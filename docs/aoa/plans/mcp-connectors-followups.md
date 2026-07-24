@@ -114,6 +114,29 @@ read and are never swept.
 (c) `docs/aoa/plans/2026-06-24-provider-switching-watched-walkthrough.md:98,116,128,146`
 still documents the per-company path with stale line numbers.
 
+### FU-16 — the credential axis is DORMANT: nothing sets `requiresSecret: true` yet · P2
+Recorded so the state of this subsystem is not overread.
+
+`requires_secret` is `notNull().default(false)`, and every live writer sets it **false**:
+the BYO create route hard-codes `requiresSecret: false` (`routes/mcp-connectors.ts:228`,
+a founder supplies credentials up front) and `mcpConnectorService.create` defaults
+`input.requiresSecret ?? false`. `McpConnectorCatalogEntrySchema` carries the field
+(`packages/shared/src/mcp-connector-catalog.ts:65`) but nothing feeds a catalog entry into
+`createConnector` yet.
+
+So `needs_credentials` is currently **unreachable in production**, and every guard built for
+it — credential-aware approve/reject, the binding endpoint, the FU-15 PATCH gate — is
+correct-in-advance and exercised only by unit tests against synthetic rows. That is
+deliberate, not a gap; the axis wakes up when the catalog install route lands (Plan 3a
+Task 10/11).
+
+⚠ **Task 13's integration test must explicitly cover it**: install a catalog connector with
+`requiresSecret: true`, assert it lands `needs_credentials` and is NOT delivered by
+`selectConnectorRowsForAgent`, bind a secret, assert it flips `active` (or stays
+`pending_approval` in `authenticated` until the board approves) and only then reaches an
+agent. Without that, the first real `needs_credentials` row in the fleet will be the first
+one anything has ever seen.
+
 ### FU-14 — `catalog.json` parsing is fleet-brittle: one unknown enum value freezes it · P1
 Discovered while designing Plan 3, and the reason connectors ship in their own
 `connectors.json` rather than as a new catalog item type.

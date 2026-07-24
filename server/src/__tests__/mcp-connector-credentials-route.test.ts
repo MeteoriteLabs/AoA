@@ -26,6 +26,7 @@ const mockConnectorSvc = vi.hoisted(() => ({
   getByName: vi.fn(),
   create: vi.fn(),
   update: vi.fn(),
+  updateIfStatus: vi.fn(),
   remove: vi.fn(),
   listAgentIds: vi.fn(),
   agentIdsInCompany: vi.fn(),
@@ -123,11 +124,9 @@ describe("POST …/credentials — derived status", () => {
     vi.clearAllMocks();
     mockGetEffectiveRole.mockResolvedValue("founder");
     mockSecretSvc.getByName.mockResolvedValue({ id: "secret-1", name: SECRET_REF });
-    mockConnectorSvc.update.mockImplementation(async (id: string, patch: object) => ({
-      id,
-      companyId: COMPANY,
-      ...patch,
-    }));
+    mockConnectorSvc.updateIfStatus.mockImplementation(
+      async (id: string, _expected: string, patch: object) => ({ id, companyId: COMPANY, ...patch }),
+    );
   });
 
   it("local_trusted: binding on a needs_credentials connector activates it", async () => {
@@ -137,10 +136,11 @@ describe("POST …/credentials — derived status", () => {
     const res = await bind(makeApp(founderActor), { secretRef: SECRET_REF });
 
     expect(res.status).toBe(200);
-    expect(mockConnectorSvc.update).toHaveBeenCalledWith(CONNECTOR_ID, {
-      secretRef: SECRET_REF,
-      status: "active",
-    });
+    expect(mockConnectorSvc.updateIfStatus).toHaveBeenCalledWith(
+      CONNECTOR_ID,
+      expect.any(String),
+      { secretRef: SECRET_REF, status: "active" },
+    );
   });
 
   it("authenticated: binding on a needs_credentials connector activates it (approval already happened)", async () => {
@@ -152,10 +152,11 @@ describe("POST …/credentials — derived status", () => {
     const res = await bind(makeApp(founderActor), { secretRef: SECRET_REF });
 
     expect(res.status).toBe(200);
-    expect(mockConnectorSvc.update).toHaveBeenCalledWith(CONNECTOR_ID, {
-      secretRef: SECRET_REF,
-      status: "active",
-    });
+    expect(mockConnectorSvc.updateIfStatus).toHaveBeenCalledWith(
+      CONNECTOR_ID,
+      expect.any(String),
+      { secretRef: SECRET_REF, status: "active" },
+    );
   });
 
   it("authenticated: binding must NOT bypass governance — a pending_approval connector stays pending_approval", async () => {
@@ -165,12 +166,14 @@ describe("POST …/credentials — derived status", () => {
     const res = await bind(makeApp(founderActor), { secretRef: SECRET_REF });
 
     expect(res.status).toBe(200);
-    expect(mockConnectorSvc.update).toHaveBeenCalledWith(CONNECTOR_ID, {
-      secretRef: SECRET_REF,
-      status: "pending_approval",
-    });
-    expect(mockConnectorSvc.update).not.toHaveBeenCalledWith(
+    expect(mockConnectorSvc.updateIfStatus).toHaveBeenCalledWith(
       CONNECTOR_ID,
+      "pending_approval",
+      { secretRef: SECRET_REF, status: "pending_approval" },
+    );
+    expect(mockConnectorSvc.updateIfStatus).not.toHaveBeenCalledWith(
+      CONNECTOR_ID,
+      expect.anything(),
       expect.objectContaining({ status: "active" }),
     );
   });
@@ -182,10 +185,11 @@ describe("POST …/credentials — derived status", () => {
     const res = await bind(makeApp(founderActor), { secretRef: SECRET_REF });
 
     expect(res.status).toBe(200);
-    expect(mockConnectorSvc.update).toHaveBeenCalledWith(CONNECTOR_ID, {
-      secretRef: SECRET_REF,
-      status: "disabled",
-    });
+    expect(mockConnectorSvc.updateIfStatus).toHaveBeenCalledWith(
+      CONNECTOR_ID,
+      "disabled",
+      { secretRef: SECRET_REF, status: "disabled" },
+    );
   });
 
   it("rotating the secret on an already-active connector keeps it active", async () => {
@@ -198,10 +202,11 @@ describe("POST …/credentials — derived status", () => {
     const res = await bind(makeApp(founderActor), { secretRef: SECRET_REF });
 
     expect(res.status).toBe(200);
-    expect(mockConnectorSvc.update).toHaveBeenCalledWith(CONNECTOR_ID, {
-      secretRef: SECRET_REF,
-      status: "active",
-    });
+    expect(mockConnectorSvc.updateIfStatus).toHaveBeenCalledWith(
+      CONNECTOR_ID,
+      expect.any(String),
+      { secretRef: SECRET_REF, status: "active" },
+    );
   });
 
   it("logs the binding as an activity entry", async () => {
@@ -228,7 +233,7 @@ describe("POST …/credentials — validation + tenancy", () => {
     vi.clearAllMocks();
     deploymentMode = "authenticated";
     mockGetEffectiveRole.mockResolvedValue("founder");
-    mockConnectorSvc.update.mockResolvedValue({ id: CONNECTOR_ID });
+    mockConnectorSvc.updateIfStatus.mockResolvedValue({ id: CONNECTOR_ID });
   });
 
   it("a secretRef naming no existing secret -> 400, no write", async () => {
@@ -238,7 +243,7 @@ describe("POST …/credentials — validation + tenancy", () => {
     const res = await bind(makeApp(founderActor), { secretRef: "mcp:ghost" });
 
     expect(res.status).toBe(400);
-    expect(mockConnectorSvc.update).not.toHaveBeenCalled();
+    expect(mockConnectorSvc.updateIfStatus).not.toHaveBeenCalled();
   });
 
   it("a connector belonging to another company -> 404, no secret lookup, no write", async () => {
@@ -251,7 +256,22 @@ describe("POST …/credentials — validation + tenancy", () => {
 
     expect(res.status).toBe(404);
     expect(mockSecretSvc.getByName).not.toHaveBeenCalled();
-    expect(mockConnectorSvc.update).not.toHaveBeenCalled();
+    expect(mockConnectorSvc.updateIfStatus).not.toHaveBeenCalled();
+  });
+
+  it("a lost TOCTOU race -> 409, not a lie about the connector being missing", async () => {
+    // The guarded UPDATE matched 0 rows: the board approved (or the founder
+    // disabled) between our read and our write, so `nextStatus` is a stale
+    // derivation. The damaging interleave is bind-landing-last in `authenticated`,
+    // which would park the connector at pending_approval with the approval already
+    // closed and no way back. 409 tells the founder to retry against the new state.
+    mockConnectorSvc.getById.mockResolvedValue(connectorRow("needs_credentials"));
+    mockSecretSvc.getByName.mockResolvedValue({ id: "secret-1", name: SECRET_REF });
+    mockConnectorSvc.updateIfStatus.mockResolvedValue(null);
+
+    const res = await bind(makeApp(founderActor), { secretRef: SECRET_REF });
+
+    expect(res.status).toBe(409);
   });
 
   it("a missing connector -> 404, no write", async () => {
@@ -260,7 +280,7 @@ describe("POST …/credentials — validation + tenancy", () => {
     const res = await bind(makeApp(founderActor), { secretRef: SECRET_REF });
 
     expect(res.status).toBe(404);
-    expect(mockConnectorSvc.update).not.toHaveBeenCalled();
+    expect(mockConnectorSvc.updateIfStatus).not.toHaveBeenCalled();
   });
 
   it("a caller-supplied status -> 400, no write (strict, not silently ignored)", async () => {
@@ -270,7 +290,7 @@ describe("POST …/credentials — validation + tenancy", () => {
     const res = await bind(makeApp(founderActor), { secretRef: SECRET_REF, status: "active" });
 
     expect(res.status).toBe(400);
-    expect(mockConnectorSvc.update).not.toHaveBeenCalled();
+    expect(mockConnectorSvc.updateIfStatus).not.toHaveBeenCalled();
   });
 });
 
@@ -280,7 +300,7 @@ describe("POST …/credentials — founder only", () => {
     deploymentMode = "authenticated";
     mockConnectorSvc.getById.mockResolvedValue(connectorRow("needs_credentials"));
     mockSecretSvc.getByName.mockResolvedValue({ id: "secret-1", name: SECRET_REF });
-    mockConnectorSvc.update.mockResolvedValue({ id: CONNECTOR_ID });
+    mockConnectorSvc.updateIfStatus.mockResolvedValue({ id: CONNECTOR_ID });
   });
 
   it.each(["team_member", "team_lead"])("%s -> 403, no write", async (role) => {
@@ -289,6 +309,6 @@ describe("POST …/credentials — founder only", () => {
     const res = await bind(makeApp(founderActor), { secretRef: SECRET_REF });
 
     expect(res.status).toBe(403);
-    expect(mockConnectorSvc.update).not.toHaveBeenCalled();
+    expect(mockConnectorSvc.updateIfStatus).not.toHaveBeenCalled();
   });
 });

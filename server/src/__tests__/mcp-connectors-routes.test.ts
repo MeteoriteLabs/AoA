@@ -461,7 +461,12 @@ describe("mcp-connectors routes — RBAC (founder-only writes)", () => {
   });
 
   it("team_member DELETE -> 403", async () => {
-    mockConnectorSvc.getById.mockResolvedValue({ id: CONNECTOR_ID, companyId: COMPANY });
+    mockConnectorSvc.getById.mockResolvedValue({
+      id: CONNECTOR_ID,
+      companyId: COMPANY,
+      requiresSecret: false,
+      secretRef: null,
+    });
     const res = await request(makeApp(actorWithRole("team_member"))).delete(
       `/api/companies/${COMPANY}/mcp-connectors/${CONNECTOR_ID}`,
     );
@@ -483,7 +488,12 @@ describe("mcp-connectors routes — agent assignment", () => {
     vi.clearAllMocks();
     deploymentMode = "authenticated";
     mockGetEffectiveRole.mockResolvedValue("founder");
-    mockConnectorSvc.getById.mockResolvedValue({ id: CONNECTOR_ID, companyId: COMPANY });
+    mockConnectorSvc.getById.mockResolvedValue({
+      id: CONNECTOR_ID,
+      companyId: COMPANY,
+      requiresSecret: false,
+      secretRef: null,
+    });
     mockConnectorSvc.replaceAgents.mockResolvedValue(undefined);
   });
 
@@ -530,7 +540,12 @@ describe("mcp-connectors routes — patch narrowness + strict fields", () => {
     vi.clearAllMocks();
     deploymentMode = "authenticated";
     mockGetEffectiveRole.mockResolvedValue("founder");
-    mockConnectorSvc.getById.mockResolvedValue({ id: CONNECTOR_ID, companyId: COMPANY });
+    mockConnectorSvc.getById.mockResolvedValue({
+      id: CONNECTOR_ID,
+      companyId: COMPANY,
+      requiresSecret: false,
+      secretRef: null,
+    });
     mockConnectorSvc.update.mockResolvedValue({ id: CONNECTOR_ID, status: "disabled" });
   });
 
@@ -551,7 +566,12 @@ describe("mcp-connectors routes — C2 PATCH cannot activate in authenticated", 
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetEffectiveRole.mockResolvedValue("founder");
-    mockConnectorSvc.getById.mockResolvedValue({ id: CONNECTOR_ID, companyId: COMPANY });
+    mockConnectorSvc.getById.mockResolvedValue({
+      id: CONNECTOR_ID,
+      companyId: COMPANY,
+      requiresSecret: false,
+      secretRef: null,
+    });
     mockConnectorSvc.update.mockImplementation(async (_id: string, patchArg: any) => ({
       id: CONNECTOR_ID,
       companyId: COMPANY,
@@ -616,7 +636,7 @@ describe("mcp-connectors routes — FU-15 PATCH cannot activate an uncredentiale
   // DEPLOYMENT_MODES is exactly ["local_trusted", "authenticated"] — there is no
   // third mode today, so this covers every one of them.
   it.each(["local_trusted", "authenticated"])(
-    "%s: PATCH -> active on a connector needing an unbound secret -> 400, no write",
+    "%s: PATCH -> active on a connector needing an unbound secret -> 400 naming CREDENTIALS, no write",
     async (mode) => {
       deploymentMode = mode;
       mockConnectorSvc.getById.mockResolvedValue(NEEDS_SECRET_UNBOUND);
@@ -625,6 +645,12 @@ describe("mcp-connectors routes — FU-15 PATCH cannot activate an uncredentiale
 
       expect(res.status).toBe(400);
       expect(mockConnectorSvc.update).not.toHaveBeenCalled();
+      // Asserting the MESSAGE, not just the code, is what makes the `authenticated`
+      // leg meaningful: the C2 governance gate would also 400 here, so a bare
+      // status assertion passes with this gate ablated. The credential gate runs
+      // FIRST, so it must be the one that answers — in every mode.
+      expect(JSON.stringify(res.body)).toMatch(/credential/i);
+      expect(JSON.stringify(res.body)).toContain("/credentials");
     },
   );
 
@@ -710,7 +736,12 @@ describe("mcp-connectors routes — M2 PATCH is founder-only", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     deploymentMode = "authenticated";
-    mockConnectorSvc.getById.mockResolvedValue({ id: CONNECTOR_ID, companyId: COMPANY });
+    mockConnectorSvc.getById.mockResolvedValue({
+      id: CONNECTOR_ID,
+      companyId: COMPANY,
+      requiresSecret: false,
+      secretRef: null,
+    });
     mockConnectorSvc.update.mockResolvedValue({ id: CONNECTOR_ID, status: "disabled" });
   });
 

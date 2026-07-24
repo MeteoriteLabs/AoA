@@ -26,11 +26,18 @@ import { applyConnectorApproval, applyConnectorRejection } from "../services/app
 
 const CO = "co1";
 
-/** A connector row stub + an observable update(). */
-function makeSvc(connector: Record<string, unknown> | null) {
+/**
+ * A connector row stub + observable writers.
+ *
+ * `updateIfStatus` is the guarded UPDATE (Codex #267 P2 pattern): it returns a row
+ * only when the precondition status matches, and `null` when it does not, which is
+ * how a lost TOCTOU race is simulated below.
+ */
+function makeSvc(connector: Record<string, unknown> | null, guardMatches = true) {
   return {
     getById: vi.fn().mockResolvedValue(connector),
     update: vi.fn().mockResolvedValue({}),
+    updateIfStatus: vi.fn().mockResolvedValue(guardMatches ? {} : null),
   };
 }
 
@@ -46,8 +53,12 @@ describe("applyConnectorApproval — credentials gate the activation (C2)", () =
 
     await applyConnectorApproval(svc as never, CO, "c1", "authenticated");
 
-    expect(svc.update).toHaveBeenCalledWith("c1", { status: "needs_credentials" });
-    expect(svc.update).not.toHaveBeenCalledWith("c1", { status: "active" });
+    expect(svc.updateIfStatus).toHaveBeenCalledWith("c1", "pending_approval", {
+      status: "needs_credentials",
+    });
+    expect(svc.updateIfStatus).not.toHaveBeenCalledWith("c1", expect.anything(), {
+      status: "active",
+    });
   });
 
   it("approving a connector whose required secret IS bound activates it", async () => {
@@ -61,7 +72,9 @@ describe("applyConnectorApproval — credentials gate the activation (C2)", () =
 
     await applyConnectorApproval(svc as never, CO, "c1", "authenticated");
 
-    expect(svc.update).toHaveBeenCalledWith("c1", { status: "active" });
+    expect(svc.updateIfStatus).toHaveBeenCalledWith("c1", "pending_approval", {
+      status: "active",
+    });
   });
 
   it("approving a connector that needs no secret at all activates it", async () => {
@@ -75,16 +88,43 @@ describe("applyConnectorApproval — credentials gate the activation (C2)", () =
 
     await applyConnectorApproval(svc as never, CO, "c1", "authenticated");
 
-    expect(svc.update).toHaveBeenCalledWith("c1", { status: "active" });
+    expect(svc.updateIfStatus).toHaveBeenCalledWith("c1", "pending_approval", {
+      status: "active",
+    });
   });
 
-  it("treats a missing/undefined requiresSecret as 'no secret required' (BYO rows predate the column)", async () => {
+  it("FAILS CLOSED on a missing/undefined requiresSecret — treats it as 'needs a secret'", async () => {
+    // `requires_secret` is notNull().default(false), so undefined cannot come from
+    // the DB. But `=== true` would read any malformed truthy value ("true", 1) as
+    // "no secret needed" and ACTIVATE; `!== false` errs toward needs_credentials,
+    // which is visible and recoverable rather than silently uncredentialed.
     const svc = makeSvc({ id: "c1", companyId: CO, status: "pending_approval" });
 
     await applyConnectorApproval(svc as never, CO, "c1", "authenticated");
 
-    expect(svc.update).toHaveBeenCalledWith("c1", { status: "active" });
+    expect(svc.updateIfStatus).toHaveBeenCalledWith("c1", "pending_approval", {
+      status: "needs_credentials",
+    });
   });
+
+  it.each([["true"], [1], ["1"]])(
+    "FAILS CLOSED on a non-boolean truthy requiresSecret (%p) — does not activate",
+    async (value) => {
+      const svc = makeSvc({
+        id: "c1",
+        companyId: CO,
+        status: "pending_approval",
+        requiresSecret: value,
+        secretRef: null,
+      });
+
+      await applyConnectorApproval(svc as never, CO, "c1", "authenticated");
+
+      expect(svc.updateIfStatus).not.toHaveBeenCalledWith("c1", expect.anything(), {
+        status: "active",
+      });
+    },
+  );
 
   it("treats an empty-string secretRef as unbound (an empty ref resolves to no credential)", async () => {
     const svc = makeSvc({
@@ -97,7 +137,9 @@ describe("applyConnectorApproval — credentials gate the activation (C2)", () =
 
     await applyConnectorApproval(svc as never, CO, "c1", "authenticated");
 
-    expect(svc.update).toHaveBeenCalledWith("c1", { status: "needs_credentials" });
+    expect(svc.updateIfStatus).toHaveBeenCalledWith("c1", "pending_approval", {
+      status: "needs_credentials",
+    });
   });
 
   it("re-approving an already-needs_credentials connector is a no-op (idempotent)", async () => {
@@ -111,7 +153,7 @@ describe("applyConnectorApproval — credentials gate the activation (C2)", () =
 
     await applyConnectorApproval(svc as never, CO, "c1", "authenticated");
 
-    expect(svc.update).not.toHaveBeenCalled();
+    expect(svc.updateIfStatus).not.toHaveBeenCalled();
   });
 
   it("re-approving an already-active connector is a no-op (idempotent)", async () => {
@@ -125,7 +167,82 @@ describe("applyConnectorApproval — credentials gate the activation (C2)", () =
 
     await applyConnectorApproval(svc as never, CO, "c1", "authenticated");
 
+    expect(svc.updateIfStatus).not.toHaveBeenCalled();
+  });
+});
+
+describe("applyConnectorApproval — a founder-disabled connector is never resurrected", () => {
+  // Reachable in `authenticated`: create → pending_approval + an approval row → the
+  // founder PATCHes {status:"disabled"} (allowed; the C2 gate only blocks
+  // *non*-disabled) → the board later approves the still-open approval. Without the
+  // short-circuit the resolver answers `active` and a connector the founder switched
+  // off starts being delivered to agents again.
+  it("approving a disabled connector leaves it disabled — no write at all", async () => {
+    const svc = makeSvc({
+      id: "c1",
+      companyId: CO,
+      status: "disabled",
+      requiresSecret: false,
+      secretRef: "mcp:notion",
+    });
+
+    await applyConnectorApproval(svc as never, CO, "c1", "authenticated");
+
+    expect(svc.updateIfStatus).not.toHaveBeenCalled();
     expect(svc.update).not.toHaveBeenCalled();
+  });
+
+  it("holds even when the connector is fully credentialed (the disable is the later signal)", async () => {
+    const svc = makeSvc({
+      id: "c1",
+      companyId: CO,
+      status: "disabled",
+      requiresSecret: true,
+      secretRef: "mcp:notion",
+    });
+
+    await applyConnectorApproval(svc as never, CO, "c1", "local_trusted");
+
+    expect(svc.updateIfStatus).not.toHaveBeenCalled();
+  });
+});
+
+describe("applyConnectorApproval — guarded write (TOCTOU)", () => {
+  it("writes with the status it READ as the precondition, not a blind id-keyed update", async () => {
+    const svc = makeSvc({
+      id: "c1",
+      companyId: CO,
+      status: "pending_approval",
+      requiresSecret: false,
+      secretRef: null,
+    });
+
+    await applyConnectorApproval(svc as never, CO, "c1", "authenticated");
+
+    // The unguarded `update` must not be used — a blind write would clobber a
+    // concurrent credential bind with this stale derivation.
+    expect(svc.update).not.toHaveBeenCalled();
+    expect(svc.updateIfStatus).toHaveBeenCalledWith("c1", "pending_approval", {
+      status: "active",
+    });
+  });
+
+  it("a lost race (0 rows matched) is absorbed silently — never throws after the approval flip", async () => {
+    const svc = makeSvc(
+      {
+        id: "c1",
+        companyId: CO,
+        status: "pending_approval",
+        requiresSecret: false,
+        secretRef: null,
+      },
+      /* guardMatches */ false,
+    );
+
+    await expect(
+      applyConnectorApproval(svc as never, CO, "c1", "authenticated"),
+    ).resolves.toBeUndefined();
+    expect(svc.updateIfStatus).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -141,7 +258,7 @@ describe("applyConnectorApproval — tenancy + null tolerance (never throw after
 
     await applyConnectorApproval(svc as never, CO, "c1", "authenticated");
 
-    expect(svc.update).not.toHaveBeenCalled();
+    expect(svc.updateIfStatus).not.toHaveBeenCalled();
   });
 
   it("is a no-op and does NOT throw when the connector was deleted between create and approve", async () => {
@@ -150,7 +267,7 @@ describe("applyConnectorApproval — tenancy + null tolerance (never throw after
     await expect(
       applyConnectorApproval(svc as never, CO, "c1", "authenticated"),
     ).resolves.toBeUndefined();
-    expect(svc.update).not.toHaveBeenCalled();
+    expect(svc.updateIfStatus).not.toHaveBeenCalled();
   });
 });
 
@@ -215,6 +332,6 @@ describe("applyConnectorRejection — covers needs_credentials, not just pending
     const svc = makeSvc(null);
 
     await expect(applyConnectorRejection(svc as never, CO, "c1")).resolves.toBeUndefined();
-    expect(svc.update).not.toHaveBeenCalled();
+    expect(svc.updateIfStatus).not.toHaveBeenCalled();
   });
 });

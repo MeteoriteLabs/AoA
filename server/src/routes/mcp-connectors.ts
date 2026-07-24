@@ -8,7 +8,7 @@ import {
   mcpConnectorService,
   secretService,
 } from "../services/index.js";
-import { badRequest, forbidden } from "../errors.js";
+import { badRequest, conflict, forbidden } from "../errors.js";
 import { createConnector } from "../services/mcp-connector-create.js";
 import { resolveConnectorStatus } from "../services/mcp-connector-status.js";
 import { assertTransportAllowed } from "../services/mcp-connector-transport-gate.js";
@@ -278,7 +278,11 @@ export function mcpConnectorRoutes(db: Db) {
           resolveConnectorStatus({
             deploymentMode,
             approved: true,
-            requiresSecret: existing.requiresSecret === true,
+            // `!== false` fails CLOSED: anything that is not explicitly false is
+            // treated as "needs a secret". `=== true` would let a malformed value
+            // ("true", 1) read as "no secret needed" and activate. The column is
+            // `notNull().default(false)`, so this is defensive only.
+            requiresSecret: existing.requiresSecret !== false,
             // Empty string names no secret, so it is not a bound credential.
             hasSecret: Boolean(existing.secretRef),
           }) === "active";
@@ -381,8 +385,14 @@ export function mcpConnectorRoutes(db: Db) {
       //
       // `disabled` is short-circuited rather than fed to the resolver: with
       // approved=true the resolver would answer `active`, i.e. binding a secret
-      // would RESURRECT a connector the board rejected. Re-enabling is PATCH's job
-      // (and in a shared deployment, a fresh approval's).
+      // would RESURRECT a connector the board rejected.
+      //
+      // In `authenticated`, `disabled` is effectively TERMINAL. Nothing re-enables
+      // it: PATCH → active is refused by the C2 governance gate, `applyConnectorApproval`
+      // short-circuits `disabled` too, and an `install_mcp_connector` approval is only
+      // ever created inside `createConnector` — no route re-requests approval for an
+      // existing connector. Recreating the connector is the way back. In
+      // `local_trusted`, PATCH → active re-enables it (no governance gate there).
       //
       // Nothing here decides `active` on its own — `resolveConnectorStatus` does,
       // and it is unconditionally incapable of returning `active` while the
@@ -394,15 +404,27 @@ export function mcpConnectorRoutes(db: Db) {
           : resolveConnectorStatus({
             deploymentMode: loadConfig().deploymentMode,
             approved,
-            requiresSecret: existing.requiresSecret === true,
+            // `!== false` fails closed; see applyConnectorApproval for the rationale.
+            requiresSecret: existing.requiresSecret !== false,
             // A non-empty secretRef was just validated to exist, so it IS bound.
             hasSecret: true,
           });
 
-      const updated = await svc.update(id, { secretRef, status: nextStatus });
+      // Guarded on the status we READ: `nextStatus` was derived from that snapshot,
+      // so if the board approved (or the founder disabled) between the read and here,
+      // this matches 0 rows rather than overwriting the newer state with a stale
+      // derivation. The damaging interleave is exactly this one — bind landing last
+      // in `authenticated` would park the connector at `pending_approval` with the
+      // approval already closed and no way back. A 409 tells the founder to retry,
+      // which then derives from the current row.
+      const updated = await svc.updateIfStatus(id, existing.status, {
+        secretRef,
+        status: nextStatus,
+      });
       if (!updated) {
-        res.status(404).json({ error: "Connector not found" });
-        return;
+        throw conflict(
+          "This connector changed while the credential was being bound. Retry the request.",
+        );
       }
 
       const actor = getActorInfo(req);

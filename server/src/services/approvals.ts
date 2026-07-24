@@ -25,6 +25,11 @@ export type ConnectorApprovalTarget = {
     | null
   >;
   update: (id: string, patch: { status: string }) => Promise<unknown>;
+  updateIfStatus: (
+    id: string,
+    expectedStatus: string,
+    patch: { status: string },
+  ) => Promise<unknown>;
 };
 
 /**
@@ -62,18 +67,45 @@ export async function applyConnectorApproval(
   const connector = await svc.getById(connectorId);
   if (!connector || connector.companyId !== companyId) return;
 
+  // `disabled` is TERMINAL here — approving must never resurrect it. Reachable in
+  // `authenticated`: create → `pending_approval` + an approval row → the founder
+  // PATCHes `{status:"disabled"}` (allowed; the C2 gate only blocks *non*-disabled)
+  // → the board later approves the still-open approval. Without this line the
+  // resolver answers `active` and a connector the founder switched off starts
+  // being delivered to agents again.
+  //
+  // The founder's explicit disable is a LATER and more specific signal than a
+  // pending install request, so it wins. This also mirrors the credential-binding
+  // route, which short-circuits `disabled` for the same reason, and is symmetric
+  // with `applyConnectorRejection` deliberately not touching an `active` connector.
+  if (connector.status === "disabled") return;
+
   const next = resolveConnectorStatus({
     deploymentMode,
     approved: true,
-    requiresSecret: connector.requiresSecret === true,
+    // `!== false` (not `=== true`) fails CLOSED: anything that is not explicitly
+    // false is treated as "needs a secret", so a malformed value cannot activate an
+    // uncredentialed connector. The column is `notNull().default(false)`, so this is
+    // defensive only — but the failure it prevents is silent activation.
+    requiresSecret: connector.requiresSecret !== false,
     // An empty-string secretRef names no secret, so it is NOT a bound credential;
     // `!= null` alone would read "" as bound and activate an unusable connector.
     hasSecret: Boolean(connector.secretRef),
   });
 
   if (connector.status !== next) {
-    await svc.update(connectorId, { status: next });
+    // Guarded on the status we READ (Codex #267 P2 pattern, as the crew_dispatch
+    // block below): `next` was derived from that snapshot, so if the row moved in
+    // between — a concurrent credential bind, or a founder disabling it — this
+    // matches 0 rows and we do nothing rather than overwrite the newer state with
+    // a stale derivation. Failing closed (no activation) is the safe direction.
+    await svc.updateIfStatus(connectorId, connector.status, { status: next });
   }
+
+  // NO activity-log entry here, deliberately. This runs AFTER the approval status
+  // flip, and approve() is called by the MCP approval tool with no wrapping
+  // transaction — a logging failure would throw and strand the approval as
+  // "approved" with no activation. The approval row itself is the audit record.
 }
 
 /**

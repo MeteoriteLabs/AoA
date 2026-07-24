@@ -48,10 +48,25 @@ export type ConnectorPatch = {
    * re-derives `status` in the same write; `updateConnectorSchema` (PATCH) is
    * `.strict()` on displayName+status and deliberately does NOT accept it, because
    * changing the bound credential without re-deriving status is how a connector
-   * ends up `active` with a dangling ref. `null` clears the binding.
+   * ends up `active` with a dangling ref.
+   *
+   * DELIBERATELY NOT `string | null`. Clearing a binding would break
+   * "`active` ∧ `requiresSecret` ⇒ `secretRef`" WITHOUT being a status write at
+   * all, so it would slip past every status-keyed guard in this subsystem. No
+   * caller needs it. If one ever does, `update` must re-derive `status` whenever
+   * `secretRef` changes — do not just widen this type.
    */
-  secretRef?: string | null;
+  secretRef?: string;
 };
+
+/** Shared by `update` and `updateIfStatus` so the two cannot drift. */
+function buildConnectorPatchSet(patch: ConnectorPatch): Record<string, unknown> {
+  const set: Record<string, unknown> = { updatedAt: new Date() };
+  if (patch.displayName !== undefined) set.displayName = patch.displayName;
+  if (patch.status !== undefined) set.status = patch.status;
+  if (patch.secretRef !== undefined) set.secretRef = patch.secretRef;
+  return set;
+}
 
 export function mcpConnectorService(db: Db) {
   return {
@@ -134,14 +149,46 @@ export function mcpConnectorService(db: Db) {
         .then((rows) => rows[0]),
 
     update: (id: string, patch: ConnectorPatch) => {
-      const set: Record<string, unknown> = { updatedAt: new Date() };
-      if (patch.displayName !== undefined) set.displayName = patch.displayName;
-      if (patch.status !== undefined) set.status = patch.status;
-      if (patch.secretRef !== undefined) set.secretRef = patch.secretRef;
+      const set = buildConnectorPatchSet(patch);
       return db
         .update(companyMcpConnectors)
         .set(set)
         .where(eq(companyMcpConnectors.id, id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+    },
+
+    /**
+     * `update`, but only if the row is STILL in `expectedStatus` — a guarded
+     * UPDATE in the sense of Codex #267 P2 (the crew_dispatch precedent in
+     * services/approvals.ts). Returns `null` when the precondition failed.
+     *
+     * WHY: the two callers that derive a status (approve, credential-binding)
+     * both read the row, compute the next status from what they read, then write.
+     * That read-compute-write is a TOCTOU: if a founder binds a secret while the
+     * board approves, the loser's stale derivation overwrites the winner's. The
+     * damaging interleave is bind-lands-last in `authenticated` — the connector
+     * ends `pending_approval` with the approval already closed, and there is NO
+     * recovery (re-binding re-derives `pending_approval`, PATCH→active is refused
+     * by the C2 gate, and the approval cannot be re-approved).
+     *
+     * Both callers fail CLOSED on a lost race (no activation / a 409 the founder
+     * can retry), which is why this is safe to apply there. It is deliberately
+     * NOT used by `applyConnectorRejection`: that write is a blind `disabled`,
+     * and guarding it would fail OPEN — a connector the board just rejected would
+     * stay enabled because someone touched it concurrently.
+     */
+    updateIfStatus: (id: string, expectedStatus: string, patch: ConnectorPatch) => {
+      const set = buildConnectorPatchSet(patch);
+      return db
+        .update(companyMcpConnectors)
+        .set(set)
+        .where(
+          and(
+            eq(companyMcpConnectors.id, id),
+            eq(companyMcpConnectors.status, expectedStatus),
+          ),
+        )
         .returning()
         .then((rows) => rows[0] ?? null);
     },

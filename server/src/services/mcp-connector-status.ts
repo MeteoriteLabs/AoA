@@ -25,15 +25,25 @@
  *    "active" unless this resolver would permit it on the credential axis, in
  *    EVERY deployment mode (FU-15).
  *
- * So: "status is active" implies a bound credential whenever one is required.
+ * So: "status is active" implies a bound secret REFERENCE whenever one is
+ * required. It does NOT imply a resolvable credential — `secretRef` names a row in
+ * `company_secrets`, and that row can later be soft-deleted or deactivated. The
+ * connector stays `active` and the delivery path drops it with a
+ * `secret_unreachable` skip (see FU-1). Bound-reference is the invariant; live
+ * credential is not.
+ *
+ * The guarantee is also keyed on `secretRef` being write-once-per-binding: a write
+ * that CLEARS `secretRef` would break "active ⇒ bound" without being a status write
+ * at all, and would therefore slip past every guard described above. That is why
+ * `ConnectorPatch.secretRef` is `string` and not `string | null`.
  *
  * What PATCH still permits, deliberately, is GOVERNANCE latitude: in
  * `local_trusted` a founder may hand-set "active" on a connector that needs no
  * secret, with no approval. That is a loopback trust boundary with no governance
  * gate to bypass — and it is orthogonal to the credential invariant above.
  *
- * If you add a third writer to `company_mcp_connectors`, this paragraph is the
- * thing you are invalidating.
+ * If you add a third writer to `company_mcp_connectors`, or make `secretRef`
+ * clearable, this paragraph is the thing you are invalidating.
  */
 
 export type ConnectorStatus = "pending_approval" | "needs_credentials" | "active" | "disabled";

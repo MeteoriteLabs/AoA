@@ -60,6 +60,7 @@ const mocks = vi.hoisted(() => ({
   logActivity: vi.fn(),
   connGetById: vi.fn(),
   connUpdate: vi.fn(),
+  connUpdateIfStatus: vi.fn(),
 }));
 
 vi.mock("../services/agents.js", () => ({
@@ -82,6 +83,7 @@ vi.mock("../services/mcp-connectors-crud.js", () => ({
   mcpConnectorService: () => ({
     getById: mocks.connGetById,
     update: mocks.connUpdate,
+    updateIfStatus: mocks.connUpdateIfStatus,
   }),
 }));
 
@@ -185,6 +187,7 @@ beforeEach(() => {
   mocks.logActivity.mockResolvedValue(undefined);
   mocks.dispatchCreatedCrewTasks.mockResolvedValue(undefined);
   mocks.connUpdate.mockResolvedValue({ id: "conn-1", status: "active" });
+  mocks.connUpdateIfStatus.mockResolvedValue({ id: "conn-1", status: "active" });
 });
 
 describe("approvalService.approve — install_mcp_connector branch", () => {
@@ -193,6 +196,8 @@ describe("approvalService.approve — install_mcp_connector branch", () => {
       id: "conn-1",
       companyId: COMPANY,
       status: "pending_approval",
+      requiresSecret: false,
+      secretRef: null,
     });
 
     const { db } = makeDb(
@@ -208,8 +213,10 @@ describe("approvalService.approve — install_mcp_connector branch", () => {
 
     expect(result).not.toBeNull();
     expect(mocks.connGetById).toHaveBeenCalledWith("conn-1");
-    expect(mocks.connUpdate).toHaveBeenCalledTimes(1);
-    expect(mocks.connUpdate).toHaveBeenCalledWith("conn-1", { status: "active" });
+    expect(mocks.connUpdateIfStatus).toHaveBeenCalledTimes(1);
+    expect(mocks.connUpdateIfStatus).toHaveBeenCalledWith("conn-1", "pending_approval", {
+      status: "active",
+    });
   });
 
   it("(2) idempotent: an already-active connector is NOT re-flipped", async () => {
@@ -217,6 +224,8 @@ describe("approvalService.approve — install_mcp_connector branch", () => {
       id: "conn-1",
       companyId: COMPANY,
       status: "active",
+      requiresSecret: false,
+      secretRef: null,
     });
 
     const { db } = makeDb(
@@ -232,6 +241,7 @@ describe("approvalService.approve — install_mcp_connector branch", () => {
 
     expect(result).not.toBeNull();
     expect(mocks.connUpdate).not.toHaveBeenCalled();
+    expect(mocks.connUpdateIfStatus).not.toHaveBeenCalled();
   });
 
   it("(3) deleted connector: getById returns null → no throw, approval still resolves", async () => {
@@ -250,6 +260,7 @@ describe("approvalService.approve — install_mcp_connector branch", () => {
 
     expect((result as { status?: string } | null)?.status).toBe("approved");
     expect(mocks.connUpdate).not.toHaveBeenCalled();
+    expect(mocks.connUpdateIfStatus).not.toHaveBeenCalled();
   });
 
   it("(4) company scope: a connector from another company is NOT flipped", async () => {
@@ -257,6 +268,8 @@ describe("approvalService.approve — install_mcp_connector branch", () => {
       id: "conn-1",
       companyId: "company-OTHER",
       status: "pending_approval",
+      requiresSecret: false,
+      secretRef: null,
     });
 
     const { db } = makeDb(
@@ -272,6 +285,7 @@ describe("approvalService.approve — install_mcp_connector branch", () => {
 
     expect(result).not.toBeNull();
     expect(mocks.connUpdate).not.toHaveBeenCalled();
+    expect(mocks.connUpdateIfStatus).not.toHaveBeenCalled();
   });
 
   it("no-op when payload.connectorId is missing", async () => {
@@ -286,6 +300,7 @@ describe("approvalService.approve — install_mcp_connector branch", () => {
     expect(result).not.toBeNull();
     expect(mocks.connGetById).not.toHaveBeenCalled();
     expect(mocks.connUpdate).not.toHaveBeenCalled();
+    expect(mocks.connUpdateIfStatus).not.toHaveBeenCalled();
   });
 });
 
@@ -295,6 +310,8 @@ describe("approvalService.reject — install_mcp_connector branch", () => {
       id: "conn-1",
       companyId: COMPANY,
       status: "pending_approval",
+      requiresSecret: false,
+      secretRef: null,
     });
     mocks.connUpdate.mockResolvedValue({ id: "conn-1", status: "disabled" });
 
@@ -319,6 +336,8 @@ describe("approvalService.reject — install_mcp_connector branch", () => {
       id: "conn-1",
       companyId: COMPANY,
       status: "active",
+      requiresSecret: false,
+      secretRef: null,
     });
 
     const { db } = makeDb(
@@ -333,6 +352,7 @@ describe("approvalService.reject — install_mcp_connector branch", () => {
     await svc.reject("ap1", COMPANY, "user-A", "no");
 
     expect(mocks.connUpdate).not.toHaveBeenCalled();
+    expect(mocks.connUpdateIfStatus).not.toHaveBeenCalled();
   });
 });
 
@@ -352,6 +372,7 @@ describe("regression — hire_agent and crew_dispatch unaffected by the connecto
     expect(mocks.activatePendingApproval).toHaveBeenCalledWith("agent-9");
     expect(mocks.connGetById).not.toHaveBeenCalled();
     expect(mocks.connUpdate).not.toHaveBeenCalled();
+    expect(mocks.connUpdateIfStatus).not.toHaveBeenCalled();
   });
 
   it("(6b) hire_agent reject still terminates the pending agent and never touches the connector service", async () => {
@@ -369,6 +390,7 @@ describe("regression — hire_agent and crew_dispatch unaffected by the connecto
     expect(mocks.terminate).toHaveBeenCalledWith("agent-9");
     expect(mocks.connGetById).not.toHaveBeenCalled();
     expect(mocks.connUpdate).not.toHaveBeenCalled();
+    expect(mocks.connUpdateIfStatus).not.toHaveBeenCalled();
   });
 
   it("(6c) crew_dispatch approve still dispatches and never touches the connector service", async () => {
@@ -387,5 +409,6 @@ describe("regression — hire_agent and crew_dispatch unaffected by the connecto
     expect(mocks.dispatchCreatedCrewTasks).toHaveBeenCalledTimes(1);
     expect(mocks.connGetById).not.toHaveBeenCalled();
     expect(mocks.connUpdate).not.toHaveBeenCalled();
+    expect(mocks.connUpdateIfStatus).not.toHaveBeenCalled();
   });
 });
