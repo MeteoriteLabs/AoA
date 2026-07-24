@@ -22,7 +22,6 @@ import {
   repairCompanyCrew,
   type CrewRepairDiagnosis,
 } from "../services/crew-repair.js";
-import type { AgentInstructionsServiceLike } from "../services/marketplace-install/agent-create.js";
 import { marketplaceSettingsService } from "../services/marketplace-settings.js";
 import { computeSectionDiff, applyMergeDecisions } from "../services/marketplace-merge.js";
 import { marketplaceNotifications } from "../services/marketplace-notifications.js";
@@ -48,8 +47,6 @@ export interface MarketplaceCompanyRoutesDeps {
   pluginRollback?: {
     getRollbackTarget(pluginId: string): Promise<{ packageName: string; version: string } | null>;
   };
-  /** Required by POST /crew/repair (T2.3b); the route 503s without it. */
-  instructionsService?: AgentInstructionsServiceLike;
 }
 
 /** Route-safe view of a diagnosis — ids and counts, no row payloads. */
@@ -475,12 +472,6 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
     assertCompanyAccess(req, companyId);
     await assertRole(db, req, companyId, "founder");
 
-    const instructionsService = deps.instructionsService;
-    if (!instructionsService) {
-      res.status(503).json({ error: "Agent instructions service is not available" });
-      return;
-    }
-
     const catalog = await deps.catalogService.readCache();
     if (!catalog) {
       // No catalog = nothing to repair towards. Distinct from "nothing to do".
@@ -494,10 +485,16 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
       return;
     }
 
+    // Without `force` this shares `CREW_REPAIR_COOLDOWN_MS` with the background
+    // pass. That is deliberate: repair fetches, and on a crewless company each
+    // call is a full provisioning attempt (catalog wait + install deadline +
+    // ~27 fetches), so an un-gated route is a self-inflicted CDN loop. `force`
+    // is the explicit operator override for "I just fixed the thing, retry now".
+    const force = (req.body as { force?: unknown } | undefined)?.force === true;
     const result = await repairCompanyCrew(db, companyId, {
       catalogItems: catalog.items,
-      instructionsService,
       requestedByUserId: req.actor.userId ?? "board",
+      force,
     });
     res.json({ diagnosis: summarizeDiagnosis(diagnosis), result });
   });

@@ -918,7 +918,6 @@ async function runCrewUpdateCheck(): Promise<void> {
       db: db as any,
       companyIds: allCompanies.map((c: { id: string }) => c.id),
       catalogItems: catalogData as any,
-      instructionsService: agentInstructionsService(),
     }).catch((err) => logger.warn({ err }, "crew provisioning repair pass failed"));
 
     for (const company of allCompanies) {

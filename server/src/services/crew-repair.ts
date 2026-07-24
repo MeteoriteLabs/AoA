@@ -2,66 +2,74 @@
  * @fileoverview Repair a company whose crew provisioning degraded (T2.3b).
  *
  * **Why this exists.** `provisionCompanyCrew` runs at exactly one instant —
- * company creation — and `crew-updater.ts:151` skips `…@legacy` and NULL-origin
+ * company creation — and `crew-updater.ts` skips `…@legacy` and NULL-origin
  * rows *forever*. So one CDN blip, cold cache, deadline, or process restart at
  * that instant permanently excludes the company from every future crew update.
  * T2.3's fail-open degrade is only an acceptable trade because this module
  * exists: the degraded state has to be recoverable, or "born updateable" is one
  * network call wide.
  *
- * ── The three degraded states, and why they need three different answers ─────
+ * ── What repair does, and the one thing it deliberately does NOT do ──────────
  *
- * 1. **`crewless`** — infrastructure agents (Commander, Steward) exist but there
- *    is no crew team row and no crew agents at all. Reached when
- *    `inspectCrewTeamInstall` returned `unknown` (a DB blip at exactly the wrong
- *    moment) and `provisionCompanyCrew` correctly refused to seed. There is
- *    nothing to collide with, so this is the one state where re-running
- *    {@link provisionCompanyCrew} verbatim is right.
+ * Repair **adopts the pointer, never the content.** For a company whose crew is
+ * `…@legacy`/NULL it rewrites two columns — `templateOrigin` and
+ * `templateVersion` — and leaves instructions, `skillKeys`, `runtimeConfig`,
+ * triggers and adapter exactly as the founder has them. That is enough to
+ * un-freeze the company: `checkCrewUpdates` then sees a managed row at
+ * {@link ADOPTED_TEMPLATE_VERSION}, which can never equal a published version,
+ * so it routes the content change through the company's own `agentUpdatePolicy`
+ * — auto-apply, or a founder-visible pending update + notification.
  *
- * 2. **`unmanaged`** — the company has crew agents, but stamped `…@legacy` or
- *    NULL. This is the state Phase 2 exists to eliminate, and it is the one
- *    where re-running `provisionCompanyCrew` is WRONG: `installTeam` inserts a
- *    fresh row per roster entry, and `resolveAgentNameConflict` renames each
- *    collision, so a naive repair mints `Scout-2` / `Reviewer-2` /
- *    `default-crew-2` — every duplicate carrying the SAME `templateOrigin`,
- *    which then breaks the single-row lookups at `resolver.ts:208` and
- *    `team-reconcile.ts:74`. Deleting the legacy rows instead is worse: they own
- *    tasks, runs and assignments by id.
+ * The alternative — having repair call `applyCrewAgentUpdate` itself — was
+ * built first and rejected. It runs
+ * `materializeManagedBundle(..., { replaceExisting: true })`, whose first act is
+ * `fs.rm(root, { recursive: true, force: true })` on the directory holding the
+ * founder's instruction edits, **outside the transaction** and **without
+ * consulting `agentUpdatePolicy`** (whose default is `notify`). An unattended
+ * boot pass that deletes founder-edited files with no consent and no signal is
+ * not a repair; and if the transaction then failed, the row stayed legacy while
+ * the edits were already gone. Pointer-only adoption has none of that: the only
+ * writes are DB writes, all inside one transaction.
  *
- *    So this state is repaired by **adoption**: re-point each existing row at
- *    its catalog template in place, through the already-tested
- *    {@link applyCrewAgentUpdate}. Agent ids survive; `name`, `role`, `title`
- *    and `adapterType` survive (see that function's docblock); origin, version,
- *    skillKeys, tool allowlist, triggers and instruction bundle come from the
- *    catalog. Adoption claims exactly the rows a fresh install would have
- *    collided with — which is precisely why it cannot duplicate them.
+ * ── The three degraded shapes ───────────────────────────────────────────────
  *
- *    Roster members with no local counterpart (Reviewer, which has no legacy
- *    seeder at all — see `LEGACY_CREW_SEEDER_COVERAGE`) are NOT installed here.
- *    Adoption writes the `teams` row + `team_members` links, which is exactly
- *    what `reconcileTeamMembers` needs to install the remainder on its own,
- *    already-wired pass.
+ * The **roster** (`team.json`) is the sole authority on what counts as crew —
+ * not a hardcoded name list. Everything is decided by matching the roster
+ * against this company's `kind='aoa'` rows:
  *
- * 3. **`operation-row-stale`** — the crew IS installed, but its
- *    `marketplace_install_operations` row still says `failure`. T2.3's
- *    averted-clobber path tries to repair that row, but the repair write uses
- *    the same connection that just failed; if the DB is what broke, the row
- *    stays `failure` and therefore CLAIMABLE, and the next
- *    `provisionCompanyCrew` would legitimately claim it and re-install over a
- *    committed roster. The retry belongs here (plan Step 4b), not inside T2.3.
+ * 1. **No roster row matches, nothing adopted** → genuinely crewless. This is
+ *    the residual state T2.3's `unknown` witness leaves behind. Nothing can
+ *    collide, so {@link provisionCompanyCrew} is re-run verbatim.
+ * 2. **Some roster rows match** → adopt them. Re-running the provisioner here
+ *    would be wrong: `installTeam` inserts a fresh row per roster entry and
+ *    `resolveAgentNameConflict` renames each collision, minting `Scout-2` /
+ *    `default-crew-2` sharing one `templateOrigin` while leaving the ORIGINAL
+ *    rows — the ones tasks, runs and assignments point at by id — still frozen.
+ * 3. **Installed, but the operation row still reads claimable** → seal it. The
+ *    T2.3 averted-clobber repair writes that row on the connection that just
+ *    failed; when the DB is what broke, it stays claimable and the next
+ *    provisioning pass re-installs over a committed roster.
  *
- * **Everything here fails closed.** If the roster cannot be mapped onto the
- * company's rows, this module does nothing and logs — it never installs
- * alongside crew rows it could not account for.
+ * **All-or-nothing.** If any roster member that HAS a local row cannot be
+ * adopted, repair writes nothing at all. A partial adoption plus a team row is
+ * the worst state available: `reconcileTeamMembers` cannot tell "no local
+ * counterpart" from "adoption failed here", so it installs a duplicate under a
+ * renamed name, and the original row is then permanently unreachable (the next
+ * pass sees the origin already present and skips it).
  */
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { agents, teams, teamMembers, marketplaceInstallOperations } from "@armyofagents/db";
+import {
+  agents,
+  companySkills,
+  teams,
+  teamMembers,
+  marketplaceInstallOperations,
+} from "@armyofagents/db";
 import type { CatalogItem } from "@armyofagents/shared";
 import { logger } from "../middleware/logger.js";
-import { applyCrewAgentUpdate } from "./marketplace-install/crew-updater.js";
-import type { AgentInstructionsServiceLike } from "./marketplace-install/agent-create.js";
+import { marketplaceNotifications } from "./marketplace-notifications.js";
 import { resolveTeamSlugConflict } from "./marketplace-install/conflict-resolver.js";
 import { fetchCatalogResource } from "./marketplace-install/fetch-resource.js";
 import {
@@ -75,22 +83,19 @@ import {
 import { provisionCompanyCrew, type CrewProvisioningOutcome } from "./crew-provisioning.js";
 
 /**
- * Agents that are AoA infrastructure rather than marketplace crew, identified by
- * name because that is the only stable key they have: `seed-crew-agent.ts`
- * stamps no origin, `backfill-template-origin.ts` stamps `Commander@legacy` but
- * skips Steward entirely (it is absent from `CREW_NAMES`), so origin cannot
- * separate them.
+ * The `templateVersion` an adopted row carries.
  *
- * They are excluded from the "does this company have a crew?" count — otherwise
- * every crewless company would look populated and never be repaired.
- *
- * ⚠️ T2.4 publishes Steward and moves it into the crew roster. When that lands,
- * remove it here in the same change, or a genuinely crewless company that still
- * has its legacy Steward will read as `unmanaged` and adoption will claim it.
- * (That is the safe direction — it adopts rather than duplicates — but the
- * classification would be wrong.)
+ * It must be non-null (`crew-updater` skips rows without one) and must never
+ * equal a published catalog version (or the updater would think the row is
+ * synced when it still holds legacy content). A `0.0.0` prerelease satisfies
+ * both and is honest about what the row actually contains: pre-catalog content
+ * of unknown provenance. Do NOT replace this with the current catalog version —
+ * that would claim the row is up to date with content it has never seen.
  */
-export const INFRASTRUCTURE_AGENT_NAMES: ReadonlySet<string> = new Set(["Commander", "Steward"]);
+export const ADOPTED_TEMPLATE_VERSION = "0.0.0-legacy";
+
+/** Aggregate budget for repair's resource fetches (team.json + skill bodies). */
+export const CREW_REPAIR_FETCH_DEADLINE_MS = 30_000;
 
 /** A `templateOrigin` that puts the row inside the update pipeline. */
 export function isMarketplaceManagedOrigin(origin: string | null): origin is string {
@@ -102,30 +107,29 @@ export interface CrewAgentSnapshot {
   name: string;
   templateOrigin: string | null;
   templateVersion: string | null;
-  adapterType: string;
-  adapterConfig: Record<string, unknown> | null;
-  runtimeConfig: Record<string, unknown> | null;
-  skillKeys: string[];
 }
 
 export type CrewRepairVerdict =
-  /** Crew team row + at least one marketplace-managed crew agent. Nothing to do. */
+  /** Crew team row + at least one managed crew agent, audit row honest. */
   | "healthy"
-  /** Installed, but the bootstrap operation row still lies (plan Step 4b, case 2). */
+  /** Installed, but the bootstrap operation row is still claimable. */
   | "operation-row-stale"
-  /** No crew team and no crew agents at all (plan Step 4b, case 1). */
-  | "crewless"
-  /** Crew agents exist but are `…@legacy`/NULL — frozen out of crew-updater. */
-  | "unmanaged";
+  /**
+   * Anything else. Deliberately NOT split into "crewless" vs "unmanaged" here:
+   * that distinction can only be made against the roster, which costs a network
+   * fetch, and a cheap diagnosis that guessed it would guess wrong exactly when
+   * the roster changes (e.g. when T2.4 moves Steward into the crew).
+   */
+  | "degraded";
 
 export interface CrewRepairDiagnosis {
   companyId: string;
   verdict: CrewRepairVerdict;
   /** The `teams` row for `team:aoa-curated/default-crew`, if it exists. */
   teamId: string | null;
-  /** Crew agents (infrastructure excluded) already inside the update pipeline. */
+  /** `kind='aoa'` rows already inside the update pipeline. */
   managedCrew: CrewAgentSnapshot[];
-  /** Crew agents (infrastructure excluded) with a `…@legacy`/NULL origin. */
+  /** `kind='aoa'` rows with a `…@legacy`/NULL origin. */
   unmanagedCrew: CrewAgentSnapshot[];
   /** The `bootstrap-crew:<companyId>` operation row, if one was ever written. */
   operation: { id: string; status: string; startedAt: Date } | null;
@@ -136,12 +140,12 @@ export interface CrewRepairDiagnosis {
  *
  * Mirrors `claimOperationForDispatch` exactly, and that is the point: a row is
  * only worth sealing if it is CLAIMABLE, because claimable-over-a-committed-crew
- * is the whole hazard. So:
- * - `failure` — claimable now. The plan's Step 4b case 2.
+ * is the whole hazard.
+ * - `failure` — claimable now.
  * - `pending` — claimable now, at any age (nobody has started it).
- * - `running` older than {@link OPERATION_CLAIM_STALE_AFTER_MS} — the owner died.
- * - a FRESH `running` — a live install owns it. Sealing it would declare
- *   someone else's in-flight work finished.
+ * - `running` older than {@link OPERATION_CLAIM_STALE_AFTER_MS} — owner died.
+ * - a FRESH `running` — a live install owns it; sealing would declare someone
+ *   else's in-flight work finished.
  * - `requested` — a founder-approval state; never hijack a pending decision.
  * - `success` — already honest.
  */
@@ -157,10 +161,10 @@ function isClaimableOverInstalledCrew(
 }
 
 /**
- * Classify a company's crew provisioning. Three cheap indexed queries; no
- * network. Throws on a DB error — callers treat that as "skip this company",
- * never as "healthy" (a repair pass that silently reads an outage as health is
- * the exact failure class T2.3's `unknown` witness was written to avoid).
+ * Classify a company's crew provisioning. Three indexed queries; no network.
+ * Throws on a DB error — callers treat that as "skip this company", never as
+ * "healthy" (a pass that silently reads an outage as health is the exact
+ * failure class T2.3's `unknown` witness was written to avoid).
  */
 export async function diagnoseCrewProvisioning(
   db: Db,
@@ -172,17 +176,12 @@ export async function diagnoseCrewProvisioning(
       name: agents.name,
       templateOrigin: agents.templateOrigin,
       templateVersion: agents.templateVersion,
-      adapterType: agents.adapterType,
-      adapterConfig: agents.adapterConfig,
-      runtimeConfig: agents.runtimeConfig,
-      skillKeys: agents.skillKeys,
     })
     .from(agents)
     .where(and(eq(agents.companyId, companyId), eq(agents.kind, "aoa")))) as CrewAgentSnapshot[];
 
-  const roster = crewRows.filter((row) => !INFRASTRUCTURE_AGENT_NAMES.has(row.name));
-  const managedCrew = roster.filter((row) => isMarketplaceManagedOrigin(row.templateOrigin));
-  const unmanagedCrew = roster.filter((row) => !isMarketplaceManagedOrigin(row.templateOrigin));
+  const managedCrew = crewRows.filter((row) => isMarketplaceManagedOrigin(row.templateOrigin));
+  const unmanagedCrew = crewRows.filter((row) => !isMarketplaceManagedOrigin(row.templateOrigin));
 
   const [teamRow] = await db
     .select({ id: teams.id })
@@ -215,11 +214,8 @@ export async function diagnoseCrewProvisioning(
     : null;
 
   // "Installed" is team row AND at least one managed crew agent — the same
-  // both-directions witness `installTeam` guarantees (it refuses to write a team
-  // row with zero agents). Leftover `…@legacy` rows for roles the catalog does
-  // not carry (e.g. the retired Dispatcher) do NOT make an installed company
-  // look broken; otherwise every such company would be re-diagnosed and
-  // re-attempted on every pass forever, with nothing to adopt.
+  // both-directions witness `installTeam` guarantees (it refuses to write a
+  // team row with zero agents).
   const installed = teamId !== null && managedCrew.length > 0;
 
   let verdict: CrewRepairVerdict;
@@ -228,14 +224,22 @@ export async function diagnoseCrewProvisioning(
       operation && isClaimableOverInstalledCrew(operation, Date.now())
         ? "operation-row-stale"
         : "healthy";
-  } else if (roster.length === 0) {
-    verdict = "crewless";
   } else {
-    verdict = "unmanaged";
+    verdict = "degraded";
   }
 
   return { companyId, verdict, teamId, managedCrew, unmanagedCrew, operation };
 }
+
+/** Why repair declined to act. Kept distinct so an operator can tell them apart. */
+export type CrewRepairSkipReason =
+  | "cooldown"
+  | "install-in-flight"
+  | "team-item-not-in-catalog"
+  | "team-template-unavailable"
+  | "empty-roster"
+  | "unadoptable-roster-member"
+  | "skill-content-unavailable";
 
 export type CrewRepairResult =
   | { action: "none"; verdict: CrewRepairVerdict }
@@ -244,38 +248,53 @@ export type CrewRepairResult =
   | {
       action: "adopted";
       teamId: string;
-      /** Catalog agent ids now stamped onto pre-existing rows. */
+      /** Catalog agent ids now stamped onto pre-existing rows. Never partial. */
       adoptedItemIds: string[];
-      /** Roster members whose adoption failed — still `…@legacy`, retryable. */
-      failedItemIds: string[];
+      /**
+       * Roster members with no local row at all. NOT a failure — repair writes
+       * the team row + links, and `reconcileTeamMembers` installs these on its
+       * own pass (e.g. Reviewer, which has no legacy seeder).
+       */
+      unmatchedItemIds: string[];
+      /** Catalog skill ids installed so the roster's `skillKeys` can resolve. */
+      installedSkillIds: string[];
     }
   /** Diagnosed as repairable, but deliberately not repaired. Always logged. */
-  | { action: "skipped"; verdict: CrewRepairVerdict; reason: string };
+  | { action: "skipped"; verdict: CrewRepairVerdict; reason: CrewRepairSkipReason; detail: string };
 
 export interface CrewRepairDeps {
   /** Catalog items — the same array the boot update pass already loaded. */
   catalogItems: readonly CatalogItem[];
-  instructionsService: AgentInstructionsServiceLike;
   /** Attribution for a repaired/synthesized install operation row. */
   requestedByUserId?: string | null;
+  /**
+   * Bypass {@link CREW_REPAIR_COOLDOWN_MS}. For a deliberate operator action
+   * (the founder route with `force`), never for the unattended pass.
+   */
+  force?: boolean;
   /** Test seam. Default: the real {@link provisionCompanyCrew}. */
   provision?: typeof provisionCompanyCrew;
+}
+
+interface RosterEntry {
+  templateOrigin: string;
+  name: string;
 }
 
 interface TeamTemplateBody {
   slug: string;
   description?: string;
   manifest?: Record<string, unknown>;
-  agents: Array<{ templateOrigin: string; name: string }>;
+  agents: RosterEntry[];
 }
 
 /**
  * Diagnose one company and repair it if it is degraded.
  *
  * Diagnosis ALWAYS runs first and gates everything. That ordering is
- * load-bearing, not stylistic: calling `provisionCompanyCrew` on a company that
- * already has crew rows is what mints the duplicate roster, and the only thing
- * standing between the two is this classification.
+ * load-bearing, not stylistic: acting on a company that already has crew rows
+ * is what mints a duplicate roster, and the only thing standing between the two
+ * is this classification.
  *
  * @throws only from {@link diagnoseCrewProvisioning} (a DB failure). Every
  * repair action past that point is contained and reported in the result.
@@ -286,16 +305,19 @@ export async function repairCompanyCrew(
   deps: CrewRepairDeps,
 ): Promise<CrewRepairResult> {
   const diagnosis = await diagnoseCrewProvisioning(db, companyId);
-
   if (diagnosis.verdict === "healthy") {
     return { action: "none", verdict: "healthy" };
   }
 
+  // The cooldown lives HERE, not in the pass, so every entry point is gated —
+  // the founder route included. A loop on the route otherwise drives unbounded
+  // fetches, and on a crewless company each call is a full provisioning attempt
+  // (catalog wait + install deadline + ~27 fetches).
+  if (!deps.force && !claimRepairAttempt(companyId)) {
+    return skip(diagnosis, "cooldown", "a repair for this company was attempted recently");
+  }
+
   if (diagnosis.verdict === "operation-row-stale") {
-    // The install committed; only its bookkeeping is wrong. Re-installing would
-    // duplicate the roster, and leaving the row `failure` keeps it claimable by
-    // the next provisioning pass — so the ONLY correct action is to correct the
-    // audit row.
     const operationId = await sealBootstrapOperation(db, {
       companyId,
       teamId: diagnosis.teamId!,
@@ -304,160 +326,342 @@ export async function repairCompanyCrew(
     });
     logger.warn(
       { companyId, operationId, teamId: diagnosis.teamId, priorStatus: diagnosis.operation?.status },
-      "crew repair: the crew is installed but its install operation row still reported failure — " +
-        "corrected to success so a later provisioning pass cannot claim it and re-install",
+      "crew repair: the crew is installed but its install operation row was still claimable — " +
+        "sealed to success so a later provisioning pass cannot re-install over it",
     );
     return { action: "operation-repaired", operationId, teamId: diagnosis.teamId! };
   }
 
-  if (diagnosis.verdict === "crewless") {
-    // Nothing to collide with: this is the one state where the ordinary
-    // provisioning path is exactly right, degrade-to-legacy included.
-    logger.warn(
-      { companyId },
-      "crew repair: company has no crew at all — re-running crew provisioning",
-    );
-    const provision = deps.provision ?? provisionCompanyCrew;
-    const outcome = await provision(db, companyId, {
-      requestedByUserId: deps.requestedByUserId ?? null,
-    });
-    logger.info({ companyId, mode: outcome.mode }, "crew repair: re-provisioning finished");
-    return { action: "reprovisioned", outcome };
-  }
-
-  return adoptUnmanagedCrew(db, diagnosis, deps);
+  return repairDegradedCrew(db, diagnosis, deps);
 }
 
-/**
- * Re-point a company's `…@legacy`/NULL-origin crew rows at their catalog
- * templates, then give them the `teams` row + `team_members` links an install
- * would have written.
- *
- * Fails closed at every branch that cannot be resolved to a specific existing
- * row: no roster, no catalog item, no name match → nothing is written.
- */
-async function adoptUnmanagedCrew(
+async function repairDegradedCrew(
   db: Db,
   diagnosis: CrewRepairDiagnosis,
   deps: CrewRepairDeps,
 ): Promise<CrewRepairResult> {
   const { companyId } = diagnosis;
+
+  // A live bootstrap owns this company's crew provisioning. Sealing the
+  // operation row inside the repair transaction excludes a bootstrap that has
+  // not created its row yet (it blocks on the unique idempotency index), but it
+  // cannot un-do one that is ALREADY mid-install — that would leave two team
+  // rows sharing one templateOrigin. `pending` and `failure` are claimable by
+  // anyone and are safe to take; a fresh `running` and `requested` are not.
+  const op = diagnosis.operation;
+  if (
+    op &&
+    (op.status === "requested" ||
+      (op.status === "running" && Date.now() - op.startedAt.getTime() < OPERATION_CLAIM_STALE_AFTER_MS))
+  ) {
+    return skip(
+      diagnosis,
+      "install-in-flight",
+      `install operation ${op.id} is ${op.status} and not yet stale — leaving it to its owner`,
+    );
+  }
+
   const catalogById = new Map(deps.catalogItems.map((item) => [item.id, item]));
   const teamItem = catalogById.get(DEFAULT_CREW_TEAM_ITEM_ID);
   if (!teamItem || teamItem.type !== "team") {
-    return skip(diagnosis, `${DEFAULT_CREW_TEAM_ITEM_ID} is not in the catalog`);
+    return skip(diagnosis, "team-item-not-in-catalog", `${DEFAULT_CREW_TEAM_ITEM_ID} is absent`);
   }
 
-  let teamBody: TeamTemplateBody;
+  const deadline = new AbortController();
+  const timer = setTimeout(() => deadline.abort(), CREW_REPAIR_FETCH_DEADLINE_MS);
+  timer.unref?.();
   try {
-    teamBody = JSON.parse(
-      await fetchCatalogResource(teamItem, "team template (crew repair)"),
-    ) as TeamTemplateBody;
-  } catch (err) {
-    return skip(diagnosis, `team template unavailable: ${errText(err)}`);
-  }
-
-  const roster = Array.isArray(teamBody.agents) ? teamBody.agents : [];
-  if (roster.length === 0) {
-    // Same fail-closed stance as installTeam's empty-roster refusal: an empty
-    // team.json must never become a team row that reads as a healthy install.
-    return skip(diagnosis, "team.json declares no agents");
-  }
-
-  // Only rows a fresh install would have COLLIDED with are adoptable. Matching
-  // on the roster's own `name` is not a heuristic — it is the same key
-  // `resolveAgentNameConflict` uses, so "adoptable" and "would have been
-  // renamed to `-2`" are the same set by construction.
-  const unmanagedByName = new Map(diagnosis.unmanagedCrew.map((row) => [row.name, row]));
-  const managedByOrigin = new Map(
-    diagnosis.managedCrew.map((row) => [row.templateOrigin as string, row]),
-  );
-
-  const adoptable: Array<{ row: CrewAgentSnapshot; item: CatalogItem }> = [];
-  const unresolvable: string[] = [];
-  for (const entry of roster) {
-    if (managedByOrigin.has(entry.templateOrigin)) continue; // already in the pipeline
-    const row = unmanagedByName.get(entry.name);
-    if (!row) continue; // no local counterpart — team-reconcile installs it later
-    const item = catalogById.get(entry.templateOrigin);
-    if (!item || item.type !== "agent") {
-      unresolvable.push(entry.templateOrigin);
-      continue;
-    }
-    adoptable.push({ row, item });
-  }
-
-  if (adoptable.length === 0 && managedByOrigin.size === 0) {
-    // Crew rows exist but not one of them maps onto the roster (e.g. every agent
-    // was renamed). Installing the team here would put a second, parallel crew
-    // beside rows we could not account for — so refuse and say why.
-    return skip(
-      diagnosis,
-      `none of this company's ${diagnosis.unmanagedCrew.length} crew agent(s) match a roster entry ` +
-        `by name (roster: ${roster.map((r) => r.name).join(", ")}) — refusing to install alongside ` +
-        "crew rows that could not be accounted for",
-    );
-  }
-
-  const adoptedItemIds: string[] = [];
-  const failedItemIds: string[] = [...unresolvable];
-  for (const { row, item } of adoptable) {
+    let teamBody: TeamTemplateBody;
     try {
-      await applyCrewAgentUpdate({
-        db,
-        agentRow: { ...row, companyId },
-        catalogItem: item,
-        instructionsService: deps.instructionsService,
-        setTemplateOrigin: item.id,
-      });
-      adoptedItemIds.push(item.id);
+      teamBody = JSON.parse(
+        await fetchCatalogResource(teamItem, "team template (crew repair)", deadline.signal),
+      ) as TeamTemplateBody;
     } catch (err) {
-      // Per-agent isolation: one unreachable agent.json must not strand the
-      // rest. The row is untouched (applyCrewAgentUpdate fetches before it
-      // writes), so it stays `…@legacy` and adoptable on the next pass.
-      failedItemIds.push(item.id);
-      logger.error(
-        { err, companyId, agentId: row.id, catalogItemId: item.id },
-        "crew repair: failed to adopt a legacy crew agent — it stays @legacy and retryable",
-      );
+      return skip(diagnosis, "team-template-unavailable", errText(err));
     }
-  }
 
-  const rosterOrigins = roster.map((entry) => entry.templateOrigin);
-  const teamId =
-    diagnosis.teamId ??
-    (await createCrewTeamRow(db, { companyId, teamItem, teamBody, rosterOrigins }));
+    const roster = Array.isArray(teamBody.agents) ? teamBody.agents : [];
+    if (roster.length === 0) {
+      // Same fail-closed stance as installTeam's empty-roster refusal: an empty
+      // team.json must never become a team row that reads as a healthy install.
+      return skip(diagnosis, "empty-roster", "team.json declares no agents");
+    }
 
-  if (!teamId) {
-    return skip(
-      diagnosis,
-      "no crew agent is marketplace-managed after adoption — refusing to write an empty team row",
+    // ── Partition the company's crew against the roster ────────────────────
+    // The roster is the ONLY authority on what is crew. Matching by the roster's
+    // own `name` is not a heuristic — it is the same key
+    // `resolveAgentNameConflict` uses, so "adoptable" and "would have been
+    // renamed to `-2` by a re-install" are the same set by construction.
+    const byOrigin = new Map(
+      diagnosis.managedCrew.map((row) => [row.templateOrigin as string, row]),
     );
+    const byName = new Map(
+      [...diagnosis.managedCrew, ...diagnosis.unmanagedCrew].map((row) => [row.name, row]),
+    );
+
+    const adoptable: Array<{ row: CrewAgentSnapshot; entry: RosterEntry }> = [];
+    const alreadyAdopted: string[] = [];
+    const unmatched: string[] = [];
+    for (const entry of roster) {
+      if (byOrigin.has(entry.templateOrigin)) {
+        alreadyAdopted.push(entry.templateOrigin);
+        continue;
+      }
+      const row = byName.get(entry.name);
+      if (!row) {
+        unmatched.push(entry.templateOrigin);
+        continue;
+      }
+      // A same-named row already managed under a DIFFERENT origin is not ours
+      // to re-point. Fail closed rather than guess.
+      if (isMarketplaceManagedOrigin(row.templateOrigin)) {
+        return skip(
+          diagnosis,
+          "unadoptable-roster-member",
+          `agent "${entry.name}" is already managed as ${row.templateOrigin}, not ${entry.templateOrigin}`,
+        );
+      }
+      const item = catalogById.get(entry.templateOrigin);
+      if (!item || item.type !== "agent") {
+        // ALL-OR-NOTHING. Adopting the rest and writing the team row would let
+        // reconcileTeamMembers install a renamed duplicate for this one, after
+        // which the original row is unreachable forever.
+        return skip(
+          diagnosis,
+          "unadoptable-roster-member",
+          `${entry.templateOrigin} (matched local agent "${entry.name}") is not an agent in the catalog`,
+        );
+      }
+      adoptable.push({ row, entry });
+    }
+
+    if (adoptable.length === 0 && alreadyAdopted.length === 0) {
+      // Not one roster member has a local row: genuinely crewless. This is the
+      // one shape where nothing can collide, so the ordinary provisioning path
+      // is exactly right — degrade-to-legacy included.
+      logger.warn({ companyId }, "crew repair: no roster member has a local row — re-provisioning");
+      const provision = deps.provision ?? provisionCompanyCrew;
+      const outcome = await provision(db, companyId, {
+        requestedByUserId: deps.requestedByUserId ?? null,
+      });
+      logger.info({ companyId, mode: outcome.mode }, "crew repair: re-provisioning finished");
+      return { action: "reprovisioned", outcome };
+    }
+
+    // ── B3: the roster's skills, or the crew advertises keys it cannot load ──
+    // `installTeam` inserts a `company_skills` row per required skill; adoption
+    // must too, or `handleUseSkill` answers "Skill not found for this company"
+    // for every declared key — and `reconcileTeamMembers` would install Reviewer
+    // with the same dangling keys.
+    let skillsToInstall: Array<{ item: CatalogItem; markdown: string }>;
+    try {
+      skillsToInstall = await loadMissingRosterSkills(db, {
+        companyId,
+        teamItem,
+        catalogById,
+        signal: deadline.signal,
+      });
+    } catch (err) {
+      return skip(diagnosis, "skill-content-unavailable", errText(err));
+    }
+
+    const rosterOrigins = roster.map((entry) => entry.templateOrigin);
+    const committed = await db.transaction(async (tx) => {
+      // Serialize repairs for this company, and (because the operation row is
+      // sealed in the SAME transaction, on the unique idempotency key) exclude a
+      // concurrent bootstrap too. `teams` has no unique index on
+      // (companyId, templateOrigin), so nothing else prevents two team rows.
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`crew-repair:${companyId}`}))`);
+
+      // Re-read inside the lock: a racing repair may have finished since the
+      // diagnosis, in which case there is nothing left to create.
+      const [existingTeam] = await tx
+        .select({ id: teams.id })
+        .from(teams)
+        .where(
+          and(eq(teams.companyId, companyId), eq(teams.templateOrigin, DEFAULT_CREW_TEAM_ITEM_ID)),
+        )
+        .limit(1);
+
+      for (const { row, entry } of adoptable) {
+        // POINTER ONLY. No instructions, no skillKeys, no runtimeConfig, no
+        // triggers, no adapter — see this module's docblock.
+        await tx
+          .update(agents)
+          .set({
+            templateOrigin: entry.templateOrigin,
+            templateVersion: ADOPTED_TEMPLATE_VERSION,
+            updatedAt: new Date(),
+          })
+          .where(eq(agents.id, row.id));
+      }
+
+      for (const skill of skillsToInstall) {
+        await tx
+          .insert(companySkills)
+          .values({
+            companyId,
+            key: skill.item.id,
+            slug: skill.item.id.split("/").pop() ?? skill.item.id,
+            name: skill.item.name,
+            description: skill.item.description,
+            markdown: skill.markdown,
+            sourceType: "catalog",
+            sourceLocator: skill.item.id,
+            sourceRef: skill.item.version,
+            trustLevel: "markdown_only",
+            compatibility: "compatible",
+            fileInventory: [],
+            metadata: {
+              catalogCategory: skill.item.category,
+              catalogTags: skill.item.tags,
+              catalogTrustTier: skill.item.trust.tier,
+              installedAt: new Date().toISOString(),
+            },
+          })
+          .onConflictDoNothing();
+      }
+
+      let teamId = existingTeam?.id ?? null;
+      if (!teamId) {
+        const slug = await resolveTeamSlugConflict({
+          db: tx as unknown as Db,
+          companyId,
+          desiredSlug: teamBody.slug || "aoa-default-crew",
+        });
+        const [inserted] = await tx
+          .insert(teams)
+          .values({
+            companyId,
+            // D21: company-wide, no parent department — as the bootstrap install.
+            parentProjectId: null,
+            name: teamItem.name,
+            slug,
+            description: teamBody.description ?? teamItem.description,
+            manifest: teamBody.manifest ?? {},
+            templateOrigin: teamItem.id,
+            templateVersion: teamItem.version,
+          })
+          .returning({ id: teams.id });
+        teamId = inserted.id;
+      }
+
+      await linkRosterMembers(tx as unknown as Db, { companyId, teamId, rosterOrigins });
+      const operationId = await sealBootstrapOperation(tx as unknown as Db, {
+        companyId,
+        teamId,
+        existingOperationId: diagnosis.operation?.id ?? null,
+        requestedByUserId: deps.requestedByUserId ?? null,
+      });
+      return { teamId, operationId };
+    });
+
+    const adoptedItemIds = adoptable.map(({ entry }) => entry.templateOrigin);
+    const installedSkillIds = skillsToInstall.map((s) => s.item.id);
+    logger.info(
+      {
+        companyId,
+        teamId: committed.teamId,
+        operationId: committed.operationId,
+        adoptedItemIds,
+        unmatchedItemIds: unmatched,
+        installedSkillIds,
+        adoptedTemplateVersion: ADOPTED_TEMPLATE_VERSION,
+      },
+      "crew repair: adopted legacy crew rows into marketplace management (pointer only — content " +
+        "is left to the policy-respecting update path). This company is now inside the crew " +
+        "update pipeline.",
+    );
+    // Founder-visible, because a boot pass silently changing how their agents
+    // are governed is exactly the kind of thing that should not be silent.
+    await marketplaceNotifications
+      .crewRepaired(db, companyId, adoptedItemIds.length)
+      .catch((err: unknown) =>
+        logger.warn({ err, companyId }, "crew repair: founder notification failed"),
+      );
+
+    return {
+      action: "adopted",
+      teamId: committed.teamId,
+      adoptedItemIds,
+      unmatchedItemIds: unmatched,
+      installedSkillIds,
+    };
+  } finally {
+    clearTimeout(timer);
+    // Abort, don't merely stop the clock: on any exit every fetch still in
+    // flight must be cancelled rather than left running against the CDN.
+    deadline.abort();
   }
-
-  await linkCrewTeamMembers(db, { companyId, teamId, rosterOrigins });
-
-  const operationId = await sealBootstrapOperation(db, {
-    companyId,
-    teamId,
-    existingOperationId: diagnosis.operation?.id ?? null,
-    requestedByUserId: deps.requestedByUserId ?? null,
-  });
-
-  logger.info(
-    { companyId, teamId, operationId, adoptedItemIds, failedItemIds },
-    "crew repair: adopted legacy crew rows into marketplace management — this company is now " +
-      "inside the crew update pipeline (crew-updater no longer skips it)",
-  );
-  return { action: "adopted", teamId, adoptedItemIds, failedItemIds };
 }
 
-function skip(diagnosis: CrewRepairDiagnosis, reason: string): CrewRepairResult {
-  logger.warn(
-    { companyId: diagnosis.companyId, verdict: diagnosis.verdict, reason },
-    "crew repair: SKIPPED — the company stays degraded and excluded from crew updates",
-  );
-  return { action: "skipped", verdict: diagnosis.verdict, reason };
+/**
+ * Fetch bodies for the roster's required skills that this company does not have
+ * yet. Already-installed keys are skipped without a fetch, so a repair on a
+ * company that already has them costs nothing here.
+ *
+ * @throws if any needed body cannot be fetched — the caller fails closed, since
+ * a crew advertising skill keys with no rows behind them is the defect this
+ * exists to prevent.
+ */
+async function loadMissingRosterSkills(
+  db: Db,
+  opts: {
+    companyId: string;
+    teamItem: CatalogItem;
+    catalogById: Map<string, CatalogItem>;
+    signal: AbortSignal;
+  },
+): Promise<Array<{ item: CatalogItem; markdown: string }>> {
+  const { companyId, teamItem, catalogById, signal } = opts;
+  const required = (teamItem.requires ?? [])
+    .filter((req) => req.type === "skill")
+    .map((req) => catalogById.get(req.id))
+    .filter((item): item is CatalogItem => !!item && item.type === "skill");
+  if (required.length === 0) return [];
+
+  const existing = (await db
+    .select({ key: companySkills.key })
+    .from(companySkills)
+    .where(
+      and(
+        eq(companySkills.companyId, companyId),
+        inArray(
+          companySkills.key,
+          required.map((item) => item.id),
+        ),
+      ),
+    )) as Array<{ key: string }>;
+  const have = new Set(existing.map((row) => row.key));
+
+  const out: Array<{ item: CatalogItem; markdown: string }> = [];
+  for (const item of required) {
+    if (have.has(item.id)) continue;
+    const markdown =
+      item.content?.inline ??
+      (await fetchCatalogResource(item, "skill content (crew repair)", signal));
+    out.push({ item, markdown });
+  }
+  return out;
+}
+
+function skip(
+  diagnosis: CrewRepairDiagnosis,
+  reason: CrewRepairSkipReason,
+  detail: string,
+): CrewRepairResult {
+  if (reason === "cooldown") {
+    logger.debug(
+      { companyId: diagnosis.companyId, verdict: diagnosis.verdict, reason, detail },
+      "crew repair: not attempted (cooldown)",
+    );
+  } else {
+    logger.warn(
+      { companyId: diagnosis.companyId, verdict: diagnosis.verdict, reason, detail },
+      "crew repair: SKIPPED — the company stays degraded and excluded from crew updates",
+    );
+  }
+  return { action: "skipped", verdict: diagnosis.verdict, reason, detail };
 }
 
 function errText(err: unknown): string {
@@ -465,55 +669,19 @@ function errText(err: unknown): string {
 }
 
 /**
- * Write the `teams` row an install would have written — but only if at least one
- * crew agent actually carries a roster origin, mirroring `installTeam`'s refusal
- * to commit an empty team. A team row with no members is a permanent false
- * witness: `inspectCrewTeamInstall` would read `installed` forever, suppressing
- * both the legacy seeders and any future repair.
+ * Link every crew row carrying a roster origin into the crew team, skipping any
+ * that is already a member. The first member of an empty team becomes `lead` —
+ * the `team_members_one_lead_uq` partial unique index allows exactly one.
  *
- * @returns the new team id, or null if there was nothing to anchor it to.
+ * Errors are NOT swallowed: this runs inside the repair transaction, and a
+ * half-linked team is a state `reconcileTeamMembers` would "fix" by installing
+ * a duplicate.
  */
-async function createCrewTeamRow(
+async function linkRosterMembers(
   db: Db,
-  opts: {
-    companyId: string;
-    teamItem: CatalogItem;
-    teamBody: TeamTemplateBody;
-    rosterOrigins: string[];
-  },
-): Promise<string | null> {
-  const { companyId, teamItem, teamBody, rosterOrigins } = opts;
-  const members = await selectRosterMembers(db, companyId, rosterOrigins);
-  if (members.length === 0) return null;
-
-  const slug = await resolveTeamSlugConflict({
-    db,
-    companyId,
-    desiredSlug: teamBody.slug || "aoa-default-crew",
-  });
-  const [row] = await db
-    .insert(teams)
-    .values({
-      companyId,
-      // D21: company-wide, no parent department — same as the bootstrap install.
-      parentProjectId: null,
-      name: teamItem.name,
-      slug,
-      description: teamBody.description ?? teamItem.description,
-      manifest: teamBody.manifest ?? {},
-      templateOrigin: teamItem.id,
-      templateVersion: teamItem.version,
-    })
-    .returning({ id: teams.id });
-  return row.id;
-}
-
-/** Crew agents whose `templateOrigin` is one of the roster's catalog ids. */
-async function selectRosterMembers(
-  db: Db,
-  companyId: string,
-  rosterOrigins: string[],
-): Promise<Array<{ id: string; templateOrigin: string | null }>> {
+  opts: { companyId: string; teamId: string; rosterOrigins: string[] },
+): Promise<void> {
+  const { companyId, teamId, rosterOrigins } = opts;
   const rows = (await db
     .select({ id: agents.id, templateOrigin: agents.templateOrigin })
     .from(agents)
@@ -522,20 +690,10 @@ async function selectRosterMembers(
     templateOrigin: string | null;
   }>;
   const wanted = new Set(rosterOrigins);
-  return rows.filter((row) => row.templateOrigin !== null && wanted.has(row.templateOrigin));
-}
+  const members = rows.filter(
+    (row) => row.templateOrigin !== null && wanted.has(row.templateOrigin),
+  );
 
-/**
- * Link every adopted roster member into the crew team, skipping any that is
- * already a member. The first member of an empty team becomes `lead` — the
- * `team_members_one_lead_uq` partial unique index allows exactly one.
- */
-async function linkCrewTeamMembers(
-  db: Db,
-  opts: { companyId: string; teamId: string; rosterOrigins: string[] },
-): Promise<void> {
-  const { companyId, teamId, rosterOrigins } = opts;
-  const members = await selectRosterMembers(db, companyId, rosterOrigins);
   const existing = (await db
     .select({ agentId: teamMembers.agentId, role: teamMembers.role })
     .from(teamMembers)
@@ -545,17 +703,10 @@ async function linkCrewTeamMembers(
 
   for (const member of members) {
     if (existingIds.has(member.id)) continue;
-    try {
-      await db
-        .insert(teamMembers)
-        .values({ teamId, agentId: member.id, role: hasLead ? "member" : "lead" });
-      hasLead = true;
-    } catch (err) {
-      logger.warn(
-        { err, companyId, teamId, agentId: member.id },
-        "crew repair: could not link an adopted crew agent to the crew team",
-      );
-    }
+    await db
+      .insert(teamMembers)
+      .values({ teamId, agentId: member.id, role: hasLead ? "member" : "lead" });
+    hasLead = true;
   }
 }
 
@@ -563,10 +714,12 @@ async function linkCrewTeamMembers(
  * Make the `bootstrap-crew:<companyId>` operation row terminal and honest.
  *
  * Load-bearing, not cosmetic. `claimOperationForDispatch` treats `pending`,
- * `failure`, and stale `running` as claimable; `success` is not. So an
- * un-sealed row is a standing invitation for the next `provisionCompanyCrew`
- * to re-run `installTeam` over a company that already has its roster — the
- * duplicate-`Scout-2` failure this whole module exists to avoid.
+ * `failure`, and stale `running` as claimable; `success` is not. So an unsealed
+ * row is a standing invitation for the next `provisionCompanyCrew` to re-run
+ * `installTeam` over a company that already has its roster.
+ *
+ * Only ever called on a COMPLETE repair — never over a partial adoption, which
+ * would make the audit record false AND put the row beyond a retry's reach.
  */
 async function sealBootstrapOperation(
   db: Db,
@@ -605,8 +758,6 @@ async function sealBootstrapOperation(
     .returning({ id: marketplaceInstallOperations.id });
   if (inserted) return inserted.id;
 
-  // Lost a race with a concurrent writer on the partial unique index — adopt
-  // whatever row won and make it terminal.
   const [existing] = await db
     .select({ id: marketplaceInstallOperations.id })
     .from(marketplaceInstallOperations)
@@ -629,25 +780,17 @@ async function sealBootstrapOperation(
   return existing.id;
 }
 
-// ── Boot-time reconcile ──────────────────────────────────────────────────────
+// ── Attempt throttling ───────────────────────────────────────────────────────
 
 /**
- * How many companies one pass may repair. Repair is network-heavy per company
- * (one team.json + one agent.json + instruction files per adopted member), so an
- * instance hosting many degraded companies must not turn a boot into a CDN
- * stampede. The remainder are picked up by the next pass — repair is permanent,
- * so the backlog strictly shrinks.
- */
-export const CREW_REPAIR_MAX_PER_PASS = 5;
-
-/**
- * Minimum gap between repair attempts for the SAME company.
+ * Minimum gap between repair attempts for the SAME company, enforced inside
+ * {@link repairCompanyCrew} so EVERY entry point is covered — the founder route
+ * included (it can opt out per call with `force`).
  *
- * Deliberately process-local (see {@link recentAttempts}). It is the guard
- * against a tight re-entry — an operator hitting the route in a loop, or the
- * 24h interval landing next to a boot — not against a crash-looping process.
- * Nothing durable is claimed here, and nothing needs to be: a failed repair
- * writes nothing (adoption fetches before it writes, per-agent), and
+ * Deliberately process-local. It is the guard against tight re-entry — a route
+ * in a loop, or the 24h interval landing next to a boot — not against a
+ * crash-looping process. Nothing durable is claimed here and nothing needs to
+ * be: a failed repair writes nothing (all writes are one transaction), and
  * {@link CREW_REPAIR_MAX_PER_PASS} bounds each pass regardless.
  */
 export const CREW_REPAIR_COOLDOWN_MS = 6 * 60 * 60 * 1000;
@@ -655,17 +798,54 @@ export const CREW_REPAIR_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 /** companyId → last attempt timestamp. Cleared on restart, by design. */
 const recentAttempts = new Map<string, number>();
 
-/** Test seam — drops the in-process cooldown state. */
+/** Test seam: the clock the cooldown reads. */
+let repairClock: () => number = () => Date.now();
+
+/** @returns true if this caller may attempt a repair now. */
+function claimRepairAttempt(companyId: string): boolean {
+  const now = repairClock();
+  const last = recentAttempts.get(companyId);
+  if (last !== undefined && now - last < CREW_REPAIR_COOLDOWN_MS) return false;
+  recentAttempts.set(companyId, now);
+  return true;
+}
+
+/** Test seam — drops the in-process cooldown state and restores the real clock. */
 export function resetCrewRepairCooldowns(): void {
   recentAttempts.clear();
+  repairClock = () => Date.now();
 }
+
+/** Test seam — pin the cooldown clock. */
+export function setCrewRepairClock(clock: () => number): void {
+  repairClock = clock;
+}
+
+// ── Boot-time reconcile ──────────────────────────────────────────────────────
+
+/**
+ * How many companies one pass may actually repair. Repair is network-bearing
+ * per company (team.json + any missing skill bodies), so an instance hosting
+ * many degraded companies must not turn a boot into a CDN stampede. The
+ * remainder are taken by later passes — repair is permanent, so the backlog
+ * strictly shrinks.
+ *
+ * Only *productive* work consumes budget: a company that skips fail-closed must
+ * not burn a slot, or a handful of unrepairable companies would starve every
+ * company behind them, forever.
+ */
+export const CREW_REPAIR_MAX_PER_PASS = 5;
 
 export interface CrewRepairPassResult {
   inspected: number;
   /** Companies that were degraded and were changed by this pass. */
   repaired: number;
-  /** Degraded but deliberately not repaired (fail-closed), or on cooldown. */
-  skipped: number;
+  /** Degraded, attempted, and deliberately not repaired (fail-closed). */
+  skippedFailClosed: number;
+  /** Degraded but within {@link CREW_REPAIR_COOLDOWN_MS} of a prior attempt. */
+  skippedCooldown: number;
+  /** Degraded but this pass had already spent its budget. */
+  skippedOverBudget: number;
   /** Diagnosis or repair threw. */
   failed: number;
 }
@@ -673,31 +853,45 @@ export interface CrewRepairPassResult {
 /**
  * Boot/interval reconcile: diagnose every company and repair the degraded ones.
  *
- * **Why a boot pass and not only a route:** the companies that need this are, by
- * construction, the ones whose founder has no idea anything is wrong — their
- * crew looks present and simply never receives an update. A button only helps
+ * **Why a pass and not only a route:** the companies that need this are, by
+ * construction, the ones whose founder has no idea anything is wrong — the crew
+ * looks present and simply never receives an update. A button only helps
  * someone who already knows to press it.
  *
- * The pass costs one indexed diagnosis per company and NOTHING else for a
- * healthy one, so the steady state is nearly free; it reuses the catalog the
- * caller already loaded, so it adds zero catalog fetches. Callers must pass a
- * catalog — with none available (a genuinely offline instance) there is nothing
- * to repair towards, and the pass should simply not be invoked.
+ * Costs one diagnosis per company and NOTHING else for a healthy one, and
+ * reuses the catalog the caller already loaded, so it adds zero catalog fetches.
  */
 export async function runCrewRepairPass(opts: {
   db: Db;
   companyIds: readonly string[];
   catalogItems: readonly CatalogItem[];
-  instructionsService: AgentInstructionsServiceLike;
   maxPerPass?: number;
-  cooldownMs?: number;
-  now?: number;
 }): Promise<CrewRepairPassResult> {
-  const { db, companyIds, catalogItems, instructionsService } = opts;
+  const { db, companyIds, catalogItems } = opts;
   const maxPerPass = opts.maxPerPass ?? CREW_REPAIR_MAX_PER_PASS;
-  const cooldownMs = opts.cooldownMs ?? CREW_REPAIR_COOLDOWN_MS;
-  const now = opts.now ?? Date.now();
-  const result: CrewRepairPassResult = { inspected: 0, repaired: 0, skipped: 0, failed: 0 };
+  const result: CrewRepairPassResult = {
+    inspected: 0,
+    repaired: 0,
+    skippedFailClosed: 0,
+    skippedCooldown: 0,
+    skippedOverBudget: 0,
+    failed: 0,
+  };
+
+  // A cache row can exist whose `items` array lacks the crew team (an empty or
+  // partial catalog). Without that item there is nothing to repair TOWARDS, and
+  // a crewless company would enter provisioning only to degrade to legacy off a
+  // catalog that never had the team. Gate on the item, not on "a catalog exists".
+  const teamItem = catalogItems.find(
+    (item) => item.id === DEFAULT_CREW_TEAM_ITEM_ID && item.type === "team",
+  );
+  if (!teamItem) {
+    logger.debug(
+      { teamItemId: DEFAULT_CREW_TEAM_ITEM_ID },
+      "crew repair pass: crew team item absent from the catalog — nothing to repair towards",
+    );
+    return result;
+  }
 
   let budget = maxPerPass;
   for (const companyId of companyIds) {
@@ -705,39 +899,36 @@ export async function runCrewRepairPass(opts: {
       // Diagnosis runs for EVERY company, budget or no budget — three indexed
       // queries, in line with what the surrounding update pass already spends
       // per company. Stopping the loop on budget exhaustion would make
-      // `inspected` a function of list order and hide how many companies are
-      // degraded, which is the one number an operator actually wants.
+      // `inspected` a function of list order and hide how many are degraded.
       const diagnosis = await diagnoseCrewProvisioning(db, companyId);
       result.inspected += 1;
       if (diagnosis.verdict === "healthy") continue;
 
       if (budget <= 0) {
-        result.skipped += 1;
+        result.skippedOverBudget += 1;
         continue;
       }
-
-      const lastAttempt = recentAttempts.get(companyId);
-      if (lastAttempt !== undefined && now - lastAttempt < cooldownMs) {
-        result.skipped += 1;
-        continue;
-      }
-      recentAttempts.set(companyId, now);
-      budget -= 1;
 
       const repair = await repairCompanyCrew(db, companyId, {
         catalogItems,
-        instructionsService,
         requestedByUserId: "system:crew-repair",
       });
-      if (repair.action === "skipped") result.skipped += 1;
-      else result.repaired += 1;
+      if (repair.action === "skipped") {
+        if (repair.reason === "cooldown") result.skippedCooldown += 1;
+        else result.skippedFailClosed += 1;
+        // Neither consumes budget: a skip did no productive work, and charging
+        // for it lets a few unrepairable companies starve the rest forever.
+      } else {
+        result.repaired += 1;
+        budget -= 1;
+      }
     } catch (err) {
       result.failed += 1;
       logger.warn({ err, companyId }, "crew repair pass failed for company");
     }
   }
 
-  if (result.repaired > 0 || result.failed > 0) {
+  if (result.repaired > 0 || result.failed > 0 || result.skippedFailClosed > 0) {
     logger.info(result, "crew provisioning repair pass complete");
   }
   return result;

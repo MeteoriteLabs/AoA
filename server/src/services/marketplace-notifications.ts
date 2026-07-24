@@ -115,6 +115,25 @@ export const marketplaceNotifications = {
       sourceId: `update_completed:${catalogItemName}`,
     }),
 
+  /**
+   * T2.3b — crew repair adopted this company's pre-existing crew rows into
+   * marketplace management. Founder-visible on purpose: a background pass
+   * changing how their agents are governed must not be silent, and the
+   * follow-on content update arrives through `agentUpdatePolicy` (which
+   * defaults to `notify`), so the founder is the one who decides it.
+   */
+  crewRepaired: (db: Db, companyId: string, adoptedCount: number) =>
+    notifyFounders(db, companyId, {
+      type: "marketplace.crew_repaired",
+      title: "Crew reconnected to the marketplace",
+      message:
+        `${adoptedCount} crew agent(s) were excluded from marketplace updates and have been ` +
+        "reconnected. Their instructions and skills were left exactly as they are — any update " +
+        "will follow your marketplace update policy.",
+      relatedEntityType: "marketplace_operation",
+      sourceId: `crew_repaired:${companyId}`,
+    }),
+
   updateFailed: (db: Db, companyId: string, catalogItemName: string, error: string) =>
     notifyFounders(db, companyId, {
       type: "marketplace.update_failed",

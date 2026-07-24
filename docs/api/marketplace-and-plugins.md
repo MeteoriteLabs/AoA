@@ -31,12 +31,24 @@ Marketplace catalog data comes from the configured AoA marketplace CDN with a bu
 
 `POST .../marketplace/crew/repair` is founder-only. It diagnoses whether the
 company's AoA crew is inside the marketplace update pipeline and repairs it if
-not — adopting `…@legacy`/unstamped crew agents in place (same agent rows, same
-names and titles), re-provisioning a company that has no crew at all, or
-correcting an install-operation row that reports failure over a committed crew.
-It returns `{ diagnosis, result }` and is a no-op on a healthy company. The same
-repair runs unattended as part of the boot/24h crew update pass, capped per pass;
-the route exists for an operator who already knows a specific company is stuck.
+not — adopting `…@legacy`/unstamped crew agents in place, re-provisioning a
+company that has no crew at all, or correcting an install-operation row that
+reports failure over a committed crew. It returns `{ diagnosis, result }` and is
+a no-op on a healthy company.
+
+Adoption is **pointer-only**: it rewrites `templateOrigin` and `templateVersion`
+(to the `0.0.0-legacy` sentinel) and installs the crew team's `company_skills`,
+and touches nothing else — instructions, `skillKeys`, `runtimeConfig`, triggers,
+adapter and name all stay as the founder has them. The follow-on content update
+then arrives through the company's `agentUpdatePolicy` (auto-apply, or a
+founder-visible pending update), so repair never discards founder edits. It is
+all-or-nothing: if any roster member with a local agent row cannot be adopted,
+nothing is written and the company stays repairable.
+
+The same repair runs unattended as part of the boot/24h crew update pass, capped
+per pass; the route exists for an operator who already knows a specific company
+is stuck. Both share a 6-hour per-company cooldown — send `{"force": true}` to
+override it after fixing the underlying cause.
 
 ## Company Plugins
 

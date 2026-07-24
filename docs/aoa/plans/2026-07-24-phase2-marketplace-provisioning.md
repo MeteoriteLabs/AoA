@@ -280,6 +280,76 @@ git commit -m "feat(marketplace): install the default crew from the marketplace 
 >    have written, which is exactly what the already-wired `reconcileTeamMembers`
 >    needs to install roster members with no legacy counterpart (Reviewer).
 
+### Post-review revision (2026-07-24) — adoption is POINTER-ONLY
+
+Two review blockers changed the design after the first build. Both are recorded
+because the rejected shape is the one a future reader will reach for first.
+
+**1. Repair must not touch agent CONTENT.** The first build adopted a legacy row
+by calling `applyCrewAgentUpdate`. That runs
+`materializeManagedBundle(..., { replaceExisting: true })`, whose first act is
+`fs.rm(root, { recursive: true, force: true })` on the directory holding the
+founder's instruction edits — **outside the transaction**, and **without reading
+`agentUpdatePolicy`** (default `notify`). Proven by ablation: forcing the
+transaction to fail leaves the DB row legacy and the founder's file *gone*.
+
+Adoption now rewrites exactly two columns — `templateOrigin` and
+`templateVersion` (`ADOPTED_TEMPLATE_VERSION = "0.0.0-legacy"`, a sentinel that
+can never equal a published version, so the row never claims content it has not
+seen). Instructions, `skillKeys`, `runtimeConfig`, triggers and adapter are left
+exactly as the founder has them. That is enough to un-freeze the company;
+`checkCrewUpdates` then routes the content change through the company's own
+policy — auto-apply, or a founder-visible pending update. Repair also fires a
+`marketplace.crew_repaired` notification.
+
+*Known consequence:* on the default `notify` policy the founder gets a pending
+**agent** update, and the agent diff/merge path is not built until **T2.7**
+(`/updates/:id/diff` 400s on non-skill today). That gap is visible and temporary,
+and is not new — it already applies to every marketplace-managed company on
+`notify`. It is strictly better than the alternative, which was silent
+destruction.
+
+**2. Adoption is ALL-OR-NOTHING, in one transaction.** A partial adoption plus a
+team row is the worst reachable state: `reconcileTeamMembers` cannot distinguish
+"no local counterpart" (Reviewer, intended) from "adoption failed here", so it
+installs a renamed duplicate — after which the original row is unreachable
+*forever*, because the next repair sees the origin already present and skips it.
+A single transient 503 was enough to reach it. If any roster member that has a
+local row cannot be adopted, repair now writes nothing. `reconcileTeamMembers`
+additionally refuses to install a roster member whose name is already held by an
+unmanaged `kind='aoa'` row (which also closes the legacy-Steward/Chronicler
+duplicate that T2.4 would otherwise hit).
+
+**3. Adoption installs the roster's `company_skills`.** `installTeam` writes one
+row per required skill; adoption did not, so a repaired crew advertised skill
+keys `handleUseSkill` could not resolve — and the Reviewer that reconcile
+installs next inherited the same dangling keys.
+
+**4. Classification is roster-driven, not name-list-driven.** The hardcoded
+infrastructure name set is gone. Diagnosis is `healthy` /
+`operation-row-stale` / `degraded`; the crewless-vs-unmanaged split is made
+against `team.json` inside repair, where the roster is authoritative. This is
+what makes the T2.4 Steward move safe: a legacy Steward will name-match its
+roster entry and be adopted rather than duplicated.
+
+**5. Smaller corrections.** The cooldown moved *into* `repairCompanyCrew` so the
+route is gated too (with an explicit `force` override); a fail-closed skip no
+longer consumes pass budget (five unrepairable companies were starving the
+sixth forever); pass counters split into
+`skippedFailClosed`/`skippedCooldown`/`skippedOverBudget`; the pass gates on the
+crew **team item** being present rather than on "a catalog exists"; repair stands
+aside while a bootstrap install is genuinely in flight; and the whole repair runs
+in one transaction behind `pg_advisory_xact_lock(companyId)` with an
+in-transaction re-read.
+
+> **Why a lock and not a unique index on `teams (companyId, templateOrigin)`.**
+> The index was the other option offered. It would change `installTeam`'s
+> semantics for *every* caller — a founder installing the same team twice into
+> one company would hard-fail instead of getting a suffixed slug — which is a
+> product decision beyond this task. The lock plus sealing the operation row
+> inside the same transaction (on its unique idempotency key) excludes both a
+> concurrent repair and a concurrent bootstrap. Filed as a follow-up.
+
 ### Step 5 — the trigger: BOTH, boot-time reconcile primary
 
 **Chosen:** a boot/interval reconcile pass (`runCrewRepairPass`, called from

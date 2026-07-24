@@ -31,33 +31,30 @@ export interface CrewAgentRow {
  *
  * Deliberately does NOT touch `name`, `role`, `title`, `icon`, `capabilities`,
  * `permissions`, `metadata` or `adapterType` — those are the founder's, not the
- * catalog's. (T2.3b's adoption path leans on that: it re-points a legacy row at
- * its catalog template without renaming the agent or moving its provider.)
+ * catalog's.
  *
- * Every network fetch happens BEFORE the transaction, so a fetch failure leaves
- * the row exactly as it was. That is what makes {@link applyCrewAgentUpdate}
- * safe to use for adoption: either the row becomes fully marketplace-managed, or
- * nothing changed.
+ * ⚠️ **THIS IS NOT ATOMIC, AND ITS DESTRUCTIVE HALF IS NOT ROLLED BACK.**
+ * Network fetches happen before the transaction, but so does
+ * `instructionsService.materializeManagedBundle(..., { replaceExisting: true })`
+ * — which opens with `fs.rm(rootPath, { recursive: true, force: true })` on the
+ * agent's managed-instructions root (`agent-instructions.ts`). That directory
+ * is where a founder's edits live (`routes/agents.ts` exposes an editor for
+ * it). If the transaction below then fails, the DB row is unchanged but the
+ * founder's instruction files are **already gone and unrecoverable**.
+ *
+ * That is tolerable here only because this function runs behind
+ * `agentUpdatePolicy` — a founder who chose `auto` opted into full replacement.
+ * Do NOT call it from a path that has not consulted that policy. (T2.3b's crew
+ * repair deliberately does not: it adopts the row POINTER and leaves content to
+ * this policy-respecting path. See `services/crew-repair.ts`.)
  */
 export async function applyCrewAgentUpdate(opts: {
   db: Db;
   agentRow: CrewAgentRow;
   catalogItem: CatalogItem;
   instructionsService: AgentInstructionsServiceLike;
-  /**
-   * Stamp `templateOrigin` as part of the same write (T2.3b adoption).
-   *
-   * Omitted on the normal update path — the row already carries the origin that
-   * selected `catalogItem`. Supplied when re-pointing an unmanaged (`…@legacy`
-   * or NULL-origin) row at its catalog template, so origin, version and content
-   * land in ONE transaction. Stamping the origin separately would leave a window
-   * where the row reads "marketplace-managed" while still carrying legacy
-   * content — and `crew-updater` skips rows with a null `templateVersion`, so
-   * that window would not self-heal.
-   */
-  setTemplateOrigin?: string;
 }): Promise<void> {
-  const { db, agentRow, catalogItem, instructionsService, setTemplateOrigin } = opts;
+  const { db, agentRow, catalogItem, instructionsService } = opts;
 
   const bodyText = await fetchCatalogResource(catalogItem, "agent template for update");
   const parsed = parseMarketplaceAgentTemplate(bodyText, catalogItem);
@@ -104,7 +101,6 @@ export async function applyCrewAgentUpdate(opts: {
         skillKeys: template.skillKeys,
         runtimeConfig: updatedRc,
         templateVersion: catalogItem.version,
-        ...(setTemplateOrigin ? { templateOrigin: setTemplateOrigin } : {}),
         ...(materialized ? { adapterConfig: materialized.adapterConfig } : {}),
         updatedAt: new Date(),
       })

@@ -2,26 +2,36 @@
  * T2.3b — crew provisioning is REPAIRABLE after a degraded bootstrap.
  *
  * T2.3 made a company *born* updateable, but only at one instant: any degrade
- * during company create (CDN blip, cold cache, deadline, crash) stamps the crew
- * `…@legacy`, and `crew-updater.ts:151` skips those rows forever. This suite
- * proves the degraded states are recoverable — and, just as importantly, that
- * the obvious recovery (re-run `provisionCompanyCrew`) is the WRONG one for the
- * state that matters most, which is why repair diagnoses first.
+ * during company create stamps the crew `…@legacy`, and `crew-updater.ts` skips
+ * those rows forever. This suite proves the degraded states are recoverable,
+ * that the obvious recovery (re-run `provisionCompanyCrew`) is the WRONG one for
+ * the state that matters most, and that repair never destroys founder content.
  *
- * Real PostgreSQL: every assertion is about rows (origins, versions, the team
- * row, team_members, the install operation) and about whether the real
- * `checkCrewUpdates` walks this company. A mocked DB could only prove functions
- * were called.
+ * ── What is real here, deliberately ─────────────────────────────────────────
+ * - Real PostgreSQL. Every assertion is about rows.
+ * - The **real** `agentInstructionsService` against a temp `AOA_HOME`, so the
+ *   founder-edited instruction files repair must not touch are observable on
+ *   disk. A stubbed instructions service would stub out the only thing the
+ *   rejected design destroyed, making the property untestable.
+ * - The **real** `checkCrewUpdates`, so "the company is un-frozen" is proven by
+ *   the pipeline itself rather than by a mode string.
+ * - The **real** `reconcileTeamMembers`, so the duplicate-minting path is
+ *   exercised end to end.
  *
  * `globalThis.fetch` is a fixture server; the gitignored
  * `ui/src/aoa-marketplace-snapshot.json` is never read (it is injected).
+ *
+ * Assertions are ordered DAMAGE FIRST throughout: a `result.action` string is a
+ * proxy, the row/file is the thing.
  *
  * Skipped on Windows by default (CI's `runneradmin` account can't start
  * embedded-postgres — Issue #114); Linux CI is the authoritative gate. On a
  * Windows dev box set `AOA_RUN_WIN_INTEGRATION=1` to run it for real.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
+import express from "express";
+import request from "supertest";
+import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -35,16 +45,21 @@ import {
 import { companyService } from "../services/companies.js";
 import { provisionCompanyCrew } from "../services/crew-provisioning.js";
 import {
+  ADOPTED_TEMPLATE_VERSION,
   CREW_REPAIR_COOLDOWN_MS,
   diagnoseCrewProvisioning,
   repairCompanyCrew,
   resetCrewRepairCooldowns,
   runCrewRepairPass,
+  setCrewRepairClock,
 } from "../services/crew-repair.js";
 import { checkCrewUpdates } from "../services/marketplace-install/crew-updater.js";
+import { reconcileTeamMembers } from "../services/marketplace-install/team-reconcile.js";
 import { ensureInfrastructureAgents } from "../services/internal-agent/aoa-agents/crew-seeding.js";
 import { backfillCrewTemplateOrigin } from "../services/internal-agent/aoa-agents/backfill-template-origin.js";
-import type { AgentInstructionsServiceLike } from "../services/marketplace-install/agent-create.js";
+import { agentInstructionsService } from "../services/agent-instructions.js";
+import { createMarketplaceCompanyRouter } from "../routes/marketplace-company.js";
+import { errorHandler } from "../middleware/error-handler.js";
 
 type EmbeddedPostgresInstance = {
   initialise(): Promise<void>;
@@ -63,6 +78,7 @@ type EmbeddedPostgresCtor = new (opts: {
 
 let pg: EmbeddedPostgresInstance | null = null;
 let dataDir = "";
+let homeDir = "";
 let db: Db;
 let setupError: unknown = null;
 
@@ -73,8 +89,10 @@ const FIXTURE_HOST = "https://raw.repairfixture.invalid";
 
 const TEAM_ID = "team:aoa-curated/default-crew";
 const SCOUT_ID = "agent:aoa-curated/aoa-scout";
+const ADJUTANT_ID = "agent:aoa-curated/aoa-adjutant";
 const REVIEWER_ID = "agent:aoa-curated/aoa-reviewer";
-const SKILL_ID = "skill:aoa-curated/fixture-crew-skill";
+const INLINE_SKILL_ID = "skill:aoa-curated/fixture-inline-skill";
+const FETCHED_SKILL_ID = "skill:aoa-curated/fixture-fetched-skill";
 
 let seedCounter = 0;
 function nextIssuePrefix(): string {
@@ -87,7 +105,11 @@ function rowsOf<T>(result: unknown): T[] {
   return asObj?.rows ?? (result as T[]);
 }
 
-// ── Fixture catalog (mirrors the T2.3 suite's shape) ─────────────────────────
+// ── Fixture catalog ──────────────────────────────────────────────────────────
+// The roster carries THREE members on purpose: two (Scout, Adjutant) have legacy
+// rows in a degraded company, one (Reviewer) has none. Two legacy-matched members
+// is the minimum that can express a PARTIAL adoption — the state that mints a
+// permanent duplicate — so a one-member fixture cannot see that bug at all.
 
 function catalogItemBase(id: string, type: string, name: string, version = "1.0.0") {
   return {
@@ -113,15 +135,17 @@ function buildCatalog(version = "1.0.0"): MarketplaceCatalogFile {
   return {
     schemaVersion: "1.0.0",
     generatedAt: "2026-07-24T00:00:00.000Z",
-    itemCount: 4,
+    itemCount: 6,
     items: [
       {
         ...catalogItemBase(TEAM_ID, "team", "AoA Default Crew", version),
         resourceUrl: `${FIXTURE_HOST}/teams/default-crew/team.json`,
         requires: [
           { type: "agent", id: SCOUT_ID },
+          { type: "agent", id: ADJUTANT_ID },
           { type: "agent", id: REVIEWER_ID },
-          { type: "skill", id: SKILL_ID },
+          { type: "skill", id: INLINE_SKILL_ID },
+          { type: "skill", id: FETCHED_SKILL_ID },
         ],
       },
       {
@@ -129,18 +153,29 @@ function buildCatalog(version = "1.0.0"): MarketplaceCatalogFile {
         resourceUrl: `${FIXTURE_HOST}/agents/aoa-scout/agent.json`,
       },
       {
+        ...catalogItemBase(ADJUTANT_ID, "agent", "Adjutant", version),
+        resourceUrl: `${FIXTURE_HOST}/agents/aoa-adjutant/agent.json`,
+      },
+      {
         ...catalogItemBase(REVIEWER_ID, "agent", "Reviewer", version),
         resourceUrl: `${FIXTURE_HOST}/agents/aoa-reviewer/agent.json`,
       },
       {
-        ...catalogItemBase(SKILL_ID, "skill", "Fixture Crew Skill", version),
-        content: { inline: "---\nname: fixture-crew-skill\n---\n\nDo the thing.\n" },
+        ...catalogItemBase(INLINE_SKILL_ID, "skill", "Fixture Inline Skill", version),
+        content: { inline: "---\nname: fixture-inline-skill\n---\n\nInline body.\n" },
+      },
+      {
+        // No inline content — the body must be FETCHED, exercising the path the
+        // 17 real crew skills take (`content.inline === null` for all of them).
+        ...catalogItemBase(FETCHED_SKILL_ID, "skill", "Fixture Fetched Skill", version),
+        resourceUrl: `${FIXTURE_HOST}/skills/fixture-fetched-skill/SKILL.md`,
       },
     ],
   } as unknown as MarketplaceCatalogFile;
 }
 
 const FIXTURE_CATALOG = buildCatalog();
+const CATALOG_ITEMS = FIXTURE_CATALOG.items as CatalogItem[];
 
 function agentTemplate(id: string, name: string, triggerRole: string) {
   return JSON.stringify({
@@ -148,11 +183,11 @@ function agentTemplate(id: string, name: string, triggerRole: string) {
     id,
     name,
     description: `${name} fixture agent`,
-    instructions: { type: "inline", content: `You are ${name}.` },
+    instructions: { type: "inline", content: `You are ${name}, from the catalog.` },
     aoa: {
       kind: "aoa",
       adapterType: "claude_local",
-      skillKeys: [SKILL_ID],
+      skillKeys: [INLINE_SKILL_ID, FETCHED_SKILL_ID],
       install: { defaultStatus: "active", defaultRole: "general" },
       triggers: [{ kind: "mention", config: { role: triggerRole } }],
     },
@@ -162,9 +197,10 @@ function agentTemplate(id: string, name: string, triggerRole: string) {
 const TEAM_TEMPLATE = JSON.stringify({
   slug: "aoa-default-crew",
   description: "Fixture crew",
-  manifest: { installOrder: [SCOUT_ID, REVIEWER_ID] },
+  manifest: { installOrder: [SCOUT_ID, ADJUTANT_ID, REVIEWER_ID] },
   agents: [
     { templateOrigin: SCOUT_ID, name: "Scout" },
+    { templateOrigin: ADJUTANT_ID, name: "Adjutant" },
     { templateOrigin: REVIEWER_ID, name: "Reviewer" },
   ],
 });
@@ -172,7 +208,10 @@ const TEAM_TEMPLATE = JSON.stringify({
 const FIXTURE_BODIES: Record<string, string> = {
   [`${FIXTURE_HOST}/teams/default-crew/team.json`]: TEAM_TEMPLATE,
   [`${FIXTURE_HOST}/agents/aoa-scout/agent.json`]: agentTemplate("aoa-scout", "Scout", "scout"),
+  [`${FIXTURE_HOST}/agents/aoa-adjutant/agent.json`]: agentTemplate("aoa-adjutant", "Adjutant", "adjutant"),
   [`${FIXTURE_HOST}/agents/aoa-reviewer/agent.json`]: agentTemplate("aoa-reviewer", "Reviewer", "reviewer"),
+  [`${FIXTURE_HOST}/skills/fixture-fetched-skill/SKILL.md`]:
+    "---\nname: fixture-fetched-skill\n---\n\nFetched body.\n",
 };
 
 let realFetch: typeof globalThis.fetch;
@@ -182,7 +221,8 @@ const brokenUrls = new Set<string>();
 function installFixtureFetch() {
   realFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : String(input);
+    const url =
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : String(input);
     if (url === FIXTURE_CDN_URL) {
       if (!cdnReachable) throw new TypeError("fetch failed (simulated: CDN unreachable)");
       return new Response(JSON.stringify(FIXTURE_CATALOG), {
@@ -196,18 +236,6 @@ function installFixtureFetch() {
     return new Response(body, { status: 200, headers: { "content-type": "application/json" } });
   }) as typeof globalThis.fetch;
 }
-
-/**
- * Instruction materialization is not what this suite is about, and the real
- * service writes bundles to disk. The stub keeps the agent's existing
- * adapterConfig so an assertion about a founder's adapter surviving adoption is
- * about adoption, not about the stub.
- */
-const instructionsService: AgentInstructionsServiceLike = {
-  materializeManagedBundle: async (agent) => ({
-    adapterConfig: (agent.adapterConfig as Record<string, unknown>) ?? {},
-  }),
-};
 
 async function clearCatalogCache() {
   await db.execute(sql`DELETE FROM marketplace_catalog_cache`);
@@ -235,13 +263,18 @@ interface CrewRow {
   template_origin: string | null;
   template_version: string | null;
   skill_keys: string[];
+  runtime_config: Record<string, unknown> | null;
+  adapter_config: Record<string, unknown> | null;
+  adapter_type: string;
   title: string | null;
+  role: string | null;
 }
 
 async function crewRows(companyId: string): Promise<CrewRow[]> {
   return rowsOf<CrewRow>(
     await db.execute(sql`
-      SELECT id, name, template_origin, template_version, skill_keys, title
+      SELECT id, name, template_origin, template_version, skill_keys,
+             runtime_config, adapter_config, adapter_type, title, role
       FROM agents WHERE company_id = ${companyId} AND kind = 'aoa' ORDER BY name
     `),
   );
@@ -266,6 +299,54 @@ async function operationRow(companyId: string) {
   );
 }
 
+async function installedSkillKeys(companyId: string): Promise<string[]> {
+  return rowsOf<{ key: string }>(
+    await db.execute(
+      sql`SELECT key FROM company_skills WHERE company_id = ${companyId} ORDER BY key`,
+    ),
+  ).map((r) => r.key);
+}
+
+async function triggerKinds(agentId: string): Promise<string[]> {
+  return rowsOf<{ kind: string }>(
+    await db.execute(
+      sql`SELECT kind FROM aoa_agent_triggers WHERE agent_id = ${agentId} ORDER BY kind`,
+    ),
+  ).map((r) => r.kind);
+}
+
+async function teamMemberNames(companyId: string): Promise<string[]> {
+  return rowsOf<{ name: string }>(
+    await db.execute(sql`
+      SELECT a.name FROM team_members tm
+      JOIN teams t ON t.id = tm.team_id
+      JOIN agents a ON a.id = tm.agent_id
+      WHERE t.company_id = ${companyId} AND t.template_origin = ${TEAM_ID}
+      ORDER BY a.name
+    `),
+  ).map((r) => r.name);
+}
+
+async function crewRepairNotificationCount(companyId: string): Promise<number> {
+  const rows = rowsOf<{ n: string }>(
+    await db.execute(sql`
+      SELECT count(*)::text AS n FROM notifications
+      WHERE company_id = ${companyId} AND source_id LIKE ${`crew_repaired:${companyId}%`}
+    `),
+  );
+  return Number(rows[0].n);
+}
+
+const NOTIFY_SETTINGS = {
+  agentUpdatePolicy: "notify",
+  updateWindow: "anytime",
+} as unknown as Parameters<typeof checkCrewUpdates>[0]["settings"];
+
+const AUTO_SETTINGS = {
+  agentUpdatePolicy: "auto",
+  updateWindow: "anytime",
+} as unknown as Parameters<typeof checkCrewUpdates>[0]["settings"];
+
 async function pendingUpdateItemIds(companyId: string): Promise<string[]> {
   return rowsOf<{ catalog_item_id: string }>(
     await db.execute(sql`
@@ -273,11 +354,6 @@ async function pendingUpdateItemIds(companyId: string): Promise<string[]> {
     `),
   ).map((r) => r.catalog_item_id);
 }
-
-const NOTIFY_SETTINGS = {
-  agentUpdatePolicy: "notify",
-  updateWindow: "anytime",
-} as unknown as Parameters<typeof checkCrewUpdates>[0]["settings"];
 
 /**
  * Does the real update pipeline WALK this company? The load-bearing question —
@@ -290,7 +366,7 @@ async function updatePipelineSeesCompany(companyId: string): Promise<boolean> {
     companyId,
     catalogItems: buildCatalog("2.0.0").items as CatalogItem[],
     settings: NOTIFY_SETTINGS,
-    instructionsService,
+    instructionsService: agentInstructionsService(),
   });
   return (await pendingUpdateItemIds(companyId)).includes(SCOUT_ID);
 }
@@ -305,9 +381,101 @@ async function createLegacyCompany(name: string): Promise<string> {
   return company.id;
 }
 
+const FOUNDER_EDIT_FILE = "FOUNDER-NOTES.md";
+const FOUNDER_EDIT_BODY = "# My hand-written playbook\n\nDo not delete me.\n";
+
+/**
+ * Give an agent a real managed instruction bundle with a founder-authored file
+ * in it, exactly as `routes/agents.ts`'s instructions editor would leave it.
+ *
+ * @returns the absolute path of the founder's file.
+ */
+async function seedFounderInstructionBundle(agent: CrewRow, companyId: string): Promise<string> {
+  const svc = agentInstructionsService();
+  const { adapterConfig } = await svc.materializeManagedBundle(
+    {
+      id: agent.id,
+      companyId,
+      name: agent.name,
+      role: agent.role ?? "general",
+      adapterType: agent.adapter_type,
+      adapterConfig: agent.adapter_config,
+    },
+    { "AGENTS.md": "Legacy seeded instructions.\n" },
+    { entryFile: "AGENTS.md", replaceExisting: true },
+  );
+  await db.execute(sql`
+    UPDATE agents SET adapter_config = ${JSON.stringify(adapterConfig)}::jsonb WHERE id = ${agent.id}
+  `);
+  const root = join(
+    homeDir, "instances", "default", "companies", companyId, "agents", agent.id, "instructions",
+  );
+  const filePath = join(root, FOUNDER_EDIT_FILE);
+  await writeFile(filePath, FOUNDER_EDIT_BODY, "utf8");
+  return filePath;
+}
+
+async function readIfPresent(path: string): Promise<string | null> {
+  try {
+    return await readFile(path, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+// ── Route harness ────────────────────────────────────────────────────────────
+
+type TestActor = Record<string, unknown>;
+let currentActor: TestActor = {};
+
+function makeApp() {
+  const app = express();
+  app.use(express.json());
+  app.use((req, _res, next) => {
+    (req as unknown as { actor: TestActor }).actor = currentActor;
+    next();
+  });
+  app.use(
+    "/api/companies/:companyId/marketplace",
+    createMarketplaceCompanyRouter({
+      db,
+      catalogService: { readCache: async () => (cdnReachable ? FIXTURE_CATALOG : null) },
+    }),
+  );
+  app.use(errorHandler);
+  return app;
+}
+
+function boardActor(userId: string, companyId: string): TestActor {
+  return {
+    type: "board",
+    source: "session",
+    userId,
+    companyIds: [companyId],
+    isInstanceAdmin: false,
+  };
+}
+
+async function seedUserRole(companyId: string, userId: string, role: string) {
+  // user_roles.user_id FKs to the auth "user" table, so the principal has to
+  // exist before the grant does.
+  await db.execute(sql`
+    INSERT INTO "user" (id, name, email, created_at, updated_at)
+    VALUES (${userId}, ${role}, ${`${userId}@example.test`}, now(), now())
+    ON CONFLICT (id) DO NOTHING
+  `);
+  await db.execute(sql`
+    INSERT INTO user_roles (company_id, user_id, role) VALUES (${companyId}, ${userId}, ${role})
+  `);
+}
+
 beforeAll(async () => {
   try {
     dataDir = await mkdtemp(join(tmpdir(), "aoa-crew-repair-integ-"));
+    homeDir = await mkdtemp(join(tmpdir(), "aoa-crew-repair-home-"));
+    // The real instructions service writes here; every bundle assertion below
+    // depends on this being an isolated directory, not the developer's ~/.aoa.
+    process.env.AOA_HOME = homeDir;
     const { default: EmbeddedPostgres } = (await import("embedded-postgres")) as {
       default: EmbeddedPostgresCtor;
     };
@@ -337,176 +505,313 @@ afterEach(() => {
   resetCrewRepairCooldowns();
   brokenUrls.clear();
   cdnReachable = false;
+  currentActor = {};
 });
 
 afterAll(async () => {
   registerMarketplaceCatalogService(null);
   if (realFetch) globalThis.fetch = realFetch;
+  delete process.env.AOA_HOME;
   try {
     if (pg) await pg.stop();
   } catch {
     /* ignore */
   }
-  try {
-    if (dataDir) await rm(dataDir, { recursive: true, force: true });
-  } catch {
-    /* ignore */
+  for (const dir of [dataDir, homeDir]) {
+    try {
+      if (dir) await rm(dir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
   }
 }, 60_000);
 
 describe.skipIf(
   process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1",
 )("crew provisioning repair (real PostgreSQL)", () => {
-  // ── Step 1 — the task itself ───────────────────────────────────────────────
-  it("adopts a `@legacy` crew so crew-updater stops skipping the company", async () => {
+  // ── The task itself ────────────────────────────────────────────────────────
+  it("adopts a `@legacy` crew pointer-only, un-freezing it without touching content", async () => {
     if (setupError) throw new Error(String(setupError));
     const companyId = await createLegacyCompany("Legacy Crew Co");
 
     const before = await crewRows(companyId);
     const scoutBefore = before.find((r) => r.name === "Scout")!;
+    const adjutantBefore = before.find((r) => r.name === "Adjutant")!;
     expect(scoutBefore.template_origin).toBe("aoa-curated/standard-crew/scout@legacy");
-    // THE discriminator, in its "before" half: the real update pipeline does not
-    // walk this company at all. A route returning 200 would not prove this.
+    // THE discriminator, "before" half: the real update pipeline does not walk
+    // this company at all. A route returning 200 would not prove this.
     expect(await updatePipelineSeesCompany(companyId)).toBe(false);
+    expect(await installedSkillKeys(companyId)).toEqual([]);
 
-    // A founder customization that adoption must not touch.
-    await db.execute(sql`UPDATE agents SET title = 'Chief Scout' WHERE id = ${scoutBefore.id}`);
+    // Real founder artefacts, on disk and in the row, that repair must preserve.
+    const founderFile = await seedFounderInstructionBundle(scoutBefore, companyId);
+    expect(await readIfPresent(founderFile)).toBe(FOUNDER_EDIT_BODY);
+    const scoutTriggersBefore = await triggerKinds(scoutBefore.id);
+    const scoutRowBefore = (await crewRows(companyId)).find((r) => r.name === "Scout")!;
 
     await withCatalog();
-    const result = await repairCompanyCrew(db, companyId, {
-      catalogItems: FIXTURE_CATALOG.items as CatalogItem[],
-      instructionsService,
-    });
+    const result = await repairCompanyCrew(db, companyId, { catalogItems: CATALOG_ITEMS });
 
-    // The DAMAGE is asserted before the mode, deliberately: `action` is a proxy,
-    // the row is the thing. A naive repair (re-running provisionCompanyCrew)
-    // fails on the next four assertions, not on a mode string.
+    // ── DAMAGE FIRST. `result.action` is asserted last, on purpose. ─────────
     const after = await crewRows(companyId);
     const scoutAfter = after.find((r) => r.name === "Scout")!;
-    // The origin CHANGED — `@legacy` → a real catalog id — in place.
+    const adjutantAfter = after.find((r) => r.name === "Adjutant")!;
+
+    // 1. The founder's instruction file is untouched, byte for byte. The
+    //    rejected design (`applyCrewAgentUpdate`) begins with
+    //    `fs.rm(root, { recursive: true })` and would have deleted it.
+    expect(await readIfPresent(founderFile)).toBe(FOUNDER_EDIT_BODY);
+
+    // 2. Pointer only: exactly two columns moved, nothing else.
     expect(scoutAfter.template_origin).toBe(SCOUT_ID);
-    expect(scoutAfter.template_version).toBe("1.0.0");
-    expect(scoutAfter.skill_keys).toEqual([SKILL_ID]);
-    // In place: same row. Tasks, runs and assignments keep pointing at it.
-    expect(scoutAfter.id).toBe(scoutBefore.id);
-    // …and the founder's edit survived.
-    expect(scoutAfter.title).toBe("Chief Scout");
+    expect(scoutAfter.template_version).toBe(ADOPTED_TEMPLATE_VERSION);
+    expect(adjutantAfter.template_origin).toBe(ADJUTANT_ID);
+    expect(scoutAfter.id).toBe(scoutBefore.id); // in place — tasks/runs still resolve
+    expect(adjutantAfter.id).toBe(adjutantBefore.id);
+    expect({ ...scoutAfter, template_origin: null, template_version: null }).toEqual({
+      ...scoutRowBefore,
+      template_origin: null,
+      template_version: null,
+    });
+    // …including the artefacts a catalog update WOULD have replaced.
+    expect(scoutAfter.skill_keys).toEqual(scoutRowBefore.skill_keys);
+    expect(scoutAfter.runtime_config).toEqual(scoutRowBefore.runtime_config);
+    expect(scoutAfter.adapter_config).toEqual(scoutRowBefore.adapter_config);
+    expect(await triggerKinds(scoutAfter.id)).toEqual(scoutTriggersBefore);
 
-    // No duplicate roster — the failure mode of a naive re-install.
-    expect(after.filter((r) => r.name === "Scout")).toHaveLength(1);
-    expect(after.some((r) => /-2$/.test(r.name))).toBe(false);
-
-    // Roles the roster does not name are left alone, still legacy.
-    expect(after.find((r) => r.name === "Adjutant")!.template_origin).toMatch(/@legacy$/);
-
-    // The team row + membership an install would have written — this is what
-    // `reconcileTeamMembers` needs in order to add Reviewer later.
-    expect(await teamRowCount(companyId)).toBe(1);
-    const members = rowsOf<{ agent_id: string; role: string }>(
-      await db.execute(sql`
-        SELECT tm.agent_id, tm.role FROM team_members tm
-        JOIN teams t ON t.id = tm.team_id
-        WHERE t.company_id = ${companyId} AND t.template_origin = ${TEAM_ID}
-      `),
+    // 3. The declared skills now have rows behind them, so `use_skill` can load
+    //    them (and the Reviewer that reconcile installs next inherits them).
+    expect(await installedSkillKeys(companyId)).toEqual(
+      [FETCHED_SKILL_ID, INLINE_SKILL_ID].sort(),
     );
-    expect(members.map((m) => m.agent_id)).toEqual([scoutBefore.id]);
-    expect(members[0].role).toBe("lead");
 
-    // The audit row is terminal — so a later provisioning pass cannot claim it.
-    const ops = await operationRow(companyId);
-    expect(ops).toHaveLength(1);
-    expect(ops[0].status).toBe("success");
+    // 4. No duplicate roster, and roles the catalog does not name stay legacy.
+    expect(after.some((r) => /-\d$/.test(r.name))).toBe(false);
+    expect(after.filter((r) => r.name === "Scout")).toHaveLength(1);
+    expect(after.find((r) => r.name === "Librarian")!.template_origin).toMatch(/@legacy$/);
 
-    // THE discriminator, "after" half: the pipeline now walks this company.
+    // 5. The team row + membership an install would have written — what
+    //    reconcileTeamMembers needs to add Reviewer later.
+    expect(await teamRowCount(companyId)).toBe(1);
+    expect(await teamMemberNames(companyId)).toEqual(["Adjutant", "Scout"]);
+    expect((await operationRow(companyId))[0].status).toBe("success");
+
+    // 6. Founder-visible.
+    expect(await crewRepairNotificationCount(companyId)).toBeGreaterThan(0);
+
+    // 7. THE discriminator, "after" half: the pipeline now walks this company.
     expect(await updatePipelineSeesCompany(companyId)).toBe(true);
 
-    // Only now the mode, and what it adopted.
+    // Only now the mode.
     expect(result.action).toBe("adopted");
     if (result.action !== "adopted") throw new Error("unreachable");
-    expect(result.adoptedItemIds).toEqual([SCOUT_ID]);
-    expect(result.failedItemIds).toEqual([]);
-  }, 180_000);
+    expect([...result.adoptedItemIds].sort()).toEqual([ADJUTANT_ID, SCOUT_ID].sort());
+    expect(result.unmatchedItemIds).toEqual([REVIEWER_ID]);
+  }, 240_000);
+
+  // ── The content change is the POLICY's decision, not repair's ─────────────
+  it("leaves the follow-up content change to agentUpdatePolicy", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const companyId = await createLegacyCompany("Policy Co");
+    const scout = (await crewRows(companyId)).find((r) => r.name === "Scout")!;
+    const founderFile = await seedFounderInstructionBundle(scout, companyId);
+
+    await withCatalog();
+    await repairCompanyCrew(db, companyId, { catalogItems: CATALOG_ITEMS });
+
+    // notify (the DEFAULT): the founder is told, and nothing is overwritten.
+    await checkCrewUpdates({
+      db,
+      companyId,
+      catalogItems: CATALOG_ITEMS,
+      settings: NOTIFY_SETTINGS,
+      instructionsService: agentInstructionsService(),
+    });
+    expect(await readIfPresent(founderFile)).toBe(FOUNDER_EDIT_BODY);
+    expect(await pendingUpdateItemIds(companyId)).toContain(SCOUT_ID);
+    expect((await crewRows(companyId)).find((r) => r.name === "Scout")!.template_version).toBe(
+      ADOPTED_TEMPLATE_VERSION,
+    );
+
+    // auto: the founder opted into full replacement, so now it applies. This is
+    // the discriminator — it proves the `notify` result above is the POLICY
+    // deciding, not repair simply being unable to update anything.
+    await checkCrewUpdates({
+      db,
+      companyId,
+      catalogItems: CATALOG_ITEMS,
+      settings: AUTO_SETTINGS,
+      instructionsService: agentInstructionsService(),
+    });
+    expect(await readIfPresent(founderFile)).toBeNull();
+    const scoutAfter = (await crewRows(companyId)).find((r) => r.name === "Scout")!;
+    expect(scoutAfter.template_version).toBe("1.0.0");
+    expect(scoutAfter.skill_keys).toEqual([INLINE_SKILL_ID, FETCHED_SKILL_ID]);
+  }, 240_000);
+
+  // ── All-or-nothing adoption ───────────────────────────────────────────────
+  // A partial adoption plus a team row is the worst state available: reconcile
+  // cannot tell "no local counterpart" from "adoption failed here", installs a
+  // renamed duplicate, and the original row becomes unreachable forever.
+  it("writes NOTHING when a name-matched roster member cannot be adopted", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const companyId = await createLegacyCompany("Partial Adopt Co");
+    await withCatalog();
+    const before = await crewRows(companyId);
+
+    // Adjutant has a legacy row AND a roster entry, but no usable catalog item.
+    const brokenCatalog = CATALOG_ITEMS.filter((item) => item.id !== ADJUTANT_ID);
+    const result = await repairCompanyCrew(db, companyId, { catalogItems: brokenCatalog });
+
+    // Not "Scout adopted, Adjutant left behind" — nothing at all.
+    expect(await crewRows(companyId)).toEqual(before);
+    expect(await teamRowCount(companyId)).toBe(0);
+    expect(await installedSkillKeys(companyId)).toEqual([]);
+    expect(await operationRow(companyId)).toHaveLength(0);
+    expect(result).toMatchObject({ action: "skipped", reason: "unadoptable-roster-member" });
+  }, 240_000);
+
+  it("writes NOTHING when a required skill body cannot be fetched", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const companyId = await createLegacyCompany("Skill Fetch Co");
+    await withCatalog();
+    brokenUrls.add(`${FIXTURE_HOST}/skills/fixture-fetched-skill/SKILL.md`);
+    const before = await crewRows(companyId);
+
+    const result = await repairCompanyCrew(db, companyId, { catalogItems: CATALOG_ITEMS });
+
+    // A crew that advertises skill keys with no rows behind them answers
+    // "Skill not found for this company" on every use_skill call.
+    expect(await crewRows(companyId)).toEqual(before);
+    expect(await installedSkillKeys(companyId)).toEqual([]);
+    expect(await teamRowCount(companyId)).toBe(0);
+    expect(result).toMatchObject({ action: "skipped", reason: "skill-content-unavailable" });
+
+    // …and it is still repairable once the CDN comes back.
+    brokenUrls.clear();
+    const second = await repairCompanyCrew(db, companyId, {
+      catalogItems: CATALOG_ITEMS,
+      force: true,
+    });
+    expect((await crewRows(companyId)).find((r) => r.name === "Scout")!.template_origin).toBe(
+      SCOUT_ID,
+    );
+    expect(second.action).toBe("adopted");
+  }, 240_000);
+
+  // ── The other side of the same hazard ─────────────────────────────────────
+  // Mechanism-independent. Fails against team-reconcile.ts as it stood: `missing`
+  // is computed from member origins alone, which cannot see an unmanaged row of
+  // the same name.
+  it("reconcileTeamMembers refuses to install over an unmanaged same-named agent", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const companyId = await createLegacyCompany("Reconcile Guard Co");
+    await withCatalog();
+
+    // Adopt only Scout, by hand, and link only Scout — i.e. exactly the partial
+    // state a half-finished adoption would leave. Adjutant stays `…@legacy`.
+    const scout = (await crewRows(companyId)).find((r) => r.name === "Scout")!;
+    await db.execute(sql`
+      UPDATE agents SET template_origin = ${SCOUT_ID}, template_version = ${ADOPTED_TEMPLATE_VERSION}
+      WHERE id = ${scout.id}
+    `);
+    const teamId = randomUUID();
+    await db.execute(sql`
+      INSERT INTO teams (id, company_id, name, slug, template_origin, template_version)
+      VALUES (${teamId}, ${companyId}, 'AoA Default Crew', 'aoa-default-crew', ${TEAM_ID}, '1.0.0')
+    `);
+    await db.execute(sql`
+      INSERT INTO team_members (team_id, agent_id, role) VALUES (${teamId}, ${scout.id}, 'lead')
+    `);
+
+    const reconciled = await reconcileTeamMembers({
+      db,
+      companyId,
+      catalogItems: CATALOG_ITEMS,
+      instructionsService: agentInstructionsService(),
+    });
+
+    const after = await crewRows(companyId);
+    // No `Adjutant-2` beside the legacy Adjutant — which, if minted, would make
+    // the ORIGINAL Adjutant permanently unadoptable (the next repair sees the
+    // origin already present and skips it).
+    expect(after.filter((r) => r.name.startsWith("Adjutant"))).toHaveLength(1);
+    expect(after.find((r) => r.name === "Adjutant")!.template_origin).toMatch(/@legacy$/);
+    // Reviewer has no local row at all, so it IS installed — the discriminator
+    // that proves the guard is targeted, not a blanket "never install".
+    expect(after.some((r) => r.name === "Reviewer")).toBe(true);
+    expect(reconciled.membersAdded).toBe(1);
+  }, 240_000);
 
   // ── The ablation, kept permanently ────────────────────────────────────────
-  // This is the naive repair the brief warns about, run against the exact state
-  // Step 1 covers. It is here so nobody re-wires repair straight to
-  // `provisionCompanyCrew`: diagnosing first is the ONLY thing preventing this.
   it("ABLATION: repairing a legacy company via provisionCompanyCrew mints a duplicate roster", async () => {
     if (setupError) throw new Error(String(setupError));
     const companyId = await createLegacyCompany("Naive Repair Co");
     await withCatalog();
 
     const outcome = await provisionCompanyCrew(db, companyId, {});
-    expect(outcome.mode).toBe("marketplace");
 
     const after = await crewRows(companyId);
-    // Two Scouts: the legacy one, and a renamed marketplace one.
     expect(after.filter((r) => r.name.startsWith("Scout"))).toHaveLength(2);
     expect(after.some((r) => r.name === "Scout-2")).toBe(true);
     // …and the ORIGINAL Scout — the row every task points at — is still
-    // `@legacy`, i.e. still excluded from crew updates. The duplicate did not
-    // repair anything; it only made the company harder to reason about.
+    // `@legacy`, i.e. still excluded from crew updates. The duplicate repaired
+    // nothing; it only made the company harder to reason about.
     expect(after.find((r) => r.name === "Scout")!.template_origin).toMatch(/@legacy$/);
-  }, 180_000);
+    expect(outcome.mode).toBe("marketplace");
+  }, 240_000);
 
-  // ── Step 2 — re-run safety ────────────────────────────────────────────────
+  // ── Re-run safety ─────────────────────────────────────────────────────────
   it("repair is a no-op on an already-marketplace-managed company", async () => {
     if (setupError) throw new Error(String(setupError));
     await withCatalog();
     const company = await companyService(db).create({ name: "Managed Crew Co" } as never);
-    await db.execute(
-      sql`UPDATE agents SET title = 'Lead Scout' WHERE company_id = ${company.id} AND name = 'Scout'`,
-    );
     const before = await crewRows(company.id);
 
+    const results = [];
     for (let pass = 0; pass < 2; pass++) {
-      const result = await repairCompanyCrew(db, company.id, {
-        catalogItems: FIXTURE_CATALOG.items as CatalogItem[],
-        instructionsService,
-      });
-      expect(result.action).toBe("none");
+      results.push(
+        await repairCompanyCrew(db, company.id, { catalogItems: CATALOG_ITEMS, force: true }),
+      );
     }
 
-    const after = await crewRows(company.id);
-    expect(after).toEqual(before);
-    expect(after.some((r) => /-2$/.test(r.name))).toBe(false);
+    expect(await crewRows(company.id)).toEqual(before);
     expect(await teamRowCount(company.id)).toBe(1);
     expect(await operationRow(company.id)).toHaveLength(1);
-  }, 180_000);
+    expect(results).toEqual([
+      { action: "none", verdict: "healthy" },
+      { action: "none", verdict: "healthy" },
+    ]);
+  }, 240_000);
 
   it("repair is a no-op when re-run on a company it just adopted", async () => {
     if (setupError) throw new Error(String(setupError));
     const companyId = await createLegacyCompany("Twice Repaired Co");
     await withCatalog();
 
-    const first = await repairCompanyCrew(db, companyId, {
-      catalogItems: FIXTURE_CATALOG.items as CatalogItem[],
-      instructionsService,
-    });
-    expect(first.action).toBe("adopted");
+    await repairCompanyCrew(db, companyId, { catalogItems: CATALOG_ITEMS });
     const afterFirst = await crewRows(companyId);
+    expect(afterFirst.find((r) => r.name === "Scout")!.template_origin).toBe(SCOUT_ID);
 
     const second = await repairCompanyCrew(db, companyId, {
-      catalogItems: FIXTURE_CATALOG.items as CatalogItem[],
-      instructionsService,
+      catalogItems: CATALOG_ITEMS,
+      force: true,
     });
-    // Adoption made the company healthy; a second pass must write NOTHING.
-    expect(second).toEqual({ action: "none", verdict: "healthy" });
-    expect(await crewRows(companyId)).toEqual(afterFirst);
-    expect(await teamRowCount(companyId)).toBe(1);
 
-    // The OTHER entry point matters just as much, and is where the harm shows:
-    // adoption must leave the bootstrap operation row terminal, or the ordinary
-    // provisioning path claims it (`failure`/absent are both claimable) and
-    // re-installs the roster this company already has.
+    // The OTHER entry point is where the harm shows: adoption must leave the
+    // bootstrap operation row terminal, or the ordinary provisioning path claims
+    // it (`failure`/absent are both claimable) and re-installs the whole roster.
     const outcome = await provisionCompanyCrew(db, companyId, {});
-    expect((await crewRows(companyId)).some((r) => /-2$/.test(r.name))).toBe(false);
+    const afterSecond = await crewRows(companyId);
+    expect(afterSecond.some((r) => /-\d$/.test(r.name))).toBe(false);
+    expect(afterSecond).toEqual(afterFirst);
     expect(await teamRowCount(companyId)).toBe(1);
-    expect(outcome.mode).toBe("marketplace-already-dispatched");
     expect(await operationRow(companyId)).toHaveLength(1);
-  }, 180_000);
+    expect(second).toEqual({ action: "none", verdict: "healthy" });
+    expect(outcome.mode).toBe("marketplace-already-dispatched");
+  }, 240_000);
 
-  // ── Step 4b case 1 — the `unknown` witness leaves a crewless company ───────
+  // ── The residual state the `unknown` witness leaves behind ────────────────
   it("re-provisions a company that has infrastructure agents but no crew at all", async () => {
     if (setupError) throw new Error(String(setupError));
     await withCatalog();
@@ -516,86 +821,64 @@ describe.skipIf(
       INSERT INTO companies (id, name, issue_prefix)
       VALUES (${companyId}, 'Crewless Co', ${nextIssuePrefix()})
     `);
-    // Exactly what `unknown-skipped-seeding` leaves behind: Commander + Steward
-    // seeded, the crew half deliberately skipped.
     await ensureInfrastructureAgents(db, companyId);
 
-    const diagnosis = await diagnoseCrewProvisioning(db, companyId);
-    expect(diagnosis.verdict).toBe("crewless");
-
-    const result = await repairCompanyCrew(db, companyId, {
-      catalogItems: FIXTURE_CATALOG.items as CatalogItem[],
-      instructionsService,
-    });
-    expect(result.action).toBe("reprovisioned");
+    const result = await repairCompanyCrew(db, companyId, { catalogItems: CATALOG_ITEMS });
 
     const crew = await crewRows(companyId);
     expect(
-      crew.filter((r) => r.template_origin?.startsWith("agent:aoa-curated/")).map((r) => r.name).sort(),
-    ).toEqual(["Reviewer", "Scout"]);
-    // Infrastructure was not duplicated by the re-provision.
+      crew
+        .filter((r) => r.template_origin?.startsWith("agent:aoa-curated/"))
+        .map((r) => r.name)
+        .sort(),
+    ).toEqual(["Adjutant", "Reviewer", "Scout"]);
     expect(crew.filter((r) => r.name === "Commander")).toHaveLength(1);
     expect(crew.filter((r) => r.name === "Steward")).toHaveLength(1);
     expect(await teamRowCount(companyId)).toBe(1);
-  }, 180_000);
+    expect(result.action).toBe("reprovisioned");
+  }, 240_000);
 
-  // ── Step 4b case 2 — the operation row the T2.3 repair could not fix ───────
-  it("corrects an install operation that still reports failure over a committed crew", async () => {
+  // ── The operation row T2.3's own repair could not fix ─────────────────────
+  it("seals an install operation that still reports failure over a committed crew", async () => {
     if (setupError) throw new Error(String(setupError));
     await withCatalog();
     const company = await companyService(db).create({ name: "Lying Op Co" } as never);
-
-    // The T2.3 averted-clobber repair write uses the same connection that just
-    // failed; when the DB is what broke, the row stays `failure`.
     await db.execute(sql`
       UPDATE marketplace_install_operations
       SET status = 'failure', error_message = 'live-event subscriber threw', completed_at = NULL
       WHERE company_id = ${company.id}
     `);
-
-    const diagnosis = await diagnoseCrewProvisioning(db, company.id);
-    expect(diagnosis.verdict).toBe("operation-row-stale");
-
     const before = await crewRows(company.id);
-    const result = await repairCompanyCrew(db, company.id, {
-      catalogItems: FIXTURE_CATALOG.items as CatalogItem[],
-      instructionsService,
-    });
-    expect(result.action).toBe("operation-repaired");
+
+    const result = await repairCompanyCrew(db, company.id, { catalogItems: CATALOG_ITEMS });
 
     const ops = await operationRow(company.id);
     expect(ops).toHaveLength(1);
     expect(ops[0].status).toBe("success");
     expect(ops[0].error_message).toBeNull();
-    // Nothing was re-installed.
     expect(await crewRows(company.id)).toEqual(before);
     expect(await teamRowCount(company.id)).toBe(1);
-  }, 180_000);
+    expect(result.action).toBe("operation-repaired");
+  }, 240_000);
 
-  // Discriminator for the above: "not success" is NOT the same as "stale". A
-  // live install owns its `running` row, and repair must not declare someone
-  // else's in-flight work finished.
   it("does not touch a FRESH `running` operation row", async () => {
     if (setupError) throw new Error(String(setupError));
     await withCatalog();
     const company = await companyService(db).create({ name: "Live Op Co" } as never);
     await db.execute(sql`
       UPDATE marketplace_install_operations
-      SET status = 'running', started_at = now(), completed_at = NULL
-      WHERE company_id = ${company.id}
+      SET status = 'running', started_at = now(), completed_at = NULL WHERE company_id = ${company.id}
     `);
 
-    expect((await diagnoseCrewProvisioning(db, company.id)).verdict).toBe("healthy");
     const result = await repairCompanyCrew(db, company.id, {
-      catalogItems: FIXTURE_CATALOG.items as CatalogItem[],
-      instructionsService,
+      catalogItems: CATALOG_ITEMS,
+      force: true,
     });
-    expect(result).toEqual({ action: "none", verdict: "healthy" });
     expect((await operationRow(company.id))[0].status).toBe("running");
-  }, 180_000);
+    expect((await diagnoseCrewProvisioning(db, company.id)).verdict).toBe("healthy");
+    expect(result).toEqual({ action: "none", verdict: "healthy" });
+  }, 240_000);
 
-  // …but a `running` row whose owner died IS stale, and IS claimable, so repair
-  // must seal it or the next provisioning pass re-installs over the crew.
   it("seals a stale `running` operation row over an installed crew", async () => {
     if (setupError) throw new Error(String(setupError));
     await withCatalog();
@@ -606,16 +889,11 @@ describe.skipIf(
       WHERE company_id = ${company.id}
     `);
 
-    expect((await diagnoseCrewProvisioning(db, company.id)).verdict).toBe("operation-row-stale");
-    const result = await repairCompanyCrew(db, company.id, {
-      catalogItems: FIXTURE_CATALOG.items as CatalogItem[],
-      instructionsService,
-    });
-    expect(result.action).toBe("operation-repaired");
+    const result = await repairCompanyCrew(db, company.id, { catalogItems: CATALOG_ITEMS });
     expect((await operationRow(company.id))[0].status).toBe("success");
-  }, 180_000);
+    expect(result.action).toBe("operation-repaired");
+  }, 240_000);
 
-  // The harm that case makes real, if repair does NOT seal the row.
   it("ABLATION: an unsealed `failure` row lets the next provisioning pass duplicate the roster", async () => {
     if (setupError) throw new Error(String(setupError));
     await withCatalog();
@@ -626,158 +904,276 @@ describe.skipIf(
       WHERE company_id = ${company.id}
     `);
 
-    // No repair. `claimOperationForDispatch` treats `failure` as claimable — by
-    // design, so a genuinely failed bootstrap can be retried — so the crew is
-    // installed a SECOND time over the committed one.
     const outcome = await provisionCompanyCrew(db, company.id, {});
-    expect(outcome.mode).toBe("marketplace");
 
-    const crew = await crewRows(company.id);
-    expect(crew.some((r) => r.name === "Scout-2")).toBe(true);
-    // Two team rows sharing one templateOrigin — this is what breaks the
-    // single-row lookups in resolver.ts and team-reconcile.ts.
+    expect((await crewRows(company.id)).some((r) => r.name === "Scout-2")).toBe(true);
     expect(await teamRowCount(company.id)).toBe(2);
-  }, 180_000);
+    expect(outcome.mode).toBe("marketplace");
+  }, 240_000);
 
-  // ── Fail closed ───────────────────────────────────────────────────────────
-  it("refuses to install alongside crew rows it cannot account for", async () => {
+  it("stands aside while a bootstrap install is genuinely in flight", async () => {
     if (setupError) throw new Error(String(setupError));
-    const companyId = await createLegacyCompany("Renamed Crew Co");
-    // The founder renamed everything — nothing matches the roster by name.
-    await db.execute(sql`
-      UPDATE agents SET name = 'Recon ' || name
-      WHERE company_id = ${companyId} AND kind = 'aoa' AND name NOT IN ('Commander', 'Steward')
-    `);
+    const companyId = await createLegacyCompany("Racing Install Co");
     await withCatalog();
-
+    // A bootstrap that has claimed the operation and is mid-install: its team
+    // row is not committed yet, so the company still LOOKS degraded. Repairing
+    // now would commit a second team row sharing one templateOrigin.
+    await db.execute(sql`
+      INSERT INTO marketplace_install_operations
+        (company_id, catalog_item_id, item_type, status, idempotency_key, started_at)
+      VALUES (${companyId}, ${TEAM_ID}, 'team', 'running', ${`bootstrap-crew:${companyId}`}, now())
+    `);
     const before = await crewRows(companyId);
-    const result = await repairCompanyCrew(db, companyId, {
-      catalogItems: FIXTURE_CATALOG.items as CatalogItem[],
-      instructionsService,
-    });
 
-    expect(result.action).toBe("skipped");
-    // Nothing installed, nothing renamed, no team row: a visible unrepaired
-    // company beats a company with two parallel crews.
+    const result = await repairCompanyCrew(db, companyId, { catalogItems: CATALOG_ITEMS });
+
     expect(await crewRows(companyId)).toEqual(before);
     expect(await teamRowCount(companyId)).toBe(0);
-    expect(await operationRow(companyId)).toHaveLength(0);
-  }, 180_000);
+    expect(result).toMatchObject({ action: "skipped", reason: "install-in-flight" });
 
-  it("skips repair when the catalog has no crew team item", async () => {
+    // Discriminator: once that row is stale, the owner is presumed dead and
+    // repair proceeds — the guard is about liveness, not about "any running row".
+    await db.execute(sql`
+      UPDATE marketplace_install_operations SET started_at = now() - interval '30 minutes'
+      WHERE company_id = ${companyId}
+    `);
+    const second = await repairCompanyCrew(db, companyId, {
+      catalogItems: CATALOG_ITEMS,
+      force: true,
+    });
+    expect((await crewRows(companyId)).find((r) => r.name === "Scout")!.template_origin).toBe(
+      SCOUT_ID,
+    );
+    expect(second.action).toBe("adopted");
+  }, 240_000);
+
+  it("skips when the catalog has no crew team item", async () => {
     if (setupError) throw new Error(String(setupError));
     const companyId = await createLegacyCompany("No Team Item Co");
     await withCatalog();
 
     const result = await repairCompanyCrew(db, companyId, {
-      catalogItems: FIXTURE_CATALOG.items.filter((i) => i.id !== TEAM_ID) as CatalogItem[],
-      instructionsService,
+      catalogItems: CATALOG_ITEMS.filter((i) => i.id !== TEAM_ID),
     });
-    expect(result.action).toBe("skipped");
     expect(await teamRowCount(companyId)).toBe(0);
-  }, 180_000);
-
-  it("leaves a legacy row untouched and retryable when its agent template is unreachable", async () => {
-    if (setupError) throw new Error(String(setupError));
-    const companyId = await createLegacyCompany("Flaky Adopt Co");
-    await withCatalog();
-    brokenUrls.add(`${FIXTURE_HOST}/agents/aoa-scout/agent.json`);
-
-    const first = await repairCompanyCrew(db, companyId, {
-      catalogItems: FIXTURE_CATALOG.items as CatalogItem[],
-      instructionsService,
-    });
-    // Adoption is fetch-before-write, so a 503 leaves the row exactly as it was.
-    expect(first.action).toBe("skipped");
-    expect((await crewRows(companyId)).find((r) => r.name === "Scout")!.template_origin).toMatch(
-      /@legacy$/,
-    );
-    expect(await teamRowCount(companyId)).toBe(0);
-
-    // …and it is still repairable once the CDN comes back.
-    brokenUrls.clear();
-    const second = await repairCompanyCrew(db, companyId, {
-      catalogItems: FIXTURE_CATALOG.items as CatalogItem[],
-      instructionsService,
-    });
-    expect(second.action).toBe("adopted");
-    expect((await crewRows(companyId)).find((r) => r.name === "Scout")!.template_origin).toBe(SCOUT_ID);
-  }, 180_000);
+    expect(result).toMatchObject({ action: "skipped", reason: "team-item-not-in-catalog" });
+  }, 240_000);
 
   // ── The boot pass ─────────────────────────────────────────────────────────
-  it("the boot pass repairs degraded companies, capped per pass, healthy ones untouched", async () => {
+  it("repairs degraded companies, caps productive work, leaves healthy ones alone", async () => {
     if (setupError) throw new Error(String(setupError));
     const degradedA = await createLegacyCompany("Pass Co A");
     const degradedB = await createLegacyCompany("Pass Co B");
     await withCatalog();
     const healthy = await companyService(db).create({ name: "Pass Co Healthy" } as never);
     const healthyBefore = await crewRows(healthy.id);
-
-    const catalogItems = FIXTURE_CATALOG.items as CatalogItem[];
     const companyIds = [degradedA, degradedB, healthy.id];
-    const t0 = Date.now();
+
+    let clock = Date.now();
+    setCrewRepairClock(() => clock);
 
     const pass1 = await runCrewRepairPass({
-      db, companyIds, catalogItems, instructionsService, maxPerPass: 1, now: t0,
+      db, companyIds, catalogItems: CATALOG_ITEMS, maxPerPass: 1,
     });
+    // The rows first: exactly ONE of the two degraded companies moved, and it
+    // moved by adoption (no `-2` duplicate), not by a second install.
+    const movedAfterPass1 = [];
+    for (const id of [degradedA, degradedB]) {
+      const rows = await crewRows(id);
+      expect(rows.some((r) => /-\d$/.test(r.name))).toBe(false);
+      if (rows.find((r) => r.name === "Scout")!.template_origin === SCOUT_ID) movedAfterPass1.push(id);
+    }
+    expect(movedAfterPass1).toHaveLength(1);
     // Every company is diagnosed; the cap limits only what is REPAIRED.
-    expect(pass1.inspected).toBe(3);
-    expect(pass1.repaired).toBe(1);
-    expect(pass1.skipped).toBe(1); // the second degraded company, over budget
+    expect(pass1).toMatchObject({
+      inspected: 3,
+      repaired: 1,
+      skippedOverBudget: 1,
+      skippedCooldown: 0,
+      skippedFailClosed: 0,
+      failed: 0,
+    });
 
-    const verdictsAfterPass1 = await Promise.all(
-      [degradedA, degradedB].map(async (id) => (await diagnoseCrewProvisioning(db, id)).verdict),
-    );
-    // The cap held: exactly one of the two was taken this pass.
-    expect(verdictsAfterPass1.filter((v) => v === "healthy")).toHaveLength(1);
-    expect(verdictsAfterPass1.filter((v) => v === "unmanaged")).toHaveLength(1);
-
+    clock += CREW_REPAIR_COOLDOWN_MS + 1;
     const pass2 = await runCrewRepairPass({
-      db, companyIds, catalogItems, instructionsService, maxPerPass: 1,
-      now: t0 + CREW_REPAIR_COOLDOWN_MS + 1,
+      db, companyIds, catalogItems: CATALOG_ITEMS, maxPerPass: 1,
     });
     expect(pass2.repaired).toBe(1);
+
     for (const id of [degradedA, degradedB]) {
-      expect((await diagnoseCrewProvisioning(db, id)).verdict).toBe("healthy");
       // "healthy" is also reachable by installing a SECOND crew beside the
       // legacy one, so the verdict alone is not a discriminator — these are.
       const rows = await crewRows(id);
-      expect(rows.some((r) => /-2$/.test(r.name))).toBe(false);
+      expect(rows.some((r) => /-\d$/.test(r.name))).toBe(false);
       expect(rows.find((r) => r.name === "Scout")!.template_origin).toBe(SCOUT_ID);
       expect(await teamRowCount(id)).toBe(1);
+      expect((await diagnoseCrewProvisioning(db, id)).verdict).toBe("healthy");
     }
-    // A healthy company is diagnosed and then left completely alone.
     expect(await crewRows(healthy.id)).toEqual(healthyBefore);
-  }, 240_000);
+  }, 300_000);
+
+  it("a fail-closed company does not consume budget, so it cannot starve the queue", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const stubborn = await createLegacyCompany("Starver Co");
+    const repairable = await createLegacyCompany("Starved Co");
+    await withCatalog();
+
+    // `stubborn` is degraded and permanently unrepairable, for a reason local to
+    // it: its Scout is already managed under a DIFFERENT origin, which repair
+    // refuses to re-point. `repairable` is an ordinary legacy company.
+    await db.execute(sql`
+      UPDATE agents SET template_origin = 'agent:aoa-curated/some-other-agent',
+                        template_version = '1.0.0'
+      WHERE company_id = ${stubborn} AND name = 'Scout'
+    `);
+
+    // Budget 1, stubborn FIRST: if a fail-closed skip consumed the slot, the
+    // company behind it would never be reached — on every pass, forever.
+    const pass = await runCrewRepairPass({
+      db,
+      companyIds: [stubborn, repairable],
+      catalogItems: CATALOG_ITEMS,
+      maxPerPass: 1,
+    });
+
+    // `repairable` is behind `stubborn` in the list and still got repaired.
+    expect((await crewRows(repairable)).find((r) => r.name === "Scout")!.template_origin).toBe(
+      SCOUT_ID,
+    );
+    expect(pass).toMatchObject({
+      inspected: 2,
+      repaired: 1,
+      skippedFailClosed: 1,
+      skippedOverBudget: 0,
+    });
+  }, 300_000);
 
   it("the cooldown, not luck, is what stops a degraded company being retried every pass", async () => {
     if (setupError) throw new Error(String(setupError));
     const companyId = await createLegacyCompany("Cooldown Co");
     await withCatalog();
-    const catalogItems = FIXTURE_CATALOG.items as CatalogItem[];
-    const t0 = Date.now();
+    let clock = Date.now();
+    setCrewRepairClock(() => clock);
 
-    // Attempt 1 fails (agent template 503s) and leaves the company degraded.
-    brokenUrls.add(`${FIXTURE_HOST}/agents/aoa-scout/agent.json`);
-    const pass1 = await runCrewRepairPass({ db, companyIds: [companyId], catalogItems, instructionsService, now: t0 });
-    expect(pass1.skipped).toBe(1);
-    expect((await diagnoseCrewProvisioning(db, companyId)).verdict).toBe("unmanaged");
+    brokenUrls.add(`${FIXTURE_HOST}/teams/default-crew/team.json`);
+    const pass1 = await runCrewRepairPass({ db, companyIds: [companyId], catalogItems: CATALOG_ITEMS });
+    expect((await crewRows(companyId)).find((r) => r.name === "Scout")!.template_origin).toMatch(
+      /@legacy$/,
+    );
+    expect(pass1).toMatchObject({ skippedFailClosed: 1, skippedCooldown: 0 });
 
     // The CDN is healthy again — the ONLY thing standing between pass 2 and a
     // successful repair is the clock.
     brokenUrls.clear();
-    const pass2 = await runCrewRepairPass({
-      db, companyIds: [companyId], catalogItems, instructionsService,
-      now: t0 + CREW_REPAIR_COOLDOWN_MS - 1,
-    });
-    expect(pass2.skipped).toBe(1);
-    expect((await diagnoseCrewProvisioning(db, companyId)).verdict).toBe("unmanaged");
+    clock += CREW_REPAIR_COOLDOWN_MS - 1;
+    const pass2 = await runCrewRepairPass({ db, companyIds: [companyId], catalogItems: CATALOG_ITEMS });
+    expect((await crewRows(companyId)).find((r) => r.name === "Scout")!.template_origin).toMatch(
+      /@legacy$/,
+    );
+    expect(pass2).toMatchObject({ skippedCooldown: 1, repaired: 0 });
 
-    const pass3 = await runCrewRepairPass({
-      db, companyIds: [companyId], catalogItems, instructionsService,
-      now: t0 + CREW_REPAIR_COOLDOWN_MS + 1,
-    });
+    clock += 2;
+    const pass3 = await runCrewRepairPass({ db, companyIds: [companyId], catalogItems: CATALOG_ITEMS });
+    expect((await crewRows(companyId)).find((r) => r.name === "Scout")!.template_origin).toBe(
+      SCOUT_ID,
+    );
     expect(pass3.repaired).toBe(1);
-    expect((await diagnoseCrewProvisioning(db, companyId)).verdict).toBe("healthy");
+  }, 300_000);
+
+  it("does no work at all when the catalog lacks the crew team item", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const companyId = await createLegacyCompany("Stale Catalog Co");
+    const before = await crewRows(companyId);
+
+    // A cache row whose `items` is empty passes a "is there a catalog?" guard,
+    // after which a crewless company would provision off a catalog that never
+    // had the team and degrade straight back to legacy.
+    const pass = await runCrewRepairPass({ db, companyIds: [companyId], catalogItems: [] });
+
+    expect(await crewRows(companyId)).toEqual(before);
+    expect(pass).toMatchObject({ inspected: 0, repaired: 0, skippedFailClosed: 0 });
+  }, 240_000);
+
+  // ── The route ─────────────────────────────────────────────────────────────
+  it("POST /crew/repair: founder repairs, team_lead is refused, no catalog is 503", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const companyId = await createLegacyCompany("Route Co");
+    const app = makeApp();
+    const founderId = randomUUID();
+    const leadId = randomUUID();
+    await seedUserRole(companyId, founderId, "founder");
+    await seedUserRole(companyId, leadId, "team_lead");
+
+    // A team_lead must not be able to rewrite the crew's governance.
+    cdnReachable = true;
+    currentActor = boardActor(leadId, companyId);
+    const refused = await request(app)
+      .post(`/api/companies/${companyId}/marketplace/crew/repair`)
+      .send({});
+    expect((await crewRows(companyId)).find((r) => r.name === "Scout")!.template_origin).toMatch(
+      /@legacy$/,
+    );
+    expect(refused.status).toBe(403);
+
+    // No catalog: nothing to repair TOWARDS — distinct from "nothing to do".
+    cdnReachable = false;
+    currentActor = boardActor(founderId, companyId);
+    const noCatalog = await request(app)
+      .post(`/api/companies/${companyId}/marketplace/crew/repair`)
+      .send({});
+    expect(await teamRowCount(companyId)).toBe(0);
+    expect(noCatalog.status).toBe(503);
+
+    cdnReachable = true;
+    const ok = await request(app)
+      .post(`/api/companies/${companyId}/marketplace/crew/repair`)
+      .send({});
+    expect((await crewRows(companyId)).find((r) => r.name === "Scout")!.template_origin).toBe(
+      SCOUT_ID,
+    );
+    expect(ok.status).toBe(200);
+    expect(ok.body.result.action).toBe("adopted");
+    expect(ok.body.diagnosis.verdict).toBe("degraded");
+  }, 240_000);
+
+  it("POST /crew/repair shares the pass cooldown unless the founder forces it", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const companyId = await createLegacyCompany("Route Cooldown Co");
+    const app = makeApp();
+    const founderId = randomUUID();
+    await seedUserRole(companyId, founderId, "founder");
+    currentActor = boardActor(founderId, companyId);
+    cdnReachable = true;
+    setCrewRepairClock(() => Date.now());
+
+    // First call fails closed (team.json is down) and takes the cooldown.
+    brokenUrls.add(`${FIXTURE_HOST}/teams/default-crew/team.json`);
+    const first = await request(app)
+      .post(`/api/companies/${companyId}/marketplace/crew/repair`)
+      .send({});
+    expect((await crewRows(companyId)).find((r) => r.name === "Scout")!.template_origin).toMatch(
+      /@legacy$/,
+    );
+    expect(first.body.result.reason).toBe("team-template-unavailable");
+
+    // A founder in a retry loop must not drive unbounded fetches: the route
+    // shares the gate rather than bypassing it.
+    brokenUrls.clear();
+    const looped = await request(app)
+      .post(`/api/companies/${companyId}/marketplace/crew/repair`)
+      .send({});
+    expect((await crewRows(companyId)).find((r) => r.name === "Scout")!.template_origin).toMatch(
+      /@legacy$/,
+    );
+    expect(looped.body.result.reason).toBe("cooldown");
+
+    // …but an explicit operator override is honoured immediately.
+    const forced = await request(app)
+      .post(`/api/companies/${companyId}/marketplace/crew/repair`)
+      .send({ force: true });
+    expect((await crewRows(companyId)).find((r) => r.name === "Scout")!.template_origin).toBe(
+      SCOUT_ID,
+    );
+    expect(forced.body.result.action).toBe("adopted");
   }, 240_000);
 });
