@@ -2046,6 +2046,21 @@ export function companyPortabilityService(db: Db) {
         sourceManifest.company?.name ??
         sourceManifest.source?.companyName ??
         "Imported Company";
+      // T2.3 (R8): this is the SECOND caller of `companies.create`, so a
+      // bundle import into a new company ALSO marketplace-provisions the crew.
+      // That is deliberate, not incidental: an imported company must be as
+      // updateable as a created one, and skipping it would mint a second class
+      // of permanently-`@legacy` companies — exactly the state Phase 2 exists
+      // to eliminate.
+      //
+      // It is safe against the bundle's own agents: the crew is `kind='aoa'`
+      // and every import/export agent path is `kind='org'`
+      // (`agents.list()` defaults to org), so the two rosters never see each
+      // other and the name-match merge below cannot touch a crew row. Bundles
+      // carry no crew/team section at all (see KNOWN_SECTIONS).
+      //
+      // Latency is bounded by CREW_INSTALL_DEADLINE_MS + the catalog budget
+      // (~42s worst case); import is already a long-running operation.
       const created = await companies.create({
         name: companyName,
         description: include.company ? (sourceManifest.company?.description ?? null) : null,
@@ -2059,7 +2074,7 @@ export function companyPortabilityService(db: Db) {
         agentCompletionReviewGuardrail: include.company
           ? (sourceManifest.company?.agentCompletionReviewGuardrail ?? false)
           : false,
-      });
+      }, { requestedByUserId: actorUserId ?? null });
       await access.ensureMembership(created.id, "user", actorUserId ?? "board", "owner", "active");
       targetCompany = created;
       companyAction = "created";

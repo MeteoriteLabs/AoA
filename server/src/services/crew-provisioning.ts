@@ -18,6 +18,7 @@ import { ensureCrewAgents } from "./internal-agent/aoa-agents/crew-seeding.js";
 import {
   DEFAULT_CREW_TEAM_ITEM_ID,
   bootstrapCrewFromMarketplace,
+  crewTeamIsInstalled,
   type CrewBootstrapDeps,
   type CrewBootstrapResult,
 } from "./marketplace-install/crew-bootstrap.js";
@@ -98,6 +99,11 @@ export function describeLegacyCoverageGap(
 export type CrewProvisioningOutcome =
   | { mode: "marketplace"; operationId: string; teamId: string | null }
   | { mode: "marketplace-already-dispatched"; operationId: string }
+  /**
+   * The bootstrap reported failure, but the company IS marketplace-managed —
+   * the install committed and only its bookkeeping failed. Seeding was skipped.
+   */
+  | { mode: "marketplace-clobber-averted"; reason: string }
   | { mode: "legacy"; reason: string; unprovidedItemIds: string[] };
 
 /**
@@ -146,9 +152,12 @@ export async function provisionCompanyCrew(
     return { mode: "marketplace-already-dispatched", operationId: result.operationId };
   }
 
+  // R7: keep the three unavailability causes distinguishable. `no-service-registered`
+  // is a WIRING REGRESSION (nothing called registerMarketplaceCatalogService) and must
+  // not read like a CDN blip; `sync-cooldown` means a recent attempt already failed.
   const reason =
     result.status === "unavailable"
-      ? result.reason
+      ? (result.detail ? `${result.reason}:${result.detail}` : result.reason)
       : `install failed: ${result.reason}`;
   const gap = describeLegacyCoverageGap(result.catalog);
 
@@ -170,6 +179,42 @@ export async function provisionCompanyCrew(
           "This company will be stamped `…@legacy` and excluded from marketplace crew updates. " +
           "The legacy seeders cover every declared crew member.",
   );
+
+  // ── The last gate before we write legacy rows ────────────────────────────
+  //
+  // A `failed` bootstrap result does NOT prove nothing was installed.
+  // `dispatchInstall` can commit the team-body transaction, write `success`,
+  // and THEN throw — the success DB write can fail, or `publishLiveEvent` is a
+  // bare synchronous `EventEmitter.emit` (`live-events.ts`) so a throwing
+  // subscriber propagates. Either lands in dispatchInstall's own catch, which
+  // overwrites the terminal patch with `failure`.
+  //
+  // Seeding on top of that committed roster is silent and permanent:
+  // `seedCrewAgent` hits ON CONFLICT DO NOTHING on every name-overlapping role,
+  // takes the `!inserted` branch, and overwrites the MARKETPLACE rows'
+  // `runtimeConfig.aoa.toolAllowlist`, possibly their adapter, and their
+  // instruction bundle — while `templateOrigin`/`templateVersion` survive. The
+  // company then looks marketplace-managed at the current catalog version, so
+  // `crew-updater` will never repair it, and no duplicate rows are minted so
+  // nothing in the data reveals the damage.
+  //
+  // One indexed query closes the whole class rather than the two known
+  // triggers. It asks "did OUR team install commit?" (the `teams` row written
+  // in the same transaction as the agents) rather than the broad
+  // `isCrewMarketplaceManaged` predicate — that one also matches the
+  // infrastructure agents seeded moments earlier, so using it here would make
+  // a company skip its own crew the day any seeder starts stamping an origin.
+  if (await crewTeamIsInstalled(db, companyId)) {
+    logger.error(
+      { companyId, degradeReason: reason, teamItemId: DEFAULT_CREW_TEAM_ITEM_ID },
+      "crew bootstrap reported failure but the crew team IS installed — " +
+        "the install committed and its bookkeeping failed. SKIPPING the legacy seeders " +
+        "(running them would silently overwrite the marketplace crew's runtimeConfig, " +
+        "adapter and instructions while leaving templateOrigin intact, putting the rows " +
+        "beyond the reach of crew-updater).",
+    );
+    return { mode: "marketplace-clobber-averted", reason };
+  }
 
   await ensureCrewAgents(db, companyId);
   return { mode: "legacy", reason, unprovidedItemIds: gap.itemIds };

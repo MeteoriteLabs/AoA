@@ -9,7 +9,7 @@
  * constraint, since the unique index is unbounded — see schema for details).
  */
 
-import { eq, and, gt } from "drizzle-orm";
+import { eq, and, gt, inArray } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { marketplaceInstallOperations } from "@armyofagents/db";
 import type { CascadeStepResult } from "@armyofagents/db";
@@ -179,6 +179,36 @@ export async function updateOperation(
     .update(marketplaceInstallOperations)
     .set(patch)
     .where(eq(marketplaceInstallOperations.id, id));
+}
+
+/**
+ * Atomically take ownership of an operation for dispatch.
+ *
+ * `startInstallOperation` is a check-then-act on the idempotency key: two
+ * concurrent callers can both receive the same row while it is still `pending`
+ * (the loser's conflict-fetch in {@link createOperation} returns the winner's
+ * row before the winner has written `running`), so a status READ cannot decide
+ * ownership. This conditional UPDATE can: exactly one caller sees a row back.
+ *
+ * `failure` is claimable on purpose — a previously failed bootstrap means
+ * nobody owns the install and nothing was installed, so a repair pass must be
+ * able to retry it. `running`/`success`/`requested` are not: someone else owns
+ * it, or it is already done.
+ *
+ * @returns true if THIS caller now owns the dispatch.
+ */
+export async function claimOperationForDispatch(db: Db, id: string): Promise<boolean> {
+  const rows = await db
+    .update(marketplaceInstallOperations)
+    .set({ status: "running" })
+    .where(
+      and(
+        eq(marketplaceInstallOperations.id, id),
+        inArray(marketplaceInstallOperations.status, ["pending", "failure"]),
+      ),
+    )
+    .returning({ id: marketplaceInstallOperations.id });
+  return rows.length > 0;
 }
 
 /**

@@ -17,16 +17,19 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { bootstrapMock, ensureCrewAgentsMock, loggerErrorMock, loggerInfoMock } = vi.hoisted(() => ({
-  bootstrapMock: vi.fn(),
-  ensureCrewAgentsMock: vi.fn(async () => {}),
-  loggerErrorMock: vi.fn(),
-  loggerInfoMock: vi.fn(),
-}));
+const { bootstrapMock, ensureCrewAgentsMock, crewTeamInstalledMock, loggerErrorMock, loggerInfoMock } =
+  vi.hoisted(() => ({
+    bootstrapMock: vi.fn(),
+    ensureCrewAgentsMock: vi.fn(async () => {}),
+    crewTeamInstalledMock: vi.fn(async () => false),
+    loggerErrorMock: vi.fn(),
+    loggerInfoMock: vi.fn(),
+  }));
 
 vi.mock("../services/marketplace-install/crew-bootstrap.js", () => ({
   DEFAULT_CREW_TEAM_ITEM_ID: "team:aoa-curated/default-crew",
   bootstrapCrewFromMarketplace: bootstrapMock,
+  crewTeamIsInstalled: crewTeamInstalledMock,
 }));
 vi.mock("../services/internal-agent/aoa-agents/crew-seeding.js", () => ({
   ensureCrewAgents: ensureCrewAgentsMock,
@@ -70,6 +73,8 @@ function lastErrorLog() {
 beforeEach(() => {
   bootstrapMock.mockReset();
   ensureCrewAgentsMock.mockClear();
+  crewTeamInstalledMock.mockReset();
+  crewTeamInstalledMock.mockResolvedValue(false);
   loggerErrorMock.mockClear();
   loggerInfoMock.mockClear();
 });
@@ -169,18 +174,41 @@ describe("provisionCompanyCrew", () => {
   });
 
   it("no catalog at all → still degrades, still names the known gap", async () => {
-    bootstrapMock.mockResolvedValue({ status: "unavailable", reason: "no-catalog", catalog: null });
+    bootstrapMock.mockResolvedValue({
+      status: "unavailable",
+      reason: "no-catalog",
+      detail: "sync-unavailable",
+      catalog: null,
+    });
 
     const outcome = await provisionCompanyCrew(DB, "co-4");
 
     expect(outcome).toEqual({
       mode: "legacy",
-      reason: "no-catalog",
+      reason: "no-catalog:sync-unavailable",
       unprovidedItemIds: ["agent:aoa-curated/aoa-reviewer"],
     });
     const { context, message } = lastErrorLog();
     expect(message).toContain("agent:aoa-curated/aoa-reviewer");
     expect(context.unprovidedSource).toBe("last-known");
+  });
+
+  // R7: a missing registry is a WIRING regression, not an outage. If both
+  // collapse to the same `degradeReason` the log cannot tell them apart, and a
+  // regression that silently un-marketplaces every new company reads like a
+  // flaky CDN.
+  it("keeps the catalog-unavailability cause distinguishable in the degrade reason", async () => {
+    bootstrapMock.mockResolvedValue({
+      status: "unavailable",
+      reason: "no-catalog",
+      detail: "no-service-registered",
+      catalog: null,
+    });
+
+    const outcome = await provisionCompanyCrew(DB, "co-4b");
+
+    expect(outcome).toMatchObject({ mode: "legacy", reason: "no-catalog:no-service-registered" });
+    expect(lastErrorLog().context.degradeReason).toBe("no-catalog:no-service-registered");
   });
 
   // The bootstrap's docblock promises it never throws. Docblocks go stale;
@@ -193,6 +221,68 @@ describe("provisionCompanyCrew", () => {
     expect(outcome.mode).toBe("legacy");
     expect(ensureCrewAgentsMock).toHaveBeenCalledWith(DB, "co-5");
     expect(lastErrorLog().message).toContain("boom");
+  });
+
+  // ── R1: a SUCCESSFUL install whose bookkeeping failed ────────────────────
+  // dispatchInstall can commit the team-body txn, write `success`, and then
+  // throw (success DB write, or a throwing live-event subscriber), landing in
+  // its own catch which overwrites the terminal patch with `failure`. Seeding
+  // on top of that committed roster silently overwrites the marketplace rows'
+  // runtimeConfig/adapter/instructions while leaving templateOrigin intact —
+  // permanently, and invisibly, beyond crew-updater's reach.
+  it("does NOT seed over a crew that is actually installed, despite a `failed` result", async () => {
+    bootstrapMock.mockResolvedValue({
+      status: "failed",
+      reason: "live-event subscriber threw after the install committed",
+      operationId: "op-7",
+      catalog: catalogWithTeam(["agent:aoa-curated/aoa-scout"]),
+    });
+    crewTeamInstalledMock.mockResolvedValue(true);
+
+    const outcome = await provisionCompanyCrew(DB, "co-7");
+
+    expect(outcome).toEqual({
+      mode: "marketplace-clobber-averted",
+      reason: "install failed: live-event subscriber threw after the install committed",
+    });
+    expect(ensureCrewAgentsMock).not.toHaveBeenCalled();
+    expect(lastErrorLog().message).toMatch(/crew team IS installed/);
+  });
+
+  // Discriminator for the guard: it must not become a blanket skip. A genuine
+  // failure on a company that is NOT marketplace-managed still has to seed, or
+  // the fix would trade a silent clobber for a silent crewless company.
+  it("still seeds when the company is genuinely NOT marketplace-managed", async () => {
+    bootstrapMock.mockResolvedValue({
+      status: "failed",
+      reason: "Failed to fetch team template: HTTP 503",
+      operationId: "op-8",
+      catalog: catalogWithTeam(["agent:aoa-curated/aoa-scout"]),
+    });
+    crewTeamInstalledMock.mockResolvedValue(false);
+
+    const outcome = await provisionCompanyCrew(DB, "co-8");
+
+    expect(outcome.mode).toBe("legacy");
+    expect(ensureCrewAgentsMock).toHaveBeenCalledWith(DB, "co-8");
+  });
+
+  // The gate must be the LAST thing before the write, not a cached read from
+  // earlier: the install commits during the bootstrap call.
+  it("re-reads the marketplace gate AFTER the bootstrap, not before", async () => {
+    const order: string[] = [];
+    bootstrapMock.mockImplementation(async () => {
+      order.push("bootstrap");
+      return { status: "failed", reason: "boom", operationId: "op-9", catalog: null };
+    });
+    crewTeamInstalledMock.mockImplementation(async () => {
+      order.push("gate");
+      return true;
+    });
+
+    await provisionCompanyCrew(DB, "co-9");
+
+    expect(order).toEqual(["bootstrap", "gate"]);
   });
 
   // Idempotency: a concurrent/retried create finds the existing operation and

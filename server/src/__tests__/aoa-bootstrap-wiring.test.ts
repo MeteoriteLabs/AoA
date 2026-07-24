@@ -108,6 +108,10 @@ vi.mock("@armyofagents/db", () => {
     mcpClientConnections: t("mcp_client_connections"),
     workspaceOperations: t("workspace_operations"),
     workspaceRuntimeServices: t("workspace_runtime_services"),
+    // T2.3: crewTeamIsInstalled queries `teams`. Omitting it here made the
+    // guard's fail-closed catch fire on a TypeError and silently skip the crew
+    // — a harness artifact that looked exactly like the real bug.
+    teams: t("teams"),
   };
 });
 // memory-folders is invoked by createCompanyWithUniquePrefix (root-folder
@@ -187,9 +191,20 @@ function makeDb(opts: { managed?: boolean; stampsOriginOnSeed?: boolean } = {}) 
       }),
     }),
     select: () => ({
-      from: () => ({
+      // The table matters now: `isCrewMarketplaceManaged` queries `agents`,
+      // while T2.3's `crewTeamIsInstalled` queries `teams`. A table-blind stub
+      // would answer "a crew team exists" to the agents predicate and vice
+      // versa, which is precisely the conflation the guard must not make.
+      from: (table: unknown) => ({
         where: () => ({
           limit: () => {
+            const isAgentsQuery = String(
+              (table as Record<string, unknown> | undefined)?.__tableName ?? "",
+            ).includes("agents");
+            if (!isAgentsQuery) {
+              // No crew team was ever installed in these mocked scenarios.
+              return Promise.resolve([]);
+            }
             const selfInflicted =
               opts.stampsOriginOnSeed === true && seedCalls.includes("commander");
             return Promise.resolve(
@@ -271,6 +286,11 @@ describe("A9.1 — Commander-Team seeds wired into createCompanyWithUniquePrefix
 
     expect(seedCalls).toContain("commander");
     // The whole point: the crew still seeds despite the self-inflicted match.
+    // T2.3 added a SECOND way to fail this — the degrade-path guard that stops
+    // the legacy seeders clobbering a committed marketplace install. If that
+    // guard asks "is any aoa agent marketplace-managed?" instead of "did the
+    // crew TEAM install commit?", the stamped Commander answers yes and the
+    // company skips its own crew. It must ask the narrow question.
     expect(seedCalls).toContain("scout");
     expect(seedCalls.slice().sort()).toEqual(
       ["adjutant", "chronicler", "commander", "config", "engineer", "librarian", "scout", "staff", "steward"],

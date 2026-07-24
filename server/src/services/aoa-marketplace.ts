@@ -45,6 +45,18 @@ const SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6h, M.4 makes this configurable
  */
 export const CATALOG_AVAILABILITY_TIMEOUT_MS = 12_000;
 
+/**
+ * After a sync attempt produces no catalog, `ensureCatalogAvailable` short-circuits
+ * to cache-only for this long (R4 — negative caching).
+ *
+ * Without it, an instance with an empty cache, an unreachable CDN, and no bundled
+ * snapshot (any image built without `pnpm fetch-catalog` — the file is gitignored)
+ * never fills the cache, so EVERY company create starts a fresh 30s-timeout fetch
+ * and burns the full availability budget. The cooldown makes the second and
+ * subsequent creates degrade instantly instead.
+ */
+export const CATALOG_SYNC_FAILURE_COOLDOWN_MS = 60_000;
+
 interface MarketplaceCatalogServiceDeps {
   db: Db;
   cdnUrl?: string;
@@ -82,12 +94,29 @@ export async function loadCachedCatalog(db: Db): Promise<MarketplaceCatalogFile 
   return parsed.data;
 }
 
+/**
+ * Why catalog resolution produced nothing. Each reason is a DIFFERENT
+ * operational story and must stay distinguishable in the degrade log (R7):
+ * `no-service-registered` is a wiring regression, the others are outages.
+ */
+export type CatalogUnavailableReason =
+  | "no-service-registered"
+  | "sync-cooldown"
+  | "sync-unavailable"
+  | "cache-read-error";
+
+export type CatalogAvailability =
+  | { status: "ok"; catalog: MarketplaceCatalogFile; source: "cache" | "sync" }
+  | { status: "unavailable"; reason: CatalogUnavailableReason };
+
 export class MarketplaceCatalogService {
   private readonly db: Db;
   private readonly cdnUrl: string;
   private readonly bundledSnapshotProvider: () => Promise<MarketplaceCatalogFile | null>;
   private syncTimer: NodeJS.Timeout | null = null;
   private inFlightSync: Promise<MarketplaceCatalogFile | null> | null = null;
+  /** Epoch ms of the last sync attempt that produced no catalog (R4 backoff). */
+  private lastSyncFailureAt: number | null = null;
 
   constructor(deps: MarketplaceCatalogServiceDeps) {
     this.db = deps.db;
@@ -120,10 +149,17 @@ export class MarketplaceCatalogService {
    */
   private runDedupedSync(): Promise<MarketplaceCatalogFile | null> {
     if (this.inFlightSync) return this.inFlightSync;
-    const started = this.sync().catch((err) => {
-      logger.error({ err }, "marketplace: catalog sync failed");
-      return null;
-    });
+    const started = this.sync()
+      .catch((err) => {
+        logger.error({ err }, "marketplace: catalog sync failed");
+        return null;
+      })
+      .then((result) => {
+        // R4: "no catalog produced" is the condition worth backing off from —
+        // a CDN failure that still resolved from cache/snapshot is a success.
+        this.lastSyncFailureAt = result ? null : Date.now();
+        return result;
+      });
     this.inFlightSync = started;
     void started.finally(() => {
       if (this.inFlightSync === started) this.inFlightSync = null;
@@ -144,9 +180,19 @@ export class MarketplaceCatalogService {
    */
   async ensureCatalogAvailable(
     timeoutMs: number = CATALOG_AVAILABILITY_TIMEOUT_MS,
-  ): Promise<MarketplaceCatalogFile | null> {
+  ): Promise<CatalogAvailability> {
+    // This IS the cold-path cache read — callers must not pre-read (R10).
     const cached = await this.readCache();
-    if (cached) return cached;
+    if (cached) return { status: "ok", catalog: cached, source: "cache" };
+
+    // R4: a recent failed attempt means the next create would pay the full
+    // budget for the same doomed fetch. Degrade immediately instead.
+    if (
+      this.lastSyncFailureAt !== null &&
+      Date.now() - this.lastSyncFailureAt < CATALOG_SYNC_FAILURE_COOLDOWN_MS
+    ) {
+      return { status: "unavailable", reason: "sync-cooldown" };
+    }
 
     let timer: NodeJS.Timeout | undefined;
     const budget = new Promise<null>((resolve) => {
@@ -154,7 +200,9 @@ export class MarketplaceCatalogService {
       timer.unref?.();
     });
     try {
-      return await Promise.race([this.runDedupedSync(), budget]);
+      const synced = await Promise.race([this.runDedupedSync(), budget]);
+      if (synced) return { status: "ok", catalog: synced, source: "sync" };
+      return { status: "unavailable", reason: "sync-unavailable" };
     } finally {
       if (timer) clearTimeout(timer);
     }
@@ -198,31 +246,14 @@ export class MarketplaceCatalogService {
     }
   }
 
-  /** Read the current cached catalog (or null if none). */
+  /**
+   * Read the current cached catalog (or null if none).
+   *
+   * Delegates to {@link loadCachedCatalog} — same query, same Zod validation.
+   * They were duplicated and ran back-to-back on the cold bootstrap path (R10).
+   */
   async readCache(): Promise<MarketplaceCatalogFile | null> {
-    const rows = await this.db
-      .select()
-      .from(marketplaceCatalogCache)
-      .where(eq(marketplaceCatalogCache.id, 1))
-      .limit(1);
-    if (rows.length === 0) return null;
-    const row = rows[0];
-
-    // Validate the cached JSON before returning.
-    // Schema drift / corruption between writes (older app version) would otherwise
-    // serve unvalidated JSONB to API clients in M.1.K.
-    const candidate = {
-      schemaVersion: row.schemaVersion,
-      generatedAt: row.generatedAt.toISOString(),
-      itemCount: row.itemCount,
-      items: (row.catalogJson as { items?: unknown }).items ?? [],
-    };
-    const parsed = MarketplaceCatalogFileSchema.safeParse(candidate);
-    if (!parsed.success) {
-      logger.warn({ err: parsed.error }, "marketplace: cached catalog failed schema validation");
-      return null;
-    }
-    return parsed.data;
+    return loadCachedCatalog(this.db);
   }
 
   /**
@@ -324,8 +355,23 @@ export class MarketplaceCatalogService {
 
 let activeCatalogService: MarketplaceCatalogService | null = null;
 
-/** Register the process-wide catalog service (app.ts on boot). Pass `null` to clear. */
+/**
+ * Register the process-wide catalog service (app.ts on boot). Pass `null` to clear.
+ *
+ * ⚠️ **Last-writer-wins.** Two `createApp` calls in one process (multi-app
+ * tests) would otherwise leave the first instance's 6-hourly `setInterval`
+ * running against a DB it no longer owns while the registry points at the
+ * second — so registering a DIFFERENT service stops the displaced one's sync
+ * loop here. That is the only teardown: a service constructed outside
+ * `createApp` and never registered still owns its own lifecycle.
+ *
+ * Vitest's per-file isolation means no cross-test leak has ever been observed;
+ * this is a latent hazard, closed cheaply rather than left named.
+ */
 export function registerMarketplaceCatalogService(service: MarketplaceCatalogService | null): void {
+  if (activeCatalogService && activeCatalogService !== service) {
+    activeCatalogService.stopSyncLoop();
+  }
   activeCatalogService = service;
 }
 
@@ -333,39 +379,38 @@ export function getMarketplaceCatalogService(): MarketplaceCatalogService | null
   return activeCatalogService;
 }
 
-export interface ResolvedBootstrapCatalog {
-  catalog: MarketplaceCatalogFile;
-  /** Where it came from — `cache` = already synced, `sync` = we waited for one. */
-  source: "cache" | "sync";
-}
-
 /**
  * Resolve a catalog for the company-create crew bootstrap:
  * cached catalog → (if a service is registered) a bounded wait on the live
- * sync, which itself falls back to the bundled snapshot → `null`.
+ * sync, which itself falls back to the bundled snapshot → unavailable.
  *
- * `null` means "no catalog within budget" and the caller must degrade to the
- * legacy seeders. It never throws: a marketplace outage cannot break onboarding.
+ * Never throws: a marketplace outage cannot break onboarding. An `unavailable`
+ * result carries WHY, so a wiring regression (`no-service-registered`) is not
+ * mistaken for a CDN blip in the logs (R7).
  */
 export async function resolveCatalogForBootstrap(
   db: Db,
   timeoutMs: number = CATALOG_AVAILABILITY_TIMEOUT_MS,
-): Promise<ResolvedBootstrapCatalog | null> {
+): Promise<CatalogAvailability> {
+  const service = activeCatalogService;
+
+  // With a service registered, ensureCatalogAvailable performs the cache read
+  // itself — pre-reading here would run the same query + Zod parse twice (R10).
+  if (service) {
+    try {
+      return await service.ensureCatalogAvailable(timeoutMs);
+    } catch (err) {
+      logger.warn({ err }, "marketplace: catalog availability wait failed during crew bootstrap");
+      return { status: "unavailable", reason: "sync-unavailable" };
+    }
+  }
+
   try {
     const cached = await loadCachedCatalog(db);
-    if (cached) return { catalog: cached, source: "cache" };
+    if (cached) return { status: "ok", catalog: cached, source: "cache" };
   } catch (err) {
     logger.warn({ err }, "marketplace: cached catalog read failed during crew bootstrap");
+    return { status: "unavailable", reason: "cache-read-error" };
   }
-
-  const service = activeCatalogService;
-  if (!service) return null;
-
-  try {
-    const synced = await service.ensureCatalogAvailable(timeoutMs);
-    return synced ? { catalog: synced, source: "sync" } : null;
-  } catch (err) {
-    logger.warn({ err }, "marketplace: catalog availability wait failed during crew bootstrap");
-    return null;
-  }
+  return { status: "unavailable", reason: "no-service-registered" };
 }

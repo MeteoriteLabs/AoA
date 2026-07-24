@@ -31,6 +31,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { applyPendingMigrations, createDb, type Db } from "@armyofagents/db";
 import type { MarketplaceCatalogFile } from "@armyofagents/shared";
@@ -72,6 +73,13 @@ const TEAM_ID = "team:aoa-curated/default-crew";
 const SCOUT_ID = "agent:aoa-curated/aoa-scout";
 const REVIEWER_ID = "agent:aoa-curated/aoa-reviewer";
 const SKILL_ID = "skill:aoa-curated/fixture-crew-skill";
+
+/** `companies.issue_prefix` is globally unique, so raw inserts need distinct values. */
+let seedCounter = 0;
+function nextIssuePrefix(): string {
+  seedCounter += 1;
+  return `CB${seedCounter}`;
+}
 
 function rowsOf<T>(result: unknown): T[] {
   const asObj = result as { rows?: T[] };
@@ -165,16 +173,36 @@ const FIXTURE_BODIES: Record<string, string> = {
 let realFetch: typeof globalThis.fetch;
 /** URLs the fixture server should 503 on — used to force a mid-install failure. */
 const brokenUrls = new Set<string>();
+/** URLs that never resolve — used to prove the aggregate deadline aborts them. */
+const stalledUrls = new Set<string>();
+/** Whether the fixture CDN answers. Default unreachable; one test flips it. */
+let cdnReachable = false;
+/** Every URL the fixture server was asked for, in order. Deterministic — no wall clock. */
+const fetchLog: string[] = [];
 
 function installFixtureFetch() {
   realFetch = globalThis.fetch;
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : String(input);
+    fetchLog.push(url);
     if (url === FIXTURE_CDN_URL) {
-      throw new TypeError("fetch failed (simulated: CDN unreachable)");
+      if (!cdnReachable) throw new TypeError("fetch failed (simulated: CDN unreachable)");
+      return new Response(JSON.stringify(FIXTURE_CATALOG), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
     }
     if (brokenUrls.has(url)) {
       return new Response("upstream unavailable", { status: 503 });
+    }
+    if (stalledUrls.has(url)) {
+      // Never resolves on its own. Rejects only when the caller's signal fires,
+      // which is precisely the behaviour under test.
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () =>
+          reject(new Error("The operation was aborted.")),
+        );
+      });
     }
     const body = FIXTURE_BODIES[url];
     if (body === undefined) {
@@ -243,6 +271,9 @@ beforeAll(async () => {
 afterEach(() => {
   registerMarketplaceCatalogService(null);
   brokenUrls.clear();
+  stalledUrls.clear();
+  cdnReachable = false;
+  fetchLog.length = 0;
 });
 
 afterAll(async () => {
@@ -284,10 +315,13 @@ describe.skipIf(
     if (setupError) throw new Error(String(setupError));
     await clearCatalogCache();
 
-    const service = makeService({ snapshot: FIXTURE_CATALOG });
-    // Warm cache via the CDN-failed → snapshot path, fully awaited.
+    // R9: this is the one test where the CDN genuinely ANSWERS — every other
+    // path here is CDN-unreachable, so without it the happy path was untested.
+    cdnReachable = true;
+    const service = makeService({ snapshot: null });
     await service.sync();
     registerMarketplaceCatalogService(service);
+    expect(await catalogCacheSource()).toBe("cdn");
 
     const company = await companyService(db).create({ name: "Marketplace Crew Co" } as never);
     const crew = await crewRows(company.id);
@@ -410,7 +444,10 @@ describe.skipIf(
     expect(crew.some((r) => r.name === "Adjutant")).toBe(true);
     // …and it is legacy: the seeders write no templateOrigin at all.
     expect(crew.find((r) => r.name === "Scout")!.template_origin).toBeNull();
-    // No marketplace rows leaked through a partial install (phase 3 is atomic).
+    // No marketplace rows exist: the break is at team-installer phase 1c (the
+    // team.json fetch), before ANY write — so this asserts "failed before it
+    // started", NOT phase-3 transactional rollback. Post-commit failure is a
+    // different animal and is covered by its own test below.
     expect(crew.some((r) => r.template_origin?.startsWith("agent:aoa-curated/"))).toBe(false);
     // …and the legacy roster genuinely lacks Reviewer — the gap the degrade log
     // has to name, because nothing in the data reveals it.
@@ -424,6 +461,113 @@ describe.skipIf(
     expect(ops).toHaveLength(1);
     expect(ops[0].status).toBe("failure");
     expect(ops[0].error_message).toMatch(/503/);
+  }, 120_000);
+
+  // ── R1: a SUCCESSFUL install whose success FAILS TO RECORD ────────────────
+  // `dispatchInstall` commits the team-body transaction, writes `success`, then
+  // publishes `marketplace.install.completed`. `publishLiveEvent` is a bare
+  // synchronous `EventEmitter.emit` with no guard, so a throwing subscriber
+  // propagates INTO dispatchInstall's catch, which overwrites the terminal
+  // patch with `failure`. The bootstrap then reports `failed` over a crew that
+  // is committed on disk.
+  //
+  // Seeding on top of it is silent and permanent: `seedCrewAgent` hits
+  // ON CONFLICT DO NOTHING on the name-overlapping roles, takes the `!inserted`
+  // branch, and overwrites the MARKETPLACE rows' runtimeConfig.aoa.toolAllowlist
+  // (and adapter, and instruction bundle) while leaving templateOrigin and
+  // templateVersion intact — so `crew-updater` sees managed rows at the current
+  // catalog version and never repairs them, and no duplicate row is minted to
+  // reveal it.
+  //
+  // This test breaks AFTER the phase-3 commit, which the degrade test above
+  // (phase 1c) cannot reach.
+  it("a post-commit failure must NOT let the legacy seeders clobber the installed crew", async () => {
+    if (setupError) throw new Error(String(setupError));
+    await clearCatalogCache();
+
+    const service = makeService({ snapshot: FIXTURE_CATALOG });
+    await service.sync();
+    registerMarketplaceCatalogService(service);
+
+    // A bare company row — no crew — so provisionCompanyCrew runs on a clean
+    // slate exactly as it does inside create().
+    const companyId = randomUUID();
+    await db.execute(sql`
+      INSERT INTO companies (id, name, issue_prefix) VALUES (${companyId}, 'Post Commit Co', ${nextIssuePrefix()})
+    `);
+
+    const outcome = await provisionCompanyCrew(db, companyId, {
+      publishLiveEvent: (event) => {
+        if (event.type === "marketplace.install.completed") {
+          throw new Error("live-event subscriber threw after the install committed");
+        }
+      },
+    });
+
+    // The install DID commit.
+    const crew = await crewRows(companyId);
+    const marketplaceCrew = crew.filter((r) => r.template_origin?.startsWith("agent:aoa-curated/"));
+    expect(marketplaceCrew.map((r) => r.name).sort()).toEqual(["Reviewer", "Scout"]);
+
+    // …and the legacy seeders did NOT run over it. The DAMAGE is asserted first
+    // and the outcome mode last, deliberately: a mode string is a proxy, the
+    // clobbered row is the bug.
+    //
+    // (a) the clobber itself — seedCrewAgent's !inserted branch writes the
+    //     legacy tool allowlist onto the marketplace row it collided with.
+    const scoutRuntime = rowsOf<{ allowlist: string | null }>(
+      await db.execute(sql`
+        SELECT runtime_config -> 'aoa' ->> 'toolAllowlist' AS allowlist
+        FROM agents WHERE company_id = ${companyId} AND name = 'Scout'
+      `),
+    );
+    expect(scoutRuntime).toHaveLength(1);
+    expect(scoutRuntime[0].allowlist).toBeNull();
+    // (b) the non-colliding legacy roles were never inserted alongside.
+    expect(crew.some((r) => r.name === "Adjutant")).toBe(false);
+    expect(crew.some((r) => r.name === "Librarian")).toBe(false);
+    // (c) the marketplace rows keep the origin/version that make them
+    //     updateable — the property the clobber leaves intact and therefore
+    //     the reason the damage is unrepairable.
+    for (const row of marketplaceCrew) {
+      expect(row.template_version).toBe("1.0.0");
+    }
+    expect(outcome.mode).toBe("marketplace-clobber-averted");
+  }, 120_000);
+
+  // ── R2: the install is bounded ────────────────────────────────────────────
+  // 27 sequential fetches at FETCH_TIMEOUT_MS each is ~13.5 minutes inside an
+  // interactive POST. The aggregate deadline aborts in-flight requests rather
+  // than merely abandoning their results — which matters, because an install
+  // that landed after we degraded would be exactly the R1 clobber again.
+  it("an install that outruns its deadline is aborted, not left running", async () => {
+    if (setupError) throw new Error(String(setupError));
+    await clearCatalogCache();
+
+    const service = makeService({ snapshot: FIXTURE_CATALOG });
+    await service.sync();
+    registerMarketplaceCatalogService(service);
+    stalledUrls.add(`${FIXTURE_HOST}/teams/default-crew/team.json`);
+
+    const companyId = randomUUID();
+    await db.execute(sql`
+      INSERT INTO companies (id, name, issue_prefix) VALUES (${companyId}, 'Deadline Co', ${nextIssuePrefix()})
+    `);
+
+    const startedAt = Date.now();
+    const outcome = await provisionCompanyCrew(db, companyId, { installDeadlineMs: 250 });
+    const elapsed = Date.now() - startedAt;
+
+    expect(outcome.mode).toBe("legacy");
+    // Bounded by the deadline, NOT by the 30s per-request FETCH_TIMEOUT_MS.
+    // The margin is deliberately huge (250ms budget vs a 30s request) so this
+    // is not a wall-clock coin flip on a loaded runner.
+    expect(elapsed).toBeLessThan(15_000);
+
+    // The company still got a crew, and nothing marketplace-shaped committed.
+    const crew = await crewRows(companyId);
+    expect(crew.some((r) => r.name === "Adjutant")).toBe(true);
+    expect(crew.some((r) => r.template_origin?.startsWith("agent:aoa-curated/"))).toBe(false);
   }, 120_000);
 
   // ── Idempotency ───────────────────────────────────────────────────────────
@@ -472,9 +616,7 @@ describe.skipIf(
     await clearCatalogCache();
     registerMarketplaceCatalogService(null);
 
-    const startedAt = Date.now();
     const company = await companyService(db).create({ name: "No Service Co" } as never);
-    const elapsed = Date.now() - startedAt;
 
     const crew = await crewRows(company.id);
     expect(crew.some((r) => r.name === "Adjutant")).toBe(true);
@@ -486,7 +628,8 @@ describe.skipIf(
       `),
     );
     expect(ops[0].n).toBe("0");
-    // No 12s catalog wait was incurred.
-    expect(elapsed).toBeLessThan(10_000);
+    // No catalog wait was incurred — asserted by "the CDN was never contacted"
+    // rather than by a wall clock, which on a loaded runner is a coin flip.
+    expect(fetchLog).toEqual([]);
   }, 120_000);
 });

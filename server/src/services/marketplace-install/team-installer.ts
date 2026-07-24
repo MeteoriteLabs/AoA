@@ -22,6 +22,50 @@ export interface InstallTeamOpts {
   targetDepartmentId?: string | null;
   db: Db;
   installPlugin: PluginInstallerFn;    // injected to break circular dep
+  /**
+   * Caller deadline for the whole install. Every resource fetch is chained to
+   * it, and it is re-checked before each phase, so an install cannot outrun the
+   * caller's budget. Absent = unbounded (the existing 202-accepted route path).
+   */
+  signal?: AbortSignal;
+  /**
+   * How many resource fetches to run at once during pre-flight. Defaults to 1
+   * (sequential — the historical behaviour) so the public install route is
+   * unchanged; the company-create bootstrap opts up, because it is the caller
+   * that pays the latency synchronously.
+   */
+  fetchConcurrency?: number;
+}
+
+/**
+ * Run `worker` over `items` with at most `limit` in flight. Rejects with the
+ * first error (remaining in-flight requests are left to settle and ignored;
+ * the caller's abort signal is what actually stops them).
+ */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  worker: (item: T) => Promise<R>,
+): Promise<R[]> {
+  if (items.length === 0) return [];
+  const width = Math.max(1, Math.min(limit, items.length));
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  async function run(): Promise<void> {
+    for (;;) {
+      const index = cursor++;
+      if (index >= items.length) return;
+      results[index] = await worker(items[index]);
+    }
+  }
+  await Promise.all(Array.from({ length: width }, run));
+  return results;
+}
+
+function assertNotAborted(signal: AbortSignal | undefined, phase: string): void {
+  if (signal?.aborted) {
+    throw new Error(`Team install exceeded its deadline before ${phase}`);
+  }
 }
 
 export type PluginInstallerFn = (opts: {
@@ -68,7 +112,8 @@ interface TeamTemplateBody {
  * @throws Error from any phase. Plugins from phase 2 remain on phase 3 failure.
  */
 export async function installTeam(opts: InstallTeamOpts): Promise<InstallTeamResult> {
-  const { catalogItem, catalog, companyId, targetDepartmentId, db, installPlugin } = opts;
+  const { catalogItem, catalog, companyId, targetDepartmentId, db, installPlugin, signal } = opts;
+  const fetchConcurrency = opts.fetchConcurrency ?? 1;
 
   if (catalogItem.type !== "team") {
     throw new Error(`installTeam called with non-team item: ${catalogItem.id}`);
@@ -106,7 +151,10 @@ export async function installTeam(opts: InstallTeamOpts): Promise<InstallTeamRes
   }
 
   // 1c: Fetch team.json
-  const teamBody = JSON.parse(await fetchCatalogResource(catalogItem, "team template")) as TeamTemplateBody;
+  assertNotAborted(signal, "the team template fetch");
+  const teamBody = JSON.parse(
+    await fetchCatalogResource(catalogItem, "team template", signal),
+  ) as TeamTemplateBody;
 
   // 1d: Pre-fetch + normalize all agent.json bodies (fail fast).
   // Uses parseMarketplaceAgentTemplate + normalizeMarketplaceAgentTemplate so
@@ -117,8 +165,9 @@ export async function installTeam(opts: InstallTeamOpts): Promise<InstallTeamRes
     .map((r) => itemsById.get(r.id)!)
     .filter(Boolean);
   const normalizedAgentTemplates = new Map<string, NormalizedMarketplaceAgentTemplate>();
-  for (const a of requiredAgentItems) {
-    const text = await fetchCatalogResource(a, "agent template");
+  assertNotAborted(signal, "the agent template fetches");
+  const normalizedPairs = await mapWithConcurrency(requiredAgentItems, fetchConcurrency, async (a) => {
+    const text = await fetchCatalogResource(a, "agent template", signal);
     const parsed = parseMarketplaceAgentTemplate(text, a);
     // availableAdapterTypes=[] — team-installer has no adapter registry context;
     // the check is skipped when the list is empty (see normalizeMarketplaceAgentTemplate).
@@ -127,7 +176,10 @@ export async function installTeam(opts: InstallTeamOpts): Promise<InstallTeamRes
       catalogItem: a,
       availableAdapterTypes: [],
     });
-    normalizedAgentTemplates.set(a.id, normalized);
+    return [a.id, normalized] as const;
+  });
+  for (const [id, normalized] of normalizedPairs) {
+    normalizedAgentTemplates.set(id, normalized);
   }
 
   // 1e: Pre-fetch skill content (uses inline if available, else helper)
@@ -136,8 +188,13 @@ export async function installTeam(opts: InstallTeamOpts): Promise<InstallTeamRes
     .map((r) => itemsById.get(r.id)!)
     .filter(Boolean);
   const skillContents = new Map<string, string>();
-  for (const s of requiredSkillItems) {
-    skillContents.set(s.id, s.content?.inline ?? await fetchCatalogResource(s, "skill content"));
+  assertNotAborted(signal, "the skill content fetches");
+  const skillPairs = await mapWithConcurrency(requiredSkillItems, fetchConcurrency, async (item) => {
+    const content = item.content?.inline ?? await fetchCatalogResource(item, "skill content", signal);
+    return [item.id, content] as const;
+  });
+  for (const [id, content] of skillPairs) {
+    skillContents.set(id, content);
   }
 
   cascadeResults.push({
@@ -177,6 +234,10 @@ export async function installTeam(opts: InstallTeamOpts): Promise<InstallTeamRes
   }
 
   // ====== Phase 3: Atomic team body (single Postgres txn) ======
+  // Last deadline check. Past this point the work is local DB writes inside one
+  // transaction — fast, and aborting midway would only mean a rollback, so the
+  // check belongs here rather than inside.
+  assertNotAborted(signal, "the team-body transaction");
   const phase3Start = Date.now();
   const teamRow = await db.transaction(async (tx) => {
     // Insert skills — idempotent: skip if the skill is already installed
