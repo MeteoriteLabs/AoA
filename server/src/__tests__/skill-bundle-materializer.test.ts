@@ -7,6 +7,8 @@ import { execFile } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import type { MarketplaceSkillBundle } from "@armyofagents/shared";
 import {
+  createBundleCheckoutCache,
+  disposeBundleCheckoutCache,
   materializeSkillBundle,
   repoUrlForBundle,
 } from "../services/marketplace-install/skill-bundle-materializer.js";
@@ -134,6 +136,73 @@ describe("materializeSkillBundle", () => {
       overwrite: true,
     });
     expect(existsSync(path.join(destination, "old.txt"))).toBe(false);
+  });
+
+  // ── The caller's deadline actually reaches `git` ──────────────────────────
+  // `installTeam` → `installSkill` → here → `execFile`. Every docblock in that
+  // chain claims an abort kills a running clone; nothing asserted it, at any
+  // level, until this.
+  it("rejects when the caller's signal is already aborted, without cloning", async () => {
+    const { repo, commitSha } = await createRepo({ "SKILL.md": "# Skill\n" });
+    const destination = path.join(await tempDir("bundle-abort-"), "out");
+
+    await expect(
+      materializeSkillBundle(makeBundle({ commitSha, path: "." }), {
+        destination,
+        unsafeTestRepoUrl: repo,
+        signal: AbortSignal.abort(),
+      }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+
+    // The real failure surfaced — cleanup did not throw over it (C4) — and no
+    // half-materialized destination was left behind.
+    expect(existsSync(path.join(destination, "SKILL.md"))).toBe(false);
+  });
+
+  // ── The per-install clone cache ───────────────────────────────────────────
+  // A `--no-checkout` clone still downloads the whole object database, and a
+  // team's bundles cluster on a few repos (17 bundles / 4 repos for the
+  // published crew), so without this most clones are byte-for-byte redundant.
+  it("clones a repo once per install when a checkout cache is shared", async () => {
+    const { repo, commitSha } = await createRepo({
+      "skills/a/SKILL.md": "# A\n",
+      "skills/b/SKILL.md": "# B\n",
+    });
+    const root = await tempDir("bundle-cache-");
+    const cache = createBundleCheckoutCache();
+    let sharedCheckoutDir = "";
+
+    try {
+      // Concurrent on purpose: two bundles from one repo starting at the same
+      // moment is the exact shape the bootstrap produces, and a cache that only
+      // works sequentially would not help there.
+      const [a, b] = await Promise.all([
+        materializeSkillBundle(makeBundle({ commitSha, path: "skills/a" }), {
+          destination: path.join(root, "a"), unsafeTestRepoUrl: repo, checkoutCache: cache,
+        }),
+        materializeSkillBundle(makeBundle({ commitSha, path: "skills/b" }), {
+          destination: path.join(root, "b"), unsafeTestRepoUrl: repo, checkoutCache: cache,
+        }),
+      ]);
+
+      // ONE clone…
+      expect(cache.size).toBe(1);
+      sharedCheckoutDir = (await [...cache.values()][0]).checkoutDir;
+      expect(existsSync(sharedCheckoutDir)).toBe(true);
+      // …and each bundle still gets its own destination written out of it.
+      // Sharing the checkout must not make the two destinations converge.
+      expect(normalizeNewlines(a.markdown)).toBe("# A\n");
+      expect(normalizeNewlines(b.markdown)).toBe("# B\n");
+      expect(existsSync(path.join(root, "a", "SKILL.md"))).toBe(true);
+      expect(existsSync(path.join(root, "b", "SKILL.md"))).toBe(true);
+    } finally {
+      await disposeBundleCheckoutCache(cache);
+    }
+
+    // Disposal is the other half: a per-install cache that never frees its temp
+    // trees is a disk leak, which is why it is not module-global.
+    expect(cache.size).toBe(0);
+    expect(existsSync(sharedCheckoutDir)).toBe(false);
   });
 
   it("skips symlinks while copying", async () => {

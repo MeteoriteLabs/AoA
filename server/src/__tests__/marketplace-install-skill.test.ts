@@ -22,6 +22,7 @@ vi.mock("../services/marketplace-install/skill-bundle-materializer.js", async ()
 });
 
 import { installSkill } from "../services/marketplace-install/skill-installer.js";
+import { createBundleCheckoutCache } from "../services/marketplace-install/skill-bundle-materializer.js";
 import type { CatalogItem } from "@armyofagents/shared";
 
 const SKILL_INLINE: CatalogItem = {
@@ -204,6 +205,32 @@ describe("installSkill", () => {
     expect(insertedRow.metadata.catalogProvider).toEqual(SKILL_BUNDLE.provider);
     expect(insertedRow.metadata.catalogSkillBundle.path).toBe("skills/bundle-skill");
     expect(insertedRow.metadata.catalogBundleInstallPath).toContain(".aoa");
+  });
+
+  // The forwarding is the load-bearing half of the caller's deadline story:
+  // `materializeSkillBundle` hands the signal to every `execFile`, so an abort
+  // kills a running `git clone` instead of waiting on git's own network timeout.
+  // Nothing below installTeam asserted it existed.
+  it("forwards the caller's signal and checkout cache to the materializer", async () => {
+    materializerMock.mockResolvedValue({
+      destination: "dest", markdown: "# Bundle Skill", fileInventory: [], fileCount: 0, byteCount: 0,
+    });
+    global.fetch = vi.fn() as any;
+    const controller = new AbortController();
+    const checkoutCache = createBundleCheckoutCache();
+
+    await installSkill({
+      catalogItem: SKILL_BUNDLE,
+      companyId: "c1",
+      db: mockDb as any,
+      signal: controller.signal,
+      checkoutCache,
+    });
+
+    expect(materializerMock).toHaveBeenCalledWith(
+      SKILL_BUNDLE.skill?.bundle,
+      expect.objectContaining({ signal: controller.signal, checkoutCache }),
+    );
   });
 
   it("stores package metadata when installed through a marketplace package", async () => {

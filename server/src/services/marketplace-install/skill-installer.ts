@@ -7,6 +7,7 @@ import {
   deriveBundleTrustLevel,
   managedCatalogSkillDir,
   materializeSkillBundle,
+  type BundleCheckoutCache,
 } from "./skill-bundle-materializer.js";
 
 export interface InstallSkillOpts {
@@ -21,6 +22,13 @@ export interface InstallSkillOpts {
    * instead of waiting on git's own connect timeout. Absent = unbounded.
    */
   signal?: AbortSignal;
+  /**
+   * Optional clone cache shared across the skills of ONE install. A team's
+   * bundles cluster on a handful of repos and `git clone --no-checkout` still
+   * downloads the whole object database, so without this the same repo is
+   * re-cloned once per skill. See {@link BundleCheckoutCache}.
+   */
+  checkoutCache?: BundleCheckoutCache;
 }
 
 export interface InstallSkillPackageContext {
@@ -87,6 +95,7 @@ export async function installSkill(opts: InstallSkillOpts): Promise<InstallSkill
         destination: managedBundleDir,
         overwrite: true,
         signal: opts.signal,
+        checkoutCache: opts.checkoutCache,
       })
     : null;
   const markdown = materialized?.markdown ?? await loadSkillContent(catalogItem, opts.signal);

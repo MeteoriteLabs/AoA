@@ -114,13 +114,25 @@ describe("installTeam — Saga cascade", () => {
     });
   }
 
-  /** T2.3c: skills are inserted OUTSIDE the txn, through the real installSkill. */
-  const topLevelInsert = (_table: any) => ({
-    values: (row: any) => {
-      skillInserts.push(row);
-      return { returning: () => Promise.resolve([{ ...row, id: `skill-${skillInserts.length}-uuid` }]) };
-    },
-  });
+  /**
+   * T2.3c: skills are inserted OUTSIDE the txn, through the real installSkill.
+   * Dispatched on the table rather than accepting whatever arrives — a mock that
+   * answers for every table is how the wrong query gets the right fixture.
+   */
+  const topLevelInsert = (table: any) => {
+    const name = (table as { __table?: string }).__table;
+    if (name !== "company_skills") {
+      throw new Error(`unexpected top-level insert into ${name}`);
+    }
+    return {
+      values: (row: any) => {
+        skillInserts.push(row);
+        return {
+          returning: () => Promise.resolve([{ ...row, id: `skill-${skillInserts.length}-uuid` }]),
+        };
+      },
+    };
+  };
 
   const mockDb = {
     transaction: async (cb: (tx: any) => Promise<any>) => {
@@ -385,20 +397,80 @@ describe("installTeam — Saga cascade", () => {
     expect(skillInserts[0].key).toBe(SKILL.id);
   });
 
-  // The caller's deadline has to reach the skill phase, or company create's
-  // 30s budget would be silently uncapped across N bundle clones.
-  it("an aborted signal stops the skill installs", async () => {
-    const aborted = AbortSignal.abort();
+  // ── The deadline must reach phase 3 ───────────────────────────────────────
+  // Company create's 30s budget would otherwise be silently uncapped across N
+  // bundle clones. Both of these abort AFTER phase 1: a pre-aborted signal is
+  // caught by the phase-1c check (`…before the team template fetch`), whose
+  // message also matches a loose /deadline/i — so that test would keep passing
+  // with BOTH phase-3 checks deleted. These assert the phase-3 messages
+  // specifically, which no earlier check can produce.
+
+  it("re-checks the deadline on ENTRY to phase 3, after pre-flight and plugins", async () => {
+    const controller = new AbortController();
+    const inner = global.fetch;
+    global.fetch = (async (url: any, init?: any) => {
+      const res = await (inner as any)(url, init);
+      // Fires once pre-flight's last fetch is done — i.e. strictly after phase 1.
+      if (String(url).includes("agent.json")) controller.abort();
+      return res;
+    }) as any;
 
     await expect(
       installTeam({
         catalogItem: TEAM, catalog: CATALOG, companyId: "c1",
         targetDepartmentId: "dept-uuid-1", db: mockDb as any,
-        installPlugin: mockPluginInstaller, signal: aborted,
+        installPlugin: mockPluginInstaller, signal: controller.signal,
       }),
-    ).rejects.toThrow(/deadline/i);
+    ).rejects.toThrow("Team install exceeded its deadline before the skill installs");
 
+    // Pre-flight and the plugin precondition both completed…
+    expect(pluginInstalls).toHaveLength(1);
+    // …and nothing past the phase-3 gate ran.
     expect(skillInserts).toHaveLength(0);
+    expect(teamInserts).toHaveLength(0);
+  });
+
+  it("re-checks the deadline BETWEEN skill installs, not just on entry", async () => {
+    const SKILL_FETCHED: CatalogItem = {
+      ...SKILL,
+      id: "skill:aoa-curated/web-search",
+      name: "Web Search",
+      content: undefined, // forces installSkill down the HTTP path
+      resourceUrl: "https://.../web-search/SKILL.md",
+    };
+    // The fetched skill is FIRST, so the abort lands while the loop is running.
+    const TEAM_TWO_SKILLS: CatalogItem = {
+      ...TEAM,
+      requires: [
+        { type: "plugin", id: PLUGIN.id },
+        { type: "skill", id: SKILL_FETCHED.id },
+        { type: "skill", id: SKILL.id },
+        { type: "agent", id: AGENT.id },
+      ],
+    };
+    const controller = new AbortController();
+    const inner = global.fetch;
+    global.fetch = (async (url: any, init?: any) => {
+      if (String(url).includes("web-search")) {
+        // Abort, then answer: skill #1's install completes, skill #2 must not start.
+        controller.abort();
+        return { ok: true, status: 200, text: async () => "# Web Search" };
+      }
+      return (inner as any)(url, init);
+    }) as any;
+
+    await expect(
+      installTeam({
+        catalogItem: TEAM_TWO_SKILLS,
+        catalog: { ...CATALOG, items: [PLUGIN, SKILL, SKILL_FETCHED, AGENT, TEAM_TWO_SKILLS] },
+        companyId: "c1", targetDepartmentId: "dept-uuid-1", db: mockDb as any,
+        installPlugin: mockPluginInstaller, signal: controller.signal,
+      }),
+    ).rejects.toThrow(`Team install exceeded its deadline before the skill install for ${SKILL.id}`);
+
+    // The discriminator against the entry-check test above: the loop DID run,
+    // and stopped between items rather than before any of them.
+    expect(skillInserts.map((r) => r.key)).toEqual([SKILL_FETCHED.id]);
     expect(teamInserts).toHaveLength(0);
   });
 });

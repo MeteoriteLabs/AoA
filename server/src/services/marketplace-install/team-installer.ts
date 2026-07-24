@@ -8,6 +8,10 @@ import type { NormalizedMarketplaceAgentTemplate } from "./types.js";
 import { parseMarketplaceAgentTemplate, normalizeMarketplaceAgentTemplate } from "./agent-runtime.js";
 import { createMarketplaceAgent } from "./agent-create.js";
 import { installSkill } from "./skill-installer.js";
+import {
+  createBundleCheckoutCache,
+  disposeBundleCheckoutCache,
+} from "./skill-bundle-materializer.js";
 import { resolveAgentNameConflict, resolveTeamSlugConflict } from "./conflict-resolver.js";
 
 export interface InstallTeamOpts {
@@ -285,37 +289,56 @@ export async function installTeam(opts: InstallTeamOpts): Promise<InstallTeamRes
       );
     const existingSkillIdByKey = new Map(existingSkillRows.map((row) => [row.key, row.id]));
 
-    // Collected index-ordered and pushed afterwards so `cascadeResults` stays
-    // deterministic regardless of `fetchConcurrency`.
-    const skillSteps = await mapWithConcurrency(
-      requiredSkillItems,
-      fetchConcurrency,
-      async (skillItem): Promise<CascadeStepResult> => {
-        const startedAt = Date.now();
-        const existingId = existingSkillIdByKey.get(skillItem.id);
-        if (existingId) {
+    // One clone per (repo, commit) for the WHOLE install rather than one per
+    // skill. A team's bundles cluster hard on a few repos — the published crew
+    // team draws 17 bundles from 4 repos — and `git clone --no-checkout` still
+    // downloads the entire object database, so without this most of the clones
+    // are byte-for-byte redundant and several run concurrently against the same
+    // repo. Per-install, never module-global: see BundleCheckoutCache.
+    const checkoutCache = createBundleCheckoutCache();
+    try {
+      // Collected index-ordered and pushed afterwards so `cascadeResults` stays
+      // deterministic regardless of `fetchConcurrency`.
+      const skillSteps = await mapWithConcurrency(
+        requiredSkillItems,
+        fetchConcurrency,
+        async (skillItem): Promise<CascadeStepResult> => {
+          const startedAt = Date.now();
+          const existingId = existingSkillIdByKey.get(skillItem.id);
+          if (existingId) {
+            return {
+              step: "skill-install",
+              itemId: skillItem.id,
+              status: "skipped",
+              resultEntityId: existingId,
+              durationMs: Date.now() - startedAt,
+            };
+          }
+          // Re-checked per item. The signal ALSO reaches the clone itself
+          // (installSkill → materializeSkillBundle → execFile), so an abort kills
+          // a running `git` rather than merely stopping the next install from
+          // starting; what is unbounded is the abort's own latency, not the clone.
+          assertNotAborted(signal, `the skill install for ${skillItem.id}`);
+          const result = await installSkill({
+            catalogItem: skillItem,
+            companyId,
+            db,
+            signal,
+            checkoutCache,
+          });
           return {
             step: "skill-install",
             itemId: skillItem.id,
-            status: "skipped",
-            resultEntityId: existingId,
+            status: result.alreadyInstalled ? "skipped" : "success",
+            resultEntityId: result.skillId,
             durationMs: Date.now() - startedAt,
           };
-        }
-        // Re-checked per item: the deadline cannot interrupt a clone that has
-        // already started, but it does stop the next one from starting.
-        assertNotAborted(signal, `the skill install for ${skillItem.id}`);
-        const result = await installSkill({ catalogItem: skillItem, companyId, db, signal });
-        return {
-          step: "skill-install",
-          itemId: skillItem.id,
-          status: result.alreadyInstalled ? "skipped" : "success",
-          resultEntityId: result.skillId,
-          durationMs: Date.now() - startedAt,
-        };
-      },
-    );
-    cascadeResults.push(...skillSteps);
+        },
+      );
+      cascadeResults.push(...skillSteps);
+    } finally {
+      await disposeBundleCheckoutCache(checkoutCache);
+    }
   }
 
   // ====== Phase 4: Atomic team body (single Postgres txn) ======

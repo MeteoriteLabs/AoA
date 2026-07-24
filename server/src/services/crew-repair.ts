@@ -82,6 +82,10 @@ import { resolveTeamSlugConflict } from "./marketplace-install/conflict-resolver
 import { fetchCatalogResource } from "./marketplace-install/fetch-resource.js";
 import { installSkill } from "./marketplace-install/skill-installer.js";
 import {
+  createBundleCheckoutCache,
+  disposeBundleCheckoutCache,
+} from "./marketplace-install/skill-bundle-materializer.js";
+import {
   OPERATION_CLAIM_STALE_AFTER_MS,
   updateOperation,
 } from "./marketplace-install/operation-store.js";
@@ -333,7 +337,7 @@ export async function repairCompanyCrew(
   // The cooldown lives HERE, not in the pass, so every entry point is gated —
   // the founder route included. A loop on the route otherwise drives unbounded
   // fetches, and on a crewless company each call is a full provisioning attempt
-  // (catalog wait + install deadline + ~27 fetches).
+  // (catalog wait + install deadline + ~10 fetches + ~17 bundle materializations).
   const minGapMs = deps.force ? CREW_REPAIR_FORCE_FLOOR_MS : CREW_REPAIR_COOLDOWN_MS;
   if (!claimRepairAttempt(companyId, minGapMs)) {
     return skip(
@@ -710,9 +714,17 @@ async function installMissingRosterSkills(
   const have = new Set(existing.map((row) => row.key));
   const missing = required.filter((item) => !have.has(item.id));
 
-  await mapWithConcurrency(missing, CREW_REPAIR_FETCH_CONCURRENCY, async (item) => {
-    await installSkill({ catalogItem: item, companyId, db });
-  });
+  // Shared clone cache for this repair, same reasoning as installTeam's: the
+  // roster's bundles cluster on a few repos and a `--no-checkout` clone still
+  // pulls the whole object database.
+  const checkoutCache = createBundleCheckoutCache();
+  try {
+    await mapWithConcurrency(missing, CREW_REPAIR_FETCH_CONCURRENCY, async (item) => {
+      await installSkill({ catalogItem: item, companyId, db, checkoutCache });
+    });
+  } finally {
+    await disposeBundleCheckoutCache(checkoutCache);
+  }
   return missing.map((item) => item.id);
 }
 
@@ -971,10 +983,11 @@ let repairClock: () => number = () => Date.now();
  * Floor that applies even to an explicit `force`.
  *
  * `force` exists so a founder who has just fixed the underlying cause does not
- * wait six hours. It is not a licence to loop: repair fetches `team.json` plus
- * every missing skill body, and on a crewless company it runs a full
- * `provisionCompanyCrew` (catalog wait + install deadline + ~27 fetches). One
- * minute is far below any human retry cadence and far above a scripted one.
+ * wait six hours. It is not a licence to loop: repair fetches `team.json` and
+ * materializes every missing skill bundle, and on a crewless company it runs a
+ * full `provisionCompanyCrew` (catalog wait + install deadline + ~10 fetches +
+ * ~17 bundle materializations). One minute is far below any human retry cadence
+ * and far above a scripted one.
  */
 export const CREW_REPAIR_FORCE_FLOOR_MS = 60_000;
 

@@ -14,9 +14,9 @@
  * 1. **This never blocks or fails company creation.** Every failure mode —
  *    no catalog, item missing, fetch failure, deadline, DB error — returns a
  *    result the caller degrades on. It does not throw.
- * 2. **It is bounded.** The real roster is 27 sequential network fetches at
- *    30s apiece; unbounded, that is ~13.5 minutes inside an interactive POST.
- *    See {@link CREW_INSTALL_DEADLINE_MS}.
+ * 2. **It is bounded.** The real roster is 10 CDN fetches plus 17 bundle
+ *    materializations; unbounded and sequential, that is many minutes inside an
+ *    interactive POST. See {@link CREW_INSTALL_DEADLINE_MS}.
  * 3. **It goes through the orchestrator**, not straight to `installTeam`, so
  *    the install is recorded in `marketplace_install_operations` with its
  *    cascade results and idempotency key. T2.7 (diff/merge) and T2.8
@@ -47,13 +47,20 @@ export const DEFAULT_CREW_TEAM_ITEM_ID = "team:aoa-curated/default-crew";
  * Aggregate wall-clock budget for the whole team install (resource fetches +
  * skill installs + the team-body transaction).
  *
- * Sizing: the published roster is 10 CDN fetches — `team.json` and 9
- * `agent.json` — plus 17 skill installs. Every one of those 17 carries a
- * `skill.bundle`, so since T2.3c each is a shallow-ish `git clone` of the
- * bundle's repo rather than a single CDN GET (their bodies are no longer
- * fetched separately; the bundle carries its own SKILL.md). At
- * {@link CREW_INSTALL_FETCH_CONCURRENCY} = 6 that is ~3 waves of clones over
- * 4 distinct small repos, which lands in a few seconds on a healthy network.
+ * Sizing, MEASURED rather than estimated (2026-07-24, live GitHub, two runs).
+ * The published roster is 10 CDN fetches — `team.json` and 9 `agent.json` —
+ * plus 17 skill installs. All 17 carry a `skill.bundle`, so since T2.3c each is
+ * a git fetch of the bundle's repo rather than a CDN GET (their bodies are no
+ * longer fetched separately; the bundle carries its own SKILL.md). Those 17
+ * bundles draw on only 4 distinct repos, and at
+ * {@link CREW_INSTALL_FETCH_CONCURRENCY} = 6 the bundle phase costs **5.2-5.6s**
+ * — one depth-1 fetch per distinct repo, shared through a per-install
+ * `BundleCheckoutCache`.
+ *
+ * Both of those matter to this number and neither is optional: full clones with
+ * no cache measured **67.5-69.3s**, i.e. more than double this budget, which
+ * would have degraded every live company create to the legacy seeders. See the
+ * table on `BundleCheckoutCache`.
  *
  * What this deadline does and does NOT bound, precisely:
  * - it aborts in-flight CDN fetches, and (since T2.3c) the `git` subprocesses

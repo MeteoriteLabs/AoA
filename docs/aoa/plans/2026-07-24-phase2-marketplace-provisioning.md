@@ -533,6 +533,51 @@ git commit -m "feat(marketplace): make crew provisioning repairable after a degr
 > 5. **Correction to a T2.3b docblock:** it claimed `installSkill` "owns its own
 >    per-item fetch and git-clone timeouts". The fetch half was true; the clone
 >    half was not — `execFile` had no timeout and no signal. Stated honestly now.
+>
+> **Review round 2 (CHANGES REQUESTED → addressed).** The reviewer was right on
+> both blockers, and the measurement they demanded overturned my own estimate.
+>
+> 6. **`git clone --no-checkout` is NOT shallow** — it skips the working tree but
+>    downloads the whole object database. My "lands in a few seconds" was
+>    derived from that false premise. **Measured**, 17 real bundles at
+>    concurrency 6 against live GitHub, two runs each:
+>
+>    | fetch strategy | no cache | cache |
+>    |---|---|---|
+>    | `clone --no-checkout` | 67.5s / 69.3s | 18.2s / 23.9s |
+>    | depth-1 fetch of the pinned sha | 16.1s / 12.9s | **5.6s / 5.2s** |
+>
+>    At 68s the shipped commit blew `CREW_INSTALL_DEADLINE_MS` (30s) by >2×, so
+>    **every live company create would have degraded to legacy**. Both fixes
+>    taken: a per-install `BundleCheckoutCache` (17 fetches → 4, the roster draws
+>    on only 4 repos) and the optional depth-1 fetch, which the numbers made
+>    non-optional. Net 12×.
+> 7. **The per-item abort comment was false and its test passed for the wrong
+>    reason** — a pre-aborted signal is caught at phase 1c, whose message also
+>    matches a loose `/deadline/i`, so both phase-3 checks could be deleted with
+>    the test still green. Replaced with two tests that abort *after* pre-flight
+>    and assert the phase-3 messages exactly; ablation-verified (both fail with
+>    the checks removed).
+> 8. **C5 — orphaned bundle-less rows: ACCEPTED as "heals on next version
+>    bump".** Agreed with the reviewer. No path repairs them (every installer
+>    matches on key and skips), but T2.3 is not on `main`, so the cohort is local
+>    dev instances only; `skill-auto-updater` re-materializes on the next version
+>    bump of each skill for `customized = false` rows. A backfill for a
+>    local-only cohort is not worth its own failure modes.
+>
+> **⚠️ NEW BLOCKER found while measuring — filed, NOT fixed here.**
+> Against the **live** catalog the crew install fails in pre-flight for every
+> company: all 9 published crew agents declare `aoa.triggers[].enabled`, and
+> `agent-runtime.ts:87-92` types `triggers[]` as `.strict()` with only
+> `kind` + `config`, so `parseMarketplaceAgentTemplate` rejects them
+> (`unrecognized_keys: ['enabled']`) and company create degrades to the legacy
+> `@legacy` roster. **T2.3's core property does not hold in production today.**
+> No test caught it because every fixture catalog in the repo hand-writes
+> triggers without `enabled`. Not fixed in T2.3c because it is a real semantic
+> decision, not a rubber stamp: `normalizeMarketplaceAgentTemplate` (`:306`)
+> does not read `enabled`, so merely relaxing the schema would install a
+> trigger the catalog marked disabled as **enabled**. Needs its own task — and
+> a fixture that mirrors a real published `agent.json`.
 
 **Why:** `team-installer.ts:243-269` (phase 3 of `installTeam`) hand-rolls the
 `company_skills` insert instead of calling `installSkill`. It hardcodes
