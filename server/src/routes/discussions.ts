@@ -1154,7 +1154,8 @@ export function discussionRoutes(db: Db) {
 
         if (threadRow !== undefined) {
           const [companyCfg] = await db
-            .select({ autonomyLevel: internalAgentConfig.autonomyLevel })
+            // D18: mirror advancePhase — the agent-work dial, not Commander's.
+            .select({ autonomyLevel: internalAgentConfig.crewAutonomyLevel })
             .from(internalAgentConfig)
             .where(eq(internalAgentConfig.companyId, companyId))
             .limit(1);

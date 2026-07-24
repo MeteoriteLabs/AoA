@@ -203,7 +203,8 @@ export function createThreadEventListener(
       effectiveAutonomy = thread.autonomyLevel;
     } else {
       const [companyCfg] = await db
-        .select({ autonomyLevel: internalAgentConfig.autonomyLevel })
+        // D18: the proactive Adjutant wake is crew work — agent-work dial.
+        .select({ autonomyLevel: internalAgentConfig.crewAutonomyLevel })
         .from(internalAgentConfig)
         .where(eq(internalAgentConfig.companyId, thread.companyId))
         .limit(1);

@@ -272,6 +272,12 @@ export interface CompanyPortabilityInternalAgentConfigManifestEntry {
   model?: string | null;
   cliTool?: string | null;
   autonomyLevel: number;
+  /**
+   * D18 dial-split. Optional so PRE-SPLIT bundles (which carry only the shared
+   * `autonomyLevel`) still import: the importer falls back to `autonomyLevel`,
+   * reproducing exactly the crew behaviour the bundle was exported with.
+   */
+  crewAutonomyLevel?: number;
   enabledCapabilities?: string[];
   notificationPreference: string;
   contextTokenBudget: number;

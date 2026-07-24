@@ -236,8 +236,10 @@ test.describe("Team AoA — fake-crew Assist crew_dispatch approval round-trip (
   // the task lands dispatchable (standard) directly.
   //
   // Eng-review fix 7 (challenger finding 7): the create_scope_draft commit gate
-  // reads effectiveAutonomy = thread.autonomyLevel ?? company.autonomyLevel
-  // (thread-agent-actions.ts). patchThreadAutonomy sets discussions.autonomyLevel
+  // reads effectiveAutonomy = thread.autonomyLevel ?? company.crewAutonomyLevel
+  // (thread-agent-actions.ts; D18 split the company dial — crew reads
+  // `crew_autonomy_level`, Commander keeps `autonomy_level`).
+  // patchThreadAutonomy sets discussions.autonomyLevel
   // (the thread override) for THIS thread, so the gate resolves to Drive from the
   // thread row regardless of company config — the assertion holds off the thread
   // level. (Reconciliation note: patchThreadAutonomy ALSO writes company config to

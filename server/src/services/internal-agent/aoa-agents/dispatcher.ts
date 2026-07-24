@@ -647,16 +647,18 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
   };
 
   // Per-company config memoization within this tick (autonomy + kill-switch + model + routing dial).
-  const configByCompany = new Map<string, { autonomyLevel: number; crewPaused: boolean; model: string; inboundRoutingLevel: string }>();
-  async function resolveCompanyConfig(companyId: string): Promise<{ autonomyLevel: number; crewPaused: boolean; model: string; inboundRoutingLevel: string }> {
+  // D18: crew reads `crewAutonomyLevel`, NOT `autonomyLevel` (Commander-only).
+  const configByCompany = new Map<string, { crewAutonomyLevel: number; crewPaused: boolean; model: string; inboundRoutingLevel: string }>();
+  async function resolveCompanyConfig(companyId: string): Promise<{ crewAutonomyLevel: number; crewPaused: boolean; model: string; inboundRoutingLevel: string }> {
     if (configByCompany.has(companyId)) return configByCompany.get(companyId)!;
     const [cfg] = await db
-      .select({ autonomyLevel: internalAgentConfig.autonomyLevel, crewPaused: internalAgentConfig.crewPaused, model: internalAgentConfig.model, inboundRoutingLevel: internalAgentConfig.inboundRoutingLevel })
+      .select({ crewAutonomyLevel: internalAgentConfig.crewAutonomyLevel, crewPaused: internalAgentConfig.crewPaused, model: internalAgentConfig.model, inboundRoutingLevel: internalAgentConfig.inboundRoutingLevel })
       .from(internalAgentConfig)
       .where(eq(internalAgentConfig.companyId, companyId))
       .limit(1);
     const config = {
-      autonomyLevel: cfg?.autonomyLevel ?? 0,
+      // Fail-closed: no config row → Manual (0).
+      crewAutonomyLevel: cfg?.crewAutonomyLevel ?? 0,
       crewPaused: cfg?.crewPaused ?? false,
       model: (cfg?.model ?? "claude-sonnet-4-6") as string,
       // D4: inbound routing has its own dial, distinct from crew autonomy.
@@ -801,7 +803,7 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
           // company is resolved HERE, BEFORE the activation gate, so the gate
           // and the runner read the SAME dial. Previously this was computed
           // AFTER the atomic claim and fed only to the runner, while the gate
-          // read companyCfg.autonomyLevel — they diverged for thread-bearing
+          // read companyCfg.crewAutonomyLevel — they diverged for thread-bearing
           // wakeups (C1: thread=Drive/company=Manual silently killed the
           // per-thread override; C2: thread=Manual/company=Drive ran + burned an
           // LLM call the completion gate then refused). Resolution logic is
@@ -811,10 +813,10 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
           // infra-sweep, and inbox-routing therefore keep effectiveAutonomy =
           // company exactly as before — only thread-bearing wakeups change.
           const wkPayload = (w.payload ?? {}) as Record<string, unknown>;
-          let effectiveAutonomy: number = companyCfg.autonomyLevel;
+          let effectiveAutonomy: number = companyCfg.crewAutonomyLevel;
           if (typeof wkPayload.threadId === "string") {
             if (threadRow) {
-              effectiveAutonomy = threadRow.autonomyLevel ?? companyCfg.autonomyLevel;
+              effectiveAutonomy = threadRow.autonomyLevel ?? companyCfg.crewAutonomyLevel;
             }
           }
 
@@ -875,7 +877,7 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
             // C1/C2: gate on effectiveAutonomy (thread override ?? company), NOT
             // the raw company dial — so the activation gate and the completion
             // gate read the SAME dial. For task wakeups / infra-sweep / inbox-
-            // routing effectiveAutonomy === companyCfg.autonomyLevel, so their
+            // routing effectiveAutonomy === companyCfg.crewAutonomyLevel, so their
             // behavior is unchanged.
             const roleActive = resolvedRole
               ? isRoleActiveAtAutonomy(resolvedRole, effectiveAutonomy)
@@ -892,7 +894,7 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
               );
               if (!skipped) return;
               logger.child({ subagent: "aoa-dispatcher" }).info(
-                { agentId: w.agentId, role: resolvedRole ?? null, autonomy: effectiveAutonomy, companyAutonomy: companyCfg.autonomyLevel, companyId: w.companyId },
+                { agentId: w.agentId, role: resolvedRole ?? null, autonomy: effectiveAutonomy, companyAutonomy: companyCfg.crewAutonomyLevel, companyId: w.companyId },
                 "aoa wakeup skipped: autonomy gate (fail-closed)",
               );
               return;

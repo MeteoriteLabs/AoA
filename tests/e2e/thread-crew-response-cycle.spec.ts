@@ -32,7 +32,8 @@ async function patchCompanyAutonomy(
   autonomyLevel: number,
 ): Promise<void> {
   const res = await request.patch(`/api/companies/${companyId}/internal-agent/config`, {
-    data: { autonomyLevel },
+    // D18: crew flows read the crew dial, not Commander's.
+    data: { crewAutonomyLevel: autonomyLevel },
   });
   if (!res.ok()) {
     const body = await res.text().catch(() => "(no body)");

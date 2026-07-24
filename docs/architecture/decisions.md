@@ -1185,22 +1185,49 @@ The two items deferred by Decision #107 shipped together on `feat/inbox-hub-tabb
 
 **Addendum (2026-07-24) — crew completion at default autonomy (product-approved):**
 
-8. **The default autonomy is Assist (1), not Manual (0).** `internal_agent_config.autonomyLevel` now defaults to `1` (migration `0180_little_omega_sentinel`). A fresh company's crew must be able to hand a finished task to `in_review` out of the box; completing to `done` still requires Drive (2). Rationale: at Manual (0) the A4 dial-gate (`set-task-status-tool.ts` → `assertAgentStatusTransition`) forbids **any** status advance, so a crew agent physically could not move its task — and the runner's silent-stuck guard then failed the run and ping-ponged the task back to `todo` forever. Schema-default changes affect NEW company rows only; existing configs keep their stored value (intentional — no mass migration).
+8. **The default autonomy is Assist (1), not Manual (0).** The agent-work dial defaults to `1`. A fresh company's crew must be able to hand a finished task to `in_review` out of the box; completing to `done` still requires Drive (2). Rationale: at Manual (0) the A4 dial-gate (`set-task-status-tool.ts` → `assertAgentStatusTransition`) forbids **any** status advance, so a crew agent physically could not move its task — and the runner's silent-stuck guard then failed the run and ping-ponged the task back to `todo` forever. Schema-default changes affect NEW company rows only; existing configs keep their stored value (intentional — no mass migration).
 
-   **Full blast radius — this one row is read by MORE than Commander.** A future engineer scoping the D18 crew/Commander column-split (filed follow-up) MUST NOT treat `internal_agent_config.autonomyLevel` as Commander-only. The same value gates, at minimum:
-   - **Commander** — its own tool/completion autonomy.
-   - **Crew task runs** — the dispatcher resolves `effectiveAutonomy` from it (`dispatcher.ts:803`, thread override `??` company); it is the dial this fix's completion guard reads.
-   - **Org-agent heartbeat runs** — `heartbeat.ts:4098-4118` → `resolveHeartbeatEffectiveAutonomy`. Fresh companies now run **org heartbeat agents at Assist**, not Manual.
-   - **Adjutant / thread scope-compilation** — `controller-adjutant-runner.ts:119` (and `thread-events.ts`) early-return when the effective dial is `< 1`. This flow was **OFF** at the old Manual default and is now **ON** at Assist.
-   - **Scope-draft auto-accept** — `thread-agent-actions.ts:864` resolves `effectiveAutonomy` (thread override `??` company config) and feeds `resolveScopeAutoAcceptGate` (`crew-task-service.ts:65-72`). For a fresh company / a thread with no explicit dial, the gate moves from **`draft_only`** (propose-only, founder accepts each card) to **`accept_apply`** (auto-create crew tasks as `planning` + raise ONE `crew_dispatch` Inbox approval). This is onboarding-visible: fresh companies now see Adjutant-generated task cards + a dispatch approval where they previously saw propose-only drafts. Note the CLAUDE.md "Discussion Pipeline → Autonomy → dispatch" section narrates Manual = propose-only as the lived default; that section's per-level semantics are unchanged, but the *default level* is now Assist. **`accept_apply` still does NOT dispatch** — dispatch needs the founder to approve the `crew_dispatch` item (budget-gated by `preflightCrewDispatch`), so no autonomous spend. Intended and accepted.
-
-   **D18 tension (accepted by the product owner):** D18 (`docs/aoa/plans/2026-07-03-discussions-end-to-end-design.md:70`) wanted a **separate** crew/Discussions autonomy column so this dial stayed Commander-only — that split is **not yet built**, so today one row drives all four flows above. Raising the shared default to Assist was accepted deliberately.
+   *Originally landed on the shared `internal_agent_config.autonomyLevel` (migration `0180_little_omega_sentinel`), which moved four systems at once. **Superseded by §10 below** — the default now lives on `crew_autonomy_level`.*
 
    **Nothing dangerous unlocks at Assist.** Assist permits advancing only to `in_review` (never `done` — that needs Drive), enables agent-*initiated* scope-compilation, and does **not** auto-dispatch or auto-complete anything. Every real crew dispatch still passes `preflightCrewDispatch` (company budget hard-stop + thread pause/disable) and every founder-gated approval path (crew_dispatch approval, memory candidates, spend brakes) is unchanged.
 
+   At Assist a fresh company's Adjutant/thread scope-draft gate resolves to `accept_apply` (auto-create crew tasks as `planning` + raise ONE `crew_dispatch` Inbox approval) rather than `draft_only` (propose-only). This is onboarding-visible and intended. `accept_apply` still does **not** dispatch — dispatch needs the founder to approve the `crew_dispatch` item.
+
 9. **A Manual-autonomy crew run that did its work is a SUCCESS, not a failure.** The crew runner's completion guard (`runner.ts`, "TASK SILENT-STUCK GUARD") treats a still-`in_progress` task after the run as a failure **only when the agent was permitted to advance it** — i.e. `effectiveAutonomy >= 1` (Assist/Drive). At `effectiveAutonomy === 0` (Manual) a still-`in_progress` task is the **expected terminal state** (the dial-gate forbade the advance): the run completes successfully, the agent's posted comment/artifact stands, the task is **not** released to `todo`, and no "Failed" card posts. The runner clears only the execution lock so the still-`in_progress` task is founder-actionable (Manual = the founder advances it) without being stuck-locked; Manual also gates agent-initiated re-dispatch, so the task does not loop. The guard's real purpose — catching a genuinely hung run at Assist/Drive that never moved the task — is preserved (unknown/`null` dial still fires the guard; only a positive `=== 0` exempts). The guard's error text was corrected from the misleading `"...no set_task_status call"` (an assumption) to `"crew task run finished with the task still in progress (not advanced)"`.
 
-**Plan:** `docs/aoa/plans/2026-07-11-commander-ask-human-completion-policy-plan.md`.
+**Addendum (2026-07-24, second) — D18 dial split BUILT (supersedes the §8 blast-radius note):**
+
+10. **Two columns, not one. The shared dial is gone.** `internal_agent_config` now carries **two independent autonomy dials** (migration `0183_clean_lady_ursula`). This closes the D18 follow-up filed in §8; the "one row drives four flows" description above is **historical**, not current behaviour.
+
+    | Column | Owner | Read by |
+    |---|---|---|
+    | `autonomy_level` (`autonomyLevel`) | **Commander only** | Nothing at runtime today — see the honesty note below |
+    | `crew_autonomy_level` (`crewAutonomyLevel`) | **Agent work** | crew task runs, org-agent heartbeat runs, and every Adjutant/thread flow |
+
+    The **complete** reader enumeration, and the dial each one reads (verified against source, not inferred):
+
+    - `dispatcher.ts` → `resolveCompanyConfig` — crew wakeups + crew task runs — **crew**
+    - `heartbeat.ts` → `resolveHeartbeatEffectiveAutonomy` — org-agent heartbeat runs — **crew** (see naming note)
+    - `controller-adjutant-runner.ts` — Adjutant scope-compilation — **crew**
+    - `thread-participation-runner.ts` — crew @mention answers — **crew**
+    - `thread-agent-actions.ts` → `resolveScopeAutoAcceptGate` — scope-draft auto-accept — **crew**
+    - `thread-events.ts` — proactive Adjutant wake — **crew**
+    - `threads.ts` → `advancePhase` — phase-advance auto-approve + dispatch — **crew**
+    - `routes/discussions.ts` — the phase-advance authz gate that mirrors `advancePhase` — **crew**
+    - `reconcile-autonomy-scale.ts` — startup clamp of the legacy 0..3 scale — **both**, independently
+    - `company-portability.ts` — export/import — **both**
+
+    Downstream consumers (`runner.ts`'s completion guard, `set-task-status-tool.ts`, `advance-phase-tool.ts`, `propose-crew-work.ts`, `tool-registry.ts`, `mcp-bridge.ts`, `cli-mode.ts`) read a **resolved** `effectiveAutonomy` off the run payload / tool context. They inherit whichever dial the resolution site chose and were deliberately left untouched — there is exactly one resolution site per system.
+
+11. **Naming honesty — `crew_autonomy_level` also governs ORG agents.** D18's language was "crew autonomy column" and the column keeps that name, but the dial means *"how far may an agent take its own task"*, which is the same question for a crew agent and an org-agent heartbeat run. Splitting those two further would be a third dial with no product story. The Settings control is therefore labelled **"Agent autonomy (crew + org agents)"** so nothing is hidden behind the shorter column name.
+
+12. **Commander's dial is currently inert, and that is stated rather than hidden.** No Commander code path reads `autonomy_level` at runtime: Commander's gating is the unconditional runtime-approval policy (`mcp-bridge.ts` → `runtime-approvals.ts`, `actorType:"commander"`). The column is retained as D18's declared Commander home and is carried by portability bundles. The Settings control for it stays **read-only** at "Level 0 — Full Approval" — writable would imply an effect it does not have.
+
+13. **Existing rows were backfilled, not defaulted.** `ADD COLUMN ... DEFAULT 1` would have stamped every existing row with Assist, silently moving any company that had deliberately chosen Manual or Drive. Migration `0183` therefore runs `UPDATE internal_agent_config SET crew_autonomy_level = autonomy_level` immediately after the DDL: on the day of the split the crew dial holds exactly what the crew readers read the day before, so **no live company's behaviour moved**. Both dials keep the Assist(1) default for new rows, preserving §8. Pre-split portability bundles (no `crewAutonomyLevel`) import with the same fallback.
+
+14. **The invariant under test is "moving one does not move the other."** A change that merely aliased the two columns would satisfy any single-dial assertion, so the tests are written to fail on an alias: `d18-autonomy-dial-split.test.ts` (distinct SQL names; a closed allowlist of files still permitted to name the Commander dial, so a NEW reader on the wrong dial fails CI) and `d18-autonomy-dial-split.integration.test.ts` (real Postgres; Commander=Drive/crew=Manual must behave Manual **and** Commander=Manual/crew=Drive must behave Drive, through the real `thread-agent-actions.ts` gate). Ablation-verified: repointing one reader back at `autonomyLevel` fails both directional cases and the registry guard.
+
+**Plan:** `docs/aoa/plans/2026-07-11-commander-ask-human-completion-policy-plan.md`. D18 split: `docs/aoa/plans/2026-07-24-phase2-marketplace-provisioning.md` § T2.10.
 
 ## Decision #110 - Two-tier Claude instruction isolation for agent runs (2026-07-23)
 

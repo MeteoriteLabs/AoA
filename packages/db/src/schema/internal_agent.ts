@@ -49,15 +49,41 @@ export const internalAgentConfig = pgTable(
     // CLI mode settings
     cliTool: text("cli_tool"), // 'claude_cli' | 'codex' | 'opencode' | null
 
-    // Autonomy
-    // 0-2 (Manual/Assist/Drive). Default is Assist (1): a fresh company's crew
-    // must be able to hand a finished task to review (in_review) out of the box.
-    // At Manual (0) the A4 dial-gate forbids ANY advance, so every crew run left
-    // its task stuck in_progress and the completion guard failed it (Decision
-    // #109). Assist advances only to in_review — completing to `done` still
-    // requires Drive (2). A schema-default change affects NEW rows only; existing
-    // company configs keep their stored value.
+    // ── Autonomy — TWO INDEPENDENT DIALS (D18 split, Decision #109 addendum) ──
+    //
+    // Before the split ONE column drove Commander, crew task runs, org-agent
+    // heartbeat runs AND Adjutant/thread scope-compilation. D18: "one dial must
+    // not secretly drive two systems." These are now separate columns; moving
+    // one must never move the other.
+
+    // COMMANDER ONLY. 0-2 (Manual/Assist/Drive). Commander's own chat loop does
+    // not consult this value at runtime today — Commander's tool gating is the
+    // runtime-approval policy (`mcp-bridge.ts` → `runtime-approvals.ts`), which
+    // is unconditional for `actorType:"commander"`. The column is retained as
+    // the Commander-side dial (its declared home per D18) and is carried by
+    // company-portability bundles; it is NOT read by crew, heartbeat, or any
+    // thread flow. Do not re-point agent-execution code at this column.
     autonomyLevel: integer("autonomy_level").notNull().default(1),
+
+    // AGENT WORK (named `crew_*` per D18). 0-2 (Manual/Assist/Drive). This is
+    // the dial every agent-execution path reads:
+    //   - crew task runs + crew wakeups (`dispatcher.ts`)
+    //   - org-agent heartbeat runs (`heartbeat.ts`)
+    //   - Adjutant scope-compilation + thread participation + proactive wakes
+    //     (`controller-adjutant-runner.ts`, `thread-participation-runner.ts`,
+    //      `thread-events.ts`, `thread-agent-actions.ts`, `threads.ts`)
+    // `discussions.autonomy_level` remains the finer-grained PER-THREAD
+    // override; this column is the company-level fallback for those flows.
+    //
+    // Default is Assist (1): a fresh company's crew must be able to hand a
+    // finished task to review (in_review) out of the box. At Manual (0) the A4
+    // dial-gate forbids ANY advance, so every crew run left its task stuck
+    // in_progress and the completion guard failed it (Decision #109). Assist
+    // advances only to in_review — completing to `done` still requires Drive
+    // (2). A schema-default change affects NEW rows only; the D18 split
+    // migration backfills existing rows from `autonomy_level` so no live
+    // company's behaviour moved.
+    crewAutonomyLevel: integer("crew_autonomy_level").notNull().default(1),
 
     // Capabilities
     enabledCapabilities: jsonb("enabled_capabilities").notNull().default([

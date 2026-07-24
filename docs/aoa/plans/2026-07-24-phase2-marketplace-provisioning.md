@@ -1680,11 +1680,15 @@ it was the wrong ordering.
 
 **Why:** `internal_agent_config.autonomyLevel` is a **single shared dial** read by Commander, crew task runs, org heartbeat, **and** Adjutant/thread scope-compilation (Decision #109 addendum). D18 wanted it Commander-only with a separate crew column "because one dial must not secretly drive two systems." Phase 1 raised its default to Assist, which moved all four at once.
 
-- [ ] **Step 1: Enumerate every reader** — `dispatcher.ts:~803`, `heartbeat.ts:~4098`, the crew completion guard (`runner.ts`, the Manual exemption), `thread-agent-actions.ts:~864` → `resolveScopeAutoAcceptGate`, `controller-adjutant-runner.ts:119`, `thread-events.ts`, `set-task-status-tool.ts`. **Record the full list before changing anything.**
-- [ ] **Step 2: Add a separate crew autonomy column** (Drizzle migration). Decide the existing-row mapping (likely: copy the shared value into the new crew column so nobody's behaviour changes).
-- [ ] **Step 3: Repoint each reader** at the correct dial for its system.
-- [ ] **Step 4: Tests** — each system reads its own dial; **changing one does not move the other** (the discriminator). Preserve current effective behaviour for existing companies.
-- [ ] **Step 5: Update Decision #109 addendum + D18** references. **Step 6: Commit.**
+- [x] **Step 1: Enumerate every reader** — done. The full list, with each one's assigned dial, is recorded in **Decision #109 addendum §10**. Ten resolution sites; eight are agent-execution (all → crew dial), two are dial-agnostic maintenance (`reconcile-autonomy-scale.ts`, `company-portability.ts`, both → *both* dials, independently). Two corrections to the list above: `runner.ts`'s completion guard and `set-task-status-tool.ts` are **not** readers — they consume a resolved `effectiveAutonomy` off the run payload / tool context and inherit whichever dial the resolution site chose, so they needed no change. Two readers the list missed: `threads.ts` (`advancePhase` auto-approve) and `routes/discussions.ts` (the authz gate that mirrors it), plus `thread-participation-runner.ts`.
+- [x] **Step 2: Add a separate crew autonomy column** — `internal_agent_config.crew_autonomy_level`, migration `0183_clean_lady_ursula` (Drizzle-generated DDL + a backfill statement). Existing-row mapping: `UPDATE ... SET crew_autonomy_level = autonomy_level`, NOT the column default — a bare `ADD COLUMN DEFAULT 1` would have moved every company that had deliberately set Manual or Drive.
+- [x] **Step 3: Repoint each reader** at the correct dial for its system.
+- [x] **Step 4: Tests** — `d18-autonomy-dial-split.test.ts` (L3 schema + a **closed allowlist** so a new reader on the wrong dial fails CI) and `d18-autonomy-dial-split.integration.test.ts` (real Postgres; both directional cases through the real gate). Ablation-verified.
+- [x] **Step 5: Update Decision #109 addendum + D18** references. **Step 6: Commit.**
+
+**Adjutant/scope-compilation is NOT its own dial** — it already has one. `discussions.autonomy_level` is the per-thread override and stays untouched; the company-level fallback for those flows is the crew dial. Grouping it with crew (as this plan assumed) is correct.
+
+**The UI was a dead stub.** The only company-autonomy control was a hard-coded `<Select value="0" disabled>` reading "Level 0 — Full Approval / Higher levels available in V3" — it never read or wrote `autonomyLevel`, so no founder could set the dial that was driving all four systems at Assist. Replaced with two labelled controls: Commander's stays read-only (its gating is the runtime-approval policy, not this integer — a writable control would imply an effect it does not have) and a **real, writable "Agent autonomy (crew + org agents)"** select that persists `crewAutonomyLevel`.
 ```bash
 git commit -m "refactor(autonomy): split the crew and Commander autonomy dials (D18)"
 ```

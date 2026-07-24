@@ -24,15 +24,19 @@ import { discussions, internalAgentConfig } from "@armyofagents/db";
  *
  * Tables updated:
  *   - discussions.autonomy_level  (per-thread override)
- *   - internal_agent_config.autonomy_level  (company-level default)
+ *   - internal_agent_config.autonomy_level  (Commander dial)
+ *   - internal_agent_config.crew_autonomy_level  (agent-work dial, D18 split)
  *
- * Safe to call on every startup — only touches rows where autonomy_level > 2.
- * Idempotent: a second run matches 0 rows and returns { discussionsUpdated: 0,
- * configUpdated: 0 }.
+ * The crew column is clamped separately because the D18 split migration
+ * backfills it verbatim from `autonomy_level` — a legacy row holding 3 lands a
+ * 3 in the new column too, so both need the same clamp.
+ *
+ * Safe to call on every startup — only touches rows above the canonical range.
+ * Idempotent: a second run matches 0 rows and returns all-zero counts.
  */
 export async function reconcileAutonomyScale(
   db: Db,
-): Promise<{ discussionsUpdated: number; configUpdated: number }> {
+): Promise<{ discussionsUpdated: number; configUpdated: number; crewConfigUpdated: number }> {
   const discussionsResult = await db
     .update(discussions)
     .set({
@@ -49,10 +53,20 @@ export async function reconcileAutonomyScale(
     })
     .where(gt(internalAgentConfig.autonomyLevel, 2));
 
+  const crewConfigResult = await db
+    .update(internalAgentConfig)
+    .set({
+      crewAutonomyLevel: 2,
+      updatedAt: new Date(),
+    })
+    .where(gt(internalAgentConfig.crewAutonomyLevel, 2));
+
   const discussionsUpdated =
     (discussionsResult as unknown as { rowCount?: number | null }).rowCount ?? 0;
   const configUpdated =
     (configResult as unknown as { rowCount?: number | null }).rowCount ?? 0;
+  const crewConfigUpdated =
+    (crewConfigResult as unknown as { rowCount?: number | null }).rowCount ?? 0;
 
-  return { discussionsUpdated, configUpdated };
+  return { discussionsUpdated, configUpdated, crewConfigUpdated };
 }

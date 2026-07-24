@@ -40,7 +40,10 @@ export interface AgentConfig {
   model: string | null;
   cliTool: string | null;
   crewModel: string | null;
+  /** D18: Commander's own dial. Not read by crew/heartbeat/thread flows. */
   autonomyLevel: number;
+  /** D18: the agent-work dial — crew runs, org heartbeat, Adjutant/thread flows. */
+  crewAutonomyLevel: number;
   enabledCapabilities: string[];
   notificationPreference: string;
   contextTokenBudget: number;

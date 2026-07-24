@@ -381,6 +381,9 @@ function serializeInternalAgentConfigRow(row: Record<string, unknown>): CompanyP
     model: (row.model as string | null | undefined) ?? null,
     cliTool: (row.cliTool as string | null | undefined) ?? null,
     autonomyLevel: typeof row.autonomyLevel === "number" ? row.autonomyLevel : 0,
+    // D18 dial-split: exported alongside the Commander dial, never derived from it.
+    crewAutonomyLevel:
+      typeof row.crewAutonomyLevel === "number" ? row.crewAutonomyLevel : 0,
     ...(enabledCapabilities ? { enabledCapabilities } : {}),
     notificationPreference:
       typeof row.notificationPreference === "string" ? row.notificationPreference : "realtime",
@@ -2836,6 +2839,11 @@ export function companyPortabilityService(db: Db) {
         model: cfg.model ?? null,
         cliTool: cfg.cliTool ?? null,
         autonomyLevel: cfg.autonomyLevel,
+        // D18 dial-split. PRE-SPLIT bundles carry no `crewAutonomyLevel`; falling
+        // back to the shared `autonomyLevel` reproduces exactly the crew behaviour
+        // the bundle was exported with. Post-split bundles carry both and neither
+        // dial is inferred from the other.
+        crewAutonomyLevel: cfg.crewAutonomyLevel ?? cfg.autonomyLevel,
         enabledCapabilities: cfg.enabledCapabilities ?? [],
         notificationPreference: cfg.notificationPreference,
         contextTokenBudget: cfg.contextTokenBudget,

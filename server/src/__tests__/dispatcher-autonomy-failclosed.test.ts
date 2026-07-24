@@ -190,7 +190,7 @@ describe("runAoaDispatch — fail-closed autonomy gate (A2)", () => {
         // slot 2 — Phase-3 wakeup-select: a queued aoa wakeup with NO role in payload.
         [{ id: "w-norole", agentId: "a1", companyId: "co-1", source: "thread_mention", payload: {} }],
         // slot 3 — resolveCompanyConfig: autonomyLevel 0 (Manual)
-        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
+        [{ crewAutonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
         // Phase-4 reclaim-select (after Promise.all). No threadId in payload, no
         // rate-brake/agent-row selects (early-return fires first), so this is slot 4.
         [],
@@ -221,7 +221,7 @@ describe("runAoaDispatch — fail-closed autonomy gate (A2)", () => {
         [],
         [],
         [{ id: "w-eng", agentId: "a2", companyId: "co-2", source: "thread_mention", payload: {} }],
-        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
+        [{ crewAutonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
         [],
       ],
       [],
@@ -248,7 +248,7 @@ describe("runAoaDispatch — fail-closed autonomy gate (A2)", () => {
         // slot 2 — Phase-3 wakeup: no role, autonomy will be 2 (Drive)
         [{ id: "w-drive", agentId: "a3", companyId: "co-3", source: "thread_mention", payload: {} }],
         // slot 3 — resolveCompanyConfig: autonomyLevel 2 (Drive)
-        [{ autonomyLevel: 2, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
+        [{ crewAutonomyLevel: 2, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
         // slot 4 — D3 SPEND-brake window count (proceeds past the gate now)
         [],
         // slot 5 — A5/T1.9 run-COUNT brake window count (proceeds; mocked → false)

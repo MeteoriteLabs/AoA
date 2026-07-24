@@ -4084,9 +4084,11 @@ export function heartbeatService(db: Db) {
       // Organization-agent heartbeat runs use the same provider-neutral AoA
       // MCP bridge as crew runs. Role and per-tool service checks remain the
       // authority boundary; capabilities only enable the bridge categories.
+      // D18: org-agent heartbeat runs are AGENT WORK, so they read the agent-work
+      // dial (`crew_autonomy_level`) — never Commander's `autonomy_level`.
       const [companyAutonomyRow, discussionAutonomyRow] = await Promise.all([
         db
-          .select({ autonomyLevel: internalAgentConfig.autonomyLevel })
+          .select({ autonomyLevel: internalAgentConfig.crewAutonomyLevel })
           .from(internalAgentConfig)
           .where(eq(internalAgentConfig.companyId, agent.companyId))
           .limit(1)

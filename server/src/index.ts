@@ -879,7 +879,7 @@ void backfillCrewOriginKind(db as any)
 // updates 0 rows.
 void reconcileAutonomyScale(db as any)
   .then((res) => {
-    if (res.discussionsUpdated > 0 || res.configUpdated > 0) {
+    if (res.discussionsUpdated > 0 || res.configUpdated > 0 || res.crewConfigUpdated > 0) {
       logger.info(res, "autonomy scale reconciliation complete");
     }
   })

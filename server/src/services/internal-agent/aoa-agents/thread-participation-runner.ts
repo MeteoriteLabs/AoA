@@ -103,7 +103,8 @@ export function makeThreadParticipationRunner(
     // config is the fallback; the thread-level override wins when set. Forwarded
     // to runAoaAgent → the MCP bridge for tool-level gating.
     const [companyCfg] = await db
-      .select({ autonomyLevel: internalAgentConfig.autonomyLevel })
+      // D18: crew thread participation reads the agent-work dial.
+      .select({ autonomyLevel: internalAgentConfig.crewAutonomyLevel })
       .from(internalAgentConfig)
       .where(eq(internalAgentConfig.companyId, thread.companyId))
       .limit(1);

@@ -202,7 +202,7 @@ describe("dispatcher thread-flags read — company-scoped (cross-tenant Layer 2)
         [], // 1 pending
         [threadWakeup()], // 2 wakeup (companyId co-A, threadId th-foreign)
         // 3 companyConfig: company Manual(0) → engineer (min 1) skips after the flag-read
-        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
+        [{ crewAutonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
         // 4 discussions flag-read → present (same company for this assertion)
         [{ crewPaused: false, useControllerPath: false, autonomyLevel: 0 }],
         // 5 Phase-4 reclaim (autonomy gate early-returns before brakes)
@@ -232,7 +232,7 @@ describe("dispatcher thread-flags read — company-scoped (cross-tenant Layer 2)
         [], // 1 pending
         [threadWakeup({ id: "w-fb", agentId: "a-fb", companyId: "co-fb" })], // 2 wakeup
         // 3 companyConfig: company Drive(2) → engineer active on the company fallback
-        [{ autonomyLevel: 2, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
+        [{ crewAutonomyLevel: 2, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
         // 4 discussions flag-read → EMPTY (foreign id excluded by the companyId conjunct)
         [],
         // 5 D3 spend-brake count

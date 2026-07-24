@@ -188,7 +188,7 @@ describe("runAoaDispatch — Phase-3 pre-spend budget hard-stop (A3)", () => {
         [],
         [],
         [{ id: "w-blk", agentId: "a-blk", companyId: "co-blk", source: "thread_mention", payload: { role: "scout", note: "x" } }],
-        [{ autonomyLevel: 3, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
+        [{ crewAutonomyLevel: 3, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
         [], // D3 SPEND-brake count
         [], // A5/T1.9 run-COUNT brake count
         [{ runtimeConfig: {}, adapterConfig: {} }], // agent row
@@ -227,7 +227,7 @@ describe("runAoaDispatch — Phase-3 pre-spend budget hard-stop (A3)", () => {
         [],
         [],
         [{ id: "w-ok", agentId: "a-ok", companyId: "co-ok", source: "thread_mention", payload: { role: "scout", note: "y" } }],
-        [{ autonomyLevel: 3, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
+        [{ crewAutonomyLevel: 3, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
         [], // D3 SPEND-brake count
         [], // A5/T1.9 run-COUNT brake count
         [{ runtimeConfig: {}, adapterConfig: {} }], // agent row

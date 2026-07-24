@@ -70,12 +70,15 @@ const updateConfigSchema = z.object({
   model: z.string().nullable().optional(),
   crewModel: z.string().nullable().optional(),
   cliTool: z.string().nullable().optional(),
-  // Threads crew (Discussions feature) opens autonomyLevel to L2 — the design
-  // ceiling for the crew (task + route + execute). Goals and identity/domain
-  // memory remain founder-gated even at L2 (Decisions #15/#16/#52). Broader
-  // "master autonomy" surface for non-crew agents stays at 0 until those
-  // controls land. See design doc § 4 — autonomy dial.
+  // D18 split: TWO dials.
+  //   autonomyLevel      → Commander only (not read by any agent-execution path).
+  //   crewAutonomyLevel  → crew task runs + org heartbeat + Adjutant/thread flows.
+  // Both accept L0-L2 — the design ceiling for the crew (task + route + execute).
+  // Goals and identity/domain memory remain founder-gated even at L2 (Decisions
+  // #15/#16/#52). L3 is reserved for a future "master autonomy" surface.
+  // See design doc § 4 — autonomy dial.
   autonomyLevel: z.number().int().min(0).max(2).optional(),
+  crewAutonomyLevel: z.number().int().min(0).max(2).optional(),
   enabledCapabilities: z.array(z.string()).optional(),
   notificationPreference: z.enum(["silent", "digest", "realtime"]).optional(),
   contextTokenBudget: z.number().int().min(2000).max(32000).optional(),
@@ -922,6 +925,12 @@ export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentSt
       // surface and remains blocked.
       if (req.body.autonomyLevel != null && (req.body.autonomyLevel < 0 || req.body.autonomyLevel > 2)) {
         throw badRequest("autonomyLevel must be 0, 1, or 2 (L3 reserved for future master autonomy surface)");
+      }
+      // D18: the crew/agent-work dial is independently settable and independently
+      // validated. It must never be derived from `autonomyLevel` here — aliasing
+      // the two would re-couple the systems the split exists to separate.
+      if (req.body.crewAutonomyLevel != null && (req.body.crewAutonomyLevel < 0 || req.body.crewAutonomyLevel > 2)) {
+        throw badRequest("crewAutonomyLevel must be 0, 1, or 2 (L3 reserved for future master autonomy surface)");
       }
 
       // Read the adapter-affecting fields BEFORE the update so we can detect a change.

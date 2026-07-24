@@ -98,7 +98,9 @@ export function makeControllerAdjutantRunner(
     // override wins when set. This is required so the L2 auto-create gate fires for
     // controller-driven Adjutant runs.
     const [companyCfg] = await db
-      .select({ autonomyLevel: internalAgentConfig.autonomyLevel })
+      // D18: the Adjutant is a crew agent, so the company-level fallback is the
+      // agent-work dial (`crew_autonomy_level`), not Commander's.
+      .select({ autonomyLevel: internalAgentConfig.crewAutonomyLevel })
       .from(internalAgentConfig)
       .where(eq(internalAgentConfig.companyId, thread.companyId))
       .limit(1);
