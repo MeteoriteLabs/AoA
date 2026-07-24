@@ -216,7 +216,35 @@ describe("assertTransportAllowed — D7 stdio gate (unit truth table)", () => {
   });
 
   it("stdio + catalog in authenticated -> ok (verified-catalog exemption)", () => {
-    expect(() => assertTransportAllowed("stdio", "authenticated", "catalog")).not.toThrow();
+    // C4: the exemption is now tier-aware, so the tier must be stated. Before C4
+    // this case passed with the tier omitted — that omission WAS the defect.
+    expect(() => assertTransportAllowed("stdio", "authenticated", "catalog", "verified")).not.toThrow();
+  });
+});
+
+describe("assertTransportAllowed — tier awareness (C4)", () => {
+  it("allows a VERIFIED catalog stdio connector in authenticated mode", () => {
+    expect(() => assertTransportAllowed("stdio", "authenticated", "catalog", "verified")).not.toThrow();
+  });
+
+  it("REJECTS an unverified catalog stdio connector in authenticated mode", () => {
+    expect(() => assertTransportAllowed("stdio", "authenticated", "catalog", "community")).toThrow(/verified/i);
+  });
+
+  it("REJECTS a catalog stdio connector with no tier supplied (fail-closed)", () => {
+    expect(() => assertTransportAllowed("stdio", "authenticated", "catalog", undefined)).toThrow();
+  });
+
+  it("still allows any stdio in local_trusted", () => {
+    expect(() => assertTransportAllowed("stdio", "local_trusted", "catalog", "community")).not.toThrow();
+  });
+
+  it("still allows http regardless of tier", () => {
+    expect(() => assertTransportAllowed("http", "authenticated", "catalog", "community")).not.toThrow();
+  });
+
+  it("rejects byo stdio in authenticated mode (unchanged)", () => {
+    expect(() => assertTransportAllowed("stdio", "authenticated", "byo", undefined)).toThrow();
   });
 });
 

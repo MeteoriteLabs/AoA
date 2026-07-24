@@ -57,23 +57,39 @@ const templateRecord = z.record(z.string(), z.string());
  * D7 stdio governance gate. A `stdio` connector's `command` executes on the AoA
  * HOST when the loader serves it — in a multi-tenant/`authenticated` deployment
  * that is remote code execution. So stdio is admissible ONLY when the host is
- * the founder's own machine (`local_trusted`) or the entry is a verified catalog
- * install (`source === "catalog"`). `http` is always fine — it makes a network
+ * the founder's own machine (`local_trusted`) or the entry is a catalog install
+ * whose trust tier is `verified`. `http` is always fine — it makes a network
  * request, never a local exec.
  *
- * Exported so its full truth table is unit-tested directly. NOTE: this route can
- * never construct a `catalog` source (C3 forces `byo` and strips any client
- * `source`), so the `catalog` branch is exercised only by verified catalog
- * installs on a DIFFERENT route — never by founder input here.
+ * THIS IS AN AUTHORIZATION GATE. It answers "is this principal permitted to make
+ * this host execute a command at all?" and it is the last line of defence before
+ * a write. The install-time CONSENT TOKEN (a separate, later mechanism) is a UX
+ * gate: it proves the founder actually saw the exact command they are installing.
+ * Consent is NOT a substitute for this check and must never be accepted in its
+ * place — a founder can consent to a command they are not authorized to run on a
+ * shared host, and an unverified catalog entry's command is untrusted regardless
+ * of how clearly it was displayed. Both gates run; neither subsumes the other.
+ *
+ * C4 — TIER AWARENESS: the catalog exemption requires `trustTier === "verified"`.
+ * The gate previously keyed on `source` alone while its comment claimed
+ * "verified"; that was safe only for as long as no route could construct a
+ * `catalog` source. The catalog install route does exactly that, and the catalog
+ * schema admits `community`/`unverified` tiers, so source alone would let an
+ * unverified third-party `npx` command spawn a process on a shared host.
+ * `trustTier` is optional and FAIL-CLOSED: an omitted or unrecognised tier is
+ * never treated as verified.
+ *
+ * Exported so its full truth table is unit-tested directly.
  */
 export function assertTransportAllowed(
   transport: string,
   deploymentMode: string,
   source: string,
+  trustTier?: string,
 ): void {
   if (transport !== "stdio") return; // http is always fine
   if (deploymentMode === "local_trusted") return; // host is the founder's own machine
-  if (source === "catalog") return; // verified catalog entries only (C3)
+  if (source === "catalog" && trustTier === "verified") return; // verified catalog entries only (C4)
   throw badRequest(
     "Only remote HTTP connectors can be added in this deployment. stdio connectors run a " +
       "command on the AoA host and are restricted to verified catalog entries.",
@@ -190,8 +206,10 @@ export function mcpConnectorRoutes(db: Db) {
 
       // C1/D7: reject a host-executing stdio connector in a shared deployment
       // BEFORE any write. `source` is the server-forced "byo" here, so the
-      // catalog exemption is unreachable from this route by construction.
-      assertTransportAllowed(body.transport, deploymentMode, source);
+      // catalog exemption is unreachable from this route by construction; the
+      // trust tier is passed as an explicit `undefined` because a BYO connector
+      // has no catalog provenance and therefore no tier to vouch for it (C4).
+      assertTransportAllowed(body.transport, deploymentMode, source, undefined);
 
       // Uniqueness (companyId, serverName) — surface a clean 409 instead of a
       // raw unique-violation 500.
