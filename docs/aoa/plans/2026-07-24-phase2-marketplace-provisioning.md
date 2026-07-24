@@ -114,7 +114,15 @@ git commit -m "fix(crew): gate only crew seeders on marketplace management (Comm
 
 ---
 
-## T2.3 — Install the crew at company creation (P8, P8c)
+## T2.3 — Install the crew at company creation (P8, P8c) — ✅ SHIPPED 2026-07-24
+
+> Landed across `9d0918162` → `c57142e5e` → `52e118108` (build + 3 review rounds,
+> two full reviews plus a focused review of the fix-round logic). Decision #112.
+> Two implementer push-backs were upheld: the prescribed `isCrewMarketplaceManaged`
+> degrade guard was wrong (it matches Commander/Steward seeded moments earlier and
+> would trade a silent clobber for a silent crewless company) — replaced with the
+> `crewTeamIsInstalled` witness; and the plan's Step 5 "remove the pre-install
+> gate" was declined because after T2.2 the gate anchors a live regression guard.
 
 **This is the task that unfreezes the whole update pipeline.**
 
@@ -271,6 +279,19 @@ fail-open behaviour are only acceptable if the resulting state is recoverable.
   leave the company crewless. Narrow that guard to `pending | running | success`
   **before** wiring repair, or the repair path is dead on arrival for exactly
   the companies that need it most.
+- [ ] **Step 4b: Cover the two residual states T2.3 deliberately left visible.**
+  Both are known, both are the *right* trade (a visible gap beats an
+  unrepairable clobber), and both are only acceptable because this task exists:
+  1. **`unknown` witness → crewless.** `inspectCrewTeamInstall` fails closed on
+     a DB error, so a blip at exactly that moment yields a company with only
+     Commander + Steward and an ERROR log as the sole signal. **Detection case:
+     "has infrastructure agents but neither a crew team nor legacy crew rows."**
+  2. **Unrepaired operation row.** The averted-clobber path repairs the lying
+     `failure` row to `success`, but that write uses the same connection that
+     just failed. If the DB is what's broken, the repair fails too and the row
+     stays claimable (`operationRepaired: false`, logged ERROR). Repair will
+     then find a legitimately claimable `failure` row — correct, just noisier.
+     Do not "fix" this by retrying inside T2.3; retry belongs here.
 - [ ] **Step 5: Decide and record the trigger.** Options: an authenticated
   founder/admin route, a boot-time reconcile for degraded companies, or both.
   Boot-time reconcile is the one that fixes companies whose founder will never
