@@ -128,6 +128,26 @@ function referencesForeignPlaceholder(v: string): boolean {
   return matches !== null && matches.some((m) => m !== OWN_TOKEN_PLACEHOLDER);
 }
 
+// FINDING 2 — does this BYO connector reference its own `${TOKEN}` anywhere
+// (header/env template value or an arg)? If it does, `${TOKEN}` has to resolve to
+// a bound secret at delivery, so the connector REQUIRES a secret. A connector that
+// references `${TOKEN}` with no `secretRef` would otherwise derive to `active` yet
+// authenticate as no-one — a silently-broken active connector. (`command` cannot
+// carry a placeholder; FU-2 rejects that separately.)
+function referencesOwnToken(body: {
+  headerTemplate?: Record<string, string>;
+  envTemplate?: Record<string, string>;
+  args?: string[];
+}): boolean {
+  const anyValue = (rec?: Record<string, string>) =>
+    Object.values(rec ?? {}).some((v) => v.includes(OWN_TOKEN_PLACEHOLDER));
+  return (
+    anyValue(body.headerTemplate) ||
+    anyValue(body.envTemplate) ||
+    (body.args ?? []).some((a) => a.includes(OWN_TOKEN_PLACEHOLDER))
+  );
+}
+
 const templateValue = z.string().refine((v) => v === "" || TEMPLATE_VALUE_RE.test(v), {
   message:
     "A connector template value must be empty or reference the connector's own secret as " +
@@ -693,6 +713,21 @@ export function mcpConnectorRoutes(db: Db, opts: McpConnectorRouteOptions = {}) 
       // already stripped in the schema; the value is fixed server-side.
       const source = "byo";
 
+      // FINDING 2 — a BYO connector that references `${TOKEN}` REQUIRES a secret.
+      // Rejecting the placeholder-without-secretRef case here (rather than creating
+      // it and letting it derive to `active`) is the cleanest option: it never
+      // manufactures a broken-active connector, and it matches D5 (the secret is
+      // bound up front for BYO). A connector with NO `${TOKEN}` (e.g. an
+      // unauthenticated filesystem server) stays requiresSecret=false → active.
+      const requiresSecret = referencesOwnToken(body);
+      if (requiresSecret && !body.secretRef) {
+        throw badRequest(
+          "This connector references ${TOKEN} but binds no secret. Pass a secretRef so ${TOKEN} " +
+            "resolves — otherwise the connector would activate yet authenticate as no-one. Store the " +
+            "credential as a company secret and reference it here.",
+        );
+      }
+
       const deploymentMode = loadConfig().deploymentMode;
 
       // C1/D7: reject a host-executing stdio connector in a shared deployment
@@ -721,10 +756,11 @@ export function mcpConnectorRoutes(db: Db, opts: McpConnectorRouteOptions = {}) 
           headerTemplate: body.headerTemplate,
           envTemplate: body.envTemplate,
           secretRef: body.secretRef ?? null,
-          // BYO: the founder supplies every credential up front, so a BYO
-          // connector is never in the "installed but uncredentialed" state that
-          // `requiresSecret` exists to describe.
-          requiresSecret: false,
+          // FINDING 2: derived from whether the connector references `${TOKEN}`. A
+          // BYO connector supplies its secret up front, so requiresSecret+secretRef
+          // are bound together here (the placeholder-without-secretRef case was
+          // already rejected above); a placeholder-free connector needs no secret.
+          requiresSecret,
           source,
           // BYO has no catalog provenance, so no trust tier can vouch for it. Null
           // means the FU-19 delivery re-check treats it as non-exempt (correctly

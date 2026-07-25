@@ -878,7 +878,10 @@ describe("[inv-4] the install body rejects every governance field", () => {
     expect(mockConnectorSvc.create).not.toHaveBeenCalled();
   });
 
-  it("BYO create always persists requiresSecret:false — the credential axis is server-owned", async () => {
+  it("BYO create derives requiresSecret from ${TOKEN} presence, never from the client (Finding 2)", async () => {
+    // The credential axis stays server-owned — the client cannot SEND
+    // requiresSecret (.strict rejects it). A connector with NO ${TOKEN} reference
+    // needs no secret even when a secretRef is supplied.
     deploymentMode = "local_trusted";
     const res = await createByo(makeApp(founderActor), {
       serverName: "notion",
@@ -889,6 +892,55 @@ describe("[inv-4] the install body rejects every governance field", () => {
     });
     expect(res.status).toBe(201);
     expect(persistedInsert().requiresSecret).toBe(false);
+  });
+
+  // FINDING 2 — a BYO connector that references ${TOKEN} but binds no secret would
+  // derive to `active` yet authenticate as no-one. Reject it at create.
+  it.each([
+    ["a header template", { headerTemplate: { Authorization: "Bearer ${TOKEN}" } }],
+    ["an env template", { transport: "stdio", command: "npx", args: ["-y", "x"], envTemplate: { T: "${TOKEN}" }, url: undefined }],
+    ["an arg", { transport: "stdio", command: "npx", args: ["--token", "${TOKEN}"], url: undefined }],
+  ])("rejects a ${TOKEN}-referencing BYO connector with no secretRef via %s -> 400", async (_l, extra) => {
+    deploymentMode = "local_trusted";
+    const res = await createByo(makeApp(founderActor), {
+      serverName: "needy",
+      displayName: "Needy",
+      transport: "http",
+      url: "https://mcp.example/mcp",
+      ...(extra as Record<string, unknown>),
+    });
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(res.body)).toMatch(/\$\{TOKEN\}|secretRef|secret/i);
+    expect(mockConnectorSvc.create).not.toHaveBeenCalled();
+  });
+
+  it("a ${TOKEN}-referencing BYO connector WITH a secretRef persists requiresSecret:true and lands (Finding 2)", async () => {
+    deploymentMode = "local_trusted";
+    const res = await createByo(makeApp(founderActor), {
+      serverName: "needy",
+      displayName: "Needy",
+      transport: "http",
+      url: "https://mcp.example/mcp",
+      secretRef: "mcp:notion",
+      headerTemplate: { Authorization: "Bearer ${TOKEN}" },
+    });
+    expect(res.status).toBe(201);
+    expect(persistedInsert().requiresSecret).toBe(true);
+    expect(persistedInsert().secretRef).toBe("mcp:notion");
+  });
+
+  it("a placeholder-free BYO connector (filesystem) needs no secret and stays active (Finding 2)", async () => {
+    deploymentMode = "local_trusted";
+    const res = await createByo(makeApp(founderActor), {
+      serverName: "localfs",
+      displayName: "Local FS",
+      transport: "stdio",
+      command: "npx",
+      args: ["-y", "fs-mcp"],
+    });
+    expect(res.status).toBe(201);
+    expect(persistedInsert().requiresSecret).toBe(false);
+    expect(persistedInsert().status).toBe("active");
   });
 });
 
@@ -1505,13 +1557,16 @@ describe("[ESC-4] a literal credential in headerTemplate / envTemplate / args", 
     expect(persistedInsert().args).toEqual(["-y", "tool", "--token", RAW_SECRET]);
   });
 
-  it("FIXED (FU-20): the legitimate shapes still pass — empty value and a ${...} placeholder", async () => {
+  it("FIXED (FU-20): the legitimate shapes still pass — empty value and the ${TOKEN} placeholder", async () => {
     deploymentMode = "local_trusted";
+    // A `${TOKEN}` reference now REQUIRES a bound secretRef (Finding 2), so this
+    // legitimate-shape case supplies one; mockSecretSvc resolves it by default.
     const res = await createByo(makeApp(founderActor), {
       serverName: "gamma",
       displayName: "Gamma",
       transport: "http",
       url: "https://mcp.example/mcp",
+      secretRef: "mcp:notion",
       headerTemplate: { Authorization: "Bearer ${TOKEN}", "X-Empty": "" },
     });
     expect(res.status).toBe(201);
