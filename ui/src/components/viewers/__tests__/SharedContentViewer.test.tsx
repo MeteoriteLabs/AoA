@@ -92,6 +92,78 @@ describe("SharedContentViewer", () => {
     expect(screen.getByRole("link", { name: "Open" })).toHaveAttribute("href", "/bundle.zip");
   });
 
+  // Binary media kinds (image/video/audio) render the raw asset URL directly and
+  // never text-fetch. They read `assetUrl` off the resolution.
+  it("renders an image from the asset URL without fetching", () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    renderViewer(
+      viewer({
+        kind: "image",
+        label: "Image preview",
+        assetUrl: "/api/assets/asset-1/content",
+        url: "/api/assets/asset-1/content",
+        requiresTextFetch: false,
+        canShowSource: false,
+      }),
+      null,
+      "photo.png",
+    );
+    const wrap = screen.getByTestId("preview-output-image");
+    const img = wrap.querySelector("img");
+    expect(img).toHaveAttribute("src", "/api/assets/asset-1/content");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("renders a video from the asset URL with native controls", () => {
+    renderViewer(
+      viewer({
+        kind: "video",
+        label: "Video preview",
+        assetUrl: "/api/assets/asset-2/content",
+        url: "/api/assets/asset-2/content",
+        requiresTextFetch: false,
+        canShowSource: false,
+      }),
+      null,
+      "clip.mp4",
+    );
+    const video = screen.getByTestId("work-product-video");
+    expect(video).toHaveAttribute("src", "/api/assets/asset-2/content");
+    expect(video).toHaveAttribute("controls");
+  });
+
+  it("renders audio from the asset URL with native controls", () => {
+    renderViewer(
+      viewer({
+        kind: "audio",
+        label: "Audio preview",
+        assetUrl: "/api/assets/asset-3/content",
+        url: "/api/assets/asset-3/content",
+        requiresTextFetch: false,
+        canShowSource: false,
+      }),
+      null,
+      "voice.webm",
+    );
+    const audio = screen.getByTestId("work-product-audio");
+    expect(audio).toHaveAttribute("src", "/api/assets/asset-3/content");
+    expect(audio).toHaveAttribute("controls");
+  });
+
+  // svg_sandbox uses the SAME sandboxed-iframe path as html_sandbox (untrusted
+  // markup executes only under sandbox="allow-scripts"), but under its own testid.
+  it("renders svg content inside a sandboxed iframe", () => {
+    renderViewer(
+      viewer({ kind: "svg_sandbox" }),
+      '<svg xmlns="http://www.w3.org/2000/svg"><rect width="10" height="10" /></svg>',
+      "diagram.svg",
+    );
+    const frame = screen.getByTestId("work-product-svg-frame");
+    expect(frame).toHaveAttribute("sandbox", "allow-scripts");
+    // It is the svg frame, not the html one.
+    expect(screen.queryByTestId("work-product-html-frame")).toBeNull();
+  });
+
   it("delegates pdf rendering to PdfDocumentViewer", () => {
     renderViewer(
       viewer({

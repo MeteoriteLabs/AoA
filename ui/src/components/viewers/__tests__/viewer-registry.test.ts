@@ -21,6 +21,17 @@ describe("resolveViewer", () => {
     expect(resolveViewer({ contentType: "application/zip", filename: "bundle.zip", assetId: "a" }).kind).toBe("download");
   });
 
+  // Text-like source files that aren't one of the special text kinds (markdown,
+  // csv/tsv, json, mermaid, sandboxed markup) fall through to the `code` viewer,
+  // which highlight.js renders. Covers the MIME branch (text/*, application/js|ts)
+  // and the extension branch (TEXT_EXTENSIONS) of `isTextLike`.
+  it("resolves generic text-like source files (by MIME or extension) to the code kind", () => {
+    expect(resolveViewer({ contentType: "text/x-python", filename: "script.py", assetId: "a" }).kind).toBe("code");
+    expect(resolveViewer({ contentType: "application/javascript", filename: "app.js", assetId: "a" }).kind).toBe("code");
+    // Extension alone (generic/unknown content type) still routes a source ext to code.
+    expect(resolveViewer({ contentType: "application/octet-stream", filename: "main.ts", assetId: "a" }).kind).toBe("code");
+  });
+
   it("routes CSV and TSV to the table kind with the correct known delimiter (no sniffing)", () => {
     const csv = resolveViewer({ contentType: "text/csv", filename: "data.csv", assetId: "a" });
     expect(csv.kind).toBe("table");
