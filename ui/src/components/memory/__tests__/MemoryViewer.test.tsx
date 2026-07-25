@@ -48,7 +48,14 @@ vi.mock("../viewers/DocxFileViewer", () => ({
   ),
 }));
 
+vi.mock("../viewers/XlsxFileViewer", () => ({
+  XlsxFileViewer: ({ companyId, assetId }: { companyId: string; assetId: string }) => (
+    <div data-testid="xlsx-file-viewer">{companyId}:{assetId}</div>
+  ),
+}));
+
 const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
 function asset(overrides: Partial<MemoryAssetRecord>): MemoryAssetRecord {
   return {
@@ -118,6 +125,16 @@ describe("MemoryViewer asset routing", () => {
     await waitFor(() => expect(screen.getByTestId("docx-file-viewer")).toBeInTheDocument());
     expect(screen.getByTestId("docx-file-viewer")).toHaveTextContent("co-1:asset-1");
     expect(screen.queryByTestId("shared-content-viewer")).not.toBeInTheDocument();
+  });
+
+  it("routes XLSX assets to the Memory-specific XLSX viewer (not a download card)", async () => {
+    renderAssetViewer(asset({ mimeType: XLSX_MIME, fileName: "budget.xlsx" }));
+
+    await waitFor(() => expect(screen.getByTestId("xlsx-file-viewer")).toBeInTheDocument());
+    expect(screen.getByTestId("xlsx-file-viewer")).toHaveTextContent("co-1:asset-1");
+    // Not the generic shared viewer / download fallback.
+    expect(screen.queryByTestId("shared-content-viewer")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("docx-file-viewer")).not.toBeInTheDocument();
   });
 });
 

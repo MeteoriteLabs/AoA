@@ -7,6 +7,7 @@ import { MarkdownItemViewer } from "./viewers/MarkdownItemViewer";
 import { MemoryFolderSummary } from "./MemoryFolderSummary";
 import { MemoryEmptyViewer } from "./MemoryEmptyViewer";
 import { DocxFileViewer } from "./viewers/DocxFileViewer";
+import { XlsxFileViewer } from "./viewers/XlsxFileViewer";
 import { memoryAssetsApi } from "../../api/memoryAssets";
 import { queryKeys } from "../../lib/queryKeys";
 import { MemoryViewerTabs } from "./MemoryViewerTabs";
@@ -44,8 +45,16 @@ function AssetViewerSlot({ companyId, assetId }: { companyId: string; assetId: s
   }
   const mt = asset.mimeType;
   const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  // DOCX + XLSX preview server-side via the memory-scoped /render route (the
+  // generic assetId does NOT resolve in /assets/:id/render — Memory uses a
+  // separate memory_assets store), so both route to their memory-scoped viewer
+  // rather than resolveViewer. Everything else falls to resolveViewer below.
   if (mt === DOCX_MIME) {
     return <DocxFileViewer companyId={companyId} assetId={assetId} />;
+  }
+  if (mt === XLSX_MIME) {
+    return <XlsxFileViewer companyId={companyId} assetId={assetId} />;
   }
 
   const viewer = resolveViewer({

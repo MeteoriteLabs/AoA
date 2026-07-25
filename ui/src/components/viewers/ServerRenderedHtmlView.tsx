@@ -18,7 +18,15 @@ async function fetchRenderedHtml(url: string): Promise<string> {
   return r.text();
 }
 
-export function ServerRenderedHtmlView({ renderUrl }: { renderUrl: string }) {
+export function ServerRenderedHtmlView({
+  renderUrl,
+  // Type-aware copy: "document" for DOCX, "spreadsheet" for XLSX. Defaults to the
+  // neutral-but-accurate "document" so existing DOCX call sites read unchanged.
+  noun = "document",
+}: {
+  renderUrl: string;
+  noun?: string;
+}) {
   const htmlQuery = useQuery({
     queryKey: ["office-render", renderUrl],
     queryFn: () => fetchRenderedHtml(renderUrl),
@@ -29,7 +37,7 @@ export function ServerRenderedHtmlView({ renderUrl }: { renderUrl: string }) {
   if (htmlQuery.isLoading) {
     return (
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
-        <Loader2 className="h-4 w-4 animate-spin" /> Rendering document…
+        <Loader2 className="h-4 w-4 animate-spin" /> Rendering {noun}…
       </div>
     );
   }
@@ -38,7 +46,7 @@ export function ServerRenderedHtmlView({ renderUrl }: { renderUrl: string }) {
     return (
       <div className="flex flex-col items-center gap-2 py-8 text-sm text-muted-foreground">
         <FileWarning className="h-8 w-8" />
-        <div>Couldn't render this document. Use Download to open it externally.</div>
+        <div>Couldn't render this {noun}. Use Download to open it externally.</div>
       </div>
     );
   }

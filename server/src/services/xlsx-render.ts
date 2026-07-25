@@ -53,7 +53,32 @@ const HTML_ESCAPES: Record<string, string> = {
  * neutralized twice over.
  */
 function esc(value: string): string {
-  return value.replace(/[&<>"']/g, (ch) => HTML_ESCAPES[ch] as string);
+  // Coerce at the boundary (S2): every caller already passes a string via
+  // cellPlainText/String(), but a future exceljs value shape must never be able
+  // to reach `.replace` on a non-string and 500 the render — fail safe to text.
+  return String(value).replace(/[&<>"']/g, (ch) => HTML_ESCAPES[ch] as string);
+}
+
+/**
+ * Flatten a cell's display value to a plain string.
+ *
+ * exceljs types `cell.text` as `string`, but at RUNTIME it returns a rich-text
+ * OBJECT (`{ richText: [{ text }, …] }`) whenever the cell's display value
+ * carries character formatting — e.g. a hyperlink whose label is partly bold, a
+ * routine Excel construct. Escaping that object directly threw
+ * `TypeError: value.replace is not a function` → a 500 on a common spreadsheet.
+ * Concatenate the rich-text runs into one string so both the hyperlink-label and
+ * the catch-all paths always hand `esc` a string.
+ */
+function cellPlainText(cell: Cell): string {
+  const t = cell.text as unknown;
+  if (typeof t === "string") return t;
+  if (t && typeof t === "object" && "richText" in t) {
+    return ((t as { richText?: Array<{ text?: unknown }> }).richText ?? [])
+      .map((r) => String(r?.text ?? ""))
+      .join("");
+  }
+  return t == null ? "" : String(t);
 }
 
 /**
@@ -82,7 +107,7 @@ function cellToHtml(cell: Cell): string {
     "hyperlink" in value
   ) {
     const href = String((value as { hyperlink?: unknown }).hyperlink ?? "");
-    const label = cell.text || href;
+    const label = cellPlainText(cell) || href;
     return `<a href="${esc(href)}">${esc(label)}</a>`;
   }
 
@@ -92,7 +117,7 @@ function cellToHtml(cell: Cell): string {
   }
 
   // String / number / boolean / error / rich text / formula RESULT.
-  return esc(cell.text ?? "");
+  return esc(cellPlainText(cell));
 }
 
 function truncationNote(shown: number, total: number, unit: "rows" | "columns" | "sheets"): string {

@@ -79,6 +79,7 @@ export function SharedContentViewer({ viewer, filename, inlineTextContent = null
           renderUrl={viewer.renderUrl ?? null}
           downloadUrl={viewer.url ?? assetUrl}
           testId="work-product-docx"
+          noun="document"
         />
       );
     case "xlsx":
@@ -87,6 +88,7 @@ export function SharedContentViewer({ viewer, filename, inlineTextContent = null
           renderUrl={viewer.renderUrl ?? null}
           downloadUrl={viewer.url ?? assetUrl}
           testId="work-product-xlsx"
+          noun="spreadsheet"
         />
       );
     case "download":
@@ -101,17 +103,19 @@ function ServerRenderedOutputViewer({
   renderUrl,
   downloadUrl,
   testId,
+  noun,
 }: {
   renderUrl: string | null;
   downloadUrl: string | null;
   testId: string;
+  noun: string;
 }) {
   // Without a render URL there is nothing to fetch — fall back to a download
   // card so the user can still open the file externally.
   if (!renderUrl) return <DownloadFallbackViewer url={downloadUrl} />;
   return (
     <div className="min-h-0 flex-1 overflow-auto bg-background px-10 py-8" data-testid={testId}>
-      <ServerRenderedHtmlView renderUrl={renderUrl} />
+      <ServerRenderedHtmlView renderUrl={renderUrl} noun={noun} />
     </div>
   );
 }

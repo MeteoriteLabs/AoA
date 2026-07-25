@@ -4,6 +4,7 @@ import { memoryAssetsService } from "../services/memory-assets.js";
 import type { StorageService } from "../storage/types.js";
 import { assertCompanyAccess } from "./authz.js";
 import { DOCX_MIME, streamToBuffer, renderDocxBufferToSafeHtml } from "../services/docx-render.js";
+import { XLSX_MIME, renderXlsxBufferToSafeHtml } from "../services/xlsx-render.js";
 
 interface RoutesOptions {
   db?: Db;
@@ -31,9 +32,10 @@ export function memoryAssetRenderRoutes(opts: RoutesOptions) {
           return;
         }
 
-        if (asset.mimeType !== DOCX_MIME) {
+        const mimeType = asset.mimeType;
+        if (mimeType !== DOCX_MIME && mimeType !== XLSX_MIME) {
           res.status(415).json({
-            error: `Render not supported for ${asset.mimeType}. Try /content for the raw bytes.`,
+            error: `Render not supported for ${mimeType}. Try /content for the raw bytes.`,
           });
           return;
         }
@@ -45,10 +47,15 @@ export function memoryAssetRenderRoutes(opts: RoutesOptions) {
 
         const obj = await storage.getObject(companyId, asset.storageKey);
         const buffer = await streamToBuffer(obj.stream);
-        // Shared convert+sanitize+wrap (server/src/services/docx-render.ts) —
-        // single source with the generic /assets/:id/render route so the two
-        // surfaces never drift in security posture.
-        const html = await renderDocxBufferToSafeHtml(buffer);
+        // Shared convert+sanitize+wrap (docx-render.ts / xlsx-render.ts), both
+        // sanitizing through the SAME allow-list-by-default config
+        // (office-html-sanitize.ts) — single source with the generic
+        // /assets/:id/render route so the surfaces never drift in security
+        // posture. Dispatch DOCX vs XLSX by the asset's own mimeType.
+        const html =
+          mimeType === XLSX_MIME
+            ? await renderXlsxBufferToSafeHtml(buffer)
+            : await renderDocxBufferToSafeHtml(buffer);
 
         res.setHeader("Content-Type", "text/html; charset=utf-8");
         res.setHeader("X-Content-Type-Options", "nosniff");

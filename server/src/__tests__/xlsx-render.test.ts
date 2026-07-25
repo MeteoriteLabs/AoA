@@ -92,6 +92,41 @@ describe("renderXlsxBufferToSafeHtml — XLSX render + sanitize", () => {
     expect(html).toContain(">safe<");
   });
 
+  // A hyperlink whose display label carries character formatting (a partly-bold
+  // link — a routine Excel construct) makes exceljs return `cell.text` as a
+  // rich-text OBJECT, not a string. Escaping that object directly threw
+  // `TypeError: value.replace is not a function` → 500. The render must flatten
+  // the rich text to a plain string first: no throw, the label text is shown, and
+  // the <a href> still renders. (Ablation: fails against the pre-fix code.)
+  it("flattens a rich-text hyperlink label instead of throwing (F1)", async () => {
+    const buf = await buildXlsx((wb) => {
+      const ws = wb.addWorksheet("RT");
+      ws.getCell("A1").value = {
+        text: { richText: [{ font: { bold: true }, text: "Click " }, { text: "here" }] },
+        hyperlink: "https://ok.example",
+      };
+    });
+    // Must resolve (not reject with a TypeError) …
+    const html = await renderXlsxBufferToSafeHtml(buf);
+    // … with the rich-text runs flattened into the visible label …
+    expect(html).toContain("Click here");
+    // … and the anchor still rendered with its benign href intact.
+    expect(html).toMatch(/href="https:\/\/ok\.example"/);
+  });
+
+  // A rich-text (non-hyperlink) cell — a cell with mixed formatting — also makes
+  // `cell.text` an object; the catch-all path must flatten it too, not throw.
+  it("flattens a rich-text non-hyperlink cell in the catch-all path (F1)", async () => {
+    const buf = await buildXlsx((wb) => {
+      const ws = wb.addWorksheet("RT2");
+      ws.getCell("A1").value = {
+        richText: [{ font: { bold: true }, text: "Bold " }, { text: "plain" }],
+      };
+    });
+    const html = await renderXlsxBufferToSafeHtml(buf);
+    expect(html).toContain("Bold plain");
+  });
+
   it("escapes an attribute-breakout attempt inside a hyperlink href", async () => {
     const buf = await buildXlsx((wb) => {
       const ws = wb.addWorksheet("B");
