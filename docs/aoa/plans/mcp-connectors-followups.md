@@ -498,3 +498,43 @@ runtime resolve-failure the loader only learns at delivery (option-B territory, 
 a live secret read). Not in FU-1's required cases. If surfacing "credential was deleted" in
 Settings is wanted, it's a small follow-up: have the list endpoint check secret existence for
 each bound `secretRef`, or persist the loader's last resolve-failure.
+
+---
+
+## Codex independent review (2026-07-25) — 8 findings, ALL FIXED
+
+An independent Codex adversarial review of the connector security surface (D7 gate, tool
+auto-allow, approval authz, create/delivery, consent, catalog parse) found 8 real defects —
+none false positives — that survived the internal adversarial reviews. All fixed + ablated;
+consolidated suite 938 green + 192 db green, typecheck clean.
+
+- **Finding 1 (HIGH, FIXED `d072221b4`)** — template value validation only checked
+  "contains a `${...}`", so `"Bearer ${TOKEN} sk-live-REAL"` put a literal secret on disk and
+  `"Bearer ${ANTHROPIC_API_KEY}"` exfiltrated an AMBIENT AoA credential into a third-party
+  request. Now anchored to `/^([A-Za-z][A-Za-z0-9-]* )?\$\{TOKEN\}$/` (only the connector's own
+  `${TOKEN}`), + args reject any non-`${TOKEN}` `${...}`, + URL-userinfo rejected. Verified
+  all legit forms pass / all exfil forms reject.
+- **Finding 2 (HIGH, FIXED `d20aa9736`)** — a BYO connector referencing `${TOKEN}` with no
+  `secretRef` went `active` but authenticated as no-one. Now `requiresSecret` is derived from
+  the `${TOKEN}` reference; a placeholder-without-secretRef is rejected at create.
+- **Finding 4 (FIXED `2deb4114c`)** — create+approval now atomic (one txn); racy
+  check-then-insert replaced with a narrow unique-constraint catch → clean 409; activity log
+  best-effort post-commit (a log failure no longer 500s a committed create).
+- **Finding 6 (FIXED `872a7ccf4`)** — approval/bind guarded on secret-boundness (not status
+  alone) with a bounded re-read/retry, so a bind racing an approval can't strand a
+  secret-bound connector inactive.
+- **Finding 3 (FIXED `eb5a03f15`)** — the runtime auto-allow now re-checks the LIVE connector
+  probe even when a trust rule matches, so disabling/unassigning a connector revokes its tools
+  even if the founder previously chose "always allow". Non-connector rules byte-identical.
+- **Finding 5 (FIXED `0b70cf9c0`)** — a catalog entry carrying a value-bearing template alias
+  (`headerTemplate`/`envTemplate`) is now DROPPED at parse (pre-`safeParse` denylist) rather
+  than silently `.strip()`-retained; FU-22 additive-field forward-compat preserved.
+- **Finding 7 (FIXED `0b70cf9c0`)** — duplicate catalog `id`s are deduped at parse (first-wins,
+  matching the install `find()`), so a trailing malicious clone can't shadow the primary.
+- **Finding 8 (FIXED `f7bf3654e`)** — the auto-allow parser now rejects a blank/separator-only
+  tool portion (`mcp__notion__ ` no longer resolves to `notion`).
+
+### FU-30 — marketplace aggregator should also reject duplicate connector ids · P3
+The AoA-side parser now dedups ids (Finding 7 defense-in-depth), but the `aoa-marketplace`
+builder (`aggregate-connectors`) should reject duplicate ids at BUILD time so a collision never
+ships in `connectors.json`. Flag for the marketplace repo (`feat/connectors-catalog`).
