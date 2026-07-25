@@ -16,7 +16,7 @@
 
 import express from "express";
 import request from "supertest";
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { McpConnectorCatalogEntrySchema, type McpConnectorCatalogEntry } from "@armyofagents/shared";
 
 let deploymentMode = "local_trusted";
@@ -788,5 +788,70 @@ describe("catalog shelf route — how the UI obtains a consent token", () => {
     mockGetEffectiveRole.mockResolvedValue(role);
     const res = await getCatalog(makeApp(founderActor));
     expect(res.status).toBe(403);
+  });
+
+  // FU-24 — when the signing secret is unset, a consent-requiring stdio entry
+  // cannot be minted a token, so the install POST would 400 on the missing
+  // token. The shelf must present such an entry as UNAVAILABLE (not a dead,
+  // enabled Install button) with a reason naming the misconfiguration.
+  describe("FU-24 — consent-gated stdio when no signing secret is configured", () => {
+    let priorBetterAuth: string | undefined;
+    let priorJwt: string | undefined;
+
+    beforeEach(() => {
+      priorBetterAuth = process.env.BETTER_AUTH_SECRET;
+      priorJwt = process.env.AOA_AGENT_JWT_SECRET;
+      // Both names resolveConsentSecret() checks — remove both so it throws.
+      delete process.env.BETTER_AUTH_SECRET;
+      delete process.env.AOA_AGENT_JWT_SECRET;
+      // local_trusted so D7 permits acme: the only thing standing in the way is
+      // the missing signing secret, isolating exactly this fix.
+      deploymentMode = "local_trusted";
+    });
+
+    afterEach(() => {
+      if (priorBetterAuth === undefined) delete process.env.BETTER_AUTH_SECRET;
+      else process.env.BETTER_AUTH_SECRET = priorBetterAuth;
+      if (priorJwt === undefined) delete process.env.AOA_AGENT_JWT_SECRET;
+      else process.env.AOA_AGENT_JWT_SECRET = priorJwt;
+    });
+
+    it("marks the entry NOT installable, with a clear reason and NO token", async () => {
+      const res = await getCatalog(makeApp(founderActor));
+      const acme = res.body.entries.find((e: { id: string }) => e.id === "acme") as {
+        installable: boolean;
+        consentRequired: boolean;
+        consentToken?: string;
+        unavailableReason?: string;
+      };
+      expect(acme.consentRequired).toBe(true);
+      expect(acme.installable).toBe(false);
+      expect(acme.consentToken).toBeUndefined();
+      expect(acme.unavailableReason).toMatch(/signing secret/i);
+    });
+
+    it("leaves consent-free entries (http + verified stdio) installable and reason-free", async () => {
+      const res = await getCatalog(makeApp(founderActor));
+      const byId = Object.fromEntries(
+        res.body.entries.map((e: { id: string }) => [e.id, e]),
+      ) as Record<string, { installable: boolean; unavailableReason?: string }>;
+      expect(byId.notion.installable).toBe(true);
+      expect(byId.notion).not.toHaveProperty("unavailableReason");
+      expect(byId.fs.installable).toBe(true);
+      expect(byId.fs).not.toHaveProperty("unavailableReason");
+    });
+
+    it("with the signing secret present the SAME entry IS installable with a token (ablation companion)", async () => {
+      process.env.BETTER_AUTH_SECRET = "fu24-test-signing-secret";
+      const res = await getCatalog(makeApp(founderActor));
+      const acme = res.body.entries.find((e: { id: string }) => e.id === "acme") as {
+        installable: boolean;
+        consentToken?: string;
+        unavailableReason?: string;
+      };
+      expect(acme.installable).toBe(true);
+      expect(typeof acme.consentToken).toBe("string");
+      expect(acme).not.toHaveProperty("unavailableReason");
+    });
   });
 });

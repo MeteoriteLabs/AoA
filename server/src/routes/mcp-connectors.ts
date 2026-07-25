@@ -399,6 +399,26 @@ export function mcpConnectorRoutes(db: Db, opts: McpConnectorRouteOptions = {}) 
       }
 
       const consentRequired = requiresInstallConsent(entry);
+
+      // FU-24 — a consent-gated stdio entry is installable ONLY if a consent
+      // token can be minted, and a token cannot be minted without the server
+      // signing secret. When the secret is unavailable the install POST would
+      // reject on the missing token, so presenting the entry as `installable`
+      // renders a dead Install button + consent dialog that always 400s. Mark it
+      // unavailable with the real reason instead — the same shape D7-refused
+      // entries already use, so "why can't I install this?" is always answered on
+      // the shelf rather than buried in a log line. `installable` is only cleared
+      // here when D7 already permitted it (still true), so this never clobbers the
+      // D7 refusal message.
+      if (installable && consentRequired && !secret) {
+        installable = false;
+        unavailableReason =
+          "This connector runs a command on the AoA host and needs an install " +
+          "confirmation the server cannot sign: no signing secret " +
+          "(BETTER_AUTH_SECRET or AOA_AGENT_JWT_SECRET) is configured. Set one to " +
+          "enable consent-gated connector installs.";
+      }
+
       const base = {
         ...entry,
         installable,
@@ -406,9 +426,11 @@ export function mcpConnectorRoutes(db: Db, opts: McpConnectorRouteOptions = {}) 
         ...(unavailableReason ? { unavailableReason } : {}),
       };
 
-      // No token for an entry D7 will refuse. Handing one out would suggest
+      // No token for an entry D7 will refuse, nor for one we could not sign
+      // (installable was just cleared above). Handing one out would suggest
       // consent is the thing standing in the way, when the deployment simply may
-      // not run host code at all.
+      // not run host code at all. The `!secret` guard is retained so a token is
+      // never minted against a null secret even if the branches above change.
       if (!consentRequired || !installable || !secret) return base;
 
       return {
