@@ -116,6 +116,42 @@ describe("connector catalog service — degradation", () => {
     expect(res).toEqual({ entries: [], stale: true });
   });
 
+  it("falls back to the bundled snapshot (offline, cache never populated)", async () => {
+    // P3b: an air-gapped instance whose CDN fetch fails on the very first load
+    // serves the build-time bundled snapshot instead of an empty shelf.
+    const fetchFn = vi.fn(async () => {
+      throw new Error("offline");
+    });
+    const svc = createConnectorCatalogService({
+      url: URL_,
+      fetchFn: fetchFn as unknown as typeof fetch,
+      snapshot: [httpEntry("snap-notion"), httpEntry("snap-linear")],
+    });
+
+    const res = await svc.load(T0);
+    expect(res.stale).toBe(true);
+    expect(res.entries.map((e) => e.id)).toEqual(["snap-notion", "snap-linear"]);
+  });
+
+  it("prefers a live cache over the snapshot once it has fetched successfully", async () => {
+    let mode: "ok" | "throw" = "ok";
+    const fetchFn = vi.fn(async () => {
+      if (mode === "throw") throw new Error("offline");
+      return okJson({ entries: [httpEntry("live")] });
+    });
+    const svc = createConnectorCatalogService({
+      url: URL_,
+      fetchFn: fetchFn as unknown as typeof fetch,
+      snapshot: [httpEntry("snap-only")],
+    });
+
+    await svc.load(T0); // populates cache with "live"
+    mode = "throw";
+    const res = await svc.load(T0 + CONNECTOR_CATALOG_TTL_MS);
+    // Live cache wins over the snapshot — the snapshot is only a never-fetched fallback.
+    expect(res.entries.map((e) => e.id)).toEqual(["live"]);
+  });
+
   it("treats a non-ok HTTP status as a failure and keeps the cache", async () => {
     let status = 200;
     const fetchFn = vi.fn(async () =>

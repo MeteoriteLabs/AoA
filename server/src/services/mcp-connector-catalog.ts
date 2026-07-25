@@ -40,6 +40,9 @@
  * a hot path; today it is one founder-facing page.
  */
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import {
   parseMcpConnectorCatalog,
   type McpConnectorCatalogEntry,
@@ -82,17 +85,32 @@ export interface ConnectorCatalogService {
 export function createConnectorCatalogService(opts: {
   url: string;
   fetchFn?: typeof fetch;
+  /**
+   * Build-time bundled snapshot (offline/air-gapped fallback). Used ONLY when the
+   * live cache has never been populated (the CDN was unreachable on the very first
+   * load) — an online instance that has fetched even once serves its own cache and
+   * never touches this. Mirrors the main catalog's `bundledSnapshotProvider`
+   * (app.ts). Absent/empty → the shelf degrades to empty, exactly as before.
+   */
+  snapshot?: readonly McpConnectorCatalogEntry[];
 }): ConnectorCatalogService {
   const doFetch = opts.fetchFn ?? fetch;
 
   let cached: McpConnectorCatalogEntry[] | null = null;
   let fetchedAtMs = 0;
 
-  /** Last known-good, or an empty shelf if we have never had one. Always a copy. */
-  const serveCache = (): ConnectorCatalogLoadResult => ({
-    entries: cached ? [...cached] : [],
-    stale: true,
-  });
+  /**
+   * Last known-good; else the bundled snapshot if we have one and have never
+   * fetched successfully; else an empty shelf. Always a copy. `stale: true` — a
+   * cache/snapshot result is by definition not a fresh CDN answer.
+   */
+  const serveCache = (): ConnectorCatalogLoadResult => {
+    if (cached) return { entries: [...cached], stale: true };
+    if (opts.snapshot && opts.snapshot.length > 0) {
+      return { entries: [...opts.snapshot], stale: true };
+    }
+    return { entries: [], stale: true };
+  };
 
   return {
     async load(nowMs: number): Promise<ConnectorCatalogLoadResult> {
@@ -182,6 +200,32 @@ export function createConnectorCatalogService(opts: {
  * through the SAME parse, drop, malformed and cache logic as the CDN path — a
  * bypass would make the e2e prove something production never does.
  */
+/**
+ * Best-effort synchronous read of the build-time bundled connector snapshot
+ * (`ui/src/aoa-connectors-snapshot.json`, gitignored — written by
+ * `pnpm fetch-connectors` before boot, mirroring `fetch-catalog`). Returns the
+ * validated entries, or `undefined` if the file is absent/unreadable/malformed.
+ *
+ * Reused via `parseMcpConnectorCatalog`, so a drifted snapshot drops its bad
+ * entries exactly like the CDN path rather than crashing the boot. The path is
+ * three levels up from this module in both `server/src/services` (dev, tsx) and
+ * `server/dist/services` (prod) — identical depth — so one relative path works
+ * for both. Any failure is swallowed: the snapshot is a pure fallback and must
+ * never fail the server if it is missing (the common case until connectors are
+ * published).
+ */
+function loadBundledConnectorSnapshot(): readonly McpConnectorCatalogEntry[] | undefined {
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const snapshotPath = join(here, "..", "..", "..", "ui", "src", "aoa-connectors-snapshot.json");
+    const body = JSON.parse(readFileSync(snapshotPath, "utf8"));
+    const { entries } = parseMcpConnectorCatalog(body);
+    return entries.length > 0 ? entries : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function resolveConnectorCatalogService(): ConnectorCatalogService {
   const fixturePath = process.env.AOA_E2E_CONNECTOR_CATALOG_PATH?.trim();
   if (fixturePath && process.env.NODE_ENV !== "production") {
@@ -198,5 +242,8 @@ export function resolveConnectorCatalogService(): ConnectorCatalogService {
       },
     });
   }
-  return createConnectorCatalogService({ url: DEFAULT_CONNECTOR_CATALOG_URL });
+  return createConnectorCatalogService({
+    url: DEFAULT_CONNECTOR_CATALOG_URL,
+    snapshot: loadBundledConnectorSnapshot(),
+  });
 }
