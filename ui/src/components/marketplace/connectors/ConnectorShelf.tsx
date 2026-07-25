@@ -76,6 +76,15 @@ function ShelfCard({ entry, installed, busy, onInstall }: ShelfCardProps) {
               />
             )}
             <TrustPill tier={entry.trust?.tier ?? "community"} />
+            {entry.requiresOAuth && (
+              <Badge
+                data-testid="connector-oauth-tag"
+                variant="idle"
+                className="text-[10px]"
+              >
+                OAuth
+              </Badge>
+            )}
           </div>
           <div className="mt-0.5 text-[12px] text-very-dim truncate font-mono">
             {entry.transport === "http" ? entry.url : commandLine(entry)}

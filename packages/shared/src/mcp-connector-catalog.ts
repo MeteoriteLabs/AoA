@@ -63,6 +63,19 @@ export const McpConnectorCatalogEntrySchema = z
      */
     envTemplateKeys: z.array(z.string().regex(ENV_NAME_RE)).default([]),
     requiresSecret: z.boolean().default(false),
+    /**
+     * OAuth-ONLY remote server (e.g. Notion's hosted `mcp.notion.com`): it rejects
+     * a bearer token and demands an interactive browser OAuth flow, so it CANNOT
+     * work headlessly under our token model. Such an entry is a VALID catalog entry
+     * — it is meant to be SHOWN side by side with a working connector, clearly
+     * labelled "needs OAuth" — but is NOT installable until the OAuth broker lands
+     * (Plan 4). Downstream (`server/src/routes/mcp-connectors.ts`) projects it as
+     * `installable: false` + an `unavailableReason`, mints no consent token, and
+     * the install route refuses it. Defaults `false`, so every existing entry is
+     * unaffected. (Notion live finding; founder decision — see
+     * `docs/aoa/plans/mcp-connectors-followups.md`.)
+     */
+    requiresOAuth: z.boolean().default(false),
     secretLabel: z.string().max(200).optional(),
     docsUrl: z.string().url().optional(),
     trust: McpConnectorTrustSchema,

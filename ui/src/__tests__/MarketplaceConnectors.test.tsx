@@ -306,6 +306,54 @@ describe("Marketplace → Connectors", () => {
     expect(within(card).queryByRole("button", { name: /install/i })).not.toBeInTheDocument();
   });
 
+  it("renders an OAuth-only entry as present, tagged, with its reason and no Install", async () => {
+    catalogMock.mockResolvedValue({
+      entries: [
+        shelfEntry({
+          id: "notion-hosted",
+          displayName: "Notion (hosted)",
+          serverName: "notion-hosted",
+          requiresOAuth: true,
+          installable: false,
+          unavailableReason:
+            "This connector uses OAuth sign-in, which isn't available yet (coming with the OAuth broker).",
+        }),
+      ],
+      stale: false,
+    });
+    renderPage();
+
+    const card = await screen.findByTestId("connector-shelf-card-notion-hosted");
+    // The card is present (shown, not hidden) and carries a distinct OAuth tag.
+    expect(within(card).getByTestId("connector-oauth-tag")).toBeInTheDocument();
+    expect(within(card).getByText(/uses OAuth sign-in/i)).toBeInTheDocument();
+    // ...and offers no actionable Install.
+    expect(within(card).queryByRole("button", { name: /install/i })).not.toBeInTheDocument();
+  });
+
+  it("still installs a normal entry shown beside an OAuth-only one", async () => {
+    catalogMock.mockResolvedValue({
+      entries: [
+        shelfEntry(),
+        shelfEntry({
+          id: "notion-hosted",
+          displayName: "Notion (hosted)",
+          serverName: "notion-hosted",
+          requiresOAuth: true,
+          installable: false,
+          unavailableReason: "This connector uses OAuth sign-in, which isn't available yet.",
+        }),
+      ],
+      stale: false,
+    });
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: /install notion/i }));
+    await waitFor(() =>
+      expect(installMock).toHaveBeenCalledWith(COMPANY_ID, { entryId: "notion" }),
+    );
+  });
+
   it("falls back to generic copy when the server sends no reason", async () => {
     catalogMock.mockResolvedValue({
       entries: [

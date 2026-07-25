@@ -257,6 +257,16 @@ export const installFromCatalogSchema = z
   .strict();
 
 /**
+ * The single refusal message for an OAuth-only catalog entry, shared by the shelf
+ * projection (as `unavailableReason`) and the install route (as its 400 body), so
+ * the reason the founder reads on the shelf is the reason the install would give.
+ * OAuth-brokered installs are Plan 4; until the broker ships these entries are
+ * shown-but-not-installable.
+ */
+const OAUTH_UNAVAILABLE_REASON =
+  "This connector uses OAuth sign-in, which isn't available yet (coming with the OAuth broker).";
+
+/**
  * Only an UNVERIFIED `stdio` entry needs command-bound consent.
  *
  * `stdio` because that is the transport that spawns a process on the AoA host;
@@ -423,14 +433,25 @@ export function mcpConnectorRoutes(db: Db, opts: McpConnectorRouteOptions = {}) 
       // actually happened.
       let installable = true;
       let unavailableReason: string | undefined;
-      try {
-        assertTransportAllowed(entry.transport, deploymentMode, "catalog", entry.trust?.tier);
-      } catch (err) {
+      // OAuth-only entries are unavailable REGARDLESS of transport/consent, so this
+      // gate runs FIRST — before D7 and before any consent-token minting. An
+      // OAuth-brokered install is Plan 4; until the broker lands, such an entry
+      // can only be SHOWN, never installed. Skipping the D7 branch here also keeps
+      // the reason honest: the founder reads "needs OAuth", not a transport refusal
+      // that isn't the real blocker.
+      if (entry.requiresOAuth) {
         installable = false;
-        unavailableReason =
-          err instanceof Error && err.message
-            ? err.message
-            : "This connector cannot be installed in this deployment.";
+        unavailableReason = OAUTH_UNAVAILABLE_REASON;
+      } else {
+        try {
+          assertTransportAllowed(entry.transport, deploymentMode, "catalog", entry.trust?.tier);
+        } catch (err) {
+          installable = false;
+          unavailableReason =
+            err instanceof Error && err.message
+              ? err.message
+              : "This connector cannot be installed in this deployment.";
+        }
       }
 
       const consentRequired = requiresInstallConsent(entry);
@@ -519,6 +540,16 @@ export function mcpConnectorRoutes(db: Db, opts: McpConnectorRouteOptions = {}) 
       if (!entry) {
         res.status(404).json({ error: "Connector not found in catalog" });
         return;
+      }
+
+      // (0) OAuth — DEFENSE IN DEPTH. The shelf already marks a `requiresOAuth`
+      // entry `installable: false`, but a direct API call bypasses the UI, so this
+      // must never reach `createConnector`. It runs first, before D7 and consent,
+      // because OAuth is unsupported regardless of transport or deployment mode —
+      // there is no token model that makes an OAuth-only server work headlessly
+      // today (Plan 4 broker).
+      if (entry.requiresOAuth) {
+        throw badRequest(OAUTH_UNAVAILABLE_REASON);
       }
 
       const deploymentMode = loadConfig().deploymentMode;

@@ -92,6 +92,28 @@ describe("McpConnectorCatalogEntrySchema", () => {
     expect(r.success).toBe(true);
   });
 
+  it("accepts requiresOAuth:true as a valid entry (shown-but-not-installable)", () => {
+    const r = McpConnectorCatalogEntrySchema.safeParse({ ...httpEntry, requiresOAuth: true });
+    expect(r.success).toBe(true);
+    expect(r.success && r.data.requiresOAuth).toBe(true);
+  });
+
+  it("defaults requiresOAuth to false when absent", () => {
+    const r = McpConnectorCatalogEntrySchema.parse(httpEntry);
+    expect(r.requiresOAuth).toBe(false);
+  });
+
+  it("keeps requiresOAuth alongside unknown-field tolerance (.strip() intact)", () => {
+    const r = McpConnectorCatalogEntrySchema.safeParse({
+      ...httpEntry,
+      requiresOAuth: true,
+      iconUrl: "https://cdn/x.png",
+    });
+    expect(r.success).toBe(true);
+    expect(r.success && r.data.requiresOAuth).toBe(true);
+    expect(r.success && r.data).not.toHaveProperty("iconUrl");
+  });
+
   it("rejects an http entry that also carries a command (symmetric transport exclusion)", () => {
     const r = McpConnectorCatalogEntrySchema.safeParse({ ...httpEntry, command: "npx" });
     expect(r.success).toBe(false);

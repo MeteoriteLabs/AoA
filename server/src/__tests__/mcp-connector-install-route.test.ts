@@ -144,6 +144,18 @@ const unverifiedStdio = entry({
   trust: { tier: "community" },
 });
 
+// An OAuth-only hosted server (the Notion `mcp.notion.com` live finding): a valid
+// catalog entry that can be SHOWN but not installed until the Plan 4 broker lands.
+const oauthHttp = entry({
+  id: "notion-hosted",
+  displayName: "Notion (hosted)",
+  serverName: "notion-hosted",
+  transport: "http",
+  url: "https://mcp.notion.com/mcp",
+  requiresOAuth: true,
+  trust: { tier: "verified" },
+});
+
 const CATALOG = [verifiedHttp, verifiedStdio, unverifiedStdio];
 
 function makeApp(actor: unknown, entries: McpConnectorCatalogEntry[] = CATALOG, stale = false) {
@@ -672,6 +684,67 @@ describe("install route — D7 authorization is independent of consent", () => {
       .mock.invocationCallOrder[0];
     const writeOrder = mockConnectorSvc.create.mock.invocationCallOrder[0];
     expect(gateOrder).toBeLessThan(writeOrder);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// requiresOAuth — shown-but-not-installable until the Plan 4 OAuth broker
+// ---------------------------------------------------------------------------
+
+describe("install route — an OAuth-only entry is refused before any write", () => {
+  it("installing an OAuth entry -> 400 naming OAuth, no connector created", async () => {
+    deploymentMode = "local_trusted";
+    const res = await install(makeApp(founderActor, [oauthHttp]), { entryId: "notion-hosted" });
+    expect(res.status).toBe(400);
+    expect(mockConnectorSvc.create).not.toHaveBeenCalled();
+    expect(JSON.stringify(res.body)).toMatch(/OAuth/i);
+  });
+
+  it("the OAuth refusal runs BEFORE D7 — the transport gate is never consulted", async () => {
+    // OAuth is unsupported regardless of transport/mode, so the OAuth branch must
+    // short-circuit ahead of D7. (This entry is http+verified, which D7 would
+    // otherwise wave through — so a create would happen if the OAuth guard were
+    // absent, which is exactly what the ablation proves.)
+    deploymentMode = "authenticated";
+    const res = await install(makeApp(founderActor, [oauthHttp]), { entryId: "notion-hosted" });
+    expect(res.status).toBe(400);
+    expect(assertTransportAllowed).not.toHaveBeenCalled();
+    expect(mockConnectorSvc.create).not.toHaveBeenCalled();
+  });
+
+  it("a normal verified entry still installs (the guard is scoped to requiresOAuth)", async () => {
+    deploymentMode = "authenticated";
+    const res = await install(makeApp(founderActor, [oauthHttp, verifiedHttp]), {
+      entryId: "notion",
+    });
+    expect(res.status).toBe(201);
+    expect(mockConnectorSvc.create).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("catalog shelf route — an OAuth-only entry is shown, not installable", () => {
+  it("projects installable:false + an OAuth reason + no consent token", async () => {
+    deploymentMode = "local_trusted";
+    const res = await getCatalog(makeApp(founderActor, [oauthHttp]));
+    const oauth = res.body.entries.find((e: { id: string }) => e.id === "notion-hosted") as {
+      installable: boolean;
+      unavailableReason?: string;
+      consentToken?: string;
+    };
+    expect(oauth.installable).toBe(false);
+    expect(oauth.unavailableReason).toMatch(/OAuth/i);
+    expect(oauth.consentToken).toBeUndefined();
+  });
+
+  it("a normal verified entry beside it is unchanged (installable, no reason)", async () => {
+    deploymentMode = "authenticated";
+    const res = await getCatalog(makeApp(founderActor, [oauthHttp, verifiedHttp]));
+    const byId = Object.fromEntries(
+      res.body.entries.map((e: { id: string }) => [e.id, e]),
+    ) as Record<string, { installable: boolean; unavailableReason?: string }>;
+    expect(byId["notion-hosted"].installable).toBe(false);
+    expect(byId.notion.installable).toBe(true);
+    expect(byId.notion).not.toHaveProperty("unavailableReason");
   });
 });
 
