@@ -463,3 +463,22 @@ the LOCAL/stdio variant where one exists (works today) or mark the hosted entry
 `requiresOAuth` and gate it behind Plan 4. Shipping a hosted-Notion HTTP entry that can only
 ever OAuth-fail headlessly would be a bad first impression. A `connectors.json` entry needs a
 way to say "this one needs OAuth, not a token."
+
+### FU-26 — delivery-time D7 re-check does not catch catalog REVOCATION/demotion · P2
+Found by the FU-19-followup security review. The persisted `trustTier` lets a verified catalog
+stdio connector survive a `local_trusted → authenticated` mode conversion (the intended fix).
+But the persisted tier is NOT re-validated against the live catalog at delivery: if a
+`verified` stdio entry is later demoted to `community` (or found malicious) in `connectors.json`
+after install, the row keeps its stored `"verified"` and keeps executing on the host in
+`authenticated`. Matches the narrow scope of the fix (mode conversion), and install already
+committed to running it — but connector *revocation* is unhandled. If revocation is in the
+threat model, the delivery gate (or a periodic sweep) should reconcile stored tier against the
+current catalog and flip a demoted connector to `disabled` with a visible reason. Related to
+the "installed connector should reflect catalog updates" concern (Decision #96 territory).
+
+### FU-27 — pre-0180 verified catalog stdio connectors fail closed after a mode conversion · P3
+Any verified catalog stdio connector installed BEFORE migration `0180` has `trust_tier = null`,
+so after a `local_trusted → authenticated` conversion it is dropped (fail-closed) until
+reinstalled. Safe direction, availability-only, narrow case. A one-time backfill (re-resolve
+tier from the catalog for `source='catalog'` rows) would remove the reinstall requirement, but
+isn't worth it unless a real deployment hits it.

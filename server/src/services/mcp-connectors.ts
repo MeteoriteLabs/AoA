@@ -164,8 +164,6 @@ export function selectConnectorRowsForAgent<T extends { id: string; status: stri
         row.source ?? "",
         // Stored column is nullable; the gate takes `string | undefined` and
         // treats a null/missing tier as unverified (fail-closed).
-        // Stored column is nullable; the gate takes `string | undefined` and
-        // treats a null/missing tier as unverified (fail-closed).
         row.trustTier ?? undefined,
       );
       if (!allowed) {
