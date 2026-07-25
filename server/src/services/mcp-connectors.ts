@@ -1,5 +1,9 @@
 import type { McpServerSpec } from "@armyofagents/adapter-utils";
-import { RESERVED_MCP_SERVER_NAMES } from "@armyofagents/adapter-utils";
+import {
+  RESERVED_MCP_SERVER_NAMES,
+  isStdioServerSpec,
+  stdioSpecCarriesSecretPlaceholder,
+} from "@armyofagents/adapter-utils";
 import { isTransportAllowed } from "./mcp-connector-transport-gate.js";
 
 /**
@@ -322,4 +326,193 @@ export function buildConnectorSpecs(rows: ResolvedConnectorRow[]): ConnectorBuil
   }
 
   return { specs, env, skipped };
+}
+
+/**
+ * The adapter type whose runtime cannot deliver a stdio connector's secret at
+ * all (Plan 2b B2N9). codex expands nothing inside stdio `args`/`env` AND scrubs
+ * its own environment before spawning an MCP child, so a `${AOA_MCP_*}`
+ * placeholder never resolves. The native TOML writer classifies that as
+ * `secret_unreachable` (`packages/adapters/codex-local/.../codex-config-toml.ts`);
+ * the deliverability preview below mirrors that exact verdict for the Settings
+ * surface so the founder learns it WITHOUT a run having to fail first.
+ */
+const CODEX_ADAPTER_TYPE = "codex_local";
+
+/**
+ * Why an ACTIVE connector would not currently reach an intended recipient.
+ *
+ * A SUPERSET of the two upstream skip vocabularies, deliberately reusing their
+ * member names so the preview cannot drift into a third dialect:
+ *  - `missing_url` | `missing_command` | `unknown_transport` | `malformed_row`
+ *    | `d7_blocked` — the server-side {@link ConnectorSkipReason} (bad row → no
+ *    spec, or the delivery-time D7 re-gate). These are CONNECTOR-GLOBAL: they do
+ *    not depend on which agent receives the connector.
+ *  - `secret_unreachable` — the adapter-writer skip
+ *    (`McpWriterSkipReason` in `@armyofagents/adapter-utils`). This is
+ *    PER-ADAPTER: only codex cannot deliver a stdio secret, so the same
+ *    connector can be deliverable to a claude agent and undeliverable to a codex
+ *    one.
+ *  - `adapter_incapable` — the assigned agent's adapter has no MCP client at all
+ *    (`process`/`http`/…); the connector is silently absent for that agent.
+ *    Also per-adapter, and not expressible in either upstream vocabulary because
+ *    those describe rows/specs, not the recipient.
+ */
+export type ConnectorDeliverabilityReason =
+  | ConnectorSkipReason
+  | "secret_unreachable"
+  | "adapter_incapable";
+
+/** One assigned agent that would NOT receive an otherwise-active connector. */
+export interface BlockedAgentDeliverability {
+  agentId: string;
+  agentName: string;
+  reason: ConnectorDeliverabilityReason;
+}
+
+/**
+ * Computed "would this connector actually reach agents right now?" summary for
+ * the Settings surface (FU-1). Only produced for ACTIVE connectors — a
+ * non-active connector's status badge already explains itself, so
+ * {@link computeConnectorDeliverability} returns `null` for those.
+ */
+export interface ConnectorDeliverabilitySummary {
+  /** True iff no global block AND no assigned agent is blocked. */
+  deliverable: boolean;
+  /**
+   * A CONNECTOR-GLOBAL block (D7, or a malformed/incomplete row) that stops the
+   * connector reaching ANY recipient — Commander included. `null` when the
+   * connector is well-formed and admissible and only per-agent issues (if any)
+   * remain.
+   */
+  reason: ConnectorDeliverabilityReason | null;
+  /**
+   * Assigned agents that individually cannot receive the connector even though
+   * it is globally deliverable (codex `secret_unreachable`, or a non-MCP
+   * adapter). Empty when `reason` is set (a global block supersedes) or when
+   * every assigned agent can receive it.
+   */
+  blockedAgents: BlockedAgentDeliverability[];
+}
+
+export interface ConnectorDeliverabilityInput {
+  connector: {
+    status: string;
+    transport: string;
+    source?: string;
+    trustTier?: string | null;
+    url: string | null;
+    command: string | null;
+    args: string[];
+    headerTemplate: Record<string, string>;
+    envTemplate: Record<string, string>;
+    /** The BOUND secret reference, if any. A non-null value means "has a secret". */
+    secretRef: string | null;
+  };
+  /** The host's CURRENT deployment mode — the axis the D7 re-gate evaluates. */
+  deploymentMode: string;
+  /** The connector's per-agent opt-in set, resolved to name + adapter type. */
+  assignedAgents: Array<{
+    agentId: string;
+    agentName: string;
+    adapterType: string | null | undefined;
+  }>;
+}
+
+/**
+ * Compute whether an ACTIVE connector would currently be delivered, and if not,
+ * the classified reason — WITHOUT depending on a run having happened (option A).
+ *
+ * Faithful to the real delivery pipeline because it reuses the SAME primitives
+ * the pipeline uses:
+ *  1. D7 re-gate — `isTransportAllowed` (the exact check inside
+ *     `selectConnectorRowsForAgent`). A connector the current host would refuse
+ *     to CREATE is globally undeliverable → `d7_blocked`.
+ *  2. Spec shape — `buildConnectorSpecs`. A row that produces no spec
+ *     (`missing_url`/`missing_command`/`unknown_transport`/`malformed_row`) is
+ *     globally undeliverable with that exact reason. Secret PRESENCE is modeled
+ *     by a sentinel `secretValue` derived from `secretRef` so the spec's
+ *     `secretEnvVar` signal is set exactly when a real secret is bound — the
+ *     real value is neither known nor needed here.
+ *  3. Per-adapter writer — `stdioSpecCarriesSecretPlaceholder` (the exact
+ *     predicate the codex TOML writer skips on) for codex, and
+ *     `adapterSupportsConnectors` for a non-MCP adapter.
+ *
+ * Returns `null` for a non-active connector: its status badge is the surface.
+ */
+export function computeConnectorDeliverability(
+  input: ConnectorDeliverabilityInput,
+): ConnectorDeliverabilitySummary | null {
+  const { connector, deploymentMode, assignedAgents } = input;
+  if (connector.status !== "active") return null;
+
+  // (1) D7 — connector-global, and applied FIRST exactly as the delivery
+  // selector does. A connector the current host may not execute reaches no one.
+  const d7Ok = isTransportAllowed(
+    connector.transport,
+    deploymentMode,
+    connector.source ?? "",
+    connector.trustTier ?? undefined,
+  );
+  if (!d7Ok) {
+    return { deliverable: false, reason: "d7_blocked", blockedAgents: [] };
+  }
+
+  // (2) Spec shape — connector-global. Model secret PRESENCE (not value) so the
+  // built spec's `secretEnvVar`/`authTokenEnvVar` signal matches production.
+  const hasSecret = Boolean(connector.secretRef);
+  const { specs, skipped } = buildConnectorSpecs([
+    {
+      serverName: "preview", // key is irrelevant here; a single-row build
+      transport: connector.transport,
+      url: connector.url,
+      command: connector.command,
+      args: connector.args,
+      headerTemplate: connector.headerTemplate,
+      envTemplate: connector.envTemplate,
+      // Sentinel: only truthiness matters. NEVER a real credential — this path
+      // does not resolve secrets, and must not.
+      secretValue: hasSecret ? " bound" : null,
+    },
+  ]);
+  if (skipped.length > 0) {
+    return { deliverable: false, reason: skipped[0].reason, blockedAgents: [] };
+  }
+
+  const spec = specs.preview;
+
+  // (3) Per-assigned-agent adapter checks. A connector with no assigned agents
+  // is not a failure: it still reaches Commander (all-active) and any agent the
+  // founder later assigns, so there is nothing to warn about.
+  const blockedAgents: BlockedAgentDeliverability[] = [];
+  for (const agent of assignedAgents) {
+    if (!adapterSupportsConnectors(agent.adapterType)) {
+      blockedAgents.push({
+        agentId: agent.agentId,
+        agentName: agent.agentName,
+        reason: "adapter_incapable",
+      });
+      continue;
+    }
+    // codex cannot deliver a stdio secret at all — the SAME predicate its TOML
+    // writer skips on, so this preview cannot disagree with the real write.
+    if (
+      agent.adapterType === CODEX_ADAPTER_TYPE &&
+      spec &&
+      isStdioServerSpec(spec) &&
+      stdioSpecCarriesSecretPlaceholder(spec)
+    ) {
+      blockedAgents.push({
+        agentId: agent.agentId,
+        agentName: agent.agentName,
+        reason: "secret_unreachable",
+      });
+    }
+  }
+
+  return {
+    deliverable: blockedAgents.length === 0,
+    reason: null,
+    blockedAgents,
+  };
 }

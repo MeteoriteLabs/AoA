@@ -7,6 +7,7 @@ import { healthApi } from "@/api/health";
 import { agentsApi } from "@/api/agents";
 import {
   mcpConnectorsApi,
+  type ConnectorDeliverabilityReason,
   type CreateConnectorInput,
   type McpConnector,
 } from "@/api/mcpConnectors";
@@ -50,6 +51,61 @@ export function StatusBadge({ status }: { status: McpConnector["status"] }) {
   if (status === "needs_credentials") return <Badge variant="draft">Needs setup</Badge>;
   if (status === "disabled") return <Badge variant="archived">Disabled</Badge>;
   return <Badge variant="idle">{status}</Badge>;
+}
+
+/**
+ * Founder-facing copy for each delivery-skip reason (FU-1). Keyed by the
+ * server's `ConnectorDeliverabilityReason` so the "why isn't this connector
+ * working?" answer the founder reads is the one the delivery pipeline actually
+ * computed — no client-side re-derivation that could drift.
+ */
+const DELIVERABILITY_REASON_COPY: Record<ConnectorDeliverabilityReason, string> = {
+  d7_blocked:
+    "Local (stdio) connectors run a command on the host and aren't allowed in this deployment, so this connector reaches no agents.",
+  missing_url: "This HTTP connector has no URL, so it can't be reached.",
+  missing_command: "This local connector has no command, so it can't start.",
+  unknown_transport: "This connector's transport isn't recognized, so it can't be delivered.",
+  malformed_row: "This connector's configuration is malformed, so it can't be delivered.",
+  secret_unreachable:
+    "the Codex CLI can't pass a local (stdio) connector's secret to the server, so it would authenticate as no-one",
+  adapter_incapable: "this agent's runtime can't host MCP connectors",
+};
+
+/**
+ * The delivery-health line for an ACTIVE connector (FU-1). Renders nothing when
+ * the connector is healthy/deliverable or when deliverability is not applicable
+ * (non-active — the StatusBadge speaks for it). Otherwise it is visually
+ * distinct from the green "Active" badge: an amber warning that names the reason
+ * and, for per-agent blocks, WHICH agent — so a connector never silently fails
+ * to reach an agent. Shares the "why isn't this connector working?" surface with
+ * the `needs_credentials` "Needs setup" affordance.
+ */
+function DeliverabilityWarning({ connector }: { connector: McpConnector }) {
+  const d = connector.deliverability;
+  if (!d || d.deliverable) return null;
+
+  return (
+    <div
+      data-testid={`connector-delivery-warning-${connector.id}`}
+      className="rounded-md border border-warning/30 bg-warning/5 px-3 py-2 space-y-1"
+    >
+      <div className="flex items-center gap-2">
+        <Badge variant="pending">Not reaching agents</Badge>
+      </div>
+      {d.reason ? (
+        <div className="text-xs text-muted-foreground">{DELIVERABILITY_REASON_COPY[d.reason]}</div>
+      ) : (
+        <ul className="text-xs text-muted-foreground space-y-0.5">
+          {d.blockedAgents.map((b) => (
+            <li key={b.agentId}>
+              Not delivered to <span className="font-medium text-foreground">{b.agentName}</span>:{" "}
+              {DELIVERABILITY_REASON_COPY[b.reason]}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
 }
 
 export function MCPConnectorsSection() {
@@ -606,6 +662,12 @@ function ConnectorRow({
           </div>
         )}
       </div>
+
+      {/* Delivery health (FU-1) — an active connector that would be silently
+          dropped at run time. Shown to every board member, not just founders:
+          "why isn't my connector working?" is a read, and the reason may be a
+          deployment-mode block a non-founder still needs to understand. */}
+      <DeliverabilityWarning connector={connector} />
 
       {isFounder && needsCredential && !showCredential && (
         <div className="text-xs text-muted-foreground">

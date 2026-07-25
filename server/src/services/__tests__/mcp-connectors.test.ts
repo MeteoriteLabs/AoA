@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   buildConnectorSpecs,
+  computeConnectorDeliverability,
   envVarNameFor,
   selectConnectorRowsForAgent,
+  type ConnectorDeliverabilityInput,
 } from "../mcp-connectors.js";
 
 describe("envVarNameFor", () => {
@@ -326,5 +328,144 @@ describe("selectConnectorRowsForAgent", () => {
       isCommander: true,
     });
     expect(rows).toEqual([]);
+  });
+});
+
+describe("computeConnectorDeliverability (FU-1)", () => {
+  // A healthy HTTP catalog connector, active, with a bound secret referenced by
+  // an ${TOKEN} header — the deliverable-to-everyone baseline.
+  const healthyHttp: ConnectorDeliverabilityInput["connector"] = {
+    status: "active",
+    transport: "http",
+    source: "catalog",
+    trustTier: "verified",
+    url: "https://mcp.notion.com/mcp",
+    command: null,
+    args: [],
+    headerTemplate: { Authorization: "Bearer ${TOKEN}" },
+    envTemplate: {},
+    secretRef: "mcp:notion",
+  };
+
+  // A stdio connector that references its secret in args — the shape codex
+  // cannot deliver.
+  const stdioWithSecret: ConnectorDeliverabilityInput["connector"] = {
+    status: "active",
+    transport: "stdio",
+    source: "catalog",
+    trustTier: "verified",
+    url: null,
+    command: "npx",
+    args: ["fs-mcp", "--token", "${TOKEN}"],
+    headerTemplate: {},
+    envTemplate: {},
+    secretRef: "mcp:fs",
+  };
+
+  const claudeAgent = { agentId: "a1", agentName: "Scout", adapterType: "claude_local" };
+  const codexAgent = { agentId: "a2", agentName: "Codey", adapterType: "codex_local" };
+
+  it("returns null for a non-active connector (its status badge speaks for it)", () => {
+    expect(
+      computeConnectorDeliverability({
+        connector: { ...healthyHttp, status: "needs_credentials" },
+        deploymentMode: "local_trusted",
+        assignedAgents: [claudeAgent],
+      }),
+    ).toBeNull();
+  });
+
+  it("reports a healthy active+assigned connector as deliverable with no warning", () => {
+    const summary = computeConnectorDeliverability({
+      connector: healthyHttp,
+      deploymentMode: "local_trusted",
+      assignedAgents: [claudeAgent, codexAgent],
+    });
+    expect(summary).toEqual({ deliverable: true, reason: null, blockedAgents: [] });
+  });
+
+  it("reports a connector with zero assigned agents as deliverable (reaches Commander/future assignees)", () => {
+    const summary = computeConnectorDeliverability({
+      connector: healthyHttp,
+      deploymentMode: "local_trusted",
+      assignedAgents: [],
+    });
+    expect(summary).toEqual({ deliverable: true, reason: null, blockedAgents: [] });
+  });
+
+  it("flags a d7_blocked stdio/byo connector globally in authenticated mode", () => {
+    const summary = computeConnectorDeliverability({
+      connector: { ...stdioWithSecret, source: "byo", trustTier: null },
+      deploymentMode: "authenticated",
+      assignedAgents: [claudeAgent],
+    });
+    expect(summary).toEqual({
+      deliverable: false,
+      reason: "d7_blocked",
+      blockedAgents: [],
+    });
+  });
+
+  it("matches selectConnectorRowsForAgent's D7 verdict exactly (no drift)", () => {
+    // The connector the deliverability preview calls d7_blocked must be the same
+    // one the real delivery selector drops.
+    const row = { ...stdioWithSecret, source: "byo", trustTier: null, id: "c1", status: "active" };
+    const delivered = selectConnectorRowsForAgent({
+      connectors: [row],
+      enabledConnectorIds: new Set(["c1"]),
+      isCommander: false,
+      deploymentMode: "authenticated",
+    });
+    const summary = computeConnectorDeliverability({
+      connector: row,
+      deploymentMode: "authenticated",
+      assignedAgents: [claudeAgent],
+    });
+    expect(delivered).toEqual([]); // selector drops it
+    expect(summary?.reason).toBe("d7_blocked"); // preview agrees
+  });
+
+  it("surfaces secret_unreachable per-agent for codex + stdio + secret, but not for claude", () => {
+    const summary = computeConnectorDeliverability({
+      connector: stdioWithSecret,
+      deploymentMode: "local_trusted",
+      assignedAgents: [claudeAgent, codexAgent],
+    });
+    expect(summary?.deliverable).toBe(false);
+    expect(summary?.reason).toBeNull();
+    expect(summary?.blockedAgents).toEqual([
+      { agentId: "a2", agentName: "Codey", reason: "secret_unreachable" },
+    ]);
+  });
+
+  it("does NOT flag secret_unreachable for a codex stdio connector with no secret", () => {
+    const summary = computeConnectorDeliverability({
+      connector: { ...stdioWithSecret, secretRef: null, args: ["fs-mcp"] },
+      deploymentMode: "local_trusted",
+      assignedAgents: [codexAgent],
+    });
+    expect(summary).toEqual({ deliverable: true, reason: null, blockedAgents: [] });
+  });
+
+  it("flags adapter_incapable for an assigned agent whose adapter has no MCP client", () => {
+    const summary = computeConnectorDeliverability({
+      connector: healthyHttp,
+      deploymentMode: "local_trusted",
+      assignedAgents: [{ agentId: "a3", agentName: "Webhook", adapterType: "http" }],
+    });
+    expect(summary?.deliverable).toBe(false);
+    expect(summary?.blockedAgents).toEqual([
+      { agentId: "a3", agentName: "Webhook", reason: "adapter_incapable" },
+    ]);
+  });
+
+  it("flags a malformed active row (http without url) as globally undeliverable", () => {
+    const summary = computeConnectorDeliverability({
+      connector: { ...healthyHttp, url: null },
+      deploymentMode: "local_trusted",
+      assignedAgents: [claudeAgent],
+    });
+    expect(summary?.reason).toBe("missing_url");
+    expect(summary?.deliverable).toBe(false);
   });
 });

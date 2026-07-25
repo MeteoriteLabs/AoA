@@ -95,6 +95,7 @@ function connector(over: Partial<McpConnector> = {}): McpConnector {
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     enabledAgentIds: [],
+    deliverability: null,
     ...over,
   };
 }
@@ -170,6 +171,87 @@ describe("needs_credentials follow-through", () => {
     await waitFor(() =>
       expect(bindCredentialsMock).toHaveBeenCalledWith(COMPANY_ID, "conn-1", "mcp:notion"),
     );
+  });
+});
+
+/* ── 5. delivery health (FU-1) ──────────────────────────────────────────── */
+
+describe("delivery-skip visibility (FU-1)", () => {
+  it("shows no delivery warning for a healthy, deliverable active connector", async () => {
+    listMock.mockResolvedValue([
+      connector({
+        deliverability: { deliverable: true, reason: null, blockedAgents: [] },
+      }),
+    ]);
+    renderSection();
+
+    await screen.findByTestId("connector-row-conn-1");
+    expect(
+      screen.queryByTestId("connector-delivery-warning-conn-1"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("surfaces a global d7_blocked reason on an active-but-undeliverable connector", async () => {
+    listMock.mockResolvedValue([
+      connector({
+        transport: "stdio",
+        command: "npx fs-mcp",
+        url: null,
+        deliverability: { deliverable: false, reason: "d7_blocked", blockedAgents: [] },
+      }),
+    ]);
+    renderSection();
+
+    const warning = await screen.findByTestId("connector-delivery-warning-conn-1");
+    // Distinct from the healthy green "Active" badge.
+    expect(within(warning).getByText(/not reaching agents/i)).toBeInTheDocument();
+    expect(within(warning).getByText(/aren't allowed in this deployment/i)).toBeInTheDocument();
+  });
+
+  it("names the blocked agent for a per-agent secret_unreachable (codex + stdio secret)", async () => {
+    listMock.mockResolvedValue([
+      connector({
+        transport: "stdio",
+        command: "npx fs-mcp",
+        url: null,
+        secretRef: "mcp:fs",
+        requiresSecret: true,
+        deliverability: {
+          deliverable: false,
+          reason: null,
+          blockedAgents: [
+            { agentId: "a2", agentName: "Codey", reason: "secret_unreachable" },
+          ],
+        },
+      }),
+    ]);
+    renderSection();
+
+    const warning = await screen.findByTestId("connector-delivery-warning-conn-1");
+    expect(within(warning).getByText(/Codey/)).toBeInTheDocument();
+    expect(within(warning).getByText(/Codex CLI can't pass/i)).toBeInTheDocument();
+  });
+
+  it("still shows the needs_credentials affordance (its own surface) untouched", async () => {
+    listMock.mockResolvedValue([
+      connector({
+        status: "needs_credentials",
+        requiresSecret: true,
+        secretRef: null,
+        headerTemplate: { Authorization: "" },
+        // non-active → deliverability is null; the status badge speaks for it
+        deliverability: null,
+      }),
+    ]);
+    renderSection();
+
+    expect(await screen.findByText("Needs setup")).toBeInTheDocument();
+    const row = screen.getByTestId("connector-row-conn-1");
+    expect(within(row).getByRole("button", { name: /add credential/i })).toBeInTheDocument();
+    // No delivery warning competes with the credential affordance.
+    expect(
+      screen.queryByTestId("connector-delivery-warning-conn-1"),
+    ).not.toBeInTheDocument();
   });
 });
 

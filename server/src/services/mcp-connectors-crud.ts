@@ -14,6 +14,11 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { agents, companyMcpConnectorAgents, companyMcpConnectors } from "@armyofagents/db";
+import {
+  computeConnectorDeliverability,
+  type ConnectorDeliverabilitySummary,
+} from "./mcp-connectors.js";
+import { loadConfig } from "../config.js";
 
 export type ConnectorInsert = {
   serverName: string;
@@ -79,12 +84,21 @@ export function mcpConnectorService(db: Db) {
   return {
     /**
      * List a company's connectors, each augmented with `enabledAgentIds` — the
-     * per-agent opt-in set (D4). Done as one grouped follow-up query (not N+1):
-     * fetch every junction row for the company's connectors in a single
-     * `inArray`, then bucket in JS. Returning the current set lets the Settings
-     * Agents panel pre-populate its selection so editing is non-destructive
-     * (A34): `PUT …/agents` REPLACES the whole set, so a panel that started empty
-     * would silently wipe already-enabled agents on save.
+     * per-agent opt-in set (D4) — and a computed `deliverability` summary (FU-1).
+     *
+     * Done as grouped follow-up queries (not N+1): fetch every junction row for
+     * the company's connectors in a single `inArray`, then bucket in JS.
+     * Returning the current set lets the Settings Agents panel pre-populate its
+     * selection so editing is non-destructive (A34): `PUT …/agents` REPLACES the
+     * whole set, so a panel that started empty would silently wipe already-enabled
+     * agents on save.
+     *
+     * `deliverability` answers "would this ACTIVE connector actually reach agents
+     * right now?" WITHOUT waiting for a run to fail (option A, FU-1). It reuses
+     * the delivery pipeline's own primitives via `computeConnectorDeliverability`,
+     * so the Settings surface cannot claim a connector is healthy while the
+     * delivery path silently drops it. `null` for non-active connectors (their
+     * status badge already explains them).
      */
     list: async (companyId: string) => {
       const rows = await db
@@ -111,7 +125,61 @@ export function mcpConnectorService(db: Db) {
         if (list) list.push(link.agentId);
         else byConnector.set(link.connectorId, [link.agentId]);
       }
-      return rows.map((r) => ({ ...r, enabledAgentIds: byConnector.get(r.id) ?? [] }));
+
+      // Resolve every assigned agent to { name, adapterType } so deliverability
+      // can be evaluated per adapter (codex `secret_unreachable` differs from a
+      // claude agent). One grouped query over exactly the referenced agent ids.
+      const assignedAgentIds = [...new Set(links.map((l) => l.agentId))];
+      const agentInfo = new Map<string, { name: string; adapterType: string }>();
+      if (assignedAgentIds.length > 0) {
+        const agentRows = await db
+          .select({
+            id: agents.id,
+            name: agents.name,
+            adapterType: agents.adapterType,
+          })
+          .from(agents)
+          .where(
+            and(eq(agents.companyId, companyId), inArray(agents.id, assignedAgentIds)),
+          );
+        for (const a of agentRows) {
+          agentInfo.set(a.id, { name: a.name, adapterType: a.adapterType });
+        }
+      }
+
+      const deploymentMode = loadConfig().deploymentMode;
+
+      return rows.map((r) => {
+        const enabledAgentIds = byConnector.get(r.id) ?? [];
+        const deliverability: ConnectorDeliverabilitySummary | null =
+          computeConnectorDeliverability({
+            connector: {
+              status: r.status,
+              transport: r.transport,
+              source: r.source,
+              trustTier: r.trustTier,
+              url: r.url,
+              command: r.command,
+              args: r.args,
+              headerTemplate: r.headerTemplate,
+              envTemplate: r.envTemplate,
+              secretRef: r.secretRef,
+            },
+            deploymentMode,
+            assignedAgents: enabledAgentIds.map((agentId) => {
+              const info = agentInfo.get(agentId);
+              return {
+                agentId,
+                // An assigned agent that no longer resolves (deleted between the
+                // link read and here) is named generically rather than dropped —
+                // it still cannot receive the connector.
+                agentName: info?.name ?? "Unknown agent",
+                adapterType: info?.adapterType,
+              };
+            }),
+          });
+        return { ...r, enabledAgentIds, deliverability };
+      });
     },
 
     getById: (id: string) =>

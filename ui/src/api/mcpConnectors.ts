@@ -8,6 +8,46 @@ import { api } from "./client";
  *
  * Paths carry NO `/api` prefix — `client.ts` prepends `BASE = "/api"`.
  */
+/**
+ * Why an ACTIVE connector would not currently reach an intended recipient.
+ * Mirrors the server's `ConnectorDeliverabilityReason` (a superset of the two
+ * skip vocabularies): connector-global row/D7 reasons plus the per-adapter
+ * `secret_unreachable` (codex can't deliver a stdio secret) and
+ * `adapter_incapable` (the agent's adapter has no MCP client).
+ */
+export type ConnectorDeliverabilityReason =
+  | "missing_url"
+  | "missing_command"
+  | "unknown_transport"
+  | "malformed_row"
+  | "d7_blocked"
+  | "secret_unreachable"
+  | "adapter_incapable";
+
+export interface BlockedAgentDeliverability {
+  agentId: string;
+  agentName: string;
+  reason: ConnectorDeliverabilityReason;
+}
+
+/**
+ * Computed "would this connector actually reach agents right now?" summary
+ * (FU-1). Present (non-null) only for ACTIVE connectors — a non-active
+ * connector's status badge already explains itself, so the server returns
+ * `null` there.
+ *
+ *  - `reason` non-null → a CONNECTOR-GLOBAL block (D7, malformed/incomplete row)
+ *    that stops it reaching every recipient.
+ *  - `reason` null + `blockedAgents` non-empty → globally fine, but specific
+ *    assigned agents can't receive it (e.g. codex + stdio secret).
+ *  - `deliverable` true → no global block and every assigned agent gets it.
+ */
+export interface ConnectorDeliverabilitySummary {
+  deliverable: boolean;
+  reason: ConnectorDeliverabilityReason | null;
+  blockedAgents: BlockedAgentDeliverability[];
+}
+
 export interface McpConnector {
   id: string;
   companyId: string;
@@ -45,6 +85,13 @@ export interface McpConnector {
    * founder didn't intend to touch (A34).
    */
   enabledAgentIds: string[];
+  /**
+   * Computed delivery health (FU-1): whether this ACTIVE connector would
+   * currently reach its agents, and if not, the classified reason(s). `null`
+   * for a non-active connector (the status badge covers it). Read-only — the
+   * server derives it on every list; there is no persisted health column.
+   */
+  deliverability: ConnectorDeliverabilitySummary | null;
 }
 
 export interface CreateConnectorInput {
