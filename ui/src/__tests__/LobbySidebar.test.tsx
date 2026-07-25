@@ -1,6 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from "vitest";
 import { act, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { notifyManager } from "@tanstack/react-query";
 import { renderWithProviders, mockCompanyContext } from "./test-utils";
 import { LobbySidebar } from "../components/LobbySidebar";
 
@@ -59,6 +60,16 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
 
 describe("LobbySidebar", () => {
   const onCreateCompany = vi.fn();
+
+  // react-query delivers observer notifications through notifyManager's default
+  // scheduler = systemSetTimeoutZero (setTimeout(cb, 0)). That macrotask races
+  // React 19 act()'s MessageChannel post-callback flush, so the fixed
+  // setTimeout(0) hop in deferredProfile() was NOT a reliable settle barrier —
+  // the "control" test flaked on CI (row present or absent by macrotask order).
+  // Notify synchronously so act() deterministically flushes the resolved profile
+  // into the re-render; the synchronous getBy assertions then stay meaningful.
+  beforeAll(() => notifyManager.setScheduler((cb) => cb()));
+  afterAll(() => notifyManager.setScheduler((cb) => setTimeout(cb, 0)));
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -158,9 +169,10 @@ describe("LobbySidebar", () => {
           avatarUrl: null,
           ...overrides,
         });
-        // react-query batches observer notifications on a scheduler tick — a
-        // macrotask hop is required before the resolved data reaches the hook.
-        // (Without it the control test below fails: the row never appears.)
+        // With the synchronous notifyManager scheduler (see beforeAll above) the
+        // resolved data reaches the hook within this act() microtask chain; this
+        // macrotask hop is now just a deterministic backstop, no longer the
+        // (racy) settle barrier it used to be.
         await new Promise((resolve) => setTimeout(resolve, 0));
       });
   }
