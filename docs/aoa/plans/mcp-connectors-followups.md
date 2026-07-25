@@ -437,3 +437,29 @@ filesystem/stdio connector operates on the agent's workspace regardless of the p
 args. Arguably safer (scoped per-run), but surprising — a founder pointing filesystem at
 `/data` would find the agent sees its workspace instead. Document it, or pass the configured
 path through as an explicit root.
+
+### Notion live test (2026-07-25): hosted = OAuth-only, local stdio = WORKS with ntn_ token
+Two runs against a real Notion account settled how Notion connectors must be shipped:
+
+- **Hosted `mcp.notion.com/mcp` (HTTP) is OAuth-only.** Run `88f33e98`: the connector
+  delivered fine (FU-21 synthesized the bearer, tools present) but Notion exposed only
+  `mcp__notion__authenticate` / `complete_authentication` and returned a browser
+  `https://mcp.notion.com/authorize?...` URL. Confirmed by Notion's docs: the hosted server
+  does not accept bearer tokens and is "not designed for cloud-based agentic workflows that
+  run without human interaction." So the `ntn_` integration token CANNOT authenticate the
+  hosted endpoint. **The shipped catalog "Notion" entry (HTTP → mcp.notion.com) will never
+  work headlessly — it requires Plan 4's OAuth broker.**
+- **Local `npx @notionhq/notion-mcp-server` (stdio) WORKS with the ntn_ token.** Run
+  `1f3b06d6`: a BYO stdio connector with `envTemplate {"NOTION_TOKEN":"${TOKEN}"}` +
+  `secretRef mcp:notion` authenticated live — `mcp__notion-local__API-post-search` returned
+  `error=False` with a real Notion API list response + `request_id`. (0 results only because
+  the integration wasn't shared with any page yet.) This also proves the **stdio-secret path
+  works end-to-end on claude_local** (claude expands `${VAR}` in stdio env; contrast FU-5,
+  codex-only), and that FU-20's `${TOKEN}` placeholder round-trips through the BYO route.
+
+**Catalog implication (feeds Plan 3b + Plan 4):** flagship remote MCPs are increasingly
+OAuth-only (Notion confirmed; Linear/others likely). The curated catalog should either ship
+the LOCAL/stdio variant where one exists (works today) or mark the hosted entry
+`requiresOAuth` and gate it behind Plan 4. Shipping a hosted-Notion HTTP entry that can only
+ever OAuth-fail headlessly would be a bad first impression. A `connectors.json` entry needs a
+way to say "this one needs OAuth, not a token."
