@@ -837,42 +837,57 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
         .find((rule) => trustRuleMatchesPrompt(rule, input, nowDate))
       : null;
 
-    // FU-25 connector auto-allow: a permission request for an ACTIVE connector's
-    // OWN tool, assigned to this run's agent (or any active connector for
-    // Commander), is pre-approved for THIS agent — a scoped grant, never a global
-    // bypass. Only evaluated for permission prompts with no matching trust rule.
-    // The pure `parseConnectorServerName` gate short-circuits before any DB work
-    // for non-connector tools (Bash, mcp__aoa__*, malformed names) and reserved
-    // names, so the scoping boundary lives entirely in the parser + the delivery
-    // selector reused inside `connectorAutoAllow`. Fail-safe: any probe error is
-    // swallowed and falls through to the existing trust-rule → human → timeout
-    // path (deny direction), never fail-open.
-    let connectorAutoAllowed = false;
-    if (
-      !matchingTrustRule &&
-      input.kind === "permission" &&
-      parseConnectorServerName(input.toolName) !== null
-    ) {
+    // Is this permission request for a connector-shaped tool? The pure
+    // `parseConnectorServerName` gate short-circuits (no DB work) for
+    // non-connector tools (Bash, mcp__aoa__*, malformed names) and reserved names.
+    const isConnectorShaped =
+      input.kind === "permission" && parseConnectorServerName(input.toolName) !== null;
+
+    // FU-25 connector auto-allow + Codex-3 live-probe gate: a permission request
+    // for a connector-shaped tool is auto-allowed ONLY when the LIVE connector
+    // probe passes — the connector is ACTIVE, assigned to this run's agent (or any
+    // active connector for Commander), and D7-admissible. This is a scoped grant,
+    // never a global bypass.
+    //
+    // Codex-3: the probe is evaluated for EVERY connector-shaped tool, including
+    // ones with a matching trust rule. A prior "always allow" trust rule can no
+    // longer override a connector the founder has since DISABLED or UNASSIGNED —
+    // for connector-shaped tools the live probe is a precondition, and the trust
+    // rule only sets the grant SCOPE when the probe also passes. Non-connector
+    // tools are unaffected: their trust-rule behavior is byte-identical.
+    //
+    // Fail-safe: any probe error is swallowed and treated as a probe MISS, so the
+    // request falls through to the human → timeout path (deny direction) — a probe
+    // error never allows, and never lets a stale trust rule allow either.
+    let connectorProbePassed = false;
+    if (isConnectorShaped) {
       try {
-        connectorAutoAllowed = await connectorAutoAllow({
+        connectorProbePassed = await connectorAutoAllow({
           companyId: input.companyId,
           agentId: input.agentId,
           adapterType: input.adapterType,
           toolName: input.toolName ?? null,
         });
       } catch (err) {
-        connectorAutoAllowed = false;
+        connectorProbePassed = false;
         logger.warn(
           { err, companyId: input.companyId, agentId: input.agentId, toolName: input.toolName },
           "connector auto-allow probe failed; falling through to trust-rule/human decision",
         );
       }
     }
-    // A trust rule and a connector grant both resolve to an auto-answered ALLOW.
-    // The trust rule mints an `allow_always`/`allow_run` decision (its own scope);
-    // the connector grant mints `allow_once` — a single-call allow that creates NO
-    // persistent trust rule (the grant is re-derived from connector state each call).
-    const autoAllowed = Boolean(matchingTrustRule) || connectorAutoAllowed;
+
+    // A trust rule is honored (mints an auto-answered ALLOW at its own scope) only
+    // when it matches AND — for connector-shaped tools — the live connector probe
+    // passes. This is the whole Codex-3 fix: a matching trust rule alone can no
+    // longer auto-allow a connector-shaped tool whose connector is gone.
+    const trustRuleHonored =
+      matchingTrustRule != null && (!isConnectorShaped || connectorProbePassed);
+    // A connector-only grant (no trust rule) mints `allow_once` — a single-call
+    // allow that creates NO persistent trust rule (re-derived from connector state
+    // each call).
+    const connectorGrant = connectorProbePassed && !trustRuleHonored;
+    const autoAllowed = trustRuleHonored || connectorGrant;
     const resolvedExpiresAt =
       input.expiresAt ?? new Date(nowDate.getTime() + defaultTtlMs(input.kind));
     const created = await repo.createDecision({
@@ -901,21 +916,21 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
       options: input.options ? redactJsonSecrets(input.options) as Array<Record<string, unknown>> : null,
       expiresAt: resolvedExpiresAt,
       timeoutPolicy: input.timeoutPolicy,
-      decision: matchingTrustRule
+      decision: trustRuleHonored && matchingTrustRule
         ? matchingTrustRule.grantScope === "run" ? "allow_run" : "allow_always"
-        : connectorAutoAllowed
+        : connectorGrant
           ? "allow_once"
           : null,
-      answeredByUserId: matchingTrustRule?.createdByUserId ?? null,
+      answeredByUserId: trustRuleHonored && matchingTrustRule ? matchingTrustRule.createdByUserId ?? null : null,
       answeredAt: autoAllowed ? nowDate : null,
     });
     if (!autoAllowed && (TERMINAL_STATUSES.has(created.status as RuntimeDecisionStatus) || created.status === "answered")) {
       throw conflict("Runtime decision prompt already consumed for this nonce");
     }
-    if (matchingTrustRule) {
+    if (trustRuleHonored && matchingTrustRule) {
       await repo.markTrustRuleUsed({ ruleId: matchingTrustRule.id, usedAt: now() });
     }
-    if (connectorAutoAllowed) {
+    if (connectorGrant) {
       // Durable audit trail for a human-less allow: the grant is re-derived from
       // connector state on every call, so there is no trust-rule row to inspect —
       // this activity entry is the only record that the broker allowed it.

@@ -252,13 +252,41 @@ function baseDecisionRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function makeService(connectorAutoAllow: (i: unknown) => Promise<boolean>) {
+function trustRuleRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "rule-1",
+    companyId: "company-1",
+    agentId: "agent-1",
+    runId: null,
+    grantScope: "persistent",
+    adapterType: "claude_local",
+    // A connector-shaped tool name: a founder who previously chose "always allow"
+    // for this connector's tool created this rule.
+    toolName: "mcp__notion__get_page",
+    commandHash: null,
+    pathScope: null,
+    networkScope: null,
+    riskClass: null,
+    enabled: true,
+    expiresAt: null,
+    createdByUserId: "founder-1",
+    lastUsedAt: null,
+    createdAt: now(),
+    updatedAt: now(),
+    ...overrides,
+  };
+}
+
+function makeService(
+  connectorAutoAllow: (i: unknown) => Promise<boolean>,
+  trustRules: Array<Record<string, unknown>> = [],
+) {
   const repo = {
     createDecision: vi.fn(async (input) => baseDecisionRow(input as Record<string, unknown>)),
     getDecision: vi.fn(async () => baseDecisionRow()),
     listActiveForRun: vi.fn(async () => []),
     getRunStatus: vi.fn(async () => "running" as string | null),
-    listTrustRules: vi.fn(async () => []),
+    listTrustRules: vi.fn(async () => trustRules),
     createTrustRule: vi.fn(),
     revokeTrustRule: vi.fn(),
     markTrustRuleUsed: vi.fn(async () => {}),
@@ -388,5 +416,102 @@ describe("createPrompt connector auto-allow", () => {
     expect(repo.createDecision).toHaveBeenCalledWith(
       expect.objectContaining({ status: "created", decision: null }),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 3b. Codex-3: a matching trust rule must NOT override the live connector probe
+//     for a connector-shaped tool. Disabling/unassigning a connector revokes
+//     auto-allow of its tools even if a prior "always allow" trust rule exists.
+//
+// ABLATION: revert the Codex-3 gate (compute `trustRuleHonored` as
+// `matchingTrustRule != null` without the `|| connectorProbePassed` precondition,
+// and probe only when there is no trust rule) → the first test below goes RED
+// (the stale trust rule would auto-allow a disabled/unassigned connector).
+// ---------------------------------------------------------------------------
+
+describe("createPrompt connector probe overrides a stale trust rule (Codex-3)", () => {
+  it("does NOT auto-allow a connector tool when the connector is now disabled/unassigned, even with an always-allow trust rule", async () => {
+    // The connector was later disabled or unassigned → the live probe MISSES.
+    const probe = vi.fn(async () => false);
+    const { service, repo, activityLogger } = makeService(probe, [trustRuleRow()]);
+
+    const { decision } = await service.createPrompt(connectorPrompt());
+
+    // The probe IS consulted for a connector-shaped tool even though a trust rule matches.
+    expect(probe).toHaveBeenCalledOnce();
+    // Falls through: no auto-allow, no trust-rule honor.
+    expect(decision.status).toBe("created");
+    expect(repo.createDecision).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "created", sourceRevision: 0, decision: null, answeredByUserId: null }),
+    );
+    // The stale trust rule is NOT marked used, and nothing is audited as auto-allowed.
+    expect(repo.markTrustRuleUsed).not.toHaveBeenCalled();
+    expect(activityLogger).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: "runtime_decision.connector_auto_allowed" }),
+    );
+  });
+
+  it("auto-allows the same connector tool while the connector is active+assigned (trust rule sets the scope)", async () => {
+    const probe = vi.fn(async () => true);
+    const { service, repo, activityLogger } = makeService(probe, [trustRuleRow()]);
+
+    const { decision } = await service.createPrompt(connectorPrompt());
+
+    expect(probe).toHaveBeenCalledOnce();
+    // The trust rule is honored (probe passed) → its own scope, not allow_once.
+    expect(repo.createDecision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "answered",
+        sourceRevision: 1,
+        decision: "allow_always",
+        answeredByUserId: "founder-1",
+      }),
+    );
+    expect(decision.status).toBe("answered");
+    // The honored trust rule is marked used; this is NOT a connector-only grant, so no auto-allow audit.
+    expect(repo.markTrustRuleUsed).toHaveBeenCalledWith(
+      expect.objectContaining({ ruleId: "rule-1" }),
+    );
+    expect(activityLogger).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: "runtime_decision.connector_auto_allowed" }),
+    );
+  });
+
+  it("leaves a NON-connector trust rule (Bash) byte-identical — no probe, still honored", async () => {
+    const probe = vi.fn(async () => true);
+    const bashRule = trustRuleRow({ toolName: null, commandHash: null });
+    const { service, repo } = makeService(probe, [bashRule]);
+
+    const { decision } = await service.createPrompt(
+      connectorPrompt({ toolName: "Bash", nonce: "nonce-bash", command: "ls" }),
+    );
+
+    // Non-connector tool → probe never runs, trust rule honored exactly as before.
+    expect(probe).not.toHaveBeenCalled();
+    expect(decision.status).toBe("answered");
+    expect(repo.createDecision).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "answered", decision: "allow_always" }),
+    );
+    expect(repo.markTrustRuleUsed).toHaveBeenCalledWith(
+      expect.objectContaining({ ruleId: "rule-1" }),
+    );
+  });
+
+  it("a probe error on a connector tool with a matching trust rule fails CLOSED (falls through)", async () => {
+    const probe = vi.fn(async () => {
+      throw new Error("db down");
+    });
+    const { service, repo } = makeService(probe, [trustRuleRow()]);
+
+    const { decision } = await service.createPrompt(connectorPrompt());
+
+    expect(probe).toHaveBeenCalledOnce();
+    // A probe error must never let the stale trust rule allow.
+    expect(decision.status).toBe("created");
+    expect(repo.createDecision).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "created", decision: null }),
+    );
+    expect(repo.markTrustRuleUsed).not.toHaveBeenCalled();
   });
 });
