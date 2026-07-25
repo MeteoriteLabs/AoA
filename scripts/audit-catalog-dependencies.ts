@@ -30,15 +30,25 @@ async function main() {
   const catalog = JSON.parse(await res.text()) as { items?: CatalogAuditItem[] };
   const items = catalog.items ?? [];
 
-  // Non-vacuity guard: a degraded/empty catalog must not report a green pass.
-  if (!items.some((i) => i.type === "agent")) {
-    throw new Error("Live catalog has no agents — refusing a vacuous pass (catalog degraded?)");
-  }
-
   const agents = items.filter((i) => i.type === "agent").length;
+  const team = items.find((i) => i.id === "team:aoa-curated/default-crew");
   const edges = items
     .filter((i) => i.type === "agent" || i.type === "team")
     .reduce((n, i) => n + (i.requires?.length ?? 0), 0);
+
+  // Non-vacuity floors (mirror the committed-fixture test). A PARTIALLY-degraded
+  // CDN response — agents present but the crew team dropped or every `requires`
+  // array stripped — would leave zero edges and pass with no orphans to
+  // classify. Refuse a vacuous green. Floors sit under real values
+  // (12 agents / 27 team edges / 70 total).
+  if (agents < 10 || !team || (team.requires?.length ?? 0) < 25 || edges < 40) {
+    throw new Error(
+      "Live catalog looks degraded — refusing a vacuous pass " +
+        `(agents=${agents}, defaultCrew=${team ? "present" : "MISSING"}, ` +
+        `teamEdges=${team?.requires?.length ?? 0}, totalEdges=${edges}).`,
+    );
+  }
+
   const orphans = auditCatalogDependencies({ items });
 
   console.log(`Catalog: ${items.length} items, ${agents} agents, ${edges} agent/team requires edges.`);

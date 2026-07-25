@@ -1,7 +1,6 @@
-import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { act, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { notifyManager } from "@tanstack/react-query";
 import { renderWithProviders, mockCompanyContext } from "./test-utils";
 import { LobbySidebar } from "../components/LobbySidebar";
 
@@ -60,16 +59,6 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
 
 describe("LobbySidebar", () => {
   const onCreateCompany = vi.fn();
-
-  // react-query delivers observer notifications through notifyManager's default
-  // scheduler = systemSetTimeoutZero (setTimeout(cb, 0)). That macrotask races
-  // React 19 act()'s MessageChannel post-callback flush, so the fixed
-  // setTimeout(0) hop in deferredProfile() was NOT a reliable settle barrier —
-  // the "control" test flaked on CI (row present or absent by macrotask order).
-  // Notify synchronously so act() deterministically flushes the resolved profile
-  // into the re-render; the synchronous getBy assertions then stay meaningful.
-  beforeAll(() => notifyManager.setScheduler((cb) => cb()));
-  afterAll(() => notifyManager.setScheduler((cb) => setTimeout(cb, 0)));
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -160,21 +149,32 @@ describe("LobbySidebar", () => {
   function deferredProfile() {
     let resolveProfile!: (value: unknown) => void;
     mockProfileGet.mockReturnValue(new Promise((resolve) => { resolveProfile = resolve; }));
-    return (overrides: Record<string, unknown>) =>
-      act(async () => {
-        resolveProfile({
-          id: "user-2",
-          email: "teammate@example.com",
-          displayName: "Teammate",
-          avatarUrl: null,
-          ...overrides,
+    return async (overrides: Record<string, unknown>) => {
+      // react-query delivers observer notifications on its default scheduler
+      // (setTimeout(cb, 0)). A fixed setTimeout(0) hop was NOT a reliable settle
+      // barrier — that macrotask races React 19 act()'s MessageChannel flush, so
+      // the "control" test flaked on CI. Keep the PRODUCTION scheduler but drive
+      // it under fake timers and flush every pending timer + microtask INSIDE
+      // act via runAllTimersAsync — deterministic, and the notification lands
+      // inside act (no "not wrapped in act" warnings, unlike a synchronous
+      // scheduler override). Scoped to this deferred flow only; the other tests
+      // (which use userEvent / findBy) keep real timers.
+      vi.useFakeTimers();
+      try {
+        await act(async () => {
+          resolveProfile({
+            id: "user-2",
+            email: "teammate@example.com",
+            displayName: "Teammate",
+            avatarUrl: null,
+            ...overrides,
+          });
+          await vi.runAllTimersAsync();
         });
-        // With the synchronous notifyManager scheduler (see beforeAll above) the
-        // resolved data reaches the hook within this act() microtask chain; this
-        // macrotask hop is now just a deterministic backstop, no longer the
-        // (racy) settle barrier it used to be.
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      });
+      } finally {
+        vi.useRealTimers();
+      }
+    };
   }
 
   it("hides the Settings row (and System section header) for non-instance-admins", async () => {
