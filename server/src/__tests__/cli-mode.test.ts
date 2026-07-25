@@ -1677,4 +1677,120 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
       "-",
     ]);
   });
+
+  // ── FU-8: MCP connectors delivered to Commander on the CODEX adapter ─────────
+  //
+  // Parity with the claude_cli connector tests above, adapted for codex's
+  // delivery mechanism: connectors reach the per-session CODEX_HOME/config.toml
+  // via writeCodexMcpConfigToml's `externalServers` (the SAME writer the codex
+  // ADAPTER uses), and the real secret rides the SCRUBBED spawn env — never the
+  // config file, never alongside AoA's own ambient secrets.
+
+  it("codex: delivers active company connectors — specs passed as externalServers to the TOML writer, real secret in the SCRUBBED spawn env (D3 all-active via agentId:null); AoA's own secrets are stripped", async () => {
+    const cp = await import("node:child_process");
+    vi.mocked(cp.execSync).mockReturnValue("/usr/local/bin/codex\n" as any);
+    const proc = makeOneShotProcess({ stdout: CODEX_TURN1_JSONL });
+    vi.mocked(cp.spawn).mockReturnValue(proc as any);
+    const codexMod = await import("@armyofagents/adapter-codex-local/server");
+
+    // Commander receives every ACTIVE connector (agentId:null). Secret is
+    // plaintext in the resolved env but MUST never reach the config file.
+    const loaderMod = await import("../services/mcp-connectors-loader.js");
+    vi.mocked(loaderMod.resolveAgentConnectors).mockResolvedValue({
+      extraMcpServers: {
+        notion: {
+          kind: "http",
+          url: "https://mcp.notion.com/mcp",
+          headers: { Authorization: "Bearer ${AOA_MCP_NOTION_TOKEN}" },
+        },
+      },
+      connectorEnv: { AOA_MCP_NOTION_TOKEN: "sk-notion-PLAINTEXT-SECRET" },
+    } as any);
+
+    // An AoA-owned ambient secret that the scrub MUST strip from the codex spawn
+    // env (and every stdio connector child it spawns). AOA_ prefix → denied.
+    const savedSecret = process.env.AOA_SECRETS_MASTER_KEY;
+    process.env.AOA_SECRETS_MASTER_KEY = "raw-master-key-should-not-leak";
+    try {
+      const { cliModeService } = await import(
+        "../services/internal-agent/cli-mode.js"
+      );
+      const service = cliModeService({} as any);
+      await drainChat(service, "codex", "hello");
+
+      // D3: Commander resolves ALL active connectors → agentId:null, company scoped.
+      expect(vi.mocked(loaderMod.resolveAgentConnectors)).toHaveBeenCalledTimes(1);
+      const callArg = vi.mocked(loaderMod.resolveAgentConnectors).mock.calls[0][1];
+      expect(callArg.agentId).toBeNull();
+      expect(callArg.companyId).toBe("comp1");
+
+      // The connector specs are handed to the codex TOML writer as
+      // `externalServers` (the writer renders them into the fenced region and
+      // filters codex-undeliverable ones — FU-5).
+      expect(vi.mocked(codexMod.writeCodexMcpConfigToml)).toHaveBeenCalledTimes(1);
+      const [codexDir, , options] = vi.mocked(codexMod.writeCodexMcpConfigToml).mock.calls[0];
+      expect((options as any)?.externalServers).toEqual({
+        notion: {
+          kind: "http",
+          url: "https://mcp.notion.com/mcp",
+          headers: { Authorization: "Bearer ${AOA_MCP_NOTION_TOKEN}" },
+        },
+      });
+
+      // The spawn env carries the connector's OWN token + CODEX_HOME, but the
+      // scrub has removed AoA's ambient secret.
+      const [, , spawnOpts] = vi.mocked(cp.spawn).mock.calls[0];
+      const env = (spawnOpts as any).env;
+      expect(env.AOA_MCP_NOTION_TOKEN).toBe("sk-notion-PLAINTEXT-SECRET");
+      expect(env.CODEX_HOME).toBe(codexDir);
+      expect(env.AOA_SECRETS_MASTER_KEY).toBeUndefined(); // scrubbed
+      expect(env.PATH).toBeTruthy(); // base non-secrets survive
+    } finally {
+      if (savedSecret === undefined) delete process.env.AOA_SECRETS_MASTER_KEY;
+      else process.env.AOA_SECRETS_MASTER_KEY = savedSecret;
+    }
+  });
+
+  it("codex: NO connectors → externalServers is {} and the spawn env is byte-identical (full process.env + CODEX_HOME, no scrub, no connector token)", async () => {
+    const cp = await import("node:child_process");
+    vi.mocked(cp.execSync).mockReturnValue("/usr/local/bin/codex\n" as any);
+    const proc = makeOneShotProcess({ stdout: CODEX_TURN1_JSONL });
+    vi.mocked(cp.spawn).mockReturnValue(proc as any);
+    const codexMod = await import("@armyofagents/adapter-codex-local/server");
+
+    // Explicit empty resolution (hermetic: vi.clearAllMocks does not reset a
+    // prior test's mockResolvedValue implementation).
+    const loaderMod = await import("../services/mcp-connectors-loader.js");
+    vi.mocked(loaderMod.resolveAgentConnectors).mockResolvedValue({
+      extraMcpServers: {},
+      connectorEnv: {},
+    } as any);
+
+    // With NO connectors the codex spawn keeps the FULL process.env — an AoA
+    // secret present here must SURVIVE (proves the no-scrub path is unchanged).
+    const savedSecret = process.env.AOA_SECRETS_MASTER_KEY;
+    process.env.AOA_SECRETS_MASTER_KEY = "present-when-no-connectors";
+    try {
+      const { cliModeService } = await import(
+        "../services/internal-agent/cli-mode.js"
+      );
+      const service = cliModeService({} as any);
+      await drainChat(service, "codex", "hi");
+
+      // Writer still called (its fence strip is the connector-cleanup path), but
+      // with an EMPTY externalServers map.
+      expect(vi.mocked(codexMod.writeCodexMcpConfigToml)).toHaveBeenCalledTimes(1);
+      const [codexDir, , options] = vi.mocked(codexMod.writeCodexMcpConfigToml).mock.calls[0];
+      expect((options as any)?.externalServers).toEqual({});
+
+      const [, , spawnOpts] = vi.mocked(cp.spawn).mock.calls[0];
+      const env = (spawnOpts as any).env;
+      expect(env.CODEX_HOME).toBe(codexDir);
+      expect(env.AOA_MCP_NOTION_TOKEN).toBeUndefined(); // no connector token
+      expect(env.AOA_SECRETS_MASTER_KEY).toBe("present-when-no-connectors"); // full env, no scrub
+    } finally {
+      if (savedSecret === undefined) delete process.env.AOA_SECRETS_MASTER_KEY;
+      else process.env.AOA_SECRETS_MASTER_KEY = savedSecret;
+    }
+  });
 });

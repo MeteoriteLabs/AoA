@@ -559,7 +559,20 @@ export async function resolveCliInvocation(
       const { writeCodexMcpConfigToml, ensureCodexAuthInHome, readSharedCodexModel } =
         await import("@armyofagents/adapter-codex-local/server");
       const codexHomeDir = codexHomeDirFor(params.companyId, params.userId);
-      await writeCodexMcpConfigToml(codexHomeDir, buildMcpBridgeSpec(params));
+      // FU-8: deliver EXTERNAL connectors alongside the bridge, exactly the way
+      // the codex ADAPTER does (execute.ts) — the SAME writer renders the bridge
+      // and every connector into one fenced region. `params.extraMcpServers`
+      // carries the Commander-resolved specs (D3 all-active; each with only a
+      // `${AOA_MCP_*_TOKEN}` placeholder — the real secret rides the spawn env,
+      // never this file). An empty/absent map means "no connectors": the writer
+      // treats `{}` and omitted identically (its fence strip still runs), so the
+      // no-connectors config.toml stays byte-identical to pre-FU-8. Codex's known
+      // limit (a stdio connector carrying a secret is undeliverable — FU-5) is
+      // handled INSIDE the writer, which SKIPS those with a reason; we pass all
+      // resolved specs and let it filter.
+      await writeCodexMcpConfigToml(codexHomeDir, buildMcpBridgeSpec(params), {
+        externalServers: params.extraMcpServers ?? {},
+      });
       // MX-chatauth: the per-session CODEX_HOME has config.toml but no
       // credentials, so `codex exec` run with it 401s ("Missing bearer or
       // basic authentication"). Provision auth.json into the SAME dir by
@@ -685,6 +698,37 @@ export function cliModeService(db: Db) {
           // bug). claude is UNTOUCHED (the else-branch below).
           const isWin = platform() === "win32";
           const bridgePath = getBridgeEntrypoint();
+
+          // MCP connectors (FU-8 — Commander, codex adapter). Parity with the
+          // claude_cli path below: Commander is per-USER, not per-agent, so it
+          // receives EVERY active company connector — the D3 all-active case →
+          // agentId: null. The specs (each carrying only a `${AOA_MCP_*_TOKEN}`
+          // placeholder) are threaded into mcpParams.extraMcpServers, which
+          // resolveCliInvocation folds into the per-session CODEX_HOME/config.toml
+          // via writeCodexMcpConfigToml's externalServers. The real secrets ride
+          // ONLY in connectorEnv, merged into the SCRUBBED spawn env inside
+          // runCodexTurn → spawnAndCollect — never on disk.
+          //
+          // Best-effort: Commander is always-on, so a connector resolution
+          // failure degrades to "no connectors" (non-silent via the warn log),
+          // never breaks the user's turn. Mirrors the claude_cli guard exactly.
+          let connectorSpecs: Record<string, McpServerSpec> = {};
+          let connectorEnv: Record<string, string> = {};
+          try {
+            const resolved = await resolveAgentConnectors(db, {
+              companyId: params.companyId,
+              agentId: null, // Commander = all active company connectors (D3)
+              logger,
+            });
+            connectorSpecs = resolved.extraMcpServers;
+            connectorEnv = resolved.connectorEnv;
+          } catch (err) {
+            logger.warn(
+              { err, companyId: params.companyId },
+              "Commander MCP connector resolution failed; proceeding without connectors",
+            );
+          }
+
           const mcpParams: McpConfigParams = {
             companyId: params.companyId,
             userId: params.userId,
@@ -693,12 +737,14 @@ export function cliModeService(db: Db) {
             bridgeEntrypoint: bridgePath,
             actorType: "commander",
             contextScope: normalizeCliContextScope(params.contextScope),
+            extraMcpServers: connectorSpecs,
           };
 
           if (session) session.lastMessageAt = new Date();
 
           for await (const chunk of runCodexTurn({
             mcpParams,
+            connectorEnv,
             prompt: params.content,
             isWin,
             resumeSessionId: session?.codexSessionId ?? null,
@@ -1223,6 +1269,14 @@ async function* streamProcessOutput(
 
 interface RunCodexTurnArgs {
   mcpParams: McpConfigParams;
+  /**
+   * FU-8: real connector secret values keyed by their `${AOA_MCP_*_TOKEN}` env
+   * var name. Empty ⇒ no connectors (byte-identical spawn env). When present,
+   * the spawn base is scrubbed of AoA's own ambient secrets and these tokens
+   * are re-applied — the CLI (and any stdio connector child it spawns) never
+   * inherits DATABASE_URL / the embeddings key / the secrets master key / etc.
+   */
+  connectorEnv: Record<string, string>;
   prompt: string;
   isWin: boolean;
   resumeSessionId: string | null;
@@ -1275,9 +1329,25 @@ async function* runCodexTurn(
     // the subprocess from reading project CLAUDE.md / AGENTS.md files that
     // contain internal implementation details (e.g. "Paperclip") not meant
     // to surface to users.
+    //
+    // FU-23 secret scrub (mirrors the claude_cli spawn): when this turn hosts
+    // third-party MCP connectors, the CLI — and every stdio connector child it
+    // spawns — must NOT inherit AoA's ambient secret env. Scrub the base down to
+    // PATH/HOME/etc., re-apply only the connector `${AOA_MCP_*_TOKEN}` values the
+    // config placeholders expand from, then overlay codex's CODEX_HOME last (the
+    // `aoa` bridge stays functional — buildMcpBridgeSpec re-supplies its own
+    // config on the bridge spec env). No-connectors turns keep the full env
+    // (byte-identical to pre-FU-8; there is no third-party child to protect).
+    const connectorsPresent = Object.keys(args.connectorEnv ?? {}).length > 0;
+    const spawnEnv = connectorsPresent
+      ? {
+          ...mergeConnectorEnv(buildScrubbedCliEnv(), args.connectorEnv),
+          ...(invocation.spawnEnv ?? {}),
+        }
+      : { ...process.env, ...invocation.spawnEnv };
     const proc = spawn(invocation.binary, invocation.args, {
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, ...invocation.spawnEnv },
+      env: spawnEnv,
       shell: args.isWin,
       cwd: tmpdir(),
     });
