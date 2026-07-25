@@ -253,6 +253,103 @@ describe("mcp-connectors routes — validation (load-bearing)", () => {
   });
 });
 
+describe("mcp-connectors routes — FINDING 1: only the connector's own ${TOKEN} is allowed", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    deploymentMode = "local_trusted";
+    mockGetEffectiveRole.mockResolvedValue("founder");
+    mockConnectorSvc.getByName.mockResolvedValue(null);
+    mockSecretSvc.getByName.mockResolvedValue({ id: "secret-1", name: "mcp:notion" });
+    mockConnectorSvc.create.mockImplementation(async (_c: string, input: any) => ({
+      id: CONNECTOR_ID,
+      companyId: COMPANY,
+      ...input,
+    }));
+    mockApprovalSvc.create.mockResolvedValue({ id: "approval-1" });
+  });
+
+  // ── template VALUES ──────────────────────────────────────────────────────
+  it.each([
+    ["a real secret riding alongside ${TOKEN}", "Bearer ${TOKEN} sk-live-REAL"],
+    ["an ambient foreign ${VAR}", "Bearer ${ANTHROPIC_API_KEY}"],
+    ["a bare foreign ${VAR}", "${OPENAI_API_KEY}"],
+    ["${TOKEN} with a trailing literal", "${TOKEN} extra"],
+    ["a bare literal secret (no placeholder)", "sk-live-REAL"],
+    ["a non-secret constant value (FU-20: placeholder-or-empty only)", "2"],
+  ])("rejects a headerTemplate value that is %s -> 400, no write", async (_label, value) => {
+    const res = await postConnector(makeApp(founderActor), {
+      ...goodHttp,
+      secretRef: "mcp:notion",
+      headerTemplate: { Authorization: value },
+    });
+    expect(res.status).toBe(400);
+    expect(mockConnectorSvc.create).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["exactly ${TOKEN}", "${TOKEN}"],
+    ["a Bearer scheme", "Bearer ${TOKEN}"],
+    ["a hyphenated scheme", "Sentry-Bearer ${TOKEN}"],
+    ["an empty value", ""],
+  ])("accepts a legitimate headerTemplate value (%s) -> 201", async (_label, value) => {
+    const res = await postConnector(makeApp(founderActor), {
+      ...goodHttp,
+      secretRef: "mcp:notion",
+      headerTemplate: { Authorization: value },
+    });
+    expect(res.status).toBe(201);
+    expect(mockConnectorSvc.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a foreign ${VAR} in envTemplate too -> 400", async () => {
+    const res = await postConnector(makeApp(founderActor), {
+      ...goodStdio,
+      secretRef: "mcp:notion",
+      envTemplate: { GH_TOKEN: "${AWS_SECRET_ACCESS_KEY}" },
+    });
+    expect(res.status).toBe(400);
+    expect(mockConnectorSvc.create).not.toHaveBeenCalled();
+  });
+
+  // ── args ─────────────────────────────────────────────────────────────────
+  it("rejects an arg carrying a foreign ${VAR} -> 400, no write", async () => {
+    const res = await postConnector(makeApp(founderActor), {
+      ...goodStdio,
+      args: ["--token", "${ANTHROPIC_API_KEY}"],
+    });
+    expect(res.status).toBe(400);
+    expect(mockConnectorSvc.create).not.toHaveBeenCalled();
+  });
+
+  it("accepts args carrying only bare literals and the own ${TOKEN} -> 201", async () => {
+    const res = await postConnector(makeApp(founderActor), {
+      ...goodStdio,
+      secretRef: "mcp:notion",
+      args: ["-y", "fs-mcp", "--token", "${TOKEN}", "--flag=${TOKEN}"],
+    });
+    expect(res.status).toBe(201);
+    expect(mockConnectorSvc.create).toHaveBeenCalledTimes(1);
+  });
+
+  // ── url userinfo ─────────────────────────────────────────────────────────
+  it.each([
+    ["basic-auth userinfo", "https://user:pass@mcp.example/v1"],
+    ["a ${TOKEN} in the authority", "https://${TOKEN}@mcp.example/v1"],
+  ])("rejects a url with %s -> 400, no write", async (_label, url) => {
+    const res = await postConnector(makeApp(founderActor), { ...goodHttp, url });
+    expect(res.status).toBe(400);
+    expect(mockConnectorSvc.create).not.toHaveBeenCalled();
+  });
+
+  it("accepts a clean url with no userinfo -> 201", async () => {
+    const res = await postConnector(makeApp(founderActor), {
+      ...goodHttp,
+      url: "https://mcp.notion.example/v1",
+    });
+    expect(res.status).toBe(201);
+  });
+});
+
 describe("assertTransportAllowed — D7 stdio gate (unit truth table)", () => {
   it("stdio BYO in authenticated -> throws", () => {
     expect(() => assertTransportAllowed("stdio", "authenticated", "byo")).toThrow();

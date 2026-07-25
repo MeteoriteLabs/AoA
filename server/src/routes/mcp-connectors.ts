@@ -85,8 +85,9 @@ import { loadConfig } from "../config.js";
 // LOAD-BEARING: lowercase letters, digits, hyphen only. Do not widen.
 const SERVER_NAME_RE = /^[a-z0-9-]+$/;
 
-// FU-20 — a template VALUE may only be EMPTY or REFERENCE a secret through a
-// `${...}` placeholder; a literal credential is refused at the door.
+// FU-20 / FINDING 1 — the ONLY credential form a connector may carry ANYWHERE is
+// its OWN `${TOKEN}` indirection. Everything else — a literal secret VALUE, or ANY
+// OTHER `${VAR}` — is refused at the door.
 //
 // Why this is security, not hygiene: `header_template` / `env_template` are plain
 // jsonb columns, NOT the encrypted `company_secrets` store. A real token pasted
@@ -95,19 +96,43 @@ const SERVER_NAME_RE = /^[a-z0-9-]+$/;
 // list route, and echoed by the error handler on any 5xx. The D5 model is: config
 // holds a placeholder, the credential lives in `company_secrets` and rides in the
 // process env. `${TOKEN}` is the placeholder `buildConnectorSpecs` rewrites to the
-// connector's real env var; `${...}` more generally is a reference, never a literal.
-//
-// This lives on `templateRecord`, so it covers EVERY write path that validates
-// through it — today the BYO create route's `headerTemplate` AND `envTemplate`.
-// `args` is deliberately NOT covered: a positional arg is legitimately a literal
-// (`["-y", "fs-mcp"]`), so the same rule there would reject every valid stdio
-// connector (FU-20 records that as its own separate decision).
+// connector's real env var — and it rewrites ONLY `${TOKEN}`. So two distinct
+// leaks were possible when the check was "value CONTAINS a `${...}`":
+//   - `"Bearer ${TOKEN} sk-live-REAL"` — only `${TOKEN}` is rewritten; the literal
+//     `sk-live-REAL` is copied verbatim into config. A real secret on disk.
+//   - `"Bearer ${ANTHROPIC_API_KEY}"` — `${ANTHROPIC_API_KEY}` is NOT `${TOKEN}`, so
+//     it is copied verbatim and the CLI expands it to AoA's ambient credential and
+//     ships it in the third-party request. Ambient-credential exfiltration.
+const OWN_TOKEN_PLACEHOLDER = "${TOKEN}";
+
+// FU-2 still refuses ANY placeholder in `command` (the executable is not
+// secret-substituted); `[^}]+` (non-empty inner) is enough for that check.
 const SECRET_PLACEHOLDER_RE = /\$\{[^}]+\}/;
-const templateValue = z.string().refine((v) => v === "" || SECRET_PLACEHOLDER_RE.test(v), {
+
+// A template VALUE is EMPTY, or an optional auth-scheme prefix + EXACTLY the
+// connector's own `${TOKEN}` (`${TOKEN}`, `Bearer ${TOKEN}`, `Sentry-Bearer
+// ${TOKEN}`). The `^…$` anchors reject a literal riding alongside the placeholder
+// and a foreign `${VAR}`. FU-20 keeps this placeholder-or-empty: a non-secret
+// CONSTANT header value is deliberately NOT a supported case — store the value in
+// `company_secrets` and reference it.
+const TEMPLATE_VALUE_RE = /^([A-Za-z][A-Za-z0-9-]* )?\$\{TOKEN\}$/;
+
+// True when `v` contains any `${...}` occurrence that is NOT the connector's own
+// `${TOKEN}`. Used for `args`, where a bare literal (a path/flag with no
+// placeholder — `-y`, `fs-mcp`, `--token=${TOKEN}`) is legitimate, but a foreign
+// `${VAR}` the CLI would expand to an ambient AoA process-env credential is not.
+// `[^}]*` also catches the empty `${}`.
+const FOREIGN_PLACEHOLDER_RE = /\$\{[^}]*\}/g;
+function referencesForeignPlaceholder(v: string): boolean {
+  const matches = v.match(FOREIGN_PLACEHOLDER_RE);
+  return matches !== null && matches.some((m) => m !== OWN_TOKEN_PLACEHOLDER);
+}
+
+const templateValue = z.string().refine((v) => v === "" || TEMPLATE_VALUE_RE.test(v), {
   message:
-    'A connector template value must be empty or reference a secret with a ${...} placeholder ' +
-    '(e.g. "Bearer ${TOKEN}"). Do not paste a real credential here — store it as a company ' +
-    "secret and reference it, or bind one after install via " +
+    "A connector template value must be empty or reference the connector's own secret as " +
+    '"${TOKEN}" (optionally after an auth scheme, e.g. "Bearer ${TOKEN}"). Do not paste a real ' +
+    "credential or any other ${VAR} here — store the secret as a company secret and bind it via " +
     "POST /companies/:companyId/mcp-connectors/:id/credentials.",
 });
 const templateRecord = z.record(z.string(), templateValue);
@@ -201,6 +226,43 @@ const createConnectorSchema = z.preprocess(
             "would be spawned literally. Reference the binary by its real path and put any secret " +
             "in an arg or env template instead.",
         });
+      }
+
+      // FINDING 1 — an arg may carry the connector's OWN `${TOKEN}` (rewritten by
+      // `buildConnectorSpecs`) but no other `${...}`. A bare literal arg is fine; a
+      // foreign `${VAR}` would be expanded by the CLI to an ambient AoA credential.
+      (val.args ?? []).forEach((arg, i) => {
+        if (referencesForeignPlaceholder(arg)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["args", i],
+            message:
+              'A connector arg may reference only the connector\'s own "${TOKEN}"; any other ' +
+              "${...} would be expanded to an AoA credential and leaked to the connector. Store the " +
+              "secret as a company secret and reference it as ${TOKEN}.",
+          });
+        }
+      });
+
+      // FINDING 1 — a credential belongs in a header (as `${TOKEN}`), never in the
+      // URL. Refuse userinfo in the authority (`user:pass@host`, or a `${...}`
+      // there, which parses as the username). `z.string().url()` has already run,
+      // so a present url parses.
+      if (val.url) {
+        try {
+          const parsed = new URL(val.url);
+          if (parsed.username !== "" || parsed.password !== "") {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["url"],
+              message:
+                "url must not embed credentials in its authority (user:pass@host). Put any token in " +
+                "a header template as ${TOKEN} and bind the secret via the credentials endpoint.",
+            });
+          }
+        } catch {
+          // Unreachable: z.string().url() already validated a present url.
+        }
       }
     }),
 );
