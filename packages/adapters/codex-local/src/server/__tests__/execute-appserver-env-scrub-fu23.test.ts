@@ -17,6 +17,27 @@ import type { McpServerSpec, AdapterRuntimeDecisionBroker } from "@armyofagents/
 import { execute } from "../execute.js";
 import type { RunAppServerTurnInput } from "../execute-app-server.js";
 
+// A real, resolvable fake `codex` command so `ensureCommandResolvable` passes on
+// CI (which has no codex binary in PATH). The injected runAppServerTurn spy means
+// this executable is never actually spawned — it only needs to exist on disk.
+// Same helper as execute-appserver-model-routing.test.ts.
+async function writeFakeCodexCommand(commandBase: string): Promise<string> {
+  const script = `#!/usr/bin/env node
+console.log(JSON.stringify({ type: "thread.started", thread_id: "codex-fu23" }));
+`;
+  const jsPath = commandBase + ".js";
+  await fs.writeFile(jsPath, script, "utf8");
+  await fs.chmod(jsPath, 0o755);
+  if (process.platform === "win32") {
+    const cmdPath = commandBase + ".cmd";
+    await fs.writeFile(cmdPath, `@node "%~dp0${path.basename(jsPath)}" %*\r\n`, "utf8");
+    return cmdPath;
+  }
+  await fs.writeFile(commandBase, script, "utf8");
+  await fs.chmod(commandBase, 0o755);
+  return commandBase;
+}
+
 const AMBIENT_SECRETS: Record<string, string> = {
   DATABASE_URL: "postgres://user:pw@localhost:5432/aoa",
   OPENAI_API_KEY: "sk-embeddings-should-not-leak",
@@ -55,6 +76,7 @@ async function captureAppServerInput(withConnectors: boolean): Promise<RunAppSer
   const workspace = path.join(root, "workspace");
   const codexHome = path.join(root, "codex-home");
   await fs.mkdir(workspace, { recursive: true });
+  const commandPath = await writeFakeCodexCommand(path.join(root, "agent"));
   const prevCodexHome = process.env.CODEX_HOME;
   process.env.CODEX_HOME = codexHome;
   let captured: RunAppServerTurnInput | null = null;
@@ -65,7 +87,7 @@ async function captureAppServerInput(withConnectors: boolean): Promise<RunAppSer
         agent: { id: "a1", companyId: "c1", name: "Codex", adapterType: "codex_local", adapterConfig: {} },
         runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
         config: {
-          command: "codex",
+          command: commandPath,
           cwd: workspace,
           env: { AOA_MCP_NOTION_TOKEN: "connector-token" },
           promptTemplate: "Prompt.",
@@ -74,7 +96,7 @@ async function captureAppServerInput(withConnectors: boolean): Promise<RunAppSer
         },
         context: {},
         executionTarget: { type: "local" as const },
-        runtimeCommandSpec: { command: "codex", installCommand: "do-not-run" },
+        runtimeCommandSpec: { command: commandPath, installCommand: "do-not-run" },
         runtimeDecisionRoutingEnabled: true,
         runtimeDecisionBroker: broker,
         ...(withConnectors ? { mcpBridge: BRIDGE, mcpServers: { notion: NOTION } } : {}),
