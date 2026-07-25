@@ -19,7 +19,12 @@ export type ViewerKind =
   | "svg_sandbox"
   | "mermaid"
   | "canvas"
+  | "docx"
   | "download";
+
+/** Word document MIME (OOXML). Server-rendered to sanitized HTML for preview. */
+const DOCX_MIME =
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
 export interface ViewerResolution {
   kind: ViewerKind;
@@ -32,6 +37,11 @@ export interface ViewerResolution {
   canShowSource: boolean;
   /** Field delimiter for the `table` kind: "," for CSV, "\t" for TSV. */
   delimiter?: "," | "\t";
+  /**
+   * Server render URL for the `docx` kind — the generic `/api/assets/:id/render`
+   * endpoint that returns already-sanitized HTML. Only set for `docx`.
+   */
+  renderUrl?: string | null;
 }
 
 export type OutputViewerKind = ViewerKind;
@@ -201,6 +211,25 @@ export function resolveViewer(output: ViewerInput): ViewerResolution {
 
   if (contentType === "application/pdf" || extension === "pdf") {
     return binaryViewer("pdf", "PDF preview", assetUrl, canOpenDirectly);
+  }
+
+  // DOCX previews via a server-side render (mammoth → sanitized HTML). The
+  // shared viewer needs a /render URL, which is built from the assetId. Without
+  // an assetId we cannot construct it, so fall through to an honest download.
+  if (contentType === DOCX_MIME || extension === "docx") {
+    if (output.assetId) {
+      return {
+        kind: "docx",
+        label: "Document preview",
+        assetUrl,
+        url: assetUrl,
+        canOpenDirectly,
+        shouldExecuteInBrowser: false,
+        requiresTextFetch: false,
+        canShowSource: false,
+        renderUrl: `/api/assets/${output.assetId}/render`,
+      };
+    }
   }
 
   if (isTextLike(contentType, extension)) {

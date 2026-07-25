@@ -1,5 +1,8 @@
 import { resolveViewer } from "../viewer-registry";
 
+const DOCX_MIME =
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
 describe("resolveViewer", () => {
   it("detects markdown, json, csv, media, pdf, sandbox markup, mermaid, canvas, and downloads", () => {
     expect(resolveViewer({ contentType: "text/markdown", filename: "note.md", assetId: "a" }).kind).toBe("markdown");
@@ -29,5 +32,30 @@ describe("resolveViewer", () => {
     const tsvByExt = resolveViewer({ contentType: "application/octet-stream", filename: "data.tsv", assetId: "a" });
     expect(tsvByExt.kind).toBe("table");
     expect(tsvByExt.delimiter).toBe("\t");
+  });
+
+  // P3.3 de-silo. Ablation: before the registry change, DOCX (MIME or .docx)
+  // matched no branch and fell to `download`; asserting `docx` here failed.
+  it("resolves DOCX by MIME to the docx kind with a generic render URL", () => {
+    const byMime = resolveViewer({ contentType: DOCX_MIME, filename: "report.docx", assetId: "asset-9" });
+    expect(byMime.kind).toBe("docx");
+    expect(byMime.renderUrl).toBe("/api/assets/asset-9/render");
+    // The raw-bytes URL is still the /content route (Download / open-externally).
+    expect(byMime.assetUrl).toBe("/api/assets/asset-9/content");
+    // A server-rendered office doc is not text-fetched by the shared viewer.
+    expect(byMime.requiresTextFetch).toBe(false);
+  });
+
+  it("resolves a .docx extension (generic content type) to the docx kind", () => {
+    const byExt = resolveViewer({ contentType: "application/octet-stream", filename: "report.docx", assetId: "asset-9" });
+    expect(byExt.kind).toBe("docx");
+    expect(byExt.renderUrl).toBe("/api/assets/asset-9/render");
+  });
+
+  it("falls back to download for DOCX when no assetId is available to build the render URL", () => {
+    // Without an assetId the generic /render URL cannot be constructed, so the
+    // honest result is a download card rather than a broken preview.
+    const noAsset = resolveViewer({ contentType: DOCX_MIME, filename: "report.docx", assetUrl: "/blob/x" });
+    expect(noAsset.kind).toBe("download");
   });
 });

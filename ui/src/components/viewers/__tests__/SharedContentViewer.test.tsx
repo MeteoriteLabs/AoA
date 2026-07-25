@@ -222,4 +222,55 @@ describe("SharedContentViewer", () => {
     expect(el).toHaveTextContent("Plan");
     expect(el).toHaveTextContent("Decision");
   });
+
+  // P3.3 de-silo: the docx kind fetches the server render URL (which returns
+  // already-sanitized HTML) and injects it. It does NOT text-fetch the raw
+  // bytes — it self-fetches the /render URL exactly once.
+  it("renders the docx viewer by fetching the render URL and injecting the HTML", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response('<article class="docx-rendered"><h1>Hello Doc</h1></article>', { status: 200 }),
+    );
+
+    renderViewer(
+      viewer({
+        kind: "docx",
+        label: "Document preview",
+        assetUrl: "/api/assets/asset-9/content",
+        url: "/api/assets/asset-9/content",
+        renderUrl: "/api/assets/asset-9/render",
+        requiresTextFetch: false,
+        canShowSource: false,
+      }),
+      null,
+      "report.docx",
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("work-product-docx")).toHaveTextContent("Hello Doc"),
+    );
+    // Fetched the /render URL, not the raw /content bytes.
+    expect(fetchSpy).toHaveBeenCalledWith("/api/assets/asset-9/render", { credentials: "include" });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to a download card when the docx render URL is missing", () => {
+    renderViewer(
+      viewer({
+        kind: "docx",
+        label: "Document preview",
+        assetUrl: "/api/assets/asset-9/content",
+        url: "/api/assets/asset-9/content",
+        renderUrl: null,
+        requiresTextFetch: false,
+        canShowSource: false,
+      }),
+      null,
+      "report.docx",
+    );
+    expect(screen.getByTestId("preview-output-download")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open" })).toHaveAttribute(
+      "href",
+      "/api/assets/asset-9/content",
+    );
+  });
 });

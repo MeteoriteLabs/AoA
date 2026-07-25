@@ -6,6 +6,7 @@ import type { ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
 import { PdfDocumentViewer } from "@/components/viewers/PdfDocumentViewer";
+import { DocxHtmlView } from "@/components/viewers/DocxHtmlView";
 import { highlightToHtml, languageForFilename } from "@/lib/code-highlight";
 import { parseCsv } from "./csv-parse";
 import type { ViewerResolution } from "./viewer-registry";
@@ -72,9 +73,22 @@ export function SharedContentViewer({ viewer, filename, inlineTextContent = null
       return <AudioOutputViewer url={assetUrl} filename={filename} />;
     case "pdf":
       return <PdfOutputViewer url={assetUrl} filename={filename} />;
+    case "docx":
+      return <DocxOutputViewer renderUrl={viewer.renderUrl ?? null} downloadUrl={viewer.url ?? assetUrl} />;
     case "download":
       return <DownloadFallbackViewer url={viewer.url ?? assetUrl} />;
   }
+}
+
+function DocxOutputViewer({ renderUrl, downloadUrl }: { renderUrl: string | null; downloadUrl: string | null }) {
+  // Without a render URL there is nothing to fetch — fall back to a download
+  // card so the user can still open the file externally.
+  if (!renderUrl) return <DownloadFallbackViewer url={downloadUrl} />;
+  return (
+    <div className="min-h-0 flex-1 overflow-auto bg-background px-10 py-8" data-testid="work-product-docx">
+      <DocxHtmlView renderUrl={renderUrl} />
+    </div>
+  );
 }
 
 function SourceOutputViewer({ content, filename }: { content: string; filename?: string }) {

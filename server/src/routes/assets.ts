@@ -1,5 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
+import mammoth from "mammoth";
+import DOMPurify from "isomorphic-dompurify";
 import type { Db } from "@armyofagents/db";
 import { companies } from "@armyofagents/db";
 import { eq } from "drizzle-orm";
@@ -38,6 +40,18 @@ const ALLOWED_IMAGE_CONTENT_TYPES = new Set([
 const COMPOSER_ALLOWED_FILE_CONTENT_TYPES = new Set<string>(COMPOSER_ATTACHMENT_CONTENT_TYPES);
 function isComposerUploadNamespace(namespace: string): boolean {
   return namespace === "discussion-entries" || namespace.startsWith("commander/");
+}
+
+// OOXML Word document. The only type the /render endpoint converts today.
+const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  return new Promise((resolve, reject) => {
+    stream.on("data", (c: Buffer) => chunks.push(c));
+    stream.on("end", () => resolve(Buffer.concat(chunks)));
+    stream.on("error", reject);
+  });
 }
 
 export function assetRoutes(db: Db, storage: StorageService) {
@@ -416,6 +430,47 @@ export function assetRoutes(db: Db, storage: StorageService) {
       next(err);
     });
     object.stream.pipe(res);
+  });
+
+  // Generic server-rendered HTML preview for office documents (DOCX today).
+  // Mirrors the memory-scoped render route (server/src/routes/memory-asset-render.ts)
+  // EXACTLY for conversion + sanitization + headers, but takes the /content
+  // route's authorization: the asset's own companyId gates access via
+  // assertCompanyAccess, so this endpoint is exactly as authorized as /content
+  // and no wider. Sanitization is server-side (DOMPurify config below); the
+  // client injects the already-sanitized HTML. See asset-render-xss.test.ts.
+  router.get("/assets/:assetId/render", async (req, res, next) => {
+    try {
+      const assetId = req.params.assetId as string;
+      const asset = await svc.getById(assetId);
+      if (!asset) {
+        res.status(404).json({ error: "Asset not found" });
+        return;
+      }
+      assertCompanyAccess(req, asset.companyId);
+
+      if ((asset.contentType || "").toLowerCase() !== DOCX_MIME) {
+        res.status(415).json({
+          error: `Render not supported for ${asset.contentType}. Try /content for the raw bytes.`,
+        });
+        return;
+      }
+
+      const object = await storage.getObject(asset.companyId, asset.objectKey);
+      const buffer = await streamToBuffer(object.stream);
+      const result = await mammoth.convertToHtml({ buffer });
+      const sanitized = DOMPurify.sanitize(result.value, {
+        ALLOWED_URI_REGEXP: /^(?:https?|mailto|tel|#)/i,
+        FORBID_TAGS: ["script", "iframe", "object", "embed", "form"],
+        FORBID_ATTR: ["onerror", "onload", "onclick", "onmouseover", "onfocus"],
+      });
+
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.send(`<article class="docx-rendered">${sanitized}</article>`);
+    } catch (err) {
+      next(err);
+    }
   });
 
   return router;
