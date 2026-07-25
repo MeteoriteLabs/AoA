@@ -269,7 +269,12 @@ test.describe("thread scope version flow", () => {
     expect(v2).toMatchObject({ status: "draft", versionNumber: 2, sourceStartSeq: 5 });
     expect(v2.sourceEndSeq).toBeGreaterThanOrEqual(5);
     const v2Detail = await getScopeVersionDetail(request, company.id, thread.id, v2.id);
-    expect(v2Detail.items[0]?.sourceEntryIds).toHaveLength(1);
+    // Same async-reply race as the range boundary above: the item sources from the
+    // new "analytics" message (seq 5) and MAY also pick up the controller's agent
+    // reply (seq 6) when it lands before the compile — so 1 or 2 source entries.
+    // The meaningful guarantee (v2 captures the analytics message) is the summary
+    // assertion below; here we only require the item to have a source entry.
+    expect((v2Detail.items[0]?.sourceEntryIds ?? []).length).toBeGreaterThanOrEqual(1);
     expect(v2Detail.summary).toContain("analytics instrumentation");
   });
 });
