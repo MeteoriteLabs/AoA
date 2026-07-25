@@ -34,6 +34,13 @@ export type ConnectorInsert = {
    */
   requiresSecret?: boolean;
   source?: string;
+  /**
+   * Catalog trust tier at install ("verified" | "community" | "unverified"), or
+   * null for BYO. Persisted so the FU-19 delivery-time D7 re-check can honor the
+   * `catalog + verified` exemption after a mode conversion instead of failing
+   * closed for every stdio connector.
+   */
+  trustTier?: string | null;
   status: string;
   createdByUserId?: string | null;
 };
@@ -142,6 +149,7 @@ export function mcpConnectorService(db: Db) {
           secretRef: input.secretRef ?? null,
           requiresSecret: input.requiresSecret ?? false,
           source: input.source ?? "byo",
+          trustTier: input.trustTier ?? null,
           status: input.status,
           createdByUserId: input.createdByUserId ?? null,
         })

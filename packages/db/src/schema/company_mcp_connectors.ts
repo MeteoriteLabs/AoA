@@ -34,6 +34,13 @@ export const companyMcpConnectors = pgTable(
     // never activate an uncredentialed connector.
     requiresSecret: boolean("requires_secret").notNull().default(false),
     source: text("source").notNull().default("byo"), // "byo" | "catalog"
+    // Catalog trust tier at INSTALL time ("verified" | "community" | "unverified"),
+    // null for BYO connectors (no catalog provenance). Load-bearing for the FU-19
+    // delivery-time D7 re-check: after a local_trusted -> authenticated conversion
+    // a stored `verified` catalog stdio connector keeps the D7 catalog exemption,
+    // while a null (BYO) or non-verified tier is dropped. Nullable & mode-agnostic
+    // so it records provenance, not a decision.
+    trustTier: text("trust_tier"),
     status: text("status").notNull().default("pending_approval"), // pending_approval | needs_credentials | active | disabled
     createdByUserId: uuid("created_by_user_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

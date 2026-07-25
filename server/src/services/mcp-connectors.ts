@@ -98,17 +98,20 @@ export function adapterSupportsConnectors(adapterType: string | null | undefined
 }
 
 /**
- * The D7-relevant fields a connector row carries at delivery. `trustTier` is
- * NOT a stored column — the catalog trust tier only exists at install time — so
- * it is always absent here, which makes the delivery re-gate FAIL-CLOSED for
- * catalog stdio connectors under `authenticated`: without proof of `verified`,
- * an stdio command on a shared host is refused. That is the safe reading of a
- * gate whose entire justification is "may this host execute this command".
+ * The D7-relevant fields a connector row carries at delivery. `trustTier` IS a
+ * stored column (`company_mcp_connectors.trust_tier`), set at install from the
+ * catalog entry's trust tier and null for BYO (FU-19 follow-up). Persisting it
+ * lets the delivery re-gate honor the `catalog + verified` exemption after a
+ * `local_trusted -> authenticated` conversion — exactly as the create-time gate
+ * does — so a previously-verified catalog stdio connector keeps working while a
+ * null (BYO) or non-verified tier still fails closed. That is the correct reading
+ * of a gate whose justification is "may this host execute this command": it must
+ * evaluate against the SAME provenance the create-time gate approved.
  */
 interface D7RelevantRow {
   transport?: string;
   source?: string;
-  trustTier?: string;
+  trustTier?: string | null;
 }
 
 export interface ConnectorSelectionInput<T extends { id: string; status: string }> {
@@ -159,7 +162,11 @@ export function selectConnectorRowsForAgent<T extends { id: string; status: stri
         row.transport ?? "",
         input.deploymentMode,
         row.source ?? "",
-        row.trustTier,
+        // Stored column is nullable; the gate takes `string | undefined` and
+        // treats a null/missing tier as unverified (fail-closed).
+        // Stored column is nullable; the gate takes `string | undefined` and
+        // treats a null/missing tier as unverified (fail-closed).
+        row.trustTier ?? undefined,
       );
       if (!allowed) {
         input.onSkip?.(c, "d7_blocked");

@@ -1,0 +1,1 @@
+ALTER TABLE "company_mcp_connectors" ADD COLUMN IF NOT EXISTS "trust_tier" text;

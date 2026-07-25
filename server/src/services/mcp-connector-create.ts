@@ -81,6 +81,12 @@ export type CreateConnectorInput = {
   requiresSecret: boolean;
   /** Forced by the caller, never taken from a client body. */
   source: "byo" | "catalog";
+  /**
+   * Catalog trust tier at install ("verified" | "community" | "unverified"), or
+   * null for BYO (no catalog provenance). Persisted so the FU-19 delivery-time D7
+   * re-check keeps the `catalog + verified` exemption after a mode conversion.
+   */
+  trustTier?: string | null;
   deploymentMode: string;
   actor: { actorType: "user" | "agent"; actorId: string; agentId: string | null };
 };
@@ -133,6 +139,7 @@ export async function createConnector(
     secretRef: input.secretRef ?? null,
     requiresSecret: input.requiresSecret,
     source: input.source,
+    trustTier: input.trustTier ?? null,
     status,
     createdByUserId,
   });

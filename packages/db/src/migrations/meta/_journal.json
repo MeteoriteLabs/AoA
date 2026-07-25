@@ -1261,6 +1261,13 @@
       "when": 1784897083857,
       "tag": "0179_nasty_stick",
       "breakpoints": true
+    },
+    {
+      "idx": 180,
+      "version": "7",
+      "when": 1784973967642,
+      "tag": "0180_luxuriant_wallow",
+      "breakpoints": true
     }
   ]
 }

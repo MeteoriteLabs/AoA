@@ -275,6 +275,17 @@ describe("entryToCreateInput", () => {
     expect(r.requiresSecret).toBe(true);
   });
 
+  // FU-19 follow-up — the entry's trust tier is persisted so the delivery-time
+  // D7 re-check can honor the catalog+verified exemption after a mode conversion.
+  it("carries the entry's trust tier onto the create input", () => {
+    expect(entryToCreateInput(verifiedHttp, "co1", "local_trusted", ACTOR).trustTier).toBe(
+      "verified",
+    );
+    expect(entryToCreateInput(unverifiedStdio, "co1", "local_trusted", ACTOR).trustTier).toBe(
+      "community",
+    );
+  });
+
   it('sets source to "catalog" — never "marketplace", which would make the D7 branch dead code', () => {
     expect(entryToCreateInput(verifiedHttp, "co1", "local_trusted", ACTOR).source).toBe("catalog");
   });
@@ -385,6 +396,17 @@ describe("install route — verified entries install in one call", () => {
       "authenticated",
       "catalog",
       "verified",
+    );
+  });
+
+  // FU-19 follow-up — the persisted row carries the tier, so the delivery re-gate
+  // can later prove the catalog+verified exemption after a mode conversion.
+  it("persists the entry's trust tier on the connector row (verified stdio)", async () => {
+    deploymentMode = "authenticated";
+    await install(makeApp(founderActor), { entryId: "fs" });
+    expect(mockConnectorSvc.create).toHaveBeenCalledWith(
+      COMPANY,
+      expect.objectContaining({ source: "catalog", trustTier: "verified" }),
     );
   });
 

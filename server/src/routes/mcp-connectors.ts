@@ -326,6 +326,11 @@ export function entryToCreateInput(
     secretRef: null,
     requiresSecret: entry.requiresSecret,
     source: "catalog",
+    // Persist the entry's trust tier so the FU-19 delivery-time D7 re-check can
+    // honor the `catalog + verified` exemption after a mode conversion, exactly
+    // like the create-time gate does. `entry.trust.tier` is always set (the
+    // shared schema defaults it to "community" fail-closed); `?.` is defensive.
+    trustTier: entry.trust?.tier ?? null,
     deploymentMode,
     actor,
   };
@@ -613,6 +618,10 @@ export function mcpConnectorRoutes(db: Db, opts: McpConnectorRouteOptions = {}) 
           // `requiresSecret` exists to describe.
           requiresSecret: false,
           source,
+          // BYO has no catalog provenance, so no trust tier can vouch for it. Null
+          // means the FU-19 delivery re-check treats it as non-exempt (correctly
+          // dropped in `authenticated` — the very case D7 exists to prevent).
+          trustTier: null,
           deploymentMode,
           actor,
         },

@@ -228,6 +228,18 @@ describe("mcp-connectors routes — validation (load-bearing)", () => {
     expect(res.status).toBe(201);
     expect(mockConnectorSvc.create).toHaveBeenCalledTimes(1);
   });
+
+  // FU-19 follow-up — a BYO connector has no catalog provenance, so it persists a
+  // null trust tier and the delivery-time D7 re-check correctly treats it as
+  // non-exempt (dropped in authenticated).
+  it("a BYO connector persists a null trust tier", async () => {
+    deploymentMode = "local_trusted";
+    await postConnector(makeApp(founderActor), goodStdio);
+    expect(mockConnectorSvc.create).toHaveBeenCalledWith(
+      COMPANY,
+      expect.objectContaining({ source: "byo", trustTier: null }),
+    );
+  });
 });
 
 describe("assertTransportAllowed — D7 stdio gate (unit truth table)", () => {

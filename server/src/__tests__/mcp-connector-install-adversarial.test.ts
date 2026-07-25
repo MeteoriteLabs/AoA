@@ -1282,6 +1282,77 @@ describe("[ESC-3] D7 is evaluated at CREATE time and never again at delivery", (
     });
     expect(rows.map((r) => r.id)).toEqual(["conn-local"]);
   });
+
+  // FU-19 FOLLOW-UP: the stored trust tier makes the delivery re-gate honor the
+  // `catalog + verified` exemption exactly like create-time does — so a mode
+  // conversion no longer over-drops previously-verified catalog stdio connectors.
+  const verifiedCatalogStdio = {
+    id: "conn-cat-verified",
+    status: "active",
+    transport: "stdio",
+    source: "catalog",
+    trustTier: "verified" as string | null,
+  };
+  const communityCatalogStdio = {
+    id: "conn-cat-community",
+    status: "active",
+    transport: "stdio",
+    source: "catalog",
+    trustTier: "community" as string | null,
+  };
+  const legacyNullTierStdio = {
+    id: "conn-legacy",
+    status: "active",
+    transport: "stdio",
+    source: "catalog",
+    trustTier: null as string | null,
+  };
+
+  it("[FU-19 follow-up] a VERIFIED catalog stdio connector SURVIVES local_trusted -> authenticated", () => {
+    const skips: Array<{ id: string; reason: string }> = [];
+    const rows = selectConnectorRowsForAgent({
+      connectors: [verifiedCatalogStdio],
+      enabledConnectorIds: new Set(["conn-cat-verified"]),
+      isCommander: false,
+      deploymentMode: "authenticated",
+      onSkip: (c, reason) => skips.push({ id: c.id, reason }),
+    });
+    expect(rows.map((r) => r.id)).toEqual(["conn-cat-verified"]);
+    expect(skips).toEqual([]);
+  });
+
+  it("[FU-19 follow-up] a COMMUNITY catalog stdio connector is still dropped under authenticated", () => {
+    const skips: Array<{ id: string; reason: string }> = [];
+    const rows = selectConnectorRowsForAgent({
+      connectors: [communityCatalogStdio],
+      enabledConnectorIds: new Set(["conn-cat-community"]),
+      isCommander: false,
+      deploymentMode: "authenticated",
+      onSkip: (c, reason) => skips.push({ id: c.id, reason }),
+    });
+    expect(rows).toEqual([]);
+    expect(skips).toEqual([{ id: "conn-cat-community", reason: "d7_blocked" }]);
+  });
+
+  it("[FU-19 follow-up] a legacy null-tier row behaves as non-exempt (dropped under authenticated)", () => {
+    const rows = selectConnectorRowsForAgent({
+      connectors: [legacyNullTierStdio],
+      enabledConnectorIds: new Set(["conn-legacy"]),
+      isCommander: false,
+      deploymentMode: "authenticated",
+    });
+    expect(rows).toEqual([]);
+  });
+
+  it("[FU-19 follow-up] the verified catalog stdio is exempt for Commander too", () => {
+    const rows = selectConnectorRowsForAgent({
+      connectors: [verifiedCatalogStdio],
+      enabledConnectorIds: new Set(),
+      isCommander: true,
+      deploymentMode: "authenticated",
+    });
+    expect(rows.map((r) => r.id)).toEqual(["conn-cat-verified"]);
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
