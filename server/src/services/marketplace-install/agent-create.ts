@@ -4,6 +4,8 @@ import { agents, aoaAgentTriggers } from "@armyofagents/db";
 import type { CatalogItem } from "@armyofagents/shared";
 import { deriveSiblingResourceUrl } from "./agent-runtime.js";
 import { fetchCatalogResourceUrl } from "./fetch-resource.js";
+import { applyCrewInstallDefaults, isCrewTemplate } from "./crew-install-defaults.js";
+import { resolveCrewAdapterForCompany } from "../internal-agent/aoa-agents/resolve-crew-adapter.js";
 import type { NormalizedMarketplaceAgentTemplate } from "./types.js";
 
 export interface AgentInstructionsServiceLike {
@@ -60,7 +62,19 @@ export async function createMarketplaceAgent(opts: {
   template: NormalizedMarketplaceAgentTemplate;
   instructionsService?: AgentInstructionsServiceLike;
 }): Promise<{ agentId: string }> {
-  const { catalogItem, companyId, db, desiredName, template, instructionsService } = opts;
+  const { catalogItem, companyId, db, desiredName, instructionsService } = opts;
+
+  // T2.3e — the single chokepoint where a marketplace agent row is born, and
+  // therefore the one place the crew defaults can be applied without a caller
+  // being able to forget them. `installTeam`, `installAgent` and
+  // `reconcileTeamMembers` all route through here.
+  //
+  // Crew status + adapter are AoA facts the catalog cannot express; see
+  // `crew-install-defaults.ts`. Non-crew (`kind: "org"`) templates are passed
+  // through untouched, so catalog `install` hints still apply to them.
+  const template = isCrewTemplate(opts.template)
+    ? applyCrewInstallDefaults(opts.template, await resolveCrewAdapterForCompany(db, companyId))
+    : opts.template;
 
   const instructions = instructionsService
     ? await loadMarketplaceInstructionFiles(catalogItem, template)
@@ -88,6 +102,12 @@ export async function createMarketplaceAgent(opts: {
         skillKeys: template.skillKeys,
         templateOrigin: catalogItem.id,
         templateVersion: catalogItem.version,
+        // D22: a row this function just minted has, by construction, never been
+        // edited — everything in it came from the catalog template. This is the
+        // one place that can honestly assert `false`, and asserting it here is
+        // what keeps freshly-installed agents inside the auto-update path.
+        // (Rows NOT written by this function stay NULL = unknown = fail closed.)
+        instructionsCustomized: false,
         metadata: template.metadata,
       })
       .returning();
@@ -95,14 +115,16 @@ export async function createMarketplaceAgent(opts: {
     const agent = inserted[0];
 
     // Materialise any aoa_agent_triggers rows declared in the template.
-    // Each trigger is enabled by default; config is merged from the template.
+    // `enabled` comes from the catalog (T2.3d) — the normalizer defaults it to
+    // `true` when the template omits it, so a trigger the catalog explicitly
+    // disabled is never installed as enabled.
     // Only executed when there are triggers to insert (org-kind agents have []).
     for (const trigger of template.triggers ?? []) {
       await tx.insert(aoaAgentTriggers).values({
         companyId,
         agentId: agent.id,
         kind: trigger.kind,
-        enabled: true,
+        enabled: trigger.enabled,
         config: trigger.config,
       });
     }

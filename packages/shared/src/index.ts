@@ -235,6 +235,7 @@ export {
   IA_CONVERSATION_STATUSES,
   REMINDER_STATUSES,
   NOTIFICATION_TYPES,
+  SKILL_CUSTOMIZED_ERROR_CODE,
   COMMANDER_TOOL_PERMISSION_DEFAULT,
   COMMANDER_RUNTIME_APPROVAL_STATUSES,
   COMMANDER_RUNTIME_APPROVAL_DECISIONS,
@@ -547,6 +548,7 @@ export type {
   CompanySkillUpdateStatus,
   CompanySkillImportRequest,
   CompanySkillImportResult,
+  CompanySkillRefusedImport,
   CompanySkillProjectScanRequest,
   CompanySkillProjectScanResult,
   CompanySkillProjectScanSkipped,
@@ -1299,6 +1301,9 @@ export * from "./autonomy-levels.js";
 export * from "./inbound-routing.js";
 export * from "./user-notes.js";
 export * from "./commander-output-refs.js";
+export * from "./viewer-show-ref.js";
+export * from "./viewer-control.js";
+export * from "./safe-browser-url.js";
 export * from "./commander-input-refs.js";
 export * from "./hub.js";
 export * from "./work-questions.js";

@@ -115,6 +115,49 @@ export const marketplaceNotifications = {
       sourceId: `update_completed:${catalogItemName}`,
     }),
 
+  /**
+   * T2.3b — crew repair adopted this company's pre-existing crew rows into
+   * marketplace management. Founder-visible on purpose: a background pass
+   * changing how their agents are governed must not be silent, and the
+   * follow-on content update arrives through `agentUpdatePolicy` (which
+   * defaults to `notify`), so the founder is the one who decides it.
+   */
+  crewRepaired: (db: Db, companyId: string, adoptedCount: number) =>
+    notifyFounders(db, companyId, {
+      type: "marketplace.crew_repaired",
+      title: "Crew reconnected to the marketplace",
+      message:
+        `${adoptedCount} crew agent(s) were excluded from marketplace updates and have been ` +
+        "reconnected. Their instructions and skills were left exactly as they are — any update " +
+        "will follow your marketplace update policy.",
+      relatedEntityType: "marketplace_operation",
+      sourceId: `crew_repaired:${companyId}`,
+    }),
+
+  /**
+   * T2.9 — a github / url / local re-install was refused because the installed
+   * skill row carries founder edits (`company_skills.customized`).
+   *
+   * This is a hub item and NOT a `marketplace_pending_updates` row on purpose:
+   * that table's `catalogItemId`, `itemType`, `currentVersion` and
+   * `latestVersion` are all `notNull`, it is uniquely indexed on
+   * `(companyId, catalogItemId)`, and every consumer — `/updates` list →
+   * `/updates/:id/diff` → `/merge`, plus `checkCompanyUpdates` — resolves that
+   * id against the live catalog. A non-catalog skill has no catalog item, so a
+   * synthetic row would surface an Updates entry that 422s on every action. The
+   * founder hub item is the honest durable record for this event.
+   */
+  skillUpdateRefusedCustomized: (db: Db, companyId: string, skillName: string, skillId: string) =>
+    notifyFounders(db, companyId, {
+      type: "marketplace.skill_update_refused_customized",
+      title: `Kept your edits to ${skillName}`,
+      message:
+        `A re-install of "${skillName}" was skipped because the skill has local edits. ` +
+        "Nothing was changed. Delete the skill and re-import it if you want the upstream version.",
+      relatedEntityType: "company_skill",
+      sourceId: `skill_update_refused_customized:${skillId}`,
+    }),
+
   updateFailed: (db: Db, companyId: string, catalogItemName: string, error: string) =>
     notifyFounders(db, companyId, {
       type: "marketplace.update_failed",

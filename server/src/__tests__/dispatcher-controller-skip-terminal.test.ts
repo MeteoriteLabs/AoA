@@ -188,7 +188,7 @@ describe("runAoaDispatch — controller-path peer-wake skip is terminalized (Tas
         // 2 Phase-3 wakeup-select: a queued peer-wake on a controller-path thread.
         [{ id: "w-ctrl", agentId: "a-1", companyId: "co-1", source: "thread_mention", payload: { threadId: "th-controller", role: "scout" } }],
         // 3 resolveCompanyConfig
-        [{ autonomyLevel: 2, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
+        [{ crewAutonomyLevel: 2, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
         // 4 threadRow pause/controller/effective-autonomy lookup: NOT paused, controller-path=true → SKIP here
         [{ crewPaused: false, useControllerPath: true, autonomyLevel: 2 }],
         // 5 Phase-4 reclaim-select (after Promise.all; the skip returns before any
@@ -231,7 +231,7 @@ describe("runAoaDispatch — controller-path peer-wake skip is terminalized (Tas
         // 2 Phase-3 wakeup: legacy thread (useControllerPath=false)
         [{ id: "w-legacy", agentId: "a-2", companyId: "co-2", source: "thread_mention", payload: { threadId: "th-legacy", role: "scout" } }],
         // 3 resolveCompanyConfig (Drive so the autonomy gate passes)
-        [{ autonomyLevel: 2, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
+        [{ crewAutonomyLevel: 2, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
         // 4 threadRow/effectiveAutonomy lookup: NOT paused, controller-path=FALSE → no skip
         [{ crewPaused: false, useControllerPath: false, autonomyLevel: 2 }],
         // 5 D3 SPEND-brake count

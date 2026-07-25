@@ -1,27 +1,21 @@
 import { Router, type Request, type Response } from "express";
-import mammoth from "mammoth";
-import DOMPurify from "isomorphic-dompurify";
 import type { Db } from "@armyofagents/db";
 import { memoryAssetsService } from "../services/memory-assets.js";
 import type { StorageService } from "../storage/types.js";
 import { assertCompanyAccess } from "./authz.js";
+import { DOCX_MIME, streamToBuffer, renderDocxBufferToSafeHtml } from "../services/docx-render.js";
+import { XLSX_MIME, renderXlsxBufferToSafeHtml } from "../services/xlsx-render.js";
+import {
+  assertOfficeRenderSize,
+  OfficeRenderTooLargeError,
+} from "../services/office-render-limits.js";
+import { officeRenderLimiter } from "../middleware/rate-limit.js";
 
 interface RoutesOptions {
   db?: Db;
   svc?: ReturnType<typeof memoryAssetsService>;
   storage?: { getObject: (companyId: string, key: string) => Promise<{ stream: NodeJS.ReadableStream; contentLength: number }> };
   storageService?: StorageService;
-}
-
-const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-
-async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  return new Promise((resolve, reject) => {
-    stream.on("data", (c: Buffer) => chunks.push(c));
-    stream.on("end", () => resolve(Buffer.concat(chunks)));
-    stream.on("error", reject);
-  });
 }
 
 export function memoryAssetRenderRoutes(opts: RoutesOptions) {
@@ -31,6 +25,7 @@ export function memoryAssetRenderRoutes(opts: RoutesOptions) {
 
   router.get(
     "/companies/:companyId/memory/assets/:id/render",
+    officeRenderLimiter,
     async (req: Request, res: Response, next) => {
       try {
         const companyId = req.params.companyId as string;
@@ -43,9 +38,10 @@ export function memoryAssetRenderRoutes(opts: RoutesOptions) {
           return;
         }
 
-        if (asset.mimeType !== DOCX_MIME) {
+        const mimeType = asset.mimeType;
+        if (mimeType !== DOCX_MIME && mimeType !== XLSX_MIME) {
           res.status(415).json({
-            error: `Render not supported for ${asset.mimeType}. Try /content for the raw bytes.`,
+            error: `Render not supported for ${mimeType}. Try /content for the raw bytes.`,
           });
           return;
         }
@@ -55,19 +51,33 @@ export function memoryAssetRenderRoutes(opts: RoutesOptions) {
           return;
         }
 
+        // Cheap pre-check on the recorded size before fetching bytes; the render
+        // helper re-checks the actual buffer length as the authoritative guard.
+        assertOfficeRenderSize(asset.fileSize ?? 0);
+
         const obj = await storage.getObject(companyId, asset.storageKey);
         const buffer = await streamToBuffer(obj.stream);
-        const result = await mammoth.convertToHtml({ buffer });
-        const sanitized = DOMPurify.sanitize(result.value, {
-          ALLOWED_URI_REGEXP: /^(?:https?|mailto|tel|#)/i,
-          FORBID_TAGS: ["script", "iframe", "object", "embed", "form"],
-          FORBID_ATTR: ["onerror", "onload", "onclick", "onmouseover", "onfocus"],
-        });
+        // Shared convert+sanitize+wrap (docx-render.ts / xlsx-render.ts), both
+        // sanitizing through the SAME allow-list-by-default config
+        // (office-html-sanitize.ts) — single source with the generic
+        // /assets/:id/render route so the surfaces never drift in security
+        // posture. Dispatch DOCX vs XLSX by the asset's own mimeType.
+        const html =
+          mimeType === XLSX_MIME
+            ? await renderXlsxBufferToSafeHtml(buffer)
+            : await renderDocxBufferToSafeHtml(buffer);
 
         res.setHeader("Content-Type", "text/html; charset=utf-8");
         res.setHeader("X-Content-Type-Options", "nosniff");
-        res.send(`<article class="docx-rendered">${sanitized}</article>`);
+        // Pure function of the immutable asset bytes — safe to browser-cache
+        // briefly so a re-viewed document renders once (mirrors /assets/:id/render).
+        res.setHeader("Cache-Control", "private, max-age=300");
+        res.send(html);
       } catch (err) {
+        if (err instanceof OfficeRenderTooLargeError) {
+          res.status(413).json({ error: err.message });
+          return;
+        }
         next(err);
       }
     },

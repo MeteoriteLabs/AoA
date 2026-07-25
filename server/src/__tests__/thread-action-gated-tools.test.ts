@@ -234,8 +234,21 @@ describe("action-gated discussion tools", () => {
   it("agent.dispatch queues a convene_agent action in controller action-gate mode", async () => {
     const targetAgentId = "eeeeeeee-0000-4000-8000-eeeeeeeeeeee";
     const ctx = makeCtx({
+      // agent.dispatch validates that a caller-supplied threadId resolves WITHIN
+      // the caller's own company before it can enter the wakeup payload (the
+      // cross-tenant guard in agent-dispatch.ts). That runs
+      // `select().from(discussions).where(...).limit(1)`, so the db mock has to be
+      // chainable — a bare `select: vi.fn()` returns undefined and blows up on
+      // `.from`. Resolve one row so the thread reads as in-company and the
+      // convene_agent queueing this test actually asserts can proceed.
       db: {
-        select: vi.fn(),
+        select: vi.fn(() => ({
+          from: vi.fn(() => ({
+            where: vi.fn(() => ({
+              limit: vi.fn(async () => [{ id: threadId }]),
+            })),
+          })),
+        })),
         insert: vi.fn(),
       } as never,
     });
@@ -251,7 +264,13 @@ describe("action-gated discussion tools", () => {
 
     expect(result.success).toBe(true);
     expect(result.data).toEqual({ actionId: "action-1", queued: true, hopCount: 2 });
-    expect(ctx.db.select).not.toHaveBeenCalled();
+    // The cross-tenant guard reads the thread once to prove the caller-supplied
+    // threadId belongs to this company before it can enter the queued action's
+    // payload. (This assertion used to be `not.toHaveBeenCalled()`; that was
+    // correct until agent.dispatch gained the ownership validation.)
+    expect(ctx.db.select).toHaveBeenCalledTimes(1);
+    // Still the load-bearing one: the action-gated path must NEVER write a wakeup
+    // row directly — it queues a thread action for the controller instead.
     expect(ctx.db.insert).not.toHaveBeenCalled();
     expect(proposeThreadAction).toHaveBeenCalledWith({
       companyId,

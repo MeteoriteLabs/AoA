@@ -1,9 +1,14 @@
 import { useEffect, useId, useMemo, useState } from "react";
+import type { ComponentPropsWithoutRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
+import type { ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
 import { PdfDocumentViewer } from "@/components/viewers/PdfDocumentViewer";
+import { ServerRenderedHtmlView } from "@/components/viewers/ServerRenderedHtmlView";
+import { highlightToHtml, languageForFilename } from "@/lib/code-highlight";
+import { parseCsv } from "./csv-parse";
 import type { ViewerResolution } from "./viewer-registry";
 
 interface SharedContentViewerProps {
@@ -55,11 +60,11 @@ export function SharedContentViewer({ viewer, filename, inlineTextContent = null
     case "json":
       return <JsonOutputViewer content={textContent ?? ""} />;
     case "table":
-      return <CsvOutputViewer content={textContent ?? ""} />;
+      return <CsvOutputViewer content={textContent ?? ""} delimiter={viewer.delimiter} />;
     case "canvas":
       return <CanvasOutputViewer content={textContent ?? ""} />;
     case "code":
-      return <SourceOutputViewer content={textContent ?? ""} />;
+      return <SourceOutputViewer content={textContent ?? ""} filename={filename} />;
     case "image":
       return <ImageOutputViewer url={assetUrl} filename={filename} />;
     case "video":
@@ -68,18 +73,108 @@ export function SharedContentViewer({ viewer, filename, inlineTextContent = null
       return <AudioOutputViewer url={assetUrl} filename={filename} />;
     case "pdf":
       return <PdfOutputViewer url={assetUrl} filename={filename} />;
+    case "docx":
+      return (
+        <ServerRenderedOutputViewer
+          renderUrl={viewer.renderUrl ?? null}
+          downloadUrl={viewer.url ?? assetUrl}
+          testId="work-product-docx"
+          noun="document"
+        />
+      );
+    case "xlsx":
+      return (
+        <ServerRenderedOutputViewer
+          renderUrl={viewer.renderUrl ?? null}
+          downloadUrl={viewer.url ?? assetUrl}
+          testId="work-product-xlsx"
+          noun="spreadsheet"
+        />
+      );
     case "download":
       return <DownloadFallbackViewer url={viewer.url ?? assetUrl} />;
   }
 }
 
-function SourceOutputViewer({ content }: { content: string }) {
+// Shared wrapper for the server-rendered office kinds (docx + xlsx). Both fetch
+// a /render URL that returns already-sanitized HTML via the one
+// ServerRenderedHtmlView; only the testid differs so each type is addressable.
+function ServerRenderedOutputViewer({
+  renderUrl,
+  downloadUrl,
+  testId,
+  noun,
+}: {
+  renderUrl: string | null;
+  downloadUrl: string | null;
+  testId: string;
+  noun: string;
+}) {
+  // Without a render URL there is nothing to fetch — fall back to a download
+  // card so the user can still open the file externally.
+  if (!renderUrl) return <DownloadFallbackViewer url={downloadUrl} />;
+  return (
+    <div className="min-h-0 flex-1 overflow-auto bg-background px-10 py-8" data-testid={testId}>
+      <ServerRenderedHtmlView renderUrl={renderUrl} noun={noun} />
+    </div>
+  );
+}
+
+function SourceOutputViewer({ content, filename }: { content: string; filename?: string }) {
+  // We derive the language from the filename extension. When there is no
+  // filename (the "source" fallback inside SandboxedMarkupViewer) or the
+  // extension is unknown/plain (.txt/.log/...), `languageForFilename` returns
+  // undefined and the content renders as escaped plain text — no auto-detect,
+  // so a plain note is never sprayed with guessed token colors.
+  const highlighted = useMemo(
+    () => highlightToHtml(content, languageForFilename(filename)),
+    [content, filename],
+  );
   return (
     <div className="min-h-0 flex-1 overflow-auto p-4" data-testid="work-product-source">
       <pre className="rounded-md border border-border bg-muted/40 p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words">
-        {content}
+        <code className="hljs" dangerouslySetInnerHTML={{ __html: highlighted.html }} />
       </pre>
     </div>
+  );
+}
+
+/**
+ * Markdown `code` renderer. Fenced blocks carry a `language-xxx` class (added by
+ * react-markdown from the fence info string) → highlight via the shared helper.
+ * Inline code and language-less fences have no `language-` class and stay plain.
+ * The highlighted output is XSS-safe (see `code-highlight.ts`).
+ */
+function MarkdownCodeRenderer({
+  className,
+  children,
+  node: _node,
+  ...props
+}: ComponentPropsWithoutRef<"code"> & ExtraProps) {
+  // react-markdown v10 passes the hast `node` to custom components. Pull it out
+  // so it is never spread onto the intrinsic <code> (React 19 would silently
+  // serialize it as node="[object Object]", an invalid attribute).
+  const highlighted = useMemo(() => {
+    const match = /language-([\w+#.-]+)/.exec(className ?? "");
+    if (!match) return null;
+    const language = match[1].toLowerCase();
+    const code = String(children ?? "").replace(/\n$/, "");
+    const { html } = highlightToHtml(code, language);
+    return { language, html };
+  }, [className, children]);
+
+  if (!highlighted) {
+    return (
+      <code className={className} {...props}>
+        {children}
+      </code>
+    );
+  }
+  return (
+    <code
+      className={`hljs language-${highlighted.language}`}
+      dangerouslySetInnerHTML={{ __html: highlighted.html }}
+    />
   );
 }
 
@@ -87,7 +182,9 @@ function MarkdownOutputViewer({ content }: { content: string }) {
   return (
     <div className="min-h-0 flex-1 overflow-auto p-5" data-testid="work-product-markdown">
       <div className="prose prose-sm max-w-none dark:prose-invert prose-headings:mb-2 prose-p:my-2 prose-li:my-0">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+        <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ code: MarkdownCodeRenderer }}>
+          {content}
+        </ReactMarkdown>
       </div>
     </div>
   );
@@ -231,8 +328,8 @@ function JsonOutputViewer({ content }: { content: string }) {
   );
 }
 
-function CsvOutputViewer({ content }: { content: string }) {
-  const rows = useMemo(() => parseCsv(content), [content]);
+function CsvOutputViewer({ content, delimiter = "," }: { content: string; delimiter?: string }) {
+  const rows = useMemo(() => parseCsv(content, delimiter), [content, delimiter]);
   if (rows.length === 0) return <SourceOutputViewer content={content} />;
   const [header, ...body] = rows;
 
@@ -262,13 +359,6 @@ function CsvOutputViewer({ content }: { content: string }) {
       </table>
     </div>
   );
-}
-
-function parseCsv(content: string): string[][] {
-  return content
-    .split(/\r?\n/)
-    .filter((line) => line.trim().length > 0)
-    .map((line) => line.split(",").map((cell) => cell.trim()));
 }
 
 function CanvasOutputViewer({ content }: { content: string }) {

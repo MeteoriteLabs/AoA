@@ -188,7 +188,8 @@ async function configureCompanyProvider(request: APIRequestContext, companyId: s
       data: {
         provider: REAL_PROVIDER,
         model: REAL_MODEL,
-        autonomyLevel,
+        // D18: the crew dial, not Commander's.
+        crewAutonomyLevel: autonomyLevel,
         crewPaused: false,
       },
     }),

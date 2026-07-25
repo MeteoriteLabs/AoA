@@ -21,6 +21,7 @@ vi.mock("drizzle-orm", () => ({
   eq: () => Symbol("eq"),
   and: () => Symbol("and"),
   ne: () => Symbol("ne"),
+  inArray: () => Symbol("inArray"),
 }));
 vi.mock("../services/marketplace-notifications.js", () => ({
   marketplaceNotifications: {

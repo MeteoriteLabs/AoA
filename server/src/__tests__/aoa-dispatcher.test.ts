@@ -577,7 +577,7 @@ describe("runAoaDispatch — generalized #99 dispatcher", () => {
         // slot 2 — Phase-3 wakeup-select: one inbox-routing wakeup
         [{ id: "wr-off", agentId: "a-nav", companyId: "co-r", source: "inbox.routing_ambiguous", payload: { inboxItemId: "item-1", candidateThreadIds: ["t1"], distances: [0.2], gap: false } }],
         // slot 3 — resolveCompanyConfig: routing dial is OFF
-        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
+        [{ crewAutonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
         [],  // slot 4 — Phase-4 reclaim-select (after Promise.all)
       ],
       [
@@ -615,7 +615,7 @@ describe("runAoaDispatch — generalized #99 dispatcher", () => {
         // slot 2 — Phase-3 wakeup-select: inbox-routing wakeup
         [{ id: "wr-sug", agentId: "a-nav", companyId: "co-r2", source: "inbox.routing_ambiguous", payload: { inboxItemId: "item-2", candidateThreadIds: [], distances: [], gap: true } }],
         // slot 3 — resolveCompanyConfig: dial=suggest, autonomyLevel=0 (crew would block)
-        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "suggest" }],
+        [{ crewAutonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "suggest" }],
         [],  // slot 4 — D3 SPEND-brake window count
         [],  // slot 5 — A5/T1.9 run-COUNT brake window count
         [{ runtimeConfig: {}, adapterConfig: {} }], // slot 6 — agent row
@@ -647,7 +647,7 @@ describe("runAoaDispatch — generalized #99 dispatcher", () => {
       [
         [], [],  // slots 0-1
         [{ id: "wr-aa", agentId: "a-nav", companyId: "co-r3", source: "inbox.routing_ambiguous", payload: { inboxItemId: "item-3", candidateThreadIds: ["t5"], distances: [0.1], gap: false } }],
-        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "auto_attach" }],
+        [{ crewAutonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "auto_attach" }],
         [],  // D3 SPEND-brake count
         [],  // A5/T1.9 run-COUNT brake count
         [{ runtimeConfig: {}, adapterConfig: {} }],
@@ -672,7 +672,7 @@ describe("runAoaDispatch — generalized #99 dispatcher", () => {
       [
         [], [],
         [{ id: "wr-fa", agentId: "a-nav", companyId: "co-r4", source: "inbox.routing_ambiguous", payload: { inboxItemId: "item-4" } }],
-        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "full_auto" }],
+        [{ crewAutonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "full_auto" }],
         [],  // D3 SPEND-brake count
         [],  // A5/T1.9 run-COUNT brake count
         [{ runtimeConfig: {}, adapterConfig: {} }],
@@ -712,7 +712,7 @@ describe("runAoaDispatch — generalized #99 dispatcher", () => {
         // 2 Phase-3 wakeup: chronicler sweep, threadId present, on a controller-path thread
         [{ id: "wr-chr", agentId: "a-chr", companyId: "co-chr", source: "sweep.chronicler", payload: { threadId: "t-cp", role: "chronicler" } }],
         // 3 resolveCompanyConfig: company autonomyLevel=0 (blocks agentic crew, but chronicler:0 passes)
-        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
+        [{ crewAutonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
         // 4 effectiveAutonomy thread lookup — thread sets dial=2 (Drive) to make
         //   the thread override observable in the forwarded payload below.
         [{ crewPaused: false, useControllerPath: true, autonomyLevel: 2 }],
@@ -738,13 +738,56 @@ describe("runAoaDispatch — generalized #99 dispatcher", () => {
     );
   });
 
+  // ── Layer B — trusted fields win over the payload spread ──────────────────
+  // A wakeup whose stored payload carries a hostile `companyId` (smuggled via
+  // agent.dispatch context on some enqueue path) must NOT redirect the run: the
+  // dispatcher sets `companyId: w.companyId` AFTER `...(w.payload)`, so the
+  // trusted wakeup-row company wins. Pre-fix companyId sat BEFORE the spread and
+  // the payload's value clobbered it — a cross-tenant escalation. Modeled on the
+  // chronicler fixture (threadId present → effectiveAutonomy lookup slot).
+  it("SECURITY (Layer B): a wakeup payload.companyId does NOT override the trusted w.companyId in the runAoaAgent call", async () => {
+    const db = makeConcurrencyDb(
+      [
+        [],  // 0 Phase-1 orphan-select
+        [],  // 1 Phase-2 pending-drain
+        // 2 Phase-3 wakeup: trusted row company is "co-chr"; payload smuggles a
+        // FOREIGN companyId ("co-EVIL") + spoofed source/wakeupId.
+        [{ id: "wr-esc", agentId: "a-chr", companyId: "co-chr", source: "sweep.chronicler", payload: { threadId: "t-cp", role: "chronicler", companyId: "co-EVIL", source: "spoofed", wakeupId: "forged" } }],
+        // 3 resolveCompanyConfig
+        [{ crewAutonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
+        // 4 effectiveAutonomy thread lookup
+        [{ crewPaused: false, useControllerPath: true, autonomyLevel: 2 }],
+        [],  // 5 D3 SPEND-brake window count
+        [],  // 6 A5/T1.9 run-COUNT brake window count
+        [{ runtimeConfig: {}, adapterConfig: {} }],  // 7 agent row
+        [],  // 8 Phase-4 reclaim-select
+      ],
+      [
+        [{ id: "wr-esc" }],  // update[0] = atomic claim RETURNING
+        [],                   // update[1] = final status update
+      ],
+    );
+
+    await runAoaDispatch(db, { limiterMax: 2, staleMs: 600_000 });
+
+    // The trusted wakeup-row company + source + wakeupId win over the payload.
+    expect(runAoaMock).toHaveBeenCalledWith(
+      db, "a-chr",
+      expect.objectContaining({ companyId: "co-chr", source: "sweep.chronicler", wakeupId: "wr-esc" }),
+    );
+    // Explicit: the foreign payload company was NOT forwarded.
+    const forwarded = runAoaMock.mock.calls[0][2] as { companyId?: string };
+    expect(forwarded.companyId).toBe("co-chr");
+    expect(forwarded.companyId).not.toBe("co-EVIL");
+  });
+
   it("infra sweep (sweep.chronicler) respects thread crewPaused before running", async () => {
     const db = makeConcurrencyDb(
       [
         [],
         [],
         [{ id: "wr-chr-paused", agentId: "a-chr", companyId: "co-chr", source: "sweep.chronicler", payload: { threadId: "t-paused", role: "chronicler" } }],
-        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
+        [{ crewAutonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
         [{ crewPaused: true, useControllerPath: true, autonomyLevel: 2 }],
         [],
       ],

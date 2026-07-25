@@ -94,7 +94,25 @@ GET /api/companies/{companyId}/internal-agent/reminders
 PATCH /api/companies/{companyId}/internal-agent/reminders/{reminderId}
 ```
 
-Config includes execution mode, provider/model fields, autonomy level, enabled capabilities, budget, and proactive interval. Current execution is CLI-mode by default.
+Config includes execution mode, provider/model fields, **two autonomy dials**, enabled capabilities, budget, and proactive interval. Current execution is CLI-mode by default.
+
+### Autonomy: two independent dials
+
+`internal_agent_config` carries two separate autonomy columns. They are set independently and **neither is derived from the other** — writing one never moves the other. Both accept `0` (Manual), `1` (Assist), or `2` (Drive); `3` is rejected. Both default to `1`. (D18 split, 2026-07-24 — see Decision #109 addendum §10-14.)
+
+| Field | Governs | Read by |
+|---|---|---|
+| `autonomyLevel` | **Commander only** | Nothing at runtime — see below |
+| `crewAutonomyLevel` | **Agent work** | Crew task runs and crew wakeups, org-agent heartbeat runs, and every Adjutant/thread flow (scope-draft auto-accept, thread participation, proactive Adjutant wake, phase-advance auto-approve) |
+
+Two things about these names are deliberate and worth knowing before you use them:
+
+- **`crewAutonomyLevel` also governs ORG agents, not just crew.** The name follows the D18 decision, but the dial answers "how far may an agent take its own task", which is the same question for a crew agent and an org-agent heartbeat run. If you are setting autonomy for *any* agent execution, this is the field. The Settings UI labels it "Agent autonomy (crew + org agents)" for the same reason.
+- **`autonomyLevel` is currently inert.** No Commander code path reads it. Commander's gating is the runtime-approval policy (`runtimeApprovalsEnabled` / `runtimeAllowAlwaysEnabled` above), which is unconditional for Commander. The column is retained as Commander's declared dial and round-trips through portability bundles, but changing it changes no behaviour today.
+
+**If you are migrating pre-2026-07-24 client code**, a `PATCH` sending `autonomyLevel` to control agents must be changed to `crewAutonomyLevel`. The old field still validates and still writes — it simply no longer affects agent execution, so the failure is silent.
+
+`discussions.autonomyLevel` (see `docs/api/discussions.md`) remains a third, finer-grained **per-thread override** that outranks `crewAutonomyLevel` for that thread. Resolution is `thread.autonomyLevel ?? company.crewAutonomyLevel`.
 
 ## Cockpit
 

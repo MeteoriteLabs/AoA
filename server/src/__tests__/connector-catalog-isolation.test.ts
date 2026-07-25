@@ -23,7 +23,7 @@
  * background timer, not a user-triggered request.
  *
  * This was proven live against the real 514-item production catalog before
- * this decision was locked in. See Decision #110 / Plan 3a (curated
+ * this decision was locked in. See Decision #116 / Plan 3a (curated
  * connector shelf) in docs/architecture/decisions.md.
  *
  * This test pins `MarketplaceItemTypeSchema`'s option list so that a future

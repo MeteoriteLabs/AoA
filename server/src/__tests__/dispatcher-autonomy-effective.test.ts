@@ -212,7 +212,7 @@ describe("runAoaDispatch — role-activation gates on EFFECTIVE autonomy (C1/C2/
         // 2 Phase-3 wakeup: thread-bearing @mention for an engineer, runtimeConfig present (not Commander)
         [{ id: "w-c1", agentId: "a-c1", companyId: "co-c1", source: "thread_mention", runtimeConfig: { aoa: { role: "member" } }, payload: { threadId: "th-drive", role: "engineer" } }],
         // 3 resolveCompanyConfig: company=Manual(0)
-        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
+        [{ crewAutonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
         // 4 threadRow pause/controller/effective-autonomy lookup
         [{ crewPaused: false, useControllerPath: false, autonomyLevel: 2 }],
         // 5 D3 SPEND-brake count
@@ -254,7 +254,7 @@ describe("runAoaDispatch — role-activation gates on EFFECTIVE autonomy (C1/C2/
         // 2 Phase-3 wakeup
         [{ id: "w-c2", agentId: "a-c2", companyId: "co-c2", source: "thread_mention", runtimeConfig: { aoa: { role: "member" } }, payload: { threadId: "th-manual", role: "engineer" } }],
         // 3 resolveCompanyConfig: company=Drive(2)
-        [{ autonomyLevel: 2, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
+        [{ crewAutonomyLevel: 2, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
         // 4 threadRow pause/controller/effective-autonomy lookup → thread dial = 0 (Manual)
         [{ crewPaused: false, useControllerPath: false, autonomyLevel: 0 }],
         // 5 Phase-4 failed-run reclaim-select (early-return at autonomy gate → no brake/agent/claim selects)
@@ -283,7 +283,7 @@ describe("runAoaDispatch — role-activation gates on EFFECTIVE autonomy (C1/C2/
         [],
         [],
         [{ id: "w-c3", agentId: "a-c3", companyId: "co-c3", source: "thread_mention", runtimeConfig: { aoa: { role: "member" } }, payload: { threadId: "th-drive2", role: "engineer" } }],
-        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }], // company Manual(0)
+        [{ crewAutonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }], // company Manual(0)
         [{ crewPaused: false, useControllerPath: false, autonomyLevel: 2 }], // threadRow/effectiveAutonomy → thread Drive(2)
         [],
         [],
@@ -318,7 +318,7 @@ describe("runAoaDispatch — role-activation gates on EFFECTIVE autonomy (C1/C2/
         // 2 Phase-3 wakeup: Commander agent (lead). No threadId → no thread lookups.
         [{ id: "w-cmd", agentId: "a-cmd", companyId: "co-cmd", source: "thread_mention", runtimeConfig: { aoa: { role: "lead" } }, payload: {} }],
         // 3 resolveCompanyConfig: company=Manual(0)
-        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
+        [{ crewAutonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
         // (no threadRow lookup: no threadId; no effectiveAutonomy lookup: no threadId)
         // 4 D3 SPEND-brake count
         [],
@@ -358,7 +358,7 @@ describe("runAoaDispatch — role-activation gates on EFFECTIVE autonomy (C1/C2/
         // 2 Phase-3 wakeup: a task wakeup, no threadId, payload.role=engineer (min 1)
         [{ id: "w-task", agentId: "a-task", companyId: "co-task", source: "wakeup", runtimeConfig: { aoa: { role: "member" } }, payload: { role: "engineer" } }],
         // 3 resolveCompanyConfig: company=Manual(0)
-        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
+        [{ crewAutonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
         // (no threadId → no threadRow lookup, no effectiveAutonomy lookup)
         // 4 Phase-4 reclaim-select (after the autonomy-gate early return)
         [],
@@ -400,7 +400,7 @@ describe("runAoaDispatch — role-activation gates on EFFECTIVE autonomy (C1/C2/
         // 2 Phase-3 wakeup: task-dispatch (assignment) — issueId present, NO threadId
         [{ id: "w-asn", agentId: "a-asn", companyId: "co-asn", source: "assignment", runtimeConfig: { aoa: { role: "member" } }, payload: { issueId: "iss-1", role: "engineer" } }],
         // 3 resolveCompanyConfig: company=Manual(0)
-        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
+        [{ crewAutonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
         // 4 D3 SPEND-brake count
         [],
         // 5 run-COUNT brake count
@@ -436,7 +436,7 @@ describe("runAoaDispatch — role-activation gates on EFFECTIVE autonomy (C1/C2/
         // 2 Phase-3 wakeup: task-dispatch (automation) — issueId present, NO threadId
         [{ id: "w-aut", agentId: "a-aut", companyId: "co-aut", source: "automation", runtimeConfig: { aoa: { role: "member" } }, payload: { issueId: "iss-2", role: "engineer" } }],
         // 3 resolveCompanyConfig: company=Manual(0)
-        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
+        [{ crewAutonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
         // 4 D3 SPEND-brake count
         [],
         // 5 run-COUNT brake count
@@ -476,7 +476,7 @@ describe("runAoaDispatch — role-activation gates on EFFECTIVE autonomy (C1/C2/
         // No threadId → gate reads company dial; source not exempt → stays gated.
         [{ id: "w-men", agentId: "a-men", companyId: "co-men", source: "thread_mention", runtimeConfig: { aoa: { role: "member" } }, payload: { issueId: "iss-3", role: "engineer" } }],
         // 3 resolveCompanyConfig: company=Manual(0)
-        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
+        [{ crewAutonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
         // 4 Phase-4 reclaim-select (early return at the autonomy gate)
         [],
       ],
@@ -503,7 +503,7 @@ describe("runAoaDispatch — role-activation gates on EFFECTIVE autonomy (C1/C2/
         // 2 Phase-3 wakeup: exempt-shaped (assignment + issueId) but company crewPaused
         [{ id: "w-kill", agentId: "a-kill", companyId: "co-kill", source: "assignment", runtimeConfig: { aoa: { role: "member" } }, payload: { issueId: "iss-4", role: "engineer" } }],
         // 3 resolveCompanyConfig: crewPaused=true
-        [{ autonomyLevel: 0, crewPaused: true, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
+        [{ crewAutonomyLevel: 0, crewPaused: true, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
         // 4 Phase-4 reclaim-select (early return at the pause gate)
         [],
       ],

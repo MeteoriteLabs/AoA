@@ -3,7 +3,7 @@ import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panel
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ExecutionWorkspace } from "@armyofagents/shared";
 import type { Project } from "@armyofagents/shared";
-import type { ArtifactWithVersions, ArtifactVersion, DetectedOutputForUI } from "@armyofagents/shared";
+import type { ArtifactWithVersions, ArtifactVersion, DetectedOutputForUI, IssueAttachment } from "@armyofagents/shared";
 import { WorkspaceTaskNav } from "./WorkspaceTaskNav";
 import { DependencyChain } from "./DependencyChain";
 import { WorkspaceTimeline } from "./WorkspaceTimeline";
@@ -192,6 +192,22 @@ export function WorkspaceLayout({
     }, "right-panel");
   }, [openPreviewTab, selectedIssueId]);
 
+  const handleOpenAttachment = useCallback((att: IssueAttachment) => {
+    openPreviewTab(
+      {
+        id: `asset:${att.assetId}`,
+        kind: "asset",
+        title: att.originalFilename ?? "Attachment",
+        assetId: att.assetId,
+        contentType: att.contentType ?? null,
+        filename: att.originalFilename ?? "file",
+        byteSize: att.byteSize ?? null,
+      },
+      "center",
+    );
+    setMobileTab("preview");
+  }, [openPreviewTab, setMobileTab]);
+
   const handleOpenBrowser = useCallback((service: WorkspaceRuntimeService) => {
     if (!service.previewUrl) return;
     openPreviewTab({
@@ -359,7 +375,7 @@ export function WorkspaceLayout({
                     />
                   </div>
                   <div className="flex-1 min-h-0">
-                    <WorkspaceTimeline issueId={selectedIssueId} />
+                    <WorkspaceTimeline issueId={selectedIssueId} onOpenAttachment={handleOpenAttachment} />
                   </div>
                 </>
               ) : (
@@ -482,7 +498,7 @@ export function WorkspaceLayout({
               )}
 
               {selectedIssueId ? (
-                <WorkspaceTimeline issueId={selectedIssueId} />
+                <WorkspaceTimeline issueId={selectedIssueId} onOpenAttachment={handleOpenAttachment} />
               ) : (
                 <div className="flex items-center justify-center h-full text-sm text-muted-foreground">
                   Select a task to view its timeline

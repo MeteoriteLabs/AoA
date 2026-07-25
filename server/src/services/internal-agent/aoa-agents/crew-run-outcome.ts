@@ -27,7 +27,11 @@ import { and, eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { issues } from "@armyofagents/db";
 import { logger } from "../../../middleware/logger.js";
-import { relayCrewResult } from "../../crew-result-relay.js";
+import {
+  relayCrewResult,
+  deliverCrewRunResult,
+  type DeliverCrewRunResultInput,
+} from "../../crew-result-relay.js";
 import { postCrewFailureCard } from "../../crew-failure-card.js";
 import {
   postRunSummaryComment,
@@ -65,6 +69,8 @@ export interface CrewRunSuccessInput {
   adapterUsage: { inputTokens?: number; outputTokens?: number } | undefined;
   costCents: number | null;
   runId?: string;
+  /** The delivering crew agent id (provenance for the run-result refs). */
+  agentId?: string | null;
 }
 
 /**
@@ -109,6 +115,12 @@ export function resolveCrewRunSummaryArgs(input: {
 export interface CrewRunSuccessDeps {
   relay: (db: Db, params: { issueId: string }) => Promise<{ posted: boolean }>;
   summarize: (db: Db, input: PostRunSummaryCommentInput) => Promise<{ posted: boolean }>;
+  /**
+   * Phase 7B / Task 4 — deliver navigational refs onto the origin thread on run
+   * finish (in-review-safe; distinct from the done-gated `relay`). Optional so a
+   * legacy caller that lacks a runId (or omits the dep) simply skips delivery.
+   */
+  deliver?: (input: DeliverCrewRunResultInput) => Promise<{ delivered: boolean }>;
 }
 
 /**
@@ -120,7 +132,11 @@ export interface CrewRunSuccessDeps {
 export async function postCrewRunSuccess(
   db: Db,
   input: CrewRunSuccessInput,
-  deps: CrewRunSuccessDeps = { relay: relayCrewResult, summarize: postRunSummaryComment },
+  deps: CrewRunSuccessDeps = {
+    relay: relayCrewResult,
+    summarize: postRunSummaryComment,
+    deliver: (deliverInput: DeliverCrewRunResultInput) => deliverCrewRunResult(deliverInput),
+  },
 ): Promise<{ relayed: boolean; summarized: boolean }> {
   let relayed = false;
   let summarized = false;
@@ -134,6 +150,30 @@ export async function postCrewRunSuccess(
       { err, issueId: input.issueId, runId: input.runId },
       "W3a crew result relay failed (non-fatal)",
     );
+  }
+
+  // ── Sub-step 1b (Phase 7B / Task 4): deliver navigational run-result refs ──
+  // Fires on run FINISH regardless of task status (in-review included), so the
+  // Discussions viewer can open the delivered task/artifacts/outputs. Distinct
+  // from the done-gated relay above — both can legitimately post for one task
+  // (run-result now, "Completed" on the later done transition). Idempotent per
+  // runId inside deliverCrewRunResult. Guarded: a caller without runId (or one
+  // that omits the dep) simply skips delivery. Best-effort — never fails a run.
+  if (input.runId && deps.deliver) {
+    try {
+      await deps.deliver({
+        db,
+        companyId: input.companyId,
+        issueId: input.issueId,
+        runId: input.runId,
+        agentId: input.agentId ?? null,
+      });
+    } catch (err) {
+      log.warn(
+        { err, issueId: input.issueId, runId: input.runId },
+        "Task 4 crew run-result delivery failed (non-fatal)",
+      );
+    }
   }
 
   // ── Sub-step 2: run-summary comment on the task ───────────────────────────

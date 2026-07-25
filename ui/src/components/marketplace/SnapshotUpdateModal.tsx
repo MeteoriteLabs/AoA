@@ -18,6 +18,13 @@ interface DiffResponse {
   diff: SectionDiff[];
   currentVersion: string;
   latestVersion: string;
+  /**
+   * Agent updates only. True when the installed bundle already matches the
+   * catalog byte-for-byte — the common shape of the `instructions_customized
+   * IS NULL` backlog, where the row was only ever "unknown provenance" and
+   * there is in fact nothing of the founder's in the way.
+   */
+  identical?: boolean;
 }
 
 interface SnapshotUpdateModalProps {
@@ -90,6 +97,12 @@ export function SnapshotUpdateModal({
         <DialogBody className="px-0 py-4">
           {isLoading && (
             <p className="text-sm text-muted-foreground px-7">Loading changes…</p>
+          )}
+
+          {diffData?.identical && (
+            <p className="px-7 pb-3 text-sm text-muted-foreground">
+              No local changes found — applying this update keeps nothing back.
+            </p>
           )}
 
           {diffData && (

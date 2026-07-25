@@ -4,7 +4,7 @@
 **Branch:** `integration/connectors-marketplace`
 **Status:** design revised; splits into **3a** (curated shelf) and **3b** (long tail)
 **Depends on:** Plans 1 + 2 + 2b (complete, `53180c129`)
-**Decisions:** extends #110 (connectors). Interacts with #96 (two-repo catalog) and #97
+**Decisions:** extends #116 (connectors). Interacts with #96 (two-repo catalog) and #97
 (`derivePackages`) — see §3.3 and §9.
 **Follow-ups:** `docs/aoa/plans/mcp-connectors-followups.md`
 

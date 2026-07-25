@@ -178,7 +178,7 @@ describe("runAoaDispatch — run-COUNT brake (A5 / T1.9)", () => {
         // 2 Phase-3 wakeup: valid role (scout), no threadId (no thread lookups)
         [{ id: "w-rc", agentId: "a-rc", companyId: "co-rc", source: "thread_mention", payload: { role: "scout", note: "x" } }],
         // 3 resolveCompanyConfig: autonomy high (Drive) → autonomy gate passes
-        [{ autonomyLevel: 3, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
+        [{ crewAutonomyLevel: 3, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
         // 4 SPEND brake: zero PAID runs in window → passes (the bug: $0 runs invisible here)
         [],
         // 5 A5 COUNT brake: 40 $0 runs in window → runRateExceeded(40, 40) → FIRES
@@ -217,7 +217,7 @@ describe("runAoaDispatch — run-COUNT brake (A5 / T1.9)", () => {
         [], // 0 Phase-1 orphan
         [], // 1 Phase-2 pending
         [{ id: "w-ok", agentId: "a-ok", companyId: "co-ok", source: "thread_mention", payload: { role: "scout", note: "y" } }], // 2 wakeup
-        [{ autonomyLevel: 3, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }], // 3 config
+        [{ crewAutonomyLevel: 3, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }], // 3 config
         [], // 4 SPEND brake: 0 paid runs → passes
         [{ id: "run-a" }, { id: "run-b" }, { id: "run-c" }], // 5 A5 COUNT brake: 3 runs < 40 → passes
         [{ runtimeConfig: {}, adapterConfig: {} }], // 6 agent row

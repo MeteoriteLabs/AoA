@@ -4,7 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "@playwright/test";
-import { FAKE_CLAUDE_CONTROL_PATH, FAKE_CLAUDE_INVOCATIONS_PATH } from "./helpers/fake-claude";
+import {
+  AMBIENT_CLAUDE_CONFIG_POISON,
+  FAKE_CLAUDE_CONTROL_PATH,
+  FAKE_CLAUDE_INVOCATIONS_PATH,
+  seedAmbientClaudeConfigHome,
+} from "./helpers/fake-claude";
 import { FAKE_CODEX_CONTROL_PATH, FAKE_CODEX_INVOCATIONS_PATH } from "./helpers/fake-codex";
 import { FAKE_CREW_CONTROL_PATH } from "./helpers/fake-crew-control";
 import { FAKE_EMBEDDER_CONTROL_PATH } from "./helpers/fake-embedder";
@@ -87,6 +92,20 @@ try {
   fs.unlinkSync(FAKE_CREW_CONTROL_PATH);
 } catch {
   /* absent — fine */
+}
+
+// D9 (crew-config-isolation.spec.ts): give the server process a REAL ambient
+// Claude config to leak, so the crew-run env strip is proven against something
+// rather than asserted against an absence that was always absent. The directory
+// is POPULATED (credential + the contamination entries), not just created: crew
+// provisioning copies the credential out of it, so an empty directory would make
+// every crew run fail credentials-missing, and the contamination is what the
+// "nothing else was copied" assertion needs in order to be falsifiable.
+// Harmless to every other spec: the fake CLIs ignore all of it, extraction/
+// Commander run through the same fakes, and no spec asserts on Anthropic key
+// presence.
+if (!WINDOWS_WITH_EMBEDDED_POSTGRES) {
+  seedAmbientClaudeConfigHome();
 }
 
 // Commander viewer e2e (commander-viewer.spec.ts): resolve `claude` to the
@@ -230,6 +249,9 @@ export default defineConfig({
           // would report semantic "available" for keyless companies and the
           // no-llm-key-banner tests would fail under pgvector.
           OPENAI_API_KEY: "",
+          // D9 ambient-leak poison — see AMBIENT_CLAUDE_CONFIG_POISON. Listed
+          // LAST so it wins over anything the dev shell exported.
+          ...AMBIENT_CLAUDE_CONFIG_POISON,
         },
       },
   outputDir: "./test-results",

@@ -57,6 +57,7 @@ import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { buildApprovalHubEmit, emitHubItem } from "../services/hub-source-producers.js";
 import { logger } from "../middleware/logger.js";
 import { liveRunsForCompany, liveRunsForIssue } from "./agents-live-runs.js";
+import { protectedAgentRefusal, protectedAgentRole } from "../services/protected-agents.js";
 import { getProviderStatus } from "../adapters/provider-status.js";
 import { realProviderStatusDeps } from "../adapters/provider-status-deps.js";
 import { resolveModel, ShellUnsafeModelError } from "../services/internal-agent/model-resolution.js";
@@ -106,6 +107,69 @@ export function agentRoutes(db: Db) {
   };
   const DEFAULT_MANAGED_INSTRUCTIONS_ADAPTER_TYPES = new Set(Object.keys(DEFAULT_INSTRUCTIONS_PATH_KEYS));
   const KNOWN_INSTRUCTIONS_PATH_KEYS = new Set(["instructionsFilePath", "agentsMdPath"]);
+
+  /**
+   * D22 (Decision #114) — adapterConfig keys whose change means "the founder
+   * altered what this agent's instructions are".
+   *
+   * **Derived from what a catalog update actually annihilates**, not from what
+   * merely sounds instruction-shaped. `applyCrewAgentUpdate` calls
+   * `materializeManagedBundle(..., { clearLegacyPromptTemplate: true })`, and
+   * `applyBundleConfig` (`agent-instructions.ts`) then:
+   * - OVERWRITES `instructionsBundleMode` / `instructionsRootPath` /
+   *   `instructionsEntryFile` / `instructionsFilePath`, and
+   * - **DELETES** `promptTemplate` and `bootstrapPromptTemplate`.
+   *
+   * `agent-instructions-service.test.ts` pins that destruction set; if it
+   * changes, this list changes with it.
+   *
+   * `promptTemplate` and `bootstrapPromptTemplate` are the dangerous pair: both
+   * are founder-editable in the shipped Config tab, both are read at runtime
+   * (`readLegacyInstructions`; acpx-local/cursor-cloud render the bootstrap
+   * one), and deletion leaves no revision row to recover from — for the same
+   * reason no `instructions_customized` backfill was possible.
+   *
+   * `agentsMdPath` is included even though materialize does not destroy it: the
+   * route already treats it as an instruction change for authz
+   * (`KNOWN_INSTRUCTIONS_PATH_KEYS`), and a founder setting it is saying "read
+   * instructions from here". Over-stamping costs a notification.
+   *
+   * **Deliberately EXCLUDED:**
+   * - `cwd` — it resolves a *relative* `instructionsFilePath`, so it can change
+   *   which file is read; but it is overwhelmingly a workspace setting, and
+   *   stamping every `cwd` edit would freeze agents out of catalog updates for
+   *   a change that is not an instruction edit. Materialize writes an absolute
+   *   path anyway, so the relative-resolution hazard does not survive an update.
+   * - `instructions` — appears in `resolve-crew-adapter.ts`'s neutral-key list,
+   *   but no adapter and no bundle code reads it. Verified by grep across every
+   *   adapter package's `src` tree and `server/src`.
+   */
+  const INSTRUCTION_BEARING_ADAPTER_CONFIG_KEYS = new Set([
+    "promptTemplate",
+    "bootstrapPromptTemplate",
+    "instructionsFilePath",
+    "agentsMdPath",
+    "instructionsRootPath",
+    "instructionsEntryFile",
+    "instructionsBundleMode",
+  ]);
+
+  /**
+   * Stamp `instructions_customized` BEFORE founder content reaches disk.
+   *
+   * The bundle routes below learn the adapterConfig to persist *from* the disk
+   * operation, so the main write cannot be moved ahead of it. This is a second,
+   * cheap write that runs first, closing the window in which an edited bundle
+   * exists on disk while the row still reads `false` — a window the updater
+   * would resolve by full-replacing the edit. Failing the subsequent write
+   * costs one spurious "update available" notification; the reverse costs the
+   * founder's work.
+   *
+   * @returns false when the row vanished between `getById` and here (→ 404).
+   */
+  async function stampInstructionsCustomized(agentId: string): Promise<boolean> {
+    return Boolean(await svc.update(agentId, { instructionsCustomized: true }));
+  }
 
   function adapterSupportsInstructionsBundle(adapterType: string): boolean {
     const adapter = findActiveServerAdapter(adapterType);
@@ -1371,7 +1435,7 @@ export function agentRoutes(db: Db) {
     const actor = getActorInfo(req);
     const agent = await svc.update(
       id,
-      { adapterConfig: normalizedAdapterConfig },
+      { adapterConfig: normalizedAdapterConfig, instructionsCustomized: true },
       {
         recordRevision: {
           createdByAgentId: actor.agentId,
@@ -1450,6 +1514,24 @@ export function agentRoutes(db: Db) {
       if (changingInstructionsPath) {
         await assertCanManageInstructionsPath(req, existing);
       }
+      // D22 (Decision #114): this route is the FIFTH instruction-changing write
+      // path. `adapterConfig` is free-form, and the shipped Config tab edits
+      // `promptTemplate` / `instructionsFilePath` through here — keys a catalog
+      // update deletes or overwrites. Without this stamp the row stays `false`
+      // and `crew-updater` silently destroys the edit on the next bump.
+      //
+      // Server-side assignment onto the Zod-parsed body: a client cannot
+      // suppress it, and cannot set the flag itself (it is absent from
+      // `updateAgentSchema`, and `validate` reassigns `req.body` from the parse).
+      // Keyed on the PATCH's OWN keys, not the merged config, so an unrelated
+      // PATCH never stamps an agent that merely happens to have a promptTemplate.
+      if (
+        Object.keys(adapterConfig).some((key) =>
+          INSTRUCTION_BEARING_ADAPTER_CONFIG_KEYS.has(key),
+        )
+      ) {
+        patchData.instructionsCustomized = true;
+      }
       patchData.adapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
         existing.companyId,
         adapterConfig,
@@ -1512,10 +1594,16 @@ export function agentRoutes(db: Db) {
     }
 
     // Validate skillKeys against company's available skills (throws 422 on unknown/ambiguous)
+    // and persist the *canonical* keys — resolveSkillKeys accepts id/slug/normalizable
+    // forms but delivery + enforcement compare against skill.key, so a non-canonical
+    // attach would silently no-op if stored raw. An empty array clears skills as-is.
     if (Object.prototype.hasOwnProperty.call(patchData, "skillKeys")) {
       const requestedKeys = patchData.skillKeys;
       if (Array.isArray(requestedKeys) && requestedKeys.length > 0) {
-        await skillSvc.resolveSkillKeys(existing.companyId, requestedKeys as string[]);
+        patchData.skillKeys = await skillSvc.resolveSkillKeys(
+          existing.companyId,
+          requestedKeys as string[],
+        );
       }
     }
 
@@ -1642,6 +1730,14 @@ export function agentRoutes(db: Db) {
     // FX-del: AoA agents (Commander + sub-agents) are reserved framework
     // agents. Terminate is hard-blocked for ALL actors (founders included) —
     // before the company/role gate. kind='org' is unaffected.
+    //
+    // ⚠️ D23 asymmetry: unlike DELETE above, this gates on `kind` ALONE. That
+    // covers Commander and Steward today because both are kind='aoa', but if
+    // crew rows ever become individually terminable this loses protection while
+    // delete keeps it. Add the `protectedAgentRole` check here at that point.
+    // (Not added now: terminate is reversible — it sets status, it destroys
+    // nothing — so the fail-closed argument that justifies the delete guard
+    // does not apply with the same force.)
     if (existing.kind === "aoa") {
       res.status(409).json({
         error:
@@ -1677,6 +1773,32 @@ export function agentRoutes(db: Db) {
     const existing = await svc.getById(id);
     if (!existing) {
       res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    // `getById` is NOT company-scoped, and both 409s below describe the row
+    // (the protected one echoes its name). Scope the caller to the agent's
+    // company BEFORE either can answer — this tightens the pre-existing FX-del
+    // refusal too. The founder gate still runs below; this is access, not role.
+    //
+    // Stated precisely: this stops the *content* of the row leaking across
+    // tenants (name, kind). It does NOT make existence unobservable — a
+    // cross-tenant hit now answers 403 where a miss answers 404, the same
+    // oracle every other `assertCompanyAccess` route in this file has. Closing
+    // that would mean 404-ing on forbidden everywhere, which is a separate
+    // decision about the whole file, not this handler.
+    assertCompanyAccess(req, existing.companyId);
+    // D23 (T2.5): protected AoA agents are refused on identity, independent of
+    // `kind`. Deliberately BEFORE the FX-del check below: that one is scoped to
+    // kind='aoa', so it would stop covering a protected agent the day crew rows
+    // become individually removable. Also gives a refusal that names the reason.
+    const protectedRole = protectedAgentRole(existing);
+    if (protectedRole) {
+      res.status(409).json({
+        error: protectedAgentRefusal([{ name: existing.name, role: protectedRole }], {
+          operation: "Deleting this agent",
+          remedy: "Pause it from the agent page if you want it to stop working.",
+        }),
+      });
       return;
     }
     // FX-del: AoA agents (Commander + sub-agents) are reserved framework
@@ -2088,6 +2210,43 @@ export function agentRoutes(db: Db) {
   });
 
   // ── Agent Instructions Bundle routes ──
+  //
+  // D22 (Decision #114): a route that can change what an agent's instructions
+  // SAY stamps `instructionsCustomized: true`. That flag is what stops
+  // `marketplace-install/crew-updater.ts` from full-replacing the bundle on the
+  // next catalog bump — see that module's docblock.
+  //
+  // ⚠️ **The four routes below are NOT the complete set.** There are FIVE
+  // instruction-changing write paths, and the fifth is not in this section:
+  //
+  //   1. `PATCH  /agents/:id/instructions-bundle`       (below)
+  //   2. `PUT    /agents/:id/instructions-bundle/file`  (below)
+  //   3. `DELETE /agents/:id/instructions-bundle/file`  (below)
+  //   4. `PATCH  /agents/:id/instructions-path`         (above)
+  //   5. `PATCH  /agents/:id` — the GENERIC agent patch, whose free-form
+  //      `adapterConfig` carries `promptTemplate`, `bootstrapPromptTemplate`
+  //      and the bundle path keys. This one is easy to miss precisely because
+  //      it does not look like an instructions route; it is the shipped Config
+  //      tab's Prompt Template editor. Gated by
+  //      `INSTRUCTION_BEARING_ADAPTER_CONFIG_KEYS`.
+  //
+  // Routes 1-3 write to DISK before they know the adapterConfig to persist, so
+  // they stamp with a separate pre-write (`stampInstructionsCustomized`) rather
+  // than folding the flag into the main update. 4 and 5 mutate only
+  // `adapterConfig`, so a single atomic write carries both.
+  //
+  // ⚠️ This flag records edits **that went through this API**. It does NOT
+  // detect a file edited directly on disk (the bundle root is a real directory
+  // under the founder's home), nor an edit made before the column existed —
+  // those rows stay NULL, which the updater treats as customized. It is also
+  // deliberately one-way: it is set on a no-op write (content identical to the
+  // catalog's), because a false "customized" costs a notification while a false
+  // "untouched" costs the founder's work. Nothing here ever clears it; only a
+  // successful catalog replacement does.
+  //
+  // `instructionsCustomized` is absent from `updateAgentSchema`, and `validate`
+  // re-assigns `req.body` from the parsed result, so a client cannot clear the
+  // flag through `PATCH /agents/:id`.
 
   router.get("/agents/:id/instructions-bundle", async (req, res) => {
     const id = req.params.id as string;
@@ -2108,6 +2267,11 @@ export function agentRoutes(db: Db) {
       return;
     }
     await assertCanManageInstructionsPath(req, existing);
+    // D22/F3: stamp BEFORE `updateBundle` touches disk. See stampInstructionsCustomized.
+    if (!(await stampInstructionsCustomized(id))) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
     const actor = getActorInfo(req);
     const { bundle, adapterConfig } = await instructions.updateBundle(existing, req.body);
     const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
@@ -2169,6 +2333,11 @@ export function agentRoutes(db: Db) {
       return;
     }
     await assertCanManageInstructionsPath(req, existing);
+    // D22/F3: stamp BEFORE the founder's bytes land on disk.
+    if (!(await stampInstructionsCustomized(id))) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
     const actor = getActorInfo(req);
     const result = await instructions.writeFile(existing, req.body.path, req.body.content, {
       clearLegacyPromptTemplate: req.body.clearLegacyPromptTemplate,
@@ -2218,6 +2387,11 @@ export function agentRoutes(db: Db) {
     const relativePath = typeof req.query.path === "string" ? req.query.path : "";
     if (!relativePath.trim()) {
       res.status(422).json({ error: "Query parameter 'path' is required" });
+      return;
+    }
+    // D22/F3: stamp BEFORE the file is removed from disk.
+    if (!(await stampInstructionsCustomized(id))) {
+      res.status(404).json({ error: "Agent not found" });
       return;
     }
     const actor = getActorInfo(req);

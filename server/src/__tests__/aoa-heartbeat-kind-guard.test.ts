@@ -117,6 +117,10 @@ vi.mock("@armyofagents/adapter-utils/server-utils", () => ({
   writeAoaSkillSyncPreference: () => undefined,
   signalRunningProcess: () => undefined,
   runChildProcess: () => Promise.resolve({}),
+  // Real behaviour, not a stub: claude-local compares env keys with this (the
+  // same function mergeChildEnv's strip uses), and folding wrong on Windows
+  // would change which CLAUDE_CONFIG_DIR spelling wins.
+  foldEnvKey: (key: string) => (process.platform === "win32" ? key.toLowerCase() : key),
 }));
 
 vi.mock("@armyofagents/adapter-utils", () => ({

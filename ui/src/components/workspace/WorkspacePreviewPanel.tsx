@@ -20,9 +20,10 @@ import {
   filenameForArtifactVersion,
 } from "../viewers/artifact-version-viewer";
 import type { ArtifactWithVersions, ArtifactVersion, DetectedOutput, DetectedOutputForUI, TaskOutput } from "@armyofagents/shared";
+import { toSafeBrowserUrl } from "@armyofagents/shared";
 
 export type PreviewMode = "changes" | "preview" | "logs";
-export type PreviewTabKind = "home" | "browser" | "changes" | "file" | "artifact" | "output" | "logs";
+export type PreviewTabKind = "home" | "browser" | "changes" | "file" | "artifact" | "output" | "asset" | "logs";
 
 export type WorkspacePreviewTab =
   | {
@@ -64,6 +65,15 @@ export type WorkspacePreviewTab =
       kind: "output";
       title: string;
       output: DetectedOutputForUI;
+    }
+  | {
+      id: string;
+      kind: "asset";
+      title: string;
+      assetId: string;
+      contentType: string | null;
+      filename: string;
+      byteSize?: number | null;
     }
   | {
       id: string;
@@ -185,6 +195,7 @@ export function WorkspacePreviewPanel({
             <ArtifactVersionPreviewView artifact={activeTab.artifact} version={activeTab.version} />
           )}
           {activeTab.kind === "output" && <OutputPreviewView output={activeTab.output} />}
+          {activeTab.kind === "asset" && <AssetPreviewView tab={activeTab} />}
           {activeTab.kind === "logs" && (
             <ScrollArea className="h-full">
               <LogsTabView issueId={activeTab.issueId} />
@@ -326,6 +337,8 @@ function previewTabIcon(kind: PreviewTabKind) {
       return Eye;
     case "output":
       return FileText;
+    case "asset":
+      return FileText;
     case "logs":
       return Terminal;
   }
@@ -426,7 +439,7 @@ function BrowserTabView({
       {currentUrl ? (
         <iframe
           key={iframeKey}
-          src={currentUrl}
+          src={toSafeBrowserUrl(currentUrl) || "about:blank"}
           className="min-h-0 flex-1 border-0"
           title={tab.title}
           data-testid="preview-browser-iframe"
@@ -793,6 +806,39 @@ function OutputPreviewView({ output }: { output: DetectedOutputForUI }) {
   );
 }
 
+function AssetPreviewView({ tab }: { tab: Extract<WorkspacePreviewTab, { kind: "asset" }> }) {
+  const viewer = resolveOutputViewer({
+    contentType: tab.contentType,
+    filename: tab.filename,
+    assetId: tab.assetId,
+    assetUrl: `/api/assets/${tab.assetId}/content`,
+  });
+
+  return (
+    <div className="flex h-full min-w-0 flex-col overflow-hidden" data-testid="preview-asset-tab">
+      <div className="flex min-w-0 shrink-0 items-center gap-2 border-b border-border px-3 py-2">
+        <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm font-medium">{tab.filename}</div>
+          <div className="truncate text-[11px] text-muted-foreground">
+            {viewer.label}
+            {tab.contentType ? ` · ${tab.contentType}` : ""}
+            {typeof tab.byteSize === "number" ? ` · ${formatBytes(tab.byteSize)}` : ""}
+          </div>
+        </div>
+        {viewer.canOpenDirectly && (
+          <Button asChild type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs">
+            <a href={viewer.assetUrl ?? undefined} target="_blank" rel="noopener noreferrer">
+              Open
+            </a>
+          </Button>
+        )}
+      </div>
+      <WorkProductViewer viewer={viewer} filename={tab.filename} />
+    </div>
+  );
+}
+
 function extensionFromName(value: string | null | undefined): string {
   const name = value?.split(/[?#]/, 1)[0]?.trim().toLowerCase() ?? "";
   const dot = name.lastIndexOf(".");
@@ -1061,7 +1107,7 @@ function PreviewView({
           </div>
           <iframe
             key={iframeKey}
-            src={runningService.previewUrl}
+            src={toSafeBrowserUrl(runningService.previewUrl) || "about:blank"}
             className="flex-1 w-full border-0"
             title="Dev server preview"
             data-testid="preview-iframe"
@@ -1101,47 +1147,24 @@ function PreviewView({
     );
   }
 
-  const assetUrl = assetUrlForArtifactVersion(version);
+  // Route mode-preview through the SAME shared viewer the tabbed views use
+  // (resolveOutputViewer -> WorkProductViewer -> SharedContentViewer), so an
+  // artifact previews identically here and in a tab. Previously this branch
+  // hand-rolled img/<pre>/download and diverged (markdown/csv/json/html/pdf/etc.
+  // rendered richly in a tab but as raw <pre> or a bare link here).
+  const inlineContent = version.content ?? null;
   const filename = filenameForArtifactVersion(artifact, version);
   const contentType = contentTypeForArtifactVersion(artifact, version);
-  const isImage = contentType.startsWith("image/");
-
-  if (isImage && assetUrl) {
-    return (
-      <div className="p-4" data-testid="preview-image">
-        <img src={assetUrl} alt={artifact.title} className="max-w-full rounded border border-border" />
-      </div>
-    );
-  }
-
-  if (version.content) {
-    return (
-      <div className="p-4" data-testid="preview-text">
-        <pre className="text-xs leading-relaxed whitespace-pre-wrap break-words font-mono bg-muted/50 rounded p-3 border border-border">
-          {version.content}
-        </pre>
-      </div>
-    );
-  }
-
-  if (assetUrl) {
-    return (
-      <div className="flex items-center justify-center h-48" data-testid="preview-download">
-        <a
-          href={assetUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-sm text-blue-500 hover:underline"
-        >
-          Download {filename} (v{version.versionNumber})
-        </a>
-      </div>
-    );
-  }
+  const viewer = resolveOutputViewer({
+    contentType,
+    filename,
+    assetId: version.assetId,
+    assetUrl: assetUrlForArtifactVersion(version),
+  });
 
   return (
-    <div className="flex items-center justify-center h-48 text-sm text-muted-foreground">
-      No content to preview
+    <div className="flex h-full min-w-0 flex-col overflow-hidden" data-testid="preview-artifact">
+      <WorkProductViewer viewer={viewer} filename={filename} inlineTextContent={inlineContent} />
     </div>
   );
 }

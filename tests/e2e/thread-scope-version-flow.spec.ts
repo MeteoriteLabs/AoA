@@ -132,7 +132,12 @@ test.describe("thread scope version flow", () => {
     await expect(page.getByTestId("scope-version-package")).toContainText("Memory candidate");
 
     const v1 = await latestScopeVersion(request, company.id, thread.id);
-    expect(v1).toMatchObject({ status: "draft", versionNumber: 1, sourceStartSeq: 1, sourceEndSeq: 3 });
+    // sourceEndSeq is 4, not 3: new threads run the orchestration controller path
+    // (discussions.useControllerPath), so creating the scope draft routes through
+    // the Adjutant, which posts its proposal as a `scope_proposal` entry (seq 4)
+    // into the thread. The draft correctly ranges over the 3 human writes + that
+    // agent entry. (Pre-controller-path this was a direct compile over seq 1-3.)
+    expect(v1).toMatchObject({ status: "draft", versionNumber: 1, sourceStartSeq: 1, sourceEndSeq: 4 });
     const v1Detail = await getScopeVersionDetail(request, company.id, thread.id, v1.id);
     expect(v1Detail.summary).toContain("whole conversation");
     expect(v1Detail.decisions.length).toBeGreaterThan(0);
@@ -238,7 +243,11 @@ test.describe("thread scope version flow", () => {
     await expect(page.getByTestId("thread-derived-stage")).toContainText("Discussing v2", {
       timeout: 10_000,
     });
-    await expect(page.getByText(/1 new message/i)).toBeVisible({ timeout: 10_000 });
+    // Count-agnostic: the controller path posts an async agent reply entry, so the
+    // unscoped-entry badge can read "1 new message" or "2 new messages" depending
+    // on whether that reply landed before the badge rendered. We only need the
+    // badge to be present, not its exact count.
+    await expect(page.getByText(/\d+ new messages?/i).first()).toBeVisible({ timeout: 10_000 });
 
     await page.getByTestId("center-tab-scope").click();
     const rescope = page.getByRole("button", { name: /^re-scope$/i });
@@ -251,9 +260,21 @@ test.describe("thread scope version flow", () => {
       timeout: 10_000,
     });
     const v2 = await latestScopeVersion(request, company.id, thread.id);
-    expect(v2).toMatchObject({ status: "draft", versionNumber: 2, sourceStartSeq: 4, sourceEndSeq: 4 });
+    // sourceStartSeq is deterministically 5 (the first entry after v1's accepted
+    // range, which ended at seq 4 — v1's agent scope_proposal). sourceEndSeq is
+    // 5 OR 6: the re-scope posts an async agent reply (seq 6) that lands inside
+    // the compiled range only when it beats the compile (a CI-timing race). The
+    // meaningful guarantee is that v2 captures the new "analytics" message
+    // (asserted via the summary below), not the exact range boundary.
+    expect(v2).toMatchObject({ status: "draft", versionNumber: 2, sourceStartSeq: 5 });
+    expect(v2.sourceEndSeq).toBeGreaterThanOrEqual(5);
     const v2Detail = await getScopeVersionDetail(request, company.id, thread.id, v2.id);
-    expect(v2Detail.items[0]?.sourceEntryIds).toHaveLength(1);
+    // Same async-reply race as the range boundary above: the item sources from the
+    // new "analytics" message (seq 5) and MAY also pick up the controller's agent
+    // reply (seq 6) when it lands before the compile — so 1 or 2 source entries.
+    // The meaningful guarantee (v2 captures the analytics message) is the summary
+    // assertion below; here we only require the item to have a source entry.
+    expect((v2Detail.items[0]?.sourceEntryIds ?? []).length).toBeGreaterThanOrEqual(1);
     expect(v2Detail.summary).toContain("analytics instrumentation");
   });
 });

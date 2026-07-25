@@ -1142,4 +1142,44 @@ describe("WorkspacePreviewPanel — Preview mode (dev server)", () => {
 
     expect(screen.getByText("No dev server running")).toBeInTheDocument();
   });
+
+  it("renders a mode-preview artifact through the shared viewer, not a raw <pre> (P3.5)", async () => {
+    // Discriminator for the consolidation: mode-preview used to hand-roll img/<pre>/download
+    // (testid `preview-text`). It must now route through resolveOutputViewer -> WorkProductViewer
+    // -> SharedContentViewer exactly like the tabbed view, so markdown renders richly.
+    const markdownArtifact = {
+      ...mockArtifact,
+      id: "art-md",
+      title: "notes.md",
+      currentVersionId: "v-md",
+      versions: [
+        {
+          ...mockArtifact.versions[0],
+          id: "v-md",
+          artifactId: "art-md",
+          content: "# Heading\n\nrendered body",
+        },
+      ],
+    };
+    artifactsApiMock.getByIssueId.mockResolvedValue(markdownArtifact);
+
+    render(
+      <WorkspacePreviewPanel
+        issueId="issue-1"
+        companyId="comp-1"
+        activeMode="preview"
+        onModeChange={() => {}}
+        functionType="design"
+      />,
+      { wrapper },
+    );
+
+    // Shared viewer rendered the markdown (old code would have shown the literal "# Heading").
+    await waitFor(() => {
+      expect(screen.getByTestId("work-product-markdown")).toHaveTextContent("rendered body");
+    });
+    expect(screen.getByTestId("preview-artifact")).toBeInTheDocument();
+    // The divergent hand-rolled raw-<pre> path is gone.
+    expect(screen.queryByTestId("preview-text")).not.toBeInTheDocument();
+  });
 });

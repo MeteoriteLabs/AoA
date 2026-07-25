@@ -294,6 +294,7 @@ describe("WorkspaceTimeline — rendering", () => {
     issuesApiMock.listAttachments.mockResolvedValue([
       {
         id: "att-1",
+        assetId: "asset-att-1",
         issueId: "issue-1",
         issueCommentId: "comment-1",
         contentType: "image/png",
@@ -306,7 +307,7 @@ describe("WorkspaceTimeline — rendering", () => {
 
     const attachmentGroup = await screen.findByTestId("timeline-comment-attachments-comment-1");
     expect(attachmentGroup).toHaveTextContent("proof.png");
-    expect(attachmentGroup.querySelector("img")).toHaveAttribute("src", "/api/attachments/att-1/content");
+    expect(attachmentGroup.querySelector("img")).toHaveAttribute("src", "/api/assets/asset-att-1/content");
     expect(screen.queryByTestId("timeline-comment-attachments-comment-2")).not.toBeInTheDocument();
   });
 

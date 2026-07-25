@@ -159,6 +159,29 @@ POST /api/companies/import
 
 Returns the created/updated company, agents list, and any warnings. Unknown bundle sections warn-and-continue — Paperclip v1 bundles import compatibly.
 
+### Bundle section: `internalAgentConfig`
+
+Present when `include.internalAgentConfig` is true. Mirrors the `internal_agent_config` row (see `docs/api/internal-agent.md` for full field semantics).
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `executionMode` | string | `"cli"` (default) or the legacy `"api"` |
+| `provider` | string \| null | Crew provider |
+| `model` | string \| null | Commander model |
+| `cliTool` | string \| null | `claude_cli` \| `codex` \| `opencode` |
+| `autonomyLevel` | number | **Commander's** dial, `0..2` |
+| `crewAutonomyLevel` | number \| absent | **Agent-work** dial (crew + org agents + Adjutant/thread flows), `0..2` |
+| `enabledCapabilities` | string[] | Optional |
+| `notificationPreference` | string | `silent` \| `digest` \| `realtime` |
+| `contextTokenBudget` | number | |
+| `budgetMonthlyCents` | number \| null | `null` = unlimited |
+| `proactiveIntervalMinutes` | number | |
+| `metadata` | object \| null | |
+
+**Bundle authors:** `autonomyLevel` and `crewAutonomyLevel` are independent — do not mirror one onto the other. `crewAutonomyLevel` is the one that controls agent execution; `autonomyLevel` is inert today.
+
+**Pre-split bundles** (exported before 2026-07-24) carry only `autonomyLevel`. On import, `crewAutonomyLevel` falls back to it, reproducing exactly the crew behaviour the bundle was exported with. The fallback is nullish (`??`), not falsy — an explicit `crewAutonomyLevel: 0` is honoured as Manual and is **not** overwritten by `autonomyLevel`.
+
 ---
 
 ## Company Fields

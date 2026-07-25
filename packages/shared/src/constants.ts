@@ -1108,6 +1108,16 @@ export const NOTIFICATION_TYPES = [
 ] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 
+// ── Company skills ────────────────────────────────────────────────────
+
+/**
+ * Machine-readable code on the 409 returned when installing/updating a skill
+ * would discard founder edits (`company_skills.customized`). Shared by the
+ * catalog apply path and the github/url install path so clients only have to
+ * recognise one value.
+ */
+export const SKILL_CUSTOMIZED_ERROR_CODE = "SKILL_CUSTOMIZED";
+
 // ── Routines ──────────────────────────────────────────────────────────
 
 export const RUN_LIVENESS_STATES = ["unknown", "advanced", "completed", "blocked", "needs_followup", "stalled"] as const;

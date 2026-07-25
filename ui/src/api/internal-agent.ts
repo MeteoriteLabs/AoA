@@ -1,4 +1,4 @@
-import type { CommanderContextScope, CommanderOutputRef, CompanySkillListItem, UpdateInternalAgentConfig } from "@armyofagents/shared";
+import type { CommanderContextScope, CompanySkillListItem, ShowRef, UpdateInternalAgentConfig } from "@armyofagents/shared";
 import { api, ApiError } from "./client";
 
 /* ------------------------------------------------------------------ */
@@ -28,7 +28,7 @@ export interface AgentMessage {
   content: string | null;
   toolCalls: AgentMessageToolCall[] | null;
   reasoning: string | null;
-  outputRefs: CommanderOutputRef[] | null;
+  outputRefs: ShowRef[] | null;
   pageContext: string | null;
   createdAt: string;
 }
@@ -40,7 +40,10 @@ export interface AgentConfig {
   model: string | null;
   cliTool: string | null;
   crewModel: string | null;
+  /** D18: Commander's own dial. Not read by crew/heartbeat/thread flows. */
   autonomyLevel: number;
+  /** D18: the agent-work dial — crew runs, org heartbeat, Adjutant/thread flows. */
+  crewAutonomyLevel: number;
   enabledCapabilities: string[];
   notificationPreference: string;
   contextTokenBudget: number;
@@ -53,6 +56,7 @@ export interface AgentConfig {
   runtimeAllowAlwaysEnabled: boolean;
   vendorCliBypassEnabled: boolean;
   inboundRoutingLevel: string;
+  viewerControlLevel: "manual" | "own_output" | "full";
 }
 
 export interface AgentRunToolCall {

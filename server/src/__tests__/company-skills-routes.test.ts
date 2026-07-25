@@ -44,6 +44,7 @@ describe("company skill mutation permissions", () => {
     mockCompanySkillService.importFromSource.mockResolvedValue({
       imported: [],
       warnings: [],
+      refusedCustomized: [], // T2.9 — always present on the real result
     });
     mockLogActivity.mockResolvedValue(undefined);
     mockAccessService.canUser.mockResolvedValue(true);

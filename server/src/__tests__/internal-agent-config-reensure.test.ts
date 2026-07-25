@@ -4,12 +4,14 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // vi.hoisted: the mock fns are referenced inside the vi.mock factory (hoisted to
 // the top of the module), so they must be defined via vi.hoisted to exist at
 // factory-evaluation time. Matches the codebase idiom (aoa-ensure-commander.test.ts).
-const { ensureAll, isManaged } = vi.hoisted(() => ({
-  ensureAll: vi.fn(async () => {}),
+const { ensureInfra, ensureCrew, isManaged } = vi.hoisted(() => ({
+  ensureInfra: vi.fn(async () => {}),
+  ensureCrew: vi.fn(async () => {}),
   isManaged: vi.fn(async () => false),
 }));
-vi.mock("../services/internal-agent/aoa-agents/ensure-all-crew.js", () => ({
-  ensureAllCrewAgents: ensureAll,
+vi.mock("../services/internal-agent/aoa-agents/crew-seeding.js", () => ({
+  ensureInfrastructureAgents: ensureInfra,
+  ensureCrewAgents: ensureCrew,
   isCrewMarketplaceManaged: isManaged,
 }));
 
@@ -18,31 +20,41 @@ import { maybeReensureAgentsOnConfigChange } from "../routes/internal-agent.js";
 const base = { provider: "openai", crewModel: null, cliTool: "claude_cli", model: null } as const;
 
 describe("maybeReensureAgentsOnConfigChange", () => {
-  beforeEach(() => { ensureAll.mockClear(); isManaged.mockClear(); isManaged.mockResolvedValue(false); });
+  beforeEach(() => {
+    ensureInfra.mockClear();
+    ensureCrew.mockClear();
+    isManaged.mockClear();
+    isManaged.mockResolvedValue(false);
+  });
 
   it("re-ensures when crew provider changed", async () => {
     await maybeReensureAgentsOnConfigChange({} as any, "co-1", { ...base, provider: "anthropic" }, { ...base, provider: "openai" });
-    expect(ensureAll).toHaveBeenCalledWith({}, "co-1");
+    expect(ensureInfra).toHaveBeenCalledWith({}, "co-1");
+    expect(ensureCrew).toHaveBeenCalledWith({}, "co-1");
   });
   it("re-ensures when crewModel changed", async () => {
     await maybeReensureAgentsOnConfigChange({} as any, "co-1", base, { ...base, crewModel: "gpt-5.5" });
-    expect(ensureAll).toHaveBeenCalledTimes(1);
+    expect(ensureCrew).toHaveBeenCalledTimes(1);
   });
   it("re-ensures when Commander cliTool changed", async () => {
     await maybeReensureAgentsOnConfigChange({} as any, "co-1", base, { ...base, cliTool: "codex" });
-    expect(ensureAll).toHaveBeenCalledTimes(1);
+    expect(ensureInfra).toHaveBeenCalledTimes(1);
+    expect(ensureCrew).toHaveBeenCalledTimes(1);
   });
   it("re-ensures when Commander model changed", async () => {
     await maybeReensureAgentsOnConfigChange({} as any, "co-1", base, { ...base, model: "claude-opus-4-1" });
-    expect(ensureAll).toHaveBeenCalledTimes(1);
+    expect(ensureInfra).toHaveBeenCalledTimes(1);
   });
   it("does NOT re-ensure when nothing adapter-affecting changed", async () => {
     await maybeReensureAgentsOnConfigChange({} as any, "co-1", base, { ...base });
-    expect(ensureAll).not.toHaveBeenCalled();
+    expect(ensureInfra).not.toHaveBeenCalled();
+    expect(ensureCrew).not.toHaveBeenCalled();
   });
-  it("skips when marketplace-managed", async () => {
+  it("skips ONLY the crew half when marketplace-managed (P8d)", async () => {
     isManaged.mockResolvedValue(true);
     await maybeReensureAgentsOnConfigChange({} as any, "co-1", base, { ...base, provider: "anthropic" });
-    expect(ensureAll).not.toHaveBeenCalled();
+    // Commander's adapter must still follow a provider/cliTool switch.
+    expect(ensureInfra).toHaveBeenCalledWith({}, "co-1");
+    expect(ensureCrew).not.toHaveBeenCalled();
   });
 });

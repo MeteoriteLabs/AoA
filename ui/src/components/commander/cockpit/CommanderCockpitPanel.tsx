@@ -24,7 +24,7 @@ import {
   Zap,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import type { CockpitData, CockpitPinnedEntityType, CommanderInputRef, CommanderOutputRef } from "@armyofagents/shared";
+import type { CockpitData, CockpitPinnedEntityType, CommanderInputRef, ShowRef } from "@armyofagents/shared";
 import { cockpitApi } from "../../../api/cockpit";
 import { queryKeys } from "../../../lib/queryKeys";
 import { Popover, PopoverContent, PopoverTrigger } from "../../ui/popover";
@@ -528,8 +528,8 @@ export function CommanderCockpitPanel({
   /** Expand from the rail. */
   onExpand?: () => void;
   onCollapse: () => void;
-  conversationRefs?: CommanderOutputRef[];
-  onOpenRef?: (ref: CommanderOutputRef) => void;
+  conversationRefs?: ShowRef[];
+  onOpenRef?: (ref: ShowRef) => void;
 } & CockpitInteractions) {
   const [prefs, setPrefs] = useCommanderCockpitPrefs();
 
@@ -764,8 +764,8 @@ function ConversationZoneBody({
   refs,
   onOpen,
 }: {
-  refs: CommanderOutputRef[];
-  onOpen?: (ref: CommanderOutputRef) => void;
+  refs: ShowRef[];
+  onOpen?: (ref: ShowRef) => void;
 }) {
   return (
     <ul className="space-y-0.5" data-testid="cockpit-zone-conversation">

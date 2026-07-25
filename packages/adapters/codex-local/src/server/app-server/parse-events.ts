@@ -26,6 +26,7 @@ import {
   liftOutputRefs,
   parseActionConfirmation,
   normalizeToolResultText,
+  AOA_MCP_SERVER_ID,
   type CodexParsedChunk,
 } from "../parse-shared.js";
 
@@ -99,11 +100,14 @@ export function createAppServerResultAccumulator(): AppServerAccumulator {
       if (chunk) {
         chunks.push(chunk);
       } else if (itemType === "mcp_tool_call") {
-        // Gate: lift outputRefs ONLY from mcp_tool_call items. Plain tool_result
-        // items are built-in/shell results and must never produce ref chips —
-        // the phantom-defense gate (identical to parseCodexJsonl / parse.ts).
+        // Gate: lift outputRefs ONLY from mcp_tool_call items whose server is the
+        // AoA MCP server. Plain tool_result items are built-in/shell results and
+        // non-`aoa` servers (Playwright etc.) must never produce ref chips — the
+        // phantom + cross-MCP-injection defense (Task 4 / Codex P1.1; identical to
+        // parseCodexJsonl / parse.ts).
         const text = normalizeToolResultText(item);
-        const refs = liftOutputRefs(text);
+        const isAoaServer = asString(item.server, "") === AOA_MCP_SERVER_ID;
+        const refs = isAoaServer ? liftOutputRefs(text) : null;
         if (refs) {
           const name = asString(item.name, "") || asString(item.tool, "");
           chunks.push({

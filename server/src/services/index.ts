@@ -18,6 +18,8 @@ export { dependencyService } from "./dependencies.js";
 export { dashboardService } from "./dashboard.js";
 export { sidebarBadgeService } from "./sidebar-badges.js";
 export { sidebarPreferencesService } from "./sidebar-preferences.js";
+export { getViewerPreference, upsertViewerPreference } from "./viewer-preferences.js";
+export { resolveViewerControl } from "./viewer-control.js";
 export { hubPreferencesService } from "./hub-preferences.js";
 export { notificationPreferencesService } from "./notification-preferences.js";
 export { notificationDigestService } from "./notification-digest.js";

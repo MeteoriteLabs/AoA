@@ -11,7 +11,12 @@ import { useState } from "react";
 import { FileText, FileCode2, Image as ImageIcon, FileBox, FileQuestion } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatBytes } from "@/lib/format";
+import { resolveViewer } from "@/components/viewers/viewer-registry";
+import { SharedContentViewer } from "@/components/viewers/SharedContentViewer";
+import { isInlinePreviewable, normalizeMime, INLINE_IMAGE_TYPES } from "@/lib/inline-preview";
 import type { DiscussionEntryAttachment } from "../../api/discussions";
+
+export { isInlinePreviewable } from "@/lib/inline-preview";
 
 interface InlineArtifactCardProps {
   attachments: DiscussionEntryAttachment[];
@@ -129,8 +134,35 @@ export function InlineArtifactCard({
         const file = fileMetaFor(a);
         if (file) {
           const FileIcon = iconForContentType(file.contentType);
+          const showPreview = isInlinePreviewable(file.contentType, file.byteSize);
+          const isImagePreview = INLINE_IMAGE_TYPES.has(normalizeMime(file.contentType) ?? "");
           return (
             <div key={a.id} className="flex flex-col gap-1">
+              {showPreview ? (
+                <div
+                  className="max-h-72 overflow-auto rounded-md border border-border"
+                  data-testid="attachment-inline-preview"
+                >
+                  {isImagePreview ? (
+                    <img
+                      src={`/api/assets/${file.assetId}/content`}
+                      alt={file.filename}
+                      loading="lazy"
+                      className="max-h-72 w-auto"
+                    />
+                  ) : (
+                    <SharedContentViewer
+                      viewer={resolveViewer({
+                        contentType: file.contentType,
+                        filename: file.filename,
+                        assetId: file.assetId,
+                        assetUrl: `/api/assets/${file.assetId}/content`,
+                      })}
+                      filename={file.filename}
+                    />
+                  )}
+                </div>
+              ) : null}
               <div
                 className="flex items-center gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-left"
                 data-testid="artifact-file-chip"

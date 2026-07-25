@@ -2,7 +2,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import express from "express";
 import request from "supertest";
 import { Readable } from "node:stream";
+import ExcelJS from "exceljs";
 import { memoryAssetRenderRoutes } from "../routes/memory-asset-render.js";
+
+const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
 vi.mock("../routes/authz.js", () => ({
   assertCompanyAccess: () => undefined,
@@ -34,7 +38,7 @@ describe("memory-asset render route", () => {
       get: vi.fn(async () => ({
         id: "a-1",
         fileName: "doc.docx",
-        mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        mimeType: DOCX_MIME,
         storageKey: "co-1/imports/a-1.docx",
       })),
     };
@@ -49,6 +53,38 @@ describe("memory-asset render route", () => {
     expect(res.status).toBe(200);
     expect(res.headers["content-type"]).toContain("text/html");
     expect(res.text).toContain("hello world");
+  });
+
+  it("renders XLSX to HTML (dispatch by mimeType, not blanket-415)", async () => {
+    // exceljs is not mocked here (only mammoth is), so this drives the REAL
+    // exceljs → sanitize path; the render-helper suite (xlsx-render.test.ts)
+    // owns the exhaustive sanitize/XSS proof. Here we just prove the memory
+    // route dispatches XLSX instead of 415ing it.
+    const wb = new ExcelJS.Workbook();
+    wb.addWorksheet("Sheet1").getCell("A1").value = "Cell-One";
+    const xlsxBuf = (await wb.xlsx.writeBuffer()) as unknown as Buffer;
+
+    const svc = {
+      get: vi.fn(async () => ({
+        id: "a-2",
+        fileName: "sheet.xlsx",
+        mimeType: XLSX_MIME,
+        storageKey: "co-1/imports/a-2.xlsx",
+      })),
+    };
+    const storage = {
+      getObject: vi.fn(async () => ({
+        stream: Readable.from([xlsxBuf]),
+        contentLength: xlsxBuf.byteLength,
+      })),
+    };
+    const app = buildApp(svc, storage);
+    const res = await request(app).get("/companies/co-1/memory/assets/a-2/render");
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toContain("text/html");
+    expect(res.headers["x-content-type-options"]).toBe("nosniff");
+    expect(res.text).toContain('<div class="xlsx-rendered">');
+    expect(res.text).toContain("Cell-One");
   });
 
   it("returns 415 for unsupported mime types", async () => {

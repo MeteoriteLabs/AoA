@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { internalAgentConfig, agents } from "@armyofagents/db";
-import type { CommanderContextScope, CommanderOutputRef } from "@armyofagents/shared";
+import type { CommanderContextScope, ShowRef } from "@armyofagents/shared";
 import type { ToolResult } from "./types.js";
 import { conversationService, COMMANDER_TURN_HEARTBEAT_MS } from "./conversation.js";
 import { cliModeService } from "./cli-mode.js";
@@ -52,7 +52,7 @@ export type AgentStreamChunk =
   | { type: "text"; delta: string }
   | { type: "reasoning"; delta: string }
   | { type: "tool_call"; id: string; name: string; input: unknown }
-  | { type: "tool_result"; id?: string; name: string; result: ToolResult; refs?: CommanderOutputRef[] }
+  | { type: "tool_result"; id?: string; name: string; result: ToolResult; refs?: ShowRef[] }
   | { type: "action_confirmation"; toolName: string; params: unknown; runId: string }
   | { type: "options_prompt"; question: string; options: string[]; promptId: string }
   | { type: "error"; message: string }
@@ -91,6 +91,12 @@ export interface ChatInput {
   departmentContext?: string;
   conversationId?: string;
   contextScope?: CommanderContextScope | NormalizedCommanderContextScope | null;
+  /**
+   * The internal_agent_runs row id for this turn (created by the chat route).
+   * Threaded to the MCP bridge as AOA_RUN_ID so emitted output refs carry
+   * `provenance.runId`. Optional so non-route callers (proactive/event) compile.
+   */
+  runId?: string;
   /** Client idempotency key; a repeat replays the original turn (see chat()). */
   clientSubmissionId?: string;
   /** Composer attachment asset IDs; text-readable content is delivered to the turn. */
@@ -120,7 +126,7 @@ function* replayPersistedReply(reply: {
   const calls = Array.isArray(reply.toolCalls)
     ? (reply.toolCalls as Array<{ id?: string; name?: string; input?: unknown; success?: boolean; summary?: string; result?: unknown }>)
     : [];
-  const refs = Array.isArray(reply.outputRefs) ? (reply.outputRefs as CommanderOutputRef[]) : [];
+  const refs = Array.isArray(reply.outputRefs) ? (reply.outputRefs as ShowRef[]) : [];
   let refsEmitted = false;
   for (const tc of calls) {
     const name = tc.name ?? "unknown";
@@ -135,7 +141,7 @@ function* replayPersistedReply(reply: {
     // Re-attach the turn's merged output refs to the first tool_result so the
     // Commander viewer re-hydrates on replay (the row stores refs turn-level).
     if (!refsEmitted && refs.length > 0) {
-      (chunk as { refs?: CommanderOutputRef[] }).refs = refs;
+      (chunk as { refs?: ShowRef[] }).refs = refs;
       refsEmitted = true;
     }
     yield chunk;
@@ -526,7 +532,7 @@ export function agentLoopService(db: Db, storage?: RuntimeAttachmentStorage) {
         let accumulatedAssistant = "";
         const REASONING_CAP = 16000;
         let accumulatedReasoning = "";
-        const turnRefs: CommanderOutputRef[] = [];
+        const turnRefs: ShowRef[] = [];
         const turnToolCalls: Array<{ id?: string; name: string; input?: unknown; success?: boolean; summary?: string; result?: unknown }> = [];
         // Lease heartbeat (round-7 #1): refresh turn_claimed_at during a long
         // stream so an actively-progressing turn never ages into the staleness

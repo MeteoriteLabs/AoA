@@ -1,13 +1,13 @@
 // Chip row under assistant bubbles. Chips are handles, not
 // previews — click opens the ref in the viewer panel.
 import { FileText } from "lucide-react";
-import type { CommanderOutputRef } from "@armyofagents/shared";
+import type { ShowRef } from "@armyofagents/shared";
 import { cn } from "@/lib/utils";
 import { chipLabel } from "./commanderViewerModel";
 
 interface OutputRefChipsProps {
-  refs: CommanderOutputRef[];
-  onOpen: (ref: CommanderOutputRef) => void;
+  refs: ShowRef[];
+  onOpen: (ref: ShowRef) => void;
 }
 
 export function OutputRefChips({ refs, onOpen }: OutputRefChipsProps) {
@@ -16,7 +16,7 @@ export function OutputRefChips({ refs, onOpen }: OutputRefChipsProps) {
     <div className="mt-1.5 flex flex-wrap gap-1.5" data-testid="output-ref-chips">
       {refs.map((ref) => (
         <button
-          key={`${ref.id}:${ref.versionId ?? "latest"}`}
+          key={`${ref.v}|${ref.kind}|${ref.id}|${ref.versionId ?? "latest"}`}
           type="button"
           onClick={() => onOpen(ref)}
           className={cn(

@@ -10,7 +10,8 @@ import type {
 export interface Team {
   id: string;
   companyId: string;
-  parentProjectId: string;
+  /** null = company-wide team with no parent department (D21). */
+  parentProjectId: string | null;
   name: string;
   slug: string;
   description: string | null;

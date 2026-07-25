@@ -1,5 +1,14 @@
 export { execute, runClaudeLogin } from "./execute.js";
-export { runClaudeLoginStreaming, resolveClaudeConfigHome } from "./login.js";
+export {
+  runClaudeLoginStreaming,
+  resolveClaudeConfigHome,
+  CLAUDE_CREDENTIAL_FILE_NAME,
+} from "./login.js";
+export {
+  sweepOrphanedIsolatedClaudeConfigDirs,
+  ISOLATED_CLAUDE_CONFIG_MAX_AGE_MS,
+  type ClaudeConfigDirSweepResult,
+} from "./ambient-config.js";
 export { listClaudeSkills, syncClaudeSkills } from "./skills.js";
 export { testEnvironment } from "./test.js";
 export {

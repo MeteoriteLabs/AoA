@@ -1,6 +1,15 @@
 import type { AssetImage } from "@armyofagents/shared";
 import { api } from "./client";
 
+/** Presentation-safe asset metadata (GET /assets/:id/meta). No storage internals. */
+export interface AssetMeta {
+  id: string;
+  originalFilename: string | null;
+  contentType: string;
+  byteSize: number;
+  createdAt: string;
+}
+
 export interface AssetFileResponse {
   assetId: string;
   companyId: string;
@@ -52,5 +61,8 @@ export const assetsApi = {
       form,
     );
   },
+
+  /** Lightweight metadata for a stored asset (Commander viewer asset/output bodies). */
+  getMeta: (assetId: string) => api.get<AssetMeta>(`/assets/${assetId}/meta`),
 };
 

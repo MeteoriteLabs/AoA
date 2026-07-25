@@ -70,8 +70,13 @@ describe("POST /api/companies — requireBoardApprovalForNewAgents default by de
 
     expect(res.status).toBe(201);
     expect(mockCreate).toHaveBeenCalledOnce();
+    // T2.3: create() now also receives per-create options — the founder id
+    // attributed to the crew's marketplace install operation. This harness's
+    // actor is `local_implicit` with userId null, which is a legitimate
+    // no-user case (the bootstrap falls back to a synthetic system actor).
     expect(mockCreate).toHaveBeenCalledWith(
       expect.objectContaining({ requireBoardApprovalForNewAgents: false }),
+      expect.objectContaining({ requestedByUserId: null }),
     );
   });
 
@@ -83,8 +88,13 @@ describe("POST /api/companies — requireBoardApprovalForNewAgents default by de
 
     expect(res.status).toBe(201);
     expect(mockCreate).toHaveBeenCalledOnce();
+    // T2.3: create() now also receives per-create options — the founder id
+    // attributed to the crew's marketplace install operation. This harness's
+    // actor is `local_implicit` with userId null, which is a legitimate
+    // no-user case (the bootstrap falls back to a synthetic system actor).
     expect(mockCreate).toHaveBeenCalledWith(
       expect.objectContaining({ requireBoardApprovalForNewAgents: true }),
+      expect.objectContaining({ requestedByUserId: null }),
     );
   });
 });

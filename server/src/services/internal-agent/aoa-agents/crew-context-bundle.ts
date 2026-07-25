@@ -121,11 +121,52 @@ function discussionScopeFilters(input: {
  */
 async function loadThreadContext(
   db: Db,
+  companyId: string,
   threadId: string,
   entryLimit: number,
 ): Promise<ThreadContext> {
+  const empty: ThreadContext = {
+    entryLines: [],
+    summaryLines: [],
+    queryText: "",
+    memoryFilters: {},
+  };
+
+  // ── Tenant gate (cross-tenant read fix) ──────────────────────────────────
+  // Company-scope the thread lookup, and do it FIRST — before any entries are
+  // read. `discussion_entries` has NO companyId column; its only tenant
+  // boundary is the parent `discussions` row. `threadId` reaches here from a
+  // wakeup payload (see runner.ts / dispatcher.ts → agent.dispatch), which can
+  // carry a caller-supplied id, so a thread belonging to another company must
+  // be rejected HERE. Mirrors crew-workspace.ts's
+  // `and(eq(discussions.id, threadId), eq(discussions.companyId, ...))`.
+  // A miss — wrong company or a since-deleted thread — yields an empty context
+  // so the bundle simply omits the thread section (fail closed, never throws:
+  // the caller already treats the bundle as best-effort). Reading the
+  // discussion first also means a foreign thread's entries are never fetched.
+  const summaryRows = (await db
+    .select({
+      summaryText: discussions.summaryText,
+      routingTerms: discussions.routingTerms,
+      scopeType: discussions.scopeType,
+      scopeId: discussions.scopeId,
+      goalId: discussions.goalId,
+    })
+    .from(discussions)
+    .where(and(eq(discussions.id, threadId), eq(discussions.companyId, companyId)))
+    .limit(1)) as Array<{
+    summaryText: string | null;
+    routingTerms: unknown;
+    scopeType: string | null;
+    scopeId: string | null;
+    goalId: string | null;
+  }>;
+  const summaryRow = Array.isArray(summaryRows) ? summaryRows[0] : null;
+  if (!summaryRow) return empty;
+
   // Newest first + LIMIT keeps the index scan on (discussion_id, created_at)
   // efficient; reverse to chronological for rendering (mirrors thread-list-entries.ts).
+  // Safe now: the parent discussion is confirmed to belong to `companyId`.
   const rowsDesc = (await db
     .select({
       id: discussionEntries.id,
@@ -146,26 +187,6 @@ async function loadThreadContext(
   }>;
 
   const chronological = Array.isArray(rowsDesc) ? [...rowsDesc].reverse() : [];
-
-  // Chronicler summary + routing terms.
-  const summaryRows = (await db
-    .select({
-      summaryText: discussions.summaryText,
-      routingTerms: discussions.routingTerms,
-      scopeType: discussions.scopeType,
-      scopeId: discussions.scopeId,
-      goalId: discussions.goalId,
-    })
-    .from(discussions)
-    .where(eq(discussions.id, threadId))
-    .limit(1)) as Array<{
-    summaryText: string | null;
-    routingTerms: unknown;
-    scopeType: string | null;
-    scopeId: string | null;
-    goalId: string | null;
-  }>;
-  const summaryRow = Array.isArray(summaryRows) ? summaryRows[0] : null;
 
   const summaryLines: string[] = [];
   if (summaryRow?.summaryText && summaryRow.summaryText.trim().length > 0) {
@@ -194,7 +215,7 @@ async function loadThreadContext(
     const nameRows = (await db
       .select({ id: agents.id, name: agents.name })
       .from(agents)
-      .where(inArray(agents.id, agentIds))) as Array<{ id: string; name: string | null }>;
+      .where(and(inArray(agents.id, agentIds), eq(agents.companyId, companyId)))) as Array<{ id: string; name: string | null }>;
     for (const r of Array.isArray(nameRows) ? nameRows : []) {
       if (r?.id) nameById.set(r.id, r.name ?? "agent");
     }
@@ -304,7 +325,11 @@ async function loadTaskContext(db: Db, companyId: string, issueId: string): Prom
     })
     .from(issues)
     .leftJoin(projects, eq(projects.id, issues.projectId))
-    .where(eq(issues.id, issueId))
+    // Company-scope the task lookup (issueId can arrive caller-supplied via a
+    // wakeup payload, same as threadId). Mirrors the discussions gate above and
+    // crew-workspace.ts. A cross-company miss returns no issue → empty task
+    // context (the `if (!issue)` guard below already fails closed).
+    .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
     .limit(1)) as Array<{
     id: string;
     companyId: string;
@@ -432,7 +457,7 @@ export async function buildCrewContextBundle(
   let task: TaskContext | null = null;
 
   if (args.threadId) {
-    thread = await loadThreadContext(db, args.threadId, DEFAULT_ENTRY_LIMIT);
+    thread = await loadThreadContext(db, args.companyId, args.threadId, DEFAULT_ENTRY_LIMIT);
   }
   if (args.issueId) {
     task = await loadTaskContext(db, args.companyId, args.issueId);

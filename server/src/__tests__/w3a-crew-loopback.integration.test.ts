@@ -8,17 +8,19 @@
  * postRunSummaryComment) against seeded companies/threads/issues.
  *
  * Cases:
- *   1. Success loopback + summary — a crew_thread issue → an `agent` "Completed: …"
- *      entry lands in the thread (entry_seq/entry_count bumped) AND an issue_comments
- *      run-summary row lands ({ relayed:true, summarized:true }).
- *   2. Non-discussion task — origin_kind='manual' → the loopback is a no-op (ZERO new
- *      entries) but the summary STILL posts (summary is not origin-gated)
- *      ({ relayed:false, summarized:true }).
+ *   1. Success loopback + summary — a crew_thread issue → TWO `agent` entries land
+ *      (the "Completed: …" relay AND the Phase-7B "Run finished" run-result delivery
+ *      carrying outputRefs + a per-runId marker; entry_seq/entry_count bumped by 2)
+ *      AND an issue_comments run-summary row lands ({ relayed:true, summarized:true }).
+ *   2. Non-discussion task — origin_kind='manual' → both the loopback AND the run-
+ *      result delivery are no-ops (ZERO new entries) but the summary STILL posts
+ *      (summary is not origin-gated) ({ relayed:false, summarized:true }).
  *   3. Failure card + failure summary — a crew_thread issue → a `system`
  *      "… could not complete …" entry lands AND a failure summary comment containing
  *      the error lands ({ carded:true, summarized:true }).
  *   4. Opt-out — runtimeConfig.autoRunSummary=false → NO issue_comments row (summary
- *      suppressed) but the loopback entry STILL posts (opt-out is summary-only, D3)
+ *      suppressed) but BOTH founder-visible thread entries STILL post (opt-out is
+ *      summary-only, D3; run-result delivery is never summary-gated)
  *      ({ relayed:true, summarized:false }).
  *
  * Each case runs in an isolated company / thread / issue triple so they are fully
@@ -179,13 +181,18 @@ async function commentsFor(issueId: string): Promise<Array<{ body: string }>> {
 
 async function entriesFor(
   threadId: string,
-): Promise<Array<{ inputType: string; rawContent: string }>> {
+): Promise<Array<{ inputType: string; rawContent: string; outputRefs: unknown; sourceInfo: unknown }>> {
   return rowsOf(
     await db.execute(sql`
-      SELECT input_type, raw_content FROM discussion_entries
+      SELECT input_type, raw_content, output_refs, source_info FROM discussion_entries
       WHERE discussion_id = ${threadId} ORDER BY seq
     `),
-  ).map((r) => ({ inputType: String(r.input_type), rawContent: String(r.raw_content) }));
+  ).map((r) => ({
+    inputType: String(r.input_type),
+    rawContent: String(r.raw_content),
+    outputRefs: r.output_refs ?? null,
+    sourceInfo: r.source_info ?? null,
+  }));
 }
 
 // ── embedded-postgres lifecycle ───────────────────────────────────────────────
@@ -272,17 +279,36 @@ describe.skipIf(process.platform === "win32")("W3a integration: crew loopback + 
     // Composed return value.
     expect(result).toEqual({ relayed: true, summarized: true });
 
-    // (a) A NEW agent loopback entry landed with the "Completed: …" content.
+    // (a) TWO agent entries now land on a crew success (Phase 7B / Task 4):
+    //   - the done-gated "Completed: …" relay entry, AND
+    //   - the on-run-finish "Run finished" navigational run-result delivery.
     const entries = await entriesFor(threadId);
     const agentEntries = entries.filter((e) => e.inputType === "agent");
-    expect(agentEntries).toHaveLength(1);
-    expect(agentEntries[0].rawContent).toContain("Completed:");
-    expect(agentEntries[0].rawContent).toContain(title);
+    expect(agentEntries).toHaveLength(2);
 
-    // (b) entry_seq / entry_count bumped by exactly one.
+    const completed = agentEntries.find((e) => e.rawContent.includes("Completed:"));
+    expect(completed).toBeDefined();
+    expect(completed!.rawContent).toContain(title);
+
+    // The run-result entry carries outputRefs (at least the task ref) + a
+    // per-runId idempotency marker in source_info.
+    const runResult = agentEntries.find((e) => e.rawContent.includes("Run finished"));
+    expect(runResult).toBeDefined();
+    const refs = runResult!.outputRefs as Array<Record<string, unknown>>;
+    expect(Array.isArray(refs)).toBe(true);
+    expect(refs.length).toBeGreaterThanOrEqual(1);
+    const taskRef = refs.find((r) => r.kind === "task");
+    expect(taskRef).toBeDefined();
+    // RBAC: every ref's provenance points at THIS origin thread.
+    for (const r of refs) {
+      expect((r.provenance as Record<string, unknown>).entityId).toBe(threadId);
+    }
+    expect((runResult!.sourceInfo as Record<string, unknown>).runResultRunId).toBeDefined();
+
+    // (b) entry_seq / entry_count bumped by exactly two (relay + delivery).
     const after = await threadCounts(threadId);
-    expect(after.entrySeq).toBe(before.entrySeq + 1);
-    expect(after.entryCount).toBe(before.entryCount + 1);
+    expect(after.entrySeq).toBe(before.entrySeq + 2);
+    expect(after.entryCount).toBe(before.entryCount + 2);
 
     // (c) A run-summary comment landed on the task, naming the agent + Duration.
     const comments = await commentsFor(issueId);
@@ -429,16 +455,20 @@ describe.skipIf(process.platform === "win32")("W3a integration: crew loopback + 
     const comments = await commentsFor(issueId);
     expect(comments).toHaveLength(0);
 
-    // The loopback entry STILL landed (opt-out never suppresses founder visibility).
+    // Both founder-visible thread entries STILL land (opt-out is summary-only,
+    // and the run-result delivery is never summary-gated): the "Completed: …"
+    // relay AND the "Run finished" navigational run-result delivery.
     const entries = await entriesFor(threadId);
     const agentEntries = entries.filter((e) => e.inputType === "agent");
-    expect(agentEntries).toHaveLength(1);
-    expect(agentEntries[0].rawContent).toContain("Completed:");
-    expect(agentEntries[0].rawContent).toContain(title);
+    expect(agentEntries).toHaveLength(2);
+    const completed = agentEntries.find((e) => e.rawContent.includes("Completed:"));
+    expect(completed).toBeDefined();
+    expect(completed!.rawContent).toContain(title);
+    expect(agentEntries.some((e) => e.rawContent.includes("Run finished"))).toBe(true);
 
     const after = await threadCounts(threadId);
-    expect(after.entrySeq).toBe(before.entrySeq + 1);
-    expect(after.entryCount).toBe(before.entryCount + 1);
+    expect(after.entrySeq).toBe(before.entrySeq + 2);
+    expect(after.entryCount).toBe(before.entryCount + 2);
   }, 60_000);
 
   // ── Case 5: cross-tenant failure loopback is blocked (code-review P2) ───────

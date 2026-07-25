@@ -93,9 +93,10 @@ export async function patchThreadAutonomy(
 ) {
   await jsonOrThrow(
     await request.patch(`/api/companies/${companyId}/internal-agent/config`, {
-      data: { autonomyLevel, crewPaused: false },
+      // D18: crew flows read the crew/agent-work dial, not Commander's.
+      data: { crewAutonomyLevel: autonomyLevel, crewPaused: false },
     }),
-    "set company autonomy",
+    "set company crew autonomy",
   );
   await jsonOrThrow(
     await request.patch(`/api/companies/${companyId}/discussions/${threadId}`, {

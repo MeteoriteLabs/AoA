@@ -195,7 +195,10 @@ const sampleConfigRow = {
   provider: "anthropic",
   model: "claude-sonnet-4-6",
   cliTool: null,
+  // D18: deliberately DIFFERENT from crewAutonomyLevel so an export that
+  // serialized the wrong column would be visible in the assertions below.
   autonomyLevel: 0,
+  crewAutonomyLevel: 2,
   enabledCapabilities: [
     "discussion_processing",
     "proactive_suggestions",
@@ -260,7 +263,10 @@ describe("company-portability internal agent config — export", () => {
       executionMode: "api",
       provider: "anthropic",
       model: "claude-sonnet-4-6",
+      // D18: both dials are exported, each from its own column. `toMatchObject`
+      // would let a missing/crossed field slide, so both are named explicitly.
       autonomyLevel: 0,
+      crewAutonomyLevel: 2,
       notificationPreference: "realtime",
       contextTokenBudget: 8000,
       budgetMonthlyCents: 5000,
@@ -382,6 +388,10 @@ describe("company-portability internal agent config — import", () => {
       provider: "anthropic",
       model: "claude-sonnet-4-6",
       autonomyLevel: 0,
+      // D18: a pre-split bundle carries no `crewAutonomyLevel`, so the importer
+      // falls back to the shared value — reproducing exactly the crew behaviour
+      // the bundle was exported with.
+      crewAutonomyLevel: 0,
       notificationPreference: "realtime",
       contextTokenBudget: 8000,
       budgetMonthlyCents: 5000,
@@ -443,6 +453,8 @@ describe("company-portability internal agent config — import", () => {
       executionMode: "cli",
       cliTool: "claude_cli",
       autonomyLevel: 1,
+      // D18: pre-split bundle (no crewAutonomyLevel) → `?? autonomyLevel`.
+      crewAutonomyLevel: 1,
       notificationPreference: "digest",
       contextTokenBudget: 12000,
       budgetMonthlyCents: null,
@@ -450,6 +462,64 @@ describe("company-portability internal agent config — import", () => {
     });
     // Upsert must NOT insert when existing row present
     expect(captured.inserts.length).toBe(0);
+  });
+
+  // D18 discriminator — nullish (??) vs falsy (||). A POST-split bundle that
+  // deliberately says "crew = Manual(0)" while Commander sits at 1 is the ONLY
+  // shape that distinguishes the two operators: `cfg.crewAutonomyLevel ?? cfg.autonomyLevel`
+  // writes 0, whereas `||` would swallow the 0 and write 1 — silently promoting
+  // a founder's Manual crew to Assist on every import. The string-match guard in
+  // d18-autonomy-dial-split.test.ts pins the source; this pins the behaviour.
+  it("import honours an explicit crewAutonomyLevel of 0 (nullish fallback, not falsy)", async () => {
+    const { db, captured } = createSequenceDb({
+      selects: [[{ id: "existing-cfg", companyId: TGT_CO_ID }]],
+      updates: [[{ id: "existing-cfg" }]],
+    });
+    const svc = companyPortabilityService(db as any);
+
+    const manifest = baseManifest({
+      includes: {
+        company: true,
+        agents: false,
+        projects: false,
+        issues: false,
+        skills: false,
+        routines: false,
+        envInputs: false,
+        internalAgentConfig: true,
+      },
+      internalAgentConfig: {
+        executionMode: "cli",
+        provider: null,
+        model: null,
+        cliTool: "claude_cli",
+        autonomyLevel: 1,
+        crewAutonomyLevel: 0,
+        enabledCapabilities: ["system_actions"],
+        notificationPreference: "digest",
+        contextTokenBudget: 12000,
+        budgetMonthlyCents: null,
+        proactiveIntervalMinutes: 60,
+        metadata: {},
+      },
+    });
+
+    await svc.importBundle(
+      {
+        source: { type: "inline", manifest, files: { "COMPANY.md": "---\nkind: company\nname: Source Co\n---\n" } },
+        target: { mode: "existing_company", companyId: TGT_CO_ID },
+        include: { agents: false, internalAgentConfig: true },
+      },
+      "user-1",
+    );
+
+    const updated = captured.updates.find(
+      (row) => (row as { executionMode?: string }).executionMode === "cli",
+    );
+    expect(updated).toBeDefined();
+    expect((updated as { crewAutonomyLevel?: number }).crewAutonomyLevel).toBe(0);
+    // ...and the two dials stayed independent through the round trip.
+    expect((updated as { autonomyLevel?: number }).autonomyLevel).toBe(1);
   });
 
   it("import with no internalAgentConfig in bundle is a no-op (older export)", async () => {

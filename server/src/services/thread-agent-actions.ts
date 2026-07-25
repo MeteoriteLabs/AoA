@@ -856,10 +856,12 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
             // W1b: autonomy-gated auto-accept of the freshly-created draft.
             if (draft.status === "created" && draft.version?.id) {
               try {
-                // effectiveAutonomy = thread.autonomyLevel ?? company.autonomyLevel (mirror controller-adjutant-runner)
+                // effectiveAutonomy = thread.autonomyLevel ?? company.crewAutonomyLevel
+                // (mirror controller-adjutant-runner). D18: the company fallback is the
+                // agent-work dial — scope auto-accept creates and dispatches crew tasks.
                 const [threadRow] = (await actionDb.select({ autonomyLevel: discussions.autonomyLevel })
                   .from(discussions).where(eq(discussions.id, input.threadId)).limit(1)) as Array<{ autonomyLevel: number | null }>;
-                const [cfg] = (await actionDb.select({ autonomyLevel: internalAgentConfig.autonomyLevel })
+                const [cfg] = (await actionDb.select({ autonomyLevel: internalAgentConfig.crewAutonomyLevel })
                   .from(internalAgentConfig).where(eq(internalAgentConfig.companyId, input.companyId)).limit(1)) as Array<{ autonomyLevel: number }>;
                 const effectiveAutonomy = threadRow?.autonomyLevel != null ? threadRow.autonomyLevel : (cfg?.autonomyLevel ?? 0);
                 const gate = resolveScopeAutoAcceptGate(effectiveAutonomy);

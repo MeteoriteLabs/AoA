@@ -47,6 +47,8 @@ export interface RunStreamingLoginOptions {
   discoveryTimeoutMs?: number;
   /** Extra parent-env keys to strip (forwarded to spawnTrackedChild). */
   unsetEnvKeys?: string[];
+  /** Extra parent-env key PREFIXES to strip (forwarded to spawnTrackedChild). */
+  unsetEnvPrefixes?: string[];
   /**
    * stdin disposition. Defaults to "ignore" — codex's device flow needs no
    * input, and leaving its spawn byte-identical keeps a working flow risk-free.
@@ -71,6 +73,7 @@ export function runStreamingLogin(opts: RunStreamingLoginOptions): StreamingLogi
     env: opts.env,
     graceSec: 5,
     unsetEnvKeys: opts.unsetEnvKeys,
+    unsetEnvPrefixes: opts.unsetEnvPrefixes,
     // stdin defaults to ignored (codex's device flow needs none); callers that
     // must answer a "paste code here" prompt (claude) opt in via opts.stdin.
     // stdout+stderr are always piped for URL detection.

@@ -99,6 +99,8 @@ export interface AdapterTargetProcessOptions {
   onSpawn?: (pid: number | null, pgid: number | null, startedAt: Date) => void;
   /** Keys to strip from the inherited parent env at spawn (unless `env` set them). */
   unsetEnvKeys?: string[];
+  /** Key PREFIXES to strip from the inherited parent env at spawn (unless `env` set them). */
+  unsetEnvPrefixes?: string[];
 }
 
 type ChildProcessRunner = typeof runChildProcess;
@@ -136,6 +138,7 @@ export async function runLocalTargetProcess(
     onLog: opts.onLog,
     onSpawn: opts.onSpawn,
     ...(opts.unsetEnvKeys ? { unsetEnvKeys: opts.unsetEnvKeys } : {}),
+    ...(opts.unsetEnvPrefixes ? { unsetEnvPrefixes: opts.unsetEnvPrefixes } : {}),
   });
 }
 

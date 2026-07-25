@@ -30,6 +30,10 @@ vi.mock("@armyofagents/adapter-codex-local/server", () => ({
 vi.mock("@armyofagents/adapter-claude-local/server", () => ({
   runClaudeLoginStreaming: vi.fn(),
   resolveClaudeConfigHome: vi.fn(() => "/home/.claude"),
+  // The runner registry reads its `credentialFileName` from the adapter (one
+  // spelling of the filename, shared with crew config-home provisioning), so the
+  // mock has to carry it too.
+  CLAUDE_CREDENTIAL_FILE_NAME: ".credentials.json",
 }));
 vi.mock("../utils/terminate-process.js", () => ({
   terminateByPid: vi.fn(),

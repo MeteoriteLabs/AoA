@@ -19,6 +19,7 @@ vi.mock("@armyofagents/db", () => {
 });
 vi.mock("drizzle-orm", () => ({
   eq: () => Symbol("op:eq"),
+  and: () => Symbol("op:and"),
 }));
 vi.mock("../middleware/logger.js", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -54,21 +55,31 @@ const LIBRARIAN_CATALOG_ITEM = {
 function makeDb(opts: {
   teamRows: Array<{ id: string; templateOrigin: string | null }>;
   existingMemberOrigins: string[];
+  /** `kind='aoa'` rows for the duplicate-name/legacy-slug guard. */
+  unmanagedAgents?: Array<{ name: string; templateOrigin: string | null }>;
   insertSpy?: ReturnType<typeof vi.fn>;
 }) {
   const insertSpy = opts.insertSpy ?? vi.fn().mockResolvedValue(undefined);
-  let selectCall = 0;
+  // Keyed dispatch, NOT positional. The previous `selectCall % 2` alternation
+  // silently mis-fed the third query added later (the unmanaged-agents scan):
+  // it handed back `teamRows`, whose objects have no `name`, so the filter
+  // dropped everything and the duplicate guard could never fire. Four tests
+  // still passed. Dispatching on the selected columns makes a new query fail
+  // loudly instead of being answered by whatever came next in the sequence.
   const db = {
-    select: vi.fn().mockImplementation(() => {
-      selectCall += 1;
-      // First select() per team = teams query; second = existing members query.
+    select: vi.fn().mockImplementation((cols?: Record<string, unknown>) => {
+      const keys = Object.keys(cols ?? {}).sort().join(",");
+      const rowsFor = (): unknown[] => {
+        if (keys === "id,templateOrigin") return opts.teamRows;
+        if (keys === "templateOrigin") {
+          return opts.existingMemberOrigins.map((templateOrigin) => ({ templateOrigin }));
+        }
+        if (keys === "name,templateOrigin") return opts.unmanagedAgents ?? [];
+        throw new Error(`team-reconcile mock: unmapped select(${keys || "*"})`);
+      };
       return {
         from: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue(
-            selectCall % 2 === 1
-              ? opts.teamRows
-              : opts.existingMemberOrigins.map((templateOrigin) => ({ templateOrigin })),
-          ),
+          where: vi.fn().mockImplementation(async () => rowsFor()),
           innerJoin: vi.fn().mockReturnThis(),
         }),
       };
@@ -120,6 +131,43 @@ describe("reconcileTeamMembers (WS6)", () => {
       expect.objectContaining({ teamId: "team-1", agentId: "agent-librarian-1", role: "member" }),
     );
     expect(result).toEqual({ teamsReconciled: 1, membersAdded: 1 });
+  });
+
+  // A founder can rename a crew agent through PATCH /agents/:id without
+  // touching templateOrigin, so a name check alone misses the very case that
+  // matters: reconcile would install a brand-new Librarian beside the founder's
+  // renamed one, and the original — which owns every task and run — would stay
+  // `@legacy` forever, unreachable by any later repair.
+  it("does not install a roster member an unmanaged RENAMED agent already covers", async () => {
+    vi.mocked(fetchCatalogResource).mockImplementation(async (item: any) => {
+      if (item.type === "team") {
+        return JSON.stringify({
+          slug: "standard-crew",
+          agents: [{ templateOrigin: "aoa-curated/standard-crew/librarian", name: "Librarian" }],
+        });
+      }
+      return JSON.stringify({ id: item.id, name: item.name });
+    });
+
+    const { db, insertSpy } = makeDb({
+      teamRows: [{ id: "team-1", templateOrigin: TEAM_CATALOG_ITEM.id }],
+      existingMemberOrigins: [],
+      unmanagedAgents: [
+        // Renamed by the founder; the boot backfill's slug survives the rename.
+        { name: "Archivist", templateOrigin: "aoa-curated/standard-crew/librarian@legacy" },
+      ],
+    });
+
+    const result = await reconcileTeamMembers({
+      db: db as any,
+      companyId: "co-1",
+      catalogItems: [TEAM_CATALOG_ITEM, LIBRARIAN_CATALOG_ITEM],
+      instructionsService: { materializeManagedBundle: vi.fn() } as any,
+    });
+
+    expect(createMarketplaceAgent).not.toHaveBeenCalled();
+    expect(insertSpy).not.toHaveBeenCalled();
+    expect(result).toEqual({ teamsReconciled: 0, membersAdded: 0 });
   });
 
   it("no-ops when the installed team's roster already matches the catalog", async () => {

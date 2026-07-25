@@ -10,6 +10,8 @@ const ctx = {
   enabledCapabilities: ["system_actions", "discussion_processing", "memory_management"],
   commanderToolPermissions: null,
   runtimeApprovalsEnabled: false,
+  runId: "run-9",
+  contextScope: { surface: "commander", conversationId: "conv-9" },
 } as unknown as ToolContext;
 
 function makeTool(name: string): AgentTool {
@@ -38,7 +40,10 @@ describe("mcp-bridge envelope outputRefs", () => {
     const res = await handler("create_artifact", { title: "GTM Plan", type: "document" });
     const envelope = JSON.parse(res.content[0]!.text);
     expect(envelope.outputRefs).toHaveLength(1);
-    expect(envelope.outputRefs[0]).toMatchObject({ kind: "artifact", id: "art-1", action: "created", title: "GTM Plan" });
+    expect(envelope.outputRefs[0]).toMatchObject({
+      v: 2, kind: "artifact", id: "art-1", action: "created", title: "GTM Plan",
+      provenance: { surface: "commander", entityId: "conv-9", runId: "run-9" },
+    });
   });
 
   it("omits outputRefs key for tools with no refs", async () => {

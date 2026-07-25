@@ -94,6 +94,16 @@ describe("appendMessage outputRefs", () => {
     expect(persisted.filter((r) => r.id === "r0")).toHaveLength(1); // deduped
   });
 
+  it("persists a v:2 ref with provenance", async () => {
+    const { db, captured } = mockDb();
+    const v2ref = {
+      v: 2, kind: "approval", id: "ap1", action: "referenced",
+      provenance: { surface: "commander", entityId: "conv-1", seq: 1, emittedAt: "2026-07-18T10:00:00.000Z" },
+    };
+    await conversationService(db).appendMessage("conv-1", { role: "assistant", content: "done", outputRefs: [v2ref] });
+    expect(captured.values.outputRefs).toEqual([expect.objectContaining({ v: 2, id: "ap1", kind: "approval" })]);
+  });
+
   it("non-array outputRefs (string) → null, message saves", async () => {
     const { db, captured } = mockDb();
     await conversationService(db).appendMessage("conv-1", {

@@ -36,6 +36,26 @@ function isNonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+/**
+ * Ambient env keys stripped from the diagnostic probe so it authenticates from
+ * the SAME source a real run does.
+ *
+ * A crew run strips the whole `CLAUDE_`/`ANTHROPIC_` ambient class and then
+ * copies the operator's `~/.claude/.credentials.json` into an isolated config
+ * home (ambient-config.ts, D9/T3). This probe cannot copy-and-isolate, so it
+ * strips only the ambient AUTH key and deliberately KEEPS `CLAUDE_CONFIG_DIR`:
+ * that variable is the credential SOURCE a crew run resolves from
+ * (`resolveClaudeConfigHome(process.env)`), so leaving it inherited makes the
+ * probe read the very file T3 would copy. Stripping the ambient
+ * `ANTHROPIC_API_KEY` stops the probe from going green via a key a crew run
+ * strips and never sees (mirrors codex's `unsetEnvKeys: ["OPENAI_API_KEY"]`,
+ * codex-local/src/server/test.ts). An adapter-config (overlay) `ANTHROPIC_API_KEY`
+ * survives — `mergeChildEnv` keeps overlay-set keys, and a crew run honours that
+ * same overlay auth (`hasOverlayConfiguredClaudeAuth`). Local targets only; a
+ * remote child never inherits the host env, so the strip is a harmless no-op there.
+ */
+const PROBE_UNSET_ENV_KEYS: readonly string[] = ["ANTHROPIC_API_KEY"];
+
 function firstNonEmptyLine(text: string): string {
   return (
     text
@@ -149,17 +169,33 @@ export async function testEnvironment(
     if (staleKeyCheck) checks.push(staleKeyCheck);
   }
 
+  // The adapter-config (overlay) key is a real, run-visible auth source: it
+  // survives the ambient strip (PROBE_UNSET_ENV_KEYS) by mergeChildEnv's
+  // overlay-wins rule, and a crew run honours it too (hasOverlayConfiguredClaudeAuth).
+  // The ambient server-process key is NOT: a crew run strips ANTHROPIC_ before
+  // spawning and authenticates from the copied .credentials.json instead, and
+  // this probe now strips it too. So the two must be reported differently — an
+  // ambient-only key described as "Claude will use API-key auth" would be a green
+  // light for a path no real run takes. (The codex probe draws the same
+  // config-vs-server-env distinction, codex-local/src/server/test.ts.)
   const configApiKey = env.ANTHROPIC_API_KEY;
   const hostApiKey = targetIsRemote ? undefined : process.env.ANTHROPIC_API_KEY;
-  if (!isBedrockAuth(effectiveEnv) && (isNonEmpty(configApiKey) || isNonEmpty(hostApiKey))) {
-    const source = isNonEmpty(configApiKey) ? "adapter config env" : "server environment";
+  if (!isBedrockAuth(effectiveEnv) && isNonEmpty(configApiKey)) {
     checks.push({
       code: "claude_anthropic_api_key_overrides_subscription",
       level: "warn",
       message:
-        "ANTHROPIC_API_KEY is set. Claude will use API-key auth instead of subscription credentials.",
-      detail: `Detected in ${source}.`,
+        "ANTHROPIC_API_KEY is set in the adapter config. Claude will use API-key auth instead of subscription credentials.",
+      detail: "Detected in adapter config env.",
       hint: "Unset ANTHROPIC_API_KEY if you want subscription-based Claude login behavior.",
+    });
+  } else if (!isBedrockAuth(effectiveEnv) && isNonEmpty(hostApiKey)) {
+    checks.push({
+      code: "claude_anthropic_api_key_server_env_only",
+      level: "warn",
+      message:
+        "ANTHROPIC_API_KEY is set only in the server environment; agent runs do not use it. Crew runs strip it, and this probe does too — both authenticate from your `claude auth login` credentials instead.",
+      hint: "Set a per-agent ANTHROPIC_API_KEY in the adapter config, or run `claude auth login`, so runs authenticate from a source they actually use.",
     });
   } else if (!isBedrockAuth(effectiveEnv)) {
     checks.push({
@@ -208,6 +244,10 @@ export async function testEnvironment(
           args,
           cwd,
           env,
+          // Strip the ambient server ANTHROPIC_API_KEY so the probe uses the SAME
+          // auth a real run does — see PROBE_UNSET_ENV_KEYS. An overlay key in
+          // `env` survives; only the inherited process.env key is dropped.
+          unsetEnvKeys: [...PROBE_UNSET_ENV_KEYS],
           runtimeCommandSpec: targetIsRemote
             ? { command, installCommand: SANDBOX_INSTALL_COMMAND }
             : null,
@@ -258,6 +298,10 @@ export async function testEnvironment(
                   args: [...CLAUDE_AUTH_STATUS_ARGS],
                   cwd,
                   env,
+                  // Same strip as the hello probe: read the SAME credential store
+                  // a real run authenticates against, never the ambient key crew
+                  // discards (PROBE_UNSET_ENV_KEYS). Mirrors codex's status probe.
+                  unsetEnvKeys: [...PROBE_UNSET_ENV_KEYS],
                   runtimeCommandSpec: null,
                   timeoutSec: 10,
                   graceSec: 2,

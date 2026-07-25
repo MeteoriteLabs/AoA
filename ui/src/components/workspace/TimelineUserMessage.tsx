@@ -10,6 +10,7 @@ interface TimelineUserMessageProps {
   authorName: string;
   isAgent?: boolean;
   attachments?: IssueAttachment[];
+  onOpenAttachment?: (att: IssueAttachment) => void;
 }
 
 export function TimelineUserMessage({
@@ -17,6 +18,7 @@ export function TimelineUserMessage({
   authorName,
   isAgent = false,
   attachments = [],
+  onOpenAttachment,
 }: TimelineUserMessageProps) {
   return (
     <div
@@ -35,6 +37,7 @@ export function TimelineUserMessage({
         <TimelineAttachments
           attachments={attachments}
           testId={`timeline-comment-attachments-${comment.id}`}
+          onOpen={onOpenAttachment}
         />
         <div className={cn("flex items-center gap-1.5 mt-1 not-prose", isAgent ? "justify-start" : "justify-end")}>
           <Identity name={authorName} size="xs" />

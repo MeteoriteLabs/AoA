@@ -59,7 +59,14 @@ export interface ToolContext {
   agentKind?: string;
   /** D2: explicit model-runtime tool allowlist. Absent/empty = default-deny. */
   toolAllowlist?: readonly string[];
-  /** Actor type: "commander" when invoked via Commander; "board" otherwise. */
+  /**
+   * Actor type driving the tool-call gate:
+   *  - "commander" → Commander policy layer (permissions + runtime approval)
+   *  - "agent"     → crew ('aoa') or org run; base allowlist/role/capability gate
+   *  - "board"     → the bridge default when no actor is set (loopback board)
+   * Only "commander" receives resolveCommanderToolPolicy; all others use the
+   * base authorizeToolInvocation gate (see mcp-bridge.ts + tool-registry.ts).
+   */
   actorType?: string;
   /** Calling agent's ID — exported as AOA_AGENT_ID by the runner. Absent in Commander runs. */
   agentId?: string;

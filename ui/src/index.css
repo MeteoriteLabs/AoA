@@ -880,3 +880,158 @@ a.aoa-skill-mention-chip {
 @media (prefers-reduced-motion: reduce) {
   .toast-rail { animation: none; left: 0; width: 100%; opacity: 0.5; }
 }
+
+/* ---------------------------------------------------------------------------
+   Syntax highlighting theme (highlight.js) — P3.2.
+   Hand-written so it is `.dark`-scoped (class dark strategy) and inherits the
+   surrounding container background (bg-muted/40 in the code viewer, .prose pre
+   in markdown). We deliberately do NOT import a highlight.js theme CSS file —
+   those set their own light-only backgrounds and are not `.dark`-aware.
+   Palette is a neutral GitHub-ish set, tuned for legibility in both themes.
+   --------------------------------------------------------------------------- */
+.hljs {
+  display: block;
+  color: var(--foreground);
+  background: transparent;
+}
+
+/* Light (default) token colors — GitHub Light-ish */
+.hljs-comment,
+.hljs-quote {
+  color: #6a737d;
+  font-style: italic;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-doctag,
+.hljs-formula {
+  color: #d73a49;
+}
+.hljs-string,
+.hljs-regexp,
+.hljs-meta .hljs-string {
+  color: #032f62;
+}
+.hljs-number,
+.hljs-literal {
+  color: #005cc5;
+}
+.hljs-title,
+.hljs-title.function_,
+.hljs-section,
+.hljs-name {
+  color: #6f42c1;
+}
+.hljs-attr,
+.hljs-attribute,
+.hljs-variable,
+.hljs-template-variable,
+.hljs-selector-attr,
+.hljs-selector-pseudo {
+  color: #005cc5;
+}
+.hljs-built_in,
+.hljs-class .hljs-title,
+.hljs-title.class_,
+.hljs-selector-class {
+  color: #e36209;
+}
+.hljs-type,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-link,
+.hljs-selector-id {
+  color: #22863a;
+}
+.hljs-tag {
+  color: #22863a;
+}
+.hljs-tag .hljs-name {
+  color: #22863a;
+}
+.hljs-meta {
+  color: #6a737d;
+}
+.hljs-params {
+  color: #24292e;
+}
+.hljs-addition {
+  color: #22863a;
+  background-color: #f0fff4;
+}
+.hljs-deletion {
+  color: #b31d28;
+  background-color: #ffeef0;
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: 600;
+}
+
+/* Dark overrides — GitHub Dark-ish */
+.dark .hljs-comment,
+.dark .hljs-quote {
+  color: #8b949e;
+}
+.dark .hljs-keyword,
+.dark .hljs-selector-tag,
+.dark .hljs-doctag,
+.dark .hljs-formula {
+  color: #ff7b72;
+}
+.dark .hljs-string,
+.dark .hljs-regexp,
+.dark .hljs-meta .hljs-string {
+  color: #a5d6ff;
+}
+.dark .hljs-number,
+.dark .hljs-literal {
+  color: #79c0ff;
+}
+.dark .hljs-title,
+.dark .hljs-title.function_,
+.dark .hljs-section,
+.dark .hljs-name {
+  color: #d2a8ff;
+}
+.dark .hljs-attr,
+.dark .hljs-attribute,
+.dark .hljs-variable,
+.dark .hljs-template-variable,
+.dark .hljs-selector-attr,
+.dark .hljs-selector-pseudo {
+  color: #79c0ff;
+}
+.dark .hljs-built_in,
+.dark .hljs-class .hljs-title,
+.dark .hljs-title.class_,
+.dark .hljs-selector-class {
+  color: #ffa657;
+}
+.dark .hljs-type,
+.dark .hljs-symbol,
+.dark .hljs-bullet,
+.dark .hljs-link,
+.dark .hljs-selector-id {
+  color: #7ee787;
+}
+.dark .hljs-tag,
+.dark .hljs-tag .hljs-name {
+  color: #7ee787;
+}
+.dark .hljs-meta {
+  color: #8b949e;
+}
+.dark .hljs-params {
+  color: #c9d1d9;
+}
+.dark .hljs-addition {
+  color: #aff5b4;
+  background-color: rgba(46, 160, 67, 0.15);
+}
+.dark .hljs-deletion {
+  color: #ffdcd7;
+  background-color: rgba(248, 81, 73, 0.15);
+}
