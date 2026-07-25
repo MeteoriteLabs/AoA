@@ -33,11 +33,14 @@ describe("highlightToHtml", () => {
     expect(result!.html).not.toContain("hljs-");
   });
 
-  it("auto-detects when no language is given", () => {
-    const { html } = highlightToHtml("def greet():\n    return 1\n");
-    // Auto-detection over the curated subset still escapes and tokenizes.
-    expect(html).toContain("hljs-");
-    expect(html).not.toContain("<script>");
+  it("renders escaped plain text when no language is given (no auto-detect)", () => {
+    // An absent language must NOT be auto-detected/tokenized — a plain note
+    // stays plain. It is escaped, and carries no hljs-* token spans.
+    const { html, language } = highlightToHtml("def greet(): return 1 & <x>\n");
+    expect(html).not.toContain("hljs-");
+    expect(html).toContain("&amp;");
+    expect(html).toContain("&lt;x&gt;");
+    expect(language).toBeNull();
   });
 
   it("never throws and escapes even for empty / odd input", () => {

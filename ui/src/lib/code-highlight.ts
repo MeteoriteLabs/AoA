@@ -9,20 +9,29 @@
  * Vite tree-shakes every grammar we do not import, keeping the highlighter to
  * the languages a work-product viewer actually encounters.
  *
+ * ## Static (not dynamic) import
+ * The Phase-3 plan leaned toward dynamic-importing the highlighter to keep it
+ * off the initial bundle, but {@link highlightToHtml} must return `{ html }`
+ * synchronously to feed `dangerouslySetInnerHTML` — an async import would force
+ * loading state/flash plumbing into every viewer. core+curated-subset is small
+ * (far lighter than mermaid, which we DO dynamic-import) and the viewers are
+ * already route-split off the app entry, so a static import is the right call.
+ *
  * ## XSS safety
- * `hljs.highlight(...).value` and `hljs.highlightAuto(...).value` return HTML in
- * which the ORIGINAL CODE TEXT is entity-escaped — only highlight.js's own
- * `<span class="hljs-*">` wrappers are real markup. So injecting the result via
- * `dangerouslySetInnerHTML` cannot execute code embedded in the source: e.g.
+ * `hljs.highlight(...).value` returns HTML in which the ORIGINAL CODE TEXT is
+ * entity-escaped — only highlight.js's own `<span class="hljs-*">` wrappers are
+ * real markup. So injecting the result via `dangerouslySetInnerHTML` cannot
+ * execute code embedded in the source: e.g.
  * `hljs.highlight("<script>", { language: "javascript" }).value` contains
  * `&lt;script&gt;`, never a live `<script>` tag. The degrade path escapes the
  * text ourselves, so every branch of {@link highlightToHtml} yields safe HTML.
  *
- * ## Never throws
+ * ## Never throws / no auto-detect
  * `highlightToHtml` wraps everything in try/catch and falls back to
- * entity-escaped plain text on any error, and a caller-specified language that
- * is not registered degrades to escaped plain text (we never silently guess a
- * different grammar for an explicit request).
+ * entity-escaped plain text on any error. An absent OR unregistered language
+ * degrades to escaped plain text — we never auto-detect (which would spray a
+ * plain `.txt` note with guessed token colors) and never silently guess a
+ * different grammar for an explicit request.
  */
 import hljs from "highlight.js/lib/core";
 
@@ -53,9 +62,8 @@ import yaml from "highlight.js/lib/languages/yaml";
 /**
  * The curated language subset. Registering a grammar also registers the aliases
  * declared inside it (e.g. `javascript` → `js`/`jsx`, `xml` → `html`/`svg`,
- * `csharp` → `cs`, `dockerfile` → `docker`), so the map covers more ids than the
- * keys listed here. `highlightAuto` is naturally restricted to this set because
- * only these grammars are registered against the core build.
+ * `csharp` → `cs`, `dockerfile` → `docker`), so `hljs.getLanguage` resolves more
+ * ids than the keys listed here.
  */
 const LANGUAGES: Record<string, LanguageFn> = {
   bash,
@@ -99,9 +107,10 @@ ensureRegistered();
 
 /**
  * File-extension → highlight.js language id. Extensions with no code meaning
- * (`.txt`, `.log`, ...) and unknown extensions return `undefined`, which the
- * callers treat as "auto-detect or plain". JSX/TSX collapse to javascript/
- * typescript (highlight.js's js/ts grammars handle the JSX superset).
+ * (`.txt`, `.log`, ...) and unknown extensions return `undefined`, which
+ * {@link highlightToHtml} renders as escaped plain text (no auto-detect). JSX/
+ * TSX collapse to javascript/typescript (highlight.js's js/ts grammars handle
+ * the JSX superset).
  */
 const EXTENSION_TO_LANGUAGE: Record<string, string> = {
   js: "javascript",
@@ -192,27 +201,24 @@ export interface HighlightResult {
 /**
  * Highlight `code` to HTML-escaped, token-wrapped markup.
  *
- * - An explicit, registered `language` → highlight with that grammar.
- * - An explicit but UNREGISTERED `language` → escaped plain text (we do not
- *   guess a different grammar for an explicit request).
- * - No `language` → auto-detect over the registered curated subset.
+ * - A registered `language` → highlight with that grammar.
+ * - An absent OR unregistered `language` → escaped plain text. We deliberately
+ *   do NOT auto-detect: guessing a grammar for a plain `.txt`/`.log`/unknown
+ *   file would spray it with token colors, and auto-detection is the most
+ *   expensive path for exactly the files that benefit least.
  * - Any thrown error → escaped plain text.
  *
  * The return is always safe to inject with `dangerouslySetInnerHTML`.
  */
 export function highlightToHtml(code: string, language?: string): HighlightResult {
   try {
-    if (language !== undefined) {
-      const normalized = language.trim().toLowerCase();
-      if (normalized && hljs.getLanguage(normalized)) {
-        const result = hljs.highlight(code, { language: normalized, ignoreIllegals: true });
-        return { html: result.value, language: result.language ?? normalized };
-      }
-      // Explicit but unknown language: degrade to escaped plain text.
-      return { html: escapeHtml(code), language: null };
+    const normalized = language?.trim().toLowerCase();
+    if (normalized && hljs.getLanguage(normalized)) {
+      const result = hljs.highlight(code, { language: normalized, ignoreIllegals: true });
+      return { html: result.value, language: result.language ?? normalized };
     }
-    const auto = hljs.highlightAuto(code);
-    return { html: auto.value, language: auto.language ?? null };
+    // Absent or unregistered language: degrade to escaped plain text.
+    return { html: escapeHtml(code), language: null };
   } catch {
     return { html: escapeHtml(code), language: null };
   }

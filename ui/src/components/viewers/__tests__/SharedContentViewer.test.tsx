@@ -136,6 +136,28 @@ describe("SharedContentViewer", () => {
     expect(source).toHaveTextContent("<script>alert(1)</script>");
   });
 
+  // P3.2 F2: an unknown/plain extension (.txt) must NOT auto-detect — it renders
+  // as escaped plain text, never sprayed with guessed token colors.
+  // Ablation: the OLD highlightToHtml auto-detected an absent language; this SQL-
+  // ish fixture auto-detects as `sql` and DID emit `hljs-*` token spans, so the
+  // `querySelectorAll("[class*='hljs-']").length === 0` assertion failed pre-fix.
+  it("renders an unknown-extension code file as plain escaped text (no highlight)", () => {
+    renderViewer(
+      viewer({ kind: "code" }),
+      "SELECT * FROM users WHERE id < 10 AND flag = 1 & 2;\n",
+      "notes.txt",
+    );
+    const source = screen.getByTestId("work-product-source");
+    // No highlight.js token spans anywhere (the <code> keeps only the "hljs"
+    // container class; token classes are all "hljs-<name>").
+    const tokenSpans = source.querySelectorAll("[class*='hljs-']");
+    expect(tokenSpans.length).toBe(0);
+    // Content still shown, and the raw < / & are entity-escaped (no injection).
+    expect(source).toHaveTextContent("SELECT * FROM users WHERE id < 10 AND flag = 1 & 2;");
+    expect(source.innerHTML).toContain("&lt;");
+    expect(source.innerHTML).toContain("&amp;");
+  });
+
   it("highlights fenced code blocks in markdown, leaving inline code plain", () => {
     renderViewer(
       viewer({ kind: "markdown" }),
@@ -151,6 +173,23 @@ describe("SharedContentViewer", () => {
       (el) => !el.classList.contains("hljs"),
     );
     expect(inlineCodes.some((el) => el.textContent === "npm i")).toBe(true);
+  });
+
+  // P3.2 F1 regression: react-markdown v10 passes a hast `node` prop to custom
+  // components. It must never be spread onto the intrinsic <code>, or React 19
+  // silently serializes it as node="[object Object]" (no warning, so only a DOM
+  // attribute check catches it). Covers both the inline and fenced branches.
+  it("never leaks the react-markdown node prop onto rendered <code>", () => {
+    renderViewer(
+      viewer({ kind: "markdown" }),
+      "Run `npm i` first.\n\n```js\nconst x = 1;\n```\n",
+    );
+    const md = screen.getByTestId("work-product-markdown");
+    const codes = Array.from(md.querySelectorAll("code"));
+    expect(codes.length).toBeGreaterThan(0);
+    for (const el of codes) {
+      expect(el.hasAttribute("node")).toBe(false);
+    }
   });
 
   it("renders a CSV table, honoring the comma delimiter and quoted fields", () => {

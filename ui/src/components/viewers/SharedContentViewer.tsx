@@ -2,6 +2,7 @@ import { useEffect, useId, useMemo, useState } from "react";
 import type { ComponentPropsWithoutRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
+import type { ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
 import { PdfDocumentViewer } from "@/components/viewers/PdfDocumentViewer";
@@ -77,9 +78,11 @@ export function SharedContentViewer({ viewer, filename, inlineTextContent = null
 }
 
 function SourceOutputViewer({ content, filename }: { content: string; filename?: string }) {
-  // `filename` is undefined when used as the "source" fallback inside
-  // SandboxedMarkupViewer; there we auto-detect the language over the curated
-  // subset. With a filename we derive the language from its extension.
+  // We derive the language from the filename extension. When there is no
+  // filename (the "source" fallback inside SandboxedMarkupViewer) or the
+  // extension is unknown/plain (.txt/.log/...), `languageForFilename` returns
+  // undefined and the content renders as escaped plain text — no auto-detect,
+  // so a plain note is never sprayed with guessed token colors.
   const highlighted = useMemo(
     () => highlightToHtml(content, languageForFilename(filename)),
     [content, filename],
@@ -99,21 +102,34 @@ function SourceOutputViewer({ content, filename }: { content: string; filename?:
  * Inline code and language-less fences have no `language-` class and stay plain.
  * The highlighted output is XSS-safe (see `code-highlight.ts`).
  */
-function MarkdownCodeRenderer({ className, children, ...props }: ComponentPropsWithoutRef<"code">) {
-  const match = /language-([\w+#.-]+)/.exec(className ?? "");
-  if (!match) {
+function MarkdownCodeRenderer({
+  className,
+  children,
+  node: _node,
+  ...props
+}: ComponentPropsWithoutRef<"code"> & ExtraProps) {
+  // react-markdown v10 passes the hast `node` to custom components. Pull it out
+  // so it is never spread onto the intrinsic <code> (React 19 would silently
+  // serialize it as node="[object Object]", an invalid attribute).
+  const highlighted = useMemo(() => {
+    const match = /language-([\w+#.-]+)/.exec(className ?? "");
+    if (!match) return null;
+    const language = match[1].toLowerCase();
+    const code = String(children ?? "").replace(/\n$/, "");
+    const { html } = highlightToHtml(code, language);
+    return { language, html };
+  }, [className, children]);
+
+  if (!highlighted) {
     return (
       <code className={className} {...props}>
         {children}
       </code>
     );
   }
-  const language = match[1].toLowerCase();
-  const code = String(children ?? "").replace(/\n$/, "");
-  const highlighted = highlightToHtml(code, language);
   return (
     <code
-      className={`hljs language-${language}`}
+      className={`hljs language-${highlighted.language}`}
       dangerouslySetInnerHTML={{ __html: highlighted.html }}
     />
   );
