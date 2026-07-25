@@ -91,3 +91,4 @@ _*.log
 
 # stray onboarding e2e artifacts (were committed by accident)
 test-results/
+local-connectors.json
