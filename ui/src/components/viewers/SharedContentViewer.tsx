@@ -1,9 +1,11 @@
 import { useEffect, useId, useMemo, useState } from "react";
+import type { ComponentPropsWithoutRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
 import { PdfDocumentViewer } from "@/components/viewers/PdfDocumentViewer";
+import { highlightToHtml, languageForFilename } from "@/lib/code-highlight";
 import { parseCsv } from "./csv-parse";
 import type { ViewerResolution } from "./viewer-registry";
 
@@ -60,7 +62,7 @@ export function SharedContentViewer({ viewer, filename, inlineTextContent = null
     case "canvas":
       return <CanvasOutputViewer content={textContent ?? ""} />;
     case "code":
-      return <SourceOutputViewer content={textContent ?? ""} />;
+      return <SourceOutputViewer content={textContent ?? ""} filename={filename} />;
     case "image":
       return <ImageOutputViewer url={assetUrl} filename={filename} />;
     case "video":
@@ -74,13 +76,46 @@ export function SharedContentViewer({ viewer, filename, inlineTextContent = null
   }
 }
 
-function SourceOutputViewer({ content }: { content: string }) {
+function SourceOutputViewer({ content, filename }: { content: string; filename?: string }) {
+  // `filename` is undefined when used as the "source" fallback inside
+  // SandboxedMarkupViewer; there we auto-detect the language over the curated
+  // subset. With a filename we derive the language from its extension.
+  const highlighted = useMemo(
+    () => highlightToHtml(content, languageForFilename(filename)),
+    [content, filename],
+  );
   return (
     <div className="min-h-0 flex-1 overflow-auto p-4" data-testid="work-product-source">
       <pre className="rounded-md border border-border bg-muted/40 p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words">
-        {content}
+        <code className="hljs" dangerouslySetInnerHTML={{ __html: highlighted.html }} />
       </pre>
     </div>
+  );
+}
+
+/**
+ * Markdown `code` renderer. Fenced blocks carry a `language-xxx` class (added by
+ * react-markdown from the fence info string) → highlight via the shared helper.
+ * Inline code and language-less fences have no `language-` class and stay plain.
+ * The highlighted output is XSS-safe (see `code-highlight.ts`).
+ */
+function MarkdownCodeRenderer({ className, children, ...props }: ComponentPropsWithoutRef<"code">) {
+  const match = /language-([\w+#.-]+)/.exec(className ?? "");
+  if (!match) {
+    return (
+      <code className={className} {...props}>
+        {children}
+      </code>
+    );
+  }
+  const language = match[1].toLowerCase();
+  const code = String(children ?? "").replace(/\n$/, "");
+  const highlighted = highlightToHtml(code, language);
+  return (
+    <code
+      className={`hljs language-${language}`}
+      dangerouslySetInnerHTML={{ __html: highlighted.html }}
+    />
   );
 }
 
@@ -88,7 +123,9 @@ function MarkdownOutputViewer({ content }: { content: string }) {
   return (
     <div className="min-h-0 flex-1 overflow-auto p-5" data-testid="work-product-markdown">
       <div className="prose prose-sm max-w-none dark:prose-invert prose-headings:mb-2 prose-p:my-2 prose-li:my-0">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+        <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ code: MarkdownCodeRenderer }}>
+          {content}
+        </ReactMarkdown>
       </div>
     </div>
   );

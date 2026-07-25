@@ -10,7 +10,11 @@ vi.mock("../PdfDocumentViewer", () => ({
   ),
 }));
 
-function renderViewer(viewer: ViewerResolution, inlineTextContent: string | null = null) {
+function renderViewer(
+  viewer: ViewerResolution,
+  inlineTextContent: string | null = null,
+  filename = "example.md",
+) {
   const client = new QueryClient({
     defaultOptions: {
       queries: {
@@ -23,7 +27,7 @@ function renderViewer(viewer: ViewerResolution, inlineTextContent: string | null
     <QueryClientProvider client={client}>
       <SharedContentViewer
         viewer={viewer}
-        filename="example.md"
+        filename={filename}
         inlineTextContent={inlineTextContent}
       />
     </QueryClientProvider>,
@@ -106,6 +110,47 @@ describe("SharedContentViewer", () => {
   it("renders inline code as source text", () => {
     renderViewer(viewer({ kind: "code" }), "const x = 1;");
     expect(screen.getByTestId("work-product-source")).toHaveTextContent("const x = 1;");
+  });
+
+  // P3.2 discriminator: the code viewer now emits highlight.js token spans.
+  // Ablation: the old `SourceOutputViewer` rendered `<pre>{content}</pre>` with
+  // ZERO child elements, so `querySelector("span.hljs-keyword")` was null and
+  // this assertion failed. The filename drives the language (`snippet.js` → js).
+  it("highlights the code viewer with token spans (not a plain <pre>)", () => {
+    renderViewer(viewer({ kind: "code" }), "const x = 1;", "snippet.js");
+    const source = screen.getByTestId("work-product-source");
+    const keyword = source.querySelector("span.hljs-keyword");
+    expect(keyword).not.toBeNull();
+    expect(keyword).toHaveTextContent("const");
+    // The visible text is intact — highlighting only wraps, never mutates.
+    expect(source).toHaveTextContent("const x = 1;");
+    // The <code> container carries the hljs class the theme CSS targets.
+    expect(source.querySelector("code.hljs")).not.toBeNull();
+  });
+
+  it("escapes HTML in the code viewer output (XSS-safe highlighting)", () => {
+    renderViewer(viewer({ kind: "code" }), "<script>alert(1)</script>", "x.js");
+    const source = screen.getByTestId("work-product-source");
+    // No live <script> element is injected into the DOM.
+    expect(source.querySelector("script")).toBeNull();
+    expect(source).toHaveTextContent("<script>alert(1)</script>");
+  });
+
+  it("highlights fenced code blocks in markdown, leaving inline code plain", () => {
+    renderViewer(
+      viewer({ kind: "markdown" }),
+      "Run `npm i` first.\n\n```js\nconst x = 1;\n```\n",
+    );
+    const md = screen.getByTestId("work-product-markdown");
+    // Fenced block → highlighted <code class="hljs language-js"> with token spans.
+    const fenced = md.querySelector("code.hljs.language-js");
+    expect(fenced).not.toBeNull();
+    expect(fenced!.querySelector("span.hljs-keyword")).not.toBeNull();
+    // Inline code (`npm i`) is left plain — no hljs class.
+    const inlineCodes = Array.from(md.querySelectorAll("code")).filter(
+      (el) => !el.classList.contains("hljs"),
+    );
+    expect(inlineCodes.some((el) => el.textContent === "npm i")).toBe(true);
   });
 
   it("renders a CSV table, honoring the comma delimiter and quoted fields", () => {
