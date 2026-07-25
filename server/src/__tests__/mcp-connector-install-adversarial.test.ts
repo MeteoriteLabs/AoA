@@ -1637,16 +1637,22 @@ describe("[ESC-7] buildConnectorProcessEnv is documented as a control but has no
       .filter((f) => !f.includes("__tests__") && !f.endsWith("mcp-connectors-env.ts"));
   }
 
-  it("CHARACTERIZATION: the module's only references are its own definition and its own unit test", () => {
-    expect(productionCallers()).toEqual([]);
+  // FU-23 FIXED: the scrub module is now wired into the connector-capable CLI
+  // spawn. Commander's `cli-mode.ts` builds the third-party-facing CLI env via
+  // `mergeConnectorEnv(buildScrubbedCliEnv(), connectorEnv)` when a turn hosts
+  // connectors, so AoA's ambient secret env no longer reaches the stdio
+  // connector children the CLI spawns. The `aoa` bridge stays functional because
+  // `buildMcpBridgeSpec` re-supplies its own DATABASE_URL + secrets-provider
+  // config on `mcpServers.aoa.env` (see mcp-bridge-spec.test.ts).
+  it("[ESC-7] the scrub module now has a production caller (was dead code before FU-23)", () => {
+    expect(productionCallers()).toContain("server/src/services/internal-agent/cli-mode.ts");
   });
 
-  // DESIRED STATE. The module's header promises "AoA's own secrets must never
-  // reach a third-party server"; today every connector-capable adapter spawns the
-  // CLI with the full unscrubbed server environment, and the CLI passes it to each
-  // stdio MCP child. Either wire this in or delete it — it currently reads as an
-  // implemented control that is not implemented.
-  it.fails("[ESC-7] DESIRED: at least one production module routes connector spawns through it", () => {
+  // DESIRED STATE — now GREEN. At least one production module routes connector
+  // spawns through the scrub. Kept as a plain assertion (no longer `it.fails`)
+  // so it goes RED if the wiring is ever removed and the module reverts to dead
+  // code.
+  it("[ESC-7] DESIRED: at least one production module routes connector spawns through it", () => {
     expect(productionCallers().length).toBeGreaterThan(0);
   });
 });

@@ -31,6 +31,8 @@ import {
 import { logger } from "../../middleware/logger.js";
 import { redactSecretsInString } from "../../redaction.js";
 import { resolveAgentConnectors } from "../mcp-connectors-loader.js";
+import { buildScrubbedCliEnv } from "../cli-spawn-safety.js";
+import { mergeConnectorEnv } from "../mcp-connectors-env.js";
 
 const require = createRequire(import.meta.url);
 
@@ -216,6 +218,29 @@ export function buildMcpBridgeSpec(params: McpConfigParams): McpBridgeSpec {
         ? { AOA_COMMANDER_CONTEXT_SCOPE: JSON.stringify(params.contextScope) }
         : {}),
       ...(process.env.DATABASE_URL ? { DATABASE_URL: process.env.DATABASE_URL } : {}),
+      // FU-23: the bridge decrypts the per-company embeddings secret IN-PROCESS
+      // (service-container `embedSync` → getProviderApiKey → secretService →
+      // local-encrypted provider), which reads the secrets-provider CONFIG from
+      // env: the provider id, the strict-mode flag, and the master-key FILE PATH
+      // (never the key VALUE — that stays in its 0600 file, read off disk by the
+      // bridge process). These are re-supplied on the bridge's OWN spec env so it
+      // stays self-sufficient once the connector-capable CLI spawns are scrubbed
+      // of AoA's ambient env (a third-party stdio connector child inherits that
+      // env and must not carry AoA's secrets). Only NON-secret config/paths are
+      // copied here; the raw `AOA_SECRETS_MASTER_KEY` / `OPENAI_API_KEY` are
+      // deliberately NOT re-injected — doing so would write a secret VALUE into
+      // the on-disk MCP config file. Deployments that rely on those raw-value
+      // env paths (rather than the default file-based master key + per-company
+      // `llm:openai` Settings secret) lose in-bridge embeddings after the scrub.
+      ...(process.env.AOA_SECRETS_PROVIDER
+        ? { AOA_SECRETS_PROVIDER: process.env.AOA_SECRETS_PROVIDER }
+        : {}),
+      ...(process.env.AOA_SECRETS_STRICT_MODE
+        ? { AOA_SECRETS_STRICT_MODE: process.env.AOA_SECRETS_STRICT_MODE }
+        : {}),
+      ...(process.env.AOA_SECRETS_MASTER_KEY_FILE
+        ? { AOA_SECRETS_MASTER_KEY_FILE: process.env.AOA_SECRETS_MASTER_KEY_FILE }
+        : {}),
     },
   };
 }
@@ -840,25 +865,51 @@ export function cliModeService(db: Db) {
 
           // Merge the real connector secrets into the spawn env (NOT the config
           // file). Placed after the null guard so it runs only when we actually
-          // spawn; the claude spawn below inherits it via
-          // { ...process.env, ...invocation.spawnEnv }. Connector tokens layer
-          // on TOP of the existing spawnEnv (e.g. MAX_THINKING_TOKENS) — no scrub.
+          // spawn. Connector tokens layer on TOP of the existing spawnEnv (e.g.
+          // MAX_THINKING_TOKENS).
           //
           // LIMITATION (P2N2): connectors are resolved at the FIRST-message
           // spawn of a persistent claude session and the env is fixed at spawn,
           // so a connector added/removed mid-conversation won't take effect
           // until that session recycles. Real debugging gotcha ("I added a
           // connector and Commander still can't see it").
-          if (Object.keys(connectorEnv).length > 0) {
+          const connectorsPresent = Object.keys(connectorEnv).length > 0;
+          if (connectorsPresent) {
             invocation.spawnEnv = { ...(invocation.spawnEnv ?? {}), ...connectorEnv };
           }
 
           // cwd = tmpdir() prevents the CLI from walking up and reading the
           // project's CLAUDE.md (which mentions "Paperclip" — an internal
           // implementation detail that must never surface to users).
+          //
+          // FU-23: when this turn hosts third-party MCP connectors, the CLI —
+          // and every stdio connector child it spawns (`npx -y <pkg>`) — must NOT
+          // inherit AoA's ambient secret env (DATABASE_URL, the embeddings
+          // OPENAI_API_KEY, the auth signing secret, the secrets master key, the
+          // GitHub PAT, sibling connectors are a separate limit — see note).
+          // Scrub the CLI base down to PATH/HOME/etc. and re-apply only the
+          // trusted overlay: MAX_THINKING_TOKENS + the connector
+          // `${AOA_MCP_*_TOKEN}` values the config placeholders expand from.
+          // `mergeConnectorEnv` keeps the scrubbed base authoritative (a connector
+          // token can never redirect PATH), then the trusted spawnEnv is spread
+          // last so MAX_THINKING_TOKENS wins. The `aoa` bridge stays functional
+          // because buildMcpBridgeSpec re-supplies DATABASE_URL + the
+          // secrets-provider config on `mcpServers.aoa.env` — the bridge does NOT
+          // depend on this inherited env. No-connectors turns keep the full env
+          // (byte-identical; there is no third-party child to protect).
+          // NOTE: sibling-connector-token isolation is NOT reachable here — every
+          // token must sit in the one CLI env for `${VAR}` expansion, and the CLI
+          // (not AoA) spawns the connector children. This scrub targets AoA's OWN
+          // secrets, which is what the module + [ESC-7] cover.
+          const cliEnv = connectorsPresent
+            ? {
+                ...mergeConnectorEnv(buildScrubbedCliEnv(), connectorEnv),
+                ...(invocation.spawnEnv ?? {}),
+              }
+            : { ...process.env, ...invocation.spawnEnv };
           const cliProcess = spawn(invocation.binary, invocation.args, {
             stdio: ["pipe", "pipe", "pipe"],
-            env: { ...process.env, ...invocation.spawnEnv },
+            env: cliEnv,
             shell: isWin,
             cwd: tmpdir(),
           });

@@ -38,6 +38,18 @@ describe("buildMcpBridgeSpec", () => {
       ...(process.env.DATABASE_URL
         ? { DATABASE_URL: process.env.DATABASE_URL }
         : {}),
+      // FU-23: the bridge's own secrets-provider config (non-secret values), so
+      // it can decrypt the per-company embeddings key in-process once the
+      // connector-capable CLI spawns are scrubbed of AoA's ambient env.
+      ...(process.env.AOA_SECRETS_PROVIDER
+        ? { AOA_SECRETS_PROVIDER: process.env.AOA_SECRETS_PROVIDER }
+        : {}),
+      ...(process.env.AOA_SECRETS_STRICT_MODE
+        ? { AOA_SECRETS_STRICT_MODE: process.env.AOA_SECRETS_STRICT_MODE }
+        : {}),
+      ...(process.env.AOA_SECRETS_MASTER_KEY_FILE
+        ? { AOA_SECRETS_MASTER_KEY_FILE: process.env.AOA_SECRETS_MASTER_KEY_FILE }
+        : {}),
     };
 
     expect(buildMcpBridgeSpec(params)).toEqual({
