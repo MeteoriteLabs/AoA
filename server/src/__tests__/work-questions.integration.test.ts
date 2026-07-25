@@ -1,8 +1,12 @@
 import { randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { runningProcesses, spawnTrackedChild } from "@armyofagents/adapter-utils/server-utils";
 import {
+  applyPendingMigrations,
   agentWakeupRequests,
   agents,
   authUsers,
@@ -32,10 +36,35 @@ import {
 import { recoverExpiredCrewWakeup } from "../services/internal-agent/aoa-agents/dispatcher.js";
 import { askHumanForActiveRun } from "../mcp/tools/ask-founder-tool.js";
 
-const databaseUrl = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL;
-const suite = databaseUrl ? describe : describe.skip;
+// Embedded-postgres harness (matches the other *.integration.test.ts files). The
+// beforeAll below boots its own throwaway cluster, so these tests run in the
+// required Linux `verify` gate with NO external DATABASE_URL. Previously the
+// suite ran only when TEST_DATABASE_URL/DATABASE_URL was set and was skipped
+// otherwise — and because CI's verify job provides neither, it SILENTLY SKIPPED
+// all 22 tests and showed green (the fail-open blind spot the
+// integration-test-hygiene guard now catches). The beforeAll is inside the win32-skipped
+// describe, so on Windows the whole suite (boot included) skips per Issue #114,
+// and on Linux a boot failure throws and reddens the suite (fail-closed).
+type EmbeddedPostgresInstance = {
+  initialise(): Promise<void>;
+  start(): Promise<void>;
+  stop(): Promise<void>;
+};
+type EmbeddedPostgresCtor = new (opts: {
+  databaseDir: string;
+  user: string;
+  password: string;
+  port: number;
+  persistent: boolean;
+  initdbFlags?: string[];
+}) => EmbeddedPostgresInstance;
 
-suite("durable work questions (real PostgreSQL)", () => {
+const PORT = 59700 + Math.floor(Math.random() * 400);
+let pg: EmbeddedPostgresInstance | null = null;
+let dataDir = "";
+
+// To run locally on Windows, temporarily flip this to `describe.skipIf(false)`.
+describe.skipIf(process.platform === "win32")("durable work questions (real PostgreSQL)", () => {
   let db: Db;
   const companyId = randomUUID();
   const agentId = randomUUID();
@@ -147,7 +176,25 @@ suite("durable work questions (real PostgreSQL)", () => {
   }
 
   beforeAll(async () => {
-    db = createDb(databaseUrl!);
+    dataDir = await mkdtemp(join(tmpdir(), "aoa-work-questions-integ-"));
+    const { default: EmbeddedPostgres } = (await import("embedded-postgres")) as {
+      default: EmbeddedPostgresCtor;
+    };
+    pg = new EmbeddedPostgres({
+      databaseDir: join(dataDir, "db"),
+      user: "test",
+      password: "test",
+      port: PORT,
+      persistent: false,
+      // Force UTF-8 so migration SQL with non-Latin1 chars (e.g. '→' in a
+      // comment) applies regardless of the host locale.
+      initdbFlags: ["--encoding=UTF8", "--locale=C"],
+    });
+    await pg.initialise();
+    await pg.start();
+    const connectionString = `postgres://test:test@localhost:${PORT}/postgres`;
+    await applyPendingMigrations(connectionString);
+    db = createDb(connectionString);
     const now = new Date();
     await db.insert(companies).values({
       id: companyId,
@@ -224,12 +271,12 @@ suite("durable work questions (real PostgreSQL)", () => {
       sourceDiscussionId: discussionId,
       acceptanceCriteria: ["Document the selected sample"],
     });
-  });
+  }, 180_000);
 
   afterAll(async () => {
-    if (!db) return;
-    await db.delete(companies).where(eq(companies.id, companyId));
-    await db.delete(authUsers).where(eq(authUsers.id, userId));
+    // Throwaway cluster — stop it and drop its data dir; no per-row cleanup needed.
+    await pg?.stop();
+    if (dataDir) await rm(dataDir, { recursive: true, force: true });
   });
 
   it("commits one answer and one continuation request, then relays idempotently", async () => {
