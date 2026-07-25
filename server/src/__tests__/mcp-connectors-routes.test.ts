@@ -81,7 +81,10 @@ function makeApp(actor: any) {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api", mcpConnectorRoutes({} as any));
+  // db stub: only `transaction` is exercised by the route (Finding 4's atomic
+  // create). It runs the callback with a throwaway tx; the tx-scoped services are
+  // module-mocked, so they ignore the tx value and return the same mocks.
+  app.use("/api", mcpConnectorRoutes({ transaction: (fn: any) => fn({}) } as any));
   app.use(errorHandler);
   return app;
 }

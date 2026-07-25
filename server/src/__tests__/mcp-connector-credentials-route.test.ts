@@ -75,7 +75,7 @@ function makeApp(actor: unknown) {
     (req as unknown as { actor: unknown }).actor = actor;
     next();
   });
-  app.use("/api", mcpConnectorRoutes({} as never));
+  app.use("/api", mcpConnectorRoutes({ transaction: (fn: any) => fn({}) } as never));
   app.use(errorHandler);
   return app;
 }

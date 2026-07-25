@@ -24,6 +24,7 @@ import {
 } from "../services/mcp-connector-consent.js";
 import {
   createConnector,
+  type CreateConnectorDeps,
   type CreateConnectorInput,
 } from "../services/mcp-connector-create.js";
 import { resolveConnectorStatus } from "../services/mcp-connector-status.js";
@@ -457,6 +458,19 @@ export function mcpConnectorRoutes(db: Db, opts: McpConnectorRouteOptions = {}) 
   // i.e. only when a founder actually opens the shelf.
   const connectorCatalog = opts.catalog ?? resolveConnectorCatalogService();
 
+  // FINDING 4 — the atomic connector-insert + approval-insert runner both create
+  // paths share. Rebinds `svc` + `approvalsSvc` to the transaction (the same
+  // `tx as unknown as Db` pattern as routes/approvals.ts) so a failure in either
+  // insert rolls back both, and a stranded `pending_approval`-without-approval
+  // connector becomes impossible.
+  const withInsertTransaction: CreateConnectorDeps["withInsertTransaction"] = (run) =>
+    db.transaction((tx) =>
+      run({
+        svc: mcpConnectorService(tx as unknown as Db),
+        approvalsSvc: approvalService(tx as unknown as Db),
+      }),
+    );
+
   // List — any board member with access to the company.
   router.get("/companies/:companyId/mcp-connectors", async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -689,7 +703,13 @@ export function mcpConnectorRoutes(db: Db, opts: McpConnectorRouteOptions = {}) 
       // derivation, approval and activity log as the BYO route. Nothing about
       // governance is re-implemented here.
       const { connector: created, approvalId } = await createConnector(
-        { svc, secretsSvc, approvalsSvc, logActivity: (logEntry) => logActivity(db, logEntry) },
+        {
+          svc,
+          secretsSvc,
+          approvalsSvc,
+          withInsertTransaction,
+          logActivity: (logEntry) => logActivity(db, logEntry),
+        },
         entryToCreateInput(entry, companyId, deploymentMode, actor),
       );
 
@@ -744,7 +764,13 @@ export function mcpConnectorRoutes(db: Db, opts: McpConnectorRouteOptions = {}) 
       // activity log — lives in the SHARED create service so the catalog install
       // route cannot fork it into an untested copy.
       const { connector: created, approvalId } = await createConnector(
-        { svc, secretsSvc, approvalsSvc, logActivity: (entry) => logActivity(db, entry) },
+        {
+          svc,
+          secretsSvc,
+          approvalsSvc,
+          withInsertTransaction,
+          logActivity: (entry) => logActivity(db, entry),
+        },
         {
           companyId,
           serverName: body.serverName,

@@ -25,7 +25,14 @@ const secretsSvc = { getByName: vi.fn() };
 const approvalsSvc = { create: vi.fn() };
 const logActivity = vi.fn();
 
-const deps = { svc, secretsSvc, approvalsSvc, logActivity };
+// FINDING 4 — a pass-through transaction runner: it calls `run` with the SAME
+// mocks (no DB), so the atomic-ordering + throw-rollback behaviour is exercised
+// while the create/approval assertions still see the plain mock calls.
+const withInsertTransaction = vi.fn(async (run: (tx: any) => Promise<any>) =>
+  run({ svc, approvalsSvc }),
+);
+
+const deps = { svc, secretsSvc, approvalsSvc, withInsertTransaction, logActivity };
 
 /**
  * Per deployment mode, the status a connector that NEEDS a secret but has none
@@ -53,6 +60,9 @@ const httpInput = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  withInsertTransaction.mockImplementation(async (run: (tx: any) => Promise<any>) =>
+    run({ svc, approvalsSvc }),
+  );
   svc.getByName.mockResolvedValue(null);
   svc.create.mockImplementation(async (_c: string, input: any) => ({
     id: CONNECTOR_ID,
@@ -231,6 +241,56 @@ describe("createConnector — activity log", () => {
         }),
       }),
     );
+  });
+});
+
+describe("createConnector — FINDING 4: atomicity + constraint-race 409 + best-effort log", () => {
+  it("runs the connector + approval inserts inside ONE transaction", async () => {
+    await createConnector(deps as any, httpInput);
+    expect(withInsertTransaction).toHaveBeenCalledTimes(1);
+    // Both writes happened via the tx-scoped services handed to the runner.
+    expect(svc.create).toHaveBeenCalledTimes(1);
+    expect(approvalsSvc.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("an approval-insert failure rolls back the whole create (throws, no partial success)", async () => {
+    approvalsSvc.create.mockRejectedValue(new Error("approval insert boom"));
+    await expect(createConnector(deps as any, httpInput)).rejects.toThrow(/approval insert boom/);
+    // svc.create WAS attempted inside the tx, but the throw propagates so the
+    // transaction runner rolls it back — the request fails cleanly rather than
+    // stranding a pending_approval connector with no approval.
+    expect(withInsertTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("a concurrent (companyId, serverName) unique violation on INSERT becomes a clean 409", async () => {
+    // The pre-check passed (getByName null), then a concurrent create committed
+    // first, so our INSERT raises 23505 on the connector-name constraint.
+    svc.create.mockRejectedValue(
+      Object.assign(new Error("duplicate key value violates unique constraint"), {
+        code: "23505",
+        constraint: "company_mcp_connectors_company_name_uq",
+      }),
+    );
+    await expect(createConnector(deps as any, httpInput)).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("an UNRELATED 23505 (e.g. the approval insert) is NOT masked as a 409 — it surfaces", async () => {
+    approvalsSvc.create.mockRejectedValue(
+      Object.assign(new Error("duplicate key value violates unique constraint"), {
+        code: "23505",
+        constraint: "approvals_some_other_uq",
+      }),
+    );
+    // Not the connector-name constraint → not translated to 409; the real error
+    // propagates (a genuine 500) rather than lying about a duplicate name.
+    await expect(createConnector(deps as any, httpInput)).rejects.not.toMatchObject({ status: 409 });
+  });
+
+  it("a post-commit activity-log failure does NOT fail the request (connector already committed)", async () => {
+    logActivity.mockRejectedValue(new Error("log sink down"));
+    const out = await createConnector(deps as any, httpInput);
+    expect(out.connector.id).toBe(CONNECTOR_ID);
+    expect(out.approvalId).toBe("approval-1");
   });
 });
 

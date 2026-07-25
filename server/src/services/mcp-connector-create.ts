@@ -28,6 +28,7 @@
  */
 
 import { badRequest, conflict } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 import { resolveConnectorStatus } from "./mcp-connector-status.js";
 import type { LogActivityInput } from "./activity-log.js";
 import type { ConnectorInsert } from "./mcp-connectors-crud.js";
@@ -40,6 +41,25 @@ import type { approvals } from "@armyofagents/db";
 // UUID (e.g. the synthetic "board"/"mcp-user" ids) is NOT a foreign key into
 // users, so it must be stored as null rather than corrupting provenance.
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// The unique index behind the (companyId, serverName) uniqueness rule
+// (packages/db/src/schema/company_mcp_connectors.ts). FINDING 4 — the pre-check
+// (getByName) still handles the common case with a friendly early 409, but two
+// concurrent creates can both pass it and race to the INSERT; the loser used to
+// surface a raw 23505 as a 500. Catching THIS constraint (narrowly, never a bare
+// 23505 that could belong to the approval insert) turns that race into the same
+// clean 409.
+const CONNECTOR_NAME_CONSTRAINT = "company_mcp_connectors_company_name_uq";
+function isConnectorNameUniqueViolation(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  const e = err as { code?: unknown; constraint?: unknown; message?: unknown };
+  if (e.code !== "23505") return false;
+  // `constraint` is populated by node-postgres; `message` is the fallback for
+  // wrappers that carry only the text.
+  return [e.constraint, e.message].some(
+    (field) => typeof field === "string" && field.includes(CONNECTOR_NAME_CONSTRAINT),
+  );
+}
 
 type ApprovalInsert = Omit<typeof approvals.$inferInsert, "companyId">;
 
@@ -56,8 +76,23 @@ export type CreateConnectorDeps = {
     create: (companyId: string, data: ApprovalInsert) => Promise<{ id: string } | null | undefined>;
   };
   /**
+   * FINDING 4 — runs the connector-insert + approval-insert ATOMICALLY. The
+   * callback receives tx-bound `svc` + `approvalsSvc`, so a failure in EITHER
+   * insert rolls back BOTH: an approval-create failure can no longer strand a
+   * `pending_approval` connector with no approval row (unactivatable). The route
+   * wraps a real `db.transaction`; unit tests inject a pass-through that calls
+   * `run` with the plain mocks (no DB), still exercising ordering + throw-rollback.
+   */
+  withInsertTransaction: <T>(
+    run: (tx: {
+      svc: { create: CreateConnectorDeps["svc"]["create"] };
+      approvalsSvc: CreateConnectorDeps["approvalsSvc"];
+    }) => Promise<T>,
+  ) => Promise<T>;
+  /**
    * Pre-bound to the caller's `db` — this module never touches a Db handle, which
-   * is what keeps it unit-testable.
+   * is what keeps it unit-testable. Runs AFTER commit and is best-effort: a
+   * logging failure must NOT 500 a request whose connector already committed.
    */
   logActivity: (input: LogActivityInput) => Promise<void>;
 };
@@ -95,11 +130,13 @@ export async function createConnector(
   deps: CreateConnectorDeps,
   input: CreateConnectorInput,
 ): Promise<{ connector: any; approvalId: string | null }> {
-  const { svc, secretsSvc, approvalsSvc, logActivity } = deps;
+  const { svc, secretsSvc, withInsertTransaction, logActivity } = deps;
   const { companyId, actor } = input;
 
-  // Uniqueness (companyId, serverName) — surface a clean 409 instead of a raw
-  // unique-violation 500.
+  // Uniqueness (companyId, serverName) — friendly early 409 for the common case.
+  // NOT the sole guard: two concurrent creates can both pass this and race to the
+  // INSERT, so the atomic write below ALSO catches the constraint violation and
+  // answers the race with the same 409 (rather than a raw 500).
   const existing = await svc.getByName(companyId, input.serverName);
   if (existing) {
     throw conflict(`A connector named "${input.serverName}" already exists`);
@@ -107,7 +144,7 @@ export async function createConnector(
 
   // secretRef must point at an existing company secret (A19/A20): reject the
   // dangling-ref state at write time rather than letting the delivery path
-  // silently drop the connector later.
+  // silently drop the connector later. Read-only, so it stays outside the tx.
   if (input.secretRef) {
     const secret = await secretsSvc.getByName(companyId, input.secretRef);
     if (!secret) {
@@ -127,44 +164,73 @@ export async function createConnector(
 
   const createdByUserId = UUID_RE.test(actor.actorId) ? actor.actorId : null;
 
-  const created = await svc.create(companyId, {
-    serverName: input.serverName,
-    displayName: input.displayName,
-    transport: input.transport,
-    url: input.url ?? null,
-    command: input.command ?? null,
-    args: input.args ?? [],
-    headerTemplate: input.headerTemplate ?? {},
-    envTemplate: input.envTemplate ?? {},
-    secretRef: input.secretRef ?? null,
-    requiresSecret: input.requiresSecret,
-    source: input.source,
-    trustTier: input.trustTier ?? null,
-    status,
-    createdByUserId,
-  });
-
+  // FINDING 4 — connector-insert + approval-insert in ONE transaction. A failure
+  // in the approval insert now rolls the connector back too, so we can never
+  // commit a `pending_approval` connector that has no approval row (which would be
+  // unactivatable). The activity log is deliberately OUTSIDE, after commit.
+  let created: { id: string; serverName: string; transport: string; [k: string]: unknown };
   let approvalId: string | null = null;
-  if (status === "pending_approval") {
-    const approval = await approvalsSvc.create(companyId, {
-      type: "install_mcp_connector",
-      requestedByUserId: actor.actorType === "user" ? actor.actorId : null,
-      status: "pending",
-      payload: { connectorId: created.id, serverName: created.serverName },
-    });
-    approvalId = approval?.id ?? null;
+  try {
+    ({ connector: created, approvalId } = await withInsertTransaction(async (tx) => {
+      const createdRow = await tx.svc.create(companyId, {
+        serverName: input.serverName,
+        displayName: input.displayName,
+        transport: input.transport,
+        url: input.url ?? null,
+        command: input.command ?? null,
+        args: input.args ?? [],
+        headerTemplate: input.headerTemplate ?? {},
+        envTemplate: input.envTemplate ?? {},
+        secretRef: input.secretRef ?? null,
+        requiresSecret: input.requiresSecret,
+        source: input.source,
+        trustTier: input.trustTier ?? null,
+        status,
+        createdByUserId,
+      });
+
+      let apId: string | null = null;
+      if (status === "pending_approval") {
+        const approval = await tx.approvalsSvc.create(companyId, {
+          type: "install_mcp_connector",
+          requestedByUserId: actor.actorType === "user" ? actor.actorId : null,
+          status: "pending",
+          payload: { connectorId: createdRow.id, serverName: createdRow.serverName },
+        });
+        apId = approval?.id ?? null;
+      }
+      return { connector: createdRow, approvalId: apId };
+    }));
+  } catch (err) {
+    // The race the pre-check above cannot close: another create committed the same
+    // (companyId, serverName) between our pre-check and our INSERT. Narrowly keyed
+    // on the connector-name constraint so an unrelated 23505 still surfaces as 500.
+    if (isConnectorNameUniqueViolation(err)) {
+      throw conflict(`A connector named "${input.serverName}" already exists`);
+    }
+    throw err;
   }
 
-  await logActivity({
-    companyId,
-    actorType: actor.actorType,
-    actorId: actor.actorId,
-    agentId: actor.agentId,
-    action: "mcp_connector.created",
-    entityType: "mcp_connector",
-    entityId: created.id,
-    details: { serverName: created.serverName, transport: created.transport, status },
-  });
+  // Best-effort AFTER commit (FINDING 4): the connector already exists, so a
+  // logging failure must NOT 500 the request — a retry would then hit the 409
+  // above. The connector row itself is the durable record; warn and move on.
+  try {
+    await logActivity({
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      action: "mcp_connector.created",
+      entityType: "mcp_connector",
+      entityId: created.id,
+      details: { serverName: created.serverName, transport: created.transport, status },
+    });
+  } catch (err) {
+    logger.warn(
+      { err, connectorId: created.id, companyId },
+      "mcp_connector.created activity log failed (connector already committed)",
+    );
+  }
 
   return { connector: created, approvalId };
 }

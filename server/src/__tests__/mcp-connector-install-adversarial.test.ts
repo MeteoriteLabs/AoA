@@ -183,7 +183,7 @@ function makeApp(actor: unknown, entries: McpConnectorCatalogEntry[] = CATALOG) 
   });
   app.use(
     "/api",
-    mcpConnectorRoutes({} as never, {
+    mcpConnectorRoutes({ transaction: (fn: any) => fn({}) } as never, {
       catalog: { load: async () => ({ entries: [...entries], stale: false }) },
     }),
   );
