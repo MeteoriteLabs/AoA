@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Loader2, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { DocxHtmlView } from "@/components/viewers/DocxHtmlView";
+import { ServerRenderedHtmlView } from "@/components/viewers/ServerRenderedHtmlView";
 import { memoryAssetsApi } from "../../../api/memoryAssets";
 import { queryKeys } from "../../../lib/queryKeys";
 import { ExtractsSidebar } from "../ExtractsSidebar";
@@ -43,7 +43,7 @@ export function DocxFileViewer({ companyId, assetId }: DocxFileViewerProps) {
           </Button>
         </div>
         <div className="flex-1 overflow-auto bg-background px-10 py-8">
-          <DocxHtmlView renderUrl={renderUrl} />
+          <ServerRenderedHtmlView renderUrl={renderUrl} />
         </div>
       </div>
       {asset.importJobId && (

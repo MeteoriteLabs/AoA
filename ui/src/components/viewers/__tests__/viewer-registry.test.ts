@@ -2,6 +2,8 @@ import { resolveViewer } from "../viewer-registry";
 
 const DOCX_MIME =
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+const XLSX_MIME =
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
 describe("resolveViewer", () => {
   it("detects markdown, json, csv, media, pdf, sandbox markup, mermaid, canvas, and downloads", () => {
@@ -56,6 +58,29 @@ describe("resolveViewer", () => {
     // Without an assetId the generic /render URL cannot be constructed, so the
     // honest result is a download card rather than a broken preview.
     const noAsset = resolveViewer({ contentType: DOCX_MIME, filename: "report.docx", assetUrl: "/blob/x" });
+    expect(noAsset.kind).toBe("download");
+  });
+
+  // P3.4 XLSX server render. Ablation: before the registry change, an XLSX MIME
+  // (or .xlsx) matched no branch and fell to `download`; asserting `xlsx` failed.
+  it("resolves XLSX by MIME to the xlsx kind with a generic render URL", () => {
+    const byMime = resolveViewer({ contentType: XLSX_MIME, filename: "sheet.xlsx", assetId: "asset-7" });
+    expect(byMime.kind).toBe("xlsx");
+    expect(byMime.renderUrl).toBe("/api/assets/asset-7/render");
+    // The raw-bytes URL stays the /content route (Download / open-externally).
+    expect(byMime.assetUrl).toBe("/api/assets/asset-7/content");
+    // A server-rendered spreadsheet is not text-fetched by the shared viewer.
+    expect(byMime.requiresTextFetch).toBe(false);
+  });
+
+  it("resolves a .xlsx extension (generic content type) to the xlsx kind", () => {
+    const byExt = resolveViewer({ contentType: "application/octet-stream", filename: "book.xlsx", assetId: "asset-7" });
+    expect(byExt.kind).toBe("xlsx");
+    expect(byExt.renderUrl).toBe("/api/assets/asset-7/render");
+  });
+
+  it("falls back to download for XLSX when no assetId is available to build the render URL", () => {
+    const noAsset = resolveViewer({ contentType: XLSX_MIME, filename: "sheet.xlsx", assetUrl: "/blob/x" });
     expect(noAsset.kind).toBe("download");
   });
 });

@@ -1,5 +1,5 @@
 import mammoth from "mammoth";
-import DOMPurify from "isomorphic-dompurify";
+import { sanitizeOfficeHtml } from "./office-html-sanitize.js";
 
 /** OOXML Word document MIME. The only type the DOCX render path converts. */
 export const DOCX_MIME =
@@ -23,36 +23,18 @@ export async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buf
  * convert+sanitize+wrap must not be duplicated, or the two surfaces can silently
  * drift in security posture.
  *
- * SECURITY — read this before touching the DOMPurify config:
- *
- * The safety of this output comes from DOMPurify's DEFAULT allow-list, NOT from
- * the FORBID_* lists below. DOMPurify v3 is allow-list-by-default: when no
- * `ALLOWED_TAGS`/`ALLOWED_ATTR` are passed, only a known-safe set of tags and
- * attributes survives and everything else is dropped — scripts, ALL event
- * handlers (not just the five named below), `javascript:` URLs, `<base>`,
- * `<meta>`, `<svg onload>`, unknown/custom elements, and so on. The
- * `FORBID_TAGS`/`FORBID_ATTR` lists only SUBTRACT from that default; they are
- * cosmetic defense-in-depth, NOT the security boundary — removing them would not
- * meaningfully change what gets through.
- *
- * Therefore:
- *  - Do NOT add `ADD_TAGS` / `ADD_ATTR` here. That REOPENS the allow-list and can
- *    let active content through. This is the one change that can turn a safe
- *    render into an XSS sink.
- *  - Do NOT treat "add one more entry to FORBID_*" as how you close a hole — the
- *    default allow-list already closes it; a new tag/attr is denied unless you
- *    explicitly allow it.
- *
- * The XSS suites (`docx-render.test.ts`, plus the route-level
- * `asset-render-xss` / `memory-asset-render-xss`) pin this by feeding payloads
- * that are NOT in the FORBID_* lists and asserting they are still neutralized.
+ * SECURITY: the convert output is sanitized by the SHARED `sanitizeOfficeHtml`
+ * helper (server/src/services/office-html-sanitize.ts) — the ONE DOMPurify
+ * allow-list-by-default config shared with the XLSX render path, so DOCX and
+ * XLSX cannot drift in security posture. The full invariant (why the DEFAULT
+ * allow-list is the real boundary and the FORBID_* lists are only cosmetic
+ * defense-in-depth, and why you must NEVER add ADD_TAGS/ADD_ATTR) lives in that
+ * module's docblock. The XSS suites (`docx-render.test.ts`, plus the route-level
+ * `asset-render-xss` / `memory-asset-render-xss`) pin it by feeding payloads that
+ * are NOT in the FORBID_* lists and asserting they are still neutralized.
  */
 export async function renderDocxBufferToSafeHtml(buffer: Buffer): Promise<string> {
   const result = await mammoth.convertToHtml({ buffer });
-  const sanitized = DOMPurify.sanitize(result.value, {
-    ALLOWED_URI_REGEXP: /^(?:https?|mailto|tel|#)/i,
-    FORBID_TAGS: ["script", "iframe", "object", "embed", "form"],
-    FORBID_ATTR: ["onerror", "onload", "onclick", "onmouseover", "onfocus"],
-  });
+  const sanitized = sanitizeOfficeHtml(result.value);
   return `<article class="docx-rendered">${sanitized}</article>`;
 }

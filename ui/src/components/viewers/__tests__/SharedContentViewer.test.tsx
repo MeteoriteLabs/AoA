@@ -273,4 +273,58 @@ describe("SharedContentViewer", () => {
       "/api/assets/asset-9/content",
     );
   });
+
+  // P3.4 XLSX: the xlsx kind uses the SAME server-rendered fetch-inject path as
+  // docx (one ServerRenderedHtmlView), fetching the /render URL that returns
+  // already-sanitized HTML and injecting it — under its own testid.
+  it("renders the xlsx viewer by fetching the render URL and injecting the HTML", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response('<div class="xlsx-rendered"><table><tbody><tr><td>Q4 Revenue</td></tr></tbody></table></div>', {
+        status: 200,
+      }),
+    );
+
+    renderViewer(
+      viewer({
+        kind: "xlsx",
+        label: "Spreadsheet preview",
+        assetUrl: "/api/assets/asset-7/content",
+        url: "/api/assets/asset-7/content",
+        renderUrl: "/api/assets/asset-7/render",
+        requiresTextFetch: false,
+        canShowSource: false,
+      }),
+      null,
+      "book.xlsx",
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("work-product-xlsx")).toHaveTextContent("Q4 Revenue"),
+    );
+    // Fetched the /render URL, not the raw /content bytes; the docx testid is absent.
+    expect(fetchSpy).toHaveBeenCalledWith("/api/assets/asset-7/render", { credentials: "include" });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("work-product-docx")).toBeNull();
+  });
+
+  it("falls back to a download card when the xlsx render URL is missing", () => {
+    renderViewer(
+      viewer({
+        kind: "xlsx",
+        label: "Spreadsheet preview",
+        assetUrl: "/api/assets/asset-7/content",
+        url: "/api/assets/asset-7/content",
+        renderUrl: null,
+        requiresTextFetch: false,
+        canShowSource: false,
+      }),
+      null,
+      "book.xlsx",
+    );
+    expect(screen.getByTestId("preview-output-download")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open" })).toHaveAttribute(
+      "href",
+      "/api/assets/asset-7/content",
+    );
+  });
 });

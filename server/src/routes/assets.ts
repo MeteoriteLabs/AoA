@@ -14,6 +14,7 @@ import { assetService, logActivity } from "../services/index.js";
 import { getSafeServingHeaders } from "../services/asset-serving-safety.js";
 import { sniffAndVerifyContentType } from "../services/asset-content-guard.js";
 import { DOCX_MIME, streamToBuffer, renderDocxBufferToSafeHtml } from "../services/docx-render.js";
+import { XLSX_MIME, renderXlsxBufferToSafeHtml } from "../services/xlsx-render.js";
 import { HttpError } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
@@ -419,14 +420,16 @@ export function assetRoutes(db: Db, storage: StorageService) {
     object.stream.pipe(res);
   });
 
-  // Generic server-rendered HTML preview for office documents (DOCX today).
-  // The convert+sanitize+wrap is the shared `renderDocxBufferToSafeHtml` helper
-  // (server/src/services/docx-render.ts) — the SINGLE source shared with the
-  // memory-scoped render route, so the two surfaces cannot drift in security
-  // posture. This route differs only in asset lookup + authorization: it takes
-  // the /content route's auth (the asset's own companyId gates access via
-  // assertCompanyAccess), so it is exactly as authorized as /content and no
-  // wider. Sanitization is server-side; the client injects already-sanitized HTML.
+  // Generic server-rendered HTML preview for office documents (DOCX + XLSX).
+  // The convert+sanitize+wrap lives in the shared render helpers
+  // (server/src/services/docx-render.ts / xlsx-render.ts), which both sanitize
+  // through the SAME allow-list-by-default config (office-html-sanitize.ts) so
+  // DOCX and XLSX cannot drift in security posture; DOCX additionally shares its
+  // helper with the memory-scoped render route. This route differs only in asset
+  // lookup + authorization: it takes the /content route's auth (the asset's own
+  // companyId gates access via assertCompanyAccess), so it is exactly as
+  // authorized as /content and no wider. Non-office types still 415. Sanitization
+  // is server-side; the client injects already-sanitized HTML.
   router.get("/assets/:assetId/render", async (req, res, next) => {
     try {
       const assetId = req.params.assetId as string;
@@ -437,7 +440,8 @@ export function assetRoutes(db: Db, storage: StorageService) {
       }
       assertCompanyAccess(req, asset.companyId);
 
-      if ((asset.contentType || "").toLowerCase() !== DOCX_MIME) {
+      const contentType = (asset.contentType || "").toLowerCase();
+      if (contentType !== DOCX_MIME && contentType !== XLSX_MIME) {
         res.status(415).json({
           error: `Render not supported for ${asset.contentType}. Try /content for the raw bytes.`,
         });
@@ -446,7 +450,10 @@ export function assetRoutes(db: Db, storage: StorageService) {
 
       const object = await storage.getObject(asset.companyId, asset.objectKey);
       const buffer = await streamToBuffer(object.stream);
-      const html = await renderDocxBufferToSafeHtml(buffer);
+      const html =
+        contentType === XLSX_MIME
+          ? await renderXlsxBufferToSafeHtml(buffer)
+          : await renderDocxBufferToSafeHtml(buffer);
 
       res.setHeader("Content-Type", "text/html; charset=utf-8");
       res.setHeader("X-Content-Type-Options", "nosniff");

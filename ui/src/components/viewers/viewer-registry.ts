@@ -20,11 +20,20 @@ export type ViewerKind =
   | "mermaid"
   | "canvas"
   | "docx"
+  | "xlsx"
   | "download";
 
-/** Word document MIME (OOXML). Server-rendered to sanitized HTML for preview. */
+/**
+ * Office MIMEs (OOXML) that server-render to sanitized HTML for preview. `docx`
+ * and `xlsx` are sibling kinds that share ONE fetch-inject client component
+ * (`ServerRenderedHtmlView`) and ONE `/render` endpoint mechanism — kept as
+ * distinct kinds so each carries its own honest viewer testid without an extra
+ * discriminator, and so the shipped `docx` resolution/tests stay untouched.
+ */
 const DOCX_MIME =
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+const XLSX_MIME =
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
 export interface ViewerResolution {
   kind: ViewerKind;
@@ -38,8 +47,9 @@ export interface ViewerResolution {
   /** Field delimiter for the `table` kind: "," for CSV, "\t" for TSV. */
   delimiter?: "," | "\t";
   /**
-   * Server render URL for the `docx` kind — the generic `/api/assets/:id/render`
-   * endpoint that returns already-sanitized HTML. Only set for `docx`.
+   * Server render URL for the server-rendered office kinds (`docx`, `xlsx`) — the
+   * generic `/api/assets/:id/render` endpoint that returns already-sanitized
+   * HTML. Only set for `docx`/`xlsx`.
    */
   renderUrl?: string | null;
 }
@@ -213,14 +223,30 @@ export function resolveViewer(output: ViewerInput): ViewerResolution {
     return binaryViewer("pdf", "PDF preview", assetUrl, canOpenDirectly);
   }
 
-  // DOCX previews via a server-side render (mammoth → sanitized HTML). The
-  // shared viewer needs a /render URL, which is built from the assetId. Without
+  // DOCX/XLSX preview via a server-side render (mammoth / exceljs → sanitized
+  // HTML). The shared viewer needs a /render URL, built from the assetId. Without
   // an assetId we cannot construct it, so fall through to an honest download.
   if (contentType === DOCX_MIME || extension === "docx") {
     if (output.assetId) {
       return {
         kind: "docx",
         label: "Document preview",
+        assetUrl,
+        url: assetUrl,
+        canOpenDirectly,
+        shouldExecuteInBrowser: false,
+        requiresTextFetch: false,
+        canShowSource: false,
+        renderUrl: `/api/assets/${output.assetId}/render`,
+      };
+    }
+  }
+
+  if (contentType === XLSX_MIME || extension === "xlsx") {
+    if (output.assetId) {
+      return {
+        kind: "xlsx",
+        label: "Spreadsheet preview",
         assetUrl,
         url: assetUrl,
         canOpenDirectly,
