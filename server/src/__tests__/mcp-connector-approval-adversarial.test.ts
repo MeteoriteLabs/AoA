@@ -607,10 +607,10 @@ describe("resubmit cannot rewrite an install_mcp_connector payload (FIXED in Tas
     expect(sets[0]).toMatchObject({ status: "pending", payload: { agentId: "a1" } });
   });
 
-  it("END TO END: the route now surfaces 422 for the MCP-key actor that used to get 200", async () => {
-    // The resubmit ROUTE still has no `assertBoard` — an `mcp` API key reaches it
-    // (see [ESC-2]). The service-level denylist is what closes the connector
-    // vector regardless of who knocks.
+  it("END TO END: the route 403s a non-board MCP key BEFORE the service denylist even runs (FU-18)", async () => {
+    // Post-FU-18 the resubmit route is gated to board-OR-requesting-agent, so an
+    // `mcp` API key is refused at the route (403) and never reaches the service.
+    // Defense in depth: even the service would 422 install_mcp_connector.
     mocks.svcGetById.mockResolvedValue(installApproval({ status: "revision_requested" }));
     mocks.svcResubmit.mockRejectedValue(
       Object.assign(new Error("System-internal install_mcp_connector approvals cannot be resubmitted"), {
@@ -620,25 +620,54 @@ describe("resubmit cannot rewrite an install_mcp_connector payload (FIXED in Tas
     const res = await request(makeApp(mcpKeyActor))
       .post(`/api/approvals/${APPROVAL_ID}/resubmit`)
       .send({ payload: { connectorId: EVIL_CONNECTOR_ID, serverName: "notion" } });
+    expect(res.status).toBe(403);
+    expect(mocks.svcResubmit).not.toHaveBeenCalled();
+  });
+
+  it("END TO END: a BOARD actor reaches the service, which 422s the install_mcp_connector resubmit", async () => {
+    // The service-level denylist is what closes the connector vector for the
+    // principals the route DOES admit (board / requesting agent).
+    mocks.svcGetById.mockResolvedValue(installApproval({ status: "revision_requested" }));
+    mocks.svcResubmit.mockRejectedValue(
+      Object.assign(new Error("System-internal install_mcp_connector approvals cannot be resubmitted"), {
+        status: 422,
+      }),
+    );
+    const res = await request(makeApp(boardActor(TEAM_MEMBER)))
+      .post(`/api/approvals/${APPROVAL_ID}/resubmit`)
+      .send({ payload: { connectorId: EVIL_CONNECTOR_ID, serverName: "notion" } });
     expect(res.status).toBe(422);
   });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// [ESC-2] the resubmit ROUTE itself is still unguarded
+// [ESC-2] — CLOSED (FU-18). The resubmit ROUTE is now gated to "board OR the
+// requesting agent".
+//
+// The route previously carried only `assertCompanyAccess` plus ONE actor check
+// that fired only for `req.actor.type === "agent"`, so a same-company `mcp`
+// API-key actor reached the handler and could rewrite `payload` wholesale. The
+// fix is NOT a blanket `assertBoard` (that would 403 the agent-resubmits-its-own
+// path this route deliberately supports); it is "board OR requesting agent".
+//
+// The two blocks that used to CHARACTERIZE the buggy 200s are now real 403
+// assertions, and the former `it.fails` DESIRED case is a real assertion.
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe("[ESC-2] POST /approvals/:id/resubmit has no board gate at all", () => {
-  it("CHARACTERIZATION: an MCP API key — not a board user — reaches the handler", async () => {
+describe("[ESC-2] POST /approvals/:id/resubmit is board-OR-requesting-agent (FU-18)", () => {
+  it("FIXED: an MCP API key — not a board user — is now 403 and never reaches the service", async () => {
     mocks.svcGetById.mockResolvedValue(installApproval({ type: "hire_agent", status: "revision_requested" }));
     const res = await request(makeApp(mcpKeyActor))
       .post(`/api/approvals/${APPROVAL_ID}/resubmit`)
       .send({ payload: { agentId: "a1" } });
-    expect(res.status).toBe(200);
-    expect(mocks.svcResubmit).toHaveBeenCalledWith(APPROVAL_ID, COMPANY, { agentId: "a1" });
+    expect(res.status).toBe(403);
+    expect(mocks.svcResubmit).not.toHaveBeenCalled();
   });
 
-  it("CHARACTERIZATION: a plain team_member reaches it too", async () => {
+  it("a board team_member may still resubmit (board OR requesting agent — role is not narrowed here)", async () => {
+    // Resubmit mirrors the sibling approve/reject board gate: any board member
+    // passes. FU-17's founder/team_lead narrowing is specific to
+    // install_mcp_connector, which is separately denylisted from resubmit (422).
     mocks.svcGetById.mockResolvedValue(installApproval({ type: "hire_agent", status: "revision_requested" }));
     const res = await request(makeApp(boardActor(TEAM_MEMBER)))
       .post(`/api/approvals/${APPROVAL_ID}/resubmit`)
@@ -647,7 +676,7 @@ describe("[ESC-2] POST /approvals/:id/resubmit has no board gate at all", () => 
     expect(mocks.getEffectiveRole).not.toHaveBeenCalled();
   });
 
-  it("CHARACTERIZATION: only a NON-requesting agent is refused — that is the sole actor check", async () => {
+  it("only the requesting agent passes among agents — a NON-requesting agent is refused", async () => {
     mocks.svcGetById.mockResolvedValue(
       installApproval({ type: "hire_agent", status: "revision_requested", requestedByAgentId: "agent-1" }),
     );
@@ -657,6 +686,7 @@ describe("[ESC-2] POST /approvals/:id/resubmit has no board gate at all", () => 
       .post(`/api/approvals/${APPROVAL_ID}/resubmit`)
       .send({ payload: {} });
     expect(res.status).toBe(403);
+    expect(mocks.svcResubmit).not.toHaveBeenCalled();
   });
 
   it("CONTROL: cross-company access IS still enforced on this route", async () => {
@@ -667,12 +697,7 @@ describe("[ESC-2] POST /approvals/:id/resubmit has no board gate at all", () => 
     expect(mocks.svcResubmit).not.toHaveBeenCalled();
   });
 
-  // NOTE FOR THE FIXER: a bare `assertBoard(req)` here would be WRONG — it would
-  // 403 the requesting AGENT, which this route deliberately supports (the check
-  // immediately below it exists only to scope agents to their own approvals). The
-  // right shape is "board OR the requesting agent". That is why this is
-  // escalated rather than patched. See [ESC-2].
-  it.fails("[ESC-2] DESIRED: a non-board, non-requesting-agent principal (MCP key) is refused", async () => {
+  it("[ESC-2] FIXED: a non-board, non-requesting-agent principal (MCP key) is refused", async () => {
     mocks.svcGetById.mockResolvedValue(installApproval({ type: "hire_agent", status: "revision_requested" }));
     const res = await request(makeApp(mcpKeyActor))
       .post(`/api/approvals/${APPROVAL_ID}/resubmit`)

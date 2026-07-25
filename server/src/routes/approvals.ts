@@ -433,8 +433,21 @@ export function approvalRoutes(db: Db) {
     }
     assertCompanyAccess(req, existing.companyId);
 
-    if (req.actor.type === "agent" && req.actor.agentId !== existing.requestedByAgentId) {
-      res.status(403).json({ error: "Only requesting agent can resubmit this approval" });
+    // FU-18 — resubmit must be gated to "board OR the requesting agent".
+    // `assertCompanyAccess` above only rejects `none` (401) and cross-company
+    // agent/mcp keys; a same-company `mcp` API-key actor — not a board user at
+    // all — otherwise reaches the handler and can rewrite `payload` wholesale
+    // (the schema is `z.record(z.unknown())`). The sibling approve/reject/
+    // request-revision routes run `assertBoard`, but a blanket `assertBoard`
+    // here would 403 the agent-resubmits-its-own-approval path this route
+    // deliberately supports. So allow a board member OR the agent that
+    // originally requested the approval; refuse every other principal (mcp key,
+    // foreign agent).
+    const isBoard = req.actor.type === "board";
+    const isRequestingAgent =
+      req.actor.type === "agent" && req.actor.agentId === existing.requestedByAgentId;
+    if (!isBoard && !isRequestingAgent) {
+      res.status(403).json({ error: "Only the board or requesting agent can resubmit this approval" });
       return;
     }
 
