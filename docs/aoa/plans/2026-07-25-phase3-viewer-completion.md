@@ -45,6 +45,21 @@
 
 Order: **P3.1 → P3.2 → P3.3 → P3.4 → P3.5 → P3.6 → P3.7.**
 
+> **Progress (2026-07-25):** ✅ **P3.1** (CSV/TSV, `fdd4a259e`+`1ce190820` — sniffer
+> dropped, TSV live via known delimiter, BOM fix) · ✅ **P3.5** (workspace
+> mode-preview routed through the shared viewer, `5c1c36dfb`) · ✅ **P3.6**
+> (inline-eligibility policy documented + exclusions pinned; no logic change —
+> divergence is intentional because html/svg render under `allow-scripts`,
+> `748aed50e`) · ◑ **P3.7** (render coverage for code/csv/tsv/json/canvas done
+> `620e151af`; Office-resolution assertions land with P3.3/P3.4; mermaid-render
+> deferred — resolution already covered).
+>
+> **Held — subagents blocked org-side (no independent review available):**
+> **P3.2** (adds highlight.js/lowlight), **P3.4** (adds sheetjs server-side), and
+> **P3.3** (de-silo DOCX; no new dep but touches the shared viewer + server
+> route). These are the dependency-adding / review-sensitive tasks; awaiting a
+> product-owner call on proceeding inline without review vs. waiting for subagents.
+
 ---
 
 ## P3.1 — Robust CSV/TSV parsing — 🔄 IN PROGRESS
