@@ -403,3 +403,37 @@ already render. Real deployments set a signing secret (both names are provisione
 `pnpm aoa onboard`), so this bites dev/misconfigured instances — but a silently-dead Install button
 is exactly the "capability vanishes with no explanation" failure this workstream exists to prevent.
 Note: HTTP connectors are unaffected (they need no consent token).
+
+---
+
+## Live round-trip PROVEN (2026-07-25)
+
+A real heartbeat agent run (claude_local, run `a8fe4d6b`) called an installed filesystem
+connector end-to-end: `list_allowed_directories` → `list_directory` → `read_text_file`, and
+got back the exact file contents (`"hello from the connector round-trip test — written
+2026-07-25"`). This proves the whole chain live: install → per-agent assign → agent run →
+MCP config built (FU-21 path) → env scrubbed (FU-23: `mcp__aoa__*` bridge AND
+`mcp__filesystem__*` connector both present) → npx server spawned → connected → tool called →
+real data returned. Not a test — a live run.
+
+### FU-25 — agents can't call connector tools unattended without dangerouslySkipPermissions · P2
+The FIRST run (`f2e1a585`) had the connector fully delivered — `mcp__filesystem__*` tools were
+in the session — but every tool call returned "Claude requested permissions … but you haven't
+granted it yet", and the agent burned the whole run fighting the permission bridge (env
+expansion + curl also blocked) and exited without doing the task. Setting
+`adapterConfig.dangerouslySkipPermissions: true` on the agent fixed it (run `a8fe4d6b`
+succeeded). So an out-of-box agent with connectors assigned cannot USE them in an unattended
+heartbeat run unless permissions are pre-granted or the approval/runtime-permission bridge
+(W5b) actually surfaces the request to a human. Worth a clear default/UX: either connectors
+imply their tool names are pre-approved for the assigned agent, or the permission prompt must
+route to the founder. Today a founder assigns a connector, the agent silently can't call it,
+and the only evidence is buried in the run log.
+
+### Observation (not a bug) — stdio connectors are scoped to the agent's WORKSPACE, not their configured path
+The filesystem connector was installed with `args=[…, "C:\Users\TK\.aoa\fs-probe"]`, but
+`list_allowed_directories` returned the agent's workspace dir, not fs-probe. This is the MCP
+"roots" protocol: claude tells the server its root is the run's workspace. Net effect: a
+filesystem/stdio connector operates on the agent's workspace regardless of the path in its
+args. Arguably safer (scoped per-run), but surprising — a founder pointing filesystem at
+`/data` would find the agent sees its workspace instead. Document it, or pass the configured
+path through as an explicit root.
