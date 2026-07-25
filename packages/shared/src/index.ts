@@ -1207,6 +1207,7 @@ export {
   MarketplaceCatalogItemSchema,
   MarketplaceCatalogFileSchema,
   MarketplacePackageSchema,
+  parseMarketplaceCatalog,
   isSchemaVersionSupported,
   MARKETPLACE_SETTINGS_DEFAULTS,
   type MarketplaceCategory,

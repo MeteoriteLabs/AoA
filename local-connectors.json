@@ -46,7 +46,7 @@
       "serverName": "filesystem",
       "transport": "stdio",
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:\\Users\\TK\\.aoa\\fs-probe"],
       "requiresSecret": false,
       "trust": { "tier": "verified" }
     },

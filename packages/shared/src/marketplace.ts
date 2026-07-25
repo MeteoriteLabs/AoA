@@ -212,6 +212,87 @@ export const MarketplaceCatalogFileSchema = z.object({
 export type MarketplaceCatalogFile = z.infer<typeof MarketplaceCatalogFileSchema>;
 
 /**
+ * Per-item, drop-and-warn parser for catalog.json — the forward-compat property
+ * `MarketplaceCatalogFileSchema.parse()` lacks.
+ *
+ * WHY (FU-14): `MarketplaceCatalogItemSchema.type` is a hard enum. A whole-array
+ * `.parse()` rejects the ENTIRE file the moment ONE item carries an unknown `type`
+ * (e.g. a future `"connector"`/`"workflow"` kind) or any other unparseable shape.
+ * The sync failure path preserves the previous cache, so a single new item type
+ * would silently freeze the catalog FOREVER on every older self-hosted instance.
+ * This parser mirrors `parseMcpConnectorCatalog` (mcp-connector-catalog.ts): it
+ * validates the ENVELOPE, then `safeParse`s each item independently, dropping the
+ * bad ones by id instead of failing the file. Items that DO parse are validated at
+ * full strength (a known-`type` item with a bad shape is still dropped, never
+ * accepted malformed) — the category/tag enums are per-item fields, so a bad
+ * category or tag drops only that item.
+ *
+ * Return shape mirrors the connector parser's `malformed` concept:
+ * - `malformed: true` ⇔ the envelope itself is unintelligible: `input` is not a
+ *   non-null object, or `items` is absent / not an array. `catalog` is `null` and
+ *   `dropped` is `[]`. Callers should treat this like a fetch failure and KEEP the
+ *   last known-good cache.
+ * - `malformed: false` ⇔ we read an `items` array (even a legitimately empty one).
+ *   `catalog` is a `MarketplaceCatalogFile` whose `items` are the survivors and
+ *   whose `itemCount` is recomputed to `items.length` (honest count of what is
+ *   actually served). `dropped` lists the ids (or `"<unidentified>"`) of items
+ *   that failed per-item validation. Never throws, for any input.
+ *
+ * NOTE: this parser does NOT gate on `schemaVersion` — that stays the caller's
+ * decision via `isSchemaVersionSupported`, exactly as before.
+ */
+export function parseMarketplaceCatalog(input: unknown): {
+  catalog: MarketplaceCatalogFile | null;
+  dropped: string[];
+  malformed: boolean;
+} {
+  if (typeof input !== "object" || input === null) {
+    return { catalog: null, dropped: [], malformed: true };
+  }
+  const envelope = input as {
+    schemaVersion?: unknown;
+    generatedAt?: unknown;
+    itemCount?: unknown;
+    items?: unknown;
+  };
+  if (!Array.isArray(envelope.items)) {
+    return { catalog: null, dropped: [], malformed: true };
+  }
+
+  const items: MarketplaceCatalogItem[] = [];
+  const dropped: string[] = [];
+  for (const raw of envelope.items) {
+    const parsed = MarketplaceCatalogItemSchema.safeParse(raw);
+    if (parsed.success) {
+      items.push(parsed.data);
+    } else {
+      const id =
+        typeof raw === "object" && raw !== null
+          ? (raw as { id?: unknown }).id
+          : undefined;
+      dropped.push(typeof id === "string" ? id : "<unidentified>");
+    }
+  }
+
+  // The envelope metadata is best-effort: a future schema that reshapes or omits
+  // these must not blank the shelf. A non-string schemaVersion degrades to "" —
+  // `isSchemaVersionSupported("")` is false, so the caller keeps its cache rather
+  // than serving an unversioned file. `itemCount` is recomputed from survivors.
+  const schemaVersion =
+    typeof envelope.schemaVersion === "string" ? envelope.schemaVersion : "";
+  const generatedAt =
+    typeof envelope.generatedAt === "string"
+      ? envelope.generatedAt
+      : new Date(0).toISOString();
+
+  return {
+    catalog: { schemaVersion, generatedAt, itemCount: items.length, items },
+    dropped,
+    malformed: false,
+  };
+}
+
+/**
  * A "package" is a synthetic grouping of catalog items that share a GitHub
  * source repo (or an explicit `packageId`). Synthesis rule: items grouped by
  * `owner/repo` extracted from `source.url`, with threshold ≥ 2 items.
@@ -249,9 +330,46 @@ export interface CatalogSyncStatus {
   itemCount: number;
 }
 
+function parseSemver(v: string): [number, number, number] | null {
+  const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(v.trim());
+  if (!m) return null;
+  return [Number(m[1]), Number(m[2]), Number(m[3])];
+}
+
+function compareSemver(a: [number, number, number], b: [number, number, number]): number {
+  for (let i = 0; i < 3; i++) {
+    if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1;
+  }
+  return 0;
+}
+
+/**
+ * Whether a CDN catalog's `schemaVersion` is one this client can serve.
+ *
+ * INTENT (unchanged): reject a version we cannot understand — a major bump signals
+ * breaking, non-backward-compatible changes and must still be refused (the sync
+ * path then keeps the last known-good cache).
+ *
+ * FU-14 loosening: the previous strict equality (`=== "1.0.0"`) made ANY bump —
+ * including an additive, backward-compatible minor/patch — freeze the catalog on
+ * every older instance, the envelope-level twin of the per-item freeze this file
+ * fixes. Now that `parseMarketplaceCatalog` drops unknown items rather than the
+ * whole file, an additive minor bump is safe to accept: unknown item shapes fall
+ * out per-item, known items keep working. So we accept any version in the SAME
+ * MAJOR band as the supported range and at or above the MIN floor. `2.0.0` (major
+ * bump = breaking) is still rejected; `1.1.0` (additive) is now accepted; `0.9.0`
+ * (below the floor) is rejected.
+ */
 export function isSchemaVersionSupported(version: string): boolean {
-  // Strict V1: only 1.0.0 supported.
-  return version === CATALOG_SCHEMA_VERSION_MIN;
+  const parsed = parseSemver(version);
+  if (!parsed) return false;
+  const min = parseSemver(CATALOG_SCHEMA_VERSION_MIN);
+  const max = parseSemver(CATALOG_SCHEMA_VERSION_MAX);
+  if (!min || !max) return false;
+  // Same major as the supported band (breaking major bumps rejected)...
+  if (parsed[0] !== max[0]) return false;
+  // ...and not below the MIN floor.
+  return compareSemver(parsed, min) >= 0;
 }
 
 export interface MarketplaceSettings {

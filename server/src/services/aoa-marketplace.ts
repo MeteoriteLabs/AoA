@@ -12,7 +12,7 @@ import { eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { marketplaceCatalogCache } from "@armyofagents/db";
 import {
-  MarketplaceCatalogFileSchema,
+  parseMarketplaceCatalog,
   isSchemaVersionSupported,
   type CatalogSyncStatus,
   type MarketplaceCatalogFile,
@@ -54,12 +54,23 @@ export async function loadCachedCatalog(db: Db): Promise<MarketplaceCatalogFile 
     itemCount: row.itemCount,
     items: (row.catalogJson as { items?: unknown }).items ?? [],
   };
-  const parsed = MarketplaceCatalogFileSchema.safeParse(candidate);
-  if (!parsed.success) {
-    logger.warn({ err: parsed.error }, "marketplace: cached catalog failed schema validation (loadCachedCatalog)");
+  // FU-14: per-item parse so a single drifted cached item (e.g. written by a newer
+  // app version) drops itself instead of nulling the whole cache and forcing a fallback.
+  const { catalog, dropped, malformed } = parseMarketplaceCatalog(candidate);
+  if (malformed || !catalog) {
+    logger.warn(
+      { schemaVersion: row.schemaVersion },
+      "marketplace: cached catalog envelope malformed (loadCachedCatalog)",
+    );
     return null;
   }
-  return parsed.data;
+  if (dropped.length > 0) {
+    logger.warn(
+      { dropped },
+      `marketplace: dropped ${dropped.length} unparseable cached item(s) (loadCachedCatalog)`,
+    );
+  }
+  return catalog;
 }
 
 export class MarketplaceCatalogService {
@@ -104,7 +115,32 @@ export class MarketplaceCatalogService {
         throw new Error(`HTTP ${res.status}`);
       }
       const json = await res.json();
-      const parsed = MarketplaceCatalogFileSchema.parse(json);
+
+      // FU-14: per-item, drop-and-warn parse. A single unknown-`type` (or otherwise
+      // unparseable) item must NOT fail the whole file — that would preserve the old
+      // cache forever on every older instance the moment the CDN publishes something
+      // this build doesn't understand. Only a broken ENVELOPE is a fetch failure.
+      const { catalog: parsed, dropped, malformed } = parseMarketplaceCatalog(json);
+      if (malformed || !parsed) {
+        // Unintelligible envelope (not an object, or `items` missing/not-an-array):
+        // NOT an answer about the catalog's contents. Keep the last known-good cache.
+        throw new Error("Malformed catalog envelope");
+      }
+      // kept-ZERO but dropped-MANY is not a real "empty catalog" answer — every item
+      // failed to parse (a schema we tighten later, or a genuinely malformed publish).
+      // Treat it like a malformed envelope: keep the last known-good cache rather than
+      // blanking the shelf. A legitimately empty catalog (dropped === 0) still replaces.
+      if (parsed.items.length === 0 && dropped.length > 0) {
+        throw new Error(
+          `All ${dropped.length} catalog item(s) were unparseable`,
+        );
+      }
+      if (dropped.length > 0) {
+        logger.warn(
+          { dropped, kept: parsed.items.length },
+          `marketplace: dropped ${dropped.length} unparseable catalog item(s)`,
+        );
+      }
       if (!isSchemaVersionSupported(parsed.schemaVersion)) {
         throw new Error(
           `Unsupported catalog schemaVersion: ${parsed.schemaVersion}`,
@@ -151,12 +187,23 @@ export class MarketplaceCatalogService {
       itemCount: row.itemCount,
       items: (row.catalogJson as { items?: unknown }).items ?? [],
     };
-    const parsed = MarketplaceCatalogFileSchema.safeParse(candidate);
-    if (!parsed.success) {
-      logger.warn({ err: parsed.error }, "marketplace: cached catalog failed schema validation");
+    // FU-14: per-item parse so one drifted cached item drops itself instead of
+    // nulling the whole cache (which readCache callers treat as "no catalog" → 503).
+    const { catalog, dropped, malformed } = parseMarketplaceCatalog(candidate);
+    if (malformed || !catalog) {
+      logger.warn(
+        { schemaVersion: row.schemaVersion },
+        "marketplace: cached catalog envelope malformed",
+      );
       return null;
     }
-    return parsed.data;
+    if (dropped.length > 0) {
+      logger.warn(
+        { dropped },
+        `marketplace: dropped ${dropped.length} unparseable cached item(s)`,
+      );
+    }
+    return catalog;
   }
 
   /**
