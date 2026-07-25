@@ -384,3 +384,22 @@ clean HEAD.
 - **In-file catalog marker key is fatal on opencode** — an unrecognised top-level key makes
   opencode reject the *entire* config, loading zero MCP servers including AoA's bridge.
   Hence the sidecar manifest, stored outside the agent cwd.
+
+### FU-24 — shelf offers uninstallable unverified-stdio connectors when the signing secret is unset · P2
+Found in live verification 2026-07-25. The shelf projection (`routes/mcp-connectors.ts:401-418`)
+correctly omits `consentToken` when `resolveConsentSecret()` throws (neither `BETTER_AUTH_SECRET`
+nor `AOA_AGENT_JWT_SECRET` set) — it logs a warning and degrades. But `installable` stays `true`
+and `consentRequired` stays `true`, so the UI renders an enabled Install button + consent dialog
+for an unverified stdio entry that **can never install**: the founder confirms, the request goes
+out with no token, and the install route 400s ("Review the exact command … and confirm it").
+The founder sees a dead button and an unexplained failure; the real reason (no server signing
+secret) is only in a log line nobody reads.
+
+Fix options: (a) when `secret` is null, mark consent-requiring entries `installable: false` with
+an `unavailableReason` naming the misconfiguration, so the shelf shows them as unavailable rather
+than falsely actionable; or (b) surface a single shelf-level banner "consent-gated installs are
+unavailable: server signing secret not configured". (a) is consistent with how D7-refused entries
+already render. Real deployments set a signing secret (both names are provisioned by
+`pnpm aoa onboard`), so this bites dev/misconfigured instances — but a silently-dead Install button
+is exactly the "capability vanishes with no explanation" failure this workstream exists to prevent.
+Note: HTTP connectors are unaffected (they need no consent token).
