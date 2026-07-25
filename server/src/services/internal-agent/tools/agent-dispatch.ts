@@ -19,13 +19,59 @@
 // Humans always reset hopCount to 0; only agent→agent edges count toward the
 // cap.
 
-import { eq } from "drizzle-orm";
-import { agents, agentWakeupRequests } from "@armyofagents/db";
+import { and, eq } from "drizzle-orm";
+import { agents, agentWakeupRequests, discussions, issues } from "@armyofagents/db";
 import type { AgentTool } from "../types.js";
 import { buildConveneAgentIdempotencyKey } from "./thread-action-keys.js";
 
 /** Matches thread-events.ts MAX_HOP_COUNT. Keep in sync. */
 const MAX_HOP_COUNT = 3;
+
+// SECURITY (Layer A — sanitize at the source). The caller FULLY controls the
+// `context` object, and its keys are written verbatim into the wakeup payload
+// (direct insert) or the queued thread action's `context` (controller-action-
+// gate). The dispatcher later spreads that payload into `runAoaAgent`, so any
+// trust/scope key riding inside `context` — most dangerously `companyId` —
+// would override the trusted, server-set run company and let a company-A agent
+// operate in company B (cross-tenant escalation). Build the forwarded context
+// from an ALLOWLIST of the content-reference keys this tool legitimately
+// carries; every other key (companyId, source, effectiveAutonomy, wakeupId,
+// resolvedModel, continuation keys, userId, agentId, …) is DROPPED. Allowlist
+// (not a denylist) so the next trust key someone adds is dropped by default.
+//
+// The allowlisted set mirrors what the parallel @mention dispatch path enqueues
+// (thread-events.ts: threadId, mentionEntryId, hopCount) plus the task/entry
+// reference keys the crew runner + trigger prompt read downstream. threadId and
+// issueId are additionally ownership-validated below before they can enter the
+// payload. hopCount is auto-managed (always overwritten with incomingHopCount+1)
+// and is therefore never taken from the caller.
+const FORWARDABLE_CONTEXT_KEYS = [
+  "threadId",
+  "issueId",
+  "entryId",
+  "mentionEntryId",
+  "parentEntryId",
+] as const;
+
+/**
+ * Build the wakeup/thread-action payload from ONLY the allowlisted content keys
+ * of the caller-supplied context, then stamp the server-managed hopCount. A
+ * `companyId` (or any other non-allowlisted key) in `context` is dropped and can
+ * never reach the runner's trigger payload.
+ */
+function buildForwardedContext(
+  context: Record<string, unknown> | undefined,
+  hopCount: number,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (context) {
+    for (const key of FORWARDABLE_CONTEXT_KEYS) {
+      if (context[key] !== undefined) out[key] = context[key];
+    }
+  }
+  out.hopCount = hopCount;
+  return out;
+}
 
 export const agentDispatchTool: AgentTool = {
   name: "agent.dispatch",
@@ -84,6 +130,46 @@ export const agentDispatchTool: AgentTool = {
     // Resolve the target agent — required to enforce the cross-company guard
     // and to confirm the agent exists before queuing a wakeup row.
     const threadId = (context?.threadId as string | undefined) ?? null;
+    const issueId = (context?.issueId as string | undefined) ?? null;
+
+    // SECURITY — cross-tenant guard at the SOURCE (root cause). The caller
+    // controls `context`, and any entity ids inside it are written verbatim
+    // into the wakeup payload (or the queued thread action) and later consumed
+    // by the dispatcher's thread-flag gate, the task-claim path, and the crew
+    // context builders. Validate that a caller-supplied threadId / issueId
+    // resolves WITHIN the caller's own company BEFORE it can enter the payload,
+    // so a foreign id can never be enqueued. Mirrors the "Cross-company
+    // dispatch forbidden" guard applied to the target agent below.
+    if (threadId) {
+      const [thread] = await ctx.db
+        .select({ id: discussions.id })
+        .from(discussions)
+        .where(and(eq(discussions.id, threadId), eq(discussions.companyId, ctx.companyId)))
+        .limit(1);
+      if (!thread) {
+        return {
+          success: false,
+          data: null,
+          summary: "Cross-company dispatch forbidden: threadId does not belong to your company",
+          error: "CROSS_COMPANY_FORBIDDEN",
+        };
+      }
+    }
+    if (issueId) {
+      const [issue] = await ctx.db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, ctx.companyId)))
+        .limit(1);
+      if (!issue) {
+        return {
+          success: false,
+          data: null,
+          summary: "Cross-company dispatch forbidden: issueId does not belong to your company",
+          error: "CROSS_COMPANY_FORBIDDEN",
+        };
+      }
+    }
 
     if (ctx.discussionRunMode === "controller_action_gate") {
       if (!ctx.runId) {
@@ -113,10 +199,9 @@ export const agentDispatchTool: AgentTool = {
         payload: {
           targetAgentId: agentId,
           reason: reason ?? "agent_dispatch",
-          context: {
-            ...(context ?? {}),
-            hopCount: incomingHopCount + 1,
-          },
+          // Layer A: allowlist-sanitized — a caller-supplied companyId (or any
+          // other trust/scope key) never enters the queued action's context.
+          context: buildForwardedContext(context, incomingHopCount + 1),
         },
         // hopCount is intentionally NOT folded into the key: the payload's
         // incomingHopCount+1 can differ across re-proposes, so including it would
@@ -186,10 +271,10 @@ export const agentDispatchTool: AgentTool = {
         agentId,
         source: "agent.dispatch",
         reason: reason ?? "agent_dispatch",
-        payload: {
-          ...(context ?? {}),
-          hopCount: incomingHopCount + 1,
-        } as Record<string, unknown>,
+        // Layer A: allowlist-sanitized — a caller-supplied companyId (or any
+        // other trust/scope key) never enters the wakeup payload, so the
+        // dispatcher's spread can't redirect the run into another tenant.
+        payload: buildForwardedContext(context, incomingHopCount + 1) as Record<string, unknown>,
         dedupKey,
         status: "queued",
       })

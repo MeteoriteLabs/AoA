@@ -220,11 +220,23 @@ export function Skills() {
         queryKey: queryKeys.companySkills.list(selectedCompanyId!),
       });
       if (result.imported[0]) navigate(skillRoute(result.imported[0].id));
-      pushToast({
-        tone: "success",
-        title: "Skills imported",
-        body: `${result.imported.length} skill${result.imported.length === 1 ? "" : "s"} added.`,
-      });
+      const refused = result.refusedCustomized ?? [];
+      // T2.9 — an import that only hit skills with local edits changed nothing.
+      // Saying "0 skills added" in a success toast would read as a no-op success.
+      if (result.imported.length === 0 && refused.length > 0) {
+        pushToast({
+          tone: "warn",
+          title: "Your edits were kept",
+          body: `${refused.length} skill${refused.length === 1 ? "" : "s"} skipped — `
+            + "delete and re-import to take the upstream version.",
+        });
+      } else {
+        pushToast({
+          tone: "success",
+          title: "Skills imported",
+          body: `${result.imported.length} skill${result.imported.length === 1 ? "" : "s"} added.`,
+        });
+      }
       if (result.warnings[0])
         pushToast({ tone: "warn", title: "Import warnings", body: result.warnings[0] });
       setAddSkillOpen(false);

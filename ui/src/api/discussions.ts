@@ -4,6 +4,7 @@ import type {
   UpdateDiscussion,
   ApproveItems,
   CreateAnnotation,
+  ShowRef,
 } from "@armyofagents/shared";
 import { api } from "./client";
 
@@ -122,6 +123,12 @@ export interface DiscussionEntry {
   annotations: Annotation[];
   /** Phase E2: attachments linked via discussion_entry_attachments. */
   attachments?: DiscussionEntryAttachment[];
+  /**
+   * Viewer Upgrade Phase 7B: navigational ShowRefs carried by crew run-result
+   * entries. Only run-result delivery entries populate this; all other entries
+   * omit it.
+   */
+  outputRefs?: ShowRef[] | null;
   /**
    * Phase E2: number of nested replies (parentEntryId === this.id).
    * Computed client-side from the entries list when not provided by the server.

@@ -426,7 +426,15 @@ export function createMarketplaceInstallRouter(deps: MarketplaceInstallRoutesDep
     const { teamId } = req.params;
     try {
       const result = await uninstallTeam({ db, companyId, teamId });
-      res.json({ success: true, deletedAgentIds: result.deletedAgentIds });
+      // D23: protected AoA agents are detached, not destroyed. Report them
+      // explicitly — a 200 that silently kept members the caller asked to
+      // remove would be the failure mode that made refusing look attractive.
+      res.json({
+        success: true,
+        deletedAgentIds: result.deletedAgentIds,
+        retainedAgentIds: result.retainedAgents.map((a) => a.id),
+        retainedAgents: result.retainedAgents,
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (message.includes("not found")) {

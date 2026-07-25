@@ -152,7 +152,13 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
     // D6: local_trusted = single trust boundary (loopback); one-click approve is friction.
     // authenticated = real multi-human board; approval is multi-person accountability.
     const requireBoardApprovalForNewAgents = opts.deploymentMode !== "local_trusted";
-    const company = await svc.create({ ...req.body, requireBoardApprovalForNewAgents });
+    // requestedByUserId attributes the crew's marketplace install operation
+    // (T2.3). The column is free text with no FK, and `local_trusted` actors
+    // legitimately have no userId — hence the null fallback.
+    const company = await svc.create(
+      { ...req.body, requireBoardApprovalForNewAgents },
+      { requestedByUserId: req.actor.userId ?? null },
+    );
     const operatorId = await access.ensureRealOperator(company.id, req.actor.userId);
     // Seed the founder's company Human Operating Profile from their GLOBAL
     // profile. Onboarding's HumanProfileStep writes only the global

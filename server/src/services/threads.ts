@@ -830,7 +830,8 @@ export function threadService(db: Db) {
         // internal_agent_config.autonomyLevel (same pattern as controller-adjutant-runner
         // and dispatcher). Default to 0 if no company row exists.
         const [companyCfg] = await db
-          .select({ autonomyLevel: internalAgentConfig.autonomyLevel })
+          // D18: phase-advance auto-approve dispatches crew work — agent-work dial.
+          .select({ autonomyLevel: internalAgentConfig.crewAutonomyLevel })
           .from(internalAgentConfig)
           .where(eq(internalAgentConfig.companyId, companyId))
           .limit(1);

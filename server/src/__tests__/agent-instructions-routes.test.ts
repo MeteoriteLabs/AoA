@@ -35,6 +35,8 @@ const mockAccessService = vi.hoisted(() => ({
 const mockSecretService = vi.hoisted(() => ({
   resolveAdapterConfigForRuntime: vi.fn(),
   normalizeAdapterConfigForPersistence: vi.fn(async (_companyId: string, config: Record<string, unknown>) => config),
+  // Called by PATCH /instructions-path after the agent write.
+  syncEnvBindingsForTarget: vi.fn().mockResolvedValue(undefined),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
@@ -329,5 +331,190 @@ describe("agent instructions bundle routes", () => {
     expect(mockAgentInstructionsService.updateBundle).toHaveBeenCalled();
     expect(mockAgentService.update).toHaveBeenCalled();
     expect(mockLogActivity).toHaveBeenCalled();
+  });
+
+  // ── D22: instruction edits are customizations, not app code ──────────────
+  // Every route that can change what an agent's instructions SAY must stamp
+  // `instructionsCustomized: true`, or `crew-updater` will full-replace the edit
+  // on the next catalog bump.
+
+  it("marks the agent customized when a bundle file is written", async () => {
+    const res = await request(createApp())
+      .put("/api/agents/11111111-1111-4111-8111-111111111111/instructions-bundle/file?companyId=company-1")
+      .send({ path: "AGENTS.md", content: "# Founder edit\n" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      { instructionsCustomized: true },
+    );
+  });
+
+  it("marks the agent customized when a bundle file is deleted", async () => {
+    mockAgentInstructionsService.deleteFile.mockResolvedValue({
+      bundle: { files: [] },
+      adapterConfig: { instructionsBundleMode: "managed" },
+    });
+
+    const res = await request(createApp())
+      .delete("/api/agents/11111111-1111-4111-8111-111111111111/instructions-bundle/file?companyId=company-1&path=docs/TOOLS.md");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      { instructionsCustomized: true },
+    );
+  });
+
+  it("marks the agent customized when the bundle config is repointed", async () => {
+    mockAgentInstructionsService.updateBundle.mockResolvedValue({
+      bundle: { mode: "external", rootPath: "/tmp/external", files: [] },
+      adapterConfig: { instructionsBundleMode: "external", instructionsRootPath: "/tmp/external" },
+    });
+
+    const res = await request(createApp())
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111/instructions-bundle?companyId=company-1")
+      .send({ mode: "external", rootPath: "/tmp/external" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      { instructionsCustomized: true },
+    );
+  });
+
+  // ── F1: PATCH /agents/:id is the FIFTH instruction-changing write path ────
+  //
+  // The generic agent PATCH accepts a free-form `adapterConfig`, and several of
+  // its keys are read (or destroyed) by the instructions bundle. The route
+  // already recognises two of them as instruction changes — it gates them on
+  // `assertCanManageInstructionsPath`, the same authz check the dedicated
+  // instructions routes use — but it did not stamp the D22 flag, so a founder's
+  // Prompt Template was full-replaced on the next catalog bump.
+
+  const PATCH_URL =
+    "/api/agents/11111111-1111-4111-8111-111111111111?companyId=company-1";
+
+  it.each([
+    ["promptTemplate", { promptTemplate: "# my custom heartbeat prompt" }],
+    ["bootstrapPromptTemplate", { bootstrapPromptTemplate: "# first-run prompt" }],
+    ["instructionsFilePath", { instructionsFilePath: "/tmp/mine/AGENTS.md" }],
+    ["agentsMdPath", { agentsMdPath: "/tmp/mine/AGENTS.md" }],
+    ["instructionsRootPath", { instructionsRootPath: "/tmp/mine" }],
+    ["instructionsEntryFile", { instructionsEntryFile: "PLAYBOOK.md" }],
+    ["instructionsBundleMode", { instructionsBundleMode: "external" }],
+  ])("marks the agent customized when PATCH /agents/:id changes %s", async (_key, adapterConfig) => {
+    const res = await request(createApp()).patch(PATCH_URL).send({ adapterConfig });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ instructionsCustomized: true }),
+      expect.any(Object),
+    );
+  });
+
+  // THE DISCRIMINATOR for F1. Without it, "stamp on every PATCH that carries an
+  // adapterConfig" would pass every case above — and that would mark an agent
+  // customized for a model change, freezing it out of catalog updates forever.
+  it("does NOT mark the agent customized for a non-instruction adapterConfig change", async () => {
+    const res = await request(createApp())
+      .patch(PATCH_URL)
+      .send({ adapterConfig: { model: "gpt-4.1", cwd: "/tmp/work" } });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const patch = mockAgentService.update.mock.calls.at(-1)![1] as Record<string, unknown>;
+    expect(patch).not.toHaveProperty("instructionsCustomized");
+  });
+
+  it("does NOT mark the agent customized for a PATCH that carries no adapterConfig", async () => {
+    const res = await request(createApp()).patch(PATCH_URL).send({ title: "Chief of Staff" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const patch = mockAgentService.update.mock.calls.at(-1)![1] as Record<string, unknown>;
+    expect(patch).not.toHaveProperty("instructionsCustomized");
+  });
+
+  // ── F3: the flag must be stamped BEFORE founder content reaches disk ─────
+  //
+  // Writing the file first and stamping second leaves a window in which an
+  // edited bundle sits on disk with `instructions_customized = false` — which
+  // the updater will full-replace. Over-stamping a write that then fails costs
+  // one spurious notification; under-stamping costs the founder's work.
+
+  it("stamps the flag before writing the file to disk (PUT)", async () => {
+    const order: string[] = [];
+    mockAgentService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => {
+      if (patch.instructionsCustomized === true) order.push("stamp");
+      return { ...makeAgent(), adapterConfig: patch.adapterConfig ?? {} };
+    });
+    mockAgentInstructionsService.writeFile.mockImplementation(async () => {
+      order.push("disk");
+      return {
+        bundle: null,
+        file: { path: "AGENTS.md", size: 1, language: "markdown", markdown: true, isEntryFile: true, editable: true, deprecated: false, virtual: false, content: "x" },
+        adapterConfig: { instructionsBundleMode: "managed" },
+      };
+    });
+
+    const res = await request(createApp())
+      .put("/api/agents/11111111-1111-4111-8111-111111111111/instructions-bundle/file?companyId=company-1")
+      .send({ path: "AGENTS.md", content: "# edit\n" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(order).toEqual(["stamp", "disk"]);
+  });
+
+  it("stamps the flag before deleting the file from disk (DELETE)", async () => {
+    const order: string[] = [];
+    mockAgentService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => {
+      if (patch.instructionsCustomized === true) order.push("stamp");
+      return { ...makeAgent(), adapterConfig: patch.adapterConfig ?? {} };
+    });
+    mockAgentInstructionsService.deleteFile.mockImplementation(async () => {
+      order.push("disk");
+      return { bundle: { files: [] }, adapterConfig: { instructionsBundleMode: "managed" } };
+    });
+
+    const res = await request(createApp())
+      .delete("/api/agents/11111111-1111-4111-8111-111111111111/instructions-bundle/file?companyId=company-1&path=docs/TOOLS.md");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(order).toEqual(["stamp", "disk"]);
+  });
+
+  it("stamps the flag before repointing the bundle on disk (PATCH bundle)", async () => {
+    const order: string[] = [];
+    mockAgentService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => {
+      if (patch.instructionsCustomized === true) order.push("stamp");
+      return { ...makeAgent(), adapterConfig: patch.adapterConfig ?? {} };
+    });
+    mockAgentInstructionsService.updateBundle.mockImplementation(async () => {
+      order.push("disk");
+      return {
+        bundle: { mode: "external", rootPath: "/tmp/external", files: [] },
+        adapterConfig: { instructionsBundleMode: "external" },
+      };
+    });
+
+    const res = await request(createApp())
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111/instructions-bundle?companyId=company-1")
+      .send({ mode: "external", rootPath: "/tmp/external" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(order).toEqual(["stamp", "disk"]);
+  });
+
+  it("marks the agent customized when the legacy instructions path is repointed", async () => {
+    const res = await request(createApp())
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111/instructions-path?companyId=company-1")
+      .send({ path: "/tmp/external/AGENTS.md" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ instructionsCustomized: true }),
+      expect.any(Object),
+    );
   });
 });

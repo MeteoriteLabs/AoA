@@ -5,7 +5,11 @@ import type { Db } from "@armyofagents/db";
 import { commanderLoginChallenges } from "@armyofagents/db";
 import { and, eq, sql } from "drizzle-orm";
 import { runCodexLogin, resolveSharedCodexHomeDir } from "@armyofagents/adapter-codex-local/server";
-import { runClaudeLoginStreaming, resolveClaudeConfigHome } from "@armyofagents/adapter-claude-local/server";
+import {
+  runClaudeLoginStreaming,
+  resolveClaudeConfigHome,
+  CLAUDE_CREDENTIAL_FILE_NAME,
+} from "@armyofagents/adapter-claude-local/server";
 import { terminateByPidIfMatches } from "../utils/terminate-process.js";
 import {
   createCommanderLoginService,
@@ -39,7 +43,11 @@ interface ProviderLoginRunner {
    * Completion evidence, relative to authHome (Codex P1 #9 — do NOT hardcode
    * auth.json for both):
    *   - openai/codex → `auth.json`
-   *   - anthropic/claude → `.credentials.json` (dogfood-verified filename)
+   *   - anthropic/claude → `CLAUDE_CREDENTIAL_FILE_NAME` (`.credentials.json`)
+   *
+   * Claude's is imported from the adapter rather than re-spelled here: crew
+   * config-home provisioning copies the SAME file, and two literals would let
+   * "which file is the credential" drift between the two answers.
    */
   credentialFileName: string;
 }
@@ -70,7 +78,7 @@ const LOGIN_RUNNERS: Partial<Record<CommanderLoginProvider, ProviderLoginRunner>
         env: args.env,
         discoveryTimeoutMs: LOGIN_URL_DISCOVERY_MS,
       }),
-    credentialFileName: ".credentials.json",
+    credentialFileName: CLAUDE_CREDENTIAL_FILE_NAME,
   },
 };
 

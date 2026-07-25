@@ -7,6 +7,7 @@ import {
   deriveBundleTrustLevel,
   managedCatalogSkillDir,
   materializeSkillBundle,
+  type BundleCheckoutCache,
 } from "./skill-bundle-materializer.js";
 
 export interface InstallSkillOpts {
@@ -14,6 +15,20 @@ export interface InstallSkillOpts {
   companyId: string;
   db: Db;
   packageContext?: InstallSkillPackageContext;
+  /**
+   * Optional caller deadline. Chained into the body fetch AND into the bundle
+   * materializer's `git` subprocesses, so a caller that must finish inside a
+   * budget (company-create's crew bootstrap) can actually stop a stalled clone
+   * instead of waiting on git's own connect timeout. Absent = unbounded.
+   */
+  signal?: AbortSignal;
+  /**
+   * Optional clone cache shared across the skills of ONE install. A team's
+   * bundles cluster on a handful of repos and `git clone --no-checkout` still
+   * downloads the whole object database, so without this the same repo is
+   * re-cloned once per skill. See {@link BundleCheckoutCache}.
+   */
+  checkoutCache?: BundleCheckoutCache;
 }
 
 export interface InstallSkillPackageContext {
@@ -79,9 +94,11 @@ export async function installSkill(opts: InstallSkillOpts): Promise<InstallSkill
     ? await materializeSkillBundle(catalogItem.skill.bundle, {
         destination: managedBundleDir,
         overwrite: true,
+        signal: opts.signal,
+        checkoutCache: opts.checkoutCache,
       })
     : null;
-  const markdown = materialized?.markdown ?? await loadSkillContent(catalogItem);
+  const markdown = materialized?.markdown ?? await loadSkillContent(catalogItem, opts.signal);
 
   const slug = catalogItem.id.split("/").pop() ?? catalogItem.id;
   const fileInventory = materialized?.fileInventory ?? [];

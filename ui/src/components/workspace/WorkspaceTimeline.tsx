@@ -20,6 +20,7 @@ import {
   COMPOSER_MAX_ATTACHMENTS,
   COMPOSER_MAX_ATTACHMENT_BYTES,
   createComposerSubmissionId,
+  type IssueAttachment,
   type IssueComment,
   type Agent,
   type WorkQuestionDetail,
@@ -99,6 +100,8 @@ interface WorkspaceTimelineProps {
   compact?: boolean;
   className?: string;
   anchorId?: string;
+  /** Pop an attachment into a preview panel. Absent (e.g. TaskDetail) → direct link. */
+  onOpenAttachment?: (att: IssueAttachment) => void;
 }
 
 export function WorkspaceTimeline({
@@ -106,6 +109,7 @@ export function WorkspaceTimeline({
   compact = false,
   className,
   anchorId,
+  onOpenAttachment,
 }: WorkspaceTimelineProps) {
   const { selectedCompanyId } = useCompany();
   const { currentUser } = useTeamAccess(selectedCompanyId);
@@ -657,6 +661,7 @@ export function WorkspaceTimeline({
             attachments={taskAttachments}
             contextBundles={contextBundles ?? []}
             agentName={assignedAgent?.name ?? null}
+            onOpenAttachment={onOpenAttachment}
           />
         )}
 
@@ -749,6 +754,7 @@ export function WorkspaceTimeline({
               authorName={authorName}
               isAgent={isAgentComment}
               attachments={attachmentsByCommentId.get(comment.id) ?? []}
+              onOpenAttachment={onOpenAttachment}
             />
           );
         })}

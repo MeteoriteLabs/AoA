@@ -149,7 +149,7 @@ describe("aoa-wakeup-dispatch", () => {
         // fail-closed gate dispatches it at autonomyLevel 0. note:"x" is still
         // asserted to flow through; role is not asserted (objectContaining).
         [{ id: "w1", agentId: "a1", companyId: "co-1", source: "thread_mention", payload: { role: "adjutant", note: "x" } }], // Phase 3 wakeup rows
-        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-20250514" }], // resolveCompanyConfig
+        [{ crewAutonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-20250514" }], // resolveCompanyConfig
         [], // D3 SPEND-brake window count (paid runs only: internalAgentRuns gt costCents 0)
         [], // A5/T1.9 run-COUNT brake window count (ALL runs; real runRateExceeded → 0 < 40 passes)
         [{ runtimeConfig: {}, adapterConfig: {} }], // agent row select
@@ -186,7 +186,7 @@ describe("aoa-wakeup-dispatch", () => {
         // Without a role the fail-closed gate would skip it at autonomy 0 and
         // the claim-race assertion below would pass for the wrong reason.
         [{ id: "w2", agentId: "a2", companyId: "co-2", source: "sweep.adjutant", payload: { role: "adjutant" } }], // Phase 3 wakeup rows
-        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-20250514" }], // resolveCompanyConfig
+        [{ crewAutonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-20250514" }], // resolveCompanyConfig
         [], // D3 SPEND-brake window count (paid runs only)
         [], // A5/T1.9 run-COUNT brake window count (ALL runs → 0 < 40 passes)
         [{ runtimeConfig: {}, adapterConfig: {} }], // agent row select
@@ -215,7 +215,7 @@ describe("aoa-wakeup-dispatch", () => {
           idempotencyKey: "work-question:q-policy:answer:1",
           payload: { issueId: "issue-policy-race", questionId: "q-policy" },
         }],
-        [{ autonomyLevel: 0, crewPaused: true, model: "claude-sonnet-4-20250514" }],
+        [{ crewAutonomyLevel: 0, crewPaused: true, model: "claude-sonnet-4-20250514" }],
         [],
       ],
       [
@@ -242,7 +242,7 @@ describe("aoa-wakeup-dispatch", () => {
           idempotencyKey: "work-question:q-policy-winner:answer:1",
           payload: { issueId: "issue-policy-winner", questionId: "q-policy-winner" },
         }],
-        [{ autonomyLevel: 0, crewPaused: true, model: "claude-sonnet-4-20250514" }],
+        [{ crewAutonomyLevel: 0, crewPaused: true, model: "claude-sonnet-4-20250514" }],
         [],
       ],
       [
@@ -276,7 +276,7 @@ describe("aoa-wakeup-dispatch", () => {
         // dispatches it at autonomyLevel 0 and runAoaAgent is invoked (then
         // throws, exercising the failure path).
         [{ id: "w3", agentId: "a3", companyId: "co-3", source: "phase-advance", payload: { role: "adjutant" } }], // Phase 3 wakeup rows
-        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-20250514" }], // resolveCompanyConfig
+        [{ crewAutonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-20250514" }], // resolveCompanyConfig
         [], // D3 SPEND-brake window count (paid runs only)
         [], // A5/T1.9 run-COUNT brake window count (ALL runs → 0 < 40 passes)
         [{ runtimeConfig: {}, adapterConfig: {} }], // agent row select
@@ -328,7 +328,7 @@ describe("aoa-wakeup-dispatch", () => {
           leaseExpiresAt: new Date(0),
         }],
         [],
-        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-20250514" }],
+        [{ crewAutonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-20250514" }],
         [],
         [],
         [{ runtimeConfig: {}, adapterConfig: {} }],

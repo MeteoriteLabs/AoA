@@ -6,6 +6,7 @@ import { platform, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@armyofagents/db";
+import { showRefSchema } from "@armyofagents/shared";
 import type { HumanQuestionRuntimeCapabilities } from "@armyofagents/adapter-utils";
 import type { AgentTool } from "./types.js";
 import type { AgentStreamChunk, ChatInput } from "./agent-loop.js";
@@ -101,7 +102,11 @@ export interface McpConfigParams {
   agentKind?: string;
   /** D2: explicit tool allowlist for AoA agents (comma-separated when passed via env) */
   toolAllowlist?: readonly string[];
-  /** Actor type threaded into the bridge: "commander" when spawned via Commander. */
+  /**
+   * Actor type threaded into the bridge (→ AOA_ACTOR_TYPE): "commander" via
+   * Commander, "agent" for crew ('aoa')/org runs, else the bridge default
+   * "board". Only "commander" receives the Commander tool-policy layer.
+   */
   actorType?: string;
   /** Agent DB ID — set as AOA_AGENT_ID in the bridge so tools can stamp authorAgentId. */
   agentId?: string;
@@ -629,6 +634,7 @@ export function cliModeService(db: Db) {
             enabledCapabilities: params.enabledCapabilities,
             bridgeEntrypoint: bridgePath,
             actorType: "commander",
+            runId: params.runId ?? null,
             contextScope: normalizeCliContextScope(params.contextScope),
           };
 
@@ -740,6 +746,7 @@ export function cliModeService(db: Db) {
               enabledCapabilities: params.enabledCapabilities,
               bridgeEntrypoint: bridgePath,
               actorType: "commander",
+              runId: params.runId ?? null,
               contextScope: normalizeCliContextScope(params.contextScope),
             },
             safeContent,
@@ -1209,7 +1216,33 @@ async function* runCodexTurn(
   }
 
   for (const chunk of parsed.chunks ?? []) {
-    yield chunk;
+    // Re-validate the codex LiftedOutputRef[] (v:1|2, structurally looser) to
+    // ShowRef[] at this boundary — the widened AgentStreamChunk.refs is ShowRef[]
+    // and LiftedOutputRef is not assignable to it. Applies to EVERY tool_result
+    // chunk (incl. empty refs) so the raw LiftedOutputRef[] never reaches yield.
+    if (chunk.type === "tool_result") {
+      const refs = (Array.isArray(chunk.refs) ? chunk.refs : []).flatMap((r) => {
+        const parsedRef = showRefSchema.safeParse(r);
+        if (parsedRef.success) return [parsedRef.data];
+        // P2.4 drop observability: this per-ref revalidation drops silently
+        // otherwise, so the founder never sees why a chip vanished. Non-fatal.
+        const rec = (r ?? {}) as Record<string, unknown>;
+        logger.debug(
+          {
+            service: "commander-cli",
+            toolName: chunk.name,
+            droppedKind: typeof rec.kind === "string" ? rec.kind : null,
+            droppedId: typeof rec.id === "string" ? rec.id : null,
+            zodIssues: parsedRef.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "),
+          },
+          "Dropped malformed output ref from codex tool_result",
+        );
+        return [];
+      });
+      yield { ...chunk, refs };
+    } else {
+      yield chunk;
+    }
   }
 
   // v1: emit the full parsed assistant reply as a single text chunk

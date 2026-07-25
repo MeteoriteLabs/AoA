@@ -77,6 +77,7 @@ For horizontally scaled deployments, local-file run logs require sticky routing 
 | `AOA_FILE_MAX_BYTES` | `52428800` (50 MB) | Max upload size for assets/artifacts |
 | `AOA_ATTACHMENT_MAX_BYTES` | (= `AOA_FILE_MAX_BYTES`) | Max upload size for issue attachments specifically |
 | `AOA_ATTACHMENTS_PER_COMMENT_MAX` | `5` | Max number of attachments accepted on a single issue comment |
+| `AOA_OFFICE_RENDER_MAX_BYTES` | `15728640` (15 MB) | Max input size for inline office (DOCX/XLSX) server-side rendering. Files above this return 413 from the `/render` routes and must be downloaded instead; deliberately below `AOA_FILE_MAX_BYTES` since a browser preview is small and mammoth/exceljs parse the whole file into memory |
 
 ## Database backups
 

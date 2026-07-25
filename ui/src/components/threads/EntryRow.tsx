@@ -22,7 +22,9 @@ import {
   MessageSquare,
 } from "lucide-react";
 import { relativeTime } from "@/lib/utils";
+import type { ShowRef } from "@armyofagents/shared";
 import type { DiscussionEntry, DiscussionEntryAttachment } from "../../api/discussions";
+import { OutputRefChips } from "../commander/viewer/OutputRefChips";
 import { InlineArtifactCard } from "./InlineArtifactCard";
 import { ScopeProposalCard } from "./ScopeProposalCard";
 import { SystemEntryCard } from "./SystemEntryCard";
@@ -33,6 +35,7 @@ import {
 import { HopCapDecisionCard } from "./HopCapDecisionCard";
 import { CrewFailureCard, type CrewFailurePayload } from "./CrewFailureCard";
 import { AgentAvatar, agentRoleColor } from "./AgentAvatar";
+import { MarkdownBody } from "../MarkdownBody";
 import type { ScopeProposalPayload } from "@armyofagents/shared";
 
 /* ─── Helpers ─── */
@@ -132,6 +135,25 @@ function ReplyCountToggle({ count }: { count: number }) {
       {count} {count === 1 ? "reply" : "replies"}
     </button>
   );
+}
+
+/* ─── Delivered navigational-ref chips (Viewer Upgrade Phase 7B) ─── */
+
+/**
+ * Renders the clickable ShowRef chips a crew run delivered onto this entry
+ * (`entry.outputRefs`). Reuses the surface-agnostic OutputRefChips; each chip's
+ * click maps ShowRef → Thread viewer tab via the thread's openRef handler.
+ * Inert (renders nothing) when there are no refs or no handler was threaded.
+ */
+function DeliveredRefChips({
+  refs,
+  onOpenRef,
+}: {
+  refs?: ShowRef[] | null;
+  onOpenRef?: (ref: ShowRef) => void;
+}) {
+  if (!onOpenRef || !refs || refs.length === 0) return null;
+  return <OutputRefChips refs={refs} onOpen={onOpenRef} />;
 }
 
 /* ─── Chip row ─── */
@@ -244,6 +266,12 @@ export interface EntryRowProps {
   onSpinOffDismiss?: (entry: DiscussionEntry, suggestion: SpinOffSuggestion) => void;
   /** Phase E2: clicked when the user opens an inline artifact. */
   onOpenArtifact?: (attachment: DiscussionEntryAttachment) => void;
+  /**
+   * Viewer Upgrade Phase 7B: clicked when the user opens a delivered navigational
+   * ref chip (from `entry.outputRefs`). Optional — other EntryRow callers omit it
+   * and the chips simply don't render.
+   */
+  onOpenRef?: (ref: ShowRef) => void;
   /** Artifact Lifecycle P1: founder-gated archive/unarchive on inline artifacts. */
   canManageArtifacts?: boolean;
   onArchiveArtifact?: (artifactId: string) => void | Promise<void>;
@@ -271,6 +299,7 @@ export function EntryRow({
   onSpinOffAccept,
   onSpinOffDismiss,
   onOpenArtifact,
+  onOpenRef,
   canManageArtifacts,
   onArchiveArtifact,
   onUnarchiveArtifact,
@@ -404,6 +433,7 @@ export function EntryRow({
         pendingCount={pendingCount}
         extractionError={extractionError}
         onOpenArtifact={onOpenArtifact}
+        onOpenRef={onOpenRef}
         canManageArtifacts={canManageArtifacts}
         onArchiveArtifact={onArchiveArtifact}
         onUnarchiveArtifact={onUnarchiveArtifact}
@@ -420,6 +450,7 @@ export function EntryRow({
         pendingCount={pendingCount}
         extractionError={extractionError}
         onOpenArtifact={onOpenArtifact}
+        onOpenRef={onOpenRef}
         canManageArtifacts={canManageArtifacts}
         onArchiveArtifact={onArchiveArtifact}
         onUnarchiveArtifact={onUnarchiveArtifact}
@@ -435,6 +466,7 @@ export function EntryRow({
       pendingCount={pendingCount}
       extractionError={extractionError}
       onOpenArtifact={onOpenArtifact}
+      onOpenRef={onOpenRef}
       canManageArtifacts={canManageArtifacts}
       onArchiveArtifact={onArchiveArtifact}
       onUnarchiveArtifact={onUnarchiveArtifact}
@@ -451,6 +483,7 @@ function MeBubble({
   pendingCount,
   extractionError,
   onOpenArtifact,
+  onOpenRef,
   canManageArtifacts,
   onArchiveArtifact,
   onUnarchiveArtifact,
@@ -461,6 +494,7 @@ function MeBubble({
   pendingCount: number;
   extractionError?: string | null;
   onOpenArtifact?: (attachment: DiscussionEntryAttachment) => void;
+  onOpenRef?: (ref: ShowRef) => void;
   canManageArtifacts?: boolean;
   onArchiveArtifact?: (artifactId: string) => void | Promise<void>;
   onUnarchiveArtifact?: (artifactId: string) => void | Promise<void>;
@@ -482,7 +516,7 @@ function MeBubble({
       <div className="flex items-end justify-end gap-2">
         <div className="flex flex-col items-end gap-1.5 max-w-[78%]">
           <div
-            className="px-4 py-3 text-sm leading-relaxed break-words whitespace-pre-wrap"
+            className="px-4 py-3 text-sm leading-relaxed break-words"
             style={{
               // Bubble has a self-contained dark background in BOTH themes, so its
               // text stays light (not text-foreground, which would be dark-on-dark
@@ -493,7 +527,10 @@ function MeBubble({
               borderRadius: "16px 16px 4px 16px",
             }}
           >
-            {entry.rawContent}
+            {/* prose-invert forced: dark bubble in both themes. */}
+            <MarkdownBody className="prose-sm prose-invert">
+              {entry.rawContent}
+            </MarkdownBody>
           </div>
           {entry.attachments && entry.attachments.length > 0 && (
             <div className="w-full">
@@ -513,6 +550,7 @@ function MeBubble({
             extractionStatus={entry.extractionStatus}
             extractionError={extractionError ?? null}
           />
+          <DeliveredRefChips refs={entry.outputRefs} onOpenRef={onOpenRef} />
           <ReplyCountToggle count={entry.replyCount ?? 0} />
         </div>
         <div
@@ -536,6 +574,7 @@ function HumanBubble({
   pendingCount,
   extractionError,
   onOpenArtifact,
+  onOpenRef,
   canManageArtifacts,
   onArchiveArtifact,
   onUnarchiveArtifact,
@@ -546,6 +585,7 @@ function HumanBubble({
   pendingCount: number;
   extractionError: string | null;
   onOpenArtifact?: (attachment: DiscussionEntryAttachment) => void;
+  onOpenRef?: (ref: ShowRef) => void;
   canManageArtifacts?: boolean;
   onArchiveArtifact?: (artifactId: string) => void | Promise<void>;
   onUnarchiveArtifact?: (artifactId: string) => void | Promise<void>;
@@ -573,7 +613,7 @@ function HumanBubble({
           </span>
         </div>
         <div
-          className="px-4 py-3 text-sm leading-relaxed break-words whitespace-pre-wrap"
+          className="px-4 py-3 text-sm leading-relaxed break-words"
           style={{
             // Self-contained dark bubble background in both themes → keep light
             // text (text-foreground would be unreadable dark-on-dark in light mode).
@@ -583,7 +623,10 @@ function HumanBubble({
             borderRadius: "16px 16px 16px 4px",
           }}
         >
-          {entry.rawContent}
+          {/* prose-invert forced: dark bubble in both themes. */}
+          <MarkdownBody className="prose-sm prose-invert">
+            {entry.rawContent}
+          </MarkdownBody>
         </div>
         {entry.attachments && entry.attachments.length > 0 && (
           <InlineArtifactCard
@@ -601,6 +644,7 @@ function HumanBubble({
           extractionStatus={entry.extractionStatus}
           extractionError={extractionError}
         />
+        <DeliveredRefChips refs={entry.outputRefs} onOpenRef={onOpenRef} />
         <ReplyCountToggle count={entry.replyCount ?? 0} />
       </div>
     </div>
@@ -616,6 +660,7 @@ function AgentCard({
   pendingCount,
   extractionError,
   onOpenArtifact,
+  onOpenRef,
   canManageArtifacts,
   onArchiveArtifact,
   onUnarchiveArtifact,
@@ -626,6 +671,7 @@ function AgentCard({
   pendingCount: number;
   extractionError: string | null;
   onOpenArtifact?: (attachment: DiscussionEntryAttachment) => void;
+  onOpenRef?: (ref: ShowRef) => void;
   canManageArtifacts?: boolean;
   onArchiveArtifact?: (artifactId: string) => void | Promise<void>;
   onUnarchiveArtifact?: (artifactId: string) => void | Promise<void>;
@@ -674,10 +720,10 @@ function AgentCard({
           </span>
         </div>
 
-        {/* Body */}
-        <p className="text-sm leading-relaxed break-words whitespace-pre-wrap text-foreground">
+        {/* Body — theme-driven (no forced invert; agent card follows global theme) */}
+        <MarkdownBody className="prose-sm text-foreground">
           {entry.rawContent}
-        </p>
+        </MarkdownBody>
 
         {/* Phase E2: inline attachments */}
         {entry.attachments && entry.attachments.length > 0 && (
@@ -698,6 +744,9 @@ function AgentCard({
           extractionStatus={entry.extractionStatus}
           extractionError={extractionError}
         />
+
+        {/* Phase 7B: delivered navigational-ref chips (crew run-result entries) */}
+        <DeliveredRefChips refs={entry.outputRefs} onOpenRef={onOpenRef} />
 
         {/* Reply count */}
         <ReplyCountToggle count={entry.replyCount ?? 0} />

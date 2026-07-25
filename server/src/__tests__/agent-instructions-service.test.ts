@@ -358,4 +358,50 @@ describe("agent instructions service", () => {
     ]);
     expect(exported.files).toEqual({ "AGENTS.md": "# Managed Agent\n" });
   });
+  // ── D22 / F1 ablation: what a catalog update actually destroys ─────────────
+  //
+  // `applyCrewAgentUpdate` calls `materializeManagedBundle(..., {
+  // replaceExisting: true, clearLegacyPromptTemplate: true })`. This pins the
+  // exact adapterConfig keys that call annihilates, which is what the
+  // instruction-bearing key list in `routes/agents.ts` has to cover. If this
+  // test's expectations change, that list must change with it.
+  it("a catalog-update materialize deletes BOTH legacy prompt templates and overwrites the bundle keys", async () => {
+    const paperclipHome = await makeTempDir("paperclip-agent-instructions-home-");
+    cleanupDirs.add(paperclipHome);
+    process.env.AOA_HOME = paperclipHome;
+    process.env.AOA_INSTANCE_ID = "test-instance";
+
+    const svc = agentInstructionsService();
+    const agent = makeAgent({
+      // Everything a founder can set through PATCH /agents/:id that the bundle
+      // touches, plus one key it must leave alone.
+      promptTemplate: "# my custom heartbeat prompt",
+      bootstrapPromptTemplate: "# my first-run prompt",
+      instructionsFilePath: "/tmp/mine/AGENTS.md",
+      instructionsRootPath: "/tmp/mine",
+      instructionsEntryFile: "PLAYBOOK.md",
+      instructionsBundleMode: "external",
+      model: "claude-sonnet-4-20250514",
+    });
+
+    const { adapterConfig } = await svc.materializeManagedBundle(
+      agent,
+      { "AGENTS.md": "# Catalog content\n" },
+      { entryFile: "AGENTS.md", replaceExisting: true, clearLegacyPromptTemplate: true },
+    );
+
+    // DELETED outright — unrecoverable, and neither has a revision row.
+    expect(adapterConfig).not.toHaveProperty("promptTemplate");
+    expect(adapterConfig).not.toHaveProperty("bootstrapPromptTemplate");
+
+    // OVERWRITTEN with catalog-derived values.
+    expect(adapterConfig.instructionsBundleMode).toBe("managed");
+    expect(adapterConfig.instructionsEntryFile).toBe("AGENTS.md");
+    expect(adapterConfig.instructionsRootPath).not.toBe("/tmp/mine");
+    expect(adapterConfig.instructionsFilePath).not.toBe("/tmp/mine/AGENTS.md");
+
+    // UNTOUCHED — proves the destruction set is bounded, so the key list does
+    // not need to cover every adapterConfig key.
+    expect(adapterConfig.model).toBe("claude-sonnet-4-20250514");
+  });
 });

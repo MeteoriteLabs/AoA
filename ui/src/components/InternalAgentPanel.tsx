@@ -71,7 +71,7 @@ import {
   OutputRefChips,
   collectConversationRefs,
   mergeRefs,
-  shouldAutoOpen,
+  pickAutoOpenRef,
   useCommanderViewer,
 } from "./commander/viewer";
 import {
@@ -79,7 +79,7 @@ import {
   type CommanderInputHandle,
   type SlashState,
 } from "./commander/CommanderInput";
-import type { CommanderInputRef, CompanySkillListItem } from "@armyofagents/shared";
+import type { CommanderInputRef, CompanySkillListItem, ViewerControlLevel } from "@armyofagents/shared";
 import {
   COMPOSER_ATTACHMENT_CONTENT_TYPES,
   MAX_COMMANDER_INPUT_REFS,
@@ -92,6 +92,7 @@ import {
 import { assetsApi } from "../api/assets";
 import { agentsApi } from "../api/agents";
 import { useTeamAccess } from "../hooks/useTeamAccess";
+import { useViewerControl } from "../hooks/useViewerControl";
 import { useComposerDraft } from "../lib/composerDraft";
 import {
   assetResponseToCommanderInputRef,
@@ -105,7 +106,7 @@ import { ComposerDropOverlay } from "./composer/ComposerDropOverlay";
 import { useComposerDragDrop } from "./composer/useComposerDragDrop";
 import { useLiveUpdates } from "../context/LiveUpdatesProvider";
 import type { CommanderContextScope } from "@armyofagents/shared";
-import type { CommanderOutputRef } from "@armyofagents/shared";
+import type { ShowRef } from "@armyofagents/shared";
 import { useInlineWorkQuestions, WorkQuestionInlineError } from "./work-questions/WorkQuestionInlineList";
 import { WorkQuestionPanel } from "./work-questions/WorkQuestionPanel";
 import {
@@ -419,7 +420,7 @@ export interface LocalMessage {
     options: string[];
     dismissed: boolean;
   };
-  outputRefs?: CommanderOutputRef[];
+  outputRefs?: ShowRef[];
   createdAt: string;
   durationMs?: number;
 }
@@ -441,7 +442,7 @@ function serverToLocal(m: AgentMessage): LocalMessage {
     role: m.role === "tool" ? "system" : m.role,
     content: m.content ?? "",
     streamingDone: true,
-    outputRefs: (m.outputRefs ?? undefined) as CommanderOutputRef[] | undefined,
+    outputRefs: m.outputRefs ?? undefined,
     ...(toolCalls ? { toolCalls } : {}),
     ...(m.reasoning ? { reasoning: m.reasoning } : {}),
     createdAt: m.createdAt,
@@ -691,6 +692,20 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   // `enableViewerPanel` is set (full-page Commander route).
   const { useDrawerSessions, isTablet, isWide } = useBreakpoint();
   const viewer = useCommanderViewer(conversationId ?? null);
+
+  // Task 4: gate viewer auto-open on the effective viewerControl level.
+  // The SSE tool_result loop runs inside a memoized (stale) closure, so it MUST
+  // read the level from a ref at event time — reading `effectiveLevel` directly
+  // there would capture a render-old value. Fail-closed: default "manual" (no
+  // auto-open) while the preference is still loading or errored.
+  const { effectiveLevel } = useViewerControl(companyId || null);
+  const effectiveLevelRef = useRef<ViewerControlLevel>("manual");
+  useEffect(() => {
+    effectiveLevelRef.current = effectiveLevel ?? "manual";
+  }, [effectiveLevel]);
+  // One tab may auto-open per user turn (kills the live-ref "tab storm"). Reset
+  // to false when a new user turn is sent (see sendText).
+  const autoOpenedTurnRef = useRef(false);
   const [paneState, dispatchPane] = useReducer(
     commanderPaneCoordinatorReducer,
     typeof window === "undefined" ? 1600 : window.innerWidth,
@@ -1020,6 +1035,10 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   const sendText = useCallback(
     async (text: string, attachmentAssetIds?: string[], clientSubmissionId?: string): Promise<boolean> => {
       if (!text || !companyId || streaming) return false;
+
+      // New user turn: allow exactly one auto-opened viewer tab for the refs
+      // this turn produces (Task 4 one-tab-per-turn arbitration).
+      autoOpenedTurnRef.current = false;
 
       setStreamingLocal(true);
       streamingRef.current = true;
@@ -1391,7 +1410,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
         // handleSSEEvent from the render it was created in) — that is safe ONLY
         // because useCommanderViewer's API reads its live state from a ref at
         // call time, and setMessages uses a functional updater.
-        const liveRefs = (event.data as { refs?: CommanderOutputRef[] }).refs;
+        const liveRefs = (event.data as { refs?: ShowRef[] }).refs;
         if (liveRefs && liveRefs.length > 0) {
           setMessages((prev) =>
             prev.map((m) =>
@@ -1400,15 +1419,39 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
                 : m,
             ),
           );
-          for (const r of liveRefs) {
-            // Phase 6 [A2]: if this ref would auto-open the viewer, run the
-            // choreography first (right-panel: collapses sessions only, keeps
-            // cockpit on ultrawide — do NOT yank both panels mid-stream).
-            // openPreviewRef is a stable ref so it's safe inside this stale closure.
-            if (enableViewerPanel && shouldAutoOpen(r, useDrawerSessions)) {
+          // Task 4: cap tab creation at ONE auto-open per user turn, gated by the
+          // effective viewerControl level read from a ref (this closure is stale;
+          // reading the state var here would be render-old). Chips already show
+          // ALL refs via the mergeRefs above — only tab creation is arbitrated.
+          if (enableViewerPanel && !useDrawerSessions && !autoOpenedTurnRef.current) {
+            const pick = pickAutoOpenRef(
+              liveRefs,
+              effectiveLevelRef.current,
+              useDrawerSessions,
+            );
+            if (pick) {
+              // Phase 6 [A2]: run the choreography first (right-panel: collapses
+              // sessions only, keeps cockpit on ultrawide — do NOT yank both
+              // panels mid-stream). openPreviewRef is a stable ref so it's safe
+              // inside this stale closure.
               openPreviewRef.current("right-panel");
+              viewer.onLiveRef(pick, useDrawerSessions, effectiveLevelRef.current);
+              autoOpenedTurnRef.current = true;
             }
-            viewer.onLiveRef(r, useDrawerSessions);
+          } else if (
+            enableViewerPanel &&
+            useDrawerSessions &&
+            effectiveLevelRef.current !== "manual"
+          ) {
+            // Mobile: no visible tab opens (the drawer stays closed), but pre-load
+            // the created refs and surface the "N new" pill badge — governed by
+            // viewerControl (manual = no nudge). pickAutoOpenRef excludes mobile,
+            // so this per-ref path (not the one-tab arbitration) restores the badge
+            // + pre-load. No per-turn cap here: mobile opens no focused tab, so we
+            // pre-load ALL refs for an accurate badge count (prior parity).
+            for (const r of liveRefs) {
+              viewer.onLiveRef(r, useDrawerSessions, effectiveLevelRef.current);
+            }
           }
         }
         break;

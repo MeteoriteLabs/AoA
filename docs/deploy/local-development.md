@@ -7,7 +7,7 @@ Run AoA locally with zero external dependencies.
 
 ## Prerequisites
 
-- Node.js 20+
+- Node.js 20.3+
 - pnpm 9+
 
 ## Start Dev Server

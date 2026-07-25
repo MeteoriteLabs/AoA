@@ -21,11 +21,20 @@ import { deriveEnabledCapabilities } from "./derive-capabilities.js";
 import { createToolRegistry } from "../tool-registry.js";
 import { redactAndCapPrompt } from "../../prompt-snapshot.js";
 import { maybeExecuteFakeCrewTurn } from "./fake-crew-llm.js";
+import { getRunLogStore } from "../../run-log-store.js";
+import type { RunLogHandle } from "../../run-log-store.js";
+import { createCrewRunLogSink } from "./crew-run-log.js";
+import type { CrewRunLogSink } from "./crew-run-log.js";
 import { getProviderStatus } from "../../../adapters/provider-status.js";
 import type { ProviderStatus } from "../../../adapters/provider-status.js";
 import { realProviderStatusDeps } from "../../../adapters/provider-status-deps.js";
 import { applyModelResolutionToConfig } from "./runner-model-resolution.js";
+import { resolveCrewExecutionWorkspace } from "./crew-workspace.js";
 import { secretService } from "../../secrets.js";
+// Type-only: erased at compile time, so it does NOT pull company-skills' module
+// graph (adapter registry + agent/project/secret services) into every consumer
+// of the runner. The value import is dynamic, at the call site below.
+import type { RuntimeSkillEntry } from "../../company-skills.js";
 import {
   bindInternalAgentWorkQuestionContinuation,
   finalizeInternalAgentWorkQuestionContinuation,
@@ -141,6 +150,14 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
   // presence pattern (heartbeat.ts:2608-2616 add / :4117-4124 remove).
   let presenceThreadId: string | null = null;
   let presenceAgentName: string | null = null;
+  // T1 (crew observability): the run's NDJSON transcript handle + the sink that
+  // feeds it. Both stay null when the transcript could not be opened (or when
+  // there is no runId to attach it to) — the run then behaves exactly as it did
+  // before T1 (no-op callbacks). Finalization lives in the single `finally`
+  // below, so every exit path (benign early returns, success, throw) converges
+  // on exactly one finalize without a per-exit call site.
+  let runLogHandle: RunLogHandle | null = null;
+  let crewLogSink: CrewRunLogSink | null = null;
   // W3a (P1 fix): `const agent` is scoped INSIDE the try, so the catch block
   // cannot read `agent.name`/`agent.runtimeConfig` (TS2304). Capture the two
   // fields the FAILURE loopback needs into function-scope locals right after the
@@ -157,6 +174,24 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       // run from the wakeup's perspective (something asked for an agent
       // that doesn't exist anymore — orphan wakeup).
       return { status: "failed", errorMessage: "aoa agent missing", runId };
+    }
+
+    // SECURITY (Layer C — cross-tenant backstop). The run's company comes from
+    // payload.companyId (the dispatcher sets it from the trusted wakeup row).
+    // Assert the loaded agent ACTUALLY belongs to that company. A company-A
+    // agent must NEVER execute in another company's context: payload.companyId
+    // becomes mcpParams.companyId below — the tenant its live MCP tools read and
+    // write — plus the run row and cost attribution. This holds even if a future
+    // enqueue path bypasses the agent.dispatch allowlist (Layer A) or the
+    // dispatcher's spread ordering (Layer B). Refuse with a failed status,
+    // mirroring the "aoa agent missing" early-return (runId is still null here,
+    // so no run row, mcpParams, or adapter execution is ever built).
+    if (agent.companyId !== payload.companyId) {
+      log.error(
+        { agentCompanyId: agent.companyId, runCompanyId: payload.companyId },
+        "aoa agent company mismatch; refusing cross-tenant run",
+      );
+      return { status: "failed", errorMessage: "aoa agent company mismatch", runId };
     }
 
     // W3a (P1 fix): capture the two fields the FAILURE loopback (in the catch,
@@ -342,6 +377,12 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       enabledCapabilities,
       bridgeEntrypoint: resolveBridgeEntrypoint(),
       agentKind: "aoa",
+      // T8 Defect A: crew is an autonomous agent actor, not a board/Commander
+      // caller. Without this the bridge defaults AOA_ACTOR_TYPE to "board", and
+      // ask_human's identity gate (actorType==="agent") rejects every crew run.
+      // Mirrors the org heartbeat path (heartbeat.ts). Never set on the
+      // Commander path — that sets actorType:"commander" (cli-mode.ts).
+      actorType: "agent",
       toolAllowlist: toolAllowlistFromConfig,
       agentId,
       runId,
@@ -545,30 +586,234 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     // T1.0: capture the adapter result so we can build AoaRunResult.
     // Adapters populate `usage`, `costUsd`, `exitCode`, `errorMessage` on
     // their AdapterExecutionResult — that data was previously discarded.
-    const adapterResult =
-      (await maybeExecuteFakeCrewTurn({
-        db,
-        agent: { id: agent.id, name: agent.name },
+    //
+    // T1: this WAS a single `fake ?? adapter.execute(...)` expression. It is now
+    // split so the run transcript is opened ONLY on the branch that actually
+    // spawns a CLI: a fake-crew turn short-circuits execute entirely, and
+    // minting a transcript for it would leave a permanently empty file with a
+    // DB pointer advertising content that never existed.
+    let adapterResult = await maybeExecuteFakeCrewTurn({
+      db,
+      agent: { id: agent.id, name: agent.name },
+      payload,
+      // Controller-mode fake turns queue real create_scope_draft actions; the
+      // seal (below) and direct-run commit then treat them exactly like a real
+      // agent's tool calls — no fake-specific bookkeeping anywhere downstream.
+      runId,
+      discussionRunMode,
+      threadFreshness,
+    });
+
+    if (!adapterResult) {
+      // T1 (crew observability): open the run transcript HERE — immediately
+      // before its only consumer — rather than at run-row insert. Everything
+      // above this point can still bail benignly (the entry-claim race and the
+      // task-checkout conflict both `return` early, and the dispatcher retries
+      // pending entries every tick), and each of those bails would otherwise
+      // mkdir + write a permanent 0-byte .ndjson and an extra UPDATE for a run
+      // that never spawned anything. There is no retention sweeper for
+      // run-logs. Opening it here makes a non-null logRef MEAN "the adapter
+      // actually ran".
+      //
+      // Keyed on the run row's UUID — deliberately NO synthesized fallback id
+      // (one would collide across runs of the same agent and truncate the
+      // previous transcript, since begin() writes an empty file). No runId ⇒
+      // nothing to attach a transcript to ⇒ skip logging for this run.
+      // Entirely best-effort — a logging failure must never change a run outcome.
+      if (runId) {
+        const logRunId = runId;
+        // Resolved inside the try on purpose: getRunLogStore() →
+        // resolveAoaInstanceId() throws on a malformed AOA_INSTANCE_ID
+        // (home-paths.ts:29-31), and an escape from here would fail the run +
+        // terminalize the claimed entry + post a failure card — a logging
+        // concern changing a run outcome, which is exactly what this block
+        // promises never to do. Declared outside so the sink can reuse it.
+        let runLogStore: ReturnType<typeof getRunLogStore> | null = null;
+        try {
+          runLogStore = getRunLogStore();
+          runLogHandle = await runLogStore.begin({
+            companyId: payload.companyId,
+            agentId,
+            runId: logRunId,
+          });
+        } catch (beginErr) {
+          // Fatal to logging only: with no handle there is nothing to write to.
+          log.warn({ err: beginErr, runId: logRunId }, "aoa-runner: failed to open run transcript (best-effort, ignored)");
+          runLogHandle = null;
+        }
+
+        // `runLogStore` is non-null whenever `runLogHandle` is (begin() only
+        // resolves after the store resolved); the second check is for the type
+        // checker, not a real second condition.
+        if (runLogHandle && runLogStore) {
+          // Record the pointer so the transcript is FINDABLE from the run row
+          // (mirrors heartbeat.ts:3709-3722 — `runLogStore.begin` + the
+          // logStore/logRef update; moved by T5's -135-line extraction). A
+          // failure here is NOT fatal to
+          // logging: logRef is fully deterministic
+          // (<companyId>/<agentId>/<runId>.ndjson — run-log-store.ts:97-100), so
+          // an operator holding the run id can still find the file. The realistic
+          // trigger is migration 0179 not being applied yet, which would fail
+          // this UPDATE on every crew run — discarding the transcript for that
+          // would silently degrade T1 back into the black box it exists to kill.
+          try {
+            await db.update(internalAgentRuns)
+              .set({ logStore: runLogHandle.store, logRef: runLogHandle.logRef })
+              .where(eq(internalAgentRuns.id, logRunId));
+          } catch (pointerErr) {
+            log.warn(
+              { err: pointerErr, runId: logRunId, logRef: runLogHandle.logRef },
+              "aoa-runner: failed to persist run transcript pointer — transcript is still being written and is findable at <companyId>/<agentId>/<runId>.ndjson",
+            );
+          }
+
+          // Wired last, so the sequence reads open → record → wire.
+          crewLogSink = createCrewRunLogSink({
+            store: runLogStore,
+            handle: runLogHandle,
+            // Identity + this run's logger, so a broken store surfaces ONE warn
+            // line traceable back to the run row rather than a silently empty
+            // transcript (which reads exactly like "the agent produced nothing").
+            run: { companyId: payload.companyId, agentId, runId: logRunId },
+            logger: log,
+          });
+        }
+      }
+
+      // T5 (Decision #110 clause 7): give this run an execution workspace.
+      // WITHOUT this, the adapter's cwd chain (`effectiveWorkspaceCwd ||
+      // configuredCwd || process.cwd()` — claude-local execute.ts:188) fell all
+      // the way through to process.cwd(): the AoA SERVER'S OWN REPOSITORY. Every
+      // crew run then executed inside this codebase and loaded AoA's CLAUDE.md
+      // as agent context. The helper mirrors heartbeat's resolution and NEVER
+      // returns nothing — the per-agent home is the floor — so process.cwd() is
+      // no longer reachable from the crew path.
+      //
+      // Placed INSIDE the `!adapterResult` branch, next to its only consumer: a
+      // fake-crew turn short-circuits `adapter.execute` entirely, so resolving
+      // for one would spend three DB reads and an mkdir on a cwd nothing ever
+      // uses. Everything above this point can also still bail benignly (the
+      // entry-claim race, the task-checkout conflict), and those bails must not
+      // provision a workspace either.
+      const crewWorkspace = await resolveCrewExecutionWorkspace(db, {
+        agent: { id: agent.id, companyId: agent.companyId },
+        issueId: typeof payload.issueId === "string" ? payload.issueId : null,
+        threadId: bridgeThreadId ?? null,
+        log,
+      });
+      if (crewWorkspace.warnings.length > 0) {
+        log.info({ warnings: crewWorkspace.warnings }, "aoa-runner: execution workspace warnings");
+        // Replay into the run transcript so the FOUNDER sees them, not just the
+        // server log. Mirrors heartbeat.ts:3753-3755, which streams the same
+        // warning class through the run's stderr. Without this a founder who
+        // configured `isolated_workspace` and silently got the shared checkout
+        // (see WHY THAT BRANCH in crew-workspace.ts) had no surface telling
+        // them so. Best-effort: the sink swallows store failures internally,
+        // and a run with no transcript simply skips it.
+        if (crewLogSink) {
+          for (const warning of crewWorkspace.warnings) {
+            await crewLogSink.onLog("stderr", `[aoa] ${warning}\n`);
+          }
+        }
+      }
+      // T6 (P3): deliver the company/marketplace skills the founder attached to
+      // this agent. `listRuntimeSkillEntries` had exactly ONE caller — the
+      // heartbeat (heartbeat.ts:3869-3885) — and crew agents are barred from the
+      // heartbeat, so an attached skill reached org agents and silently reached
+      // no crew agent, while the Agent Skills tab said it did. This block mirrors
+      // heartbeat's, including its two load-bearing details:
+      //
+      //   1. the `length > 0` guard. The claude-local adapter reads
+      //        const dbSkills = (context.skills as …) ?? [];
+      //        buildSkillsDir(dbSkills.length > 0 ? dbSkills : undefined);
+      //      (claude-local/src/server/execute.ts:374-375) — writing `[]` instead
+      //      of omitting the key must not change which branch runs, so the key is
+      //      only ever written when there is something to write.
+      //   2. warn-and-continue. Skill resolution touches the DB and, for
+      //      local_path/catalog skills, the filesystem; broken skill storage must
+      //      be VISIBLE rather than silently reading as "no skills attached" —
+      //      which is exactly what an unattached agent produces (D17: Phase 1
+      //      ships crew agents with no default skillKeys, so the empty result is
+      //      the common case and cannot be allowed to double as the error case).
+      //
+      // Imported dynamically like the runner's other heavy collaborators
+      // (issues.js, crew-context-bundle.js, crew-run-outcome.js):
+      // company-skills.ts pulls in the adapter registry plus the agent, project
+      // and secret services, and every consumer of this module would otherwise
+      // load that graph.
+      //
+      // Placement matches T5's workspace resolution — inside `!adapterResult`,
+      // next to its only consumer. A fake-crew turn never spawns a CLI, so
+      // resolving skills for one costs DB + ancillary-file reads for a context
+      // nothing reads.
+      let agentSkills: RuntimeSkillEntry[] = [];
+      try {
+        const { companySkillService } = await import("../../company-skills.js");
+        agentSkills = await companySkillService(db).listRuntimeSkillEntries(
+          agent.companyId,
+          agent.id,
+        );
+        log.info(
+          { runId, skillCount: agentSkills.length, skillKeys: agentSkills.map((s) => s.key) },
+          "aoa-runner: resolved company skills for crew run",
+        );
+      } catch (skillErr) {
+        // Sanitized err — mirror heartbeat's team-coordination block
+        // (heartbeat.ts:3923), NOT its skills block. A skill-resolution failure
+        // is most plausibly a DB error, and a node-postgres error carries `query`
+        // + `parameters` as own-enumerable props that pino's err serializer would
+        // include — so log identity only, never the raw error.
+        log.warn(
+          {
+            err: skillErr instanceof Error
+              ? { name: skillErr.name, message: skillErr.message }
+              : String(skillErr),
+            companyId: agent.companyId,
+            agentId: agent.id,
+            runId,
+          },
+          "aoa-runner: failed to resolve company skills for crew run; continuing without skill injection",
+        );
+      }
+
+      const executionContext: Record<string, unknown> = {
+        aoaInstruction: instruction,
         payload,
-        // Controller-mode fake turns queue real create_scope_draft actions; the
-        // seal (below) and direct-run commit then treat them exactly like a real
-        // agent's tool calls — no fake-specific bookkeeping anywhere downstream.
-        runId,
-        discussionRunMode,
-        threadFreshness,
-      })) ??
-      (await adapter.execute({
+        paperclipWorkspace: crewWorkspace.workspace,
+        paperclipWorkspaces: crewWorkspace.workspaceHints,
+      };
+      // Guard, not a convenience: see (1) above — `skills: []` and an absent key
+      // must stay indistinguishable to the adapter.
+      if (agentSkills.length > 0) {
+        executionContext.skills = agentSkills;
+      }
+
+      adapterResult = await adapter.execute({
         runId: runId ?? `aoa-${agentId}`,
         agent,
         runtime: agent.runtimeConfig ?? {},
         config,
-        context: { aoaInstruction: instruction, payload },
+        context: executionContext,
         executionTarget, runtimeCommandSpec,
         mcpBridge: bridgeSpec,
         humanQuestionCapabilities: adapter.humanQuestionCapabilities,
-        onLog: async () => {}, onMeta: async () => {},
+        // T2 (D9): CREW-ONLY ambient-config isolation. A crew run inherited the
+        // operator's whole environment, so the host machine's ~/.claude
+        // (SessionStart hooks, third-party skills, plugins) and the server's
+        // ambient ANTHROPIC_API_KEY bled into the agent — observed live
+        // hijacking a run. Set unconditionally HERE because this call site IS
+        // the crew path; heartbeat (org) never sets it, so org behavior is
+        // unchanged. Honoring the flag is per-adapter opt-in — claude_local
+        // acts on it, the others currently ignore it.
+        isolateAmbientConfig: true,
+        // T1: stream the CLI transcript + one redacted adapter.invoke event into
+        // the run log (was: two literal no-ops that discarded everything). Both
+        // sink callbacks swallow store failures internally.
+        onLog: crewLogSink ? crewLogSink.onLog : async () => {},
+        onMeta: crewLogSink ? crewLogSink.onMeta : async () => {},
         authToken: undefined, onSpawn: () => {},
-      }));
+      });
+    }
 
     // Silent-failure guard: a CLI agent can finish its run WITHOUT calling
     // submit_extracted_items (codex/opencode have no MCP-bridge wiring yet — see
@@ -592,16 +837,36 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       }
     }
 
-    // Spec B Task 5 — TASK SILENT-STUCK GUARD. Symmetric to the entry guard
-    // above. A non-claude adapter (no MCP bridge) or a hung claude run can exit
-    // "successfully" WITHOUT ever calling set_task_status — leaving the task we
-    // checked out stuck 'in_progress' forever (silent stall). If the task is
-    // still 'in_progress' AND still locked by THIS run (executionRunId===runId),
-    // the agent did not move it: RELEASE it back to 'todo' (clear the execution
-    // lock so the founder/heartbeat can re-dispatch it) and THROW so the run is
-    // marked failed loudly via the catch below. The release is guarded on
-    // executionRunId=runId so a concurrent run that legitimately re-claimed the
-    // task is never clobbered.
+    // Spec B Task 5 — TASK SILENT-STUCK GUARD (autonomy-aware, T10 fix).
+    // Symmetric to the entry guard above. A non-claude adapter (no MCP bridge) or
+    // a hung claude run can exit "successfully" WITHOUT ever moving its task —
+    // leaving the task we checked out stuck 'in_progress' forever. BUT: whether a
+    // still-in_progress task is a FAILURE depends on the autonomy dial the agent
+    // ran under.
+    //
+    //  • effectiveAutonomy >= 1 (Assist/Drive): the A4 dial-gate PERMITTED an
+    //    advance (Assist → in_review, Drive → done). A task still in_progress
+    //    means the agent was allowed to move it but didn't → a genuine stall:
+    //    RELEASE it back to 'todo' (clear the lock) and THROW so the run is marked
+    //    failed loudly. This is the guard's real purpose and is preserved.
+    //  • effectiveAutonomy === 0 (Manual): the A4 dial-gate FORBIDS any advance
+    //    (set-task-status-tool refuses in_review/done at Manual). A task still
+    //    in_progress is therefore the EXPECTED terminal state, NOT a failure — the
+    //    agent physically could not satisfy the guard. Do NOT release-to-todo and
+    //    do NOT throw: the run SUCCEEDS and the agent's posted work stands. We
+    //    clear ONLY the execution lock so the task is founder-actionable (Manual
+    //    means the founder advances it) and not stuck-locked; status stays
+    //    in_progress so nothing masquerades as review-ready, and Manual gates
+    //    agent-initiated re-dispatch so this does not loop (Decision #109).
+    //
+    // effectiveAutonomy is `null` only for synthetic/legacy callers that never
+    // pass a dial (the dispatcher ALWAYS resolves a number for real task runs) —
+    // treat unknown as "fire the guard" so behaviour for those callers is
+    // unchanged; the Manual exemption requires a POSITIVE `=== 0`.
+    // Both writes are guarded on executionRunId=runId AND status='in_progress' so
+    // a concurrent run that legitimately re-claimed the task is never clobbered.
+    const effectiveAutonomy: number | null =
+      typeof payload.effectiveAutonomy === "number" ? payload.effectiveAutonomy : null;
     if (payload.issueId && runId) {
       const { issueService } = await import("../../issues.js");
       const task = await issueService(db).getById(payload.issueId);
@@ -620,30 +885,62 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
             { issueId: payload.issueId, questionId: parkedQuestion.id },
             "crew task run parked on an open human question",
           );
+        } else if (effectiveAutonomy === 0) {
+          // Manual: the agent was never permitted to advance → not a failure.
+          // Clear the execution lock (atomic, guarded on runId + in_progress) so
+          // the founder can advance the still-in_progress task without it being
+          // stuck-locked. Zero rows (a concurrent re-claim) → leave it alone.
+          // Clear the SAME four lock fields the dispatcher's canonical release
+          // clears (dispatcher.ts:175-181) — executionAgentNameKey/executionLockedAt
+          // are harmless once executionRunId is null (heartbeat reads them only
+          // inside `if (activeExecutionRun)`), but keep the field-set aligned.
+          // BEST-EFFORT: unlike the Assist+ branch this path deliberately does NOT
+          // fail the run — the agent's posted work already stands and the lock-clear
+          // is cleanup, not correctness. A transient DB error here must NOT
+          // propagate to the outer catch and mark an otherwise-successful Manual run
+          // failed (which would reintroduce the exact failure this fix removes).
+          try {
+            await db.update(issues)
+              .set({ executionRunId: null, checkoutRunId: null, executionAgentNameKey: null, executionLockedAt: null, updatedAt: new Date() })
+              .where(and(eq(issues.id, payload.issueId), eq(issues.executionRunId, runId), eq(issues.status, "in_progress")));
+            log.info(
+              { issueId: payload.issueId, effectiveAutonomy },
+              "crew task run finished at Manual autonomy — task left in_progress for the founder, execution lock cleared (not a failure)",
+            );
+          } catch (lockClearErr) {
+            log.warn(
+              { err: lockClearErr, issueId: payload.issueId },
+              "Manual-autonomy execution-lock clear failed (best-effort, ignored) — run stays successful",
+            );
+          }
         } else {
           const released = await db.update(issues)
-          // Atomic status guard (Codex P2): a concurrent set_task_status between
-          // the getById read and this write keeps executionRunId (only checkoutRunId
-          // is cleared on leaving in_progress), so without status='in_progress' here
-          // this could revert an in_review/done task back to todo.
-          .set({ status: "todo", executionRunId: null, checkoutRunId: null, updatedAt: new Date() })
-          .where(and(eq(issues.id, payload.issueId), eq(issues.executionRunId, runId), eq(issues.status, "in_progress")))
-          .returning({ id: issues.id });
-        // Only publish + throw if the guarded UPDATE actually released the row. A
-        // ZERO-row result means set_task_status won the race and already moved the
-        // task — the agent DID move it, so the run is NOT a failure (Codex P2).
-        if (released.length > 0) {
-          log.warn({ issueId: payload.issueId }, "crew task run finished without set_task_status — released task to todo");
-          // Task 5.6: this is a CREW status-MOVE (in_progress → todo) that bypasses
-          // issueService.update; publish issue.status_changed so the board reflects
-          // the card dropping back to todo. Best-effort — must not mask the throw.
-          try {
-            publishIssueStatusChanged(payload.companyId, payload.issueId, "todo");
-          } catch (publishErr) {
-            log.warn({ err: publishErr, issueId: payload.issueId }, "issue.status_changed publish failed on silent-stuck release (best-effort, ignored)");
+            // Atomic status guard (Codex P2): a concurrent set_task_status between
+            // the getById read and this write keeps executionRunId (only checkoutRunId
+            // is cleared on leaving in_progress), so without status='in_progress' here
+            // this could revert an in_review/done task back to todo.
+            .set({ status: "todo", executionRunId: null, checkoutRunId: null, updatedAt: new Date() })
+            .where(and(eq(issues.id, payload.issueId), eq(issues.executionRunId, runId), eq(issues.status, "in_progress")))
+            .returning({ id: issues.id });
+          // Only publish + throw if the guarded UPDATE actually released the row. A
+          // ZERO-row result means set_task_status won the race and already moved the
+          // task — the agent DID move it, so the run is NOT a failure (Codex P2).
+          if (released.length > 0) {
+            log.warn({ issueId: payload.issueId, effectiveAutonomy }, "crew task run finished with the task still in_progress (not advanced) — released task to todo");
+            // Task 5.6: this is a CREW status-MOVE (in_progress → todo) that bypasses
+            // issueService.update; publish issue.status_changed so the board reflects
+            // the card dropping back to todo. Best-effort — must not mask the throw.
+            try {
+              publishIssueStatusChanged(payload.companyId, payload.issueId, "todo");
+            } catch (publishErr) {
+              log.warn({ err: publishErr, issueId: payload.issueId }, "issue.status_changed publish failed on silent-stuck release (best-effort, ignored)");
+            }
+            // The agent WAS permitted to advance (effectiveAutonomy >= 1) but the task
+            // is still in_progress — a genuine stall. (The prior "no set_task_status
+            // call" text was an assumption: the agent may have called it and hit a
+            // different refusal.)
+            throw new Error("crew task run finished with the task still in progress (not advanced)");
           }
-          throw new Error("crew task run completed without moving the task (no set_task_status call)");
-        }
         }
       }
     }
@@ -837,6 +1134,8 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
             adapterUsage,
             costCents: costCents ?? null,
             runId,
+            // Task 4: the delivering agent id — provenance for the run-result refs.
+            agentId,
           });
         } else {
           // runResult.status === "failed" WITHOUT a throw — the adapter reported
@@ -1048,6 +1347,22 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     // exception — masking every crew failure as a successful wakeup.
     return { status: "failed", errorMessage: errMessage, runId };
   } finally {
+    // T1 (crew observability): seal the run transcript on EVERY exit — success,
+    // adapter-reported failure, thrown failure, and the benign early returns
+    // (entry not claimable / task checkout conflict) that return before the
+    // success path. `finally` is the single site precisely because it is
+    // unmissable and runs exactly once — no per-exit finalize calls to keep in
+    // sync. Best-effort (mirrors the presence/unlink cleanups below) — a
+    // finalize failure must never change a run outcome. The logged logRef is
+    // the pointer an operator follows to read what the CLI actually did.
+    if (runLogHandle) {
+      try {
+        const summary = await getRunLogStore().finalize(runLogHandle);
+        log.info({ runId, logRef: runLogHandle.logRef, bytes: summary.bytes }, "aoa-runner: run transcript finalized");
+      } catch (finalizeErr) {
+        log.warn({ err: finalizeErr, runId }, "aoa-runner: failed to finalize run transcript (best-effort, ignored)");
+      }
+    }
     // Phase 5 (Tasks 5.1/5.2): clear this agent's thread working-presence (run
     // ended — success OR failure). GUARANTEED removal even on throw: the
     // presenceThreadId is only set after the add succeeded, so this never

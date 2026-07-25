@@ -262,7 +262,9 @@ describe("marketplace agent runtime parser", () => {
         aoa: {
           kind: "aoa",
           triggers: [
-            { kind: "mention", config: { priority: "high" } },
+            // `enabled` is production shape (T2.3d) — every published crew agent
+            // declares it.
+            { kind: "mention", enabled: true, config: { priority: "high" } },
             { kind: "outbox" },
           ],
           install: { defaultRole: "general" },
@@ -279,9 +281,13 @@ describe("marketplace agent runtime parser", () => {
 
     expect(normalized.kind).toBe("aoa");
     expect(normalized.triggers).toHaveLength(2);
-    expect(normalized.triggers[0]).toEqual({ kind: "mention", config: { priority: "high" } });
-    // config defaults to {} when absent in the template
-    expect(normalized.triggers[1]).toEqual({ kind: "outbox", config: {} });
+    expect(normalized.triggers[0]).toEqual({
+      kind: "mention",
+      enabled: true,
+      config: { priority: "high" },
+    });
+    // config defaults to {} and enabled to true when absent in the template
+    expect(normalized.triggers[1]).toEqual({ kind: "outbox", enabled: true, config: {} });
   });
 
   it("T3.2: normalizes kind='org' (default) when aoa.kind is absent", () => {

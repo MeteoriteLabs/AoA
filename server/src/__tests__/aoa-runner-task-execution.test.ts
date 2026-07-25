@@ -32,11 +32,19 @@ const {
   buildBridgeSpecMock,
   publishLiveEventMock,
   publishIssueStatusChangedMock,
+  mkdirMock,
+  statMock,
   checkoutMock,
   getByIdMock,
 } = vi.hoisted(() => ({
   writeFileMock: vi.fn().mockResolvedValue(undefined),
   unlinkMock: vi.fn().mockResolvedValue(undefined),
+  // T5: the runner now resolves an execution workspace before adapter.execute,
+  // which mkdir's the per-agent home and stat's candidate cwds. Both go through
+  // this same mocked module, so they have to exist here or every task run
+  // throws.
+  mkdirMock: vi.fn().mockResolvedValue(undefined),
+  statMock: vi.fn().mockResolvedValue({ isDirectory: () => true }),
   adapterExecute: vi.fn().mockResolvedValue({ exitCode: 0 }),
   createEventMock: vi.fn().mockResolvedValue(undefined),
   buildMcpMock: vi.fn(() => ({})),
@@ -51,13 +59,16 @@ const {
   getByIdMock: vi.fn().mockResolvedValue(null),
 }));
 
-vi.mock("node:fs/promises", () => ({
-  writeFile: writeFileMock,
-  unlink: unlinkMock,
-}));
+// `workspace-resolution.ts` imports the DEFAULT export; the runner uses the
+// named writeFile/unlink. Provide both shapes.
+vi.mock("node:fs/promises", () => {
+  const api = { writeFile: writeFileMock, unlink: unlinkMock, mkdir: mkdirMock, stat: statMock };
+  return { ...api, default: api };
+});
 
 vi.mock("drizzle-orm", () => ({
   and: vi.fn((...a: unknown[]) => ({ and: a })),
+  asc: vi.fn((a: unknown) => ({ asc: a })),
   eq: vi.fn((a: unknown, b: unknown) => ({ eq: [a, b] })),
   sql: Object.assign(
     (strings: TemplateStringsArray, ...vals: unknown[]) => ({
@@ -83,6 +94,8 @@ vi.mock("@armyofagents/db", () => {
     internalAgentRuns: makeTable("internal_agent_runs"),
     discussionEntries: makeTable("discussion_entries"),
     issues: makeTable("issues"),
+    projects: makeTable("projects"),
+    projectWorkspaces: makeTable("project_workspaces"),
     workQuestions: makeTable("work_questions"),
     memoryItems: makeTable("memory_items"),
     discussions: makeTable("discussions"),
@@ -112,6 +125,29 @@ vi.mock("../services/heartbeat.js", () => ({
 
 vi.mock("../services/internal-agent/aoa-agents/bridge-path.js", () => ({
   resolveBridgeEntrypoint: vi.fn(() => "/bridge"),
+}));
+
+// T5: crew workspace resolution reads the instance experimental flags. Stub the
+// service so this suite keeps modelling only the task-execution branch.
+vi.mock("../services/instance-settings.js", () => ({
+  instanceSettingsService: vi.fn(() => ({
+    getExperimental: vi.fn().mockResolvedValue({ enableIsolatedWorkspaces: true }),
+  })),
+}));
+
+// T1: the runner opens a run transcript before adapter.execute. run-log-store
+// imports `node:fs` — a DIFFERENT specifier than the `node:fs/promises` this
+// file mocks — so without this an otherwise fully-mocked suite does REAL
+// filesystem I/O, writing .ndjson files keyed on fixture ids that repeat across
+// test files. vitest runs files in parallel workers and begin() TRUNCATES, so
+// that is a latent cross-file flake, not just litter.
+vi.mock("../services/run-log-store.js", () => ({
+  getRunLogStore: () => ({
+    begin: async () => ({ store: "local_file", logRef: "test-run.ndjson" }),
+    append: async () => {},
+    finalize: async () => ({ bytes: 0, compressed: false }),
+    read: async () => ({ content: "" }),
+  }),
 }));
 
 vi.mock("../services/costs.js", () => ({
@@ -222,6 +258,8 @@ describe("Spec B Task 5: runner issueId branch", () => {
   beforeEach(() => {
     writeFileMock.mockClear().mockResolvedValue(undefined);
     unlinkMock.mockClear().mockResolvedValue(undefined);
+    mkdirMock.mockClear().mockResolvedValue(undefined);
+    statMock.mockClear().mockResolvedValue({ isDirectory: () => true });
     adapterExecute.mockClear().mockResolvedValue({ exitCode: 0 });
     createEventMock.mockClear().mockResolvedValue(undefined);
     buildMcpMock.mockClear().mockReturnValue({});
@@ -296,8 +334,10 @@ describe("Spec B Task 5: runner issueId branch", () => {
     const result = await runAoaAgent(db as any, "a-1", TASK_PAYLOAD);
 
     // The throw lands in the catch → run row marked failed → failed AoaRunResult.
+    // (No effectiveAutonomy on the payload → unknown dial → guard fires, as before
+    // this fix. The Manual exemption requires a positive effectiveAutonomy===0.)
     expect(result.status).toBe("failed");
-    expect(result.errorMessage).toMatch(/without moving the task|set_task_status/i);
+    expect(result.errorMessage).toMatch(/still in progress|not advanced/i);
 
     // The task was RELEASED back to 'todo' with the execution lock cleared.
     const release = db._sets.find(
@@ -344,6 +384,30 @@ describe("Spec B Task 5: runner issueId branch", () => {
     expect(publishIssueStatusChangedMock).not.toHaveBeenCalledWith("co-1", "TASK-1", "todo");
   });
 
+  it("(e) crew MCP params carry actorType='agent' + agentKind='aoa' (crew actor identity — T8 Defect A)", async () => {
+    // ask_human's identity gate keys on actorType==='agent'; when the runner
+    // omits actorType the bridge defaults AOA_ACTOR_TYPE to 'board' and the
+    // gate fails for every crew agent. Assert both the config and bridge-spec
+    // builders receive the corrected actor identity.
+    buildMcpMock.mockClear();
+    buildBridgeSpecMock.mockClear();
+    const db = makeDb();
+
+    await runAoaAgent(db as any, "a-1", TASK_PAYLOAD);
+
+    expect(buildBridgeSpecMock).toHaveBeenCalledTimes(1);
+    const bridgeParams = buildBridgeSpecMock.mock.calls[0]![0] as any;
+    expect(bridgeParams.actorType).toBe("agent");
+    expect(bridgeParams.agentKind).toBe("aoa");
+    // Guard against a regression to the unset/'board' actor.
+    expect(bridgeParams.actorType).not.toBe("board");
+    expect(bridgeParams.actorType).not.toBeUndefined();
+
+    // buildMcpConfig (the claude {mcpServers} envelope) gets the SAME params.
+    const cfgParams = buildMcpMock.mock.calls[0]![0] as any;
+    expect(cfgParams.actorType).toBe("agent");
+  });
+
   it("(d'') no release when a DIFFERENT run owns the task (executionRunId !== runId)", async () => {
     getByIdMock.mockResolvedValueOnce({
       id: "TASK-1",
@@ -355,6 +419,99 @@ describe("Spec B Task 5: runner issueId branch", () => {
     const result = await runAoaAgent(db as any, "a-1", TASK_PAYLOAD);
 
     // Not our lock → do not touch it; complete normally.
+    expect(result.status).not.toBe("failed");
+    const release = db._sets.find((s: any) => s.set?.status === "todo");
+    expect(release).toBeUndefined();
+  });
+
+  // ── Autonomy-aware completion guard (T10 fix) ──────────────────────────────
+  // The silent-stuck guard's release-to-todo + throw must fire ONLY when the
+  // agent was PERMITTED to advance the task (effectiveAutonomy >= 1) but didn't.
+  // At Manual (effectiveAutonomy === 0) the A4 dial-gate FORBIDS any advance, so
+  // a task still in_progress after the run is the EXPECTED terminal state — not a
+  // failure. Before this fix every Manual crew run failed here (the agent's
+  // correctly-refused set_task_status call could never satisfy the guard).
+
+  it("(f) MANUAL (effectiveAutonomy=0): task still in_progress + owned by this run → run SUCCEEDS, NOT released to todo, lock cleared, no throw", async () => {
+    // Same silent-stuck state as (d) — but at Manual the agent was never allowed
+    // to advance, so this is a success, not a stall.
+    getByIdMock.mockResolvedValueOnce({
+      id: "TASK-1",
+      status: "in_progress",
+      executionRunId: "run-1",
+    });
+    const db = makeDb();
+
+    const result = await runAoaAgent(db as any, "a-1", {
+      ...TASK_PAYLOAD,
+      effectiveAutonomy: 0,
+    });
+
+    // The run is NOT failed — the agent did its work; Manual just means the
+    // founder advances the card.
+    expect(result.status).toBe("succeeded");
+
+    // NOT released to 'todo' (no ping-pong back to the queue).
+    const release = db._sets.find((s: any) => s.set?.status === "todo");
+    expect(release).toBeUndefined();
+
+    // The execution lock IS cleared so the task is founder-actionable and not
+    // stuck-locked — status stays untouched (undefined in the write). This is the
+    // discriminator: it proves the guard block WAS entered and took the Manual
+    // branch (not that the guard was skipped because the task wasn't in_progress).
+    const lockClear = db._sets.find(
+      (s: any) =>
+        s.set?.executionRunId === null &&
+        s.set?.checkoutRunId === null &&
+        s.set?.status === undefined,
+    );
+    expect(lockClear).toBeDefined();
+
+    // No board broadcast of a todo status-move; the card did not move.
+    expect(publishIssueStatusChangedMock).not.toHaveBeenCalledWith("co-1", "TASK-1", "todo");
+  });
+
+  it("(g) ASSIST (effectiveAutonomy=1): task still in_progress + owned by this run → guard STILL fires (release + fail) — regression guard for the guard", async () => {
+    // Identical task state to (f), only the dial differs. At Assist the agent WAS
+    // permitted to advance (→ in_review) but didn't → a genuine stall the guard
+    // must still catch. This pins that the autonomy gate did not neuter the
+    // guard's real purpose.
+    getByIdMock.mockResolvedValueOnce({
+      id: "TASK-1",
+      status: "in_progress",
+      executionRunId: "run-1",
+    });
+    const db = makeDb();
+
+    const result = await runAoaAgent(db as any, "a-1", {
+      ...TASK_PAYLOAD,
+      effectiveAutonomy: 1,
+    });
+
+    expect(result.status).toBe("failed");
+    expect(result.errorMessage).toMatch(/still in progress|not advanced/i);
+
+    const release = db._sets.find(
+      (s: any) => s.set?.status === "todo" && s.set?.executionRunId === null,
+    );
+    expect(release).toBeDefined();
+    expect(release.set.checkoutRunId).toBe(null);
+    expect(publishIssueStatusChangedMock).toHaveBeenCalledWith("co-1", "TASK-1", "todo");
+  });
+
+  it("(h) ASSIST (effectiveAutonomy=1): task moved to in_review (agent succeeded) → guard no-op, run completes", async () => {
+    getByIdMock.mockResolvedValueOnce({
+      id: "TASK-1",
+      status: "in_review",
+      executionRunId: "run-1",
+    });
+    const db = makeDb();
+
+    const result = await runAoaAgent(db as any, "a-1", {
+      ...TASK_PAYLOAD,
+      effectiveAutonomy: 1,
+    });
+
     expect(result.status).not.toBe("failed");
     const release = db._sets.find((s: any) => s.set?.status === "todo");
     expect(release).toBeUndefined();

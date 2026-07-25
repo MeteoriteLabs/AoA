@@ -46,6 +46,7 @@ import { activityRoutes } from "./routes/activity.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
 import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { sidebarPreferencesRoutes } from "./routes/sidebar-preferences.js";
+import { viewerPreferencesRoutes } from "./routes/viewer-preferences.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
 import { userEntityPinRoutes } from "./routes/user-entity-pins.js";
 import { userNoteRoutes } from "./routes/user-notes.js";
@@ -103,7 +104,7 @@ import { createMarketplaceRouter } from "./routes/marketplace.js";
 import { createMarketplaceInstallRouter } from "./routes/marketplace-installs.js";
 import { createMarketplaceCompanyRouter } from "./routes/marketplace-company.js";
 import { providerRoutes } from "./routes/providers.js";
-import { MarketplaceCatalogService } from "./services/aoa-marketplace.js";
+import { MarketplaceCatalogService, registerMarketplaceCatalogService } from "./services/aoa-marketplace.js";
 import { pluginLoader } from "./services/plugin-loader.js";
 import { pluginRollbackService } from "./services/plugin-rollback.js";
 import { pluginRegistryService } from "./services/plugin-registry.js";
@@ -379,6 +380,7 @@ export async function createApp(
   api.use(sidebarBadgeRoutes(db));
   api.use(cockpitRoutes(db));
   api.use(sidebarPreferencesRoutes(db));
+  api.use(viewerPreferencesRoutes(db));
   api.use(inboxDismissalRoutes(db));
   api.use(userEntityPinRoutes(db));
   api.use(userNoteRoutes(db));
@@ -483,6 +485,10 @@ export async function createApp(
       }
     },
   });
+  // Publish the instance so paths below the route layer can reach it — today
+  // the company-create crew bootstrap (T2.3), which must be able to WAIT for a
+  // catalog on a cold cache rather than race the fire-and-forget boot sync.
+  registerMarketplaceCatalogService(marketplaceCatalogService);
   marketplaceCatalogService.startSyncLoop();
   api.use("/marketplace", createMarketplaceRouter({ service: marketplaceCatalogService }));
 

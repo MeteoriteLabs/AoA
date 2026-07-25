@@ -25,7 +25,7 @@
 // (its own transaction inside createMarketplaceAgent) so one member's
 // failure never blocks the others or corrupts the team's existing roster.
 
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { teams, teamMembers, agents } from "@armyofagents/db";
 import type { CatalogItem } from "@armyofagents/shared";
@@ -34,6 +34,7 @@ import { parseMarketplaceAgentTemplate, normalizeMarketplaceAgentTemplate } from
 import { createMarketplaceAgent } from "./agent-create.js";
 import type { AgentInstructionsServiceLike } from "./agent-create.js";
 import { resolveAgentNameConflict } from "./conflict-resolver.js";
+import { crewLegacySlugCandidates } from "./crew-constants.js";
 import { logger } from "../../middleware/logger.js";
 
 interface TeamTemplateBody {
@@ -107,8 +108,50 @@ export async function reconcileTeamMembers(
     const missing = teamBody.agents.filter((a) => !installedOrigins.has(a.templateOrigin));
     if (missing.length === 0) continue;
 
+    // A roster member is "missing" here purely because no TEAM MEMBER carries
+    // its origin — which cannot distinguish "this company never had one" from
+    // "this company has one that is not yet origin-stamped or not yet linked".
+    // Installing in the second case renames the newcomer (`Adjutant-2`) and
+    // strands the original row forever: the next pass sees the origin present
+    // and skips it, so the row every task and run points at is never adopted.
+    //
+    // This fires today for a legacy Steward/Chronicler (NULL origin, absent
+    // from `CREW_NAMES`) and for any partially-adopted crew. Name collision is
+    // the right test because it is exactly what `resolveAgentNameConflict`
+    // would have renamed around.
+    const unmanagedRows = (
+      (await db
+        .select({ name: agents.name, templateOrigin: agents.templateOrigin })
+        .from(agents)
+        .where(and(eq(agents.companyId, companyId), eq(agents.kind, "aoa")))) as Array<{
+        name: string;
+        templateOrigin: string | null;
+      }>
+    ).filter((row) => !row.templateOrigin || row.templateOrigin.endsWith("@legacy"));
+    const unmanagedNames = new Set(unmanagedRows.map((row) => row.name));
+    // Name alone is not enough: a founder can rename a crew agent without
+    // touching `templateOrigin`, and `backfillCrewTemplateOrigin`'s
+    // `…/<slug>@legacy` stamp survives that rename. Match on either.
+    const unmanagedLegacySlugs = new Set(
+      unmanagedRows
+        .map((row) => row.templateOrigin)
+        .filter((origin): origin is string => !!origin && origin.endsWith("@legacy"))
+        .map((origin) => origin.slice(0, -"@legacy".length).split("/").pop()!.toLowerCase()),
+    );
+
     let addedForThisTeam = 0;
     for (const memberSpec of missing) {
+      if (
+        unmanagedNames.has(memberSpec.name) ||
+        [...crewLegacySlugCandidates(memberSpec)].some((slug) => unmanagedLegacySlugs.has(slug))
+      ) {
+        logger.warn(
+          { companyId, teamId: teamRow.id, templateOrigin: memberSpec.templateOrigin, name: memberSpec.name },
+          "team-reconcile: an unmanaged agent already holds this roster member's name — refusing " +
+            "to install a renamed duplicate. Run crew repair to adopt the existing row instead.",
+        );
+        continue;
+      }
       const agentItem = catalogById.get(memberSpec.templateOrigin);
       if (!agentItem || agentItem.type !== "agent") {
         logger.warn(

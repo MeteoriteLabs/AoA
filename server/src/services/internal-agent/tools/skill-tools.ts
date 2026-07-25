@@ -44,7 +44,7 @@ export const useSkillTool: AgentTool = {
 
     try {
       const { companySkills, agents, internalAgentConfig } = await import("@armyofagents/db");
-      const { eq } = await import("drizzle-orm");
+      const { and, eq } = await import("drizzle-orm");
 
       // Flexible resolution: the model sometimes drops the "skill:" prefix or
       // passes the slug/name. Resolve to the canonical company skill.
@@ -83,31 +83,101 @@ export const useSkillTool: AgentTool = {
         };
       }
 
-      // Curated-source-of-truth enforcement: the Commander may only use skills
-      // selected for it (agents.skillKeys). The bridge sets actorType
-      // "commander" but not an agent id, so resolve the Commander agent from
-      // companyId via internalAgentConfig.agentId. Check the CANONICAL key.
+      // Curated-source-of-truth enforcement (Decision D8): an agent may only use
+      // skills deliberately attached to it (agents.skillKeys). The skill LIBRARY
+      // is open (D7) — a founder can install from any GitHub repo — so this
+      // per-agent allowlist is the ONLY thing standing between a crew agent and
+      // an arbitrarily-sourced skill. It must be enforced for BOTH callers:
+      //
+      //   • Commander (actorType "commander"): the bridge sets no agent id, so
+      //     resolve the Commander agent from companyId via
+      //     internalAgentConfig.agentId. That row is ALREADY company-scoped, so
+      //     the agents lookup needs no companyId conjunct (unchanged behaviour).
+      //
+      //   • Crew  (actorType "agent" + agentKind "aoa" + ctx.agentId): the agent
+      //     id comes from AOA_AGENT_ID in the bridge subprocess — an env value —
+      //     so the agents lookup MUST company-scope (and(id, companyId)). Without
+      //     it, a crew run could resolve another company's agent (and thus its
+      //     skillKeys allowlist). A cross-company / missing agent yields an empty
+      //     allowlist → NOT_ENABLED, never a skill leak.
+      //
+      // Other actors (board, org) are intentionally NOT gated here (out of scope
+      // for this task). The shared allowlist check below is factored out so the
+      // two paths can only differ in HOW they resolve/scope the agent, never in
+      // the allow/deny decision itself.
+      let scopedAgentId: string | null = null;
+      let enforcementSurface: "commander" | "crew" | null = null;
+
       if (ctx.actorType === "commander") {
         const [cfg] = await ctx.db
           .select({ agentId: internalAgentConfig.agentId })
           .from(internalAgentConfig)
           .where(eq(internalAgentConfig.companyId, ctx.companyId))
           .limit(1);
-        if (cfg?.agentId) {
-          const [agent] = await ctx.db
-            .select({ skillKeys: agents.skillKeys })
-            .from(agents)
-            .where(eq(agents.id, cfg.agentId))
-            .limit(1);
-          const allowed: string[] = Array.isArray(agent?.skillKeys) ? agent.skillKeys : [];
-          if (!allowed.includes(skill.key)) {
-            return {
-              success: false,
-              data: null,
-              summary: `Skill '${skill.key}' is not enabled for Commander. Enable it in Settings → Commander → Skills.`,
-              error: "NOT_ENABLED",
-            };
-          }
+        scopedAgentId = cfg?.agentId ?? null;
+        enforcementSurface = "commander";
+      } else if (ctx.actorType === "agent" && ctx.agentKind === "aoa") {
+        // Key on kind ALONE (mirrors authorize-tool.ts:67, which gates the
+        // runtime allowlist on agentKind so a misconfigured identity fails
+        // closed rather than falling through). agentId may be null/empty here —
+        // handled by the fail-closed guard below.
+        scopedAgentId = ctx.agentId ?? null;
+        enforcementSurface = "crew";
+      }
+
+      // Crew identity is mandatory. A missing/empty agentId is an env/caller
+      // defect, never a legitimate crew run (a crew run is definitionally an
+      // agent executing as itself), so fail closed rather than fall through to
+      // the unconditional allow. `!scopedAgentId` also catches "".
+      if (enforcementSurface === "crew" && !scopedAgentId) {
+        return {
+          success: false,
+          data: null,
+          summary: `Skill '${skill.key}' is not enabled: crew agent identity could not be verified.`,
+          error: "NOT_ENABLED",
+        };
+      }
+
+      if (enforcementSurface && scopedAgentId) {
+        // Company-scope the lookup ONLY for crew (its agentId is an untrusted
+        // env value). Commander's agentId is transitively company-scoped via the
+        // internalAgentConfig row above, so its WHERE stays a single eq — byte-
+        // compatible with the prior behaviour.
+        const where =
+          enforcementSurface === "crew"
+            ? and(eq(agents.id, scopedAgentId), eq(agents.companyId, ctx.companyId))
+            : eq(agents.id, scopedAgentId);
+        const [agent] = await ctx.db
+          .select({ skillKeys: agents.skillKeys })
+          .from(agents)
+          .where(where)
+          .limit(1);
+        // Observability (no behaviour change): for crew, a row that fails to
+        // resolve UNDER COMPANY SCOPE is a strong env-corruption / cross-tenant
+        // signal — distinct from a resolved agent that simply lacks the skill.
+        // Surface it so the two collapse-to-`allowed=[]` cases are separable.
+        if (enforcementSurface === "crew" && !agent) {
+          console.warn(
+            `use_skill: crew agent '${scopedAgentId}' did not resolve under company scope ` +
+              `(companyId='${ctx.companyId}') — denying skill '${skill.key}'. ` +
+              `Possible env corruption or cross-tenant identity.`,
+          );
+        }
+        const allowed: string[] = Array.isArray(agent?.skillKeys) ? agent.skillKeys : [];
+        if (!allowed.includes(skill.key)) {
+          return enforcementSurface === "commander"
+            ? {
+                success: false,
+                data: null,
+                summary: `Skill '${skill.key}' is not enabled for Commander. Enable it in Settings → Commander → Skills.`,
+                error: "NOT_ENABLED",
+              }
+            : {
+                success: false,
+                data: null,
+                summary: `Skill '${skill.key}' is not enabled for this agent. Ask the founder to attach it on the agent's Skills tab (Agent → Skills).`,
+                error: "NOT_ENABLED",
+              };
         }
       }
 

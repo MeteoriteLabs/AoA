@@ -12,6 +12,7 @@ import {
   boolean,
 } from "drizzle-orm/pg-core";
 import { relations, sql } from "drizzle-orm";
+import type { ShowRef } from "@armyofagents/shared";
 import { companies } from "./companies.js";
 import { projects } from "./projects.js";
 import { goals } from "./goals.js";
@@ -214,6 +215,13 @@ export const discussionEntries = pgTable(
     // Client-generated idempotency key for user Sends. A retried Send replays the
     // original entry. Nullable: agent/system/action-gated entries carry no key.
     clientSubmissionId: text("client_submission_id"),
+
+    // Viewer Upgrade Phase 7B: navigational ShowRefs carried by crew run-result
+    // entries so the Discussions viewer can open the delivered task/artifacts/
+    // outputs. Nullable — only run-result delivery entries populate it. Mirrors
+    // internal_agent_messages.output_refs (typed CommanderOutputRef[]); here the
+    // superset ShowRef[] type covers v:2 navigational kinds.
+    outputRefs: jsonb("output_refs").$type<ShowRef[]>(),
 
     createdBy: text("created_by").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })

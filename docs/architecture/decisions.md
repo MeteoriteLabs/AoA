@@ -1183,4 +1183,544 @@ The two items deferred by Decision #107 shipped together on `feat/inbox-hub-tabb
 
 7. **Process success is not task completion.** Technical run completion remains in run ledgers and observability. User-facing task completion and source-Discussion milestones are emitted only from actual task-domain transitions.
 
-**Plan:** `docs/aoa/plans/2026-07-11-commander-ask-human-completion-policy-plan.md`.
+**Addendum (2026-07-24) — crew completion at default autonomy (product-approved):**
+
+8. **The default autonomy is Assist (1), not Manual (0).** The agent-work dial defaults to `1`. A fresh company's crew must be able to hand a finished task to `in_review` out of the box; completing to `done` still requires Drive (2). Rationale: at Manual (0) the A4 dial-gate (`set-task-status-tool.ts` → `assertAgentStatusTransition`) forbids **any** status advance, so a crew agent physically could not move its task — and the runner's silent-stuck guard then failed the run and ping-ponged the task back to `todo` forever. Schema-default changes affect NEW company rows only; existing configs keep their stored value (intentional — no mass migration).
+
+   *Originally landed on the shared `internal_agent_config.autonomyLevel` (migration `0180_little_omega_sentinel`), which moved four systems at once. **Superseded by §10 below** — the default now lives on `crew_autonomy_level`.*
+
+   **Nothing dangerous unlocks at Assist.** Assist permits advancing only to `in_review` (never `done` — that needs Drive), enables agent-*initiated* scope-compilation, and does **not** auto-dispatch or auto-complete anything. Every real crew dispatch still passes `preflightCrewDispatch` (company budget hard-stop + thread pause/disable) and every founder-gated approval path (crew_dispatch approval, memory candidates, spend brakes) is unchanged.
+
+   At Assist a fresh company's Adjutant/thread scope-draft gate resolves to `accept_apply` (auto-create crew tasks as `planning` + raise ONE `crew_dispatch` Inbox approval) rather than `draft_only` (propose-only). This is onboarding-visible and intended. `accept_apply` still does **not** dispatch — dispatch needs the founder to approve the `crew_dispatch` item.
+
+9. **A Manual-autonomy crew run that did its work is a SUCCESS, not a failure.** The crew runner's completion guard (`runner.ts`, "TASK SILENT-STUCK GUARD") treats a still-`in_progress` task after the run as a failure **only when the agent was permitted to advance it** — i.e. `effectiveAutonomy >= 1` (Assist/Drive). At `effectiveAutonomy === 0` (Manual) a still-`in_progress` task is the **expected terminal state** (the dial-gate forbade the advance): the run completes successfully, the agent's posted comment/artifact stands, the task is **not** released to `todo`, and no "Failed" card posts. The runner clears only the execution lock so the still-`in_progress` task is founder-actionable (Manual = the founder advances it) without being stuck-locked; Manual also gates agent-initiated re-dispatch, so the task does not loop. The guard's real purpose — catching a genuinely hung run at Assist/Drive that never moved the task — is preserved (unknown/`null` dial still fires the guard; only a positive `=== 0` exempts). The guard's error text was corrected from the misleading `"...no set_task_status call"` (an assumption) to `"crew task run finished with the task still in progress (not advanced)"`.
+
+**Addendum (2026-07-24, second) — D18 dial split BUILT (supersedes the §8 blast-radius note):**
+
+10. **Two columns, not one. The shared dial is gone.** `internal_agent_config` now carries **two independent autonomy dials** (migration `0183_clean_lady_ursula`). This closes the D18 follow-up filed in §8; the "one row drives four flows" description above is **historical**, not current behaviour.
+
+    | Column | Owner | Read by |
+    |---|---|---|
+    | `autonomy_level` (`autonomyLevel`) | **Commander only** | Nothing at runtime today — see the honesty note below |
+    | `crew_autonomy_level` (`crewAutonomyLevel`) | **Agent work** | crew task runs, org-agent heartbeat runs, and every Adjutant/thread flow |
+
+    The **complete** reader enumeration, and the dial each one reads (verified against source, not inferred):
+
+    - `dispatcher.ts` → `resolveCompanyConfig` — crew wakeups + crew task runs — **crew**
+    - `heartbeat.ts` → `resolveHeartbeatEffectiveAutonomy` — org-agent heartbeat runs — **crew** (see naming note)
+    - `controller-adjutant-runner.ts` — Adjutant scope-compilation — **crew**
+    - `thread-participation-runner.ts` — crew @mention answers — **crew**
+    - `thread-agent-actions.ts` → `resolveScopeAutoAcceptGate` — scope-draft auto-accept — **crew**
+    - `thread-events.ts` — proactive Adjutant wake — **crew**
+    - `threads.ts` → `advancePhase` — phase-advance auto-approve + dispatch — **crew**
+    - `routes/discussions.ts` — the phase-advance authz gate that mirrors `advancePhase` — **crew**
+    - `reconcile-autonomy-scale.ts` — startup clamp of the legacy 0..3 scale — **both**, independently
+    - `company-portability.ts` — export/import — **both**
+
+    Downstream consumers (`runner.ts`'s completion guard, `set-task-status-tool.ts`, `advance-phase-tool.ts`, `propose-crew-work.ts`, `tool-registry.ts`, `mcp-bridge.ts`, `cli-mode.ts`) read a **resolved** `effectiveAutonomy` off the run payload / tool context. They inherit whichever dial the resolution site chose and were deliberately left untouched — there is exactly one resolution site per system.
+
+11. **Naming honesty — `crew_autonomy_level` also governs ORG agents.** D18's language was "crew autonomy column" and the column keeps that name, but the dial means *"how far may an agent take its own task"*, which is the same question for a crew agent and an org-agent heartbeat run. Splitting those two further would be a third dial with no product story. The Settings control is therefore labelled **"Agent autonomy (crew + org agents)"**, the schema comment lists the org-heartbeat reader by name, and `docs/api/internal-agent.md` documents both the mismatch and the migration note for clients still sending `autonomyLevel`. What makes the narrow name acceptable is the **mitigation, not the reasoning**: this is documented deliberate narrowing rather than undocumented drift.
+
+    **RENAME TRIGGER — inherit this, not just the decision.** The asymmetry here is inverted from the usual failure mode: the column with the *honest* name (`autonomy_level`) does nothing, and the one with the *narrow* name (`crew_autonomy_level`) does everything. That holds only while every consumer is crew or org. **If a third consumer arrives that is neither — a plugin-run agent, an autonomously-executing routine, a scheduled proactive scanner — do NOT add it to `crew_autonomy_level` by default.** That is the point at which renaming to `agent_autonomy_level` stops being churn and becomes the cheaper option, because a third unrelated consumer is what turns "documented narrowing" back into drift.
+
+12. **Commander's dial is currently inert, and that is stated rather than hidden.** No Commander code path reads `autonomy_level` at runtime: Commander's gating is the unconditional runtime-approval policy (`mcp-bridge.ts` → `runtime-approvals.ts`, `actorType:"commander"`). The column is retained as D18's declared Commander home and is carried by portability bundles. The Settings UI shows **no level for Commander at all** — not a read-only one. A control would have to display *some* number, and every number would assert behaviour that does not exist; the pre-split stub hard-coded `0` while the column defaults to `1` and round-trips through portability bundles, so importing a bundle with `2` displayed "Level 0". Commander's block is now a plain statement that it asks before every governed action, pointing at the runtime-approval settings that actually govern it.
+
+13. **Existing rows were backfilled, not defaulted.** `ADD COLUMN ... DEFAULT 1` would have stamped every existing row with Assist, silently moving any company that had deliberately chosen Manual or Drive. Migration `0183` therefore runs `UPDATE internal_agent_config SET crew_autonomy_level = autonomy_level` immediately after the DDL: on the day of the split the crew dial holds exactly what the crew readers read the day before, so **no live company's behaviour moved**. Both dials keep the Assist(1) default for new rows, preserving §8. Pre-split portability bundles (no `crewAutonomyLevel`) import with the same fallback.
+
+14. **The invariant under test is "moving one does not move the other."** A change that merely aliased the two columns would satisfy any single-dial assertion, so the tests are written to fail on an alias: `d18-autonomy-dial-split.test.ts` (distinct SQL names, plus **three** source guards) and `d18-autonomy-dial-split.integration.test.ts` (real Postgres; Commander=Drive/crew=Manual must behave Manual **and** Commander=Manual/crew=Drive must behave Drive, through the real `thread-agent-actions.ts` gate). Ablation-verified: repointing one reader back at `autonomyLevel` fails both directional cases and the registry guard.
+
+    **A reader can take two shapes, and the guards cover both.** A column-name sweep alone is not enough: a whole-row `db.select().from(internalAgentConfig)` followed by `cfg.autonomyLevel` never names the column. That shape is not hypothetical — six such selects exist, and `agent-loop.ts` spreads the entire row (both dials) into the object handed to `cliService.chat`, so a `config.autonomyLevel` check added inside `cli-mode.ts` or a provider would re-couple Commander invisibly. The guards are therefore (a) a column-name sweep with a closed allowlist, (b) a token sweep asserting the Commander **runtime** surface (`services/internal-agent/*.ts` + `providers/`) never mentions `autonomyLevel` in any form, and (c) a whole-row-reader sweep with its own allowlist for the two paths that legitimately move the value without interpreting it (the settings PATCH and portability).
+
+15. **Known residual, accepted: the settings route cannot detect a *wrong known key*.** `PATCH …/internal-agent/config` is `.set({ ...req.body, updatedAt })` with zod stripping unknown keys. Zod protects against unknown keys, not against a caller who sends `autonomyLevel` *meaning* "agent autonomy" — that writes the inert column and nothing fails. This predates the split; the split makes it silent rather than loud, because pre-split the write would at least have worked. Mitigation is documentation, not code: `docs/api/internal-agent.md` carries an explicit migration note for clients still sending `autonomyLevel`. A server-side rejection would need a deprecation window and is not worth one for a field with no external consumers today.
+
+**Plan:** `docs/aoa/plans/2026-07-11-commander-ask-human-completion-policy-plan.md`. D18 split: `docs/aoa/plans/2026-07-24-phase2-marketplace-provisioning.md` § T2.10.
+
+## Decision #110 - Two-tier Claude instruction isolation for agent runs (2026-07-23)
+
+**Status:** Locked 2026-07-23 (plan decision D16). Implemented by the crew config-isolation work; one sub-claim remains unverified and is stated as such below.
+
+1. **Two tiers, not one switch.** The operator's **global** Claude config — `~/.claude`'s hooks, `settings.json`, `plugins/`, user `skills/`, and `CLAUDE.md` — is **blocked** for agent runs. The **workspace repository's own `CLAUDE.md` is allowed**: build commands, test conventions and architecture rules are legitimate engineering context, and an agent that ignores them does the wrong thing confidently.
+
+2. **AoA's instructions outrank the repo's by construction, not by convention.** Agent instructions are delivered via `--append-system-prompt-file` (`claude-local/src/server/execute.ts:650`). A repo `CLAUDE.md` arrives as user-level context, so no precedence rule needs enforcing — the layering is structural.
+
+3. **The mechanism is config-home redirection, not a disable flag.** Blocking is achieved by pinning `CLAUDE_CONFIG_DIR` to a fresh per-run directory and provisioning **only** `.credentials.json` into it. The operator's global instructions live *inside* the config home, so redirecting the home is what makes them unreachable.
+
+4. **`--bare` was evaluated and rejected.** It is the CLI's only all-or-nothing context switch (skips hooks, plugin sync, auto-memory and `CLAUDE.md` auto-discovery). It is **unusable here** for two independent reasons: it forces `ANTHROPIC_API_KEY`/`apiKeyHelper` auth and never reads OAuth or the keychain, which breaks the subscription-based credential provisioning this design depends on; and it suppresses **all** `CLAUDE.md` discovery including the project's, contradicting tier two.
+
+5. **A previously-assumed mechanism was disproven.** Earlier planning drafts referenced `CLAUDE_CODE_DISABLE_CLAUDE_MDS` and `CLAUDE_CODE_DISABLE_AUTO_MEMORY`. **Neither exists in the installed CLI** (`claude --help`, 2026-07-23). Do not reintroduce them.
+
+6. **Open sub-claim — do not treat as settled.** Whether `CLAUDE_CONFIG_DIR` also redirects the *user-level* `~/.claude/CLAUDE.md`, or whether that file is reached by a second route, is **not established**. Tier one is proven for `settings.json`/`plugins/`/`skills/` (the per-run directory demonstrably contains only the credential); the user-level `CLAUDE.md` specifically is inferred, not observed. **What would settle it:** during live crew verification, run with a distinctive marker string in the operator's `~/.claude/CLAUDE.md` and assert it is absent from the run transcript. Note that testing this by invoking `claude` from inside an agent session is unreliable — that has produced false findings in this project before.
+
+7. **Tier two was satisfied by accident, and wrongly — CLOSED 2026-07-23.** Crew runs were not workspace-backed: the crew runner never set a workspace, so `cwd` fell through to `process.cwd()` (`claude-local/src/server/execute.ts:188`) — the **AoA server's own repository**. Every crew run therefore loaded *AoA's* `CLAUDE.md` rather than the customer workspace's. This is the most likely mechanism behind the observed live hijack. **Fixed by crew workspace resolution (T5):** the crew runner now populates `context.paperclipWorkspace` by reusing heartbeat's own resolver (`server/src/services/workspace-resolution.ts`, extracted from `heartbeat.ts`), with the per-agent home `<AOA_HOME>/instances/<id>/workspaces/<agentId>` as an always-present floor — so `process.cwd()` is unreachable from the crew path. Crew does **not** realize per-task git worktrees; an `isolated_workspace` / `operator_branch` project policy degrades to the project's shared primary workspace until W3b.
+
+**Key files:** `packages/adapters/claude-local/src/server/ambient-config.ts`, `execute.ts`; `packages/adapter-utils/src/server-utils.ts` (`mergeChildEnv`, `foldEnvKey`); `server/src/services/internal-agent/aoa-agents/runner.ts`. Plan: `docs/aoa/plans/2026-07-19-crew-execution-phase1-foundation.md`.
+
+## Decision #111 — Teams may be company-wide: `teams.parent_project_id` is nullable (D21) (2026-07-24)
+
+**Status:** Locked 2026-07-24 (Phase 2 marketplace provisioning, plan decision D21). Implemented by T2.1; migration `0181_light_overlord`.
+
+1. **A team may have no parent department.** `teams.parent_project_id` is nullable. `NULL` means **company-wide**, not "unknown" or "not yet set" — it is a first-class scope, and the only writer of it is the crew installer.
+
+2. **Why it had to change.** AoA crew (Adjutant, Scout, Engineer, …) are **company-wide singletons** — Adjutant serves every department. Nothing creates a department at company-create time (not company creation, not onboarding; the founder makes them), so at the moment the crew is installed there is no department to install into. Worse, the column carries `ON DELETE CASCADE`: parenting the crew to an arbitrary department meant deleting that department would silently delete the crew team row.
+
+3. **The FK stays `ON DELETE CASCADE`.** Nullability is not a relaxation of the departmental contract — a departmental team still cascades away with its department. A `NULL` parent simply has nothing to cascade from. Both halves are asserted together in `server/src/__tests__/teams-null-parent-cascade.integration.test.ts`; a test that only checks "NULL is accepted" would not have caught a dropped FK.
+
+4. **Existing rows are untouched.** The migration is a bare `DROP NOT NULL`. No backfill, no re-parenting.
+
+5. **The public install API is unchanged.** `POST …/marketplace/install` still returns **400** for a team or agent install without a `targetDepartmentId` (`server/src/routes/marketplace-installs.ts:338`), and `createTeamSchema` still requires `parentProjectId`. Only the internal crew bootstrap may omit it. `installTeam` accepts `null`/absent and skips the department pre-flight — but a **supplied** id is still fully validated (exists, belongs to the company, `type: 'department'`). A bad id is an error, never a silent fallback to company-wide.
+
+6. **Authorization fails closed on `NULL`.** `assertDepartmentAccess` takes `string | null`; a null department is founder / instance-admin only. No team lead can be "lead of no department", so the lead-scoped grant cannot apply to a company-wide entity.
+
+7. **A company-wide team's roster is installer-owned.** `addMember`, `removeMember`, and `updateMemberRole` all **refuse** when `parentProjectId` is null (`server/src/services/teams.ts`, `loadTeamForRosterEdit`). The roster comes from the marketplace package, is written by the installer inside its own transaction, and is reconciled by `team-reconcile`. This is deliberately symmetric: closing only `addMember` would let a founder strip the crew one agent at a time with no supported way to put anyone back. The department-membership lookup in `addMember` is also the **tenancy-bearing** guard — skipping it for null-parent teams rather than refusing would open a cross-tenant path. Making the crew roster founder-editable requires its own company-scoped agent check and is a separate design call.
+
+8. **Company-wide is a visible state, not a blank.** The Teams list renders a distinct **"Company-wide"** pill rather than the `—` used for an unresolvable department id, and search matches that label so the crew is findable by scope (`ui/src/components/team/TeamCard.tsx`, `ui/src/pages/TeamsListPage.tsx`).
+
+**Resolved follow-up (T2.3, 2026-07-24):** `dispatchInstall` no longer hard-throws for a team install without a department. The throw was a redundant backstop — the user-facing guard is the route's 400 (point 5 above), which fires *before* `startInstallOperation` — so relaxing it loosened no HTTP path. The relaxation is **null-only**: a supplied department id is still forwarded verbatim to `installTeam`, which validates it. See Decision #112.
+
+**Plan:** `docs/aoa/plans/2026-07-24-phase2-marketplace-provisioning.md` (T2.1).
+
+---
+
+## Decision #112 — Company creation installs the crew from the marketplace, and degrades loudly (D21/P8, P8c) (2026-07-24)
+
+**Status:** Locked 2026-07-24 (Phase 2 marketplace provisioning, T2.3).
+
+1. **Company create installs `team:aoa-curated/default-crew`.** The legacy `ensure-*` seeders write no `templateOrigin`; the boot backfill stamps them `…@legacy`; and `crew-updater.ts` skips `@legacy` rows **forever**. Every company was therefore permanently frozen out of the update pipeline that was already built and running. Installing the marketplace team at create time is what makes a company **born updateable**.
+
+2. **Through the orchestrator, not straight to `installTeam`.** `startInstallOperation` + `dispatchInstall` own the `marketplace_install_operations` record, `cascadeResults`, and idempotency-key dedupe — which T2.7 (diff/merge) and T2.8 (re-materialization) build on. A second, divergent bootstrap path would fork them.
+
+3. **Deterministic idempotency key `bootstrap-crew:<companyId>`, plus an atomic claim.** `startInstallOperation` returns the existing operation on a key hit, and `claimOperationForDispatch` then decides ownership with a conditional `UPDATE … SET status='running' WHERE status IN ('pending','failure')`. A status *read* would not be enough: `startInstallOperation` is check-then-act, and two concurrent callers can both receive the same row while it is still `pending` (the loser's conflict-fetch returns the winner's row before the winner writes `running`). Dispatching twice would re-run the team installer and mint a renamed duplicate roster.
+
+   **Claimable statuses:** `pending`, `failure` (nobody owns a failed install and nothing was installed, so repair must be able to retry), and a `running` row **older than `OPERATION_CLAIM_STALE_AFTER_MS`** (10 min). Without that last one a process killed between claim and terminal patch strands the row forever: after 24h the idempotency lookup misses, the INSERT trips the unbounded unique index, `onConflictDoNothing` suppresses it, and the fallback SELECT — which has no `createdAt` cutoff — returns the same stale `running` row, so the caller reports "already dispatched", short-circuits **before** the seeding guard, and the company ends with no marketplace crew, no legacy crew, and no repair path. The claim also resets `startedAt` and clears `errorMessage`/`completedAt`, so a retried-and-succeeded operation does not end `success` carrying the previous attempt's error. A fresh `running` is never stolen; `requested` is never claimable (it is a pending human decision).
+
+   **Correction (2026-07-24):** an earlier draft of this decision — and of the T2.3 plan — justified the key by saying "company create already retries on issue-prefix collision, so this is reachable". **That is false.** The retry loop in `companies.ts` only re-enters on a conflict at the company `INSERT`, before any `companyId` exists, so it can never re-provision the same company. The key and the claim are still correct and load-bearing; the reachable repeat caller is T2.3b's repair path, and `failure` is claimable precisely so that repair can retry.
+
+4. **Catalog resolution is a bounded wait, not a cache read.** cached catalog → (bounded) live sync, which itself falls back to the bundled snapshot → `null`. The boot sync is fire-and-forget (`startSyncLoop` → `void this.sync()`), so a company created seconds after boot would otherwise read an empty cache and be provisioned `@legacy` — non-deterministically, and invisibly afterwards. `MarketplaceCatalogService.ensureCatalogAvailable` **joins** the in-flight sync (deduped) under `CATALOG_AVAILABILITY_TIMEOUT_MS` (12s, deliberately shorter than the 30s CDN timeout so a hung CDN cannot hold onboarding open).
+
+   **What this guarantees vs. makes likely:** it *guarantees* create never loses to the boot sync merely by ordering — a cold cache waits for the same attempt instead of racing it. It does **not** guarantee a marketplace roster: a CDN that is slow past the budget, or unreachable with no bundled snapshot present, still degrades. That is intentional.
+
+5. **`app.ts` registers the catalog service in a process-wide registry.** The service is constructed at the app layer (it owns the bundled-snapshot provider); company create sits far below the route layer. With **no** service registered — every unit and integration test that is not explicitly exercising this path — resolution is cache-only and degrades immediately. That is the seam that keeps the test suite off the network.
+
+6. **The degrade is lossy, and the log says which roles are lost.** The legacy seeders cover 8 roles; the crew team declares 9. There is **no `ensure-reviewer.ts` anywhere in the tree**, so a company provisioned during a marketplace outage is permanently missing its Reviewer with nothing in the data to distinguish it from a complete roster. `describeLegacyCoverageGap` computes the gap from the live team item's `requires[]` when a catalog is in hand (authoritative, catches roster drift) and from a static last-known map otherwise, and the degrade log names the gap in both the message and the structured context. A generic "install failed, using legacy seeders" line is not sufficient to diagnose this later.
+
+7. **The degrade calls `ensureCrewAgents`, never a union.** `ensureInfrastructureAgents` has already run unconditionally by then (P8d / T2.2). There is deliberately no "seed everything" export.
+
+8. **The create-time `isCrewMarketplaceManaged` gate SURVIVES.** T2.3 was specified to delete it as unreachable. It was kept: it is what pins the **read-the-gate-before-any-seeding** ordering that `aoa-bootstrap-wiring.test.ts` (`stampsOriginOnSeed`) guards — a read-after-write gate would let a company see its own freshly-inserted Commander, conclude "marketplace-managed", and skip its entire crew — and it correctly short-circuits a concurrent create that already installed the marketplace crew. It costs one indexed query.
+
+9. **The degrade re-checks a WITNESS immediately before it seeds, and repairs the record.** `dispatchInstall` can commit the team-body transaction, write `success`, and *then* throw — the success DB write can fail, and `publishLiveEvent` is a bare synchronous `EventEmitter.emit` so a throwing subscriber propagates — landing in its own catch, which overwrites the terminal patch with `failure`. A `failed` result therefore does not prove nothing was installed. Seeding on top of a committed roster is silent and permanent: `seedCrewAgent` hits `ON CONFLICT DO NOTHING` on every name-overlapping role, takes the `!inserted` branch, and overwrites the **marketplace** rows' `runtimeConfig.aoa.toolAllowlist`, possibly their adapter, and their instruction bundle — while `templateOrigin`/`templateVersion` survive, so `crew-updater` sees managed rows at the current catalog version and never repairs them, and no duplicate row is minted to reveal the damage. One indexed query before the write closes the whole class rather than the two known triggers.
+
+   The witness is the `teams` row carrying the crew team's `templateOrigin` — written in the same transaction as the agents, and `installTeam` now **refuses to write it with zero agents**, so it is exact in both directions. It is deliberately **not** `isCrewMarketplaceManaged`: that predicate also matches the infrastructure agents seeded moments earlier, and using it made a company skip its own crew as soon as any seeder stamped an origin (`aoa-bootstrap-wiring.test.ts`, `stampsOriginOnSeed`, caught exactly that). The witness is tri-state — `installed` / `absent` / `unknown` — and `unknown` fails closed *without* claiming the install succeeded.
+
+   **Refusing to seed is not sufficient on its own.** That guard protects the legacy-seeder path but not the marketplace **re-install** path, which consumes the same lying row: a later `provisionCompanyCrew` (T2.3b repair) claims the `failure` row and re-runs `installTeam` over a company that already has the roster, minting `Scout-2` / `Reviewer-2` / `default-crew-2` — all carrying the same `templateOrigin`, which additionally breaks the single-row team lookups in `resolver.ts` and `team-reconcile.ts`. So the averted path **repairs the operation row** to `success` (not claimable), which closes the hole and corrects the audit record in one move.
+
+10. **The install is bounded, and the deadline aborts rather than abandons.** The published roster is 27 network fetches (`team.json` + 9 `agent.json` + 17 skill bodies — **zero** of the crew's skills carry `content.inline`). Sequential at `FETCH_TIMEOUT_MS` = 30s that is ~13.5 minutes inside an interactive POST, past which Node's 300s default `requestTimeout` was the real ceiling: a socket error, a founder retry, and a company row already created with an install still running. `CREW_INSTALL_DEADLINE_MS` (30s) is chained into every fetch as an `AbortSignal` and re-checked before each phase, and `CREW_INSTALL_FETCH_CONCURRENCY` (6) makes the healthy path ~1-2s. Worst case for company create is now ~42s (12s catalog + 30s install). The signal **aborts** in-flight requests rather than merely abandoning their results — and it fires on EVERY exit path, not just deadline expiry: a phase-1 503 or parse error used to cancel the timer and leave ~26 orphan fetches running at `FETCH_TIMEOUT_MS` apiece while the caller was already writing legacy rows — an install that landed after the caller had degraded would be point 9's clobber all over again. Other `installTeam` callers are unchanged (no signal, concurrency 1): the public install route is 202-accepted and does not pay this latency synchronously.
+
+11. **A failed sync is negatively cached.** With an empty cache, an unreachable CDN, and no bundled snapshot (any image built without `pnpm fetch-catalog` — the file is gitignored), the cache never fills, so *every* create would start a fresh 30s-timeout fetch and burn the full availability budget. `CATALOG_SYNC_FAILURE_COOLDOWN_MS` (60s) short-circuits `ensureCatalogAvailable` to cache-only after an attempt that produced no catalog.
+
+12. **Catalog unavailability keeps its cause.** `no-service-registered` (a wiring regression — nothing called `registerMarketplaceCatalogService`) must not read like a CDN blip in the degrade log, so `resolveCatalogForBootstrap` returns a typed reason that reaches `degradeReason` as e.g. `no-catalog:no-service-registered`.
+
+13. **Bundle import provisions too.** `companies.create` has a second caller — `company-portability.ts`, `new_company` mode. An imported company marketplace-provisions like any other, deliberately: skipping it would mint a second class of permanently-`@legacy` companies. It is safe against the bundle's own agents because the crew is `kind='aoa'` and every import/export agent path is `kind='org'`, so the two rosters never see each other.
+
+14. **Node >= 20.3.** The aggregate deadline uses `AbortSignal.any`, which landed in Node 20.3.0. On 20.0-20.2 it throws inside the fetch helper, is wrapped as a fetch failure, and every company on that runtime silently degrades to `@legacy` — arriving as a "CDN problem". `engines.node` is `>=20.3`. CI (24) and the Docker image were never exposed; source checkout, the supported install path, was.
+
+**Known limitation — "offline" means *catalog* offline, not *install* offline.** The bundled snapshot carries only the catalog **index**. `installTeam` still fetches `team.json` and each `agent.json` over the network (`fetchCatalogResource`), and published skills carry `content.inline === null`, so their bodies are fetched too. A genuinely network-isolated instance resolves a catalog from the snapshot and then **fails the install**, degrading to legacy. True offline provisioning would require bundling resource bodies, not just the index — not built, not claimed.
+
+**Key files:** `server/src/services/crew-provisioning.ts`, `server/src/services/marketplace-install/crew-bootstrap.ts`, `server/src/services/aoa-marketplace.ts`, `server/src/services/companies.ts`, `server/src/services/marketplace-install/orchestrator.ts`, `server/src/services/marketplace-install/team-installer.ts`, `server/src/services/marketplace-install/operation-store.ts`.
+
+**Plan:** `docs/aoa/plans/2026-07-24-phase2-marketplace-provisioning.md` (T2.3).
+
+## Decision #113 — Protected AoA agents are identity-keyed, and the guard lives at team uninstall (D23) (2026-07-24)
+
+**Context.** Commander and Steward are essential to AoA: Commander is the
+always-on internal assistant, Steward drives Inbox Hub curation. A marketplace
+uninstall must never destroy them.
+
+**Decisions.**
+
+1. **Protection is an AoA fact, enforced server-side** — not catalog metadata.
+   Neither agent is published to the catalog, so there is nothing upstream to
+   express it with even if we wanted to.
+
+2. **The set is keyed on agent IDENTITY, not on `templateOrigin`.** The obvious
+   origin-keyed design silently fails to protect the very agent it names:
+   `backfill-template-origin.ts`'s `CREW_NAMES` omits **Steward and
+   Chronicler**, and that backfill is the column's only writer, so Steward's
+   `templateOrigin` is `NULL` permanently. A canonical role slug is recovered
+   from **either** signal a row can carry — the origin (legacy-suffixed or a
+   catalog id) **or** the name — and either alone suffices.
+
+3. **Steward's NULL origin must NOT be "fixed" by stamping it.** That NULL is
+   load-bearing: the marketplace-managed gate requires
+   `templateOrigin IS NOT NULL AND NOT LIKE '%@legacy'`, which is precisely why
+   seeding infrastructure agents cannot flip a company to "managed". Stamping
+   Steward a non-`@legacy` origin would make every company self-report as
+   marketplace-managed and **suppress its entire crew**.
+
+4. **The guard belongs at team uninstall, not at agent delete.** `DELETE
+   /agents/:id` already hard-refuses every `kind='aoa'` row for all actors.
+   There are exactly three `delete(agents)` sites: the agents service, whole-
+   company delete (intended), and `team-uninstaller.ts`, which deletes members
+   with raw SQL inside its own transaction — so a per-agent guard is invisible
+   to it. That was the only unguarded path, and it is where the refusal lives.
+   The refusal is raised **before** the transaction opens.
+
+5. **Team uninstall DETACHES protected agents; it does not refuse.**
+   `uninstallTeam` partitions before any write, deletes the unprotected members
+   and the team row, retains the protected agents, and returns
+   `{ deletedAgentIds, retainedAgents }` (the route also projects
+   `retainedAgentIds`). Retained agents are excluded from **both** the
+   `aoa_agent_triggers` delete and the `agents` delete — excluding them from
+   only the latter would leave the row alive with its triggers wiped, which is
+   point 7's harm arriving through this door.
+
+   *Superseded reasoning, recorded so it is not re-adopted:* an earlier revision
+   refused the whole uninstall, on the argument that a `deletedAgentIds`
+   silently omitting requested members is worse than a named refusal. That is
+   an argument against **silence**, not against partial retention — an explicit
+   `retainedAgents` is not silent, and agents are not owned by teams. It also
+   rested on a false premise: `teamsService.loadTeamForRosterEdit` refuses both
+   `addMember` and `removeMember` when `parentProjectId === null`, and the crew
+   team is company-wide, so there was **no** detach path and no other route.
+   Refusing would have made the crew team permanently un-removable with the
+   only exit being deletion of the company.
+
+6. **Over-matching is deliberate and safe-by-direction.** A third-party agent
+   named `Commander` is treated as protected. That is recoverable (rename, then
+   delete); the inverse — deleting a real Commander — is not.
+
+7. **A catalog update must not functionally destroy a protected agent.**
+   `applyCrewAgentUpdate` deletes every `aoa_agent_triggers` row and re-inserts
+   only what the template carries, so a catalog change could drop Steward's
+   `sweep`/`role:steward` trigger and silently stop hub curation — the row
+   survives while the function dies. Trigger replacement is therefore skipped
+   for protected agents. Deliberate trade: a catalog-*added* trigger will never
+   reach Commander or Steward, whose triggers are AoA-seeded anyway; first
+   install still honours the template.
+
+8. **This is a guardrail, not an authorization boundary, and the code says so.**
+   A founder who renames a NULL-origin Steward before uninstalling erases its
+   last signal. Closing that with the `sweep`/`role:steward` trigger was
+   considered and rejected: the trigger is founder-writable *and* deletable, so
+   it adds a signal without closing the hole while making the predicate
+   db-aware. The gap closes for Steward the moment it is published (the origin
+   then carries the slug through any rename) and never applied to Commander.
+
+**Related.** [Decision #111] (company-wide teams), [Decision #112] (marketplace
+crew at company creation).
+
+---
+
+## Decision #114 — Agent instruction bundles are founder config, not app code (D22) (2026-07-24)
+
+**This reverses a shipped design.** `services/marketplace-install/crew-updater.ts`
+opened with, verbatim:
+
+> `DESIGN DECISION: instruction files are app code, not user config.`
+> `replaceExisting: true → ALL files replaced (no preservation of edits).`
+
+That rationale is **withdrawn**. It was internally inconsistent with the rest of
+the product: `routes/agents.ts` ships a first-class instructions editor
+(`GET/PATCH /agents/:id/instructions-bundle`, `PUT/DELETE
+…/instructions-bundle/file`, `PATCH …/instructions-path`) whose entire purpose
+is to let a founder edit those files — and a founder editing an AoA agent is
+gated to `founder` role specifically because the edit is consequential. Calling
+the output of that editor "app code" made every catalog version bump a silent,
+unrecoverable deletion (`materializeManagedBundle`'s first act is
+`fs.rm(rootPath, { recursive: true, force: true })`), with no diff, no
+notification, and no backup. Skills already had the opposite rule
+(`company_skills.customized` → `SkillCustomizedError` → notify), so the same
+artifact class was governed two different ways for no stated reason.
+
+**Decisions.**
+
+1. **Agent instruction edits are customizations, governed exactly like skill
+   edits.** A customized agent routes to **notify** — the ordinary
+   `marketplace_pending_updates` row + `updateAvailable` notification — never to
+   full replacement. `agentUpdatePolicy: "auto"` is consent to take catalog
+   content over *catalog* content; it is not consent to discard the founder's
+   own work, which they have no way to recover.
+
+2. **The flag is a column on `agents`: `instructions_customized`, mirroring
+   `company_skills.customized`.** Not a `metadata` key — it participates in an
+   optimistic-lock `WHERE instructions_customized = false … RETURNING`, the same
+   concurrency guard `applySkillUpdate` uses.
+
+3. **It is THREE-state, unlike the skills flag.** `false` = AoA materialized
+   this bundle from a catalog template and no edit has been observed since;
+   `true` = an edit landed through the instructions API; **`null` = unknown**.
+   `null` is treated as `true` (fail closed).
+
+4. **`null` is the honest answer for rows that predate the column, and there is
+   no backfill.** Two candidate historical witnesses were investigated and both
+   are unsound: `agent_config_revisions` only records a row when
+   `changedKeys.length > 0`, and an instruction file write on an
+   already-managed bundle leaves `adapterConfig` byte-identical — so the edits
+   that matter most are exactly the ones with no revision row. A content hash
+   has no pre-existing baseline to compare against, so it cannot answer the
+   historical question either. Defaulting the column to `false` would assert
+   "untouched" about every pre-existing row, which is the one claim the data
+   cannot support and the precise harm this decision exists to prevent.
+   **Consequence, accepted:** every crew agent installed before this migration
+   routes to notify on its next catalog bump, including untouched ones. Until
+   T2.7 lands the agent diff/merge path, `POST /updates/:id/apply` still answers
+   501 for `itemType: "agent"`, so those updates sit as pending rows. That is a
+   visible, reversible cost; silent data loss is neither.
+
+5. **Detection is an explicit flag set by the edit routes, not a content hash.**
+   Chosen because it is the pattern `company_skills` already uses, because it
+   costs no filesystem I/O in a pass that walks every crew agent of every
+   company at boot, and because a disk-only hash would miss the legacy
+   `promptTemplate` pseudo-file, which lives in `adapterConfig` rather than on
+   disk. **What it does NOT detect, stated plainly:** an edit made directly on
+   the filesystem outside the API (the bundle root is a real directory under the
+   founder's home); an edit made before this column existed; and any future
+   write path that bypasses these routes. It also *over*-detects: a no-op write
+   of byte-identical content marks the agent customized. A false "customized"
+   costs one notification; a false "untouched" costs the founder's work.
+
+6. **Three checks, at progressively tighter windows.** Ordering is load-bearing:
+   a check inside the transaction would throw *after* the `fs.rm` had already
+   deleted the edits.
+   (a) A gate on the caller's snapshot, before any fetch. That snapshot comes
+   from `checkCrewUpdates`' single **batch SELECT of every crew agent, taken
+   before its loop** — so for the k-th agent it is stale by every preceding
+   agent's entire apply cycle (template fetch + N file fetches + `fs.rm` +
+   writes + transaction), seconds to tens of seconds over a CDN. This gate
+   avoids pointless work; it is not the safety boundary.
+   (b) A single indexed PK re-read immediately before `materializeManagedBundle`.
+   **This is the disk-safety gate.** It reduces the exposed window to the gap
+   between that read and the `fs.rm`.
+   (c) The transactional `instructions_customized = false` predicate, which
+   closes the database half completely.
+   The window in (b) is not closed; closing it needs the edit routes and the
+   updater to share a lock. Not done, not claimed. And the two post-materialize
+   failure states differ and must not be conflated: an ordinary transaction
+   error loses no founder work (catalog-vs-catalog inconsistency, next pass
+   converges), while a **lost optimistic lock** means the `fs.rm` already ran —
+   DB reads `customized = true` at the OLD `templateVersion` while disk holds
+   pure catalog content. The founder sees a pending update rather than a silent
+   success: the best available outcome, not a good one.
+
+10. **There are FIVE instruction-changing write paths, not four.** The four
+   `/agents/:id/instructions*` routes are the obvious set. The fifth is the
+   **generic `PATCH /agents/:id`**, whose free-form `adapterConfig` is what the
+   shipped Config tab uses to edit `promptTemplate`. It was missed in the first
+   implementation, and the miss was a live regression of this very decision: the
+   founder's Prompt Template was deleted on the next catalog bump with no
+   notification and no revision row. It is gated on
+   `INSTRUCTION_BEARING_ADAPTER_CONFIG_KEYS`, derived from what
+   `applyBundleConfig` actually destroys — `promptTemplate` and
+   `bootstrapPromptTemplate` are DELETED (both founder-editable, both read at
+   runtime), and the four `instructions*` bundle keys are OVERWRITTEN.
+   `agentsMdPath` is included though not destroyed, because the route already
+   treats it as an instruction change for authz. `cwd` is deliberately excluded
+   (dominantly a workspace setting; stamping every `cwd` edit would freeze
+   agents out of updates), as is `instructions` (no live reader — verified).
+   `agent-instructions-service.test.ts` pins the destruction set so the key list
+   cannot drift from it silently.
+
+11. **The flag is stamped BEFORE founder content reaches disk.** The three
+   bundle routes learn the `adapterConfig` to persist *from* the disk operation,
+   so the main write cannot move ahead of it; they issue a separate cheap
+   pre-write instead. Writing disk first left a window in which an edited bundle
+   existed with `instructions_customized = false` — fail-open, and contrary to
+   this decision's own asymmetry. Over-stamping a write that then fails costs one
+   spurious notification; under-stamping costs the founder's work.
+
+7. **`applyCrewAgentUpdate` throws `AgentInstructionsCustomizedError` rather
+   than silently skipping,** so callers must make an explicit fallback choice.
+   `checkCrewUpdates` catches it into the existing notify path.
+
+8. **Composes with, and does not weaken, [Decision #113].** D22 decides
+   *whether* `applyCrewAgentUpdate` runs; D23's protected-agent carve-out
+   narrows *what* it writes once it does. Both gates are independent and both
+   fail closed.
+
+9. **This does not change T2.3b's pointer-only adoption.** Repaired rows carry
+   `instructions_customized = null`, so they route to notify — which is correct:
+   repair genuinely cannot know whether the legacy bundle it adopted was edited.
+   D22 makes content adoption *safe* to build; it does not perform it. Adopting
+   content for those rows is T2.7's diff/merge.
+
+**Related.** [Decision #112] (marketplace crew at company creation),
+[Decision #113] (protected AoA agents), T2.7 (agent diff/merge).
+
+---
+
+## Decision #115 — Reviewed agent merge: `<file>::<section>`, byte-derived customization, no `fs.rm` (T2.7) (2026-07-24)
+
+Decision #114 (D22) routes a customized — or unknown-provenance — crew agent's
+catalog update to **notify**. It did not say what the founder does next, and
+there was nothing to do: `POST /updates/:id/apply` answered **501** "use merge",
+`POST /updates/:id/merge` answered **404** "not a skill", and
+`GET /updates/:id/diff` answered **400** "skill updates only". The Review button
+led nowhere, and #114's accepted consequence — *every* crew agent installed
+before migration `0182` routes to notify on its next catalog bump, untouched ones
+included — meant those rows accumulate with no exit. This decision closes the
+loop.
+
+**Decisions.**
+
+1. **An agent's reviewable section is `<file>::<## heading>`.** The skill
+   differ's unit, namespaced by the bundle file it came from. File granularity
+   was rejected (an all-or-nothing choice on a 400-line `AGENTS.md`), and hunk
+   granularity was rejected (a hunk has no stable identity across a rewrite, so
+   a founder cannot tell which of their edits a decision covers). The file
+   prefix is load-bearing rather than decorative: two files in one bundle may
+   both declare `## Tone`, and one shared decision key would silently govern
+   both. A file present on only one side is mapped straight to `added` /
+   `removed` sections rather than diffed against the empty string, which would
+   have labelled a brand-new file's preamble `changed`.
+
+2. **`promptTemplate` and `bootstrapPromptTemplate` are virtual files** —
+   `promptTemplate.legacy.md` and `bootstrapPromptTemplate.legacy.md`. They live
+   in `adapterConfig`, not on disk, and `applyBundleConfig` **deletes** both when
+   a catalog update materializes. The first name is not invented here:
+   `agent-instructions.ts` already surfaces `promptTemplate` under exactly that
+   path as a `virtual: true, deprecated: true` bundle entry. Upstream never
+   carries either, so they surface as `removed` sections defaulting to "mine".
+   Excluding them was the alternative and it is wrong in both directions: drop
+   them silently and the merge becomes the very harm #114 exists to prevent;
+   keep them unconditionally and no merge could ever honestly report that the
+   agent holds pure catalog content, so the backlog could never drain.
+
+3. **After a merge, `instructions_customized` is derived from the resulting
+   BYTES, not from the founder's clicks.** `false` iff the bundle is
+   byte-identical to upstream — same file set, same bytes, same entry file —
+   otherwise `true`. Never back to `null`: after a review the divergence is
+   known, not unknown. This is the same statement `applyCrewAgentUpdate` already
+   makes when it re-asserts `false` after a full replacement, and getting it
+   wrong is expensive in both directions: a false `false` re-opens surviving
+   founder bytes to a silent overwrite on the next bump, a false `true` freezes a
+   provably clean agent out of auto-update forever.
+
+   The byte test is not pedantry. `applyMergeDecisions` *reassembles* a document
+   (join the surviving sections with a blank line, trim, add a trailing
+   newline), so an all-"accept upstream" merge does not reproduce upstream's
+   bytes. Two verbatim shortcuts exist for exactly this: a file whose every
+   section resolves upstream is copied from upstream verbatim, and a file whose
+   every decision is "mine" is copied from the founder's side verbatim. Without
+   the first, `pureUpstream` could never be true. Without the second, "keep
+   mine" would rewrite the founder's blank lines and would append a newline to
+   their `promptTemplate` on every merge.
+
+   Rebuilding a file from its diff sections was tried and is **unsound**:
+   `splitSections` always emits a `__preamble__` section, and for a
+   heading-first document that section holds zero lines while its content string
+   is empty — indistinguishable from one blank line. Both sides are passed as
+   whole-file maps instead.
+
+4. **The merged result is written file-by-file; `materializeManagedBundle` is
+   never called.** Its first act is a recursive, forced `fs.rm` of the directory
+   holding the founder's edits, outside any transaction — the hazard T2.3b's
+   review and #114 both landed on. `writeMergedAgentBundle` is the single named
+   function that touches disk and uses the same `agentInstructionsService`
+   surface the founder's own editor uses. When every decision is "accept
+   upstream" the end state is identical to a replace-everything materialize,
+   reached without the rm. Deletions skip the entry file; a skipped deletion is
+   reported and forces `pureUpstream` false.
+
+5. **`conflict` is now written, and means something narrower than `pending`.**
+   It was read in three places and written in none. `conflict` = the local copy
+   is (or may be) divergent, so the update cannot be taken wholesale;
+   `pending` = held back only by policy or the update window, one click from
+   landing. Reconciliation is bidirectional.
+
+   **`checkCrewUpdates` is the ONLY writer of `itemType: "agent"` rows**, so it
+   owns every state transition for them. `upsertPendingUpdate`
+   (marketplace-update-checker.ts), which owns the equivalent logic for skills
+   and plugins, has no agent caller — `checkCompany` still carries a
+   `TODO: Add agent + team template checks`. A first version of this decision
+   deferred re-opening to it; that was wrong, and with the unique index on
+   (companyId, catalogItemId) `onConflictDoNothing` cannot re-open anything, so
+   dismiss was permanent *per agent* rather than per version and an agent that
+   ever took an update never announced another one. The agent path therefore
+   re-opens `applied`/`dismissed` rows itself, for a strictly newer release only
+   (`compareVersions`), mirroring `upsertPendingUpdate`'s rule so the two kinds
+   behave the same.
+
+6. **`/apply` handles agents; 501 now means TEAM updates only.** Forcing a
+   provably untouched agent through a review it has nothing to review is the
+   failure mode on the far side of D22. `/apply` delegates to
+   `applyCrewAgentUpdate`, which owns the D22 gate, and answers 409
+   `AGENT_INSTRUCTIONS_CUSTOMIZED` for `true`/`null` rows — the shape the skill
+   path already used. The **UI offers it for `pending` rows only**: a `conflict`
+   row is one whose local copy diverges, so its `/apply` answers 409 by design
+   and the card sends it straight to Review. A 409 received anyway (the status
+   went stale between render and click) opens the review modal rather than
+   surfacing an error. Wiring this also un-stranded the *skill* `/apply`, which
+   had been equally unreachable — `UpdateCard` rendered its Update button only
+   for plugins.
+
+   **`bundlesAreByteIdentical`, not "every section is `unchanged`", decides what
+   the review modal tells the founder.** `computeSectionDiff` classifies a
+   section `unchanged` on `.trim()`; the wholesale-upstream relaxation in (3)
+   requires byte equality. Reading "identical" off the states therefore reported
+   *"No local changes found"* about a trailing-whitespace divergence that then
+   merged to `true`. The bulk `Accept all upstream` / `Keep all mine` control
+   renders whenever there is any section at all, for the same reason: unchanged
+   sections render no per-section buttons, so gating the bar on "has a changed
+   section" left an all-`unchanged` review with no control able to resolve it to
+   upstream — a permanent freeze-out announced as success.
+
+7. **A merge moves the catalog-owned non-instruction fields too** — `skillKeys`,
+   `runtimeConfig.aoa.toolAllowlist`, `templateVersion`, triggers — mirroring
+   `applyCrewAgentUpdate`. It must: stamping the new `templateVersion` without
+   them leaves a row claiming content it does not have, and `checkCrewUpdates`
+   would never look at it again. **Decision #113 (D23) composes unchanged:** a
+   protected AoA agent keeps its triggers through a reviewed merge exactly as it
+   does through an auto-applied one.
+
+8. **Agent resolution fails closed on ambiguity.** `agents.template_origin` is
+   not unique per company while `marketplace_pending_updates` is unique on
+   (company, item). Two agents sharing an origin returns 409
+   `AMBIGUOUS_AGENT_ORIGIN` rather than writing the merge into whichever row the
+   planner returned first.
+
+**Consequence: #114's `null` backlog is now drainable end to end.** Those agents
+surface as `conflict`; Review shows either nothing (bundle already matches) or
+catalog-vs-catalog changes; `Accept all upstream` (a bulk control added for this
+reason, not for convenience — the per-section default of "mine" would otherwise
+re-declare them customized on every review) lands upstream verbatim and stamps
+`instructions_customized = false`, returning the agent to auto-update
+permanently.
+
+**A file the founder declines wholesale is not created.** An upstream-only file
+whose every section resolves to "mine" is skipped outright — it appears in
+neither the write set nor the delete set, because there is nothing on disk to
+delete. Letting it fall through to `applyMergeDecisions` produced a one-newline
+phantom file that the agent then read and that showed as the founder's own
+content in every later diff.
+
+**A real on-disk file whose name collides with a legacy prompt pseudo-file is
+excluded from review in both directions.** `agentInstructionsService.readFile`
+short-circuits on `promptTemplate.legacy.md` and returns
+`adapterConfig.promptTemplate` rather than the file's bytes, so the merge cannot
+see such a file's contents at all — "disk wins" is not implementable here. It is
+therefore never written, never deleted, and its `adapterConfig` counterpart is
+left out too; the collision is logged with the rename that would bring it under
+review, and it **forces `pureUpstream` false**, because unaccounted local content
+must never be mistaken for pure catalog content.
+
+**Known gaps, stated rather than hidden.** Files are written before the
+transaction: a transaction failure leaves the merged bundle on disk with the row
+still on the old `templateVersion`, so the pending update survives and the next
+diff shows the merged content as "mine" — recoverable, whereas the reverse order
+would silently claim content that is not there. Two concurrent merges of the same
+update are serialised by the pending row's `pending`/`conflict` → `applied` claim
+and the loser gets 409, but that cannot un-write the files the loser already put
+on disk. An upstream entry-file rename is honoured only when the upstream entry
+file survives the merge; otherwise the old entry file is kept and `pureUpstream`
+is forced false. And the reassembly path (mixed merges only — never the wholesale
+ones) inherits two defects from the skill primitives it shares: `\n\n` joins
+damage a CRLF document, and `splitSections` is fence-unaware, so a `## ` line
+inside a fenced example is independently decidable and carries the closing fence
+with it. Both matter more for agents than they ever did for skills, because
+AGENTS.md bundles routinely carry fenced examples; fixing them means changing
+the shipped skill merge, so they are marked at the call site rather than done
+here.
+
+**Related.** [Decision #113] (protected AoA agents — the trigger carve-out this
+composes with), [Decision #114] (D22, which this completes), T2.8 (skill-bundle
+re-materialization on merge — deliberately left as a separate seam; do NOT unify
+it by routing the agent merge through `materializeManagedBundle`).

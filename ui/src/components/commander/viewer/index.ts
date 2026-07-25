@@ -5,4 +5,4 @@ export {
 } from "./CommanderViewerPanel";
 export { OutputRefChips } from "./OutputRefChips";
 export { useCommanderViewer } from "./useCommanderViewer";
-export { collectConversationRefs, mergeRefs, shouldAutoOpen } from "./commanderViewerModel";
+export { collectConversationRefs, mergeRefs, shouldAutoOpen, pickAutoOpenRef } from "./commanderViewerModel";

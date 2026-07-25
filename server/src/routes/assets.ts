@@ -13,6 +13,13 @@ import type { StorageService } from "../storage/types.js";
 import { assetService, logActivity } from "../services/index.js";
 import { getSafeServingHeaders } from "../services/asset-serving-safety.js";
 import { sniffAndVerifyContentType } from "../services/asset-content-guard.js";
+import { DOCX_MIME, streamToBuffer, renderDocxBufferToSafeHtml } from "../services/docx-render.js";
+import { XLSX_MIME, renderXlsxBufferToSafeHtml } from "../services/xlsx-render.js";
+import {
+  assertOfficeRenderSize,
+  OfficeRenderTooLargeError,
+} from "../services/office-render-limits.js";
+import { officeRenderLimiter } from "../middleware/rate-limit.js";
 import { HttpError } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
@@ -371,6 +378,27 @@ export function assetRoutes(db: Db, storage: StorageService) {
     res.status(200).json({ ok: true });
   });
 
+  // Lightweight asset metadata (Commander viewer asset/output tab bodies).
+  // Mirrors the content route's path shape + access assertion but returns ONLY
+  // presentation-safe fields — never objectKey/sha256/storage internals.
+  router.get("/assets/:assetId/meta", async (req, res) => {
+    const assetId = req.params.assetId as string;
+    const asset = await svc.getById(assetId);
+    if (!asset) {
+      res.status(404).json({ error: "Asset not found" });
+      return;
+    }
+    assertCompanyAccess(req, asset.companyId);
+
+    res.json({
+      id: asset.id,
+      originalFilename: asset.originalFilename,
+      contentType: asset.contentType,
+      byteSize: asset.byteSize,
+      createdAt: asset.createdAt,
+    });
+  });
+
   router.get("/assets/:assetId/content", async (req, res, next) => {
     const assetId = req.params.assetId as string;
     const asset = await svc.getById(assetId);
@@ -395,6 +423,62 @@ export function assetRoutes(db: Db, storage: StorageService) {
       next(err);
     });
     object.stream.pipe(res);
+  });
+
+  // Generic server-rendered HTML preview for office documents (DOCX + XLSX).
+  // The convert+sanitize+wrap lives in the shared render helpers
+  // (server/src/services/docx-render.ts / xlsx-render.ts), which both sanitize
+  // through the SAME allow-list-by-default config (office-html-sanitize.ts) so
+  // DOCX and XLSX cannot drift in security posture; DOCX additionally shares its
+  // helper with the memory-scoped render route. This route differs only in asset
+  // lookup + authorization: it takes the /content route's auth (the asset's own
+  // companyId gates access via assertCompanyAccess), so it is exactly as
+  // authorized as /content and no wider. Non-office types still 415. Sanitization
+  // is server-side; the client injects already-sanitized HTML.
+  router.get("/assets/:assetId/render", officeRenderLimiter, async (req, res, next) => {
+    try {
+      const assetId = req.params.assetId as string;
+      const asset = await svc.getById(assetId);
+      if (!asset) {
+        res.status(404).json({ error: "Asset not found" });
+        return;
+      }
+      assertCompanyAccess(req, asset.companyId);
+
+      const contentType = (asset.contentType || "").toLowerCase();
+      if (contentType !== DOCX_MIME && contentType !== XLSX_MIME) {
+        res.status(415).json({
+          error: `Render not supported for ${asset.contentType}. Try /content for the raw bytes.`,
+        });
+        return;
+      }
+
+      // Cheap pre-check on the recorded size: reject an oversized file BEFORE
+      // fetching + buffering its bytes. The render helper re-checks the actual
+      // buffer length as the authoritative guard (in case byteSize is stale/0).
+      assertOfficeRenderSize(asset.byteSize ?? 0);
+
+      const object = await storage.getObject(asset.companyId, asset.objectKey);
+      const buffer = await streamToBuffer(object.stream);
+      const html =
+        contentType === XLSX_MIME
+          ? await renderXlsxBufferToSafeHtml(buffer)
+          : await renderDocxBufferToSafeHtml(buffer);
+
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      // The render is a pure function of the immutable asset bytes (a new upload
+      // gets a new assetId), so the browser may cache it briefly — this is what
+      // makes a re-viewed document render once instead of re-parsing every open.
+      res.setHeader("Cache-Control", "private, max-age=300");
+      res.send(html);
+    } catch (err) {
+      if (err instanceof OfficeRenderTooLargeError) {
+        res.status(413).json({ error: err.message });
+        return;
+      }
+      next(err);
+    }
   });
 
   return router;

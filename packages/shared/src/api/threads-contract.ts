@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { DISCUSSION_ENTRY_INPUT_TYPES, THREAD_VISIBILITIES } from "../constants.js";
+import { showRefsSchema } from "../viewer-show-ref.js";
 
 // ---- Discussion entry attachments (new field on DiscussionEntry) ----
 export const DiscussionEntryAttachmentSchema = z.object({
@@ -32,6 +33,10 @@ export const DiscussionEntryV2Schema = z.object({
   authorAgentName: z.string().nullable(),
   authorAgentAvatar: z.string().nullable(),
   attachments: z.array(DiscussionEntryAttachmentSchema).default([]),
+  // Viewer Upgrade Phase 7B: navigational ShowRefs on crew run-result entries.
+  // Nullable + optional — only run-result delivery entries carry refs; all other
+  // entries omit the field entirely.
+  outputRefs: showRefsSchema.nullish(),
   createdAt: z.string(), // ISO string
   createdBy: z.string(),
 });

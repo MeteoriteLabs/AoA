@@ -415,7 +415,12 @@ export function teamImportService(db: Db) {
           id: team.id,
           slug: team.slug,
           name: team.name,
-          parentProjectId: team.parentProjectId,
+          // Non-null by construction: `resolution.parentProjectId` is a required
+          // string that was validated against this company above (~:247), and it
+          // is what was just inserted. YAML import always parents into a
+          // department — only the marketplace crew installer writes null (D21) —
+          // so the HTTP contract stays `string` rather than widening.
+          parentProjectId: team.parentProjectId!,
           warnings,
         };
       });

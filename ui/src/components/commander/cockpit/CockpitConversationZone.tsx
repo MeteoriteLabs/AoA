@@ -1,5 +1,5 @@
 import { MessagesSquare, FileText } from "lucide-react";
-import type { CommanderOutputRef } from "@armyofagents/shared";
+import type { ShowRef } from "@armyofagents/shared";
 // NOTE: sibling cards (CockpitReviewCard etc.) use the inline section classes below
 // (`rounded-lg border border-border bg-background p-2`), NOT the panel-level
 // COMMANDER_PANEL_CARD (which is the rounded-xl PANEL wrapper). Mirror the cards.
@@ -8,10 +8,10 @@ export function CockpitConversationZone({
   refs,
   onOpen,
 }: {
-  refs: CommanderOutputRef[];
+  refs: ShowRef[];
   // Pass the WHOLE ref (Codex #1): opening must preserve versionId, like the
   // viewer home does — a lossy (id,title) rebuild would open the latest version.
-  onOpen?: (ref: CommanderOutputRef) => void;
+  onOpen?: (ref: ShowRef) => void;
 }) {
   if (refs.length === 0) return null;
   return (

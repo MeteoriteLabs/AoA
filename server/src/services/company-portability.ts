@@ -381,6 +381,9 @@ function serializeInternalAgentConfigRow(row: Record<string, unknown>): CompanyP
     model: (row.model as string | null | undefined) ?? null,
     cliTool: (row.cliTool as string | null | undefined) ?? null,
     autonomyLevel: typeof row.autonomyLevel === "number" ? row.autonomyLevel : 0,
+    // D18 dial-split: exported alongside the Commander dial, never derived from it.
+    crewAutonomyLevel:
+      typeof row.crewAutonomyLevel === "number" ? row.crewAutonomyLevel : 0,
     ...(enabledCapabilities ? { enabledCapabilities } : {}),
     notificationPreference:
       typeof row.notificationPreference === "string" ? row.notificationPreference : "realtime",
@@ -2046,6 +2049,21 @@ export function companyPortabilityService(db: Db) {
         sourceManifest.company?.name ??
         sourceManifest.source?.companyName ??
         "Imported Company";
+      // T2.3 (R8): this is the SECOND caller of `companies.create`, so a
+      // bundle import into a new company ALSO marketplace-provisions the crew.
+      // That is deliberate, not incidental: an imported company must be as
+      // updateable as a created one, and skipping it would mint a second class
+      // of permanently-`@legacy` companies — exactly the state Phase 2 exists
+      // to eliminate.
+      //
+      // It is safe against the bundle's own agents: the crew is `kind='aoa'`
+      // and every import/export agent path is `kind='org'`
+      // (`agents.list()` defaults to org), so the two rosters never see each
+      // other and the name-match merge below cannot touch a crew row. Bundles
+      // carry no crew/team section at all (see KNOWN_SECTIONS).
+      //
+      // Latency is bounded by CREW_INSTALL_DEADLINE_MS + the catalog budget
+      // (~42s worst case); import is already a long-running operation.
       const created = await companies.create({
         name: companyName,
         description: include.company ? (sourceManifest.company?.description ?? null) : null,
@@ -2059,7 +2077,7 @@ export function companyPortabilityService(db: Db) {
         agentCompletionReviewGuardrail: include.company
           ? (sourceManifest.company?.agentCompletionReviewGuardrail ?? false)
           : false,
-      });
+      }, { requestedByUserId: actorUserId ?? null });
       await access.ensureMembership(created.id, "user", actorUserId ?? "board", "owner", "active");
       targetCompany = created;
       companyAction = "created";
@@ -2592,7 +2610,17 @@ export function companyPortabilityService(db: Db) {
             : [],
           metadata: manifestSkill.metadata ?? null,
         }));
-        const upserted = await skills.upsertImportedSkills(targetCompany.id, imports);
+        // T2.9 policy: the bundle IS the authority for a company import, and the
+        // loop below pairs results to inputs POSITIONALLY — `preserve_founder_edits`
+        // returns a short array on refusal and would silently mis-pair every row
+        // after the first skip. Founder-edit protection for bundle imports needs
+        // the conflict surface the import plan already has, not this flag; filed
+        // as T2.9d.
+        const upserted = (await skills.upsertImportedSkills(
+          targetCompany.id,
+          imports,
+          "caller_is_authoritative",
+        )).skills;
         for (let i = 0; i < skillsToUpsert.length; i++) {
           const entry = skillsToUpsert[i]!;
           const created = upserted[i] ?? null;
@@ -2811,6 +2839,11 @@ export function companyPortabilityService(db: Db) {
         model: cfg.model ?? null,
         cliTool: cfg.cliTool ?? null,
         autonomyLevel: cfg.autonomyLevel,
+        // D18 dial-split. PRE-SPLIT bundles carry no `crewAutonomyLevel`; falling
+        // back to the shared `autonomyLevel` reproduces exactly the crew behaviour
+        // the bundle was exported with. Post-split bundles carry both and neither
+        // dial is inferred from the other.
+        crewAutonomyLevel: cfg.crewAutonomyLevel ?? cfg.autonomyLevel,
         enabledCapabilities: cfg.enabledCapabilities ?? [],
         notificationPreference: cfg.notificationPreference,
         contextTokenBudget: cfg.contextTokenBudget,

@@ -19,17 +19,27 @@
 // root-folder seed.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { ensureConfigMock, ensureCommanderMock, callOrder } =
+const { ensureConfigMock, ensureCommanderMock, ensureStewardMock, seedCalls, callOrder } =
   vi.hoisted(() => {
     const callOrder: string[] = [];
+    // Every ensure-* seeder that actually ran, infra + crew, in order. Used by
+    // the P8d marketplace-gate assertions.
+    const seedCalls: string[] = [];
     return {
       callOrder,
+      seedCalls,
       ensureConfigMock: vi.fn(async () => {
         callOrder.push("config");
+        seedCalls.push("config");
       }),
       ensureCommanderMock: vi.fn(async () => {
         callOrder.push("commander");
+        seedCalls.push("commander");
         return "cmd-1";
+      }),
+      ensureStewardMock: vi.fn(async () => {
+        seedCalls.push("steward");
+        return "stw-1";
       }),
     };
   });
@@ -98,6 +108,10 @@ vi.mock("@armyofagents/db", () => {
     mcpClientConnections: t("mcp_client_connections"),
     workspaceOperations: t("workspace_operations"),
     workspaceRuntimeServices: t("workspace_runtime_services"),
+    // T2.3: crewTeamIsInstalled queries `teams`. Omitting it here made the
+    // guard's fail-closed catch fire on a TypeError and silently skip the crew
+    // — a harness artifact that looked exactly like the real bug.
+    teams: t("teams"),
   };
 });
 // memory-folders is invoked by createCompanyWithUniquePrefix (root-folder
@@ -122,17 +136,26 @@ vi.mock("../services/internal-agent/aoa-agents/ensure-commander.js", () => ({
 // the wiring contract for the Decision #100 minimum (config + commander); the
 // crew seeders have their own unit tests and the marketplace gate test
 // asserts their order.
+vi.mock("../services/internal-agent/aoa-agents/ensure-steward.js", () => ({
+  ensureSteward: ensureStewardMock,
+}));
 vi.mock("../services/internal-agent/aoa-agents/ensure-command-staff.js", () => ({
-  ensureCommandStaff: vi.fn(async () => undefined),
+  ensureCommandStaff: vi.fn(async () => { seedCalls.push("staff"); }),
 }));
 vi.mock("../services/internal-agent/aoa-agents/ensure-adjutant.js", () => ({
-  ensureAdjutant: vi.fn(async () => undefined),
+  ensureAdjutant: vi.fn(async () => { seedCalls.push("adjutant"); }),
 }));
 vi.mock("../services/internal-agent/aoa-agents/ensure-scout.js", () => ({
-  ensureScout: vi.fn(async () => undefined),
+  ensureScout: vi.fn(async () => { seedCalls.push("scout"); }),
 }));
 vi.mock("../services/internal-agent/aoa-agents/ensure-engineer.js", () => ({
-  ensureEngineer: vi.fn(async () => undefined),
+  ensureEngineer: vi.fn(async () => { seedCalls.push("engineer"); }),
+}));
+vi.mock("../services/internal-agent/aoa-agents/ensure-chronicler.js", () => ({
+  ensureChronicler: vi.fn(async () => { seedCalls.push("chronicler"); }),
+}));
+vi.mock("../services/internal-agent/aoa-agents/ensure-librarian.js", () => ({
+  ensureLibrarian: vi.fn(async () => { seedCalls.push("librarian"); }),
 }));
 
 import { companyService } from "../services/companies.js";
@@ -144,11 +167,23 @@ const NEW_COMPANY_ID = "co-new-9";
 // the freshly-created company row (with id). All ensure-seeds are mocked,
 // so no further DB ops are exercised by this test.
 //
-// T3.5 addition: createCompanyWithUniquePrefix now calls
-// db.select().from(agents).where(...).limit(1) to check whether a marketplace-
-// governed crew already exists. Returning [] simulates a fresh legacy company
-// so the legacy ensure-*.ts path still runs and the wiring assertions hold.
-function makeDb() {
+// T3.5 addition: createCompanyWithUniquePrefix calls isCrewMarketplaceManaged,
+// which issues db.select().from(agents).where(...).limit(1) to check whether a
+// marketplace-governed crew already exists. Returning [] simulates a fresh
+// legacy company so the legacy ensure-*.ts path still runs and the wiring
+// assertions hold.
+//
+// P8d: `managed` flips the marketplace gate — [{ id }] means a `kind='aoa'`
+// row with a non-`@legacy` templateOrigin already exists, i.e. the marketplace
+// governs this company's crew.
+//
+// `stampsOriginOnSeed` simulates the future regression the gate-read ordering
+// defends against: a seeder that stamps a non-`@legacy` templateOrigin at
+// insert time (the cleanup `backfill-template-origin.ts:29-37` practically
+// invites). The gate query then starts matching as soon as Commander exists.
+// Reading the gate BEFORE seeding makes that harmless; reading it after would
+// make every newly-created company look marketplace-managed to itself.
+function makeDb(opts: { managed?: boolean; stampsOriginOnSeed?: boolean } = {}) {
   return {
     insert: () => ({
       values: () => ({
@@ -156,9 +191,26 @@ function makeDb() {
       }),
     }),
     select: () => ({
-      from: () => ({
+      // The table matters now: `isCrewMarketplaceManaged` queries `agents`,
+      // while T2.3's `crewTeamIsInstalled` queries `teams`. A table-blind stub
+      // would answer "a crew team exists" to the agents predicate and vice
+      // versa, which is precisely the conflation the guard must not make.
+      from: (table: unknown) => ({
         where: () => ({
-          limit: () => Promise.resolve([]), // no marketplace-installed agents → legacy path
+          limit: () => {
+            const isAgentsQuery = String(
+              (table as Record<string, unknown> | undefined)?.__tableName ?? "",
+            ).includes("agents");
+            if (!isAgentsQuery) {
+              // No crew team was ever installed in these mocked scenarios.
+              return Promise.resolve([]);
+            }
+            const selfInflicted =
+              opts.stampsOriginOnSeed === true && seedCalls.includes("commander");
+            return Promise.resolve(
+              opts.managed || selfInflicted ? [{ id: "mkt-agent-1" }] : [],
+            );
+          },
         }),
       }),
     }),
@@ -169,7 +221,9 @@ describe("A9.1 — Commander-Team seeds wired into createCompanyWithUniquePrefix
   beforeEach(() => {
     ensureConfigMock.mockClear();
     ensureCommanderMock.mockClear();
+    ensureStewardMock.mockClear();
     callOrder.length = 0;
+    seedCalls.length = 0;
   });
 
   it("calls config + commander seeds with (db, newCompanyId)", async () => {
@@ -192,5 +246,54 @@ describe("A9.1 — Commander-Team seeds wired into createCompanyWithUniquePrefix
     // batch 2: the Discussion Extraction seed was removed from this chain;
     // see file-level docstring.)
     expect(callOrder).toEqual(["rootFolder", "config", "commander"]);
+  });
+
+  // ── P8d — the marketplace gate covers the CREW half only ────────────────
+  it("marketplace-managed company: config + infrastructure still seed, crew does NOT", async () => {
+    const db = makeDb({ managed: true });
+    await companyService(db).create({ name: "Acme" } as any);
+
+    // The casualty this task fixes: internal_agent_config used to live inside
+    // the gated block, so a marketplace-managed company got NO config row —
+    // no autonomy dial, no provider/model config.
+    expect(ensureConfigMock).toHaveBeenCalledWith(db, NEW_COMPANY_ID);
+    expect(ensureCommanderMock).toHaveBeenCalledWith(db, NEW_COMPANY_ID);
+    expect(ensureStewardMock).toHaveBeenCalledWith(db, NEW_COMPANY_ID);
+
+    // Discriminator: Scout IS published in the catalog, so the marketplace owns
+    // it and the legacy seeder must stay off.
+    expect(seedCalls).not.toContain("scout");
+    expect(seedCalls).toEqual(["config", "commander", "steward"]);
+  });
+
+  it("NOT marketplace-managed: the full legacy roster still seeds (regression)", async () => {
+    const db = makeDb();
+    await companyService(db).create({ name: "Acme" } as any);
+
+    expect(seedCalls.slice().sort()).toEqual(
+      ["adjutant", "chronicler", "commander", "config", "engineer", "librarian", "scout", "staff", "steward"],
+    );
+  });
+
+  // ── F2 — the gate must be READ BEFORE anything is SEEDED ─────────────────
+  // Fails if the gate read is moved back below the seeding writes. With a
+  // seeder that stamps a non-`@legacy` origin, a read-after-write gate sees the
+  // company's own fresh Commander, concludes "marketplace-managed", and skips
+  // the entire crew — silently, on every newly created company.
+  it("a seeder that stamps a non-@legacy origin cannot make a company skip its own crew", async () => {
+    const db = makeDb({ stampsOriginOnSeed: true });
+    await companyService(db).create({ name: "Acme" } as any);
+
+    expect(seedCalls).toContain("commander");
+    // The whole point: the crew still seeds despite the self-inflicted match.
+    // T2.3 added a SECOND way to fail this — the degrade-path guard that stops
+    // the legacy seeders clobbering a committed marketplace install. If that
+    // guard asks "is any aoa agent marketplace-managed?" instead of "did the
+    // crew TEAM install commit?", the stamped Commander answers yes and the
+    // company skips its own crew. It must ask the narrow question.
+    expect(seedCalls).toContain("scout");
+    expect(seedCalls.slice().sort()).toEqual(
+      ["adjutant", "chronicler", "commander", "config", "engineer", "librarian", "scout", "staff", "steward"],
+    );
   });
 });

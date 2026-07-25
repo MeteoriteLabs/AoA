@@ -647,16 +647,18 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
   };
 
   // Per-company config memoization within this tick (autonomy + kill-switch + model + routing dial).
-  const configByCompany = new Map<string, { autonomyLevel: number; crewPaused: boolean; model: string; inboundRoutingLevel: string }>();
-  async function resolveCompanyConfig(companyId: string): Promise<{ autonomyLevel: number; crewPaused: boolean; model: string; inboundRoutingLevel: string }> {
+  // D18: crew reads `crewAutonomyLevel`, NOT `autonomyLevel` (Commander-only).
+  const configByCompany = new Map<string, { crewAutonomyLevel: number; crewPaused: boolean; model: string; inboundRoutingLevel: string }>();
+  async function resolveCompanyConfig(companyId: string): Promise<{ crewAutonomyLevel: number; crewPaused: boolean; model: string; inboundRoutingLevel: string }> {
     if (configByCompany.has(companyId)) return configByCompany.get(companyId)!;
     const [cfg] = await db
-      .select({ autonomyLevel: internalAgentConfig.autonomyLevel, crewPaused: internalAgentConfig.crewPaused, model: internalAgentConfig.model, inboundRoutingLevel: internalAgentConfig.inboundRoutingLevel })
+      .select({ crewAutonomyLevel: internalAgentConfig.crewAutonomyLevel, crewPaused: internalAgentConfig.crewPaused, model: internalAgentConfig.model, inboundRoutingLevel: internalAgentConfig.inboundRoutingLevel })
       .from(internalAgentConfig)
       .where(eq(internalAgentConfig.companyId, companyId))
       .limit(1);
     const config = {
-      autonomyLevel: cfg?.autonomyLevel ?? 0,
+      // Fail-closed: no config row → Manual (0).
+      crewAutonomyLevel: cfg?.crewAutonomyLevel ?? 0,
       crewPaused: cfg?.crewPaused ?? false,
       model: (cfg?.model ?? "claude-sonnet-4-6") as string,
       // D4: inbound routing has its own dial, distinct from crew autonomy.
@@ -735,7 +737,18 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
                   autonomyLevel: discussions.autonomyLevel,
                 })
                 .from(discussions)
-                .where(eq(discussions.id, threadIdInPayload))
+                // Cross-tenant guard (defence-in-depth): these thread flags
+                // (crewPaused / useControllerPath / autonomyLevel) GATE crew
+                // dispatch, and threadIdInPayload originates from the wakeup
+                // payload — which can be caller-supplied via agent.dispatch.
+                // Scope the read to the wakeup's own company so a foreign
+                // thread id resolves to NO row (safe defaults below), never a
+                // different tenant's flags. Layer 1 (agent-dispatch.ts) already
+                // refuses foreign ids at the source; this is belt-and-braces.
+                .where(and(
+                  eq(discussions.id, threadIdInPayload),
+                  eq(discussions.companyId, w.companyId),
+                ))
                 .then((rows: Array<{
                   crewPaused: boolean | null;
                   useControllerPath: boolean | null;
@@ -790,7 +803,7 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
           // company is resolved HERE, BEFORE the activation gate, so the gate
           // and the runner read the SAME dial. Previously this was computed
           // AFTER the atomic claim and fed only to the runner, while the gate
-          // read companyCfg.autonomyLevel — they diverged for thread-bearing
+          // read companyCfg.crewAutonomyLevel — they diverged for thread-bearing
           // wakeups (C1: thread=Drive/company=Manual silently killed the
           // per-thread override; C2: thread=Manual/company=Drive ran + burned an
           // LLM call the completion gate then refused). Resolution logic is
@@ -800,10 +813,10 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
           // infra-sweep, and inbox-routing therefore keep effectiveAutonomy =
           // company exactly as before — only thread-bearing wakeups change.
           const wkPayload = (w.payload ?? {}) as Record<string, unknown>;
-          let effectiveAutonomy: number = companyCfg.autonomyLevel;
+          let effectiveAutonomy: number = companyCfg.crewAutonomyLevel;
           if (typeof wkPayload.threadId === "string") {
             if (threadRow) {
-              effectiveAutonomy = threadRow.autonomyLevel ?? companyCfg.autonomyLevel;
+              effectiveAutonomy = threadRow.autonomyLevel ?? companyCfg.crewAutonomyLevel;
             }
           }
 
@@ -864,7 +877,7 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
             // C1/C2: gate on effectiveAutonomy (thread override ?? company), NOT
             // the raw company dial — so the activation gate and the completion
             // gate read the SAME dial. For task wakeups / infra-sweep / inbox-
-            // routing effectiveAutonomy === companyCfg.autonomyLevel, so their
+            // routing effectiveAutonomy === companyCfg.crewAutonomyLevel, so their
             // behavior is unchanged.
             const roleActive = resolvedRole
               ? isRoleActiveAtAutonomy(resolvedRole, effectiveAutonomy)
@@ -881,7 +894,7 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
               );
               if (!skipped) return;
               logger.child({ subagent: "aoa-dispatcher" }).info(
-                { agentId: w.agentId, role: resolvedRole ?? null, autonomy: effectiveAutonomy, companyAutonomy: companyCfg.autonomyLevel, companyId: w.companyId },
+                { agentId: w.agentId, role: resolvedRole ?? null, autonomy: effectiveAutonomy, companyAutonomy: companyCfg.crewAutonomyLevel, companyId: w.companyId },
                 "aoa wakeup skipped: autonomy gate (fail-closed)",
               );
               return;
@@ -1045,6 +1058,24 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
               ? crewContinuationAttemptKey(w.idempotencyKey, claimed[0]!.attempts)
               : null;
             const result = await runAoaAgent(db, w.agentId, {
+              // L2 / SECURITY (Layer B): spread the stored payload FIRST, then set
+              // EVERY trusted, server-resolved field AFTER it so a seeded or
+              // attacker-controlled `w.payload` can never override them (last-key-
+              // wins). Originally only `effectiveAutonomy` was defended this way;
+              // `companyId` sat BEFORE the spread and a smuggled `payload.companyId`
+              // (via agent.dispatch context) could redirect the run into another
+              // tenant — the run's live MCP tools then operated on the foreign
+              // company's tasks/memory/artifacts. The run's company is the wakeup
+              // row's trusted `w.companyId`, full stop. `source`, `wakeupId`, and
+              // `resolvedModel` are likewise server-resolved (wakeup row columns /
+              // per-role model resolution) and must not be payload-overridable.
+              ...(w.payload ?? {}),
+              ...(continuationAttemptIdempotencyKey
+                ? {
+                    continuationIdempotencyKey: w.idempotencyKey,
+                    continuationAttemptIdempotencyKey,
+                  }
+                : {}),
               companyId: w.companyId,
               // T1.2 (codex F6): pass the wakeup's ORIGINAL source (e.g.
               // 'thread_mention', 'sweep.adjutant', 'phase-advance') NOT the
@@ -1053,18 +1084,8 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
               source: w.source,
               wakeupId: w.id,
               resolvedModel: roleModel, // Plan 3 Task 9: pass resolved model to runner
-              // L2: spread the stored payload FIRST so the trusted, server-resolved
-              // effectiveAutonomy (thread override ?? company dial) ALWAYS wins. A
-              // stray `payload.effectiveAutonomy` (e.g. an attacker- or bug-seeded
-              // wakeup) must NOT override the dial the activation gate read — keep
-              // gate and runner reading the same value.
-              ...(w.payload ?? {}),
-              ...(continuationAttemptIdempotencyKey
-                ? {
-                    continuationIdempotencyKey: w.idempotencyKey,
-                    continuationAttemptIdempotencyKey,
-                  }
-                : {}),
+              // effectiveAutonomy (thread override ?? company dial) stays AFTER the
+              // spread so the gate and the runner read the SAME dial.
               effectiveAutonomy,
             });
             // P2 + T1.0: status reflects what the runner actually saw.

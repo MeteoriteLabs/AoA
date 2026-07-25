@@ -8,6 +8,7 @@ import type {
 } from "@armyofagents/shared";
 import type { AgentInstallPreview, InstallPlan, InstallPlanStep, ConflictWarning } from "./types.js";
 import { fetchCatalogResource } from "./fetch-resource.js";
+import { ADOPTED_TEMPLATE_VERSION } from "./crew-constants.js";
 import {
   normalizeMarketplaceAgentTemplate,
   parseMarketplaceAgentTemplate,
@@ -195,6 +196,20 @@ export async function classifyAction(opts: {
     if (existing.length === 0) return { action: "install-new" };
     if (existing[0].templateVersion === item.version) {
       return { action: "skip-already-installed", reason: `Already installed at ${item.version}` };
+    }
+    // T2.3b: an ADOPTED row carries the `0.0.0-legacy` sentinel — it is
+    // marketplace-managed but still holds pre-catalog content. Refusing the
+    // install is correct (a second row would duplicate the agent), but the
+    // generic "version differs" copy reads like a bug rather than the expected
+    // state it is, so it gets its own sentence.
+    if (existing[0].templateVersion === ADOPTED_TEMPLATE_VERSION) {
+      return {
+        action: "fail-version-mismatch",
+        reason:
+          `This company already has ${item.id}: an existing agent was reconnected to the ` +
+          "marketplace and is waiting for its first catalog update. Apply that update instead " +
+          "of installing a second copy.",
+      };
     }
     return {
       action: "fail-version-mismatch",

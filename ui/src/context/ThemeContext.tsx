@@ -42,8 +42,8 @@ function readPreference(): ThemePreference {
 }
 
 function resolveSystem(): ResolvedTheme {
-  if (typeof window === "undefined") return "dark";
-  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return "dark";
+  return window.matchMedia("(prefers-color-scheme: dark)")?.matches ? "dark" : "light";
 }
 
 function applyTheme(resolved: ResolvedTheme) {
@@ -67,8 +67,9 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // Watch the OS preference. Listener stays mounted regardless of current preference —
   // cheap, and means switching to "system" picks up the live value immediately.
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
     const mql = window.matchMedia("(prefers-color-scheme: dark)");
+    if (!mql || typeof mql.addEventListener !== "function") return;
     const handler = (e: MediaQueryListEvent) => setSystemResolved(e.matches ? "dark" : "light");
     mql.addEventListener("change", handler);
     return () => mql.removeEventListener("change", handler);

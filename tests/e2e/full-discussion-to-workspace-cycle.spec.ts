@@ -330,9 +330,11 @@ async function patchThreadAutonomy(request: APIRequestContext, companyId: string
 async function patchCompanyAutonomy(request: APIRequestContext, companyId: string, autonomyLevel: number) {
   await jsonOrThrow(
     await request.patch(`/api/companies/${companyId}/internal-agent/config`, {
-      data: { autonomyLevel },
+      // D18: crew/thread flows read `crewAutonomyLevel`; Commander's
+      // `autonomyLevel` is a separate dial and would not move this test.
+      data: { crewAutonomyLevel: autonomyLevel },
     }),
-    "set company autonomy",
+    "set company crew autonomy",
   );
 }
 

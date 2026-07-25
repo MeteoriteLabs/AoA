@@ -19,7 +19,7 @@ import { HttpError, badRequest, notFound, forbidden } from "../errors.js";
 import { agentLoopService, type RuntimeAttachmentStorage } from "../services/internal-agent/agent-loop.js";
 import { detectCliTool } from "../services/internal-agent/cli-mode.js";
 import { ensureCommanderAgent } from "../services/internal-agent/aoa-agents/ensure-commander.js";
-import { ensureAllCrewAgents, isCrewMarketplaceManaged } from "../services/internal-agent/aoa-agents/ensure-all-crew.js";
+import { ensureCrewAgents, ensureInfrastructureAgents, isCrewMarketplaceManaged } from "../services/internal-agent/aoa-agents/crew-seeding.js";
 import { logger } from "../middleware/logger.js";
 import { companySkillService } from "../services/company-skills.js";
 import {
@@ -27,6 +27,8 @@ import {
   executeTool,
 } from "../services/internal-agent/tool-registry.js";
 import { createServiceContainer } from "../services/internal-agent/service-container.js";
+import { buildOutputRefs } from "../services/internal-agent/output-refs.js";
+import { conversationService } from "../services/internal-agent/conversation.js";
 import { loadOwnedConversation, resolveActorRole } from "./conversation-authz.js";
 import { runtimeApprovalService } from "../services/internal-agent/runtime-approvals.js";
 import type { CommanderRuntimeApprovalDecision, CommanderToolPermissions, UserRole } from "@armyofagents/shared";
@@ -68,12 +70,15 @@ const updateConfigSchema = z.object({
   model: z.string().nullable().optional(),
   crewModel: z.string().nullable().optional(),
   cliTool: z.string().nullable().optional(),
-  // Threads crew (Discussions feature) opens autonomyLevel to L2 — the design
-  // ceiling for the crew (task + route + execute). Goals and identity/domain
-  // memory remain founder-gated even at L2 (Decisions #15/#16/#52). Broader
-  // "master autonomy" surface for non-crew agents stays at 0 until those
-  // controls land. See design doc § 4 — autonomy dial.
+  // D18 split: TWO dials.
+  //   autonomyLevel      → Commander only (not read by any agent-execution path).
+  //   crewAutonomyLevel  → crew task runs + org heartbeat + Adjutant/thread flows.
+  // Both accept L0-L2 — the design ceiling for the crew (task + route + execute).
+  // Goals and identity/domain memory remain founder-gated even at L2 (Decisions
+  // #15/#16/#52). L3 is reserved for a future "master autonomy" surface.
+  // See design doc § 4 — autonomy dial.
   autonomyLevel: z.number().int().min(0).max(2).optional(),
+  crewAutonomyLevel: z.number().int().min(0).max(2).optional(),
   enabledCapabilities: z.array(z.string()).optional(),
   notificationPreference: z.enum(["silent", "digest", "realtime"]).optional(),
   contextTokenBudget: z.number().int().min(2000).max(32000).optional(),
@@ -89,6 +94,8 @@ const updateConfigSchema = z.object({
   inboundRoutingLevel: z
     .enum(["off", "suggest", "auto_attach", "full_auto"])
     .optional(),
+  // Viewer Upgrade Phase 5: per-company default viewer control level.
+  viewerControlLevel: z.enum(["manual", "own_output", "full"]).optional(),
 });
 
 const cancelReminderSchema = z.object({
@@ -114,11 +121,18 @@ interface AgentAdapterFields {
 
 /**
  * Re-seed the AoA agents after a config PATCH iff any adapter-affecting field
- * changed and they aren't marketplace-managed. Crew rows follow provider/crewModel;
- * the Commander row follows cliTool/model (Task 5b). Running the full
- * ensureAllCrewAgents on any change is safe — each ensure resolves from its own
- * inputs and shouldRewriteCrewAdapter is a no-op when the adapter already matches,
- * so a crew-only change leaves Commander untouched and vice-versa.
+ * changed. Crew rows follow provider/crewModel; the Commander row follows
+ * cliTool/model (Task 5b). Running every ensure on any change is safe — each
+ * ensure resolves from its own inputs and shouldRewriteCrewAdapter is a no-op
+ * when the adapter already matches, so a crew-only change leaves Commander
+ * untouched and vice-versa.
+ *
+ * P8d: the marketplace gate suppresses the CREW half only. Infrastructure
+ * (Commander, Steward) must still be re-ensured for a marketplace-managed
+ * company — `shouldRewriteCrewAdapter` returns true whenever the resolved
+ * adapterType or model differs (resolve-crew-adapter.ts:259-264), so this is
+ * the call that migrates Commander onto the founder's newly-picked CLI/model.
+ * Skipping it wholesale stranded Commander on the old provider.
  */
 export async function maybeReensureAgentsOnConfigChange(
   db: Db,
@@ -132,8 +146,9 @@ export async function maybeReensureAgentsOnConfigChange(
     before.cliTool !== after.cliTool ||
     before.model !== after.model;
   if (!changed) return;
+  await ensureInfrastructureAgents(db, companyId);
   if (await isCrewMarketplaceManaged(db, companyId)) return;
-  await ensureAllCrewAgents(db, companyId);
+  await ensureCrewAgents(db, companyId);
 }
 
 // ── Route factory ────────────────────────────────────────────────────────────
@@ -228,6 +243,9 @@ export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentSt
           userId: actor.actorId,
           userRole,
           enabledCapabilities,
+          // Thread the pre-created run id so emitted output refs carry
+          // provenance.runId (set as AOA_RUN_ID in the MCP bridge env).
+          runId: run.id,
           content: req.body.message,
           pageContext: req.body.pageContext ?? undefined,
           departmentContext: req.body.departmentContext ?? req.body.contextScope?.departmentId ?? undefined,
@@ -498,6 +516,47 @@ export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentSt
           entityType: null,
           entityId: null,
         });
+
+        // Emit viewer navigational refs for this approval-gated write. The
+        // non-approval (auto-run) path builds these in mcp-bridge.ts
+        // executeAndFormat; the approval path executes the tool here, so it must
+        // build + persist them itself or the approved result never becomes a
+        // message with outputRefs (no nav chip renders). Persisting a small
+        // assistant message carrying the refs lets the UI's existing
+        // OutputRefChips path render on the confirm handler's refetch.
+        // Best-effort: ref emission / persistence must NEVER fail the approved
+        // tool call or change the HTTP response (matches mcp-bridge.ts, which
+        // swallows buildOutputRefs failures).
+        try {
+          if (claimed.conversationId) {
+            let seq = 0;
+            const outputRefs = buildOutputRefs(claimed.toolName, claimed.params, result, {
+              provenanceBase: {
+                surface: "commander" as const,
+                entityId: claimed.conversationId,
+                runId: claimed.runId ?? null,
+                agentId: null,
+                messageId: null,
+                emittedAt: new Date().toISOString(),
+              },
+              nextSeq: () => seq++,
+            });
+            if (outputRefs.length > 0) {
+              await conversationService(db).appendMessage(claimed.conversationId, {
+                role: "assistant",
+                content: result.summary ?? "",
+                outputRefs,
+              });
+            }
+          }
+        } catch (err) {
+          // Ref emission / persistence is best-effort — never fail the approved
+          // tool call (matches how mcp-bridge.ts logs buildOutputRefs failures).
+          logger.debug(
+            { err, confirmId, toolName: claimed.toolName },
+            "confirm: output-ref emission failed (approved tool call unaffected)",
+          );
+        }
       } else {
         await approvals.markFailed(
           confirmId,
@@ -866,6 +925,12 @@ export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentSt
       // surface and remains blocked.
       if (req.body.autonomyLevel != null && (req.body.autonomyLevel < 0 || req.body.autonomyLevel > 2)) {
         throw badRequest("autonomyLevel must be 0, 1, or 2 (L3 reserved for future master autonomy surface)");
+      }
+      // D18: the crew/agent-work dial is independently settable and independently
+      // validated. It must never be derived from `autonomyLevel` here — aliasing
+      // the two would re-couple the systems the split exists to separate.
+      if (req.body.crewAutonomyLevel != null && (req.body.crewAutonomyLevel < 0 || req.body.crewAutonomyLevel > 2)) {
+        throw badRequest("crewAutonomyLevel must be 0, 1, or 2 (L3 reserved for future master autonomy surface)");
       }
 
       // Read the adapter-affecting fields BEFORE the update so we can detect a change.

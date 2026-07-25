@@ -1,10 +1,10 @@
 import type { AgentTool, ToolContext, ToolResult } from "./types.js";
-import type { CommanderToolPermissions, CommanderOutputRef } from "@armyofagents/shared";
+import type { CommanderToolPermissions, ShowRef } from "@armyofagents/shared";
 // Type-only import (erased at compile time → no runtime side effect, preserves
 // the side-effect-free module load for consumers of the tool-layer exports).
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { buildOutputRefs } from "./output-refs.js";
-import { resolveCommanderToolPolicy } from "./authorize-tool.js";
+import { authorizeToolInvocation, resolveCommanderToolPolicy } from "./authorize-tool.js";
 import { parseCommanderContextScopeJson } from "./context-scope.js";
 import { filterAuthorizedToolsForContext } from "./tool-registry.js";
 
@@ -83,6 +83,12 @@ function normalizeToolArgs(args: unknown): Record<string, unknown> {
     : {};
 }
 
+// Per-ref ordering allocator. The bridge is a per-turn subprocess (it
+// respawns/exits each turn), so this counter is effectively per-turn — an
+// ordering hint, not a global key. Resetting on restart is acceptable.
+let refSeqCounter = 0;
+const nextSeq = (): number => refSeqCounter++;
+
 async function executeAndFormat(
   tool: AgentTool,
   args: unknown,
@@ -91,9 +97,20 @@ async function executeAndFormat(
 ): Promise<McpToolResult> {
   try {
     const result = await deps.executeTool(tool, args, toolContext);
-    let outputRefs: CommanderOutputRef[] = [];
+    let outputRefs: ShowRef[] = [];
     try {
-      outputRefs = buildOutputRefs(tool.name, args, result);
+      // Provenance built here where toolContext is in scope. entityId is the
+      // Commander conversation; null → the builder emits provenance: null.
+      // seq is allocated PER REF inside buildOutputRefs via nextSeq().
+      const provenanceBase = {
+        surface: "commander" as const,
+        entityId: toolContext.contextScope?.conversationId ?? null,
+        runId: toolContext.runId ?? null,
+        agentId: toolContext.agentId ?? null,
+        messageId: null,
+        emittedAt: new Date().toISOString(),
+      };
+      outputRefs = buildOutputRefs(tool.name, args, result, { provenanceBase, nextSeq });
     } catch (err) {
       outputRefs = []; // ref extraction must never fail the tool call
       process.stderr.write(
@@ -137,13 +154,32 @@ export function createToolCallHandler(deps: ToolCallHandlerDeps) {
       };
     }
 
-    const policy = resolveCommanderToolPolicy(tool, deps.toolContext);
+    // T8 Defect B: the Commander policy layer (commanderToolPermissions +
+    // runtime-approval / ⚡CONFIRM gate) applies ONLY to the Commander actor —
+    // mirroring the tools/list gate in filterAuthorizedToolsForContext
+    // (tool-registry.ts) so listing and calling agree. Every other actor (crew
+    // 'aoa', org) is judged by the base gate (allowlist + role + capability)
+    // alone. Crew has no confirm route, so a Commander approval marker would
+    // strand the tool; the base gate is exactly the enforcement crew needs.
+    const policy = deps.toolContext.actorType === "commander"
+      ? resolveCommanderToolPolicy(tool, deps.toolContext)
+      : authorizeToolInvocation(
+          tool,
+          deps.toolContext.userRole,
+          deps.toolContext.enabledCapabilities,
+          { agentKind: deps.toolContext.agentKind, toolAllowlist: deps.toolContext.toolAllowlist },
+        );
     if (!policy.allowed) {
       // Include both the error code (e.g., NOT_IN_ALLOWLIST, FORBIDDEN_ROLE,
       // CAPABILITY_DISABLED) and the human-readable summary so callers/tests
-      // can parse the failure type and humans see the explanation.
+      // can parse the failure type and humans see the explanation. Both denied
+      // decision shapes carry required `error`/`summary`, so the access is
+      // always type-valid; the `error ? … : summary` else branch is dead
+      // (error is always a truthy literal on a denied decision) but kept for
+      // defensiveness. Destructured here for readability.
+      const { error, summary } = policy;
       return {
-        content: [{ type: "text", text: policy.error ? `${policy.error}: ${policy.summary}` : policy.summary }],
+        content: [{ type: "text", text: error ? `${error}: ${summary}` : summary }],
         isError: true,
       };
     }
@@ -152,7 +188,18 @@ export function createToolCallHandler(deps: ToolCallHandlerDeps) {
       ? { ...deps.toolContext, producerInvocationId }
       : deps.toolContext;
 
-    if (!policy.requiresApproval) {
+    // Runtime approval is a Commander-only path — key it on the SAME actor
+    // discriminator as the gate selection above (and the two gates in
+    // tool-registry.ts) rather than on the mere absence of a `requiresApproval`
+    // field. Crew/org have no confirm route, so this MUST NOT depend on the
+    // base decision's shape: if a future refactor added `requiresApproval` to
+    // ToolAuthDecision, an `in`-only check would silently re-strand crew tools
+    // with no compile error and no failing test.
+    const requiresApproval =
+      deps.toolContext.actorType === "commander" &&
+      "requiresApproval" in policy &&
+      policy.requiresApproval;
+    if (!requiresApproval) {
       return executeAndFormat(tool, args, deps, invocationContext);
     }
 
@@ -171,7 +218,16 @@ export function createToolCallHandler(deps: ToolCallHandlerDeps) {
 
     const approval = await approvalSvc.createPending({
       companyId: deps.toolContext.companyId,
-      conversationId: deps.toolContext.conversationId ?? null,
+      // The Commander conversation id lives on contextScope (same source the
+      // non-gated emission uses for provenance at L107). The ToolContext has no
+      // top-level `conversationId`, so reading it directly stored null — which
+      // left the approved tool's result with no conversation to attach output
+      // refs to (the confirm route guards on a non-null conversationId), so
+      // approval-gated writes emitted no viewer nav chip.
+      conversationId:
+        deps.toolContext.contextScope?.conversationId ??
+        deps.toolContext.conversationId ??
+        null,
       runId: deps.toolContext.runId ?? null,
       userId: deps.toolContext.userId,
       toolName: name,

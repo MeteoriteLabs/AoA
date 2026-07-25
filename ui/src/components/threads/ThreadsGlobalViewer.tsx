@@ -1,4 +1,4 @@
-import { Compass, FileText, Globe, LayoutGrid, Network } from "lucide-react";
+import { CheckSquare, Compass, FileText, Globe, LayoutGrid, MessageSquare, Network, Package } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { BrowserViewer } from "../viewers/BrowserViewer";
 import { ViewerTabs, type ViewerTabModel } from "../viewers/ViewerTabs";
@@ -24,6 +24,9 @@ const HOME_VIEWER_ICON_FOR_KIND: Record<ThreadViewerTabKind, typeof LayoutGrid> 
   artifact: FileText,
   browser: Globe,
   map: Network,
+  discussion: MessageSquare,
+  approval: CheckSquare,
+  output_ref: Package,
 };
 
 export const HOME_VIEWER_DEFAULT_TAB = createGlobalMapTab();

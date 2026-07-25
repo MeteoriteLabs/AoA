@@ -58,7 +58,8 @@ export async function configureCompanyCrewProvider(
       data: {
         provider: config.provider,
         model: config.model,
-        autonomyLevel,
+        // D18: the crew dial, not Commander's.
+        crewAutonomyLevel: autonomyLevel,
         crewPaused: false,
       },
     }),

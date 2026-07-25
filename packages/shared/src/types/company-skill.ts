@@ -87,9 +87,27 @@ export interface CompanySkillImportRequest {
   source: string;
 }
 
+/**
+ * A skill the import declined to overwrite because the installed row carries
+ * founder edits (`company_skills.customized`). T2.9 — the non-catalog install
+ * path honours the same flag the catalog auto-apply path does.
+ */
+export interface CompanySkillRefusedImport {
+  skillId: string;
+  key: string;
+  slug: string;
+  name: string;
+  reason: "customized";
+}
+
 export interface CompanySkillImportResult {
   imported: CompanySkill[];
   warnings: string[];
+  /**
+   * Rows left untouched because they carry founder edits. Always present;
+   * empty when nothing was refused. Refused entries are NOT in `imported`.
+   */
+  refusedCustomized: CompanySkillRefusedImport[];
 }
 
 export interface CompanySkillProjectScanRequest {

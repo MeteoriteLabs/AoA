@@ -149,6 +149,21 @@ describe("createRateLimiter", () => {
     expect((await request(appOtherIp).get("/probe")).status).toBe(429);
   });
 
+  // Regression: an actor-keyed limiter reached with NO `req.actor` at all (a
+  // route mounted without actorMiddleware) must degrade to an IP bucket, never
+  // 500 on `req.actor.type` of undefined. Before the guard this threw a
+  // TypeError and crashed the request.
+  it("falls back to IP bucketing when keyBy=actor and req.actor is absent", async () => {
+    const limiter = createRateLimiter({ windowMs: 60_000, max: 1, keyBy: "actor" });
+    // Set req.ip but deliberately leave req.actor undefined.
+    const app = buildApp({ limiter, preLimiter: withIp("192.0.2.77") });
+
+    const r1 = await request(app).get("/probe");
+    expect(r1.status).toBe(200); // did not 500
+    const r2 = await request(app).get("/probe");
+    expect(r2.status).toBe(429); // same IP bucket exhausted
+  });
+
   it("emits draft-7 RateLimit-* standardized headers on responses", async () => {
     const limiter = createRateLimiter({ windowMs: 60_000, max: 5, keyBy: "ip" });
     const app = buildApp({ limiter, preLimiter: withIp("198.51.100.99") });

@@ -200,7 +200,7 @@ automatically.
 The MeteoriteLabs AoA CLI is not currently published to npm. Do not use
 `npx aoa` or `npx paperclipai`: those package names resolve to other projects.
 
-> **Requirements:** Node.js 20+, pnpm 9.15+
+> **Requirements:** Node.js 20.3+, pnpm 9.15+
 
 Open the URL to continue through guided setup. The first-time flow creates your
 profile and organization, verifies a writable workspace and your Commander CLI,

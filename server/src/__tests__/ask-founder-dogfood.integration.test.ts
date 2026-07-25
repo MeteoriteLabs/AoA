@@ -40,6 +40,28 @@ let pg: EmbeddedPostgresInstance | null = null;
 let dataDir = "";
 let db: Db;
 let setupError: unknown = null;
+let setupFailed = false;
+
+/**
+ * Fail LOUDLY and ONCE when embedded-postgres never came up.
+ *
+ * `setupError = err` alone is not a guard: embedded-postgres can reject with
+ * `undefined`, which is falsy, so the old `if (setupError) throw` silently
+ * no-oped and every case then ran against an unassigned `db` — a wall of
+ * `Cannot read properties of undefined (reading 'insert')` pointing into
+ * product code, which reads as a product bug rather than a setup failure.
+ * A boolean cannot be falsy-by-accident, and the `db` check covers a throw
+ * that happens to leave `setupError` null.
+ */
+function assertSetupOk(): void {
+  const dbReady = (db as Db | undefined) !== undefined;
+  if (!setupFailed && dbReady) return;
+  throw new Error(
+    `embedded-postgres setup failed (see the console.error above): ${
+      setupError instanceof Error ? setupError.message : String(setupError)
+    }`,
+  );
+}
 const PORT = 59900 + Math.floor(Math.random() * 300);
 
 interface Scenario {
@@ -162,6 +184,7 @@ beforeAll(async () => {
     db = createDb(connectionString);
   } catch (error) {
     setupError = error;
+    setupFailed = true;
     console.error("[ask-human-dogfood] embedded-postgres setup failed:", error);
   }
 }, 180_000);
@@ -178,7 +201,7 @@ describe.skipIf(
   process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1",
 )("ask_human dogfood (real PostgreSQL)", () => {
   it("round-trips one free-text answer through the durable question and Hub mirror", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     const scenario = await seedScenario("text");
     const pending = handleAskHuman(buildAgentContext(scenario), {
       question: "Should we launch to five design partners first?",
@@ -218,7 +241,7 @@ describe.skipIf(
   });
 
   it("round-trips a structured option and keeps ask_founder as the same path", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     const scenario = await seedScenario("option");
     const pending = handleAskFounder(buildAgentContext(scenario), {
       question: "Which interview sample should we use?",
@@ -244,7 +267,7 @@ describe.skipIf(
   });
 
   it("rejects a terminal run before creating a question", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     const scenario = await seedScenario("terminal", "succeeded");
     await expect(handleAskHuman(
       buildAgentContext(scenario),
@@ -256,7 +279,7 @@ describe.skipIf(
   });
 
   it("rejects board callers and agent callers without a run", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     const scenario = await seedScenario("actor");
     const board = await handleAskHuman(
       buildAgentContext(scenario, { source: "board", agentId: null, runId: null }),

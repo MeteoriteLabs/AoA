@@ -13,7 +13,11 @@ export const updateInternalAgentConfigSchema = z.object({
   model: z.string().optional().nullable(),
   crewModel: z.string().optional().nullable(),
   cliTool: z.string().optional().nullable(),
+  // D18 dial-split: `autonomyLevel` is Commander's; `crewAutonomyLevel` drives
+  // crew task runs, org-agent heartbeat runs, and Adjutant/thread flows. They
+  // are set independently — never mirror one onto the other.
   autonomyLevel: z.number().int().min(0).max(2).optional(),
+  crewAutonomyLevel: z.number().int().min(0).max(2).optional(),
   enabledCapabilities: z.array(z.enum(AGENT_CAPABILITIES)).optional(),
   notificationPreference: z.enum(NOTIFICATION_PREFERENCES).optional(),
   contextTokenBudget: z.number().int().positive().optional(),
@@ -30,6 +34,8 @@ export const updateInternalAgentConfigSchema = z.object({
       INBOUND_ROUTING_LEVELS.map((l) => l.value) as [string, ...string[]],
     )
     .optional(),
+  // Viewer Upgrade Phase 5: per-company default viewer control level.
+  viewerControlLevel: z.enum(["manual", "own_output", "full"]).optional(),
 });
 
 export type UpdateInternalAgentConfig = z.infer<typeof updateInternalAgentConfigSchema>;

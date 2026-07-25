@@ -358,17 +358,42 @@ export async function ensureCommandResolvable(command: string, cwd: string, env:
 }
 
 /**
+ * Case-folding for environment-variable NAMES.
+ *
+ * Windows env names are case-insensitive — `Claude_Config_Dir` IS
+ * `CLAUDE_CONFIG_DIR`, one variable — while POSIX names are case-sensitive and
+ * must never be folded together.
+ *
+ * Exported because `mergeChildEnv`'s strip is not the only place that has to
+ * compare env keys: claude-local reads the overlay for a configured
+ * `CLAUDE_CONFIG_DIR` and for configured auth, and both comparisons must agree
+ * with the strip's. A private second copy of this rule drifts silently, and the
+ * drift only shows up as a Windows-only bug — so the rule is one function and
+ * the strip below uses it too.
+ */
+export function foldEnvKey(key: string): string {
+  return process.platform === "win32" ? key.toLowerCase() : key;
+}
+
+/**
  * Build a child-process environment from the parent env + an overlay, with an
  * opt-in strip of inherited keys. A key in `unsetEnvKeys` is removed from the
  * result ONLY if the overlay did not set it — so an agent's own value (even an
  * explicit empty string) survives while an ambient (server-process) value is
  * dropped. Used to keep the AoA server's OPENAI_API_KEY out of agent runs
  * (codex opts in); default behavior (no `unsetEnvKeys`) is unchanged.
+ *
+ * `unsetEnvPrefixes` applies the SAME rule to a whole prefix CLASS (D9 — crew
+ * ambient-config isolation strips `CLAUDE_`/`ANTHROPIC_` so a crew run inherits
+ * nothing from the operator's host Claude setup). A prefix rather than an
+ * enumerated list because an enumeration silently leaks any newly-introduced
+ * variable. Also additive: no prefixes ⇒ behavior identical to before.
  */
 export function mergeChildEnv(
   parentEnv: NodeJS.ProcessEnv,
   overlayEnv: Record<string, string>,
   unsetEnvKeys?: string[],
+  unsetEnvPrefixes?: string[],
 ): NodeJS.ProcessEnv {
   const merged: NodeJS.ProcessEnv = { ...parentEnv, ...overlayEnv };
   // Windows env var names are case-insensitive: deleting only the exact-cased
@@ -376,10 +401,10 @@ export function mergeChildEnv(
   // `OpenAI_API_KEY`) in place, so the codex child still inherits the server key
   // and the api-key auth/billing leak this strip prevents returns (Codex P2).
   // Match case-insensitively on Windows, exact elsewhere (POSIX env IS
-  // case-sensitive — don't drop a legitimately distinct var there).
-  const caseInsensitive = process.platform === "win32";
-  const sameKey = (a: string, b: string) =>
-    caseInsensitive ? a.toLowerCase() === b.toLowerCase() : a === b;
+  // case-sensitive — don't drop a legitimately distinct var there). Delegates to
+  // the exported `foldEnvKey` so the adapters that must agree with this strip
+  // share the rule rather than reimplementing it.
+  const sameKey = (a: string, b: string) => foldEnvKey(a) === foldEnvKey(b);
   for (const key of unsetEnvKeys ?? []) {
     // The exact key(s) the overlay set itself survive (an agent's own key — even
     // an explicit empty string — wins). Any OTHER matching-cased key is an
@@ -388,6 +413,23 @@ export function mergeChildEnv(
     const overlayKeys = new Set(Object.keys(overlayEnv).filter((k) => sameKey(k, key)));
     for (const mergedKey of Object.keys(merged)) {
       if (sameKey(mergedKey, key) && !overlayKeys.has(mergedKey)) delete merged[mergedKey];
+    }
+  }
+  // Prefix class — deliberately built on the SAME `sameKey` case-folding (a
+  // second comparison rule would drift from the exact-key strip above, and the
+  // Windows case-insensitivity is exactly what makes `Claude_Config_Dir` and
+  // `CLAUDE_CONFIG_DIR` one variable). Overlay-set keys survive identically.
+  const hasPrefix = (candidate: string, prefix: string) =>
+    candidate.length >= prefix.length && sameKey(candidate.slice(0, prefix.length), prefix);
+  for (const prefix of unsetEnvPrefixes ?? []) {
+    // An empty prefix matches EVERY key — it would wipe the child's whole
+    // environment. Skip it: the asymmetry with unsetEnvKeys (where an empty
+    // entry deletes at most a literal "" key) makes this a live footgun for a
+    // caller building the list dynamically.
+    if (prefix.length === 0) continue;
+    const overlayKeys = new Set(Object.keys(overlayEnv).filter((k) => hasPrefix(k, prefix)));
+    for (const mergedKey of Object.keys(merged)) {
+      if (hasPrefix(mergedKey, prefix) && !overlayKeys.has(mergedKey)) delete merged[mergedKey];
     }
   }
   return merged;
@@ -417,6 +459,8 @@ export interface SpawnTrackedChildOptions {
   graceSec: number;
   /** Keys to strip from the inherited parent env unless `env` set them. */
   unsetEnvKeys?: string[];
+  /** Key PREFIXES to strip from the inherited parent env unless `env` set them. */
+  unsetEnvPrefixes?: string[];
   /** stdio layout; drivers use ["pipe","pipe","pipe"] to keep JSON-RPC bidirectional. */
   stdio?: import("node:child_process").StdioOptions;
   shell?: boolean;
@@ -428,7 +472,9 @@ export function spawnTrackedChild(
   args: string[],
   opts: SpawnTrackedChildOptions,
 ): TrackedChildHandle {
-  const mergedEnv = ensurePathInEnv(mergeChildEnv(process.env, opts.env, opts.unsetEnvKeys));
+  const mergedEnv = ensurePathInEnv(
+    mergeChildEnv(process.env, opts.env, opts.unsetEnvKeys, opts.unsetEnvPrefixes),
+  );
   const child = spawn(command, args, {
     cwd: opts.cwd,
     env: mergedEnv,
@@ -497,6 +543,8 @@ export async function runChildProcess(
     shell?: boolean;
     /** Keys to strip from the inherited parent env (unless `env` set them). */
     unsetEnvKeys?: string[];
+    /** Key PREFIXES to strip from the inherited parent env (unless `env` set them). */
+    unsetEnvPrefixes?: string[];
   },
 ): Promise<RunProcessResult> {
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
@@ -505,7 +553,9 @@ export async function runChildProcess(
     // Same merged env spawnTrackedChild will build — captured here only so the
     // ENOENT error message can report the effective PATH (kept identical to the
     // pre-refactor behavior).
-    const mergedEnv = ensurePathInEnv(mergeChildEnv(process.env, opts.env, opts.unsetEnvKeys));
+    const mergedEnv = ensurePathInEnv(
+      mergeChildEnv(process.env, opts.env, opts.unsetEnvKeys, opts.unsetEnvPrefixes),
+    );
     // spawnTrackedChild owns spawn flags, the env-strip, the runningProcesses
     // registration/deregistration, and the SIGTERM→SIGKILL escalation. The exec
     // path layers stdin-write / stdout-capture / close-resolve on top; net
@@ -515,6 +565,7 @@ export async function runChildProcess(
       env: opts.env,
       graceSec: opts.graceSec,
       unsetEnvKeys: opts.unsetEnvKeys,
+      unsetEnvPrefixes: opts.unsetEnvPrefixes,
       shell: opts.shell,
       stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
     });

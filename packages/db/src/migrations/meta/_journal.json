@@ -1247,6 +1247,48 @@
       "when": 1784716922443,
       "tag": "0177_strong_imperial_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 178,
+      "version": "7",
+      "when": 1784782188752,
+      "tag": "0178_pale_champions",
+      "breakpoints": true
+    },
+    {
+      "idx": 179,
+      "version": "7",
+      "when": 1784803482121,
+      "tag": "0179_thin_jack_power",
+      "breakpoints": true
+    },
+    {
+      "idx": 180,
+      "version": "7",
+      "when": 1784834553178,
+      "tag": "0180_little_omega_sentinel",
+      "breakpoints": true
+    },
+    {
+      "idx": 181,
+      "version": "7",
+      "when": 1784873201946,
+      "tag": "0181_light_overlord",
+      "breakpoints": true
+    },
+    {
+      "idx": 182,
+      "version": "7",
+      "when": 1784901664857,
+      "tag": "0182_friendly_stature",
+      "breakpoints": true
+    },
+    {
+      "idx": 183,
+      "version": "7",
+      "when": 1784916557611,
+      "tag": "0183_clean_lady_ursula",
+      "breakpoints": true
     }
   ]
 }

@@ -94,6 +94,80 @@ function makeSeqDb(queue: Array<Array<Record<string, unknown>>>) {
   };
 }
 
+// ── WHERE-aware db (for the cross-tenant scoping tests) ───────────────────────
+// Unlike makeSeqDb (which ignores the WHERE clause), this stub HONORS the
+// company filter so a cross-company read is actually denied — the whole point
+// of the fix. The drizzle mock renders `eq(a,b)` → { eq:[a,b] } and
+// `and(...c)` → { and:[...] }; we walk that structure to read the requested
+// companyId. Tables are identified by the column strings the proxy yields.
+function collectEqs(node: unknown, acc: Array<[unknown, unknown]> = []): Array<[unknown, unknown]> {
+  if (!node || typeof node !== "object") return acc;
+  const n = node as { eq?: unknown[]; and?: unknown[] };
+  if (Array.isArray(n.eq)) acc.push([n.eq[0], n.eq[1]]);
+  if (Array.isArray(n.and)) for (const c of n.and) collectEqs(c, acc);
+  return acc;
+}
+function requestedValue(where: unknown, column: string): unknown {
+  const pair = collectEqs(where).find(([col]) => col === column);
+  return pair ? pair[1] : undefined;
+}
+
+/**
+ * A db that models REAL cross-tenant semantics: the discussion/issue row
+ * genuinely EXISTS (owned by `ownerCompanyId`) and is matched by its id. It is
+ * returned UNLESS the WHERE clause carries a companyId conjunct scoping it to a
+ * DIFFERENT company. Crucially, an UNSCOPED read (id only, no companyId — i.e.
+ * the pre-fix vulnerable query) still returns the row — so a regression that
+ * drops the companyId conjunct surfaces the foreign row and FAILS the tests.
+ * `discussion_entries` (no companyId column) and `agents` reads return their
+ * rows whenever the code reaches them — the gate's job is to make them
+ * unreachable for a foreign caller in the first place.
+ */
+function makeTenantScopedDb(opts: {
+  ownerCompanyId: string;
+  discussionId?: string;
+  discussionRow?: Record<string, unknown>;
+  entryRows?: Array<Record<string, unknown>>;
+  issueId?: string;
+  issueRow?: Record<string, unknown>;
+  agentRows?: Array<Record<string, unknown>>;
+}) {
+  const makeChain = () => {
+    const state: { table?: string; where?: unknown } = {};
+    const chain: any = {};
+    chain.from = (t: any) => { state.table = String(t.id).split(".")[0]; return chain; };
+    chain.where = (c: unknown) => { state.where = c; return chain; };
+    chain.orderBy = () => chain;
+    chain.leftJoin = () => chain;
+    chain.innerJoin = () => chain;
+    const resolve = (): Array<Record<string, unknown>> => {
+      if (state.table === "discussions") {
+        if (!opts.discussionRow) return [];
+        if (requestedValue(state.where, "discussions.id") !== opts.discussionId) return [];
+        const reqCompany = requestedValue(state.where, "discussions.companyId");
+        // Row exists; only a mismatched companyId conjunct hides it.
+        if (reqCompany !== undefined && reqCompany !== opts.ownerCompanyId) return [];
+        return [opts.discussionRow];
+      }
+      if (state.table === "issues") {
+        if (!opts.issueRow) return [];
+        if (requestedValue(state.where, "issues.id") !== opts.issueId) return [];
+        const reqCompany = requestedValue(state.where, "issues.companyId");
+        if (reqCompany !== undefined && reqCompany !== opts.ownerCompanyId) return [];
+        return [opts.issueRow];
+      }
+      if (state.table === "discussionEntries") return opts.entryRows ?? [];
+      if (state.table === "agents") return opts.agentRows ?? [];
+      return [];
+    };
+    chain.limit = () => Promise.resolve(resolve());
+    chain.then = (onF: (v: unknown[]) => unknown, onR?: (e: unknown) => unknown) =>
+      Promise.resolve(resolve()).then(onF, onR);
+    return chain;
+  };
+  return { select: vi.fn(() => makeChain()) };
+}
+
 describe("buildCrewContextBundle", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -104,13 +178,13 @@ describe("buildCrewContextBundle", () => {
   // (a) THREAD branch renders the last entries (author: text) + the summary.
   it("(a) thread branch: renders the Chronicler summary + the last entries as '<author>: <text>'", async () => {
     const db = makeSeqDb([
-      // 1) entries (desc; the builder reverses to chronological)
+      // 1) company-scoped thread (discussions) row — read FIRST as the tenant gate
+      [{ summaryText: "Thread about enterprise authentication strategy.", routingTerms: ["SSO", "SAML"] }],
+      // 2) entries (desc; the builder reverses to chronological)
       [
         { id: "e2", rawContent: "I think we should ship SSO first", authorAgentId: null, createdBy: "user-founder", createdAt: new Date("2026-06-01T10:01:00Z") },
         { id: "e1", rawContent: "We need a precedent for enterprise auth", authorAgentId: "agent-scout", createdBy: "agent", createdAt: new Date("2026-06-01T10:00:00Z") },
       ],
-      // 2) thread summary row
-      [{ summaryText: "Thread about enterprise authentication strategy.", routingTerms: ["SSO", "SAML"] }],
       // 3) agent-name lookup (one entry had authorAgentId)
       [{ id: "agent-scout", name: "Scout" }],
     ]);
@@ -282,10 +356,10 @@ describe("buildCrewContextBundle", () => {
       { id: "m2", title: "Brand voice", content: "Terse, factual.", layer: "identity" },
     ]);
     const db = makeSeqDb([
+      // company-scoped thread row (found, no Chronicler summary yet)
+      [{ summaryText: null, routingTerms: null }],
       // thread entries
       [{ id: "e1", rawContent: "how do we do auth?", authorAgentId: null, createdBy: "user-1", createdAt: new Date("2026-06-01T10:00:00Z") }],
-      // summary (none)
-      [],
     ]);
 
     const out = await buildCrewContextBundle(db as any, {
@@ -311,8 +385,8 @@ describe("buildCrewContextBundle", () => {
   it("(d) memory degrades gracefully: search throwing (embeddings absent) never crashes the bundle", async () => {
     mockSearchMultiPath.mockRejectedValue(new Error("pgvector unavailable: column embedding does not exist"));
     const db = makeSeqDb([
+      [{ summaryText: null, routingTerms: null }],
       [{ id: "e1", rawContent: "ambient chatter", authorAgentId: null, createdBy: "user-1", createdAt: new Date("2026-06-01T10:00:00Z") }],
-      [],
     ]);
 
     const out = await buildCrewContextBundle(db as any, {
@@ -329,8 +403,8 @@ describe("buildCrewContextBundle", () => {
   it("(d2) memory empty array → no memory section, thread context preserved", async () => {
     mockSearchMultiPath.mockResolvedValue([]);
     const db = makeSeqDb([
+      [{ summaryText: null, routingTerms: null }],
       [{ id: "e1", rawContent: "ambient chatter two", authorAgentId: null, createdBy: "user-1", createdAt: new Date("2026-06-01T10:00:00Z") }],
-      [],
     ]);
 
     const out = await buildCrewContextBundle(db as any, {
@@ -355,8 +429,8 @@ describe("buildCrewContextBundle", () => {
       createdAt: new Date(2026, 5, 1, 10, n, 0),
     }));
     const db = makeSeqDb([
-      rowsDesc, // entries (desc)
-      [],       // no summary
+      [{ summaryText: null, routingTerms: null }], // company-scoped thread row (found)
+      rowsDesc,                                    // entries (desc)
     ]);
 
     // ~120 tokens ≈ 480 chars: enough for ~1 entry, not all 6.
@@ -372,6 +446,96 @@ describe("buildCrewContextBundle", () => {
     expect(out).not.toContain("#1");
     // Budget respected (ceil(len/4) <= budget, with a little slack for headers).
     expect(Math.ceil(out.length / 4)).toBeLessThanOrEqual(120 + 40);
+  });
+
+  // ── Cross-tenant scoping (security) ────────────────────────────────────────
+  // The thread + task reads MUST be company-scoped. A caller-supplied threadId/
+  // issueId can arrive via a wakeup payload (dispatcher → agent.dispatch), so a
+  // company-A run passing a company-B id must read NOTHING of company B's data,
+  // even though that thread/task genuinely EXISTS in company B (the denial is
+  // the company scope, not a generic not-found).
+
+  it("(sec-thread) a foreign company's thread is NOT readable — no summary, no entries leak", async () => {
+    mockSearchMultiPath.mockResolvedValue([]);
+    const db = makeTenantScopedDb({
+      ownerCompanyId: "company-B",
+      discussionId: "thread-owned-by-B",
+      // This thread + these entries genuinely exist, owned by company-B.
+      discussionRow: { summaryText: "Company B secret strategy", routingTerms: ["acquisition", "layoffs"] },
+      entryRows: [
+        { id: "b1", rawContent: "Company B confidential board note", authorAgentId: "agent-b", createdBy: "agent", createdAt: new Date("2026-06-01T10:00:00Z") },
+      ],
+      agentRows: [{ id: "agent-b", name: "CompanyB-Agent" }],
+    });
+
+    // Attacker: company-A run, but pointing at company-B's thread id.
+    const out = await buildCrewContextBundle(db as any, {
+      companyId: "company-A",
+      threadId: "thread-owned-by-B",
+      agentId: "agent-a",
+    });
+
+    // Nothing of company B crosses the boundary.
+    expect(out).toBe("");
+    expect(out).not.toContain("Company B secret strategy");
+    expect(out).not.toContain("Company B confidential board note");
+    expect(out).not.toContain("acquisition");
+    expect(out).not.toContain("CompanyB-Agent");
+    // And the foreign thread's entries/memory were never queried against B.
+    expect(mockSearchMultiPath).not.toHaveBeenCalled();
+  });
+
+  it("(sec-thread) the SAME thread IS readable by its owning company (denial is company scope, not not-found)", async () => {
+    mockSearchMultiPath.mockResolvedValue([]);
+    const db = makeTenantScopedDb({
+      ownerCompanyId: "company-B",
+      discussionId: "thread-owned-by-B",
+      discussionRow: { summaryText: "Company B secret strategy", routingTerms: ["acquisition"] },
+      entryRows: [
+        { id: "b1", rawContent: "Company B confidential board note", authorAgentId: null, createdBy: "user-b", createdAt: new Date("2026-06-01T10:00:00Z") },
+      ],
+    });
+
+    const out = await buildCrewContextBundle(db as any, {
+      companyId: "company-B", // the rightful owner
+      threadId: "thread-owned-by-B",
+      agentId: "agent-b",
+    });
+
+    // Owner sees the content — proves the foreign-company denial above is the
+    // company scope, not the thread simply being absent.
+    expect(out).toContain("Company B secret strategy");
+    expect(out).toContain("Company B confidential board note");
+  });
+
+  it("(sec-task) a foreign company's task is NOT readable through the task branch", async () => {
+    mockSearchMultiPath.mockResolvedValue([]);
+    const db = makeTenantScopedDb({
+      ownerCompanyId: "company-B",
+      issueId: "task-owned-by-B",
+      issueRow: {
+        id: "task-owned-by-B",
+        companyId: "company-B",
+        title: "Company B private task title",
+        description: "Company B private task body",
+        status: "todo",
+        priority: "high",
+        artifactId: null,
+        projectId: null,
+        projectType: null,
+        goalId: null,
+      },
+    });
+
+    const out = await buildCrewContextBundle(db as any, {
+      companyId: "company-A",
+      issueId: "task-owned-by-B",
+      agentId: "agent-a",
+    });
+
+    expect(out).toBe("");
+    expect(out).not.toContain("Company B private task title");
+    expect(out).not.toContain("Company B private task body");
   });
 
   it("returns empty string when there is genuinely no context (no thread/task, no memory)", async () => {

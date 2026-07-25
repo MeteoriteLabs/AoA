@@ -3,6 +3,7 @@ import { render, type RenderOptions } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { vi } from "vitest";
+import { ThemeProvider } from "../context/ThemeContext";
 
 // --- Mock company context ---
 export const mockCompanyContext = {
@@ -71,7 +72,7 @@ export function createWrapper(initialEntries: string[] = ["/"]) {
     return (
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={initialEntries}>
-          {children}
+          <ThemeProvider>{children}</ThemeProvider>
         </MemoryRouter>
       </QueryClientProvider>
     );

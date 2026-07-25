@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { ShowRef } from "@armyofagents/shared";
 import type { DiscussionDetail, DiscussionEntryAttachment, ExtractedItem } from "../../../api/discussions";
 import {
   OPEN_TAB_KEY,
@@ -13,6 +14,7 @@ import {
   extractUrlsFromThread,
   scopeArtifactToTab,
   scopeItemToTab,
+  showRefToThreadTab,
   taskOutputTab,
   taskTab,
   threadAttachmentToTab,
@@ -283,5 +285,81 @@ describe("threadViewerModel", () => {
       "https://entry.example/doc",
       "https://source.example/call",
     ]);
+  });
+});
+
+describe("showRefToThreadTab — delivered-ref openRef adapter", () => {
+  function v2(kind: ShowRef["kind"], overrides: Partial<ShowRef> = {}): ShowRef {
+    return {
+      v: 2,
+      kind,
+      id: `${kind}-id`,
+      action: "referenced",
+      ...overrides,
+    } as ShowRef;
+  }
+
+  it("maps artifact → artifact_ref tab (carries id + versionId)", () => {
+    const tab = showRefToThreadTab(v2("artifact", { id: "art-1", versionId: "ver-9", title: "Brief" }));
+    expect(tab.kind).toBe("artifact_ref");
+    expect(tab.payload).toMatchObject({ artifactId: "art-1", artifactVersionId: "ver-9" });
+  });
+
+  it("maps a legacy v1 artifact ref → artifact_ref tab", () => {
+    const legacy: ShowRef = { v: 1, kind: "artifact", id: "art-2", action: "created", title: "Deck" };
+    const tab = showRefToThreadTab(legacy);
+    expect(tab.kind).toBe("artifact_ref");
+    expect(tab.payload).toMatchObject({ artifactId: "art-2" });
+  });
+
+  it("maps asset → asset tab (assetId carried via synthesized attachment)", () => {
+    const tab = showRefToThreadTab(v2("asset", { id: "asset-1", mimeType: "image/png", title: "logo.png" }));
+    expect(tab.kind).toBe("asset");
+    expect(tab.key).toBe("asset:asset-1");
+    expect(tab.payload).toMatchObject({ attachment: { assetId: "asset-1", assetContentType: "image/png" } });
+  });
+
+  it("maps task → task tab (TaskDetail, carries issueId)", () => {
+    const tab = showRefToThreadTab(v2("task", { id: "issue-1", title: "Ship it" }));
+    expect(tab.kind).toBe("task");
+    expect(tab.payload).toMatchObject({ issueId: "issue-1" });
+  });
+
+  it("maps memory_item → memory tab (carries companyId + memoryId)", () => {
+    const tab = showRefToThreadTab(v2("memory_item", { id: "mem-1", title: "How we test" }), "comp-1");
+    expect(tab.kind).toBe("memory");
+    expect(tab.payload).toMatchObject({ companyId: "comp-1", memoryId: "mem-1" });
+  });
+
+  it("maps url → browser tab (normalized url in payload)", () => {
+    const tab = showRefToThreadTab(v2("url", { id: "https://example.com/x", title: "Example" }));
+    expect(tab.kind).toBe("browser");
+    expect(tab.payload).toMatchObject({ url: "https://example.com/x" });
+  });
+
+  it("maps discussion → discussion tab (NEW body, carries companyId + discussionId)", () => {
+    const tab = showRefToThreadTab(v2("discussion", { id: "disc-1", title: "Kickoff" }), "comp-1");
+    expect(tab.kind).toBe("discussion");
+    expect(tab.key).toBe("discussion:disc-1");
+    expect(tab.payload).toMatchObject({ companyId: "comp-1", discussionId: "disc-1" });
+  });
+
+  it("maps approval → approval tab (NEW body, carries approvalId)", () => {
+    const tab = showRefToThreadTab(v2("approval", { id: "appr-1", title: "Dispatch crew" }));
+    expect(tab.kind).toBe("approval");
+    expect(tab.key).toBe("approval:appr-1");
+    expect(tab.payload).toMatchObject({ approvalId: "appr-1" });
+  });
+
+  it("maps output → output_ref tab (NEW body, distinct from whole-task task_output)", () => {
+    const tab = showRefToThreadTab(v2("output", { id: "out-1", title: "PR #42", viewerKind: "code" }), "comp-1");
+    expect(tab.kind).toBe("output_ref");
+    expect(tab.key).toBe("output-ref:out-1");
+    expect(tab.payload).toMatchObject({ companyId: "comp-1", outputId: "out-1", viewerKind: "code" });
+  });
+
+  it("falls back to a kind-derived title when the ref has none", () => {
+    const tab = showRefToThreadTab(v2("task", { id: "abcdef1234567890", title: null }));
+    expect(tab.label).toBe("task abcdef12");
   });
 });

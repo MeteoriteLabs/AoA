@@ -4,7 +4,7 @@ import {
   internalAgentConversations,
   internalAgentMessages,
 } from "@armyofagents/db";
-import { commanderOutputRefSchema } from "@armyofagents/shared";
+import { showRefSchema } from "@armyofagents/shared";
 import { mergeOutputRefs } from "./output-refs.js";
 
 export interface MessageInput {
@@ -79,7 +79,7 @@ export function conversationService(db: Db) {
       let outputRefs: unknown = null;
       if (Array.isArray(message.outputRefs) && message.outputRefs.length > 0) {
         const valid = message.outputRefs.flatMap((r) => {
-          const p = commanderOutputRefSchema.safeParse(r);
+          const p = showRefSchema.safeParse(r);
           return p.success ? [p.data] : [];
         });
         const merged = mergeOutputRefs([], valid);

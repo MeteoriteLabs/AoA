@@ -93,7 +93,11 @@ export function TeamsListPage() {
         id: t.id,
         name: t.name,
         slug: t.slug,
-        parentProjectName: projectsById.get(t.parentProjectId)?.name ?? "—",
+        // null = company-wide team (D21), which the card renders as its own
+        // pill. Kept distinct from the "—" an unresolvable department id gets.
+        parentProjectName: t.parentProjectId
+          ? projectsById.get(t.parentProjectId)?.name ?? "—"
+          : null,
         status: t.status,
         memberCount: t.memberCount ?? 0,
         leadName,
@@ -108,9 +112,13 @@ export function TeamsListPage() {
       if (statusFilter !== "all" && card.status !== statusFilter) return false;
       if (search) {
         const q = search.toLowerCase();
+        // A company-wide team has no department name to match on, so it matches
+        // the label it actually renders — otherwise the crew would be
+        // unfindable by scope.
+        const scopeLabel = card.parentProjectName ?? "Company-wide";
         return (
           card.name.toLowerCase().includes(q) ||
-          card.parentProjectName.toLowerCase().includes(q)
+          scopeLabel.toLowerCase().includes(q)
         );
       }
       return true;

@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
-import { screen } from "@testing-library/react";
+import { screen, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithProviders } from "../../../__tests__/test-utils";
-import { InlineArtifactCard } from "../InlineArtifactCard";
+import { InlineArtifactCard, isInlinePreviewable } from "../InlineArtifactCard";
 import type { DiscussionEntryAttachment } from "../../../api/discussions";
 
 function makeAttachment(overrides: Partial<DiscussionEntryAttachment> = {}): DiscussionEntryAttachment {
@@ -168,5 +168,54 @@ describe("InlineArtifactCard", () => {
     );
     await user.click(screen.getByTestId("artifact-archive"));
     expect(onArchiveArtifact).toHaveBeenCalledWith("art-1");
+  });
+});
+
+const imgAtt = { id: "att-img", assetId: "asset-1", assetOriginalFilename: "pic.png", assetContentType: "image/png", assetByteSize: 1024, artifactId: null, artifactType: null, artifactTitle: null, artifactStatus: null, currentVersionStorageKind: null, currentVersionAssetId: null, currentVersionFilename: null, currentVersionContentType: null, currentVersionByteSize: null } as any;
+const zipAtt = { ...imgAtt, id: "att-zip", assetOriginalFilename: "a.zip", assetContentType: "application/zip" } as any;
+const txtAtt = { ...imgAtt, id: "att-txt", assetOriginalFilename: "n.md", assetContentType: "text/markdown", assetByteSize: 2000 } as any;
+
+describe("isInlinePreviewable", () => {
+  it("raster images + small text inline; svg(+params)/pdf/zip/unknown-size-text not", () => {
+    expect(isInlinePreviewable("image/png", 9e9)).toBe(true);
+    expect(isInlinePreviewable("IMAGE/PNG", 10)).toBe(true);
+    expect(isInlinePreviewable("image/svg+xml; charset=utf-8", 10)).toBe(false);
+    expect(isInlinePreviewable("text/markdown", 1000)).toBe(true);
+    expect(isInlinePreviewable("text/plain", 300 * 1024)).toBe(false);
+    expect(isInlinePreviewable("text/plain", null)).toBe(false);
+    expect(isInlinePreviewable("application/pdf", 10)).toBe(false);
+    expect(isInlinePreviewable("application/zip", 10)).toBe(false);
+    expect(isInlinePreviewable("text/html", 1000)).toBe(false);
+    expect(isInlinePreviewable("text/html; charset=utf-8", 1000)).toBe(false);
+  });
+});
+describe("InlineArtifactCard hybrid preview", () => {
+  it("renders an inline lazy image preview for an image attachment", () => {
+    const { container } = renderWithProviders(<InlineArtifactCard attachments={[imgAtt]} onOpen={() => {}} />);
+    const img = container.querySelector('img[src="/api/assets/asset-1/content"]');
+    expect(img).not.toBeNull();
+    expect(img!.getAttribute("loading")).toBe("lazy");
+    expect(container.querySelector('[data-testid="attachment-inline-preview"]')).not.toBeNull();
+  });
+  it("mounts an inline preview region for a small text attachment", () => {
+    const { container } = renderWithProviders(<InlineArtifactCard attachments={[txtAtt]} onOpen={() => {}} />);
+    expect(container.querySelector('[data-testid="attachment-inline-preview"]')).not.toBeNull();
+  });
+  it("chip-only (no preview region) for a non-previewable attachment", () => {
+    const { container } = renderWithProviders(<InlineArtifactCard attachments={[zipAtt]} onOpen={() => {}} />);
+    expect(container.querySelector('[data-testid="attachment-inline-preview"]')).toBeNull();
+    expect(container.querySelector('[data-testid="artifact-file-chip"]')).not.toBeNull();
+  });
+  it("does not inline-preview text/html (pops to panel instead)", () => {
+    const htmlAtt = { ...imgAtt, id: "att-html", assetOriginalFilename: "page.html", assetContentType: "text/html", assetByteSize: 1000 } as any;
+    const { container } = renderWithProviders(<InlineArtifactCard attachments={[htmlAtt]} onOpen={() => {}} />);
+    expect(container.querySelector('[data-testid="attachment-inline-preview"]')).toBeNull();
+    expect(container.querySelector('[data-testid="artifact-file-chip"]')).not.toBeNull();
+  });
+  it("still fires onOpen from the filename button", () => {
+    const onOpen = vi.fn();
+    const { getByTestId } = renderWithProviders(<InlineArtifactCard attachments={[imgAtt]} onOpen={onOpen} />);
+    fireEvent.click(getByTestId("inline-artifact-card-att-img"));
+    expect(onOpen).toHaveBeenCalledTimes(1);
   });
 });

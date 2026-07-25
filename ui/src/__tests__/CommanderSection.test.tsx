@@ -17,7 +17,10 @@ function makeAgentConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
     provider: "anthropic",
     model: "claude-sonnet-4-6",
     cliTool: null,
+    // D18: the two dials are deliberately DIFFERENT in this fixture so a control
+    // that read the wrong column would be visible in the assertions below.
     autonomyLevel: 0,
+    crewAutonomyLevel: 2,
     enabledCapabilities: [
       "discussion_processing",
       "proactive_suggestions",
@@ -322,13 +325,36 @@ describe("CommanderSection", () => {
     expect(screen.queryByText("Execution Mode")).not.toBeInTheDocument();
   });
 
-  it("autonomy level is disabled", async () => {
+  it("shows Commander no autonomy level at all — not a hard-coded one", async () => {
     renderWithProviders(<CommanderSection />);
     await waitFor(() => {
-      expect(screen.getByText("Autonomy Level")).toBeInTheDocument();
+      expect(
+        screen.getByText(/Commander asks before every governed action/),
+      ).toBeInTheDocument();
     });
-    const autonomySelect = screen.getByText("Level 0 — Full Approval");
-    expect(autonomySelect.closest("button")).toBeDisabled();
+    // The old control was a hard-coded `<Select value="0">` that ignored
+    // `config.autonomyLevel`. That column defaults to 1 and round-trips through
+    // portability bundles, so the label could contradict storage. There is no
+    // level to show (Decision #109 addendum §12), so none is shown.
+    expect(screen.queryByText(/Level 0/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Full Approval/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Commander autonomy")).not.toBeInTheDocument();
+  });
+
+  // D18 dial-split discriminator: the founder-settable agent dial must render the
+  // CREW column (2 = Drive) — not Commander's `autonomyLevel` (0) — and must be
+  // enabled. Before the split there was one disabled stub and no way to set this.
+  it("agent autonomy renders the crew dial (not Commander's) and is editable", async () => {
+    renderWithProviders(<CommanderSection />);
+    await waitFor(() => {
+      expect(screen.getByText("Agent autonomy (crew + org agents)")).toBeInTheDocument();
+    });
+    const crewTrigger = screen.getByLabelText("Agent autonomy");
+    expect(crewTrigger).not.toBeDisabled();
+    expect(crewTrigger).toHaveTextContent("Drive — agents can complete and dispatch");
+    // Commander's dial is 0 in the fixture; if the control had read it we would
+    // see the Manual copy here instead.
+    expect(crewTrigger).not.toHaveTextContent("Manual — I move every task");
   });
 
   it("renders all 12 capability checkboxes on capabilities tab", async () => {

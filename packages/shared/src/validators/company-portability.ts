@@ -277,6 +277,8 @@ export const portabilityInternalAgentConfigManifestSchema = z
     model: z.string().nullable().optional(),
     cliTool: z.string().nullable().optional(),
     autonomyLevel: z.number().int().min(0),
+    // D18 dial-split — optional: pre-split bundles carry only `autonomyLevel`.
+    crewAutonomyLevel: z.number().int().min(0).optional(),
     enabledCapabilities: z.array(z.string()).optional(),
     notificationPreference: z.string().min(1),
     contextTokenBudget: z.number().int().nonnegative(),

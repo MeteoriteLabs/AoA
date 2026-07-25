@@ -1168,10 +1168,16 @@ describe.skipIf(process.platform === "win32")("thread-commit idempotency (real D
     const svc = threadAgentActionService(db);
 
     // Thread with one entry at seq=1 so createDraftFromThread has source rows to compile a draft.
+    // autonomy_level=0 (Manual) keeps this thread below the W1b auto-accept gate:
+    // the D18 split made crewAutonomyLevel default to Assist/1, which would
+    // auto-accept the freshly-minted draft during commit and flip the version to
+    // 'accepted' — the sibling add_scope_item would then hit blocked_policy instead
+    // of reusing the still-'draft' version. This test asserts freshness-gate
+    // sibling-suppression mechanics, not autonomy, so Manual is the correct fixture.
     const [tM7] = rowsOf(
       await db.execute(sql`
-        INSERT INTO discussions (id, company_id, status, created_by, entry_seq)
-        VALUES (gen_random_uuid(), ${companyId}, 'active', 'integration-test', 1)
+        INSERT INTO discussions (id, company_id, status, created_by, entry_seq, autonomy_level)
+        VALUES (gen_random_uuid(), ${companyId}, 'active', 'integration-test', 1, 0)
         RETURNING id
       `),
     );

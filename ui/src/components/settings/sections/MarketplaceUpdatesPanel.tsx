@@ -12,6 +12,17 @@ import { useCompany } from "@/context/CompanyContext";
 import { useToast } from "@/context/ToastContext";
 import { useDismissUpdate, usePendingUpdates } from "@/hooks/usePendingUpdates";
 
+/**
+ * The two `/apply` 409 codes that mean "your local copy diverges — merge it",
+ * as opposed to the bare 409 for a row that is simply no longer pending.
+ */
+const CUSTOMIZED_CONFLICT_CODES = new Set(["AGENT_INSTRUCTIONS_CUSTOMIZED", "SKILL_CUSTOMIZED"]);
+
+function isCustomizedConflict(err: ApiError): boolean {
+  const code = (err.body as { code?: unknown } | null | undefined)?.code;
+  return typeof code === "string" && CUSTOMIZED_CONFLICT_CODES.has(code);
+}
+
 const TYPE_LABELS: Record<string, string> = {
   skill: "Skills",
   agent: "Agents",
@@ -67,7 +78,16 @@ export function MarketplaceUpdatesPanel() {
     ]);
   };
 
-  const applyPluginUpdate = async (update: PendingUpdate) => {
+  /**
+   * One-click apply. Works for plugins, skills and agents — `/apply` handles
+   * all three server-side, and only TEAM updates still answer 501.
+   *
+   * Offered only for `pending` rows. A `conflict` row is one whose local copy
+   * diverges (or may diverge) from the catalog; `/apply` would answer 409 for
+   * it, so it goes straight to Review. The 409 is still handled below because
+   * the status can go stale between the list render and the click.
+   */
+  const applyUpdate = async (update: PendingUpdate) => {
     if (!selectedCompany?.id) return;
     setBusyId(update.id);
     try {
@@ -94,6 +114,23 @@ export function MarketplaceUpdatesPanel() {
           title: "Only instance admins can update plugins",
           body: `Ask an instance admin to apply the ${update.catalogItemName} plugin update.`,
           tone: "error",
+        });
+        return;
+      }
+      if (err instanceof ApiError && err.status === 409 && isCustomizedConflict(err)) {
+        // Local edits are in the way — the status went stale between render and
+        // click. Hand the founder straight to the review they actually need
+        // rather than making them find the other button.
+        //
+        // Keyed on the response CODE, not on 409 alone: `/apply` also answers
+        // 409 for a row that is simply no longer pending (already applied
+        // elsewhere), which is not a merge situation and has no diff to show.
+        await invalidateUpdates();
+        setReviewUpdate(update);
+        pushToast({
+          title: "Local changes found",
+          body: `Review the changes to ${update.catalogItemName} before applying.`,
+          tone: "info",
         });
         return;
       }
@@ -170,8 +207,8 @@ export function MarketplaceUpdatesPanel() {
                   update={update}
                   isPending={busyId === update.id}
                   onApply={
-                    update.itemType === "plugin"
-                      ? () => applyPluginUpdate(update)
+                    update.itemType === "plugin" || update.status === "pending"
+                      ? () => applyUpdate(update)
                       : undefined
                   }
                   onReview={

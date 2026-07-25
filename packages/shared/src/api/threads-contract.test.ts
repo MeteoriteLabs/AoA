@@ -91,6 +91,72 @@ describe("threads API contract", () => {
       expect(parsed.inputType).toBe("system");
     });
 
+    it("round-trips a v:2 navigational outputRefs array", () => {
+      const parsed = DiscussionEntryV2Schema.parse({
+        id: "00000000-0000-0000-0000-000000000001",
+        discussionId: "00000000-0000-0000-0000-000000000002",
+        inputType: "agent",
+        rawContent: "Run finished — 1 output",
+        parentEntryId: null,
+        authorAgentId: "00000000-0000-0000-0000-000000000003",
+        authorAgentName: "Scout",
+        authorAgentAvatar: null,
+        outputRefs: [
+          {
+            v: 2,
+            kind: "task",
+            id: "00000000-0000-0000-0000-000000000009",
+            action: "referenced",
+            provenance: {
+              surface: "discussion",
+              entityId: "00000000-0000-0000-0000-000000000002",
+              runId: "00000000-0000-0000-0000-00000000000a",
+              agentId: "00000000-0000-0000-0000-000000000003",
+              seq: 0,
+              emittedAt: new Date().toISOString(),
+            },
+          },
+        ],
+        createdAt: new Date().toISOString(),
+        createdBy: "agent",
+      });
+      expect(parsed.outputRefs).toHaveLength(1);
+      expect(parsed.outputRefs?.[0]).toMatchObject({ v: 2, kind: "task", action: "referenced" });
+    });
+
+    it("accepts null outputRefs", () => {
+      const parsed = DiscussionEntryV2Schema.parse({
+        id: "00000000-0000-0000-0000-000000000001",
+        discussionId: "00000000-0000-0000-0000-000000000002",
+        inputType: "write",
+        rawContent: "hello",
+        parentEntryId: null,
+        authorAgentId: null,
+        authorAgentName: null,
+        authorAgentAvatar: null,
+        outputRefs: null,
+        createdAt: new Date().toISOString(),
+        createdBy: "user-1",
+      });
+      expect(parsed.outputRefs).toBeNull();
+    });
+
+    it("treats omitted outputRefs as undefined (optional)", () => {
+      const parsed = DiscussionEntryV2Schema.parse({
+        id: "00000000-0000-0000-0000-000000000001",
+        discussionId: "00000000-0000-0000-0000-000000000002",
+        inputType: "write",
+        rawContent: "hello",
+        parentEntryId: null,
+        authorAgentId: null,
+        authorAgentName: null,
+        authorAgentAvatar: null,
+        createdAt: new Date().toISOString(),
+        createdBy: "user-1",
+      });
+      expect(parsed.outputRefs).toBeUndefined();
+    });
+
     it("rejects unknown inputType", () => {
       expect(() =>
         DiscussionEntryV2Schema.parse({

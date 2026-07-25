@@ -252,7 +252,10 @@ describe("parseCodexJsonl outputRefs lift", () => {
       JSON.stringify({ type: "thread.started", thread_id: "th-1" }),
       JSON.stringify({
         type: "item.completed",
-        item: { type: "mcp_tool_call", name: "create_artifact", content: envelope },
+        // server:"aoa" — the branch gates ref-lifting to the AoA MCP server
+        // (parse.ts trust boundary; forged-ref injection defense). Real codex
+        // item.completed mcp_tool_call events for the AoA server carry this.
+        item: { type: "mcp_tool_call", server: "aoa", name: "create_artifact", content: envelope },
       }),
       JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "Done." } }),
     ].join("\n");
@@ -334,8 +337,10 @@ describe("parseCodexJsonl outputRefs lift", () => {
       outputRefs: [
         // valid
         { v: 1, kind: "artifact", id: "good-id", action: "created" },
-        // invalid: wrong v
-        { v: 2, kind: "artifact", id: "bad-v", action: "created" },
+        // invalid: unknown version (v3). NB: v2 is now a VALID version on this
+        // branch (Phase-2 ShowRef widening), so the rejected fixture must use an
+        // unknown version to still be screened out.
+        { v: 3, kind: "artifact", id: "bad-v", action: "created" },
         // invalid: missing id
         { v: 1, kind: "artifact", action: "created" },
         // invalid: bad action
@@ -344,7 +349,8 @@ describe("parseCodexJsonl outputRefs lift", () => {
     });
     const stdout = JSON.stringify({
       type: "item.completed",
-      item: { type: "mcp_tool_call", name: "multi_ref_tool", content: envelope },
+      // server:"aoa" — ref-lifting is gated to the AoA MCP server (see above).
+      item: { type: "mcp_tool_call", server: "aoa", name: "multi_ref_tool", content: envelope },
     });
     const parsed = parseCodexJsonl(stdout);
     const toolResults = parsed.chunks.filter((c: any) => c.type === "tool_result") as any[];

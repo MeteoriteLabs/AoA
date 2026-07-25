@@ -37,7 +37,7 @@ import { BranchesTab } from "../components/threads/BranchesTab";
 import { ThreadErrorBanner } from "../components/threads/ThreadErrorBanner";
 import { ThreadVisibilityControls } from "../components/threads/ThreadVisibilityControls";
 import type { ScopeItem } from "../components/threads/scopeGrouping";
-import { autonomyLabel, type AutonomyValue } from "@armyofagents/shared";
+import { autonomyLabel, type AutonomyValue, type ShowRef } from "@armyofagents/shared";
 import {
   OPEN_TAB_KEY,
   browserTab,
@@ -47,6 +47,7 @@ import {
   ensureTab,
   memoryTab,
   scopeItemToTab,
+  showRefToThreadTab,
   taskTab,
   threadAttachmentToTab,
   type ThreadViewerScopeItem,
@@ -379,6 +380,13 @@ export function ThreadDetail({
   ) => {
     openViewerTab(threadAttachmentToTab(attachment, entryId));
   }, [openViewerTab]);
+
+  // Viewer Upgrade Phase 7B: open a delivered navigational ref (from an entry's
+  // outputRefs) — map the ShowRef to a Thread viewer tab via the openRef adapter,
+  // then route through the same seam attachments use (local tab or hub request).
+  const openRefInViewer = useCallback((ref: ShowRef) => {
+    openViewerTab(showRefToThreadTab(ref, selectedCompanyId ?? ""));
+  }, [openViewerTab, selectedCompanyId]);
 
   // Live updates. D2: keep these fully live even when embedded (a hub tab IS the
   // live thread — same as the ThreadsWorkspace pane). They key on `resolvedId`
@@ -1372,6 +1380,7 @@ export function ThreadDetail({
                 isError={isError}
                 onRetry={refetch}
                 onOpenAttachment={openAttachmentInViewer}
+                onOpenRef={openRefInViewer}
                 hasScopeDraft={!!thread.derivedStage?.scopeVersionId}
                 draftText={effectiveDraftText}
                 onDraftTextChange={handleDraftTextChange}
