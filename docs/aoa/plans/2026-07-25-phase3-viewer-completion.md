@@ -50,9 +50,16 @@ Order: **P3.1 → P3.2 → P3.3 → P3.4 → P3.5 → P3.6 → P3.7.**
 > mode-preview routed through the shared viewer, `5c1c36dfb`) · ✅ **P3.6**
 > (inline-eligibility policy documented + exclusions pinned; no logic change —
 > divergence is intentional because html/svg render under `allow-scripts`,
-> `748aed50e`) · ◑ **P3.7** (render coverage for code/csv/tsv/json/canvas done
-> `620e151af`; Office-resolution assertions land with P3.3/P3.4; mermaid-render
-> deferred — resolution already covered).
+> `748aed50e`) · ✅ **P3.7** (ViewerKind coverage matrix closed, `620e151af`
+> +`5562797b7` — every kind has a registry resolution assertion; every kind
+> except mermaid-render, which stays an async dynamic import, has a render test.
+> The final gap-fill added the `code` registry assertion and image/video/audio/
+> svg_sandbox render tests).
+>
+> **Phase 3 COMPLETE** — all seven tasks (P3.1–P3.7) shipped on
+> `feat/viewer-upgrade`. Syntax highlighting (highlight.js), DOCX+XLSX
+> server-render de-silo, workspace-preview collapse, inline-eligibility
+> alignment, and the closed test matrix are all in.
 >
 > **Held — subagents blocked org-side (no independent review available):**
 > **P3.2** (adds highlight.js/lowlight), **P3.4** (adds sheetjs server-side), and
