@@ -1147,47 +1147,24 @@ function PreviewView({
     );
   }
 
-  const assetUrl = assetUrlForArtifactVersion(version);
+  // Route mode-preview through the SAME shared viewer the tabbed views use
+  // (resolveOutputViewer -> WorkProductViewer -> SharedContentViewer), so an
+  // artifact previews identically here and in a tab. Previously this branch
+  // hand-rolled img/<pre>/download and diverged (markdown/csv/json/html/pdf/etc.
+  // rendered richly in a tab but as raw <pre> or a bare link here).
+  const inlineContent = version.content ?? null;
   const filename = filenameForArtifactVersion(artifact, version);
   const contentType = contentTypeForArtifactVersion(artifact, version);
-  const isImage = contentType.startsWith("image/");
-
-  if (isImage && assetUrl) {
-    return (
-      <div className="p-4" data-testid="preview-image">
-        <img src={assetUrl} alt={artifact.title} className="max-w-full rounded border border-border" />
-      </div>
-    );
-  }
-
-  if (version.content) {
-    return (
-      <div className="p-4" data-testid="preview-text">
-        <pre className="text-xs leading-relaxed whitespace-pre-wrap break-words font-mono bg-muted/50 rounded p-3 border border-border">
-          {version.content}
-        </pre>
-      </div>
-    );
-  }
-
-  if (assetUrl) {
-    return (
-      <div className="flex items-center justify-center h-48" data-testid="preview-download">
-        <a
-          href={assetUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-sm text-blue-500 hover:underline"
-        >
-          Download {filename} (v{version.versionNumber})
-        </a>
-      </div>
-    );
-  }
+  const viewer = resolveOutputViewer({
+    contentType,
+    filename,
+    assetId: version.assetId,
+    assetUrl: assetUrlForArtifactVersion(version),
+  });
 
   return (
-    <div className="flex items-center justify-center h-48 text-sm text-muted-foreground">
-      No content to preview
+    <div className="flex h-full min-w-0 flex-col overflow-hidden" data-testid="preview-artifact">
+      <WorkProductViewer viewer={viewer} filename={filename} inlineTextContent={inlineContent} />
     </div>
   );
 }
