@@ -93,10 +93,15 @@ beforeAll(async () => {
 
     // Seed a discussion thread (the thread the action will belong to).
     // Needs at least one entry so createDraftFromThread has something to compile.
+    // autonomy_level=0 (Manual) pins this thread below the W1b auto-accept gate:
+    // the D18 split made crewAutonomyLevel default to Assist/1, which would
+    // auto-accept+apply the draft during commit and close the version, so the
+    // manual acceptDraft below would early-return with createdTasks:[]. This test
+    // exercises the MANUAL accept→apply→assign path, so Manual is the correct fixture.
     const [thread] = rowsOf(
       await db.execute(sql`
-        INSERT INTO discussions (id, company_id, status, created_by, entry_seq)
-        VALUES (gen_random_uuid(), ${companyId}, 'active', 'integration-test', 1)
+        INSERT INTO discussions (id, company_id, status, created_by, entry_seq, autonomy_level)
+        VALUES (gen_random_uuid(), ${companyId}, 'active', 'integration-test', 1, 0)
         RETURNING id
       `),
     );

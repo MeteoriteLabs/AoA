@@ -126,6 +126,10 @@ test.describe("embedding re-index — failed badge + re-index button", () => {
         !PGVECTOR_AVAILABLE,
         "Requires pgvector — enqueueMemoryEmbedding no-ops without vector support",
       );
+      // Two stacked "eventually" polls (failed→reindex→indexed) sum to ~55s,
+      // which overruns Playwright's 60s default under CI runner contention.
+      // Match the sibling memory-index-status.spec.ts headroom.
+      test.setTimeout(120_000);
 
       const company = await seedCompany(request, `E2E-Reindex-${Date.now()}`);
 
@@ -210,6 +214,9 @@ test.describe("embedding re-index — failed badge + re-index button", () => {
         !PGVECTOR_AVAILABLE,
         "Requires pgvector extension (set AOA_E2E_PGVECTOR=1 to enable)",
       );
+      // Stacked "eventually" polls overrun the 60s default under CI contention;
+      // match the sibling memory-index-status.spec.ts headroom.
+      test.setTimeout(120_000);
 
       // The fake embedder is error-free here; item must become indexed after re-index.
       clearFakeEmbedderControl();
