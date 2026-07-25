@@ -14,7 +14,13 @@ import type { Db } from "@armyofagents/db";
 import { companyMcpConnectorAgents, companyMcpConnectors } from "@armyofagents/db";
 import type { McpServerSpec } from "@armyofagents/adapter-utils";
 import { logger } from "../middleware/logger.js";
-import { buildConnectorSpecs, selectConnectorRowsForAgent, type ResolvedConnectorRow } from "./mcp-connectors.js";
+import {
+  adapterSupportsConnectors,
+  buildConnectorSpecs,
+  parseConnectorServerName,
+  selectConnectorRowsForAgent,
+  type ResolvedConnectorRow,
+} from "./mcp-connectors.js";
 import { secretService, type SecretConsumerContext } from "./secrets.js";
 import { loadConfig } from "../config.js";
 
@@ -161,6 +167,82 @@ export async function loadEnabledConnectorRows(
   }
 
   return resolved;
+}
+
+export interface ConnectorToolAutoAllowInput {
+  companyId: string;
+  /** Trusted run agent id, or `null` for Commander (all-active, D3). */
+  agentId: string | null;
+  /** The run's adapter type — only connector-capable adapters can host MCP servers. */
+  adapterType: string | null | undefined;
+  /** The raw PreToolUse tool name, expected shape `mcp__<serverName>__<tool>`. */
+  toolName: string | null | undefined;
+}
+
+/**
+ * FU-25: decide whether a runtime PreToolUse permission request is for a tool
+ * that belongs to a connector THIS run is allowed to use — and may therefore be
+ * auto-allowed without a human. Returns `true` ONLY when every scoping rule
+ * holds:
+ *
+ *  1. The tool name parses to a non-reserved connector serverName
+ *     (`parseConnectorServerName` — reserved `aoa`/`playwright` and malformed
+ *     names return null → false here). Only the connector's OWN tools qualify.
+ *  2. The adapter is connector-capable (a non-MCP adapter has no connector tools;
+ *     a query would be wasted and the answer is trivially no).
+ *  3. There is a company connector with that exact serverName that survives the
+ *     SAME delivery selector `selectConnectorRowsForAgent` — status === "active"
+ *     AND (assigned to this agent via `company_mcp_connector_agents`, OR
+ *     Commander) AND admissible under the host's CURRENT deployment mode (D7).
+ *
+ * This is intentionally a THIN wrapper over the exact query + selector the
+ * delivery path uses (`loadEnabledConnectorRows`), minus secret resolution: a
+ * broken secret is a delivery failure, not an authorization one, and the
+ * permission grant is still correctly scoped to an active, assigned connector.
+ * Reusing `selectConnectorRowsForAgent` keeps the security predicate in ONE
+ * place — it cannot drift from what actually gets delivered.
+ *
+ * Company + agent scope come from the run's VERIFIED context (the caller passes
+ * the broker's own companyId/agentId), never from the hook request body.
+ */
+export async function isConnectorToolAutoAllowed(
+  db: Db,
+  input: ConnectorToolAutoAllowInput,
+): Promise<boolean> {
+  const serverName = parseConnectorServerName(input.toolName);
+  if (serverName === null) return false;
+  if (!adapterSupportsConnectors(input.adapterType)) return false;
+
+  const isCommander = input.agentId === null;
+
+  const connectors = await db
+    .select()
+    .from(companyMcpConnectors)
+    .where(eq(companyMcpConnectors.companyId, input.companyId));
+
+  let enabledConnectorIds = new Set<string>();
+  if (input.agentId !== null) {
+    const links = await db
+      .select()
+      .from(companyMcpConnectorAgents)
+      .where(
+        and(
+          eq(companyMcpConnectorAgents.companyId, input.companyId),
+          eq(companyMcpConnectorAgents.agentId, input.agentId),
+        ),
+      );
+    enabledConnectorIds = new Set(links.map((link) => link.connectorId));
+  }
+
+  const deploymentMode = loadConfig().deploymentMode;
+  const selected = selectConnectorRowsForAgent({
+    connectors,
+    enabledConnectorIds,
+    isCommander,
+    deploymentMode,
+  });
+
+  return selected.some((connector) => connector.serverName === serverName);
 }
 
 /** Minimal logger surface `resolveAgentConnectors` needs — matches pino's `.warn(meta, msg)` shape. */

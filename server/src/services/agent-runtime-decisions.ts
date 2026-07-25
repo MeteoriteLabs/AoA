@@ -15,6 +15,7 @@ import { logger } from "../middleware/logger.js";
 import { redactEventPayload, redactSecretsInString } from "../redaction.js";
 import { logActivity, type LogActivityInput } from "./activity-log.js";
 import { hubItemsService } from "./hub-items.js";
+import { parseConnectorServerName } from "./mcp-connectors.js";
 
 const SOURCE_TYPE = "runtime_decision";
 const ACTIVE_STATUSES = new Set<RuntimeDecisionStatus>([
@@ -239,12 +240,26 @@ type DecisionRepo = {
 
 type HubItemsApi = Pick<ReturnType<typeof hubItemsService>, "emit" | "reconcile">;
 
+type ConnectorAutoAllowInput = {
+  companyId: string;
+  agentId: string;
+  adapterType: string;
+  toolName: string | null;
+};
+
 type ServiceDeps = {
   repo?: DecisionRepo;
   hubItems?: HubItemsApi;
   activityLogger?: (input: LogActivityInput) => Promise<void>;
   runCanceller?: (input: { companyId: string; runId: string; reason: string }) => Promise<void>;
   now?: () => Date;
+  /**
+   * FU-25: connector auto-allow probe. Returns true when a permission request is
+   * for a tool owned by an ACTIVE connector assigned to this run's agent (or, for
+   * Commander, any active connector). Injectable for tests; the production default
+   * (below) resolves it against the DB via `isConnectorToolAutoAllowed`.
+   */
+  connectorAutoAllow?: (input: ConnectorAutoAllowInput) => Promise<boolean>;
 };
 
 function safeText(value: string | null | undefined): string | null {
@@ -725,6 +740,16 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
   const activityLogger = deps.activityLogger ?? ((input: LogActivityInput) => logActivity(db, input));
   const runCanceller = deps.runCanceller;
   const now = deps.now ?? (() => new Date());
+  // FU-25 default: lazily import the DB-backed matcher only when a permission
+  // request is actually connector-tool-shaped (the pure `parseConnectorServerName`
+  // gate at the call site fires first), so pure unit tests and every
+  // non-connector permission prompt never touch the loader or the DB.
+  const connectorAutoAllow: (input: ConnectorAutoAllowInput) => Promise<boolean> =
+    deps.connectorAutoAllow ??
+    (async (input) => {
+      const { isConnectorToolAutoAllowed } = await import("./mcp-connectors-loader.js");
+      return isConnectorToolAutoAllowed(db, input);
+    });
 
   async function emitHubItem(decision: AgentRuntimeDecisionRow) {
     return hub.emit({
@@ -811,6 +836,43 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
       ? (await repo.listTrustRules({ companyId: input.companyId, adapterType: input.adapterType }))
         .find((rule) => trustRuleMatchesPrompt(rule, input, nowDate))
       : null;
+
+    // FU-25 connector auto-allow: a permission request for an ACTIVE connector's
+    // OWN tool, assigned to this run's agent (or any active connector for
+    // Commander), is pre-approved for THIS agent — a scoped grant, never a global
+    // bypass. Only evaluated for permission prompts with no matching trust rule.
+    // The pure `parseConnectorServerName` gate short-circuits before any DB work
+    // for non-connector tools (Bash, mcp__aoa__*, malformed names) and reserved
+    // names, so the scoping boundary lives entirely in the parser + the delivery
+    // selector reused inside `connectorAutoAllow`. Fail-safe: any probe error is
+    // swallowed and falls through to the existing trust-rule → human → timeout
+    // path (deny direction), never fail-open.
+    let connectorAutoAllowed = false;
+    if (
+      !matchingTrustRule &&
+      input.kind === "permission" &&
+      parseConnectorServerName(input.toolName) !== null
+    ) {
+      try {
+        connectorAutoAllowed = await connectorAutoAllow({
+          companyId: input.companyId,
+          agentId: input.agentId,
+          adapterType: input.adapterType,
+          toolName: input.toolName ?? null,
+        });
+      } catch (err) {
+        connectorAutoAllowed = false;
+        logger.warn(
+          { err, companyId: input.companyId, agentId: input.agentId, toolName: input.toolName },
+          "connector auto-allow probe failed; falling through to trust-rule/human decision",
+        );
+      }
+    }
+    // A trust rule and a connector grant both resolve to an auto-answered ALLOW.
+    // The trust rule mints an `allow_always`/`allow_run` decision (its own scope);
+    // the connector grant mints `allow_once` — a single-call allow that creates NO
+    // persistent trust rule (the grant is re-derived from connector state each call).
+    const autoAllowed = Boolean(matchingTrustRule) || connectorAutoAllowed;
     const resolvedExpiresAt =
       input.expiresAt ?? new Date(nowDate.getTime() + defaultTtlMs(input.kind));
     const created = await repo.createDecision({
@@ -821,9 +883,9 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
       adapterSessionId: input.adapterSessionId ?? null,
       adapterSessionParams: redactEventPayload(input.adapterSessionParams ?? null),
       kind: input.kind,
-      status: matchingTrustRule ? "answered" : "created",
+      status: autoAllowed ? "answered" : "created",
       nonce: input.nonce,
-      sourceRevision: matchingTrustRule ? 1 : 0,
+      sourceRevision: autoAllowed ? 1 : 0,
       promptHash: promptHash(input),
       sourceUniqueKey: sourceUniqueKey(input),
       title: safeText(input.title) ?? "Runtime decision",
@@ -841,15 +903,33 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
       timeoutPolicy: input.timeoutPolicy,
       decision: matchingTrustRule
         ? matchingTrustRule.grantScope === "run" ? "allow_run" : "allow_always"
-        : null,
+        : connectorAutoAllowed
+          ? "allow_once"
+          : null,
       answeredByUserId: matchingTrustRule?.createdByUserId ?? null,
-      answeredAt: matchingTrustRule ? nowDate : null,
+      answeredAt: autoAllowed ? nowDate : null,
     });
-    if (!matchingTrustRule && (TERMINAL_STATUSES.has(created.status as RuntimeDecisionStatus) || created.status === "answered")) {
+    if (!autoAllowed && (TERMINAL_STATUSES.has(created.status as RuntimeDecisionStatus) || created.status === "answered")) {
       throw conflict("Runtime decision prompt already consumed for this nonce");
     }
     if (matchingTrustRule) {
       await repo.markTrustRuleUsed({ ruleId: matchingTrustRule.id, usedAt: now() });
+    }
+    if (connectorAutoAllowed) {
+      // Durable audit trail for a human-less allow: the grant is re-derived from
+      // connector state on every call, so there is no trust-rule row to inspect —
+      // this activity entry is the only record that the broker allowed it.
+      await activityLogger({
+        companyId: input.companyId,
+        actorType: "system",
+        actorId: "runtime_decision_connector_auto_allow",
+        action: "runtime_decision.connector_auto_allowed",
+        entityType: "agent_runtime_decision",
+        entityId: created.id,
+        agentId: input.agentId,
+        runId: input.runId,
+        details: { toolName: input.toolName ?? null, adapterType: input.adapterType },
+      });
     }
     const hubItem = await emitHubItem(created);
     return { decision: created, hubItem };

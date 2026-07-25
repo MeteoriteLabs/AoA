@@ -1,5 +1,58 @@
 import type { McpServerSpec } from "@armyofagents/adapter-utils";
+import { RESERVED_MCP_SERVER_NAMES } from "@armyofagents/adapter-utils";
 import { isTransportAllowed } from "./mcp-connector-transport-gate.js";
+
+/**
+ * Server-name charset a connector is allowed to use — the SAME regex the
+ * catalog + BYO write paths enforce (`packages/shared` SERVER_NAME_RE and
+ * `server/src/routes/mcp-connectors.ts`). Duplicated as a literal here (not
+ * imported) because those live in @armyofagents/shared and the server route
+ * respectively; keeping a local copy avoids a new cross-package import for one
+ * regex while the value stays greppable. No underscores — that is what lets us
+ * split an MCP tool name on `__` unambiguously.
+ */
+const CONNECTOR_SERVER_NAME_RE = /^[a-z0-9-]+$/;
+
+/**
+ * Parse the `serverName` out of an MCP tool name of the form
+ * `mcp__<serverName>__<tool>` and return it IFF it is a plausible founder
+ * connector server name — i.e. it matches the connector charset AND is not one
+ * of the reserved/bridge names AoA owns (`aoa`, `playwright`, …). Returns null
+ * for anything that is not a well-formed, non-reserved connector tool name.
+ *
+ * This is the security-critical parser for the runtime auto-allow path: a tool
+ * whose name does not resolve to a non-reserved connector serverName here can
+ * NEVER be auto-allowed as "the assigned connector's own tool".
+ *
+ * Format contract (verified against the catalog SERVER_NAME_RE): a serverName
+ * never contains `__` (no underscores at all), so `serverName` is exactly the
+ * segment at index 1 after splitting on `__`. The tool portion (everything
+ * after the second `__`) may itself contain `__`; it does not affect which
+ * connector this belongs to, so it is only required to be non-empty.
+ *
+ * Rejected (→ null): a null/empty/non-string input; a name not prefixed with
+ * `mcp__`; `mcp__` (no serverName); `mcp__x` (no tool separator); `mcp__srv__`
+ * (empty tool); a serverName outside the connector charset; and any reserved
+ * name (`mcp__aoa__*`, `mcp__playwright__*`).
+ */
+export function parseConnectorServerName(toolName: string | null | undefined): string | null {
+  if (typeof toolName !== "string") return null;
+  if (!toolName.startsWith("mcp__")) return null;
+  const segments = toolName.split("__");
+  // ["mcp", serverName, ...toolParts]. Fewer than 3 segments means there is no
+  // tool portion at all (e.g. "mcp__" → ["mcp",""], "mcp__x" → ["mcp","x"]).
+  if (segments.length < 3) return null;
+  const serverName = segments[1];
+  if (!serverName || !CONNECTOR_SERVER_NAME_RE.test(serverName)) return null;
+  // Require a non-empty tool portion so "mcp__srv__" (trailing separator, empty
+  // tool) does not resolve to a grantable name.
+  const toolPortion = segments.slice(2).join("__");
+  if (toolPortion.length === 0) return null;
+  // Reserved/bridge names are AoA-owned, not founder connectors — they have
+  // their own handling and must never be treated as a connector grant.
+  if ((RESERVED_MCP_SERVER_NAMES as readonly string[]).includes(serverName)) return null;
+  return serverName;
+}
 
 /**
  * A connector row joined with its resolved secret value. Source table:
