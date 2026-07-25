@@ -110,19 +110,17 @@ describe("GET /assets/:assetId/render (generic DOCX render + XSS sanitization)",
     vi.clearAllMocks();
   });
 
-  // LOAD-BEARING: the endpoint returns HTML injected via dangerouslySetInnerHTML,
-  // so the server MUST strip the full XSS surface. Hostile mammoth output →
-  // script/iframe/object/embed/form tags removed, all on* handlers removed,
-  // javascript: URLs removed — while a benign https link survives.
-  it("strips script, event handlers, dangerous embeds, and javascript: URLs from mammoth output", async () => {
+  // Route-level integration: the endpoint returns HTML injected via
+  // dangerouslySetInnerHTML, so it MUST run the shared sanitizer AND set the
+  // safe-serving headers + article wrap. The FULL sanitizer battery (including
+  // the out-of-FORBID default-deny payloads that prove the real boundary) lives
+  // in docx-render.test.ts, which tests the shared helper directly; here we only
+  // prove the route wires it and sends the right headers.
+  it("runs the shared sanitizer and sets safe headers on a hostile payload", async () => {
     const HOSTILE = [
       "<script>alert(1)</script>",
       '<img src=x onerror="alert(2)">',
       '<a href="javascript:alert(3)">click</a>',
-      '<iframe src="https://evil.example"></iframe>',
-      '<object data="x"></object>',
-      '<embed src="x">',
-      "<form action=/x><input></form>",
       '<a href="https://example.com" onclick="steal()">safe</a>',
     ].join("");
     mockConvert.mockResolvedValue({ value: HOSTILE, messages: [] });
@@ -134,21 +132,14 @@ describe("GET /assets/:assetId/render (generic DOCX render + XSS sanitization)",
     // Headers match the memory render route exactly.
     expect(res.headers["content-type"]).toMatch(/text\/html; charset=utf-8/);
     expect(res.headers["x-content-type-options"]).toBe("nosniff");
-    // No live script / event handlers / dangerous tags / javascript: URI.
+    // Sanitized (representative checks; full battery in docx-render.test.ts).
     expect(res.text).not.toMatch(/<script/i);
     expect(res.text).not.toMatch(/onerror/i);
     expect(res.text).not.toMatch(/onclick/i);
-    expect(res.text).not.toMatch(/onload/i);
-    expect(res.text).not.toMatch(/onmouseover/i);
-    expect(res.text).not.toMatch(/onfocus/i);
     expect(res.text).not.toMatch(/javascript:/i);
-    expect(res.text).not.toMatch(/<iframe/i);
-    expect(res.text).not.toMatch(/<object/i);
-    expect(res.text).not.toMatch(/<embed/i);
-    expect(res.text).not.toMatch(/<form/i);
-    // Regression guard: sanitize keeps benign https links (not nuking everything).
+    // Regression guard: benign https link survives.
     expect(res.text).toMatch(/href="https:\/\/example\.com"/);
-    // Wrapped in the same article shell as the memory route.
+    // Wrapped in the shared article shell.
     expect(res.text).toMatch(/<article class="docx-rendered">/);
   });
 

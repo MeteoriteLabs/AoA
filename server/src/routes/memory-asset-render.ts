@@ -1,27 +1,15 @@
 import { Router, type Request, type Response } from "express";
-import mammoth from "mammoth";
-import DOMPurify from "isomorphic-dompurify";
 import type { Db } from "@armyofagents/db";
 import { memoryAssetsService } from "../services/memory-assets.js";
 import type { StorageService } from "../storage/types.js";
 import { assertCompanyAccess } from "./authz.js";
+import { DOCX_MIME, streamToBuffer, renderDocxBufferToSafeHtml } from "../services/docx-render.js";
 
 interface RoutesOptions {
   db?: Db;
   svc?: ReturnType<typeof memoryAssetsService>;
   storage?: { getObject: (companyId: string, key: string) => Promise<{ stream: NodeJS.ReadableStream; contentLength: number }> };
   storageService?: StorageService;
-}
-
-const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-
-async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  return new Promise((resolve, reject) => {
-    stream.on("data", (c: Buffer) => chunks.push(c));
-    stream.on("end", () => resolve(Buffer.concat(chunks)));
-    stream.on("error", reject);
-  });
 }
 
 export function memoryAssetRenderRoutes(opts: RoutesOptions) {
@@ -57,16 +45,14 @@ export function memoryAssetRenderRoutes(opts: RoutesOptions) {
 
         const obj = await storage.getObject(companyId, asset.storageKey);
         const buffer = await streamToBuffer(obj.stream);
-        const result = await mammoth.convertToHtml({ buffer });
-        const sanitized = DOMPurify.sanitize(result.value, {
-          ALLOWED_URI_REGEXP: /^(?:https?|mailto|tel|#)/i,
-          FORBID_TAGS: ["script", "iframe", "object", "embed", "form"],
-          FORBID_ATTR: ["onerror", "onload", "onclick", "onmouseover", "onfocus"],
-        });
+        // Shared convert+sanitize+wrap (server/src/services/docx-render.ts) —
+        // single source with the generic /assets/:id/render route so the two
+        // surfaces never drift in security posture.
+        const html = await renderDocxBufferToSafeHtml(buffer);
 
         res.setHeader("Content-Type", "text/html; charset=utf-8");
         res.setHeader("X-Content-Type-Options", "nosniff");
-        res.send(`<article class="docx-rendered">${sanitized}</article>`);
+        res.send(html);
       } catch (err) {
         next(err);
       }
