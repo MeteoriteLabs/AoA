@@ -482,3 +482,19 @@ so after a `local_trusted → authenticated` conversion it is dropped (fail-clos
 reinstalled. Safe direction, availability-only, narrow case. A one-time backfill (re-resolve
 tier from the catalog for `source='catalog'` rows) would remove the reinstall requirement, but
 isn't worth it unless a real deployment hits it.
+
+### FU-28 — reserved serverName rejected at create · FIXED
+The FU-25 review noted the connector create/BYO path did not reject a serverName colliding
+with an AoA-owned reserved/bridge name (`aoa`, `playwright`). Not exploitable (such a connector
+is stripped at delivery via `stripReservedMcpServerNames` and rejected by the FU-25 auto-allow
+parser — a dead connector, not a privilege), but confusing UX. **Fixed**: `createConnectorSchema`
+now rejects a reserved serverName with a clear 400 (superRefine + `RESERVED_MCP_SERVER_NAMES`).
+Tests added to `mcp-connectors-routes.test.ts`.
+
+### FU-29 — deliverability does not detect a deleted bound secret · P3
+FU-1's computed-at-list-time deliverability (option A) intentionally does NOT detect the case
+where a connector's `secretRef` points at a soft-deleted `company_secrets` row — that's a
+runtime resolve-failure the loader only learns at delivery (option-B territory, needs a run or
+a live secret read). Not in FU-1's required cases. If surfacing "credential was deleted" in
+Settings is wanted, it's a small follow-up: have the list endpoint check secret existence for
+each bound `secretRef`, or persist the loader's last resolve-failure.

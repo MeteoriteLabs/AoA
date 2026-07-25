@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import type { Db } from "@armyofagents/db";
 import type { McpConnectorCatalogEntry } from "@armyofagents/shared";
+import { RESERVED_MCP_SERVER_NAMES } from "@armyofagents/adapter-utils";
 import { validate } from "../middleware/validate.js";
 import { logger } from "../middleware/logger.js";
 import {
@@ -142,6 +143,20 @@ const createConnectorSchema = z.preprocess(
     })
     .strict()
     .superRefine((val, ctx) => {
+      // FU-28 — reject a serverName that collides with an AoA-owned reserved/bridge
+      // name (`aoa`, `playwright`, …). Such a connector is silently stripped at
+      // delivery (`stripReservedMcpServerNames`) and never auto-allowed (the FU-25
+      // parser rejects reserved names), so it would be a dead, confusing connector.
+      // Refuse it up front with a clear reason instead. Charset is already lowercase
+      // (`SERVER_NAME_RE`), matching the reserved list's casing exactly.
+      if ((RESERVED_MCP_SERVER_NAMES as readonly string[]).includes(val.serverName)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["serverName"],
+          message: `"${val.serverName}" is a reserved AoA server name and cannot be used for a connector`,
+        });
+      }
+
       if (val.transport === "http") {
         if (!val.url) {
           ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["url"], message: "http transport requires url" });

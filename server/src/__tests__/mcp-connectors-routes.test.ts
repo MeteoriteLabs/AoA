@@ -131,6 +131,17 @@ describe("mcp-connectors routes — validation (load-bearing)", () => {
     expect(mockConnectorSvc.create).not.toHaveBeenCalled();
   });
 
+  // FU-28 — a reserved AoA-owned server name (stripped at delivery, rejected by
+  // the FU-25 auto-allow parser) must not be creatable as a connector.
+  it.each([["aoa"], ["playwright"]])(
+    "rejects reserved serverName %s -> 400",
+    async (serverName) => {
+      const res = await postConnector(makeApp(founderActor), { ...goodHttp, serverName });
+      expect(res.status).toBe(400);
+      expect(mockConnectorSvc.create).not.toHaveBeenCalled();
+    },
+  );
+
   it("rejects http without url -> 400", async () => {
     const { url: _url, ...noUrl } = goodHttp;
     const res = await postConnector(makeApp(founderActor), noUrl);
