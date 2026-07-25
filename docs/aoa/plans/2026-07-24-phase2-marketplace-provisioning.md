@@ -1008,6 +1008,26 @@ stops being enough.
 >    members and the team row and returns Steward in `retainedAgentIds`. No 409.
 >    Confirm any UI built against that route surfaces `retainedAgentIds`, or a
 >    founder sees "uninstalled" and an agent that is still there.
+> **✅ VERIFIED 2026-07-25 (post-publish, read-only): the duplicate risk in
+> points 2–3 below is ALREADY MITIGATED — do NOT treat it as an open pre-ship
+> blocker.**
+> - `team-reconcile.ts:122-154` (landed in T2.3b) refuses to install a roster
+>   member whose name / legacy-slug is already held by an unmanaged `kind='aoa'`
+>   row, so a legacy Steward is **not** duplicated on reconcile.
+> - `crew-repair.ts:457` matches a legacy Steward by name to the now-published
+>   roster entry and **adopts it in place** (stamps origin + version).
+> - Residual, narrow, NOT urgent: `ensureInfrastructureAgents` still force-seeds
+>   Steward and `seed-crew-agent.ts:260-274` re-materializes the *legacy*
+>   instruction bundle each run, overwriting the adopted marketplace instructions
+>   (authored near-identical). Fix = the signposted `ensureSteward`
+>   infrastructure→crew move (T2.2 `⚠️ TEMPORARY PLACEMENT`). Small, but on the
+>   most-reviewed crew machinery and it changes managed-company seeding — do it
+>   WITH review. Tracked as task #32.
+> - The earlier "`INFRASTRUCTURE_AGENT_NAMES` must drop Steward" note was
+>   over-cautious: `crew-repair.ts:758-798` documents that set as "safe stale"
+>   post-T2.4 (consulted only AFTER roster matching), and Steward stays in
+>   `PROTECTED_AGENT_ROLES` (still essential).
+>
 > 3. **Publishing Steward must be paired with reconciling the pre-existing
 >    legacy Steward row**, or companies created between T2.3 and T2.4 end up
 >    with **two** Steward agents (both carrying the `sweep` trigger → duplicated
