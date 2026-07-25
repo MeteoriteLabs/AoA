@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { detectDelimiter, parseCsv } from "../csv-parse";
+import { parseCsv } from "../csv-parse";
 
 describe("parseCsv (RFC-4180)", () => {
   it("parses a quoted field containing the delimiter (naive split would fail)", () => {
@@ -65,21 +65,46 @@ describe("parseCsv (RFC-4180)", () => {
     ]);
   });
 
-  it("parses tab-separated content and does not split values on their commas", () => {
-    expect(parseCsv("name\tcity\nSmith, John\tNYC")).toEqual([
+  it("parses tab-separated content with an explicit tab delimiter and does not split on commas", () => {
+    // TSV is routed with a KNOWN delimiter (registry maps `.tsv` -> "\t"); no sniffing.
+    expect(parseCsv("name\tcity\nSmith, John\tNYC", "\t")).toEqual([
       ["name", "city"],
       ["Smith, John", "NYC"],
     ]);
   });
 
-  it("sniffs the delimiter from the first line and ignores tabs inside quotes", () => {
-    expect(detectDelimiter("a,b,c\n1,2,3")).toBe(",");
-    expect(detectDelimiter("a\tb\tc\n1\t2\t3")).toBe("\t");
-    // A tab lives inside a quoted header field; the record is still comma-delimited.
-    expect(detectDelimiter('"a\tb",c\n1,2')).toBe(",");
+  it("does not misparse a comma CSV whose field contains a literal tab (no sniffer to misfire)", () => {
+    // A tab inside a quoted CSV field must not change the delimiter — the sniffer that
+    // could have done that was removed; the caller-supplied comma is authoritative.
     expect(parseCsv('"a\tb",c\n1,2')).toEqual([
       ["a\tb", "c"],
       ["1", "2"],
+    ]);
+    // ...and an unquoted tab in a comma CSV is just a literal character in the cell.
+    expect(parseCsv("Col\tA,Col2\nx,y")).toEqual([
+      ["Col\tA", "Col2"],
+      ["x", "y"],
+    ]);
+  });
+
+  it("unescapes a doubled quote at end of a quoted field (\"\"\"\" -> escaped quote)", () => {
+    expect(parseCsv('"a""""b",c')).toEqual([['a""b', "c"]]);
+    expect(parseCsv('""""')).toEqual([['"']]);
+  });
+
+  it("degrades sanely on an unterminated quote (no hang; remaining text is the final field)", () => {
+    expect(parseCsv('"abc')).toEqual([["abc"]]);
+    expect(parseCsv('a,"bc')).toEqual([["a", "bc"]]);
+  });
+
+  it("strips a leading UTF-8 BOM even when the first cell is quoted", () => {
+    // Unquoted first cell — trim would have hidden the BOM anyway.
+    expect(parseCsv("﻿Name,City\nBob,NYC")[0][0]).toBe("Name");
+    // Quoted first cell — the old blanket trim did NOT reach inside quotes, so the BOM
+    // survived as an invisible zero-width char. stripBom must remove it up front.
+    expect(parseCsv('﻿"Name","City"\nBob,NYC')).toEqual([
+      ["Name", "City"],
+      ["Bob", "NYC"],
     ]);
   });
 });

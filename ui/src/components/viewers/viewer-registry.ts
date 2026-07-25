@@ -30,6 +30,8 @@ export interface ViewerResolution {
   shouldExecuteInBrowser: boolean;
   requiresTextFetch: boolean;
   canShowSource: boolean;
+  /** Field delimiter for the `table` kind: "," for CSV, "\t" for TSV. */
+  delimiter?: "," | "\t";
 }
 
 export type OutputViewerKind = ViewerKind;
@@ -178,7 +180,11 @@ export function resolveViewer(output: ViewerInput): ViewerResolution {
   }
 
   if (contentType === "text/csv" || extension === "csv") {
-    return textViewer("table", "Table preview", assetUrl, canOpenDirectly);
+    return { ...textViewer("table", "Table preview", assetUrl, canOpenDirectly), delimiter: "," };
+  }
+
+  if (contentType === "text/tab-separated-values" || extension === "tsv") {
+    return { ...textViewer("table", "Table preview", assetUrl, canOpenDirectly), delimiter: "\t" };
   }
 
   if (contentType.startsWith("image/")) {

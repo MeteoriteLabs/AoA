@@ -6,6 +6,11 @@
  * escaped quotes. This parser handles all of those correctly.
  *
  * Behaviour notes:
+ * - The delimiter is supplied by the caller (the viewer registry resolves `.csv` -> `,`
+ *   and `.tsv` -> `\t`). It is NOT sniffed from the content, so a valid CSV whose first
+ *   line happens to contain unquoted tabs is never misparsed.
+ * - A leading UTF-8 BOM is stripped once before parsing, so the first header cell is
+ *   never polluted by an invisible zero-width character (even when it is quoted).
  * - The first row is the header; the table renderer treats `rows[0]` as `<th>`.
  * - Ragged rows are returned verbatim (no padding to the header width) so the renderer
  *   keeps its existing per-row cell mapping.
@@ -14,38 +19,8 @@
  *   which the viewer uses to fall back to the raw source view.
  * - Unquoted fields are trimmed for display; quoted fields are preserved verbatim
  *   (leading/trailing whitespace, embedded delimiters, and newlines are kept).
- * - The delimiter is sniffed from the first physical line: tab when tabs strictly
- *   outnumber commas there, otherwise comma. This lets tab-separated content render
- *   correctly should it ever be routed to the table viewer, while defaulting to CSV.
+ * - An unterminated quote degrades sanely: the remaining text becomes the final field.
  */
-
-/** Sniff the field delimiter from the first unquoted line. Defaults to comma. */
-export function detectDelimiter(content: string): "," | "\t" {
-  let inQuotes = false;
-  let commas = 0;
-  let tabs = 0;
-  for (let i = 0; i < content.length; i += 1) {
-    const ch = content[i];
-    if (inQuotes) {
-      if (ch === '"') {
-        if (content[i + 1] === '"') {
-          i += 1;
-          continue;
-        }
-        inQuotes = false;
-      }
-      continue;
-    }
-    if (ch === '"') {
-      inQuotes = true;
-      continue;
-    }
-    if (ch === "\n" || ch === "\r") break;
-    if (ch === ",") commas += 1;
-    else if (ch === "\t") tabs += 1;
-  }
-  return tabs > commas ? "\t" : ",";
-}
 
 /** Parse delimited text into rows of cells using a single-pass RFC-4180 state machine. */
 export function parseDelimited(content: string, delimiter: string): string[][] {
@@ -118,12 +93,17 @@ export function parseDelimited(content: string, delimiter: string): string[][] {
   return rows;
 }
 
+/** Remove a single leading UTF-8 BOM (U+FEFF) if present. */
+function stripBom(content: string): string {
+  return content.charCodeAt(0) === 0xfeff ? content.slice(1) : content;
+}
+
 /**
- * Parse CSV/TSV content into rows of cells. The first row is the header.
- * Blank physical lines are dropped so the table has no empty ghost rows.
+ * Parse CSV/TSV content into rows of cells. The first row is the header. The delimiter
+ * is caller-supplied (defaults to comma). Blank physical lines are dropped so the table
+ * has no empty ghost rows.
  */
-export function parseCsv(content: string): string[][] {
-  const delimiter = detectDelimiter(content);
-  const rows = parseDelimited(content, delimiter);
+export function parseCsv(content: string, delimiter: string = ","): string[][] {
+  const rows = parseDelimited(stripBom(content), delimiter);
   return rows.filter((row) => !(row.length === 1 && row[0] === ""));
 }

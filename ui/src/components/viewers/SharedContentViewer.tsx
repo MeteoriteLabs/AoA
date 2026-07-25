@@ -56,7 +56,7 @@ export function SharedContentViewer({ viewer, filename, inlineTextContent = null
     case "json":
       return <JsonOutputViewer content={textContent ?? ""} />;
     case "table":
-      return <CsvOutputViewer content={textContent ?? ""} />;
+      return <CsvOutputViewer content={textContent ?? ""} delimiter={viewer.delimiter} />;
     case "canvas":
       return <CanvasOutputViewer content={textContent ?? ""} />;
     case "code":
@@ -232,8 +232,8 @@ function JsonOutputViewer({ content }: { content: string }) {
   );
 }
 
-function CsvOutputViewer({ content }: { content: string }) {
-  const rows = useMemo(() => parseCsv(content), [content]);
+function CsvOutputViewer({ content, delimiter = "," }: { content: string; delimiter?: string }) {
+  const rows = useMemo(() => parseCsv(content, delimiter), [content, delimiter]);
   if (rows.length === 0) return <SourceOutputViewer content={content} />;
   const [header, ...body] = rows;
 

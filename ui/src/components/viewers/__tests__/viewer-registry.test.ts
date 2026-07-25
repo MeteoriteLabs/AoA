@@ -15,4 +15,19 @@ describe("resolveViewer", () => {
     expect(resolveViewer({ contentType: "application/json", filename: "flow.aoa-canvas.json", assetId: "a" }).kind).toBe("canvas");
     expect(resolveViewer({ contentType: "application/zip", filename: "bundle.zip", assetId: "a" }).kind).toBe("download");
   });
+
+  it("routes CSV and TSV to the table kind with the correct known delimiter (no sniffing)", () => {
+    const csv = resolveViewer({ contentType: "text/csv", filename: "data.csv", assetId: "a" });
+    expect(csv.kind).toBe("table");
+    expect(csv.delimiter).toBe(",");
+
+    const tsvByType = resolveViewer({ contentType: "text/tab-separated-values", filename: "data.tsv", assetId: "a" });
+    expect(tsvByType.kind).toBe("table");
+    expect(tsvByType.delimiter).toBe("\t");
+
+    // Extension alone (generic content type) still routes TSV correctly.
+    const tsvByExt = resolveViewer({ contentType: "application/octet-stream", filename: "data.tsv", assetId: "a" });
+    expect(tsvByExt.kind).toBe("table");
+    expect(tsvByExt.delimiter).toBe("\t");
+  });
 });
