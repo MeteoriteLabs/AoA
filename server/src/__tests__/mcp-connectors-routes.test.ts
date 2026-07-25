@@ -160,6 +160,30 @@ describe("mcp-connectors routes — validation (load-bearing)", () => {
     expect(mockConnectorSvc.create).not.toHaveBeenCalled();
   });
 
+  // FU-2 — `${...}` in `command` is REFUSED at create (the executable command is
+  // not secret-substituted, so a placeholder would spawn literally). local_trusted
+  // so the D7 gate does not pre-empt the 400 we are actually testing.
+  it.each([
+    ["a bare ${TOKEN} placeholder", "/opt/${TOKEN}/bin/srv"],
+    ["an ${AOA_MCP_X_TOKEN} placeholder", "${AOA_MCP_X_TOKEN}"],
+    ["a placeholder mid-path", "npx-${TOKEN}"],
+  ])("rejects a stdio command containing %s -> 400, no write", async (_label, command) => {
+    deploymentMode = "local_trusted";
+    const res = await postConnector(makeApp(founderActor), { ...goodStdio, command });
+    expect(res.status).toBe(400);
+    expect(mockConnectorSvc.create).not.toHaveBeenCalled();
+  });
+
+  it("accepts a stdio command with a real path (no placeholder) -> 201", async () => {
+    deploymentMode = "local_trusted";
+    const res = await postConnector(makeApp(founderActor), {
+      ...goodStdio,
+      command: "/usr/local/bin/fs-mcp",
+    });
+    expect(res.status).toBe(201);
+    expect(mockConnectorSvc.create).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects args as a string -> 400", async () => {
     const res = await postConnector(makeApp(founderActor), { ...goodStdio, args: "not-an-array" });
     expect(res.status).toBe(400);

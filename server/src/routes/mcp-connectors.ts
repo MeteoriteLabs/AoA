@@ -157,6 +157,36 @@ const createConnectorSchema = z.preprocess(
           ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["url"], message: "stdio transport forbids url" });
         }
       }
+
+      // FU-2 — a `${...}` placeholder in `command` is REFUSED, not substituted.
+      //
+      // DECISION (reject, not substitute): unlike `args`, `envTemplate` and
+      // `headerTemplate` — which `buildConnectorSpecs` rewrites `${TOKEN}` ->
+      // `${AOA_MCP_<name>_TOKEN}` — the executable `command` is copied verbatim,
+      // so a placeholder there reaches the CLI as a literal `${...}` and spawns
+      // as nothing. Two reasons to reject rather than close the substitution hole:
+      //  1. `command` is the host-exec surface the whole D7 gate exists to guard.
+      //     A secret belongs in an env var (or an arg the CLI expands), never
+      //     baked into an executable path/name where it lands on a process command
+      //     line (visible in `ps`/process listings) — the opposite of D5's
+      //     "credential rides in the env, never in config/argv" model.
+      //  2. Whether `${VAR}` even expands in the COMMAND position (vs args) is
+      //     unverified across the four connector-capable CLIs; substituting on a
+      //     guess risks shipping a literal `${VAR}` that authenticates as no-one
+      //     (FU-21's failure mode in a new place). Rejecting is loud and early.
+      // A secret in an executable path is almost always a mistake; the clean 400
+      // here points the founder at args/env instead of failing silently at spawn.
+      if (val.command !== undefined && SECRET_PLACEHOLDER_RE.test(val.command)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["command"],
+          message:
+            "command must not contain a ${...} placeholder. The executable command is not " +
+            "secret-substituted (only args and header/env templates are), so a placeholder here " +
+            "would be spawned literally. Reference the binary by its real path and put any secret " +
+            "in an arg or env template instead.",
+        });
+      }
     }),
 );
 
