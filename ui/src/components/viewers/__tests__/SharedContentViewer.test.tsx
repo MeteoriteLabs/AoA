@@ -102,4 +102,40 @@ describe("SharedContentViewer", () => {
 
     expect(screen.getByTestId("pdf-viewer")).toHaveTextContent("example.md:/report.pdf");
   });
+
+  it("renders inline code as source text", () => {
+    renderViewer(viewer({ kind: "code" }), "const x = 1;");
+    expect(screen.getByTestId("work-product-source")).toHaveTextContent("const x = 1;");
+  });
+
+  it("renders a CSV table, honoring the comma delimiter and quoted fields", () => {
+    renderViewer(viewer({ kind: "table", delimiter: "," }), 'name,city\n"Smith, John",NYC');
+    const table = screen.getByTestId("work-product-table");
+    expect(table).toHaveTextContent("name");
+    expect(table).toHaveTextContent("Smith, John"); // quoted comma kept as one cell
+    expect(table).toHaveTextContent("NYC");
+  });
+
+  it("renders a TSV table when the resolved delimiter is a tab (delimiter prop is honored)", () => {
+    renderViewer(viewer({ kind: "table", delimiter: "\t" }), "name\tcity\nSmith, John\tNYC");
+    const table = screen.getByTestId("work-product-table");
+    // The comma is a literal inside the tab-delimited cell, not a column break.
+    expect(table).toHaveTextContent("Smith, John");
+    expect(table).toHaveTextContent("NYC");
+  });
+
+  it("renders pretty-printed JSON", () => {
+    renderViewer(viewer({ kind: "json" }), '{"ok":true,"count":2}');
+    const json = screen.getByTestId("work-product-json");
+    expect(json).toHaveTextContent('"ok": true');
+    expect(json).toHaveTextContent('"count": 2');
+  });
+
+  it("renders an aoa-canvas document by its node labels", () => {
+    const canvas = JSON.stringify({ nodes: [{ id: "1", label: "Plan" }, { id: "2", label: "Decision" }] });
+    renderViewer(viewer({ kind: "canvas" }), canvas);
+    const el = screen.getByTestId("work-product-canvas");
+    expect(el).toHaveTextContent("Plan");
+    expect(el).toHaveTextContent("Decision");
+  });
 });
