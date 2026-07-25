@@ -132,7 +132,12 @@ test.describe("thread scope version flow", () => {
     await expect(page.getByTestId("scope-version-package")).toContainText("Memory candidate");
 
     const v1 = await latestScopeVersion(request, company.id, thread.id);
-    expect(v1).toMatchObject({ status: "draft", versionNumber: 1, sourceStartSeq: 1, sourceEndSeq: 3 });
+    // sourceEndSeq is 4, not 3: new threads run the orchestration controller path
+    // (discussions.useControllerPath), so creating the scope draft routes through
+    // the Adjutant, which posts its proposal as a `scope_proposal` entry (seq 4)
+    // into the thread. The draft correctly ranges over the 3 human writes + that
+    // agent entry. (Pre-controller-path this was a direct compile over seq 1-3.)
+    expect(v1).toMatchObject({ status: "draft", versionNumber: 1, sourceStartSeq: 1, sourceEndSeq: 4 });
     const v1Detail = await getScopeVersionDetail(request, company.id, thread.id, v1.id);
     expect(v1Detail.summary).toContain("whole conversation");
     expect(v1Detail.decisions.length).toBeGreaterThan(0);
@@ -251,7 +256,11 @@ test.describe("thread scope version flow", () => {
       timeout: 10_000,
     });
     const v2 = await latestScopeVersion(request, company.id, thread.id);
-    expect(v2).toMatchObject({ status: "draft", versionNumber: 2, sourceStartSeq: 4, sourceEndSeq: 4 });
+    // v2 ranges seq 5 (the new "analytics instrumentation" human message). The
+    // seqs shifted up by one vs the pre-controller-path baseline because v1's
+    // create-draft posted an agent scope_proposal entry at seq 4 (see v1 above):
+    // seq 1-3 human writes, 4 = v1 agent proposal, 5 = this new human message.
+    expect(v2).toMatchObject({ status: "draft", versionNumber: 2, sourceStartSeq: 5, sourceEndSeq: 5 });
     const v2Detail = await getScopeVersionDetail(request, company.id, thread.id, v2.id);
     expect(v2Detail.items[0]?.sourceEntryIds).toHaveLength(1);
     expect(v2Detail.summary).toContain("analytics instrumentation");

@@ -268,6 +268,20 @@ test.describe("Team AoA — fake-crew Assist crew_dispatch approval round-trip (
       },
     });
 
+    // Pin the COMPANY crew dial to Drive BEFORE the thread gets any content.
+    // createThreadFromUi posts an initial message, and the thread-event debounce
+    // (AOA_THREAD_EVENT_DEBOUNCE_MS) can fire a controller sweep off that message.
+    // If that sweep commits before patchThreadAutonomy(2) below lands (a race the
+    // slower CI runner loses but a local box wins), it commits at the default
+    // Assist autonomy and raises a stray crew_dispatch approval. Setting the
+    // company dial to Drive up front makes any such sweep dispatch-not-approve.
+    await jsonOrThrow(
+      await request.patch(`/api/companies/${company.id}/internal-agent/config`, {
+        data: { crewAutonomyLevel: 2, crewPaused: false },
+      }),
+      "pin company crew autonomy to Drive before thread content",
+    );
+
     await page.goto(`/${company.issuePrefix}/discussions`);
     await expect(page.getByRole("heading", { name: /Discussions/i }).first()).toBeVisible({
       timeout: 15_000,
