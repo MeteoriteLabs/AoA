@@ -1,6 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import {
+  auditCatalogDependencies,
+  type CatalogAuditInput,
+} from "@armyofagents/shared/marketplace-dependency-audit";
 
 /**
  * T2.4 Step 6 — marketplace dependency audit.
@@ -22,45 +26,9 @@ import { fileURLToPath } from "node:url";
  * `*.agent.json` fixtures).
  */
 
-type Item = {
-  id: string;
-  type: string;
-  status: string;
-  requires?: { type: string; id: string; versionRange?: string }[];
-};
-type Catalog = { schemaVersion: string; generatedAt: string; items: Item[] };
-type Orphan = {
-  owner: string;
-  requiredType: string;
-  requiredId: string;
-  reason: "missing" | "type-mismatch" | "not-active";
-};
-
-/**
- * Pure auditor: returns every agent/team `requires` edge that does NOT resolve
- * to a matching-type, active item in the catalog. Empty result = all edges
- * resolve. Exported so it can be reused by a live-CDN advisory script.
- */
-export function auditCatalogDependencies(cat: Catalog): Orphan[] {
-  const byId = new Map(cat.items.map((i) => [i.id, i]));
-  const out: Orphan[] = [];
-  for (const owner of cat.items) {
-    if (owner.type !== "agent" && owner.type !== "team") continue;
-    for (const edge of owner.requires ?? []) {
-      const target = byId.get(edge.id);
-      if (!target) {
-        out.push({ owner: owner.id, requiredType: edge.type, requiredId: edge.id, reason: "missing" });
-      } else if (target.type !== edge.type) {
-        out.push({ owner: owner.id, requiredType: edge.type, requiredId: edge.id, reason: "type-mismatch" });
-      } else if (target.status !== "active") {
-        out.push({ owner: owner.id, requiredType: edge.type, requiredId: edge.id, reason: "not-active" });
-      }
-    }
-  }
-  return out;
-}
-
-const catalog: Catalog = JSON.parse(
+// The auditor is shared with the live-CDN advisory (scripts/audit-catalog-dependencies.ts)
+// so the required-gate fixture check and the drift-catching CDN check can never diverge.
+const catalog: CatalogAuditInput = JSON.parse(
   readFileSync(
     fileURLToPath(new URL("./__fixtures__/published-catalog/catalog-index.json", import.meta.url)),
     "utf8",
@@ -98,9 +66,7 @@ describe("marketplace catalog dependency audit", () => {
   // FAIL-ABILITY discriminator: proves the auditor is not a no-op that always
   // returns []. If someone stubs auditCatalogDependencies, this fails the build.
   it("auditor flags an unresolvable edge (negative control)", () => {
-    const broken: Catalog = {
-      schemaVersion: "1.0.0",
-      generatedAt: "test",
+    const broken: CatalogAuditInput = {
       items: [
         { id: "agent:test/a", type: "agent", status: "active", requires: [{ type: "skill", id: "skill:test/missing" }] },
       ],
@@ -111,9 +77,7 @@ describe("marketplace catalog dependency audit", () => {
   });
 
   it("auditor flags a type mismatch and a non-active target", () => {
-    const cat: Catalog = {
-      schemaVersion: "1.0.0",
-      generatedAt: "test",
+    const cat: CatalogAuditInput = {
       items: [
         { id: "skill:x/dep", type: "skill", status: "deprecated" },
         { id: "plugin:x/p", type: "plugin", status: "active" },
