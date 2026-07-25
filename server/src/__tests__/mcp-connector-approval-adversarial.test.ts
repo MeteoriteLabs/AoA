@@ -60,6 +60,7 @@ const mocks = vi.hoisted(() => ({
   connGetById: vi.fn(),
   connUpdate: vi.fn(),
   connUpdateIfStatus: vi.fn(),
+  connUpdateIfStatusAndSecret: vi.fn(),
   // Route-level observation of the service the handler actually calls.
   svcApprove: vi.fn(),
   svcReject: vi.fn(),
@@ -91,6 +92,7 @@ vi.mock("../services/mcp-connectors-crud.js", () => ({
     getById: mocks.connGetById,
     update: mocks.connUpdate,
     updateIfStatus: mocks.connUpdateIfStatus,
+    updateIfStatusAndSecret: mocks.connUpdateIfStatusAndSecret,
   }),
 }));
 
@@ -211,6 +213,9 @@ const installApproval = (overrides: Record<string, unknown> = {}) => ({
 beforeEach(() => {
   for (const m of Object.values(mocks)) m.mockReset();
   mocks.logActivity.mockResolvedValue(undefined);
+  // Finding 6: the secret-aware guard returns a truthy row by default so the
+  // approve path's optimistic retry converges on the first attempt.
+  mocks.connUpdateIfStatusAndSecret.mockResolvedValue({ id: CONNECTOR_ID, status: "active" });
   mocks.listIssuesForApproval.mockResolvedValue([]);
   mocks.getEffectiveRole.mockResolvedValue("team_member");
   mocks.svcGetById.mockResolvedValue(installApproval());
@@ -358,6 +363,7 @@ describe("[ESC-1] install_mcp_connector approval is founder/team_lead only (FU-1
 
   it("CHARACTERIZATION: the real side-effect then activates the connector", async () => {
     // The genuine `applyConnectorApproval`, unmocked, over a structural stub.
+    mocks.connUpdateIfStatusAndSecret.mockResolvedValue({ id: CONNECTOR_ID, status: "active" });
     const svc: ConnectorApprovalTarget = {
       getById: async () => ({
         companyId: COMPANY,
@@ -367,11 +373,17 @@ describe("[ESC-1] install_mcp_connector approval is founder/team_lead only (FU-1
       }),
       update: mocks.connUpdate,
       updateIfStatus: mocks.connUpdateIfStatus,
+      updateIfStatusAndSecret: mocks.connUpdateIfStatusAndSecret,
     };
     await applyConnectorApproval(svc, COMPANY, CONNECTOR_ID, "authenticated");
-    expect(mocks.connUpdateIfStatus).toHaveBeenCalledWith(CONNECTOR_ID, "pending_approval", {
-      status: "active",
-    });
+    // Finding 6: the guard re-checks secret-boundness — this connector has a bound
+    // secret, so expectSecretBound=true.
+    expect(mocks.connUpdateIfStatusAndSecret).toHaveBeenCalledWith(
+      CONNECTOR_ID,
+      "pending_approval",
+      true,
+      { status: "active" },
+    );
   });
 
   it("CHARACTERIZATION: and delivery needs no further founder step — Commander picks it up immediately", async () => {
@@ -401,6 +413,7 @@ describe("[ESC-1] install_mcp_connector approval is founder/team_lead only (FU-1
       }),
       update: mocks.connUpdate,
       updateIfStatus: mocks.connUpdateIfStatus,
+      updateIfStatusAndSecret: mocks.connUpdateIfStatusAndSecret,
     };
     await applyConnectorRejection(svc, COMPANY, CONNECTOR_ID);
     expect(mocks.connUpdate).toHaveBeenCalledWith(CONNECTOR_ID, { status: "disabled" });
@@ -732,6 +745,9 @@ describe("[inv-1] applyConnectorApproval never yields active without a bound sec
       getById: async () => row as never,
       update: mocks.connUpdate,
       updateIfStatus: mocks.connUpdateIfStatus,
+      // Finding 6: the approve path now writes through the secret-aware guard.
+      // Return a truthy row so the optimistic retry converges on the first attempt.
+      updateIfStatusAndSecret: mocks.connUpdateIfStatusAndSecret,
     };
   }
 
@@ -744,7 +760,7 @@ describe("[inv-1] applyConnectorApproval never yields active without a bound sec
         for (const requiresSecret of bools) {
           for (const hasSecret of bools) {
             mocks.connUpdate.mockClear();
-            mocks.connUpdateIfStatus.mockClear();
+            mocks.connUpdateIfStatusAndSecret.mockClear();
             combos += 1;
 
             await applyConnectorApproval(
@@ -761,7 +777,9 @@ describe("[inv-1] applyConnectorApproval never yields active without a bound sec
 
             const writes = [
               ...mocks.connUpdate.mock.calls.map((c) => c[1]),
-              ...mocks.connUpdateIfStatus.mock.calls.map((c) => c[2]),
+              // Finding 6: the guarded write's patch is now the 4th arg (id,
+              // expectedStatus, expectSecretBound, patch).
+              ...mocks.connUpdateIfStatusAndSecret.mock.calls.map((c) => c[3]),
             ] as Array<{ status?: string }>;
 
             if (requiresSecret && !hasSecret) {
@@ -790,7 +808,7 @@ describe("[inv-1] applyConnectorApproval never yields active without a bound sec
 
   it("a malformed requiresSecret fails CLOSED rather than activating", async () => {
     for (const raw of [undefined, null, 0, 1, "", "false", "true", {}]) {
-      mocks.connUpdateIfStatus.mockClear();
+      mocks.connUpdateIfStatusAndSecret.mockClear();
       await applyConnectorApproval(
         targetFor({
           companyId: COMPANY,
@@ -802,7 +820,9 @@ describe("[inv-1] applyConnectorApproval never yields active without a bound sec
         CONNECTOR_ID,
         "authenticated",
       );
-      const wrote = mocks.connUpdateIfStatus.mock.calls[0]?.[2] as { status?: string } | undefined;
+      const wrote = mocks.connUpdateIfStatusAndSecret.mock.calls[0]?.[3] as
+        | { status?: string }
+        | undefined;
       expect(wrote?.status ?? "no-write").not.toBe("active");
     }
   });
@@ -819,9 +839,13 @@ describe("[inv-1] applyConnectorApproval never yields active without a bound sec
       CONNECTOR_ID,
       "authenticated",
     );
-    expect(mocks.connUpdateIfStatus).toHaveBeenCalledWith(CONNECTOR_ID, "pending_approval", {
-      status: "needs_credentials",
-    });
+    // Empty-string secretRef → hasSecret=false → expectSecretBound=false.
+    expect(mocks.connUpdateIfStatusAndSecret).toHaveBeenCalledWith(
+      CONNECTOR_ID,
+      "pending_approval",
+      false,
+      { status: "needs_credentials" },
+    );
   });
 
   it("a connector from ANOTHER company is never touched, whoever approved", async () => {
@@ -837,13 +861,13 @@ describe("[inv-1] applyConnectorApproval never yields active without a bound sec
       "authenticated",
     );
     expect(mocks.connUpdate).not.toHaveBeenCalled();
-    expect(mocks.connUpdateIfStatus).not.toHaveBeenCalled();
+    expect(mocks.connUpdateIfStatusAndSecret).not.toHaveBeenCalled();
   });
 
   it("the resolver stays the single decision-maker: the helper writes exactly what it says", async () => {
     for (const requiresSecret of bools) {
       for (const hasSecret of bools) {
-        mocks.connUpdateIfStatus.mockClear();
+        mocks.connUpdateIfStatusAndSecret.mockClear();
         const expected = resolveConnectorStatus({
           deploymentMode: "authenticated",
           approved: true,
@@ -862,11 +886,14 @@ describe("[inv-1] applyConnectorApproval never yields active without a bound sec
           "authenticated",
         );
         if (expected === "pending_approval") {
-          expect(mocks.connUpdateIfStatus).not.toHaveBeenCalled();
+          expect(mocks.connUpdateIfStatusAndSecret).not.toHaveBeenCalled();
         } else {
-          expect(mocks.connUpdateIfStatus).toHaveBeenCalledWith(CONNECTOR_ID, "pending_approval", {
-            status: expected,
-          });
+          expect(mocks.connUpdateIfStatusAndSecret).toHaveBeenCalledWith(
+            CONNECTOR_ID,
+            "pending_approval",
+            hasSecret,
+            { status: expected },
+          );
         }
       }
     }

@@ -61,6 +61,7 @@ const mocks = vi.hoisted(() => ({
   connGetById: vi.fn(),
   connUpdate: vi.fn(),
   connUpdateIfStatus: vi.fn(),
+  connUpdateIfStatusAndSecret: vi.fn(),
 }));
 
 vi.mock("../services/agents.js", () => ({
@@ -84,10 +85,11 @@ vi.mock("../services/mcp-connectors-crud.js", () => ({
     getById: mocks.connGetById,
     update: mocks.connUpdate,
     updateIfStatus: mocks.connUpdateIfStatus,
+    updateIfStatusAndSecret: mocks.connUpdateIfStatusAndSecret,
   }),
 }));
 
-import { approvalService } from "../services/approvals.js";
+import { applyConnectorApproval, approvalService } from "../services/approvals.js";
 
 const COMPANY = "company-A";
 
@@ -188,6 +190,7 @@ beforeEach(() => {
   mocks.dispatchCreatedCrewTasks.mockResolvedValue(undefined);
   mocks.connUpdate.mockResolvedValue({ id: "conn-1", status: "active" });
   mocks.connUpdateIfStatus.mockResolvedValue({ id: "conn-1", status: "active" });
+  mocks.connUpdateIfStatusAndSecret.mockResolvedValue({ id: "conn-1", status: "active" });
 });
 
 describe("approvalService.approve — install_mcp_connector branch", () => {
@@ -213,10 +216,15 @@ describe("approvalService.approve — install_mcp_connector branch", () => {
 
     expect(result).not.toBeNull();
     expect(mocks.connGetById).toHaveBeenCalledWith("conn-1");
-    expect(mocks.connUpdateIfStatus).toHaveBeenCalledTimes(1);
-    expect(mocks.connUpdateIfStatus).toHaveBeenCalledWith("conn-1", "pending_approval", {
-      status: "active",
-    });
+    // Finding 6: the guarded write now re-checks secret-boundness too. This
+    // connector needs no secret and has none → expectSecretBound=false.
+    expect(mocks.connUpdateIfStatusAndSecret).toHaveBeenCalledTimes(1);
+    expect(mocks.connUpdateIfStatusAndSecret).toHaveBeenCalledWith(
+      "conn-1",
+      "pending_approval",
+      false,
+      { status: "active" },
+    );
   });
 
   it("(2) idempotent: an already-active connector is NOT re-flipped", async () => {
@@ -242,6 +250,7 @@ describe("approvalService.approve — install_mcp_connector branch", () => {
     expect(result).not.toBeNull();
     expect(mocks.connUpdate).not.toHaveBeenCalled();
     expect(mocks.connUpdateIfStatus).not.toHaveBeenCalled();
+    expect(mocks.connUpdateIfStatusAndSecret).not.toHaveBeenCalled();
   });
 
   it("(3) deleted connector: getById returns null → no throw, approval still resolves", async () => {
@@ -261,6 +270,7 @@ describe("approvalService.approve — install_mcp_connector branch", () => {
     expect((result as { status?: string } | null)?.status).toBe("approved");
     expect(mocks.connUpdate).not.toHaveBeenCalled();
     expect(mocks.connUpdateIfStatus).not.toHaveBeenCalled();
+    expect(mocks.connUpdateIfStatusAndSecret).not.toHaveBeenCalled();
   });
 
   it("(4) company scope: a connector from another company is NOT flipped", async () => {
@@ -286,6 +296,7 @@ describe("approvalService.approve — install_mcp_connector branch", () => {
     expect(result).not.toBeNull();
     expect(mocks.connUpdate).not.toHaveBeenCalled();
     expect(mocks.connUpdateIfStatus).not.toHaveBeenCalled();
+    expect(mocks.connUpdateIfStatusAndSecret).not.toHaveBeenCalled();
   });
 
   it("no-op when payload.connectorId is missing", async () => {
@@ -301,6 +312,7 @@ describe("approvalService.approve — install_mcp_connector branch", () => {
     expect(mocks.connGetById).not.toHaveBeenCalled();
     expect(mocks.connUpdate).not.toHaveBeenCalled();
     expect(mocks.connUpdateIfStatus).not.toHaveBeenCalled();
+    expect(mocks.connUpdateIfStatusAndSecret).not.toHaveBeenCalled();
   });
 });
 
@@ -353,6 +365,77 @@ describe("approvalService.reject — install_mcp_connector branch", () => {
 
     expect(mocks.connUpdate).not.toHaveBeenCalled();
     expect(mocks.connUpdateIfStatus).not.toHaveBeenCalled();
+    expect(mocks.connUpdateIfStatusAndSecret).not.toHaveBeenCalled();
+  });
+});
+
+describe("applyConnectorApproval — FINDING 6: TOCTOU convergence with a concurrent bind", () => {
+  const target = (getById: any, updateIfStatusAndSecret: any) => ({
+    getById,
+    update: vi.fn(),
+    updateIfStatus: vi.fn(),
+    updateIfStatusAndSecret,
+  });
+
+  it("re-derives when a bind lands between read and write (needs_credentials → active)", async () => {
+    // Attempt 1: read the PRE-bind snapshot (pending, no secret) → derive
+    // needs_credentials → the guarded write LOSES (a bind changed secretRef) → null.
+    // Attempt 2: read the POST-bind snapshot (pending, secret bound) → derive
+    // active → guarded write WINS. No stale overwrite, no stranded connector.
+    const getById = vi
+      .fn()
+      .mockResolvedValueOnce({
+        id: "c",
+        companyId: COMPANY,
+        status: "pending_approval",
+        requiresSecret: true,
+        secretRef: null,
+      })
+      .mockResolvedValueOnce({
+        id: "c",
+        companyId: COMPANY,
+        status: "pending_approval",
+        requiresSecret: true,
+        secretRef: "mcp:x",
+      });
+    const updateIfStatusAndSecret = vi
+      .fn()
+      .mockResolvedValueOnce(null) // lost the race
+      .mockResolvedValueOnce({ id: "c", status: "active" });
+
+    await applyConnectorApproval(
+      target(getById, updateIfStatusAndSecret) as any,
+      COMPANY,
+      "c",
+      "authenticated",
+    );
+
+    expect(updateIfStatusAndSecret).toHaveBeenCalledTimes(2);
+    expect(updateIfStatusAndSecret).toHaveBeenNthCalledWith(1, "c", "pending_approval", false, {
+      status: "needs_credentials",
+    });
+    expect(updateIfStatusAndSecret).toHaveBeenNthCalledWith(2, "c", "pending_approval", true, {
+      status: "active",
+    });
+  });
+
+  it("fails CLOSED when the guard keeps losing — bounded retry, never an unguarded write", async () => {
+    const getById = vi.fn().mockResolvedValue({
+      id: "c",
+      companyId: COMPANY,
+      status: "pending_approval",
+      requiresSecret: true,
+      secretRef: null,
+    });
+    const updateIfStatusAndSecret = vi.fn().mockResolvedValue(null);
+    const svc = target(getById, updateIfStatusAndSecret);
+
+    await applyConnectorApproval(svc as any, COMPANY, "c", "authenticated");
+
+    // Bounded: it retries a fixed number of times and stops — never spins, and
+    // never falls back to the unguarded `update` that could strand the connector.
+    expect(updateIfStatusAndSecret).toHaveBeenCalledTimes(4);
+    expect(svc.update).not.toHaveBeenCalled();
   });
 });
 
@@ -373,6 +456,7 @@ describe("regression — hire_agent and crew_dispatch unaffected by the connecto
     expect(mocks.connGetById).not.toHaveBeenCalled();
     expect(mocks.connUpdate).not.toHaveBeenCalled();
     expect(mocks.connUpdateIfStatus).not.toHaveBeenCalled();
+    expect(mocks.connUpdateIfStatusAndSecret).not.toHaveBeenCalled();
   });
 
   it("(6b) hire_agent reject still terminates the pending agent and never touches the connector service", async () => {
@@ -391,6 +475,7 @@ describe("regression — hire_agent and crew_dispatch unaffected by the connecto
     expect(mocks.connGetById).not.toHaveBeenCalled();
     expect(mocks.connUpdate).not.toHaveBeenCalled();
     expect(mocks.connUpdateIfStatus).not.toHaveBeenCalled();
+    expect(mocks.connUpdateIfStatusAndSecret).not.toHaveBeenCalled();
   });
 
   it("(6c) crew_dispatch approve still dispatches and never touches the connector service", async () => {
@@ -410,5 +495,6 @@ describe("regression — hire_agent and crew_dispatch unaffected by the connecto
     expect(mocks.connGetById).not.toHaveBeenCalled();
     expect(mocks.connUpdate).not.toHaveBeenCalled();
     expect(mocks.connUpdateIfStatus).not.toHaveBeenCalled();
+    expect(mocks.connUpdateIfStatusAndSecret).not.toHaveBeenCalled();
   });
 });

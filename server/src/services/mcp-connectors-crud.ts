@@ -11,7 +11,7 @@
  * read-path `mcp-connectors-loader.ts` so each file carries a single concern.
  */
 
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { agents, companyMcpConnectorAgents, companyMcpConnectors } from "@armyofagents/db";
 import {
@@ -263,6 +263,48 @@ export function mcpConnectorService(db: Db) {
           and(
             eq(companyMcpConnectors.id, id),
             eq(companyMcpConnectors.status, expectedStatus),
+          ),
+        )
+        .returning()
+        .then((rows) => rows[0] ?? null);
+    },
+
+    /**
+     * `updateIfStatus`, but the guard ALSO re-checks whether a secret is bound —
+     * for the approve path (Finding 6), whose derived status depends on BOTH the
+     * connector's approval status AND its secret-boundness (`hasSecret`).
+     *
+     * WHY status alone is insufficient here: a concurrent credential-bind can add
+     * `secretRef` while status stays `pending_approval`. Approve, having read the
+     * pre-bind snapshot, would derive `needs_credentials` and — guarding on status
+     * only — overwrite the just-bound secret's row, stranding the connector at
+     * `needs_credentials` with a secret bound and the approval already closed (no
+     * recovery in `authenticated`). Guarding on secret-boundness too makes that a
+     * 0-row no-op the caller re-derives from.
+     *
+     * `expectSecretBound` maps to `secretRef IS [NOT] NULL`. An empty-string
+     * secretRef (which the status derivation treats as UNBOUND) is a schema-level
+     * non-case — `secretRef` is null or a validated non-empty name everywhere it
+     * is set — and a mismatch there merely fails the guard (fail-closed), never
+     * activates.
+     */
+    updateIfStatusAndSecret: (
+      id: string,
+      expectedStatus: string,
+      expectSecretBound: boolean,
+      patch: ConnectorPatch,
+    ) => {
+      const set = buildConnectorPatchSet(patch);
+      return db
+        .update(companyMcpConnectors)
+        .set(set)
+        .where(
+          and(
+            eq(companyMcpConnectors.id, id),
+            eq(companyMcpConnectors.status, expectedStatus),
+            expectSecretBound
+              ? isNotNull(companyMcpConnectors.secretRef)
+              : isNull(companyMcpConnectors.secretRef),
           ),
         )
         .returning()

@@ -29,15 +29,18 @@ const CO = "co1";
 /**
  * A connector row stub + observable writers.
  *
- * `updateIfStatus` is the guarded UPDATE (Codex #267 P2 pattern): it returns a row
- * only when the precondition status matches, and `null` when it does not, which is
- * how a lost TOCTOU race is simulated below.
+ * `updateIfStatusAndSecret` is the guarded UPDATE the approve path uses (Finding 6
+ * — the guard re-checks status AND secret-boundness): it returns a row only when
+ * the precondition matches, and `null` when it does not, which is how a lost
+ * TOCTOU race is simulated below. `updateIfStatus` is retained on the stub for the
+ * structural type; the approve path no longer calls it.
  */
 function makeSvc(connector: Record<string, unknown> | null, guardMatches = true) {
   return {
     getById: vi.fn().mockResolvedValue(connector),
     update: vi.fn().mockResolvedValue({}),
     updateIfStatus: vi.fn().mockResolvedValue(guardMatches ? {} : null),
+    updateIfStatusAndSecret: vi.fn().mockResolvedValue(guardMatches ? {} : null),
   };
 }
 
@@ -53,12 +56,16 @@ describe("applyConnectorApproval — credentials gate the activation (C2)", () =
 
     await applyConnectorApproval(svc as never, CO, "c1", "authenticated");
 
-    expect(svc.updateIfStatus).toHaveBeenCalledWith("c1", "pending_approval", {
+    // hasSecret=false → expectSecretBound=false.
+    expect(svc.updateIfStatusAndSecret).toHaveBeenCalledWith("c1", "pending_approval", false, {
       status: "needs_credentials",
     });
-    expect(svc.updateIfStatus).not.toHaveBeenCalledWith("c1", expect.anything(), {
-      status: "active",
-    });
+    expect(svc.updateIfStatusAndSecret).not.toHaveBeenCalledWith(
+      "c1",
+      expect.anything(),
+      expect.anything(),
+      { status: "active" },
+    );
   });
 
   it("approving a connector whose required secret IS bound activates it", async () => {
@@ -72,7 +79,8 @@ describe("applyConnectorApproval — credentials gate the activation (C2)", () =
 
     await applyConnectorApproval(svc as never, CO, "c1", "authenticated");
 
-    expect(svc.updateIfStatus).toHaveBeenCalledWith("c1", "pending_approval", {
+    // hasSecret=true → expectSecretBound=true.
+    expect(svc.updateIfStatusAndSecret).toHaveBeenCalledWith("c1", "pending_approval", true, {
       status: "active",
     });
   });
@@ -88,7 +96,7 @@ describe("applyConnectorApproval — credentials gate the activation (C2)", () =
 
     await applyConnectorApproval(svc as never, CO, "c1", "authenticated");
 
-    expect(svc.updateIfStatus).toHaveBeenCalledWith("c1", "pending_approval", {
+    expect(svc.updateIfStatusAndSecret).toHaveBeenCalledWith("c1", "pending_approval", false, {
       status: "active",
     });
   });
@@ -102,7 +110,7 @@ describe("applyConnectorApproval — credentials gate the activation (C2)", () =
 
     await applyConnectorApproval(svc as never, CO, "c1", "authenticated");
 
-    expect(svc.updateIfStatus).toHaveBeenCalledWith("c1", "pending_approval", {
+    expect(svc.updateIfStatusAndSecret).toHaveBeenCalledWith("c1", "pending_approval", false, {
       status: "needs_credentials",
     });
   });
@@ -120,9 +128,12 @@ describe("applyConnectorApproval — credentials gate the activation (C2)", () =
 
       await applyConnectorApproval(svc as never, CO, "c1", "authenticated");
 
-      expect(svc.updateIfStatus).not.toHaveBeenCalledWith("c1", expect.anything(), {
-        status: "active",
-      });
+      expect(svc.updateIfStatusAndSecret).not.toHaveBeenCalledWith(
+        "c1",
+        expect.anything(),
+        expect.anything(),
+        { status: "active" },
+      );
     },
   );
 
@@ -137,7 +148,8 @@ describe("applyConnectorApproval — credentials gate the activation (C2)", () =
 
     await applyConnectorApproval(svc as never, CO, "c1", "authenticated");
 
-    expect(svc.updateIfStatus).toHaveBeenCalledWith("c1", "pending_approval", {
+    // Empty-string secretRef → hasSecret=false → expectSecretBound=false.
+    expect(svc.updateIfStatusAndSecret).toHaveBeenCalledWith("c1", "pending_approval", false, {
       status: "needs_credentials",
     });
   });
@@ -153,7 +165,7 @@ describe("applyConnectorApproval — credentials gate the activation (C2)", () =
 
     await applyConnectorApproval(svc as never, CO, "c1", "authenticated");
 
-    expect(svc.updateIfStatus).not.toHaveBeenCalled();
+    expect(svc.updateIfStatusAndSecret).not.toHaveBeenCalled();
   });
 
   it("re-approving an already-active connector is a no-op (idempotent)", async () => {
@@ -167,7 +179,7 @@ describe("applyConnectorApproval — credentials gate the activation (C2)", () =
 
     await applyConnectorApproval(svc as never, CO, "c1", "authenticated");
 
-    expect(svc.updateIfStatus).not.toHaveBeenCalled();
+    expect(svc.updateIfStatusAndSecret).not.toHaveBeenCalled();
   });
 });
 
@@ -188,7 +200,7 @@ describe("applyConnectorApproval — a founder-disabled connector is never resur
 
     await applyConnectorApproval(svc as never, CO, "c1", "authenticated");
 
-    expect(svc.updateIfStatus).not.toHaveBeenCalled();
+    expect(svc.updateIfStatusAndSecret).not.toHaveBeenCalled();
     expect(svc.update).not.toHaveBeenCalled();
   });
 
@@ -203,12 +215,12 @@ describe("applyConnectorApproval — a founder-disabled connector is never resur
 
     await applyConnectorApproval(svc as never, CO, "c1", "local_trusted");
 
-    expect(svc.updateIfStatus).not.toHaveBeenCalled();
+    expect(svc.updateIfStatusAndSecret).not.toHaveBeenCalled();
   });
 });
 
 describe("applyConnectorApproval — guarded write (TOCTOU)", () => {
-  it("writes with the status it READ as the precondition, not a blind id-keyed update", async () => {
+  it("writes with the status AND secret-boundness it READ as the precondition, not a blind update", async () => {
     const svc = makeSvc({
       id: "c1",
       companyId: CO,
@@ -220,14 +232,18 @@ describe("applyConnectorApproval — guarded write (TOCTOU)", () => {
     await applyConnectorApproval(svc as never, CO, "c1", "authenticated");
 
     // The unguarded `update` must not be used — a blind write would clobber a
-    // concurrent credential bind with this stale derivation.
+    // concurrent credential bind with this stale derivation. Finding 6: the guard
+    // now also pins secret-boundness (expectSecretBound=false here).
     expect(svc.update).not.toHaveBeenCalled();
-    expect(svc.updateIfStatus).toHaveBeenCalledWith("c1", "pending_approval", {
+    expect(svc.updateIfStatusAndSecret).toHaveBeenCalledWith("c1", "pending_approval", false, {
       status: "active",
     });
   });
 
-  it("a lost race (0 rows matched) is absorbed silently — never throws after the approval flip", async () => {
+  it("a perpetually-lost race is absorbed silently (fail-closed) — bounded, never an unguarded write", async () => {
+    // guardMatches=false and a fixed getById row means the guard can never
+    // converge; Finding 6's bounded retry stops after a fixed cap and never falls
+    // back to the unguarded `update`, so the connector is never forced active.
     const svc = makeSvc(
       {
         id: "c1",
@@ -242,7 +258,8 @@ describe("applyConnectorApproval — guarded write (TOCTOU)", () => {
     await expect(
       applyConnectorApproval(svc as never, CO, "c1", "authenticated"),
     ).resolves.toBeUndefined();
-    expect(svc.updateIfStatus).toHaveBeenCalledTimes(1);
+    expect(svc.updateIfStatusAndSecret).toHaveBeenCalled();
+    expect(svc.update).not.toHaveBeenCalled();
   });
 });
 
@@ -258,7 +275,7 @@ describe("applyConnectorApproval — tenancy + null tolerance (never throw after
 
     await applyConnectorApproval(svc as never, CO, "c1", "authenticated");
 
-    expect(svc.updateIfStatus).not.toHaveBeenCalled();
+    expect(svc.updateIfStatusAndSecret).not.toHaveBeenCalled();
   });
 
   it("is a no-op and does NOT throw when the connector was deleted between create and approve", async () => {
@@ -267,7 +284,7 @@ describe("applyConnectorApproval — tenancy + null tolerance (never throw after
     await expect(
       applyConnectorApproval(svc as never, CO, "c1", "authenticated"),
     ).resolves.toBeUndefined();
-    expect(svc.updateIfStatus).not.toHaveBeenCalled();
+    expect(svc.updateIfStatusAndSecret).not.toHaveBeenCalled();
   });
 });
 
