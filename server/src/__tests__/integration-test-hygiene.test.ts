@@ -21,13 +21,24 @@ import { fileURLToPath } from "node:url";
 // different construct — and are not flagged.
 const FAIL_OPEN_SUITE = /\?\s*describe\s*:\s*describe\.skip/;
 
-const testsDir = fileURLToPath(new URL(".", import.meta.url));
+// Scan ALL of server/src recursively, not just this __tests__ dir — integration
+// tests also live in nested dirs (e.g. services/internal-agent/__tests__/), so a
+// non-recursive scan would leave the invariant enforceable only in one folder.
+const srcDir = fileURLToPath(new URL("..", import.meta.url));
+
+function integrationTestFiles(): string[] {
+  return readdirSync(srcDir, { recursive: true, encoding: "utf8" }).filter(
+    (f): f is string => typeof f === "string" && f.endsWith(".integration.test.ts"),
+  );
+}
 
 describe("integration test hygiene", () => {
   it("no *.integration.test.ts fail-opens by skipping its whole suite on a missing env var", () => {
-    const offenders = readdirSync(testsDir)
-      .filter((f) => f.endsWith(".integration.test.ts"))
-      .filter((f) => FAIL_OPEN_SUITE.test(readFileSync(join(testsDir, f), "utf8")));
+    const files = integrationTestFiles();
+    // Guard against the scan silently finding nothing (a refactor that moved the
+    // files, or a broken glob) — which would make this a test that lies.
+    expect(files.length, "expected to find *.integration.test.ts files to scan").toBeGreaterThan(20);
+    const offenders = files.filter((f) => FAIL_OPEN_SUITE.test(readFileSync(join(srcDir, f), "utf8")));
     expect(
       offenders,
       "these integration suites silently skip when an env var is absent (fail-open — " +

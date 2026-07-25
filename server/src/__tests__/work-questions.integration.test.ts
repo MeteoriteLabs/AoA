@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { runningProcesses, spawnTrackedChild } from "@armyofagents/adapter-utils/server-utils";
+import { allocateEmbeddedPgPort } from "./helpers/embedded-pg-port.js";
 import {
   applyPendingMigrations,
   agentWakeupRequests,
@@ -59,7 +60,6 @@ type EmbeddedPostgresCtor = new (opts: {
   initdbFlags?: string[];
 }) => EmbeddedPostgresInstance;
 
-const PORT = 59700 + Math.floor(Math.random() * 400);
 let pg: EmbeddedPostgresInstance | null = null;
 let dataDir = "";
 
@@ -177,6 +177,9 @@ describe.skipIf(process.platform === "win32")("durable work questions (real Post
 
   beforeAll(async () => {
     dataDir = await mkdtemp(join(tmpdir(), "aoa-work-questions-integ-"));
+    // Probe for a genuinely-free port (vitest runs these files in parallel and
+    // sibling suites use overlapping fixed random ranges — see the helper).
+    const port = await allocateEmbeddedPgPort();
     const { default: EmbeddedPostgres } = (await import("embedded-postgres")) as {
       default: EmbeddedPostgresCtor;
     };
@@ -184,7 +187,7 @@ describe.skipIf(process.platform === "win32")("durable work questions (real Post
       databaseDir: join(dataDir, "db"),
       user: "test",
       password: "test",
-      port: PORT,
+      port,
       persistent: false,
       // Force UTF-8 so migration SQL with non-Latin1 chars (e.g. '→' in a
       // comment) applies regardless of the host locale.
@@ -192,7 +195,7 @@ describe.skipIf(process.platform === "win32")("durable work questions (real Post
     });
     await pg.initialise();
     await pg.start();
-    const connectionString = `postgres://test:test@localhost:${PORT}/postgres`;
+    const connectionString = `postgres://test:test@localhost:${port}/postgres`;
     await applyPendingMigrations(connectionString);
     db = createDb(connectionString);
     const now = new Date();
