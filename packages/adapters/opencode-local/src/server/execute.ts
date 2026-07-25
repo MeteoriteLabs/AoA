@@ -9,6 +9,7 @@ import {
   adapterExecutionTargetSessionMatches,
   runAdapterExecutionTargetProcess,
   syncAdapterExecutionTargetFile,
+  aoaAmbientSecretEnvKeys,
   type AdapterExecutionContext,
   type AdapterExecutionResult,
 } from "@armyofagents/adapter-utils";
@@ -243,6 +244,34 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     targetIsRemote: executionTarget.type !== "local",
   });
   const preparedRuntimeEnv = preparedRuntimeConfig.env;
+
+  // FU-23: opencode is the outlier — for local targets it composes its spawn env
+  // as `{ ...process.env, ...env }` (baseExecutionEnv above) and passes THAT to
+  // the spawn, so AoA's ambient secrets sit in the spawn OVERLAY. mergeChildEnv
+  // exempts overlay-set keys from `unsetEnvKeys`, so unsetEnvKeys ALONE cannot
+  // remove them here — the ambient secrets must also be dropped from the overlay
+  // we pass. When this run hosts external MCP connectors, compute the ambient
+  // secrets present in the prepared env, EXCLUDING the adapter's own overlay keys
+  // (`env`: the connector's `${AOA_MCP_*_TOKEN}`, AOA_RUN_ID/AOA_API_KEY, and any
+  // agent-configured key), then (1) strip them from the spawn env and (2) also
+  // pass them as `unsetEnvKeys` so spawnTrackedChild's own re-merge of
+  // process.env drops them too. The `aoa` bridge keeps working from
+  // opencode.json's `mcp.aoa.environment` (buildMcpBridgeSpec re-supplies
+  // DATABASE_URL + secrets config). No-connector runs are byte-identical.
+  const connectorsPresent =
+    ctx.mcpServers != null && Object.keys(ctx.mcpServers).length > 0;
+  const connectorScrubKeys = connectorsPresent
+    ? aoaAmbientSecretEnvKeys(preparedRuntimeEnv, { keep: Object.keys(env) })
+    : [];
+  const spawnEnv =
+    connectorScrubKeys.length > 0
+      ? Object.fromEntries(
+          Object.entries(preparedRuntimeEnv).filter(
+            ([key]) => !connectorScrubKeys.includes(key),
+          ),
+        )
+      : preparedRuntimeEnv;
+
   if (executionTarget.type === "local") {
     await ensureCommandResolvable(command, cwd, preparedRuntimeEnv);
     await ensureOpenCodeModelConfiguredAndAvailable({
@@ -367,7 +396,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       command,
       args,
       cwd,
-      env: preparedRuntimeEnv,
+      env: spawnEnv,
+      ...(connectorScrubKeys.length > 0 ? { unsetEnvKeys: connectorScrubKeys } : {}),
       stdin: prompt,
       authToken: preparedRuntimeEnv.AOA_API_KEY ?? authToken ?? null,
       apiBaseUrl: preparedRuntimeEnv.AOA_API_URL ?? null,

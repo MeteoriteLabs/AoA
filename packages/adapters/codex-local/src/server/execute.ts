@@ -6,6 +6,7 @@ import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
   runAdapterExecutionTargetProcess,
+  aoaAmbientSecretEnvKeys,
   type AdapterExecutionContext,
   type AdapterExecutionResult,
   type AdapterRuntimeCommandSpec,
@@ -391,6 +392,22 @@ export async function execute(
     }
   }
 
+  // FU-23: codex already strips the ambient OPENAI_API_KEY on EVERY run (billing
+  // safety). When THIS run also hosts external MCP connectors, broaden the strip
+  // to ALL of AoA's ambient secrets so a stdio connector child codex spawns
+  // cannot inherit them. codex passes the OVERLAY-only `env` to its spawns, so
+  // mergeChildEnv strips these from the inherited process.env while preserving
+  // the connector's own overlay token. The `aoa` bridge is unaffected: codex
+  // scrubs its own env before spawning MCP children and reads the bridge's env
+  // from `[mcp_servers.aoa.env]` in the managed config.toml (buildMcpBridgeSpec
+  // re-supplies DATABASE_URL + secrets config). No-connector runs keep the
+  // existing `["OPENAI_API_KEY"]` strip, byte-identical.
+  const codexConnectorsPresent =
+    ctx.mcpServers != null && Object.keys(ctx.mcpServers).length > 0;
+  const codexUnsetEnvKeys = codexConnectorsPresent
+    ? [...new Set(["OPENAI_API_KEY", ...aoaAmbientSecretEnvKeys()])]
+    : ["OPENAI_API_KEY"];
+
   const billingType = resolveCodexBillingType(env);
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   if (executionTarget.type === "local") {
@@ -534,7 +551,8 @@ export async function execute(
       // never reach a Codex agent run and silently flip it to api-key billing.
       // Strip it from the inherited env; a key the agent set in its own config
       // (config.env / overlay) still survives. See mergeChildEnv in adapter-utils.
-      unsetEnvKeys: ["OPENAI_API_KEY"],
+      // FU-23: broadened to all AoA ambient secrets on connector-hosting runs.
+      unsetEnvKeys: codexUnsetEnvKeys,
       stdin: prompt,
       authToken: env.AOA_API_KEY ?? authToken ?? null,
       apiBaseUrl: env.AOA_API_URL ?? null,
@@ -797,6 +815,8 @@ export async function execute(
       },
       model: supervisedModel,
       managedCodexHome,
+      // FU-23: same connector-aware ambient-secret strip as the exec path.
+      unsetEnvKeys: codexUnsetEnvKeys,
     });
 
     return buildAdapterExecutionResult(bridgedResultToIntermediate(driverResult));

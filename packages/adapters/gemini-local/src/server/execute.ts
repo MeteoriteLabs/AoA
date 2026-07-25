@@ -7,6 +7,7 @@ import {
   adapterExecutionTargetSessionMatches,
   runAdapterExecutionTargetProcess,
   syncAdapterExecutionTargetFile,
+  aoaAmbientSecretEnvKeys,
   type AdapterExecutionContext,
   type AdapterExecutionResult,
 } from "@armyofagents/adapter-utils";
@@ -238,6 +239,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (!hasExplicitApiKey && authToken) {
     env.AOA_API_KEY = authToken;
   }
+  // FU-23: scrub AoA's ambient secrets from the spawn env when this run hosts
+  // external MCP connectors, so a stdio connector child gemini spawns can't
+  // inherit them. gemini passes the OVERLAY-only `env` to the spawn (below), so
+  // mergeChildEnv strips the ambient secrets from the inherited process.env while
+  // preserving the connector's own `${AOA_MCP_*_TOKEN}` (overlay-set). The `aoa`
+  // bridge keeps working from .gemini/settings.json's `mcpServers.aoa.env`
+  // (buildMcpBridgeSpec re-supplies DATABASE_URL + secrets config). No-connector
+  // runs keep the full env, byte-identical.
+  const connectorsPresent =
+    ctx.mcpServers != null && Object.keys(ctx.mcpServers).length > 0;
+  const connectorScrubKeys = connectorsPresent ? aoaAmbientSecretEnvKeys() : undefined;
   const effectiveEnv = Object.fromEntries(
     Object.entries({ ...process.env, ...env }).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
@@ -383,6 +395,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       args,
       cwd,
       env,
+      ...(connectorScrubKeys ? { unsetEnvKeys: connectorScrubKeys } : {}),
       authToken: env.AOA_API_KEY ?? authToken ?? null,
       apiBaseUrl: env.AOA_API_URL ?? null,
       runtimeCommandSpec: ctx.runtimeCommandSpec ?? null,
