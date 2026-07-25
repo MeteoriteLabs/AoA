@@ -100,6 +100,24 @@ export interface InstallPlan {
   };
 }
 
+/** A protected agent that a team uninstall detached and kept instead of destroying. */
+export interface RetainedProtectedAgent {
+  id: string;
+  name: string;
+  /** Canonical protected-role slug, e.g. `steward`. */
+  role: string;
+  /** Founder-facing reason the agent was kept. */
+  why: string;
+}
+
+/** Result of {@link marketplaceApi.uninstallTeam}. Mirrors the server route body. */
+export interface TeamUninstallResult {
+  success: boolean;
+  deletedAgentIds: string[];
+  retainedAgentIds: string[];
+  retainedAgents: RetainedProtectedAgent[];
+}
+
 export const marketplaceApi = {
   async getCatalog(): Promise<MarketplaceCatalogFile> {
     return api.get<MarketplaceCatalogFile>("/marketplace/catalog");
@@ -190,6 +208,18 @@ export const marketplaceApi = {
     await api.post<{ queued: boolean }>(
       `/companies/${companyId}/marketplace/request-install`,
       { catalogItemId },
+    );
+  },
+
+  /**
+   * Uninstall a marketplace-installed team (e.g. the crew). Destroys the team's
+   * member agents EXCEPT protected ones (Commander, Steward), which are detached
+   * and kept — the result reports them explicitly so the caller can tell the
+   * founder *which* agents survived and *why* (D23; task #33).
+   */
+  async uninstallTeam(companyId: string, teamId: string): Promise<TeamUninstallResult> {
+    return api.delete<TeamUninstallResult>(
+      `/companies/${companyId}/marketplace/teams/${teamId}`,
     );
   },
 };

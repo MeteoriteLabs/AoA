@@ -13,6 +13,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { teamsApi, type Team, type TeamMember } from "../api/teams";
+import { marketplaceApi, type TeamUninstallResult } from "../api/marketplace";
+import { CrewUninstallResultDialog } from "../components/team/CrewUninstallResultDialog";
 import { projectsApi } from "../api/projects";
 import { agentsApi } from "../api/agents";
 import type { Agent } from "@armyofagents/shared";
@@ -53,6 +55,8 @@ export function TeamDetail() {
   const rawTab = searchParams.get("tab");
   const activeTab: TeamDetailTab = isValidTab(rawTab) ? rawTab : "overview";
   const [dismantleConfirmOpen, setDismantleConfirmOpen] = useState(false);
+  const [uninstallConfirmOpen, setUninstallConfirmOpen] = useState(false);
+  const [uninstallResult, setUninstallResult] = useState<TeamUninstallResult | null>(null);
 
   // Fetch teams list and find by slug.
   // Backend doesn't expose getBySlug; we filter client-side. Acceptable v1.
@@ -161,6 +165,31 @@ export function TeamDetail() {
     },
   });
 
+  // Marketplace uninstall (crew only). Unlike dismantle, this DESTROYS the
+  // team's member agents — except protected ones (Commander, Steward), which are
+  // detached and kept. The result surfaces those retained agents so the founder
+  // sees which survived and why (task #33). Navigation happens only when the
+  // result dialog is dismissed, so the retained list isn't lost to an unmount.
+  const uninstallMut = useMutation({
+    mutationFn: () => marketplaceApi.uninstallTeam(selectedCompanyId!, teamQuery.data!.id),
+    onSuccess: (result) => {
+      setUninstallConfirmOpen(false);
+      setUninstallResult(result);
+      if (selectedCompanyId) {
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.teams.list(selectedCompanyId),
+        });
+      }
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Uninstall failed",
+        body: (err as Error).message,
+        tone: "error",
+      });
+    },
+  });
+
   if (teamQuery.isLoading) return <PageSkeleton variant="detail" />;
   if (teamQuery.isError)
     return <EmptyState icon={Users} message="Team not found." />;
@@ -221,6 +250,16 @@ export function TeamDetail() {
                 <Trash2 className="mr-2 h-3.5 w-3.5" />
                 {dismantleMut.isPending ? "Dismantling..." : "Dismantle team"}
               </DropdownMenuItem>
+              {team.templateOrigin && (
+                <DropdownMenuItem
+                  onClick={() => setUninstallConfirmOpen(true)}
+                  className="text-destructive"
+                  disabled={uninstallMut.isPending}
+                >
+                  <Trash2 className="mr-2 h-3.5 w-3.5" />
+                  {uninstallMut.isPending ? "Uninstalling..." : "Uninstall crew"}
+                </DropdownMenuItem>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         }
@@ -260,6 +299,26 @@ export function TeamDetail() {
         destructive
         onConfirm={() => dismantleMut.mutate()}
         disabled={dismantleMut.isPending}
+      />
+
+      <ConfirmDialog
+        open={uninstallConfirmOpen}
+        onOpenChange={setUninstallConfirmOpen}
+        title={`Uninstall "${team.name}"?`}
+        description="This permanently deletes the crew's agents and removes the team. Protected agents (Commander, Steward) are kept and detached. This cannot be undone."
+        confirmLabel="Uninstall"
+        destructive
+        onConfirm={() => uninstallMut.mutate()}
+        disabled={uninstallMut.isPending}
+      />
+
+      <CrewUninstallResultDialog
+        result={uninstallResult}
+        open={uninstallResult !== null}
+        onClose={() => {
+          setUninstallResult(null);
+          navigate("/team");
+        }}
       />
     </>
   );
