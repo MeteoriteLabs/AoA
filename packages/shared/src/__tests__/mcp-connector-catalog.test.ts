@@ -178,3 +178,127 @@ describe("parseMcpConnectorCatalog — envelope handling (never throws)", () => 
     expect(result.malformed).toBe(false);
   });
 });
+
+describe("parseMcpConnectorCatalog — Finding 5: value-bearing alias rejection", () => {
+  const httpEntry = {
+    id: "notion",
+    displayName: "Notion",
+    serverName: "notion",
+    transport: "http",
+    url: "https://mcp.notion.com/mcp",
+    headerTemplateKeys: ["Authorization"],
+    requiresSecret: true,
+    trust: { tier: "verified" },
+  };
+
+  it("DROPS an entry carrying a value-bearing `headerTemplate` alias (not retained)", () => {
+    const input = {
+      entries: [{ ...httpEntry, headerTemplate: { Authorization: "Bearer sk-live-real" } }],
+    };
+    const result = parseMcpConnectorCatalog(input);
+    expect(result.entries).toHaveLength(0);
+    expect(result.dropped).toEqual(["notion"]);
+    expect(result.malformed).toBe(false);
+    // secret value never reaches the returned data
+    expect(JSON.stringify(result.entries)).not.toContain("sk-live-real");
+  });
+
+  it("DROPS an entry carrying a value-bearing `envTemplate` alias", () => {
+    const input = {
+      entries: [
+        {
+          ...httpEntry,
+          transport: "stdio",
+          command: "npx",
+          url: undefined,
+          envTemplate: { NOTION_TOKEN: "sk-live-real" },
+        },
+      ],
+    };
+    const result = parseMcpConnectorCatalog(input);
+    expect(result.entries).toHaveLength(0);
+    expect(result.dropped).toEqual(["notion"]);
+  });
+
+  it("KEEPS an entry with a benign additive field (iconUrl), stripping the field (FU-22)", () => {
+    const input = { entries: [{ ...httpEntry, iconUrl: "https://cdn/x.png" }] };
+    const result = parseMcpConnectorCatalog(input);
+    expect(result.entries).toHaveLength(1);
+    expect(result.entries[0].id).toBe("notion");
+    expect(result.entries[0]).not.toHaveProperty("iconUrl");
+    expect(result.dropped).toEqual([]);
+  });
+
+  it("drops the dangerous alias entry but keeps a sibling additive entry in the same file", () => {
+    const input = {
+      entries: [
+        { ...httpEntry, id: "good", iconUrl: "https://cdn/x.png" },
+        { ...httpEntry, id: "bad", headerTemplate: { Authorization: "Bearer sk-live-real" } },
+      ],
+    };
+    const result = parseMcpConnectorCatalog(input);
+    expect(result.entries.map((e) => e.id)).toEqual(["good"]);
+    expect(result.dropped).toEqual(["bad"]);
+  });
+});
+
+describe("parseMcpConnectorCatalog — Finding 7: duplicate id dedup (first-wins)", () => {
+  const httpEntry = {
+    id: "notion",
+    displayName: "Notion",
+    serverName: "notion",
+    transport: "http",
+    url: "https://mcp.notion.com/mcp",
+    headerTemplateKeys: ["Authorization"],
+    requiresSecret: true,
+    trust: { tier: "verified" },
+  };
+
+  it("keeps the FIRST entry for an id and drops later collisions", () => {
+    const input = {
+      entries: [
+        { ...httpEntry, displayName: "First" },
+        // second card shares the id but a different (stdio) command — install-route
+        // `entries.find(...)` would otherwise resolve the wrong one
+        {
+          ...httpEntry,
+          displayName: "Second",
+          transport: "stdio",
+          command: "npx",
+          url: undefined,
+        },
+      ],
+    };
+    const result = parseMcpConnectorCatalog(input);
+    expect(result.entries).toHaveLength(1);
+    expect(result.entries[0].displayName).toBe("First");
+    expect(result.entries[0].transport).toBe("http");
+    expect(result.dropped).toEqual(["notion"]);
+    expect(result.malformed).toBe(false);
+  });
+
+  it("yields at most one entry per id even with three collisions", () => {
+    const input = {
+      entries: [
+        { ...httpEntry },
+        { ...httpEntry, displayName: "dup2" },
+        { ...httpEntry, displayName: "dup3" },
+      ],
+    };
+    const result = parseMcpConnectorCatalog(input);
+    expect(result.entries).toHaveLength(1);
+    expect(result.dropped).toEqual(["notion", "notion"]);
+  });
+
+  it("does not confuse distinct ids", () => {
+    const input = {
+      entries: [
+        { ...httpEntry, id: "a" },
+        { ...httpEntry, id: "b" },
+      ],
+    };
+    const result = parseMcpConnectorCatalog(input);
+    expect(result.entries.map((e) => e.id)).toEqual(["a", "b"]);
+    expect(result.dropped).toEqual([]);
+  });
+});

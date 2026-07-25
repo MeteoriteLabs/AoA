@@ -134,6 +134,41 @@ export const McpConnectorCatalogEntrySchema = z
 export type McpConnectorCatalogEntry = z.infer<typeof McpConnectorCatalogEntrySchema>;
 
 /**
+ * KNOWN-DANGEROUS value-bearing alias keys (Codex Finding 5).
+ *
+ * The schema is `.strip()` for FU-22 forward-compat, so an unknown key is removed
+ * and the entry still validates. That is correct for a GENUINELY-additive field
+ * (e.g. a future `iconUrl`): drop the key, keep the entry. But it is WRONG for the
+ * value-bearing TWINS of our KEYS-only fields — `headerTemplate` / `envTemplate`
+ * (and the obvious `headers` / `env` value maps). Silently stripping those means:
+ *   (a) it contradicts the intended "reject an entry that puts a VALUE in a
+ *       template field" — the secret value vanishes (good) but the entry survives
+ *       carrying no auth it thought it declared (bad, silent), and
+ *   (b) an entry that meant to set a header/env value silently loses it.
+ *
+ * So for THIS closed denylist we drop the whole ENTRY (not just the key). Any key
+ * NOT on this list still `.strip()`s harmlessly — FU-22 preserved exactly, so an
+ * additive field never re-triggers the fleet-freeze bug.
+ *
+ * Matched exactly and case-sensitively on the raw item, BEFORE `safeParse` — a
+ * `.strip()`ed schema removes these keys before a `.superRefine` could ever see
+ * them, so this must be a pre-check here in `parseMcpConnectorCatalog`.
+ */
+const VALUE_BEARING_ALIAS_KEYS = ["headerTemplate", "envTemplate", "headers", "env"] as const;
+
+/** The label recorded in `dropped` for an item — its `id`, or `<unidentified>`. */
+function droppedIdOf(item: unknown): string {
+  const id = typeof item === "object" && item !== null ? (item as { id?: unknown }).id : undefined;
+  return typeof id === "string" ? id : "<unidentified>";
+}
+
+/** True when the raw item carries a known-dangerous value-bearing alias key. */
+function hasValueBearingAlias(item: unknown): boolean {
+  if (typeof item !== "object" || item === null) return false;
+  return VALUE_BEARING_ALIAS_KEYS.some((k) => Object.prototype.hasOwnProperty.call(item, k));
+}
+
+/**
  * Parse PER ENTRY, dropping bad ones. This is the forward-compat property
  * catalog.json lacks: a future field or entry shape we do not understand costs
  * us that entry, never the whole file.
@@ -160,6 +195,17 @@ export type McpConnectorCatalogEntry = z.infer<typeof McpConnectorCatalogEntrySc
  *   `McpConnectorCatalogEntry`) never set `malformed` — they are recorded in
  *   `dropped` by `id` (or `"<unidentified>"` when the item isn't an object or
  *   its `id` isn't a string), and parsing continues with the remaining items.
+ * - Two further per-entry guards drop-and-record without setting `malformed`:
+ *   (Finding 5) an item carrying a KNOWN-DANGEROUS value-bearing alias key
+ *   (`headerTemplate`/`envTemplate`/…, see `VALUE_BEARING_ALIAS_KEYS`) is dropped
+ *   rather than silently stripped-and-kept; and (Finding 7) a DUPLICATE `id` is
+ *   dropped. Dedup is FIRST-WINS: the first entry for an id is kept and every later
+ *   collision is recorded in `dropped`. First-wins is chosen because the install
+ *   route selects with `entries.find(e => e.id === entryId)` (also first-wins), so
+ *   parse and install agree on exactly one entry per id; it defeats the
+ *   append-a-duplicate attack (a trailing malicious clone loses to the original),
+ *   and — unlike drop-ALL — it preserves availability of the presumably-intended
+ *   primary entry when a publish mistake duplicates an id.
  */
 export function parseMcpConnectorCatalog(input: unknown): {
   entries: McpConnectorCatalogEntry[];
@@ -177,14 +223,29 @@ export function parseMcpConnectorCatalog(input: unknown): {
     return { entries, dropped, malformed: true };
   }
 
+  const seenIds = new Set<string>();
   for (const item of raw) {
-    const parsed = McpConnectorCatalogEntrySchema.safeParse(item);
-    if (parsed.success) {
-      entries.push(parsed.data);
-    } else {
-      const id = typeof item === "object" && item !== null ? (item as { id?: unknown }).id : undefined;
-      dropped.push(typeof id === "string" ? id : "<unidentified>");
+    // Finding 5: a known-dangerous value-bearing alias drops the whole entry,
+    // BEFORE parsing (a `.strip()`ed schema would silently discard the key and
+    // keep the entry). Genuinely-additive unknown fields are NOT on the denylist
+    // and still `.strip()` harmlessly inside `safeParse` — FU-22 preserved.
+    if (hasValueBearingAlias(item)) {
+      dropped.push(droppedIdOf(item));
+      continue;
     }
+    const parsed = McpConnectorCatalogEntrySchema.safeParse(item);
+    if (!parsed.success) {
+      dropped.push(droppedIdOf(item));
+      continue;
+    }
+    // Finding 7: enforce id uniqueness in the returned entries. First-wins, so
+    // this agrees with the install route's `entries.find(...)` selection.
+    if (seenIds.has(parsed.data.id)) {
+      dropped.push(parsed.data.id);
+      continue;
+    }
+    seenIds.add(parsed.data.id);
+    entries.push(parsed.data);
   }
   return { entries, dropped, malformed: false };
 }
