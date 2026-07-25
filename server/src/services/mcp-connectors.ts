@@ -48,10 +48,14 @@ export function parseConnectorServerName(toolName: string | null | undefined): s
   if (segments.length < 3) return null;
   const serverName = segments[1];
   if (!serverName || !CONNECTOR_SERVER_NAME_RE.test(serverName)) return null;
-  // Require a non-empty tool portion so "mcp__srv__" (trailing separator, empty
-  // tool) does not resolve to a grantable name.
-  const toolPortion = segments.slice(2).join("__");
-  if (toolPortion.length === 0) return null;
+  // Require a NON-BLANK tool portion. A join+length check is not enough (FINDING 8):
+  // "mcp__notion__ " splits to [...," "] and "mcp__notion____" to [...,"",""], whose
+  // joins (" " and "__") are non-empty strings and would slip through, resolving to
+  // a grantable serverName with no real tool. Test the underlying segments for any
+  // non-whitespace content instead, which rejects empty, whitespace-only, and
+  // separator-only tool portions alike.
+  const toolSegments = segments.slice(2);
+  if (!toolSegments.some((s) => s.trim().length > 0)) return null;
   // Reserved/bridge names are AoA-owned, not founder connectors — they have
   // their own handling and must never be treated as a connector grant.
   if ((RESERVED_MCP_SERVER_NAMES as readonly string[]).includes(serverName)) return null;

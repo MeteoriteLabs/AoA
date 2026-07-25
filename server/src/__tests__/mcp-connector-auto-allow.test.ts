@@ -62,6 +62,16 @@ describe("parseConnectorServerName", () => {
     expect(parseConnectorServerName(null)).toBeNull();
     expect(parseConnectorServerName(undefined)).toBeNull();
   });
+
+  // FINDING 8 — a blank / separator-only tool portion must NOT resolve. The old
+  // join+length check let " " and "__" through (non-empty strings), grantng the
+  // connector's WHOLE toolset off a name with no real tool.
+  it("returns null for a blank or separator-only tool portion", () => {
+    expect(parseConnectorServerName("mcp__notion__ ")).toBeNull(); // single space
+    expect(parseConnectorServerName("mcp__notion__\t")).toBeNull(); // tab
+    expect(parseConnectorServerName("mcp__notion____")).toBeNull(); // separators only
+    expect(parseConnectorServerName("mcp__notion__ __ ")).toBeNull(); // all-blank segments
+  });
 });
 
 // ---------------------------------------------------------------------------
