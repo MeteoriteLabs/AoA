@@ -108,6 +108,9 @@ describe("GET /assets/:assetId/render (XLSX render + sanitization)", () => {
     // Headers match the DOCX render route exactly.
     expect(res.headers["content-type"]).toMatch(/text\/html; charset=utf-8/);
     expect(res.headers["x-content-type-options"]).toBe("nosniff");
+    // The render is a pure function of the immutable asset bytes, so it is
+    // browser-cacheable — a re-viewed doc renders once instead of re-parsing.
+    expect(res.headers["cache-control"]).toBe("private, max-age=300");
     // Wrapped in the xlsx shell, with the cell content rendered.
     expect(res.text).toMatch(/<div class="xlsx-rendered">/);
     expect(res.text).toContain("Cell-One");
@@ -133,6 +136,19 @@ describe("GET /assets/:assetId/render (XLSX render + sanitization)", () => {
     const res = await request(app).get(`/api/assets/${assetId}/render`);
 
     expect(res.status).toBe(415);
+    expect(storage.getObject).not.toHaveBeenCalled();
+  });
+
+  // Resource-exhaustion guard: an asset whose recorded size exceeds the render
+  // cap is refused with 413 BEFORE its bytes are fetched — the parse never runs.
+  it("rejects an oversized office asset with 413 before reading storage", async () => {
+    mockService.getById.mockResolvedValue(assetRow({ byteSize: 50 * 1024 * 1024 }));
+    const { app, storage } = makeApp();
+
+    const res = await request(app).get(`/api/assets/${assetId}/render`);
+
+    expect(res.status).toBe(413);
+    expect(res.body.error).toMatch(/Download to view/i);
     expect(storage.getObject).not.toHaveBeenCalled();
   });
 

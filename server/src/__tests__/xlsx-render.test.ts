@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import ExcelJS from "exceljs";
 import { renderXlsxBufferToSafeHtml, DEFAULT_XLSX_LIMITS } from "../services/xlsx-render.js";
+import {
+  OFFICE_RENDER_MAX_BYTES,
+  OfficeRenderTooLargeError,
+} from "../services/office-render-limits.js";
 
 // Unlike DOCX (where mammoth cannot emit scripts, so the XSS suite mocks it),
 // exceljs faithfully round-trips whatever we put in a cell — including
@@ -194,6 +198,17 @@ describe("renderXlsxBufferToSafeHtml — XLSX render + sanitize", () => {
     expect(DEFAULT_XLSX_LIMITS.maxRows).toBe(1000);
     expect(DEFAULT_XLSX_LIMITS.maxCols).toBe(50);
     expect(DEFAULT_XLSX_LIMITS.maxSheets).toBe(12);
+  });
+
+  // Resource-exhaustion guard: a buffer over the render cap is refused BEFORE
+  // exceljs parses it. The guard throws OfficeRenderTooLargeError specifically
+  // (a corrupt/oversized buffer reaching exceljs would throw a different error),
+  // so this proves the size check fires first — no unbounded parse.
+  it("refuses a buffer over the render input cap without parsing (OfficeRenderTooLargeError)", async () => {
+    const oversized = Buffer.alloc(OFFICE_RENDER_MAX_BYTES + 1);
+    await expect(renderXlsxBufferToSafeHtml(oversized)).rejects.toBeInstanceOf(
+      OfficeRenderTooLargeError,
+    );
   });
 
   it("renders an empty sheet with a note instead of a broken table", async () => {

@@ -1,6 +1,7 @@
 import ExcelJS from "exceljs";
 import type { Cell, Worksheet } from "exceljs";
 import { sanitizeOfficeHtml } from "./office-html-sanitize.js";
+import { assertOfficeRenderSize } from "./office-render-limits.js";
 
 /** OOXML spreadsheet MIME. The only type the XLSX render path converts. */
 export const XLSX_MIME =
@@ -18,8 +19,10 @@ export const XLSX_MIME =
  * output — it does not walk every row.
  *
  * Note on INPUT: `workbook.xlsx.load(buffer)` still parses the whole workbook
- * into memory (same as mammoth for DOCX). That input is bounded by the 50 MB
- * asset-upload cap (AOA_FILE_MAX_BYTES); these caps bound the OUTPUT HTML.
+ * into memory (same as mammoth for DOCX). That input is bounded by
+ * `assertOfficeRenderSize` (OFFICE_RENDER_MAX_BYTES — see office-render-limits.ts),
+ * which refuses an oversized buffer BEFORE the parse; these caps bound the
+ * OUTPUT HTML. Raw bytes above the render cap are still downloadable via /content.
  */
 export interface XlsxRenderLimits {
   /** Max worksheets rendered; extra sheets are noted, not dropped. */
@@ -171,6 +174,13 @@ export async function renderXlsxBufferToSafeHtml(
   buffer: Buffer,
   limits: XlsxRenderLimits = DEFAULT_XLSX_LIMITS,
 ): Promise<string> {
+  // Bound the parse INPUT before exceljs loads the whole workbook into memory
+  // (resource-exhaustion guard — see office-render-limits.ts). A modest on-disk
+  // OOXML zip can expand into millions of in-memory cells; the output caps below
+  // only bound the emitted HTML, not the parse. Throws OfficeRenderTooLargeError,
+  // which the routes map to 413.
+  assertOfficeRenderSize(buffer.length);
+
   const workbook = new ExcelJS.Workbook();
   // exceljs's bundled types declare load(buffer: <its own Buffer extends
   // ArrayBuffer>), which a Node Buffer is not structurally assignable to (its

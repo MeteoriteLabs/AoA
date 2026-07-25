@@ -55,6 +55,12 @@ interface RateLimitedJsonBody {
 
 function actorKey(req: Request): string {
   const actor = req.actor;
+  // Defensive: a rate limiter must never 500 a request. In production
+  // `actorMiddleware` always sets `req.actor` (at minimum `{type:"none"}`), but a
+  // route mounted without it must degrade to an IP bucket, not crash.
+  if (!actor) {
+    return ipKey(req);
+  }
   if (actor.type === "board" && actor.userId) {
     return `user:${actor.userId}`;
   }
@@ -231,4 +237,20 @@ export const previewProxyLimiter: RequestHandler = createRateLimiter({
   max: 600,
   keyBy: "actor",
   message: "Preview proxy rate limit exceeded; try again shortly",
+});
+
+/**
+ * Office document server-render (`GET /assets/:id/render` and the memory-scoped
+ * `GET /companies/:cid/memory/assets/:id/render`). Each request fetches the file
+ * and runs mammoth (DOCX) / exceljs (XLSX) over it — a CPU- and memory-heavy
+ * parse. Bucket by authenticated actor so one account's render storm hits its
+ * own limit. 60/min/actor comfortably covers a human clicking through previews
+ * while capping automated abuse; the render input is additionally bounded by
+ * OFFICE_RENDER_MAX_BYTES (office-render-limits.ts).
+ */
+export const officeRenderLimiter: RequestHandler = createRateLimiter({
+  windowMs: ONE_MINUTE,
+  max: 60,
+  keyBy: "actor",
+  message: "Office render rate limit exceeded; try again shortly",
 });

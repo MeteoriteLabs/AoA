@@ -1,5 +1,6 @@
 import mammoth from "mammoth";
 import { sanitizeOfficeHtml } from "./office-html-sanitize.js";
+import { assertOfficeRenderSize } from "./office-render-limits.js";
 
 /** OOXML Word document MIME. The only type the DOCX render path converts. */
 export const DOCX_MIME =
@@ -34,6 +35,10 @@ export async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buf
  * are NOT in the FORBID_* lists and asserting they are still neutralized.
  */
 export async function renderDocxBufferToSafeHtml(buffer: Buffer): Promise<string> {
+  // Bound the parse INPUT before mammoth loads the whole document into memory
+  // (resource-exhaustion guard — see office-render-limits.ts). Throws
+  // OfficeRenderTooLargeError, which the routes map to 413.
+  assertOfficeRenderSize(buffer.length);
   const result = await mammoth.convertToHtml({ buffer });
   const sanitized = sanitizeOfficeHtml(result.value);
   return `<article class="docx-rendered">${sanitized}</article>`;

@@ -8,6 +8,10 @@ const { mockConvert } = vi.hoisted(() => ({ mockConvert: vi.fn() }));
 vi.mock("mammoth", () => ({ default: { convertToHtml: mockConvert } }));
 
 import { renderDocxBufferToSafeHtml } from "../services/docx-render.js";
+import {
+  OFFICE_RENDER_MAX_BYTES,
+  OfficeRenderTooLargeError,
+} from "../services/office-render-limits.js";
 
 async function sanitize(html: string): Promise<string> {
   mockConvert.mockResolvedValue({ value: html, messages: [] });
@@ -24,6 +28,17 @@ describe("renderDocxBufferToSafeHtml — shared DOCX render+sanitize", () => {
     expect(out).toMatch(/^<article class="docx-rendered">/);
     expect(out).toMatch(/<\/article>$/);
     expect(out).toContain("<p>hello</p>");
+  });
+
+  // Resource-exhaustion guard: a buffer over the render cap is refused BEFORE
+  // mammoth parses it — mockConvert must never be called, proving the size check
+  // short-circuits the unbounded parse.
+  it("refuses a buffer over the render input cap without calling mammoth", async () => {
+    const oversized = Buffer.alloc(OFFICE_RENDER_MAX_BYTES + 1);
+    await expect(renderDocxBufferToSafeHtml(oversized)).rejects.toBeInstanceOf(
+      OfficeRenderTooLargeError,
+    );
+    expect(mockConvert).not.toHaveBeenCalled();
   });
 
   // The items explicitly named in FORBID_TAGS / FORBID_ATTR.

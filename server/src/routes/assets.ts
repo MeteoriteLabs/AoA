@@ -15,6 +15,11 @@ import { getSafeServingHeaders } from "../services/asset-serving-safety.js";
 import { sniffAndVerifyContentType } from "../services/asset-content-guard.js";
 import { DOCX_MIME, streamToBuffer, renderDocxBufferToSafeHtml } from "../services/docx-render.js";
 import { XLSX_MIME, renderXlsxBufferToSafeHtml } from "../services/xlsx-render.js";
+import {
+  assertOfficeRenderSize,
+  OfficeRenderTooLargeError,
+} from "../services/office-render-limits.js";
+import { officeRenderLimiter } from "../middleware/rate-limit.js";
 import { HttpError } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
@@ -430,7 +435,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
   // companyId gates access via assertCompanyAccess), so it is exactly as
   // authorized as /content and no wider. Non-office types still 415. Sanitization
   // is server-side; the client injects already-sanitized HTML.
-  router.get("/assets/:assetId/render", async (req, res, next) => {
+  router.get("/assets/:assetId/render", officeRenderLimiter, async (req, res, next) => {
     try {
       const assetId = req.params.assetId as string;
       const asset = await svc.getById(assetId);
@@ -448,6 +453,11 @@ export function assetRoutes(db: Db, storage: StorageService) {
         return;
       }
 
+      // Cheap pre-check on the recorded size: reject an oversized file BEFORE
+      // fetching + buffering its bytes. The render helper re-checks the actual
+      // buffer length as the authoritative guard (in case byteSize is stale/0).
+      assertOfficeRenderSize(asset.byteSize ?? 0);
+
       const object = await storage.getObject(asset.companyId, asset.objectKey);
       const buffer = await streamToBuffer(object.stream);
       const html =
@@ -457,8 +467,16 @@ export function assetRoutes(db: Db, storage: StorageService) {
 
       res.setHeader("Content-Type", "text/html; charset=utf-8");
       res.setHeader("X-Content-Type-Options", "nosniff");
+      // The render is a pure function of the immutable asset bytes (a new upload
+      // gets a new assetId), so the browser may cache it briefly — this is what
+      // makes a re-viewed document render once instead of re-parsing every open.
+      res.setHeader("Cache-Control", "private, max-age=300");
       res.send(html);
     } catch (err) {
+      if (err instanceof OfficeRenderTooLargeError) {
+        res.status(413).json({ error: err.message });
+        return;
+      }
       next(err);
     }
   });
