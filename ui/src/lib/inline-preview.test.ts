@@ -14,6 +14,23 @@ describe("isInlinePreviewable", () => {
     expect(isInlinePreviewable("text/html", 1000)).toBe(false);
     expect(isInlinePreviewable("text/html; charset=utf-8", 1000)).toBe(false);
   });
+
+  it("keeps script-capable and heavy types OUT of feed cards even though the full viewer renders them", () => {
+    // html + svg render in a `sandbox="allow-scripts"` iframe — must not auto-run in a feed.
+    expect(isInlinePreviewable("text/html", 100)).toBe(false);
+    expect(isInlinePreviewable("image/svg+xml", 100)).toBe(false);
+    // pdf is heavy (pdfjs worker); office is heavy (server render round-trip). Both open on click.
+    expect(isInlinePreviewable("application/pdf", 100)).toBe(false);
+    expect(
+      isInlinePreviewable("application/vnd.openxmlformats-officedocument.wordprocessingml.document", 100),
+    ).toBe(false);
+    expect(
+      isInlinePreviewable("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 100),
+    ).toBe(false);
+    // ...but cheap text-family content (csv -> table, mermaid, json) DOES preview inline.
+    expect(isInlinePreviewable("text/csv", 5000)).toBe(true);
+    expect(isInlinePreviewable("application/json", 5000)).toBe(true);
+  });
 });
 
 describe("isInlineImage", () => {
