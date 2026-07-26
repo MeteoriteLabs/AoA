@@ -28,6 +28,7 @@ vi.mock("drizzle-orm", () => drizzleOperatorStubs());
 // hoisting: the factory body runs at import time, after these initialize.
 const resolveByName = vi.fn();
 const warn = vi.fn();
+const logActivityMock = vi.fn();
 
 vi.mock("../secrets.js", () => ({
   secretService: () => ({ resolveByName }),
@@ -35,6 +36,14 @@ vi.mock("../secrets.js", () => ({
 
 vi.mock("../../middleware/logger.js", () => ({
   logger: { warn: (...args: unknown[]) => warn(...args) },
+}));
+
+// The delivery-audit sink (Task 5.4 / Decision #116 clause 7). Mocked as a no-op
+// so it never touches the sequence-mock db (which has no `.insert`) — that keeps
+// the loader's best-effort try/catch from ever firing its warn and perturbing the
+// `warn`-count assertions elsewhere in this file.
+vi.mock("../activity-log.js", () => ({
+  logActivity: (...args: unknown[]) => logActivityMock(...args),
 }));
 
 import { loadEnabledConnectorRows, resolveAgentConnectors } from "../mcp-connectors-loader.js";
@@ -102,6 +111,8 @@ function connectorRow(overrides: MockRow = {}): MockRow {
 beforeEach(() => {
   resolveByName.mockReset();
   warn.mockReset();
+  logActivityMock.mockReset();
+  logActivityMock.mockResolvedValue(undefined);
 });
 
 describe("loadEnabledConnectorRows", () => {
@@ -214,6 +225,77 @@ describe("loadEnabledConnectorRows", () => {
     // secrets lookup, no warning.
     expect(resolveByName).not.toHaveBeenCalled();
     expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("emits an mcp_connector.delivered audit event per DELIVERED connector (Decision #116 clause 7)", async () => {
+    // AoA cannot observe the CLI's actual MCP child spawn, so the honest audit
+    // point is "delivered to the run" — a connector that passed the selector AND
+    // whose secret resolved. Two delivered here: one http (secret resolves), one
+    // stdio (no secret). command is recorded only for stdio; trustTier always.
+    const { db } = createSequenceDb([
+      [
+        connectorRow({ id: "c-http", serverName: "notion", transport: "http", secretRef: "mcp:notion" }),
+        connectorRow({
+          id: "c-stdio",
+          serverName: "pg",
+          transport: "stdio",
+          url: null,
+          command: "npx",
+          args: ["-y", "dbhub@1.0.0"],
+          secretRef: null,
+          trustTier: "verified",
+        }),
+      ],
+      [{ connectorId: "c-http" }, { connectorId: "c-stdio" }],
+    ]);
+    resolveByName.mockResolvedValue("secret-abc");
+
+    await loadEnabledConnectorRows(db, { companyId: "co-1", agentId: "agent-1", runId: "run-9" });
+
+    expect(logActivityMock).toHaveBeenCalledTimes(2);
+    expect(logActivityMock).toHaveBeenCalledWith(
+      db,
+      expect.objectContaining({
+        companyId: "co-1",
+        actorType: "system",
+        actorId: "mcp-connectors",
+        agentId: "agent-1",
+        runId: "run-9",
+        action: "mcp_connector.delivered",
+        entityType: "mcp_connector",
+        entityId: "c-http",
+        details: expect.objectContaining({ serverName: "notion", transport: "http", trustTier: null }),
+      }),
+    );
+    // http carries no command; stdio does.
+    const httpCall = logActivityMock.mock.calls.find((c) => (c[1] as { entityId: string }).entityId === "c-http");
+    expect((httpCall![1] as { details: Record<string, unknown> }).details.command).toBeUndefined();
+    expect(logActivityMock).toHaveBeenCalledWith(
+      db,
+      expect.objectContaining({
+        entityId: "c-stdio",
+        details: expect.objectContaining({
+          serverName: "pg",
+          transport: "stdio",
+          command: "npx",
+          trustTier: "verified",
+        }),
+      }),
+    );
+  });
+
+  it("does NOT emit a delivered audit event for a connector dropped on secret failure", async () => {
+    // A connector the selector passed but whose secret THROWS is not delivered —
+    // it must not be audited as delivered.
+    const { db } = createSequenceDb([
+      [connectorRow({ id: "c-broken", serverName: "broken", secretRef: "mcp:deleted" })],
+      [{ connectorId: "c-broken" }],
+    ]);
+    resolveByName.mockRejectedValue(Object.assign(new Error("gone"), { status: 404 }));
+
+    await loadEnabledConnectorRows(db, { companyId: "co-1", agentId: "agent-1" });
+
+    expect(logActivityMock).not.toHaveBeenCalled();
   });
 
   it("passes a system consumer context naming the connector", async () => {

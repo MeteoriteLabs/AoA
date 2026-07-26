@@ -22,6 +22,7 @@ import {
   type ResolvedConnectorRow,
 } from "./mcp-connectors.js";
 import { secretService, type SecretConsumerContext } from "./secrets.js";
+import { logActivity } from "./activity-log.js";
 import { loadConfig } from "../config.js";
 
 export interface LoadEnabledConnectorRowsOptions {
@@ -32,6 +33,12 @@ export interface LoadEnabledConnectorRowsOptions {
    * company connector (D3).
    */
   agentId: string | null;
+  /**
+   * The heartbeat/crew run this delivery belongs to, if any. Threaded solely for
+   * the `mcp_connector.delivered` audit event (Decision #116 clause 7) so the
+   * audit row correlates to the run — omitted for callers with no run context.
+   */
+  runId?: string;
 }
 
 /**
@@ -65,7 +72,7 @@ function consumerContextFor(serverName: string): SecretConsumerContext {
  */
 export async function loadEnabledConnectorRows(
   db: Db,
-  { companyId, agentId }: LoadEnabledConnectorRowsOptions,
+  { companyId, agentId, runId }: LoadEnabledConnectorRowsOptions,
 ): Promise<ResolvedConnectorRow[]> {
   // Fetch ALL of the company's connectors and let the pure selector apply the
   // status rule. Pre-filtering `status = 'active'` in SQL would put a
@@ -164,6 +171,36 @@ export async function loadEnabledConnectorRows(
       envTemplate: connector.envTemplate,
       secretValue,
     });
+
+    // Decision #116 clause 7 — audit each connector DELIVERED to a run. AoA does
+    // not spawn the MCP child itself (the CLI does), so "delivered" is the honest
+    // event: this connector passed the selector AND its secret resolved, so it
+    // WILL be built into the run's config. Best-effort: an audit failure must
+    // never break delivery, and the actual delivery already succeeded above.
+    // `command` is recorded only for stdio (the exec-bearing transport).
+    try {
+      await logActivity(db, {
+        companyId,
+        actorType: "system",
+        actorId: "mcp-connectors",
+        agentId,
+        runId: runId ?? null,
+        action: "mcp_connector.delivered",
+        entityType: "mcp_connector",
+        entityId: connector.id,
+        details: {
+          serverName: connector.serverName,
+          transport: connector.transport,
+          trustTier: connector.trustTier ?? null,
+          ...(connector.transport === "stdio" ? { command: connector.command ?? null } : {}),
+        },
+      });
+    } catch (err) {
+      logger.warn(
+        { err, companyId, connectorId: connector.id, serverName: connector.serverName },
+        "mcp_connector.delivered audit failed (delivery unaffected)",
+      );
+    }
   }
 
   return resolved;
@@ -284,6 +321,7 @@ export async function resolveAgentConnectors(
   const rows = await loadEnabledConnectorRows(db, {
     companyId: input.companyId,
     agentId: input.agentId,
+    runId: input.runId,
   });
   const { specs, env, skipped } = buildConnectorSpecs(rows);
   if (skipped.length > 0 && input.logger) {
