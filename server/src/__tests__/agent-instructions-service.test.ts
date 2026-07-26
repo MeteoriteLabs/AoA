@@ -472,4 +472,25 @@ describe("agent instructions service", () => {
       svc.updateBundle(agent, { mode: "external", rootPath: ancestorRoot }),
     ).rejects.toThrow(/managed marketplace-skills/);
   });
+
+  it("refuses to materialize a managed bundle whose root overlaps the marketplace-skills tree (Codex #302)", async () => {
+    // Pathological AOA_HOME rooted INSIDE the catalog-owned tree: the managed
+    // instructions root then resolves inside marketplace-skills, so
+    // materialize's replaceExisting fs.rm would delete catalog bytes. It must
+    // refuse before any destructive action (this path writes directly, not via
+    // the jailed writeBundleFiles).
+    const evilHome = path.join(process.cwd(), ".aoa", "marketplace-skills", "__evil_home__");
+    process.env.AOA_HOME = evilHome;
+    process.env.AOA_INSTANCE_ID = "test-instance";
+
+    const svc = agentInstructionsService();
+    const agent = makeAgent({});
+
+    await expect(
+      svc.materializeManagedBundle(agent, { "AGENTS.md": "# hijack" }, { replaceExisting: true }),
+    ).rejects.toThrow(/overlaps the managed marketplace-skills/);
+
+    // The guard fired before any filesystem work — nothing was created there.
+    await expect(fs.stat(evilHome)).rejects.toMatchObject({ code: "ENOENT" });
+  });
 });

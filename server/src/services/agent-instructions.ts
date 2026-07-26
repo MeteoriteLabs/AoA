@@ -428,9 +428,10 @@ async function writeBundleFiles(
     const absolutePath = resolvePathWithinRoot(rootPath, normalizedPath);
     // T2.8c(b) writable-sink jail (Codex #302): an ancestor external root + a
     // `marketplace-skills/...` entryFile resolves a write into the catalog-owned
-    // tree. Check the resolved TARGET, not the root. (materializeManagedBundle
-    // also uses this helper but writes under the managed *instructions* root,
-    // a different subtree, so it never trips this.)
+    // tree. Check the resolved TARGET, not the root. (Note: `materializeManagedBundle`
+    // does NOT route through this helper — it writes + `fs.rm`s directly and is
+    // guarded there against a managed-instructions root that overlaps the
+    // marketplace-skills tree.)
     if (isInsideManagedMarketplaceSkillsRoot(absolutePath)) {
       throw unprocessable(
         "Cannot write instructions files inside the managed marketplace-skills directory.",
@@ -731,6 +732,16 @@ export function agentInstructionsService() {
     },
   ): Promise<{ bundle: AgentInstructionsBundle; adapterConfig: Record<string, unknown> }> {
     const rootPath = resolveManagedInstructionsRoot(agent);
+    // T2.8c(b) writable-sink jail (Codex #302): this path writes + `fs.rm`s
+    // DIRECTLY (not via writeBundleFiles). A pathological AOA_HOME could resolve
+    // the managed instructions root inside — or as an ancestor of — the managed
+    // marketplace-skills tree, so the `replaceExisting` removal below would
+    // delete catalog-owned bundle bytes. Refuse before any destructive action.
+    if (overlapsManagedMarketplaceSkillsRoot(rootPath)) {
+      throw unprocessable(
+        "The managed instructions root overlaps the managed marketplace-skills directory; refusing to materialize.",
+      );
+    }
     const entryFile = options?.entryFile ? normalizeRelativeFilePath(options.entryFile) : ENTRY_FILE_DEFAULT;
 
     if (options?.replaceExisting) {
