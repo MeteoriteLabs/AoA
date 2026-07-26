@@ -145,6 +145,23 @@ function resolveManagedInstructionsRoot(agent: AgentLike): string {
   );
 }
 
+/**
+ * T2.8c(b): the managed instructions root must never overlap the managed
+ * marketplace-skills tree. A pathological AOA_HOME could resolve it inside — or
+ * as an ancestor of — that tree, and the managed-bundle write paths
+ * (`materializeManagedBundle`, `ensureWritableBundle`, the managed branch of
+ * `updateBundle`) `mkdir` + write (and `fs.rm`) DIRECTLY, before any
+ * write-target jail, so they would add/delete catalog-owned bytes. Call this at
+ * every such path before the first `mkdir`/write. (Codex #302)
+ */
+function assertManagedInstructionsRootWritable(rootPath: string): void {
+  if (overlapsManagedMarketplaceSkillsRoot(rootPath)) {
+    throw unprocessable(
+      "The managed instructions root overlaps the managed marketplace-skills directory; refusing to write.",
+    );
+  }
+}
+
 function resolveLegacyInstructionsPath(candidatePath: string, config: Record<string, unknown>): string {
   if (path.isAbsolute(candidatePath)) return candidatePath;
   const cwd = asString(config.cwd);
@@ -534,6 +551,7 @@ export function agentInstructionsService() {
     }
 
     const managedRoot = resolveManagedInstructionsRoot(agent);
+    assertManagedInstructionsRootWritable(managedRoot); // before mkdir + legacy write below
     const entryFile = current.entryFile || ENTRY_FILE_DEFAULT;
     const nextConfig = applyBundleConfig(current.config, {
       mode: "managed",
@@ -575,6 +593,7 @@ export function agentInstructionsService() {
 
     if (nextMode === "managed") {
       nextRootPath = resolveManagedInstructionsRoot(agent);
+      assertManagedInstructionsRootWritable(nextRootPath); // before the mkdir below
     } else {
       const rootPath = asString(input.rootPath) ?? state.rootPath;
       if (!rootPath) {
@@ -732,16 +751,7 @@ export function agentInstructionsService() {
     },
   ): Promise<{ bundle: AgentInstructionsBundle; adapterConfig: Record<string, unknown> }> {
     const rootPath = resolveManagedInstructionsRoot(agent);
-    // T2.8c(b) writable-sink jail (Codex #302): this path writes + `fs.rm`s
-    // DIRECTLY (not via writeBundleFiles). A pathological AOA_HOME could resolve
-    // the managed instructions root inside — or as an ancestor of — the managed
-    // marketplace-skills tree, so the `replaceExisting` removal below would
-    // delete catalog-owned bundle bytes. Refuse before any destructive action.
-    if (overlapsManagedMarketplaceSkillsRoot(rootPath)) {
-      throw unprocessable(
-        "The managed instructions root overlaps the managed marketplace-skills directory; refusing to materialize.",
-      );
-    }
+    assertManagedInstructionsRootWritable(rootPath); // before the replaceExisting fs.rm below
     const entryFile = options?.entryFile ? normalizeRelativeFilePath(options.entryFile) : ENTRY_FILE_DEFAULT;
 
     if (options?.replaceExisting) {

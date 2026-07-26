@@ -493,4 +493,22 @@ describe("agent instructions service", () => {
     // The guard fired before any filesystem work — nothing was created there.
     await expect(fs.stat(evilHome)).rejects.toMatchObject({ code: "ENOENT" });
   });
+
+  it("refuses ensureWritableBundle (PUT /file) when the managed root overlaps the marketplace-skills tree (Codex #302)", async () => {
+    // Codex's scenario: an unconfigured agent with legacy prompt content hits
+    // ensureWritableBundle via writeFile, which would mkdir + write the legacy
+    // content into the overlapping managed root BEFORE writeFile's target jail.
+    const evilHome = path.join(process.cwd(), ".aoa", "marketplace-skills", "__evil_home2__");
+    process.env.AOA_HOME = evilHome;
+    process.env.AOA_INSTANCE_ID = "test-instance";
+
+    const svc = agentInstructionsService();
+    const agent = makeAgent({ promptTemplate: "# legacy instructions" });
+
+    await expect(svc.writeFile(agent, "docs/extra.md", "# new")).rejects.toThrow(
+      /overlaps the managed marketplace-skills/,
+    );
+
+    await expect(fs.stat(evilHome)).rejects.toMatchObject({ code: "ENOENT" });
+  });
 });
