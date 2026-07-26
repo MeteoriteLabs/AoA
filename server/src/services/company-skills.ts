@@ -33,7 +33,10 @@ import { agentService } from "./agents.js";
 import { executePinnedRequest, validateAndResolveFetchUrl } from "./outbound-url-guard.js";
 import { projectService } from "./projects.js";
 import { secretService } from "./secrets.js";
-import { isInsideManagedMarketplaceSkillsRoot } from "./marketplace-install/managed-skills-root.js";
+import {
+  isInsideManagedMarketplaceSkillsRoot,
+  overlapsManagedMarketplaceSkillsRoot,
+} from "./marketplace-install/managed-skills-root.js";
 
 // ---------------------------------------------------------------------------
 // RuntimeSkillEntry — replaces PaperclipSkillEntry from Paperclip
@@ -1995,10 +1998,10 @@ export function companySkillService(db: Db) {
       if (
         skill.sourceType === "local_path" &&
         skill.sourceLocator &&
-        isInsideManagedMarketplaceSkillsRoot(skill.sourceLocator)
+        overlapsManagedMarketplaceSkillsRoot(skill.sourceLocator)
       ) {
         throw unprocessable(
-          `Cannot import a skill from inside the managed marketplace-skills directory ` +
+          `Cannot import a skill whose directory overlaps the managed marketplace-skills tree ` +
             `("${skill.sourceLocator}"). That tree is owned by the catalog installer.`,
         );
       }
@@ -2098,6 +2101,22 @@ export function companySkillService(db: Db) {
           },
         });
         if (!imported) continue;
+
+        // T2.8c(b): a workspace cwd can be a catalog bundle version directory,
+        // so a discovered SKILL.md there would mint an editable `local_path` row
+        // inside the managed tree. Skip it — the catalog installer owns that
+        // tree. (Complements the authoritative updateFile sink guard; Codex #302.)
+        if (isInsideManagedMarketplaceSkillsRoot(skillDir)) {
+          result.skipped.push({
+            projectId: target.projectId,
+            projectName: target.projectName,
+            workspaceId: target.workspaceId,
+            workspaceName: target.workspaceName,
+            path: skillDir,
+            reason: "Inside the managed marketplace-skills directory (catalog-owned).",
+          });
+          continue;
+        }
 
         result.discovered++;
 

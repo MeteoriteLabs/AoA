@@ -49,6 +49,20 @@ function normalizeForContainment(candidatePath: string): string {
   return CASE_INSENSITIVE_FS ? resolved.toLowerCase() : resolved;
 }
 
+/** True when `childPath` equals `parentPath` or is nested inside it. */
+function contains(parentPath: string, childPath: string): boolean {
+  const parent = normalizeForContainment(parentPath);
+  const child = normalizeForContainment(childPath);
+  if (child === parent) return true;
+  const rel = path.relative(parent, child);
+  // A different drive/root yields an absolute rel — not contained.
+  if (path.isAbsolute(rel)) return false;
+  // `rel` escapes upward only when its FIRST segment is exactly "..". A plain
+  // `rel.startsWith("..")` would wrongly reject a genuinely-contained child
+  // whose first segment merely begins with two dots, e.g. "..shadow/file.md".
+  return rel !== ".." && !rel.startsWith(`..${path.sep}`);
+}
+
 /**
  * The parent of every {@link managedCatalogSkillDir}. Keyed off `process.cwd()`
  * so it always agrees with where bundles are actually materialized — do not
@@ -65,9 +79,21 @@ export function managedMarketplaceSkillsRoot(): string {
  * or above/beside the root, is not contained.
  */
 export function isInsideManagedMarketplaceSkillsRoot(candidatePath: string): boolean {
-  const root = normalizeForContainment(managedMarketplaceSkillsRoot());
-  const candidate = normalizeForContainment(candidatePath);
-  if (candidate === root) return true;
-  const rel = path.relative(root, candidate);
-  return rel.length > 0 && !rel.startsWith("..") && !path.isAbsolute(rel);
+  return contains(managedMarketplaceSkillsRoot(), candidatePath);
+}
+
+/**
+ * True when `candidatePath` OVERLAPS the managed root in EITHER direction: it is
+ * inside the root, OR it is an ANCESTOR of the root (a root from which a
+ * relative path can still resolve *into* the managed tree).
+ *
+ * Use this for a founder-supplied ROOT (an external instructions root, a skill
+ * import source) whose later writes resolve paths *under* it — rejecting an
+ * ancestor closes the "root = `.aoa`, write `marketplace-skills/…`" bypass at
+ * set time. For an already-resolved file TARGET, use
+ * {@link isInsideManagedMarketplaceSkillsRoot} instead.
+ */
+export function overlapsManagedMarketplaceSkillsRoot(candidatePath: string): boolean {
+  const root = managedMarketplaceSkillsRoot();
+  return contains(root, candidatePath) || contains(candidatePath, root);
 }

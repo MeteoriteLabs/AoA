@@ -455,4 +455,21 @@ describe("agent instructions service", () => {
       svc.deleteFile(agent, "marketplace-skills/company-1/skill_x/1.0.0/evil.md"),
     ).rejects.toThrow(/managed marketplace-skills/);
   });
+
+  it("rejects an external bundle rootPath that is an ANCESTOR of the managed tree (Codex #302 overlap)", async () => {
+    const aoaHome = await makeTempDir("paperclip-agent-instructions-overlap-");
+    cleanupDirs.add(aoaHome);
+    process.env.AOA_HOME = aoaHome;
+    process.env.AOA_INSTANCE_ID = "test-instance";
+
+    // `.aoa` contains the managed tree; rejecting it at set time closes the
+    // ancestor-root + `marketplace-skills/...` entryFile bypass.
+    const ancestorRoot = path.join(process.cwd(), ".aoa");
+    const svc = agentInstructionsService();
+    const agent = makeAgent({});
+
+    await expect(
+      svc.updateBundle(agent, { mode: "external", rootPath: ancestorRoot }),
+    ).rejects.toThrow(/managed marketplace-skills/);
+  });
 });

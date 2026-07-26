@@ -3,6 +3,7 @@ import { describe, it, expect } from "vitest";
 import {
   managedMarketplaceSkillsRoot,
   isInsideManagedMarketplaceSkillsRoot,
+  overlapsManagedMarketplaceSkillsRoot,
 } from "../services/marketplace-install/managed-skills-root.js";
 
 describe("managedMarketplaceSkillsRoot", () => {
@@ -61,5 +62,33 @@ describe("isInsideManagedMarketplaceSkillsRoot (T2.8c(b) containment)", () => {
     const caseVariant = path.join(process.cwd(), ".AOA", "MARKETPLACE-SKILLS", "co", "skill_x", "1.0.0");
     const caseInsensitiveFs = process.platform === "win32" || process.platform === "darwin";
     expect(isInsideManagedMarketplaceSkillsRoot(caseVariant)).toBe(caseInsensitiveFs);
+  });
+
+  it("treats a child dir that merely STARTS with two dots as contained (Codex #302: ..shadow)", () => {
+    // `path.relative` yields "..shadow/file.md"; a naive startsWith("..") would
+    // wrongly classify this contained target as outside and bypass the jail.
+    expect(
+      isInsideManagedMarketplaceSkillsRoot(path.join(root, "..shadow", "file.md")),
+    ).toBe(true);
+  });
+});
+
+describe("overlapsManagedMarketplaceSkillsRoot (T2.8c(b) root-set jail, bidirectional)", () => {
+  const root = managedMarketplaceSkillsRoot();
+
+  it("true when the candidate is inside the root", () => {
+    expect(overlapsManagedMarketplaceSkillsRoot(path.join(root, "co", "skill_x"))).toBe(true);
+  });
+
+  it("true when the candidate is an ANCESTOR of the root (e.g. .aoa)", () => {
+    expect(overlapsManagedMarketplaceSkillsRoot(path.join(process.cwd(), ".aoa"))).toBe(true);
+    expect(overlapsManagedMarketplaceSkillsRoot(process.cwd())).toBe(true);
+  });
+
+  it("false for a sibling with a shared prefix or an unrelated path", () => {
+    expect(
+      overlapsManagedMarketplaceSkillsRoot(path.join(process.cwd(), ".aoa", "marketplace-skills-other")),
+    ).toBe(false);
+    expect(overlapsManagedMarketplaceSkillsRoot(path.join(process.cwd(), "src"))).toBe(false);
   });
 });

@@ -361,7 +361,7 @@ describe("managed marketplace-skills jail (T2.8c(b))", () => {
     const service = companySkillService(makeDbReturning([]) as any);
 
     await expect(service.importFromSource("company-1", skillDir)).rejects.toThrow(
-      /managed marketplace-skills directory/,
+      /managed marketplace-skills tree/,
     );
   });
 
