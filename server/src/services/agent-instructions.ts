@@ -423,6 +423,16 @@ async function writeBundleFiles(
   for (const [relativePath, content] of Object.entries(files)) {
     const normalizedPath = normalizeRelativeFilePath(relativePath);
     const absolutePath = resolvePathWithinRoot(rootPath, normalizedPath);
+    // T2.8c(b) writable-sink jail (Codex #302): an ancestor external root + a
+    // `marketplace-skills/...` entryFile resolves a write into the catalog-owned
+    // tree. Check the resolved TARGET, not the root. (materializeManagedBundle
+    // also uses this helper but writes under the managed *instructions* root,
+    // a different subtree, so it never trips this.)
+    if (isInsideManagedMarketplaceSkillsRoot(absolutePath)) {
+      throw unprocessable(
+        "Cannot write instructions files inside the managed marketplace-skills directory.",
+      );
+    }
     const existingStat = await statIfExists(absolutePath);
     if (existingStat?.isFile() && !options?.overwriteExisting) continue;
     await fs.mkdir(path.dirname(absolutePath), { recursive: true });

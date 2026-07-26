@@ -1657,21 +1657,22 @@ export function companySkillService(db: Db) {
       throw unprocessable("GitHub-managed skills can only be edited via install-update");
     }
 
-    // T2.8c(b) writable-sink jail: refuse to edit a `local_path` row whose
-    // files live inside the managed marketplace-skills tree — the catalog
-    // installer is that tree's only writer. This is the authoritative guard
-    // (the `importFromSource` check only stops NEW rows); it also neutralizes
-    // rows minted by `scanProjectWorkspaces` and any that predate the import
-    // guard, per Codex #302.
-    if (
-      skill.sourceType === "local_path" &&
-      skill.sourceLocator &&
-      isInsideManagedMarketplaceSkillsRoot(skill.sourceLocator)
-    ) {
-      throw unprocessable(
-        "This skill's files live inside the managed marketplace-skills directory and cannot be " +
-          "edited here; the catalog installer owns that tree.",
-      );
+    // T2.8c(b) writable-sink jail: refuse to write a `local_path` skill file
+    // whose RESOLVED TARGET lands inside the managed marketplace-skills tree —
+    // the catalog installer is that tree's only writer. Checking the resolved
+    // `sourceLocator + normalizedPath` (not just `sourceLocator`) also catches a
+    // row rooted at an ANCESTOR of the managed tree (e.g. `.aoa`) whose forward
+    // path reaches in. This is the authoritative guard (the `importFromSource`
+    // check only stops NEW inside-rows); it also neutralizes rows minted by
+    // `scanProjectWorkspaces` and any that predate the import guard. Per Codex #302.
+    if (skill.sourceType === "local_path" && skill.sourceLocator) {
+      const resolvedTarget = path.resolve(skill.sourceLocator, normalizedPath);
+      if (isInsideManagedMarketplaceSkillsRoot(resolvedTarget)) {
+        throw unprocessable(
+          "This skill's file target resolves inside the managed marketplace-skills directory and " +
+            "cannot be edited here; the catalog installer owns that tree.",
+        );
+      }
     }
 
     // Update on filesystem if local_path

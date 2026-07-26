@@ -377,6 +377,23 @@ describe("managed marketplace-skills jail (T2.8c(b))", () => {
       service.updateFile("company-1", "skill-row-1", "SKILL.md", "# hijack"),
     ).rejects.toThrow(/managed marketplace-skills directory/);
   });
+
+  it("updateFile refuses a forward path resolving into the managed tree from an ANCESTOR sourceLocator (Codex #302 re-review)", async () => {
+    // sourceLocator is an ANCESTOR of the managed tree, so a sourceLocator-only
+    // check would pass; the guard must check the resolved sourceLocator+path.
+    const ancestorLocator = path.join(process.cwd(), ".aoa");
+    const row = makeSkillRow({ sourceType: "local_path", sourceLocator: ancestorLocator });
+    const service = companySkillService(makeDbReturning([row]) as any);
+
+    await expect(
+      service.updateFile(
+        "company-1",
+        "skill-row-1",
+        "marketplace-skills/company-1/skill_x/1.0.0/evil.md",
+        "# hijack",
+      ),
+    ).rejects.toThrow(/managed marketplace-skills directory/);
+  });
 });
 
 function makeDbReturning(rows: any[]) {
