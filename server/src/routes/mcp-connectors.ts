@@ -416,10 +416,24 @@ export function entryToCreateInput(
   // DROPPED rather than propagated into a downstream header/env writer, and
   // `Object.prototype` is never touched. `Object.fromEntries` would instead
   // define it as a real own property and carry it downstream.
+  // P1 (Codex): a declared credential key must carry the literal `${TOKEN}`
+  // placeholder — buildConnectorSpecs rewrites it to the connector's
+  // `${AOA_MCP_*_TOKEN}` ref and the CLI expands the real value at spawn. Empty
+  // values meant a custom header (X-Api-Key) or stdio env key installed "active"
+  // but ran UNAUTHENTICATED. `${TOKEN}` is a placeholder, never a value (D5-safe).
+  //   - `Authorization` is owned by the Bearer synthesizer
+  //     (withSynthesizedBearerHeader): leave it EMPTY so it fills `Bearer <token>`.
+  //     A raw `${TOKEN}` there would make the synth back off AND send an
+  //     unprefixed token.
+  //   - Secretless entries (requiresSecret:false) keep empty values — there is no
+  //     credential to wire, and an unresolved placeholder would break them.
+  const tokenPlaceholder = entry.requiresSecret ? "${TOKEN}" : "";
   const headerTemplate: Record<string, string> = {};
-  for (const key of entry.headerTemplateKeys) headerTemplate[key] = "";
+  for (const key of entry.headerTemplateKeys) {
+    headerTemplate[key] = key.toLowerCase() === "authorization" ? "" : tokenPlaceholder;
+  }
   const envTemplate: Record<string, string> = {};
-  for (const key of entry.envTemplateKeys) envTemplate[key] = "";
+  for (const key of entry.envTemplateKeys) envTemplate[key] = tokenPlaceholder;
 
   return {
     companyId,

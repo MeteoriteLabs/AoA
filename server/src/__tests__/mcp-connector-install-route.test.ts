@@ -281,6 +281,59 @@ describe("entryToCreateInput", () => {
     expect(Object.values(r.envTemplate ?? {})).toEqual([]);
   });
 
+  // P1 (Codex) — a credentialed non-Authorization header / stdio env key must
+  // carry the literal `${TOKEN}` placeholder (buildConnectorSpecs rewrites it to
+  // the connector's `${AOA_MCP_*_TOKEN}` ref), else the connector installs
+  // "active" but runs UNAUTHENTICATED. `${TOKEN}` is a placeholder, never a
+  // value — D5 stays intact.
+  it("credentialed CUSTOM header key gets the ${TOKEN} placeholder (not empty)", () => {
+    const e = entry({
+      id: "acme-http",
+      displayName: "Acme",
+      serverName: "acme-http",
+      transport: "http",
+      url: "https://acme.example/mcp",
+      headerTemplateKeys: ["X-Api-Key"],
+      requiresSecret: true,
+      trust: { tier: "verified" },
+    });
+    const r = entryToCreateInput(e, "co1", "local_trusted", ACTOR);
+    expect(r.headerTemplate).toEqual({ "X-Api-Key": "${TOKEN}" });
+    // D5: the placeholder is not a real secret value.
+    expect(JSON.stringify(r.headerTemplate)).not.toMatch(/sk-|secret|token-[0-9a-f]/i);
+  });
+
+  it("credentialed stdio env key gets the ${TOKEN} placeholder (not empty)", () => {
+    const e = entry({
+      id: "acme-db",
+      displayName: "Acme DB",
+      serverName: "acme-db",
+      transport: "stdio",
+      command: "npx",
+      args: ["-y", "acme-db-tool"],
+      envTemplateKeys: ["ACME_TOKEN"],
+      requiresSecret: true,
+      trust: { tier: "verified" },
+    });
+    const r = entryToCreateInput(e, "co1", "local_trusted", ACTOR);
+    expect(r.envTemplate).toEqual({ ACME_TOKEN: "${TOKEN}" });
+  });
+
+  it("Authorization stays EMPTY even when credentialed — the Bearer synth owns it", () => {
+    // verifiedHttp is requiresSecret:true with headerTemplateKeys:["Authorization"].
+    // A raw ${TOKEN} here would defeat withSynthesizedBearerHeader and send an
+    // unprefixed token; leaving it empty lets the synth fill `Bearer <token>`.
+    const r = entryToCreateInput(verifiedHttp, "co1", "local_trusted", ACTOR);
+    expect(r.headerTemplate).toEqual({ Authorization: "" });
+  });
+
+  it("SECRETLESS entry keeps empty template values (no unresolved placeholder)", () => {
+    // unverifiedStdio has envTemplateKeys but requiresSecret:false.
+    const r = entryToCreateInput(unverifiedStdio, "co1", "local_trusted", ACTOR);
+    expect(r.requiresSecret).toBe(false);
+    expect(r.envTemplate).toEqual({ ACME_TOKEN: "" });
+  });
+
   it("installs credential-UNBOUND: secretRef is null and requiresSecret is carried through", () => {
     const r = entryToCreateInput(verifiedHttp, "co1", "local_trusted", ACTOR);
     expect(r.secretRef).toBeNull();
