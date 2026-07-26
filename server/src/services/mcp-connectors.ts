@@ -5,6 +5,7 @@ import {
   stdioSpecCarriesSecretPlaceholder,
 } from "@armyofagents/adapter-utils";
 import { isTransportAllowed } from "./mcp-connector-transport-gate.js";
+import { isStdioCommandSafe } from "./mcp-connector-command-safety.js";
 
 /**
  * Server-name charset a connector is allowed to use — the SAME regex the
@@ -99,7 +100,17 @@ export type ConnectorSkipReason =
    * delivery-time re-assertion. Named so it can later surface in the UI (FU-1
    * already references a "D7 block" reason that did not previously exist).
    */
-  | "d7_blocked";
+  | "d7_blocked"
+  /**
+   * WS2 (Decision #116 clause 7): a stdio connector whose command is not a
+   * pinned launcher package. The create chokepoint refuses such a command, but
+   * legacy/imported/direct-DB rows can still carry one, so delivery re-checks the
+   * same predicate (`isStdioCommandSafe`) and fails closed. UNLIKE `d7_blocked`,
+   * this is MODE-INDEPENDENT — the pinning policy is universal. Only fires for a
+   * row that HAS a command; a stdio row with no command is `missing_command`
+   * (reported by `buildConnectorSpecs`), the pre-existing reason.
+   */
+  | "unsafe_command";
 
 export interface ConnectorBuildResult {
   specs: Record<string, McpServerSpec>;
@@ -173,6 +184,9 @@ interface D7RelevantRow {
   transport?: string;
   source?: string;
   trustTier?: string | null;
+  /** WS2: the stdio command + args the delivery-time command-safety re-check reads. */
+  command?: string | null;
+  args?: string[];
 }
 
 export interface ConnectorSelectionInput<T extends { id: string; status: string }> {
@@ -231,6 +245,21 @@ export function selectConnectorRowsForAgent<T extends { id: string; status: stri
         input.onSkip?.(c, "d7_blocked");
         return false;
       }
+    }
+    // WS2: command-safety re-check. MODE-INDEPENDENT (not gated on deploymentMode,
+    // unlike D7) — the pinning policy is universal. Only a stdio row that HAS a
+    // command is checked: a commandless stdio row stays and is reported
+    // `missing_command` by buildConnectorSpecs (the pre-existing reason), so this
+    // gate does not steal that classification. A legacy/imported row whose command
+    // the create chokepoint would now refuse is dropped WITH a reason, not run.
+    const safetyRow = c as unknown as D7RelevantRow;
+    if (
+      safetyRow.transport === "stdio" &&
+      safetyRow.command &&
+      !isStdioCommandSafe(safetyRow.command, safetyRow.args)
+    ) {
+      input.onSkip?.(c, "unsafe_command");
+      return false;
     }
     return true;
   });
@@ -469,6 +498,20 @@ export function computeConnectorDeliverability(
   );
   if (!d7Ok) {
     return { deliverable: false, reason: "d7_blocked", blockedAgents: [] };
+  }
+
+  // (1a) Command safety — connector-global (WS2), the exact predicate the delivery
+  // selector re-checks. MODE-INDEPENDENT: a stdio command the create chokepoint
+  // would now refuse reaches no recipient. Only a row that HAS a command is
+  // flagged here; a commandless stdio row falls through to the spec-shape build
+  // below, which reports `missing_command` (the faithful reason). Ordered D7 →
+  // unsafe_command → credential → spec, matching the delivery pipeline.
+  if (
+    connector.transport === "stdio" &&
+    connector.command &&
+    !isStdioCommandSafe(connector.command, connector.args)
+  ) {
+    return { deliverable: false, reason: "unsafe_command", blockedAgents: [] };
   }
 
   // (1b) Credential state — connector-global (F2). A connector active with a

@@ -329,6 +329,68 @@ describe("selectConnectorRowsForAgent", () => {
     });
     expect(rows).toEqual([]);
   });
+
+  // WS2 delivery re-check: a stdio row whose command is not a pinned launcher is
+  // dropped at delivery (legacy/imported/direct-DB rows fail closed), regardless
+  // of deployment mode (unlike D7). skip-not-throw: one bad connector never
+  // breaks the run.
+  it("drops an unpinned stdio connector via onSkip(unsafe_command), keeps a pinned one (mode-independent)", () => {
+    const skips: Array<{ id: string; reason: string }> = [];
+    const unpinned = {
+      id: "u1",
+      status: "active",
+      transport: "stdio",
+      command: "npx",
+      args: ["-y", "fs-mcp"],
+    };
+    const pinned = {
+      id: "p1",
+      status: "active",
+      transport: "stdio",
+      command: "npx",
+      args: ["-y", "fs-mcp@1.0.0"],
+    };
+    const rows = selectConnectorRowsForAgent({
+      connectors: [unpinned, pinned],
+      enabledConnectorIds: new Set(["u1", "p1"]),
+      isCommander: false,
+      // no deploymentMode → D7 re-gate is skipped; the unsafe check still runs.
+      onSkip: (c, reason) => skips.push({ id: (c as { id: string }).id, reason }),
+    });
+    expect(rows.map((r) => r.id)).toEqual(["p1"]);
+    expect(skips).toEqual([{ id: "u1", reason: "unsafe_command" }]);
+  });
+
+  it("drops a non-launcher stdio command (bash) as unsafe_command", () => {
+    const bad = { id: "b1", status: "active", transport: "stdio", command: "bash", args: ["-c", "x"] };
+    const rows = selectConnectorRowsForAgent({
+      connectors: [bad],
+      enabledConnectorIds: new Set(["b1"]),
+      isCommander: true,
+    });
+    expect(rows).toEqual([]);
+  });
+
+  it("does NOT drop a stdio row with no command (missing_command is the build-time reason, not this gate)", () => {
+    const noCmd = { id: "n1", status: "active", transport: "stdio", command: null, args: [] };
+    const rows = selectConnectorRowsForAgent({
+      connectors: [noCmd],
+      enabledConnectorIds: new Set(["n1"]),
+      isCommander: false,
+    });
+    // Passes the selector; buildConnectorSpecs later reports missing_command.
+    expect(rows.map((r) => r.id)).toEqual(["n1"]);
+  });
+
+  it("does not command-check a non-stdio (http) row", () => {
+    const http = { id: "h1", status: "active", transport: "http", command: null, args: [] };
+    const rows = selectConnectorRowsForAgent({
+      connectors: [http],
+      enabledConnectorIds: new Set(["h1"]),
+      isCommander: false,
+    });
+    expect(rows.map((r) => r.id)).toEqual(["h1"]);
+  });
 });
 
 describe("computeConnectorDeliverability (FU-1)", () => {
@@ -356,7 +418,9 @@ describe("computeConnectorDeliverability (FU-1)", () => {
     trustTier: "verified",
     url: null,
     command: "npx",
-    args: ["fs-mcp", "--token", "${TOKEN}"],
+    // WS2: pinned package (the ${TOKEN} arg is the connector's own secret and is
+    // allowed by the validator's whitelist).
+    args: ["fs-mcp@1.0.0", "--token", "${TOKEN}"],
     headerTemplate: {},
     envTemplate: {},
     secretRef: "mcp:fs",
@@ -404,6 +468,27 @@ describe("computeConnectorDeliverability (FU-1)", () => {
       reason: "d7_blocked",
       blockedAgents: [],
     });
+  });
+
+  // WS2 — a connector active with a stdio command that is no longer safe
+  // (unpinned/non-launcher) is dropped by the loader for EVERY recipient, so the
+  // preview must surface it as a connector-global block, ordered after D7.
+  it("flags unsafe_command for an unpinned stdio connector, globally", () => {
+    const summary = computeConnectorDeliverability({
+      connector: { ...stdioWithSecret, args: ["fs-mcp", "--token", "${TOKEN}"] }, // unpinned pkg
+      deploymentMode: "local_trusted", // D7 allows stdio here → isolates the unsafe check
+      assignedAgents: [claudeAgent],
+    });
+    expect(summary).toEqual({ deliverable: false, reason: "unsafe_command", blockedAgents: [] });
+  });
+
+  it("does NOT flag unsafe_command for a pinned stdio connector carrying the own ${TOKEN}", () => {
+    const summary = computeConnectorDeliverability({
+      connector: { ...stdioWithSecret, args: ["fs-mcp@1.0.0", "--token", "${TOKEN}"] },
+      deploymentMode: "local_trusted",
+      assignedAgents: [claudeAgent],
+    });
+    expect(summary?.reason).not.toBe("unsafe_command");
   });
 
   // F2 — a connector active with a bound secret that no longer resolves.
@@ -484,7 +569,7 @@ describe("computeConnectorDeliverability (FU-1)", () => {
 
   it("does NOT flag secret_unreachable for a codex stdio connector with no secret", () => {
     const summary = computeConnectorDeliverability({
-      connector: { ...stdioWithSecret, secretRef: null, args: ["fs-mcp"] },
+      connector: { ...stdioWithSecret, secretRef: null, args: ["fs-mcp@1.0.0"] },
       deploymentMode: "local_trusted",
       assignedAgents: [codexAgent],
     });

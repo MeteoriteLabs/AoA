@@ -62,6 +62,8 @@ export function StatusBadge({ status }: { status: McpConnector["status"] }) {
 const DELIVERABILITY_REASON_COPY: Record<ConnectorDeliverabilityReason, string> = {
   d7_blocked:
     "Local (stdio) connectors run a command on the host and aren't allowed in this deployment, so this connector reaches no agents.",
+  unsafe_command:
+    "This local connector's command isn't an allowed, version-pinned launcher (npx/uvx), so it's blocked from running and reaches no agents. Re-create it with a pinned package (e.g. name@1.2.3).",
   missing_url: "This HTTP connector has no URL, so it can't be reached.",
   missing_command: "This local connector has no command, so it can't start.",
   unknown_transport: "This connector's transport isn't recognized, so it can't be delivered.",

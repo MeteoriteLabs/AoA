@@ -123,7 +123,11 @@ export async function loadEnabledConnectorRows(
           deploymentMode,
           reason,
         },
-        "MCP connector skipped at delivery: no longer admissible under the current deployment mode (D7)",
+        // Two delivery-time drop reasons now flow through here: `d7_blocked` (no
+        // longer admissible under the current deployment mode) and `unsafe_command`
+        // (a stdio command the create chokepoint would now refuse — a legacy/
+        // imported/direct-DB row failing closed). `reason` distinguishes them.
+        "MCP connector skipped at delivery (see `reason`: d7_blocked = deployment-mode re-gate; unsafe_command = command safety)",
       );
     },
   });
