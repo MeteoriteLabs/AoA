@@ -135,8 +135,20 @@ describe("codex_local FU-23 env scrub (app-server path)", () => {
     expect(input.unsetEnvKeys).toContain("AOA_SECRETS_MASTER_KEY");
   });
 
+  // WS1 — the run-scoped API bearer must NOT be in the env handed to the codex
+  // app-server on a connector run (a stdio connector child would inherit it).
+  it("connectors present → AOA_API_KEY is stripped from the app-server env", async () => {
+    const input = await captureAppServerInput(true);
+    expect(input.env.AOA_API_KEY).toBeUndefined();
+  });
+
   it("no connectors → app-server keeps only the pre-existing OPENAI_API_KEY strip", async () => {
     const input = await captureAppServerInput(false);
     expect(input.unsetEnvKeys).toEqual(["OPENAI_API_KEY"]);
+  });
+
+  it("no connectors → the run token still rides the env (byte-identity)", async () => {
+    const input = await captureAppServerInput(false);
+    expect(input.env.AOA_API_KEY).toBe("secret-run-token");
   });
 });
