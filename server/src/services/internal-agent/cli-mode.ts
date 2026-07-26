@@ -926,8 +926,14 @@ export function cliModeService(db: Db) {
           // so a connector added/removed mid-conversation won't take effect
           // until that session recycles. Real debugging gotcha ("I added a
           // connector and Commander still can't see it").
-          const connectorsPresent = Object.keys(connectorEnv).length > 0;
-          if (connectorsPresent) {
+          // P1 (Codex): gate on the resolved SPEC map, not connectorEnv. A
+          // secretless connector (stdio filesystem, unauth'd http) yields a
+          // nonempty spec map but an EMPTY connectorEnv — gating on connectorEnv
+          // would skip the FU-23 scrub below and let that connector's stdio child
+          // inherit AoA's ambient secrets. Presence of ANY external spec is what
+          // means "a third-party child may spawn → scrub".
+          const connectorsPresent = Object.keys(connectorSpecs).length > 0;
+          if (Object.keys(connectorEnv).length > 0) {
             invocation.spawnEnv = { ...(invocation.spawnEnv ?? {}), ...connectorEnv };
           }
 
@@ -1345,7 +1351,11 @@ async function* runCodexTurn(
     // `aoa` bridge stays functional — buildMcpBridgeSpec re-supplies its own
     // config on the bridge spec env). No-connectors turns keep the full env
     // (byte-identical to pre-FU-8; there is no third-party child to protect).
-    const connectorsPresent = Object.keys(args.connectorEnv ?? {}).length > 0;
+    // P1 (Codex): gate on the resolved SPEC map, not connectorEnv. A secretless
+    // connector yields a nonempty spec map but empty connectorEnv; gating on
+    // connectorEnv would skip this scrub and leak AoA's ambient secrets into that
+    // connector's stdio child. Presence of ANY external spec means "scrub".
+    const connectorsPresent = Object.keys(args.mcpParams.extraMcpServers ?? {}).length > 0;
     const spawnEnv = connectorsPresent
       ? {
           ...mergeConnectorEnv(buildScrubbedCliEnv(), args.connectorEnv),

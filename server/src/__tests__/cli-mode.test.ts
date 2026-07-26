@@ -1793,4 +1793,96 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
       else process.env.AOA_SECRETS_MASTER_KEY = savedSecret;
     }
   });
+
+  // P1 (Codex) regression — a SECRETLESS connector (stdio filesystem, unauth'd
+  // http) resolves to a NONEMPTY spec map but an EMPTY connectorEnv. Gating the
+  // FU-23 scrub on connectorEnv (the pre-fix bug) treated this as "no connectors"
+  // and handed the full ambient env — DATABASE_URL, master key, GitHub PAT — to
+  // the connector's stdio child. The gate now keys on the SPEC map, so the scrub
+  // fires whenever any external connector is present, token or not.
+  it("claude_cli: SECRETLESS connector (empty connectorEnv, nonempty specs) STILL scrubs AoA's ambient secrets", async () => {
+    const cp = await import("node:child_process");
+    vi.mocked(cp.execSync).mockReturnValue("/usr/local/bin/claude\n" as any);
+    const persistent = makePersistentProcess();
+    vi.mocked(cp.spawn).mockReturnValue(persistent as any);
+    const fsp = await import("node:fs/promises");
+
+    const loaderMod = await import("../services/mcp-connectors-loader.js");
+    vi.mocked(loaderMod.resolveAgentConnectors).mockResolvedValue({
+      extraMcpServers: {
+        filesystem: {
+          kind: "stdio",
+          command: "npx",
+          args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+        },
+      },
+      connectorEnv: {}, // secretless — nonempty specs, empty env
+    } as any);
+
+    const savedSecret = process.env.AOA_SECRETS_MASTER_KEY;
+    process.env.AOA_SECRETS_MASTER_KEY = "raw-master-key-should-not-leak";
+    try {
+      const { cliModeService } = await import(
+        "../services/internal-agent/cli-mode.js"
+      );
+      const service = cliModeService({} as any);
+      driveClaudeToCompletion(persistent);
+      await drainChat(service, "claude_cli", "hello");
+
+      // The connector WAS delivered (config file carries it) → this is the
+      // "present" state, not the no-connector path.
+      const parsed = JSON.parse(String(vi.mocked(fsp.writeFile).mock.calls[0][1]));
+      expect(parsed.mcpServers.filesystem).toBeDefined();
+
+      // …and the ambient secret is SCRUBBED despite connectorEnv being empty.
+      const [, , spawnOpts] = vi.mocked(cp.spawn).mock.calls[0];
+      expect((spawnOpts as any).env.AOA_SECRETS_MASTER_KEY).toBeUndefined();
+      expect((spawnOpts as any).env.PATH).toBeTruthy(); // base non-secrets survive
+    } finally {
+      if (savedSecret === undefined) delete process.env.AOA_SECRETS_MASTER_KEY;
+      else process.env.AOA_SECRETS_MASTER_KEY = savedSecret;
+    }
+  });
+
+  it("codex: SECRETLESS connector (empty connectorEnv, nonempty specs) STILL scrubs AoA's ambient secrets", async () => {
+    const cp = await import("node:child_process");
+    vi.mocked(cp.execSync).mockReturnValue("/usr/local/bin/codex\n" as any);
+    const proc = makeOneShotProcess({ stdout: CODEX_TURN1_JSONL });
+    vi.mocked(cp.spawn).mockReturnValue(proc as any);
+    const codexMod = await import("@armyofagents/adapter-codex-local/server");
+
+    const loaderMod = await import("../services/mcp-connectors-loader.js");
+    vi.mocked(loaderMod.resolveAgentConnectors).mockResolvedValue({
+      extraMcpServers: {
+        filesystem: {
+          kind: "stdio",
+          command: "npx",
+          args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+        },
+      },
+      connectorEnv: {}, // secretless — nonempty specs, empty env
+    } as any);
+
+    const savedSecret = process.env.AOA_SECRETS_MASTER_KEY;
+    process.env.AOA_SECRETS_MASTER_KEY = "raw-master-key-should-not-leak";
+    try {
+      const { cliModeService } = await import(
+        "../services/internal-agent/cli-mode.js"
+      );
+      const service = cliModeService({} as any);
+      await drainChat(service, "codex", "hello");
+
+      // The connector WAS delivered to the TOML writer → "present" state.
+      expect(vi.mocked(codexMod.writeCodexMcpConfigToml)).toHaveBeenCalledTimes(1);
+      const [, , options] = vi.mocked(codexMod.writeCodexMcpConfigToml).mock.calls[0];
+      expect((options as any)?.externalServers.filesystem).toBeDefined();
+
+      const [, , spawnOpts] = vi.mocked(cp.spawn).mock.calls[0];
+      expect((spawnOpts as any).env.AOA_SECRETS_MASTER_KEY).toBeUndefined(); // scrubbed
+      expect((spawnOpts as any).env.PATH).toBeTruthy();
+    } finally {
+      if (savedSecret === undefined) delete process.env.AOA_SECRETS_MASTER_KEY;
+      else process.env.AOA_SECRETS_MASTER_KEY = savedSecret;
+    }
+  });
 });

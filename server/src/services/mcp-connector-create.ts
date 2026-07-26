@@ -27,6 +27,7 @@
  * DEPENDENCIES ARE INJECTED so the governance above is unit-testable with no DB.
  */
 
+import { RESERVED_MCP_SERVER_NAMES } from "@armyofagents/adapter-utils";
 import { badRequest, conflict } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { resolveConnectorStatus } from "./mcp-connector-status.js";
@@ -140,6 +141,19 @@ export async function createConnector(
   const existing = await svc.getByName(companyId, input.serverName);
   if (existing) {
     throw conflict(`A connector named "${input.serverName}" already exists`);
+  }
+
+  // P2 (Codex): reserved AoA-owned names ("aoa"/"playwright") must never become a
+  // connector. The BYO route's Zod already rejects them (FU-28), but the CATALOG
+  // install path builds its input straight from the entry and reaches this shared
+  // chokepoint without that Zod — so a reserved-name catalog entry would install,
+  // then get silently removed by `stripReservedMcpServerNames` at every adapter
+  // merge, leaving a permanently dead connector the shelf still shows as valid.
+  // Guarding here covers BOTH callers.
+  if ((RESERVED_MCP_SERVER_NAMES as readonly string[]).includes(input.serverName)) {
+    throw badRequest(
+      `"${input.serverName}" is a reserved AoA server name and cannot be used for a connector`,
+    );
   }
 
   // secretRef must point at an existing company secret (A19/A20): reject the

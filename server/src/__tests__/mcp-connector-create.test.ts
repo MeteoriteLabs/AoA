@@ -85,6 +85,25 @@ describe("createConnector — uniqueness", () => {
   });
 });
 
+describe("createConnector — reserved server names (Codex P2)", () => {
+  // The BYO route's Zod rejects these (FU-28), but the CATALOG install path
+  // builds its input straight from the entry and reaches this shared chokepoint
+  // without that Zod. Guarding here stops a reserved-name catalog entry from
+  // installing into a permanently-dead connector (stripped at every adapter merge).
+  it.each(["aoa", "playwright"])(
+    "400s a reserved serverName %j and never writes (covers the catalog path)",
+    async (serverName) => {
+      svc.getByName.mockResolvedValue(null);
+      await expect(
+        createConnector(deps as any, { ...httpInput, serverName, source: "catalog" }),
+      ).rejects.toMatchObject({ status: 400 });
+      expect(svc.create).not.toHaveBeenCalled();
+      expect(approvalsSvc.create).not.toHaveBeenCalled();
+      expect(logActivity).not.toHaveBeenCalled();
+    },
+  );
+});
+
 describe("createConnector — secretRef existence", () => {
   it("400s when secretRef names a secret that does not exist, and never writes", async () => {
     secretsSvc.getByName.mockResolvedValue(null);
