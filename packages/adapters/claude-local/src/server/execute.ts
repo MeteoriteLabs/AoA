@@ -13,6 +13,7 @@ import {
   syncAdapterExecutionTargetDirectory,
   syncAdapterExecutionTargetFile,
   aoaAmbientSecretEnvKeys,
+  stripConnectorRunBearers,
   type AdapterBillingType,
   type AdapterExecutionContext,
   type AdapterExecutionResult,
@@ -566,6 +567,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
     // ------------------------------------
 
+    // WS1 — with the run bearers now assembled, remove them from the
+    // connector-facing env: the vendor CLI passes its FULL env to every stdio
+    // connector child (empirically confirmed), so a connector would otherwise
+    // inherit AOA_API_KEY (call AoA as the agent) or AOA_RUNTIME_HOOK_TOKEN
+    // (forge runtime permission prompts). No-op without connectors → no-connector
+    // runs stay byte-identical.
+    stripConnectorRunBearers(env, {
+      connectorsPresent,
+      secretValues: [authToken, runtimeHookToken],
+    });
+
     const executionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
     const preparedRuntime = await prepareAdapterExecutionTargetRuntime({
       target: executionTarget,
@@ -779,7 +791,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         cwd: executionCwd,
         env,
         stdin: prompt,
-        authToken: env.AOA_API_KEY ?? authToken ?? null,
+        // Connector runs: null the token param too — some execution targets
+        // (sandbox-docker) forward it into a host callback bridge, so leaving it
+        // would reintroduce the credential the env-strip just removed.
+        authToken: connectorsPresent ? null : (env.AOA_API_KEY ?? authToken ?? null),
         apiBaseUrl: env.AOA_API_URL ?? null,
         runtimeCommandSpec: ctx.runtimeCommandSpec ?? null,
         timeoutSec,

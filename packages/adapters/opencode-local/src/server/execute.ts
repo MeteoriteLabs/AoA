@@ -10,6 +10,7 @@ import {
   runAdapterExecutionTargetProcess,
   syncAdapterExecutionTargetFile,
   aoaAmbientSecretEnvKeys,
+  stripConnectorRunBearers,
   type AdapterExecutionContext,
   type AdapterExecutionResult,
 } from "@armyofagents/adapter-utils";
@@ -260,6 +261,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // DATABASE_URL + secrets config). No-connector runs are byte-identical.
   const connectorsPresent =
     ctx.mcpServers != null && Object.keys(ctx.mcpServers).length > 0;
+  // WS1 — strip the run bearer from the overlay BEFORE the scrub computes its
+  // `keep` list from Object.keys(env); otherwise AOA_API_KEY is kept + spread
+  // back onto the spawn env. opencode has no runtime hook token.
+  stripConnectorRunBearers(env, { connectorsPresent, secretValues: [authToken] });
   const connectorScrubKeys = connectorsPresent
     ? aoaAmbientSecretEnvKeys(preparedRuntimeEnv, { keep: Object.keys(env) })
     : [];
@@ -399,7 +404,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       env: spawnEnv,
       ...(connectorScrubKeys.length > 0 ? { unsetEnvKeys: connectorScrubKeys } : {}),
       stdin: prompt,
-      authToken: preparedRuntimeEnv.AOA_API_KEY ?? authToken ?? null,
+      authToken: connectorsPresent ? null : (preparedRuntimeEnv.AOA_API_KEY ?? authToken ?? null),
       apiBaseUrl: preparedRuntimeEnv.AOA_API_URL ?? null,
       runtimeCommandSpec: ctx.runtimeCommandSpec ?? null,
       timeoutSec,

@@ -7,6 +7,7 @@ import {
   adapterExecutionTargetRemoteCwd,
   runAdapterExecutionTargetProcess,
   aoaAmbientSecretEnvKeys,
+  stripConnectorRunBearers,
   type AdapterExecutionContext,
   type AdapterExecutionResult,
   type AdapterRuntimeCommandSpec,
@@ -407,6 +408,13 @@ export async function execute(
   const codexUnsetEnvKeys = codexConnectorsPresent
     ? [...new Set(["OPENAI_API_KEY", ...aoaAmbientSecretEnvKeys()])]
     : ["OPENAI_API_KEY"];
+  // WS1 — strip the run bearer from the overlay so neither codex spawn path (exec
+  // or app-server) hands it to a connector child. Covers both because both use
+  // this shared `env`. No-op without connectors.
+  stripConnectorRunBearers(env, {
+    connectorsPresent: codexConnectorsPresent,
+    secretValues: [authToken],
+  });
 
   const billingType = resolveCodexBillingType(env);
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
@@ -554,7 +562,7 @@ export async function execute(
       // FU-23: broadened to all AoA ambient secrets on connector-hosting runs.
       unsetEnvKeys: codexUnsetEnvKeys,
       stdin: prompt,
-      authToken: env.AOA_API_KEY ?? authToken ?? null,
+      authToken: codexConnectorsPresent ? null : (env.AOA_API_KEY ?? authToken ?? null),
       apiBaseUrl: env.AOA_API_URL ?? null,
       runtimeCommandSpec,
       timeoutSec,

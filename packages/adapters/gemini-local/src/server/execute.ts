@@ -8,6 +8,7 @@ import {
   runAdapterExecutionTargetProcess,
   syncAdapterExecutionTargetFile,
   aoaAmbientSecretEnvKeys,
+  stripConnectorRunBearers,
   type AdapterExecutionContext,
   type AdapterExecutionResult,
 } from "@armyofagents/adapter-utils";
@@ -250,6 +251,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const connectorsPresent =
     ctx.mcpServers != null && Object.keys(ctx.mcpServers).length > 0;
   const connectorScrubKeys = connectorsPresent ? aoaAmbientSecretEnvKeys() : undefined;
+  // WS1 — keep the run bearer out of connector children (gemini has no runtime
+  // hook token; only AOA_API_KEY to strip). No-op without connectors.
+  stripConnectorRunBearers(env, { connectorsPresent, secretValues: [authToken] });
   const effectiveEnv = Object.fromEntries(
     Object.entries({ ...process.env, ...env }).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
@@ -396,7 +400,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       cwd,
       env,
       ...(connectorScrubKeys ? { unsetEnvKeys: connectorScrubKeys } : {}),
-      authToken: env.AOA_API_KEY ?? authToken ?? null,
+      authToken: connectorsPresent ? null : (env.AOA_API_KEY ?? authToken ?? null),
       apiBaseUrl: env.AOA_API_URL ?? null,
       runtimeCommandSpec: ctx.runtimeCommandSpec ?? null,
       timeoutSec,

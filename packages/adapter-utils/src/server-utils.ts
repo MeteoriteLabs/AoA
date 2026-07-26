@@ -435,6 +435,47 @@ export function mergeChildEnv(
   return merged;
 }
 
+/**
+ * Run-scoped bearer env keys that MUST NOT reach a third-party stdio connector
+ * child. `AOA_API_KEY` (raw REST as the agent) + its `PAPERCLIP_*` wire alias,
+ * and `AOA_RUNTIME_HOOK_TOKEN` (answers/forges runtime permission prompts).
+ */
+export const CONNECTOR_STRIPPED_RUN_BEARER_KEYS = [
+  "AOA_API_KEY",
+  "PAPERCLIP_API_KEY",
+  "AOA_RUNTIME_HOOK_TOKEN",
+] as const;
+
+/**
+ * WS1 — on a connector-attached run the vendor CLI passes its FULL environment
+ * to every stdio connector child (empirically confirmed for Claude Code: a probe
+ * child received `AOA_API_KEY` + an unrelated sentinel). AoA injects the run
+ * bearers as an OVERLAY, and `mergeChildEnv` deliberately PRESERVES overlay keys
+ * past the ambient scrub — so the only reliable removal is to delete them from
+ * the overlay itself, BEFORE the merge.
+ *
+ * Mutates `overlayEnv` in place. Deletes by KEY (case-folded, incl. the
+ * `PAPERCLIP_` alias) AND by VALUE — a connector could otherwise inherit the
+ * token under an arbitrarily-named configured key carrying the same value
+ * (Codex plan-review finding). No-op when no connectors are present, so
+ * no-connector runs stay byte-identical.
+ */
+export function stripConnectorRunBearers(
+  overlayEnv: Record<string, string>,
+  opts: { connectorsPresent: boolean; secretValues?: Array<string | null | undefined> },
+): void {
+  if (!opts.connectorsPresent) return;
+  const strippedKeys = new Set(CONNECTOR_STRIPPED_RUN_BEARER_KEYS.map((k) => foldEnvKey(k)));
+  const strippedValues = new Set(
+    (opts.secretValues ?? []).filter((v): v is string => typeof v === "string" && v.length > 0),
+  );
+  for (const key of Object.keys(overlayEnv)) {
+    if (strippedKeys.has(foldEnvKey(key)) || strippedValues.has(overlayEnv[key])) {
+      delete overlayEnv[key];
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // spawnTrackedChild — single source of truth for spawning a child that is
 // registered in `runningProcesses` (so heartbeat.cancelRun + reapOrphanedRuns

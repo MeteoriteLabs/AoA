@@ -105,6 +105,10 @@ export {
   aoaAmbientSecretEnvKeys,
 } from "./aoa-secret-env.js";
 export type { AoaAmbientSecretOptions } from "./aoa-secret-env.js";
+export {
+  stripConnectorRunBearers,
+  CONNECTOR_STRIPPED_RUN_BEARER_KEYS,
+} from "./server-utils.js";
 export { preferredShellForSandbox } from "./sandbox-shell.js";
 export {
   isAllowedAoaBridgeRequest,
