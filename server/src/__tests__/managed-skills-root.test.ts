@@ -1,5 +1,14 @@
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { describe, it, expect } from "vitest";
+
+// Whether the filesystem this test runs on is case-insensitive — observed
+// directly (mirrors how the jail detects it), NOT guessed from process.platform,
+// so the assertion stays correct on a case-insensitive Linux mount or a
+// case-sensitive macOS volume.
+const cwd = process.cwd();
+const flippedCwd = cwd === cwd.toLowerCase() ? cwd.toUpperCase() : cwd.toLowerCase();
+const CASE_INSENSITIVE_FS = flippedCwd !== cwd && existsSync(flippedCwd);
 import {
   managedMarketplaceSkillsRoot,
   isInsideManagedMarketplaceSkillsRoot,
@@ -60,8 +69,7 @@ describe("isInsideManagedMarketplaceSkillsRoot (T2.8c(b) containment)", () => {
     // case-insensitive FS, so the jail must catch it there. On case-sensitive
     // Linux it is genuinely a different directory and correctly reads as outside.
     const caseVariant = path.join(process.cwd(), ".AOA", "MARKETPLACE-SKILLS", "co", "skill_x", "1.0.0");
-    const caseInsensitiveFs = process.platform === "win32" || process.platform === "darwin";
-    expect(isInsideManagedMarketplaceSkillsRoot(caseVariant)).toBe(caseInsensitiveFs);
+    expect(isInsideManagedMarketplaceSkillsRoot(caseVariant)).toBe(CASE_INSENSITIVE_FS);
   });
 
   it("treats a child dir that merely STARTS with two dots as contained (Codex #302: ..shadow)", () => {
