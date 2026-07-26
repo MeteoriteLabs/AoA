@@ -319,6 +319,15 @@ export async function resolveAgentConnectors(
   // `malformed_row`) and never reach the CLI — auditing it as delivered would be
   // a false entry in a security trail (Codex review). Best-effort: an audit
   // failure must never break a delivery that already succeeded.
+  //
+  // SCOPE (Codex F5): this is the SERVER-SIDE resolution point — the connector
+  // was resolved into the run's connector set and handed to the adapter. A
+  // downstream ADAPTER writer can still drop it (codex → `secret_unreachable` for
+  // a secret-bearing stdio spec; sandbox-docker → all MCP skipped); those drops
+  // are separately reported by the writers (McpWriterSkipReason) and surfaced in
+  // the deliverability preview. Auditing the exact adapter-written set needs each
+  // writer to report its survivors — tracked as a follow-up; this event errs
+  // toward recording that AoA MADE the connector available to the run.
   const skippedNames = new Set(skipped.map((s) => s.serverName));
   for (const row of rows) {
     if (skippedNames.has(row.serverName)) continue;
