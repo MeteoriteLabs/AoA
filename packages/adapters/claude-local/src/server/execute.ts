@@ -46,6 +46,7 @@ import {
 import {
   buildPreToolUseSettings,
   writeRuntimeHookSettingsFile,
+  writeRuntimeHookTokenFile,
 } from "./runtime-hook-settings.js";
 import {
   CLAUDE_AMBIENT_CONFIG_UNSET_PREFIXES,
@@ -550,20 +551,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     let hookSettingsFilePath: string | null = null;
     if (bridged) {
       const endpointUrl = runtimeHookBridge!.selfBaseUrl + runtimeHookBridge!.path;
+      hookSettingsTmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-runtime-hooks-"));
+      // F1 — deliver the bearer token via a FILE whose path is a hook-command arg,
+      // NOT via AOA_RUNTIME_HOOK_TOKEN in the child env. The Claude CLI passes its
+      // full env to every stdio connector child, so an env token would leak there;
+      // and `stripConnectorRunBearers` (below) removes it on connector runs, which
+      // would break the fail-closed hook — denying Bash/Write/Edit/WebFetch for the
+      // whole run (Codex F1). The connector child never sees the hook's argv, so the
+      // token-file path stays out of its reach. Only the non-secret URL rides in env.
+      let hookTokenFilePath: string | undefined;
+      if (runtimeHookToken) {
+        hookTokenFilePath = await writeRuntimeHookTokenFile(hookSettingsTmpDir, runtimeHookToken);
+      }
       const hookSettings = buildPreToolUseSettings({
         endpointUrl,
         timeoutSec: runtimeHookBridge!.timeoutSec,
         forwarderPath,
+        tokenFilePath: hookTokenFilePath,
       });
-      hookSettingsTmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-runtime-hooks-"));
       hookSettingsFilePath = await writeRuntimeHookSettingsFile(hookSettingsTmpDir, hookSettings);
-      // Inject hook env vars into the child process env.
-      // AOA_RUNTIME_HOOK_TOKEN is redacted in onMeta by its key name ("TOKEN" matches SENSITIVE_ENV_KEY).
-      // AOA_RUNTIME_HOOK_URL is a plain non-secret URL; redacted by value if it looks like a secret (it doesn't).
+      // AOA_RUNTIME_HOOK_URL is a plain non-secret URL; redacted by value in onMeta
+      // only if it looks like a secret (it doesn't). The token is NOT injected here.
       env.AOA_RUNTIME_HOOK_URL = endpointUrl;
-      if (runtimeHookToken) {
-        env.AOA_RUNTIME_HOOK_TOKEN = runtimeHookToken;
-      }
     }
     // ------------------------------------
 

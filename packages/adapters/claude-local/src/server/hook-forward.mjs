@@ -18,6 +18,7 @@
 
 import https from "node:https";
 import http from "node:http";
+import { readFileSync } from "node:fs";
 import { URL } from "node:url";
 
 /** Slightly under the 300-second block timeout so the hook never outlives it. */
@@ -86,7 +87,23 @@ function postJson(url, token, body) {
 
 async function main() {
   const url = process.env.AOA_RUNTIME_HOOK_URL;
-  const token = process.env.AOA_RUNTIME_HOOK_TOKEN ?? "";
+  // F1: the bearer token is delivered via a file whose path is argv[2], so it
+  // never rides in AOA_RUNTIME_HOOK_TOKEN (which a stdio connector child would
+  // inherit, and which stripConnectorRunBearers removes on connector runs).
+  // Fall back to the env var for backward compatibility (no-connector runs that
+  // still inject it, or older callers).
+  let token = "";
+  const tokenFilePath = process.argv[2];
+  if (tokenFilePath) {
+    try {
+      token = readFileSync(tokenFilePath, "utf-8").trim();
+    } catch {
+      token = "";
+    }
+  }
+  if (!token) {
+    token = process.env.AOA_RUNTIME_HOOK_TOKEN ?? "";
+  }
 
   if (!url) {
     // No endpoint configured — fail closed
