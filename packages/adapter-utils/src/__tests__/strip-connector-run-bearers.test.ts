@@ -40,9 +40,26 @@ describe("stripConnectorRunBearers", () => {
     expect(env).toEqual({ PATH: "/bin" });
   });
 
-  it("matches bearer keys case-insensitively", () => {
+  it("folds bearer keys per the platform's env-key case semantics (win32 case-insensitive, POSIX case-sensitive)", () => {
+    // `foldEnvKey` folds case ONLY on win32, because Windows env keys are
+    // case-INSENSITIVE (`aoa_api_key` IS `AOA_API_KEY`) while POSIX keys are
+    // case-SENSITIVE (`aoa_api_key` is a genuinely DIFFERENT var — not the
+    // bearer, so it must NOT be stripped by key). Value-based stripping remains
+    // the platform-independent backstop for a real bearer hiding under any key.
     const env: Record<string, string> = { aoa_api_key: "run-token", PATH: "/bin" };
     stripConnectorRunBearers(env, { connectorsPresent: true });
+    if (process.platform === "win32") {
+      expect(env).toEqual({ PATH: "/bin" });
+    } else {
+      expect(env).toEqual({ aoa_api_key: "run-token", PATH: "/bin" });
+    }
+  });
+
+  it("value-stripping catches a bearer under a lowercase key on EVERY platform (the real defense)", () => {
+    // The security-load-bearing path: even where key-folding does not apply
+    // (POSIX), the actual bearer VALUE is removed regardless of its key name.
+    const env: Record<string, string> = { aoa_api_key: "run-token", PATH: "/bin" };
+    stripConnectorRunBearers(env, { connectorsPresent: true, secretValues: ["run-token"] });
     expect(env).toEqual({ PATH: "/bin" });
   });
 
