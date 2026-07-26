@@ -36,7 +36,7 @@
  * founder holding an invariant, not an anonymous escape, and those vectors are
  * consistent with the rest of the codebase's `path.resolve` jails.
  */
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 
 let cachedCaseInsensitive: boolean | undefined;
@@ -87,10 +87,47 @@ function probeCaseInsensitive(): { value: boolean; cacheable: boolean } {
       // A case-flipped CHILD that still resolves within `dir` ⇒ case-insensitive.
       return { value: existsSync(path.join(dir, flipped)), cacheable };
     }
+    // `dir` is empty or has no alphabetic child, so readdir alone can't classify
+    // it — e.g. a freshly-mounted, empty case-insensitive `.aoa`. Create a
+    // mixed-case probe entry on THIS filesystem and measure it. Only when we are
+    // measuring the managed area itself (cacheable): cwd is never empty, so the
+    // cwd fallback never reaches here, and this keeps the write off the hot path.
+    if (cacheable) {
+      const measured = measureCaseSensitivityByTempEntry(dir);
+      if (measured !== undefined) return { value: measured, cacheable: true };
+    }
   } catch {
     // fall through to the platform default
   }
   return { value: platformDefault, cacheable: false };
+}
+
+/**
+ * Conclusively measure whether `dir`'s filesystem is case-insensitive by
+ * creating a probe directory and testing whether a case-flipped spelling
+ * resolves to it. Returns undefined (inconclusive → caller uses the platform
+ * default) if the entry cannot be created — e.g. a read-only mount. Best-effort
+ * cleanup; the pid-scoped name is cleared first so a crash-stranded prior probe
+ * cannot make this inconclusive.
+ */
+function measureCaseSensitivityByTempEntry(dir: string): boolean | undefined {
+  const lower = path.join(dir, `.aoa-fscase-probe-${process.pid}a`);
+  const upper = path.join(dir, `.aoa-fscase-probe-${process.pid}A`);
+  try {
+    rmSync(lower, { recursive: true, force: true });
+    mkdirSync(lower);
+  } catch {
+    return undefined;
+  }
+  try {
+    return existsSync(upper);
+  } finally {
+    try {
+      rmSync(lower, { recursive: true, force: true });
+    } catch {
+      /* best-effort cleanup */
+    }
+  }
 }
 
 /** Resolve to absolute, then fold case on case-insensitive filesystems. */
