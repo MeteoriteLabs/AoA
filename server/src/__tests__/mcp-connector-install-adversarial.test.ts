@@ -144,7 +144,8 @@ const verifiedStdio = entry({
   serverName: "local-fs",
   transport: "stdio",
   command: "npx",
-  args: ["-y", "fs-mcp"],
+  // WS2: stdio packages must be exact-version pinned (assertStdioCommandSafe).
+  args: ["-y", "fs-mcp@1.0.0"],
   trust: { tier: "verified" },
 });
 
@@ -154,7 +155,7 @@ const unverifiedStdio = entry({
   serverName: "acme",
   transport: "stdio",
   command: "npx",
-  args: ["-y", "acme-db-tool"],
+  args: ["-y", "acme-db-tool@1.0.0"],
   envTemplateKeys: ["ACME_TOKEN"],
   trust: { tier: "community" },
 });
@@ -166,7 +167,7 @@ const noTrustStdio = entry({
   serverName: "no-trust",
   transport: "stdio",
   command: "npx",
-  args: ["-y", "mystery-tool"],
+  args: ["-y", "mystery-tool@1.0.0"],
 });
 
 const CATALOG = [verifiedHttp, verifiedStdio, unverifiedStdio, noTrustStdio];
@@ -247,7 +248,7 @@ describe("[inv-3] D7 authorization is not purchasable with consent", () => {
       verifyConsentToken(
         SECRET,
         "acme",
-        { command: "npx", args: ["-y", "acme-db-tool"] },
+        { command: "npx", args: ["-y", "acme-db-tool@1.0.0"] },
         token,
         Date.now(),
       ),
@@ -853,7 +854,9 @@ describe("[inv-4] the install body rejects every governance field", () => {
       displayName: "Evil",
       transport: "stdio",
       command: "npx",
-      args: ["-y", "evil-tool"],
+      // Pinned so the command-safety gate (which fires once D7 allows in
+      // local_trusted) passes and the source-stripping behaviour is what's tested.
+      args: ["-y", "evil-tool@1.0.0"],
       source: "catalog",
     });
     expect(res.status).toBe(201);
@@ -936,7 +939,7 @@ describe("[inv-4] the install body rejects every governance field", () => {
       displayName: "Local FS",
       transport: "stdio",
       command: "npx",
-      args: ["-y", "fs-mcp"],
+      args: ["-y", "fs-mcp@1.0.0"],
     });
     expect(res.status).toBe(201);
     expect(persistedInsert().requiresSecret).toBe(false);
@@ -1534,7 +1537,9 @@ describe("[ESC-4] a literal credential in headerTemplate / envTemplate / args", 
       displayName: "Beta",
       transport: "stdio",
       command: "npx",
-      args: ["-y", "tool"],
+      // Pinned so command-safety passes and FU-20 (literal-env rejection) is the
+      // gate that answers the 400 — not a spurious unpinned_package 400.
+      args: ["-y", "tool@1.0.0"],
       envTemplate: { BETA_TOKEN: RAW_SECRET },
     });
     expect(res.status).toBe(400);
@@ -1543,18 +1548,19 @@ describe("[ESC-4] a literal credential in headerTemplate / envTemplate / args", 
 
   it("CHARACTERIZATION: `args` are NOT covered by FU-20 — a positional arg is legitimately a literal", async () => {
     // Deliberate scope boundary: the same "empty-or-placeholder" rule on `args`
-    // would reject every valid stdio connector (`["-y", "fs-mcp"]`). So a literal
-    // in `args` still lands; FU-20 records that as its own separate decision.
+    // would reject every valid stdio connector (`["-y", "fs-mcp@1.0.0"]`). So a
+    // literal in a post-package positional still lands; FU-20 records that as its
+    // own separate decision. (The package itself must still be pinned — WS2.)
     deploymentMode = "local_trusted";
     const res = await createByo(makeApp(founderActor), {
       serverName: "beta",
       displayName: "Beta",
       transport: "stdio",
       command: "npx",
-      args: ["-y", "tool", "--token", RAW_SECRET],
+      args: ["-y", "tool@1.0.0", "--token", RAW_SECRET],
     });
     expect(res.status).toBe(201);
-    expect(persistedInsert().args).toEqual(["-y", "tool", "--token", RAW_SECRET]);
+    expect(persistedInsert().args).toEqual(["-y", "tool@1.0.0", "--token", RAW_SECRET]);
   });
 
   it("FIXED (FU-20): the legitimate shapes still pass — empty value and the ${TOKEN} placeholder", async () => {

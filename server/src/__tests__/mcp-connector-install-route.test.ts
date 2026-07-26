@@ -129,7 +129,8 @@ const verifiedStdio = entry({
   serverName: "local-fs",
   transport: "stdio",
   command: "npx",
-  args: ["-y", "fs-mcp"],
+  // WS2: stdio packages must be exact-version pinned (assertStdioCommandSafe).
+  args: ["-y", "fs-mcp@1.0.0"],
   trust: { tier: "verified" },
 });
 
@@ -139,7 +140,7 @@ const unverifiedStdio = entry({
   serverName: "acme",
   transport: "stdio",
   command: "npx",
-  args: ["-y", "acme-db-tool"],
+  args: ["-y", "acme-db-tool@1.0.0"],
   envTemplateKeys: ["ACME_TOKEN"],
   trust: { tier: "community" },
 });
@@ -369,7 +370,7 @@ describe("entryToCreateInput", () => {
       transport: "stdio",
       url: null,
       command: "npx",
-      args: ["-y", "acme-db-tool"],
+      args: ["-y", "acme-db-tool@1.0.0"],
       companyId: "co1",
       deploymentMode: "authenticated",
       actor: ACTOR,
@@ -568,7 +569,7 @@ describe("install route — consent gate for unverified stdio", () => {
     expect(res.status).toBe(201);
     expect(mockConnectorSvc.create).toHaveBeenCalledWith(
       COMPANY,
-      expect.objectContaining({ source: "catalog", command: "npx", args: ["-y", "acme-db-tool"] }),
+      expect.objectContaining({ source: "catalog", command: "npx", args: ["-y", "acme-db-tool@1.0.0"] }),
     );
   });
 
@@ -877,7 +878,7 @@ describe("catalog shelf route — how the UI obtains a consent token", () => {
     const listed = await getCatalog(makeApp(founderActor));
     const acme = listed.body.entries.find((e: { id: string }) => e.id === "acme");
     expect(acme.command).toBe("npx");
-    expect(acme.args).toEqual(["-y", "acme-db-tool"]);
+    expect(acme.args).toEqual(["-y", "acme-db-tool@1.0.0"]);
 
     const res = await install(makeApp(founderActor), {
       entryId: "acme",

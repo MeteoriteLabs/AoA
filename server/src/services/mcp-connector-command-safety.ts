@@ -72,6 +72,17 @@ export function assertStdioCommandSafe(
   const launcher = command.trim();
   const argv = args ?? [];
 
+  // Surrounding whitespace: the checks below trim, but the ORIGINAL `command`
+  // string is what gets persisted and spawned. A `" npx "` would preview-safe
+  // here yet fail at exec (no such binary), or re-tokenize on a future shell
+  // path. Require the persisted command to be exactly its trimmed launcher.
+  if (command !== launcher) {
+    throw new ConnectorCommandUnsafeError(
+      `connector command must not have leading/trailing whitespace: ${JSON.stringify(command)}`,
+      "not_a_launcher",
+    );
+  }
+
   if (!ALLOWED_LAUNCHERS.has(launcher)) {
     throw new ConnectorCommandUnsafeError(
       `"${launcher}" is not an allowed connector launcher (allowed: ${[...ALLOWED_LAUNCHERS].join(", ")})`,
@@ -80,7 +91,22 @@ export function assertStdioCommandSafe(
   }
 
   for (const tok of [command, ...argv]) {
-    if (typeof tok !== "string" || DISALLOWED_CHAR.test(tok)) {
+    if (typeof tok !== "string") {
+      throw new ConnectorCommandUnsafeError(
+        `connector command contains a disallowed character: ${JSON.stringify(tok)}`,
+        "disallowed_character",
+      );
+    }
+    // The connector's OWN secret placeholder `${TOKEN}` is the SINGLE permitted
+    // $-form: AoA rewrites it to the connector's real secret env var at delivery
+    // (`buildConnectorSpecs`). Strip that exact sentinel, THEN char-check the
+    // remainder — so `--token ${TOKEN}` / `--flag=${TOKEN}` are allowed, but a
+    // FOREIGN `${AOA_API_KEY}` (which the CLI would expand from AoA's own env — an
+    // exfiltration vector) and `$(cmd)` / backticks are still rejected. The
+    // launcher (`npx`/`uvx`, already asserted above) never carries the sentinel,
+    // so stripping it from `command` is a harmless no-op.
+    const withoutOwnToken = tok.replaceAll("${TOKEN}", "");
+    if (DISALLOWED_CHAR.test(withoutOwnToken)) {
       throw new ConnectorCommandUnsafeError(
         `connector command contains a disallowed character: ${JSON.stringify(tok)}`,
         "disallowed_character",
