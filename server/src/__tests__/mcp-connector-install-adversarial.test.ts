@@ -318,12 +318,53 @@ describe("[inv-3] D7 authorization is not purchasable with consent", () => {
             : {}),
         });
 
-        const refusedByD7 = res.status === 400 && D7_REFUSAL.test(JSON.stringify(res.body));
+        // WS2: generalized from a D7-only predicate to ANY create-time refusal.
+        // A valid token is supplied above, so the only 400s the install can raise
+        // are the create-time gates the shelf CAN mirror (D7 + command-safety) —
+        // never a token/consent failure. Keying on D7_REFUSAL alone let a
+        // command-safety 400 pass vacuously (shelf installable:true vs install 400);
+        // `status === 400` makes the invariant catch every projection/install drift.
+        const refused = res.status === 400;
         expect(
-          { id: shelfEntry.id, mode, installable: shelfEntry.installable, refusedByD7 },
-        ).toEqual({ id: shelfEntry.id, mode, installable: !refusedByD7, refusedByD7 });
+          { id: shelfEntry.id, mode, installable: shelfEntry.installable, refused },
+        ).toEqual({ id: shelfEntry.id, mode, installable: !refused, refused });
       }
     }
+  });
+
+  it("the shelf marks a verified stdio entry with an UNPINNED command as NOT installable (mirrors the create-time command-safety gate)", async () => {
+    // WS2 added a fourth create-time gate (assertStdioCommandSafe in
+    // createConnector). The shelf projection must mirror it, or a founder sees an
+    // enabled Install button that 400s. `verified` keeps D7 out of the way
+    // (catalog+verified is exempt), so command-safety is the ONLY blocker — which
+    // is exactly what makes this a clean regression test for the projection.
+    const unpinnedVerifiedStdio = entry({
+      id: "unpinned-fs",
+      displayName: "Unpinned FS",
+      serverName: "unpinned-fs",
+      transport: "stdio",
+      command: "npx",
+      args: ["-y", "fs-mcp"], // NOT @version — createConnector would 400 (unpinned_package)
+      trust: { tier: "verified" },
+    });
+    deploymentMode = "local_trusted"; // D7 permits stdio for certain; isolates command-safety
+    const shelf = await request(makeApp(founderActor, [unpinnedVerifiedStdio])).get(
+      `/api/companies/${COMPANY}/mcp-connectors/catalog`,
+    );
+    expect(shelf.status).toBe(200);
+    const projected = shelf.body.entries.find((e: { id: string }) => e.id === "unpinned-fs");
+    expect(projected.installable).toBe(false);
+    expect(projected.unavailableReason).toMatch(/pinned|launcher/i);
+    // A non-installable entry must not be handed a consent token either.
+    expect(projected.consentToken).toBeUndefined();
+
+    // The projection is not a guess: the install POST for the same entry really 400s.
+    mockConnectorSvc.getByName.mockResolvedValue(null);
+    const res = await install(makeApp(founderActor, [unpinnedVerifiedStdio]), {
+      entryId: "unpinned-fs",
+    });
+    expect(res.status).toBe(400);
+    expect(mockConnectorSvc.create).not.toHaveBeenCalled();
   });
 
   it("the shelf never hands out a consent token for an entry D7 will refuse", async () => {

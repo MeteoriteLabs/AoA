@@ -29,6 +29,10 @@ import {
 } from "../services/mcp-connector-create.js";
 import { resolveConnectorStatus } from "../services/mcp-connector-status.js";
 import { assertTransportAllowed } from "../services/mcp-connector-transport-gate.js";
+import {
+  ConnectorCommandUnsafeError,
+  assertStdioCommandSafe,
+} from "../services/mcp-connector-command-safety.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { assertRole } from "../middleware/rbac.js";
 import { loadConfig } from "../config.js";
@@ -576,6 +580,24 @@ export function mcpConnectorRoutes(db: Db, opts: McpConnectorRouteOptions = {}) 
             err instanceof Error && err.message
               ? err.message
               : "This connector cannot be installed in this deployment.";
+        }
+        // WS2: mirror the create-time command-safety gate (assertStdioCommandSafe,
+        // which the install POST runs via createConnector). Without this, a stdio
+        // entry whose command the create gate will reject — an unpinned package, a
+        // non-npx/uvx launcher — is projected `installable: true`, rendering an
+        // enabled Install button that always 400s. Same predicate + the gate's OWN
+        // message, ordered after D7 and only when D7 still permits (so a D7 refusal
+        // message is never clobbered). http entries have no command → skipped.
+        if (installable && entry.transport === "stdio") {
+          try {
+            assertStdioCommandSafe(entry.command, entry.args);
+          } catch (err) {
+            installable = false;
+            unavailableReason =
+              err instanceof ConnectorCommandUnsafeError && err.message
+                ? err.message
+                : "This connector's command is not an allowed, version-pinned launcher.";
+          }
         }
       }
 

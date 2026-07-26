@@ -142,8 +142,10 @@ test.describe("connector shelf install journey", () => {
     await expect(dialog).toBeVisible();
     // The argv shown must be the literal argv the token is bound to — anything
     // prettified or truncated would be a lie about what executes on the host.
+    // WS2: the fixture package is exact-version pinned (the create-time
+    // command-safety gate requires it), so the consent line shows the pin too.
     await expect(dialog.getByTestId("connector-consent-command")).toHaveText(
-      "npx -y @e2e/local-tool",
+      "npx -y @e2e/local-tool@1.0.0",
     );
 
     // Install stays disabled until the founder actually ticks the box.
