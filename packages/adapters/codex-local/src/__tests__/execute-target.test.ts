@@ -126,7 +126,9 @@ describe("codex execute target", () => {
         AOA_RUN_ID: "run-codex-target",
         CUSTOM_ENV: "custom-value",
       });
-      expect(capture.env.CODEX_HOME).toBe(path.join(codexHome, "aoa-instances", "company-1"));
+      expect(capture.env.CODEX_HOME).toBe(
+        path.join(codexHome, "aoa-instances", "company-1", "agent-1"),
+      );
       const meta = metaEvents.at(-1);
       expect(meta?.commandNotes).toContain("Execution target: local");
       expect(meta?.env?.AOA_API_KEY).toBe("***REDACTED***");

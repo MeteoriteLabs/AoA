@@ -135,7 +135,7 @@ describe("writeGeminiMcpSettingsJson (T2.2)", () => {
 
   describe("custom server name", () => {
     it("respects serverName arg when stripping + writing", async () => {
-      await writeGeminiMcpSettingsJson(tmpDir, BRIDGE_SPEC, "myorg");
+      await writeGeminiMcpSettingsJson(tmpDir, BRIDGE_SPEC, { serverName: "myorg" });
       const written = JSON.parse(
         await fs.readFile(path.join(tmpDir, ".gemini", "settings.json"), "utf8"),
       );

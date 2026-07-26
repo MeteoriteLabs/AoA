@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   MarketplaceCatalogItemSchema,
   MarketplaceSkillBundleSchema,
+  parseMarketplaceCatalog,
+  isSchemaVersionSupported,
 } from "../marketplace.js";
 
 describe("MarketplaceCatalogItemSchema", () => {
@@ -78,6 +80,103 @@ describe("MarketplaceSkillBundleSchema", () => {
       if (!result.success) {
         expect(result.error.issues[0]?.message).toMatch(/commit sha/i);
       }
+    },
+  );
+});
+
+describe("parseMarketplaceCatalog (FU-14 per-item drop-and-warn)", () => {
+  function makeEnvelope(items: unknown[]) {
+    return {
+      schemaVersion: "1.0.0",
+      generatedAt: "2026-05-14T00:00:00Z",
+      itemCount: items.length,
+      items,
+    };
+  }
+
+  it("keeps known items and drops an unknown-type sibling by id", () => {
+    const known = makeCatalogSkill();
+    const unknown = { ...makeCatalogSkill(), id: "connector:future/thing", type: "connector" };
+
+    const { catalog, dropped, malformed } = parseMarketplaceCatalog(
+      makeEnvelope([known, unknown]),
+    );
+
+    expect(malformed).toBe(false);
+    expect(catalog).not.toBeNull();
+    expect(catalog!.items).toHaveLength(1);
+    expect(catalog!.items[0]?.id).toBe(known.id);
+    // itemCount is recomputed to the survivor count (honest served count)
+    expect(catalog!.itemCount).toBe(1);
+    expect(dropped).toEqual(["connector:future/thing"]);
+  });
+
+  it("treats a non-object envelope as malformed (keep cache) — null catalog, no drops", () => {
+    for (const bad of [null, undefined, 42, "nope", true]) {
+      const r = parseMarketplaceCatalog(bad);
+      expect(r.malformed).toBe(true);
+      expect(r.catalog).toBeNull();
+      expect(r.dropped).toEqual([]);
+    }
+  });
+
+  it("treats a missing/non-array items field as malformed (keep cache)", () => {
+    for (const bad of [{ schemaVersion: "1.0.0" }, { items: "not-an-array" }, { items: 5 }]) {
+      const r = parseMarketplaceCatalog(bad);
+      expect(r.malformed).toBe(true);
+      expect(r.catalog).toBeNull();
+    }
+  });
+
+  it("distinguishes a legitimately empty catalog from a malformed one", () => {
+    const r = parseMarketplaceCatalog(makeEnvelope([]));
+    expect(r.malformed).toBe(false);
+    expect(r.catalog).not.toBeNull();
+    expect(r.catalog!.items).toEqual([]);
+    expect(r.catalog!.itemCount).toBe(0);
+    expect(r.dropped).toEqual([]);
+  });
+
+  it("drops a malformed KNOWN-type item instead of accepting it", () => {
+    // Valid `type: "skill"` but structurally broken (missing required `name`).
+    const { name: _name, ...brokenKnown } = makeCatalogSkill();
+    const { catalog, dropped, malformed } = parseMarketplaceCatalog(
+      makeEnvelope([makeCatalogSkill(), brokenKnown]),
+    );
+
+    expect(malformed).toBe(false);
+    expect(catalog!.items).toHaveLength(1);
+    // dropped by its id, not silently accepted malformed
+    expect(dropped).toEqual([brokenKnown.id]);
+  });
+
+  it("records an unidentifiable dropped item as <unidentified>", () => {
+    const { catalog, dropped } = parseMarketplaceCatalog(
+      makeEnvelope([makeCatalogSkill(), 12345, { type: "skill" /* no string id */ }]),
+    );
+    expect(catalog!.items).toHaveLength(1);
+    expect(dropped).toEqual(["<unidentified>", "<unidentified>"]);
+  });
+
+  it("never throws for arbitrary input", () => {
+    expect(() => parseMarketplaceCatalog(Symbol("x") as unknown)).not.toThrow();
+    expect(() => parseMarketplaceCatalog({ items: [() => {}, NaN] })).not.toThrow();
+  });
+});
+
+describe("isSchemaVersionSupported (FU-14 same-major loosening)", () => {
+  it.each(["1.0.0", "1.1.0", "1.5.2", "1.99.99"])("accepts additive same-major %s", (v) => {
+    expect(isSchemaVersionSupported(v)).toBe(true);
+  });
+
+  it.each(["2.0.0", "0.9.0", "99.0.0"])("rejects out-of-band major %s", (v) => {
+    expect(isSchemaVersionSupported(v)).toBe(false);
+  });
+
+  it.each(["1.0", "1", "garbage", "", "v1.0.0", "1.0.0-beta"])(
+    "rejects unparseable version %s",
+    (v) => {
+      expect(isSchemaVersionSupported(v)).toBe(false);
     },
   );
 });

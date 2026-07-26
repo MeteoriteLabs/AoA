@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockGetInstallUrl = vi.hoisted(() => vi.fn().mockReturnValue("https://github.com/apps/test-app/installations/new"));
 const mockSaveInstallation = vi.hoisted(() => vi.fn());
@@ -875,7 +875,36 @@ describe("GET /api/github/callback", () => {
     accountType: "Organization",
   };
 
+  // The callback builds its redirect origin from `AOA_AUTH_PUBLIC_BASE_URL`
+  // (server/src/routes/github.ts) with a `http://localhost:5173` dev fallback.
+  // `config.ts` loads that var via dotenv from the running instance's
+  // `~/.aoa/instances/*/​.env`, and CI bootstrap writes it too — so without
+  // isolation the assertions below would pick up the ambient public origin
+  // (e.g. http://127.0.0.1:3100) instead of the intended fallback and flake.
+  // Mirror the hermetic pattern in cli-auth-approval-url-origin.test.ts /
+  // team-resend-invite-url.test.ts: clear the public-origin env keys per test
+  // so these redirect assertions exercise the deterministic dev fallback, then
+  // restore whatever the ambient environment had.
+  const PUBLIC_URL_ENV_KEYS = [
+    "AOA_AUTH_PUBLIC_BASE_URL",
+    "BETTER_AUTH_URL",
+    "BETTER_AUTH_BASE_URL",
+    "AOA_PUBLIC_URL",
+  ];
+  const savedPublicUrlEnv: Record<string, string | undefined> = {};
+
+  afterEach(() => {
+    for (const key of PUBLIC_URL_ENV_KEYS) {
+      if (savedPublicUrlEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = savedPublicUrlEnv[key];
+    }
+  });
+
   beforeEach(() => {
+    for (const key of PUBLIC_URL_ENV_KEYS) {
+      savedPublicUrlEnv[key] = process.env[key];
+      delete process.env[key];
+    }
     // Clear call history so the not.toHaveBeenCalled() assertions below don't see
     // calls leaked from earlier tests in this file (no global clearAllMocks here).
     mockSaveInstallation.mockClear();

@@ -16,40 +16,7 @@
  *      for the whole timeout window, so without a cap that is a memory-exhaustion
  *      DoS. Callers stop reading (and kill the child) once the cap is hit.
  */
-
-/** Exact env keys that are always stripped (AoA-internal / infra secrets). */
-const ALWAYS_DROP_EXACT = new Set([
-  "GITHUB_PAT",
-  "GH_TOKEN",
-  "GITHUB_TOKEN",
-  "DATABASE_URL",
-  "DIRECT_DATABASE_URL",
-  "REDIS_URL",
-]);
-
-/**
- * Vendor auth env that SOME CLI may read for auth. Dropped by default so a
- * different vendor's CLI never sees it; the caller re-adds its own via `keep`
- * (claude → ANTHROPIC_API_KEY; codex → OPENAI_API_KEY).
- */
-const VENDOR_AUTH_KEYS = new Set([
-  "OPENAI_API_KEY",
-  "ANTHROPIC_API_KEY",
-  "GEMINI_API_KEY",
-  "GOOGLE_API_KEY",
-  "GOOGLE_GENERATIVE_AI_API_KEY",
-]);
-
-/**
- * Generic credential-style names (covers app/plugin/infra secrets we don't
- * enumerate by exact name). Broadened (P1, Codex re-review) to deny ALL
- * token/api-key/access-key/credential/cookie/auth names so vars like NPM_TOKEN,
- * SENTRY_AUTH_TOKEN, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, *_API_KEY never
- * reach an untrusted-prompt extraction child. Vendor auth the CLI genuinely
- * needs is re-added via `keep` (checked before this regex).
- */
-const SECRETISH_RE =
-  /(secret|password|passwd|passphrase|token|api[_-]?key|access[_-]?key|private[_-]?key|credential|cookie|auth)/i;
+import { isAoaAmbientSecretEnvKey } from "@armyofagents/adapter-utils";
 
 /**
  * Build a scrubbed copy of `process.env` for an untrusted-prompt CLI child.
@@ -58,27 +25,27 @@ const SECRETISH_RE =
  * and drop only known-sensitive keys), so it cannot break normal CLI operation
  * while still withholding the server's secrets:
  *   - drop all `AOA_*` (app-internal config + secrets),
- *   - drop ALWAYS_DROP_EXACT (infra creds),
- *   - drop VENDOR_AUTH_KEYS unless the caller keeps its own,
- *   - drop generic secret-ish names (secret / password / private_key).
+ *   - drop infra creds (DATABASE_URL, GITHUB_PAT, …),
+ *   - drop vendor auth keys unless the caller keeps its own,
+ *   - drop generic secret-ish names (secret / password / private_key / …).
  *
- * @param keep vendor auth keys to preserve for THIS spawn's own CLI.
+ * FU-23: the denylist itself lives in `adapter-utils`
+ * (`isAoaAmbientSecretEnvKey`) so this Commander spawn and the four adapter
+ * spawns (claude/codex/opencode/gemini) strip the EXACT same set from ONE
+ * source. The adapters may not import from `server/`; the server may import from
+ * adapter-utils, so the shared predicate lives there.
+ *
+ * @param keep vendor auth keys to preserve for THIS spawn's own CLI
+ *   (claude → ANTHROPIC_API_KEY; codex → OPENAI_API_KEY).
  */
 export function buildScrubbedCliEnv(
   keep: Iterable<string> = [],
 ): NodeJS.ProcessEnv {
-  const keepSet = new Set(keep);
+  const keepArr = [...keep];
   const out: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (value === undefined) continue;
-    if (keepSet.has(key)) {
-      out[key] = value;
-      continue;
-    }
-    if (key.startsWith("AOA_")) continue;
-    if (ALWAYS_DROP_EXACT.has(key)) continue;
-    if (VENDOR_AUTH_KEYS.has(key)) continue;
-    if (SECRETISH_RE.test(key)) continue;
+    if (isAoaAmbientSecretEnvKey(key, { keep: keepArr })) continue;
     out[key] = value;
   }
   return out;

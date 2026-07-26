@@ -88,28 +88,69 @@ async function copySharedAuthJson(sharedHome: string, managedHome: string): Prom
   return ensureCodexAuthInHome(managedHome, { CODEX_HOME: sharedHome });
 }
 
-export function resolveManagedCodexHomeDir(env: NodeJS.ProcessEnv, companyId: string): string {
+/**
+ * Sentinel agent id for surfaces that legitimately have no agent — today only
+ * the adapter "Test environment" probe (`testEnvironment` receives an
+ * `AdapterEnvironmentTestContext`, which carries a companyId but no agent).
+ * Keeping the probe in its OWN managed home means it can never clobber (or be
+ * clobbered by) a real agent's `config.toml`, while still exercising the same
+ * auth provisioning path a run uses.
+ */
+export const CODEX_ENV_TEST_AGENT_ID = "_env-test";
+
+/**
+ * Constrain an id to a single safe path segment. Company/agent ids are
+ * DB-generated today, but the managed home is a filesystem location derived
+ * from them — a `..` or separator must never let a caller escape the
+ * `aoa-instances` root (or collide across companies).
+ */
+function safePathSegment(value: string): string {
+  const cleaned = value.replace(/[^A-Za-z0-9._-]/g, "_").replace(/^\.+$/, "_");
+  return cleaned.length > 0 ? cleaned : "_";
+}
+
+/**
+ * The adapter-managed CODEX_HOME for one AGENT.
+ *
+ * PER-AGENT, not per-company (Plan 2b B1). codex discovers its MCP servers from
+ * a single `<home>/config.toml`; a per-company home would (a) expose Agent A's
+ * opted-in connectors to Agent B, defeating the per-agent opt-in enforced
+ * everywhere else, and (b) make two concurrent runs in one company contend for
+ * the same file. Commander's codex chat home is a DIFFERENT function
+ * (`codexHomeDirFor(companyId, userId)` in the server) and is unaffected.
+ */
+export function resolveManagedCodexHomeDir(
+  env: NodeJS.ProcessEnv,
+  companyId: string,
+  agentId: string,
+): string {
   const root = resolveSharedCodexHomeDir(env);
-  return path.join(root, "aoa-instances", companyId);
+  return path.join(root, "aoa-instances", safePathSegment(companyId), safePathSegment(agentId));
 }
 
 export async function prepareManagedCodexHome(
   env: NodeJS.ProcessEnv,
   onLog: (msg: string) => void,
   companyId: string,
+  agentId: string,
   opts: PrepareManagedCodexHomeOptions,
 ): Promise<string> {
   const sharedHome = resolveSharedCodexHomeDir(env);
-  const home = resolveManagedCodexHomeDir(env, companyId);
+  const home = resolveManagedCodexHomeDir(env, companyId, agentId);
   await fs.mkdir(home, { recursive: true });
 
   if (opts.apiKey && opts.apiKey.trim().length > 0) {
     await writeApiKeyAuthJson(home, opts.apiKey.trim());
-    onLog(`[aoa] Wrote managed Codex auth.json for company ${companyId}`);
+    onLog(`[aoa] Wrote managed Codex auth.json for company ${companyId} agent ${agentId}`);
   } else {
+    // Auth is seeded per-agent: every agent's home gets its own copy of the
+    // shared login, so a second agent in the same company is never left
+    // unauthenticated by the per-agent split.
     const copied = await copySharedAuthJson(sharedHome, home);
     if (copied) {
-      onLog(`[aoa] Copied shared Codex auth.json into managed home for company ${companyId}`);
+      onLog(
+        `[aoa] Copied shared Codex auth.json into managed home for company ${companyId} agent ${agentId}`,
+      );
     } else {
       const target = path.join(home, "auth.json");
       try {

@@ -89,6 +89,13 @@ export interface RunAppServerTurnInput {
   model?: string;
   /** The adapter-owned CODEX_HOME the app-server child reads config.toml from. */
   managedCodexHome?: string;
+  /**
+   * Env keys to strip from the inherited parent env on spawn (unless the overlay
+   * set them). Defaults to `["OPENAI_API_KEY"]` (ambient billing safety). FU-23:
+   * the exec path passes the connector-aware AoA ambient-secret list here on
+   * connector-hosting runs so a stdio connector child cannot inherit AoA secrets.
+   */
+  unsetEnvKeys?: string[];
 }
 
 /**
@@ -113,6 +120,7 @@ export async function runAppServerTurn(
     onWarn,
     model,
     managedCodexHome,
+    unsetEnvKeys = ["OPENAI_API_KEY"],
     deps = defaultRunAppServerTurnDeps,
   } = input;
 
@@ -188,8 +196,9 @@ export async function runAppServerTurn(
     // Preserve the env-strip on the bridged path too — the ambient server
     // OPENAI_API_KEY must never reach a supervised codex run and flip billing.
     // (spawnAppServerClient also defaults this; we pass it explicitly so the
-    // guard survives even if that default is ever changed.)
-    unsetEnvKeys: ["OPENAI_API_KEY"],
+    // guard survives even if that default is ever changed.) FU-23: the caller
+    // broadens this to all AoA ambient secrets on connector-hosting runs.
+    unsetEnvKeys,
     onSpawn,
     onNotification: (method, params) => {
       notificationHandler?.(method, params);

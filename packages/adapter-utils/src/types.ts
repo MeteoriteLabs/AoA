@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import type { AdapterModelProfile } from "./model-profiles.js";
+import type { McpServerSpec } from "./mcp-server-spec.js";
 
 export interface AdapterAgent {
   id: string;
@@ -297,8 +298,31 @@ export interface AdapterExecutionContext {
    * Optional provider-neutral MCP bridge spec. When present, an adapter may
    * spawn this MCP server instead of building its own. Unset → adapter falls
    * back to existing behavior. Wired by a later milestone.
+   *
+   * External connectors travel separately on `mcpServers` below — this field
+   * never carries them.
    */
   mcpBridge?: McpBridgeSpec;
+  /**
+   * Optional external MCP servers (connectors), keyed by server name. Delivered
+   * ALONGSIDE `mcpBridge` — `mcpBridge` remains AoA's own loopback server and is
+   * never represented here. Adapters that do not understand this field simply
+   * ignore it and behave exactly as before.
+   *
+   * Reserved names `aoa` and `playwright` MUST be filtered before merging — a
+   * connector must never shadow them.
+   *
+   * An adapter that cannot support a given transport (e.g. no HTTP MCP support)
+   * MUST skip that entry and continue, rather than failing the run.
+   *
+   * SECRETS: values may contain `${VAR}` placeholders. Whether these are
+   * expanded by the target CLI from process env is per-CLI and not universally
+   * verified (verified for claude_local in Task 4) — for a CLI that does not
+   * expand them, the connector receives a literal `${VAR}` as its token and
+   * fails at connect time. Never place a real secret in this struct — it is
+   * persisted into run events (see RuntimeHookBridgeSpec note above).
+   */
+  mcpServers?: Record<string, McpServerSpec>;
   /**
    * Optional human-decision broker. Adapters can use this to pause a run for a
    * permission prompt or work-question without knowing how the Hub stores,

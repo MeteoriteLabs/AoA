@@ -58,6 +58,7 @@ tests/release-smoke/test-results/
 
 # Marketplace catalog snapshot — fetched at build time, not committed
 ui/src/aoa-marketplace-snapshot.json
+ui/src/aoa-connectors-snapshot.json
 .gstack/
 
 # Codex CLI scratch dir — dev-server logs & UAT screenshots from agent runs
@@ -91,3 +92,4 @@ _*.log
 
 # stray onboarding e2e artifacts (were committed by accident)
 test-results/
+local-connectors.json

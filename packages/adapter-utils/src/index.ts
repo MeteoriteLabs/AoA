@@ -100,6 +100,11 @@ export {
   startAdapterExecutionTargetPaperclipBridge,
 } from "./execution-target.js";
 export { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
+export {
+  isAoaAmbientSecretEnvKey,
+  aoaAmbientSecretEnvKeys,
+} from "./aoa-secret-env.js";
+export type { AoaAmbientSecretOptions } from "./aoa-secret-env.js";
 export { preferredShellForSandbox } from "./sandbox-shell.js";
 export {
   isAllowedAoaBridgeRequest,
@@ -147,3 +152,36 @@ export { extractVerificationUrl, createLoginUrlDetector, isLoopbackUrl } from ".
 export type { LoginUrlDetector } from "./login-url-detector.js";
 export { runAuthStatusAndBranch } from "./auth-probe-branch.js";
 export type { AuthProbeStatus, AuthProbeBranchOptions } from "./auth-probe-branch.js";
+export {
+  isStdioServerSpec,
+  isHttpServerSpec,
+  RESERVED_MCP_SERVER_NAMES,
+  stripReservedMcpServerNames,
+  reservedMcpServerNameCollisions,
+  mergeExternalMcpServers,
+  AOA_SECRET_PLACEHOLDER_PATTERN,
+  containsAoaSecretPlaceholder,
+  aoaSecretPlaceholderVars,
+  aoaSecretPlaceholderFor,
+  stdioSpecCarriesSecretPlaceholder,
+  withSynthesizedBearerHeader,
+} from "./mcp-server-spec.js";
+export type {
+  McpServerSpec,
+  McpStdioServerSpec,
+  McpHttpServerSpec,
+  McpWriterSkipReason,
+  McpWriterSkip,
+  McpWriterResult,
+} from "./mcp-server-spec.js";
+export {
+  AOA_MCP_MANIFEST_FILENAME,
+  resolveMcpManagedManifestPath,
+  tryResolveMcpManagedManifestPath,
+  readAoaManagedServerNames,
+  writeAoaManagedServerNames,
+  tryWriteAoaManagedServerNames,
+  removeLegacyCwdManifest,
+  sweepAoaManagedEntries,
+} from "./mcp-managed-manifest.js";
+export type { McpManagedManifestScope } from "./mcp-managed-manifest.js";

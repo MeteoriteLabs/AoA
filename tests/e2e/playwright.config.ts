@@ -127,6 +127,16 @@ const FAKE_CODEX_BIN_DIR = path.join(
   "fake-codex",
 );
 
+// Connector shelf e2e (connector-install.spec.ts): the curated shelf's only
+// input is a remote `connectors.json` on a 6h TTL, so pin it to a local fixture
+// (see `resolveConnectorCatalogService`). A FILE path, not a URL — the seam
+// cannot be used to point a deployment's shelf at an arbitrary host.
+const CONNECTOR_CATALOG_FIXTURE = path.join(
+  fileURLToPath(new URL(".", import.meta.url)),
+  "fixtures",
+  "connectors.json",
+);
+
 export default defineConfig({
   testDir: ".",
   testMatch: WINDOWS_WITH_EMBEDDED_POSTGRES
@@ -208,6 +218,11 @@ export default defineConfig({
           // Pin e2e marketplace data to the copied bundled fixture. The
           // service falls back to bundled data when the CDN cannot be reached.
           AOA_MARKETPLACE_CDN_URL: "http://127.0.0.1:1/catalog.json",
+          // Connector shelf: pin `connectors.json` to a local fixture instead of
+          // the CDN. Without this the shelf is empty in CI (correct degradation,
+          // but nothing to browse) and — because `POST …/install` resolves
+          // `entryId` against the SERVER's catalog — there is no install to make.
+          AOA_E2E_CONNECTOR_CATALOG_PATH: CONNECTOR_CATALOG_FIXTURE,
           // Commander viewer e2e: `claude` resolves to the deterministic
           // fake CLI (tests/e2e/fixtures/fake-claude). The control file is
           // rewritten by the spec before each send to script the next turn.

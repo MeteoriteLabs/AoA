@@ -12,6 +12,7 @@ import {
   runAdapterExecutionTargetProcess,
   syncAdapterExecutionTargetDirectory,
   syncAdapterExecutionTargetFile,
+  aoaAmbientSecretEnvKeys,
   type AdapterBillingType,
   type AdapterExecutionContext,
   type AdapterExecutionResult,
@@ -329,6 +330,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const executionTarget = ctx.executionTarget ?? { type: "local" as const };
   const isRemoteExecutionTarget = adapterExecutionTargetIsRemote(executionTarget);
 
+  // FU-23: when THIS run hosts external MCP connectors, claude spawns each stdio
+  // connector's child (`npx -y <pkg>`) with claude's inherited env. Scrub AoA's
+  // ambient secrets (DB creds, embeddings OPENAI_API_KEY, auth signing secret,
+  // master key, GitHub PAT) from that env so a third-party package can't read
+  // them. The `aoa` bridge is unaffected: it is spawned from the generated
+  // --mcp-config file whose `mcpServers.aoa.env` re-supplies DATABASE_URL + the
+  // secrets-provider config (buildMcpBridgeSpec). The connector's own
+  // `${AOA_MCP_*_TOKEN}` lives in the spawn OVERLAY (`env` below), which
+  // mergeChildEnv preserves through the strip. No-connector runs keep the full
+  // env, byte-identical (empty list → no strip).
+  const connectorsPresent =
+    ctx.mcpServers != null && Object.keys(ctx.mcpServers).length > 0;
+  const connectorScrubKeys = connectorsPresent ? aoaAmbientSecretEnvKeys() : undefined;
+
   const promptTemplate = asString(
     config.promptTemplate,
     [
@@ -518,7 +533,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // strip above (redundant-but-harmless); org gains exactly this. Both feed the
     // one mergeChildEnv, and overlay-wins still applies: an agent that explicitly
     // sets one of these on adapterConfig.env keeps its own value.
-    const unsetEnvKeys = [...CLAUDE_SESSION_IDENTITY_UNSET_KEYS];
+    const unsetEnvKeys = [
+      ...CLAUDE_SESSION_IDENTITY_UNSET_KEYS,
+      // Connectors present → also scrub AoA ambient secrets so a third-party
+      // MCP server never sees DATABASE_URL / provider keys (Decision #116, FU-23).
+      ...(connectorScrubKeys ?? []),
+    ];
     // ------------------------------------------------------
 
     // --- Runtime hook bridge (Task 6) ---

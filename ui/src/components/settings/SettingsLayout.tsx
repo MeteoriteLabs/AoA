@@ -1,14 +1,14 @@
 import { useEffect, useState, type ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
 import { useSidebar } from "@/context/SidebarContext";
-import { Building, Shield, KeyRound, DollarSign, Plug, Puzzle, Store, Archive, Github, Activity, Layers, HeartPulse, PanelLeft, PanelLeftClose, Brain, Terminal, Inbox } from "lucide-react";
+import { Building, Shield, KeyRound, DollarSign, Plug, Cable, Puzzle, Store, Archive, Github, Activity, Layers, HeartPulse, PanelLeft, PanelLeftClose, Brain, Terminal, Inbox } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 const SECONDARY_COLLAPSED_KEY = "aoa.settings-secondary-collapsed";
 
 export type SettingsSectionId =
-  | "general" | "health" | "commander" | "memory" | "providers" | "budget" | "mcp" | "github"
+  | "general" | "health" | "commander" | "memory" | "providers" | "budget" | "mcp" | "connectors" | "github"
   | "plugins" | "marketplace" | "archive"
   | "activity" | "environments" | "secrets" | "inbox";
 
@@ -43,6 +43,7 @@ export const SETTINGS_SECTIONS: readonly SettingsGroup[] = [
     { id: "providers",    label: "Providers",          icon: Terminal },
     { id: "budget",       label: "Budget & caps",      icon: DollarSign },
     { id: "mcp",          label: "MCP API keys",       icon: Plug },
+    { id: "connectors",   label: "Connectors",         icon: Cable },
     { id: "environments", label: "Environments",       icon: Layers },
     { id: "secrets",      label: "Secrets",            icon: KeyRound },
     { id: "github",       label: "GitHub",             icon: Github },

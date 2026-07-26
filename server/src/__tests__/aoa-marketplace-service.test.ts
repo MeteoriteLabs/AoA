@@ -135,6 +135,115 @@ describe("MarketplaceCatalogService", () => {
     expect(result).toBeNull();
   });
 
+  it("FU-14: keeps known items when a sibling has an unknown type", async () => {
+    const unknownTypeItem = {
+      ...VALID_CATALOG.items[0],
+      id: "connector:future/thing",
+      type: "connector",
+    };
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          ...VALID_CATALOG,
+          itemCount: 2,
+          items: [VALID_CATALOG.items[0], unknownTypeItem],
+        }),
+    }) as any;
+
+    const { db, inserted } = makeDb([[]]);
+    const service = new MarketplaceCatalogService({
+      db,
+      cdnUrl: "https://example.com/catalog.json",
+      bundledSnapshotProvider: async () => null,
+    });
+
+    const result = await service.sync();
+    // Known item survives; unknown dropped; count recomputed to survivors.
+    expect(result?.itemCount).toBe(1);
+    expect(result?.items).toHaveLength(1);
+    expect(result?.items[0]?.id).toBe(VALID_CATALOG.items[0].id);
+    expect(inserted.length).toBeGreaterThan(0);
+    expect(inserted[0].lastSyncStatus).toBe("success");
+  });
+
+  it("FU-14: broken envelope is a fetch failure that preserves the cache", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      // `items` is not an array → malformed envelope
+      json: () => Promise.resolve({ schemaVersion: "1.0.0", items: "nope" }),
+    }) as any;
+
+    // readCache returns an existing cached row → writeCache(null) updates status only,
+    // returns the existing catalog (cache preserved, never overwritten).
+    const existingRow = [
+      {
+        schemaVersion: "1.0.0",
+        generatedAt: new Date("2026-04-30T00:00:00.000Z"),
+        itemCount: 1,
+        catalogJson: VALID_CATALOG,
+        lastSyncedAt: new Date(),
+        lastSyncStatus: "success",
+        lastSyncError: null,
+        source: "cdn",
+      },
+    ];
+    // sync() failure path: writeCache(null) → readCache() (existing), then a
+    // second readCache() inside writeCache's update branch is not called; provide
+    // the existing row for each readCache invocation.
+    const { db, inserted, updated } = makeDb([existingRow, existingRow]);
+    const service = new MarketplaceCatalogService({
+      db,
+      cdnUrl: "https://example.com/catalog.json",
+      bundledSnapshotProvider: async () => null,
+    });
+
+    const result = await service.sync();
+    // Cache preserved: no fresh insert of catalog rows; status-only update recorded failure.
+    expect(inserted.length).toBe(0);
+    expect(updated.length).toBeGreaterThan(0);
+    expect(updated[0].lastSyncStatus).toBe("failure");
+    // Returned catalog is the preserved cache, not null.
+    expect(result?.schemaVersion).toBe("1.0.0");
+    expect(result?.items).toHaveLength(1);
+  });
+
+  it("FU-14: all-items-unparseable preserves the cache (not an empty-catalog answer)", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          ...VALID_CATALOG,
+          itemCount: 1,
+          items: [{ id: "x", type: "connector" }], // every item drops
+        }),
+    }) as any;
+
+    const existingRow = [
+      {
+        schemaVersion: "1.0.0",
+        generatedAt: new Date("2026-04-30T00:00:00.000Z"),
+        itemCount: 1,
+        catalogJson: VALID_CATALOG,
+        lastSyncedAt: new Date(),
+        lastSyncStatus: "success",
+        lastSyncError: null,
+        source: "cdn",
+      },
+    ];
+    const { db, inserted, updated } = makeDb([existingRow, existingRow]);
+    const service = new MarketplaceCatalogService({
+      db,
+      cdnUrl: "https://example.com/catalog.json",
+      bundledSnapshotProvider: async () => null,
+    });
+
+    const result = await service.sync();
+    expect(inserted.length).toBe(0);
+    expect(updated[0].lastSyncStatus).toBe("failure");
+    expect(result?.items).toHaveLength(1); // preserved cache
+  });
+
   it("falls back to bundled snapshot on CDN failure", async () => {
     global.fetch = vi.fn().mockRejectedValue(new Error("network down"));
 

@@ -6,6 +6,7 @@ import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
   runAdapterExecutionTargetProcess,
+  aoaAmbientSecretEnvKeys,
   type AdapterExecutionContext,
   type AdapterExecutionResult,
   type AdapterRuntimeCommandSpec,
@@ -316,10 +317,15 @@ export async function execute(
       ? env.OPENAI_API_KEY.trim()
       : null;
 
+  // The managed home is per-AGENT (Plan 2b B1): codex reads its MCP servers
+  // from one config.toml per CODEX_HOME, so sharing a home across a company's
+  // agents would leak one agent's opted-in connectors to another and race two
+  // concurrent runs onto the same file.
   const managedCodexHome = await prepareManagedCodexHome(
     process.env,
     (msg) => onLog("stderr", `${msg}\n`),
     agent.companyId,
+    agent.id,
     { apiKey: configuredOpenAiApiKey },
   );
   const isRemoteExecutionTarget = adapterExecutionTargetIsRemote(executionTarget);
@@ -344,23 +350,63 @@ export async function execute(
   // path. The managed home is adapter-owned (only holds auth.json + this
   // file); writeCodexMcpConfigToml preserves any unrelated content and is
   // idempotent. auth.json is untouched; CODEX_HOME's value is unchanged.
-  if (ctx.mcpBridge) {
+  //
+  // External connectors (Plan 2b Task 5) ride along in the SAME write: the
+  // writer renders the bridge and every connector into one fenced region.
+  //
+  // The gate tests PRESENCE, not emptiness: a run that delivers
+  // `mcpServers: {}` (every connector disabled/deleted) must still reach the
+  // writer, because the writer's fence strip is what REMOVES the connector
+  // blocks a previous run wrote. Gating on non-emptiness would leave a disabled
+  // connector — and its bearer-token env-var name — in config.toml forever, and
+  // the agent would keep the tool. Same reason `ctx.mcpBridge` alone no longer
+  // guards this: the day the bridge becomes conditional, cleanup must not stop.
+  if (ctx.mcpBridge !== undefined || ctx.mcpServers !== undefined) {
     if (executionTarget.type === "sandbox-docker") {
       // MX3: sandbox-docker codex MCP wiring is a follow-up — CODEX_HOME there
       // is the container path "/tmp/aoa-codex-home" which is not writable from
       // the host at this point. The §17 acceptance path is type:"local".
       await onLog(
         "stderr",
-        `[aoa] codex MCP bridge config.toml is not yet wired for sandbox-docker execution targets; skipping (MX3 follow-up).\n`,
+        `[aoa] codex MCP bridge + external connector config.toml is not yet wired for sandbox-docker execution targets; skipping both (MX3 follow-up).\n`,
       );
     } else {
-      await writeCodexMcpConfigToml(managedCodexHome, ctx.mcpBridge);
+      const result = await writeCodexMcpConfigToml(managedCodexHome, ctx.mcpBridge ?? null, {
+        externalServers: ctx.mcpServers ?? {},
+      });
+      const connectorCount = Object.keys(ctx.mcpServers ?? {}).length;
       await onLog(
         "stderr",
-        `[aoa] Wrote managed Codex config.toml [mcp_servers.aoa] for company ${agent.companyId}\n`,
+        `[aoa] Wrote managed Codex config.toml (${ctx.mcpBridge ? "[mcp_servers.aoa] + " : ""}${connectorCount} external connector${connectorCount === 1 ? "" : "s"}) for company ${agent.companyId}\n`,
       );
+      // B2N9: `secret_unreachable` lands here for a stdio connector whose token
+      // codex has no way to deliver. Reporting is the whole point — emitting an
+      // unauthenticated entry instead would look like success and fail silently
+      // at the connector.
+      for (const skip of result.skipped) {
+        await onLog(
+          "stderr",
+          `[aoa] codex MCP connector "${skip.serverName}" skipped: ${skip.reason}\n`,
+        );
+      }
     }
   }
+
+  // FU-23: codex already strips the ambient OPENAI_API_KEY on EVERY run (billing
+  // safety). When THIS run also hosts external MCP connectors, broaden the strip
+  // to ALL of AoA's ambient secrets so a stdio connector child codex spawns
+  // cannot inherit them. codex passes the OVERLAY-only `env` to its spawns, so
+  // mergeChildEnv strips these from the inherited process.env while preserving
+  // the connector's own overlay token. The `aoa` bridge is unaffected: codex
+  // scrubs its own env before spawning MCP children and reads the bridge's env
+  // from `[mcp_servers.aoa.env]` in the managed config.toml (buildMcpBridgeSpec
+  // re-supplies DATABASE_URL + secrets config). No-connector runs keep the
+  // existing `["OPENAI_API_KEY"]` strip, byte-identical.
+  const codexConnectorsPresent =
+    ctx.mcpServers != null && Object.keys(ctx.mcpServers).length > 0;
+  const codexUnsetEnvKeys = codexConnectorsPresent
+    ? [...new Set(["OPENAI_API_KEY", ...aoaAmbientSecretEnvKeys()])]
+    : ["OPENAI_API_KEY"];
 
   const billingType = resolveCodexBillingType(env);
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
@@ -505,7 +551,8 @@ export async function execute(
       // never reach a Codex agent run and silently flip it to api-key billing.
       // Strip it from the inherited env; a key the agent set in its own config
       // (config.env / overlay) still survives. See mergeChildEnv in adapter-utils.
-      unsetEnvKeys: ["OPENAI_API_KEY"],
+      // FU-23: broadened to all AoA ambient secrets on connector-hosting runs.
+      unsetEnvKeys: codexUnsetEnvKeys,
       stdin: prompt,
       authToken: env.AOA_API_KEY ?? authToken ?? null,
       apiBaseUrl: env.AOA_API_URL ?? null,
@@ -768,6 +815,8 @@ export async function execute(
       },
       model: supervisedModel,
       managedCodexHome,
+      // FU-23: same connector-aware ambient-secret strip as the exec path.
+      unsetEnvKeys: codexUnsetEnvKeys,
     });
 
     return buildAdapterExecutionResult(bridgedResultToIntermediate(driverResult));

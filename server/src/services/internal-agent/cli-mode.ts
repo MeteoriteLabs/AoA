@@ -8,6 +8,12 @@ import { fileURLToPath } from "node:url";
 import type { Db } from "@armyofagents/db";
 import { showRefSchema } from "@armyofagents/shared";
 import type { HumanQuestionRuntimeCapabilities } from "@armyofagents/adapter-utils";
+import {
+  mergeExternalMcpServers,
+  withSynthesizedBearerHeader,
+  aoaSecretPlaceholderFor,
+  type McpServerSpec,
+} from "@armyofagents/adapter-utils";
 import type { AgentTool } from "./types.js";
 import type { AgentStreamChunk, ChatInput } from "./agent-loop.js";
 import { createCLISessionStore } from "./cli-session-store.js";
@@ -25,6 +31,9 @@ import {
 } from "./codex-model.js";
 import { logger } from "../../middleware/logger.js";
 import { redactSecretsInString } from "../../redaction.js";
+import { resolveAgentConnectors } from "../mcp-connectors-loader.js";
+import { buildScrubbedCliEnv } from "../cli-spawn-safety.js";
+import { mergeConnectorEnv } from "../mcp-connectors-env.js";
 
 const require = createRequire(import.meta.url);
 
@@ -124,21 +133,26 @@ export interface McpConfigParams {
   effectiveAutonomy?: number | null;
   /** Normalized structured Commander scope for memory/tool policy. */
   contextScope?: NormalizedCommanderContextScope | null;
+  /** External connectors, keyed by server name. Reserved names are filtered. */
+  extraMcpServers?: Record<string, McpServerSpec>;
+}
+
+/**
+ * Serialized MCP config handed to a CLI. `aoa` is always present (AoA's own
+ * loopback bridge). `playwright` is capability-gated. Any other key is an
+ * external connector (see McpServerSpec).
+ */
+interface McpConfigServerEntry {
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  type?: "http";
+  url?: string;
+  headers?: Record<string, string>;
 }
 
 interface McpConfig {
-  mcpServers: {
-    aoa: {
-      command: string;
-      args: string[];
-      env: Record<string, string>;
-    };
-    playwright?: {
-      command: string;
-      args: string[];
-      env: Record<string, string>;
-    };
-  };
+  mcpServers: Record<string, McpConfigServerEntry>;
 }
 
 export const PLAYWRIGHT_MCP_PACKAGE = "@playwright/mcp@0.0.75";
@@ -209,26 +223,73 @@ export function buildMcpBridgeSpec(params: McpConfigParams): McpBridgeSpec {
         ? { AOA_COMMANDER_CONTEXT_SCOPE: JSON.stringify(params.contextScope) }
         : {}),
       ...(process.env.DATABASE_URL ? { DATABASE_URL: process.env.DATABASE_URL } : {}),
+      // FU-23: the bridge decrypts the per-company embeddings secret IN-PROCESS
+      // (service-container `embedSync` → getProviderApiKey → secretService →
+      // local-encrypted provider), which reads the secrets-provider CONFIG from
+      // env: the provider id, the strict-mode flag, and the master-key FILE PATH
+      // (never the key VALUE — that stays in its 0600 file, read off disk by the
+      // bridge process). These are re-supplied on the bridge's OWN spec env so it
+      // stays self-sufficient once the connector-capable CLI spawns are scrubbed
+      // of AoA's ambient env (a third-party stdio connector child inherits that
+      // env and must not carry AoA's secrets). Only NON-secret config/paths are
+      // copied here; the raw `AOA_SECRETS_MASTER_KEY` / `OPENAI_API_KEY` are
+      // deliberately NOT re-injected — doing so would write a secret VALUE into
+      // the on-disk MCP config file. Deployments that rely on those raw-value
+      // env paths (rather than the default file-based master key + per-company
+      // `llm:openai` Settings secret) lose in-bridge embeddings after the scrub.
+      ...(process.env.AOA_SECRETS_PROVIDER
+        ? { AOA_SECRETS_PROVIDER: process.env.AOA_SECRETS_PROVIDER }
+        : {}),
+      ...(process.env.AOA_SECRETS_STRICT_MODE
+        ? { AOA_SECRETS_STRICT_MODE: process.env.AOA_SECRETS_STRICT_MODE }
+        : {}),
+      ...(process.env.AOA_SECRETS_MASTER_KEY_FILE
+        ? { AOA_SECRETS_MASTER_KEY_FILE: process.env.AOA_SECRETS_MASTER_KEY_FILE }
+        : {}),
     },
   };
 }
 
 export function buildMcpConfig(params: McpConfigParams): McpConfig {
-  const config: McpConfig = {
-    mcpServers: {
-      aoa: buildMcpBridgeSpec(params),
-    },
-  };
-
+  const reserved: Record<string, McpConfigServerEntry> = { aoa: buildMcpBridgeSpec(params) };
   if (params.enabledCapabilities?.includes("browser_use")) {
-    config.mcpServers.playwright = {
+    reserved.playwright = {
       command: "npx",
       args: [PLAYWRIGHT_MCP_PACKAGE, "--headless"],
       env: {},
     };
   }
 
-  return config;
+  // mergeExternalMcpServers is the ONLY supported merge path: it couples
+  // reserved-name filtering with the null-prototype destination that keeps a
+  // connector named `__proto__` an own key instead of the map's prototype.
+  const mcpServers = mergeExternalMcpServers(reserved, params.extraMcpServers ?? {}, (spec) =>
+    spec.kind === "http"
+      ? {
+          type: "http" as const,
+          url: spec.url,
+          // FU-21: claude expands `${VAR}` inside `--mcp-config` headers
+          // (verified live against the CLI in Plan 2b), so a credentialed
+          // connector whose headerTemplate never references its token gets the
+          // conventional bearer header synthesised here. Dropping
+          // `authTokenEnvVar` — as this writer used to — emitted
+          // `{"Authorization": ""}` for every catalog install (D5 seeds template
+          // KEYS with empty values) and the agent authenticated as no-one,
+          // silently, on the DEFAULT adapter. Same rule as the opencode and
+          // gemini writers, from one shared definition.
+          // SECRETS: this writes the `${AOA_MCP_*_TOKEN}` PLACEHOLDER. The real
+          // value reaches the CLI only through the spawn env (D5) and must never
+          // be written into this file.
+          headers: withSynthesizedBearerHeader(
+            spec.headers,
+            spec.authTokenEnvVar,
+            aoaSecretPlaceholderFor,
+          ),
+        }
+      : { command: spec.command, args: spec.args, env: spec.env },
+  );
+
+  return { mcpServers };
 }
 
 export function toolToMcpFormat(tool: AgentTool) {
@@ -456,6 +517,7 @@ export async function resolveCliInvocation(
           binary: "claude",
           args: [
             "--mcp-config", configPath,
+            "--strict-mcp-config",
             "--system-prompt-file", safeSystemPromptPath,
             ...claudeModelArgs(commanderModel),
             ...claudeBypassArgs,
@@ -475,6 +537,7 @@ export async function resolveCliInvocation(
         binary: "claude",
         args: [
           "--mcp-config", configPath,
+          "--strict-mcp-config",
           ...claudeModelArgs(commanderModel),
           ...claudeBypassArgs,
           "--print",
@@ -501,7 +564,20 @@ export async function resolveCliInvocation(
       const { writeCodexMcpConfigToml, ensureCodexAuthInHome, readSharedCodexModel } =
         await import("@armyofagents/adapter-codex-local/server");
       const codexHomeDir = codexHomeDirFor(params.companyId, params.userId);
-      await writeCodexMcpConfigToml(codexHomeDir, buildMcpBridgeSpec(params));
+      // FU-8: deliver EXTERNAL connectors alongside the bridge, exactly the way
+      // the codex ADAPTER does (execute.ts) — the SAME writer renders the bridge
+      // and every connector into one fenced region. `params.extraMcpServers`
+      // carries the Commander-resolved specs (D3 all-active; each with only a
+      // `${AOA_MCP_*_TOKEN}` placeholder — the real secret rides the spawn env,
+      // never this file). An empty/absent map means "no connectors": the writer
+      // treats `{}` and omitted identically (its fence strip still runs), so the
+      // no-connectors config.toml stays byte-identical to pre-FU-8. Codex's known
+      // limit (a stdio connector carrying a secret is undeliverable — FU-5) is
+      // handled INSIDE the writer, which SKIPS those with a reason; we pass all
+      // resolved specs and let it filter.
+      await writeCodexMcpConfigToml(codexHomeDir, buildMcpBridgeSpec(params), {
+        externalServers: params.extraMcpServers ?? {},
+      });
       // MX-chatauth: the per-session CODEX_HOME has config.toml but no
       // credentials, so `codex exec` run with it 401s ("Missing bearer or
       // basic authentication"). Provision auth.json into the SAME dir by
@@ -627,6 +703,37 @@ export function cliModeService(db: Db) {
           // bug). claude is UNTOUCHED (the else-branch below).
           const isWin = platform() === "win32";
           const bridgePath = getBridgeEntrypoint();
+
+          // MCP connectors (FU-8 — Commander, codex adapter). Parity with the
+          // claude_cli path below: Commander is per-USER, not per-agent, so it
+          // receives EVERY active company connector — the D3 all-active case →
+          // agentId: null. The specs (each carrying only a `${AOA_MCP_*_TOKEN}`
+          // placeholder) are threaded into mcpParams.extraMcpServers, which
+          // resolveCliInvocation folds into the per-session CODEX_HOME/config.toml
+          // via writeCodexMcpConfigToml's externalServers. The real secrets ride
+          // ONLY in connectorEnv, merged into the SCRUBBED spawn env inside
+          // runCodexTurn → spawnAndCollect — never on disk.
+          //
+          // Best-effort: Commander is always-on, so a connector resolution
+          // failure degrades to "no connectors" (non-silent via the warn log),
+          // never breaks the user's turn. Mirrors the claude_cli guard exactly.
+          let connectorSpecs: Record<string, McpServerSpec> = {};
+          let connectorEnv: Record<string, string> = {};
+          try {
+            const resolved = await resolveAgentConnectors(db, {
+              companyId: params.companyId,
+              agentId: null, // Commander = all active company connectors (D3)
+              logger,
+            });
+            connectorSpecs = resolved.extraMcpServers;
+            connectorEnv = resolved.connectorEnv;
+          } catch (err) {
+            logger.warn(
+              { err, companyId: params.companyId },
+              "Commander MCP connector resolution failed; proceeding without connectors",
+            );
+          }
+
           const mcpParams: McpConfigParams = {
             companyId: params.companyId,
             userId: params.userId,
@@ -636,12 +743,14 @@ export function cliModeService(db: Db) {
             actorType: "commander",
             runId: params.runId ?? null,
             contextScope: normalizeCliContextScope(params.contextScope),
+            extraMcpServers: connectorSpecs,
           };
 
           if (session) session.lastMessageAt = new Date();
 
           for await (const chunk of runCodexTurn({
             mcpParams,
+            connectorEnv,
             prompt: params.content,
             isWin,
             resumeSessionId: session?.codexSessionId ?? null,
@@ -737,6 +846,46 @@ export function cliModeService(db: Db) {
                 }
               : undefined;
 
+          // MCP connectors (Plan 2 — Commander, claude_cli ONLY). Commander is
+          // per-USER, not per-agent, so it receives EVERY active company
+          // connector — the D3 all-active case → agentId: null. The specs (each
+          // carrying only a `${AOA_MCP_*_TOKEN}` placeholder) are threaded into
+          // resolveCliInvocation's params, which already folds them into the
+          // --mcp-config FILE via buildMcpConfig. The real secrets ride ONLY in
+          // connectorEnv, merged into the spawn env below — never on disk.
+          //
+          // Gated on claude_cli: codex is handled by the one-shot branch above,
+          // and opencode returns a null invocation (never spawns), so resolving
+          // for either would be wasted DB I/O + a needless per-turn failure
+          // surface (mirrors the heartbeat/crew adapterType gate).
+          //
+          // Best-effort: Commander is the always-on assistant, so a connector
+          // resolution failure must degrade to "no connectors" (non-silent via
+          // the warn log — A8/A19), never break the user's turn. The loader
+          // already isolates per-connector secret failures; this guard also
+          // absorbs a systemic DB error so the chat still answers. The guard is
+          // justified by this production-degradation reason ALONE — the unit
+          // tests mock resolveAgentConnectors at module level, so they never
+          // reach (or depend on) this try/catch.
+          let connectorSpecs: Record<string, McpServerSpec> = {};
+          let connectorEnv: Record<string, string> = {};
+          if (config.cliTool === "claude_cli") {
+            try {
+              const resolved = await resolveAgentConnectors(db, {
+                companyId: params.companyId,
+                agentId: null, // Commander = all active company connectors (D3)
+                logger,
+              });
+              connectorSpecs = resolved.extraMcpServers;
+              connectorEnv = resolved.connectorEnv;
+            } catch (err) {
+              logger.warn(
+                { err, companyId: params.companyId },
+                "Commander MCP connector resolution failed; proceeding without connectors",
+              );
+            }
+          }
+
           const invocation = await resolveCliInvocation(
             config.cliTool,
             {
@@ -748,6 +897,7 @@ export function cliModeService(db: Db) {
               actorType: "commander",
               runId: params.runId ?? null,
               contextScope: normalizeCliContextScope(params.contextScope),
+              extraMcpServers: connectorSpecs,
             },
             safeContent,
             undefined,        // resumeCodexSessionId (N/A for the persistent-claude path)
@@ -766,12 +916,59 @@ export function cliModeService(db: Db) {
             return;
           }
 
+          // Merge the real connector secrets into the spawn env (NOT the config
+          // file). Placed after the null guard so it runs only when we actually
+          // spawn. Connector tokens layer on TOP of the existing spawnEnv (e.g.
+          // MAX_THINKING_TOKENS).
+          //
+          // LIMITATION (P2N2): connectors are resolved at the FIRST-message
+          // spawn of a persistent claude session and the env is fixed at spawn,
+          // so a connector added/removed mid-conversation won't take effect
+          // until that session recycles. Real debugging gotcha ("I added a
+          // connector and Commander still can't see it").
+          // P1 (Codex): gate on the resolved SPEC map, not connectorEnv. A
+          // secretless connector (stdio filesystem, unauth'd http) yields a
+          // nonempty spec map but an EMPTY connectorEnv — gating on connectorEnv
+          // would skip the FU-23 scrub below and let that connector's stdio child
+          // inherit AoA's ambient secrets. Presence of ANY external spec is what
+          // means "a third-party child may spawn → scrub".
+          const connectorsPresent = Object.keys(connectorSpecs).length > 0;
+          if (Object.keys(connectorEnv).length > 0) {
+            invocation.spawnEnv = { ...(invocation.spawnEnv ?? {}), ...connectorEnv };
+          }
+
           // cwd = tmpdir() prevents the CLI from walking up and reading the
           // project's CLAUDE.md (which mentions "Paperclip" — an internal
           // implementation detail that must never surface to users).
+          //
+          // FU-23: when this turn hosts third-party MCP connectors, the CLI —
+          // and every stdio connector child it spawns (`npx -y <pkg>`) — must NOT
+          // inherit AoA's ambient secret env (DATABASE_URL, the embeddings
+          // OPENAI_API_KEY, the auth signing secret, the secrets master key, the
+          // GitHub PAT, sibling connectors are a separate limit — see note).
+          // Scrub the CLI base down to PATH/HOME/etc. and re-apply only the
+          // trusted overlay: MAX_THINKING_TOKENS + the connector
+          // `${AOA_MCP_*_TOKEN}` values the config placeholders expand from.
+          // `mergeConnectorEnv` keeps the scrubbed base authoritative (a connector
+          // token can never redirect PATH), then the trusted spawnEnv is spread
+          // last so MAX_THINKING_TOKENS wins. The `aoa` bridge stays functional
+          // because buildMcpBridgeSpec re-supplies DATABASE_URL + the
+          // secrets-provider config on `mcpServers.aoa.env` — the bridge does NOT
+          // depend on this inherited env. No-connectors turns keep the full env
+          // (byte-identical; there is no third-party child to protect).
+          // NOTE: sibling-connector-token isolation is NOT reachable here — every
+          // token must sit in the one CLI env for `${VAR}` expansion, and the CLI
+          // (not AoA) spawns the connector children. This scrub targets AoA's OWN
+          // secrets, which is what the module + [ESC-7] cover.
+          const cliEnv = connectorsPresent
+            ? {
+                ...mergeConnectorEnv(buildScrubbedCliEnv(), connectorEnv),
+                ...(invocation.spawnEnv ?? {}),
+              }
+            : { ...process.env, ...invocation.spawnEnv };
           const cliProcess = spawn(invocation.binary, invocation.args, {
             stdio: ["pipe", "pipe", "pipe"],
-            env: { ...process.env, ...invocation.spawnEnv },
+            env: cliEnv,
             shell: isWin,
             cwd: tmpdir(),
           });
@@ -1085,6 +1282,14 @@ async function* streamProcessOutput(
 
 interface RunCodexTurnArgs {
   mcpParams: McpConfigParams;
+  /**
+   * FU-8: real connector secret values keyed by their `${AOA_MCP_*_TOKEN}` env
+   * var name. Empty ⇒ no connectors (byte-identical spawn env). When present,
+   * the spawn base is scrubbed of AoA's own ambient secrets and these tokens
+   * are re-applied — the CLI (and any stdio connector child it spawns) never
+   * inherits DATABASE_URL / the embeddings key / the secrets master key / etc.
+   */
+  connectorEnv: Record<string, string>;
   prompt: string;
   isWin: boolean;
   resumeSessionId: string | null;
@@ -1137,9 +1342,29 @@ async function* runCodexTurn(
     // the subprocess from reading project CLAUDE.md / AGENTS.md files that
     // contain internal implementation details (e.g. "Paperclip") not meant
     // to surface to users.
+    //
+    // FU-23 secret scrub (mirrors the claude_cli spawn): when this turn hosts
+    // third-party MCP connectors, the CLI — and every stdio connector child it
+    // spawns — must NOT inherit AoA's ambient secret env. Scrub the base down to
+    // PATH/HOME/etc., re-apply only the connector `${AOA_MCP_*_TOKEN}` values the
+    // config placeholders expand from, then overlay codex's CODEX_HOME last (the
+    // `aoa` bridge stays functional — buildMcpBridgeSpec re-supplies its own
+    // config on the bridge spec env). No-connectors turns keep the full env
+    // (byte-identical to pre-FU-8; there is no third-party child to protect).
+    // P1 (Codex): gate on the resolved SPEC map, not connectorEnv. A secretless
+    // connector yields a nonempty spec map but empty connectorEnv; gating on
+    // connectorEnv would skip this scrub and leak AoA's ambient secrets into that
+    // connector's stdio child. Presence of ANY external spec means "scrub".
+    const connectorsPresent = Object.keys(args.mcpParams.extraMcpServers ?? {}).length > 0;
+    const spawnEnv = connectorsPresent
+      ? {
+          ...mergeConnectorEnv(buildScrubbedCliEnv(), args.connectorEnv),
+          ...(invocation.spawnEnv ?? {}),
+        }
+      : { ...process.env, ...invocation.spawnEnv };
     const proc = spawn(invocation.binary, invocation.args, {
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, ...invocation.spawnEnv },
+      env: spawnEnv,
       shell: args.isWin,
       cwd: tmpdir(),
     });

@@ -146,6 +146,7 @@ The server sets these automatically when invoking adapters. They appear in the s
 | `AOA_WORKSPACE_BRANCH` | Git branch name when workspace is git-backed |
 | `AOA_WORKSPACE_WORKTREE_PATH` | Filesystem path to the git worktree when applicable |
 | `AGENT_HOME` | Agent's home directory (memory + life files live here) |
+| `AOA_MCP_<CONNECTOR>_TOKEN` | Dynamic family (one per external MCP connector, name derived from the connector's `serverName`). Holds the resolved company secret for that connector and is injected into the spawned agent process env; the generated `--mcp-config` file references it only as a `${AOA_MCP_<CONNECTOR>_TOKEN}` placeholder, so the plaintext secret never lands on disk. Not operator-set. |
 
 ## Session impersonation (CLI / mcp)
 
@@ -198,6 +199,7 @@ These are read by tests and dev scripts; you should not need to set them in prod
 | `AOA_RUN_WIN_INTEGRATION` | Opt-in flag for real embedded-Postgres integration tests on Windows. Unset ⇒ Windows skips those tests |
 | `AOA_E2E_FAKE_CREW_LLM` | Playwright e2e harness flag (`=1`) that swaps the real crew CLI for the deterministic fake-crew harness (`fake-crew-llm.ts`). Never activates when `NODE_ENV=production`. |
 | `AOA_E2E_FAKE_CREW_CONTROL` | E2E only. Path to a JSON control file that scripts the fake-crew harness per test (e.g. the controller-mode Adjutant scope turn). Read fresh on every fake turn; absent/invalid ⇒ legacy fake behavior. Set by `tests/e2e/playwright.config.ts`. No effect unless `AOA_E2E_FAKE_CREW_LLM=1`. |
+| `AOA_E2E_CONNECTOR_CATALOG_PATH` | E2E only. Absolute path to a local `connectors.json` served instead of fetching the connector-shelf CDN, so `connector-install.spec.ts` has a deterministic shelf to browse and install from. A FILE path, never a URL — it cannot point a deployment's shelf at an arbitrary host. Ignored when `NODE_ENV=production`. Set by `tests/e2e/playwright.config.ts`. |
 | `AOA_ACCEPTANCE_CLI` | Selects the real CLI binary in acceptance/integration tests |
 | `AOA_PI_COMMAND` | Overrides the `pi` adapter binary in adapter-model tests |
 | `AOA_TEST_CODEX_MODEL` | Codex model override for live crew e2e tests |
@@ -205,4 +207,5 @@ These are read by tests and dev scripts; you should not need to set them in prod
 | `AOA_E2E_RUNTIME_DECISION_BRIDGE_CODEX` | Opt-in flag for the guarded codex_local runtime-decision-bridge e2e (`runtime-decision-bridge-codex.spec.ts`); unset ⇒ skipped. W5c |
 | `AOA_TEST_COMPANY_ID` / `AOA_TEST_THREAD_ID` | Seed IDs for the bridge stdout-purity test |
 | `AOA_TEST_DATABASE_URL` | Postgres URL for tests that need a real DB connection |
+| `AOA_TEST_SECRET_PROBE` | Test-only probe var set by `mcp-connectors-env.test.ts` to assert `buildConnectorProcessEnv` scrubs AoA/infra secrets out of the env handed to external MCP connectors. Never read in production. |
 | `AOA_API_BASE` | API base URL used by the Commander review seed script; defaults to `http://127.0.0.1:3100/api` |

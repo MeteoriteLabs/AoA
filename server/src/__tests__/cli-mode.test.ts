@@ -47,6 +47,16 @@ vi.mock("@armyofagents/adapter-codex-local/server", async (importOriginal) => {
   };
 });
 
+// Task 3 (MCP connectors → Commander): the claude_cli chat now resolves the
+// company's active connectors via resolveAgentConnectors before spawning. Stub
+// it so the DB-less cliModeService({} as any) tests never hit real DB I/O.
+// DEFAULT = no connectors → the claude wiring stays byte-identical to pre-Task-3
+// (the existing argv/writeFile/spawnEnv assertions below still hold). The
+// connector-delivery test overrides this per-test with mockResolvedValue.
+vi.mock("../services/mcp-connectors-loader.js", () => ({
+  resolveAgentConnectors: vi.fn(async () => ({ extraMcpServers: {}, connectorEnv: {} })),
+}));
+
 // ── Session Store Tests ─────────────────────────────────────────────────────
 
 describe("CLISessionStore", () => {
@@ -759,14 +769,17 @@ describe("cliModeService.chat — per-CLI wiring (MX4)", () => {
     expect(args[0]).toBe("--mcp-config");
     expect(typeof args[1]).toBe("string");
     expect(args[1]).toMatch(/\.json$/);
-    expect(args[2]).toBe("--dangerously-skip-permissions");
-    expect(args[3]).toBe("--print");
-    expect(args[4]).toBe("--output-format");
-    expect(args[5]).toBe("stream-json");
-    expect(args[6]).toBe("--include-partial-messages");
-    expect(args[7]).toBe("--verbose");
+    // D2: --strict-mcp-config pairs with --mcp-config so the CLI does NOT also
+    // load the host ~/.claude.json / project .mcp.json (and claude.ai connectors).
+    expect(args[2]).toBe("--strict-mcp-config");
+    expect(args[3]).toBe("--dangerously-skip-permissions");
+    expect(args[4]).toBe("--print");
+    expect(args[5]).toBe("--output-format");
+    expect(args[6]).toBe("stream-json");
+    expect(args[7]).toBe("--include-partial-messages");
+    expect(args[8]).toBe("--verbose");
     // No content positional — argv stops at the flags.
-    expect(args).toHaveLength(8);
+    expect(args).toHaveLength(9);
     expect(args.join(" ")).not.toContain("hello world");
     expect(args).not.toContain("exec");
 
@@ -1427,6 +1440,8 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
     expect(args).toEqual([
       "--mcp-config",
       expect.stringMatching(/\.json$/),
+      // D2: strict flag pairs with --mcp-config (no host/project MCP inheritance).
+      "--strict-mcp-config",
       "--dangerously-skip-permissions",
       "--print",
       "--output-format",
@@ -1473,6 +1488,125 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
     // extended thinking. Mirrors the codex CODEX_HOME assertion pattern.
     const [, , spawnOpts] = vi.mocked(cp.spawn).mock.calls[0];
     expect((spawnOpts as any)?.env?.MAX_THINKING_TOKENS).toBe("3000");
+  });
+
+  // ── Task 3: MCP connectors delivered to Commander (claude_cli) ──────────────
+  //
+  // Commander is per-USER, not per-agent → it receives EVERY active company
+  // connector (D3), resolved with agentId: null. The spec (carrying only a
+  // `${AOA_MCP_*_TOKEN}` placeholder) lands in the --mcp-config FILE alongside
+  // aoa; the real secret rides ONLY in the spawn env (connectorEnv merged over
+  // process.env + the existing spawnEnv), never on disk.
+
+  // Drives a claude persistent process: emits one stream-json text delta then
+  // exits, so the turn's for-await completes.
+  function driveClaudeToCompletion(persistent: any) {
+    let attached = false;
+    persistent.stdout.on("newListener", () => {
+      if (attached) return;
+      attached = true;
+      setImmediate(() => {
+        persistent.stdout.emit(
+          "data",
+          Buffer.from(
+            JSON.stringify({
+              type: "stream_event",
+              event: {
+                type: "content_block_delta",
+                delta: { type: "text_delta", text: "ok" },
+              },
+            }) + "\n",
+          ),
+        );
+        persistent.emit("exit", 0, null);
+        persistent.emit("close", 0, null);
+      });
+    });
+  }
+
+  it("claude_cli: delivers active company connectors — spec (with ${AOA_MCP_*_TOKEN} placeholder) in the config FILE, real secret ONLY in spawn env (D3 all-active via agentId:null)", async () => {
+    const cp = await import("node:child_process");
+    vi.mocked(cp.execSync).mockReturnValue("/usr/local/bin/claude\n" as any);
+    const persistent = makePersistentProcess();
+    vi.mocked(cp.spawn).mockReturnValue(persistent as any);
+    const fsp = await import("node:fs/promises");
+
+    // Commander receives every ACTIVE connector (agentId:null). Secret is
+    // plaintext in the resolved env but MUST never reach the config file.
+    const loaderMod = await import("../services/mcp-connectors-loader.js");
+    vi.mocked(loaderMod.resolveAgentConnectors).mockResolvedValue({
+      extraMcpServers: {
+        notion: {
+          kind: "http",
+          url: "https://mcp.notion.com/mcp",
+          headers: { Authorization: "Bearer ${AOA_MCP_NOTION_TOKEN}" },
+        },
+      },
+      connectorEnv: { AOA_MCP_NOTION_TOKEN: "sk-notion-PLAINTEXT-SECRET" },
+    });
+
+    const { cliModeService } = await import(
+      "../services/internal-agent/cli-mode.js"
+    );
+    const service = cliModeService({} as any);
+    driveClaudeToCompletion(persistent);
+    await drainChat(service, "claude_cli", "hello");
+
+    // D3: Commander resolves ALL active connectors → agentId: null, company scoped.
+    expect(vi.mocked(loaderMod.resolveAgentConnectors)).toHaveBeenCalledTimes(1);
+    const callArg = vi.mocked(loaderMod.resolveAgentConnectors).mock.calls[0][1];
+    expect(callArg.agentId).toBeNull();
+    expect(callArg.companyId).toBe("comp1");
+
+    // The written --mcp-config FILE carries notion (PLACEHOLDER header) alongside
+    // aoa — and NEVER the plaintext secret.
+    expect(vi.mocked(fsp.writeFile)).toHaveBeenCalledTimes(1);
+    const jsonBody = String(vi.mocked(fsp.writeFile).mock.calls[0][1]);
+    const parsed = JSON.parse(jsonBody);
+    expect(parsed.mcpServers.aoa).toBeDefined();
+    expect(parsed.mcpServers.notion).toEqual({
+      type: "http",
+      url: "https://mcp.notion.com/mcp",
+      headers: { Authorization: "Bearer ${AOA_MCP_NOTION_TOKEN}" },
+    });
+    expect(jsonBody).not.toContain("sk-notion-PLAINTEXT-SECRET");
+
+    // The real secret rides ONLY in the spawn env (merged over process.env +
+    // the existing spawnEnv). MAX_THINKING_TOKENS (pre-Task-3 spawnEnv) survives.
+    const [, , spawnOpts] = vi.mocked(cp.spawn).mock.calls[0];
+    expect((spawnOpts as any).env.AOA_MCP_NOTION_TOKEN).toBe("sk-notion-PLAINTEXT-SECRET");
+    expect((spawnOpts as any).env.MAX_THINKING_TOKENS).toBe("3000");
+  });
+
+  it("claude_cli: NO connectors → config FILE has ONLY aoa and spawn env carries no connector token (byte-identity regression)", async () => {
+    const cp = await import("node:child_process");
+    vi.mocked(cp.execSync).mockReturnValue("/usr/local/bin/claude\n" as any);
+    const persistent = makePersistentProcess();
+    vi.mocked(cp.spawn).mockReturnValue(persistent as any);
+    const fsp = await import("node:fs/promises");
+
+    // Explicit empty resolution (hermetic: vi.clearAllMocks does not reset a
+    // prior test's mockResolvedValue implementation).
+    const loaderMod = await import("../services/mcp-connectors-loader.js");
+    vi.mocked(loaderMod.resolveAgentConnectors).mockResolvedValue({
+      extraMcpServers: {},
+      connectorEnv: {},
+    });
+
+    const { cliModeService } = await import(
+      "../services/internal-agent/cli-mode.js"
+    );
+    const service = cliModeService({} as any);
+    driveClaudeToCompletion(persistent);
+    await drainChat(service, "claude_cli", "hi");
+
+    const parsed = JSON.parse(String(vi.mocked(fsp.writeFile).mock.calls[0][1]));
+    // aoa is the ONLY server — no connector splices in.
+    expect(Object.keys(parsed.mcpServers)).toEqual(["aoa"]);
+    const [, , spawnOpts] = vi.mocked(cp.spawn).mock.calls[0];
+    // spawnEnv unchanged: MAX_THINKING_TOKENS present, no connector token added.
+    expect((spawnOpts as any).env.MAX_THINKING_TOKENS).toBe("3000");
+    expect((spawnOpts as any).env.AOA_MCP_NOTION_TOKEN).toBeUndefined();
   });
 
   it("codex argv (first-turn): full argv shape — model + effort + summary — claude default config → DEFAULT_CODEX_CHAT_MODEL", async () => {
@@ -1542,5 +1676,213 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
       "codex-sess-aaa",
       "-",
     ]);
+  });
+
+  // ── FU-8: MCP connectors delivered to Commander on the CODEX adapter ─────────
+  //
+  // Parity with the claude_cli connector tests above, adapted for codex's
+  // delivery mechanism: connectors reach the per-session CODEX_HOME/config.toml
+  // via writeCodexMcpConfigToml's `externalServers` (the SAME writer the codex
+  // ADAPTER uses), and the real secret rides the SCRUBBED spawn env — never the
+  // config file, never alongside AoA's own ambient secrets.
+
+  it("codex: delivers active company connectors — specs passed as externalServers to the TOML writer, real secret in the SCRUBBED spawn env (D3 all-active via agentId:null); AoA's own secrets are stripped", async () => {
+    const cp = await import("node:child_process");
+    vi.mocked(cp.execSync).mockReturnValue("/usr/local/bin/codex\n" as any);
+    const proc = makeOneShotProcess({ stdout: CODEX_TURN1_JSONL });
+    vi.mocked(cp.spawn).mockReturnValue(proc as any);
+    const codexMod = await import("@armyofagents/adapter-codex-local/server");
+
+    // Commander receives every ACTIVE connector (agentId:null). Secret is
+    // plaintext in the resolved env but MUST never reach the config file.
+    const loaderMod = await import("../services/mcp-connectors-loader.js");
+    vi.mocked(loaderMod.resolveAgentConnectors).mockResolvedValue({
+      extraMcpServers: {
+        notion: {
+          kind: "http",
+          url: "https://mcp.notion.com/mcp",
+          headers: { Authorization: "Bearer ${AOA_MCP_NOTION_TOKEN}" },
+        },
+      },
+      connectorEnv: { AOA_MCP_NOTION_TOKEN: "sk-notion-PLAINTEXT-SECRET" },
+    } as any);
+
+    // An AoA-owned ambient secret that the scrub MUST strip from the codex spawn
+    // env (and every stdio connector child it spawns). AOA_ prefix → denied.
+    const savedSecret = process.env.AOA_SECRETS_MASTER_KEY;
+    process.env.AOA_SECRETS_MASTER_KEY = "raw-master-key-should-not-leak";
+    try {
+      const { cliModeService } = await import(
+        "../services/internal-agent/cli-mode.js"
+      );
+      const service = cliModeService({} as any);
+      await drainChat(service, "codex", "hello");
+
+      // D3: Commander resolves ALL active connectors → agentId:null, company scoped.
+      expect(vi.mocked(loaderMod.resolveAgentConnectors)).toHaveBeenCalledTimes(1);
+      const callArg = vi.mocked(loaderMod.resolveAgentConnectors).mock.calls[0][1];
+      expect(callArg.agentId).toBeNull();
+      expect(callArg.companyId).toBe("comp1");
+
+      // The connector specs are handed to the codex TOML writer as
+      // `externalServers` (the writer renders them into the fenced region and
+      // filters codex-undeliverable ones — FU-5).
+      expect(vi.mocked(codexMod.writeCodexMcpConfigToml)).toHaveBeenCalledTimes(1);
+      const [codexDir, , options] = vi.mocked(codexMod.writeCodexMcpConfigToml).mock.calls[0];
+      expect((options as any)?.externalServers).toEqual({
+        notion: {
+          kind: "http",
+          url: "https://mcp.notion.com/mcp",
+          headers: { Authorization: "Bearer ${AOA_MCP_NOTION_TOKEN}" },
+        },
+      });
+
+      // The spawn env carries the connector's OWN token + CODEX_HOME, but the
+      // scrub has removed AoA's ambient secret.
+      const [, , spawnOpts] = vi.mocked(cp.spawn).mock.calls[0];
+      const env = (spawnOpts as any).env;
+      expect(env.AOA_MCP_NOTION_TOKEN).toBe("sk-notion-PLAINTEXT-SECRET");
+      expect(env.CODEX_HOME).toBe(codexDir);
+      expect(env.AOA_SECRETS_MASTER_KEY).toBeUndefined(); // scrubbed
+      expect(env.PATH).toBeTruthy(); // base non-secrets survive
+    } finally {
+      if (savedSecret === undefined) delete process.env.AOA_SECRETS_MASTER_KEY;
+      else process.env.AOA_SECRETS_MASTER_KEY = savedSecret;
+    }
+  });
+
+  it("codex: NO connectors → externalServers is {} and the spawn env is byte-identical (full process.env + CODEX_HOME, no scrub, no connector token)", async () => {
+    const cp = await import("node:child_process");
+    vi.mocked(cp.execSync).mockReturnValue("/usr/local/bin/codex\n" as any);
+    const proc = makeOneShotProcess({ stdout: CODEX_TURN1_JSONL });
+    vi.mocked(cp.spawn).mockReturnValue(proc as any);
+    const codexMod = await import("@armyofagents/adapter-codex-local/server");
+
+    // Explicit empty resolution (hermetic: vi.clearAllMocks does not reset a
+    // prior test's mockResolvedValue implementation).
+    const loaderMod = await import("../services/mcp-connectors-loader.js");
+    vi.mocked(loaderMod.resolveAgentConnectors).mockResolvedValue({
+      extraMcpServers: {},
+      connectorEnv: {},
+    } as any);
+
+    // With NO connectors the codex spawn keeps the FULL process.env — an AoA
+    // secret present here must SURVIVE (proves the no-scrub path is unchanged).
+    const savedSecret = process.env.AOA_SECRETS_MASTER_KEY;
+    process.env.AOA_SECRETS_MASTER_KEY = "present-when-no-connectors";
+    try {
+      const { cliModeService } = await import(
+        "../services/internal-agent/cli-mode.js"
+      );
+      const service = cliModeService({} as any);
+      await drainChat(service, "codex", "hi");
+
+      // Writer still called (its fence strip is the connector-cleanup path), but
+      // with an EMPTY externalServers map.
+      expect(vi.mocked(codexMod.writeCodexMcpConfigToml)).toHaveBeenCalledTimes(1);
+      const [codexDir, , options] = vi.mocked(codexMod.writeCodexMcpConfigToml).mock.calls[0];
+      expect((options as any)?.externalServers).toEqual({});
+
+      const [, , spawnOpts] = vi.mocked(cp.spawn).mock.calls[0];
+      const env = (spawnOpts as any).env;
+      expect(env.CODEX_HOME).toBe(codexDir);
+      expect(env.AOA_MCP_NOTION_TOKEN).toBeUndefined(); // no connector token
+      expect(env.AOA_SECRETS_MASTER_KEY).toBe("present-when-no-connectors"); // full env, no scrub
+    } finally {
+      if (savedSecret === undefined) delete process.env.AOA_SECRETS_MASTER_KEY;
+      else process.env.AOA_SECRETS_MASTER_KEY = savedSecret;
+    }
+  });
+
+  // P1 (Codex) regression — a SECRETLESS connector (stdio filesystem, unauth'd
+  // http) resolves to a NONEMPTY spec map but an EMPTY connectorEnv. Gating the
+  // FU-23 scrub on connectorEnv (the pre-fix bug) treated this as "no connectors"
+  // and handed the full ambient env — DATABASE_URL, master key, GitHub PAT — to
+  // the connector's stdio child. The gate now keys on the SPEC map, so the scrub
+  // fires whenever any external connector is present, token or not.
+  it("claude_cli: SECRETLESS connector (empty connectorEnv, nonempty specs) STILL scrubs AoA's ambient secrets", async () => {
+    const cp = await import("node:child_process");
+    vi.mocked(cp.execSync).mockReturnValue("/usr/local/bin/claude\n" as any);
+    const persistent = makePersistentProcess();
+    vi.mocked(cp.spawn).mockReturnValue(persistent as any);
+    const fsp = await import("node:fs/promises");
+
+    const loaderMod = await import("../services/mcp-connectors-loader.js");
+    vi.mocked(loaderMod.resolveAgentConnectors).mockResolvedValue({
+      extraMcpServers: {
+        filesystem: {
+          kind: "stdio",
+          command: "npx",
+          args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+        },
+      },
+      connectorEnv: {}, // secretless — nonempty specs, empty env
+    } as any);
+
+    const savedSecret = process.env.AOA_SECRETS_MASTER_KEY;
+    process.env.AOA_SECRETS_MASTER_KEY = "raw-master-key-should-not-leak";
+    try {
+      const { cliModeService } = await import(
+        "../services/internal-agent/cli-mode.js"
+      );
+      const service = cliModeService({} as any);
+      driveClaudeToCompletion(persistent);
+      await drainChat(service, "claude_cli", "hello");
+
+      // The connector WAS delivered (config file carries it) → this is the
+      // "present" state, not the no-connector path.
+      const parsed = JSON.parse(String(vi.mocked(fsp.writeFile).mock.calls[0][1]));
+      expect(parsed.mcpServers.filesystem).toBeDefined();
+
+      // …and the ambient secret is SCRUBBED despite connectorEnv being empty.
+      const [, , spawnOpts] = vi.mocked(cp.spawn).mock.calls[0];
+      expect((spawnOpts as any).env.AOA_SECRETS_MASTER_KEY).toBeUndefined();
+      expect((spawnOpts as any).env.PATH).toBeTruthy(); // base non-secrets survive
+    } finally {
+      if (savedSecret === undefined) delete process.env.AOA_SECRETS_MASTER_KEY;
+      else process.env.AOA_SECRETS_MASTER_KEY = savedSecret;
+    }
+  });
+
+  it("codex: SECRETLESS connector (empty connectorEnv, nonempty specs) STILL scrubs AoA's ambient secrets", async () => {
+    const cp = await import("node:child_process");
+    vi.mocked(cp.execSync).mockReturnValue("/usr/local/bin/codex\n" as any);
+    const proc = makeOneShotProcess({ stdout: CODEX_TURN1_JSONL });
+    vi.mocked(cp.spawn).mockReturnValue(proc as any);
+    const codexMod = await import("@armyofagents/adapter-codex-local/server");
+
+    const loaderMod = await import("../services/mcp-connectors-loader.js");
+    vi.mocked(loaderMod.resolveAgentConnectors).mockResolvedValue({
+      extraMcpServers: {
+        filesystem: {
+          kind: "stdio",
+          command: "npx",
+          args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+        },
+      },
+      connectorEnv: {}, // secretless — nonempty specs, empty env
+    } as any);
+
+    const savedSecret = process.env.AOA_SECRETS_MASTER_KEY;
+    process.env.AOA_SECRETS_MASTER_KEY = "raw-master-key-should-not-leak";
+    try {
+      const { cliModeService } = await import(
+        "../services/internal-agent/cli-mode.js"
+      );
+      const service = cliModeService({} as any);
+      await drainChat(service, "codex", "hello");
+
+      // The connector WAS delivered to the TOML writer → "present" state.
+      expect(vi.mocked(codexMod.writeCodexMcpConfigToml)).toHaveBeenCalledTimes(1);
+      const [, , options] = vi.mocked(codexMod.writeCodexMcpConfigToml).mock.calls[0];
+      expect((options as any)?.externalServers.filesystem).toBeDefined();
+
+      const [, , spawnOpts] = vi.mocked(cp.spawn).mock.calls[0];
+      expect((spawnOpts as any).env.AOA_SECRETS_MASTER_KEY).toBeUndefined(); // scrubbed
+      expect((spawnOpts as any).env.PATH).toBeTruthy();
+    } finally {
+      if (savedSecret === undefined) delete process.env.AOA_SECRETS_MASTER_KEY;
+      else process.env.AOA_SECRETS_MASTER_KEY = savedSecret;
+    }
   });
 });

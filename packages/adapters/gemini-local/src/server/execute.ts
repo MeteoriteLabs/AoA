@@ -7,6 +7,7 @@ import {
   adapterExecutionTargetSessionMatches,
   runAdapterExecutionTargetProcess,
   syncAdapterExecutionTargetFile,
+  aoaAmbientSecretEnvKeys,
   type AdapterExecutionContext,
   type AdapterExecutionResult,
 } from "@armyofagents/adapter-utils";
@@ -34,6 +35,10 @@ import {
 } from "./parse.js";
 import { firstNonEmptyLine } from "./utils.js";
 import { writeGeminiMcpSettingsJson } from "./gemini-settings-json.js";
+import {
+  detectGeminiFolderTrust,
+  geminiFolderTrustWarning,
+} from "./gemini-folder-trust.js";
 
 function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean {
   const raw = env[key];
@@ -120,8 +125,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // radius to the adapter-controlled workspace. Idempotent, preserves
   // unrelated keys, strips prior aoa block before splicing — see
   // gemini-settings-json.ts header.
-  if (ctx.mcpBridge) {
-    await writeGeminiMcpSettingsJson(cwd, ctx.mcpBridge);
+  //
+  // External connectors (Plan 2b Task 6) ride along in the SAME write.
+  //
+  // C2 — the gate tests PRESENCE, not truthiness/emptiness: a run that delivers
+  // `mcpServers: {}` (every connector deleted or disabled) MUST still reach the
+  // writer, because the writer's sweep is what REMOVES the entries a previous
+  // run wrote. Gating on non-emptiness would leave a revoked connector in
+  // settings.json forever and the agent would keep the tool. Same reason
+  // `ctx.mcpBridge` alone no longer guards this: the day the bridge becomes
+  // conditional, cleanup must not stop with it.
+  if (ctx.mcpBridge !== undefined || ctx.mcpServers !== undefined) {
+    const result = await writeGeminiMcpSettingsJson(cwd, ctx.mcpBridge ?? null, {
+      externalServers: ctx.mcpServers ?? {},
+      // Scopes the ownership manifest, which lives under the AoA instance root
+      // rather than in this workspace.
+      companyId: agent.companyId,
+      agentId: agent.id,
+    });
     if (executionTargetIsRemote) {
       await syncAdapterExecutionTargetFile({
         runId,
@@ -135,7 +156,34 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         onLog,
       });
     }
-    await onLog("stdout", "[aoa] Wired gemini MCP bridge via .gemini/settings.json\n");
+    const connectorCount = Object.keys(ctx.mcpServers ?? {}).length;
+    await onLog(
+      "stdout",
+      `[aoa] Wired gemini MCP config via .gemini/settings.json (${ctx.mcpBridge ? "bridge + " : ""}${connectorCount} external connector${connectorCount === 1 ? "" : "s"})\n`,
+    );
+    // Never let a connector vanish silently — the founder would believe the
+    // agent has a tool it does not have. stderr, matching codex and opencode:
+    // a skip is a diagnostic, and splitting them across streams makes the three
+    // adapters impossible to grep uniformly (M7).
+    for (const skip of result.skipped) {
+      await onLog(
+        "stderr",
+        `[aoa] gemini MCP connector "${skip.serverName}" skipped: ${skip.reason}\n`,
+      );
+    }
+
+    // B7 (corrected): everything above is moot if gemini folder trust is on —
+    // it disables EVERY MCP server, including the bridge we just wrote, and
+    // still exits 0. There is no known programmatic remedy (`--skip-trust` and
+    // per-server `trust` were both empirically disproven), so the least-bad
+    // behaviour is to make it loud. Best-effort: detection never fails the run.
+    const folderTrust = await detectGeminiFolderTrust(cwd).catch(() => ({
+      enabled: false,
+      source: null,
+    }));
+    if (folderTrust.enabled) {
+      await onLog("stderr", geminiFolderTrustWarning(folderTrust.source));
+    }
   }
 
   const envConfig = parseObject(config.env);
@@ -191,6 +239,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (!hasExplicitApiKey && authToken) {
     env.AOA_API_KEY = authToken;
   }
+  // FU-23: scrub AoA's ambient secrets from the spawn env when this run hosts
+  // external MCP connectors, so a stdio connector child gemini spawns can't
+  // inherit them. gemini passes the OVERLAY-only `env` to the spawn (below), so
+  // mergeChildEnv strips the ambient secrets from the inherited process.env while
+  // preserving the connector's own `${AOA_MCP_*_TOKEN}` (overlay-set). The `aoa`
+  // bridge keeps working from .gemini/settings.json's `mcpServers.aoa.env`
+  // (buildMcpBridgeSpec re-supplies DATABASE_URL + secrets config). No-connector
+  // runs keep the full env, byte-identical.
+  const connectorsPresent =
+    ctx.mcpServers != null && Object.keys(ctx.mcpServers).length > 0;
+  const connectorScrubKeys = connectorsPresent ? aoaAmbientSecretEnvKeys() : undefined;
   const effectiveEnv = Object.fromEntries(
     Object.entries({ ...process.env, ...env }).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
@@ -336,6 +395,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       args,
       cwd,
       env,
+      ...(connectorScrubKeys ? { unsetEnvKeys: connectorScrubKeys } : {}),
       authToken: env.AOA_API_KEY ?? authToken ?? null,
       apiBaseUrl: env.AOA_API_URL ?? null,
       runtimeCommandSpec: ctx.runtimeCommandSpec ?? null,

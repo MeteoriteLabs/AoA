@@ -146,7 +146,7 @@ describe("writeOpenCodeMcpConfigJson (T2.1)", () => {
     it("respects the serverName argument when stripping + writing", async () => {
       // Same content under a non-default key — verifies the strip/write logic
       // doesn't assume the literal string "aoa".
-      await writeOpenCodeMcpConfigJson(tmpDir, BRIDGE_SPEC, "myorg");
+      await writeOpenCodeMcpConfigJson(tmpDir, BRIDGE_SPEC, { serverName: "myorg" });
 
       const written = JSON.parse(
         await fs.readFile(path.join(tmpDir, "opencode.json"), "utf8"),

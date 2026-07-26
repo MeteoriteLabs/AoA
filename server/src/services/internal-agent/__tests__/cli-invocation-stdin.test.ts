@@ -18,6 +18,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { writeFile } from "node:fs/promises";
 
 // resolveCliInvocation writes the {mcpServers:{aoa}} JSON (+ the sysprompt txt
 // on the systemSplit path) via fs/promises.writeFile — stub it.
@@ -130,6 +131,45 @@ describe("resolveCliInvocation — claude stdin prompt delivery (W1 fix)", () =>
     expect(invocation!.stdinPrompt).toBe(safeContent);
   });
 
+  // D2 (strict MCP isolation): whenever the Commander argv passes --mcp-config
+  // it MUST also pass --strict-mcp-config, immediately after the config path.
+  // Without it the claude CLI additionally loads the host machine's
+  // ~/.claude.json and project .mcp.json (and claude.ai connectors).
+  it("plain path: argv pairs --mcp-config with --strict-mcp-config (D2)", async () => {
+    const invocation = await resolveCliInvocation(
+      "claude_cli",
+      BASE_PARAMS as any,
+      "safe",
+      undefined,
+      undefined, // plain path
+      true,
+      undefined,
+      "raw-prompt",
+    );
+    expect(invocation!.args).toContain("--mcp-config");
+    expect(invocation!.args).toContain("--strict-mcp-config");
+    // strict flag sits immediately after the config path element.
+    const cfgIdx = invocation!.args.indexOf("--mcp-config");
+    expect(invocation!.args[cfgIdx + 2]).toBe("--strict-mcp-config");
+  });
+
+  it("systemSplit path: argv pairs --mcp-config with --strict-mcp-config (D2)", async () => {
+    const invocation = await resolveCliInvocation(
+      "claude_cli",
+      BASE_PARAMS as any,
+      "ignored-safeContent",
+      undefined,
+      { rawSystemContext: "## System\nYou are Commander.", rawContent: "do it" },
+      true,
+      undefined,
+      undefined,
+    );
+    expect(invocation!.args).toContain("--mcp-config");
+    expect(invocation!.args).toContain("--strict-mcp-config");
+    const cfgIdx = invocation!.args.indexOf("--mcp-config");
+    expect(invocation!.args[cfgIdx + 2]).toBe("--strict-mcp-config");
+  });
+
   it("vendorCliBypassEnabled=false drops --dangerously-skip-permissions but still uses stdin", async () => {
     const invocation = await resolveCliInvocation(
       "claude_cli",
@@ -143,5 +183,76 @@ describe("resolveCliInvocation — claude stdin prompt delivery (W1 fix)", () =>
     );
     expect(invocation!.args).not.toContain("--dangerously-skip-permissions");
     expect(invocation!.stdinPrompt).toBe("raw-prompt");
+  });
+});
+
+// Task 3 (MCP connectors): resolveCliInvocation already threads
+// params.extraMcpServers into buildMcpConfig, so an external connector splices
+// into the written --mcp-config FILE alongside aoa. These lock that seam: the
+// placeholder (never a plaintext secret) is what lands on disk, and the
+// no-connector output stays byte-identical.
+describe("resolveCliInvocation — external MCP connectors in the claude config (Task 3)", () => {
+  let resolveCliInvocation: typeof import("../cli-mode.js").resolveCliInvocation;
+  const writeFileMock = vi.mocked(writeFile);
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    vi.resetModules();
+    const mod = await import("../cli-mode.js");
+    resolveCliInvocation = mod.resolveCliInvocation;
+  });
+
+  it("writes a connector (with ${AOA_MCP_*_TOKEN} placeholder) alongside aoa; NO plaintext secret; connectors do not touch spawnEnv", async () => {
+    const invocation = await resolveCliInvocation(
+      "claude_cli",
+      {
+        ...BASE_PARAMS,
+        extraMcpServers: {
+          notion: {
+            kind: "http",
+            url: "https://mcp.notion.com/mcp",
+            headers: { Authorization: "Bearer ${AOA_MCP_NOTION_TOKEN}" },
+          },
+        },
+      } as any,
+      "safe",
+      undefined, // resumeCodexSessionId
+      undefined, // systemSplitArgs (plain path)
+      true,
+      undefined,
+      "raw-prompt",
+    );
+
+    // The FIRST writeFile call is the {mcpServers:...} config JSON.
+    const body = String(writeFileMock.mock.calls[0][1]);
+    const parsed = JSON.parse(body);
+    expect(parsed.mcpServers.aoa).toBeDefined();
+    expect(parsed.mcpServers.notion).toEqual({
+      type: "http",
+      url: "https://mcp.notion.com/mcp",
+      headers: { Authorization: "Bearer ${AOA_MCP_NOTION_TOKEN}" },
+    });
+    // Only the placeholder is on disk — resolveCliInvocation never sees the secret.
+    expect(body).toContain("${AOA_MCP_NOTION_TOKEN}");
+
+    // Connectors are delivered via the FILE only: resolveCliInvocation's
+    // spawnEnv stays the Commander default (MAX_THINKING_TOKENS), no token keys.
+    expect(invocation!.spawnEnv?.MAX_THINKING_TOKENS).toBeDefined();
+    expect(invocation!.spawnEnv?.AOA_MCP_NOTION_TOKEN).toBeUndefined();
+  });
+
+  it("no extraMcpServers → the config FILE contains ONLY aoa (no-connector byte-identity)", async () => {
+    await resolveCliInvocation(
+      "claude_cli",
+      BASE_PARAMS as any,
+      "safe",
+      undefined,
+      undefined,
+      true,
+      undefined,
+      "raw-prompt",
+    );
+    const parsed = JSON.parse(String(writeFileMock.mock.calls[0][1]));
+    expect(Object.keys(parsed.mcpServers)).toEqual(["aoa"]);
   });
 });
