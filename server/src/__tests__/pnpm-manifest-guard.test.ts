@@ -47,13 +47,16 @@ describe("pnpm manifest guard (#42) — pnpm 10/11 must not have dropped the pnp
     const wsPath = path.join(ROOT, "pnpm-workspace.yaml");
     if (!existsSync(wsPath)) return;
     const ws = readFileSync(wsPath, "utf8");
+    // Match TOP-LEVEL keys only (column 0, no indentation) — pnpm 10/11 writes
+    // these at the root of the file. An indented `overrides:` (e.g. a named
+    // catalog under `catalogs:`) is legitimate and must not trip the guard.
     expect(
       ws,
       "overrides migrated into pnpm-workspace.yaml — run under pnpm 9.15.4 and move them back to package.json",
-    ).not.toMatch(/^\s*overrides\s*:/m);
+    ).not.toMatch(/^overrides\s*:/m);
     expect(
       ws,
       "patchedDependencies migrated into pnpm-workspace.yaml — move it back to package.json",
-    ).not.toMatch(/^\s*patchedDependencies\s*:/m);
+    ).not.toMatch(/^patchedDependencies\s*:/m);
   });
 });
