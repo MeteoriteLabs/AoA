@@ -53,6 +53,23 @@ describe("McpConnectorCatalogEntrySchema", () => {
     expect(r.success && r.data).not.toHaveProperty("iconUrl");
   });
 
+  it.each(["aoa", "playwright"])(
+    "drops a reserved-name entry %j from the shelf (Codex P2 shelf hygiene)",
+    (serverName) => {
+      const file = {
+        schemaVersion: "1.0.0",
+        entries: [
+          httpEntry,
+          { ...httpEntry, id: "reserved", serverName },
+        ],
+      };
+      const result = parseMcpConnectorCatalog(file);
+      expect(result.entries.map((e) => e.id)).toEqual(["notion"]);
+      expect(result.dropped).toEqual(["reserved"]);
+      expect(result.malformed).toBe(false);
+    },
+  );
+
   it("drops an unparseable entry but keeps the good ones (forward compatible)", () => {
     const file = {
       schemaVersion: "1.0.0",

@@ -9,6 +9,14 @@
  * @packageDocumentation
  */
 
+// Server names AoA owns. A connector must never shadow these. The canonical
+// definition lives in `@armyofagents/shared` (the catalog parser there needs it
+// too, and `shared` cannot depend on `adapter-utils`). Imported for internal use
+// (stripReservedMcpServerNames) AND re-exported so every existing
+// `@armyofagents/adapter-utils` importer keeps working unchanged.
+import { RESERVED_MCP_SERVER_NAMES } from "@armyofagents/shared";
+export { RESERVED_MCP_SERVER_NAMES };
+
 /** A locally-spawned MCP server (stdio transport). */
 export interface McpStdioServerSpec {
   kind: "stdio";
@@ -82,9 +90,6 @@ export function isHttpServerSpec(spec: unknown): spec is McpHttpServerSpec {
     typeof (spec as { url?: unknown }).url === "string"
   );
 }
-
-/** Server names AoA owns. A connector must never shadow these. */
-export const RESERVED_MCP_SERVER_NAMES = ["aoa", "playwright"] as const;
 
 /**
  * Why a writer dropped a connector it was handed.

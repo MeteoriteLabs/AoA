@@ -17,6 +17,21 @@ import { z } from "zod";
 
 const SERVER_NAME_RE = /^[a-z0-9-]+$/;
 
+/**
+ * AoA-owned MCP server names that a connector must NEVER claim. `aoa` is the
+ * loopback bridge; `playwright` is the browser-use server. Both are re-supplied
+ * structurally by AoA and stripped from any incoming connector at adapter merge
+ * (`stripReservedMcpServerNames`), so a connector using one installs into a
+ * permanently-dead row.
+ *
+ * CANONICAL DEFINITION LIVES HERE (in `shared`). `@armyofagents/adapter-utils`
+ * re-exports it — `adapter-utils` depends on `shared`, never the reverse, so this
+ * placement is the only one that lets both the catalog parser (shared) and the
+ * adapter merge (adapter-utils) share one source of truth without a workspace
+ * dependency cycle.
+ */
+export const RESERVED_MCP_SERVER_NAMES = ["aoa", "playwright"] as const;
+
 // RFC 7230 §3.2.6 token charset for HTTP header field-names. Deliberately
 // excludes `:` and whitespace — those are exactly what would let a "key" smuggle
 // a `Name: value` pair (or a whole secret) past this schema and into the
@@ -236,6 +251,14 @@ export function parseMcpConnectorCatalog(input: unknown): {
     const parsed = McpConnectorCatalogEntrySchema.safeParse(item);
     if (!parsed.success) {
       dropped.push(droppedIdOf(item));
+      continue;
+    }
+    // P2 (Codex): shelf hygiene — drop a reserved-name entry so it never
+    // surfaces on the shelf. NOT the security boundary (createConnector + the
+    // delivery-time reserved guard remain that): the adapter merge would strip
+    // it anyway, but showing it as installable is a dead-install trap.
+    if ((RESERVED_MCP_SERVER_NAMES as readonly string[]).includes(parsed.data.serverName)) {
+      dropped.push(parsed.data.id);
       continue;
     }
     // Finding 7: enforce id uniqueness in the returned entries. First-wins, so
