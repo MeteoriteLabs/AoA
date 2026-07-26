@@ -394,25 +394,34 @@ export async function execute(
   }
 
   // FU-23: codex already strips the ambient OPENAI_API_KEY on EVERY run (billing
-  // safety). When THIS run also hosts external MCP connectors, broaden the strip
+  // safety). When THIS run also hosts a STDIO MCP connector, broaden the strip
   // to ALL of AoA's ambient secrets so a stdio connector child codex spawns
   // cannot inherit them. codex passes the OVERLAY-only `env` to its spawns, so
   // mergeChildEnv strips these from the inherited process.env while preserving
   // the connector's own overlay token. The `aoa` bridge is unaffected: codex
   // scrubs its own env before spawning MCP children and reads the bridge's env
   // from `[mcp_servers.aoa.env]` in the managed config.toml (buildMcpBridgeSpec
-  // re-supplies DATABASE_URL + secrets config). No-connector runs keep the
-  // existing `["OPENAI_API_KEY"]` strip, byte-identical.
-  const codexConnectorsPresent =
-    ctx.mcpServers != null && Object.keys(ctx.mcpServers).length > 0;
-  const codexUnsetEnvKeys = codexConnectorsPresent
+  // re-supplies DATABASE_URL + secrets config). Runs without a stdio connector
+  // keep the existing `["OPENAI_API_KEY"]` strip, byte-identical.
+  //
+  // F4 — http connectors inherit nothing; env isolation is stdio-only. An HTTP
+  // connector is remote and spawns NO local child that inherits the CLI env, so
+  // isolating the env on an http-only run has zero benefit and wrongly strips the
+  // agent's own AOA_API_KEY → its curl/REST calls 401 in authenticated mode. Gate
+  // every env-isolation use (ambient scrub, bearer strip, authToken:null) on a
+  // STDIO connector actually being present. Connector CONFIG delivery
+  // (config.toml) is unchanged for all transports — this gate is env-isolation only.
+  const hasStdioConnector =
+    ctx.mcpServers != null &&
+    Object.values(ctx.mcpServers).some((s) => (s as { kind?: string } | null)?.kind === "stdio");
+  const codexUnsetEnvKeys = hasStdioConnector
     ? [...new Set(["OPENAI_API_KEY", ...aoaAmbientSecretEnvKeys()])]
     : ["OPENAI_API_KEY"];
   // WS1 — strip the run bearer from the overlay so neither codex spawn path (exec
   // or app-server) hands it to a connector child. Covers both because both use
-  // this shared `env`. No-op without connectors.
+  // this shared `env`. No-op without a stdio connector (F4).
   stripConnectorRunBearers(env, {
-    connectorsPresent: codexConnectorsPresent,
+    connectorsPresent: hasStdioConnector,
     secretValues: [authToken],
   });
 
@@ -562,7 +571,9 @@ export async function execute(
       // FU-23: broadened to all AoA ambient secrets on connector-hosting runs.
       unsetEnvKeys: codexUnsetEnvKeys,
       stdin: prompt,
-      authToken: codexConnectorsPresent ? null : (env.AOA_API_KEY ?? authToken ?? null),
+      // F4 — http connectors inherit nothing; env isolation is stdio-only. Only a
+      // stdio connector run nulls the bearer (a local child would inherit it).
+      authToken: hasStdioConnector ? null : (env.AOA_API_KEY ?? authToken ?? null),
       apiBaseUrl: env.AOA_API_URL ?? null,
       runtimeCommandSpec,
       timeoutSec,

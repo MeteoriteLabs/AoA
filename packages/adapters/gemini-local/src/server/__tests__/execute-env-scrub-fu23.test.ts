@@ -1,8 +1,9 @@
 /**
  * FU-23 (gemini_local) — see the claude sibling test for the threat model. A
- * fake gemini dumps the env it received; connectors present → AoA ambient
- * secrets are scrubbed, connector token + PATH survive; no connectors → env is
- * unchanged.
+ * fake gemini dumps the env it received; a STDIO connector present → AoA ambient
+ * secrets are scrubbed and the run bearer stripped, connector token + PATH
+ * survive; no connectors → env is unchanged; an HTTP-only connector is
+ * byte-identical to no-connectors (F4: remote connectors spawn no local child).
  *
  * ABLATION: delete `unsetEnvKeys: connectorScrubKeys` in execute.ts → the
  * "secret absent" assertions go RED.
@@ -33,6 +34,15 @@ const BRIDGE = {
   command: "node",
   args: ["/path/to/mcp-bridge.js"],
   env: { AOA_SESSION_COMPANY_ID: "company-1", DATABASE_URL: AMBIENT_SECRETS.DATABASE_URL },
+};
+
+// A STDIO connector — the ONLY transport that spawns a local child inheriting
+// the CLI env, so the ONLY one that triggers env isolation (F4).
+const PG_STDIO: McpServerSpec = {
+  kind: "stdio",
+  command: "npx",
+  args: ["-y", "dbhub@1.0.0"],
+  env: {},
 };
 
 async function writeFakeGeminiCommand(commandBase: string): Promise<string> {
@@ -69,12 +79,21 @@ afterEach(() => {
   }
 });
 
-async function runOnce(withConnectors: boolean): Promise<Record<string, string>> {
+async function runOnce(connectors: "none" | "stdio" | "http"): Promise<Record<string, string>> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-gemini-fu23-"));
   const workspace = path.join(root, "workspace");
   const capturePath = path.join(root, "capture.json");
   await fs.mkdir(workspace, { recursive: true });
   const commandPath = await writeFakeGeminiCommand(path.join(root, "agent"));
+  const mcpFields =
+    connectors === "none"
+      ? {}
+      : {
+          mcpBridge: BRIDGE,
+          mcpServers: (connectors === "stdio"
+            ? { pg: PG_STDIO }
+            : { notion: NOTION }) as Record<string, McpServerSpec>,
+        };
   try {
     const result = await execute({
       runId: "run-gemini-fu23",
@@ -90,7 +109,7 @@ async function runOnce(withConnectors: boolean): Promise<Record<string, string>>
       },
       context: {},
       executionTarget: { type: "local" as const },
-      ...(withConnectors ? { mcpBridge: BRIDGE, mcpServers: { notion: NOTION } } : {}),
+      ...mcpFields,
       authToken: "secret-run-token",
       onLog: async () => {},
     });
@@ -102,24 +121,36 @@ async function runOnce(withConnectors: boolean): Promise<Record<string, string>>
 }
 
 describe("gemini_local FU-23 env scrub", () => {
-  it("connectors present → AoA ambient secrets are absent, connector token + PATH survive", async () => {
-    const env = await runOnce(true);
+  it("STDIO connector present → AoA ambient secrets absent, run bearer stripped, connector token + PATH survive", async () => {
+    const env = await runOnce("stdio");
     for (const key of Object.keys(AMBIENT_SECRETS)) {
       expect(env[key], `${key} must not leak to a connector child`).toBeUndefined();
     }
     expect(env.AOA_MCP_NOTION_TOKEN).toBe("connector-token");
     expect(env.PATH ?? env.Path).toBeTruthy();
-    // WS1 — the run-scoped API bearer must NOT reach a connector child.
+    // WS1 — the run-scoped API bearer must NOT reach a stdio connector child.
     // ABLATION: delete stripConnectorRunBearers(...) in execute.ts → RED.
     expect(env.AOA_API_KEY, "run token must not leak to a connector child").toBeUndefined();
   });
 
   it("no connectors → env is unscrubbed (byte-identical: ambient secrets present)", async () => {
-    const env = await runOnce(false);
+    const env = await runOnce("none");
     expect(env.DATABASE_URL).toBe(AMBIENT_SECRETS.DATABASE_URL);
     expect(env.OPENAI_API_KEY).toBe(AMBIENT_SECRETS.OPENAI_API_KEY);
     expect(env.AOA_MCP_NOTION_TOKEN).toBe("connector-token");
     // WS1 byte-identity foil: the run token is present when no connectors.
     expect(env.AOA_API_KEY).toBe("secret-run-token");
+  });
+
+  it("HTTP-ONLY connector → byte-identical, bearer KEPT (F4: remote connectors spawn no child)", async () => {
+    // Enabling an HTTP connector must NOT strip the agent's own bearer — otherwise
+    // authenticated-deployment REST (curl with AOA_API_KEY) 401s for no isolation
+    // benefit, since an HTTP connector inherits nothing. ABLATION: gate the strip
+    // on `connectorsPresent` again → AOA_API_KEY becomes undefined → RED.
+    const env = await runOnce("http");
+    expect(env.DATABASE_URL).toBe(AMBIENT_SECRETS.DATABASE_URL);
+    expect(env.OPENAI_API_KEY).toBe(AMBIENT_SECRETS.OPENAI_API_KEY);
+    expect(env.AOA_API_KEY).toBe("secret-run-token");
+    expect(env.AOA_MCP_NOTION_TOKEN).toBe("connector-token");
   });
 });

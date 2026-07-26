@@ -50,6 +50,15 @@ const NOTION: McpServerSpec = {
   headers: { Authorization: "Bearer ${AOA_MCP_NOTION_TOKEN}" },
   authTokenEnvVar: "AOA_MCP_NOTION_TOKEN",
 };
+// STDIO — the ONLY transport that spawns a local child inheriting the env, so the
+// ONLY one that triggers env isolation (F4). An http-only run must stay
+// byte-identical to a no-connector run.
+const PG_STDIO: McpServerSpec = {
+  kind: "stdio",
+  command: "npx",
+  args: ["-y", "dbhub@1.0.0"],
+  env: {},
+};
 const BRIDGE = { command: "node", args: ["/b.js"], env: { AOA_SESSION_COMPANY_ID: "c1" } };
 
 // Minimal broker — never invoked in this test (no approval frames from the fake).
@@ -71,7 +80,9 @@ afterEach(() => {
   }
 });
 
-async function captureAppServerInput(withConnectors: boolean): Promise<RunAppServerTurnInput> {
+async function captureAppServerInput(
+  connectors: "none" | "stdio" | "http",
+): Promise<RunAppServerTurnInput> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-codex-appsrv-fu23-"));
   const workspace = path.join(root, "workspace");
   const codexHome = path.join(root, "codex-home");
@@ -99,7 +110,14 @@ async function captureAppServerInput(withConnectors: boolean): Promise<RunAppSer
         runtimeCommandSpec: { command: commandPath, installCommand: "do-not-run" },
         runtimeDecisionRoutingEnabled: true,
         runtimeDecisionBroker: broker,
-        ...(withConnectors ? { mcpBridge: BRIDGE, mcpServers: { notion: NOTION } } : {}),
+        ...(connectors === "none"
+          ? {}
+          : {
+              mcpBridge: BRIDGE,
+              mcpServers: (connectors === "stdio"
+                ? { pg: PG_STDIO }
+                : { notion: NOTION }) as Record<string, McpServerSpec>,
+            }),
         authToken: "secret-run-token",
         onLog: async () => {},
       },
@@ -128,27 +146,37 @@ async function captureAppServerInput(withConnectors: boolean): Promise<RunAppSer
 }
 
 describe("codex_local FU-23 env scrub (app-server path)", () => {
-  it("connectors present → app-server receives the broadened ambient-secret strip", async () => {
-    const input = await captureAppServerInput(true);
+  it("STDIO connector present → app-server receives the broadened ambient-secret strip", async () => {
+    const input = await captureAppServerInput("stdio");
     expect(input.unsetEnvKeys).toContain("OPENAI_API_KEY");
     expect(input.unsetEnvKeys).toContain("DATABASE_URL");
     expect(input.unsetEnvKeys).toContain("AOA_SECRETS_MASTER_KEY");
   });
 
   // WS1 — the run-scoped API bearer must NOT be in the env handed to the codex
-  // app-server on a connector run (a stdio connector child would inherit it).
-  it("connectors present → AOA_API_KEY is stripped from the app-server env", async () => {
-    const input = await captureAppServerInput(true);
+  // app-server on a stdio-connector run (a stdio connector child would inherit it).
+  it("STDIO connector present → AOA_API_KEY is stripped from the app-server env", async () => {
+    const input = await captureAppServerInput("stdio");
     expect(input.env.AOA_API_KEY).toBeUndefined();
   });
 
   it("no connectors → app-server keeps only the pre-existing OPENAI_API_KEY strip", async () => {
-    const input = await captureAppServerInput(false);
+    const input = await captureAppServerInput("none");
     expect(input.unsetEnvKeys).toEqual(["OPENAI_API_KEY"]);
   });
 
   it("no connectors → the run token still rides the env (byte-identity)", async () => {
-    const input = await captureAppServerInput(false);
+    const input = await captureAppServerInput("none");
+    expect(input.env.AOA_API_KEY).toBe("secret-run-token");
+  });
+
+  // F4 — an HTTP-only connector spawns no local child, so the app-server run must
+  // stay byte-identical to no-connectors: only the always-on OPENAI_API_KEY
+  // billing strip, and the agent's own AOA_API_KEY bearer KEPT (else authenticated
+  // REST 401s merely because an http connector was enabled).
+  it("HTTP-ONLY connector → only the OPENAI_API_KEY billing strip, bearer KEPT", async () => {
+    const input = await captureAppServerInput("http");
+    expect(input.unsetEnvKeys).toEqual(["OPENAI_API_KEY"]);
     expect(input.env.AOA_API_KEY).toBe("secret-run-token");
   });
 });

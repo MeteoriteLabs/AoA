@@ -342,9 +342,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // `${AOA_MCP_*_TOKEN}` lives in the spawn OVERLAY (`env` below), which
   // mergeChildEnv preserves through the strip. No-connector runs keep the full
   // env, byte-identical (empty list → no strip).
-  const connectorsPresent =
-    ctx.mcpServers != null && Object.keys(ctx.mcpServers).length > 0;
-  const connectorScrubKeys = connectorsPresent ? aoaAmbientSecretEnvKeys() : undefined;
+  // F4 — connector ENV ISOLATION (ambient scrub + bearer strip + authToken:null)
+  // applies only when a STDIO connector will spawn a local child that inherits the
+  // CLI env. HTTP connectors are remote: they inherit nothing, so an http-only run
+  // must stay byte-identical to a no-connector run. Otherwise merely enabling an
+  // HTTP connector would strip the agent's own AOA_API_KEY and 401 its REST calls
+  // (Codex F4). The connector CONFIG (--mcp-config) is still built from
+  // ctx.mcpServers regardless of transport — this gate is env-isolation only.
+  const hasStdioConnector =
+    ctx.mcpServers != null &&
+    Object.values(ctx.mcpServers).some((s) => (s as { kind?: string } | null)?.kind === "stdio");
+  const connectorScrubKeys = hasStdioConnector ? aoaAmbientSecretEnvKeys() : undefined;
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -583,7 +591,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // (forge runtime permission prompts). No-op without connectors → no-connector
     // runs stay byte-identical.
     stripConnectorRunBearers(env, {
-      connectorsPresent,
+      connectorsPresent: hasStdioConnector,
       secretValues: [authToken, runtimeHookToken],
     });
 
@@ -800,10 +808,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         cwd: executionCwd,
         env,
         stdin: prompt,
-        // Connector runs: null the token param too — some execution targets
+        // Stdio-connector runs: null the token param too — some execution targets
         // (sandbox-docker) forward it into a host callback bridge, so leaving it
-        // would reintroduce the credential the env-strip just removed.
-        authToken: connectorsPresent ? null : (env.AOA_API_KEY ?? authToken ?? null),
+        // would reintroduce the credential the env-strip just removed. HTTP-only
+        // runs keep the bearer (F4 — no local child inherits it).
+        authToken: hasStdioConnector ? null : (env.AOA_API_KEY ?? authToken ?? null),
         apiBaseUrl: env.AOA_API_URL ?? null,
         runtimeCommandSpec: ctx.runtimeCommandSpec ?? null,
         timeoutSec,

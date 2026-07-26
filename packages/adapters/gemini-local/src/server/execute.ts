@@ -248,12 +248,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // bridge keeps working from .gemini/settings.json's `mcpServers.aoa.env`
   // (buildMcpBridgeSpec re-supplies DATABASE_URL + secrets config). No-connector
   // runs keep the full env, byte-identical.
-  const connectorsPresent =
-    ctx.mcpServers != null && Object.keys(ctx.mcpServers).length > 0;
-  const connectorScrubKeys = connectorsPresent ? aoaAmbientSecretEnvKeys() : undefined;
+  // F4 — http connectors inherit nothing; env isolation is stdio-only. A stdio
+  // connector spawns a local child that inherits gemini's env, so it is the only
+  // transport whose presence justifies scrubbing ambient secrets, stripping the
+  // run bearer, and nulling authToken. An http-only run reaches a remote server
+  // that inherits no env, so isolating it would wrongly strip the agent's own
+  // AOA_API_KEY and 401 its REST calls (Codex F4). Connector CONFIG delivery via
+  // .gemini/settings.json is unchanged for all transports — this gate is
+  // env-isolation only.
+  const hasStdioConnector =
+    ctx.mcpServers != null &&
+    Object.values(ctx.mcpServers).some((s) => (s as { kind?: string } | null)?.kind === "stdio");
+  const connectorScrubKeys = hasStdioConnector ? aoaAmbientSecretEnvKeys() : undefined;
   // WS1 — keep the run bearer out of connector children (gemini has no runtime
-  // hook token; only AOA_API_KEY to strip). No-op without connectors.
-  stripConnectorRunBearers(env, { connectorsPresent, secretValues: [authToken] });
+  // hook token; only AOA_API_KEY to strip). No-op without stdio connectors.
+  stripConnectorRunBearers(env, { connectorsPresent: hasStdioConnector, secretValues: [authToken] });
   const effectiveEnv = Object.fromEntries(
     Object.entries({ ...process.env, ...env }).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
@@ -400,7 +409,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       cwd,
       env,
       ...(connectorScrubKeys ? { unsetEnvKeys: connectorScrubKeys } : {}),
-      authToken: connectorsPresent ? null : (env.AOA_API_KEY ?? authToken ?? null),
+      authToken: hasStdioConnector ? null : (env.AOA_API_KEY ?? authToken ?? null),
       apiBaseUrl: env.AOA_API_URL ?? null,
       runtimeCommandSpec: ctx.runtimeCommandSpec ?? null,
       timeoutSec,

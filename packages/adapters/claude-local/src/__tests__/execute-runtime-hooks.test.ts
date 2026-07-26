@@ -37,12 +37,14 @@ const CONNECTOR_MCP_BRIDGE = {
   args: ["/path/to/mcp-bridge.js"],
   env: { AOA_SESSION_COMPANY_ID: "company-hooks" },
 };
+// STDIO — the transport that spawns a local child inheriting the CLI env, so the
+// one that triggers the WS1 bearer strip (F4: an http-only connector would not).
 const CONNECTOR_SERVERS: Record<string, McpServerSpec> = {
-  notion: {
-    kind: "http",
-    url: "https://mcp.notion.com/mcp",
-    headers: { Authorization: "Bearer ${AOA_MCP_NOTION_TOKEN}" },
-    authTokenEnvVar: "AOA_MCP_NOTION_TOKEN",
+  pg: {
+    kind: "stdio",
+    command: "npx",
+    args: ["-y", "dbhub@1.0.0"],
+    env: {},
   },
 };
 
