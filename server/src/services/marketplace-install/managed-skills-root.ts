@@ -25,28 +25,54 @@
  *
  * Containment is `path.resolve`-based, matching the rest of the server's jails
  * (`resolvePathWithinRoot` in `agent-instructions.ts`,
- * `validatePackageFileKey`). On case-insensitive filesystems (win32/darwin —
- * and win32 is the primary platform) the compared paths are lower-cased first,
- * so a case-variant like `.AOA\Marketplace-Skills\…` — which names the SAME
- * directory the OS would open — cannot slip past a case-sensitive string
- * compare and defeat the jail. It does NOT resolve symlinks, 8.3 short names
+ * `validatePackageFileKey`). When the backing filesystem is case-insensitive
+ * (detected by probing `process.cwd()`, not guessed from the OS) the compared
+ * paths are lower-cased first, so a case-variant like `.AOA\Marketplace-Skills\…`
+ * — which names the SAME directory the OS would open — cannot slip past a
+ * case-sensitive string compare and defeat the jail. It does NOT resolve
+ * symlinks, 8.3 short names
  * (`MARKET~1`), or UNC/`\\?\` prefixes; the threat model is an authenticated
  * founder holding an invariant, not an anonymous escape, and those vectors are
  * consistent with the rest of the codebase's `path.resolve` jails.
  */
+import { existsSync } from "node:fs";
 import path from "node:path";
 
+let cachedCaseInsensitive: boolean | undefined;
+
 /**
- * Filesystems where two paths differing only in case name the same directory.
- * Comparisons are lower-cased on these so a case-variant path can't bypass the
- * jail (Linux is case-sensitive, so it is compared verbatim).
+ * Whether the filesystem backing the managed root treats differently-cased
+ * paths as the same directory. **Probed from `process.cwd()`** (which shares a
+ * filesystem with the managed root and always exists) rather than guessed from
+ * `process.platform` — so a case-insensitive mount on Linux, or a case-sensitive
+ * volume on macOS, is classified correctly instead of by a brittle OS default.
+ * Cached after the first call; falls back to the platform default only when the
+ * probe is inconclusive.
  */
-const CASE_INSENSITIVE_FS = process.platform === "win32" || process.platform === "darwin";
+function isCaseInsensitiveFilesystem(): boolean {
+  if (cachedCaseInsensitive === undefined) {
+    cachedCaseInsensitive = probeCaseInsensitive();
+  }
+  return cachedCaseInsensitive;
+}
+
+function probeCaseInsensitive(): boolean {
+  try {
+    const cwd = process.cwd();
+    const flipped = cwd === cwd.toLowerCase() ? cwd.toUpperCase() : cwd.toLowerCase();
+    // A case-flipped spelling of an existing directory that still resolves to it
+    // ⇒ the filesystem is case-insensitive.
+    if (flipped !== cwd) return existsSync(flipped);
+  } catch {
+    // fall through to the platform default
+  }
+  return process.platform === "win32" || process.platform === "darwin";
+}
 
 /** Resolve to absolute, then fold case on case-insensitive filesystems. */
 function normalizeForContainment(candidatePath: string): string {
   const resolved = path.resolve(candidatePath);
-  return CASE_INSENSITIVE_FS ? resolved.toLowerCase() : resolved;
+  return isCaseInsensitiveFilesystem() ? resolved.toLowerCase() : resolved;
 }
 
 /** True when `childPath` equals `parentPath` or is nested inside it. */
