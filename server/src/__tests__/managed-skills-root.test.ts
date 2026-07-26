@@ -1,21 +1,15 @@
-import { existsSync } from "node:fs";
 import path from "node:path";
 import { describe, it, expect } from "vitest";
 
-// Whether the filesystem this test runs on is case-insensitive — observed
-// directly (mirrors how the jail detects it), NOT guessed from process.platform,
-// so the assertion stays correct on a case-insensitive Linux mount or a
-// case-sensitive macOS volume. Flip ONLY cwd's leaf, keeping the ancestor path
-// intact, so we test the filesystem AT cwd and not a case-sensitive mount above it.
-const cwd = process.cwd();
-const cwdBase = path.basename(cwd);
-const flippedBase = cwdBase === cwdBase.toLowerCase() ? cwdBase.toUpperCase() : cwdBase.toLowerCase();
-const CASE_INSENSITIVE_FS =
-  flippedBase !== cwdBase && existsSync(path.join(path.dirname(cwd), flippedBase));
+// Observe case-sensitivity via the jail's OWN detector, so the expectation can
+// never drift from the code as the probe evolves — and it is filesystem-probed,
+// not guessed from process.platform.
+const CASE_INSENSITIVE_FS = isCaseInsensitiveFilesystem();
 import {
   managedMarketplaceSkillsRoot,
   isInsideManagedMarketplaceSkillsRoot,
   overlapsManagedMarketplaceSkillsRoot,
+  isCaseInsensitiveFilesystem,
 } from "../services/marketplace-install/managed-skills-root.js";
 
 describe("managedMarketplaceSkillsRoot", () => {

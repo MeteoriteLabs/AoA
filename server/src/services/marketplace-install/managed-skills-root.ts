@@ -35,21 +35,23 @@
  * founder holding an invariant, not an anonymous escape, and those vectors are
  * consistent with the rest of the codebase's `path.resolve` jails.
  */
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 
 let cachedCaseInsensitive: boolean | undefined;
 
 /**
  * Whether the filesystem backing the managed root treats differently-cased
- * paths as the same directory. **Probed from `process.cwd()`** (which shares a
- * filesystem with the managed root and always exists) rather than guessed from
- * `process.platform` — so a case-insensitive mount on Linux, or a case-sensitive
+ * paths as the same directory. Probed by case-flipping an existing entry
+ * **inside** `process.cwd()` — so the lookup happens on cwd's OWN filesystem,
+ * not the parent mount that resolves cwd's name — rather than guessed from
+ * `process.platform`. So a case-insensitive mount on Linux, or a case-sensitive
  * volume on macOS, is classified correctly instead of by a brittle OS default.
  * Cached after the first call; falls back to the platform default only when the
- * probe is inconclusive.
+ * probe is inconclusive. Exported so the containment test observes the same
+ * signal instead of re-deriving (and drifting from) it.
  */
-function isCaseInsensitiveFilesystem(): boolean {
+export function isCaseInsensitiveFilesystem(): boolean {
   if (cachedCaseInsensitive === undefined) {
     cachedCaseInsensitive = probeCaseInsensitive();
   }
@@ -59,14 +61,15 @@ function isCaseInsensitiveFilesystem(): boolean {
 function probeCaseInsensitive(): boolean {
   try {
     const cwd = process.cwd();
-    const base = path.basename(cwd);
-    const flipped = base === base.toLowerCase() ? base.toUpperCase() : base.toLowerCase();
-    // Flip ONLY the leaf and keep the ancestor path intact, so the probe tests
-    // the filesystem AT cwd (where the managed root lives) rather than a
-    // case-sensitive mount ABOVE it: a whole-path flip would change e.g. `/mnt`
-    // in `/mnt/casefold/AoA` and miss a case-insensitive `casefold` mount. A
-    // case-flipped leaf that still resolves ⇒ case-insensitive filesystem.
-    if (flipped !== base) return existsSync(path.join(path.dirname(cwd), flipped));
+    for (const entry of readdirSync(cwd)) {
+      const flipped = entry === entry.toLowerCase() ? entry.toUpperCase() : entry.toLowerCase();
+      if (flipped === entry) continue; // no letters to flip
+      // Look the case-flipped CHILD up within cwd, so we test cwd's own
+      // filesystem (not the parent mount that resolves cwd's own name — cwd may
+      // itself be a case-insensitive mount point under a case-sensitive parent).
+      // A flipped child that still resolves ⇒ case-insensitive filesystem.
+      return existsSync(path.join(cwd, flipped));
+    }
   } catch {
     // fall through to the platform default
   }
