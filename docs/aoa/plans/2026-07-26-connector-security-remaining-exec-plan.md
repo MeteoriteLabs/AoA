@@ -185,7 +185,12 @@ Covers BOTH callers (BYO + catalog) + ALL modes (incl. BYO-in-local_trusted per 
   - **Fixture caveat:** the D7-only delivery fixtures with NO command now trip `missing_command` → skipped. Per investigation: pin the ones asserting *delivery* (done in 5.1); a stdio row with no command is genuinely undeliverable.
 - [ ] **Step 4:** run server + `pnpm --filter @armyofagents/ui build`. Pass. **Step 5:** commit.
 
-### Task 5.4 (verify on push): e2e + integration
+### Task 5.4: audit-per-delivery event (RESOLVED — founder wants it now; completes Decision #116 clause 7)
+**File:** `server/src/services/mcp-connectors-loader.ts` (the real delivery path `loadEnabledConnectorRows`) + `server/src/services/activity-log.ts` (or the existing audit sink).
+- [ ] **Step 1 — failing test:** when a connector is delivered to a run (passes the selector), an audit event `mcp_connector.delivered` is emitted with `{ connectorId, serverName, transport, command (stdio), trustTier, runId, agentId }`. (AoA cannot observe the actual child exec — the CLI spawns it — so the honest event is `delivered`, not `spawned`; name + doc it so.)
+- [ ] **Step 2:** fail. **Step 3 — implement:** emit the event once per delivered connector in `loadEnabledConnectorRows`, best-effort (a logging failure must NOT break delivery — wrap in try/catch like the existing skip-log). **Step 4:** pass. **Step 5:** commit. This is what lets the PR honestly claim #116 clause 7 (audit) is satisfied.
+
+### Task 5.5 (verify on push): e2e + integration
 - [ ] Run connector e2e (`AOA_E2E_FORCE_WINDOWS=1`) — the pinned `tests/e2e/fixtures/connectors.json` must still install→active. Push for Linux CI (the pinning + integration are invisible to a plain Windows run).
 
 ---
@@ -195,7 +200,7 @@ Covers BOTH callers (BYO + catalog) + ALL modes (incl. BYO-in-local_trusted per 
 1. **F4 scope:** connector-scoped wrapper (recommended, zero hire/crew regression) vs full service-level boundary (atomic for all types on MCP but re-enters the high-regression zone). → **Recommend connector-scoped.**
 2. **F4 reject():** wrap symmetrically (recommended, cosmetic) or leave (lower severity). → **Recommend wrap.**
 3. **WS2 delivery check is mode-INDEPENDENT** (diverges from FU-19 D7's `deploymentMode !== undefined` gate) because decision 2 makes pinning universal. Confirm.
-4. **WS2 BYO consent:** there is NO BYO consent dialog/token today (consent is catalog-only). Does decision 2 require a new BYO command-consent dialog in `local_trusted`, or is pinning-via-`createConnector` + founder-authored command = sufficient implicit consent? → **Founder call.** (`mintConsentToken`/`verifyConsentToken` are reusable if wanted.)
+4. **WS2 BYO consent — RESOLVED (founder, 2026-07-26): implicit consent, NO new dialog.** local_trusted is the founder's own machine; the WS2 validator (exact pinning + closed grammar) in `createConnector` is the safety floor, and the founder authored the command. Do NOT build a BYO consent dialog/token. (Marketplace unverified-entry consent stays as-is — those commands come from third parties.)
 5. **WS2 cross-repo:** real curated stdio entries in `aoa-marketplace-cdn/connectors.json` MUST be exact-pinned or `createConnector` 400s every install (external-repo deliverable). Optionally add a pin `.refine` to the shared `McpConnectorCatalogEntrySchema` so a mis-published unpinned entry drops from the shelf instead of failing at install (would need `packages/shared/src/__tests__/mcp-connector-catalog.test.ts` pins).
 6. **WS2/registry integrity:** exact-version pinning ≠ provenance. Registry/config pinning (`npm_config_registry`, `.npmrc`, `UV_INDEX_URL`) + digest/vendoring + OS sandboxing are SEPARATE, later layers (Codex). This plan does NOT claim to sandbox connector code.
 
@@ -228,6 +233,6 @@ Covers BOTH callers (BYO + catalog) + ALL modes (incl. BYO-in-local_trusted per 
 - **[P2] Task 5.2 — reject a non-trimmed command.** The validator trims for the launcher check but the original string is persisted/spawned. Require `command === command.trim()` (or persist the normalized launcher) so `" npx "` can't preview-safe then fail at exec.
 - **[P2] Task 5.3** — the loader's hard-coded `onSkip` log message says "D7/deployment mode"; make it accurate for `unsafe_command`. And **flag the breaking migration explicitly**: existing unpinned USER rows stop delivering immediately (correct fail-closed, but needs release-notes + UI handling, not just fixture pinning). Preview order: D7 → unsafe_command → credential → spec.
 - **[P1] Task 5.4 — cross-repo catalog pinning is a RELEASE PREREQUISITE, not an open decision.** Every real stdio entry in `aoa-marketplace-cdn/connectors.json` must be exact-pinned before this ships or valid catalog installs 400 immediately.
-- **[P1] NEW — Decision #116 audit-per-spawn is MISSING.** #116 clause 7 requires an audit entry per stdio spawn/delivery attempt; no such production audit path exists and this plan doesn't add one. **Either add an audit task (a `mcp_connector.delivered` event in `selectConnectorRowsForAgent` / the loader) OR explicitly scope this PR as NOT completing #116's audit requirement** (tracked separately). Do not let the PR claim to "finish #116 connector security" without it.
+- **[P1] NEW — Decision #116 audit-per-spawn — RESOLVED (founder wants it now): added as Task 5.4** (`mcp_connector.delivered` best-effort event in `loadEnabledConnectorRows`). With it, the PR completes #116 clause 7's audit requirement.
 
 **Net:** approach is sound on all four; the corrections are (1) two WS1 test-compile/vacuity fixes, (2) an honest F2 reason rename, (3) F4: reject() mandatory + rollback-proof is integration-only + shared transition helper + tx cast, (4) WS2: complete the fixture migration + trim guard + honest audit scoping.
