@@ -10,6 +10,16 @@
 
 ---
 
+## ⚠️ RESOLVED at execution — the `${TOKEN}`-in-args conflict (Option A, founder-approved 2026-07-26)
+
+The complete fixture inventory (agent `af3466eb`) surfaced a conflict the plan + its Codex review both missed: the committed validator's blanket `$` ban (`DISALLOWED_CHAR`) is **incompatible with the shipped `${TOKEN}`-in-stdio-args secret-injection feature** — `buildConnectorSpecs` substitutes a connector's own `${TOKEN}` placeholder to its real secret env var, and it is valid in stdio `args`. Wiring the validator as-committed would have made every stdio connector that passes its token as a CLI arg **uncreatable** (a feature regression), not a fixture typo.
+
+**Decision (Option A):** the validator now **strips the exact `${TOKEN}` sentinel before the `$`-char check** — so the connector's OWN placeholder is allowed in args (`--token ${TOKEN}`, `--flag=${TOKEN}`), while every OTHER `$`-form stays rejected: a **foreign** `${AOA_API_KEY}` (which the CLI would expand from AoA's own env — an exfiltration vector the pre-WS2 no-validation path *allowed*), `$(cmd)`, backticks, redirection, chaining. This both **preserves the shipped feature** AND is **stricter than the status quo**. Consequence for the migration: most inventory items flagged `SEMANTIC-REWRITE` collapse to simple **version-pins**; the only true rewrites are an absolute-path command (now `not_a_launcher`) and assertion-order adjustments where a route-level `${TOKEN}`/D7/FU-20 gate legitimately pre-empts command-safety.
+
+Also folded in while wiring: a **trim guard** (reject a command with surrounding whitespace — `" npx "` would preview-safe then fail at exec). Delivery re-check lives in `selectConnectorRowsForAgent` + `computeConnectorDeliverability` (NOT `buildConnectorSpecs`, which is the substitution layer), guarded on `command &&` so a commandless stdio row keeps its `missing_command` classification.
+
+---
+
 ## File Structure (what each touched file is responsible for)
 
 | File | Role in this plan |
