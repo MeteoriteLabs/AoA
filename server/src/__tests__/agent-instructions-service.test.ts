@@ -432,4 +432,27 @@ describe("agent instructions service", () => {
     // The guard fires before any filesystem work, so nothing was created there.
     await expect(fs.stat(insideManagedRoot)).rejects.toMatchObject({ code: "ENOENT" });
   });
+
+  it("rejects deleting a file that resolves inside the managed tree via an ANCESTOR external root (Codex #302 writable-sink)", async () => {
+    const aoaHome = await makeTempDir("paperclip-agent-instructions-sink-");
+    cleanupDirs.add(aoaHome);
+    process.env.AOA_HOME = aoaHome;
+    process.env.AOA_INSTANCE_ID = "test-instance";
+
+    // `.aoa` is an ANCESTOR of `.aoa/marketplace-skills`, so it passes the
+    // updateBundle inside-check — but a relative path resolves into the managed
+    // tree, which the sink guard in deleteFile must catch before fs.rm.
+    const ancestorRoot = path.join(process.cwd(), ".aoa");
+    const agent = makeAgent({
+      instructionsBundleMode: "external",
+      instructionsRootPath: ancestorRoot,
+      instructionsEntryFile: "AGENTS.md",
+      instructionsFilePath: path.join(ancestorRoot, "AGENTS.md"),
+    });
+
+    const svc = agentInstructionsService();
+    await expect(
+      svc.deleteFile(agent, "marketplace-skills/company-1/skill_x/1.0.0/evil.md"),
+    ).rejects.toThrow(/managed marketplace-skills/);
+  });
 });

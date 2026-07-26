@@ -630,6 +630,14 @@ export function agentInstructionsService() {
 
     const prepared = await ensureWritableBundle(agent, options);
     const absolutePath = resolvePathWithinRoot(prepared.state.rootPath!, relativePath);
+    // T2.8c(b) writable-sink jail: an external root that is an ANCESTOR of the
+    // managed tree passes the updateBundle check, but a relative path can still
+    // resolve inside it — reject at the resolved target (Codex #302).
+    if (isInsideManagedMarketplaceSkillsRoot(absolutePath)) {
+      throw unprocessable(
+        "Cannot write instructions files inside the managed marketplace-skills directory.",
+      );
+    }
     await fs.mkdir(path.dirname(absolutePath), { recursive: true });
     await fs.writeFile(absolutePath, content, "utf8");
     const nextAgent = { ...agent, adapterConfig: prepared.adapterConfig };
@@ -655,6 +663,13 @@ export function agentInstructionsService() {
       throw unprocessable("Cannot delete the bundle entry file");
     }
     const absolutePath = resolvePathWithinRoot(state.rootPath, normalizedPath);
+    // T2.8c(b) writable-sink jail — mirrors writeFile (Codex #302): an ancestor
+    // external root must not be able to `fs.rm` catalog-owned bundle files.
+    if (isInsideManagedMarketplaceSkillsRoot(absolutePath)) {
+      throw unprocessable(
+        "Cannot delete instructions files inside the managed marketplace-skills directory.",
+      );
+    }
     await fs.rm(absolutePath, { force: true });
     const adapterConfig = buildPersistedBundleConfig(derived, state);
     const bundle = await getBundle({ ...agent, adapterConfig });

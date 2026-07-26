@@ -348,8 +348,8 @@ function makeSkillRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
-describe("importFromSource — managed marketplace-skills jail (T2.8c(b))", () => {
-  it("refuses to import a local skill from inside the managed marketplace-skills tree", async () => {
+describe("managed marketplace-skills jail (T2.8c(b))", () => {
+  it("importFromSource refuses a local skill from inside the managed marketplace-skills tree", async () => {
     // A directory the catalog installer owns. Importing it would mint an
     // editable `local_path` row, after which PATCH /skills/:id/files could write
     // into a catalog-managed bundle. server/.aoa is gitignored; clean up after.
@@ -363,6 +363,19 @@ describe("importFromSource — managed marketplace-skills jail (T2.8c(b))", () =
     await expect(service.importFromSource("company-1", skillDir)).rejects.toThrow(
       /managed marketplace-skills directory/,
     );
+  });
+
+  it("updateFile refuses to edit a local_path row whose files live inside the managed tree (Codex #302 writable-sink)", async () => {
+    // The authoritative sink guard: covers rows minted by scanProjectWorkspaces
+    // and any that predate the importFromSource check. No filesystem needed —
+    // the guard fires before any disk write.
+    const insideManaged = path.join(managedMarketplaceSkillsRoot(), "company-1", "skill_x", "1.0.0");
+    const row = makeSkillRow({ sourceType: "local_path", sourceLocator: insideManaged });
+    const service = companySkillService(makeDbReturning([row]) as any);
+
+    await expect(
+      service.updateFile("company-1", "skill-row-1", "SKILL.md", "# hijack"),
+    ).rejects.toThrow(/managed marketplace-skills directory/);
   });
 });
 
