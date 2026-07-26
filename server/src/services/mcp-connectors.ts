@@ -365,7 +365,8 @@ const CODEX_ADAPTER_TYPE = "codex_local";
 export type ConnectorDeliverabilityReason =
   | ConnectorSkipReason
   | "secret_unreachable"
-  | "adapter_incapable";
+  | "adapter_incapable"
+  | "credential_inactive_or_missing";
 
 /** One assigned agent that would NOT receive an otherwise-active connector. */
 export interface BlockedAgentDeliverability {
@@ -415,6 +416,14 @@ export interface ConnectorDeliverabilityInput {
   };
   /** The host's CURRENT deployment mode — the axis the D7 re-gate evaluates. */
   deploymentMode: string;
+  /**
+   * Whether the connector's BOUND secret currently resolves — i.e. a company
+   * secret row exists that is not deleted and `status = "active"` (F2). The
+   * caller evaluates this (batched, non-decrypting) and passes it in; the pure
+   * function stays DB-free. `undefined` = caller did not evaluate → legacy
+   * presence-only behavior (no `credential_inactive_or_missing`).
+   */
+  secretResolvable?: boolean;
   /** The connector's per-agent opt-in set, resolved to name + adapter type. */
   assignedAgents: Array<{
     agentId: string;
@@ -462,9 +471,20 @@ export function computeConnectorDeliverability(
     return { deliverable: false, reason: "d7_blocked", blockedAgents: [] };
   }
 
+  // (1b) Credential state — connector-global (F2). A connector active with a
+  // bound secret that no longer resolves (deleted or disabled) is dropped by the
+  // loader for EVERY recipient, yet the row stays `active` → the preview would
+  // otherwise show it healthy. `secretResolvable === false` means the bound
+  // secret is missing/inactive; `undefined` = caller did not evaluate (legacy).
+  // Order is faithful: after D7 (selector), before the loader's secret-resolve
+  // step that the spec-shape build models below.
+  const hasSecret = Boolean(connector.secretRef);
+  if (hasSecret && input.secretResolvable === false) {
+    return { deliverable: false, reason: "credential_inactive_or_missing", blockedAgents: [] };
+  }
+
   // (2) Spec shape — connector-global. Model secret PRESENCE (not value) so the
   // built spec's `secretEnvVar`/`authTokenEnvVar` signal matches production.
-  const hasSecret = Boolean(connector.secretRef);
   const { specs, skipped } = buildConnectorSpecs([
     {
       serverName: "preview", // key is irrelevant here; a single-row build

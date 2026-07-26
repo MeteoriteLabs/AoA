@@ -406,6 +406,50 @@ describe("computeConnectorDeliverability (FU-1)", () => {
     });
   });
 
+  // F2 — a connector active with a bound secret that no longer resolves.
+  it("flags credential_inactive_or_missing when the bound secret no longer resolves", () => {
+    const summary = computeConnectorDeliverability({
+      connector: healthyHttp, // active, secretRef "mcp:notion"
+      deploymentMode: "local_trusted",
+      assignedAgents: [claudeAgent],
+      secretResolvable: false,
+    });
+    expect(summary).toEqual({
+      deliverable: false,
+      reason: "credential_inactive_or_missing",
+      blockedAgents: [],
+    });
+  });
+
+  it("does NOT flag credential_inactive_or_missing when the secret resolves", () => {
+    const summary = computeConnectorDeliverability({
+      connector: healthyHttp,
+      deploymentMode: "local_trusted",
+      assignedAgents: [claudeAgent],
+      secretResolvable: true,
+    });
+    expect(summary).toEqual({ deliverable: true, reason: null, blockedAgents: [] });
+  });
+
+  it("omitting secretResolvable preserves legacy presence-only behavior", () => {
+    const summary = computeConnectorDeliverability({
+      connector: healthyHttp,
+      deploymentMode: "local_trusted",
+      assignedAgents: [claudeAgent],
+    });
+    expect(summary?.reason).not.toBe("credential_inactive_or_missing");
+  });
+
+  it("skips the credential check when there is no bound secret", () => {
+    const summary = computeConnectorDeliverability({
+      connector: { ...healthyHttp, secretRef: null, headerTemplate: {} },
+      deploymentMode: "local_trusted",
+      assignedAgents: [claudeAgent],
+      secretResolvable: false, // ignored — nothing bound to be unresolvable
+    });
+    expect(summary?.reason).not.toBe("credential_inactive_or_missing");
+  });
+
   it("matches selectConnectorRowsForAgent's D7 verdict exactly (no drift)", () => {
     // The connector the deliverability preview calls d7_blocked must be the same
     // one the real delivery selector drops.

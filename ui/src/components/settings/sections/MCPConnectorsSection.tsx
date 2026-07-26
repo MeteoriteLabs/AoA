@@ -69,6 +69,8 @@ const DELIVERABILITY_REASON_COPY: Record<ConnectorDeliverabilityReason, string> 
   secret_unreachable:
     "the Codex CLI can't pass a local (stdio) connector's secret to the server, so it would authenticate as no-one",
   adapter_incapable: "this agent's runtime can't host MCP connectors",
+  credential_inactive_or_missing:
+    "This connector's secret is missing or disabled, so it can't authenticate and reaches no agents.",
 };
 
 /**

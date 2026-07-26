@@ -19,6 +19,7 @@ import {
   type ConnectorDeliverabilitySummary,
 } from "./mcp-connectors.js";
 import { loadConfig } from "../config.js";
+import { secretService } from "./secrets.js";
 
 export type ConnectorInsert = {
   serverName: string;
@@ -148,6 +149,11 @@ export function mcpConnectorService(db: Db) {
       }
 
       const deploymentMode = loadConfig().deploymentMode;
+      // F2 — ONE grouped, non-decrypting query so the deliverability preview
+      // reflects real resolvability: a connector active with a bound secret that
+      // was later deleted/disabled is dropped by every run, but the row stays
+      // active. Fetched once here (the sync map below can't await).
+      const resolvableSecretNames = await secretService(db).activeSecretNames(companyId);
 
       return rows.map((r) => {
         const enabledAgentIds = byConnector.get(r.id) ?? [];
@@ -166,6 +172,7 @@ export function mcpConnectorService(db: Db) {
               secretRef: r.secretRef,
             },
             deploymentMode,
+            secretResolvable: r.secretRef ? resolvableSecretNames.has(r.secretRef) : undefined,
             assignedAgents: enabledAgentIds.map((agentId) => {
               const info = agentInfo.get(agentId);
               return {
