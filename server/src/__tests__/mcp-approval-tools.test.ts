@@ -742,6 +742,95 @@ describe("MCP approval tools", () => {
     });
   });
 
+  // Codex P2 — install_mcp_connector approvals are company-wide with NO task
+  // link. The founder decision (routes/approvals.ts `assertMayResolveApproval`)
+  // grants them to founder + team_lead; a team_member may neither see nor resolve
+  // one. Before this fix the MCP task-scope filter hid + blocked them from
+  // team_leads (they have no scoped task), diverging from the REST contract.
+  describe("install_mcp_connector RBAC (company-wide, no task link)", () => {
+    const connectorApproval = {
+      id: UUID_APPROVAL,
+      companyId: "company-1",
+      type: "install_mcp_connector",
+      status: "pending",
+      payload: { connectorId: "conn-1" },
+    };
+
+    it("team_lead resolves a connector approval WITHOUT a scoped task link", async () => {
+      const { app, approvalsSvc } = buildApp({
+        role: "team_lead",
+        projectIds: [UUID_PROJECT_MINE],
+        approvals: [connectorApproval], // deliberately no linksByApproval
+      });
+      const res = await callTool(app, "approval-decision", {
+        approvalId: UUID_APPROVAL,
+        action: "approve",
+      });
+      expect(res.status).toBe(200);
+      expect(approvalsSvc.approve).toHaveBeenCalled();
+    });
+
+    it("team_lead SEES a connector approval in list (no task link)", async () => {
+      const { app } = buildApp({
+        role: "team_lead",
+        projectIds: [UUID_PROJECT_MINE],
+        approvals: [connectorApproval],
+      });
+      const res = await callTool(app, "list-approvals");
+      const payload = JSON.parse(res.body.result.content[0].text);
+      expect(payload.map((a: { id: string }) => a.id)).toContain(UUID_APPROVAL);
+    });
+
+    it("team_lead can get a connector approval (no task link)", async () => {
+      const { app } = buildApp({
+        role: "team_lead",
+        projectIds: [UUID_PROJECT_MINE],
+        approvals: [connectorApproval],
+      });
+      const res = await callTool(app, "get-approval", { approvalId: UUID_APPROVAL });
+      expect(res.status).toBe(200);
+    });
+
+    it("team_member CANNOT see a connector approval in list", async () => {
+      const { app } = buildApp({
+        role: "team_member",
+        projectIds: [UUID_PROJECT_MINE],
+        approvals: [connectorApproval],
+      });
+      const res = await callTool(app, "list-approvals");
+      const payload = JSON.parse(res.body.result.content[0].text);
+      expect(payload).toHaveLength(0);
+    });
+
+    it("team_member CANNOT resolve a connector approval (403)", async () => {
+      const { app } = buildApp({
+        role: "team_member",
+        projectIds: [UUID_PROJECT_MINE],
+        approvals: [connectorApproval],
+      });
+      const res = await callTool(app, "approval-decision", {
+        approvalId: UUID_APPROVAL,
+        action: "approve",
+      });
+      expect(res.status).toBe(403);
+    });
+
+    it("regression: team_lead still CANNOT resolve a NON-connector approval without a scoped task", async () => {
+      const task: Task = { id: UUID_TASK_OTHER, companyId: "company-1", projectId: UUID_PROJECT_OTHER };
+      const { app } = buildApp({
+        role: "team_lead",
+        projectIds: [UUID_PROJECT_MINE],
+        approvals: [{ id: UUID_APPROVAL, companyId: "company-1", type: "hire_agent", status: "pending", payload: {} }],
+        linksByApproval: { [UUID_APPROVAL]: [task] },
+      });
+      const res = await callTool(app, "approval-decision", {
+        approvalId: UUID_APPROVAL,
+        action: "approve",
+      });
+      expect(res.status).toBe(403);
+    });
+  });
+
   describe("add-approval-comment", () => {
     it("founder adds comment", async () => {
       const { app, approvalsSvc } = buildApp({

@@ -36,10 +36,19 @@ async function approvalHasScopedIssueLink(
 
 async function canActorSeeApproval(
   ctx: ToolContext,
-  approval: { id: string; companyId: string },
+  approval: { id: string; companyId: string; type: string },
 ): Promise<boolean> {
   if (approval.companyId !== ctx.companyId) return false;
   if (ctx.scope.kind === "founder") return true;
+  // `install_mcp_connector` is company-wide governance with NO task link. The
+  // founder decision (2026-07-24, routes/approvals.ts `assertMayResolveApproval`)
+  // grants it to founder + team_lead; a team_member may neither see nor resolve
+  // it. Type-only would over-expose it to team_members (who also have non-founder
+  // scope), so gate on ROLE. All other types keep the per-task project-scope rule.
+  if (approval.type === "install_mcp_connector") {
+    const role = await ctx.resolveRole(ctx.companyId, ctx.actor.userId);
+    return role === "team_lead"; // founder already returned true above
+  }
   return approvalHasScopedIssueLink(ctx, approval.id);
 }
 
@@ -69,9 +78,13 @@ async function handleListApprovals(
     rows = rows.filter((row) => row.type === parsed.type);
   }
   if (ctx.scope.kind !== "founder") {
+    // Per-row visibility via canActorSeeApproval so a company-wide
+    // install_mcp_connector approval (no task link) is visible to a team_lead
+    // — matching the get/decide paths and the REST contract — while a
+    // team_member still sees only task-scoped approvals.
     const filtered: typeof rows = [];
     for (const row of rows) {
-      if (await approvalHasScopedIssueLink(ctx, row.id)) {
+      if (await canActorSeeApproval(ctx, row)) {
         filtered.push(row);
       }
     }
@@ -216,7 +229,15 @@ async function handleApprovalDecision(
   if (!approval || approval.companyId !== ctx.companyId) {
     return notFoundResult("Approval not found");
   }
-  if (role === "team_lead" && !(await approvalHasScopedIssueLink(ctx, parsed.approvalId))) {
+  // install_mcp_connector is company-wide (no task link): a team_lead resolves it
+  // without a scoped task, matching REST `assertMayResolveApproval`. The
+  // founder|team_lead gate above already excludes team_member. Every other type
+  // keeps the "must own a task in scope" rule.
+  if (
+    role === "team_lead" &&
+    approval.type !== "install_mcp_connector" &&
+    !(await approvalHasScopedIssueLink(ctx, parsed.approvalId))
+  ) {
     return forbiddenResult("Approval has no tasks in your scope");
   }
 
