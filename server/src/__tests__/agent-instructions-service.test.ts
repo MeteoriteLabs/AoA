@@ -404,4 +404,111 @@ describe("agent instructions service", () => {
     // not need to cover every adapterConfig key.
     expect(adapterConfig.model).toBe("claude-sonnet-4-20250514");
   });
+
+  it("rejects an external bundle rootPath inside the managed marketplace-skills tree (T2.8c(b))", async () => {
+    const aoaHome = await makeTempDir("paperclip-agent-instructions-jail-");
+    cleanupDirs.add(aoaHome);
+    process.env.AOA_HOME = aoaHome;
+    process.env.AOA_INSTANCE_ID = "test-instance";
+
+    // A path the catalog installer owns. updateBundle would otherwise mkdir +
+    // write (and deleteFile would `fs.rm`) inside it.
+    const insideManagedRoot = path.join(
+      process.cwd(),
+      ".aoa",
+      "marketplace-skills",
+      "company-1",
+      "skill_x",
+      "1.0.0",
+    );
+
+    const svc = agentInstructionsService();
+    const agent = makeAgent({});
+
+    await expect(
+      svc.updateBundle(agent, { mode: "external", rootPath: insideManagedRoot }),
+    ).rejects.toThrow(/managed marketplace-skills/);
+
+    // The guard fires before any filesystem work, so nothing was created there.
+    await expect(fs.stat(insideManagedRoot)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects deleting a file that resolves inside the managed tree via an ANCESTOR external root (Codex #302 writable-sink)", async () => {
+    const aoaHome = await makeTempDir("paperclip-agent-instructions-sink-");
+    cleanupDirs.add(aoaHome);
+    process.env.AOA_HOME = aoaHome;
+    process.env.AOA_INSTANCE_ID = "test-instance";
+
+    // `.aoa` is an ANCESTOR of `.aoa/marketplace-skills`, so it passes the
+    // updateBundle inside-check — but a relative path resolves into the managed
+    // tree, which the sink guard in deleteFile must catch before fs.rm.
+    const ancestorRoot = path.join(process.cwd(), ".aoa");
+    const agent = makeAgent({
+      instructionsBundleMode: "external",
+      instructionsRootPath: ancestorRoot,
+      instructionsEntryFile: "AGENTS.md",
+      instructionsFilePath: path.join(ancestorRoot, "AGENTS.md"),
+    });
+
+    const svc = agentInstructionsService();
+    await expect(
+      svc.deleteFile(agent, "marketplace-skills/company-1/skill_x/1.0.0/evil.md"),
+    ).rejects.toThrow(/managed marketplace-skills/);
+  });
+
+  it("rejects an external bundle rootPath that is an ANCESTOR of the managed tree (Codex #302 overlap)", async () => {
+    const aoaHome = await makeTempDir("paperclip-agent-instructions-overlap-");
+    cleanupDirs.add(aoaHome);
+    process.env.AOA_HOME = aoaHome;
+    process.env.AOA_INSTANCE_ID = "test-instance";
+
+    // `.aoa` contains the managed tree; rejecting it at set time closes the
+    // ancestor-root + `marketplace-skills/...` entryFile bypass.
+    const ancestorRoot = path.join(process.cwd(), ".aoa");
+    const svc = agentInstructionsService();
+    const agent = makeAgent({});
+
+    await expect(
+      svc.updateBundle(agent, { mode: "external", rootPath: ancestorRoot }),
+    ).rejects.toThrow(/managed marketplace-skills/);
+  });
+
+  it("refuses to materialize a managed bundle whose root overlaps the marketplace-skills tree (Codex #302)", async () => {
+    // Pathological AOA_HOME rooted INSIDE the catalog-owned tree: the managed
+    // instructions root then resolves inside marketplace-skills, so
+    // materialize's replaceExisting fs.rm would delete catalog bytes. It must
+    // refuse before any destructive action (this path writes directly, not via
+    // the jailed writeBundleFiles).
+    const evilHome = path.join(process.cwd(), ".aoa", "marketplace-skills", "__evil_home__");
+    process.env.AOA_HOME = evilHome;
+    process.env.AOA_INSTANCE_ID = "test-instance";
+
+    const svc = agentInstructionsService();
+    const agent = makeAgent({});
+
+    await expect(
+      svc.materializeManagedBundle(agent, { "AGENTS.md": "# hijack" }, { replaceExisting: true }),
+    ).rejects.toThrow(/overlaps the managed marketplace-skills/);
+
+    // The guard fired before any filesystem work — nothing was created there.
+    await expect(fs.stat(evilHome)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("refuses ensureWritableBundle (PUT /file) when the managed root overlaps the marketplace-skills tree (Codex #302)", async () => {
+    // Codex's scenario: an unconfigured agent with legacy prompt content hits
+    // ensureWritableBundle via writeFile, which would mkdir + write the legacy
+    // content into the overlapping managed root BEFORE writeFile's target jail.
+    const evilHome = path.join(process.cwd(), ".aoa", "marketplace-skills", "__evil_home2__");
+    process.env.AOA_HOME = evilHome;
+    process.env.AOA_INSTANCE_ID = "test-instance";
+
+    const svc = agentInstructionsService();
+    const agent = makeAgent({ promptTemplate: "# legacy instructions" });
+
+    await expect(svc.writeFile(agent, "docs/extra.md", "# new")).rejects.toThrow(
+      /overlaps the managed marketplace-skills/,
+    );
+
+    await expect(fs.stat(evilHome)).rejects.toMatchObject({ code: "ENOENT" });
+  });
 });

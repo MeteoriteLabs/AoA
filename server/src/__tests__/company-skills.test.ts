@@ -27,6 +27,7 @@ import {
   readLocalSkillImportFromDirectory,
   validatePackageFileKey,
 } from "../services/company-skills.js";
+import { managedMarketplaceSkillsRoot } from "../services/marketplace-install/managed-skills-root.js";
 
 const cleanupDirs = new Set<string>();
 
@@ -346,6 +347,54 @@ function makeSkillRow(overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
 }
+
+describe("managed marketplace-skills jail (T2.8c(b))", () => {
+  it("importFromSource refuses a local skill from inside the managed marketplace-skills tree", async () => {
+    // A directory the catalog installer owns. Importing it would mint an
+    // editable `local_path` row, after which PATCH /skills/:id/files could write
+    // into a catalog-managed bundle. server/.aoa is gitignored; clean up after.
+    const base = path.join(managedMarketplaceSkillsRoot(), "__t2_8c_import_test__");
+    cleanupDirs.add(base);
+    const skillDir = path.join(base, "company-1", "skill_x", "1.0.0");
+    await writeSkillDir(skillDir, "code-review");
+
+    const service = companySkillService(makeDbReturning([]) as any);
+
+    await expect(service.importFromSource("company-1", skillDir)).rejects.toThrow(
+      /managed marketplace-skills tree/,
+    );
+  });
+
+  it("updateFile refuses to edit a local_path row whose files live inside the managed tree (Codex #302 writable-sink)", async () => {
+    // The authoritative sink guard: covers rows minted by scanProjectWorkspaces
+    // and any that predate the importFromSource check. No filesystem needed —
+    // the guard fires before any disk write.
+    const insideManaged = path.join(managedMarketplaceSkillsRoot(), "company-1", "skill_x", "1.0.0");
+    const row = makeSkillRow({ sourceType: "local_path", sourceLocator: insideManaged });
+    const service = companySkillService(makeDbReturning([row]) as any);
+
+    await expect(
+      service.updateFile("company-1", "skill-row-1", "SKILL.md", "# hijack"),
+    ).rejects.toThrow(/managed marketplace-skills directory/);
+  });
+
+  it("updateFile refuses a forward path resolving into the managed tree from an ANCESTOR sourceLocator (Codex #302 re-review)", async () => {
+    // sourceLocator is an ANCESTOR of the managed tree, so a sourceLocator-only
+    // check would pass; the guard must check the resolved sourceLocator+path.
+    const ancestorLocator = path.join(process.cwd(), ".aoa");
+    const row = makeSkillRow({ sourceType: "local_path", sourceLocator: ancestorLocator });
+    const service = companySkillService(makeDbReturning([row]) as any);
+
+    await expect(
+      service.updateFile(
+        "company-1",
+        "skill-row-1",
+        "marketplace-skills/company-1/skill_x/1.0.0/evil.md",
+        "# hijack",
+      ),
+    ).rejects.toThrow(/managed marketplace-skills directory/);
+  });
+});
 
 function makeDbReturning(rows: any[]) {
   const queryResult = {

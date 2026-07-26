@@ -33,6 +33,10 @@ import { agentService } from "./agents.js";
 import { executePinnedRequest, validateAndResolveFetchUrl } from "./outbound-url-guard.js";
 import { projectService } from "./projects.js";
 import { secretService } from "./secrets.js";
+import {
+  isInsideManagedMarketplaceSkillsRoot,
+  overlapsManagedMarketplaceSkillsRoot,
+} from "./marketplace-install/managed-skills-root.js";
 
 // ---------------------------------------------------------------------------
 // RuntimeSkillEntry — replaces PaperclipSkillEntry from Paperclip
@@ -1656,6 +1660,24 @@ export function companySkillService(db: Db) {
       throw unprocessable("GitHub-managed skills can only be edited via install-update");
     }
 
+    // T2.8c(b) writable-sink jail: refuse to write a `local_path` skill file
+    // whose RESOLVED TARGET lands inside the managed marketplace-skills tree —
+    // the catalog installer is that tree's only writer. Checking the resolved
+    // `sourceLocator + normalizedPath` (not just `sourceLocator`) also catches a
+    // row rooted at an ANCESTOR of the managed tree (e.g. `.aoa`) whose forward
+    // path reaches in. This is the authoritative guard (the `importFromSource`
+    // check only stops NEW inside-rows); it also neutralizes rows minted by
+    // `scanProjectWorkspaces` and any that predate the import guard. Per Codex #302.
+    if (skill.sourceType === "local_path" && skill.sourceLocator) {
+      const resolvedTarget = path.resolve(skill.sourceLocator, normalizedPath);
+      if (isInsideManagedMarketplaceSkillsRoot(resolvedTarget)) {
+        throw unprocessable(
+          "This skill's file target resolves inside the managed marketplace-skills directory and " +
+            "cannot be edited here; the catalog installer owns that tree.",
+        );
+      }
+    }
+
     // Update on filesystem if local_path
     if (skill.sourceType === "local_path" && skill.sourceLocator) {
       const dirStat = await statPath(skill.sourceLocator);
@@ -1965,6 +1987,26 @@ export function companySkillService(db: Db) {
         skill.key = deriveCanonicalSkillKey(companyId, skill);
       }
     }
+
+    // T2.8c(b): a local import must never mint a `local_path` row that names a
+    // directory inside the managed marketplace-skills tree. Such a row is
+    // editable (its `sourceType` is `local_path`), so `PATCH /skills/:id/files`
+    // would then write into a catalog-owned bundle — but the materializer is the
+    // only writer that tree is meant to have. Reject loudly rather than importing
+    // a catalog-managed location as an editable local skill.
+    for (const skill of filteredSkills) {
+      if (
+        skill.sourceType === "local_path" &&
+        skill.sourceLocator &&
+        overlapsManagedMarketplaceSkillsRoot(skill.sourceLocator)
+      ) {
+        throw unprocessable(
+          `Cannot import a skill whose directory overlaps the managed marketplace-skills tree ` +
+            `("${skill.sourceLocator}"). That tree is owned by the catalog installer.`,
+        );
+      }
+    }
+
     const { skills: imported, refused } = await upsertImportedSkills(
       companyId,
       filteredSkills,
@@ -2059,6 +2101,22 @@ export function companySkillService(db: Db) {
           },
         });
         if (!imported) continue;
+
+        // T2.8c(b): a workspace cwd can be a catalog bundle version directory,
+        // so a discovered SKILL.md there would mint an editable `local_path` row
+        // inside the managed tree. Skip it — the catalog installer owns that
+        // tree. (Complements the authoritative updateFile sink guard; Codex #302.)
+        if (isInsideManagedMarketplaceSkillsRoot(skillDir)) {
+          result.skipped.push({
+            projectId: target.projectId,
+            projectName: target.projectName,
+            workspaceId: target.workspaceId,
+            workspaceName: target.workspaceName,
+            path: skillDir,
+            reason: "Inside the managed marketplace-skills directory (catalog-owned).",
+          });
+          continue;
+        }
 
         result.discovered++;
 

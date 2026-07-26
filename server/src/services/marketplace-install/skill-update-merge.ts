@@ -44,15 +44,17 @@
  * non-`SKILL.md` path on a catalog row. The merge preserves that column — it
  * writes `merged` on every branch.
  *
- * **The guarantee is on the row's `sourceType`, not on the path.** The bundle
- * directory itself is not jailed, and a founder can get a differently-typed row
- * to name it — `POST /skills/import` with `source` set to the bundle directory
- * produces a `local_path` row whose `sourceLocator` is that directory, after
- * which `PATCH /skills/:id/files` writes into it; `PATCH
- * /agents/:id/instructions-bundle` with `mode: "external"` accepts any absolute
- * `rootPath` and both writes and removes inside it. Neither happens during a
- * normal merge, but "nothing can ever write there" would be false. Jailing that
- * root is plan task T2.8c(b).
+ * **The guarantee was historically on the row's `sourceType`, not on the
+ * path.** The bundle directory itself was not jailed, and a founder could get a
+ * differently-typed row to name it — `POST /skills/import` with `source` set to
+ * the bundle directory produced a `local_path` row whose `sourceLocator` was
+ * that directory, after which `PATCH /skills/:id/files` wrote into it; `PATCH
+ * /agents/:id/instructions-bundle` with `mode: "external"` accepted any absolute
+ * `rootPath` and both wrote and removed inside it. Neither happens during a
+ * normal merge, but "nothing can ever write there" would have been false. Both
+ * chains now reject a path inside the managed root via
+ * {@link isInsideManagedMarketplaceSkillsRoot} (plan task T2.8c(b)), so the
+ * guarantee no longer rests on `sourceType` alone.
  *
  * The destination is additionally **version-scoped**
  * (`.aoa/marketplace-skills/<company>/<item>/<version>`), so a merge to a new
@@ -103,14 +105,13 @@
 import { eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { companySkills, marketplacePendingUpdates } from "@armyofagents/db";
-import type { CatalogItem, MarketplaceSkillBundle } from "@armyofagents/shared";
+import type { CatalogItem } from "@armyofagents/shared";
 import { computeSectionDiff, applyMergeDecisions } from "../marketplace-merge.js";
 import {
-  deriveBundleTrustLevel,
   managedCatalogSkillDir,
   materializeSkillBundle,
-  type MaterializeSkillBundleResult,
 } from "./skill-bundle-materializer.js";
+import { resolveBundleColumns } from "./skill-bundle-columns.js";
 
 /**
  * Ceiling on the bundle checkout for ONE reviewed merge.
@@ -236,63 +237,6 @@ export async function mergeSkillUpdate(
 }
 
 /**
- * The bundle-derived columns, for all three shapes the upstream item can take.
- *
- * - **Upstream has a bundle** → point at the tree just written and recompute
- *   `fileInventory` / `trustLevel` from it.
- * - **Upstream has no bundle and the row never had one** → contribute nothing.
- *   A markdown-only row must not be stamped with an empty inventory it never had.
- * - **Upstream has no bundle but the row DOES** → clear the pointer. This is the
- *   whole-bundle analogue of a removed file, and without it the row would keep
- *   naming the old version's directory forever: agents would go on receiving
- *   scripts upstream no longer publishes, and `trustLevel` would go on asserting
- *   `scripts_executables` for a bundle that no longer exists. Nothing else
- *   repairs it — `customized` is now `true`, so `applySkillUpdate` never touches
- *   the row again.
- *
- * Not reachable against today's catalog (all 498 published skills in the shipped
- * snapshot carry `skill.bundle`; the 16 bundle-less items are the agents,
- * plugins and team, which never reach this path). It is a latent gap, closed
- * because this function's contract is "the row describes what is on disk".
- *
- * `skill-auto-updater.ts`'s `resolveSkillUpdatePayload` has the identical gap on
- * the auto-apply path and is NOT fixed here — plan task T2.8c(a).
- */
-function resolveBundleColumns(
-  currentMetadata: unknown,
-  bundle: MarketplaceSkillBundle | undefined,
-  materialized: MaterializeSkillBundleResult | null,
-) {
-  const metadata = asRecord(currentMetadata);
-  if (materialized) {
-    return {
-      trustLevel: deriveBundleTrustLevel(materialized.fileInventory),
-      fileInventory: materialized.fileInventory as unknown as Record<string, unknown>[],
-      metadata: {
-        ...metadata,
-        catalogSkillBundle: bundle,
-        catalogBundleInstallPath: materialized.destination,
-      },
-    };
-  }
-
-  const hadBundle =
-    typeof metadata.catalogBundleInstallPath === "string" || metadata.catalogSkillBundle != null;
-  if (!hadBundle) return {};
-
-  const {
-    catalogSkillBundle: _bundle,
-    catalogBundleInstallPath: _installPath,
-    ...rest
-  } = metadata;
-  return {
-    trustLevel: "markdown_only" as const,
-    fileInventory: [] as unknown as Record<string, unknown>[],
-    metadata: rest,
-  };
-}
-
-/**
  * The upstream side of the diff.
  *
  * Deliberately the same source `GET /updates/:id/diff` uses — `resourceUrl`, not
@@ -316,10 +260,4 @@ async function fetchUpstreamSkillMarkdown(catalogItem: CatalogItem): Promise<str
     throw new SkillMergeUpstreamError("Failed to fetch upstream content");
   }
   return response.text();
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
 }
