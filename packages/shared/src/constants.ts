@@ -196,16 +196,18 @@ export const PROJECT_COLORS = [
   "#3b82f6", // blue
 ] as const;
 
-export const APPROVAL_TYPES = ["hire_agent", "approve_ceo_strategy", "budget_override_required", "crew_dispatch"] as const;
+export const APPROVAL_TYPES = ["hire_agent", "approve_ceo_strategy", "budget_override_required", "crew_dispatch", "install_mcp_connector"] as const;
 export type ApprovalType = (typeof APPROVAL_TYPES)[number];
 
 // Types an external caller (HTTP route / MCP create-approval) may CREATE or RESUBMIT.
-// `crew_dispatch` is SYSTEM-INTERNAL — only the autonomy handler
-// (server/src/services/thread-agent-actions.ts) creates it, directly via
-// approvalService.create() with system-controlled payload.taskIds. It must NOT be
-// externally creatable/resubmittable: its approve() side-effect dispatches every id in
-// payload.taskIds (company-scoped), so a caller-controlled payload would let a scoped
-// actor dispatch out-of-scope tasks. It stays in APPROVAL_TYPES for read/list/filter.
+// `crew_dispatch` and `install_mcp_connector` are SYSTEM-INTERNAL — only their own
+// service creates them (thread-agent-actions.ts for crew_dispatch; the connector
+// create/install path via createConnector for install_mcp_connector), directly via
+// approvalService.create() with a system-controlled payload. They must NOT be
+// externally creatable/resubmittable: their approve() side-effects act on
+// company-scoped ids, so a caller-controlled payload would let a scoped actor act
+// out of scope. Both stay in APPROVAL_TYPES for read/list/filter (so the Approval
+// contract + MCP list-approvals can represent them).
 export const CREATABLE_APPROVAL_TYPES = ["hire_agent", "approve_ceo_strategy", "budget_override_required"] as const;
 export type CreatableApprovalType = (typeof CREATABLE_APPROVAL_TYPES)[number];
 

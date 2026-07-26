@@ -85,3 +85,21 @@ describe("crew_dispatch is system-internal — not externally creatable (Codex #
     expect(res.success).toBe(true);
   });
 });
+
+describe("install_mcp_connector is system-internal — readable, not externally creatable (Codex P2)", () => {
+  it("is a known approval type (read/list/filter) but NOT in the creatable set", () => {
+    // Created system-side by createConnector; the Approval contract + MCP
+    // list-approvals must be able to represent/filter it, but a client must not
+    // be able to mint one (its approve() activates a company connector).
+    expect(APPROVAL_TYPES).toContain("install_mcp_connector");
+    expect(CREATABLE_APPROVAL_TYPES).not.toContain("install_mcp_connector");
+  });
+
+  it("createApprovalSchema (HTTP route + MCP create-approval) REJECTS type=install_mcp_connector", () => {
+    const res = createApprovalSchema.safeParse({
+      type: "install_mcp_connector",
+      payload: { connectorId: "c1" },
+    });
+    expect(res.success).toBe(false);
+  });
+});
