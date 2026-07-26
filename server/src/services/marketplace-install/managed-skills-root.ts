@@ -26,8 +26,9 @@
  * Containment is `path.resolve`-based, matching the rest of the server's jails
  * (`resolvePathWithinRoot` in `agent-instructions.ts`,
  * `validatePackageFileKey`). When the backing filesystem is case-insensitive
- * (detected by probing `process.cwd()`, not guessed from the OS) the compared
- * paths are lower-cased first, so a case-variant like `.AOA\Marketplace-Skills\…`
+ * (detected by probing the managed root's nearest existing ancestor, not guessed
+ * from the OS) the compared paths are lower-cased first, so a case-variant like
+ * `.AOA\Marketplace-Skills\…`
  * — which names the SAME directory the OS would open — cannot slip past a
  * case-sensitive string compare and defeat the jail. It does NOT resolve
  * symlinks, 8.3 short names
@@ -42,38 +43,54 @@ let cachedCaseInsensitive: boolean | undefined;
 
 /**
  * Whether the filesystem backing the managed root treats differently-cased
- * paths as the same directory. Probed by case-flipping an existing entry
- * **inside** `process.cwd()` — so the lookup happens on cwd's OWN filesystem,
- * not the parent mount that resolves cwd's name — rather than guessed from
+ * paths as the same directory. Probed by case-flipping an existing entry inside
+ * **the managed root's nearest existing ancestor** — so the lookup happens on
+ * the filesystem the managed tree actually lives on, even when `.aoa` is a
+ * separate mount from `process.cwd()` — rather than guessed from
  * `process.platform`. So a case-insensitive mount on Linux, or a case-sensitive
  * volume on macOS, is classified correctly instead of by a brittle OS default.
- * Cached after the first call; falls back to the platform default only when the
- * probe is inconclusive. Exported so the containment test observes the same
- * signal instead of re-deriving (and drifting from) it.
+ *
+ * Cached after the first *conclusive* probe, i.e. one taken at or below `.aoa`
+ * (the managed area). If `.aoa` does not exist yet the probe walks up to cwd,
+ * whose filesystem may differ from the mount `.aoa` will later live on, so that
+ * result is used but NOT cached — the next call re-probes once the tree exists.
+ * Exported so the containment test observes the same signal instead of
+ * re-deriving (and drifting from) it.
  */
 export function isCaseInsensitiveFilesystem(): boolean {
-  if (cachedCaseInsensitive === undefined) {
-    cachedCaseInsensitive = probeCaseInsensitive();
-  }
-  return cachedCaseInsensitive;
+  if (cachedCaseInsensitive !== undefined) return cachedCaseInsensitive;
+  const { value, cacheable } = probeCaseInsensitive();
+  if (cacheable) cachedCaseInsensitive = value;
+  return value;
 }
 
-function probeCaseInsensitive(): boolean {
+function probeCaseInsensitive(): { value: boolean; cacheable: boolean } {
+  const platformDefault = process.platform === "win32" || process.platform === "darwin";
   try {
-    const cwd = process.cwd();
-    for (const entry of readdirSync(cwd)) {
+    const managedRoot = managedMarketplaceSkillsRoot();
+    const managedParent = path.dirname(managedRoot); // `<cwd>/.aoa`
+    // Walk up from the managed root to the nearest EXISTING directory — the root
+    // may not exist yet. Probing here (not cwd) tests the filesystem the managed
+    // tree actually lives on even when `.aoa` is a separate mount.
+    let dir = managedRoot;
+    while (!existsSync(dir)) {
+      const parent = path.dirname(dir);
+      if (parent === dir) return { value: platformDefault, cacheable: false }; // hit fs root
+      dir = parent;
+    }
+    // Trust (and cache) only a probe taken at or below `.aoa`; a probe forced up
+    // to cwd because `.aoa` is absent may read a different mount than `.aoa`.
+    const cacheable = dir === managedRoot || dir === managedParent;
+    for (const entry of readdirSync(dir)) {
       const flipped = entry === entry.toLowerCase() ? entry.toUpperCase() : entry.toLowerCase();
       if (flipped === entry) continue; // no letters to flip
-      // Look the case-flipped CHILD up within cwd, so we test cwd's own
-      // filesystem (not the parent mount that resolves cwd's own name — cwd may
-      // itself be a case-insensitive mount point under a case-sensitive parent).
-      // A flipped child that still resolves ⇒ case-insensitive filesystem.
-      return existsSync(path.join(cwd, flipped));
+      // A case-flipped CHILD that still resolves within `dir` ⇒ case-insensitive.
+      return { value: existsSync(path.join(dir, flipped)), cacheable };
     }
   } catch {
     // fall through to the platform default
   }
-  return process.platform === "win32" || process.platform === "darwin";
+  return { value: platformDefault, cacheable: false };
 }
 
 /** Resolve to absolute, then fold case on case-insensitive filesystems. */
