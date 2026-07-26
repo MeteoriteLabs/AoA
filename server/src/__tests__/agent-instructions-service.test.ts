@@ -404,4 +404,32 @@ describe("agent instructions service", () => {
     // not need to cover every adapterConfig key.
     expect(adapterConfig.model).toBe("claude-sonnet-4-20250514");
   });
+
+  it("rejects an external bundle rootPath inside the managed marketplace-skills tree (T2.8c(b))", async () => {
+    const aoaHome = await makeTempDir("paperclip-agent-instructions-jail-");
+    cleanupDirs.add(aoaHome);
+    process.env.AOA_HOME = aoaHome;
+    process.env.AOA_INSTANCE_ID = "test-instance";
+
+    // A path the catalog installer owns. updateBundle would otherwise mkdir +
+    // write (and deleteFile would `fs.rm`) inside it.
+    const insideManagedRoot = path.join(
+      process.cwd(),
+      ".aoa",
+      "marketplace-skills",
+      "company-1",
+      "skill_x",
+      "1.0.0",
+    );
+
+    const svc = agentInstructionsService();
+    const agent = makeAgent({});
+
+    await expect(
+      svc.updateBundle(agent, { mode: "external", rootPath: insideManagedRoot }),
+    ).rejects.toThrow(/managed marketplace-skills/);
+
+    // The guard fires before any filesystem work, so nothing was created there.
+    await expect(fs.stat(insideManagedRoot)).rejects.toMatchObject({ code: "ENOENT" });
+  });
 });

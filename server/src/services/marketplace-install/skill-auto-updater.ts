@@ -3,8 +3,10 @@
  *
  * Gating logic (policy + window) lives in the update checker. This module
  * owns the transactional apply: re-checks the `customized` flag inside the
- * transaction to avoid acting on stale data, then updates the skill's markdown
- * and marks the pending row as applied.
+ * transaction to avoid acting on stale data, then updates the skill's markdown,
+ * re-derives the bundle-backed columns (trustLevel / fileInventory / bundle
+ * pointer) from what was materialized — clearing them when upstream drops the
+ * bundle, T2.8c(a) — and marks the pending row as applied.
  */
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
@@ -12,10 +14,11 @@ import { companySkills, marketplacePendingUpdates } from "@armyofagents/db";
 import type { CatalogItem, MarketplaceSettings } from "@armyofagents/shared";
 import { loadSkillContent } from "./fetch-resource.js";
 import {
-  deriveBundleTrustLevel,
   managedCatalogSkillDir,
   materializeSkillBundle,
+  type MaterializeSkillBundleResult,
 } from "./skill-bundle-materializer.js";
+import { resolveBundleColumns } from "./skill-bundle-columns.js";
 import { marketplaceNotifications } from "../marketplace-notifications.js";
 import { logger } from "../../middleware/logger.js";
 
@@ -80,8 +83,9 @@ export async function applySkillUpdate(args: {
 }): Promise<void> {
   const { db, catalogItemId, catalogItemName, companyId, catalogItem } = args;
 
-  // Step 1: fetch content outside transaction (network call — don't hold tx open)
-  const payload = await resolveSkillUpdatePayload(catalogItem, companyId);
+  // Step 1: fetch content + materialize any bundle outside the transaction
+  // (network + git — don't hold the tx open for either).
+  const { markdown, materialized } = await resolveSkillUpdatePayload(catalogItem, companyId);
 
   // Step 2: transaction — re-read customized, update skill, mark pending applied
   await db.transaction(async (tx) => {
@@ -109,18 +113,21 @@ export async function applySkillUpdate(args: {
     // notification — a low-harm false positive given the rarity of concurrent delete +
     // auto-apply. A second SELECT to distinguish the cases is not worth the extra
     // round-trip here.
+    //
+    // `resolveBundleColumns` (shared with the reviewed-merge path) recomputes
+    // trustLevel / fileInventory / the bundle pointer from what was actually
+    // materialized. Crucially it CLEARS them when the upstream item has stopped
+    // carrying a bundle but this row still names an old one — the C3 gap fixed
+    // for the merge path in T2.8 and here (auto-apply) in T2.8c(a). `metadata`
+    // carries the row's existing keys forward, so this stays a patch.
     const updatedRows = await tx
       .update(companySkills)
       .set({
-        markdown: payload.markdown,
+        markdown,
         sourceRef: catalogItem.version,
-        ...(payload.trustLevel ? { trustLevel: payload.trustLevel } : {}),
-        ...(payload.fileInventory
-          ? { fileInventory: payload.fileInventory as unknown as Record<string, unknown>[] }
-          : {}),
-        ...(payload.metadataPatch
-          ? { metadata: { ...asRecord(skillRow.metadata), ...payload.metadataPatch } }
-          : {}),
+        ...resolveBundleColumns(skillRow.metadata, catalogItem.skill?.bundle, materialized, {
+          catalogProvider: catalogItem.provider ?? null,
+        }),
         updatedAt: new Date(),
       })
       .where(and(
@@ -156,14 +163,18 @@ export async function applySkillUpdate(args: {
   }
 }
 
-async function resolveSkillUpdatePayload(catalogItem: CatalogItem, companyId: string) {
+/**
+ * The markdown to write, plus the materialized bundle tree (or null when the
+ * upstream item carries no bundle). The bundle-derived columns are computed
+ * inside the transaction by {@link resolveBundleColumns}, which needs the row's
+ * current metadata to decide whether a bundle is being dropped.
+ */
+async function resolveSkillUpdatePayload(
+  catalogItem: CatalogItem,
+  companyId: string,
+): Promise<{ markdown: string; materialized: MaterializeSkillBundleResult | null }> {
   if (!catalogItem.skill?.bundle) {
-    return {
-      markdown: await loadSkillContent(catalogItem),
-      trustLevel: undefined,
-      fileInventory: undefined,
-      metadataPatch: undefined,
-    };
+    return { markdown: await loadSkillContent(catalogItem), materialized: null };
   }
 
   const managedDir = managedCatalogSkillDir(companyId, catalogItem.id, catalogItem.version);
@@ -171,21 +182,5 @@ async function resolveSkillUpdatePayload(catalogItem: CatalogItem, companyId: st
     destination: managedDir,
     overwrite: true,
   });
-
-  return {
-    markdown: materialized.markdown,
-    trustLevel: deriveBundleTrustLevel(materialized.fileInventory),
-    fileInventory: materialized.fileInventory,
-    metadataPatch: {
-      catalogProvider: catalogItem.provider ?? null,
-      catalogSkillBundle: catalogItem.skill.bundle,
-      catalogBundleInstallPath: managedDir,
-    },
-  };
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {};
+  return { markdown: materialized.markdown, materialized };
 }

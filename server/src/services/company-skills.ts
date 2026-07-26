@@ -33,6 +33,7 @@ import { agentService } from "./agents.js";
 import { executePinnedRequest, validateAndResolveFetchUrl } from "./outbound-url-guard.js";
 import { projectService } from "./projects.js";
 import { secretService } from "./secrets.js";
+import { isInsideManagedMarketplaceSkillsRoot } from "./marketplace-install/managed-skills-root.js";
 
 // ---------------------------------------------------------------------------
 // RuntimeSkillEntry — replaces PaperclipSkillEntry from Paperclip
@@ -1965,6 +1966,26 @@ export function companySkillService(db: Db) {
         skill.key = deriveCanonicalSkillKey(companyId, skill);
       }
     }
+
+    // T2.8c(b): a local import must never mint a `local_path` row that names a
+    // directory inside the managed marketplace-skills tree. Such a row is
+    // editable (its `sourceType` is `local_path`), so `PATCH /skills/:id/files`
+    // would then write into a catalog-owned bundle — but the materializer is the
+    // only writer that tree is meant to have. Reject loudly rather than importing
+    // a catalog-managed location as an editable local skill.
+    for (const skill of filteredSkills) {
+      if (
+        skill.sourceType === "local_path" &&
+        skill.sourceLocator &&
+        isInsideManagedMarketplaceSkillsRoot(skill.sourceLocator)
+      ) {
+        throw unprocessable(
+          `Cannot import a skill from inside the managed marketplace-skills directory ` +
+            `("${skill.sourceLocator}"). That tree is owned by the catalog installer.`,
+        );
+      }
+    }
+
     const { skills: imported, refused } = await upsertImportedSkills(
       companyId,
       filteredSkills,

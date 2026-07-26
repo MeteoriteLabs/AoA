@@ -1,0 +1,65 @@
+import path from "node:path";
+import { describe, it, expect } from "vitest";
+import {
+  managedMarketplaceSkillsRoot,
+  isInsideManagedMarketplaceSkillsRoot,
+} from "../services/marketplace-install/managed-skills-root.js";
+
+describe("managedMarketplaceSkillsRoot", () => {
+  it("is <cwd>/.aoa/marketplace-skills", () => {
+    expect(managedMarketplaceSkillsRoot()).toBe(
+      path.join(process.cwd(), ".aoa", "marketplace-skills"),
+    );
+  });
+});
+
+describe("isInsideManagedMarketplaceSkillsRoot (T2.8c(b) containment)", () => {
+  const root = managedMarketplaceSkillsRoot();
+
+  it("true for a bundle directory nested inside the root", () => {
+    expect(
+      isInsideManagedMarketplaceSkillsRoot(path.join(root, "co-1", "skill_x", "1.0.0")),
+    ).toBe(true);
+  });
+
+  it("true for the root itself", () => {
+    expect(isInsideManagedMarketplaceSkillsRoot(root)).toBe(true);
+  });
+
+  it("true for traversal that normalizes back inside the root", () => {
+    expect(
+      isInsideManagedMarketplaceSkillsRoot(path.join(root, "co-1", "..", "co-2", "s", "1.0.0")),
+    ).toBe(true);
+  });
+
+  it("false for the parent .aoa directory", () => {
+    expect(isInsideManagedMarketplaceSkillsRoot(path.join(process.cwd(), ".aoa"))).toBe(false);
+  });
+
+  it("false for a sibling directory with a shared prefix", () => {
+    // `.../marketplace-skills-other` must not be treated as inside
+    // `.../marketplace-skills`.
+    expect(
+      isInsideManagedMarketplaceSkillsRoot(
+        path.join(process.cwd(), ".aoa", "marketplace-skills-other"),
+      ),
+    ).toBe(false);
+  });
+
+  it("false for an unrelated absolute path", () => {
+    expect(isInsideManagedMarketplaceSkillsRoot(path.join(process.cwd(), "src"))).toBe(false);
+  });
+
+  it("false for traversal that escapes the root", () => {
+    expect(isInsideManagedMarketplaceSkillsRoot(path.join(root, "..", "..", "etc"))).toBe(false);
+  });
+
+  it("catches a case-variant path on case-insensitive filesystems (win32/darwin)", () => {
+    // `.AOA\MARKETPLACE-SKILLS\…` names the SAME directory the OS would open on a
+    // case-insensitive FS, so the jail must catch it there. On case-sensitive
+    // Linux it is genuinely a different directory and correctly reads as outside.
+    const caseVariant = path.join(process.cwd(), ".AOA", "MARKETPLACE-SKILLS", "co", "skill_x", "1.0.0");
+    const caseInsensitiveFs = process.platform === "win32" || process.platform === "darwin";
+    expect(isInsideManagedMarketplaceSkillsRoot(caseVariant)).toBe(caseInsensitiveFs);
+  });
+});

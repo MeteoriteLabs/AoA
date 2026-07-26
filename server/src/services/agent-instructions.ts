@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { notFound, unprocessable } from "../errors.js";
 import { resolveHomeAwarePath, resolveAoaInstanceRoot } from "../home-paths.js";
+import { isInsideManagedMarketplaceSkillsRoot } from "./marketplace-install/managed-skills-root.js";
 
 const ENTRY_FILE_DEFAULT = "AGENTS.md";
 const MODE_KEY = "instructionsBundleMode";
@@ -568,6 +569,14 @@ export function agentInstructionsService() {
       const resolvedRoot = resolveHomeAwarePath(rootPath);
       if (!path.isAbsolute(resolvedRoot)) {
         throw unprocessable("External instructions bundles require an absolute rootPath");
+      }
+      // T2.8c(b): an external bundle must not live inside the managed
+      // marketplace-skills tree. `updateBundle` writes into its root, and
+      // `deleteFile` `fs.rm`s inside it — the catalog installer owns that tree.
+      if (isInsideManagedMarketplaceSkillsRoot(resolvedRoot)) {
+        throw unprocessable(
+          "External instructions bundles cannot live inside the managed marketplace-skills directory.",
+        );
       }
       nextRootPath = resolvedRoot;
     }

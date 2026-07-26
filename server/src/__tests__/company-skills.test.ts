@@ -27,6 +27,7 @@ import {
   readLocalSkillImportFromDirectory,
   validatePackageFileKey,
 } from "../services/company-skills.js";
+import { managedMarketplaceSkillsRoot } from "../services/marketplace-install/managed-skills-root.js";
 
 const cleanupDirs = new Set<string>();
 
@@ -346,6 +347,24 @@ function makeSkillRow(overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
 }
+
+describe("importFromSource — managed marketplace-skills jail (T2.8c(b))", () => {
+  it("refuses to import a local skill from inside the managed marketplace-skills tree", async () => {
+    // A directory the catalog installer owns. Importing it would mint an
+    // editable `local_path` row, after which PATCH /skills/:id/files could write
+    // into a catalog-managed bundle. server/.aoa is gitignored; clean up after.
+    const base = path.join(managedMarketplaceSkillsRoot(), "__t2_8c_import_test__");
+    cleanupDirs.add(base);
+    const skillDir = path.join(base, "company-1", "skill_x", "1.0.0");
+    await writeSkillDir(skillDir, "code-review");
+
+    const service = companySkillService(makeDbReturning([]) as any);
+
+    await expect(service.importFromSource("company-1", skillDir)).rejects.toThrow(
+      /managed marketplace-skills directory/,
+    );
+  });
+});
 
 function makeDbReturning(rows: any[]) {
   const queryResult = {

@@ -21,6 +21,7 @@ import type {
   MarketplaceSkillBundle,
 } from "@armyofagents/shared";
 import { isMarketplaceGitHubRepo } from "@armyofagents/shared/marketplace";
+import { managedMarketplaceSkillsRoot } from "./managed-skills-root.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -282,9 +283,7 @@ export function deriveBundleTrustLevel(
 
 export function managedCatalogSkillDir(companyId: string, catalogItemId: string, version: string): string {
   return path.join(
-    process.cwd(),
-    ".aoa",
-    "marketplace-skills",
+    managedMarketplaceSkillsRoot(),
     safeCatalogSkillId(companyId),
     safeCatalogSkillId(catalogItemId),
     safeCatalogSkillId(version),
