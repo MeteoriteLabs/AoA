@@ -59,10 +59,14 @@ function isCaseInsensitiveFilesystem(): boolean {
 function probeCaseInsensitive(): boolean {
   try {
     const cwd = process.cwd();
-    const flipped = cwd === cwd.toLowerCase() ? cwd.toUpperCase() : cwd.toLowerCase();
-    // A case-flipped spelling of an existing directory that still resolves to it
-    // ⇒ the filesystem is case-insensitive.
-    if (flipped !== cwd) return existsSync(flipped);
+    const base = path.basename(cwd);
+    const flipped = base === base.toLowerCase() ? base.toUpperCase() : base.toLowerCase();
+    // Flip ONLY the leaf and keep the ancestor path intact, so the probe tests
+    // the filesystem AT cwd (where the managed root lives) rather than a
+    // case-sensitive mount ABOVE it: a whole-path flip would change e.g. `/mnt`
+    // in `/mnt/casefold/AoA` and miss a case-insensitive `casefold` mount. A
+    // case-flipped leaf that still resolves ⇒ case-insensitive filesystem.
+    if (flipped !== base) return existsSync(path.join(path.dirname(cwd), flipped));
   } catch {
     // fall through to the platform default
   }

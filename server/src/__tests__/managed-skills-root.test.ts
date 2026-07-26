@@ -5,10 +5,13 @@ import { describe, it, expect } from "vitest";
 // Whether the filesystem this test runs on is case-insensitive — observed
 // directly (mirrors how the jail detects it), NOT guessed from process.platform,
 // so the assertion stays correct on a case-insensitive Linux mount or a
-// case-sensitive macOS volume.
+// case-sensitive macOS volume. Flip ONLY cwd's leaf, keeping the ancestor path
+// intact, so we test the filesystem AT cwd and not a case-sensitive mount above it.
 const cwd = process.cwd();
-const flippedCwd = cwd === cwd.toLowerCase() ? cwd.toUpperCase() : cwd.toLowerCase();
-const CASE_INSENSITIVE_FS = flippedCwd !== cwd && existsSync(flippedCwd);
+const cwdBase = path.basename(cwd);
+const flippedBase = cwdBase === cwdBase.toLowerCase() ? cwdBase.toUpperCase() : cwdBase.toLowerCase();
+const CASE_INSENSITIVE_FS =
+  flippedBase !== cwdBase && existsSync(path.join(path.dirname(cwd), flippedBase));
 import {
   managedMarketplaceSkillsRoot,
   isInsideManagedMarketplaceSkillsRoot,
