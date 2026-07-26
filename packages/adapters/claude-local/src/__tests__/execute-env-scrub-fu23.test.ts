@@ -116,6 +116,9 @@ describe("claude_local FU-23 env scrub", () => {
     }
     expect(env.AOA_MCP_NOTION_TOKEN).toBe("connector-token");
     expect(env.PATH ?? env.Path).toBeTruthy();
+    // WS1 — the run-scoped API bearer must NOT reach a connector child.
+    // ABLATION: delete stripConnectorRunBearers(...) in execute.ts → RED.
+    expect(env.AOA_API_KEY, "run token must not leak to a connector child").toBeUndefined();
   });
 
   it("no connectors → env is unscrubbed (byte-identical: ambient secrets present)", async () => {
@@ -123,5 +126,7 @@ describe("claude_local FU-23 env scrub", () => {
     expect(env.DATABASE_URL).toBe(AMBIENT_SECRETS.DATABASE_URL);
     expect(env.OPENAI_API_KEY).toBe(AMBIENT_SECRETS.OPENAI_API_KEY);
     expect(env.AOA_MCP_NOTION_TOKEN).toBe("connector-token");
+    // WS1 byte-identity foil: the run token is present when no connectors.
+    expect(env.AOA_API_KEY).toBe("secret-run-token");
   });
 });

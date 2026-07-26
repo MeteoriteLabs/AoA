@@ -18,7 +18,7 @@ import os from "node:os";
 import path from "node:path";
 import { execute } from "../server/execute.js";
 import type { AdapterInvocationMeta } from "@armyofagents/adapter-utils";
-import type { RuntimeHookBridgeSpec } from "@armyofagents/adapter-utils";
+import type { RuntimeHookBridgeSpec, McpServerSpec } from "@armyofagents/adapter-utils";
 
 const HOOK_BRIDGE_SPEC: RuntimeHookBridgeSpec = {
   enabled: true,
@@ -28,6 +28,22 @@ const HOOK_BRIDGE_SPEC: RuntimeHookBridgeSpec = {
 };
 const HOOK_TOKEN = "SECRET-TOKEN-VALUE-xxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
 const HOOK_URL = "http://127.0.0.1:3000/internal/runtime-hooks/permission-request";
+
+// WS1 — connector fixtures to force `connectorsPresent` (claude needs BOTH an
+// mcpBridge and a non-empty mcpServers). Used only by the connector-run test.
+const CONNECTOR_MCP_BRIDGE = {
+  command: "node",
+  args: ["/path/to/mcp-bridge.js"],
+  env: { AOA_SESSION_COMPANY_ID: "company-hooks" },
+};
+const CONNECTOR_SERVERS: Record<string, McpServerSpec> = {
+  notion: {
+    kind: "http",
+    url: "https://mcp.notion.com/mcp",
+    headers: { Authorization: "Bearer ${AOA_MCP_NOTION_TOKEN}" },
+    authTokenEnvVar: "AOA_MCP_NOTION_TOKEN",
+  },
+};
 
 // Fake claude command that captures argv + env to a JSON file and exits cleanly.
 async function writeFakeClaudeCommand(commandBase: string): Promise<string> {
@@ -458,6 +474,49 @@ console.log(JSON.stringify({ type: "result", subtype: "success", session_id: "s1
       expect(capture.argv).toContain("--dangerously-skip-permissions");
     } finally {
       await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("bridged + connectors present: BOTH run bearers (hook token + API key) are stripped from the connector-facing env", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-claude-hooks-connectors-"));
+    const workspace = path.join(root, "workspace");
+    const commandBase = path.join(root, "agent");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    const commandPath = await writeFakeClaudeCommand(commandBase);
+    try {
+      const result = await execute({
+        ...makeBaseContext(commandPath, capturePath, workspace),
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: { AOA_TEST_CAPTURE_PATH: capturePath, AOA_MCP_NOTION_TOKEN: "connector-token" },
+          promptTemplate: "Prompt for hooks test.",
+          timeoutSec: 10,
+          graceSec: 1,
+        },
+        // Bridge ON (so AOA_RUNTIME_HOOK_TOKEN is injected) AND connectors present
+        // (so the WS1 strip must fire). authToken set so AOA_API_KEY is injected —
+        // otherwise the assertion below would be vacuous.
+        runtimeHookBridge: HOOK_BRIDGE_SPEC,
+        runtimeHookToken: HOOK_TOKEN,
+        authToken: "secret-run-token",
+        mcpBridge: CONNECTOR_MCP_BRIDGE,
+        mcpServers: CONNECTOR_SERVERS,
+      });
+      expect(result.exitCode).toBe(0);
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as {
+        env: Record<string, string>;
+      };
+      // The existing bridged (no-connector) test is the foil: it asserts the hook
+      // token PRESENT. Here, with a connector, BOTH run bearers must be gone.
+      // ABLATION: delete stripConnectorRunBearers(...) in execute.ts → RED.
+      expect(capture.env.AOA_RUNTIME_HOOK_TOKEN).toBeUndefined();
+      expect(capture.env.AOA_API_KEY).toBeUndefined();
+      // The connector's own token still rides (it's the credential the connector needs).
+      expect(capture.env.AOA_MCP_NOTION_TOKEN).toBe("connector-token");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true }).catch(() => {});
     }
   });
 
