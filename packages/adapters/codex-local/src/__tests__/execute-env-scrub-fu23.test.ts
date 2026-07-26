@@ -53,6 +53,16 @@ const PG_STDIO: McpServerSpec = {
   args: ["-y", "dbhub@1.0.0"],
   env: {},
 };
+// A SECRET-bearing stdio connector — codex CANNOT deliver a stdio secret, so its
+// writer drops this as `secret_unreachable` (no child spawns). The isolation gate
+// must therefore NOT fire for it (F4 round 2 / Codex round 3).
+const SECRET_STDIO: McpServerSpec = {
+  kind: "stdio",
+  command: "npx",
+  args: ["-y", "dbhub@1.0.0", "--token", "${AOA_MCP_PG_TOKEN}"],
+  env: {},
+  secretEnvVar: "AOA_MCP_PG_TOKEN",
+};
 const BRIDGE = {
   command: "node",
   args: ["/path/to/mcp-bridge.js"],
@@ -94,7 +104,9 @@ afterEach(() => {
   }
 });
 
-async function runOnce(connectors: "none" | "stdio" | "http"): Promise<Record<string, string>> {
+async function runOnce(
+  connectors: "none" | "stdio" | "http" | "secret-stdio",
+): Promise<Record<string, string>> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-codex-fu23-"));
   const workspace = path.join(root, "workspace");
   const capturePath = path.join(root, "capture.json");
@@ -103,14 +115,18 @@ async function runOnce(connectors: "none" | "stdio" | "http"): Promise<Record<st
   const commandPath = await writeFakeCodexCommand(path.join(root, "agent"));
   const prevCodexHome = process.env.CODEX_HOME;
   process.env.CODEX_HOME = codexHome;
+  const stdioServers: Record<string, McpServerSpec> =
+    connectors === "stdio"
+      ? { pg: PG_STDIO }
+      : connectors === "secret-stdio"
+        ? { pg: SECRET_STDIO }
+        : { notion: NOTION };
   const mcpFields =
     connectors === "none"
       ? {}
       : {
           mcpBridge: BRIDGE,
-          mcpServers: (connectors === "stdio"
-            ? { pg: PG_STDIO }
-            : { notion: NOTION }) as Record<string, McpServerSpec>,
+          mcpServers: stdioServers,
         };
   try {
     const result = await execute({
@@ -179,5 +195,22 @@ describe("codex_local FU-23 env scrub (exec path)", () => {
     expect(env.GITHUB_PAT).toBe(AMBIENT_SECRETS.GITHUB_PAT);
     expect(env.AOA_API_KEY).toBe("secret-run-token");
     expect(env.AOA_MCP_NOTION_TOKEN).toBe("connector-token");
+  });
+
+  it("SECRET-bearing stdio only → codex drops it (secret_unreachable), so bearer KEPT (Codex round 3)", async () => {
+    // codex cannot deliver a stdio secret, so its writer drops a secret-bearing
+    // stdio spec before any child spawns. With no delivered stdio child, isolating
+    // the env is pure downside — it must NOT strip AOA_API_KEY (else the codex
+    // agent's own authenticated REST 401s merely because it was ASSIGNED a
+    // connector codex can't run). Uses the writer's OWN predicate
+    // (stdioSpecCarriesSecretPlaceholder) so the gate can never disagree with the
+    // drop. ABLATION: gate on any-stdio-present → AOA_API_KEY goes undefined → RED.
+    const env = await runOnce("secret-stdio");
+    expect(env.AOA_API_KEY).toBe("secret-run-token");
+    // Byte-identical to no-connectors otherwise: ambient present, only the always-on
+    // billing strip fires.
+    expect(env.DATABASE_URL).toBe(AMBIENT_SECRETS.DATABASE_URL);
+    expect(env.GITHUB_PAT).toBe(AMBIENT_SECRETS.GITHUB_PAT);
+    expect(env.OPENAI_API_KEY).toBeUndefined();
   });
 });

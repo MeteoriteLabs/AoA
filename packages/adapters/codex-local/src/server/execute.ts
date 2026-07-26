@@ -8,6 +8,8 @@ import {
   runAdapterExecutionTargetProcess,
   aoaAmbientSecretEnvKeys,
   stripConnectorRunBearers,
+  isStdioServerSpec,
+  stdioSpecCarriesSecretPlaceholder,
   type AdapterExecutionContext,
   type AdapterExecutionResult,
   type AdapterRuntimeCommandSpec,
@@ -409,11 +411,23 @@ export async function execute(
   // isolating the env on an http-only run has zero benefit and wrongly strips the
   // agent's own AOA_API_KEY → its curl/REST calls 401 in authenticated mode. Gate
   // every env-isolation use (ambient scrub, bearer strip, authToken:null) on a
-  // STDIO connector actually being present. Connector CONFIG delivery
-  // (config.toml) is unchanged for all transports — this gate is env-isolation only.
+  // stdio connector that codex will ACTUALLY spawn locally. Connector CONFIG
+  // delivery (config.toml) is unchanged for all transports — this gate is
+  // env-isolation only.
+  //
+  // Codex F4 round 2 — the gate must reflect codex's DELIVERED stdio set, not the
+  // raw ctx.mcpServers, because the codex writer drops some stdio specs before any
+  // child spawns: (1) a secret-bearing stdio spec is dropped as `secret_unreachable`
+  // (codex cannot pass a stdio secret — same predicate the writer uses, no drift),
+  // and (2) sandbox-docker skips ALL codex MCP wiring (MX3 below). If the only
+  // stdio connectors are ones codex won't spawn, no child inherits the env, so the
+  // strip is pure downside (401s the agent's own REST).
   const hasStdioConnector =
+    executionTarget.type !== "sandbox-docker" &&
     ctx.mcpServers != null &&
-    Object.values(ctx.mcpServers).some((s) => (s as { kind?: string } | null)?.kind === "stdio");
+    Object.values(ctx.mcpServers).some(
+      (s) => isStdioServerSpec(s) && !stdioSpecCarriesSecretPlaceholder(s),
+    );
   const codexUnsetEnvKeys = hasStdioConnector
     ? [...new Set(["OPENAI_API_KEY", ...aoaAmbientSecretEnvKeys()])]
     : ["OPENAI_API_KEY"];
