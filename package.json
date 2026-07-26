@@ -13,6 +13,8 @@
     "dev:stop": "pkill -f 'pnpm.*dev' || true",
     "fetch-catalog": "pnpm --filter @armyofagents/db exec -- tsx ../../scripts/fetch-bundled-catalog.ts",
     "fetch-connectors": "pnpm --filter @armyofagents/db exec -- tsx ../../scripts/fetch-bundled-connectors.ts",
+    "fetch-catalog:audit-fixture": "pnpm --filter @armyofagents/db exec -- tsx ../../scripts/fetch-catalog-audit-fixture.ts",
+    "audit-catalog": "pnpm --filter @armyofagents/db exec -- tsx ../../scripts/audit-catalog-dependencies.ts",
     "prebuild": "pnpm fetch-catalog && pnpm fetch-connectors",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",

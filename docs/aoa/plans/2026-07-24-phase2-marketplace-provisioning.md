@@ -1043,7 +1043,7 @@ stops being enough.
 - [ ] **Step 3: Add Steward** to `content/teams/default-crew/team.json` `agents[]` and `manifest.installOrder`.
 - [ ] **Step 4: Regenerate + publish.** Rebuild `catalog.json`, PR to `aoa-marketplace`, then publish to `aoa-marketplace-cdn`. **Confirm with the owner before each PR.**
 - [ ] **Step 5: Refresh the bundled snapshot** in AoA via `pnpm fetch-catalog` so offline bootstrap matches.
-- [ ] **Step 6: Dependency audit as a test** — every agent's declared `requires` skills resolve against the published catalog (re-run the 42→N audit as an automated check, so a future catalog bump can't silently orphan a dependency).
+- [x] **Step 6: Dependency audit as a test** — every agent's/team's declared `requires` edge resolves to a matching-type, active catalog item. SHIPPED as `server/src/__tests__/marketplace-dependency-audit.test.ts` (plain `.test.ts` → runs in the required `verify` gate + on Windows) against a committed, generated projection `__fixtures__/published-catalog/catalog-index.json`. Non-vacuity floor + negative controls guard against a "test that lies". **Refresh the fixture whenever the catalog is bumped: `pnpm fetch-catalog:audit-fixture`.** Green today (12 agents / 27 team edges / 70 total, 0 orphans).
 - [ ] **Step 7: Commit** (AoA side).
 ```bash
 git commit -m "feat(marketplace): publish Steward + declare skills for Chronicler/Memory Keeper/Navigator"

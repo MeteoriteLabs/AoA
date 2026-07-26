@@ -149,20 +149,32 @@ describe("LobbySidebar", () => {
   function deferredProfile() {
     let resolveProfile!: (value: unknown) => void;
     mockProfileGet.mockReturnValue(new Promise((resolve) => { resolveProfile = resolve; }));
-    return (overrides: Record<string, unknown>) =>
-      act(async () => {
-        resolveProfile({
-          id: "user-2",
-          email: "teammate@example.com",
-          displayName: "Teammate",
-          avatarUrl: null,
-          ...overrides,
+    return async (overrides: Record<string, unknown>) => {
+      // react-query delivers observer notifications on its default scheduler
+      // (setTimeout(cb, 0)). A fixed setTimeout(0) hop was NOT a reliable settle
+      // barrier — that macrotask races React 19 act()'s MessageChannel flush, so
+      // the "control" test flaked on CI. Keep the PRODUCTION scheduler but drive
+      // it under fake timers and flush every pending timer + microtask INSIDE
+      // act via runAllTimersAsync — deterministic, and the notification lands
+      // inside act (no "not wrapped in act" warnings, unlike a synchronous
+      // scheduler override). Scoped to this deferred flow only; the other tests
+      // (which use userEvent / findBy) keep real timers.
+      vi.useFakeTimers();
+      try {
+        await act(async () => {
+          resolveProfile({
+            id: "user-2",
+            email: "teammate@example.com",
+            displayName: "Teammate",
+            avatarUrl: null,
+            ...overrides,
+          });
+          await vi.runAllTimersAsync();
         });
-        // react-query batches observer notifications on a scheduler tick — a
-        // macrotask hop is required before the resolved data reaches the hook.
-        // (Without it the control test below fails: the row never appears.)
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      });
+      } finally {
+        vi.useRealTimers();
+      }
+    };
   }
 
   it("hides the Settings row (and System section header) for non-instance-admins", async () => {
