@@ -85,6 +85,18 @@ export interface ResolvedConnectorRow {
   secretValue: string | null;
 }
 
+/**
+ * A resolved connector row PLUS the audit metadata the delivery-audit needs
+ * (`mcp_connector.delivered`, Decision #116 clause 7). The loader returns these;
+ * `buildConnectorSpecs` consumes only the {@link ResolvedConnectorRow} subset
+ * (the extra fields are ignored), so its many unit-test fixtures stay minimal.
+ */
+export interface LoadedConnectorRow extends ResolvedConnectorRow {
+  connectorId: string;
+  /** Catalog trust tier, or null for BYO. */
+  trustTier: string | null;
+}
+
 /** Why a connector row produced no spec. */
 export type ConnectorSkipReason =
   | "missing_url"

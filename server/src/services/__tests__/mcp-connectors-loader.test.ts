@@ -250,7 +250,9 @@ describe("loadEnabledConnectorRows", () => {
     ]);
     resolveByName.mockResolvedValue("secret-abc");
 
-    await loadEnabledConnectorRows(db, { companyId: "co-1", agentId: "agent-1", runId: "run-9" });
+    // The audit is emitted by resolveAgentConnectors AFTER buildConnectorSpecs
+    // (only spec survivors), not by loadEnabledConnectorRows.
+    await resolveAgentConnectors(db, { companyId: "co-1", agentId: "agent-1", runId: "run-9" });
 
     expect(logActivityMock).toHaveBeenCalledTimes(2);
     expect(logActivityMock).toHaveBeenCalledWith(
@@ -293,9 +295,38 @@ describe("loadEnabledConnectorRows", () => {
     ]);
     resolveByName.mockRejectedValue(Object.assign(new Error("gone"), { status: 404 }));
 
-    await loadEnabledConnectorRows(db, { companyId: "co-1", agentId: "agent-1" });
+    await resolveAgentConnectors(db, { companyId: "co-1", agentId: "agent-1" });
 
     expect(logActivityMock).not.toHaveBeenCalled();
+  });
+
+  it("does NOT audit a connector that buildConnectorSpecs DROPS (missing_command) — Codex review", async () => {
+    // A stdio row with no command passes the selector (the WS2 unsafe-command
+    // gate only fires for a PRESENT command) and resolves (no secret), so the
+    // loader returns it — but buildConnectorSpecs skips it as `missing_command`,
+    // so it never reaches the CLI. It must NOT be audited as delivered.
+    const { db } = createSequenceDb([
+      [
+        connectorRow({
+          id: "c-nocmd",
+          serverName: "broken-stdio",
+          transport: "stdio",
+          url: null,
+          command: null,
+          args: [],
+          secretRef: null,
+        }),
+        connectorRow({ id: "c-http", serverName: "notion", transport: "http", secretRef: "mcp:notion" }),
+      ],
+      [{ connectorId: "c-nocmd" }, { connectorId: "c-http" }],
+    ]);
+    resolveByName.mockResolvedValue("secret-abc");
+
+    await resolveAgentConnectors(db, { companyId: "co-1", agentId: "agent-1", runId: "run-9" });
+
+    // Only the healthy http connector is audited; the dropped stdio row is not.
+    expect(logActivityMock).toHaveBeenCalledTimes(1);
+    expect(logActivityMock.mock.calls[0][1]).toMatchObject({ entityId: "c-http" });
   });
 
   it("passes a system consumer context naming the connector", async () => {
@@ -340,6 +371,7 @@ describe("loadEnabledConnectorRows", () => {
     // A dropped column would silently downgrade a connector at spawn time
     // rather than fail loudly, so assert the whole shape.
     expect(rows[0]).toEqual({
+      connectorId: "c1",
       serverName: "pg",
       transport: "stdio",
       url: null,
@@ -347,6 +379,7 @@ describe("loadEnabledConnectorRows", () => {
       args: ["-y", "dbhub@1.0.0"],
       headerTemplate: {},
       envTemplate: { DSN: "${TOKEN}" },
+      trustTier: null,
       secretValue: null,
     });
   });

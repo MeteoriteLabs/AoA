@@ -19,7 +19,7 @@ import {
   buildConnectorSpecs,
   parseConnectorServerName,
   selectConnectorRowsForAgent,
-  type ResolvedConnectorRow,
+  type LoadedConnectorRow,
 } from "./mcp-connectors.js";
 import { secretService, type SecretConsumerContext } from "./secrets.js";
 import { logActivity } from "./activity-log.js";
@@ -33,12 +33,6 @@ export interface LoadEnabledConnectorRowsOptions {
    * company connector (D3).
    */
   agentId: string | null;
-  /**
-   * The heartbeat/crew run this delivery belongs to, if any. Threaded solely for
-   * the `mcp_connector.delivered` audit event (Decision #116 clause 7) so the
-   * audit row correlates to the run — omitted for callers with no run context.
-   */
-  runId?: string;
 }
 
 /**
@@ -72,8 +66,8 @@ function consumerContextFor(serverName: string): SecretConsumerContext {
  */
 export async function loadEnabledConnectorRows(
   db: Db,
-  { companyId, agentId, runId }: LoadEnabledConnectorRowsOptions,
-): Promise<ResolvedConnectorRow[]> {
+  { companyId, agentId }: LoadEnabledConnectorRowsOptions,
+): Promise<LoadedConnectorRow[]> {
   // Fetch ALL of the company's connectors and let the pure selector apply the
   // status rule. Pre-filtering `status = 'active'` in SQL would put a
   // security-relevant predicate in two places, and the SQL copy is the one no
@@ -134,7 +128,7 @@ export async function loadEnabledConnectorRows(
   if (selected.length === 0) return [];
 
   const secrets = secretService(db);
-  const resolved: ResolvedConnectorRow[] = [];
+  const resolved: LoadedConnectorRow[] = [];
 
   for (const connector of selected) {
     let secretValue: string | null = null;
@@ -166,6 +160,7 @@ export async function loadEnabledConnectorRows(
     }
 
     resolved.push({
+      connectorId: connector.id,
       serverName: connector.serverName,
       transport: connector.transport,
       url: connector.url,
@@ -173,40 +168,18 @@ export async function loadEnabledConnectorRows(
       args: connector.args,
       headerTemplate: connector.headerTemplate,
       envTemplate: connector.envTemplate,
+      trustTier: connector.trustTier ?? null,
       secretValue,
     });
-
-    // Decision #116 clause 7 — audit each connector DELIVERED to a run. AoA does
-    // not spawn the MCP child itself (the CLI does), so "delivered" is the honest
-    // event: this connector passed the selector AND its secret resolved, so it
-    // WILL be built into the run's config. Best-effort: an audit failure must
-    // never break delivery, and the actual delivery already succeeded above.
-    // `command` is recorded only for stdio (the exec-bearing transport).
-    try {
-      await logActivity(db, {
-        companyId,
-        actorType: "system",
-        actorId: "mcp-connectors",
-        agentId,
-        runId: runId ?? null,
-        action: "mcp_connector.delivered",
-        entityType: "mcp_connector",
-        entityId: connector.id,
-        details: {
-          serverName: connector.serverName,
-          transport: connector.transport,
-          trustTier: connector.trustTier ?? null,
-          ...(connector.transport === "stdio" ? { command: connector.command ?? null } : {}),
-        },
-      });
-    } catch (err) {
-      logger.warn(
-        { err, companyId, connectorId: connector.id, serverName: connector.serverName },
-        "mcp_connector.delivered audit failed (delivery unaffected)",
-      );
-    }
   }
 
+  // The `mcp_connector.delivered` audit (Decision #116 clause 7) is emitted by
+  // `resolveAgentConnectors` AFTER `buildConnectorSpecs`, NOT here — a row can
+  // pass the selector + resolve its secret yet still be dropped by the spec
+  // builder (a stdio row with no command → `missing_command`, an unknown
+  // transport, a malformed jsonb column). Auditing here would claim a connector
+  // was delivered that never reached the CLI (Codex review). The row now carries
+  // `connectorId`/`trustTier` so the caller can audit only the survivors.
   return resolved;
 }
 
@@ -325,7 +298,6 @@ export async function resolveAgentConnectors(
   const rows = await loadEnabledConnectorRows(db, {
     companyId: input.companyId,
     agentId: input.agentId,
-    runId: input.runId,
   });
   const { specs, env, skipped } = buildConnectorSpecs(rows);
   if (skipped.length > 0 && input.logger) {
@@ -339,5 +311,41 @@ export async function resolveAgentConnectors(
       "mcp connectors skipped for agent run",
     );
   }
+
+  // Decision #116 clause 7 — audit each connector actually DELIVERED to the run,
+  // i.e. one that produced a spec. Emitting this AFTER buildConnectorSpecs (not
+  // in the loader) is deliberate: a row that passed the selector + resolved its
+  // secret can still be dropped here (`missing_command`, `unknown_transport`,
+  // `malformed_row`) and never reach the CLI — auditing it as delivered would be
+  // a false entry in a security trail (Codex review). Best-effort: an audit
+  // failure must never break a delivery that already succeeded.
+  const skippedNames = new Set(skipped.map((s) => s.serverName));
+  for (const row of rows) {
+    if (skippedNames.has(row.serverName)) continue;
+    try {
+      await logActivity(db, {
+        companyId: input.companyId,
+        actorType: "system",
+        actorId: "mcp-connectors",
+        agentId: input.agentId,
+        runId: input.runId ?? null,
+        action: "mcp_connector.delivered",
+        entityType: "mcp_connector",
+        entityId: row.connectorId,
+        details: {
+          serverName: row.serverName,
+          transport: row.transport,
+          trustTier: row.trustTier,
+          ...(row.transport === "stdio" ? { command: row.command ?? null } : {}),
+        },
+      });
+    } catch (err) {
+      logger.warn(
+        { err, companyId: input.companyId, connectorId: row.connectorId, serverName: row.serverName },
+        "mcp_connector.delivered audit failed (delivery unaffected)",
+      );
+    }
+  }
+
   return { extraMcpServers: specs, connectorEnv: env };
 }
