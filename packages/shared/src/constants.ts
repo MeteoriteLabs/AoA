@@ -1120,6 +1120,14 @@ export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
  */
 export const SKILL_CUSTOMIZED_ERROR_CODE = "SKILL_CUSTOMIZED";
 
+/**
+ * Machine-readable code on the 409 returned when creating a company skill
+ * whose canonical key is already claimed. This is intentionally distinct from
+ * `SKILL_CUSTOMIZED`: the caller chose a taken name, rather than attempting an
+ * upstream update that would discard edits.
+ */
+export const SKILL_NAME_TAKEN_ERROR_CODE = "SKILL_NAME_TAKEN";
+
 // ── Routines ──────────────────────────────────────────────────────────
 
 export const RUN_LIVENESS_STATES = ["unknown", "advanced", "completed", "blocked", "needs_followup", "stalled"] as const;

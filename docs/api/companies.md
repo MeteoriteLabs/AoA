@@ -153,11 +153,19 @@ POST /api/companies/import
   "bundle": { ... },
   "target": { "mode": "new_company" },
   "include": { ... },
-  "collisionStrategy": "skip"
+  "collisionStrategy": "skip",
+  "overwriteCustomizedSkillKeys": []
 }
 ```
 
 Returns the created/updated company, agents list, and any warnings. Unknown bundle sections warn-and-continue — Paperclip v1 bundles import compatibly.
+
+For an `existing_company` import with `collisionStrategy: "replace"`, a matching
+skill that carries founder edits is shown in preview with
+`existingCustomized: true` and is skipped by default. Overwriting it requires
+putting that exact manifest skill key in `overwriteCustomizedSkillKeys` on both
+the preview and import request. Skill `sourceType` values are restricted to
+`local_path`, `github`, `url`, `catalog`, or `skills_sh`.
 
 ### Bundle section: `internalAgentConfig`
 

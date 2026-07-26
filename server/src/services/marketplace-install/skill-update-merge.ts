@@ -106,7 +106,7 @@ import { eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { companySkills, marketplacePendingUpdates } from "@armyofagents/db";
 import type { CatalogItem } from "@armyofagents/shared";
-import { computeSectionDiff, applyMergeDecisions } from "../marketplace-merge.js";
+import { computeSectionDiff, mergeSkillDocument } from "../marketplace-merge.js";
 import {
   managedCatalogSkillDir,
   materializeSkillBundle,
@@ -177,8 +177,9 @@ export async function mergeSkillUpdate(
   const { db, companyId, skill, catalogItem, pendingUpdateId, latestVersion, decisions } = args;
 
   const upstreamContent = await fetchUpstreamSkillMarkdown(catalogItem);
-  const diff = computeSectionDiff(skill.markdown ?? "", upstreamContent);
-  const merged = applyMergeDecisions(diff, decisions);
+  const mineContent = skill.markdown ?? "";
+  const diff = computeSectionDiff(mineContent, upstreamContent);
+  const merged = mergeSkillDocument(diff, decisions, upstreamContent, mineContent);
 
   // The bundle is keyed by `catalogItem.version`, NOT by the pending row's
   // `latestVersion`: the bytes come from `catalogItem.skill.bundle`, and the
@@ -209,13 +210,13 @@ export async function mergeSkillUpdate(
     await tx
       .update(companySkills)
       .set({
-        // `merged`, never `materialized.markdown` — see the file docblock.
-        markdown: merged,
+        // `merged.content`, never `materialized.markdown` — see the file docblock.
+        markdown: merged.content,
         // `catalogItem.version`, not the pending row's `latestVersion`: both the
         // merged markdown and the bundle now come from `catalogItem`, so this is
         // the only stamp the row's own contents justify.
         sourceRef: catalogItem.version,
-        customized: true,
+        customized: !merged.pureUpstream,
         ...resolveBundleColumns(skill.metadata, bundle, materialized),
         updatedAt: new Date(),
       })

@@ -140,6 +140,10 @@ describe("mergeSkillUpdate - bundle re-materialization (T2.8)", () => {
       "references/guide.md",
       "scripts/modern.js",
     ]);
+    // Accepting upstream everywhere writes the reviewed document byte-for-byte
+    // and re-opens this row to the existing customized=false auto-apply path.
+    expect(capture.skillSet.markdown).toBe(V2_FILES["skills/research/SKILL.md"]);
+    expect(capture.skillSet.customized).toBe(false);
   });
 
   it("does not carry an upstream-removed script into the active bundle", async () => {

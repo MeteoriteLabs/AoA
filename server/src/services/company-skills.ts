@@ -4,7 +4,11 @@ import path from "node:path";
 import { and, asc, eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { companySkills, agents as agentsTable } from "@armyofagents/db";
-import { normalizeAgentUrlKey, SKILL_CUSTOMIZED_ERROR_CODE } from "@armyofagents/shared";
+import {
+  normalizeAgentUrlKey,
+  SKILL_CUSTOMIZED_ERROR_CODE,
+  SKILL_NAME_TAKEN_ERROR_CODE,
+} from "@armyofagents/shared";
 import type {
   CompanySkill,
   CompanySkillCreateRequest,
@@ -1154,6 +1158,26 @@ function skillCustomizedConflict(skill: Pick<CompanySkill, "id" | "name">) {
   );
 }
 
+function skillNameTakenConflict(slug: string, key: string) {
+  return conflict(
+    `A skill named "${slug}" already exists. Choose a different name or slug.`,
+    { code: SKILL_NAME_TAKEN_ERROR_CODE, slug, key },
+  );
+}
+
+function isCompanySkillKeyCollision(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; depth < 4 && current && typeof current === "object"; depth++) {
+    const record = current as Record<string, unknown>;
+    if (record.code === "23505") {
+      const constraint = record.constraint_name ?? record.constraint;
+      return constraint === undefined || constraint === "company_skills_company_key_idx";
+    }
+    current = record.cause;
+  }
+  return false;
+}
+
 function refusedCustomizedEntry(
   skill: Pick<CompanySkill, "id" | "key" | "slug" | "name">,
 ): CompanySkillRefusedImport {
@@ -1463,6 +1487,15 @@ export function companySkillService(db: Db) {
     return (await listFullRows(companyId)).map(toCompanySkill);
   }
 
+  async function listFullWithCustomization(
+    companyId: string,
+  ): Promise<Array<CompanySkill & { customized: boolean }>> {
+    return (await listFullRows(companyId)).map((row) => ({
+      ...toCompanySkill(row),
+      customized: row.customized === true,
+    }));
+  }
+
   /** See {@link listFullRows} — raw row, used where `customized` matters. */
   async function getRowById(id: string): Promise<CompanySkillRow | null> {
     return db
@@ -1641,10 +1674,11 @@ export function companySkillService(db: Db) {
     filePath: string,
     content: string,
   ): Promise<CompanySkillFileDetail> {
-    const skill = await getById(skillId);
-    if (!skill || skill.companyId !== companyId) {
+    const skillRow = await getRowById(skillId);
+    if (!skillRow || skillRow.companyId !== companyId) {
       throw notFound("Skill not found");
     }
+    const skill = toCompanySkill(skillRow);
 
     const normalizedPath = normalizePortablePath(filePath) || "SKILL.md";
     // SECURITY: reject path traversal — normalizedPath is joined to the skill
@@ -1711,7 +1745,10 @@ export function companySkillService(db: Db) {
           markdown: content,
           name: newName,
           description: newDescription,
-          customized: true, // Atomic: folded in here so no separate route-level write is needed
+          // A no-op save of pristine upstream bytes must not freeze the row.
+          // Once customized, the flag remains sticky because the current row no
+          // longer contains an independent upstream baseline to prove a revert.
+          customized: skillRow.customized === true || content !== skill.markdown,
           updatedAt: new Date(),
         })
         .where(eq(companySkills.id, skillId));
@@ -1755,8 +1792,6 @@ export function companySkillService(db: Db) {
     const managedRoot = resolveManagedSkillsRoot(companyId);
     const skillDir = path.resolve(managedRoot, slug);
 
-    await fs.mkdir(skillDir, { recursive: true });
-
     const markdown = input.markdown?.trim().length
       ? input.markdown
       : [
@@ -1771,29 +1806,74 @@ export function companySkillService(db: Db) {
         "",
       ].join("\n");
 
-    await fs.writeFile(path.join(skillDir, "SKILL.md"), markdown, "utf8");
+    const safeMarkdown = sanitizeMarkdown(markdown);
+    const parsed = parseFrontmatterMarkdown(safeMarkdown);
+    const key = `company/${companyId}/${slug}`;
 
-    const parsed = parseFrontmatterMarkdown(markdown);
-    // T2.9 policy: the founder is authoring this skill right now and its bytes
-    // were just written to disk above, so there is no third-party edit to
-    // protect. (A create that collides with an existing customized key still
-    // overwrites — pre-existing behaviour, out of T2.9's scope; filed as T2.9b.)
-    const imported = (await upsertImportedSkills(companyId, [{
-      key: `company/${companyId}/${slug}`,
-      slug,
-      name: asString(parsed.frontmatter.name) ?? input.name,
-      description: asString(parsed.frontmatter.description) ?? input.description?.trim() ?? null,
-      markdown,
-      sourceType: "local_path",
-      sourceLocator: skillDir,
-      sourceRef: null,
-      trustLevel: "markdown_only",
-      compatibility: "compatible",
-      fileInventory: [{ path: "SKILL.md", kind: "skill" }],
-      metadata: { sourceKind: "managed_local" },
-    }], "caller_is_authoritative")).skills;
+    // Stage bytes away from the final path. The unique (company_id, key) insert
+    // below is the concurrency authority: only its winner may publish this
+    // directory, and a loser never mutates an existing founder-owned file.
+    await fs.mkdir(managedRoot, { recursive: true });
+    const stagingDir = await fs.mkdtemp(path.join(managedRoot, `.${slug}-create-`));
+    try {
+      await fs.writeFile(path.join(stagingDir, "SKILL.md"), safeMarkdown, "utf8");
 
-    return imported[0]!;
+      let inserted: CompanySkillRow | undefined;
+      try {
+        [inserted] = await db
+          .insert(companySkills)
+          .values({
+            companyId,
+            key,
+            slug,
+            name: asString(parsed.frontmatter.name) ?? input.name,
+            description:
+              asString(parsed.frontmatter.description) ?? input.description?.trim() ?? null,
+            markdown: safeMarkdown,
+            sourceType: "local_path",
+            sourceLocator: skillDir,
+            sourceRef: null,
+            trustLevel: "markdown_only",
+            compatibility: "compatible",
+            fileInventory: serializeFileInventory([{ path: "SKILL.md", kind: "skill" }]),
+            metadata: { sourceKind: "managed_local" },
+            customized: false,
+          })
+          .returning();
+      } catch (error) {
+        if (isCompanySkillKeyCollision(error)) {
+          throw skillNameTakenConflict(slug, key);
+        }
+        throw error;
+      }
+
+      if (!inserted) {
+        throw new Error("Failed to create company skill");
+      }
+
+      try {
+        await fs.rename(stagingDir, skillDir);
+      } catch (error) {
+        await db.delete(companySkills).where(eq(companySkills.id, inserted.id));
+        const record = error && typeof error === "object"
+          ? error as Record<string, unknown>
+          : null;
+        if (
+          record?.code === "EEXIST"
+          || record?.code === "ENOTEMPTY"
+          || record?.code === "EPERM"
+        ) {
+          throw skillNameTakenConflict(slug, key);
+        }
+        throw error;
+      }
+
+      return toCompanySkill(inserted);
+    } finally {
+      // If the insert lost the race, or a later step failed, only the private
+      // staging directory is removed. Never remove the final path on collision.
+      await fs.rm(stagingDir, { recursive: true, force: true });
+    }
   }
 
   /**
@@ -2742,6 +2822,7 @@ export function companySkillService(db: Db) {
   return {
     list,
     listFull,
+    listFullWithCustomization,
     getById,
     getByKey,
     detail,

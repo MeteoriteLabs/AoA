@@ -142,6 +142,14 @@ function makeFakeDb(rows: Row[]): FakeDb {
           ...values,
         };
         const commit = () => {
+          if (state.rows.some((existing) =>
+            existing.companyId === row.companyId && existing.key === row.key
+          )) {
+            throw Object.assign(new Error("duplicate company skill key"), {
+              code: "23505",
+              constraint_name: "company_skills_company_key_idx",
+            });
+          }
           state.rows.push(row);
           state.inserted.push(row);
           return [{ ...row }];
@@ -152,6 +160,7 @@ function makeFakeDb(rows: Row[]): FakeDb {
         };
       },
     }),
+    transaction: async (action: (tx: any) => Promise<any>) => action(state.db),
     delete: () => ({
       where: (cond: any) => {
         const keep = state.rows.filter((r) => !evalCond(cond, r));
@@ -448,6 +457,140 @@ describe("caller_is_authoritative clears `customized` (F1)", () => {
 });
 
 // ── 4. F2 — the project scan is a third source-re-read path ──────────────────
+
+describe("createLocalSkill — collision guard (T2.9b)", () => {
+  let previousAoaHome: string | undefined;
+
+  beforeEach(async () => {
+    previousAoaHome = process.env.AOA_HOME;
+    process.env.AOA_HOME = await makeTempDir("aoa-t29b-home-");
+  });
+
+  afterEach(() => {
+    if (previousAoaHome === undefined) delete process.env.AOA_HOME;
+    else process.env.AOA_HOME = previousAoaHome;
+  });
+
+  it("returns a distinct 409 and preserves a customized row plus its bytes", async () => {
+    const skillDir = path.join(
+      path.resolve(process.env.AOA_HOME!),
+      "instances",
+      "default",
+      "skills",
+      "co-1",
+      "brainstorming",
+    );
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), FOUNDER_MARKDOWN, "utf8");
+    const fake = makeFakeDb([
+      urlSkillRow({
+        key: "company/co-1/brainstorming",
+        slug: "brainstorming",
+        sourceType: "local_path",
+        sourceLocator: skillDir,
+        customized: true,
+      }),
+    ]);
+    const svc = companySkillService(fake.db);
+
+    await expect(svc.createLocalSkill("co-1", {
+      name: "Brainstorming",
+      slug: "brainstorming",
+      markdown: UPSTREAM_MARKDOWN,
+    })).rejects.toMatchObject({
+      status: 409,
+      details: { code: "SKILL_NAME_TAKEN" },
+    });
+
+    expect(fake.rows).toHaveLength(1);
+    expect(fake.rows[0]!.markdown).toBe(FOUNDER_MARKDOWN);
+    expect(fake.rows[0]!.customized).toBe(true);
+    expect(await fs.readFile(path.join(skillDir, "SKILL.md"), "utf8")).toBe(FOUNDER_MARKDOWN);
+  });
+
+  it("lets exactly one of two concurrent creates claim a fresh key", async () => {
+    const fake = makeFakeDb([]);
+    const svc = companySkillService(fake.db);
+    const input = {
+      name: "Brainstorming",
+      slug: "brainstorming",
+      markdown: UPSTREAM_MARKDOWN,
+    };
+
+    const outcomes = await Promise.allSettled([
+      svc.createLocalSkill("co-1", input),
+      svc.createLocalSkill("co-1", input),
+    ]);
+
+    expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+    const rejected = outcomes.find(
+      (outcome): outcome is PromiseRejectedResult => outcome.status === "rejected",
+    );
+    expect(rejected?.reason).toMatchObject({
+      status: 409,
+      details: { code: "SKILL_NAME_TAKEN" },
+    });
+    expect(fake.rows.filter((candidate) =>
+      candidate.key === "company/co-1/brainstorming"
+    )).toHaveLength(1);
+  });
+
+  it("still creates a fresh slug", async () => {
+    const fake = makeFakeDb([]);
+    const svc = companySkillService(fake.db);
+
+    const created = await svc.createLocalSkill("co-1", {
+      name: "Fresh Skill",
+      slug: "fresh-skill",
+      markdown: "# Fresh\n",
+    });
+
+    expect(created.key).toBe("company/co-1/fresh-skill");
+    expect(fake.rows).toHaveLength(1);
+    expect(await fs.readFile(
+      path.join(created.sourceLocator!, "SKILL.md"),
+      "utf8",
+    )).toBe("# Fresh\n");
+  });
+});
+
+describe("updateFile — byte-derived customized companion", () => {
+  it("keeps an uncustomized SKILL.md uncustomized on a byte-identical save", async () => {
+    const skillDir = await makeTempDir("aoa-t29-edit-");
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), UPSTREAM_MARKDOWN, "utf8");
+    const fake = makeFakeDb([
+      urlSkillRow({
+        sourceType: "local_path",
+        sourceLocator: skillDir,
+        markdown: UPSTREAM_MARKDOWN,
+        customized: false,
+      }),
+    ]);
+    const svc = companySkillService(fake.db);
+
+    await svc.updateFile("co-1", "skill-1", "SKILL.md", UPSTREAM_MARKDOWN);
+
+    expect(fake.rows[0]!.customized).toBe(false);
+  });
+
+  it("keeps an already-customized SKILL.md sticky on a byte-identical re-save", async () => {
+    const skillDir = await makeTempDir("aoa-t29-edit-sticky-");
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), FOUNDER_MARKDOWN, "utf8");
+    const fake = makeFakeDb([
+      urlSkillRow({
+        sourceType: "local_path",
+        sourceLocator: skillDir,
+        markdown: FOUNDER_MARKDOWN,
+        customized: true,
+      }),
+    ]);
+    const svc = companySkillService(fake.db);
+
+    await svc.updateFile("co-1", "skill-1", "SKILL.md", FOUNDER_MARKDOWN);
+
+    expect(fake.rows[0]!.customized).toBe(true);
+  });
+});
 
 describe("scanProjectWorkspaces — customized guard (F2)", () => {
   const ON_DISK = "---\nname: Scanned\n---\n\n# from the repo\n";

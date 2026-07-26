@@ -18,20 +18,63 @@ export interface SectionDiff {
   wordDiff?: ReturnType<typeof diffWords>; // only when state === "changed"
 }
 
+type Fence = { marker: "`" | "~"; length: number };
+
+function dominantEol(markdown: string): "\n" | "\r\n" {
+  const lineEndings = markdown.match(/\r\n|\n/g) ?? [];
+  if (lineEndings.length === 0) return "\n";
+
+  const crlfCount = lineEndings.filter((ending) => ending === "\r\n").length;
+  const lfCount = lineEndings.length - crlfCount;
+  if (crlfCount === lfCount) return lineEndings[0] === "\r\n" ? "\r\n" : "\n";
+  return crlfCount > lfCount ? "\r\n" : "\n";
+}
+
+function openingFence(line: string): Fence | null {
+  const match = line.trimStart().match(/^(`{3,}|~{3,}).*$/);
+  if (!match) return null;
+  const run = match[1];
+  return { marker: run[0] as Fence["marker"], length: run.length };
+}
+
+function closesFence(line: string, fence: Fence): boolean {
+  const match = line.trimStart().match(/^(`+|~+)\s*$/);
+  return Boolean(
+    match &&
+      match[1][0] === fence.marker &&
+      match[1].length >= fence.length,
+  );
+}
+
 /**
  * Split a markdown document into sections by ## (h2) headings.
  * Content before the first ## goes into a __preamble__ section.
  */
 export function splitSections(markdown: string): Section[] {
-  const lines = markdown.split("\n");
+  const eol = dominantEol(markdown);
+  const lines = markdown.split(/\r?\n/);
   const sections: Section[] = [];
   let currentHeader = "__preamble__";
   let currentLines: string[] = [];
+  let fence: Fence | null = null;
 
   for (const line of lines) {
+    if (fence) {
+      currentLines.push(line);
+      if (closesFence(line, fence)) fence = null;
+      continue;
+    }
+
+    const openedFence = openingFence(line);
+    if (openedFence) {
+      fence = openedFence;
+      currentLines.push(line);
+      continue;
+    }
+
     if (line.startsWith("## ")) {
       // Flush previous section
-      sections.push({ header: currentHeader, content: currentLines.join("\n") });
+      sections.push({ header: currentHeader, content: currentLines.join(eol) });
       currentHeader = line.slice(3).trim();
       currentLines = [line];
     } else {
@@ -39,8 +82,56 @@ export function splitSections(markdown: string): Section[] {
     }
   }
   // Flush last section
-  sections.push({ header: currentHeader, content: currentLines.join("\n") });
+  sections.push({ header: currentHeader, content: currentLines.join(eol) });
 
+  return sections;
+}
+
+/**
+ * Split into the same logical sections while retaining every original byte,
+ * including the line ending immediately before the next heading.
+ */
+function splitSectionsExact(markdown: string): Section[] {
+  const sections: Section[] = [];
+  let currentHeader = "__preamble__";
+  let currentStart = 0;
+  let fence: Fence | null = null;
+
+  for (const match of markdown.matchAll(/[^\r\n]*(?:\r\n|\n|$)/g)) {
+    const rawLine = match[0];
+    if (rawLine.length === 0) continue;
+    const line = rawLine.endsWith("\r\n")
+      ? rawLine.slice(0, -2)
+      : rawLine.endsWith("\n")
+        ? rawLine.slice(0, -1)
+        : rawLine;
+
+    if (fence) {
+      if (closesFence(line, fence)) fence = null;
+      continue;
+    }
+
+    const openedFence = openingFence(line);
+    if (openedFence) {
+      fence = openedFence;
+      continue;
+    }
+
+    if (line.startsWith("## ")) {
+      const offset = match.index ?? 0;
+      sections.push({
+        header: currentHeader,
+        content: markdown.slice(currentStart, offset),
+      });
+      currentHeader = line.slice(3).trim();
+      currentStart = offset;
+    }
+  }
+
+  sections.push({
+    header: currentHeader,
+    content: markdown.slice(currentStart),
+  });
   return sections;
 }
 
@@ -148,5 +239,78 @@ export function applyMergeDecisions(
     // If decision is "mine" and state is "added", section is dropped
     // If decision is "theirs" and state is "removed", section is dropped
   }
-  return parts.join("\n\n").trim() + "\n";
+  const eol = dominantEol(parts.join(""));
+  return parts.join(eol + eol).trim() + eol;
+}
+
+/**
+ * Merge a skill document and report whether the result is byte-identical to
+ * the upstream document the founder reviewed.
+ *
+ * `computeSectionDiff` intentionally classifies trim-equal sections as
+ * unchanged, so section state alone cannot prove upstream parity. When every
+ * section resolves upstream, return the original upstream bytes verbatim
+ * instead of the normalized output from `applyMergeDecisions`.
+ */
+export function mergeSkillDocument(
+  diff: SectionDiff[],
+  decisions: Record<string, "mine" | "theirs">,
+  upstreamContent: string,
+  mineContent: string,
+): { content: string; pureUpstream: boolean } {
+  const mineSections = new Map(
+    deduplicateHeaders(splitSectionsExact(mineContent)).map((section) => [
+      section.header,
+      section,
+    ]),
+  );
+  const upstreamSections = deduplicateHeaders(splitSectionsExact(upstreamContent));
+  const upstreamByHeader = new Map(
+    upstreamSections.map((section) => [section.header, section]),
+  );
+  const resolvedSections: Section[] = [];
+
+  for (const section of diff) {
+    if (section.state === "unchanged") {
+      resolvedSections.push(
+        mineSections.get(section.header) ?? {
+          header: section.header,
+          content: section.mine,
+        },
+      );
+      continue;
+    }
+    const decision =
+      decisions[section.header] ?? (section.state === "added" ? "theirs" : "mine");
+    if (decision === "mine" && section.state !== "added") {
+      resolvedSections.push(
+        mineSections.get(section.header) ?? {
+          header: section.header,
+          content: section.mine,
+        },
+      );
+    } else if (decision === "theirs" && section.state !== "removed") {
+      resolvedSections.push(
+        upstreamByHeader.get(section.header) ?? {
+          header: section.header,
+          content: section.theirs,
+        },
+      );
+    }
+  }
+
+  const pureUpstream =
+    resolvedSections.length === upstreamSections.length &&
+    resolvedSections.every(
+      (section, index) =>
+        section.header === upstreamSections[index].header &&
+        section.content === upstreamSections[index].content,
+    );
+
+  return pureUpstream
+    ? { content: upstreamContent, pureUpstream: true }
+    : {
+        content: applyMergeDecisions(diff, decisions),
+        pureUpstream: false,
+      };
 }

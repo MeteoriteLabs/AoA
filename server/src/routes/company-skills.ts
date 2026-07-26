@@ -7,6 +7,7 @@ import {
   companySkillImportPackageSchema,
   companySkillProjectScanRequestSchema,
   SKILL_CUSTOMIZED_ERROR_CODE,
+  SKILL_NAME_TAKEN_ERROR_CODE,
 } from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";
 import { accessService, agentService, companySkillService, logActivity } from "../services/index.js";
@@ -51,6 +52,13 @@ export function companySkillRoutes(db: Db) {
     const record = details as Record<string, unknown>;
     if (record.code !== SKILL_CUSTOMIZED_ERROR_CODE || typeof record.skillId !== "string") return null;
     return { skillId: record.skillId };
+  }
+
+  function isSkillNameTaken(err: unknown): err is HttpError {
+    if (!(err instanceof HttpError) || err.status !== 409) return false;
+    const details = err.details;
+    if (!details || typeof details !== "object") return false;
+    return (details as Record<string, unknown>).code === SKILL_NAME_TAKEN_ERROR_CODE;
   }
 
   function canCreateAgents(agent: { permissions: Record<string, unknown> | null | undefined }) {
@@ -137,7 +145,18 @@ export function companySkillRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       await assertCanMutateCompanySkills(req, companyId);
-      const result = await svc.createLocalSkill(companyId, req.body);
+      let result;
+      try {
+        result = await svc.createLocalSkill(companyId, req.body);
+      } catch (err) {
+        if (!isSkillNameTaken(err)) throw err;
+        res.status(409).json({
+          error: err.message,
+          code: SKILL_NAME_TAKEN_ERROR_CODE,
+          details: err.details,
+        });
+        return;
+      }
 
       const actor = getActorInfo(req);
       await logActivity(db, {
@@ -173,7 +192,7 @@ export function companySkillRoutes(db: Db) {
         String(req.body.content ?? ""),
       );
 
-      // customized=true is written inside svc.updateFile() for all paths:
+      // The customized flag is written inside svc.updateFile(): byte-derived
       // atomically with markdown for SKILL.md, standalone for other files.
 
       const actor = getActorInfo(req);

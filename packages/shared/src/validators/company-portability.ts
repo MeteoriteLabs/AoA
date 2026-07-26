@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { AGENT_COMPLETION_POLICIES, AGENT_COMPLETION_POLICY_SOURCES } from "../constants.js";
+import { companySkillSourceTypeSchema } from "./company-skill.js";
 
 export const portabilityCostEventsDateRangeSchema = z.object({
   from: z.string().optional(),
@@ -78,7 +79,7 @@ export const portabilitySkillManifestEntrySchema = z.object({
   path: z.string().min(1),
   description: z.string().nullable().optional(),
   markdown: z.string().optional(),
-  sourceType: z.string().min(1),
+  sourceType: companySkillSourceTypeSchema,
   sourceLocator: z.string().nullable().optional(),
   sourceRef: z.string().nullable().optional(),
   trustLevel: z.string().nullable().optional(),
@@ -407,6 +408,7 @@ export const companyPortabilityPreviewSchema = z.object({
   target: portabilityTargetSchema,
   agents: portabilityAgentSelectionSchema.optional(),
   collisionStrategy: portabilityCollisionStrategySchema.optional(),
+  overwriteCustomizedSkillKeys: z.array(z.string().min(1)).optional(),
 });
 
 export type CompanyPortabilityPreview = z.infer<typeof companyPortabilityPreviewSchema>;

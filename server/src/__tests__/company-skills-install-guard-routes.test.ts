@@ -30,12 +30,14 @@ vi.mock("../routes/authz.js", () => ({
 
 const installUpdateMock = vi.hoisted(() => vi.fn());
 const importFromSourceMock = vi.hoisted(() => vi.fn());
+const createLocalSkillMock = vi.hoisted(() => vi.fn());
 const getByIdMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/index.js", () => ({
   companySkillService: vi.fn(() => ({
     installUpdate: installUpdateMock,
     importFromSource: importFromSourceMock,
+    createLocalSkill: createLocalSkillMock,
     getById: getByIdMock,
   })),
   agentService: vi.fn(() => ({ getById: vi.fn(), list: vi.fn() })),
@@ -52,7 +54,10 @@ vi.mock("../middleware/logger.js", () => ({ logger: { error: vi.fn(), info: vi.f
 import { companySkillRoutes } from "../routes/company-skills.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { conflict } from "../errors.js";
-import { SKILL_CUSTOMIZED_ERROR_CODE } from "@armyofagents/shared";
+import {
+  SKILL_CUSTOMIZED_ERROR_CODE,
+  SKILL_NAME_TAKEN_ERROR_CODE,
+} from "@armyofagents/shared";
 
 function buildApp() {
   const app = express();
@@ -68,6 +73,30 @@ function buildApp() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+});
+
+describe("POST /skills — name-taken refusal", () => {
+  it("answers 409 with the distinct top-level name-taken code", async () => {
+    createLocalSkillMock.mockRejectedValue(
+      conflict("Name already taken", {
+        code: SKILL_NAME_TAKEN_ERROR_CODE,
+        slug: "brainstorming",
+        key: "company/c1/brainstorming",
+      }),
+    );
+
+    const res = await request(buildApp())
+      .post("/companies/c1/skills")
+      .send({ name: "Brainstorming", slug: "brainstorming" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe(SKILL_NAME_TAKEN_ERROR_CODE);
+    expect(res.body.code).not.toBe(SKILL_CUSTOMIZED_ERROR_CODE);
+    expect(res.body.details).toMatchObject({
+      code: SKILL_NAME_TAKEN_ERROR_CODE,
+      slug: "brainstorming",
+    });
+  });
 });
 
 describe("POST /skills/:skillId/install-update — customized refusal", () => {

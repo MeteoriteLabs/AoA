@@ -34,6 +34,10 @@ vi.mock("../services/marketplace-settings.js", () => ({
 vi.mock("../services/marketplace-merge.js", () => ({
   computeSectionDiff: vi.fn(() => [{ heading: "## Overview", mine: "old", theirs: "new" }]),
   applyMergeDecisions: vi.fn(() => "# Merged Content"),
+  mergeSkillDocument: vi.fn(() => ({
+    content: "# New upstream content",
+    pureUpstream: true,
+  })),
 }));
 vi.mock("../routes/authz.js", () => ({
   assertBoard: authzMocks.assertBoard,
@@ -152,8 +156,8 @@ function buildApp(dbOverrides: any = {}) {
   return { app, smartDb };
 }
 
-describe("POST /updates/:id/merge — sets customized = true", () => {
-  it("includes customized: true in the skill update SET clause", async () => {
+describe("POST /updates/:id/merge — derives customized from result bytes", () => {
+  it("sets customized: false for a pure-upstream merge", async () => {
     global.fetch = vi.fn(async () => ({
       ok: true,
       text: async () => "# New upstream content",
@@ -167,8 +171,7 @@ describe("POST /updates/:id/merge — sets customized = true", () => {
       .send({ decisions: { "## Overview": "theirs" } });
 
     expect(res.status).toBe(200);
-    // Fails before the fix — current code omits customized from the SET clause
-    expect(capturedSets.some((s) => s.customized === true)).toBe(true);
+    expect(capturedSets.some((s) => s.customized === false)).toBe(true);
   });
 
   it("executes both the skill update and the pending-update status change inside a single transaction", async () => {
