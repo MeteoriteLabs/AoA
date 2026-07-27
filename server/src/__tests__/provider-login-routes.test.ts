@@ -258,7 +258,7 @@ describe("login lifecycle is provider-scoped", () => {
     const s = svc(memStore([row]));
     expect(await s.getStatus(COMPANY_ID, "ch-1", "openai")).toEqual({
       status: "pending",
-      loginUrl: row.loginUrl,
+      loginUrl: null,
     });
   });
 
@@ -298,7 +298,7 @@ describe("login lifecycle is provider-scoped", () => {
     const s = svc(memStore([row]));
     expect(await s.getStatus(COMPANY_ID, "ch-1", null)).toEqual({
       status: "pending",
-      loginUrl: row.loginUrl,
+      loginUrl: null,
     });
     await s.cancel(COMPANY_ID, "ch-1", null);
     expect(await memStore([row]).get("ch-1")).not.toBeNull();
@@ -320,6 +320,8 @@ describe("provider login routes", () => {
     mockLoginService.startChallenge.mockResolvedValue({
       challengeId: "ch-1",
       loginUrl: "https://auth.openai.com/device?code=A",
+      userCode: "ABCD-EFGH",
+      expiresAt: "2026-07-20T00:05:00.000Z",
       completion: Promise.resolve(),
     });
     mockLoginService.getStatus.mockResolvedValue({ status: "pending", loginUrl: "https://x" });
@@ -349,11 +351,15 @@ describe("provider login routes", () => {
     expect(res.body).toEqual({
       challengeId: "ch-1",
       loginUrl: "https://auth.openai.com/device?code=A",
+      mode: "device_code",
+      userCode: "ABCD-EFGH",
+      expiresAt: "2026-07-20T00:05:00.000Z",
     });
     expect(mockLoginService.startChallenge).toHaveBeenCalledWith({
       companyId: COMPANY_ID,
       provider: "openai",
       startedByUserId: "user-1",
+      executionTargetId: "control-plane",
     });
   });
 
@@ -483,7 +489,12 @@ describe("provider login routes", () => {
   it("scopes status by provider AND company", async () => {
     const res = await request(makeApp()).get(statusUrl("openai", "ch-1"));
     expect(res.status).toBe(200);
-    expect(mockLoginService.getStatus).toHaveBeenCalledWith(COMPANY_ID, "ch-1");
+    expect(mockLoginService.getStatus).toHaveBeenCalledWith(
+      COMPANY_ID,
+      "ch-1",
+      "openai",
+      "user-1",
+    );
   });
 
   it("404s a status read for a challenge belonging to ANOTHER provider", async () => {
@@ -510,7 +521,12 @@ describe("provider login routes", () => {
     const res = await request(makeApp()).post(cancelUrl("openai", "ch-1"));
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ ok: true });
-    expect(mockLoginService.cancel).toHaveBeenCalledWith(COMPANY_ID, "ch-1");
+    expect(mockLoginService.cancel).toHaveBeenCalledWith(
+      COMPANY_ID,
+      "ch-1",
+      "openai",
+      "user-1",
+    );
   });
 
   it("refuses to cancel a challenge belonging to ANOTHER provider", async () => {

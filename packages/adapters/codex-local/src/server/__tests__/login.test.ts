@@ -17,15 +17,40 @@ function fakeSpawn() {
 }
 
 describe("runCodexLogin (Plan 3 T3)", () => {
-  it("spawns `codex login` against the shared codex home and returns authHome", async () => {
+  it("spawns remote-safe Codex device auth and returns URL plus user code", async () => {
     const f = fakeSpawn();
-    const res = runCodexLogin({ runId: "c1", env: { CODEX_HOME: "/custom/.codex" }, spawn: f.spawn });
+    const res = runCodexLogin({
+      runId: "c1",
+      env: { HOME: "/scoped/home", CODEX_HOME: "/custom/.codex" },
+      spawn: f.spawn,
+    });
     expect(f.calls).toHaveLength(1);
     expect(f.calls[0].command).toBe("codex");
-    expect(f.calls[0].argv).toEqual(["login"]);
+    expect(f.calls[0].argv).toEqual(["login", "--device-auth"]);
     expect(f.calls[0].opts.env.CODEX_HOME).toBe("/custom/.codex");
+    expect(f.calls[0].opts.env.HOME).toBe("/scoped/home");
     expect(res.authHome).toBe("/custom/.codex");
-    f.child.stdout.emit("data", "open https://chatgpt.com/device?u=1\n");
+    f.child.stdout.emit("data", "open https://chatgpt.com/device?u=1\nenter ABCD-EFGH\n");
     await expect(res.urlPromise).resolves.toBe("https://chatgpt.com/device?u=1");
+    await expect(res.userCodePromise).resolves.toBe("ABCD-EFGH");
+  });
+
+  it("bounds device-code discovery when the CLI prints a URL but no code", async () => {
+    vi.useFakeTimers();
+    try {
+      const f = fakeSpawn();
+      const res = runCodexLogin({
+        runId: "c2",
+        env: { HOME: "/scoped/home", CODEX_HOME: "/custom/.codex" },
+        discoveryTimeoutMs: 250,
+        spawn: f.spawn,
+      });
+      f.child.stdout.emit("data", "open https://chatgpt.com/device\n");
+      const rejected = expect(res.userCodePromise).rejects.toThrow("device-code-timeout");
+      await vi.advanceTimersByTimeAsync(250);
+      await rejected;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

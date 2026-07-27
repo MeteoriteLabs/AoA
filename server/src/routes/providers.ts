@@ -107,7 +107,9 @@
  *   ── Interactive login (Task 9b) ──────────────────────────────────────
  *
  *   POST /:providerId/login/start
- *     200 -> { challengeId: string, loginUrl: string }
+ *     200 -> { challengeId: string, loginUrl: string,
+ *              mode: "device_code" | "paste_code",
+ *              userCode: string | null, expiresAt: string }
  *     400 -> { error, canLogin: false, manualCommand?: string }
  *            The provider's CLI login cannot finish without a terminal. The UI
  *            renders `manualCommand` as copyable text INSTEAD of a button. Its
@@ -180,7 +182,10 @@ import {
   buildCommanderLoginService,
   hasLoginRunner,
 } from "../services/commander-login-runtime.js";
-import { LoginChallengeConflictError } from "../services/commander-login.js";
+import {
+  LoginChallengeConflictError,
+  type CommanderLoginProvider,
+} from "../services/commander-login.js";
 import { findServerAdapter } from "../adapters/index.js";
 import {
   ADAPTER_PROBE_BUSY_ERROR,
@@ -1005,17 +1010,28 @@ export function providerRoutes(db: Db): Router {
       });
       return;
     }
+    const loginProvider = providerId as CommanderLoginProvider;
 
     try {
-      const { challengeId, loginUrl } = await loginService.startChallenge({
+      const executionTargetId =
+        process.env.AOA_EXECUTION_TARGET_ID?.trim() || "control-plane";
+      const { challengeId, loginUrl, userCode, expiresAt } = await loginService.startChallenge({
         companyId,
-        provider: providerId,
+        provider: loginProvider,
         startedByUserId: founderUserId,
+        executionTargetId,
       });
       await auditProvider(companyId, founderUserId, "provider.login.started", providerId, {
         challengeId,
+        executionTargetId,
       });
-      res.json({ challengeId, loginUrl });
+      res.json({
+        challengeId,
+        loginUrl,
+        mode: loginProvider === "openai" ? "device_code" : "paste_code",
+        userCode,
+        expiresAt,
+      });
     } catch (err) {
       if (err instanceof LoginChallengeConflictError) {
         // Deliberately NOT `err.message`: the lifecycle's copy names the
@@ -1048,11 +1064,19 @@ export function providerRoutes(db: Db): Router {
     // The service enforces only the company dimension, so the provider check is
     // ours (see `challengeBelongsToProvider`).
     const challengeId = req.params.challengeId as string;
-    if (!(await challengeBelongsToProvider(companyId, challengeId, providerId))) {
+    if (
+      !hasLoginRunner(providerId) ||
+      !(await challengeBelongsToProvider(companyId, challengeId, providerId))
+    ) {
       res.status(404).json({ error: "challenge not found" });
       return;
     }
-    const status = await loginService.getStatus(companyId, challengeId);
+    const status = await loginService.getStatus(
+      companyId,
+      challengeId,
+      providerId as CommanderLoginProvider,
+      founderUserId,
+    );
     if (!status) {
       res.status(404).json({ error: "challenge not found" });
       return;
@@ -1121,11 +1145,19 @@ export function providerRoutes(db: Db): Router {
     // ANOTHER provider in this company would terminate that provider's login
     // child. A mismatch reads as absent, exactly like an unknown challengeId.
     const challengeId = req.params.challengeId as string;
-    if (!(await challengeBelongsToProvider(companyId, challengeId, providerId))) {
+    if (
+      !hasLoginRunner(providerId) ||
+      !(await challengeBelongsToProvider(companyId, challengeId, providerId))
+    ) {
       res.status(404).json({ error: "challenge not found" });
       return;
     }
-    await loginService.cancel(companyId, challengeId);
+    await loginService.cancel(
+      companyId,
+      challengeId,
+      providerId as CommanderLoginProvider,
+      founderUserId,
+    );
     await auditProvider(companyId, founderUserId, "provider.login.cancelled", providerId, {
       challengeId,
     });

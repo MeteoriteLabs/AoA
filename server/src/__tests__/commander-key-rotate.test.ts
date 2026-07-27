@@ -123,7 +123,7 @@ describe("POST commander-key rotate-on-retry (Codex P1)", () => {
   it("first save creates the Commander secret (no rotate)", async () => {
     const res = await request(makeApp()).post(url).send({ provider: "anthropic", value: "sk-ant-FIRST" });
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ ok: true, secretId: "sec-1" });
+    expect(res.body).toEqual({ ok: true, secretId: "sec-1", verification: "verified" });
     expect(secretsMock.svc.create).toHaveBeenCalledTimes(1);
     expect(secretsMock.svc.rotate).not.toHaveBeenCalled();
   });
@@ -136,7 +136,7 @@ describe("POST commander-key rotate-on-retry (Codex P1)", () => {
 
     const retry = await request(app).post(url).send({ provider: "anthropic", value: "sk-ant-GOOD" });
     expect(retry.status).toBe(200); // NOT 409
-    expect(retry.body).toEqual({ ok: true, secretId: firstId }); // same id → binding stays valid
+    expect(retry.body).toEqual({ ok: true, secretId: firstId, verification: "verified" }); // same id → binding stays valid
     expect(secretsMock.svc.create).toHaveBeenCalledTimes(1); // created only once
     expect(secretsMock.svc.rotate).toHaveBeenCalledTimes(1); // rotated on retry
     // the rotate actually updated the resolved value the Commander adapter reads
@@ -170,7 +170,7 @@ describe("POST commander-key rotate-on-retry (Codex P1)", () => {
 
     const save = await request(app).post(url).send({ provider: "anthropic", value: "sk-ant-NEW" });
     expect(save.status).toBe(200);
-    expect(save.body).toEqual({ ok: true, secretId }); // same id -> binding stays valid
+    expect(save.body).toEqual({ ok: true, secretId, verification: "verified" }); // same id -> binding stays valid
     // reactivated via the canonical update() seam, then rotated
     expect(secretsMock.svc.update).toHaveBeenCalledTimes(1);
     expect(secretsMock.svc.update).toHaveBeenCalledWith(secretId, { status: "active" });

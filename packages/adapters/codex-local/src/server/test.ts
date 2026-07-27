@@ -141,7 +141,11 @@ export async function testEnvironment(
   // probe passes while the saved agent immediately runs without auth.
   const configOpenAiKey = env.OPENAI_API_KEY;
   const hostOpenAiKey = targetIsRemote ? undefined : process.env.OPENAI_API_KEY;
-  const sharedAuthPath = path.join(resolveSharedCodexHomeDir(process.env), "auth.json");
+  const authSourceEnv = {
+    ...process.env,
+    ...(isNonEmpty(env.CODEX_HOME) ? { CODEX_HOME: env.CODEX_HOME } : {}),
+  };
+  const sharedAuthPath = path.join(resolveSharedCodexHomeDir(authSourceEnv), "auth.json");
   const sharedAuthReady = await fs.stat(sharedAuthPath).then((stat) => stat.isFile()).catch(() => false);
   if (isNonEmpty(configOpenAiKey)) {
     checks.push({
@@ -200,7 +204,11 @@ export async function testEnvironment(
         return asStringArray(config.args);
       })();
 
-      const args = ["exec", "--json"];
+      // Environment probes commonly run from the packaged application directory
+      // (`/app` in Docker), which is intentionally not a Git checkout. Codex
+      // rejects `exec` outside a trusted repository unless this explicit flag is
+      // present, so omitting it makes a healthy installation look broken.
+      const args = ["exec", "--json", "--skip-git-repo-check"];
       if (search) args.unshift("--search");
       if (bypass) args.push("--dangerously-bypass-approvals-and-sandbox");
       if (model) args.push("--model", model);
@@ -229,7 +237,7 @@ export async function testEnvironment(
       const managedCodexHome = targetIsRemote
         ? `${adapterExecutionTargetRemoteCwd(target, cwd).replace(/\/+$/, "")}/.aoa-codex-home`
         : await prepareManagedCodexHome(
-            process.env,
+            authSourceEnv,
             () => {},
             ctx.companyId,
             // AdapterEnvironmentTestContext carries no agent id (the probe can
@@ -309,7 +317,7 @@ export async function testEnvironment(
           ...(hasHello
             ? {}
             : {
-                hint: "Try the probe manually (`codex exec --json -` then prompt: Respond with hello) to inspect full output.",
+                hint: "Try the probe manually (`codex exec --json --skip-git-repo-check -` then prompt: Respond with hello) to inspect full output.",
               }),
         });
       } else if (detectAuthFailure(authEvidence).kind !== "none") {
@@ -384,7 +392,7 @@ export async function testEnvironment(
           level: "error",
           message: "Codex hello probe failed.",
           ...(detail ? { detail } : {}),
-          hint: "Run `codex exec --json -` manually in this working directory and prompt `Respond with hello` to debug.",
+          hint: "Run `codex exec --json --skip-git-repo-check -` manually in this working directory and prompt `Respond with hello` to debug.",
         });
       }
     }

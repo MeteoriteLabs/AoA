@@ -52,6 +52,8 @@ program
   .option("-c, --config <path>", "Path to config file")
   .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
   .option("--lint", "Run read-only setup checks for CI")
+  .option("--json", "Print a stable machine-readable diagnostic report")
+  .option("--offline", "Skip checks that can make network connections")
   .option("--repair", "Attempt to repair issues automatically")
   .option("-y, --yes", "Skip repair confirmation prompts")
   .action(async (opts) => {

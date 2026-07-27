@@ -55,9 +55,7 @@ function RouterShell() {
           <DialogProvider>
             <InstallToastProvider>
               <UnsavedChangesProvider>
-                <ErrorBoundary>
-                  <App />
-                </ErrorBoundary>
+                <App />
                 <ToastViewport />
               </UnsavedChangesProvider>
             </InstallToastProvider>
@@ -77,16 +75,18 @@ const router = createBrowserRouter([{ path: "*", element: <RouterShell /> }]);
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <ThemeProvider>
-        <CompanyProvider>
-          <ToastProvider>
-            <LiveUpdatesProvider>
-              <RouterProvider router={router} />
-            </LiveUpdatesProvider>
-          </ToastProvider>
-        </CompanyProvider>
-      </ThemeProvider>
-    </QueryClientProvider>
+    <ErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <ThemeProvider>
+          <CompanyProvider>
+            <ToastProvider>
+              <LiveUpdatesProvider>
+                <RouterProvider router={router} />
+              </LiveUpdatesProvider>
+            </ToastProvider>
+          </CompanyProvider>
+        </ThemeProvider>
+      </QueryClientProvider>
+    </ErrorBoundary>
   </StrictMode>
 );

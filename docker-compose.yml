@@ -13,9 +13,17 @@ x-aoa-env: &aoa-env
   HOST: "0.0.0.0"
   PORT: "3100"
   SERVE_UI: "true"
-  AOA_HOME: /paperclip
+  AOA_HOME: /aoa
   AOA_INSTANCE_ID: ${AOA_INSTANCE_ID:-default}
-  AOA_CONFIG: /paperclip/instances/${AOA_INSTANCE_ID:-default}/config.json
+  AOA_CONFIG: /aoa/instances/${AOA_INSTANCE_ID:-default}/config.json
+  AOA_INSTALL_PROFILE: ${AOA_INSTALL_PROFILE:-hosted_multi_tenant}
+  AOA_NETWORK_LOCATION: ${AOA_NETWORK_LOCATION:-}
+  AOA_TRUST_BOUNDARY: ${AOA_TRUST_BOUNDARY:-}
+  AOA_EXECUTION_OWNERSHIP: ${AOA_EXECUTION_OWNERSHIP:-}
+  AOA_EXECUTION_TARGET_ID: ${AOA_EXECUTION_TARGET_ID:-control-plane}
+  AOA_CODEX_DEVICE_AUTH: ${AOA_CODEX_DEVICE_AUTH:-false}
+  AOA_CLAUDE_PASTE_AUTH: ${AOA_CLAUDE_PASTE_AUTH:-false}
+  AOA_SCOPED_CLI_AUTH: ${AOA_SCOPED_CLI_AUTH:-false}
   AOA_DEPLOYMENT_MODE: ${AOA_DEPLOYMENT_MODE:-authenticated}
   AOA_DEPLOYMENT_EXPOSURE: ${AOA_DEPLOYMENT_EXPOSURE:-private}
   AOA_PUBLIC_URL: ${AOA_PUBLIC_URL:-}
@@ -98,7 +106,7 @@ services:
       retries: 30
       start_period: 60s
     volumes:
-      - aoa-data:/paperclip
+      - aoa-data:/aoa
     networks:
       - aoa
 
@@ -126,7 +134,7 @@ services:
     healthcheck:
       disable: true
     volumes:
-      - aoa-data:/paperclip
+      - aoa-data:/aoa
     networks:
       - aoa
 

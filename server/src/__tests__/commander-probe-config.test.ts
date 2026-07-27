@@ -13,7 +13,10 @@ vi.mock("../services/secrets.js", () => ({
   secretService: () => ({ resolveAdapterConfigForRuntime }),
 }));
 
-import { resolveCommanderProbeConfig } from "../services/commander-verify.js";
+import {
+  commanderProbeUsesApiKey,
+  resolveCommanderProbeConfig,
+} from "../services/commander-verify.js";
 
 /** db.select().from().where().limit() → next configured result. */
 function db(results: unknown[][]) {
@@ -25,6 +28,24 @@ function db(results: unknown[][]) {
 
 describe("resolveCommanderProbeConfig (Plan 3 T1)", () => {
   beforeEach(() => vi.clearAllMocks());
+
+  it("distinguishes API-key probes from subscription-home probes", () => {
+    expect(
+      commanderProbeUsesApiKey(
+        { env: { OPENAI_API_KEY: "company-key", CODEX_HOME: "/scoped" } },
+        "codex_local",
+      ),
+    ).toBe(true);
+    expect(
+      commanderProbeUsesApiKey({ env: { CODEX_HOME: "/scoped" } }, "codex_local"),
+    ).toBe(false);
+    expect(
+      commanderProbeUsesApiKey(
+        { env: { ANTHROPIC_API_KEY: "company-key" } },
+        "claude_local",
+      ),
+    ).toBe(true);
+  });
 
   it("loads the Commander agent's adapterConfig and returns the RESOLVED config", async () => {
     const d = db([
@@ -41,10 +62,12 @@ describe("resolveCommanderProbeConfig (Plan 3 T1)", () => {
     expect(cfg).toMatchObject({ env: { ANTHROPIC_API_KEY: "resolved" } });
   });
 
-  it("returns {} when there is no linked Commander agent (CLI-defaults probe)", async () => {
+  it("uses the caller-scoped CLI home when there is no linked Commander agent", async () => {
     const d = db([[]]); // no internal_agent_config agent link
     const cfg = await resolveCommanderProbeConfig(d, "c1", "claude_local", "u1");
-    expect(cfg).toEqual({});
+    expect(cfg).toMatchObject({
+      env: { CLAUDE_CONFIG_DIR: expect.stringMatching(/[\\/]anthropic$/) },
+    });
     expect(resolveAdapterConfigForRuntime).not.toHaveBeenCalled();
   });
 });

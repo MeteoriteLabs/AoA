@@ -791,17 +791,32 @@ describe("ProviderReadinessCard — remediation always present", () => {
     expect(screen.queryByTestId("provider-login-section")).toBeNull();
   });
 
-  it("shows login progress and a cancel control while a challenge is pending", () => {
+  it("shows and copies Codex device-login details while a challenge is pending", async () => {
     const onCancelLogin = vi.fn();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
     renderCard(row("openai", { companyDefault: scope({ outcome: "needs_auth" }) }), {
       onStartLogin: vi.fn(),
       onCancelLogin,
-      login: { status: "pending", loginUrl: "https://auth.openai.com/x" },
+      login: {
+        status: "pending",
+        loginUrl: "https://auth.openai.com/x",
+        mode: "device_code",
+        userCode: "ABCD-EFGH",
+        expiresAt: "2026-07-20T00:05:00.000Z",
+      },
     });
     expect((screen.getByTestId("provider-signin") as HTMLButtonElement).disabled).toBe(true);
     expect(
       within(screen.getByTestId("provider-login-progress")).getByRole("link").getAttribute("href"),
     ).toBe("https://auth.openai.com/x");
+    expect(screen.getByLabelText("Codex device code").textContent).toBe("ABCD-EFGH");
+    fireEvent.click(screen.getByRole("button", { name: "Copy code" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("ABCD-EFGH"));
+    expect(screen.getByTestId("provider-login-expiry").textContent).toMatch(/^Expires /);
     fireEvent.click(screen.getByTestId("provider-login-cancel"));
     expect(onCancelLogin).toHaveBeenCalled();
   });

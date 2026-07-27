@@ -112,6 +112,9 @@ describe("FlowEngine (Stage B / B6)", () => {
     await waitFor(() => screen.getByTestId("step-org"));
     const shell = container.querySelector(".onboarding-dark");
     expect(shell).toBeTruthy();
+    expect(shell?.getAttribute("data-aoa-onboarding-theme")).toBe("dark");
+    expect(shell?.className).toContain("overflow-y-auto");
+    expect(shell?.className).toContain("[height:100dvh]");
     expect(shell?.querySelector("canvas")).toBeTruthy();
   });
 

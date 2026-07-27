@@ -103,7 +103,7 @@ function makeService(overrides: Partial<Parameters<typeof createCommanderLoginSe
 }
 
 describe("commander-login service (Plan 3 T4)", () => {
-  it("(a) startChallenge inserts a durable pending row with pid/pgid + loginUrl", async () => {
+  it("(a) keeps loginUrl in memory while the durable row stores only process metadata", async () => {
     const f = fakeRun(222, 222);
     const { svc, store } = makeService({ runLogin: () => f.run });
     const startP = svc.startChallenge({ companyId: "c1", provider: "openai", startedByUserId: "u1" });
@@ -118,8 +118,11 @@ describe("commander-login service (Plan 3 T4)", () => {
       pid: 222,
       pgid: 222,
       status: "pending",
-      loginUrl: "https://chatgpt.com/device?code=Z9",
+      loginUrl: null,
     });
+    expect((await svc.getStatus("c1", challengeId, null, "u1"))?.loginUrl).toBe(
+      "https://chatgpt.com/device?code=Z9",
+    );
   });
 
   it("(a') the pending row is durable BEFORE the child spawns (claim → spawn → pid update)", async () => {
@@ -387,6 +390,27 @@ describe("commander-login service (Plan 3 T4)", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]!.status).toBe("timeout");
     expect(f.handle.terminate).toHaveBeenCalledTimes(1);
+  });
+
+  it("(c3) URL without a Codex device code rejects promptly, terminates, and releases the slot", async () => {
+    const f = fakeRun();
+    let rejectCode!: (error: Error) => void;
+    const userCodePromise = new Promise<string>((_resolve, reject) => {
+      rejectCode = reject;
+    });
+    f.run.userCodePromise = userCodePromise;
+    const { svc, store } = makeService({ runLogin: () => f.run });
+    const startP = svc.startChallenge({
+      companyId: "c1",
+      provider: "openai",
+      startedByUserId: "u1",
+    });
+    f.resolveUrl("https://chatgpt.com/device");
+    rejectCode(new Error("device-code-timeout"));
+    await expect(startP).rejects.toThrow("device-code-timeout");
+    expect(f.handle.terminate).toHaveBeenCalledTimes(1);
+    expect([...store.rows.values()]).toHaveLength(1);
+    expect([...store.rows.values()][0]?.status).toBe("timeout");
   });
 
   it("(c'''') a rejecting exitPromise after URL failure is swallowed (no unhandled rejection)", async () => {
@@ -661,6 +685,52 @@ describe("commander-login service (Plan 3 T4)", () => {
     expect((await svc.getStatus("c1", challengeId))?.loginUrl).toBe(
       "https://chatgpt.com/device?code=SECRET",
     );
+  });
+
+  it("records subscription credential evidence for the owner and target before probing", async () => {
+    const f = fakeRun();
+    const onCredentialEvidence = vi.fn(async () => {});
+    const { svc } = makeService({
+      runLogin: () => f.run,
+      credentialPresent: async () => true,
+      onCredentialEvidence,
+    });
+    const pending = svc.startChallenge({
+      companyId: "c1",
+      provider: "openai",
+      startedByUserId: "u1",
+      executionTargetId: "target-1",
+    });
+    f.resolveUrl("https://chatgpt.com/device");
+    const { completion } = await pending;
+    f.resolveExit(0);
+    await completion;
+    expect(onCredentialEvidence).toHaveBeenCalledWith({
+      companyId: "c1",
+      provider: "openai",
+      userId: "u1",
+      executionTargetId: "target-1",
+    });
+  });
+
+  it("scopes status, cancel, and pasted-code delivery to the owning user", async () => {
+    const f = fakeRun();
+    const { svc, store } = makeService({ runLogin: () => f.run });
+    const pending = svc.startChallenge({
+      companyId: "c1",
+      provider: "anthropic",
+      startedByUserId: "u1",
+    });
+    f.resolveUrl("https://claude.ai/oauth");
+    const { challengeId } = await pending;
+
+    expect(await svc.getStatus("c1", challengeId, null, "u2")).toBeNull();
+    expect(svc.submitCode("c1", challengeId, "SECRET", "u2")).toBe("not-live");
+    await svc.cancel("c1", challengeId, null, "u2");
+    expect(store.rows.has(challengeId)).toBe(true);
+
+    expect((await svc.getStatus("c1", challengeId, null, "u1"))?.status).toBe("pending");
+    expect(svc.submitCode("c1", challengeId, "SECRET", "u1")).toBe("delivered");
   });
 
   it("(e) reapOrphans terminates each persisted pending child WITH its recorded identity and clears the rows", async () => {
@@ -1214,17 +1284,13 @@ describe("commander-login service (Plan 3 T4)", () => {
     expect(store.rows.has(challengeId)).toBe(false); // no stranded `pending` row
   });
 
-  it("(sib) loginUrl-write rejection AFTER URL discovery terminates the LIVE child + finalizes failed (no stranded live child + pending row)", async () => {
-    // Sibling audit: once the URL is found, `deps.store.update(id, { loginUrl })`
-    // runs BEFORE the completion deadline is wired. If that write rejects (DB blip)
-    // and we simply throw, the child is left ALIVE (holding :1455) with a `pending`
-    // row and NO deadline — stranded until the boot reaper. The path must kill the
-    // live child + finalize failed, mirroring the URL-discovery-failure path.
+  it("(sib) never writes the bearer loginUrl to durable storage", async () => {
     const f = fakeRun(789, 789);
     const store = memStore();
     const baseUpdate = store.update.bind(store);
+    let durableUrlWriteAttempted = false;
     store.update = async (id, patch) => {
-      if ("loginUrl" in patch) throw new Error("db-blip"); // pid backfill (no loginUrl) still succeeds
+      if ("loginUrl" in patch) durableUrlWriteAttempted = true;
       return baseUpdate(id, patch);
     };
     const svc = createCommanderLoginService({
@@ -1239,14 +1305,15 @@ describe("commander-login service (Plan 3 T4)", () => {
     });
     const startP = svc.startChallenge({ companyId: "c1", provider: "openai", startedByUserId: "u1" });
     f.resolveUrl("https://chatgpt.com/device?code=A");
-    await expect(startP).rejects.toThrow(/db-blip/); // ORIGINAL error propagates
-    expect(f.handle.terminate).toHaveBeenCalledTimes(1); // live child killed → :1455 freed
-    // Row finalized failed (via settleTerminal), never left stranded `pending`.
-    const rows = [...store.rows.values()];
-    expect(rows.every((r) => r.status !== "pending")).toBe(true);
-    // A post-kill exit rejection must not surface as an unhandled rejection.
-    f.rejectExit(new Error("exit-after-kill"));
-    await new Promise((r) => setImmediate(r));
+    const { challengeId, completion } = await startP;
+    expect(durableUrlWriteAttempted).toBe(false);
+    expect(store.rows.get(challengeId)?.loginUrl).toBeNull();
+    expect((await svc.getStatus("c1", challengeId, null, "u1"))?.loginUrl).toBe(
+      "https://chatgpt.com/device?code=A",
+    );
+    f.resolveExit(0);
+    await completion;
+    expect((await svc.getStatus("c1", challengeId, null, "u1"))?.loginUrl).toBeNull();
   });
 
   // ── Live-challenge registry + submitCode (Plan 3 / §6.2 Task 3) ──

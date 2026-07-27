@@ -52,9 +52,10 @@ export type FlowEngineProps = {
 export function DarkShell({ children, fill = false }: { children: React.ReactNode; fill?: boolean }) {
   return (
     <div
+      data-aoa-onboarding-theme="dark"
       className={cn(
-        "onboarding-dark relative w-full overflow-x-hidden bg-background text-foreground",
-        fill ? "min-h-full" : "min-h-screen",
+        "onboarding-dark relative w-full overflow-x-hidden bg-background text-foreground [color-scheme:dark]",
+        fill ? "min-h-full" : "h-screen min-h-screen overflow-y-auto [height:100dvh]",
       )}
     >
       <ConstellationBg />
@@ -187,7 +188,7 @@ export function FlowEngine({
 
   return (
     <DarkShell>
-      <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-xl flex-col px-6 py-8">
+      <div className="relative z-10 mx-auto flex min-h-full w-full max-w-xl flex-col px-4 py-5 sm:px-6 sm:py-8">
         {/* Shared step chrome: one Back affordance + a stepper-pip / "Step N of
             M" position readout for every step (steps no longer render their
             own Back). */}
@@ -208,7 +209,7 @@ export function FlowEngine({
           </div>
           {showStepChrome && <StepPosition current={stepNumber} total={base} />}
         </div>
-        <div className="flex flex-1 flex-col">
+        <div className="flex min-h-0 flex-1 flex-col">
           <div className="my-auto w-full">
             <Suspense fallback={<p className="text-center text-sm text-dim">Loading step…</p>}>
               <Step ctx={ctx} onComplete={() => void handleComplete()} onBack={handleBack} />

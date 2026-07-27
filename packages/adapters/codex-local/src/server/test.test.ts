@@ -62,6 +62,7 @@ describe("codex_local testEnvironment", () => {
     );
     const runInput = providerInputs.find((input) => input.args.includes("exec"));
     expect(runInput).toBeDefined();
+    expect(runInput!.args).toContain("--skip-git-repo-check");
     expect(runInput).toMatchObject({
       command: "bash",
       cwd: "/home/user/aoa-workspace",

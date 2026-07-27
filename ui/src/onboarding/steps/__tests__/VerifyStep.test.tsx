@@ -24,12 +24,40 @@ const startCommanderLogin = vi.hoisted(() => vi.fn());
 const getCommanderLoginStatus = vi.hoisted(() => vi.fn());
 const cancelCommanderLogin = vi.hoisted(() => vi.fn(async () => ({ ok: true })));
 const submitCommanderLoginCode = vi.hoisted(() => vi.fn());
+const getCommanderAuthCapabilities = vi.hoisted(() =>
+  vi.fn(async () => ({
+    topology: {
+      platform: "linux",
+      installProfile: "local_single_user",
+      networkLocation: "local",
+      trustBoundary: "single_user",
+      executionOwnership: "user_hosted",
+    },
+    providers: {
+      openai: {
+        provider: "openai",
+        mode: "device_code",
+        enabled: true,
+        browserSafeRemotely: true,
+        reason: null,
+      },
+      anthropic: {
+        provider: "anthropic",
+        mode: "paste_code",
+        enabled: true,
+        browserSafeRemotely: true,
+        reason: null,
+      },
+    },
+  })),
+);
 vi.mock("../../../api/commander-auth", () => ({
   saveCommanderKey,
   startCommanderLogin,
   getCommanderLoginStatus,
   cancelCommanderLogin,
   submitCommanderLoginCode,
+  getCommanderAuthCapabilities,
 }));
 
 import { advanceOnboarding } from "../../../api/onboarding";
@@ -40,6 +68,15 @@ const ctx: StepContext = {
   journey: "founder",
   completedStates: ["AUTHENTICATED", "PROFILE_SET", "ORGANIZATION_CREATED", "ENVIRONMENT_READY", "COMMANDER_SELECTED"],
 };
+
+const needsAuthResponse = () =>
+  new ApiError("Request failed: 422", 422, {
+    outcome: "needs_auth",
+    result: {
+      status: "fail",
+      checks: [{ code: "codex_hello_probe_auth_required", message: "sign in" }],
+    },
+  });
 
 describe("VerifyStep (Stage C / order 5, blocking)", () => {
   beforeEach(() => vi.clearAllMocks());
@@ -140,8 +177,9 @@ describe("VerifyStep (Stage C / order 5, blocking)", () => {
     fireEvent.click(screen.getByText("Verify"));
 
     fireEvent.click(await screen.findByRole("button", { name: /sign in with codex/i }));
-    const link = (await screen.findByText("https://auth.openai.com/go?c=1")) as HTMLAnchorElement;
+    const link = (await screen.findByText("Continue securely at auth.openai.com")) as HTMLAnchorElement;
     expect(link.getAttribute("href")).toBe("https://auth.openai.com/go?c=1");
+    expect(screen.queryByText("https://auth.openai.com/go?c=1")).toBeNull();
     expect(startCommanderLogin).toHaveBeenCalledWith({ companyId: "c1", provider: "openai" });
   });
 
@@ -163,6 +201,29 @@ describe("VerifyStep (Stage C / order 5, blocking)", () => {
       journey: "founder",
       requestedState: "COMMANDER_VERIFIED",
     });
+  });
+
+  it("stops polling and offers Start again after the server loses the challenge", async () => {
+    getConfig.mockResolvedValue({ cliTool: "codex", provider: "anthropic" });
+    post.mockRejectedValueOnce(needsAuthError());
+    startCommanderLogin.mockResolvedValueOnce({
+      challengeId: "ch-restarted",
+      loginUrl: "https://auth.openai.com/device",
+    });
+    getCommanderLoginStatus.mockRejectedValueOnce(
+      new ApiError("Request failed: 404", 404, { error: "challenge not found" }),
+    );
+
+    render(<VerifyStep ctx={ctx} onComplete={vi.fn()} onBack={() => {}} />);
+    fireEvent.click(screen.getByText("Verify"));
+    fireEvent.click(await screen.findByRole("button", { name: /sign in with codex/i }));
+
+    expect(
+      await screen.findByText(
+        "This sign-in session expired or the server restarted. Start sign-in again.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /sign in with codex/i })).toBeInTheDocument();
   });
 
   // Fix 3: the challenge finalizing "completed" is not proof of a successful
@@ -222,7 +283,7 @@ describe("VerifyStep (Stage C / order 5, blocking)", () => {
     const { unmount } = render(<VerifyStep ctx={ctx} onComplete={vi.fn()} onBack={() => {}} />);
     fireEvent.click(screen.getByText("Verify"));
     fireEvent.click(await screen.findByRole("button", { name: /sign in with codex/i }));
-    await screen.findByText("https://auth.openai.com/go?c=1"); // pending challenge surfaced
+    await screen.findByText("Continue securely at auth.openai.com"); // pending challenge surfaced
     unmount();
     await waitFor(() =>
       expect(cancelCommanderLogin).toHaveBeenCalledWith({ companyId: "c1", challengeId: "ch-1" }),
@@ -513,14 +574,79 @@ describe("VerifyStep — per-check breakdown", () => {
     });
   });
 
-  it("decodes a revoked token into plain language instead of a JSON dump", async () => {
-    post.mockResolvedValue(REVOKED_RUN);
+  it("keeps sanitized raw detail collapsed until the founder asks for it", async () => {
+    post.mockResolvedValue({
+      ...REVOKED_RUN,
+      result: {
+        ...REVOKED_RUN.result,
+        checks: REVOKED_RUN.result.checks.map((check) =>
+          check.code === "claude_hello_probe_failed"
+            ? { ...check, detail: "Provider rejected the saved session." }
+            : check,
+        ),
+      },
+    });
     render(<VerifyStep ctx={ctx} onComplete={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Verify" }));
 
-    expect(await screen.findByText(/sign-in has expired or been revoked/i)).toBeTruthy();
-    // The raw stream-json must never reach the founder.
-    expect(screen.queryByText(/OAuth access token has been revoked\."\}\}/)).toBeNull();
+    const summary = await screen.findByText("Technical details");
+    const details = summary.closest("details");
+    expect(details).toBeTruthy();
+    expect(details).not.toHaveAttribute("open");
+    expect(screen.getByText("Provider rejected the saved session.")).toBeInTheDocument();
+  });
+
+  it("shows the Codex device code returned by the remote-safe login flow", async () => {
+    getConfig.mockResolvedValueOnce({ cliTool: "codex", provider: "anthropic" });
+    post.mockRejectedValueOnce(needsAuthResponse());
+    startCommanderLogin.mockResolvedValueOnce({
+      challengeId: "ch-device",
+      loginUrl: "https://auth.openai.com/codex/device",
+      mode: "device_code",
+      userCode: "ABCD-EFGH",
+      expiresAt: "2026-07-27T12:00:00.000Z",
+    });
+    getCommanderLoginStatus.mockResolvedValue({ status: "pending", loginUrl: null });
+    const view = render(<VerifyStep ctx={ctx} onComplete={vi.fn()} />);
+    fireEvent.click(screen.getByText("Verify"));
+    fireEvent.click(await screen.findByRole("button", { name: /sign in with codex/i }));
+    expect(await screen.findByLabelText("Codex device code")).toHaveTextContent("ABCD-EFGH");
+    view.unmount();
+  });
+
+  it("explains why subscription auth is unavailable on a shared hosted installation", async () => {
+    getConfig.mockResolvedValueOnce({ cliTool: "codex", provider: "anthropic" });
+    getCommanderAuthCapabilities.mockResolvedValueOnce({
+      topology: {
+        platform: "linux",
+        installProfile: "hosted_multi_tenant",
+        networkLocation: "remote",
+        trustBoundary: "multi_tenant",
+        executionOwnership: "aoa_hosted",
+      },
+      providers: {
+        openai: {
+          provider: "openai",
+          mode: "device_code",
+          enabled: false,
+          browserSafeRemotely: true,
+          reason: "Use a company API key or a dedicated execution target.",
+        },
+        anthropic: {
+          provider: "anthropic",
+          mode: "paste_code",
+          enabled: false,
+          browserSafeRemotely: true,
+          reason: "Use a company API key or a dedicated execution target.",
+        },
+      },
+    });
+    post.mockRejectedValueOnce(needsAuthResponse());
+    render(<VerifyStep ctx={ctx} onComplete={vi.fn()} />);
+    fireEvent.click(screen.getByText("Verify"));
+    expect(await screen.findByText(/subscription sign-in is unavailable here/i)).toBeTruthy();
+    expect(screen.getByText(/company API key or a dedicated execution target/i)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /sign in with codex/i })).toBeNull();
   });
 
   it("surfaces the server's hint for the failing check", async () => {
@@ -625,7 +751,7 @@ describe("VerifyStep — Claude in-app sign-in", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: /sign in with claude/i }));
 
-    expect(await screen.findByText(/https:\/\/claude\.com\/x/)).toBeTruthy();
+    expect(await screen.findByText("Continue securely at claude.com")).toBeTruthy();
     expect(screen.getByLabelText(/paste the code/i)).toBeTruthy();
   });
 

@@ -21,10 +21,31 @@ if [ "$(id -g node)" -ne "$PGID" ]; then
     changed=1
 fi
 
-export AOA_HOME="${AOA_HOME:-/paperclip}"
+export AOA_HOME="${AOA_HOME:-/aoa}"
 export AOA_INSTANCE_ID="${AOA_INSTANCE_ID:-default}"
 export AOA_CONFIG="${AOA_CONFIG:-$AOA_HOME/instances/$AOA_INSTANCE_ID/config.json}"
 export HOME="${HOME:-$AOA_HOME}"
+
+# New images use /aoa. An old Compose file mounts the named volume over the
+# compatibility symlink at /paperclip, leaving /aoa on a different anonymous
+# volume. Refuse that mixed layout instead of silently initializing empty data.
+if [ "$AOA_HOME" = "/aoa" ] && [ -d /paperclip ] && [ ! -L /paperclip ]; then
+    echo "ERROR: legacy /paperclip is mounted but AOA_HOME is /aoa." >&2
+    echo "Upgrade the Compose file so the existing aoa-data volume mounts at /aoa." >&2
+    exit 1
+fi
+
+mkdir -p "$AOA_HOME"
+layout_sentinel="$AOA_HOME/.aoa-data-layout-version"
+if [ -f "$layout_sentinel" ]; then
+    layout_version=$(cat "$layout_sentinel")
+    if [ "$layout_version" != "2" ]; then
+        echo "ERROR: unsupported AOA data-layout version '$layout_version' (expected 2)." >&2
+        exit 1
+    fi
+else
+    printf '%s\n' "2" > "$layout_sentinel"
+fi
 
 # Assemble DATABASE_URL from the discrete AOA_POSTGRES_* pieces, percent-encoding
 # the user/password so URL-reserved characters in a hardened password survive

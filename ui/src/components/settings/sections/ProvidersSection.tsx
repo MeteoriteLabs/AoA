@@ -35,7 +35,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { isReadinessStale, type ProviderId } from "@armyofagents/shared";
 import { useCompany } from "@/context/CompanyContext";
-import { providersApi, type ProviderStatusRow } from "@/api/providers";
+import {
+  providersApi,
+  type ProviderLoginMode,
+  type ProviderStatusRow,
+} from "@/api/providers";
 import { ApiError } from "@/api/client";
 import {
   ProviderReadinessCard,
@@ -56,6 +60,9 @@ interface ActiveLogin {
   providerId: ProviderId;
   challengeId: string;
   loginUrl: string | null;
+  mode: ProviderLoginMode;
+  userCode: string | null;
+  expiresAt: string;
   status: "pending" | "completed" | "failed" | "timeout";
 }
 
@@ -296,9 +303,18 @@ function ProvidersPanel({ companyId }: { companyId: string }) {
       setBusyFor(providerId, { login: true });
       setErrorFor(providerId, null);
       try {
-        const { challengeId, loginUrl } = await providersApi.startLogin(companyId, providerId);
+        const { challengeId, loginUrl, mode, userCode, expiresAt } =
+          await providersApi.startLogin(companyId, providerId);
         activeLoginRef.current = { providerId, challengeId };
-        setLogin({ providerId, challengeId, loginUrl, status: "pending" });
+        setLogin({
+          providerId,
+          challengeId,
+          loginUrl,
+          mode,
+          userCode,
+          expiresAt,
+          status: "pending",
+        });
         clearPoll();
         pollRef.current = setInterval(
           () => void poll(providerId, challengeId),
@@ -420,7 +436,13 @@ function ProvidersPanel({ companyId }: { companyId: string }) {
               onCancelLogin={cancelLogin}
               login={
                 login && login.providerId === selectedRow.descriptor.id
-                  ? { status: login.status, loginUrl: login.loginUrl }
+                  ? {
+                      status: login.status,
+                      loginUrl: login.loginUrl,
+                      mode: login.mode,
+                      userCode: login.userCode,
+                      expiresAt: login.expiresAt,
+                    }
                   : null
               }
               onOpenProvider={openProvider}
