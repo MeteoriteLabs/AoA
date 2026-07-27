@@ -95,9 +95,53 @@ describe("FlowEngine (Stage B / B6)", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Progress service unavailable"
     );
+    expect(
+      screen.getByRole("heading", { name: "We couldn't load onboarding" })
+    ).toHaveFocus();
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     await waitFor(() => screen.getByTestId("step-profile"));
     expect(getProgress).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not remount a stale step while retrying a failed post-completion refresh", async () => {
+    let completed: OnboardingState[] = ["AUTHENTICATED"];
+    let resolveRetry!: (value: { completedStates: OnboardingState[] }) => void;
+    const retry = new Promise<{ completedStates: OnboardingState[] }>(
+      (resolve) => {
+        resolveRetry = resolve;
+      }
+    );
+    const getProgress = vi
+      .fn<FlowEngineApi["getProgress"]>()
+      .mockResolvedValueOnce({ completedStates: completed })
+      .mockRejectedValueOnce(new Error("Refresh failed"))
+      .mockReturnValueOnce(retry);
+
+    render(
+      <FlowEngine
+        userId="u1"
+        companyId={null}
+        journey="founder"
+        api={{ getProgress }}
+        registry={makeRegistry((state) => {
+          completed = [...completed, state];
+        })}
+      />
+    );
+
+    fireEvent.click(await screen.findByTestId("step-profile"));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Refresh failed"
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(screen.queryByTestId("step-profile")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Trying again…" })
+    ).toBeDisabled();
+
+    resolveRetry({ completedStates: completed });
+    await waitFor(() => screen.getByTestId("step-org"));
   });
 
   it("renders the first step, advances on complete, then finishes", async () => {

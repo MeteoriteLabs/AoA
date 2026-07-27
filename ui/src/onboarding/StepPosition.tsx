@@ -1,7 +1,13 @@
 import { cn } from "@/lib/utils";
 
 /** The mockup's stepper (screens S2–S5): a row of pips, done/current/upcoming. */
-export function StepperPips({ total, current }: { total: number; current: number }) {
+export function StepperPips({
+  total,
+  current,
+}: {
+  total: number;
+  current: number;
+}) {
   if (total <= 1) return null;
   return (
     <div className="flex items-center gap-1.5" aria-hidden="true">
@@ -13,7 +19,8 @@ export function StepperPips({ total, current }: { total: number; current: number
             className={cn(
               "h-1 w-[22px] rounded-full bg-border-strong transition-colors",
               n < current && "bg-brand",
-              n === current && "bg-brand-hover shadow-[0_0_8px_rgba(209,58,38,0.6)]",
+              n === current &&
+                "bg-brand-hover shadow-[0_0_8px_rgba(209,58,38,0.6)]"
             )}
           />
         );
@@ -28,14 +35,22 @@ export function StepperPips({ total, current }: { total: number; current: number
  * In-flight tail) so the counter runs continuously across the whole onboarding.
  * Renders nothing when `total <= 1` (single-step journeys carry no info).
  */
-export function StepPosition({ current, total }: { current: number; total: number }) {
+export function StepPosition({
+  current,
+  total,
+}: {
+  current: number;
+  total: number;
+}) {
   if (total <= 1) return null;
   return (
-    <div className="flex items-center gap-3">
-      <StepperPips total={total} current={current} />
+    <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+      <div className="hidden sm:block">
+        <StepperPips total={total} current={current} />
+      </div>
       <span
         data-testid="onboarding-step-position"
-        className="font-mono text-[10.5px] tracking-[0.14em] text-very-dim"
+        className="whitespace-nowrap font-mono text-[10.5px] tracking-[0.1em] text-very-dim sm:tracking-[0.14em]"
       >
         Step {current} of {total}
       </span>

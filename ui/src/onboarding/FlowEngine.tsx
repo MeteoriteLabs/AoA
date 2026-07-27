@@ -101,25 +101,46 @@ export function FlowEngine({
 }: FlowEngineProps) {
   const [completed, setCompleted] = useState<OnboardingState[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [progressLoading, setProgressLoading] = useState(true);
   const [backStepId, setBackStepId] = useState<string | null>(null);
   const finishedRef = useRef(false);
   const companyIdRef = useRef(companyId);
+  const loadGenerationRef = useRef(0);
+  const recoveryHeadingRef = useRef<HTMLHeadingElement>(null);
   companyIdRef.current = companyId;
 
   const load = useCallback(async () => {
     const requestedCompanyId = companyId;
-    setLoadError(null);
+    if (companyIdRef.current !== requestedCompanyId) return;
+    const generation = ++loadGenerationRef.current;
+    setProgressLoading(true);
     try {
       const p = await api.getProgress(requestedCompanyId);
-      if (companyIdRef.current !== requestedCompanyId) return;
+      if (
+        companyIdRef.current !== requestedCompanyId ||
+        loadGenerationRef.current !== generation
+      )
+        return;
       setCompleted(p?.completedStates ?? ["AUTHENTICATED"]);
+      setLoadError(null);
     } catch (error) {
-      if (companyIdRef.current !== requestedCompanyId) return;
+      if (
+        companyIdRef.current !== requestedCompanyId ||
+        loadGenerationRef.current !== generation
+      )
+        return;
       setLoadError(
         error instanceof Error
           ? error.message
           : "We couldn't load your onboarding progress."
       );
+    } finally {
+      if (
+        companyIdRef.current === requestedCompanyId &&
+        loadGenerationRef.current === generation
+      ) {
+        setProgressLoading(false);
+      }
     }
   }, [api, companyId]);
 
@@ -129,6 +150,10 @@ export function FlowEngine({
     setCompleted(null);
     void load();
   }, [load]);
+
+  useEffect(() => {
+    if (loadError) recoveryHeadingRef.current?.focus();
+  }, [loadError]);
 
   const ctx: StepContext | null =
     completed === null
@@ -180,8 +205,15 @@ export function FlowEngine({
     return (
       <DarkShell>
         <div className="relative z-10 flex min-h-[100dvh] items-center justify-center px-4 py-16 sm:px-6">
-          <div className="w-full max-w-md rounded-xl border border-border bg-card p-5 text-center">
-            <h1 className="text-lg font-semibold text-text">
+          <div
+            className="w-full max-w-md rounded-xl border border-border bg-card p-5 text-center"
+            aria-busy={progressLoading}
+          >
+            <h1
+              ref={recoveryHeadingRef}
+              tabIndex={-1}
+              className="text-lg font-semibold text-text outline-none"
+            >
               We couldn't load onboarding
             </h1>
             <p
@@ -191,8 +223,12 @@ export function FlowEngine({
               {loadError}
             </p>
             <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:justify-center">
-              <Button type="button" onClick={() => void load()}>
-                Try again
+              <Button
+                type="button"
+                disabled={progressLoading}
+                onClick={() => void load()}
+              >
+                {progressLoading ? "Trying again…" : "Try again"}
               </Button>
               {onSwitchAccount && (
                 <Button
@@ -216,7 +252,7 @@ export function FlowEngine({
     );
   }
 
-  if (!ctx) {
+  if (progressLoading || !ctx) {
     return (
       <DarkShell>
         {onSwitchAccount && (
@@ -291,34 +327,38 @@ export function FlowEngine({
         {/* Shared step chrome: one Back affordance + a stepper-pip / "Step N of
             M" position readout for every step (steps no longer render their
             own Back). */}
-        <div className="flex items-center justify-between gap-4">
-          <div className="min-w-[64px]">
+        <div className="flex items-center justify-between gap-2 sm:gap-4">
+          <div className="min-w-10 sm:min-w-16">
             {hasCompletedPredecessor && (
               <Button
                 type="button"
                 variant="ghost"
                 size="sm"
-                className="-ml-2 gap-1 text-dim hover:bg-white/5 hover:text-text"
+                aria-label="Back"
+                className="-ml-2 gap-1 px-2 text-dim hover:bg-white/5 hover:text-text sm:px-3"
                 onClick={handleBack}
               >
                 <ChevronLeft className="h-3.5 w-3.5" aria-hidden />
-                Back
+                <span className="hidden sm:inline">Back</span>
               </Button>
             )}
           </div>
           {showStepChrome && <StepPosition current={stepNumber} total={base} />}
-          <div className="flex min-w-[104px] justify-end">
+          <div className="flex min-w-10 justify-end sm:min-w-[104px]">
             {onSwitchAccount && (
               <Button
                 type="button"
                 variant="ghost"
                 size="sm"
-                className="-mr-2 gap-1.5 text-dim hover:bg-white/5 hover:text-text"
+                aria-label="Switch account"
+                className="-mr-2 gap-1.5 px-2 text-dim hover:bg-white/5 hover:text-text sm:px-3"
                 disabled={isSwitchingAccount}
                 onClick={onSwitchAccount}
               >
                 <LogOut className="h-3.5 w-3.5" aria-hidden />
-                {isSwitchingAccount ? "Signing out…" : "Switch account"}
+                <span className="hidden sm:inline">
+                  {isSwitchingAccount ? "Signing out…" : "Switch account"}
+                </span>
               </Button>
             )}
           </div>
@@ -329,7 +369,7 @@ export function FlowEngine({
           </p>
         )}
         <div className="flex min-h-0 flex-1 flex-col">
-          <div className="my-auto w-full">
+          <div className="w-full py-6 sm:py-10">
             <Suspense
               fallback={
                 <p className="text-center text-sm text-dim">Loading step…</p>
