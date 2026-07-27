@@ -3,6 +3,7 @@ import type { Db } from "@armyofagents/db";
 import {
   agentProviderCredentialBindings,
   agents,
+  internalAgentConfig,
   providerCredentials,
 } from "@armyofagents/db";
 import { and, eq, isNull, sql } from "drizzle-orm";
@@ -15,31 +16,34 @@ import { HttpError, unprocessable } from "../errors.js";
 export function providerCredentialRoutes(db: Db): Router {
   const router = Router();
 
-  router.get("/companies/:companyId/provider-credentials", async (req: Request, res: Response) => {
-    const actor = req.actor;
-    if (actor.type !== "board" || !actor.userId) {
-      res.status(401).json({ error: "authentication required" });
-      return;
+  router.get(
+    "/companies/:companyId/provider-credentials",
+    async (req: Request, res: Response) => {
+      const actor = req.actor;
+      if (actor.type !== "board" || !actor.userId) {
+        res.status(401).json({ error: "authentication required" });
+        return;
+      }
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      await assertRole(db, req, companyId, "founder");
+      const rows = await db
+        .select({
+          id: providerCredentials.id,
+          provider: providerCredentials.provider,
+          ownerUserId: providerCredentials.ownerUserId,
+          executionTargetId: providerCredentials.executionTargetId,
+          kind: providerCredentials.kind,
+          state: providerCredentials.state,
+          verifiedAt: providerCredentials.verifiedAt,
+          revokedAt: providerCredentials.revokedAt,
+          suspendedAt: providerCredentials.suspendedAt,
+        })
+        .from(providerCredentials)
+        .where(eq(providerCredentials.companyId, companyId));
+      res.json(rows);
     }
-    const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    await assertRole(db, req, companyId, "founder");
-    const rows = await db
-      .select({
-        id: providerCredentials.id,
-        provider: providerCredentials.provider,
-        ownerUserId: providerCredentials.ownerUserId,
-        executionTargetId: providerCredentials.executionTargetId,
-        kind: providerCredentials.kind,
-        state: providerCredentials.state,
-        verifiedAt: providerCredentials.verifiedAt,
-        revokedAt: providerCredentials.revokedAt,
-        suspendedAt: providerCredentials.suspendedAt,
-      })
-      .from(providerCredentials)
-      .where(eq(providerCredentials.companyId, companyId));
-    res.json(rows);
-  });
+  );
 
   router.get(
     "/companies/:companyId/agents/:agentId/provider-credential-bindings",
@@ -60,7 +64,9 @@ export function providerCredentialRoutes(db: Db): Router {
         .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)))
         .limit(1);
       if (!agent) {
-        throw new HttpError(404, "Agent not found", { code: "agent_not_found" });
+        throw new HttpError(404, "Agent not found", {
+          code: "agent_not_found",
+        });
       }
 
       const rows = await db
@@ -78,17 +84,20 @@ export function providerCredentialRoutes(db: Db): Router {
         .from(agentProviderCredentialBindings)
         .innerJoin(
           providerCredentials,
-          eq(agentProviderCredentialBindings.credentialId, providerCredentials.id),
+          eq(
+            agentProviderCredentialBindings.credentialId,
+            providerCredentials.id
+          )
         )
         .where(
           and(
             eq(agentProviderCredentialBindings.companyId, companyId),
             eq(agentProviderCredentialBindings.agentId, agentId),
-            eq(providerCredentials.companyId, companyId),
-          ),
+            eq(providerCredentials.companyId, companyId)
+          )
         );
       res.json(rows);
-    },
+    }
   );
 
   router.post(
@@ -103,7 +112,9 @@ export function providerCredentialRoutes(db: Db): Router {
       const companyId = req.params.companyId as string;
       const agentId = req.params.agentId as string;
       const credentialId =
-        typeof req.body?.credentialId === "string" ? req.body.credentialId.trim() : "";
+        typeof req.body?.credentialId === "string"
+          ? req.body.credentialId.trim()
+          : "";
       if (!credentialId) {
         res.status(400).json({ error: "credentialId is required" });
         return;
@@ -122,14 +133,15 @@ export function providerCredentialRoutes(db: Db): Router {
           .select({
             id: providerCredentials.id,
             provider: providerCredentials.provider,
+            kind: providerCredentials.kind,
             state: providerCredentials.state,
           })
           .from(providerCredentials)
           .where(
             and(
               eq(providerCredentials.id, credentialId),
-              eq(providerCredentials.companyId, companyId),
-            ),
+              eq(providerCredentials.companyId, companyId)
+            )
           )
           .limit(1);
         if (!agent || !credential) {
@@ -142,12 +154,25 @@ export function providerCredentialRoutes(db: Db): Router {
             code: "credential_not_verified",
           });
         }
+        if (credential.kind === "personal_subscription") {
+          const [commander] = await txDb
+            .select({ agentId: internalAgentConfig.agentId })
+            .from(internalAgentConfig)
+            .where(eq(internalAgentConfig.companyId, companyId))
+            .limit(1);
+          if (commander?.agentId !== agentId) {
+            throw unprocessable(
+              "Personal subscription credentials can only be assigned to the company Commander",
+              { code: "subscription_commander_only" }
+            );
+          }
+        }
 
         // Serialize replacement for one agent/provider. Without this lock two
         // concurrent approvals can both observe no active binding, insert
         // different credentials, and leave execution fail-closed as ambiguous.
         await txDb.execute(
-          sql`SELECT pg_advisory_xact_lock(hashtext(${`provider-binding:${companyId}:${agentId}:${credential.provider}`}))`,
+          sql`SELECT pg_advisory_xact_lock(hashtext(${`provider-binding:${companyId}:${agentId}:${credential.provider}`}))`
         );
         const existing = await txDb
           .select({
@@ -157,15 +182,18 @@ export function providerCredentialRoutes(db: Db): Router {
           .from(agentProviderCredentialBindings)
           .innerJoin(
             providerCredentials,
-            eq(agentProviderCredentialBindings.credentialId, providerCredentials.id),
+            eq(
+              agentProviderCredentialBindings.credentialId,
+              providerCredentials.id
+            )
           )
           .where(
             and(
               eq(agentProviderCredentialBindings.companyId, companyId),
               eq(agentProviderCredentialBindings.agentId, agentId),
               eq(providerCredentials.provider, credential.provider),
-              isNull(agentProviderCredentialBindings.revokedAt),
-            ),
+              isNull(agentProviderCredentialBindings.revokedAt)
+            )
           );
         const now = new Date();
         for (const row of existing) {
@@ -213,7 +241,7 @@ export function providerCredentialRoutes(db: Db): Router {
         return binding.id;
       });
       res.status(201).json({ id: bindingId });
-    },
+    }
   );
 
   router.delete(
@@ -241,8 +269,8 @@ export function providerCredentialRoutes(db: Db): Router {
               eq(agentProviderCredentialBindings.id, bindingId),
               eq(agentProviderCredentialBindings.companyId, companyId),
               eq(agentProviderCredentialBindings.agentId, agentId),
-              isNull(agentProviderCredentialBindings.revokedAt),
-            ),
+              isNull(agentProviderCredentialBindings.revokedAt)
+            )
           )
           .returning({ id: agentProviderCredentialBindings.id });
         if (!row) return null;
@@ -262,7 +290,7 @@ export function providerCredentialRoutes(db: Db): Router {
         return;
       }
       res.status(204).end();
-    },
+    }
   );
 
   router.delete(
@@ -277,9 +305,13 @@ export function providerCredentialRoutes(db: Db): Router {
       const companyId = req.params.companyId as string;
       const credentialId = req.params.credentialId as string;
       const confirmation =
-        typeof req.body?.confirmation === "string" ? req.body.confirmation.trim() : "";
+        typeof req.body?.confirmation === "string"
+          ? req.body.confirmation.trim()
+          : "";
       if (confirmation !== credentialId) {
-        res.status(400).json({ error: "confirmation must exactly match credentialId" });
+        res
+          .status(400)
+          .json({ error: "confirmation must exactly match credentialId" });
         return;
       }
       assertCompanyAccess(req, companyId);
@@ -297,8 +329,8 @@ export function providerCredentialRoutes(db: Db): Router {
         .where(
           and(
             eq(providerCredentials.id, credentialId),
-            eq(providerCredentials.companyId, companyId),
-          ),
+            eq(providerCredentials.companyId, companyId)
+          )
         )
         .limit(1);
       if (!credential) {
@@ -307,12 +339,16 @@ export function providerCredentialRoutes(db: Db): Router {
       }
       if (
         credential.kind !== "personal_subscription" ||
-        (credential.provider !== "openai" && credential.provider !== "anthropic")
+        (credential.provider !== "openai" &&
+          credential.provider !== "anthropic")
       ) {
-        res.status(422).json({ error: "Only CLI subscription credentials can be revoked here" });
+        res.status(422).json({
+          error: "Only CLI subscription credentials can be revoked here",
+        });
         return;
       }
-      const localTargetId = process.env.AOA_EXECUTION_TARGET_ID?.trim() || "control-plane";
+      const localTargetId =
+        process.env.AOA_EXECUTION_TARGET_ID?.trim() || "control-plane";
       if (credential.executionTargetId !== localTargetId) {
         res.status(409).json({
           error: "Credential is owned by another execution target",
@@ -330,8 +366,8 @@ export function providerCredentialRoutes(db: Db): Router {
           .where(
             and(
               eq(providerCredentials.id, credentialId),
-              eq(providerCredentials.companyId, companyId),
-            ),
+              eq(providerCredentials.companyId, companyId)
+            )
           );
         await txDb
           .update(agentProviderCredentialBindings)
@@ -340,8 +376,8 @@ export function providerCredentialRoutes(db: Db): Router {
             and(
               eq(agentProviderCredentialBindings.companyId, companyId),
               eq(agentProviderCredentialBindings.credentialId, credentialId),
-              isNull(agentProviderCredentialBindings.revokedAt),
-            ),
+              isNull(agentProviderCredentialBindings.revokedAt)
+            )
           );
         await logActivity(txDb, {
           companyId,
@@ -350,7 +386,10 @@ export function providerCredentialRoutes(db: Db): Router {
           action: "provider_credential.revoked",
           entityType: "provider_credential",
           entityId: credentialId,
-          details: { provider: credential.provider, executionTargetId: credential.executionTargetId },
+          details: {
+            provider: credential.provider,
+            executionTargetId: credential.executionTargetId,
+          },
         });
       });
 
@@ -361,7 +400,7 @@ export function providerCredentialRoutes(db: Db): Router {
         executionTargetId: credential.executionTargetId,
       });
       res.json({ id: credentialId, state: "revoked", filesRemoved });
-    },
+    }
   );
 
   return router;

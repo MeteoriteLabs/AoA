@@ -1,12 +1,18 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { drizzleOperatorStubs, makeTableProxy } from "./helpers/drizzle-mock.js";
+import {
+  drizzleOperatorStubs,
+  makeTableProxy,
+} from "./helpers/drizzle-mock.js";
 
 vi.mock("drizzle-orm", () => drizzleOperatorStubs());
 vi.mock("@armyofagents/db", () => ({
-  agentProviderCredentialBindings: makeTableProxy("agent_provider_credential_bindings"),
+  agentProviderCredentialBindings: makeTableProxy(
+    "agent_provider_credential_bindings"
+  ),
   agents: makeTableProxy("agents"),
+  internalAgentConfig: makeTableProxy("internal_agent_config"),
   providerCredentials: makeTableProxy("provider_credentials"),
 }));
 
@@ -16,8 +22,12 @@ const mockLogActivity = vi.hoisted(() => vi.fn(async () => {}));
 const mockRemoveCredentialHome = vi.hoisted(() => vi.fn(async () => true));
 
 vi.mock("../middleware/rbac.js", () => ({ assertRole: mockAssertRole }));
-vi.mock("../routes/authz.js", () => ({ assertCompanyAccess: mockAssertCompanyAccess }));
-vi.mock("../services/activity-log.js", () => ({ logActivity: mockLogActivity }));
+vi.mock("../routes/authz.js", () => ({
+  assertCompanyAccess: mockAssertCompanyAccess,
+}));
+vi.mock("../services/activity-log.js", () => ({
+  logActivity: mockLogActivity,
+}));
 vi.mock("../services/provider-credentials.js", () => ({
   removeScopedSubscriptionCredentialHome: mockRemoveCredentialHome,
 }));
@@ -47,7 +57,7 @@ function query(result: unknown[], calls: string[]) {
   chain.returning = async () => result;
   chain.then = (
     resolve: (value: unknown[]) => unknown,
-    reject?: (reason: unknown) => unknown,
+    reject?: (reason: unknown) => unknown
   ) => Promise.resolve(result).then(resolve, reject);
   return chain;
 }
@@ -84,7 +94,7 @@ function fakeDb(options: FakeDbOptions = {}) {
 
 function makeApp(
   db: unknown,
-  actor: Record<string, unknown> = { type: "board", userId: "user-1" },
+  actor: Record<string, unknown> = { type: "board", userId: "user-1" }
 ) {
   const app = express();
   app.use(express.json());
@@ -118,24 +128,39 @@ describe("provider credential routes", () => {
     ["GET bindings", "get", bindingsUrl, undefined],
     ["POST binding", "post", bindUrl, { credentialId: "credential-1" }],
     ["DELETE binding", "delete", bindingUrl, undefined],
-    ["DELETE credential", "delete", credentialUrl, { confirmation: "credential-1" }],
-  ] as const)("%s rejects non-board actors", async (_label, method, url, body) => {
-    const agent = request(makeApp(fakeDb().db, { type: "agent", agentId: "agent-x" }));
-    const pending = method === "get" ? agent.get(url) : agent[method](url);
-    const response = body ? await pending.send(body) : await pending;
-    expect(response.status).toBe(401);
-    expect(mockAssertRole).not.toHaveBeenCalled();
-  });
+    [
+      "DELETE credential",
+      "delete",
+      credentialUrl,
+      { confirmation: "credential-1" },
+    ],
+  ] as const)(
+    "%s rejects non-board actors",
+    async (_label, method, url, body) => {
+      const agent = request(
+        makeApp(fakeDb().db, { type: "agent", agentId: "agent-x" })
+      );
+      const pending = method === "get" ? agent.get(url) : agent[method](url);
+      const response = body ? await pending.send(body) : await pending;
+      expect(response.status).toBe(401);
+      expect(mockAssertRole).not.toHaveBeenCalled();
+    }
+  );
 
   it.each([
     ["GET credentials", "get", credentialsUrl, undefined],
     ["GET bindings", "get", bindingsUrl, undefined],
     ["POST binding", "post", bindUrl, { credentialId: "credential-1" }],
     ["DELETE binding", "delete", bindingUrl, undefined],
-    ["DELETE credential", "delete", credentialUrl, { confirmation: "credential-1" }],
+    [
+      "DELETE credential",
+      "delete",
+      credentialUrl,
+      { confirmation: "credential-1" },
+    ],
   ] as const)("%s rejects a non-founder", async (_label, method, url, body) => {
     mockAssertRole.mockRejectedValueOnce(
-      Object.assign(new Error("forbidden"), { status: 403, expose: true }),
+      Object.assign(new Error("forbidden"), { status: 403, expose: true })
     );
     const founder = request(makeApp(fakeDb().db));
     const pending = method === "get" ? founder.get(url) : founder[method](url);
@@ -145,7 +170,10 @@ describe("provider credential routes", () => {
 
   it("enforces company access before reading or mutating credential records", async () => {
     mockAssertCompanyAccess.mockImplementationOnce(() => {
-      throw Object.assign(new Error("company access denied"), { status: 403, expose: true });
+      throw Object.assign(new Error("company access denied"), {
+        status: 403,
+        expose: true,
+      });
     });
     const listingDb = fakeDb();
     const listing = await request(makeApp(listingDb.db)).get(credentialsUrl);
@@ -153,7 +181,10 @@ describe("provider credential routes", () => {
     expect(listingDb.calls).not.toContain("select");
 
     mockAssertCompanyAccess.mockImplementationOnce(() => {
-      throw Object.assign(new Error("company access denied"), { status: 403, expose: true });
+      throw Object.assign(new Error("company access denied"), {
+        status: 403,
+        expose: true,
+      });
     });
     const mutationDb = fakeDb();
     const mutation = await request(makeApp(mutationDb.db))
@@ -180,7 +211,12 @@ describe("provider credential routes", () => {
     expect(response.status).toBe(200);
     expect(response.body).toEqual([row]);
     expect(mockAssertCompanyAccess).toHaveBeenCalled();
-    expect(mockAssertRole).toHaveBeenCalledWith(expect.anything(), expect.anything(), "company-1", "founder");
+    expect(mockAssertRole).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      "company-1",
+      "founder"
+    );
   });
 
   it("discovers agent bindings, including revoked rows and credential state", async () => {
@@ -213,14 +249,26 @@ describe("provider credential routes", () => {
 
   it("requires credentialId before opening a transaction", async () => {
     const { db, calls } = fakeDb();
-    const response = await request(makeApp(db)).post(bindUrl).send({ credentialId: " " });
+    const response = await request(makeApp(db))
+      .post(bindUrl)
+      .send({ credentialId: " " });
     expect(response.status).toBe(400);
     expect(calls).not.toContain("transaction");
   });
 
   it("returns stable errors for cross-company/missing and unverified credentials", async () => {
     const missing = fakeDb({
-      select: [[], [{ id: "credential-1", provider: "openai", state: "verified" }]],
+      select: [
+        [],
+        [
+          {
+            id: "credential-1",
+            provider: "openai",
+            kind: "personal_subscription",
+            state: "verified",
+          },
+        ],
+      ],
     });
     const missingResponse = await request(makeApp(missing.db))
       .post(bindUrl)
@@ -234,7 +282,14 @@ describe("provider credential routes", () => {
     const unverified = fakeDb({
       select: [
         [{ id: "agent-1" }],
-        [{ id: "credential-1", provider: "openai", state: "pending" }],
+        [
+          {
+            id: "credential-1",
+            provider: "openai",
+            kind: "personal_subscription",
+            state: "pending",
+          },
+        ],
       ],
     });
     const unverifiedResponse = await request(makeApp(unverified.db))
@@ -247,11 +302,48 @@ describe("provider credential routes", () => {
     });
   });
 
+  it("rejects assigning a personal subscription credential to a non-Commander agent", async () => {
+    const { db, calls } = fakeDb({
+      select: [
+        [{ id: "agent-1" }],
+        [
+          {
+            id: "credential-1",
+            provider: "anthropic",
+            kind: "personal_subscription",
+            state: "verified",
+          },
+        ],
+        [{ agentId: "commander-1" }],
+      ],
+    });
+
+    const response = await request(makeApp(db))
+      .post(bindUrl)
+      .send({ credentialId: "credential-1" });
+
+    expect(response.status).toBe(422);
+    expect(response.body).toEqual({
+      error:
+        "Personal subscription credentials can only be assigned to the company Commander",
+      details: { code: "subscription_commander_only" },
+    });
+    expect(calls).not.toContain("insert");
+  });
+
   it("approves a verified binding under a serialized transaction and audits it", async () => {
     const { db, calls, handle } = fakeDb({
       select: [
         [{ id: "agent-1" }],
-        [{ id: "credential-1", provider: "openai", state: "verified" }],
+        [
+          {
+            id: "credential-1",
+            provider: "openai",
+            kind: "personal_subscription",
+            state: "verified",
+          },
+        ],
+        [{ agentId: "agent-1" }],
         [],
       ],
       insert: [[{ id: "binding-1" }]],
@@ -268,8 +360,33 @@ describe("provider credential routes", () => {
         companyId: "company-1",
         action: "provider_credential.binding.approved",
         entityId: "binding-1",
-      }),
+      })
     );
+  });
+
+  it("allows a verified company API key credential to be assigned to an ordinary agent", async () => {
+    const { db, calls } = fakeDb({
+      select: [
+        [{ id: "agent-1" }],
+        [
+          {
+            id: "credential-1",
+            provider: "openai",
+            kind: "company_api_key",
+            state: "verified",
+          },
+        ],
+        [],
+      ],
+      insert: [[{ id: "binding-1" }]],
+    });
+
+    const response = await request(makeApp(db))
+      .post(bindUrl)
+      .send({ credentialId: "credential-1" });
+
+    expect(response.status).toBe(201);
+    expect(calls.filter((call) => call === "select")).toHaveLength(3);
   });
 
   it("returns 404 for an absent binding and atomically audits a successful revoke", async () => {
@@ -286,17 +403,22 @@ describe("provider credential routes", () => {
       expect.objectContaining({
         action: "provider_credential.binding.revoked",
         entityId: "binding-1",
-      }),
+      })
     );
   });
 
   it("fails the binding-revoke transaction when its required audit write fails", async () => {
-    mockLogActivity.mockRejectedValueOnce(new Error("activity store unavailable"));
+    mockLogActivity.mockRejectedValueOnce(
+      new Error("activity store unavailable")
+    );
     const attempted = fakeDb({ update: [[{ id: "binding-1" }]] });
     const response = await request(makeApp(attempted.db)).delete(bindingUrl);
     expect(response.status).toBe(500);
     expect(attempted.calls).toContain("transaction");
-    expect(mockLogActivity).toHaveBeenCalledWith(attempted.handle, expect.anything());
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      attempted.handle,
+      expect.anything()
+    );
   });
 
   it("rejects credential revocation confirmation, unsupported kinds, and wrong targets", async () => {
@@ -306,13 +428,17 @@ describe("provider credential routes", () => {
     expect(confirmation.status).toBe(400);
 
     const companyKey = fakeDb({
-      select: [[{
-        id: "credential-1",
-        provider: "openai",
-        ownerUserId: "user-1",
-        executionTargetId: "target-1",
-        kind: "company_api_key",
-      }]],
+      select: [
+        [
+          {
+            id: "credential-1",
+            provider: "openai",
+            ownerUserId: "user-1",
+            executionTargetId: "target-1",
+            kind: "company_api_key",
+          },
+        ],
+      ],
     });
     const unsupported = await request(makeApp(companyKey.db))
       .delete(credentialUrl)
@@ -320,13 +446,17 @@ describe("provider credential routes", () => {
     expect(unsupported.status).toBe(422);
 
     const foreignTarget = fakeDb({
-      select: [[{
-        id: "credential-1",
-        provider: "anthropic",
-        ownerUserId: "user-1",
-        executionTargetId: "target-2",
-        kind: "personal_subscription",
-      }]],
+      select: [
+        [
+          {
+            id: "credential-1",
+            provider: "anthropic",
+            ownerUserId: "user-1",
+            executionTargetId: "target-2",
+            kind: "personal_subscription",
+          },
+        ],
+      ],
     });
     const mismatch = await request(makeApp(foreignTarget.db))
       .delete(credentialUrl)
@@ -368,7 +498,7 @@ describe("provider credential routes", () => {
       expect.objectContaining({
         action: "provider_credential.revoked",
         entityId: "credential-1",
-      }),
+      })
     );
     expect(mockRemoveCredentialHome).toHaveBeenCalledWith({
       companyId: "company-1",
@@ -379,7 +509,9 @@ describe("provider credential routes", () => {
   });
 
   it("surfaces scoped filesystem cleanup failure only after the audited logical revoke", async () => {
-    mockRemoveCredentialHome.mockRejectedValueOnce(new Error("filesystem unavailable"));
+    mockRemoveCredentialHome.mockRejectedValueOnce(
+      new Error("filesystem unavailable")
+    );
     const credential = {
       id: "credential-1",
       provider: "anthropic",
@@ -394,7 +526,7 @@ describe("provider credential routes", () => {
     expect(response.status).toBe(500);
     expect(mockLogActivity).toHaveBeenCalledWith(
       attempted.handle,
-      expect.objectContaining({ action: "provider_credential.revoked" }),
+      expect.objectContaining({ action: "provider_credential.revoked" })
     );
   });
 });
