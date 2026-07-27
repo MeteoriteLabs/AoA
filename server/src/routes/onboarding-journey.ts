@@ -253,20 +253,16 @@ export function onboardingJourneyRoutes(db: Db): Router {
       userId: actor.userId,
       isInstanceAdmin: actor.isInstanceAdmin === true,
     });
-    // Rolling-deploy compatibility: an old cached UI does not understand the
-    // access_required discriminant and would render a blank route. Only clients
-    // advertising the versioned contract receive it. The new UI tolerates both
-    // this legacy response and the versioned response.
+    // Fail closed for an old cached UI that cannot represent access_required.
+    // Claiming this user is a founder would route them into company creation
+    // despite the server correctly denying that authority.
     if (
       result.journey === "access_required" &&
       req.header("x-aoa-journey-schema-version") !== "1"
     ) {
-      res.json({
-        journey: "founder",
-        targetCompanyId: null,
-        pendingInvitations: [],
-        inviteToken: null,
-        resumeFirstRunCompanyId: null,
+      res.status(409).json({
+        error: "This AoA client must be refreshed before access can continue.",
+        code: "journey_schema_upgrade_required",
       });
       return;
     }

@@ -508,7 +508,7 @@ describe("GET /api/onboarding/journey", () => {
     });
   });
 
-  it("keeps old cached clients on the legacy journey contract during rollout", async () => {
+  it("fails closed for old cached clients that cannot represent access_required", async () => {
     const db = seqDb([
       [{ email: "member@x.com", emailVerified: true }],
       [],
@@ -526,13 +526,10 @@ describe("GET /api/onboarding/journey", () => {
 
     const res = await request(app).get("/api/onboarding/journey");
 
-    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
     expect(res.body).toEqual({
-      journey: "founder",
-      targetCompanyId: null,
-      pendingInvitations: [],
-      inviteToken: null,
-      resumeFirstRunCompanyId: null,
+      error: "This AoA client must be refreshed before access can continue.",
+      code: "journey_schema_upgrade_required",
     });
   });
 
