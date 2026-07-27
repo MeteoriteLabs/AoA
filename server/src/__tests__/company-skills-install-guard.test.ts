@@ -620,6 +620,52 @@ describe("createLocalSkill — collision guard (T2.9b)", () => {
     expect(fake.rows).toHaveLength(1);
   });
 
+  it("removes an owned managed directory so a deleted slug can be recreated", async () => {
+    const fake = makeFakeDb([]);
+    const svc = companySkillService(fake.db);
+    const first = await svc.createLocalSkill("co-1", {
+      name: "Reusable",
+      slug: "reusable",
+      markdown: "# First\n",
+    });
+    const firstDirectory = first.sourceLocator!;
+
+    await expect(svc.deleteSkill("co-1", first.id)).resolves.toMatchObject({
+      id: first.id,
+    });
+    expect(existsSync(firstDirectory)).toBe(false);
+
+    const recreated = await svc.createLocalSkill("co-1", {
+      name: "Reusable",
+      slug: "reusable",
+      markdown: "# Second\n",
+    });
+    expect(recreated.id).not.toBe(first.id);
+    expect(await fs.readFile(path.join(recreated.sourceLocator!, "SKILL.md"), "utf8")).toBe(
+      "# Second\n",
+    );
+  });
+
+  it("does not delete an imported local_path directory with the database row", async () => {
+    const importedDirectory = await makeTempDir("aoa-imported-local-delete-");
+    await fs.writeFile(path.join(importedDirectory, "SKILL.md"), FOUNDER_MARKDOWN, "utf8");
+    const fake = makeFakeDb([
+      urlSkillRow({
+        sourceType: "local_path",
+        sourceLocator: importedDirectory,
+        metadata: { sourceKind: "local" },
+      }),
+    ]);
+    const svc = companySkillService(fake.db);
+
+    await svc.deleteSkill("co-1", "skill-1");
+
+    expect(fake.rows).toHaveLength(0);
+    expect(await fs.readFile(path.join(importedDirectory, "SKILL.md"), "utf8")).toBe(
+      FOUNDER_MARKDOWN,
+    );
+  });
+
   it("still creates a fresh slug", async () => {
     const fake = makeFakeDb([]);
     const svc = companySkillService(fake.db);

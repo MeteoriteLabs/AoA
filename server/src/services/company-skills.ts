@@ -2041,6 +2041,30 @@ export function companySkillService(db: Db) {
     }
 
     await db.delete(companySkills).where(eq(companySkills.id, skillId));
+    // AoA owns only direct child directories it created under the per-company
+    // managed root. Remove those with the row so a founder can later recreate
+    // the same slug. Never delete arbitrary imported local_path directories.
+    const managedRoot = path.resolve(resolveManagedSkillsRoot(companyId));
+    const resolvedLocator = skill.sourceLocator
+      ? path.resolve(skill.sourceLocator)
+      : null;
+    const managedLocalDirectory =
+      skill.sourceType === "local_path"
+      && skill.metadata?.sourceKind === "managed_local"
+      && resolvedLocator
+      && path.dirname(resolvedLocator) === managedRoot
+        ? resolvedLocator
+        : null;
+    if (managedLocalDirectory) {
+      try {
+        await fs.rm(managedLocalDirectory, { recursive: true, force: true });
+      } catch (error) {
+        logger.warn(
+          { companyId, skillId, sourceLocator: managedLocalDirectory, error },
+          "Deleted managed local skill row but could not remove its directory",
+        );
+      }
+    }
     return skill;
   }
 

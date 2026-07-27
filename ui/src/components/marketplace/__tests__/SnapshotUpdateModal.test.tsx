@@ -11,10 +11,6 @@ vi.mock("@/context/ToastContext", () => ({
   useToast: () => ({ pushToast }),
 }));
 
-vi.mock("../MergeDiffPane", () => ({
-  MergeDiffPane: () => <div>Merge sections</div>,
-}));
-
 function response(
   status: number,
   body: unknown,
@@ -64,7 +60,12 @@ describe("SnapshotUpdateModal snapshot conflicts", () => {
     const refresh = deferred<Pick<Response, "ok" | "status" | "json">>();
     const fetchMock = vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(response(200, {
-        diff: [],
+        diff: [{
+          header: "Old",
+          state: "changed",
+          mine: "old mine",
+          theirs: "old upstream",
+        }],
         currentVersion: "1.0.0",
         latestVersion: "1.1.0",
         snapshotToken: "token-old",
@@ -78,8 +79,10 @@ describe("SnapshotUpdateModal snapshot conflicts", () => {
 
     renderModal();
     const user = userEvent.setup();
-    const applyButton = await screen.findByRole("button", { name: "Apply merge" });
+    const acceptUpstream = await screen.findByRole("button", { name: "Accept upstream" });
+    const applyButton = screen.getByRole("button", { name: "Apply merge" });
 
+    await user.click(acceptUpstream);
     await user.click(applyButton);
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
@@ -87,10 +90,16 @@ describe("SnapshotUpdateModal snapshot conflicts", () => {
     expect(screen.getByText(/reviewed snapshot changed/i)).toBeInTheDocument();
     expect(JSON.parse(String(fetchMock.mock.calls[1]![1]?.body))).toMatchObject({
       snapshotToken: "token-old",
+      decisions: { Old: "theirs" },
     });
 
     refresh.resolve(response(200, {
-      diff: [],
+      diff: [{
+        header: "New",
+        state: "changed",
+        mine: "new mine",
+        theirs: "new upstream",
+      }],
       currentVersion: "1.0.0",
       latestVersion: "1.2.0",
       snapshotToken: "token-new",
@@ -106,13 +115,19 @@ describe("SnapshotUpdateModal snapshot conflicts", () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
     expect(JSON.parse(String(fetchMock.mock.calls[3]![1]?.body))).toMatchObject({
       snapshotToken: "token-new",
+      decisions: { New: "mine" },
     });
   });
 
   it("keeps Apply disabled and offers an in-modal retry when refresh fails", async () => {
     vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(response(200, {
-        diff: [],
+        diff: [{
+          header: "Old",
+          state: "changed",
+          mine: "old mine",
+          theirs: "old upstream",
+        }],
         currentVersion: "1.0.0",
         latestVersion: "1.1.0",
         snapshotToken: "token-old",
@@ -123,7 +138,12 @@ describe("SnapshotUpdateModal snapshot conflicts", () => {
       }) as Response)
       .mockResolvedValueOnce(response(503, { error: "Catalog unavailable" }) as Response)
       .mockResolvedValueOnce(response(200, {
-        diff: [],
+        diff: [{
+          header: "New",
+          state: "changed",
+          mine: "new mine",
+          theirs: "new upstream",
+        }],
         currentVersion: "1.0.0",
         latestVersion: "1.2.0",
         snapshotToken: "token-new",
@@ -131,7 +151,8 @@ describe("SnapshotUpdateModal snapshot conflicts", () => {
 
     renderModal();
     const user = userEvent.setup();
-    const applyButton = await screen.findByRole("button", { name: "Apply merge" });
+    await screen.findByRole("button", { name: "Accept upstream" });
+    const applyButton = screen.getByRole("button", { name: "Apply merge" });
 
     await user.click(applyButton);
 

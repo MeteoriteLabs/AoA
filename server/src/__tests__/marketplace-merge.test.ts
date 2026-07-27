@@ -71,6 +71,20 @@ describe("splitSections", () => {
       "Next",
     ]);
   });
+
+  it("does not treat a four-space-indented delimiter as a fence", () => {
+    const md = [
+      "    ```",
+      "indented code",
+      "## Real section",
+      "body",
+    ].join("\n");
+
+    expect(splitSections(md).map((section) => section.header)).toEqual([
+      "__preamble__",
+      "Real section",
+    ]);
+  });
 });
 
 describe("computeSectionDiff — unique headers", () => {
@@ -336,6 +350,18 @@ describe("mergeSkillDocument", () => {
     const result = mergeSkillDocument(diff, {}, upstream, mine);
 
     expect(result.pureUpstream).toBe(false);
+  });
+
+  it("derives upstream parity from the bytes emitted by the merge", () => {
+    const mine = "## A\nx";
+    const upstream = "## A\nx\n";
+    const diff = computeSectionDiff(mine, upstream);
+    expect(diff.every((section) => section.state === "unchanged")).toBe(true);
+
+    expect(mergeSkillDocument(diff, {}, upstream, mine)).toEqual({
+      content: upstream,
+      pureUpstream: true,
+    });
   });
 });
 

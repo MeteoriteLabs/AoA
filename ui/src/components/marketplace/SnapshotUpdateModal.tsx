@@ -38,6 +38,15 @@ interface SnapshotUpdateModalProps {
   itemName: string;
 }
 
+function defaultMergeDecisions(sections: SectionDiff[]) {
+  return Object.fromEntries(
+    sections.map((section) => [
+      section.header,
+      section.state === "added" ? "theirs" as const : "mine" as const,
+    ]),
+  );
+}
+
 export function SnapshotUpdateModal({
   open,
   onClose,
@@ -49,6 +58,7 @@ export function SnapshotUpdateModal({
   const { pushToast } = useToast();
   const [decisions, setDecisions] = useState<Record<string, "mine" | "theirs">>({});
   const [snapshotStale, setSnapshotStale] = useState(false);
+  const [diffRevision, setDiffRevision] = useState(0);
 
   const {
     data: diffData,
@@ -71,6 +81,7 @@ export function SnapshotUpdateModal({
   useEffect(() => {
     setDecisions({});
     setSnapshotStale(false);
+    setDiffRevision(0);
   }, [open, updateId]);
 
   const refreshStaleDiff = async () => {
@@ -78,6 +89,10 @@ export function SnapshotUpdateModal({
     setDecisions({});
     const refreshed = await refetchDiff();
     if (refreshed.isSuccess && refreshed.data) {
+      // Force the stateful MergeDiffPane to rebuild its defaults even in the
+      // unlikely case that content changed and then reverted to the same token.
+      setDecisions(defaultMergeDecisions(refreshed.data.diff));
+      setDiffRevision((revision) => revision + 1);
       setSnapshotStale(false);
       pushToast({
         title: "Merge diff refreshed",
@@ -124,6 +139,10 @@ export function SnapshotUpdateModal({
       });
     },
   });
+  const decisionsReady =
+    !diffData
+    || diffData.diff.length === 0
+    || diffData.diff.every((section) => decisions[section.header] !== undefined);
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
@@ -166,6 +185,9 @@ export function SnapshotUpdateModal({
 
           {diffData && (
             <MergeDiffPane
+              key={`${
+                diffData.snapshotToken ?? `${diffData.currentVersion}:${diffData.latestVersion}`
+              }:${diffRevision}`}
               sections={diffData.diff}
               onChange={setDecisions}
             />
@@ -178,7 +200,14 @@ export function SnapshotUpdateModal({
           </Button>
           <Button
             onClick={() => apply.mutate()}
-            disabled={apply.isPending || isLoading || isFetching || snapshotStale || !diffData}
+            disabled={
+              apply.isPending
+              || isLoading
+              || isFetching
+              || snapshotStale
+              || !diffData
+              || !decisionsReady
+            }
           >
             {apply.isPending ? "Applying…" : "Apply merge"}
           </Button>

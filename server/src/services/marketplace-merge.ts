@@ -31,14 +31,16 @@ function dominantEol(markdown: string): "\n" | "\r\n" {
 }
 
 function openingFence(line: string): Fence | null {
-  const match = line.trimStart().match(/^(`{3,}|~{3,}).*$/);
+  // CommonMark allows at most three leading spaces before a fenced code block.
+  // Four spaces is an indented code line and must not hide later real headings.
+  const match = line.match(/^ {0,3}(`{3,}|~{3,}).*$/);
   if (!match) return null;
   const run = match[1];
   return { marker: run[0] as Fence["marker"], length: run.length };
 }
 
 function closesFence(line: string, fence: Fence): boolean {
-  const match = line.trimStart().match(/^(`+|~+)\s*$/);
+  const match = line.match(/^ {0,3}(`+|~+)\s*$/);
   return Boolean(
     match &&
       match[1][0] === fence.marker &&
@@ -332,10 +334,16 @@ export function mergeSkillDocument(
         section.content === upstreamSections[index].content,
     );
 
-  return pureUpstream
+  if (pureUpstream) {
+    return { content: upstreamContent, pureUpstream: true };
+  }
+
+  const content = applyMergeDecisions(diff, decisions);
+  // `applyMergeDecisions` normalizes section separators and the final newline.
+  // Even when the logical choices were "mine", those emitted bytes can become
+  // exactly upstream. The persisted customized flag describes the bytes that
+  // were actually written, not the pre-normalization section provenance.
+  return content === upstreamContent
     ? { content: upstreamContent, pureUpstream: true }
-    : {
-        content: applyMergeDecisions(diff, decisions),
-        pureUpstream: false,
-      };
+    : { content, pureUpstream: false };
 }
