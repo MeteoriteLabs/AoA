@@ -515,6 +515,33 @@ describe("createLocalSkill — collision guard (T2.9b)", () => {
     expect(await fs.readFile(path.join(skillDir, "SKILL.md"), "utf8")).toBe(FOUNDER_MARKDOWN);
   });
 
+  it("rejects an existing normalized slug even when another source owns a different key", async () => {
+    const fake = makeFakeDb([
+      urlSkillRow({
+        key: "github/example/skills/brainstorming",
+        slug: "brainstorming",
+        sourceType: "github",
+        sourceLocator: "https://github.com/example/skills",
+      }),
+    ]);
+    const svc = companySkillService(fake.db);
+
+    await expect(svc.createLocalSkill("co-1", {
+      name: "Brainstorming",
+      slug: "BRAINSTORMING",
+      markdown: UPSTREAM_MARKDOWN,
+    })).rejects.toMatchObject({
+      status: 409,
+      details: {
+        code: "SKILL_NAME_TAKEN",
+        key: "github/example/skills/brainstorming",
+      },
+    });
+
+    expect(fake.rows).toHaveLength(1);
+    expect(fake.inserted).toHaveLength(0);
+  });
+
   it("lets exactly one of two concurrent creates claim a fresh key", async () => {
     const fake = makeFakeDb([]);
     const svc = companySkillService(fake.db);
@@ -627,6 +654,28 @@ describe("updateFile — byte-derived customized companion", () => {
     await svc.updateFile("co-1", "skill-1", "SKILL.md", UPSTREAM_MARKDOWN);
 
     expect(fake.rows[0]!.customized).toBe(false);
+  });
+
+  it("does not rewrite the filesystem on a byte-identical DB save", async () => {
+    const skillDir = await makeTempDir("aoa-t29-edit-disk-race-");
+    const concurrentDiskBytes = "# newer filesystem bytes\n";
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), concurrentDiskBytes, "utf8");
+    const fake = makeFakeDb([
+      urlSkillRow({
+        sourceType: "local_path",
+        sourceLocator: skillDir,
+        markdown: UPSTREAM_MARKDOWN,
+        customized: false,
+      }),
+    ]);
+    const svc = companySkillService(fake.db);
+
+    await svc.updateFile("co-1", "skill-1", "SKILL.md", UPSTREAM_MARKDOWN);
+
+    expect(await fs.readFile(path.join(skillDir, "SKILL.md"), "utf8")).toBe(
+      concurrentDiskBytes,
+    );
+    expect(fake.attemptedUpdates).toHaveLength(0);
   });
 
   it("keeps an already-customized SKILL.md sticky on a byte-identical re-save", async () => {

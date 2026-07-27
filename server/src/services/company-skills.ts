@@ -1683,6 +1683,7 @@ export function companySkillService(db: Db) {
     const normalizedPath = normalizePortablePath(filePath) || "SKILL.md";
     const markdownChanged =
       normalizedPath === "SKILL.md" && content !== skill.markdown;
+    const shouldWriteLocalFile = normalizedPath !== "SKILL.md" || markdownChanged;
     // SECURITY: reject path traversal — normalizedPath is joined to the skill
     // directory on disk, and normalizePortablePath does NOT strip "../", so an
     // unvalidated path escapes the skill dir (arbitrary file write).
@@ -1707,7 +1708,6 @@ export function companySkillService(db: Db) {
     if (
       skill.sourceType === "local_path"
       && skill.sourceLocator
-      && (normalizedPath !== "SKILL.md" || markdownChanged)
     ) {
       const resolvedTarget = path.resolve(skill.sourceLocator, normalizedPath);
       if (isInsideManagedMarketplaceSkillsRoot(resolvedTarget)) {
@@ -1719,7 +1719,7 @@ export function companySkillService(db: Db) {
     }
 
     // Update on filesystem if local_path
-    if (skill.sourceType === "local_path" && skill.sourceLocator) {
+    if (skill.sourceType === "local_path" && skill.sourceLocator && shouldWriteLocalFile) {
       const dirStat = await statPath(skill.sourceLocator);
       if (dirStat !== "directory") {
         // Source directory no longer exists — convert to catalog so it stays editable
@@ -1815,6 +1815,18 @@ export function companySkillService(db: Db) {
     const safeMarkdown = sanitizeMarkdown(markdown);
     const parsed = parseFrontmatterMarkdown(markdown);
     const key = `company/${companyId}/${slug}`;
+
+    // A skill's normalized slug is its user-facing identity and route lookup
+    // key, even when an imported/catalog skill has a different canonical key.
+    // Refuse that collision before staging any filesystem bytes. Concurrent
+    // createLocalSkill calls still race through the unique company+key insert
+    // below, whose loser is mapped to the same 409.
+    const existingSlug = (await listFullRows(companyId)).find(
+      (candidate) => normalizeSkillSlug(candidate.slug) === slug,
+    );
+    if (existingSlug) {
+      throw skillNameTakenConflict(slug, existingSlug.key);
+    }
 
     // Stage bytes away from the final path. The unique (company_id, key) insert
     // below is the concurrency authority: only its winner may publish this

@@ -162,6 +162,15 @@ describe("applyMergeDecisions", () => {
     expect(result).not.toContain("my content");
   });
 
+  it("honors an explicit theirs decision for a trim-equal unchanged section", () => {
+    const mine = "## Overview\nSame words.  \n";
+    const theirs = "## Overview\nSame words.\n";
+    const diff = computeSectionDiff(mine, theirs);
+    expect(diff.find((section) => section.header === "Overview")?.state).toBe("unchanged");
+
+    expect(applyMergeDecisions(diff, { Overview: "theirs" })).toBe(theirs);
+  });
+
   it("keeps a mixed merge's fenced block balanced", () => {
     const mine = [
       "## Instructions",
@@ -262,6 +271,21 @@ describe("mergeSkillDocument", () => {
     expect(result.content).not.toBe(upstream);
   });
 
+  it("returns trim-equal upstream bytes verbatim when all sections choose theirs", () => {
+    const mine = "# Skill\n\n## Overview\n\nSame words.  \n";
+    const upstream = "# Skill\n\n## Overview\n\nSame words.\n";
+    const diff = computeSectionDiff(mine, upstream);
+    expect(diff.every((section) => section.state === "unchanged")).toBe(true);
+    const decisions = Object.fromEntries(
+      diff.map((section) => [section.header, "theirs" as const]),
+    );
+
+    expect(mergeSkillDocument(diff, decisions, upstream, mine)).toEqual({
+      content: upstream,
+      pureUpstream: true,
+    });
+  });
+
   it("is pure upstream only when added sections are accepted and removed sections are dropped", () => {
     const mine = "## Local\nfounder-only\n";
     const upstream = "## Added\nupstream-only\n";
@@ -286,6 +310,21 @@ describe("mergeSkillDocument", () => {
 
     expect(result.pureUpstream).toBe(false);
     expect(result.content.indexOf("## Second")).toBeLessThan(result.content.indexOf("## First"));
+  });
+
+  it("returns reordered upstream bytes verbatim when all sections choose theirs", () => {
+    const mine = "## Second\nsame second\n## First\nsame first\n";
+    const upstream = "## First\nsame first\n## Second\nsame second\n";
+    const diff = computeSectionDiff(mine, upstream);
+    expect(diff.every((section) => section.state === "unchanged")).toBe(true);
+    const decisions = Object.fromEntries(
+      diff.map((section) => [section.header, "theirs" as const]),
+    );
+
+    expect(mergeSkillDocument(diff, decisions, upstream, mine)).toEqual({
+      content: upstream,
+      pureUpstream: true,
+    });
   });
 
   it("does not erase an LF/CRLF-only difference at a section boundary", () => {

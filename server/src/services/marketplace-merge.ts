@@ -235,7 +235,9 @@ export function applyMergeDecisions(
   for (const section of diff) {
     const decision = decisions[section.header] ?? (section.state === "added" ? "theirs" : "mine");
     if (section.state === "unchanged") {
-      parts.push(section.mine);
+      // "Unchanged" is semantic (trim-equal), not byte-identical. Bulk
+      // "accept upstream" must still be able to select upstream whitespace.
+      parts.push(decision === "theirs" ? section.theirs : section.mine);
     } else if (decision === "mine" && section.state !== "added") {
       parts.push(section.mine);
     } else if (decision === "theirs" && section.state !== "removed") {
@@ -262,6 +264,20 @@ export function mergeSkillDocument(
   upstreamContent: string,
   mineContent: string,
 ): { content: string; pureUpstream: boolean } {
+  // The diff is ordered to preserve founder section placement. When every
+  // logical section resolves upstream, that order is deliberately irrelevant:
+  // return the reviewed upstream document verbatim, including its ordering and
+  // byte-only whitespace. This is what makes the bulk "accept all upstream"
+  // control able to opt back into automatic updates.
+  const everySectionResolvesUpstream = diff.every((section) => {
+    const decision =
+      decisions[section.header] ?? (section.state === "added" ? "theirs" : "mine");
+    return decision === "theirs";
+  });
+  if (everySectionResolvesUpstream) {
+    return { content: upstreamContent, pureUpstream: true };
+  }
+
   const mineSections = new Map(
     deduplicateHeaders(splitSectionsExact(mineContent)).map((section) => [
       section.header,
@@ -275,17 +291,22 @@ export function mergeSkillDocument(
   const resolvedSections: Section[] = [];
 
   for (const section of diff) {
+    const decision =
+      decisions[section.header] ?? (section.state === "added" ? "theirs" : "mine");
     if (section.state === "unchanged") {
       resolvedSections.push(
-        mineSections.get(section.header) ?? {
-          header: section.header,
-          content: section.mine,
-        },
+        decision === "theirs"
+          ? upstreamByHeader.get(section.header) ?? {
+              header: section.header,
+              content: section.theirs,
+            }
+          : mineSections.get(section.header) ?? {
+              header: section.header,
+              content: section.mine,
+            },
       );
       continue;
     }
-    const decision =
-      decisions[section.header] ?? (section.state === "added" ? "theirs" : "mine");
     if (decision === "mine" && section.state !== "added") {
       resolvedSections.push(
         mineSections.get(section.header) ?? {
