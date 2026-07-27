@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ProviderCredentialBindingError,
   chooseGovernedSubscriptionBinding,
+  mayUseLegacySubscriptionHome,
 } from "../services/provider-credential-bindings.js";
 
 const base = {
@@ -62,5 +63,15 @@ describe("governed provider credential binding", () => {
     expect(codeOf(() => chooseGovernedSubscriptionBinding([base, { ...base }], expected))).toBe(
       "binding_ambiguous",
     );
+  });
+
+  it("allows legacy global-home fallback only for an absent binding when enforcement is off", () => {
+    const missing = new ProviderCredentialBindingError("binding_missing", "missing");
+    const revoked = new ProviderCredentialBindingError("binding_not_approved", "revoked");
+
+    expect(mayUseLegacySubscriptionHome(missing, false)).toBe(true);
+    expect(mayUseLegacySubscriptionHome(missing, true)).toBe(false);
+    expect(mayUseLegacySubscriptionHome(revoked, false)).toBe(false);
+    expect(mayUseLegacySubscriptionHome(new Error("database unavailable"), false)).toBe(false);
   });
 });

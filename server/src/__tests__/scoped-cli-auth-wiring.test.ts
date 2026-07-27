@@ -16,4 +16,18 @@ describe("scoped CLI authentication wiring", () => {
       "runScopedConfig = applyRunScopedMentionedSkillKeys(resolvedConfigWithEnvironmentAcquisition, mentionedSkillKeys);",
     );
   });
+
+  it("attempts governed binding resolution even when strict scoped auth is not enabled", () => {
+    const source = fs.readFileSync(
+      path.resolve(import.meta.dirname, "../services/heartbeat.ts"),
+      "utf8",
+    );
+    const compact = source.replace(/\s+/g, " ");
+
+    expect(compact).toContain("if (subscriptionProvider) {");
+    expect(compact).not.toContain("if (scopedCliAuthEnabled && subscriptionProvider) {");
+    expect(compact).toContain(
+      "if (!mayUseLegacySubscriptionHome(error, scopedCliAuthEnabled)) throw error;",
+    );
+  });
 });

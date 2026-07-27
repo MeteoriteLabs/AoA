@@ -113,7 +113,10 @@ import {
 } from "./workspace-resolution.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import { outputDetectionService } from "./output-detection.js";
-import { resolveAgentSubscriptionEnvironment } from "./provider-credential-bindings.js";
+import {
+  mayUseLegacySubscriptionHome,
+  resolveAgentSubscriptionEnvironment,
+} from "./provider-credential-bindings.js";
 import { postRunSummaryComment } from "./run-summary-comment.js";
 import {
   buildWorkspaceReadyComment,
@@ -3995,7 +3998,7 @@ export function heartbeatService(db: Db) {
       const scopedCliAuthEnabled = /^(1|true|yes)$/i.test(
         process.env.AOA_SCOPED_CLI_AUTH?.trim() ?? "",
       );
-      if (scopedCliAuthEnabled && subscriptionProvider) {
+      if (subscriptionProvider) {
         const configuredEnv = parseObject(runScopedConfig.env);
         const apiKeyName =
           subscriptionProvider === "openai" ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY";
@@ -4006,22 +4009,28 @@ export function heartbeatService(db: Db) {
           const targetConfig = parseObject(runScopedConfig.executionTarget);
           const targetType =
             typeof targetConfig.type === "string" ? targetConfig.type : "local";
-          if (targetType !== "local") {
+          if (targetType !== "local" && scopedCliAuthEnabled) {
             throw new Error(
               "Governed subscription credentials currently require the dedicated local execution target.",
             );
           }
-          const boundEnv = await resolveAgentSubscriptionEnvironment(db, {
-            companyId: agent.companyId,
-            agentId: agent.id,
-            provider: subscriptionProvider,
-            executionTargetId:
-              process.env.AOA_EXECUTION_TARGET_ID?.trim() || "control-plane",
-          });
-          runScopedConfig = {
-            ...runScopedConfig,
-            env: { ...configuredEnv, ...boundEnv },
-          };
+          if (targetType === "local") {
+            try {
+              const boundEnv = await resolveAgentSubscriptionEnvironment(db, {
+                companyId: agent.companyId,
+                agentId: agent.id,
+                provider: subscriptionProvider,
+                executionTargetId:
+                  process.env.AOA_EXECUTION_TARGET_ID?.trim() || "control-plane",
+              });
+              runScopedConfig = {
+                ...runScopedConfig,
+                env: { ...configuredEnv, ...boundEnv },
+              };
+            } catch (error) {
+              if (!mayUseLegacySubscriptionHome(error, scopedCliAuthEnabled)) throw error;
+            }
+          }
         }
       }
       try {

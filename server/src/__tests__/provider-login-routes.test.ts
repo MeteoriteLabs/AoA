@@ -24,7 +24,7 @@
  */
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { drizzleOperatorStubs, makeTableProxy } from "./helpers/drizzle-mock.js";
 
 vi.mock("drizzle-orm", () => drizzleOperatorStubs());
@@ -49,6 +49,20 @@ vi.mock("../services/secrets.js", () => ({
 }));
 
 vi.mock("../services/activity-log.js", () => ({ logActivity: vi.fn() }));
+
+vi.mock("../config.js", () => ({
+  loadConfig: () => ({
+    deploymentMode: "local_trusted",
+    deploymentExposure: "private",
+  }),
+}));
+
+const mockVerifyAndBind = vi.hoisted(() =>
+  vi.fn(async () => ({ credentialIds: ["cred-1"], bindingIds: ["binding-1"] })),
+);
+vi.mock("../services/provider-credentials.js", () => ({
+  verifyAndBindCommanderSubscriptionCredential: mockVerifyAndBind,
+}));
 
 const mockReadReadiness = vi.hoisted(() => vi.fn(async () => [] as unknown[]));
 const mockRecordReadiness = vi.hoisted(() =>
@@ -328,6 +342,10 @@ describe("provider login routes", () => {
     mockLoginService.cancel.mockResolvedValue(undefined);
   });
 
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   /* invariant 1 — the self-completing gate */
 
   it("400s start for a provider whose CLI cannot self-complete, with the manual command", async () => {
@@ -361,6 +379,35 @@ describe("provider login routes", () => {
       startedByUserId: "user-1",
       executionTargetId: "control-plane",
     });
+  });
+
+  it("refuses subscription sign-in on a shared hosted installation", async () => {
+    vi.stubEnv("AOA_INSTALL_PROFILE", "hosted_multi_tenant");
+    const res = await request(makeApp()).post(startUrl("openai")).send({});
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("subscription_auth_disabled");
+    expect(mockLoginService.startChallenge).not.toHaveBeenCalled();
+  });
+
+  it("requires the provider opt-in for a dedicated remote installation", async () => {
+    vi.stubEnv("AOA_INSTALL_PROFILE", "remote_single_tenant");
+    const denied = await request(makeApp()).post(startUrl("openai")).send({});
+    expect(denied.status).toBe(403);
+    expect(denied.body.error).toMatch(/AOA_CODEX_DEVICE_AUTH/);
+
+    vi.stubEnv("AOA_CODEX_DEVICE_AUTH", "1");
+    const allowed = await request(makeApp()).post(startUrl("openai")).send({});
+    expect(allowed.status).toBe(200);
+    expect(mockLoginService.startChallenge).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports an invalid topology without starting a login", async () => {
+    vi.stubEnv("AOA_INSTALL_PROFILE", "local_single_user");
+    vi.stubEnv("AOA_NETWORK_LOCATION", "remote");
+    const res = await request(makeApp()).post(startUrl("openai")).send({});
+    expect(res.status).toBe(503);
+    expect(res.body.code).toBe("invalid_cli_auth_topology");
+    expect(mockLoginService.startChallenge).not.toHaveBeenCalled();
   });
 
   it("400s start when the catalog says self-completing but NO runner is wired", async () => {
@@ -546,7 +593,27 @@ describe("provider login routes", () => {
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("completed");
     expect(mockTestEnvironment).toHaveBeenCalledTimes(1);
+    expect(mockTestEnvironment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        config: expect.objectContaining({
+          env: expect.objectContaining({
+            HOME: expect.any(String),
+            CODEX_HOME: expect.any(String),
+          }),
+        }),
+      }),
+    );
     expect(mockRecordReadiness).toHaveBeenCalledTimes(1);
+    expect(mockVerifyAndBind).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId: COMPANY_ID,
+        userId: "user-1",
+        provider: "openai",
+        executionTargetId: "control-plane",
+        actorUserId: "user-1",
+      }),
+    );
     expect(res.body.readiness).toMatchObject({
       scopeType: "company_default",
       outcome: "verified",
@@ -595,5 +662,6 @@ describe("provider login routes", () => {
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("completed");
     expect(res.body.readiness).toBeNull();
+    expect(mockVerifyAndBind).not.toHaveBeenCalled();
   });
 });

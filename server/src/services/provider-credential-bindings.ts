@@ -29,6 +29,17 @@ export class ProviderCredentialBindingError extends Error {
   }
 }
 
+export function mayUseLegacySubscriptionHome(
+  error: unknown,
+  scopedCliAuthRequired: boolean,
+): boolean {
+  return (
+    !scopedCliAuthRequired &&
+    error instanceof ProviderCredentialBindingError &&
+    error.code === "binding_missing"
+  );
+}
+
 interface BindingCandidate {
   credentialId: string;
   credentialCompanyId: string;

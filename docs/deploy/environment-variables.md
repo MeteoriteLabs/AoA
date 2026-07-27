@@ -44,6 +44,19 @@ For horizontally scaled deployments, local-file run logs require sticky routing 
 | `AOA_DEV_LOCAL_IDENTITY_FORCE` | `false` | Allows `AOA_DEV_LOCAL_IDENTITY` on an instance that already contains real users. Development/recovery only: this bypasses the populated-instance safety check. |
 | `AOA_HEADLESS_BOOTSTRAP` | `false` | Enables the legacy board-ownership claim path for a headless/self-hosted server migrating from `local_trusted` when `local-board` is still the only instance admin. The claim is completed by a real Google user in a browser that can reach the server. Leave disabled for normal onboarding. |
 
+### CLI subscription authentication
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AOA_INSTALL_PROFILE` | Derived from deployment mode/exposure | High-level CLI-auth topology: `local_single_user`, `remote_single_tenant`, or `hosted_multi_tenant`. Shared hosted installations disable subscription sign-in. |
+| `AOA_NETWORK_LOCATION` | From install profile | Advanced topology override: `local` or `remote`. It must agree with `AOA_INSTALL_PROFILE`. |
+| `AOA_TRUST_BOUNDARY` | From install profile | Advanced topology override: `single_user`, `single_tenant`, or `multi_tenant`. It must agree with `AOA_INSTALL_PROFILE`. |
+| `AOA_EXECUTION_OWNERSHIP` | From install profile | Advanced topology override: `user_hosted`, `tenant_hosted`, or `aoa_hosted`. It must agree with `AOA_INSTALL_PROFILE`. |
+| `AOA_CODEX_DEVICE_AUTH` | `false` on remote installs | Enables Codex device-code subscription sign-in on a dedicated `remote_single_tenant` installation. It never enables sign-in on `hosted_multi_tenant`. |
+| `AOA_CLAUDE_PASTE_AUTH` | `false` on remote installs | Enables Claude paste-code subscription sign-in on a dedicated `remote_single_tenant` installation. It never enables sign-in on `hosted_multi_tenant`. |
+| `AOA_EXECUTION_TARGET_ID` | `control-plane` | Stable identity of the execution target that owns the provider-native credential files. Login, verification, binding, and agent execution must use the same value. |
+| `AOA_SCOPED_CLI_AUTH` | `false` | When true, subscription-backed agent runs require a verified company/user/provider credential binding and fail closed if it is absent. Verified bindings are preferred even when this flag is false; the flag controls whether an entirely missing binding may fall back to the legacy global CLI home. |
+
 ## Agent JWT (signing for `AOA_API_KEY`)
 
 | Variable | Default | Description |

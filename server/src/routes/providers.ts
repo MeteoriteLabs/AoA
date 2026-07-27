@@ -182,6 +182,14 @@ import {
   buildCommanderLoginService,
   hasLoginRunner,
 } from "../services/commander-login-runtime.js";
+import { loadConfig } from "../config.js";
+import {
+  providerSubscriptionCapability,
+  resolveCliAuthTopology,
+  resolveScopedCliAuthHome,
+  scopedCliAuthEnv,
+} from "../services/cli-auth-topology.js";
+import { verifyAndBindCommanderSubscriptionCredential } from "../services/provider-credentials.js";
 import {
   LoginChallengeConflictError,
   type CommanderLoginProvider,
@@ -1012,6 +1020,31 @@ export function providerRoutes(db: Db): Router {
     }
     const loginProvider = providerId as CommanderLoginProvider;
 
+    let subscriptionCapability;
+    try {
+      const config = loadConfig();
+      const topology = resolveCliAuthTopology({
+        deploymentMode: config.deploymentMode,
+        deploymentExposure: config.deploymentExposure,
+      });
+      subscriptionCapability = providerSubscriptionCapability(loginProvider, topology);
+    } catch (error) {
+      res.status(503).json({
+        code: "invalid_cli_auth_topology",
+        error:
+          error instanceof Error ? error.message : "CLI authentication topology is invalid.",
+      });
+      return;
+    }
+    if (!subscriptionCapability.enabled) {
+      res.status(403).json({
+        code: "subscription_auth_disabled",
+        error: subscriptionCapability.reason,
+        capability: subscriptionCapability,
+      });
+      return;
+    }
+
     try {
       const executionTargetId =
         process.env.AOA_EXECUTION_TARGET_ID?.trim() || "control-plane";
@@ -1102,14 +1135,41 @@ export function providerRoutes(db: Db): Router {
         log.warn({ err, companyId, providerId }, "post-login agent-scope invalidation failed");
       }
       try {
+        const executionTargetId =
+          process.env.AOA_EXECUTION_TARGET_ID?.trim() || "control-plane";
+        const loginProvider = providerId as CommanderLoginProvider;
+        const authHome = resolveScopedCliAuthHome({
+          executionTargetId,
+          companyId,
+          userId: founderUserId,
+          provider: loginProvider,
+        });
+        const scopedEnv = scopedCliAuthEnv({}, authHome, loginProvider);
         const probed = await probeAndRecord({
           req,
           companyId,
           descriptor,
           scope: { type: "company_default" },
-          adapterConfig: {},
+          adapterConfig: {
+            env:
+              loginProvider === "openai"
+                ? { HOME: scopedEnv.HOME, CODEX_HOME: scopedEnv.CODEX_HOME }
+                : {
+                    HOME: scopedEnv.HOME,
+                    CLAUDE_CONFIG_DIR: scopedEnv.CLAUDE_CONFIG_DIR,
+                  },
+          },
         });
         if (probed) {
+          if (probed.outcome === "verified") {
+            await verifyAndBindCommanderSubscriptionCredential(db, {
+              companyId,
+              userId: founderUserId,
+              provider: loginProvider,
+              executionTargetId,
+              actorUserId: founderUserId,
+            });
+          }
           if (reprobedChallenges.size >= REPROBED_CHALLENGES_MAX) reprobedChallenges.clear();
           reprobedChallenges.add(challengeId);
           readiness = {

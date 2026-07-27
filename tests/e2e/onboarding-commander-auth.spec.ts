@@ -101,11 +101,54 @@ test("needs_auth → interactive login surfaces the URL and completes on poll", 
       ),
     });
   });
+  await page.route("**/internal-agent/commander-login/capabilities", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        topology: {
+          platform: "linux",
+          installProfile: "local_single_user",
+          networkLocation: "local",
+          trustBoundary: "single_user",
+          executionOwnership: "user_hosted",
+        },
+        providers: {
+          openai: {
+            provider: "openai",
+            mode: "device_code",
+            enabled: true,
+            browserSafeRemotely: true,
+            reason: null,
+            cliInstalled: true,
+            cliVersion: "0.145.0",
+            cliVersionSupported: true,
+          },
+          anthropic: {
+            provider: "anthropic",
+            mode: "paste_code",
+            enabled: true,
+            browserSafeRemotely: true,
+            reason: null,
+            cliInstalled: true,
+            cliVersion: "2.1.220",
+            cliVersionSupported: true,
+          },
+        },
+      }),
+    }),
+  );
   await page.route("**/commander-login/start", (route) =>
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ challengeId: "ch-e2e", loginUrl: "https://claude.ai/oauth?code=E2E" }),
+      body: JSON.stringify({
+        challengeId: "ch-e2e",
+        loginUrl: "https://chatgpt.com/device",
+        mode: "device_code",
+        userCode: "E2E1-CODE",
+        expiresAt: "2026-07-27T14:00:00.000Z",
+      }),
     }),
   );
   // First poll: pending (the URL panel must stay mounted long enough to be
@@ -120,7 +163,7 @@ test("needs_auth → interactive login surfaces the URL and completes on poll", 
       contentType: "application/json",
       body: JSON.stringify({
         status: statusCalls === 1 ? "pending" : "completed",
-        loginUrl: "https://claude.ai/oauth?code=E2E",
+        loginUrl: "https://chatgpt.com/device",
       }),
     });
   });
@@ -132,7 +175,11 @@ test("needs_auth → interactive login surfaces the URL and completes on poll", 
   await expect(page.getByText("sign in", { exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: /sign in with codex/i }).click();
-  await expect(page.getByText("https://claude.ai/oauth?code=E2E")).toBeVisible();
+  await expect(page.getByRole("link", { name: /continue securely at chatgpt\.com/i })).toHaveAttribute(
+    "href",
+    "https://chatgpt.com/device",
+  );
+  await expect(page.getByLabel("Codex device code")).toHaveText("E2E1-CODE");
   await shot("02-login-url");
 
   // Immediate poll → completed → auto re-verify → spine completes and hands off

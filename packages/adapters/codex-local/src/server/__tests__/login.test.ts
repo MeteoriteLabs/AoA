@@ -1,5 +1,8 @@
 import { EventEmitter } from "node:events";
-import { describe, it, expect, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import type { SpawnTrackedChildOptions, TrackedChildHandle } from "@armyofagents/adapter-utils/server-utils";
 import { runCodexLogin } from "../login.js";
 
@@ -17,19 +20,30 @@ function fakeSpawn() {
 }
 
 describe("runCodexLogin (Plan 3 T3)", () => {
+  let scopedHome: string;
+
+  beforeEach(() => {
+    scopedHome = fs.mkdtempSync(path.join(os.tmpdir(), "aoa-codex-login-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(scopedHome, { recursive: true, force: true });
+  });
+
   it("spawns remote-safe Codex device auth and returns URL plus user code", async () => {
     const f = fakeSpawn();
+    const codexHome = path.join(scopedHome, ".codex");
     const res = runCodexLogin({
       runId: "c1",
-      env: { HOME: "/scoped/home", CODEX_HOME: "/custom/.codex" },
+      env: { HOME: scopedHome, CODEX_HOME: codexHome },
       spawn: f.spawn,
     });
     expect(f.calls).toHaveLength(1);
     expect(f.calls[0].command).toBe("codex");
     expect(f.calls[0].argv).toEqual(["login", "--device-auth"]);
-    expect(f.calls[0].opts.env.CODEX_HOME).toBe("/custom/.codex");
-    expect(f.calls[0].opts.env.HOME).toBe("/scoped/home");
-    expect(res.authHome).toBe("/custom/.codex");
+    expect(f.calls[0].opts.env.CODEX_HOME).toBe(codexHome);
+    expect(f.calls[0].opts.env.HOME).toBe(scopedHome);
+    expect(res.authHome).toBe(codexHome);
     f.child.stdout.emit("data", "open https://chatgpt.com/device?u=1\nenter ABCD-EFGH\n");
     await expect(res.urlPromise).resolves.toBe("https://chatgpt.com/device?u=1");
     await expect(res.userCodePromise).resolves.toBe("ABCD-EFGH");
@@ -39,9 +53,10 @@ describe("runCodexLogin (Plan 3 T3)", () => {
     vi.useFakeTimers();
     try {
       const f = fakeSpawn();
+      const codexHome = path.join(scopedHome, ".codex");
       const res = runCodexLogin({
         runId: "c2",
-        env: { HOME: "/scoped/home", CODEX_HOME: "/custom/.codex" },
+        env: { HOME: scopedHome, CODEX_HOME: codexHome },
         discoveryTimeoutMs: 250,
         spawn: f.spawn,
       });
