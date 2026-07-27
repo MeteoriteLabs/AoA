@@ -4,7 +4,11 @@ import path from "node:path";
 import { and, asc, eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { companySkills, agents as agentsTable } from "@armyofagents/db";
-import { normalizeAgentUrlKey, SKILL_CUSTOMIZED_ERROR_CODE } from "@armyofagents/shared";
+import {
+  normalizeAgentUrlKey,
+  SKILL_CUSTOMIZED_ERROR_CODE,
+  SKILL_NAME_TAKEN_ERROR_CODE,
+} from "@armyofagents/shared";
 import type {
   CompanySkill,
   CompanySkillCreateRequest,
@@ -234,7 +238,7 @@ function normalizeSkillSlug(raw: string | null | undefined): string | null {
   return result;
 }
 
-function normalizeSkillKey(value: string | null | undefined): string | null {
+export function normalizeSkillKey(value: string | null | undefined): string | null {
   if (!value) return null;
   const segments = value
     .split("/")
@@ -1154,6 +1158,26 @@ function skillCustomizedConflict(skill: Pick<CompanySkill, "id" | "name">) {
   );
 }
 
+function skillNameTakenConflict(slug: string, key: string) {
+  return conflict(
+    `A skill named "${slug}" already exists. Choose a different name or slug.`,
+    { code: SKILL_NAME_TAKEN_ERROR_CODE, slug, key },
+  );
+}
+
+function isCompanySkillKeyCollision(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; depth < 4 && current && typeof current === "object"; depth++) {
+    const record = current as Record<string, unknown>;
+    if (record.code === "23505") {
+      const constraint = record.constraint_name ?? record.constraint;
+      return constraint === undefined || constraint === "company_skills_company_key_idx";
+    }
+    current = record.cause;
+  }
+  return false;
+}
+
 function refusedCustomizedEntry(
   skill: Pick<CompanySkill, "id" | "key" | "slug" | "name">,
 ): CompanySkillRefusedImport {
@@ -1463,6 +1487,15 @@ export function companySkillService(db: Db) {
     return (await listFullRows(companyId)).map(toCompanySkill);
   }
 
+  async function listFullWithCustomization(
+    companyId: string,
+  ): Promise<Array<CompanySkill & { customized: boolean }>> {
+    return (await listFullRows(companyId)).map((row) => ({
+      ...toCompanySkill(row),
+      customized: row.customized === true,
+    }));
+  }
+
   /** See {@link listFullRows} — raw row, used where `customized` matters. */
   async function getRowById(id: string): Promise<CompanySkillRow | null> {
     return db
@@ -1641,12 +1674,16 @@ export function companySkillService(db: Db) {
     filePath: string,
     content: string,
   ): Promise<CompanySkillFileDetail> {
-    const skill = await getById(skillId);
-    if (!skill || skill.companyId !== companyId) {
+    const skillRow = await getRowById(skillId);
+    if (!skillRow || skillRow.companyId !== companyId) {
       throw notFound("Skill not found");
     }
+    const skill = toCompanySkill(skillRow);
 
     const normalizedPath = normalizePortablePath(filePath) || "SKILL.md";
+    const markdownChanged =
+      normalizedPath === "SKILL.md" && content !== skill.markdown;
+    const shouldWriteLocalFile = normalizedPath !== "SKILL.md" || markdownChanged;
     // SECURITY: reject path traversal — normalizedPath is joined to the skill
     // directory on disk, and normalizePortablePath does NOT strip "../", so an
     // unvalidated path escapes the skill dir (arbitrary file write).
@@ -1668,7 +1705,10 @@ export function companySkillService(db: Db) {
     // path reaches in. This is the authoritative guard (the `importFromSource`
     // check only stops NEW inside-rows); it also neutralizes rows minted by
     // `scanProjectWorkspaces` and any that predate the import guard. Per Codex #302.
-    if (skill.sourceType === "local_path" && skill.sourceLocator) {
+    if (
+      skill.sourceType === "local_path"
+      && skill.sourceLocator
+    ) {
       const resolvedTarget = path.resolve(skill.sourceLocator, normalizedPath);
       if (isInsideManagedMarketplaceSkillsRoot(resolvedTarget)) {
         throw unprocessable(
@@ -1679,7 +1719,7 @@ export function companySkillService(db: Db) {
     }
 
     // Update on filesystem if local_path
-    if (skill.sourceType === "local_path" && skill.sourceLocator) {
+    if (skill.sourceType === "local_path" && skill.sourceLocator && shouldWriteLocalFile) {
       const dirStat = await statPath(skill.sourceLocator);
       if (dirStat !== "directory") {
         // Source directory no longer exists — convert to catalog so it stays editable
@@ -1700,21 +1740,24 @@ export function companySkillService(db: Db) {
       }
     }
 
-    // Always update DB markdown if path is SKILL.md
+    // A byte-identical SKILL.md save is a true no-op. Rewriting its stale
+    // snapshot could undo an upstream update that committed after our read.
     if (normalizedPath === "SKILL.md") {
-      const { frontmatter } = parseFrontmatterMarkdown(content);
-      const newName = asString(frontmatter.name) ?? skill.name;
-      const newDescription = asString(frontmatter.description) ?? skill.description;
-      await db
-        .update(companySkills)
-        .set({
-          markdown: content,
-          name: newName,
-          description: newDescription,
-          customized: true, // Atomic: folded in here so no separate route-level write is needed
-          updatedAt: new Date(),
-        })
-        .where(eq(companySkills.id, skillId));
+      if (markdownChanged) {
+        const { frontmatter } = parseFrontmatterMarkdown(content);
+        const newName = asString(frontmatter.name) ?? skill.name;
+        const newDescription = asString(frontmatter.description) ?? skill.description;
+        await db
+          .update(companySkills)
+          .set({
+            markdown: content,
+            name: newName,
+            description: newDescription,
+            customized: true,
+            updatedAt: new Date(),
+          })
+          .where(eq(companySkills.id, skillId));
+      }
     } else {
       // For non-SKILL.md paths (filesystem-only edit), mark customized in a standalone write.
       // The DB markdown column wasn't changed, so there is no two-step atomicity risk.
@@ -1755,8 +1798,6 @@ export function companySkillService(db: Db) {
     const managedRoot = resolveManagedSkillsRoot(companyId);
     const skillDir = path.resolve(managedRoot, slug);
 
-    await fs.mkdir(skillDir, { recursive: true });
-
     const markdown = input.markdown?.trim().length
       ? input.markdown
       : [
@@ -1771,29 +1812,92 @@ export function companySkillService(db: Db) {
         "",
       ].join("\n");
 
-    await fs.writeFile(path.join(skillDir, "SKILL.md"), markdown, "utf8");
-
+    const safeMarkdown = sanitizeMarkdown(markdown);
     const parsed = parseFrontmatterMarkdown(markdown);
-    // T2.9 policy: the founder is authoring this skill right now and its bytes
-    // were just written to disk above, so there is no third-party edit to
-    // protect. (A create that collides with an existing customized key still
-    // overwrites — pre-existing behaviour, out of T2.9's scope; filed as T2.9b.)
-    const imported = (await upsertImportedSkills(companyId, [{
-      key: `company/${companyId}/${slug}`,
-      slug,
-      name: asString(parsed.frontmatter.name) ?? input.name,
-      description: asString(parsed.frontmatter.description) ?? input.description?.trim() ?? null,
-      markdown,
-      sourceType: "local_path",
-      sourceLocator: skillDir,
-      sourceRef: null,
-      trustLevel: "markdown_only",
-      compatibility: "compatible",
-      fileInventory: [{ path: "SKILL.md", kind: "skill" }],
-      metadata: { sourceKind: "managed_local" },
-    }], "caller_is_authoritative")).skills;
+    const key = `company/${companyId}/${slug}`;
 
-    return imported[0]!;
+    // A skill's normalized slug is its user-facing identity and route lookup
+    // key, even when an imported/catalog skill has a different canonical key.
+    // Refuse that collision before staging any filesystem bytes. Concurrent
+    // createLocalSkill calls still race through the unique company+key insert
+    // below, whose loser is mapped to the same 409.
+    const existingSlug = (await listFullRows(companyId)).find(
+      (candidate) => normalizeSkillSlug(candidate.slug) === slug,
+    );
+    if (existingSlug) {
+      throw skillNameTakenConflict(slug, existingSlug.key);
+    }
+
+    // Stage bytes away from the final path, then atomically claim the final
+    // directory BEFORE exposing a DB row whose inventory reconciliation would
+    // otherwise see a missing sourceLocator and prune it. A failed insert
+    // removes only the directory this request just claimed.
+    await fs.mkdir(managedRoot, { recursive: true });
+    const stagingDir = await fs.mkdtemp(path.join(managedRoot, `.${slug}-create-`));
+    try {
+      // Preserve the founder-authored file bytes exactly. The DB column keeps
+      // the existing sanitized representation used by imported skills, but
+      // the managed source file must not discard Unicode content.
+      await fs.writeFile(path.join(stagingDir, "SKILL.md"), markdown, "utf8");
+
+      try {
+        await fs.rename(stagingDir, skillDir);
+      } catch (error) {
+        const record = error && typeof error === "object"
+          ? error as Record<string, unknown>
+          : null;
+        if (
+          record?.code === "EEXIST"
+          || record?.code === "ENOTEMPTY"
+          || record?.code === "EPERM"
+        ) {
+          throw skillNameTakenConflict(slug, key);
+        }
+        throw error;
+      }
+
+      let inserted: CompanySkillRow | undefined;
+      try {
+        [inserted] = await db
+          .insert(companySkills)
+          .values({
+            companyId,
+            key,
+            slug,
+            name: asString(parsed.frontmatter.name) ?? input.name,
+            description:
+              asString(parsed.frontmatter.description) ?? input.description?.trim() ?? null,
+            markdown: safeMarkdown,
+            sourceType: "local_path",
+            sourceLocator: skillDir,
+            sourceRef: null,
+            trustLevel: "markdown_only",
+            compatibility: "compatible",
+            fileInventory: serializeFileInventory([{ path: "SKILL.md", kind: "skill" }]),
+            metadata: { sourceKind: "managed_local" },
+            customized: false,
+          })
+          .returning();
+      } catch (error) {
+        await fs.rm(skillDir, { recursive: true, force: true });
+        if (isCompanySkillKeyCollision(error)) {
+          throw skillNameTakenConflict(slug, key);
+        }
+        throw error;
+      }
+
+      if (!inserted) {
+        await fs.rm(skillDir, { recursive: true, force: true });
+        throw new Error("Failed to create company skill");
+      }
+
+      return toCompanySkill(inserted);
+    } finally {
+      // If publication lost the filesystem race, remove only this request's
+      // private staging directory. Insert failures clean up the final directory
+      // in their own branch because this request already claimed it.
+      await fs.rm(stagingDir, { recursive: true, force: true });
+    }
   }
 
   /**
@@ -1937,6 +2041,30 @@ export function companySkillService(db: Db) {
     }
 
     await db.delete(companySkills).where(eq(companySkills.id, skillId));
+    // AoA owns only direct child directories it created under the per-company
+    // managed root. Remove those with the row so a founder can later recreate
+    // the same slug. Never delete arbitrary imported local_path directories.
+    const managedRoot = path.resolve(resolveManagedSkillsRoot(companyId));
+    const resolvedLocator = skill.sourceLocator
+      ? path.resolve(skill.sourceLocator)
+      : null;
+    const managedLocalDirectory =
+      skill.sourceType === "local_path"
+      && skill.metadata?.sourceKind === "managed_local"
+      && resolvedLocator
+      && path.dirname(resolvedLocator) === managedRoot
+        ? resolvedLocator
+        : null;
+    if (managedLocalDirectory) {
+      try {
+        await fs.rm(managedLocalDirectory, { recursive: true, force: true });
+      } catch (error) {
+        logger.warn(
+          { companyId, skillId, sourceLocator: managedLocalDirectory, error },
+          "Deleted managed local skill row but could not remove its directory",
+        );
+      }
+    }
     return skill;
   }
 
@@ -2520,8 +2648,7 @@ export function companySkillService(db: Db) {
    * `skills` is NOT positionally aligned with `imports` under EITHER policy —
    * `caller_is_authoritative` also drops a row whose UPDATE returns nothing
    * because it was concurrently deleted. It is merely far likelier to be aligned.
-   * Callers that pair by index (`company-portability.ts`) inherit that pre-existing
-   * hazard; the durable fix is to pair by key. Filed as T2.9d.
+   * Callers must pair returned rows and refusals by canonical key.
    */
   async function upsertImportedSkills(
     companyId: string,
@@ -2546,7 +2673,9 @@ export function companySkillService(db: Db) {
       const normalizedInputSlug = normalizeSkillSlug(imp.slug) ?? imp.slug;
       const prelimKey = imp.key ?? `company/${companyId}/${normalizedInputSlug}`;
       const normalizedPrelimKey = normalizeSkillKey(prelimKey) ?? prelimKey;
-      const existingByKey = existing.find((s) => s.key === normalizedPrelimKey);
+      const existingByKey =
+        existing.find((s) => s.key === prelimKey)
+        ?? existing.find((s) => normalizeSkillKey(s.key) === normalizedPrelimKey);
 
       // Exclude the existing skill's own slug so deduplication doesn't rename it.
       const slugPool = existingByKey
@@ -2742,6 +2871,7 @@ export function companySkillService(db: Db) {
   return {
     list,
     listFull,
+    listFullWithCustomization,
     getById,
     getByKey,
     detail,

@@ -1,4 +1,10 @@
-export type CompanySkillSourceType = "local_path" | "github" | "url" | "catalog" | "skills_sh";
+export type CompanySkillSourceType =
+  | "local_path"
+  | "github"
+  | "url"
+  | "catalog"
+  | "skills_sh"
+  | "builtin";
 
 export type CompanySkillTrustLevel = "markdown_only" | "assets" | "scripts_executables";
 

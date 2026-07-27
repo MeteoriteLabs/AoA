@@ -378,6 +378,20 @@ describe("managed marketplace-skills jail (T2.8c(b))", () => {
     ).rejects.toThrow(/managed marketplace-skills directory/);
   });
 
+  it("updateFile still enforces the managed-tree jail on a byte-identical SKILL.md save", async () => {
+    const insideManaged = path.join(managedMarketplaceSkillsRoot(), "company-1", "skill_x", "1.0.0");
+    const row = makeSkillRow({
+      sourceType: "local_path",
+      sourceLocator: insideManaged,
+      markdown: "# OpenAI Docs",
+    });
+    const service = companySkillService(makeDbReturning([row]) as any);
+
+    await expect(
+      service.updateFile("company-1", "skill-row-1", "SKILL.md", "# OpenAI Docs"),
+    ).rejects.toThrow(/managed marketplace-skills directory/);
+  });
+
   it("updateFile refuses a forward path resolving into the managed tree from an ANCESTOR sourceLocator (Codex #302 re-review)", async () => {
     // sourceLocator is an ANCESTOR of the managed tree, so a sourceLocator-only
     // check would pass; the guard must check the resolved sourceLocator+path.

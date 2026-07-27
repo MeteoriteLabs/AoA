@@ -67,8 +67,10 @@ import express from "express";
 import request from "supertest";
 import { createMarketplaceCompanyRouter } from "../routes/marketplace-company.js";
 import {
+  SkillMergeConflictError,
   SkillMergeUpstreamError,
   mergeSkillUpdate,
+  skillMergeSnapshotToken,
   type MergeableSkillRow,
 } from "../services/marketplace-install/skill-update-merge.js";
 import { managedCatalogSkillDir } from "../services/marketplace-install/skill-bundle-materializer.js";
@@ -123,7 +125,7 @@ describe("mergeSkillUpdate - bundle re-materialization (T2.8)", () => {
       skill: skillRow({ v1Dir, v1Sha: repo.v1Sha }),
       catalogItem: catalogItem({ version: "2.0.0", commitSha: repo.v2Sha }),
       pendingUpdateId: "upd-1",
-      latestVersion: "2.0.0",
+      expectedSnapshotToken: reviewedSnapshotToken(),
       decisions: { Overview: "theirs" },
     });
 
@@ -140,6 +142,10 @@ describe("mergeSkillUpdate - bundle re-materialization (T2.8)", () => {
       "references/guide.md",
       "scripts/modern.js",
     ]);
+    // Accepting upstream everywhere writes the reviewed document byte-for-byte
+    // and re-opens this row to the existing customized=false auto-apply path.
+    expect(capture.skillSet.markdown).toBe(V2_FILES["skills/research/SKILL.md"]);
+    expect(capture.skillSet.customized).toBe(false);
   });
 
   it("does not carry an upstream-removed script into the active bundle", async () => {
@@ -158,7 +164,7 @@ describe("mergeSkillUpdate - bundle re-materialization (T2.8)", () => {
       skill: skillRow({ v1Dir, v1Sha: repo.v1Sha }),
       catalogItem: catalogItem({ version: "2.0.0", commitSha: repo.v2Sha }),
       pendingUpdateId: "upd-1",
-      latestVersion: "2.0.0",
+      expectedSnapshotToken: reviewedSnapshotToken(),
       decisions: { Overview: "theirs" },
     });
 
@@ -190,7 +196,9 @@ describe("mergeSkillUpdate - bundle re-materialization (T2.8)", () => {
       }),
       catalogItem: catalogItem({ version: "2.0.0", commitSha: repo.v2Sha }),
       pendingUpdateId: "upd-1",
-      latestVersion: "2.0.0",
+      expectedSnapshotToken: reviewedSnapshotToken({
+        mine: "# Research\n\n## Overview\n\nFOUNDER EDIT.\n",
+      }),
       // Keep mine: the entire reason a merge exists rather than an apply.
       decisions: { Overview: "mine" },
     });
@@ -219,7 +227,7 @@ describe("mergeSkillUpdate - bundle re-materialization (T2.8)", () => {
       skill: skillRow({ v1Dir, v1Sha: repo.v1Sha }),
       catalogItem: catalogItem({ version: "2.0.0", commitSha: repo.v2Sha }),
       pendingUpdateId: "upd-1",
-      latestVersion: "2.0.0",
+      expectedSnapshotToken: reviewedSnapshotToken(),
       decisions: { Overview: "theirs" },
     });
 
@@ -246,7 +254,7 @@ describe("mergeSkillUpdate - bundle re-materialization (T2.8)", () => {
         // A sha that is not in the repo - the fetch cannot resolve it.
         catalogItem: catalogItem({ version: "2.0.0", commitSha: "0".repeat(40) }),
         pendingUpdateId: "upd-1",
-        latestVersion: "2.0.0",
+        expectedSnapshotToken: reviewedSnapshotToken(),
         decisions: { Overview: "theirs" },
       }),
     ).rejects.toThrow();
@@ -257,12 +265,7 @@ describe("mergeSkillUpdate - bundle re-materialization (T2.8)", () => {
     expect(await readFile(path.join(v1Dir, "references", "guide.md"), "utf8")).toBe("v1 guide\n");
   });
 
-  /**
-   * C4. Both the merged markdown and the bundle come from `catalogItem`, so
-   * that is the only version the row's own contents justify. The pending row's
-   * `latestVersion` can lag when the catalog advances between checker runs.
-   */
-  it("stamps sourceRef from the catalog item, not the pending row's latestVersion", async () => {
+  it("lands the exact newer catalog snapshot the founder reviewed", async () => {
     const repo = await createRepoWithTwoCommits();
     repoState.url = repo.url;
     stubUpstreamMarkdown(V2_FILES["skills/research/SKILL.md"]);
@@ -276,13 +279,11 @@ describe("mergeSkillUpdate - bundle re-materialization (T2.8)", () => {
       skill: skillRow({ v1Dir, v1Sha: repo.v1Sha }),
       catalogItem: catalogItem({ version: "2.1.0", commitSha: repo.v2Sha }),
       pendingUpdateId: "upd-1",
-      latestVersion: "2.0.0", // stale: the catalog moved on since the row was written
+      expectedSnapshotToken: reviewedSnapshotToken({ version: "2.1.0" }),
       decisions: { Overview: "theirs" },
     });
 
     expect(capture.skillSet.sourceRef).toBe("2.1.0");
-    // …and the directory agrees with the stamp, so a later idempotency check
-    // cannot conclude "installed" against a tree at a different version.
     expect(capture.skillSet.metadata.catalogBundleInstallPath).toBe(
       managedCatalogSkillDir(COMPANY_ID, CATALOG_ITEM_ID, "2.1.0"),
     );
@@ -307,7 +308,7 @@ describe("mergeSkillUpdate - bundle re-materialization (T2.8)", () => {
       skill: skillRow({ v1Dir, v1Sha: repo.v1Sha }),
       catalogItem: { ...catalogItem({ version: "2.0.0", commitSha: repo.v2Sha }), skill: undefined },
       pendingUpdateId: "upd-1",
-      latestVersion: "2.0.0",
+      expectedSnapshotToken: reviewedSnapshotToken(),
       decisions: { Overview: "theirs" },
     });
 
@@ -335,10 +336,15 @@ describe("mergeSkillUpdate - bundle re-materialization (T2.8)", () => {
     const result = await mergeSkillUpdate({
       db,
       companyId: COMPANY_ID,
-      skill: { id: "skill-1", markdown: "# Research\n\n## Overview\n\nv1 overview.\n", metadata: {} },
+      skill: {
+        id: "skill-1",
+        markdown: "# Research\n\n## Overview\n\nv1 overview.\n",
+        metadata: {},
+        customized: false,
+      },
       catalogItem: { ...catalogItem({ version: "2.0.0", commitSha: "0".repeat(40) }), skill: undefined },
       pendingUpdateId: "upd-1",
-      latestVersion: "2.0.0",
+      expectedSnapshotToken: reviewedSnapshotToken(),
       decisions: { Overview: "theirs" },
     });
 
@@ -348,6 +354,85 @@ describe("mergeSkillUpdate - bundle re-materialization (T2.8)", () => {
     // stamped with an empty inventory it never had.
     expect(capture.skillSet.fileInventory).toBeUndefined();
     expect(capture.skillSet.trustLevel).toBeUndefined();
+  });
+
+  it("rejects a stale diff token before touching disk or the database", async () => {
+    stubUpstreamMarkdown(V2_FILES["skills/research/SKILL.md"]);
+    const { db, capture } = createDb();
+
+    await expect(
+      mergeSkillUpdate({
+        db,
+        companyId: COMPANY_ID,
+        skill: {
+          id: "skill-1",
+          markdown: V1_FILES["skills/research/SKILL.md"],
+          metadata: {},
+          customized: true,
+        },
+        catalogItem: {
+          ...catalogItem({ version: "2.0.0", commitSha: "0".repeat(40) }),
+          skill: undefined,
+        },
+        pendingUpdateId: "upd-1",
+        expectedSnapshotToken: reviewedSnapshotToken({ mine: "older founder bytes" }),
+        decisions: { Overview: "theirs" },
+      }),
+    ).rejects.toBeInstanceOf(SkillMergeConflictError);
+
+    expect(capture.transactionCount).toBe(0);
+  });
+
+  it("refuses a merge when another session already claimed the pending update", async () => {
+    stubUpstreamMarkdown(V2_FILES["skills/research/SKILL.md"]);
+    const { db, capture } = createDb({ claimSucceeded: false });
+
+    await expect(
+      mergeSkillUpdate({
+        db,
+        companyId: COMPANY_ID,
+        skill: {
+          id: "skill-1",
+          markdown: V1_FILES["skills/research/SKILL.md"],
+          metadata: {},
+          customized: true,
+        },
+        catalogItem: {
+          ...catalogItem({ version: "2.0.0", commitSha: "0".repeat(40) }),
+          skill: undefined,
+        },
+        pendingUpdateId: "upd-1",
+        expectedSnapshotToken: reviewedSnapshotToken(),
+        decisions: { Overview: "theirs" },
+      }),
+    ).rejects.toBeInstanceOf(SkillMergeConflictError);
+
+    expect(capture.skillSet).toBeNull();
+  });
+
+  it("refuses to overwrite a skill changed after the route loaded it", async () => {
+    stubUpstreamMarkdown(V2_FILES["skills/research/SKILL.md"]);
+    const { db } = createDb({ skillUpdateSucceeded: false });
+
+    await expect(
+      mergeSkillUpdate({
+        db,
+        companyId: COMPANY_ID,
+        skill: {
+          id: "skill-1",
+          markdown: V1_FILES["skills/research/SKILL.md"],
+          metadata: {},
+          customized: true,
+        },
+        catalogItem: {
+          ...catalogItem({ version: "2.0.0", commitSha: "0".repeat(40) }),
+          skill: undefined,
+        },
+        pendingUpdateId: "upd-1",
+        expectedSnapshotToken: reviewedSnapshotToken(),
+        decisions: { Overview: "theirs" },
+      }),
+    ).rejects.toBeInstanceOf(SkillMergeConflictError);
   });
 
   it("raises a typed upstream error without touching disk or the database", async () => {
@@ -365,7 +450,7 @@ describe("mergeSkillUpdate - bundle re-materialization (T2.8)", () => {
         skill: skillRow({ v1Dir, v1Sha: repo.v1Sha }),
         catalogItem: catalogItem({ version: "2.0.0", commitSha: repo.v2Sha }),
         pendingUpdateId: "upd-1",
-        latestVersion: "2.0.0",
+        expectedSnapshotToken: reviewedSnapshotToken(),
         decisions: { Overview: "theirs" },
       }),
     ).rejects.toBeInstanceOf(SkillMergeUpstreamError);
@@ -397,7 +482,10 @@ describe("POST /updates/:id/merge - the route reaches disk", () => {
 
     const res = await request(app)
       .post(`/api/companies/${COMPANY_ID}/marketplace/updates/upd-1/merge`)
-      .send({ decisions: { Overview: "theirs" } });
+      .send({
+        decisions: { Overview: "theirs" },
+        snapshotToken: reviewedSnapshotToken(),
+      });
 
     expect(res.status).toBe(200);
     expect(res.body.bundleMaterialized).toBe(true);
@@ -434,7 +522,10 @@ describe("POST /updates/:id/merge - the route reaches disk", () => {
 
       const res = await request(app)
         .post(`/api/companies/${COMPANY_ID}/marketplace/updates/upd-1/merge`)
-        .send({ decisions: { Overview: "theirs" } });
+        .send({
+          decisions: { Overview: "theirs" },
+          snapshotToken: reviewedSnapshotToken(),
+        });
 
       expect(res.status).toBe(409);
       expect(res.body.error).toContain(status);
@@ -455,6 +546,18 @@ function stubUpstreamMarkdown(markdown: string) {
     "fetch",
     vi.fn(async () => ({ ok: true, status: 200, text: async () => markdown })),
   );
+}
+
+function reviewedSnapshotToken({
+  mine = V1_FILES["skills/research/SKILL.md"],
+  upstream = V2_FILES["skills/research/SKILL.md"],
+  version = "2.0.0",
+}: {
+  mine?: string;
+  upstream?: string;
+  version?: string;
+} = {}) {
+  return skillMergeSnapshotToken(mine, upstream, version);
 }
 
 /**
@@ -525,9 +628,13 @@ function buildMergeApp(opts: { updateRow: any; skill: MergeableSkillRow; catalog
       return cb({
         update: () => ({
           set: (values: any) => ({
-            where: async () => {
-              if (++call === 1) capture.skillSet = values;
-            },
+            where: () => ({
+              returning: async () => {
+                if (++call === 1) return [{ id: "upd-1" }];
+                capture.skillSet = values;
+                return [{ id: "skill-1" }];
+              },
+            }),
           }),
         }),
       });
@@ -566,6 +673,7 @@ function skillRow(opts: { v1Dir: string; v1Sha: string; markdown?: string }): Me
   return {
     id: "skill-1",
     markdown: opts.markdown ?? V1_FILES["skills/research/SKILL.md"],
+    customized: true,
     metadata: {
       catalogTrustTier: "verified",
       catalogBundleInstallPath: opts.v1Dir,
@@ -589,7 +697,13 @@ function catalogItem(opts: { version: string; commitSha: string }): any {
 }
 
 /** Mock Drizzle handle that records the two `.set()` payloads the merge writes. */
-function createDb() {
+function createDb({
+  claimSucceeded = true,
+  skillUpdateSucceeded = true,
+}: {
+  claimSucceeded?: boolean;
+  skillUpdateSucceeded?: boolean;
+} = {}) {
   const capture: any = { skillSet: null, pendingSet: null, transactionCount: 0 };
   const db: any = {
     transaction: async (cb: (tx: any) => Promise<unknown>) => {
@@ -598,11 +712,17 @@ function createDb() {
       const tx = {
         update: () => ({
           set: (values: any) => ({
-            where: async () => {
-              call++;
-              if (call === 1) capture.skillSet = values;
-              else capture.pendingSet = values;
-            },
+            where: () => ({
+              returning: async () => {
+                call++;
+                if (call === 1) {
+                  capture.pendingSet = values;
+                  return claimSucceeded ? [{ id: "upd-1" }] : [];
+                }
+                capture.skillSet = values;
+                return skillUpdateSucceeded ? [{ id: "skill-1" }] : [];
+              },
+            }),
           }),
         }),
       };

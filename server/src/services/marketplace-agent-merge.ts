@@ -298,18 +298,9 @@ export function applyAgentMergeDecisions(
     } else if (allMine && file in mine) {
       content = mine[file]!;
     } else {
-      // TODO(marketplace): the reassembly path inherits two defects from the
-      // skill primitives, and they bite harder for agents than they ever did
-      // for skills — AGENTS.md bundles routinely carry fenced examples.
-      //  1. `applyMergeDecisions` joins with a bare "\n\n", so a CRLF document
-      //     comes back with LF separators between sections.
-      //  2. `splitSections` is fence-unaware: a "## " line inside a ``` block
-      //     becomes an independently decidable section AND carries the closing
-      //     fence with it, so accepting one side and keeping the other can
-      //     leave the fence unbalanced.
-      // Neither reaches the wholesale (all-mine / all-upstream) paths above.
-      // Fixing them means changing `marketplace-merge.ts`, which the shipped
-      // skill merge also uses — out of scope for T2.7, not forgotten.
+      // Mixed decisions use the shared fence-aware, dominant-EOL-preserving
+      // reassembly path. Wholesale decisions still bypass it above so their
+      // original file bytes remain exact.
       content = applyMergeDecisions(sections, decisions);
     }
 

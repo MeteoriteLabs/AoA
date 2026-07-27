@@ -53,7 +53,7 @@ import { notFound, unprocessable } from "../errors.js";
 import { accessService } from "./access.js";
 import { agentService } from "./agents.js";
 import { companyService } from "./companies.js";
-import { companySkillService } from "./company-skills.js";
+import { companySkillService, normalizeSkillKey } from "./company-skills.js";
 import { generateReadme } from "./company-export-readme.js";
 import { issueService } from "./issues.js";
 import { executePinnedRequest, validateAndResolveFetchUrl } from "./outbound-url-guard.js";
@@ -304,6 +304,23 @@ function uniqueSlug(base: string, used: Set<string>) {
     const candidate = `${base}-${idx}`;
     if (!used.has(candidate)) {
       used.add(candidate);
+      return candidate;
+    }
+    idx += 1;
+  }
+}
+
+function uniqueSkillKeyByNormalizedKey(base: string, usedNormalizedKeys: Set<string>) {
+  const normalizedBase = normalizeSkillKey(base) ?? base;
+  if (!usedNormalizedKeys.has(normalizedBase)) {
+    usedNormalizedKeys.add(normalizedBase);
+    return base;
+  }
+  let idx = 2;
+  while (true) {
+    const candidate = `${normalizedBase}-${idx}`;
+    if (!usedNormalizedKeys.has(candidate)) {
+      usedNormalizedKeys.add(candidate);
       return candidate;
     }
     idx += 1;
@@ -1600,6 +1617,7 @@ export function companyPortabilityService(db: Db) {
     const source = await resolveSource(input.source);
     const manifest = source.manifest;
     const collisionStrategy = input.collisionStrategy ?? DEFAULT_COLLISION_STRATEGY;
+    const overwriteCustomizedSkillKeys = new Set(input.overwriteCustomizedSkillKeys ?? []);
     const warnings = [...source.warnings];
     const errors: string[] = [];
 
@@ -1794,31 +1812,95 @@ export function companyPortabilityService(db: Db) {
     const manifestSkills = manifest.skills ?? [];
     const selectedSkills: CompanyPortabilitySkillManifestEntry[] = include.skills ? manifestSkills : [];
     const skillPlans: CompanyPortabilityPreviewSkillPlan[] = [];
-    const existingSkillKeyToRow = new Map<string, { id: string; name: string; key: string }>();
-    const existingSkillKeys = new Set<string>();
+    const existingSkillKeyToRow = new Map<string, {
+      id: string;
+      name: string;
+      key: string;
+      customized: boolean;
+    }>();
+    const existingSkillNormalizedKeyToRow = new Map<string, {
+      id: string;
+      name: string;
+      key: string;
+      customized: boolean;
+    }>();
+    // Key lookup and upsert both normalize canonical keys. Allocation must use
+    // that same namespace or a raw-key rename such as ALPHA -> alpha can be
+    // normalized back onto the row it was supposed to avoid.
+    const allocatedSkillNormalizedKeys = new Set<string>();
     if (include.skills && input.target.mode === "existing_company") {
-      const existingSkills = await skills.listFull(input.target.companyId);
+      const existingSkills = await skills.listFullWithCustomization(input.target.companyId);
       for (const existing of existingSkills) {
-        existingSkillKeyToRow.set(existing.key, { id: existing.id, name: existing.name, key: existing.key });
-        existingSkillKeys.add(existing.key);
+        const row = {
+          id: existing.id,
+          name: existing.name,
+          key: existing.key,
+          customized: existing.customized,
+        };
+        existingSkillKeyToRow.set(existing.key, row);
+        const normalizedKey = normalizeSkillKey(existing.key);
+        if (normalizedKey && !existingSkillNormalizedKeyToRow.has(normalizedKey)) {
+          existingSkillNormalizedKeyToRow.set(normalizedKey, row);
+        }
+        allocatedSkillNormalizedKeys.add(normalizedKey ?? existing.key);
       }
     }
     if (include.skills) {
+      const seenManifestSkillKeys = new Set<string>();
       for (const manifestSkill of selectedSkills) {
-        const existing = existingSkillKeyToRow.get(manifestSkill.key) ?? null;
+        const normalizedManifestKey =
+          normalizeSkillKey(manifestSkill.key) ?? manifestSkill.key;
+        if (seenManifestSkillKeys.has(normalizedManifestKey)) {
+          errors.push(
+            `Duplicate skill key after normalization: ${manifestSkill.key}`,
+          );
+          continue;
+        }
+        seenManifestSkillKeys.add(normalizedManifestKey);
+
+        const existing =
+          existingSkillKeyToRow.get(manifestSkill.key)
+          ?? existingSkillNormalizedKeyToRow.get(normalizedManifestKey)
+          ?? null;
         if (!existing) {
+          const plannedKey = uniqueSkillKeyByNormalizedKey(
+            manifestSkill.key,
+            allocatedSkillNormalizedKeys,
+          );
           skillPlans.push({
             key: manifestSkill.key,
             slug: manifestSkill.slug,
             action: "create",
             plannedName: manifestSkill.name,
-            plannedKey: manifestSkill.key,
+            plannedKey,
             existingSkillId: null,
-            reason: null,
+            existingCustomized: false,
+            overwriteCustomized: false,
+            reason: plannedKey === manifestSkill.key
+              ? null
+              : "A prior planned skill reserved this normalized key; renamed.",
           });
           continue;
         }
         if (collisionStrategy === "replace") {
+          const overwriteCustomized =
+            existing.customized && overwriteCustomizedSkillKeys.has(manifestSkill.key);
+          if (existing.customized && !overwriteCustomized) {
+            skillPlans.push({
+              key: manifestSkill.key,
+              slug: manifestSkill.slug,
+              action: "skip",
+              plannedName: existing.name,
+              plannedKey: existing.key,
+              existingSkillId: existing.id,
+              existingCustomized: true,
+              overwriteCustomized: false,
+              reason:
+                "Existing skill has founder edits; preserved by default. " +
+                "Explicitly select this skill key to overwrite it.",
+            });
+            continue;
+          }
           skillPlans.push({
             key: manifestSkill.key,
             slug: manifestSkill.slug,
@@ -1826,7 +1908,11 @@ export function companyPortabilityService(db: Db) {
             plannedName: manifestSkill.name,
             plannedKey: existing.key,
             existingSkillId: existing.id,
-            reason: "Existing key matched; replace strategy.",
+            existingCustomized: existing.customized,
+            overwriteCustomized,
+            reason: overwriteCustomized
+              ? "Existing skill has founder edits; explicit per-item overwrite selected."
+              : "Existing key matched; replace strategy.",
           });
           continue;
         }
@@ -1838,12 +1924,17 @@ export function companyPortabilityService(db: Db) {
             plannedName: existing.name,
             plannedKey: existing.key,
             existingSkillId: existing.id,
+            existingCustomized: existing.customized,
+            overwriteCustomized: false,
             reason: "Existing key matched; skip strategy.",
           });
           continue;
         }
         // rename: generate unique key
-        const renamedKey = uniqueSlug(manifestSkill.key, existingSkillKeys);
+        const renamedKey = uniqueSkillKeyByNormalizedKey(
+          manifestSkill.key,
+          allocatedSkillNormalizedKeys,
+        );
         skillPlans.push({
           key: manifestSkill.key,
           slug: manifestSkill.slug,
@@ -1851,6 +1942,8 @@ export function companyPortabilityService(db: Db) {
           plannedName: manifestSkill.name,
           plannedKey: renamedKey,
           existingSkillId: existing.id,
+          existingCustomized: existing.customized,
+          overwriteCustomized: false,
           reason: "Existing key matched; rename strategy.",
         });
       }
@@ -2574,65 +2667,105 @@ export function companyPortabilityService(db: Db) {
       }
 
       if (skillsToUpsert.length > 0) {
-        const imports = skillsToUpsert.map(({ plan: planSkill, manifestSkill, markdown }) => ({
-          slug: manifestSkill.slug,
-          key: planSkill.plannedKey,
-          name: planSkill.plannedName,
-          description: manifestSkill.description ?? null,
-          markdown,
-          sourceType: (manifestSkill.sourceType ?? "local_path") as
-            | "local_path"
-            | "github"
-            | "url"
-            | "catalog"
-            | "skills_sh",
-          sourceLocator: manifestSkill.sourceLocator ?? null,
-          sourceRef: manifestSkill.sourceRef ?? null,
-          trustLevel: (manifestSkill.trustLevel ?? "markdown_only") as
-            | "markdown_only"
-            | "assets"
-            | "scripts_executables",
-          compatibility: (manifestSkill.compatibility ?? "compatible") as
-            | "compatible"
-            | "unknown"
-            | "invalid",
-          fileInventory: Array.isArray(manifestSkill.fileInventory)
-            ? manifestSkill.fileInventory.map((entry) => ({
-                path: String(entry.path),
-                kind: (entry.kind ?? "other") as
-                  | "skill"
-                  | "markdown"
-                  | "reference"
-                  | "script"
-                  | "asset"
-                  | "other",
-              }))
-            : [],
-          metadata: manifestSkill.metadata ?? null,
-        }));
-        // T2.9 policy: the bundle IS the authority for a company import, and the
-        // loop below pairs results to inputs POSITIONALLY — `preserve_founder_edits`
-        // returns a short array on refusal and would silently mis-pair every row
-        // after the first skip. Founder-edit protection for bundle imports needs
-        // the conflict surface the import plan already has, not this flag; filed
-        // as T2.9d.
-        const upserted = (await skills.upsertImportedSkills(
-          targetCompany.id,
-          imports,
-          "caller_is_authoritative",
-        )).skills;
-        for (let i = 0; i < skillsToUpsert.length; i++) {
-          const entry = skillsToUpsert[i]!;
-          const created = upserted[i] ?? null;
-          skillKeyMap.set(entry.manifestSkill.key, entry.plan.plannedKey);
-          resultSkills.push({
-            key: entry.manifestSkill.key,
+        const importEntries = skillsToUpsert.map((entry) => ({
+          entry,
+          imported: {
             slug: entry.manifestSkill.slug,
-            id: created?.id ?? null,
-            action: entry.plan.action === "update" ? "updated" : "created",
+            key: entry.plan.plannedKey,
             name: entry.plan.plannedName,
-            reason: entry.plan.reason,
-          });
+            description: entry.manifestSkill.description ?? null,
+            markdown: entry.markdown,
+            sourceType: entry.manifestSkill.sourceType,
+            sourceLocator: entry.manifestSkill.sourceLocator ?? null,
+            sourceRef: entry.manifestSkill.sourceRef ?? null,
+            trustLevel: (entry.manifestSkill.trustLevel ?? "markdown_only") as
+              | "markdown_only"
+              | "assets"
+              | "scripts_executables",
+            compatibility: (entry.manifestSkill.compatibility ?? "compatible") as
+              | "compatible"
+              | "unknown"
+              | "invalid",
+            fileInventory: Array.isArray(entry.manifestSkill.fileInventory)
+              ? entry.manifestSkill.fileInventory.map((file) => ({
+                  path: String(file.path),
+                  kind: (file.kind ?? "other") as
+                    | "skill"
+                    | "markdown"
+                    | "reference"
+                    | "script"
+                    | "asset"
+                    | "other",
+                }))
+              : [],
+            metadata: entry.manifestSkill.metadata ?? null,
+          },
+        }));
+        const skillResultsBySourceKey = new Map<
+          string,
+          CompanyPortabilityImportResult["skills"][number]
+        >();
+        const groups = [
+          {
+            policy: "preserve_founder_edits" as const,
+            entries: importEntries.filter(({ entry }) => !entry.plan.overwriteCustomized),
+          },
+          {
+            policy: "caller_is_authoritative" as const,
+            entries: importEntries.filter(({ entry }) => entry.plan.overwriteCustomized),
+          },
+        ];
+
+        for (const group of groups) {
+          if (group.entries.length === 0) continue;
+          const outcome = await skills.upsertImportedSkills(
+            targetCompany.id,
+            group.entries.map(({ imported }) => imported),
+            group.policy,
+          );
+          const writtenByKey = new Map(outcome.skills.map((skill) => [skill.key, skill]));
+          const refusedByKey = new Map(outcome.refused.map((refused) => [refused.key, refused]));
+
+          for (const { entry } of group.entries) {
+            const written = writtenByKey.get(entry.plan.plannedKey);
+            const refused = refusedByKey.get(entry.plan.plannedKey);
+            if (written) {
+              skillKeyMap.set(entry.manifestSkill.key, entry.plan.plannedKey);
+              skillResultsBySourceKey.set(entry.manifestSkill.key, {
+                key: entry.manifestSkill.key,
+                slug: entry.manifestSkill.slug,
+                id: written.id,
+                action: entry.plan.action === "update" ? "updated" : "created",
+                name: entry.plan.plannedName,
+                reason: entry.plan.reason,
+              });
+              continue;
+            }
+
+            if (refused) {
+              skillKeyMap.set(entry.manifestSkill.key, entry.plan.plannedKey);
+            }
+            const reason = refused
+              ? "Existing skill gained founder edits during import; preserved."
+              : "Skill changed concurrently and was not imported.";
+            warnings.push({
+              kind: "skipped_update",
+              message: `${entry.manifestSkill.name}: ${reason}`,
+            });
+            skillResultsBySourceKey.set(entry.manifestSkill.key, {
+              key: entry.manifestSkill.key,
+              slug: entry.manifestSkill.slug,
+              id: refused?.skillId ?? null,
+              action: "skipped",
+              name: entry.plan.plannedName,
+              reason,
+            });
+          }
+        }
+
+        for (const entry of skillsToUpsert) {
+          const result = skillResultsBySourceKey.get(entry.manifestSkill.key);
+          if (result) resultSkills.push(result);
         }
       }
     }
