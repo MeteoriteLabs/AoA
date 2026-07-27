@@ -1,4 +1,4 @@
-import { Router, type Request } from "express";
+import { Router, type Request, type RequestHandler } from "express";
 import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { companies, type Db } from "@armyofagents/db";
@@ -13,24 +13,71 @@ import {
 import { forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { assertRole } from "../middleware/rbac.js";
-import { accessService, companyPortabilityService, companyService, logActivity } from "../services/index.js";
+import {
+  accessService,
+  companyPortabilityService,
+  companyService,
+  logActivity,
+} from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { seedAoaNativeSkills } from "../services/internal-agent/aoa-skills-seeder.js";
 import { ensureCommanderAgent } from "../services/internal-agent/aoa-agents/ensure-commander.js";
 import { materializeCompanyProfileFromGlobal } from "../services/team.js";
 import { logger } from "../middleware/logger.js";
 
-export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) {
+export function companyRoutes(
+  db: Db,
+  opts: { deploymentMode: DeploymentMode }
+) {
   const router = Router();
   const svc = companyService(db);
   const portability = companyPortabilityService(db);
   const access = accessService(db);
 
   async function assertCanAssignTasks(req: Request, companyId: string) {
-    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
-    const allowed = await access.canUser(companyId, req.actor.userId, "tasks:assign");
+    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)
+      return;
+    const allowed = await access.canUser(
+      companyId,
+      req.actor.userId,
+      "tasks:assign"
+    );
     if (!allowed) throw forbidden("Missing permission: tasks:assign");
   }
+
+  function authorizeImportTarget(req: Request, requireBoard: boolean) {
+    if (requireBoard) assertBoard(req);
+    const target = (
+      req.body as
+        | { target?: { mode?: unknown; companyId?: unknown } }
+        | undefined
+    )?.target;
+    if (
+      target?.mode === "existing_company" &&
+      typeof target.companyId === "string"
+    ) {
+      assertCompanyAccess(req, target.companyId);
+      return;
+    }
+    if (target?.mode === "new_company") {
+      assertBoard(req);
+      if (
+        !(req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)
+      ) {
+        throw forbidden("Instance admin required");
+      }
+    }
+  }
+
+  const authorizeImportPreview: RequestHandler = (req, _res, next) => {
+    authorizeImportTarget(req, false);
+    next();
+  };
+
+  const authorizeImportCommit: RequestHandler = (req, _res, next) => {
+    authorizeImportTarget(req, true);
+    next();
+  };
 
   router.get("/", async (req, res) => {
     // rbac: instance-admin-not-required — list endpoint with no companyId in path; result is scope-filtered inline against req.actor.companyIds.
@@ -47,22 +94,26 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
   router.get("/stats", async (req, res) => {
     // rbac: instance-admin-not-required — stats endpoint with no companyId in path; result is scope-filtered inline against req.actor.companyIds.
     assertBoard(req);
-    const allowed = req.actor.source === "local_implicit" || req.actor.isInstanceAdmin
-      ? null
-      : new Set(req.actor.companyIds ?? []);
+    const allowed =
+      req.actor.source === "local_implicit" || req.actor.isInstanceAdmin
+        ? null
+        : new Set(req.actor.companyIds ?? []);
     const stats = await svc.stats();
     if (!allowed) {
       res.json(stats);
       return;
     }
-    const filtered = Object.fromEntries(Object.entries(stats).filter(([companyId]) => allowed.has(companyId)));
+    const filtered = Object.fromEntries(
+      Object.entries(stats).filter(([companyId]) => allowed.has(companyId))
+    );
     res.json(filtered);
   });
 
   // Common malformed path when companyId is empty in "/api/companies/{companyId}/issues".
   router.get("/issues", (_req, res) => {
     res.status(400).json({
-      error: "Missing companyId in path. Use /api/companies/{companyId}/issues.",
+      error:
+        "Missing companyId in path. Use /api/companies/{companyId}/issues.",
     });
   });
 
@@ -78,70 +129,90 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
     res.json(company);
   });
 
-  router.post("/:companyId/export", validate(companyPortabilityExportSchema), async (req, res) => {
-    const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    const result = await portability.exportBundle(companyId, req.body);
-    res.json(result);
-  });
-
-  router.post("/:companyId/export/preview", validate(companyPortabilityExportSchema), async (req, res) => {
-    const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    const result = await portability.previewExport(companyId, req.body);
-    res.json(result);
-  });
-
-  router.post("/import/preview", validate(companyPortabilityPreviewSchema), async (req, res) => {
-    if (req.body.target.mode === "existing_company") {
-      assertCompanyAccess(req, req.body.target.companyId);
-    } else {
-      assertBoard(req);
+  router.post(
+    "/:companyId/export",
+    validate(companyPortabilityExportSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const result = await portability.exportBundle(companyId, req.body);
+      res.json(result);
     }
-    const preview = await portability.previewImport(req.body);
-    res.json(preview);
-  });
+  );
 
-  router.post("/import", validate(companyPortabilityImportSchema), async (req, res) => {
-    assertBoard(req);
-    const existingCompanyId =
-      req.body.target.mode === "existing_company" ? req.body.target.companyId : null;
-    if (req.body.target.mode === "existing_company") {
-      assertCompanyAccess(req, req.body.target.companyId);
+  router.post(
+    "/:companyId/export/preview",
+    validate(companyPortabilityExportSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const result = await portability.previewExport(companyId, req.body);
+      res.json(result);
     }
-    const actor = getActorInfo(req);
-    const result = await portability.importBundle(
-      req.body,
-      req.actor.type === "board" ? req.actor.userId : null,
-      existingCompanyId
-        ? async ({ requiresTaskAssignmentPermission, importsWorkflowTemplates }) => {
-          if (requiresTaskAssignmentPermission) {
-            await assertCanAssignTasks(req, existingCompanyId);
-          }
-          if (importsWorkflowTemplates) {
-            await assertRole(db, req, existingCompanyId, "founder", "team_lead");
-          }
-        }
-        : undefined,
-    );
-    await logActivity(db, {
-      companyId: result.company.id,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      action: "company.imported",
-      entityType: "company",
-      entityId: result.company.id,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      details: {
-        include: req.body.include ?? null,
-        agentCount: result.agents.length,
-        warningCount: result.warnings.length,
-        companyAction: result.company.action,
-      },
-    });
-    res.json(result);
-  });
+  );
+
+  router.post(
+    "/import/preview",
+    authorizeImportPreview,
+    validate(companyPortabilityPreviewSchema),
+    async (req, res) => {
+      const preview = await portability.previewImport(req.body);
+      res.json(preview);
+    }
+  );
+
+  router.post(
+    "/import",
+    authorizeImportCommit,
+    validate(companyPortabilityImportSchema),
+    async (req, res) => {
+      const existingCompanyId =
+        req.body.target.mode === "existing_company"
+          ? req.body.target.companyId
+          : null;
+      const actor = getActorInfo(req);
+      const result = await portability.importBundle(
+        req.body,
+        req.actor.type === "board" ? req.actor.userId : null,
+        existingCompanyId
+          ? async ({
+              requiresTaskAssignmentPermission,
+              importsWorkflowTemplates,
+            }) => {
+              if (requiresTaskAssignmentPermission) {
+                await assertCanAssignTasks(req, existingCompanyId);
+              }
+              if (importsWorkflowTemplates) {
+                await assertRole(
+                  db,
+                  req,
+                  existingCompanyId,
+                  "founder",
+                  "team_lead"
+                );
+              }
+            }
+          : undefined
+      );
+      await logActivity(db, {
+        companyId: result.company.id,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        action: "company.imported",
+        entityType: "company",
+        entityId: result.company.id,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        details: {
+          include: req.body.include ?? null,
+          agentCount: result.agents.length,
+          warningCount: result.warnings.length,
+          companyAction: result.company.action,
+        },
+      });
+      res.json(result);
+    }
+  );
 
   router.post("/", validate(createCompanySchema), async (req, res) => {
     // rbac: instance-admin-not-required — inline isInstanceAdmin check on the next line is the gate; assertCanManageInstanceSettings would be a synonym refactor.
@@ -151,15 +222,19 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
     }
     // D6: local_trusted = single trust boundary (loopback); one-click approve is friction.
     // authenticated = real multi-human board; approval is multi-person accountability.
-    const requireBoardApprovalForNewAgents = opts.deploymentMode !== "local_trusted";
+    const requireBoardApprovalForNewAgents =
+      opts.deploymentMode !== "local_trusted";
     // requestedByUserId attributes the crew's marketplace install operation
     // (T2.3). The column is free text with no FK, and `local_trusted` actors
     // legitimately have no userId — hence the null fallback.
     const company = await svc.create(
       { ...req.body, requireBoardApprovalForNewAgents },
-      { requestedByUserId: req.actor.userId ?? null },
+      { requestedByUserId: req.actor.userId ?? null }
     );
-    const operatorId = await access.ensureRealOperator(company.id, req.actor.userId);
+    const operatorId = await access.ensureRealOperator(
+      company.id,
+      req.actor.userId
+    );
     // Seed the founder's company Human Operating Profile from their GLOBAL
     // profile. Onboarding's HumanProfileStep writes only the global
     // `user_profiles` row (companyId is null at that step); without this, the
@@ -167,10 +242,15 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
     // their own company Team page. The invited-approve and manual-add paths
     // already materialize via the same helper — founder-create was the gap.
     // Best-effort — never block company creation. (Codex P2)
-    await materializeCompanyProfileFromGlobal(db, company.id, operatorId, operatorId).catch((err) => {
+    await materializeCompanyProfileFromGlobal(
+      db,
+      company.id,
+      operatorId,
+      operatorId
+    ).catch((err) => {
       logger.warn(
         { err, companyId: company.id, userId: operatorId },
-        "company create: founder profile seeding failed (non-fatal)",
+        "company create: founder profile seeding failed (non-fatal)"
       );
     });
     await seedAoaNativeSkills(db, company.id).catch(() => {
@@ -201,33 +281,37 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
     res.status(201).json(company);
   });
 
-  router.patch("/:companyId", validate(updateCompanySchema), async (req, res) => {
-    assertBoard(req);
-    const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    if (
-      "agentCompletionPolicyDefault" in req.body ||
-      "agentCompletionReviewGuardrail" in req.body ||
-      "humanQuestionSlaHours" in req.body
-    ) {
-      await assertCanAssignTasks(req, companyId);
+  router.patch(
+    "/:companyId",
+    validate(updateCompanySchema),
+    async (req, res) => {
+      assertBoard(req);
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      if (
+        "agentCompletionPolicyDefault" in req.body ||
+        "agentCompletionReviewGuardrail" in req.body ||
+        "humanQuestionSlaHours" in req.body
+      ) {
+        await assertCanAssignTasks(req, companyId);
+      }
+      const company = await svc.update(companyId, req.body);
+      if (!company) {
+        res.status(404).json({ error: "Company not found" });
+        return;
+      }
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "company.updated",
+        entityType: "company",
+        entityId: companyId,
+        details: req.body,
+      });
+      res.json(company);
     }
-    const company = await svc.update(companyId, req.body);
-    if (!company) {
-      res.status(404).json({ error: "Company not found" });
-      return;
-    }
-    await logActivity(db, {
-      companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
-      action: "company.updated",
-      entityType: "company",
-      entityId: companyId,
-      details: req.body,
-    });
-    res.json(company);
-  });
+  );
 
   // Founder-only toggle for the team-architecture feature flag (Slices 6 + 7).
   // Default is false; flipping to true opts the company into the teams system.
@@ -258,7 +342,7 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
         details: { enabled: req.body.enabled },
       });
       res.json({ ok: true });
-    },
+    }
   );
 
   router.post("/:companyId/archive", async (req, res) => {

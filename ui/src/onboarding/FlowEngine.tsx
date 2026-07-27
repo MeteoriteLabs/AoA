@@ -1,5 +1,5 @@
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { ChevronLeft } from "lucide-react";
+import { ChevronLeft, LogOut } from "lucide-react";
 import type { OnboardingJourney, OnboardingState } from "@armyofagents/shared";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -33,6 +33,9 @@ export type FlowEngineProps = {
   registry?: StepDefinition[];
   onFinished?: () => void;
   onBack?: () => void;
+  onSwitchAccount?: () => void;
+  isSwitchingAccount?: boolean;
+  switchAccountError?: string | null;
 };
 
 /**
@@ -49,13 +52,21 @@ export type FlowEngineProps = {
  * `fill` swaps to `min-h-full` (fills the available height, still grows with
  * content) so `<main>` stays the single scroll container.
  */
-export function DarkShell({ children, fill = false }: { children: React.ReactNode; fill?: boolean }) {
+export function DarkShell({
+  children,
+  fill = false,
+}: {
+  children: React.ReactNode;
+  fill?: boolean;
+}) {
   return (
     <div
       data-aoa-onboarding-theme="dark"
       className={cn(
         "onboarding-dark relative w-full overflow-x-hidden bg-background text-foreground [color-scheme:dark]",
-        fill ? "min-h-full" : "h-screen min-h-screen overflow-y-auto [height:100dvh]",
+        fill
+          ? "min-h-full"
+          : "h-screen min-h-screen overflow-y-auto [height:100dvh]"
       )}
     >
       <ConstellationBg />
@@ -85,6 +96,9 @@ export function FlowEngine({
   registry = ONBOARDING_REGISTRY,
   onFinished,
   onBack,
+  onSwitchAccount,
+  isSwitchingAccount = false,
+  switchAccountError,
 }: FlowEngineProps) {
   const [completed, setCompleted] = useState<OnboardingState[] | null>(null);
   const [backStepId, setBackStepId] = useState<string | null>(null);
@@ -107,7 +121,9 @@ export function FlowEngine({
   }, [load]);
 
   const ctx: StepContext | null =
-    completed === null ? null : { userId, companyId, journey, completedStates: completed };
+    completed === null
+      ? null
+      : { userId, companyId, journey, completedStates: completed };
   const applicableSteps = ctx
     ? registry
         .filter((candidate) => candidate.journeys.includes(ctx.journey))
@@ -116,7 +132,8 @@ export function FlowEngine({
     : [];
   const nextStep = ctx ? resolveNextStep(registry, ctx) : null;
   const step = backStepId
-    ? (applicableSteps.find((candidate) => candidate.id === backStepId) ?? nextStep)
+    ? applicableSteps.find((candidate) => candidate.id === backStepId) ??
+      nextStep
     : nextStep;
 
   useEffect(() => {
@@ -135,7 +152,9 @@ export function FlowEngine({
 
   const handleBack = useCallback(() => {
     if (!ctx || !step) return;
-    const currentIndex = applicableSteps.findIndex((candidate) => candidate.id === step.id);
+    const currentIndex = applicableSteps.findIndex(
+      (candidate) => candidate.id === step.id
+    );
     const previous = applicableSteps
       .slice(0, currentIndex)
       .reverse()
@@ -150,6 +169,19 @@ export function FlowEngine({
   if (!ctx) {
     return (
       <DarkShell>
+        {onSwitchAccount && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="fixed right-4 top-4 z-20 gap-1.5 text-dim hover:bg-white/5 hover:text-text"
+            disabled={isSwitchingAccount}
+            onClick={onSwitchAccount}
+          >
+            <LogOut className="h-3.5 w-3.5" aria-hidden />
+            {isSwitchingAccount ? "Signing out…" : "Switch account"}
+          </Button>
+        )}
         <div className="relative z-10 flex min-h-screen items-center justify-center px-6">
           <p className="text-sm text-dim">Loading…</p>
         </div>
@@ -159,6 +191,19 @@ export function FlowEngine({
   if (!step) {
     return (
       <DarkShell>
+        {onSwitchAccount && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="fixed right-4 top-4 z-20 gap-1.5 text-dim hover:bg-white/5 hover:text-text"
+            disabled={isSwitchingAccount}
+            onClick={onSwitchAccount}
+          >
+            <LogOut className="h-3.5 w-3.5" aria-hidden />
+            {isSwitchingAccount ? "Signing out…" : "Switch account"}
+          </Button>
+        )}
         <div className="relative z-10 flex min-h-screen items-center justify-center px-6">
           <div data-testid="onboarding-complete" className="text-sm text-dim">
             Onboarding complete.
@@ -169,19 +214,23 @@ export function FlowEngine({
   }
 
   const Step = step.Component;
-  const stepNumber = applicableSteps.findIndex((candidate) => candidate.id === step.id) + 1;
+  const stepNumber =
+    applicableSteps.findIndex((candidate) => candidate.id === step.id) + 1;
   // Back renders only when a COMPLETED predecessor exists to walk back to.
   // On the first step the fallthrough (onBack → navigate "/") would bounce:
   // the index gate resolves the same journey and sends the user straight back
   // here — a flash-reload, not an exit.
   const hasCompletedPredecessor =
     stepNumber > 0 &&
-    applicableSteps.slice(0, stepNumber - 1).some((candidate) => candidate.isComplete(ctx));
+    applicableSteps
+      .slice(0, stepNumber - 1)
+      .some((candidate) => candidate.isComplete(ctx));
   // BASE = visible spine steps + the Map (founder only). The spine now counts
   // toward this continuous total, so the last spine step reads "N of BASE" and
   // the post-spine Map/In-flight surfaces continue the same count (see
   // onboardingProgress.ts).
-  const base = applicableSteps.length + (journeyHasFirstRunMap(journey) ? 1 : 0);
+  const base =
+    applicableSteps.length + (journeyHasFirstRunMap(journey) ? 1 : 0);
   // The chip hides on single-step journeys where it carries no information
   // (e.g. invited's lone human-profile step).
   const showStepChrome = stepNumber > 0 && base > 1;
@@ -208,11 +257,39 @@ export function FlowEngine({
             )}
           </div>
           {showStepChrome && <StepPosition current={stepNumber} total={base} />}
+          <div className="flex min-w-[104px] justify-end">
+            {onSwitchAccount && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="-mr-2 gap-1.5 text-dim hover:bg-white/5 hover:text-text"
+                disabled={isSwitchingAccount}
+                onClick={onSwitchAccount}
+              >
+                <LogOut className="h-3.5 w-3.5" aria-hidden />
+                {isSwitchingAccount ? "Signing out…" : "Switch account"}
+              </Button>
+            )}
+          </div>
         </div>
+        {switchAccountError && (
+          <p className="mt-2 text-right text-xs text-destructive" role="alert">
+            {switchAccountError}
+          </p>
+        )}
         <div className="flex min-h-0 flex-1 flex-col">
           <div className="my-auto w-full">
-            <Suspense fallback={<p className="text-center text-sm text-dim">Loading step…</p>}>
-              <Step ctx={ctx} onComplete={() => void handleComplete()} onBack={handleBack} />
+            <Suspense
+              fallback={
+                <p className="text-center text-sm text-dim">Loading step…</p>
+              }
+            >
+              <Step
+                ctx={ctx}
+                onComplete={() => void handleComplete()}
+                onBack={handleBack}
+              />
             </Suspense>
           </div>
         </div>

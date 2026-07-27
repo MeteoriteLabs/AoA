@@ -1,28 +1,52 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { destinationForJourney, getOnboardingProgress, advanceOnboarding, setFirstRunCompleted } from "../onboarding";
+import {
+  destinationForJourney,
+  fetchJourney,
+  getOnboardingProgress,
+  advanceOnboarding,
+  setFirstRunCompleted,
+} from "../onboarding";
 import type { PostAuthJourneyResult } from "@armyofagents/shared";
 
-const base = (over: Partial<PostAuthJourneyResult>): PostAuthJourneyResult => ({
-  journey: "founder",
-  targetCompanyId: null,
-  pendingInvitations: [],
-  inviteToken: null,
-  ...over,
-});
+const base = (over: Partial<PostAuthJourneyResult>): PostAuthJourneyResult =>
+  ({
+    schemaVersion: 1,
+    journey: "founder",
+    targetCompanyId: null,
+    pendingInvitations: [],
+    inviteToken: null,
+    canCreateCompany: true,
+    resumeFirstRunCompanyId: null,
+    ...over,
+  } as PostAuthJourneyResult);
 
 describe("destinationForJourney (Stage A / A9)", () => {
   it("returning → lobby", () => {
-    expect(destinationForJourney(base({ journey: "returning", targetCompanyId: "c1" }))).toBe("/");
+    expect(
+      destinationForJourney(
+        base({ journey: "returning", targetCompanyId: "c1" })
+      )
+    ).toBe("/");
   });
 
   it("founder → onboarding", () => {
-    expect(destinationForJourney(base({ journey: "founder" }))).toBe("/onboarding");
+    expect(destinationForJourney(base({ journey: "founder" }))).toBe(
+      "/onboarding"
+    );
   });
 
   it("invited → join flow with the target company", () => {
-    expect(destinationForJourney(base({ journey: "invited", targetCompanyId: "c2" }))).toBe(
-      "/onboarding/join?company=c2",
-    );
+    expect(
+      destinationForJourney(base({ journey: "invited", targetCompanyId: "c2" }))
+    ).toBe("/onboarding/join?company=c2");
+  });
+
+  it("routes access-required users to the account rescue screen", () => {
+    expect(
+      destinationForJourney(
+        base({ journey: "access_required", canCreateCompany: false })
+      )
+    ).toBe("/access-required");
   });
 });
 
@@ -44,21 +68,57 @@ describe("onboarding progress client (Stage B / B7)", () => {
   });
 
   it("getOnboardingProgress returns null when no row", async () => {
-    (globalThis.fetch as any).mockResolvedValue({ ok: true, json: async () => ({ progress: null }) });
+    (globalThis.fetch as any).mockResolvedValue({
+      ok: true,
+      json: async () => ({ progress: null }),
+    });
     expect(await getOnboardingProgress(null)).toBeNull();
   });
 
   it("advanceOnboarding PATCHes the requested state", async () => {
     (globalThis.fetch as any).mockResolvedValue({
       ok: true,
-      json: async () => ({ progress: { completedStates: ["AUTHENTICATED", "PROFILE_SET"] } }),
+      json: async () => ({
+        progress: { completedStates: ["AUTHENTICATED", "PROFILE_SET"] },
+      }),
     });
-    const p = await advanceOnboarding({ companyId: null, journey: "founder", requestedState: "PROFILE_SET" });
+    const p = await advanceOnboarding({
+      companyId: null,
+      journey: "founder",
+      requestedState: "PROFILE_SET",
+    });
     const [url, init] = (globalThis.fetch as any).mock.calls[0];
     expect(url).toBe("/api/onboarding/progress");
     expect(init.method).toBe("PATCH");
-    expect(JSON.parse(init.body)).toMatchObject({ journey: "founder", requestedState: "PROFILE_SET" });
+    expect(JSON.parse(init.body)).toMatchObject({
+      journey: "founder",
+      requestedState: "PROFILE_SET",
+    });
     expect(p?.completedStates).toContain("PROFILE_SET");
+  });
+});
+
+describe("journey contract negotiation", () => {
+  it("advertises support for the access-required discriminant", async () => {
+    (globalThis as any).fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        journey: "founder",
+        targetCompanyId: null,
+        pendingInvitations: [],
+      }),
+    });
+
+    await fetchJourney();
+
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "/api/onboarding/journey",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          "X-AOA-Journey-Schema-Version": "1",
+        }),
+      })
+    );
   });
 });
 
@@ -70,7 +130,9 @@ describe("setFirstRunCompleted (Fix 2 — write the flag at onboarding completio
   it("PATCHes the first-run endpoint with companyId + completed:true", async () => {
     (globalThis.fetch as any).mockResolvedValue({
       ok: true,
-      json: async () => ({ progress: { firstRunCompletedAt: "2026-07-18T00:00:00Z" } }),
+      json: async () => ({
+        progress: { firstRunCompletedAt: "2026-07-18T00:00:00Z" },
+      }),
     });
     await setFirstRunCompleted("c1");
     const [url, init] = (globalThis.fetch as any).mock.calls[0];
@@ -94,7 +156,10 @@ describe("setFirstRunCompleted (Fix 2 — write the flag at onboarding completio
   });
 
   it("resolves true when the write is confirmed", async () => {
-    (globalThis.fetch as any).mockResolvedValue({ ok: true, json: async () => ({}) });
+    (globalThis.fetch as any).mockResolvedValue({
+      ok: true,
+      json: async () => ({}),
+    });
     await expect(setFirstRunCompleted("c1")).resolves.toBe(true);
   });
 });

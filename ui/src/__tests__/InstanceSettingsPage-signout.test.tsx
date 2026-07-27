@@ -2,7 +2,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Routes, Route } from "react-router-dom";
-import { renderWithProviders, mockCompanyContext, makeCompany } from "./test-utils";
+import {
+  renderWithProviders,
+  mockCompanyContext,
+  makeCompany,
+} from "./test-utils";
 import { InstanceSettingsPage } from "../pages/InstanceSettingsPage";
 import { LobbyLayout } from "@/components/LobbyLayout";
 
@@ -17,7 +21,7 @@ function renderSettings(opts?: { initialEntries?: string[] }) {
         <Route path="/instance/settings" element={<InstanceSettingsPage />} />
       </Route>
     </Routes>,
-    { initialEntries: opts?.initialEntries ?? ["/instance/settings"] },
+    { initialEntries: opts?.initialEntries ?? ["/instance/settings"] }
   );
 }
 
@@ -42,11 +46,14 @@ vi.mock("../api/instanceSettings", () => ({
 }));
 
 const mockSignOut = vi.fn();
+const mockCancelOwnLoginChallenges = vi.fn();
 
 vi.mock("../api/auth", () => ({
   authApi: {
     getSession: vi.fn(),
     signInSocial: vi.fn(),
+    cancelOwnLoginChallenges: (...args: unknown[]) =>
+      mockCancelOwnLoginChallenges(...args),
     signOut: (...args: unknown[]) => mockSignOut(...args),
   },
 }));
@@ -85,7 +92,9 @@ vi.mock("@/components/LobbySidebar", () => ({
 
 vi.mock("@/components/ui/sheet", () => ({
   Sheet: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  SheetContent: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  SheetContent: ({ children }: { children: React.ReactNode }) => (
+    <>{children}</>
+  ),
 }));
 
 vi.mock("@/components/UserMenu", () => ({ UserMenu: () => <div /> }));
@@ -95,13 +104,25 @@ vi.mock("@/context/DialogContext", () => ({
 }));
 
 vi.mock("@/components/SecondarySidebar", () => ({
-  SecondarySidebar: ({ sections }: { sections: Array<{ items: Array<{ id: string; label: string; onClick?: () => void }> }> }) => (
+  SecondarySidebar: ({
+    sections,
+  }: {
+    sections: Array<{
+      items: Array<{ id: string; label: string; onClick?: () => void }>;
+    }>;
+  }) => (
     <aside data-testid="secondary-sidebar">
-      {sections.flatMap((s) => s.items).map((item) => (
-        <button key={item.id} data-testid={`sidebar-item-${item.id}`} onClick={item.onClick}>
-          {item.label}
-        </button>
-      ))}
+      {sections
+        .flatMap((s) => s.items)
+        .map((item) => (
+          <button
+            key={item.id}
+            data-testid={`sidebar-item-${item.id}`}
+            onClick={item.onClick}
+          >
+            {item.label}
+          </button>
+        ))}
     </aside>
   ),
 }));
@@ -130,22 +151,29 @@ describe("InstanceSettingsPage Sign out section", () => {
     mockGetGeneral.mockResolvedValue(defaultGeneralSettings);
     mockGetExperimental.mockResolvedValue(defaultExperimentalSettings);
     mockSignOut.mockResolvedValue(undefined);
-    mockGetHealth.mockResolvedValue({ status: "ok", deploymentMode: "authenticated" });
+    mockCancelOwnLoginChallenges.mockResolvedValue(undefined);
+    mockGetHealth.mockResolvedValue({
+      status: "ok",
+      deploymentMode: "authenticated",
+    });
   });
 
   it("renders the Sign out button in the General tab", async () => {
     renderSettings();
     expect(
-      await screen.findByRole("button", { name: /sign out/i }),
+      await screen.findByRole("button", { name: /sign out/i })
     ).toBeInTheDocument();
   });
 
   it("renders the Sign out section heading and description", async () => {
     renderSettings();
-    const heading = await screen.findByRole("heading", { name: "Sign out", level: 2 });
+    const heading = await screen.findByRole("heading", {
+      name: "Sign out",
+      level: 2,
+    });
     expect(heading).toBeInTheDocument();
     expect(
-      await screen.findByText(/sign out of this AoA instance/i),
+      await screen.findByText(/sign out of this AoA instance/i)
     ).toBeInTheDocument();
   });
 
@@ -170,33 +198,39 @@ describe("InstanceSettingsPage Sign out section", () => {
 
     await waitFor(() =>
       expect(
-        screen.getByRole("button", { name: /signing out/i }),
-      ).toBeDisabled(),
+        screen.getByRole("button", { name: /signing out/i })
+      ).toBeDisabled()
     );
   });
 
   describe("Sign out section visibility by deployment mode", () => {
     it("hides the Sign out section when deploymentMode is local_trusted", async () => {
-      mockGetHealth.mockResolvedValue({ status: "ok", deploymentMode: "local_trusted" });
+      mockGetHealth.mockResolvedValue({
+        status: "ok",
+        deploymentMode: "local_trusted",
+      });
       renderSettings();
 
       // Wait for general settings to load so the General tab body is rendered.
       await screen.findByRole("heading", { name: /keyboard shortcuts/i });
 
       expect(
-        screen.queryByRole("heading", { name: "Sign out", level: 2 }),
+        screen.queryByRole("heading", { name: "Sign out", level: 2 })
       ).not.toBeInTheDocument();
       expect(
-        screen.queryByRole("button", { name: /sign out/i }),
+        screen.queryByRole("button", { name: /sign out/i })
       ).not.toBeInTheDocument();
     });
 
     it("renders the Sign out section when deploymentMode is authenticated", async () => {
-      mockGetHealth.mockResolvedValue({ status: "ok", deploymentMode: "authenticated" });
+      mockGetHealth.mockResolvedValue({
+        status: "ok",
+        deploymentMode: "authenticated",
+      });
       renderSettings();
 
       expect(
-        await screen.findByRole("heading", { name: "Sign out", level: 2 }),
+        await screen.findByRole("heading", { name: "Sign out", level: 2 })
       ).toBeInTheDocument();
     });
 
@@ -205,7 +239,7 @@ describe("InstanceSettingsPage Sign out section", () => {
       renderSettings();
 
       expect(
-        await screen.findByRole("heading", { name: "Sign out", level: 2 }),
+        await screen.findByRole("heading", { name: "Sign out", level: 2 })
       ).toBeInTheDocument();
     });
   });

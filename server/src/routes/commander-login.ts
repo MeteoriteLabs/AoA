@@ -1,9 +1,13 @@
 import { Router, type Request, type Response } from "express";
-import type { Db } from "@armyofagents/db";
+import { commanderLoginChallenges, type Db } from "@armyofagents/db";
+import { and, eq } from "drizzle-orm";
 import { assertRole } from "../middleware/rbac.js";
 import { assertCompanyAccess } from "./authz.js";
 import { buildCommanderLoginService } from "../services/commander-login-runtime.js";
-import { LoginChallengeConflictError, type CommanderLoginProvider } from "../services/commander-login.js";
+import {
+  LoginChallengeConflictError,
+  type CommanderLoginProvider,
+} from "../services/commander-login.js";
 import { loadConfig } from "../config.js";
 import {
   providerSubscriptionCapability,
@@ -22,7 +26,11 @@ export function commanderLoginRoutes(db: Db): Router {
   const router = Router();
   const service = buildCommanderLoginService(db);
 
-  async function gate(req: Request, res: Response, companyId: string): Promise<boolean> {
+  async function gate(
+    req: Request,
+    res: Response,
+    companyId: string
+  ): Promise<boolean> {
     const actor = req.actor;
     if (actor.type !== "board" || !actor.userId) {
       res.status(401).json({ error: "authentication required" });
@@ -42,8 +50,16 @@ export function commanderLoginRoutes(db: Db): Router {
     const cli =
       process.env.NODE_ENV === "test"
         ? {
-            openai: { cliInstalled: true, cliVersion: "0.145.0", cliVersionSupported: true },
-            anthropic: { cliInstalled: true, cliVersion: "2.1.220", cliVersionSupported: true },
+            openai: {
+              cliInstalled: true,
+              cliVersion: "0.145.0",
+              cliVersionSupported: true,
+            },
+            anthropic: {
+              cliInstalled: true,
+              cliVersion: "2.1.220",
+              cliVersionSupported: true,
+            },
           }
         : {
             openai: await detectProviderCli("openai"),
@@ -57,7 +73,9 @@ export function commanderLoginRoutes(db: Db): Router {
           ...policy,
           ...detected,
           enabled: false,
-          reason: `${provider === "openai" ? "Codex" : "Claude"} CLI is not installed in the AOA runtime.`,
+          reason: `${
+            provider === "openai" ? "Codex" : "Claude"
+          } CLI is not installed in the AOA runtime.`,
         };
       }
       if (!detected.cliVersionSupported) {
@@ -65,7 +83,9 @@ export function commanderLoginRoutes(db: Db): Router {
           ...policy,
           ...detected,
           enabled: false,
-          reason: `Installed ${provider === "openai" ? "Codex" : "Claude"} version is unsupported by this AOA image. Rebuild with the pinned CLI version.`,
+          reason: `Installed ${
+            provider === "openai" ? "Codex" : "Claude"
+          } version is unsupported by this AOA image. Rebuild with the pinned CLI version.`,
         };
       }
       return { ...policy, ...detected };
@@ -79,6 +99,37 @@ export function commanderLoginRoutes(db: Db): Router {
     };
   }
 
+  router.post(
+    "/auth/commander-login/cancel-all",
+    async (req: Request, res: Response) => {
+      const actor = req.actor;
+      if (actor.type !== "board" || !actor.userId) {
+        res.status(401).json({ error: "authentication required" });
+        return;
+      }
+
+      const pending = await db
+        .select({
+          id: commanderLoginChallenges.id,
+          companyId: commanderLoginChallenges.companyId,
+        })
+        .from(commanderLoginChallenges)
+        .where(
+          and(
+            eq(commanderLoginChallenges.startedByUserId, actor.userId),
+            eq(commanderLoginChallenges.status, "pending")
+          )
+        );
+
+      await Promise.all(
+        pending.map((challenge) =>
+          service.cancel(challenge.companyId, challenge.id, null, actor.userId)
+        )
+      );
+      res.json({ ok: true, cancelled: pending.length });
+    }
+  );
+
   router.get(
     "/companies/:companyId/internal-agent/commander-login/capabilities",
     async (req: Request, res: Response) => {
@@ -89,10 +140,13 @@ export function commanderLoginRoutes(db: Db): Router {
       } catch (error) {
         res.status(503).json({
           code: "invalid_cli_auth_topology",
-          error: error instanceof Error ? error.message : "CLI authentication topology is invalid.",
+          error:
+            error instanceof Error
+              ? error.message
+              : "CLI authentication topology is invalid.",
         });
       }
-    },
+    }
   );
 
   router.post(
@@ -103,7 +157,9 @@ export function commanderLoginRoutes(db: Db): Router {
 
       const provider = req.body?.provider as CommanderLoginProvider;
       if (provider !== "anthropic" && provider !== "openai") {
-        res.status(400).json({ error: "provider must be 'anthropic' or 'openai'" });
+        res
+          .status(400)
+          .json({ error: "provider must be 'anthropic' or 'openai'" });
         return;
       }
 
@@ -117,12 +173,14 @@ export function commanderLoginRoutes(db: Db): Router {
           });
           return;
         }
-        const { challengeId, loginUrl, userCode, expiresAt } = await service.startChallenge({
-          companyId,
-          provider,
-          startedByUserId: req.actor.userId!,
-          executionTargetId: process.env.AOA_EXECUTION_TARGET_ID ?? "control-plane",
-        });
+        const { challengeId, loginUrl, userCode, expiresAt } =
+          await service.startChallenge({
+            companyId,
+            provider,
+            startedByUserId: req.actor.userId!,
+            executionTargetId:
+              process.env.AOA_EXECUTION_TARGET_ID ?? "control-plane",
+          });
         res.json({
           challengeId,
           loginUrl,
@@ -135,9 +193,11 @@ export function commanderLoginRoutes(db: Db): Router {
           res.status(409).json({ error: err.message });
           return;
         }
-        res.status(502).json({ error: "login could not start (no verification URL)" });
+        res
+          .status(502)
+          .json({ error: "login could not start (no verification URL)" });
       }
-    },
+    }
   );
 
   router.post(
@@ -146,7 +206,8 @@ export function commanderLoginRoutes(db: Db): Router {
       const companyId = req.params.companyId as string;
       if (!(await gate(req, res, companyId))) return;
 
-      const code = typeof req.body?.code === "string" ? req.body.code.trim() : "";
+      const code =
+        typeof req.body?.code === "string" ? req.body.code.trim() : "";
       if (!code) {
         res.status(400).json({ error: "code is required" });
         return;
@@ -161,11 +222,12 @@ export function commanderLoginRoutes(db: Db): Router {
         companyId,
         req.params.id as string,
         code,
-        req.actor.userId,
+        req.actor.userId
       );
       if (result === "not-live") {
         res.status(404).json({
-          error: "This sign-in session is no longer active. Start sign-in again.",
+          error:
+            "This sign-in session is no longer active. Start sign-in again.",
         });
         return;
       }
@@ -177,12 +239,13 @@ export function commanderLoginRoutes(db: Db): Router {
       }
       if (result === "unsupported") {
         res.status(409).json({
-          error: "This provider completes sign-in in the browser and does not take a pasted code.",
+          error:
+            "This provider completes sign-in in the browser and does not take a pasted code.",
         });
         return;
       }
       res.status(202).json({ ok: true });
-    },
+    }
   );
 
   router.get(
@@ -196,14 +259,14 @@ export function commanderLoginRoutes(db: Db): Router {
         companyId,
         req.params.id as string,
         null,
-        req.actor.userId,
+        req.actor.userId
       );
       if (!status) {
         res.status(404).json({ error: "challenge not found" });
         return;
       }
       res.json(status);
-    },
+    }
   );
 
   router.post(
@@ -213,9 +276,14 @@ export function commanderLoginRoutes(db: Db): Router {
       if (!(await gate(req, res, companyId))) return;
       // Company-scoped (Codex P1) — a cross-tenant cancel is a silent no-op,
       // never terminating another company's login child.
-      await service.cancel(companyId, req.params.id as string, null, req.actor.userId);
+      await service.cancel(
+        companyId,
+        req.params.id as string,
+        null,
+        req.actor.userId
+      );
       res.json({ ok: true });
-    },
+    }
   );
 
   return router;

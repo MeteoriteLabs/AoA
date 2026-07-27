@@ -14,6 +14,7 @@ export const mockCompanyContext = {
   loading: false,
   error: null,
   setSelectedCompanyId: vi.fn(),
+  resetCompanySelection: vi.fn(),
   reloadCompanies: vi.fn().mockResolvedValue(undefined),
   createCompany: vi.fn().mockResolvedValue({}),
 };
@@ -84,7 +85,7 @@ export function renderWithProviders(
   {
     initialEntries = ["/"],
     ...renderOptions
-  }: RenderOptions & { initialEntries?: string[] } = {},
+  }: RenderOptions & { initialEntries?: string[] } = {}
 ) {
   const Wrapper = createWrapper(initialEntries);
   return render(ui, { wrapper: Wrapper, ...renderOptions });

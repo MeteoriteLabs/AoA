@@ -107,8 +107,15 @@ type RoutineRow = {
 const SRC_CO_ID = "11111111-1111-4111-8111-111111111111";
 const OTHER_CO_ID = "99999999-9999-4999-8999-999999999999";
 
-const companyStore: Record<string, { id: string; name: string; requireBoardApprovalForNewAgents?: boolean }> = {
-  [SRC_CO_ID]: { id: SRC_CO_ID, name: "Source Co", requireBoardApprovalForNewAgents: true },
+const companyStore: Record<
+  string,
+  { id: string; name: string; requireBoardApprovalForNewAgents?: boolean }
+> = {
+  [SRC_CO_ID]: {
+    id: SRC_CO_ID,
+    name: "Source Co",
+    requireBoardApprovalForNewAgents: true,
+  },
 };
 
 let sourceAgents: AgentRow[] = [];
@@ -128,7 +135,9 @@ vi.mock("../services/companies.js", () => ({
 vi.mock("../services/agents.js", () => ({
   agentService: () => ({
     backfillHumanAtTop: vi.fn(async () => undefined),
-    list: vi.fn(async (companyId: string) => (companyId === SRC_CO_ID ? sourceAgents : [])),
+    list: vi.fn(async (companyId: string) =>
+      companyId === SRC_CO_ID ? sourceAgents : []
+    ),
     create: vi.fn(),
     update: vi.fn(),
   }),
@@ -148,7 +157,9 @@ vi.mock("../middleware/rbac.js", () => ({
 
 vi.mock("../services/projects.js", () => ({
   projectService: () => ({
-    list: vi.fn(async (companyId: string) => (companyId === SRC_CO_ID ? sourceProjects : [])),
+    list: vi.fn(async (companyId: string) =>
+      companyId === SRC_CO_ID ? sourceProjects : []
+    ),
     create: vi.fn(),
     update: vi.fn(),
   }),
@@ -156,14 +167,18 @@ vi.mock("../services/projects.js", () => ({
 
 vi.mock("../services/issues.js", () => ({
   issueService: () => ({
-    list: vi.fn(async (companyId: string) => (companyId === SRC_CO_ID ? sourceIssues : [])),
+    list: vi.fn(async (companyId: string) =>
+      companyId === SRC_CO_ID ? sourceIssues : []
+    ),
     create: vi.fn(),
   }),
 }));
 
 vi.mock("../services/company-skills.js", () => ({
   companySkillService: () => ({
-    listFull: vi.fn(async (companyId: string) => (companyId === SRC_CO_ID ? sourceSkills : [])),
+    listFull: vi.fn(async (companyId: string) =>
+      companyId === SRC_CO_ID ? sourceSkills : []
+    ),
     upsertImportedSkills: vi.fn(async () => []),
   }),
 }));
@@ -186,7 +201,9 @@ import { companyRoutes } from "../routes/companies.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { forbidden } from "../errors.js";
 
-function makeAgent(overrides: Partial<AgentRow> & { id: string; name: string }): AgentRow {
+function makeAgent(
+  overrides: Partial<AgentRow> & { id: string; name: string }
+): AgentRow {
   return {
     companyId: SRC_CO_ID,
     status: "active",
@@ -207,7 +224,9 @@ function makeAgent(overrides: Partial<AgentRow> & { id: string; name: string }):
   };
 }
 
-function makeProject(overrides: Partial<ProjectRow> & { id: string; name: string }): ProjectRow {
+function makeProject(
+  overrides: Partial<ProjectRow> & { id: string; name: string }
+): ProjectRow {
   return {
     companyId: SRC_CO_ID,
     type: "department",
@@ -223,7 +242,9 @@ function makeProject(overrides: Partial<ProjectRow> & { id: string; name: string
   };
 }
 
-function makeIssue(overrides: Partial<IssueRow> & { id: string; title: string }): IssueRow {
+function makeIssue(
+  overrides: Partial<IssueRow> & { id: string; title: string }
+): IssueRow {
   return {
     companyId: SRC_CO_ID,
     projectId: null,
@@ -243,7 +264,14 @@ function makeIssue(overrides: Partial<IssueRow> & { id: string; title: string })
   };
 }
 
-function makeSkill(overrides: Partial<SkillRow> & { id: string; key: string; slug: string; name: string }): SkillRow {
+function makeSkill(
+  overrides: Partial<SkillRow> & {
+    id: string;
+    key: string;
+    slug: string;
+    name: string;
+  }
+): SkillRow {
   return {
     companyId: SRC_CO_ID,
     description: null,
@@ -261,7 +289,14 @@ function makeSkill(overrides: Partial<SkillRow> & { id: string; key: string; slu
   };
 }
 
-function makeRoutine(overrides: Partial<RoutineRow> & { id: string; title: string; projectId: string; assigneeAgentId: string }): RoutineRow {
+function makeRoutine(
+  overrides: Partial<RoutineRow> & {
+    id: string;
+    title: string;
+    projectId: string;
+    assigneeAgentId: string;
+  }
+): RoutineRow {
   return {
     companyId: SRC_CO_ID,
     goalId: null,
@@ -288,7 +323,9 @@ function resetState() {
 }
 
 describe("company-portability previewExport (service)", () => {
-  const svc = companyPortabilityService({ select: () => ({ from: () => ({ where: () => Promise.resolve([]) }) }) } as any);
+  const svc = companyPortabilityService({
+    select: () => ({ from: () => ({ where: () => Promise.resolve([]) }) }),
+  } as any);
 
   it("returns agent count with DEFAULT_INCLUDE (company + agents only)", async () => {
     resetState();
@@ -314,40 +351,69 @@ describe("company-portability previewExport (service)", () => {
       makeProject({ id: "p2", name: "Auth", type: "project" }),
       makeProject({ id: "p3", name: "Billing", type: "project" }),
     ];
-    const preview = await svc.previewExport(SRC_CO_ID, { include: { projects: true } });
+    const preview = await svc.previewExport(SRC_CO_ID, {
+      include: { projects: true },
+    });
     expect(preview.counts.projects).toBe(3);
   });
 
   it("returns issue count when include.issues=true", async () => {
     resetState();
-    sourceProjects = [makeProject({ id: "p1", name: "Eng", type: "department" })];
+    sourceProjects = [
+      makeProject({ id: "p1", name: "Eng", type: "department" }),
+    ];
     sourceIssues = [
       makeIssue({ id: "i1", title: "Task One", projectId: "p1" }),
       makeIssue({ id: "i2", title: "Task Two", projectId: "p1" }),
     ];
-    const preview = await svc.previewExport(SRC_CO_ID, { include: { projects: true, issues: true } });
+    const preview = await svc.previewExport(SRC_CO_ID, {
+      include: { projects: true, issues: true },
+    });
     expect(preview.counts.issues).toBe(2);
   });
 
   it("returns skill count with file inventory paths listed", async () => {
     resetState();
     sourceSkills = [
-      makeSkill({ id: "s1", key: "skill.one", slug: "skill-one", name: "Skill One" }),
-      makeSkill({ id: "s2", key: "skill.two", slug: "skill-two", name: "Skill Two" }),
+      makeSkill({
+        id: "s1",
+        key: "skill.one",
+        slug: "skill-one",
+        name: "Skill One",
+      }),
+      makeSkill({
+        id: "s2",
+        key: "skill.two",
+        slug: "skill-two",
+        name: "Skill Two",
+      }),
     ];
-    const preview = await svc.previewExport(SRC_CO_ID, { include: { skills: true } });
+    const preview = await svc.previewExport(SRC_CO_ID, {
+      include: { skills: true },
+    });
     expect(preview.counts.skills).toBe(2);
     // File inventory should include the SKILL.md paths emitted by exportBundle
-    expect(preview.files.some((path) => path.startsWith("skills/skill-one/"))).toBe(true);
-    expect(preview.files.some((path) => path.startsWith("skills/skill-two/"))).toBe(true);
+    expect(
+      preview.files.some((path) => path.startsWith("skills/skill-one/"))
+    ).toBe(true);
+    expect(
+      preview.files.some((path) => path.startsWith("skills/skill-two/"))
+    ).toBe(true);
   });
 
   it("returns routine count when include.routines=true", async () => {
     resetState();
     sourceAgents = [makeAgent({ id: "a1", name: "Ada" })];
-    sourceProjects = [makeProject({ id: "p1", name: "Eng", type: "department" })];
+    sourceProjects = [
+      makeProject({ id: "p1", name: "Eng", type: "department" }),
+    ];
     sourceRoutines = [
-      makeRoutine({ id: "r1", title: "Nightly", projectId: "p1", assigneeAgentId: "a1" }),
+      makeRoutine({
+        id: "r1",
+        title: "Nightly",
+        projectId: "p1",
+        assigneeAgentId: "a1",
+      }),
     ];
     const preview = await svc.previewExport(SRC_CO_ID, {
       include: { agents: true, projects: true, routines: true },
@@ -369,7 +435,9 @@ describe("company-portability previewExport (service)", () => {
         },
       }),
     ];
-    const preview = await svc.previewExport(SRC_CO_ID, { include: { agents: true, envInputs: true } });
+    const preview = await svc.previewExport(SRC_CO_ID, {
+      include: { agents: true, envInputs: true },
+    });
     expect(preview.counts.envInputs).toBe(2);
   });
 
@@ -411,7 +479,17 @@ describe("company-portability previewExport (route)", () => {
       };
       next();
     });
-    app.use("/api/companies", companyRoutes({ select: () => ({ from: () => ({ where: () => Promise.resolve([]) }) }) } as any, { deploymentMode: "local_trusted" }));
+    app.use(
+      "/api/companies",
+      companyRoutes(
+        {
+          select: () => ({
+            from: () => ({ where: () => Promise.resolve([]) }),
+          }),
+        } as any,
+        { deploymentMode: "local_trusted" }
+      )
+    );
     app.use(errorHandler);
     return app;
   }
@@ -458,7 +536,7 @@ function buildAppWithImportBodyCap(actorOverrides: Partial<any> = {}) {
   const captureRawBody = (
     req: express.Request,
     _res: express.Response,
-    buf: Buffer,
+    buf: Buffer
   ) => {
     if (buf && buf.length > 0) {
       (req as unknown as { rawBody?: Buffer }).rawBody = buf;
@@ -466,7 +544,7 @@ function buildAppWithImportBodyCap(actorOverrides: Partial<any> = {}) {
   };
   app.use(
     ["/api/companies/import", "/api/companies/import/preview"],
-    express.json({ limit: "20mb", verify: captureRawBody }),
+    express.json({ limit: "20mb", verify: captureRawBody })
   );
   app.use(express.json({ verify: captureRawBody }));
   app.use((req, _res, next) => {
@@ -483,9 +561,11 @@ function buildAppWithImportBodyCap(actorOverrides: Partial<any> = {}) {
   app.use(
     "/api/companies",
     companyRoutes(
-      { select: () => ({ from: () => ({ where: () => Promise.resolve([]) }) }) } as any,
-      { deploymentMode: "local_trusted" },
-    ),
+      {
+        select: () => ({ from: () => ({ where: () => Promise.resolve([]) }) }),
+      } as any,
+      { deploymentMode: "local_trusted" }
+    )
   );
   app.use(errorHandler);
   return app;
@@ -508,6 +588,31 @@ describe("import body-size cap", () => {
     },
     target: { mode: "existing_company" as const, companyId: SRC_CO_ID },
   };
+
+  const validNewCompanyImport = {
+    ...validExistingCompanyImport,
+    target: { mode: "new_company" as const, newCompanyName: "Imported Co" },
+  };
+
+  it("rejects new-company preview for a non-instance-admin before portability work", async () => {
+    const app = buildAppWithImportBodyCap();
+    const res = await request(app)
+      .post("/api/companies/import/preview")
+      .send(validNewCompanyImport);
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Instance admin required");
+  });
+
+  it("rejects new-company import for a non-instance-admin before portability work", async () => {
+    const app = buildAppWithImportBodyCap();
+    const res = await request(app)
+      .post("/api/companies/import")
+      .send(validNewCompanyImport);
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Instance admin required");
+  });
 
   it("allows a company-scoped agent to preview an existing-company import", async () => {
     const app = buildAppWithImportBodyCap({
@@ -549,18 +654,20 @@ describe("import body-size cap", () => {
           manifest: {
             ...validExistingCompanyImport.source.manifest,
             includes: { company: false, agents: false, routines: true },
-            routines: [{
-              slug: "daily-brief",
-              title: "Daily brief",
-              status: "active",
-              priority: "medium",
-              concurrencyPolicy: "coalesce_if_active",
-              catchUpPolicy: "skip_missed",
-              projectSlug: "product",
-              assigneeAgentSlug: "researcher",
-              variables: [],
-              triggers: [],
-            }],
+            routines: [
+              {
+                slug: "daily-brief",
+                title: "Daily brief",
+                status: "active",
+                priority: "medium",
+                concurrencyPolicy: "coalesce_if_active",
+                catchUpPolicy: "skip_missed",
+                projectSlug: "product",
+                assigneeAgentSlug: "researcher",
+                variables: [],
+                triggers: [],
+              },
+            ],
           },
         },
         include: { company: false, agents: false, routines: true },
@@ -568,7 +675,11 @@ describe("import body-size cap", () => {
 
     expect(res.status).toBe(403);
     expect(res.body.error).toBe("Missing permission: tasks:assign");
-    expect(mockCanUser).toHaveBeenCalledWith(SRC_CO_ID, "user-1", "tasks:assign");
+    expect(mockCanUser).toHaveBeenCalledWith(
+      SRC_CO_ID,
+      "user-1",
+      "tasks:assign"
+    );
   });
 
   it("requires tasks:assign when importing issues into an existing company", async () => {
@@ -583,11 +694,13 @@ describe("import body-size cap", () => {
           manifest: {
             ...validExistingCompanyImport.source.manifest,
             includes: { company: false, agents: false, issues: true },
-            issues: [{
-              slug: "prepare-brief",
-              title: "Prepare brief",
-              assigneeAgentSlug: "researcher",
-            }],
+            issues: [
+              {
+                slug: "prepare-brief",
+                title: "Prepare brief",
+                assigneeAgentSlug: "researcher",
+              },
+            ],
           },
         },
         include: { company: false, agents: false, issues: true },
@@ -595,11 +708,17 @@ describe("import body-size cap", () => {
 
     expect(res.status).toBe(403);
     expect(res.body.error).toBe("Missing permission: tasks:assign");
-    expect(mockCanUser).toHaveBeenCalledWith(SRC_CO_ID, "user-1", "tasks:assign");
+    expect(mockCanUser).toHaveBeenCalledWith(
+      SRC_CO_ID,
+      "user-1",
+      "tasks:assign"
+    );
   });
 
   it("requires founder or team-lead role when importing workflow templates", async () => {
-    mockAssertRole.mockRejectedValueOnce(forbidden("Requires one of: founder, team_lead"));
+    mockAssertRole.mockRejectedValueOnce(
+      forbidden("Requires one of: founder, team_lead")
+    );
     const app = buildAppWithImportBodyCap();
     const res = await request(app)
       .post("/api/companies/import")
@@ -609,15 +728,21 @@ describe("import body-size cap", () => {
           ...validExistingCompanyImport.source,
           manifest: {
             ...validExistingCompanyImport.source.manifest,
-            includes: { company: false, agents: false, workflowTemplates: true },
-            workflowTemplates: [{
-              slug: "launch",
-              name: "Launch",
-              description: null,
-              workspaceMode: "per_task",
-              steps: [],
-              dependencies: [],
-            }],
+            includes: {
+              company: false,
+              agents: false,
+              workflowTemplates: true,
+            },
+            workflowTemplates: [
+              {
+                slug: "launch",
+                name: "Launch",
+                description: null,
+                workspaceMode: "per_task",
+                steps: [],
+                dependencies: [],
+              },
+            ],
           },
         },
         include: { company: false, agents: false, workflowTemplates: true },
@@ -630,7 +755,7 @@ describe("import body-size cap", () => {
       expect.anything(),
       SRC_CO_ID,
       "founder",
-      "team_lead",
+      "team_lead"
     );
   });
 
@@ -645,16 +770,22 @@ describe("import body-size cap", () => {
           ...validExistingCompanyImport.source,
           manifest: {
             ...validExistingCompanyImport.source.manifest,
-            includes: { company: false, agents: false, workflowTemplates: true },
-            workflowTemplates: [{
-              slug: "launch",
-              name: "Launch",
-              description: null,
-              workspaceMode: "per_task",
-              agentCompletionPolicyOverride: "agent_can_complete",
-              steps: [],
-              dependencies: [],
-            }],
+            includes: {
+              company: false,
+              agents: false,
+              workflowTemplates: true,
+            },
+            workflowTemplates: [
+              {
+                slug: "launch",
+                name: "Launch",
+                description: null,
+                workspaceMode: "per_task",
+                agentCompletionPolicyOverride: "agent_can_complete",
+                steps: [],
+                dependencies: [],
+              },
+            ],
           },
         },
         include: { company: false, agents: false, workflowTemplates: true },
@@ -662,7 +793,11 @@ describe("import body-size cap", () => {
 
     expect(res.status).toBe(403);
     expect(res.body.error).toBe("Missing permission: tasks:assign");
-    expect(mockCanUser).toHaveBeenCalledWith(SRC_CO_ID, "user-1", "tasks:assign");
+    expect(mockCanUser).toHaveBeenCalledWith(
+      SRC_CO_ID,
+      "user-1",
+      "tasks:assign"
+    );
   });
 
   it("returns 413 for bodies over 20MB on /api/companies/import/preview", async () => {

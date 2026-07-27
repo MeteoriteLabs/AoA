@@ -7,12 +7,28 @@ describe("LobbyOrOnboardingRedirect invitation handoff", () => {
     const source = readFileSync(
       resolve(
         process.cwd(),
-        process.cwd().endsWith("ui") ? "src/App.tsx" : "ui/src/App.tsx",
+        process.cwd().endsWith("ui") ? "src/App.tsx" : "ui/src/App.tsx"
       ),
-      "utf8",
+      "utf8"
     );
     expect(source).toContain(
-      "<Lobby pendingInvitations={data?.pendingInvitations ?? []} />",
+      "<Lobby pendingInvitations={data?.pendingInvitations ?? []} />"
+    );
+  });
+
+  it("resolves the post-auth journey before mounting the lobby layout", () => {
+    const source = readFileSync(
+      resolve(
+        process.cwd(),
+        process.cwd().endsWith("ui") ? "src/App.tsx" : "ui/src/App.tsx"
+      ),
+      "utf8"
+    );
+    expect(
+      source.indexOf("<Route element={<PostAuthJourneyGate />}>")
+    ).toBeLessThan(source.indexOf("<Route element={<LobbyLayout />}>"));
+    expect(source).toContain(
+      '<Route path="access-required" element={<AccessRequiredPage />} />'
     );
   });
 });

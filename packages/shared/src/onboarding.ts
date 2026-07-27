@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 // Post-auth journey + onboarding shared contracts.
 //
 // Authority: revC > revB > revA > stage docs. revB §1.4 adds `pendingInvitations`
@@ -67,7 +69,9 @@ export const INVITED_PHASE1_STATES: OnboardingState[] = [
 ];
 
 /** The ordered state list for a journey (used by the monotonic advance). */
-export function orderedStatesFor(journey: OnboardingJourney): OnboardingState[] {
+export function orderedStatesFor(
+  journey: OnboardingJourney
+): OnboardingState[] {
   return journey === "invited" ? INVITED_PHASE1_STATES : FOUNDER_PHASE1_STATES;
 }
 
@@ -106,7 +110,7 @@ export type PendingInvitation = {
  * record consumed at accept time (revC RC3). `inviteToken` stays for shape
  * compatibility and is always null.
  */
-export type PostAuthJourneyResult = {
+type LegacyPostAuthJourneyResult = {
   journey: OnboardingJourney | "returning";
   targetCompanyId: string | null;
   pendingInvitations: PendingInvitation[];
@@ -123,3 +127,104 @@ export type PostAuthJourneyResult = {
    */
   resumeFirstRunCompanyId?: string | null;
 };
+
+export const pendingInvitationSchema = z.object({
+  companyId: z.string().min(1),
+  companyName: z.string(),
+  inviteId: z.string().min(1),
+  role: z.string().min(1),
+  createdAt: z.string().datetime({ offset: true }),
+  filed: z.boolean(),
+});
+
+const postAuthJourneyBaseSchema = z.object({
+  schemaVersion: z.literal(1),
+  pendingInvitations: z.array(pendingInvitationSchema),
+  inviteToken: z.null(),
+});
+
+export const postAuthJourneyResultSchema = z.discriminatedUnion("journey", [
+  postAuthJourneyBaseSchema.extend({
+    journey: z.literal("founder"),
+    targetCompanyId: z.null(),
+    canCreateCompany: z.literal(true),
+    resumeFirstRunCompanyId: z.null(),
+  }),
+  postAuthJourneyBaseSchema.extend({
+    journey: z.literal("invited"),
+    targetCompanyId: z.string().min(1),
+    canCreateCompany: z.literal(false),
+    resumeFirstRunCompanyId: z.null(),
+  }),
+  postAuthJourneyBaseSchema.extend({
+    journey: z.literal("access_required"),
+    targetCompanyId: z.null(),
+    canCreateCompany: z.literal(false),
+    resumeFirstRunCompanyId: z.null(),
+  }),
+  postAuthJourneyBaseSchema.extend({
+    journey: z.literal("returning"),
+    targetCompanyId: z.string().min(1),
+    canCreateCompany: z.boolean(),
+    resumeFirstRunCompanyId: z.string().min(1).nullable(),
+  }),
+]);
+
+export type PostAuthJourneyResult = z.infer<typeof postAuthJourneyResultSchema>;
+
+const legacyPostAuthJourneyResultSchema: z.ZodType<LegacyPostAuthJourneyResult> =
+  z.object({
+    journey: z.enum(["founder", "invited", "returning"]),
+    targetCompanyId: z.string().min(1).nullable(),
+    pendingInvitations: z.array(pendingInvitationSchema),
+    inviteToken: z.null().optional(),
+    resumeFirstRunCompanyId: z.string().min(1).nullable().optional(),
+  });
+
+/**
+ * Parse the current wire contract while tolerating the immediately preceding
+ * response shape during a rolling UI/server deployment.
+ */
+export function parsePostAuthJourneyResult(
+  value: unknown
+): PostAuthJourneyResult {
+  const current = postAuthJourneyResultSchema.safeParse(value);
+  if (current.success) return current.data;
+
+  const legacy = legacyPostAuthJourneyResultSchema.parse(value);
+  if (legacy.journey === "founder") {
+    if (legacy.targetCompanyId !== null)
+      throw new Error("Invalid founder journey target");
+    return {
+      schemaVersion: 1,
+      journey: "founder",
+      targetCompanyId: null,
+      pendingInvitations: legacy.pendingInvitations,
+      inviteToken: null,
+      canCreateCompany: true,
+      resumeFirstRunCompanyId: null,
+    };
+  }
+  if (!legacy.targetCompanyId)
+    throw new Error(`Invalid ${legacy.journey} journey target`);
+  if (legacy.journey === "invited") {
+    return {
+      schemaVersion: 1,
+      journey: "invited",
+      targetCompanyId: legacy.targetCompanyId,
+      pendingInvitations: legacy.pendingInvitations,
+      inviteToken: null,
+      canCreateCompany: false,
+      resumeFirstRunCompanyId: null,
+    };
+  }
+  return {
+    schemaVersion: 1,
+    journey: "returning",
+    targetCompanyId: legacy.targetCompanyId,
+    pendingInvitations: legacy.pendingInvitations,
+    inviteToken: null,
+    canCreateCompany: false,
+    resumeFirstRunCompanyId: legacy.resumeFirstRunCompanyId ?? null,
+  };
+}

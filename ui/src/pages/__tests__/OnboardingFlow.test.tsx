@@ -7,9 +7,18 @@ const state = vi.hoisted(() => ({
   searchParams: new URLSearchParams(),
   selectedCompanyId: null as string | null,
   session: { user: { id: "u1" } } as unknown,
-  flowProps: null as unknown as { companyId: string | null; onFinished?: () => void },
-  orgProps: null as unknown as { ctx: { companyId: string | null }; onComplete: () => void },
-  firstRunProps: null as unknown as { companyId: string; onComplete: () => void },
+  flowProps: null as unknown as {
+    companyId: string | null;
+    onFinished?: () => void;
+  },
+  orgProps: null as unknown as {
+    ctx: { companyId: string | null };
+    onComplete: () => void;
+  },
+  firstRunProps: null as unknown as {
+    companyId: string;
+    onComplete: () => void;
+  },
 }));
 const mockNavigate = vi.hoisted(() => vi.fn());
 const mockRemoveQueries = vi.hoisted(() => vi.fn());
@@ -40,7 +49,10 @@ vi.mock("../../api/onboarding", () => ({
   advanceOnboarding: mockAdvanceOnboarding,
 }));
 vi.mock("../../onboarding/FlowEngine", () => ({
-  FlowEngine: (props: { companyId: string | null; onFinished?: () => void }) => {
+  FlowEngine: (props: {
+    companyId: string | null;
+    onFinished?: () => void;
+  }) => {
     state.flowProps = props;
     return (
       <button type="button" onClick={() => props.onFinished?.()}>
@@ -54,7 +66,10 @@ vi.mock("../../onboarding/FlowEngine", () => ({
   DarkShell: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 vi.mock("../../onboarding/steps/OrgStep", () => ({
-  OrgStep: (props: { ctx: { companyId: string | null }; onComplete: () => void }) => {
+  OrgStep: (props: {
+    ctx: { companyId: string | null };
+    onComplete: () => void;
+  }) => {
     state.orgProps = props;
     return <div>org-step-direct</div>;
   },
@@ -117,10 +132,9 @@ describe("OnboardingFlowPage", () => {
     fireEvent.click(finishTail);
     expect(mockRemoveQueries).toHaveBeenCalledWith({
       queryKey: ["onboarding", "journey"],
-      exact: true,
     });
     expect(mockRemoveQueries.mock.invocationCallOrder[0]).toBeLessThan(
-      mockNavigate.mock.invocationCallOrder[0]!,
+      mockNavigate.mock.invocationCallOrder[0]!
     );
     expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true });
   });

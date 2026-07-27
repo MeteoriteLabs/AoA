@@ -1,5 +1,12 @@
 import { lazy, Suspense, useEffect, useRef } from "react";
-import { Navigate, Outlet, Route, Routes, useLocation, useNavigate } from "@/lib/router";
+import {
+  Navigate,
+  Outlet,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+} from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Layout } from "./components/Layout";
@@ -35,6 +42,7 @@ import { ThreadsWorkspace } from "./pages/ThreadsWorkspace";
 import { WorkspacesList } from "./pages/WorkspacesList";
 import { AuthPage } from "./pages/Auth";
 import { OnboardingFlowPage } from "./pages/OnboardingFlow";
+import { AccessRequiredPage } from "./pages/AccessRequired";
 import { Me } from "./pages/Me";
 import { CompanyExport } from "./pages/CompanyExport";
 import { CompanyImport } from "./pages/CompanyImport";
@@ -44,7 +52,10 @@ import { InviteLandingPage } from "./pages/InviteLanding";
 import { PluginPage } from "./pages/PluginPage";
 import { PluginSettings } from "./pages/PluginSettings";
 import Marketplace from "./pages/Marketplace";
-import { Navigate as RawNavigate, useParams as useRawParams } from "react-router-dom";
+import {
+  Navigate as RawNavigate,
+  useParams as useRawParams,
+} from "react-router-dom";
 import MarketplaceDetail from "./pages/MarketplaceDetail";
 import MarketplaceSearch from "./pages/MarketplaceSearch";
 import MarketplaceUpdates from "./pages/MarketplaceUpdates";
@@ -54,21 +65,49 @@ import { queryKeys } from "./lib/queryKeys";
 import { useCompany } from "./context/CompanyContext";
 import { useDialog } from "./context/DialogContext";
 import { requiresBoardSession } from "./lib/authGate";
+import { useAccountSwitch } from "./hooks/useAccountSwitch";
+import { postAuthJourneyRedirect } from "./lib/postAuthJourneyGate";
 
-const AgentDetail = lazy(() => import("./pages/AgentDetail").then((m) => ({ default: m.AgentDetail })));
-const AoaAgentDetail = lazy(() => import("./pages/AoaAgentDetail").then((m) => ({ default: m.AoaAgentDetail })));
-const DesignGuide = lazy(() => import("./pages/DesignGuide").then((m) => ({ default: m.DesignGuide })));
-const Issues = lazy(() => import("./pages/Issues").then((m) => ({ default: m.Issues })));
-const Memory = lazy(() => import("./pages/Memory").then((m) => ({ default: m.Memory })));
-const MemoryExplorer = lazy(() => import("./pages/MemoryExplorer").then((m) => ({ default: m.MemoryExplorer })));
-const ProjectDetail = lazy(() => import("./pages/ProjectDetail").then((m) => ({ default: m.ProjectDetail })));
-const RoutineDetail = lazy(() => import("./pages/RoutineDetail").then((m) => ({ default: m.RoutineDetail })));
-const Routines = lazy(() => import("./pages/Routines").then((m) => ({ default: m.Routines })));
-const Skills = lazy(() => import("./pages/Skills").then((m) => ({ default: m.Skills })));
-const WorkspaceView = lazy(() => import("./pages/WorkspaceView").then((m) => ({ default: m.WorkspaceView })));
+const AgentDetail = lazy(() =>
+  import("./pages/AgentDetail").then((m) => ({ default: m.AgentDetail }))
+);
+const AoaAgentDetail = lazy(() =>
+  import("./pages/AoaAgentDetail").then((m) => ({ default: m.AoaAgentDetail }))
+);
+const DesignGuide = lazy(() =>
+  import("./pages/DesignGuide").then((m) => ({ default: m.DesignGuide }))
+);
+const Issues = lazy(() =>
+  import("./pages/Issues").then((m) => ({ default: m.Issues }))
+);
+const Memory = lazy(() =>
+  import("./pages/Memory").then((m) => ({ default: m.Memory }))
+);
+const MemoryExplorer = lazy(() =>
+  import("./pages/MemoryExplorer").then((m) => ({ default: m.MemoryExplorer }))
+);
+const ProjectDetail = lazy(() =>
+  import("./pages/ProjectDetail").then((m) => ({ default: m.ProjectDetail }))
+);
+const RoutineDetail = lazy(() =>
+  import("./pages/RoutineDetail").then((m) => ({ default: m.RoutineDetail }))
+);
+const Routines = lazy(() =>
+  import("./pages/Routines").then((m) => ({ default: m.Routines }))
+);
+const Skills = lazy(() =>
+  import("./pages/Skills").then((m) => ({ default: m.Skills }))
+);
+const WorkspaceView = lazy(() =>
+  import("./pages/WorkspaceView").then((m) => ({ default: m.WorkspaceView }))
+);
 
 function RouteFallback() {
-  return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
+  return (
+    <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">
+      Loading...
+    </div>
+  );
 }
 
 function CloudAccessGate() {
@@ -88,13 +127,19 @@ function CloudAccessGate() {
   });
 
   if (healthQuery.isLoading || (requiresSession && sessionQuery.isLoading)) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
+    return (
+      <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">
+        Loading...
+      </div>
+    );
   }
 
   if (healthQuery.error) {
     return (
       <div className="mx-auto max-w-xl py-10 text-sm text-destructive">
-        {healthQuery.error instanceof Error ? healthQuery.error.message : "Failed to load app state"}
+        {healthQuery.error instanceof Error
+          ? healthQuery.error.message
+          : "Failed to load app state"}
       </div>
     );
   }
@@ -111,6 +156,103 @@ function CloudAccessGate() {
   return <Outlet />;
 }
 
+function JourneyGateSurface({
+  error,
+  onRetry,
+}: {
+  error?: string;
+  onRetry?: () => void;
+}) {
+  const { switchAccount, isSwitching, error: switchError } = useAccountSwitch();
+  return (
+    <main className="flex min-h-[100dvh] items-center justify-center bg-[#09090b] px-6 text-zinc-100 [color-scheme:dark]">
+      <div className="w-full max-w-md rounded-xl border border-zinc-800 bg-zinc-950 p-6 text-center">
+        {error ? (
+          <>
+            <h1 className="text-lg font-semibold">
+              We could not determine your access
+            </h1>
+            <p className="mt-2 text-sm text-zinc-400">{error}</p>
+            {switchError ? (
+              <p className="mt-3 text-sm text-red-300">{switchError}</p>
+            ) : null}
+            <div className="mt-5 flex flex-col justify-center gap-3 sm:flex-row">
+              <Button variant="outline" onClick={onRetry}>
+                Retry
+              </Button>
+              <Button
+                disabled={isSwitching}
+                onClick={() => void switchAccount()}
+              >
+                {isSwitching ? "Switching..." : "Switch account"}
+              </Button>
+            </div>
+          </>
+        ) : (
+          <p className="text-sm text-zinc-400" role="status">
+            Checking your AOA access...
+          </p>
+        )}
+      </div>
+    </main>
+  );
+}
+
+function PostAuthJourneyGate() {
+  const location = useLocation();
+  const { setSelectedCompanyId } = useCompany();
+  const sessionQuery = useQuery({
+    queryKey: queryKeys.auth.session,
+    queryFn: () => authApi.getSession(),
+    retry: false,
+  });
+  const healthQuery = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => healthApi.get(),
+    retry: false,
+  });
+  const requiresSession = requiresBoardSession(healthQuery.data);
+  const identityKey = sessionQuery.data?.user.id ?? "local";
+  const journeyQuery = useQuery({
+    queryKey: queryKeys.onboarding.journeyForIdentity(identityKey),
+    queryFn: () => fetchJourney(),
+    enabled: requiresSession && !sessionQuery.isLoading,
+    retry: false,
+  });
+
+  const journey = journeyQuery.data;
+  useEffect(() => {
+    if (journey?.journey === "returning" && journey.resumeFirstRunCompanyId) {
+      setSelectedCompanyId(journey.resumeFirstRunCompanyId, {
+        source: "route_sync",
+      });
+    }
+  }, [journey, setSelectedCompanyId]);
+
+  if (!requiresSession) return <Outlet />;
+  if (sessionQuery.isLoading || journeyQuery.isLoading)
+    return <JourneyGateSurface />;
+  if (journeyQuery.error || !journey) {
+    return (
+      <JourneyGateSurface
+        error={
+          journeyQuery.error instanceof Error
+            ? journeyQuery.error.message
+            : "Access state is unavailable."
+        }
+        onRetry={() => void journeyQuery.refetch()}
+      />
+    );
+  }
+
+  const redirect = postAuthJourneyRedirect(
+    journey,
+    location.pathname,
+    location.search
+  );
+  return redirect ? <Navigate to={redirect} replace /> : <Outlet />;
+}
+
 function boardRoutes() {
   return (
     <>
@@ -121,10 +263,22 @@ function boardRoutes() {
       <Route path="objectives" element={<Objectives />} />
       <Route path="commander" element={<Commander />} />
       <Route path="settings" element={<SettingsPage />} />
-      <Route path="secrets" element={<Navigate to="../settings?tab=secrets" replace />} />
-      <Route path="settings/commander" element={<Navigate to="../settings?tab=commander" replace />} />
-      <Route path="settings/internal-agent" element={<Navigate to="../settings?tab=commander" replace />} />
-      <Route path="company/settings" element={<Navigate to="../settings" replace />} />
+      <Route
+        path="secrets"
+        element={<Navigate to="../settings?tab=secrets" replace />}
+      />
+      <Route
+        path="settings/commander"
+        element={<Navigate to="../settings?tab=commander" replace />}
+      />
+      <Route
+        path="settings/internal-agent"
+        element={<Navigate to="../settings?tab=commander" replace />}
+      />
+      <Route
+        path="company/settings"
+        element={<Navigate to="../settings" replace />}
+      />
       <Route path="team" element={<TeamPage />} />
       <Route path="org" element={<Navigate to="../team" replace />} />
       <Route path="team/teams/:slug" element={<TeamDetail />} />
@@ -145,20 +299,35 @@ function boardRoutes() {
       <Route path="projects/:projectId/overview" element={<ProjectDetail />} />
       <Route path="projects/:projectId/goals" element={<ProjectDetail />} />
       <Route path="projects/:projectId/issues" element={<ProjectDetail />} />
-      <Route path="projects/:projectId/issues/:filter" element={<ProjectDetail />} />
+      <Route
+        path="projects/:projectId/issues/:filter"
+        element={<ProjectDetail />}
+      />
       <Route path="projects/:projectId/team" element={<ProjectDetail />} />
       <Route path="projects/:projectId/budget" element={<ProjectDetail />} />
-      <Route path="projects/:projectId/discussions" element={<ProjectDetail />} />
-      <Route path="projects/:projectId/workspaces" element={<ProjectDetail />} />
+      <Route
+        path="projects/:projectId/discussions"
+        element={<ProjectDetail />}
+      />
+      <Route
+        path="projects/:projectId/workspaces"
+        element={<ProjectDetail />}
+      />
       <Route path="projects/:projectId/settings" element={<ProjectDetail />} />
       <Route path="issues" element={<Issues />} />
       <Route path="issues/all" element={<Navigate to="/issues" replace />} />
       <Route path="issues/active" element={<Navigate to="/issues" replace />} />
-      <Route path="issues/backlog" element={<Navigate to="/issues" replace />} />
+      <Route
+        path="issues/backlog"
+        element={<Navigate to="/issues" replace />}
+      />
       <Route path="issues/done" element={<Navigate to="/issues" replace />} />
       <Route path="issues/recent" element={<Navigate to="/issues" replace />} />
       <Route path="issues/:issueId" element={<Issues />} />
-      <Route path="goals" element={<Navigate to="../objectives?tab=goals" replace />} />
+      <Route
+        path="goals"
+        element={<Navigate to="../objectives?tab=goals" replace />}
+      />
       <Route path="goals/:goalId" element={<GoalDetail />} />
       <Route path="skills/*" element={<Skills />} />
       <Route path="routines" element={<Routines />} />
@@ -171,20 +340,35 @@ function boardRoutes() {
       {/* Canonical thread route — same ThreadDetail component, different param name */}
       <Route path="threads/:threadId" element={<ThreadsWorkspace />} />
       <Route path="briefs" element={<Navigate to="/discussions" replace />} />
-      <Route path="briefs/:briefId" element={<Navigate to="/discussions" replace />} />
+      <Route
+        path="briefs/:briefId"
+        element={<Navigate to="/discussions" replace />}
+      />
       <Route path="debriefs" element={<Navigate to="/discussions" replace />} />
       <Route path="active-agents" element={<ActiveAgents />} />
       {/* Phase 6.2a: explorer is the only memory page; home content lives in its center pane when no scope is selected. /memory redirects in. */}
       <Route path="memory" element={<Navigate to="explore" replace />} />
       <Route path="memory/explore" element={<MemoryExplorer />} />
       <Route path="memory/legacy" element={<Memory />} />
-      <Route path="approvals" element={<Navigate to="/approvals/pending" replace />} />
+      <Route
+        path="approvals"
+        element={<Navigate to="/approvals/pending" replace />}
+      />
       <Route path="approvals/pending" element={<Approvals />} />
       <Route path="approvals/all" element={<Approvals />} />
       <Route path="approvals/:approvalId" element={<ApprovalDetail />} />
-      <Route path="budget" element={<Navigate to="../settings?tab=budget" replace />} />
-      <Route path="costs" element={<Navigate to="../settings?tab=budget" replace />} />
-      <Route path="activity" element={<Navigate to="../settings?tab=activity" replace />} />
+      <Route
+        path="budget"
+        element={<Navigate to="../settings?tab=budget" replace />}
+      />
+      <Route
+        path="costs"
+        element={<Navigate to="../settings?tab=budget" replace />}
+      />
+      <Route
+        path="activity"
+        element={<Navigate to="../settings?tab=activity" replace />}
+      />
       <Route path="inbox" element={<InboxHub />} />
       <Route path="inbox/new" element={<InboxHub />} />
       <Route path="inbox/all" element={<InboxHub />} />
@@ -206,7 +390,11 @@ function CompanyRootRedirect() {
   const { companies, selectedCompany, loading } = useCompany();
 
   if (loading) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
+    return (
+      <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">
+        Loading...
+      </div>
+    );
   }
 
   const targetCompany = selectedCompany ?? companies[0] ?? null;
@@ -222,7 +410,11 @@ function UnprefixedBoardRedirect() {
   const { companies, selectedCompany, loading } = useCompany();
 
   if (loading) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
+    return (
+      <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">
+        Loading...
+      </div>
+    );
   }
 
   const targetCompany = selectedCompany ?? companies[0] ?? null;
@@ -269,7 +461,9 @@ function NoCompaniesStartPage({ autoOpen = true }: { autoOpen?: boolean }) {
 /** Redirect /marketplace/:type → /marketplace?type={type} without company-prefix logic. */
 function MarketplaceTypeRedirect() {
   const { type } = useRawParams<{ type: string }>();
-  return <RawNavigate to={`/marketplace${type ? `?type=${type}` : ""}`} replace />;
+  return (
+    <RawNavigate to={`/marketplace${type ? `?type=${type}` : ""}`} replace />
+  );
 }
 
 /** Self-consuming mount shim — mirrors the DiscussionCaptureModal pattern */
@@ -290,9 +484,16 @@ function NewThreadDialogMount() {
 function LobbyOrOnboardingRedirect() {
   const navigate = useNavigate();
   const { setSelectedCompanyId } = useCompany();
+  const sessionQuery = useQuery({
+    queryKey: queryKeys.auth.session,
+    queryFn: () => authApi.getSession(),
+    retry: false,
+  });
+  const identityKey = sessionQuery.data?.user.id ?? "local";
   const { data, isLoading } = useQuery({
-    queryKey: ["onboarding", "journey"],
+    queryKey: queryKeys.onboarding.journeyForIdentity(identityKey),
     queryFn: () => fetchJourney(),
+    enabled: !sessionQuery.isLoading,
     retry: false,
   });
   useEffect(() => {
@@ -300,7 +501,9 @@ function LobbyOrOnboardingRedirect() {
     if (data.journey === "founder") {
       navigate("/onboarding", { replace: true });
     } else if (data.journey === "invited") {
-      navigate(`/onboarding/join?company=${data.targetCompanyId ?? ""}`, { replace: true });
+      navigate(`/onboarding/join?company=${data.targetCompanyId ?? ""}`, {
+        replace: true,
+      });
     } else if (data.resumeFirstRunCompanyId) {
       // Returning founder who abandoned their first-run tail: select that company
       // and drop them back into /onboarding to finish it. The spine is already
@@ -310,10 +513,11 @@ function LobbyOrOnboardingRedirect() {
       navigate("/onboarding", { replace: true });
     }
   }, [data, navigate, setSelectedCompanyId]);
-  if (isLoading) return <RouteFallback />;
+  if (sessionQuery.isLoading || isLoading) return <RouteFallback />;
   // Redirecting (founder / invited) OR resuming an unfinished founder tail —
   // render nothing so the Lobby doesn't flash underneath before the redirect.
-  if (data && (data.journey !== "returning" || data.resumeFirstRunCompanyId)) return null;
+  if (data && (data.journey !== "returning" || data.resumeFirstRunCompanyId))
+    return null;
   return <Lobby pendingInvitations={data?.pendingInvitations ?? []} />;
 }
 
@@ -328,62 +532,143 @@ export function App() {
           <Route path="invite/:token" element={<InviteLandingPage />} />
 
           <Route element={<CloudAccessGate />}>
-            {/* Persistent lobby shell — sidebar mounts once, content swaps via <Outlet/> */}
-            <Route element={<LobbyLayout />}>
-              <Route index element={<LobbyOrOnboardingRedirect />} />
-              <Route path="instance/settings" element={<InstanceSettingsPage />} />
-              <Route path="instance/access" element={<InstanceAccessPage />} />
-              <Route path="marketplace" element={<Marketplace />} />
-              <Route path="marketplace/search" element={<MarketplaceSearch />} />
-              {/* Static segment — outranks `marketplace/:type` (which would
+            <Route element={<PostAuthJourneyGate />}>
+              {/* Persistent lobby shell — sidebar mounts once, content swaps via <Outlet/> */}
+              <Route element={<LobbyLayout />}>
+                <Route index element={<LobbyOrOnboardingRedirect />} />
+                <Route
+                  path="instance/settings"
+                  element={<InstanceSettingsPage />}
+                />
+                <Route
+                  path="instance/access"
+                  element={<InstanceAccessPage />}
+                />
+                <Route path="marketplace" element={<Marketplace />} />
+                <Route
+                  path="marketplace/search"
+                  element={<MarketplaceSearch />}
+                />
+                {/* Static segment — outranks `marketplace/:type` (which would
                   otherwise bounce it to `?type=connectors`, a type the catalog
                   does not and must not have). */}
-              <Route path="marketplace/connectors" element={<MarketplaceConnectors />} />
-              <Route path="marketplace/package/:id/*" element={<MarketplacePackageDetail />} />
-              <Route path="marketplace/:type" element={<MarketplaceTypeRedirect />} />
-              <Route path="marketplace/:type/:slug/*" element={<MarketplaceDetail />} />
-            </Route>
-            <Route path="me" element={<Me />} />
-            <Route path="onboarding" element={<OnboardingFlowPage journey="founder" />} />
-            <Route path="onboarding/join" element={<OnboardingFlowPage journey="invited" />} />
-            <Route path="export" element={<Layout />}>
-              <Route index element={<CompanyExport />} />
-            </Route>
-            <Route path="import" element={<Layout />}>
-              <Route index element={<CompanyImport />} />
-            </Route>
-            <Route path="instance/settings/plugins/:pluginId" element={<PluginSettings />} />
-            <Route path="companies" element={<UnprefixedBoardRedirect />} />
-            <Route path="issues" element={<UnprefixedBoardRedirect />} />
-            <Route path="issues/:issueId" element={<UnprefixedBoardRedirect />} />
-            <Route path="agents" element={<UnprefixedBoardRedirect />} />
-            <Route path="agents/:agentId" element={<UnprefixedBoardRedirect />} />
-            <Route path="agents/:agentId/:tab" element={<UnprefixedBoardRedirect />} />
-            <Route path="agents/:agentId/runs/:runId" element={<UnprefixedBoardRedirect />} />
-            <Route path="discussions" element={<UnprefixedBoardRedirect />} />
-            <Route path="discussions/:discussionId" element={<UnprefixedBoardRedirect />} />
-            <Route path="briefs" element={<Navigate to="/discussions" replace />} />
-            <Route path="briefs/*" element={<Navigate to="/discussions" replace />} />
-            <Route path="vision" element={<UnprefixedBoardRedirect />} />
-            <Route path="objectives" element={<UnprefixedBoardRedirect />} />
-            <Route path="commander" element={<UnprefixedBoardRedirect />} />
-            <Route path="memory" element={<UnprefixedBoardRedirect />} />
-            <Route path="budget" element={<UnprefixedBoardRedirect />} />
-            <Route path="secrets" element={<UnprefixedBoardRedirect />} />
-            <Route path="projects" element={<UnprefixedBoardRedirect />} />
-            <Route path="projects/:projectId" element={<UnprefixedBoardRedirect />} />
-            <Route path="team/teams/:slug" element={<UnprefixedBoardRedirect />} />
-            <Route path="projects/:projectId/overview" element={<UnprefixedBoardRedirect />} />
-            <Route path="projects/:projectId/issues" element={<UnprefixedBoardRedirect />} />
-            <Route path="projects/:projectId/issues/:filter" element={<UnprefixedBoardRedirect />} />
-            <Route path="projects/:projectId/goals" element={<UnprefixedBoardRedirect />} />
-            <Route path="projects/:projectId/team" element={<UnprefixedBoardRedirect />} />
-            <Route path="projects/:projectId/budget" element={<UnprefixedBoardRedirect />} />
-            <Route path="projects/:projectId/settings" element={<UnprefixedBoardRedirect />} />
-            <Route path="skills/*" element={<UnprefixedBoardRedirect />} />
-            <Route path="workspaces" element={<UnprefixedBoardRedirect />} />
-            <Route path=":companyPrefix" element={<Layout />}>
-              {boardRoutes()}
+                <Route
+                  path="marketplace/connectors"
+                  element={<MarketplaceConnectors />}
+                />
+                <Route
+                  path="marketplace/package/:id/*"
+                  element={<MarketplacePackageDetail />}
+                />
+                <Route
+                  path="marketplace/:type"
+                  element={<MarketplaceTypeRedirect />}
+                />
+                <Route
+                  path="marketplace/:type/:slug/*"
+                  element={<MarketplaceDetail />}
+                />
+              </Route>
+              <Route path="me" element={<Me />} />
+              <Route path="access-required" element={<AccessRequiredPage />} />
+              <Route
+                path="onboarding"
+                element={<OnboardingFlowPage journey="founder" />}
+              />
+              <Route
+                path="onboarding/join"
+                element={<OnboardingFlowPage journey="invited" />}
+              />
+              <Route path="export" element={<Layout />}>
+                <Route index element={<CompanyExport />} />
+              </Route>
+              <Route path="import" element={<Layout />}>
+                <Route index element={<CompanyImport />} />
+              </Route>
+              <Route
+                path="instance/settings/plugins/:pluginId"
+                element={<PluginSettings />}
+              />
+              <Route path="companies" element={<UnprefixedBoardRedirect />} />
+              <Route path="issues" element={<UnprefixedBoardRedirect />} />
+              <Route
+                path="issues/:issueId"
+                element={<UnprefixedBoardRedirect />}
+              />
+              <Route path="agents" element={<UnprefixedBoardRedirect />} />
+              <Route
+                path="agents/:agentId"
+                element={<UnprefixedBoardRedirect />}
+              />
+              <Route
+                path="agents/:agentId/:tab"
+                element={<UnprefixedBoardRedirect />}
+              />
+              <Route
+                path="agents/:agentId/runs/:runId"
+                element={<UnprefixedBoardRedirect />}
+              />
+              <Route path="discussions" element={<UnprefixedBoardRedirect />} />
+              <Route
+                path="discussions/:discussionId"
+                element={<UnprefixedBoardRedirect />}
+              />
+              <Route
+                path="briefs"
+                element={<Navigate to="/discussions" replace />}
+              />
+              <Route
+                path="briefs/*"
+                element={<Navigate to="/discussions" replace />}
+              />
+              <Route path="vision" element={<UnprefixedBoardRedirect />} />
+              <Route path="objectives" element={<UnprefixedBoardRedirect />} />
+              <Route path="commander" element={<UnprefixedBoardRedirect />} />
+              <Route path="memory" element={<UnprefixedBoardRedirect />} />
+              <Route path="budget" element={<UnprefixedBoardRedirect />} />
+              <Route path="secrets" element={<UnprefixedBoardRedirect />} />
+              <Route path="projects" element={<UnprefixedBoardRedirect />} />
+              <Route
+                path="projects/:projectId"
+                element={<UnprefixedBoardRedirect />}
+              />
+              <Route
+                path="team/teams/:slug"
+                element={<UnprefixedBoardRedirect />}
+              />
+              <Route
+                path="projects/:projectId/overview"
+                element={<UnprefixedBoardRedirect />}
+              />
+              <Route
+                path="projects/:projectId/issues"
+                element={<UnprefixedBoardRedirect />}
+              />
+              <Route
+                path="projects/:projectId/issues/:filter"
+                element={<UnprefixedBoardRedirect />}
+              />
+              <Route
+                path="projects/:projectId/goals"
+                element={<UnprefixedBoardRedirect />}
+              />
+              <Route
+                path="projects/:projectId/team"
+                element={<UnprefixedBoardRedirect />}
+              />
+              <Route
+                path="projects/:projectId/budget"
+                element={<UnprefixedBoardRedirect />}
+              />
+              <Route
+                path="projects/:projectId/settings"
+                element={<UnprefixedBoardRedirect />}
+              />
+              <Route path="skills/*" element={<UnprefixedBoardRedirect />} />
+              <Route path="workspaces" element={<UnprefixedBoardRedirect />} />
+              <Route path=":companyPrefix" element={<Layout />}>
+                {boardRoutes()}
+              </Route>
             </Route>
           </Route>
         </Routes>

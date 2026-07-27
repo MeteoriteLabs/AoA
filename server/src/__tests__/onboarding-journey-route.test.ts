@@ -20,7 +20,8 @@ function seqDb(results: unknown[][]) {
       {
         get(_t, prop) {
           if (prop === "then") {
-            return (resolve: (v: unknown) => void) => resolve(results[i++] ?? []);
+            return (resolve: (v: unknown) => void) =>
+              resolve(results[i++] ?? []);
           }
           if (prop === "where") {
             return (cond: unknown) => {
@@ -36,9 +37,13 @@ function seqDb(results: unknown[][]) {
           }
           return () => builder();
         },
-      },
+      }
     );
-  return { select: () => builder(), _whereCalls: whereCalls, _orderByCalls: orderByCalls } as any;
+  return {
+    select: () => builder(),
+    _whereCalls: whereCalls,
+    _orderByCalls: orderByCalls,
+  } as any;
 }
 
 /**
@@ -72,7 +77,10 @@ function sqlText(node: unknown): string {
     }
     if (typeof c !== "object") return;
     const rec = c as Record<string, unknown>;
-    if (Array.isArray(rec.value) && rec.value.every((v) => typeof v === "string")) {
+    if (
+      Array.isArray(rec.value) &&
+      rec.value.every((v) => typeof v === "string")
+    ) {
       out.push((rec.value as string[]).join(""));
     }
     if (Array.isArray(rec.queryChunks)) rec.queryChunks.forEach(walk);
@@ -131,7 +139,7 @@ describe("getJourneyForUser (A5 + RB7/RB9 wiring)", () => {
     // onboarding_progress.first_run_completed_at, and it binds companies.status
     // in the same clause — status is referenced solely for the archived guard.
     const resumeWhere = (db._whereCalls as unknown[]).find((c) =>
-      conditionColumns(c).includes("first_run_completed_at"),
+      conditionColumns(c).includes("first_run_completed_at")
     );
     expect(resumeWhere).toBeDefined();
     expect(conditionColumns(resumeWhere)).toContain("status");
@@ -170,14 +178,13 @@ describe("getJourneyForUser (A5 + RB7/RB9 wiring)", () => {
     expect(r.pendingInvitations[0].role).toBe("team_member"); // default when defaults absent
   });
 
-  it("founder when no membership and no pending request", async () => {
+  it("access required when a non-admin has no membership or pending request", async () => {
     const db = seqDb([[{ email: "u@x.com", emailVerified: true }], [], []]);
     const r = await getJourneyForUser(db, { userId: "u1" });
-    expect(r).toEqual({
-      journey: "founder",
+    expect(r).toMatchObject({
+      journey: "access_required",
       targetCompanyId: null,
-      pendingInvitations: [],
-      inviteToken: null,
+      canCreateCompany: false,
     });
   });
 
@@ -205,7 +212,9 @@ describe("getJourneyForUser (A5 + RB7/RB9 wiring)", () => {
 
     expect(r.journey).toBe("returning");
     expect(r.targetCompanyId).toBe("c1");
-    expect(r.pendingInvitations.map((invite) => invite.companyId)).toEqual(["c2"]);
+    expect(r.pendingInvitations.map((invite) => invite.companyId)).toEqual([
+      "c2",
+    ]);
   });
 
   it("prefers an instance admin's active membership over the global fallback", async () => {
@@ -225,18 +234,22 @@ describe("getJourneyForUser (A5 + RB7/RB9 wiring)", () => {
   });
 
   it("keeps an instance admin on the founder journey when the instance is empty", async () => {
-    const db = seqDb([[{ email: "admin@x.com", emailVerified: true }], [], [], []]);
+    const db = seqDb([
+      [{ email: "admin@x.com", emailVerified: true }],
+      [],
+      [],
+      [],
+    ]);
 
     const r = await getJourneyForUser(db, {
       userId: "admin-1",
       isInstanceAdmin: true,
     });
 
-    expect(r).toEqual({
+    expect(r).toMatchObject({
       journey: "founder",
       targetCompanyId: null,
-      pendingInvitations: [],
-      inviteToken: null,
+      canCreateCompany: true,
     });
   });
 });
@@ -326,7 +339,7 @@ describe("getJourneyForUser — open-invite detection (tokenless invited entry)"
     // Structural lock: the open-invite query itself orders desc(createdAt) —
     // the merge's first-row-wins only picks the newest if SQL sorts it first.
     const openInviteOrderBy = (db._orderByCalls as unknown[][]).find((args) =>
-      args.some((a) => conditionColumns(a).includes("created_at")),
+      args.some((a) => conditionColumns(a).includes("created_at"))
     );
     expect(openInviteOrderBy).toBeDefined();
     expect(sqlText(openInviteOrderBy)).toContain("desc");
@@ -341,7 +354,7 @@ describe("getJourneyForUser — open-invite detection (tokenless invited entry)"
     ]);
     await getJourneyForUser(db, { userId: "u1" });
     const openInviteWhere = (db._whereCalls as unknown[]).find((c) =>
-      conditionColumns(c).includes("expires_at"),
+      conditionColumns(c).includes("expires_at")
     );
     expect(openInviteWhere).toBeDefined();
     const text = sqlText(openInviteWhere);
@@ -357,10 +370,18 @@ describe("getJourneyForUser — open-invite detection (tokenless invited entry)"
       [], // filed join_requests
       // Would-be open invite: MUST NOT be consumed — detection is gated on a
       // verified email. If the query ran, this row would flip the journey.
-      [{ inviteId: "i9", companyId: "c2", companyName: "Beta", createdAt: new Date(), defaults: null }],
+      [
+        {
+          inviteId: "i9",
+          companyId: "c2",
+          companyName: "Beta",
+          createdAt: new Date(),
+          defaults: null,
+        },
+      ],
     ]);
     const r = await getJourneyForUser(db, { userId: "u1" });
-    expect(r.journey).toBe("founder");
+    expect(r.journey).toBe("access_required");
     expect(r.pendingInvitations).toEqual([]);
   });
 
@@ -375,9 +396,9 @@ describe("getJourneyForUser — open-invite detection (tokenless invited entry)"
       [], // open invites — an expired/revoked/accepted invite comes back empty
     ]);
     const r = await getJourneyForUser(db, { userId: "u1" });
-    expect(r.journey).toBe("founder");
+    expect(r.journey).toBe("access_required");
     const openInviteWhere = (db._whereCalls as unknown[]).find((c) =>
-      conditionColumns(c).includes("expires_at"),
+      conditionColumns(c).includes("expires_at")
     );
     expect(openInviteWhere).toBeDefined();
     expect(conditionColumns(openInviteWhere)).toEqual(
@@ -388,7 +409,7 @@ describe("getJourneyForUser — open-invite detection (tokenless invited entry)"
         "invite_type",
         "allowed_join_types",
         "defaults_payload",
-      ]),
+      ])
     );
   });
 
@@ -449,7 +470,9 @@ describe("GET /api/onboarding/journey", () => {
       companyIds: [],
     });
 
-    const res = await request(app).get("/api/onboarding/journey");
+    const res = await request(app)
+      .get("/api/onboarding/journey")
+      .set("X-AOA-Journey-Schema-Version", "1");
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body).toMatchObject({
@@ -474,17 +497,51 @@ describe("GET /api/onboarding/journey", () => {
       companyIds: [],
     });
 
-    const res = await request(app).get("/api/onboarding/journey");
+    const res = await request(app)
+      .get("/api/onboarding/journey")
+      .set("X-AOA-Journey-Schema-Version", "1");
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body).toMatchObject({
-      journey: "founder",
+      journey: "access_required",
       targetCompanyId: null,
     });
   });
 
+  it("keeps old cached clients on the legacy journey contract during rollout", async () => {
+    const db = seqDb([
+      [{ email: "member@x.com", emailVerified: true }],
+      [],
+      [],
+      [],
+      [{ companyId: "c1" }],
+    ]);
+    const app = makeApp(db, {
+      type: "board",
+      userId: "member-1",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [],
+    });
+
+    const res = await request(app).get("/api/onboarding/journey");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual({
+      journey: "founder",
+      targetCompanyId: null,
+      pendingInvitations: [],
+      inviteToken: null,
+      resumeFirstRunCompanyId: null,
+    });
+  });
+
   it("rejects callers without a board identity before querying", async () => {
-    const db = { select: () => { throw new Error("database should not be queried"); } };
+    const db = {
+      select: () => {
+        throw new Error("database should not be queried");
+      },
+    };
     const app = makeApp(db, { type: "none", source: "none" });
 
     const res = await request(app).get("/api/onboarding/journey");

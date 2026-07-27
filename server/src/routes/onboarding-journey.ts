@@ -8,13 +8,30 @@ import {
   companies,
   onboardingProgress,
 } from "@armyofagents/db";
-import { and, desc, eq, gt, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
-import type { PostAuthJourneyResult, PendingInvitation } from "@armyofagents/shared";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  ne,
+  or,
+  sql,
+} from "drizzle-orm";
+import type {
+  PostAuthJourneyResult,
+  PendingInvitation,
+} from "@armyofagents/shared";
 import { resolvePostAuthJourney } from "../services/post-auth-journey.js";
 
 const TEAM_INVITE_KEY = "teamInvite";
 
-function roleFromInviteDefaults(defaults: Record<string, unknown> | null | undefined): string {
+function roleFromInviteDefaults(
+  defaults: Record<string, unknown> | null | undefined
+): string {
   const team = (defaults?.[TEAM_INVITE_KEY] ?? {}) as Record<string, unknown>;
   const role = team.role;
   return typeof role === "string" && role.length > 0 ? role : "team_member";
@@ -43,7 +60,7 @@ export async function getJourneyForUser(
     userId: string;
     deepLinkCompanyId?: string | null;
     isInstanceAdmin?: boolean;
-  },
+  }
 ): Promise<PostAuthJourneyResult> {
   const [user] = await db
     .select({ email: authUsers.email, emailVerified: authUsers.emailVerified })
@@ -57,13 +74,16 @@ export async function getJourneyForUser(
   const memberships = await db
     .select({ companyId: companyMemberships.companyId })
     .from(companyMemberships)
+    .innerJoin(companies, eq(companies.id, companyMemberships.companyId))
     .where(
       and(
         eq(companyMemberships.principalType, "user"),
         eq(companyMemberships.principalId, args.userId),
         eq(companyMemberships.status, "active"),
-      ),
-    );
+        ne(companies.status, "archived")
+      )
+    )
+    .orderBy(desc(companyMemberships.updatedAt), companyMemberships.companyId);
 
   // Match the user's own pending human requests, plus (verified email only) any
   // pending human request snapshotting their verified email.
@@ -87,8 +107,9 @@ export async function getJourneyForUser(
       and(
         eq(joinRequests.requestType, "human"),
         eq(joinRequests.status, "pending_approval"),
-        or(eq(joinRequests.requestingUserId, args.userId), emailMatch),
-      ),
+        ne(companies.status, "archived"),
+        or(eq(joinRequests.requestingUserId, args.userId), emailMatch)
+      )
     );
 
   const pendingInvitations: PendingInvitation[] = pendingRows.map((r) => ({
@@ -96,7 +117,10 @@ export async function getJourneyForUser(
     companyName: r.companyName ?? "",
     inviteId: r.inviteId,
     role: roleFromInviteDefaults(r.defaults),
-    createdAt: (r.createdAt instanceof Date ? r.createdAt : new Date(r.createdAt as string)).toISOString(),
+    createdAt: (r.createdAt instanceof Date
+      ? r.createdAt
+      : new Date(r.createdAt as string)
+    ).toISOString(),
     filed: true,
   }));
 
@@ -124,10 +148,11 @@ export async function getJourneyForUser(
               eq(invites.inviteType, "company_join"),
               inArray(invites.allowedJoinTypes, ["human", "both"]),
               isNotNull(invites.companyId),
+              ne(companies.status, "archived"),
               // btrim: padded invite emails must match like the admit gate,
               // which trims both sides before comparing.
-              sql`lower(btrim(${invites.defaultsPayload} -> 'teamInvite' ->> 'email')) = lower(btrim(${email}))`,
-            ),
+              sql`lower(btrim(${invites.defaultsPayload} -> 'teamInvite' ->> 'email')) = lower(btrim(${email}))`
+            )
           )
           // Newest first — the merge below keeps the FIRST row per company, so
           // the surfaced invite matches the one finalize claims (it orders by
@@ -147,29 +172,41 @@ export async function getJourneyForUser(
       companyName: r.companyName ?? "",
       inviteId: r.inviteId,
       role: roleFromInviteDefaults(r.defaults),
-      createdAt: (r.createdAt instanceof Date ? r.createdAt : new Date(r.createdAt as string)).toISOString(),
+      createdAt: (r.createdAt instanceof Date
+        ? r.createdAt
+        : new Date(r.createdAt as string)
+      ).toISOString(),
       filed: false,
     });
   }
 
   // Deterministic ordering when multiple invitations match.
   pendingInvitations.sort(
-    (a, b) => a.createdAt.localeCompare(b.createdAt) || a.companyId.localeCompare(b.companyId),
+    (a, b) =>
+      b.createdAt.localeCompare(a.createdAt) ||
+      a.companyId.localeCompare(b.companyId)
   );
 
-  let returningCompanyIds = memberships.map((membership) => membership.companyId);
+  let returningCompanyIds = memberships.map(
+    (membership) => membership.companyId
+  );
   if (returningCompanyIds.length === 0 && args.isInstanceAdmin) {
     const adminVisibleCompanies = await db
       .select({ companyId: companies.id })
       .from(companies)
+      .where(ne(companies.status, "archived"))
+      .orderBy(asc(companies.createdAt), companies.id)
       .limit(1);
-    returningCompanyIds = adminVisibleCompanies.map((company) => company.companyId);
+    returningCompanyIds = adminVisibleCompanies.map(
+      (company) => company.companyId
+    );
   }
 
   const result = resolvePostAuthJourney({
     memberships: returningCompanyIds,
     pendingInvitations,
     deepLinkCompanyId: args.deepLinkCompanyId ?? null,
+    canCreateCompany: args.isInstanceAdmin === true,
   });
 
   // Resume signal: a returning founder whose OWN first-run tail is unfinished
@@ -192,9 +229,10 @@ export async function getJourneyForUser(
           isNotNull(onboardingProgress.companyId),
           isNull(onboardingProgress.firstRunCompletedAt),
           inArray(onboardingProgress.companyId, returningCompanyIds),
-          ne(companies.status, "archived"),
-        ),
+          ne(companies.status, "archived")
+        )
       )
+      .orderBy(desc(onboardingProgress.updatedAt), onboardingProgress.companyId)
       .limit(1);
     result.resumeFirstRunCompanyId = resume?.companyId ?? null;
   }
@@ -215,6 +253,23 @@ export function onboardingJourneyRoutes(db: Db): Router {
       userId: actor.userId,
       isInstanceAdmin: actor.isInstanceAdmin === true,
     });
+    // Rolling-deploy compatibility: an old cached UI does not understand the
+    // access_required discriminant and would render a blank route. Only clients
+    // advertising the versioned contract receive it. The new UI tolerates both
+    // this legacy response and the versioned response.
+    if (
+      result.journey === "access_required" &&
+      req.header("x-aoa-journey-schema-version") !== "1"
+    ) {
+      res.json({
+        journey: "founder",
+        targetCompanyId: null,
+        pendingInvitations: [],
+        inviteToken: null,
+        resumeFirstRunCompanyId: null,
+      });
+      return;
+    }
     res.json(result);
   });
   return router;

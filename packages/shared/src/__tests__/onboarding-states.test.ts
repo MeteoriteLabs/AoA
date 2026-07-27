@@ -5,6 +5,7 @@ import {
   FOUNDER_PHASE1_STATES,
   INVITED_PHASE1_STATES,
   orderedStatesFor,
+  parsePostAuthJourneyResult,
 } from "../onboarding.js";
 
 describe("onboarding states (Stage B / B2)", () => {
@@ -48,5 +49,50 @@ describe("onboarding states (Stage B / B2)", () => {
   it("orderedStatesFor picks the right sequence per journey", () => {
     expect(orderedStatesFor("founder")).toBe(FOUNDER_PHASE1_STATES);
     expect(orderedStatesFor("invited")).toBe(INVITED_PHASE1_STATES);
+  });
+});
+
+describe("post-auth journey contract", () => {
+  it("parses access-required without admitting company creation", () => {
+    expect(
+      parsePostAuthJourneyResult({
+        schemaVersion: 1,
+        journey: "access_required",
+        targetCompanyId: null,
+        pendingInvitations: [],
+        inviteToken: null,
+        canCreateCompany: false,
+        resumeFirstRunCompanyId: null,
+      })
+    ).toMatchObject({ journey: "access_required", canCreateCompany: false });
+  });
+
+  it("upgrades the previous founder response during a rolling deploy", () => {
+    expect(
+      parsePostAuthJourneyResult({
+        journey: "founder",
+        targetCompanyId: null,
+        pendingInvitations: [],
+        inviteToken: null,
+      })
+    ).toMatchObject({
+      schemaVersion: 1,
+      journey: "founder",
+      canCreateCompany: true,
+    });
+  });
+
+  it("rejects impossible access-required targets", () => {
+    expect(() =>
+      parsePostAuthJourneyResult({
+        schemaVersion: 1,
+        journey: "access_required",
+        targetCompanyId: "company-1",
+        pendingInvitations: [],
+        inviteToken: null,
+        canCreateCompany: false,
+        resumeFirstRunCompanyId: null,
+      })
+    ).toThrow();
   });
 });

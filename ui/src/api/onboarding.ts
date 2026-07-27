@@ -4,15 +4,24 @@ import type {
   OnboardingState,
   FirstRunPersona,
 } from "@armyofagents/shared";
+import { parsePostAuthJourneyResult } from "@armyofagents/shared";
 
 export type FlowProgress = { completedStates: OnboardingState[] };
 
-export async function getOnboardingProgress(companyId: string | null): Promise<FlowProgress | null> {
+export async function getOnboardingProgress(
+  companyId: string | null
+): Promise<FlowProgress | null> {
   const q = companyId ? `?companyId=${encodeURIComponent(companyId)}` : "";
-  const res = await fetch(`/api/onboarding/progress${q}`, { credentials: "include" });
+  const res = await fetch(`/api/onboarding/progress${q}`, {
+    credentials: "include",
+  });
   if (!res.ok) throw new Error(`progress fetch failed: ${res.status}`);
-  const data = (await res.json()) as { progress?: { completedStates?: OnboardingState[] } | null };
-  return data.progress ? { completedStates: data.progress.completedStates ?? [] } : null;
+  const data = (await res.json()) as {
+    progress?: { completedStates?: OnboardingState[] } | null;
+  };
+  return data.progress
+    ? { completedStates: data.progress.completedStates ?? [] }
+    : null;
 }
 
 export async function advanceOnboarding(args: {
@@ -27,12 +36,19 @@ export async function advanceOnboarding(args: {
     body: JSON.stringify(args),
   });
   if (!res.ok) throw new Error(`advance failed: ${res.status}`);
-  const data = (await res.json()) as { progress?: { completedStates?: OnboardingState[] } | null };
-  return data.progress ? { completedStates: data.progress.completedStates ?? [] } : null;
+  const data = (await res.json()) as {
+    progress?: { completedStates?: OnboardingState[] } | null;
+  };
+  return data.progress
+    ? { completedStates: data.progress.completedStates ?? [] }
+    : null;
 }
 
 /** The FlowEngineApi backed by the real endpoints. */
-export const onboardingApi = { getProgress: getOnboardingProgress, advance: advanceOnboarding };
+export const onboardingApi = {
+  getProgress: getOnboardingProgress,
+  advance: advanceOnboarding,
+};
 
 /**
  * Fix 2 (dead-end fix, see CLAUDE.md WS0b note) — writes the WS0b
@@ -47,7 +63,9 @@ export const onboardingApi = { getProgress: getOnboardingProgress, advance: adva
  * rather than surface it to the caller, since the caller must never block
  * navigation on this write.
  */
-export async function setFirstRunCompleted(companyId: string): Promise<boolean> {
+export async function setFirstRunCompleted(
+  companyId: string
+): Promise<boolean> {
   try {
     const res = await fetch("/api/onboarding/first-run", {
       method: "PATCH",
@@ -77,7 +95,10 @@ export async function setFirstRunCompleted(companyId: string): Promise<boolean> 
  * the door band again (see `getFirstRunProgress` below), which is a safe,
  * re-askable default, not a dead end.
  */
-export async function setFirstRunPersona(companyId: string, persona: FirstRunPersona): Promise<void> {
+export async function setFirstRunPersona(
+  companyId: string,
+  persona: FirstRunPersona
+): Promise<void> {
   try {
     const res = await fetch("/api/onboarding/first-run", {
       method: "PATCH",
@@ -105,13 +126,21 @@ export type FirstRunProgress = {
  * projects `firstRunPersona`/`firstRunCompletedAt` on every row — see
  * `services/onboarding.ts` `mapRow`) rather than adding a new route.
  */
-export async function getFirstRunProgress(companyId: string): Promise<FirstRunProgress> {
-  const res = await fetch(`/api/onboarding/progress?companyId=${encodeURIComponent(companyId)}`, {
-    credentials: "include",
-  });
+export async function getFirstRunProgress(
+  companyId: string
+): Promise<FirstRunProgress> {
+  const res = await fetch(
+    `/api/onboarding/progress?companyId=${encodeURIComponent(companyId)}`,
+    {
+      credentials: "include",
+    }
+  );
   if (!res.ok) throw new Error(`progress fetch failed: ${res.status}`);
   const data = (await res.json()) as {
-    progress?: { firstRunPersona?: FirstRunPersona | null; firstRunCompletedAt?: string | null } | null;
+    progress?: {
+      firstRunPersona?: FirstRunPersona | null;
+      firstRunCompletedAt?: string | null;
+    } | null;
   };
   return {
     firstRunPersona: data.progress?.firstRunPersona ?? null,
@@ -126,19 +155,29 @@ export async function getFirstRunProgress(companyId: string): Promise<FirstRunPr
  * invited journey.
  */
 export async function fetchJourney(): Promise<PostAuthJourneyResult> {
-  const res = await fetch("/api/onboarding/journey", { credentials: "include" });
+  const res = await fetch("/api/onboarding/journey", {
+    credentials: "include",
+    headers: {
+      Accept: "application/json",
+      "X-AOA-Journey-Schema-Version": "1",
+    },
+  });
   if (!res.ok) {
     // Carry the HTTP status — the terminal distinguishes a dead session (401 →
     // back to sign-in) from a transient failure (retry next tick).
-    throw Object.assign(new Error(`journey fetch failed: ${res.status}`), { status: res.status });
+    throw Object.assign(new Error(`journey fetch failed: ${res.status}`), {
+      status: res.status,
+    });
   }
-  return (await res.json()) as PostAuthJourneyResult;
+  return parsePostAuthJourneyResult(await res.json());
 }
 
 /** Map a journey to the route the user should land on after login. */
 export function destinationForJourney(j: PostAuthJourneyResult): string {
   if (j.journey === "returning") return "/";
-  if (j.journey === "invited") return `/onboarding/join?company=${j.targetCompanyId ?? ""}`;
+  if (j.journey === "invited")
+    return `/onboarding/join?company=${j.targetCompanyId ?? ""}`;
+  if (j.journey === "access_required") return "/access-required";
   return "/onboarding";
 }
 
@@ -159,18 +198,23 @@ export type FinalizeInvitedJoinResult = {
  */
 export async function finalizeInvitedJoin(
   companyId: string,
-  opts?: { acceptOpenInvite?: boolean },
+  opts?: { acceptOpenInvite?: boolean }
 ): Promise<FinalizeInvitedJoinResult> {
   const res = await fetch("/api/onboarding/join/finalize", {
     method: "POST",
     credentials: "include",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ companyId, ...(opts?.acceptOpenInvite ? { acceptOpenInvite: true } : {}) }),
+    body: JSON.stringify({
+      companyId,
+      ...(opts?.acceptOpenInvite ? { acceptOpenInvite: true } : {}),
+    }),
   });
   if (!res.ok) {
     // Carry the HTTP status — the terminal distinguishes a dead session (401 →
     // back to sign-in) from a transient failure (retry next tick).
-    throw Object.assign(new Error(`finalize failed: ${res.status}`), { status: res.status });
+    throw Object.assign(new Error(`finalize failed: ${res.status}`), {
+      status: res.status,
+    });
   }
   return (await res.json()) as FinalizeInvitedJoinResult;
 }
