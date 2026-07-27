@@ -852,7 +852,10 @@ async function mapWithConcurrency<T>(
   if (items.length === 0) return;
   const width = Math.max(1, Math.min(limit, items.length));
   let cursor = 0;
-  await Promise.all(
+  // Drain every started worker before reporting a failure. `Promise.all` would
+  // reject immediately and let siblings keep writing after repair returned
+  // (and, for skill installs, after their shared checkout cache was disposed).
+  const workers = await Promise.allSettled(
     Array.from({ length: width }, async () => {
       for (;;) {
         const index = cursor++;
@@ -861,6 +864,10 @@ async function mapWithConcurrency<T>(
       }
     }),
   );
+  const failed = workers.find(
+    (result): result is PromiseRejectedResult => result.status === "rejected",
+  );
+  if (failed) throw failed.reason;
 }
 
 function skip(

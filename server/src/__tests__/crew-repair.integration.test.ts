@@ -130,6 +130,7 @@ const REVIEWER_ID = "agent:aoa-curated/aoa-reviewer";
 const STEWARD_ID = STEWARD_CATALOG_ITEM_ID;
 const INLINE_SKILL_ID = "skill:aoa-curated/fixture-inline-skill";
 const FETCHED_SKILL_ID = "skill:aoa-curated/fixture-fetched-skill";
+const SLOW_INLINE_SKILL_URL = `${FIXTURE_HOST}/skills/fixture-inline-skill/SKILL.md`;
 
 let seedCounter = 0;
 function nextIssuePrefix(): string {
@@ -303,6 +304,7 @@ const FIXTURE_BODIES: Record<string, string> = {
   [`${FIXTURE_HOST}/agents/aoa-adjutant/agent.json`]: agentTemplate("aoa-adjutant", "Adjutant", "adjutant"),
   [`${FIXTURE_HOST}/agents/aoa-reviewer/agent.json`]: agentTemplate("aoa-reviewer", "Reviewer", "reviewer"),
   [`${FIXTURE_HOST}/agents/aoa-steward/agent.json`]: agentTemplate("aoa-steward", "Steward", "steward"),
+  [SLOW_INLINE_SKILL_URL]: "---\nname: fixture-inline-skill\n---\n\nInline body.\n",
   [`${FIXTURE_HOST}/skills/fixture-fetched-skill/SKILL.md`]:
     "---\nname: fixture-fetched-skill\n---\n\nFetched body.\n",
 };
@@ -310,6 +312,7 @@ const FIXTURE_BODIES: Record<string, string> = {
 let realFetch: typeof globalThis.fetch;
 let cdnReachable = false;
 const brokenUrls = new Set<string>();
+const delayedUrls = new Set<string>();
 let fixtureFetchCallCount = 0;
 
 function installFixtureFetch() {
@@ -324,6 +327,9 @@ function installFixtureFetch() {
         status: 200,
         headers: { "content-type": "application/json" },
       });
+    }
+    if (delayedUrls.has(url)) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
     }
     if (brokenUrls.has(url)) return new Response("upstream unavailable", { status: 503 });
     const body = FIXTURE_BODIES[url];
@@ -617,6 +623,7 @@ afterEach(() => {
   registerMarketplaceCatalogService(null);
   resetCrewRepairCooldowns();
   brokenUrls.clear();
+  delayedUrls.clear();
   cdnReachable = false;
   fixtureFetchCallCount = 0;
   delete process.env[STEWARD_RECONCILE_ENV];
@@ -813,11 +820,21 @@ describe.skipIf(
     const companyId = await createLegacyCompany("Skill Fetch Co");
     await withCatalog();
     brokenUrls.add(`${FIXTURE_HOST}/skills/fixture-fetched-skill/SKILL.md`);
+    // Make the successful sibling finish after the failed fetch. The repair
+    // helper must drain started workers before returning; otherwise this row
+    // appears nondeterministically after the assertions (and after cache cleanup).
+    delayedUrls.add(SLOW_INLINE_SKILL_URL);
+    const failureCatalog = buildCatalog();
+    const inlineSkill = failureCatalog.items.find((item) => item.id === INLINE_SKILL_ID)!;
+    delete inlineSkill.content;
+    inlineSkill.resourceUrl = SLOW_INLINE_SKILL_URL;
     const before = await crewRows(companyId);
 
     let clock = Date.now();
     setCrewRepairClock(() => clock);
-    const result = await repairCompanyCrew(db, companyId, { catalogItems: CATALOG_ITEMS });
+    const result = await repairCompanyCrew(db, companyId, {
+      catalogItems: failureCatalog.items as CatalogItem[],
+    });
 
     // The CREW is untouched — no adoption, no team row, nothing that could read
     // as a healthy install. A crew that advertises skill keys with no rows
