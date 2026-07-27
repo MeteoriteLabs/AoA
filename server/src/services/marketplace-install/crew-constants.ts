@@ -25,6 +25,18 @@
  */
 export const ADOPTED_TEMPLATE_VERSION = "0.0.0-legacy";
 
+/** Published identity of the Steward agent that curates the Inbox Hub. */
+export const STEWARD_CATALOG_ITEM_ID = "agent:aoa-curated/aoa-steward";
+
+/** Published identity of the default marketplace crew team. */
+export const DEFAULT_CREW_TEAM_ITEM_ID = "team:aoa-curated/default-crew";
+
+/**
+ * Maximum number of productive crew repairs or legacy adoptions in one fleet
+ * pass. Fail-closed and already-converged companies do not consume a slot.
+ */
+export const CREW_REPAIR_MAX_PER_PASS = 5;
+
 /**
  * Every `…@legacy` origin slug a catalog roster entry could have been seeded
  * under locally, given its published id and display name.

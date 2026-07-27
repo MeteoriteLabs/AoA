@@ -83,6 +83,7 @@ import { reconcileAutonomyScale } from "./services/internal-agent/aoa-agents/rec
 import { checkCrewUpdates } from "./services/marketplace-install/crew-updater.js";
 import { reconcileTeamMembers } from "./services/marketplace-install/team-reconcile.js";
 import { runCrewRepairPass } from "./services/crew-repair.js";
+import { runLegacyStewardReconcilePass } from "./services/marketplace-install/legacy-steward-reconcile.js";
 import { agentInstructionsService } from "./services/agent-instructions.js";
 
 type BetterAuthSessionUser = {
@@ -919,6 +920,17 @@ async function runCrewUpdateCheck(): Promise<void> {
       companyIds: allCompanies.map((c: { id: string }) => c.id),
       catalogItems: catalogData as any,
     }).catch((err) => logger.warn({ err }, "crew provisioning repair pass failed"));
+
+    // T2.4 / Phase 4A — a healthy marketplace-managed company can still carry
+    // the legacy NULL-origin Steward created before Steward joined the catalog.
+    // Adopt that exact row in place before the updater walks agents. This pass
+    // uses only `catalogData` already loaded above: no fetch and no change to
+    // `diagnoseCrewProvisioning`'s no-network healthy classification.
+    await runLegacyStewardReconcilePass({
+      db: db as any,
+      companyIds: allCompanies.map((c: { id: string }) => c.id),
+      catalogItems: catalogData as any,
+    }).catch((err) => logger.warn({ err }, "legacy Steward reconciliation pass failed"));
 
     for (const company of allCompanies) {
       // Per-company isolation: a failure for one company must not abort the

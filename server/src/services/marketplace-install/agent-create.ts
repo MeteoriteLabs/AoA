@@ -1,10 +1,15 @@
-import { eq } from "drizzle-orm";
+import { and, eq, or } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { agents, aoaAgentTriggers } from "@armyofagents/db";
 import type { CatalogItem } from "@armyofagents/shared";
 import { deriveSiblingResourceUrl } from "./agent-runtime.js";
 import { fetchCatalogResourceUrl } from "./fetch-resource.js";
 import { applyCrewInstallDefaults, isCrewTemplate } from "./crew-install-defaults.js";
+import {
+  acquireCrewRepairAdvisoryLock,
+  adoptLegacyCrewAgentPointer,
+} from "./crew-adoption.js";
+import { STEWARD_CATALOG_ITEM_ID } from "./crew-constants.js";
 import { resolveCrewAdapterForCompany } from "../internal-agent/aoa-agents/resolve-crew-adapter.js";
 import type { NormalizedMarketplaceAgentTemplate } from "./types.js";
 
@@ -61,6 +66,8 @@ export async function createMarketplaceAgent(opts: {
   desiredName: string;
   template: NormalizedMarketplaceAgentTemplate;
   instructionsService?: AgentInstructionsServiceLike;
+  /** Team installation may adopt the pre-catalog built-in Steward in place. */
+  adoptLegacySteward?: boolean;
 }): Promise<{ agentId: string }> {
   const { catalogItem, companyId, db, desiredName, instructionsService } = opts;
 
@@ -81,6 +88,67 @@ export async function createMarketplaceAgent(opts: {
     : null;
 
   return db.transaction(async (tx) => {
+    if (catalogItem.id === STEWARD_CATALOG_ITEM_ID) {
+      if (template.kind !== "aoa") {
+        throw new Error("Catalog Steward must normalize to kind='aoa'");
+      }
+      const lockedDb = tx as unknown as Db;
+      await acquireCrewRepairAdvisoryLock(lockedDb, companyId);
+      const existingStewardRows = await tx
+        .select({
+          id: agents.id,
+          kind: agents.kind,
+          name: agents.name,
+          templateOrigin: agents.templateOrigin,
+        })
+        .from(agents)
+        .where(
+          and(
+            eq(agents.companyId, companyId),
+            or(
+              eq(agents.templateOrigin, STEWARD_CATALOG_ITEM_ID),
+              and(eq(agents.kind, "aoa"), eq(agents.name, "Steward")),
+            ),
+          ),
+        )
+        .limit(2);
+      if (existingStewardRows.length > 0) {
+        const existing = existingStewardRows[0];
+        if (
+          opts.adoptLegacySteward === true &&
+          existingStewardRows.length === 1 &&
+          existing.kind === "aoa" &&
+          existing.templateOrigin === STEWARD_CATALOG_ITEM_ID
+        ) {
+          return { agentId: existing.id };
+        }
+        if (
+          opts.adoptLegacySteward === true &&
+          existingStewardRows.length === 1 &&
+          existing.kind === "aoa" &&
+          existing.name === "Steward" &&
+          existing.templateOrigin === null
+        ) {
+          const adopted = await adoptLegacyCrewAgentPointer(lockedDb, {
+            companyId,
+            agentId: existing.id,
+            expectedName: existing.name,
+            expectedTemplateOrigin: null,
+            templateOrigin: STEWARD_CATALOG_ITEM_ID,
+          });
+          if (!adopted) {
+            throw new Error(
+              "Steward changed before team installation could adopt it; retry the install",
+            );
+          }
+          return { agentId: existing.id };
+        }
+        throw new Error(
+          "Steward already exists for this company; reconcile or update the existing protected agent",
+        );
+      }
+    }
+
     const inserted = await tx
       .insert(agents)
       .values({
