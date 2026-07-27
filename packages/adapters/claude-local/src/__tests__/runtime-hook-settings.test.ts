@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   buildPreToolUseSettings,
   writeRuntimeHookSettingsFile,
+  writeRuntimeHookTokenFile,
   PERMISSION_REQUIRING_TOOLS,
 } from "../server/runtime-hook-settings.js";
 
@@ -108,6 +109,27 @@ describe("buildPreToolUseSettings", () => {
     expect(hook.command).not.toContain(sampleInput.endpointUrl);
   });
 
+  it("appends the token-FILE path (not the token) as an arg when provided", () => {
+    // WS1/F1 — the token travels via a file whose PATH is a hook-command arg, NOT
+    // via AOA_RUNTIME_HOOK_TOKEN in the child env (which a connector stdio child
+    // inherits and which stripConnectorRunBearers removes). The connector child
+    // does not see the hook command's argv, so the token stays out of its reach.
+    const tokenFilePath = "/tmp/aoa-hooks-xyz/aoa-runtime-hook-token";
+    const result = buildPreToolUseSettings({ ...sampleInput, tokenFilePath });
+    const hook = result.hooks.PreToolUse[0].hooks[0];
+    expect(hook.command).toContain(tokenFilePath);
+    // ordered: node "<forwarder>" "<tokenFilePath>"
+    expect(hook.command.indexOf(sampleInput.forwarderPath)).toBeLessThan(
+      hook.command.indexOf(tokenFilePath),
+    );
+  });
+
+  it("omits the token-file arg when no tokenFilePath is given (byte-identical to before)", () => {
+    const result = buildPreToolUseSettings(sampleInput);
+    const hook = result.hooks.PreToolUse[0].hooks[0];
+    expect(hook.command).toBe(`node "${sampleInput.forwarderPath}"`);
+  });
+
   it("the hook uses timeoutSec from the input", () => {
     const result = buildPreToolUseSettings(sampleInput);
     const hook = result.hooks.PreToolUse[0].hooks[0];
@@ -135,6 +157,27 @@ describe("buildPreToolUseSettings", () => {
     const json = JSON.stringify(result);
     const parsed = JSON.parse(json);
     expect(parsed).toEqual(result);
+  });
+});
+
+describe("writeRuntimeHookTokenFile", () => {
+  it("writes the token to a 0600 file in the given dir and returns its path", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "hook-token-test-"));
+    const token = "SECRET-TOKEN-VALUE-abc123";
+
+    const filePath = await writeRuntimeHookTokenFile(dir, token);
+
+    expect(typeof filePath).toBe("string");
+    expect(filePath.startsWith(dir)).toBe(true);
+    const raw = await fs.readFile(filePath, "utf-8");
+    expect(raw).toBe(token);
+    // Owner-only permissions (best-effort; POSIX only — Windows ignores mode bits).
+    if (process.platform !== "win32") {
+      const mode = (await fs.stat(filePath)).mode & 0o777;
+      expect(mode).toBe(0o600);
+    }
+
+    await fs.rm(dir, { recursive: true, force: true });
   });
 });
 

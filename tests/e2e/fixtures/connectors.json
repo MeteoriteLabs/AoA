@@ -31,7 +31,7 @@
       "serverName": "e2e-local-tool",
       "transport": "stdio",
       "command": "npx",
-      "args": ["-y", "@e2e/local-tool"],
+      "args": ["-y", "@e2e/local-tool@1.0.0"],
       "envTemplateKeys": ["E2E_LOCAL_TOOL_TOKEN"],
       "requiresSecret": false,
       "trust": { "tier": "unverified" }

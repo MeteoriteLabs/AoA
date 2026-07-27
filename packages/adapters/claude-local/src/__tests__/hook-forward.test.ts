@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { spawn } from "node:child_process";
 import http from "node:http";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -143,6 +145,57 @@ describe("hook-forward.mjs", () => {
       expect(parsed).toEqual(DENY_DECISION);
     } finally {
       await stub.close();
+    }
+  });
+
+  it("reads the bearer token from the argv[2] FILE (F1), authenticating with NO env token", async () => {
+    // F1: the token is delivered via a file path passed as argv[2], NOT via
+    // AOA_RUNTIME_HOOK_TOKEN (which a connector child would inherit). Prove the
+    // forwarder reads the file and sends the right bearer even with the env var
+    // absent — the exact scenario a connector run creates.
+    const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "hook-forward-tokenfile-"));
+    const tokenFilePath = path.join(dir, "aoa-runtime-hook-token");
+    const TOKEN = "FILE-DELIVERED-TOKEN-abc123";
+    await fs.promises.writeFile(tokenFilePath, TOKEN, "utf8");
+
+    let seenAuth: string | undefined;
+    const stub = await startStubServer((req, res) => {
+      seenAuth = req.headers["authorization"];
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: "PreToolUse",
+            permissionDecision: "allow",
+            permissionDecisionReason: "ok",
+          },
+        }),
+      );
+    });
+
+    try {
+      const { stdout, exitCode } = await new Promise<{ stdout: string; exitCode: number }>(
+        (resolve, reject) => {
+          const env: NodeJS.ProcessEnv = { ...process.env, AOA_RUNTIME_HOOK_URL: stub.url };
+          delete env.AOA_RUNTIME_HOOK_TOKEN; // the token must come from the file, not env
+          const proc = spawn("node", [FORWARDER_PATH, tokenFilePath], { env });
+          let stdout = "";
+          proc.stdout.on("data", (chunk: Buffer) => (stdout += chunk.toString()));
+          proc.on("error", reject);
+          proc.on("close", (code: number | null) =>
+            resolve({ stdout: stdout.trim(), exitCode: code ?? 0 }),
+          );
+          proc.stdin.write(SAMPLE_HOOK_PAYLOAD);
+          proc.stdin.end();
+        },
+      );
+      expect(exitCode).toBe(0);
+      // The forwarder authenticated with the FILE token, not env.
+      expect(seenAuth).toBe(`Bearer ${TOKEN}`);
+      expect(JSON.parse(stdout).hookSpecificOutput.permissionDecision).toBe("allow");
+    } finally {
+      await stub.close();
+      await fs.promises.rm(dir, { recursive: true, force: true });
     }
   });
 

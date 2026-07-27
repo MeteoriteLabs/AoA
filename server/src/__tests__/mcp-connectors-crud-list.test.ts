@@ -10,6 +10,7 @@ vi.mock("drizzle-orm", () => ({
   desc: vi.fn((c: unknown) => ({ desc: c })),
   eq: vi.fn((a: unknown, b: unknown) => ({ eq: [a, b] })),
   inArray: vi.fn((c: unknown, v: unknown) => ({ inArray: [c, v] })),
+  isNull: vi.fn((c: unknown) => ({ isNull: c })),
 }));
 
 vi.mock("@armyofagents/db", () => {
@@ -25,6 +26,7 @@ vi.mock("@armyofagents/db", () => {
     agents: makeTable("agents"),
     companyMcpConnectorAgents: makeTable("company_mcp_connector_agents"),
     companyMcpConnectors: makeTable("company_mcp_connectors"),
+    companySecrets: makeTable("company_secrets"),
   };
 });
 

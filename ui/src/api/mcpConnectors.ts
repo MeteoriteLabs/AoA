@@ -21,8 +21,10 @@ export type ConnectorDeliverabilityReason =
   | "unknown_transport"
   | "malformed_row"
   | "d7_blocked"
+  | "unsafe_command"
   | "secret_unreachable"
-  | "adapter_incapable";
+  | "adapter_incapable"
+  | "credential_inactive_or_missing";
 
 export interface BlockedAgentDeliverability {
   agentId: string;

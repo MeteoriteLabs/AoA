@@ -538,3 +538,15 @@ consolidated suite 938 green + 192 db green, typecheck clean.
 The AoA-side parser now dedups ids (Finding 7 defense-in-depth), but the `aoa-marketplace`
 builder (`aggregate-connectors`) should reject duplicate ids at BUILD time so a collision never
 ships in `connectors.json`. Flag for the marketplace repo (`feat/connectors-catalog`).
+
+### FU-31 — `mcp_connector.delivered` audit should reflect the ADAPTER-written set · P2
+`resolveAgentConnectors` emits `mcp_connector.delivered` at the SERVER-SIDE resolution point
+(after `buildConnectorSpecs`, PR #304 / Codex F5). A downstream adapter writer can still drop a
+connector before it reaches the CLI — codex → `secret_unreachable` for a secret-bearing stdio
+spec (`codex-config-toml.ts`), sandbox-docker → all MCP skipped (`execute.ts`) — so those are
+audited as delivered though they never reached the CLI. Fully accurate requires each adapter
+writer to report its surviving connector ids (or the audit to move post-write, per adapter). Not
+done in #304 to avoid a 4-writer refactor + upstream duplication of the drop predicates (drift).
+The drops ARE separately observable today (McpWriterSkipReason warnings + the deliverability
+preview's `secret_unreachable`); this event errs toward recording that AoA MADE the connector
+available. Revisit when adapter writers gain a uniform "delivered ids" report.

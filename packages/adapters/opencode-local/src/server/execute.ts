@@ -10,6 +10,7 @@ import {
   runAdapterExecutionTargetProcess,
   syncAdapterExecutionTargetFile,
   aoaAmbientSecretEnvKeys,
+  stripConnectorRunBearers,
   type AdapterExecutionContext,
   type AdapterExecutionResult,
 } from "@armyofagents/adapter-utils";
@@ -258,9 +259,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // process.env drops them too. The `aoa` bridge keeps working from
   // opencode.json's `mcp.aoa.environment` (buildMcpBridgeSpec re-supplies
   // DATABASE_URL + secrets config). No-connector runs are byte-identical.
-  const connectorsPresent =
-    ctx.mcpServers != null && Object.keys(ctx.mcpServers).length > 0;
-  const connectorScrubKeys = connectorsPresent
+  // F4 — http connectors inherit nothing; env isolation is stdio-only. Only a
+  // STDIO connector spawns a local child that inherits the CLI env, so all three
+  // isolation concerns below (bearer strip, ambient scrub, authToken:null) gate
+  // on a stdio connector being present. An http-only run inherits nothing local,
+  // so isolating it has zero benefit and would wrongly strip the agent's own
+  // AOA_API_KEY → its REST calls 401 in authenticated mode. Connector delivery
+  // (opencode.json --mcp-config) is unchanged for every transport — this gate is
+  // env-isolation only.
+  const hasStdioConnector =
+    ctx.mcpServers != null &&
+    Object.values(ctx.mcpServers).some((s) => (s as { kind?: string } | null)?.kind === "stdio");
+  // WS1 — strip the run bearer from the overlay BEFORE the scrub computes its
+  // `keep` list from Object.keys(env); otherwise AOA_API_KEY is kept + spread
+  // back onto the spawn env. opencode has no runtime hook token.
+  stripConnectorRunBearers(env, { connectorsPresent: hasStdioConnector, secretValues: [authToken] });
+  const connectorScrubKeys = hasStdioConnector
     ? aoaAmbientSecretEnvKeys(preparedRuntimeEnv, { keep: Object.keys(env) })
     : [];
   const spawnEnv =
@@ -399,7 +413,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       env: spawnEnv,
       ...(connectorScrubKeys.length > 0 ? { unsetEnvKeys: connectorScrubKeys } : {}),
       stdin: prompt,
-      authToken: preparedRuntimeEnv.AOA_API_KEY ?? authToken ?? null,
+      authToken: hasStdioConnector ? null : (preparedRuntimeEnv.AOA_API_KEY ?? authToken ?? null),
       apiBaseUrl: preparedRuntimeEnv.AOA_API_URL ?? null,
       runtimeCommandSpec: ctx.runtimeCommandSpec ?? null,
       timeoutSec,

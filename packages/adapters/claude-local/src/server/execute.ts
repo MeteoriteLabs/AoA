@@ -13,6 +13,7 @@ import {
   syncAdapterExecutionTargetDirectory,
   syncAdapterExecutionTargetFile,
   aoaAmbientSecretEnvKeys,
+  stripConnectorRunBearers,
   type AdapterBillingType,
   type AdapterExecutionContext,
   type AdapterExecutionResult,
@@ -45,6 +46,7 @@ import {
 import {
   buildPreToolUseSettings,
   writeRuntimeHookSettingsFile,
+  writeRuntimeHookTokenFile,
 } from "./runtime-hook-settings.js";
 import {
   CLAUDE_AMBIENT_CONFIG_UNSET_PREFIXES,
@@ -340,9 +342,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // `${AOA_MCP_*_TOKEN}` lives in the spawn OVERLAY (`env` below), which
   // mergeChildEnv preserves through the strip. No-connector runs keep the full
   // env, byte-identical (empty list → no strip).
-  const connectorsPresent =
-    ctx.mcpServers != null && Object.keys(ctx.mcpServers).length > 0;
-  const connectorScrubKeys = connectorsPresent ? aoaAmbientSecretEnvKeys() : undefined;
+  // F4 — connector ENV ISOLATION (ambient scrub + bearer strip + authToken:null)
+  // applies only when a STDIO connector will spawn a local child that inherits the
+  // CLI env. HTTP connectors are remote: they inherit nothing, so an http-only run
+  // must stay byte-identical to a no-connector run. Otherwise merely enabling an
+  // HTTP connector would strip the agent's own AOA_API_KEY and 401 its REST calls
+  // (Codex F4). The connector CONFIG (--mcp-config) is still built from
+  // ctx.mcpServers regardless of transport — this gate is env-isolation only.
+  const hasStdioConnector =
+    ctx.mcpServers != null &&
+    Object.values(ctx.mcpServers).some((s) => (s as { kind?: string } | null)?.kind === "stdio");
+  const connectorScrubKeys = hasStdioConnector ? aoaAmbientSecretEnvKeys() : undefined;
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -549,22 +559,41 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     let hookSettingsFilePath: string | null = null;
     if (bridged) {
       const endpointUrl = runtimeHookBridge!.selfBaseUrl + runtimeHookBridge!.path;
+      hookSettingsTmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-runtime-hooks-"));
+      // F1 — deliver the bearer token via a FILE whose path is a hook-command arg,
+      // NOT via AOA_RUNTIME_HOOK_TOKEN in the child env. The Claude CLI passes its
+      // full env to every stdio connector child, so an env token would leak there;
+      // and `stripConnectorRunBearers` (below) removes it on connector runs, which
+      // would break the fail-closed hook — denying Bash/Write/Edit/WebFetch for the
+      // whole run (Codex F1). The connector child never sees the hook's argv, so the
+      // token-file path stays out of its reach. Only the non-secret URL rides in env.
+      let hookTokenFilePath: string | undefined;
+      if (runtimeHookToken) {
+        hookTokenFilePath = await writeRuntimeHookTokenFile(hookSettingsTmpDir, runtimeHookToken);
+      }
       const hookSettings = buildPreToolUseSettings({
         endpointUrl,
         timeoutSec: runtimeHookBridge!.timeoutSec,
         forwarderPath,
+        tokenFilePath: hookTokenFilePath,
       });
-      hookSettingsTmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-runtime-hooks-"));
       hookSettingsFilePath = await writeRuntimeHookSettingsFile(hookSettingsTmpDir, hookSettings);
-      // Inject hook env vars into the child process env.
-      // AOA_RUNTIME_HOOK_TOKEN is redacted in onMeta by its key name ("TOKEN" matches SENSITIVE_ENV_KEY).
-      // AOA_RUNTIME_HOOK_URL is a plain non-secret URL; redacted by value if it looks like a secret (it doesn't).
+      // AOA_RUNTIME_HOOK_URL is a plain non-secret URL; redacted by value in onMeta
+      // only if it looks like a secret (it doesn't). The token is NOT injected here.
       env.AOA_RUNTIME_HOOK_URL = endpointUrl;
-      if (runtimeHookToken) {
-        env.AOA_RUNTIME_HOOK_TOKEN = runtimeHookToken;
-      }
     }
     // ------------------------------------
+
+    // WS1 — with the run bearers now assembled, remove them from the
+    // connector-facing env: the vendor CLI passes its FULL env to every stdio
+    // connector child (empirically confirmed), so a connector would otherwise
+    // inherit AOA_API_KEY (call AoA as the agent) or AOA_RUNTIME_HOOK_TOKEN
+    // (forge runtime permission prompts). No-op without connectors → no-connector
+    // runs stay byte-identical.
+    stripConnectorRunBearers(env, {
+      connectorsPresent: hasStdioConnector,
+      secretValues: [authToken, runtimeHookToken],
+    });
 
     const executionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
     const preparedRuntime = await prepareAdapterExecutionTargetRuntime({
@@ -779,7 +808,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         cwd: executionCwd,
         env,
         stdin: prompt,
-        authToken: env.AOA_API_KEY ?? authToken ?? null,
+        // Stdio-connector runs: null the token param too — some execution targets
+        // (sandbox-docker) forward it into a host callback bridge, so leaving it
+        // would reintroduce the credential the env-strip just removed. HTTP-only
+        // runs keep the bearer (F4 — no local child inherits it).
+        authToken: hasStdioConnector ? null : (env.AOA_API_KEY ?? authToken ?? null),
         apiBaseUrl: env.AOA_API_URL ?? null,
         runtimeCommandSpec: ctx.runtimeCommandSpec ?? null,
         timeoutSec,

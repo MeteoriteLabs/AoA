@@ -30,6 +30,10 @@
 import { RESERVED_MCP_SERVER_NAMES } from "@armyofagents/adapter-utils";
 import { badRequest, conflict } from "../errors.js";
 import { logger } from "../middleware/logger.js";
+import {
+  ConnectorCommandUnsafeError,
+  assertStdioCommandSafe,
+} from "./mcp-connector-command-safety.js";
 import { resolveConnectorStatus } from "./mcp-connector-status.js";
 import type { LogActivityInput } from "./activity-log.js";
 import type { ConnectorInsert } from "./mcp-connectors-crud.js";
@@ -154,6 +158,22 @@ export async function createConnector(
     throw badRequest(
       `"${input.serverName}" is a reserved AoA server name and cannot be used for a connector`,
     );
+  }
+
+  // Decision #116 clause 7 — command safety. Unlike D7 (which needs a caller-only
+  // trust tier), this gate needs nothing the caller has to supply, so it lives
+  // HERE and covers BOTH the BYO and catalog callers in EVERY deployment mode. It
+  // authorizes a package IDENTITY + shape (launcher allowlist, exact pin, closed
+  // grammar, no shell metachars, only the own `${TOKEN}`); it does NOT sandbox the
+  // package's code (separate layer). Delivery re-checks the same predicate so
+  // legacy/imported/direct-DB rows fail closed. http carries no command → skipped.
+  if (input.transport === "stdio") {
+    try {
+      assertStdioCommandSafe(input.command, input.args);
+    } catch (e) {
+      if (e instanceof ConnectorCommandUnsafeError) throw badRequest(e.message);
+      throw e;
+    }
   }
 
   // secretRef must point at an existing company secret (A19/A20): reject the
