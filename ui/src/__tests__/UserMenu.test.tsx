@@ -1,8 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithProviders, mockCompanyContext } from "./test-utils";
 import { UserMenu } from "../components/UserMenu";
+import { cancelChallengesWithinTimeout } from "../hooks/useAccountSwitch";
 
 const mockNavigate = vi.fn();
 
@@ -61,6 +62,10 @@ describe("UserMenu", () => {
     });
     signOut.mockResolvedValue(undefined);
     cancelOwnLoginChallenges.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("renders avatar trigger with user initials", async () => {
@@ -125,7 +130,7 @@ describe("UserMenu", () => {
     expect(mockCompanyContext.resetCompanySelection).toHaveBeenCalledOnce();
   });
 
-  it("stays signed in when active provider sign-in cancellation fails", async () => {
+  it("still signs out when active provider sign-in cancellation fails", async () => {
     cancelOwnLoginChallenges.mockRejectedValueOnce(new Error("cancel failed"));
     const user = userEvent.setup();
     renderWithProviders(<UserMenu />);
@@ -137,9 +142,21 @@ describe("UserMenu", () => {
       await screen.findByRole("menuitem", { name: /sign out/i })
     );
 
-    expect(await screen.findByText("cancel failed")).toBeInTheDocument();
-    expect(signOut).not.toHaveBeenCalled();
-    expect(mockNavigate).not.toHaveBeenCalled();
+    await waitFor(() => expect(signOut).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(mockNavigate).toHaveBeenCalledWith("/auth", { replace: true })
+    );
+    expect(mockCompanyContext.resetCompanySelection).toHaveBeenCalledOnce();
+  });
+
+  it("still signs out when active provider sign-in cancellation times out", async () => {
+    vi.useFakeTimers();
+    cancelOwnLoginChallenges.mockReturnValueOnce(new Promise(() => {}));
+    const rejection = expect(cancelChallengesWithinTimeout()).rejects.toThrow(
+      "Could not cancel active provider sign-in"
+    );
+    await vi.advanceTimersByTimeAsync(5_000);
+    await rejection;
   });
 
   it("calls sidebar resetToDefault when 'Reset sidebar to default' is selected", async () => {
