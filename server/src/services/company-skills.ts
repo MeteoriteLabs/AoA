@@ -1828,9 +1828,10 @@ export function companySkillService(db: Db) {
       throw skillNameTakenConflict(slug, existingSlug.key);
     }
 
-    // Stage bytes away from the final path. The unique (company_id, key) insert
-    // below is the concurrency authority: only its winner may publish this
-    // directory, and a loser never mutates an existing founder-owned file.
+    // Stage bytes away from the final path, then atomically claim the final
+    // directory BEFORE exposing a DB row whose inventory reconciliation would
+    // otherwise see a missing sourceLocator and prune it. A failed insert
+    // removes only the directory this request just claimed.
     await fs.mkdir(managedRoot, { recursive: true });
     const stagingDir = await fs.mkdtemp(path.join(managedRoot, `.${slug}-create-`));
     try {
@@ -1838,6 +1839,22 @@ export function companySkillService(db: Db) {
       // the existing sanitized representation used by imported skills, but
       // the managed source file must not discard Unicode content.
       await fs.writeFile(path.join(stagingDir, "SKILL.md"), markdown, "utf8");
+
+      try {
+        await fs.rename(stagingDir, skillDir);
+      } catch (error) {
+        const record = error && typeof error === "object"
+          ? error as Record<string, unknown>
+          : null;
+        if (
+          record?.code === "EEXIST"
+          || record?.code === "ENOTEMPTY"
+          || record?.code === "EPERM"
+        ) {
+          throw skillNameTakenConflict(slug, key);
+        }
+        throw error;
+      }
 
       let inserted: CompanySkillRow | undefined;
       try {
@@ -1862,6 +1879,7 @@ export function companySkillService(db: Db) {
           })
           .returning();
       } catch (error) {
+        await fs.rm(skillDir, { recursive: true, force: true });
         if (isCompanySkillKeyCollision(error)) {
           throw skillNameTakenConflict(slug, key);
         }
@@ -1869,30 +1887,15 @@ export function companySkillService(db: Db) {
       }
 
       if (!inserted) {
+        await fs.rm(skillDir, { recursive: true, force: true });
         throw new Error("Failed to create company skill");
-      }
-
-      try {
-        await fs.rename(stagingDir, skillDir);
-      } catch (error) {
-        await db.delete(companySkills).where(eq(companySkills.id, inserted.id));
-        const record = error && typeof error === "object"
-          ? error as Record<string, unknown>
-          : null;
-        if (
-          record?.code === "EEXIST"
-          || record?.code === "ENOTEMPTY"
-          || record?.code === "EPERM"
-        ) {
-          throw skillNameTakenConflict(slug, key);
-        }
-        throw error;
       }
 
       return toCompanySkill(inserted);
     } finally {
-      // If the insert lost the race, or a later step failed, only the private
-      // staging directory is removed. Never remove the final path on collision.
+      // If publication lost the filesystem race, remove only this request's
+      // private staging directory. Insert failures clean up the final directory
+      // in their own branch because this request already claimed it.
       await fs.rm(stagingDir, { recursive: true, force: true });
     }
   }

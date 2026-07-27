@@ -930,6 +930,54 @@ describe("company-portability skills", () => {
     expect(targetSkills.find((s) => s.id === "existing-1")!.name).toBe("Old Alpha");
   });
 
+  it("allocates renamed skill keys in normalized key space", async () => {
+    resetState();
+    targetSkills = [
+      makeSkill({
+        id: "existing-1",
+        companyId: TGT_CO_ID,
+        key: "ALPHA",
+        name: "Existing Alpha",
+        markdown: "# existing\n",
+      }),
+    ];
+    const manifest = baseManifest({
+      skills: [{
+        key: "alpha",
+        slug: "alpha",
+        name: "Imported Alpha",
+        path: "skills/alpha/SKILL.md",
+        sourceType: "local_path",
+        trustLevel: "markdown_only",
+        compatibility: "compatible",
+      }],
+    });
+    const request = buildInlineSource(
+      manifest,
+      { company: false, agents: false, projects: false, issues: false, skills: true },
+      { "COMPANY.md": "", "skills/alpha/SKILL.md": "# imported\n" },
+      { mode: "existing_company", companyId: TGT_CO_ID },
+      "rename",
+    );
+
+    const preview = await svc.previewImport(request);
+    expect(preview.plan.skillPlans[0]).toMatchObject({
+      key: "alpha",
+      action: "create",
+      plannedKey: "alpha-2",
+      existingSkillId: "existing-1",
+    });
+
+    const result = await svc.importBundle(request, "user-1");
+    expect(skillUpsertCalls[0]!.imports[0]!.key).toBe("alpha-2");
+    expect(result.skills[0]).toMatchObject({ key: "alpha", action: "created" });
+    expect(targetSkills.find((skill) => skill.id === "existing-1")).toMatchObject({
+      key: "ALPHA",
+      name: "Existing Alpha",
+      markdown: "# existing\n",
+    });
+  });
+
   it("importBundle remaps agent.skillKeys when a referenced skill is renamed", async () => {
     resetState();
     targetSkills = [

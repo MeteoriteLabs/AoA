@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ApiError, api } from "@/api/client";
 import {
   Dialog,
   DialogBody,
@@ -47,8 +48,14 @@ export function SnapshotUpdateModal({
   const qc = useQueryClient();
   const { pushToast } = useToast();
   const [decisions, setDecisions] = useState<Record<string, "mine" | "theirs">>({});
+  const [snapshotStale, setSnapshotStale] = useState(false);
 
-  const { data: diffData, isLoading } = useQuery<DiffResponse>({
+  const {
+    data: diffData,
+    isLoading,
+    isFetching,
+    refetch: refetchDiff,
+  } = useQuery<DiffResponse>({
     queryKey: ["marketplace", "updates", updateId, "diff"],
     queryFn: async () => {
       const res = await fetch(
@@ -61,26 +68,60 @@ export function SnapshotUpdateModal({
     enabled: open,
   });
 
+  useEffect(() => {
+    setDecisions({});
+    setSnapshotStale(false);
+  }, [open, updateId]);
+
+  const refreshStaleDiff = async () => {
+    setSnapshotStale(true);
+    setDecisions({});
+    const refreshed = await refetchDiff();
+    if (refreshed.isSuccess && refreshed.data) {
+      setSnapshotStale(false);
+      pushToast({
+        title: "Merge diff refreshed",
+        body: "The skill or upstream content changed. Review the refreshed diff before applying.",
+        tone: "info",
+      });
+      return;
+    }
+    pushToast({
+      title: "Could not refresh merge diff",
+      body: "The reviewed snapshot is stale. Refresh it before trying to apply again.",
+      tone: "error",
+    });
+  };
+
   const apply = useMutation({
     mutationFn: async () => {
-      const res = await fetch(
-        `/api/companies/${companyId}/marketplace/updates/${updateId}/merge`,
-        {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ decisions, snapshotToken: diffData?.snapshotToken }),
-        },
+      await api.post<{ ok: true }>(
+        `/companies/${companyId}/marketplace/updates/${updateId}/merge`,
+        { decisions, snapshotToken: diffData?.snapshotToken },
       );
-      if (!res.ok) throw new Error("Merge failed");
     },
     onSuccess: () => {
       pushToast({ title: "Update applied", tone: "success" });
       qc.invalidateQueries({ queryKey: ["marketplace", "updates", companyId] });
       onClose();
     },
-    onError: (err: Error) => {
-      pushToast({ title: "Failed to apply merge", body: err.message, tone: "error" });
+    onError: async (err: unknown) => {
+      const body = err instanceof ApiError && err.body && typeof err.body === "object"
+        ? err.body as { code?: unknown }
+        : null;
+      if (
+        err instanceof ApiError
+        && err.status === 409
+        && body?.code === "SKILL_MERGE_CONFLICT"
+      ) {
+        await refreshStaleDiff();
+        return;
+      }
+      pushToast({
+        title: "Failed to apply merge",
+        body: err instanceof Error ? err.message : "Merge failed",
+        tone: "error",
+      });
     },
   });
 
@@ -107,6 +148,22 @@ export function SnapshotUpdateModal({
             </p>
           )}
 
+          {snapshotStale && (
+            <div className="mx-7 mb-3 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm">
+              <p>The reviewed snapshot changed. Refresh the diff before applying.</p>
+              {!isFetching && (
+                <Button
+                  className="mt-2"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void refreshStaleDiff()}
+                >
+                  Refresh diff
+                </Button>
+              )}
+            </div>
+          )}
+
           {diffData && (
             <MergeDiffPane
               sections={diffData.diff}
@@ -121,7 +178,7 @@ export function SnapshotUpdateModal({
           </Button>
           <Button
             onClick={() => apply.mutate()}
-            disabled={apply.isPending || isLoading || !diffData}
+            disabled={apply.isPending || isLoading || isFetching || snapshotStale || !diffData}
           >
             {apply.isPending ? "Applying…" : "Apply merge"}
           </Button>

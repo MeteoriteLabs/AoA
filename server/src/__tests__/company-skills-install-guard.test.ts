@@ -14,7 +14,7 @@
  */
 import os from "node:os";
 import path from "node:path";
-import { promises as fs } from "node:fs";
+import { existsSync, promises as fs } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // ── Mocks (hoisted before the service import) ────────────────────────────────
@@ -85,6 +85,7 @@ interface FakeDb {
   attemptedUpdates: Array<{ values: Row; ids: string[] }>;
   inserted: Row[];
   afterNextSelect?: () => void;
+  beforeInsertCommit?: (row: Row) => void;
 }
 
 function makeFakeDb(rows: Row[]): FakeDb {
@@ -149,6 +150,7 @@ function makeFakeDb(rows: Row[]): FakeDb {
           ...values,
         };
         const commit = () => {
+          state.beforeInsertCommit?.(row);
           if (state.rows.some((existing) =>
             existing.companyId === row.companyId && existing.key === row.key
           )) {
@@ -569,7 +571,7 @@ describe("createLocalSkill — collision guard (T2.9b)", () => {
     )).toHaveLength(1);
   });
 
-  it("rolls back the inserted row when an orphan final directory blocks publication", async () => {
+  it("does not insert a row when an orphan final directory blocks publication", async () => {
     const managedRoot = path.join(
       path.resolve(process.env.AOA_HOME!),
       "instances",
@@ -599,6 +601,23 @@ describe("createLocalSkill — collision guard (T2.9b)", () => {
     expect((await fs.readdir(managedRoot)).filter(
       (entry) => entry.startsWith(".brainstorming-create-"),
     )).toEqual([]);
+  });
+
+  it("publishes SKILL.md before making the database row visible", async () => {
+    const fake = makeFakeDb([]);
+    fake.beforeInsertCommit = (row) => {
+      expect(existsSync(path.join(row.sourceLocator, "SKILL.md"))).toBe(true);
+    };
+    const svc = companySkillService(fake.db);
+
+    const created = await svc.createLocalSkill("co-1", {
+      name: "Published First",
+      slug: "published-first",
+      markdown: "# Published first\n",
+    });
+
+    expect(created.id).toBe("inserted-1");
+    expect(fake.rows).toHaveLength(1);
   });
 
   it("still creates a fresh slug", async () => {

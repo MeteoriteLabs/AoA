@@ -310,6 +310,23 @@ function uniqueSlug(base: string, used: Set<string>) {
   }
 }
 
+function uniqueSkillKeyByNormalizedKey(base: string, usedNormalizedKeys: Set<string>) {
+  const normalizedBase = normalizeSkillKey(base) ?? base;
+  if (!usedNormalizedKeys.has(normalizedBase)) {
+    usedNormalizedKeys.add(normalizedBase);
+    return base;
+  }
+  let idx = 2;
+  while (true) {
+    const candidate = `${normalizedBase}-${idx}`;
+    if (!usedNormalizedKeys.has(candidate)) {
+      usedNormalizedKeys.add(candidate);
+      return candidate;
+    }
+    idx += 1;
+  }
+}
+
 function uniqueNameBySlug(baseName: string, existingSlugs: Set<string>) {
   const baseSlug = normalizeAgentUrlKey(baseName) ?? "agent";
   if (!existingSlugs.has(baseSlug)) return baseName;
@@ -1807,7 +1824,10 @@ export function companyPortabilityService(db: Db) {
       key: string;
       customized: boolean;
     }>();
-    const existingSkillKeys = new Set<string>();
+    // Key lookup and upsert both normalize canonical keys. Allocation must use
+    // that same namespace or a raw-key rename such as ALPHA -> alpha can be
+    // normalized back onto the row it was supposed to avoid.
+    const allocatedSkillNormalizedKeys = new Set<string>();
     if (include.skills && input.target.mode === "existing_company") {
       const existingSkills = await skills.listFullWithCustomization(input.target.companyId);
       for (const existing of existingSkills) {
@@ -1822,7 +1842,7 @@ export function companyPortabilityService(db: Db) {
         if (normalizedKey && !existingSkillNormalizedKeyToRow.has(normalizedKey)) {
           existingSkillNormalizedKeyToRow.set(normalizedKey, row);
         }
-        existingSkillKeys.add(existing.key);
+        allocatedSkillNormalizedKeys.add(normalizedKey ?? existing.key);
       }
     }
     if (include.skills) {
@@ -1843,16 +1863,22 @@ export function companyPortabilityService(db: Db) {
           ?? existingSkillNormalizedKeyToRow.get(normalizedManifestKey)
           ?? null;
         if (!existing) {
+          const plannedKey = uniqueSkillKeyByNormalizedKey(
+            manifestSkill.key,
+            allocatedSkillNormalizedKeys,
+          );
           skillPlans.push({
             key: manifestSkill.key,
             slug: manifestSkill.slug,
             action: "create",
             plannedName: manifestSkill.name,
-            plannedKey: manifestSkill.key,
+            plannedKey,
             existingSkillId: null,
             existingCustomized: false,
             overwriteCustomized: false,
-            reason: null,
+            reason: plannedKey === manifestSkill.key
+              ? null
+              : "A prior planned skill reserved this normalized key; renamed.",
           });
           continue;
         }
@@ -1905,7 +1931,10 @@ export function companyPortabilityService(db: Db) {
           continue;
         }
         // rename: generate unique key
-        const renamedKey = uniqueSlug(manifestSkill.key, existingSkillKeys);
+        const renamedKey = uniqueSkillKeyByNormalizedKey(
+          manifestSkill.key,
+          allocatedSkillNormalizedKeys,
+        );
         skillPlans.push({
           key: manifestSkill.key,
           slug: manifestSkill.slug,
