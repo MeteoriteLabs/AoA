@@ -236,34 +236,23 @@ WHERE hub.company_id = reverted.company_id
   AND hub.status = 'open'
   AND hub.semantic_type = 'marketplace_op'
   AND hub.source_type = 'marketplace_update'
-  AND left(
-        hub.source_id,
-        length('update_available:Steward:' || reverted.latest_version || ':')
-      ) = 'update_available:Steward:' || reverted.latest_version || ':'
+  AND (
+    hub.source_id = 'update_available:Steward:' || reverted.latest_version
+    OR left(
+         hub.source_id,
+         length('update_available:Steward:' || reverted.latest_version || ':')
+       ) = 'update_available:Steward:' || reverted.latest_version || ':'
+  )
 RETURNING hub.id, hub.company_id, hub.source_id;
 
 COMMIT;
 ```
 
-The following separate damage-containment selector detects an impossible stamp
-outside the intended population: an adopted Steward in a company that has no
-installed default marketplace crew. It does **not** select successful
-reconciliations and is not a substitute for the audited rollback above:
-
-```sql
-SELECT steward.id, steward.company_id
-FROM agents AS steward
-WHERE steward.kind = 'aoa'
-  AND steward.name = 'Steward'
-  AND steward.template_origin = 'agent:aoa-curated/aoa-steward'
-  AND steward.template_version = '0.0.0-legacy'
-  AND NOT EXISTS (
-    SELECT 1
-    FROM teams AS crew
-    WHERE crew.company_id = steward.company_id
-      AND crew.template_origin = 'team:aoa-curated/default-crew'
-  );
-```
+Do not use the absence of a default-crew team as a damage or rollback selector.
+A normal team uninstall intentionally deletes that team while retaining the
+protected Steward agent, producing the same pointer state. Investigate any
+suspected out-of-band stamp from its exact activity/install history; there is no
+safe fleet-wide substitute for selecting the transactional audit IDs above.
 
 Leave the switch disabled until every audited company and any inserted
 membership link has been checked.
