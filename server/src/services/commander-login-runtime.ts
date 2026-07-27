@@ -182,6 +182,7 @@ export function drizzleChallengeStore(db: Db): ChallengeStore {
           companyId: row.companyId,
           provider: row.provider,
           authHome: row.authHome,
+          resourceKey: `commander-login:${row.provider}:${row.authHome}`,
           loginUrl: row.loginUrl,
           pid: row.pid,
           pgid: row.pgid,

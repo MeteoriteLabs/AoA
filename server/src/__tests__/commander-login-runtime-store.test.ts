@@ -89,7 +89,16 @@ function makeDb(existingRows: unknown[]) {
       return await fn(tx);
     },
   } as never;
-  return { db, executed, inserted, deleted, events, get txCount() { return txCount; } };
+  return {
+    db,
+    executed,
+    inserted,
+    deleted,
+    events,
+    get txCount() {
+      return txCount;
+    },
+  };
 }
 
 function row(overrides: Partial<ChallengeRow> = {}): ChallengeRow {
@@ -112,13 +121,20 @@ describe("drizzleChallengeStore.claim (atomic single-flight)", () => {
   it("runs inside ONE transaction and takes pg_advisory_xact_lock on the (provider, authHome) key first", async () => {
     const h = makeDb([]);
     const store = drizzleChallengeStore(h.db);
-    await store.claim({ provider: "openai", authHome: "/home/.codex", row: row(), onExisting: () => {} });
+    await store.claim({
+      provider: "openai",
+      authHome: "/home/.codex",
+      row: row(),
+      onExisting: () => {},
+    });
 
     expect(h.txCount).toBe(1);
     expect(h.executed).toHaveLength(1);
     expect(h.executed[0]!.sql).toContain("pg_advisory_xact_lock");
     expect(h.executed[0]!.sql).toContain("hashtext");
-    expect(h.executed[0]!.values).toEqual(["commander-login:openai:/home/.codex"]);
+    expect(h.executed[0]!.values).toEqual([
+      "commander-login:openai:/home/.codex",
+    ]);
     // Lock BEFORE the pending-row read — otherwise the read races.
     expect(h.events.slice(0, 2)).toEqual(["execute", "select"]);
   });
@@ -137,7 +153,13 @@ describe("drizzleChallengeStore.claim (atomic single-flight)", () => {
     expect(inserted.id).toBe("ch-new");
     expect(h.deleted).toHaveLength(0);
     expect(h.inserted).toHaveLength(1);
-    expect(h.inserted[0]).toMatchObject({ id: "ch-new", companyId: "c1", status: "pending", pid: null });
+    expect(h.inserted[0]).toMatchObject({
+      id: "ch-new",
+      companyId: "c1",
+      status: "pending",
+      pid: null,
+      resourceKey: "commander-login:openai:/home/.codex",
+    });
   });
 
   it("takeover: onExisting returns → existing row removed, then the new row inserted", async () => {
@@ -183,7 +205,7 @@ describe("drizzleChallengeStore.claim (atomic single-flight)", () => {
         onExisting: () => {
           throw new Error("conflict");
         },
-      }),
+      })
     ).rejects.toThrow(/conflict/);
     expect(h.deleted).toHaveLength(0);
     expect(h.inserted).toHaveLength(0);
