@@ -56,6 +56,7 @@ let targetAgents: AgentRow[] = [];
 const skillUpsertCalls: Array<{ companyId: string; imports: any[]; policy?: string }> = [];
 const agentUpdateCalls: Array<{ id: string; data: any }> = [];
 let reverseSkillUpsertResults = false;
+let customizeBeforeNextSkillUpsert = false;
 
 vi.mock("../services/companies.js", () => ({
   companyService: () => ({
@@ -129,6 +130,20 @@ vi.mock("../services/issues.js", () => ({
 }));
 
 vi.mock("../services/company-skills.js", () => ({
+  normalizeSkillKey: (value: string | null | undefined) => {
+    if (!value) return null;
+    const segments = value
+      .split("/")
+      .map((segment) =>
+        segment
+          .toLowerCase()
+          .replace(/[^a-z0-9-]/g, "-")
+          .replace(/-+/g, "-")
+          .replace(/^-|-$/g, ""),
+      )
+      .filter(Boolean);
+    return segments.length > 0 ? segments.join("/") : null;
+  },
   companySkillService: () => ({
     listFull: vi.fn(async (companyId: string) => {
       if (companyId === SRC_CO_ID) return sourceSkills;
@@ -153,6 +168,11 @@ vi.mock("../services/company-skills.js", () => ({
       for (const imp of imports) {
         const existing = targetSkills.find((s) => s.key === imp.key);
         if (existing) {
+          if (policy === "preserve_founder_edits" && customizeBeforeNextSkillUpsert) {
+            customizeBeforeNextSkillUpsert = false;
+            existing.customized = true;
+            existing.markdown = "# concurrent founder bytes\n";
+          }
           if (policy === "preserve_founder_edits" && existing.customized) {
             refused.push({
               skillId: existing.id,
@@ -222,6 +242,7 @@ function resetState() {
   skillUpsertCalls.length = 0;
   agentUpdateCalls.length = 0;
   reverseSkillUpsertResults = false;
+  customizeBeforeNextSkillUpsert = false;
 }
 
 function makeSkill(overrides: Partial<SkillRow> & { id: string; key: string; name: string }): SkillRow {
@@ -336,6 +357,28 @@ describe("company-portability skills", () => {
     const beta = result.manifest.skills!.find((s) => s.name === "Beta");
     expect(beta!.sourceType).toBe("github");
     expect(beta!.sourceRef).toBe("abc123");
+  });
+
+  it("accepts an exported built-in skill through AoA's own import validator", async () => {
+    resetState();
+    sourceSkills = [
+      makeSkill({
+        id: "s1",
+        key: "skill:aoa/brainstorming",
+        slug: "aoa-brainstorming",
+        name: "Brainstorming",
+        sourceType: "builtin",
+      }),
+    ];
+    const exported = await svc.exportBundle(SRC_CO_ID, { include: { skills: true } });
+    const { companyPortabilityPreviewSchema } = await import("@armyofagents/shared");
+
+    const parsed = companyPortabilityPreviewSchema.safeParse(
+      buildInlineSource(exported.manifest, undefined, exported.files),
+    );
+
+    expect(exported.manifest.skills?.[0]?.sourceType).toBe("builtin");
+    expect(parsed.success).toBe(true);
   });
 
   it("exportBundle omits skills by default (DEFAULT_INCLUDE.skills=false)", async () => {
@@ -631,6 +674,81 @@ describe("company-portability skills", () => {
     });
   });
 
+  it("preserves a skill customized after preview and keeps agent links on that row", async () => {
+    resetState();
+    targetSkills = [
+      makeSkill({
+        id: "existing-1",
+        companyId: TGT_CO_ID,
+        key: "alpha",
+        name: "Existing Alpha",
+        markdown: "# pristine bytes\n",
+        customized: false,
+      }),
+    ];
+    customizeBeforeNextSkillUpsert = true;
+    const manifest = baseManifest({
+      includes: { company: false, agents: true, projects: false, issues: false, skills: true },
+      agents: [{
+        slug: "ada",
+        name: "Ada",
+        path: "agents/ada/AGENTS.md",
+        role: "Engineer",
+        title: null,
+        icon: null,
+        capabilities: null,
+        reportsToSlug: null,
+        adapterType: "claude_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+        budgetMonthlyCents: 0,
+        metadata: null,
+        skillKeys: ["alpha"],
+      }],
+      skills: [{
+        key: "alpha",
+        slug: "alpha",
+        name: "Bundle Alpha",
+        path: "skills/alpha/SKILL.md",
+        sourceType: "local_path",
+        trustLevel: "markdown_only",
+        compatibility: "compatible",
+      }],
+    });
+
+    const result = await svc.importBundle(
+      buildInlineSource(
+        manifest,
+        { company: false, agents: true, projects: false, issues: false, skills: true },
+        {
+          "COMPANY.md": "",
+          "agents/ada/AGENTS.md": "---\nkind: agent\n---\n",
+          "skills/alpha/SKILL.md": "# bundle bytes\n",
+        },
+        { mode: "existing_company", companyId: TGT_CO_ID },
+        "replace",
+      ),
+      "user-1",
+    );
+
+    expect(result.skills[0]).toMatchObject({
+      key: "alpha",
+      id: "existing-1",
+      action: "skipped",
+      reason: expect.stringMatching(/gained founder edits|preserved/i),
+    });
+    expect(result.warnings).toContainEqual(expect.objectContaining({
+      kind: "skipped_update",
+      message: expect.stringMatching(/gained founder edits|preserved/i),
+    }));
+    expect(targetSkills[0]).toMatchObject({
+      markdown: "# concurrent founder bytes\n",
+      customized: true,
+    });
+    expect(targetAgents.find((agent) => agent.name === "Ada")?.skillKeys).toEqual(["alpha"]);
+  });
+
   it("pairs upsert results to plan rows by key even when returned out of order", async () => {
     resetState();
     reverseSkillUpsertResults = true;
@@ -674,6 +792,85 @@ describe("company-portability skills", () => {
     const betaRow = targetSkills.find((skill) => skill.key === "beta")!;
     expect(result.skills.find((skill) => skill.key === "alpha")?.id).toBe(alphaRow.id);
     expect(result.skills.find((skill) => skill.key === "beta")?.id).toBe(betaRow.id);
+  });
+
+  it("pairs a normalized manifest key to the existing canonical row", async () => {
+    resetState();
+    targetSkills = [
+      makeSkill({
+        id: "existing-1",
+        companyId: TGT_CO_ID,
+        key: "alpha",
+        name: "Old Alpha",
+      }),
+    ];
+    const manifest = baseManifest({
+      skills: [{
+        key: "ALPHA",
+        slug: "alpha",
+        name: "New Alpha",
+        path: "skills/alpha/SKILL.md",
+        sourceType: "local_path",
+        trustLevel: "markdown_only",
+        compatibility: "compatible",
+      }],
+    });
+    const request = buildInlineSource(
+      manifest,
+      { company: false, agents: false, projects: false, issues: false, skills: true },
+      { "COMPANY.md": "", "skills/alpha/SKILL.md": "# new alpha\n" },
+      { mode: "existing_company", companyId: TGT_CO_ID },
+      "replace",
+    );
+
+    const preview = await svc.previewImport(request);
+    expect(preview.plan.skillPlans[0]).toMatchObject({
+      key: "ALPHA",
+      plannedKey: "alpha",
+      existingSkillId: "existing-1",
+      action: "update",
+    });
+
+    const result = await svc.importBundle(request, "user-1");
+    expect(result.skills[0]).toMatchObject({
+      key: "ALPHA",
+      id: "existing-1",
+      action: "updated",
+    });
+    expect(targetSkills).toHaveLength(1);
+    expect(targetSkills[0]?.name).toBe("New Alpha");
+  });
+
+  it("rejects manifest skill keys that collide after normalization", async () => {
+    resetState();
+    const manifest = baseManifest({
+      skills: [
+        {
+          key: "ALPHA",
+          slug: "alpha-one",
+          name: "Alpha One",
+          path: "skills/alpha-one/SKILL.md",
+          sourceType: "local_path",
+        },
+        {
+          key: "alpha",
+          slug: "alpha-two",
+          name: "Alpha Two",
+          path: "skills/alpha-two/SKILL.md",
+          sourceType: "local_path",
+        },
+      ],
+    });
+
+    const preview = await svc.previewImport(buildInlineSource(manifest));
+
+    expect(preview.errors).toContainEqual(
+      expect.stringMatching(/duplicate skill key after normalization/i),
+    );
+    await expect(
+      svc.importBundle(buildInlineSource(manifest), "user-1"),
+    ).rejects.toMatchObject({ status: 422 });
+    expect(skillUpsertCalls).toHaveLength(0);
   });
 
   it("rejects an unknown skill sourceType in the request validator", async () => {

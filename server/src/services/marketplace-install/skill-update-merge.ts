@@ -102,7 +102,8 @@
  * refuses a non-`pending`/`conflict` update (409), and the materializer stages
  * and renames instead of deleting up front.
  */
-import { eq } from "drizzle-orm";
+import { createHash } from "node:crypto";
+import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { companySkills, marketplacePendingUpdates } from "@armyofagents/db";
 import type { CatalogItem } from "@armyofagents/shared";
@@ -137,11 +138,30 @@ export class SkillMergeUpstreamError extends Error {
   }
 }
 
+/** Thrown when the reviewed skill/catalog snapshot is no longer current. */
+export class SkillMergeConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SkillMergeConflictError";
+  }
+}
+
+export function skillMergeSnapshotToken(
+  mineContent: string,
+  upstreamContent: string,
+  catalogVersion: string,
+): string {
+  return createHash("sha256")
+    .update(JSON.stringify([catalogVersion, mineContent, upstreamContent]), "utf8")
+    .digest("hex");
+}
+
 /** The `company_skills` columns the skill merge reads. */
 export interface MergeableSkillRow {
   id: string;
   markdown: string | null;
   metadata: unknown;
+  customized: boolean;
 }
 
 export interface MergeSkillUpdateArgs {
@@ -150,8 +170,8 @@ export interface MergeSkillUpdateArgs {
   skill: MergeableSkillRow;
   catalogItem: CatalogItem;
   pendingUpdateId: string;
-  /** `marketplace_pending_updates.latestVersion` — the version the founder reviewed against. */
-  latestVersion: string;
+  /** Opaque digest returned by GET /updates/:id/diff for this exact review. */
+  expectedSnapshotToken: string;
   decisions: Record<string, "mine" | "theirs">;
 }
 
@@ -174,10 +194,26 @@ export interface MergeSkillUpdateResult {
 export async function mergeSkillUpdate(
   args: MergeSkillUpdateArgs,
 ): Promise<MergeSkillUpdateResult> {
-  const { db, companyId, skill, catalogItem, pendingUpdateId, latestVersion, decisions } = args;
+  const {
+    db,
+    companyId,
+    skill,
+    catalogItem,
+    pendingUpdateId,
+    expectedSnapshotToken,
+    decisions,
+  } = args;
 
   const upstreamContent = await fetchUpstreamSkillMarkdown(catalogItem);
   const mineContent = skill.markdown ?? "";
+  if (
+    skillMergeSnapshotToken(mineContent, upstreamContent, catalogItem.version)
+    !== expectedSnapshotToken
+  ) {
+    throw new SkillMergeConflictError(
+      "The skill or upstream catalog content changed after this diff was reviewed.",
+    );
+  }
   const diff = computeSectionDiff(mineContent, upstreamContent);
   const merged = mergeSkillDocument(diff, decisions, upstreamContent, mineContent);
 
@@ -188,12 +224,8 @@ export async function mergeSkillUpdate(
   // checker next runs). Keying the directory off anything but the item that
   // produced it would make `catalogBundleInstallPath` name a tree that was
   // never written there.
-  //
-  // `sourceRef` keeps stamping `latestVersion`, unchanged from before this fix.
-  // If the two ever disagree the row under-reports its version and the next
-  // checker pass re-raises the update, which converges; the pointer written
-  // below is self-describing either way, so the runtime always reads the tree
-  // that was actually materialized.
+  // `sourceRef` is stamped from that same catalog item below, keeping the row's
+  // version and bundle pointer aligned even if the pending row is stale.
   const bundle = catalogItem.skill?.bundle;
   const bundleDir = bundle
     ? managedCatalogSkillDir(companyId, catalogItem.id, catalogItem.version)
@@ -207,7 +239,25 @@ export async function mergeSkillUpdate(
     : null;
 
   await db.transaction(async (tx) => {
-    await tx
+    const claimed = await tx
+      .update(marketplacePendingUpdates)
+      .set({ status: "applied", updatedAt: new Date() })
+      .where(
+        and(
+          eq(marketplacePendingUpdates.id, pendingUpdateId),
+          eq(marketplacePendingUpdates.companyId, companyId),
+          inArray(marketplacePendingUpdates.status, ["pending", "conflict"]),
+        ),
+      )
+      .returning({ id: marketplacePendingUpdates.id });
+
+    if (claimed.length === 0) {
+      throw new SkillMergeConflictError(
+        "This update was already applied or dismissed by another session.",
+      );
+    }
+
+    const updated = await tx
       .update(companySkills)
       .set({
         // `merged.content`, never `materialized.markdown` — see the file docblock.
@@ -220,12 +270,21 @@ export async function mergeSkillUpdate(
         ...resolveBundleColumns(skill.metadata, bundle, materialized),
         updatedAt: new Date(),
       })
-      .where(eq(companySkills.id, skill.id));
+      .where(
+        and(
+          eq(companySkills.id, skill.id),
+          eq(companySkills.companyId, companyId),
+          eq(companySkills.markdown, mineContent),
+          eq(companySkills.customized, skill.customized),
+        ),
+      )
+      .returning({ id: companySkills.id });
 
-    await tx
-      .update(marketplacePendingUpdates)
-      .set({ status: "applied", updatedAt: new Date() })
-      .where(eq(marketplacePendingUpdates.id, pendingUpdateId));
+    if (updated.length === 0) {
+      throw new SkillMergeConflictError(
+        "The installed skill changed after this diff was reviewed.",
+      );
+    }
   });
 
   return materialized

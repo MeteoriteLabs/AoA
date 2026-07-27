@@ -238,7 +238,7 @@ function normalizeSkillSlug(raw: string | null | undefined): string | null {
   return result;
 }
 
-function normalizeSkillKey(value: string | null | undefined): string | null {
+export function normalizeSkillKey(value: string | null | undefined): string | null {
   if (!value) return null;
   const segments = value
     .split("/")
@@ -1681,6 +1681,8 @@ export function companySkillService(db: Db) {
     const skill = toCompanySkill(skillRow);
 
     const normalizedPath = normalizePortablePath(filePath) || "SKILL.md";
+    const markdownChanged =
+      normalizedPath === "SKILL.md" && content !== skill.markdown;
     // SECURITY: reject path traversal — normalizedPath is joined to the skill
     // directory on disk, and normalizePortablePath does NOT strip "../", so an
     // unvalidated path escapes the skill dir (arbitrary file write).
@@ -1702,7 +1704,11 @@ export function companySkillService(db: Db) {
     // path reaches in. This is the authoritative guard (the `importFromSource`
     // check only stops NEW inside-rows); it also neutralizes rows minted by
     // `scanProjectWorkspaces` and any that predate the import guard. Per Codex #302.
-    if (skill.sourceType === "local_path" && skill.sourceLocator) {
+    if (
+      skill.sourceType === "local_path"
+      && skill.sourceLocator
+      && (normalizedPath !== "SKILL.md" || markdownChanged)
+    ) {
       const resolvedTarget = path.resolve(skill.sourceLocator, normalizedPath);
       if (isInsideManagedMarketplaceSkillsRoot(resolvedTarget)) {
         throw unprocessable(
@@ -1734,24 +1740,24 @@ export function companySkillService(db: Db) {
       }
     }
 
-    // Always update DB markdown if path is SKILL.md
+    // A byte-identical SKILL.md save is a true no-op. Rewriting its stale
+    // snapshot could undo an upstream update that committed after our read.
     if (normalizedPath === "SKILL.md") {
-      const { frontmatter } = parseFrontmatterMarkdown(content);
-      const newName = asString(frontmatter.name) ?? skill.name;
-      const newDescription = asString(frontmatter.description) ?? skill.description;
-      await db
-        .update(companySkills)
-        .set({
-          markdown: content,
-          name: newName,
-          description: newDescription,
-          // A no-op save of pristine upstream bytes must not freeze the row.
-          // Once customized, the flag remains sticky because the current row no
-          // longer contains an independent upstream baseline to prove a revert.
-          customized: skillRow.customized === true || content !== skill.markdown,
-          updatedAt: new Date(),
-        })
-        .where(eq(companySkills.id, skillId));
+      if (markdownChanged) {
+        const { frontmatter } = parseFrontmatterMarkdown(content);
+        const newName = asString(frontmatter.name) ?? skill.name;
+        const newDescription = asString(frontmatter.description) ?? skill.description;
+        await db
+          .update(companySkills)
+          .set({
+            markdown: content,
+            name: newName,
+            description: newDescription,
+            customized: true,
+            updatedAt: new Date(),
+          })
+          .where(eq(companySkills.id, skillId));
+      }
     } else {
       // For non-SKILL.md paths (filesystem-only edit), mark customized in a standalone write.
       // The DB markdown column wasn't changed, so there is no two-step atomicity risk.
@@ -1807,7 +1813,7 @@ export function companySkillService(db: Db) {
       ].join("\n");
 
     const safeMarkdown = sanitizeMarkdown(markdown);
-    const parsed = parseFrontmatterMarkdown(safeMarkdown);
+    const parsed = parseFrontmatterMarkdown(markdown);
     const key = `company/${companyId}/${slug}`;
 
     // Stage bytes away from the final path. The unique (company_id, key) insert
@@ -1816,7 +1822,10 @@ export function companySkillService(db: Db) {
     await fs.mkdir(managedRoot, { recursive: true });
     const stagingDir = await fs.mkdtemp(path.join(managedRoot, `.${slug}-create-`));
     try {
-      await fs.writeFile(path.join(stagingDir, "SKILL.md"), safeMarkdown, "utf8");
+      // Preserve the founder-authored file bytes exactly. The DB column keeps
+      // the existing sanitized representation used by imported skills, but
+      // the managed source file must not discard Unicode content.
+      await fs.writeFile(path.join(stagingDir, "SKILL.md"), markdown, "utf8");
 
       let inserted: CompanySkillRow | undefined;
       try {
@@ -2600,8 +2609,7 @@ export function companySkillService(db: Db) {
    * `skills` is NOT positionally aligned with `imports` under EITHER policy —
    * `caller_is_authoritative` also drops a row whose UPDATE returns nothing
    * because it was concurrently deleted. It is merely far likelier to be aligned.
-   * Callers that pair by index (`company-portability.ts`) inherit that pre-existing
-   * hazard; the durable fix is to pair by key. Filed as T2.9d.
+   * Callers must pair returned rows and refusals by canonical key.
    */
   async function upsertImportedSkills(
     companyId: string,
@@ -2626,7 +2634,9 @@ export function companySkillService(db: Db) {
       const normalizedInputSlug = normalizeSkillSlug(imp.slug) ?? imp.slug;
       const prelimKey = imp.key ?? `company/${companyId}/${normalizedInputSlug}`;
       const normalizedPrelimKey = normalizeSkillKey(prelimKey) ?? prelimKey;
-      const existingByKey = existing.find((s) => s.key === normalizedPrelimKey);
+      const existingByKey =
+        existing.find((s) => s.key === prelimKey)
+        ?? existing.find((s) => normalizeSkillKey(s.key) === normalizedPrelimKey);
 
       // Exclude the existing skill's own slug so deduplication doesn't rename it.
       const slugPool = existingByKey

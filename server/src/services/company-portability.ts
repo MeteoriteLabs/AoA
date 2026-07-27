@@ -53,7 +53,7 @@ import { notFound, unprocessable } from "../errors.js";
 import { accessService } from "./access.js";
 import { agentService } from "./agents.js";
 import { companyService } from "./companies.js";
-import { companySkillService } from "./company-skills.js";
+import { companySkillService, normalizeSkillKey } from "./company-skills.js";
 import { generateReadme } from "./company-export-readme.js";
 import { issueService } from "./issues.js";
 import { executePinnedRequest, validateAndResolveFetchUrl } from "./outbound-url-guard.js";
@@ -1801,22 +1801,47 @@ export function companyPortabilityService(db: Db) {
       key: string;
       customized: boolean;
     }>();
+    const existingSkillNormalizedKeyToRow = new Map<string, {
+      id: string;
+      name: string;
+      key: string;
+      customized: boolean;
+    }>();
     const existingSkillKeys = new Set<string>();
     if (include.skills && input.target.mode === "existing_company") {
       const existingSkills = await skills.listFullWithCustomization(input.target.companyId);
       for (const existing of existingSkills) {
-        existingSkillKeyToRow.set(existing.key, {
+        const row = {
           id: existing.id,
           name: existing.name,
           key: existing.key,
           customized: existing.customized,
-        });
+        };
+        existingSkillKeyToRow.set(existing.key, row);
+        const normalizedKey = normalizeSkillKey(existing.key);
+        if (normalizedKey && !existingSkillNormalizedKeyToRow.has(normalizedKey)) {
+          existingSkillNormalizedKeyToRow.set(normalizedKey, row);
+        }
         existingSkillKeys.add(existing.key);
       }
     }
     if (include.skills) {
+      const seenManifestSkillKeys = new Set<string>();
       for (const manifestSkill of selectedSkills) {
-        const existing = existingSkillKeyToRow.get(manifestSkill.key) ?? null;
+        const normalizedManifestKey =
+          normalizeSkillKey(manifestSkill.key) ?? manifestSkill.key;
+        if (seenManifestSkillKeys.has(normalizedManifestKey)) {
+          errors.push(
+            `Duplicate skill key after normalization: ${manifestSkill.key}`,
+          );
+          continue;
+        }
+        seenManifestSkillKeys.add(normalizedManifestKey);
+
+        const existing =
+          existingSkillKeyToRow.get(manifestSkill.key)
+          ?? existingSkillNormalizedKeyToRow.get(normalizedManifestKey)
+          ?? null;
         if (!existing) {
           skillPlans.push({
             key: manifestSkill.key,

@@ -1,6 +1,13 @@
 import { z } from "zod";
 
-export const companySkillSourceTypeSchema = z.enum(["local_path", "github", "url", "catalog", "skills_sh"]);
+export const companySkillSourceTypeSchema = z.enum([
+  "local_path",
+  "github",
+  "url",
+  "catalog",
+  "skills_sh",
+  "builtin",
+]);
 export const companySkillTrustLevelSchema = z.enum(["markdown_only", "assets", "scripts_executables"]);
 export const companySkillCompatibilitySchema = z.enum(["compatible", "unknown", "invalid"]);
 export const companySkillSourceBadgeSchema = z.enum(["paperclip", "github", "local", "url", "catalog", "skills_sh"]);

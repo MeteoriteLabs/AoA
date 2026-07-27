@@ -69,7 +69,7 @@ describe("FlowEngine (Stage B / B6)", () => {
     fireEvent.click(screen.getByTestId("step-org"));
 
     await waitFor(() => screen.getByTestId("onboarding-complete"));
-    expect(onFinished).toHaveBeenCalled();
+    await waitFor(() => expect(onFinished).toHaveBeenCalled());
   });
 
   it("resumes at the first incomplete step", async () => {

@@ -165,7 +165,7 @@ skill that carries founder edits is shown in preview with
 `existingCustomized: true` and is skipped by default. Overwriting it requires
 putting that exact manifest skill key in `overwriteCustomizedSkillKeys` on both
 the preview and import request. Skill `sourceType` values are restricted to
-`local_path`, `github`, `url`, `catalog`, or `skills_sh`.
+`local_path`, `github`, `url`, `catalog`, `skills_sh`, or `builtin`.
 
 ### Bundle section: `internalAgentConfig`
 

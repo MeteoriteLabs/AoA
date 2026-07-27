@@ -18,6 +18,8 @@ interface DiffResponse {
   diff: SectionDiff[];
   currentVersion: string;
   latestVersion: string;
+  /** Skill updates only. Binds Apply to the exact local/upstream bytes reviewed. */
+  snapshotToken?: string;
   /**
    * Agent updates only. True when the installed bundle already matches the
    * catalog byte-for-byte — the common shape of the `instructions_customized
@@ -67,7 +69,7 @@ export function SnapshotUpdateModal({
           method: "POST",
           credentials: "include",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ decisions }),
+          body: JSON.stringify({ decisions, snapshotToken: diffData?.snapshotToken }),
         },
       );
       if (!res.ok) throw new Error("Merge failed");

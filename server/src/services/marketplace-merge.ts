@@ -226,6 +226,11 @@ export function applyMergeDecisions(
   diff: SectionDiff[],
   decisions: Record<string, "mine" | "theirs">,
 ): string {
+  // Derive this before filtering. A merge that drops every section still needs
+  // to retain the source document's line-ending convention.
+  const eol = dominantEol(
+    diff.flatMap((section) => [section.mine, section.theirs]).join(""),
+  );
   const parts: string[] = [];
   for (const section of diff) {
     const decision = decisions[section.header] ?? (section.state === "added" ? "theirs" : "mine");
@@ -239,7 +244,6 @@ export function applyMergeDecisions(
     // If decision is "mine" and state is "added", section is dropped
     // If decision is "theirs" and state is "removed", section is dropped
   }
-  const eol = dominantEol(parts.join(""));
   return parts.join(eol + eol).trim() + eol;
 }
 

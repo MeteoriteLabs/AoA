@@ -206,6 +206,13 @@ describe("applyMergeDecisions", () => {
     expect(result.endsWith("\r\n")).toBe(true);
   });
 
+  it("preserves CRLF when merge decisions drop every section", () => {
+    const mine = "## Only\r\nfounder\r\n";
+    const diff = computeSectionDiff(mine, "");
+
+    expect(applyMergeDecisions(diff, { Only: "theirs" })).toBe("\r\n");
+  });
+
   it("keeps the existing LF mixed-merge bytes unchanged", () => {
     const mine = "# Skill\n\n## Overview\nold\n\n## Notes\nmine\n";
     const theirs = "# Skill\n\n## Overview\nnew\n\n## Notes\ntheirs\n";

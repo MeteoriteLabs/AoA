@@ -33,8 +33,10 @@ Marketplace catalog data comes from the configured AoA marketplace CDN with a bu
 agent updates. `/diff` returns a section-level diff (a skill's unit is a `## `
 section of its SKILL.md; an agent's is `<file>::<## section>` across its whole
 instruction bundle); `/merge` takes a `decisions` map of section → `"mine"` |
-`"theirs"`. `/apply` is the unreviewed one-click landing and refuses team
-updates.
+`"theirs"`. Skill diffs also return an opaque `snapshotToken`; the client must
+send it with the merge so the server can reject a stale review if the local
+skill, upstream bytes, or catalog version changed. `/apply` is the unreviewed
+one-click landing and refuses team updates.
 
 Both verbs require the update to still be open: like `/apply`, `/merge` answers
 409 when the update is not `pending` or `conflict`, so a merge cannot be
@@ -177,10 +179,16 @@ source-re-read paths refuse rather than replace it:
   `conflicts` (reason names the local edits); they are absent from `updated`. One edited
   skill never aborts the sweep.
 
-Paths where the caller *is* the authoring surface — `POST .../skills`,
-`POST .../skills/import-package`, and company bundle import — overwrite by design and
-**clear** `customized`, because the bytes they just wrote are now the row's truth.
+`POST .../skills` only creates a fresh canonical key. A name/slug collision returns
+**409** with top-level `code = "SKILL_NAME_TAKEN"` and the same value plus `slug` and
+`key` under `details`; the existing row and directory are untouched.
 
-Both also raise a founder hub item. To take the upstream version, delete the skill and
-re-import it. This mirrors the catalog apply path, which answers 409 `SKILL_CUSTOMIZED`
-and routes the founder to the diff/merge review instead.
+`POST .../skills/import-package` remains an authoritative authoring surface and clears
+`customized` after replacing the bytes. Company bundle import is conservative instead:
+an `existing_company` preview surfaces `existingCustomized: true` and skips that skill
+by default. Replacing founder edits requires the exact manifest key in
+`overwriteCustomizedSkillKeys` on both the preview and import requests.
+
+A source-re-read refusal also raises a founder hub item. To take the upstream version,
+delete the skill and re-import it. This mirrors the catalog apply path, which answers
+409 `SKILL_CUSTOMIZED` and routes the founder to the diff/merge review instead.
