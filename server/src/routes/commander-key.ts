@@ -7,6 +7,10 @@ import { assertCompanyAccess } from "./authz.js";
 import { secretService } from "../services/secrets.js";
 import { persistCommanderApiKey } from "../services/commander-key.js";
 import { logActivity } from "../services/activity-log.js";
+import {
+  probeProviderApiKey,
+  type ProviderApiKeyProbe,
+} from "../services/provider-api-key-probe.js";
 
 /**
  * Save a pasted Commander API key (Plan 3 / §6.1). Founder-scoped: an EXPLICIT
@@ -15,8 +19,21 @@ import { logActivity } from "../services/activity-log.js";
  * Commander agent's adapterConfig.env (see persistCommanderApiKey). The verify
  * route (T1) then probes the resolved config, so the key unblocks re-probe.
  */
-export function commanderKeyRoutes(db: Db): Router {
+export function commanderKeyRoutes(
+  db: Db,
+  opts: {
+    probeKey?: (
+      provider: "openai" | "anthropic",
+      value: string,
+    ) => Promise<ProviderApiKeyProbe>;
+  } = {},
+): Router {
   const router = Router();
+  const probeKey =
+    opts.probeKey ??
+    (process.env.NODE_ENV === "test"
+      ? async () => ({ ok: true as const })
+      : probeProviderApiKey);
 
   router.post("/companies/:companyId/internal-agent/commander-key", async (req: Request, res: Response) => {
     const actor = req.actor;
@@ -56,6 +73,21 @@ export function commanderKeyRoutes(db: Db): Router {
     // Capture the narrowed (non-null) id here — TS control-flow narrowing from
     // the guard above does not survive into the db.transaction callback closure.
     const agentId = cfg.agentId;
+
+    // Validate the candidate before touching the active encrypted secret. A
+    // confirmed-invalid replacement can therefore never destroy a working key.
+    const verification = await probeKey(provider, value);
+    if (!verification.ok) {
+      if (verification.retryAfter) res.set("Retry-After", verification.retryAfter);
+      res.status(verification.transient ? 503 : 422).json({
+        code: verification.code,
+        error: verification.summary,
+        remediation: verification.remediation,
+        supportId: verification.supportId,
+        canSaveUnverified: false,
+      });
+      return;
+    }
 
     // ONE atomic transaction wraps the whole save: the vault mutation
     // (writeSecret — create OR rotate OR reactivate+rotate), the agent
@@ -182,7 +214,11 @@ export function commanderKeyRoutes(db: Db): Router {
       return result.secretId;
     });
 
-    res.json({ ok: true, secretId });
+    res.json({
+      ok: true,
+      secretId,
+      verification: "verified",
+    });
   });
 
   return router;

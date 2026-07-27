@@ -434,10 +434,19 @@ describe("ProvidersSection login lifecycle", () => {
   it("polls immediately, then on an interval, and stops on completed", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     await renderAndSettle([needsAuthRow("openai")]);
-    startLoginMock.mockResolvedValue({ challengeId: "c1", loginUrl: "https://example.test/l" });
+    startLoginMock.mockResolvedValue({
+      challengeId: "c1",
+      loginUrl: "https://example.test/l",
+      mode: "device_code",
+      userCode: "ABCD-EFGH",
+      expiresAt: "2026-07-20T00:05:00.000Z",
+    });
     loginStatusMock.mockResolvedValue(loginStatus({ status: "pending" }));
 
     fireEvent.click(screen.getByTestId("provider-signin"));
+
+    expect(await screen.findByLabelText("Codex device code")).toHaveTextContent("ABCD-EFGH");
+    expect(screen.getByTestId("provider-login-expiry").textContent).toMatch(/^Expires /);
 
     // Poll ONCE immediately — not after a full interval of dead air.
     await waitFor(() => expect(loginStatusMock).toHaveBeenCalledTimes(1));

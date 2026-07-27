@@ -33,7 +33,7 @@ RUN apt-get update \
 # Modify the existing node user/group to have the specified UID/GID to match host user
 RUN usermod -u $USER_UID --non-unique node \
   && groupmod -g $USER_GID --non-unique node \
-  && usermod -g $USER_GID -d /paperclip node
+  && usermod -g $USER_GID -d /aoa node
 
 FROM base AS deps
 WORKDIR /app
@@ -72,6 +72,8 @@ RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" &
 FROM base AS production
 ARG USER_UID=1000
 ARG USER_GID=1000
+ARG CODEX_CLI_VERSION=0.145.0
+ARG CLAUDE_CODE_VERSION=2.1.220
 
 LABEL org.opencontainers.image.title="AoA"
 LABEL org.opencontainers.image.description="Army of Agents — Hybrid Workforce OS"
@@ -80,32 +82,33 @@ LABEL org.opencontainers.image.source="https://github.com/meteoritelabs/aoa"
 WORKDIR /app
 COPY --chown=node:node --from=build /app /app
 RUN npm install --global --omit=dev \
-    @anthropic-ai/claude-code@latest \
+    @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
     @google/gemini-cli@latest \
-    @openai/codex@latest \
+    @openai/codex@${CODEX_CLI_VERSION} \
     opencode-ai \
-  && mkdir -p /paperclip \
-  && chown node:node /paperclip
+  && mkdir -p /aoa \
+  && ln -s /aoa /paperclip \
+  && chown node:node /aoa
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh \
   && chmod +x /usr/local/bin/docker-entrypoint.sh
 
 ENV NODE_ENV=production \
-  HOME=/paperclip \
+  HOME=/aoa \
   HOST=0.0.0.0 \
   PORT=3100 \
   SERVE_UI=true \
-  AOA_HOME=/paperclip \
+  AOA_HOME=/aoa \
   AOA_INSTANCE_ID=default \
   USER_UID=${USER_UID} \
   USER_GID=${USER_GID} \
-  AOA_CONFIG=/paperclip/instances/default/config.json \
+  AOA_CONFIG=/aoa/instances/default/config.json \
   AOA_DEPLOYMENT_MODE=authenticated \
   AOA_DEPLOYMENT_EXPOSURE=private \
   OPENCODE_ALLOW_ALL_MODELS=true
 
-VOLUME ["/paperclip"]
+VOLUME ["/aoa"]
 EXPOSE 3100
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=5 CMD curl -fsS "http://127.0.0.1:${PORT:-3100}/api/health" >/dev/null || exit 1
 

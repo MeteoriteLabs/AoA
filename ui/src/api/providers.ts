@@ -175,10 +175,14 @@ export interface SaveKeyResult {
 }
 
 export type ProviderLoginStatus = "pending" | "completed" | "failed" | "timeout";
+export type ProviderLoginMode = "device_code" | "paste_code";
 
 export interface StartLoginResult {
   challengeId: string;
   loginUrl: string;
+  mode: ProviderLoginMode;
+  userCode: string | null;
+  expiresAt: string;
 }
 
 /**

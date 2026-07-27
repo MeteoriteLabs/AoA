@@ -2,12 +2,11 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Db } from "@armyofagents/db";
-import { commanderLoginChallenges } from "@armyofagents/db";
+import { commanderLoginChallenges, providerCredentials } from "@armyofagents/db";
 import { and, eq, sql } from "drizzle-orm";
-import { runCodexLogin, resolveSharedCodexHomeDir } from "@armyofagents/adapter-codex-local/server";
+import { runCodexLogin } from "@armyofagents/adapter-codex-local/server";
 import {
   runClaudeLoginStreaming,
-  resolveClaudeConfigHome,
   CLAUDE_CREDENTIAL_FILE_NAME,
 } from "@armyofagents/adapter-claude-local/server";
 import { terminateByPidIfMatches } from "../utils/terminate-process.js";
@@ -19,6 +18,11 @@ import {
   type CommanderLoginService,
   type LoginRunLike,
 } from "./commander-login.js";
+import {
+  assertProviderLoginUrl,
+  prepareScopedCliAuthHome,
+  scopedCliAuthEnv,
+} from "./cli-auth-topology.js";
 
 /** Route-facing discovery cap — bounds how long `start` waits for the URL. */
 const LOGIN_URL_DISCOVERY_MS = 60_000;
@@ -37,8 +41,7 @@ interface ProviderLoginRunner {
    * HOST-shared and genuinely cross-tenant. Two companies on one host contend
    * for one slot; the loser gets a 409.
    */
-  resolveAuthHome: (env: NodeJS.ProcessEnv) => string;
-  runLogin: (args: { runId: string; env: NodeJS.ProcessEnv }) => LoginRunLike;
+  runLogin: (args: { runId: string; env: NodeJS.ProcessEnv; authHome: string }) => LoginRunLike;
   /**
    * Completion evidence, relative to authHome (Codex P1 #9 — do NOT hardcode
    * auth.json for both):
@@ -61,21 +64,19 @@ interface ProviderLoginRunner {
  */
 const LOGIN_RUNNERS: Partial<Record<CommanderLoginProvider, ProviderLoginRunner>> = {
   openai: {
-    resolveAuthHome: resolveSharedCodexHomeDir,
     runLogin: (args) =>
       runCodexLogin({
         runId: args.runId,
-        env: args.env,
+        env: scopedCliAuthEnv(args.env, args.authHome, "openai"),
         discoveryTimeoutMs: LOGIN_URL_DISCOVERY_MS,
       }),
     credentialFileName: "auth.json",
   },
   anthropic: {
-    resolveAuthHome: resolveClaudeConfigHome,
     runLogin: (args) =>
       runClaudeLoginStreaming({
         runId: args.runId,
-        env: args.env,
+        env: scopedCliAuthEnv(args.env, args.authHome, "anthropic"),
         discoveryTimeoutMs: LOGIN_URL_DISCOVERY_MS,
       }),
     credentialFileName: CLAUDE_CREDENTIAL_FILE_NAME,
@@ -215,12 +216,57 @@ export function drizzleChallengeStore(db: Db): ChallengeStore {
 export function buildCommanderLoginService(db: Db): CommanderLoginService {
   return createCommanderLoginService({
     store: drizzleChallengeStore(db),
-    resolveAuthHome: (provider, env) => requireLoginRunner(provider).resolveAuthHome(env),
-    runLogin: (provider, args): LoginRunLike => requireLoginRunner(provider).runLogin(args),
+    resolveAuthHome: (provider, env, scope) => {
+      requireLoginRunner(provider);
+      return prepareScopedCliAuthHome({
+        env,
+        executionTargetId: scope.executionTargetId,
+        companyId: scope.companyId,
+        userId: scope.userId,
+        provider,
+      });
+    },
+    runLogin: (provider, args): LoginRunLike => {
+      const run = requireLoginRunner(provider).runLogin(args);
+      return {
+        ...run,
+        urlPromise: run.urlPromise.then((url) => assertProviderLoginUrl(provider, url)),
+      };
+    },
     credentialPresent: async (provider, authHome) => {
       const file = path.join(authHome, requireLoginRunner(provider).credentialFileName);
       const stat = await fs.stat(file).catch(() => null);
       return Boolean(stat?.isFile());
+    },
+    onCredentialEvidence: async ({ companyId, provider, userId, executionTargetId }) => {
+      const now = new Date();
+      await db
+        .insert(providerCredentials)
+        .values({
+          companyId,
+          provider,
+          ownerUserId: userId,
+          executionTargetId,
+          kind: "personal_subscription",
+          state: "pending",
+          updatedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: [
+            providerCredentials.companyId,
+            providerCredentials.provider,
+            providerCredentials.ownerUserId,
+            providerCredentials.executionTargetId,
+            providerCredentials.kind,
+          ],
+          set: {
+            state: "pending",
+            verifiedAt: null,
+            revokedAt: null,
+            suspendedAt: null,
+            updatedAt: now,
+          },
+        });
     },
     // Persisted-pid kill — ALWAYS identity-verified (Codex P1, round 6 →
     // round 7). Every caller (BOOT reaper, single-flight takeover in `onExisting`,

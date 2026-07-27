@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from "express";
 import type { Db } from "@armyofagents/db";
 import {
   classifyCommanderProbe,
+  commanderProbeUsesApiKey,
   resolveCommanderAdapterType,
   resolveCommanderProbeConfig,
 } from "../services/commander-verify.js";
@@ -13,6 +14,8 @@ import {
 } from "../services/adapter-probe-concurrency.js";
 import { assertRole } from "../middleware/rbac.js";
 import { assertCompanyAccess } from "./authz.js";
+import { redactChecks } from "../services/providers/readiness.js";
+import { verifyAndBindCommanderSubscriptionCredential } from "../services/provider-credentials.js";
 
 /**
  * Commander verify (Stage C / C7-C8, revA R14). Drives the SAME adapter
@@ -54,7 +57,26 @@ export function commanderVerifyRoutes(db: Db): Router {
 
     try {
       const result = await adapter.testEnvironment({ companyId, adapterType, config: probeConfig });
-      const classified = classifyCommanderProbe(result);
+      // Probe output is CLI-controlled and may echo keys or tokens. The generic
+      // agent-test and Providers paths already redact this boundary; Commander
+      // Verify must do the same before returning details to onboarding.
+      const safeResult = { ...result, checks: redactChecks(result.checks) };
+      const classified = classifyCommanderProbe(safeResult);
+      if (
+        classified.outcome === "verified" &&
+        !commanderProbeUsesApiKey(probeConfig, adapterType) &&
+        (adapterType === "codex_local" || adapterType === "claude_local")
+      ) {
+        const provider = adapterType === "codex_local" ? "openai" : "anthropic";
+        const executionTargetId = process.env.AOA_EXECUTION_TARGET_ID?.trim() || "control-plane";
+        await verifyAndBindCommanderSubscriptionCredential(db, {
+          companyId,
+          userId: actor.userId,
+          actorUserId: actor.userId,
+          provider,
+          executionTargetId,
+        });
+      }
       res.status(classified.outcome === "verified" ? 200 : 422).json(classified);
     } finally {
       releaseProbeSlot();
