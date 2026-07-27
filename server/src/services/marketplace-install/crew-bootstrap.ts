@@ -39,9 +39,9 @@ import { dispatchInstall, startInstallOperation, type Installers, type PublishLi
 import { claimOperationForDispatch, updateOperation } from "./operation-store.js";
 import { installSkill } from "./skill-installer.js";
 import { installTeam } from "./team-installer.js";
+import { DEFAULT_CREW_TEAM_ITEM_ID } from "./crew-constants.js";
 
-/** The catalog item that defines the AoA crew roster. */
-export const DEFAULT_CREW_TEAM_ITEM_ID = "team:aoa-curated/default-crew";
+export { DEFAULT_CREW_TEAM_ITEM_ID } from "./crew-constants.js";
 
 /**
  * Aggregate wall-clock budget for the whole team install (resource fetches +

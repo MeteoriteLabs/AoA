@@ -13,6 +13,7 @@ import {
   disposeBundleCheckoutCache,
 } from "./skill-bundle-materializer.js";
 import { resolveAgentNameConflict, resolveTeamSlugConflict } from "./conflict-resolver.js";
+import { DEFAULT_CREW_TEAM_ITEM_ID } from "./crew-constants.js";
 
 export interface InstallTeamOpts {
   catalogItem: CatalogItem;            // type='team'
@@ -376,6 +377,9 @@ export async function installTeam(opts: InstallTeamOpts): Promise<InstallTeamRes
         db: tx as unknown as Db,
         desiredName: resolvedAgentName,
         template: normalized,
+        // Phase 4A ships before Steward leaves the unconditional infrastructure
+        // seeder. Reuse that exact built-in row instead of minting Steward-2.
+        adoptLegacySteward: catalogItem.id === DEFAULT_CREW_TEAM_ITEM_ID,
       });
       agentInsertResults.push({ id: agentId, templateOrigin: teamAgent.templateOrigin });
       cascadeResults.push({

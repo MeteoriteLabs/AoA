@@ -99,6 +99,174 @@ For horizontally scaled deployments, local-file run logs require sticky routing 
 | `AOA_EMBEDDED_POSTGRES_PORT` | (auto) | Override the embedded PostgreSQL port. Intended for isolated local/e2e instances that must avoid port collisions |
 | `AOA_EMBEDDED_POSTGRES_STRICT_PORT` | `false` | When truthy, fail startup instead of falling back to a random embedded PostgreSQL port if `AOA_EMBEDDED_POSTGRES_PORT` is unavailable |
 | `AOA_EMBEDDED_POSTGRES_VERBOSE` | `false` | Verbose logging from `embedded-postgres` (helpful for debugging boot issues) |
+| `AOA_STEWARD_RECONCILE_ENABLED` | `true` | Set to `false` to disable only the boot/24-hour pass that adopts a legacy NULL-origin Steward into an already-installed marketplace crew. Ordinary crew repair and marketplace update checks continue. |
+
+### Legacy Steward reconciliation backout
+
+Disable `AOA_STEWARD_RECONCILE_ENABLED` before investigating or running a
+backout so the next 24-hour pass cannot reapply the change.
+
+`template_version = '0.0.0-legacy'` is shared by every pointer-only crew
+adoption, so it is not a safe rollback selector by itself. Every successful
+background reconciliation writes an `activity_log` row with action
+`marketplace.legacy_steward_adopted` in the same transaction as the adoption.
+The application log named `legacy Steward adopted in place` includes that
+row's `auditId` for lookup, but the durable database row is the source of truth.
+
+After taking a database backup, inspect the audit rows, choose the exact audit
+IDs from the affected deployment window, and create a transaction-local target
+table from only those IDs. Never select the whole fleet by version:
+
+```sql
+SELECT id AS audit_id, company_id, entity_id AS agent_id, details, created_at
+FROM activity_log
+WHERE action = 'marketplace.legacy_steward_adopted'
+ORDER BY created_at DESC;
+
+BEGIN;
+CREATE TEMP TABLE steward_reconcile_backout_targets ON COMMIT DROP AS
+SELECT
+  company_id,
+  entity_id::uuid AS agent_id,
+  (details->>'teamId')::uuid AS team_id,
+  COALESCE((details->>'memberInserted')::boolean, false) AS member_inserted,
+  details->>'previousTemplateVersion' AS previous_template_version
+FROM activity_log
+WHERE action = 'marketplace.legacy_steward_adopted'
+  AND id IN (
+    '00000000-0000-0000-0000-000000000000'::uuid
+  );
+
+-- Preview every target and predicate before changing anything.
+SELECT targets.*, steward.template_origin, steward.template_version
+FROM steward_reconcile_backout_targets AS targets
+JOIN agents AS steward
+  ON steward.company_id = targets.company_id
+ AND steward.id = targets.agent_id;
+
+CREATE TEMP TABLE steward_reconcile_reverted_targets (
+  company_id uuid NOT NULL,
+  agent_id uuid NOT NULL,
+  team_id uuid NOT NULL,
+  member_inserted boolean NOT NULL
+) ON COMMIT DROP;
+
+WITH reverted AS (
+  UPDATE agents AS steward
+  SET template_origin = NULL,
+      template_version = targets.previous_template_version,
+      updated_at = now()
+  FROM steward_reconcile_backout_targets AS targets
+  WHERE steward.company_id = targets.company_id
+    AND steward.id = targets.agent_id
+    AND steward.kind = 'aoa'
+    AND steward.name = 'Steward'
+    AND steward.template_origin = 'agent:aoa-curated/aoa-steward'
+    AND steward.template_version = '0.0.0-legacy'
+  RETURNING
+    targets.company_id,
+    targets.agent_id,
+    targets.team_id,
+    targets.member_inserted
+)
+INSERT INTO steward_reconcile_reverted_targets
+SELECT * FROM reverted
+RETURNING agent_id, company_id;
+
+-- Abort the whole transaction instead of performing a partial backout if any
+-- selected row no longer has the exact post-reconciliation pointer state.
+DO $$
+BEGIN
+  IF (
+    SELECT count(*) FROM steward_reconcile_reverted_targets
+  ) <> (
+    SELECT count(*) FROM steward_reconcile_backout_targets
+  ) THEN
+    RAISE EXCEPTION
+      'Steward backout aborted: selected and reverted target counts differ';
+  END IF;
+END
+$$;
+```
+
+If an audit row says `memberInserted=true`, the pass also created the exact
+`team_members(teamId, agentId)` link in that transaction. Delete that link only
+after confirming no later team operation now relies on it; a `false` value
+means the link predated reconciliation and must be kept. The delete uses only
+rows that the guarded pointer update above actually reverted, so a Steward that
+has since advanced cannot be detached:
+
+```sql
+DELETE FROM team_members AS member
+USING steward_reconcile_reverted_targets AS targets
+WHERE targets.member_inserted
+  AND member.team_id = targets.team_id
+  AND member.agent_id = targets.agent_id
+RETURNING member.id, member.team_id, member.agent_id;
+```
+
+The updater may already have created a Steward pending-update row and its open
+Hub alert after reconciliation. Remove only the pending row tied to the audited
+companies that were actually reverted and the legacy current version. Capture
+its exact advertised version before deletion. Keep the matching Hub entry as
+history, but archive the now-non-actionable open alert:
+
+```sql
+CREATE TEMP TABLE steward_reconcile_reverted_updates ON COMMIT DROP AS
+SELECT
+  pending.id,
+  pending.company_id,
+  pending.latest_version
+FROM marketplace_pending_updates AS pending
+JOIN steward_reconcile_reverted_targets AS targets
+  ON targets.company_id = pending.company_id
+WHERE pending.catalog_item_id = 'agent:aoa-curated/aoa-steward'
+  AND pending.current_version = '0.0.0-legacy';
+
+DELETE FROM marketplace_pending_updates AS pending
+USING steward_reconcile_reverted_updates AS reverted
+WHERE pending.id = reverted.id
+RETURNING pending.id, pending.company_id;
+
+UPDATE notifications AS hub
+SET status = 'archived',
+    archived_at = now()
+FROM steward_reconcile_reverted_updates AS reverted
+WHERE hub.company_id = reverted.company_id
+  AND hub.status = 'open'
+  AND hub.semantic_type = 'marketplace_op'
+  AND hub.source_type = 'marketplace_update'
+  AND left(
+        hub.source_id,
+        length('update_available:Steward:' || reverted.latest_version || ':')
+      ) = 'update_available:Steward:' || reverted.latest_version || ':'
+RETURNING hub.id, hub.company_id, hub.source_id;
+
+COMMIT;
+```
+
+The following separate damage-containment selector detects an impossible stamp
+outside the intended population: an adopted Steward in a company that has no
+installed default marketplace crew. It does **not** select successful
+reconciliations and is not a substitute for the audited rollback above:
+
+```sql
+SELECT steward.id, steward.company_id
+FROM agents AS steward
+WHERE steward.kind = 'aoa'
+  AND steward.name = 'Steward'
+  AND steward.template_origin = 'agent:aoa-curated/aoa-steward'
+  AND steward.template_version = '0.0.0-legacy'
+  AND NOT EXISTS (
+    SELECT 1
+    FROM teams AS crew
+    WHERE crew.company_id = steward.company_id
+      AND crew.template_origin = 'team:aoa-curated/default-crew'
+  );
+```
+
+Leave the switch disabled until every audited company and any inserted
+membership link has been checked.
 
 ## Telemetry / feedback
 

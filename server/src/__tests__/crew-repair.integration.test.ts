@@ -56,12 +56,22 @@ import {
 } from "../services/crew-repair.js";
 import { checkCrewUpdates } from "../services/marketplace-install/crew-updater.js";
 import { reconcileTeamMembers } from "../services/marketplace-install/team-reconcile.js";
+import {
+  runLegacyStewardReconcilePass,
+  STEWARD_RECONCILE_ACTIVITY_ACTION,
+  STEWARD_CATALOG_ITEM_ID,
+  STEWARD_RECONCILE_ENV,
+} from "../services/marketplace-install/legacy-steward-reconcile.js";
 import { ensureInfrastructureAgents } from "../services/internal-agent/aoa-agents/crew-seeding.js";
 import { backfillCrewTemplateOrigin } from "../services/internal-agent/aoa-agents/backfill-template-origin.js";
 import { agentInstructionsService } from "../services/agent-instructions.js";
 import { listEnabledOutboxAgents } from "../services/internal-agent/aoa-agents/triggers.js";
 import { resolveCrewAdapterForCompany } from "../services/internal-agent/aoa-agents/resolve-crew-adapter.js";
 import { installSkill } from "../services/marketplace-install/skill-installer.js";
+import { createMarketplaceAgent } from "../services/marketplace-install/agent-create.js";
+import { installTeam } from "../services/marketplace-install/team-installer.js";
+import { uninstallTeam } from "../services/marketplace-install/team-uninstaller.js";
+import type { NormalizedMarketplaceAgentTemplate } from "../services/marketplace-install/types.js";
 import { createMarketplaceCompanyRouter } from "../routes/marketplace-company.js";
 import { errorHandler } from "../middleware/error-handler.js";
 
@@ -117,6 +127,7 @@ const TEAM_ID = "team:aoa-curated/default-crew";
 const SCOUT_ID = "agent:aoa-curated/aoa-scout";
 const ADJUTANT_ID = "agent:aoa-curated/aoa-adjutant";
 const REVIEWER_ID = "agent:aoa-curated/aoa-reviewer";
+const STEWARD_ID = STEWARD_CATALOG_ITEM_ID;
 const INLINE_SKILL_ID = "skill:aoa-curated/fixture-inline-skill";
 const FETCHED_SKILL_ID = "skill:aoa-curated/fixture-fetched-skill";
 
@@ -203,6 +214,44 @@ function buildCatalog(version = "1.0.0"): MarketplaceCatalogFile {
 const FIXTURE_CATALOG = buildCatalog();
 const CATALOG_ITEMS = FIXTURE_CATALOG.items as CatalogItem[];
 
+function buildCatalogWithSteward(version = "1.0.0"): MarketplaceCatalogFile {
+  const catalog = buildCatalog(version);
+  const teamItem = catalog.items.find((item) => item.id === TEAM_ID)!;
+  teamItem.requires = [...(teamItem.requires ?? []), { type: "agent", id: STEWARD_ID }];
+  catalog.items.push({
+    ...catalogItemBase(STEWARD_ID, "agent", "Steward", version),
+    resourceUrl: `${FIXTURE_HOST}/agents/aoa-steward/agent.json`,
+  } as CatalogItem);
+  catalog.itemCount = catalog.items.length;
+  return catalog;
+}
+
+const STEWARD_CATALOG_ITEMS = buildCatalogWithSteward().items as CatalogItem[];
+const STEWARD_CATALOG_ITEM = STEWARD_CATALOG_ITEMS.find((item) => item.id === STEWARD_ID)!;
+
+const STEWARD_INSTALL_TEMPLATE: NormalizedMarketplaceAgentTemplate = {
+  name: "Steward",
+  role: "general",
+  kind: "aoa",
+  triggers: [{ kind: "sweep", enabled: true, config: {} }],
+  status: "idle",
+  adapterType: "claude_local",
+  adapterConfig: {},
+  runtimeConfig: {},
+  permissions: {},
+  budgetMonthlyCents: 0,
+  skillKeys: [],
+  instructions: {
+    type: "inline",
+    files: { "AGENTS.md": "You are Steward, from the catalog." },
+    entryFile: "AGENTS.md",
+  },
+  setupRequirements: [],
+  setupRequired: false,
+  metadata: {},
+  warnings: [],
+};
+
 function agentTemplate(id: string, name: string, triggerRole: string) {
   return JSON.stringify({
     schemaVersion: "agent.v1",
@@ -236,11 +285,24 @@ const TEAM_TEMPLATE = JSON.stringify({
   ],
 });
 
+const TEAM_TEMPLATE_WITH_STEWARD = JSON.stringify({
+  slug: "aoa-default-crew",
+  description: "Fixture crew with Steward",
+  manifest: { installOrder: [SCOUT_ID, ADJUTANT_ID, REVIEWER_ID, STEWARD_ID] },
+  agents: [
+    { templateOrigin: SCOUT_ID, name: "Scout" },
+    { templateOrigin: ADJUTANT_ID, name: "Adjutant" },
+    { templateOrigin: REVIEWER_ID, name: "Reviewer" },
+    { templateOrigin: STEWARD_ID, name: "Steward" },
+  ],
+});
+
 const FIXTURE_BODIES: Record<string, string> = {
   [`${FIXTURE_HOST}/teams/default-crew/team.json`]: TEAM_TEMPLATE,
   [`${FIXTURE_HOST}/agents/aoa-scout/agent.json`]: agentTemplate("aoa-scout", "Scout", "scout"),
   [`${FIXTURE_HOST}/agents/aoa-adjutant/agent.json`]: agentTemplate("aoa-adjutant", "Adjutant", "adjutant"),
   [`${FIXTURE_HOST}/agents/aoa-reviewer/agent.json`]: agentTemplate("aoa-reviewer", "Reviewer", "reviewer"),
+  [`${FIXTURE_HOST}/agents/aoa-steward/agent.json`]: agentTemplate("aoa-steward", "Steward", "steward"),
   [`${FIXTURE_HOST}/skills/fixture-fetched-skill/SKILL.md`]:
     "---\nname: fixture-fetched-skill\n---\n\nFetched body.\n",
 };
@@ -248,10 +310,12 @@ const FIXTURE_BODIES: Record<string, string> = {
 let realFetch: typeof globalThis.fetch;
 let cdnReachable = false;
 const brokenUrls = new Set<string>();
+let fixtureFetchCallCount = 0;
 
 function installFixtureFetch() {
   realFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL) => {
+    fixtureFetchCallCount += 1;
     const url =
       typeof input === "string" ? input : input instanceof URL ? input.toString() : String(input);
     if (url === FIXTURE_CDN_URL) {
@@ -281,9 +345,9 @@ function makeService(snapshot: MarketplaceCatalogFile | null = FIXTURE_CATALOG) 
 }
 
 /** Register a working catalog (via the bundled-snapshot fallback — no network). */
-async function withCatalog(): Promise<void> {
+async function withCatalog(snapshot: MarketplaceCatalogFile = FIXTURE_CATALOG): Promise<void> {
   await clearCatalogCache();
-  const service = makeService();
+  const service = makeService(snapshot);
   await service.sync();
   registerMarketplaceCatalogService(service);
 }
@@ -300,13 +364,15 @@ interface CrewRow {
   adapter_type: string;
   title: string | null;
   role: string | null;
+  instructions_customized: boolean | null;
 }
 
 async function crewRows(companyId: string): Promise<CrewRow[]> {
   return rowsOf<CrewRow>(
     await db.execute(sql`
       SELECT id, name, status, template_origin, template_version, skill_keys,
-             runtime_config, adapter_config, adapter_type, title, role
+             runtime_config, adapter_config, adapter_type, title, role,
+             instructions_customized
       FROM agents WHERE company_id = ${companyId} AND kind = 'aoa' ORDER BY name
     `),
   );
@@ -357,6 +423,20 @@ async function teamMemberNames(companyId: string): Promise<string[]> {
       ORDER BY a.name
     `),
   ).map((r) => r.name);
+}
+
+async function teamMemberLinkCount(companyId: string, agentId: string): Promise<number> {
+  const rows = rowsOf<{ n: string }>(
+    await db.execute(sql`
+      SELECT count(*)::text AS n
+      FROM team_members tm
+      JOIN teams t ON t.id = tm.team_id
+      WHERE t.company_id = ${companyId}
+        AND t.template_origin = ${TEAM_ID}
+        AND tm.agent_id = ${agentId}
+    `),
+  );
+  return Number(rows[0].n);
 }
 
 async function crewRepairNotificationCount(companyId: string): Promise<number> {
@@ -538,6 +618,8 @@ afterEach(() => {
   resetCrewRepairCooldowns();
   brokenUrls.clear();
   cdnReachable = false;
+  fixtureFetchCallCount = 0;
+  delete process.env[STEWARD_RECONCILE_ENV];
   currentActor = {};
 });
 
@@ -867,6 +949,342 @@ describe.skipIf(
     // that proves the guard is targeted, not a blanket "never install".
     expect(after.some((r) => r.name === "Reviewer")).toBe(true);
     expect(reconciled.membersAdded).toBe(1);
+  }, 240_000);
+
+  // Phase 4A: legacy Steward adoption.
+  it("keeps new-company marketplace provisioning atomic when the crew publishes Steward", async () => {
+    assertSetupOk();
+    const teamUrl = `${FIXTURE_HOST}/teams/default-crew/team.json`;
+    const originalTeamTemplate = FIXTURE_BODIES[teamUrl];
+    FIXTURE_BODIES[teamUrl] = TEAM_TEMPLATE_WITH_STEWARD;
+    try {
+      await withCatalog(buildCatalogWithSteward());
+      const company = await companyService(db).create({
+        name: "Steward Marketplace Bootstrap Co",
+      } as never);
+
+      const stewardRows = (await crewRows(company.id)).filter((row) => row.name === "Steward");
+      expect(stewardRows).toHaveLength(1);
+      expect(stewardRows[0].template_origin).toBe(STEWARD_ID);
+      expect(stewardRows[0].template_version).toBe(ADOPTED_TEMPLATE_VERSION);
+      expect(stewardRows[0].instructions_customized).toBeNull();
+      expect(await triggerKinds(stewardRows[0].id)).toEqual(["sweep"]);
+      expect(await teamMemberLinkCount(company.id, stewardRows[0].id)).toBe(1);
+
+      const installedTeams = rowsOf<{ n: string }>(
+        await db.execute(sql`
+          SELECT count(*)::text AS n
+          FROM teams
+          WHERE company_id = ${company.id}
+            AND template_origin = ${TEAM_ID}
+        `),
+      );
+      expect(Number(installedTeams[0].n)).toBe(1);
+
+      const teamId = rowsOf<{ id: string }>(
+        await db.execute(sql`
+          SELECT id
+          FROM teams
+          WHERE company_id = ${company.id}
+            AND template_origin = ${TEAM_ID}
+        `),
+      )[0].id;
+      const uninstalled = await uninstallTeam({ db, companyId: company.id, teamId });
+      expect(uninstalled.retainedAgents.map((agent) => agent.id)).toContain(stewardRows[0].id);
+
+      const reinstallCatalog = buildCatalogWithSteward();
+      const reinstallTeamItem = reinstallCatalog.items.find((item) => item.id === TEAM_ID)!;
+      const reinstalled = await installTeam({
+        catalogItem: reinstallTeamItem,
+        catalog: reinstallCatalog,
+        companyId: company.id,
+        targetDepartmentId: null,
+        db,
+        installPlugin: async () => {
+          throw new Error("default crew fixture must not install plugins");
+        },
+      });
+      expect(reinstalled.teamId).toBeDefined();
+      const afterReinstall = (await crewRows(company.id)).filter((row) => row.name === "Steward");
+      expect(afterReinstall).toHaveLength(1);
+      expect(afterReinstall[0].id).toBe(stewardRows[0].id);
+      expect(afterReinstall[0].template_origin).toBe(STEWARD_ID);
+      expect(await teamMemberLinkCount(company.id, afterReinstall[0].id)).toBe(1);
+    } finally {
+      FIXTURE_BODIES[teamUrl] = originalTeamTemplate;
+    }
+  }, 240_000);
+
+  it("adopts the same legacy Steward in place, links it once, and makes updates see it", async () => {
+    assertSetupOk();
+    await withCatalog();
+    const company = await companyService(db).create({ name: "Steward Adoption Co" } as never);
+    const before = (await crewRows(company.id)).filter((row) => row.name === "Steward");
+    expect(before).toHaveLength(1);
+    expect(before[0].template_origin).toBeNull();
+    expect(before[0].instructions_customized).toBeNull();
+    expect(await triggerKinds(before[0].id)).toEqual(["sweep"]);
+    expect(await teamMemberLinkCount(company.id, before[0].id)).toBe(0);
+    expect((await diagnoseCrewProvisioning(db, company.id)).verdict).toBe("healthy");
+
+    const fetchesBefore = fixtureFetchCallCount;
+    const raced = await Promise.all([
+      runLegacyStewardReconcilePass({
+        db,
+        companyIds: [company.id],
+        catalogItems: STEWARD_CATALOG_ITEMS,
+      }),
+      runLegacyStewardReconcilePass({
+        db,
+        companyIds: [company.id],
+        catalogItems: STEWARD_CATALOG_ITEMS,
+      }),
+    ]);
+
+    const after = (await crewRows(company.id)).filter((row) => row.name === "Steward");
+    expect(after).toHaveLength(1);
+    expect(after[0].id).toBe(before[0].id);
+    expect(after[0].template_origin).toBe(STEWARD_ID);
+    expect(after[0].template_version).toBe(ADOPTED_TEMPLATE_VERSION);
+    expect(after[0].instructions_customized).toBeNull();
+    expect(await triggerKinds(after[0].id)).toEqual(["sweep"]);
+    expect(await teamMemberLinkCount(company.id, after[0].id)).toBe(1);
+    expect(raced.reduce((sum, result) => sum + result.adopted, 0)).toBe(1);
+    expect(fixtureFetchCallCount).toBe(fetchesBefore);
+
+    const auditRows = rowsOf<{
+      actor_id: string;
+      entity_id: string;
+      agent_id: string;
+      details: {
+        teamId: string;
+        memberInserted: boolean;
+        previousTemplateVersion: string | null;
+        templateOrigin: string;
+      };
+    }>(
+      await db.execute(sql`
+        SELECT actor_id, entity_id, agent_id, details
+        FROM activity_log
+        WHERE company_id = ${company.id}
+          AND action = ${STEWARD_RECONCILE_ACTIVITY_ACTION}
+      `),
+    );
+    expect(auditRows).toHaveLength(1);
+    expect(auditRows[0]).toMatchObject({
+      actor_id: "legacy-steward-reconcile",
+      entity_id: before[0].id,
+      agent_id: before[0].id,
+      details: {
+        memberInserted: true,
+        previousTemplateVersion: null,
+        templateOrigin: STEWARD_ID,
+      },
+    });
+    expect(auditRows[0].details.teamId).toBeTruthy();
+
+    await checkCrewUpdates({
+      db,
+      companyId: company.id,
+      catalogItems: STEWARD_CATALOG_ITEMS,
+      settings: NOTIFY_SETTINGS,
+      instructionsService: agentInstructionsService(),
+    });
+    expect(await pendingUpdateItemIds(company.id)).toContain(STEWARD_ID);
+    expect(fixtureFetchCallCount).toBe(fetchesBefore);
+
+    const secondPass = await runLegacyStewardReconcilePass({
+      db,
+      companyIds: [company.id],
+      catalogItems: STEWARD_CATALOG_ITEMS,
+    });
+    expect(secondPass.adopted).toBe(0);
+    expect((await diagnoseCrewProvisioning(db, company.id)).verdict).toBe("healthy");
+    expect(fixtureFetchCallCount).toBe(fetchesBefore);
+
+    // The still-unconditional Phase 4B seeder must neither duplicate Steward
+    // nor undo the adopted origin while 4A ships independently.
+    await ensureInfrastructureAgents(db, company.id);
+    const afterReseed = (await crewRows(company.id)).filter((row) => row.name === "Steward");
+    expect(afterReseed).toHaveLength(1);
+    expect(afterReseed[0].id).toBe(before[0].id);
+    expect(afterReseed[0].template_origin).toBe(STEWARD_ID);
+    expect(await triggerKinds(afterReseed[0].id)).toEqual(["sweep"]);
+  }, 240_000);
+
+  it("serializes adoption with direct Steward installation and refuses a duplicate", async () => {
+    assertSetupOk();
+    await withCatalog();
+    const company = await companyService(db).create({ name: "Steward Install Race Co" } as never);
+    const before = (await crewRows(company.id)).find((row) => row.name === "Steward")!;
+    const fetchesBefore = fixtureFetchCallCount;
+
+    const [reconcileResult, installResult] = await Promise.allSettled([
+      runLegacyStewardReconcilePass({
+        db,
+        companyIds: [company.id],
+        catalogItems: STEWARD_CATALOG_ITEMS,
+      }),
+      createMarketplaceAgent({
+        catalogItem: STEWARD_CATALOG_ITEM,
+        companyId: company.id,
+        db,
+        desiredName: "Steward-2",
+        template: STEWARD_INSTALL_TEMPLATE,
+      }),
+    ]);
+
+    expect(reconcileResult.status).toBe("fulfilled");
+    if (reconcileResult.status === "fulfilled") {
+      expect(reconcileResult.value.adopted).toBe(1);
+    }
+    expect(installResult.status).toBe("rejected");
+    if (installResult.status === "rejected") {
+      expect(String(installResult.reason)).toContain("Steward already exists");
+    }
+
+    const after = (await crewRows(company.id)).filter((row) => row.name.startsWith("Steward"));
+    expect(after).toHaveLength(1);
+    expect(after[0].id).toBe(before.id);
+    expect(after[0].template_origin).toBe(STEWARD_ID);
+    expect(await triggerKinds(after[0].id)).toEqual(["sweep"]);
+    expect(await teamMemberLinkCount(company.id, after[0].id)).toBe(1);
+    expect(fixtureFetchCallCount).toBe(fetchesBefore);
+  }, 240_000);
+
+  it("fails closed when the loaded catalog does not publish Steward in the crew", async () => {
+    assertSetupOk();
+    await withCatalog();
+    const company = await companyService(db).create({ name: "Steward Catalog Miss Co" } as never);
+    const before = (await crewRows(company.id)).find((row) => row.name === "Steward")!;
+    const fetchesBefore = fixtureFetchCallCount;
+
+    const result = await runLegacyStewardReconcilePass({
+      db,
+      companyIds: [company.id],
+      catalogItems: STEWARD_CATALOG_ITEMS.filter((item) => item.id !== STEWARD_ID),
+    });
+
+    const after = (await crewRows(company.id)).find((row) => row.name === "Steward")!;
+    expect(after.id).toBe(before.id);
+    expect(after.template_origin).toBeNull();
+    expect(await triggerKinds(after.id)).toEqual(["sweep"]);
+    expect(await teamMemberLinkCount(company.id, after.id)).toBe(0);
+    expect(result).toMatchObject({ catalogReady: false, inspected: 0, adopted: 0, failed: 0 });
+    expect(fixtureFetchCallCount).toBe(fetchesBefore);
+  }, 240_000);
+
+  it("fails closed when Steward exists in the catalog but is absent from crew requirements", async () => {
+    assertSetupOk();
+    await withCatalog();
+    const company = await companyService(db).create({ name: "Steward Requirement Miss Co" } as never);
+    const before = (await crewRows(company.id)).find((row) => row.name === "Steward")!;
+    const catalogWithoutStewardRequirement = buildCatalogWithSteward().items as CatalogItem[];
+    const teamItem = catalogWithoutStewardRequirement.find((item) => item.id === TEAM_ID)!;
+    teamItem.requires = teamItem.requires?.filter((requirement) => requirement.id !== STEWARD_ID);
+    const fetchesBefore = fixtureFetchCallCount;
+
+    const result = await runLegacyStewardReconcilePass({
+      db,
+      companyIds: [company.id],
+      catalogItems: catalogWithoutStewardRequirement,
+    });
+
+    const after = (await crewRows(company.id)).find((row) => row.id === before.id)!;
+    expect(after.template_origin).toBeNull();
+    expect(await triggerKinds(after.id)).toEqual(["sweep"]);
+    expect(await teamMemberLinkCount(company.id, after.id)).toBe(0);
+    expect(result).toMatchObject({ catalogReady: false, inspected: 0, adopted: 0, failed: 0 });
+    expect(fixtureFetchCallCount).toBe(fetchesBefore);
+  }, 240_000);
+
+  it("refuses a stray default-team row when no crew agent proves marketplace management", async () => {
+    assertSetupOk();
+    await withCatalog();
+    const company = await companyService(db).create({ name: "Steward Partial Team Co" } as never);
+    const steward = (await crewRows(company.id)).find((row) => row.name === "Steward")!;
+    await db.execute(sql`
+      UPDATE agents
+      SET template_origin = NULL,
+          template_version = NULL
+      WHERE company_id = ${company.id}
+        AND kind = 'aoa'
+        AND name <> 'Steward'
+    `);
+
+    const result = await runLegacyStewardReconcilePass({
+      db,
+      companyIds: [company.id],
+      catalogItems: STEWARD_CATALOG_ITEMS,
+    });
+
+    const after = (await crewRows(company.id)).find((row) => row.id === steward.id)!;
+    expect(after.template_origin).toBeNull();
+    expect(await triggerKinds(after.id)).toEqual(["sweep"]);
+    expect(await teamMemberLinkCount(company.id, after.id)).toBe(0);
+    expect(result).toMatchObject({ inspected: 1, adopted: 0, failed: 0 });
+  }, 240_000);
+
+  it("refuses adoption when any agent kind already carries Steward's published origin", async () => {
+    assertSetupOk();
+    await withCatalog();
+    const company = await companyService(db).create({ name: "Steward Origin Collision Co" } as never);
+    const steward = (await crewRows(company.id)).find((row) => row.name === "Steward")!;
+    await db.execute(sql`
+      INSERT INTO agents (
+        company_id,
+        name,
+        kind,
+        role,
+        template_origin,
+        template_version
+      )
+      VALUES (
+        ${company.id},
+        'Historical Steward Import',
+        'org',
+        'general',
+        ${STEWARD_ID},
+        '1.0.0'
+      )
+    `);
+
+    const result = await runLegacyStewardReconcilePass({
+      db,
+      companyIds: [company.id],
+      catalogItems: STEWARD_CATALOG_ITEMS,
+    });
+
+    const after = (await crewRows(company.id)).find((row) => row.id === steward.id)!;
+    expect(after.template_origin).toBeNull();
+    expect(await triggerKinds(after.id)).toEqual(["sweep"]);
+    expect(await teamMemberLinkCount(company.id, after.id)).toBe(0);
+    expect(result).toMatchObject({ inspected: 1, adopted: 0, failed: 0 });
+  }, 240_000);
+
+  it("the runtime switch disables only Steward reconciliation", async () => {
+    assertSetupOk();
+    await withCatalog();
+    const company = await companyService(db).create({ name: "Steward Switch Co" } as never);
+    const steward = (await crewRows(company.id)).find((row) => row.name === "Steward")!;
+    process.env[STEWARD_RECONCILE_ENV] = "false";
+
+    const result = await runLegacyStewardReconcilePass({
+      db,
+      companyIds: [company.id],
+      catalogItems: STEWARD_CATALOG_ITEMS,
+    });
+
+    expect(result).toMatchObject({
+      disabled: true,
+      catalogReady: false,
+      inspected: 0,
+      adopted: 0,
+      failed: 0,
+    });
+    expect((await crewRows(company.id)).find((row) => row.id === steward.id)!.template_origin).toBeNull();
+    expect(await triggerKinds(steward.id)).toEqual(["sweep"]);
+    expect(await teamMemberLinkCount(company.id, steward.id)).toBe(0);
   }, 240_000);
 
   // ── The ablation, kept permanently ────────────────────────────────────────

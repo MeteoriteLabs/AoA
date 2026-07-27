@@ -74,7 +74,7 @@
  * pass sees the origin already present and skips it).
  */
 
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   agents,
@@ -104,10 +104,18 @@ import {
 import { provisionCompanyCrew, type CrewProvisioningOutcome } from "./crew-provisioning.js";
 import {
   ADOPTED_TEMPLATE_VERSION,
+  CREW_REPAIR_MAX_PER_PASS,
   crewLegacySlugCandidates,
 } from "./marketplace-install/crew-constants.js";
+import {
+  acquireCrewRepairAdvisoryLock,
+  adoptLegacyCrewAgentPointer,
+} from "./marketplace-install/crew-adoption.js";
 
-export { ADOPTED_TEMPLATE_VERSION } from "./marketplace-install/crew-constants.js";
+export {
+  ADOPTED_TEMPLATE_VERSION,
+  CREW_REPAIR_MAX_PER_PASS,
+} from "./marketplace-install/crew-constants.js";
 
 /**
  * Budget for the `team.json` fetch — the one resource repair fetches directly.
@@ -576,7 +584,7 @@ async function repairDegradedCrew(
       // A partial unique index on (companyId, templateOrigin) would cover both,
       // but it changes `installTeam` semantics for every caller — filed, not
       // done here.
-      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`crew-repair:${companyId}`}))`);
+      await acquireCrewRepairAdvisoryLock(tx as unknown as Db, companyId);
 
       // Re-read inside the lock: a racing repair may have finished since the
       // diagnosis, in which case there is nothing left to create.
@@ -591,14 +599,18 @@ async function repairDegradedCrew(
       for (const { row, entry } of adoptable) {
         // POINTER ONLY. No instructions, no skillKeys, no runtimeConfig, no
         // triggers, no adapter — see this module's docblock.
-        await tx
-          .update(agents)
-          .set({
-            templateOrigin: entry.templateOrigin,
-            templateVersion: ADOPTED_TEMPLATE_VERSION,
-            updatedAt: new Date(),
-          })
-          .where(eq(agents.id, row.id));
+        const adopted = await adoptLegacyCrewAgentPointer(tx as unknown as Db, {
+          companyId,
+          agentId: row.id,
+          expectedName: row.name,
+          expectedTemplateOrigin: row.templateOrigin,
+          templateOrigin: entry.templateOrigin,
+        });
+        if (!adopted) {
+          throw new Error(
+            `crew repair: legacy agent ${row.id} changed before pointer adoption; rolling back`,
+          );
+        }
       }
 
       let teamId = existingTeam?.id ?? null;
@@ -1040,19 +1052,6 @@ export function setCrewRepairClock(clock: () => number): void {
 }
 
 // ── Boot-time reconcile ──────────────────────────────────────────────────────
-
-/**
- * How many companies one pass may actually repair. Repair is network-bearing
- * per company (team.json + any missing skill bodies), so an instance hosting
- * many degraded companies must not turn a boot into a CDN stampede. The
- * remainder are taken by later passes — repair is permanent, so the backlog
- * strictly shrinks.
- *
- * Only *productive* work consumes budget: a company that skips fail-closed must
- * not burn a slot, or a handful of unrepairable companies would starve every
- * company behind them, forever.
- */
-export const CREW_REPAIR_MAX_PER_PASS = 5;
 
 export interface CrewRepairPassResult {
   inspected: number;
