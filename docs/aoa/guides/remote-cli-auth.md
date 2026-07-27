@@ -51,6 +51,8 @@ Each subscription credential is stored beneath an opaque scoped path:
 
 Authorization URLs and device/paste codes are not stored in the challenge row.
 A server restart expires the actionable login material; start the flow again.
+Active challenges have a database-enforced resource key, so only one pending
+login may use a scoped provider credential home at a time.
 
 `AOA_SCOPED_CLI_AUTH=true` also makes CLI execution fail closed unless the agent
 has exactly one active, approved provider-credential binding for its execution
@@ -58,6 +60,16 @@ target. A successful onboarding Verify probe now verifies the founder's scoped
 credential and atomically approves it for the configured Commander. Existing
 agents still require an explicit founder-approved binding before enabling the
 flag.
+The login worker also finalizes and binds a successful subscription credential
+when the CLI exits successfully; the browser poller is only an observer. Closing
+or reloading onboarding after completing provider sign-in does not leave the
+credential pending.
+
+Personal ChatGPT/Claude subscription credentials are Commander-only. The server
+rejects direct attempts to assign one to an ordinary agent. Use a verified
+company API key for unattended ordinary agents; API billing is separate from
+the user's ChatGPT or Claude subscription.
+
 Revoking a local subscription credential requires founder access and an exact
 credential-ID confirmation. AOA revokes all of its agent bindings before deleting
 that credential's validated scoped provider directory.
@@ -102,3 +114,7 @@ For each enabled provider:
    start again.
 7. Confirm logs, activity entries, HTTP errors, and browser console contain no
    API key, pasted code, device code, token, or authorization query string.
+8. Close the browser after provider sign-in completes, reopen onboarding, and
+   confirm the Commander credential is already verified and bound.
+9. Attempt to bind the subscription credential to an ordinary agent and require
+   the stable `subscription_commander_only` rejection.
