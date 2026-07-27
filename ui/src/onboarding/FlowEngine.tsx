@@ -335,7 +335,7 @@ export function FlowEngine({
                 variant="ghost"
                 size="sm"
                 aria-label="Back"
-                className="-ml-2 gap-1 px-2 text-dim hover:bg-white/5 hover:text-text sm:px-3"
+                className="gap-1 px-2 text-dim hover:bg-white/5 hover:text-text sm:-ml-2 sm:px-3"
                 onClick={handleBack}
               >
                 <ChevronLeft className="h-3.5 w-3.5" aria-hidden />
@@ -351,7 +351,7 @@ export function FlowEngine({
                 variant="ghost"
                 size="sm"
                 aria-label="Switch account"
-                className="-mr-2 gap-1.5 px-2 text-dim hover:bg-white/5 hover:text-text sm:px-3"
+                className="gap-1.5 px-2 text-dim hover:bg-white/5 hover:text-text sm:-mr-2 sm:px-3"
                 disabled={isSwitchingAccount}
                 onClick={onSwitchAccount}
               >
