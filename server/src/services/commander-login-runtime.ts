@@ -2,7 +2,10 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Db } from "@armyofagents/db";
-import { commanderLoginChallenges, providerCredentials } from "@armyofagents/db";
+import {
+  commanderLoginChallenges,
+  providerCredentials,
+} from "@armyofagents/db";
 import { and, eq, sql } from "drizzle-orm";
 import { runCodexLogin } from "@armyofagents/adapter-codex-local/server";
 import {
@@ -23,6 +26,7 @@ import {
   prepareScopedCliAuthHome,
   scopedCliAuthEnv,
 } from "./cli-auth-topology.js";
+import { verifyAndBindCommanderSubscriptionCredential } from "./provider-credentials.js";
 
 /** Route-facing discovery cap — bounds how long `start` waits for the URL. */
 const LOGIN_URL_DISCOVERY_MS = 60_000;
@@ -41,7 +45,11 @@ interface ProviderLoginRunner {
    * HOST-shared and genuinely cross-tenant. Two companies on one host contend
    * for one slot; the loser gets a 409.
    */
-  runLogin: (args: { runId: string; env: NodeJS.ProcessEnv; authHome: string }) => LoginRunLike;
+  runLogin: (args: {
+    runId: string;
+    env: NodeJS.ProcessEnv;
+    authHome: string;
+  }) => LoginRunLike;
   /**
    * Completion evidence, relative to authHome (Codex P1 #9 — do NOT hardcode
    * auth.json for both):
@@ -62,7 +70,9 @@ interface ProviderLoginRunner {
  * drivable but not offerable — the onboarding Verify step drives it and accepts
  * that the founder finishes in a terminal.
  */
-const LOGIN_RUNNERS: Partial<Record<CommanderLoginProvider, ProviderLoginRunner>> = {
+const LOGIN_RUNNERS: Partial<
+  Record<CommanderLoginProvider, ProviderLoginRunner>
+> = {
   openai: {
     runLogin: (args) =>
       runCodexLogin({
@@ -93,7 +103,9 @@ const LOGIN_RUNNERS: Partial<Record<CommanderLoginProvider, ProviderLoginRunner>
  * throw, surfacing as a 502 "sign-in could not start" instead of the honest
  * 400 "no in-app sign-in for this provider".
  */
-export function hasLoginRunner(providerId: string): providerId is CommanderLoginProvider {
+export function hasLoginRunner(
+  providerId: string
+): providerId is CommanderLoginProvider {
   return LOGIN_RUNNERS[providerId as CommanderLoginProvider] !== undefined;
 }
 
@@ -103,11 +115,14 @@ export function hasLoginRunner(providerId: string): providerId is CommanderLogin
  * needs a test of its own. Without it a "helpful" default would reintroduce
  * that hazard with a fully green suite.
  */
-export function requireLoginRunner(provider: CommanderLoginProvider): ProviderLoginRunner {
+export function requireLoginRunner(
+  provider: CommanderLoginProvider
+): ProviderLoginRunner {
   const runner = LOGIN_RUNNERS[provider];
   // Explicit throw rather than an implicit "else = claude" fallback: driving the
   // WRONG CLI would spawn a login against another provider's credential home.
-  if (!runner) throw new Error(`No interactive login runner for provider: ${provider}`);
+  if (!runner)
+    throw new Error(`No interactive login runner for provider: ${provider}`);
   return runner;
 }
 
@@ -136,10 +151,12 @@ export function drizzleChallengeStore(db: Db): ChallengeStore {
       // Serialized by a transaction-scoped advisory lock on the slot key —
       // same pattern as first-user-bootstrap.ts.
       return await (
-        db as unknown as { transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T> }
+        db as unknown as {
+          transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T>;
+        }
       ).transaction(async (tx) => {
         await tx.execute(
-          sql`SELECT pg_advisory_xact_lock(hashtext(${`commander-login:${provider}:${authHome}`}))`,
+          sql`SELECT pg_advisory_xact_lock(hashtext(${`commander-login:${provider}:${authHome}`}))`
         );
         const [existing] = await tx
           .select()
@@ -148,8 +165,8 @@ export function drizzleChallengeStore(db: Db): ChallengeStore {
             and(
               eq(commanderLoginChallenges.provider, provider),
               eq(commanderLoginChallenges.authHome, authHome),
-              eq(commanderLoginChallenges.status, "pending"),
-            ),
+              eq(commanderLoginChallenges.status, "pending")
+            )
           )
           .orderBy(commanderLoginChallenges.startedAt)
           .limit(1);
@@ -191,13 +208,20 @@ export function drizzleChallengeStore(db: Db): ChallengeStore {
       // residual remover is a founder `cancel` / the boot `reapOrphans`.
       const updated = await db
         .update(commanderLoginChallenges)
-        .set({ ...patch, updatedAt: new Date(), finishedAt: patch.status && patch.status !== "pending" ? new Date() : undefined })
+        .set({
+          ...patch,
+          updatedAt: new Date(),
+          finishedAt:
+            patch.status && patch.status !== "pending" ? new Date() : undefined,
+        })
         .where(eq(commanderLoginChallenges.id, id))
         .returning({ id: commanderLoginChallenges.id });
       return updated.length;
     },
     async remove(id) {
-      await db.delete(commanderLoginChallenges).where(eq(commanderLoginChallenges.id, id));
+      await db
+        .delete(commanderLoginChallenges)
+        .where(eq(commanderLoginChallenges.id, id));
     },
     async listActive() {
       const rows = await db
@@ -230,15 +254,25 @@ export function buildCommanderLoginService(db: Db): CommanderLoginService {
       const run = requireLoginRunner(provider).runLogin(args);
       return {
         ...run,
-        urlPromise: run.urlPromise.then((url) => assertProviderLoginUrl(provider, url)),
+        urlPromise: run.urlPromise.then((url) =>
+          assertProviderLoginUrl(provider, url)
+        ),
       };
     },
     credentialPresent: async (provider, authHome) => {
-      const file = path.join(authHome, requireLoginRunner(provider).credentialFileName);
+      const file = path.join(
+        authHome,
+        requireLoginRunner(provider).credentialFileName
+      );
       const stat = await fs.stat(file).catch(() => null);
       return Boolean(stat?.isFile());
     },
-    onCredentialEvidence: async ({ companyId, provider, userId, executionTargetId }) => {
+    onCredentialEvidence: async ({
+      companyId,
+      provider,
+      userId,
+      executionTargetId,
+    }) => {
       const now = new Date();
       await db
         .insert(providerCredentials)
@@ -267,6 +301,16 @@ export function buildCommanderLoginService(db: Db): CommanderLoginService {
             updatedAt: now,
           },
         });
+      // The login worker owns finalization. Browser polling is only an observer:
+      // closing or reloading onboarding after the provider accepts the login must
+      // not leave a valid credential stuck in `pending` or unbound.
+      await verifyAndBindCommanderSubscriptionCredential(db, {
+        companyId,
+        provider,
+        userId,
+        actorUserId: userId,
+        executionTargetId,
+      });
     },
     // Persisted-pid kill — ALWAYS identity-verified (Codex P1, round 6 →
     // round 7). Every caller (BOOT reaper, single-flight takeover in `onExisting`,
@@ -276,7 +320,8 @@ export function buildCommanderLoginService(db: Db): CommanderLoginService {
     // only UNCONDITIONAL kills are the LIVE in-memory `run.handle.terminate()`
     // calls in the service (this process's own child — not PID-reuse-prone), which
     // never route through this seam.
-    terminate: (pid, pgid, expected) => void terminateByPidIfMatches(pid, pgid, expected),
+    terminate: (pid, pgid, expected) =>
+      void terminateByPidIfMatches(pid, pgid, expected),
     newId: () => randomUUID(),
     env: () => process.env,
   });
