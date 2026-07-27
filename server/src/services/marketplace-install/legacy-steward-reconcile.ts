@@ -65,7 +65,9 @@ function catalogPublishesStewardInDefaultCrew(catalogItems: readonly CatalogItem
   const stewardItem = catalogById.get(STEWARD_CATALOG_ITEM_ID);
   return (
     teamItem?.type === "team" &&
+    teamItem.status === "active" &&
     stewardItem?.type === "agent" &&
+    stewardItem.status === "active" &&
     teamItem.requires?.some(
       (requirement) =>
         requirement.type === "agent" && requirement.id === STEWARD_CATALOG_ITEM_ID,

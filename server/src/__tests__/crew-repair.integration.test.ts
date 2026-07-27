@@ -1198,6 +1198,48 @@ describe.skipIf(
     expect(fixtureFetchCallCount).toBe(fetchesBefore);
   }, 240_000);
 
+  it("fails closed when either the crew team or Steward catalog item is inactive", async () => {
+    assertSetupOk();
+    await withCatalog();
+    const company = await companyService(db).create({ name: "Steward Inactive Catalog Co" } as never);
+    const before = (await crewRows(company.id)).find((row) => row.name === "Steward")!;
+    const fetchesBefore = fixtureFetchCallCount;
+
+    const deprecatedTeamCatalog = buildCatalogWithSteward().items as CatalogItem[];
+    deprecatedTeamCatalog.find((item) => item.id === TEAM_ID)!.status = "deprecated";
+    const deprecatedTeamResult = await runLegacyStewardReconcilePass({
+      db,
+      companyIds: [company.id],
+      catalogItems: deprecatedTeamCatalog,
+    });
+
+    const quarantinedStewardCatalog = buildCatalogWithSteward().items as CatalogItem[];
+    quarantinedStewardCatalog.find((item) => item.id === STEWARD_ID)!.status = "quarantined";
+    const quarantinedStewardResult = await runLegacyStewardReconcilePass({
+      db,
+      companyIds: [company.id],
+      catalogItems: quarantinedStewardCatalog,
+    });
+
+    const after = (await crewRows(company.id)).find((row) => row.id === before.id)!;
+    expect(after.template_origin).toBeNull();
+    expect(await triggerKinds(after.id)).toEqual(["sweep"]);
+    expect(await teamMemberLinkCount(company.id, after.id)).toBe(0);
+    expect(deprecatedTeamResult).toMatchObject({
+      catalogReady: false,
+      inspected: 0,
+      adopted: 0,
+      failed: 0,
+    });
+    expect(quarantinedStewardResult).toMatchObject({
+      catalogReady: false,
+      inspected: 0,
+      adopted: 0,
+      failed: 0,
+    });
+    expect(fixtureFetchCallCount).toBe(fetchesBefore);
+  }, 240_000);
+
   it("refuses a stray default-team row when no crew agent proves marketplace management", async () => {
     assertSetupOk();
     await withCatalog();
