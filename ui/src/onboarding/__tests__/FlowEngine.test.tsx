@@ -76,6 +76,30 @@ describe("FlowEngine (Stage B / B6)", () => {
     expect(onSwitchAccount).toHaveBeenCalledOnce();
   });
 
+  it("shows a recoverable error when progress cannot load", async () => {
+    const getProgress = vi
+      .fn<FlowEngineApi["getProgress"]>()
+      .mockRejectedValueOnce(new Error("Progress service unavailable"))
+      .mockResolvedValueOnce({ completedStates: ["AUTHENTICATED"] });
+
+    render(
+      <FlowEngine
+        userId="u1"
+        companyId={null}
+        journey="founder"
+        api={{ getProgress }}
+        registry={makeRegistry(() => {})}
+      />
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Progress service unavailable"
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => screen.getByTestId("step-profile"));
+    expect(getProgress).toHaveBeenCalledTimes(2);
+  });
+
   it("renders the first step, advances on complete, then finishes", async () => {
     let completed: OnboardingState[] = ["AUTHENTICATED"];
     const advance = (s: OnboardingState) => {
@@ -152,7 +176,7 @@ describe("FlowEngine (Stage B / B6)", () => {
   // WS3: the whole engine — chrome + every step it resolves — renders inside
   // the dark spine shell (`.onboarding-dark` scope + drifting
   // `<ConstellationBg/>` canvas), matching the mockup's S2–S5 screens.
-  it("WS3: renders inside the .onboarding-dark shell with the constellation background", async () => {
+  it("renders inside a dark, viewport-bounded shell with one stable vertical scroller", async () => {
     const api: FlowEngineApi = {
       getProgress: async () => ({
         completedStates: ["AUTHENTICATED", "PROFILE_SET"],
@@ -172,8 +196,9 @@ describe("FlowEngine (Stage B / B6)", () => {
     expect(shell).toBeTruthy();
     expect(shell?.getAttribute("data-aoa-onboarding-theme")).toBe("dark");
     expect(shell?.className).toContain("overflow-y-auto");
-    expect(shell?.className).toContain("[height:100dvh]");
-    expect(shell?.querySelector("canvas")).toBeTruthy();
+    expect(shell?.className).toContain("h-[100dvh]");
+    expect(shell?.className).toContain("[scrollbar-gutter:stable]");
+    expect(shell?.querySelector("canvas")).toBeNull();
   });
 
   it("renders the shared chrome: 'Step N of M' position chip + a central Back control", async () => {

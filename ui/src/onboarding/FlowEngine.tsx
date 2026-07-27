@@ -3,7 +3,6 @@ import { ChevronLeft, LogOut } from "lucide-react";
 import type { OnboardingJourney, OnboardingState } from "@armyofagents/shared";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { ConstellationBg } from "./motion";
 import {
   resolveNextStep,
   ONBOARDING_REGISTRY,
@@ -39,7 +38,8 @@ export type FlowEngineProps = {
 };
 
 /**
- * Shared dark chrome shell: `.onboarding-dark` scope + drifting constellation.
+ * Shared dark chrome shell. The standalone route owns one vertical scroller so
+ * long verification and authentication errors always remain reachable.
  * Exported so non-FlowEngine onboarding surfaces (e.g. the org-only branch in
  * `pages/OnboardingFlow.tsx`) render the same chrome instead of hand-duplicating
  * it.
@@ -66,10 +66,9 @@ export function DarkShell({
         "onboarding-dark relative w-full overflow-x-hidden bg-background text-foreground [color-scheme:dark]",
         fill
           ? "min-h-full"
-          : "h-screen min-h-screen overflow-y-auto [height:100dvh]"
+          : "h-[100dvh] min-h-0 overflow-y-auto overscroll-y-contain [scrollbar-gutter:stable]"
       )}
     >
-      <ConstellationBg />
       {children}
     </div>
   );
@@ -101,6 +100,7 @@ export function FlowEngine({
   switchAccountError,
 }: FlowEngineProps) {
   const [completed, setCompleted] = useState<OnboardingState[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [backStepId, setBackStepId] = useState<string | null>(null);
   const finishedRef = useRef(false);
   const companyIdRef = useRef(companyId);
@@ -108,9 +108,19 @@ export function FlowEngine({
 
   const load = useCallback(async () => {
     const requestedCompanyId = companyId;
-    const p = await api.getProgress(requestedCompanyId);
-    if (companyIdRef.current !== requestedCompanyId) return;
-    setCompleted(p?.completedStates ?? ["AUTHENTICATED"]);
+    setLoadError(null);
+    try {
+      const p = await api.getProgress(requestedCompanyId);
+      if (companyIdRef.current !== requestedCompanyId) return;
+      setCompleted(p?.completedStates ?? ["AUTHENTICATED"]);
+    } catch (error) {
+      if (companyIdRef.current !== requestedCompanyId) return;
+      setLoadError(
+        error instanceof Error
+          ? error.message
+          : "We couldn't load your onboarding progress."
+      );
+    }
   }, [api, companyId]);
 
   useEffect(() => {
@@ -166,6 +176,46 @@ export function FlowEngine({
     onBack?.();
   }, [applicableSteps, ctx, onBack, step]);
 
+  if (loadError) {
+    return (
+      <DarkShell>
+        <div className="relative z-10 flex min-h-[100dvh] items-center justify-center px-4 py-16 sm:px-6">
+          <div className="w-full max-w-md rounded-xl border border-border bg-card p-5 text-center">
+            <h1 className="text-lg font-semibold text-text">
+              We couldn't load onboarding
+            </h1>
+            <p
+              className="mt-2 break-words text-sm text-destructive"
+              role="alert"
+            >
+              {loadError}
+            </p>
+            <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:justify-center">
+              <Button type="button" onClick={() => void load()}>
+                Try again
+              </Button>
+              {onSwitchAccount && (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  disabled={isSwitchingAccount}
+                  onClick={onSwitchAccount}
+                >
+                  {isSwitchingAccount ? "Signing out…" : "Switch account"}
+                </Button>
+              )}
+            </div>
+            {switchAccountError && (
+              <p className="mt-3 text-xs text-destructive" role="alert">
+                {switchAccountError}
+              </p>
+            )}
+          </div>
+        </div>
+      </DarkShell>
+    );
+  }
+
   if (!ctx) {
     return (
       <DarkShell>
@@ -182,7 +232,7 @@ export function FlowEngine({
             {isSwitchingAccount ? "Signing out…" : "Switch account"}
           </Button>
         )}
-        <div className="relative z-10 flex min-h-screen items-center justify-center px-6">
+        <div className="relative z-10 flex min-h-[100dvh] items-center justify-center px-6">
           <p className="text-sm text-dim">Loading…</p>
         </div>
       </DarkShell>
@@ -204,7 +254,7 @@ export function FlowEngine({
             {isSwitchingAccount ? "Signing out…" : "Switch account"}
           </Button>
         )}
-        <div className="relative z-10 flex min-h-screen items-center justify-center px-6">
+        <div className="relative z-10 flex min-h-[100dvh] items-center justify-center px-6">
           <div data-testid="onboarding-complete" className="text-sm text-dim">
             Onboarding complete.
           </div>
@@ -237,7 +287,7 @@ export function FlowEngine({
 
   return (
     <DarkShell>
-      <div className="relative z-10 mx-auto flex min-h-full w-full max-w-xl flex-col px-4 py-5 sm:px-6 sm:py-8">
+      <div className="relative z-10 mx-auto flex min-h-[100dvh] w-full max-w-xl flex-col px-4 pb-[max(1.25rem,env(safe-area-inset-bottom))] pt-[max(1.25rem,env(safe-area-inset-top))] sm:px-6 sm:py-8">
         {/* Shared step chrome: one Back affordance + a stepper-pip / "Step N of
             M" position readout for every step (steps no longer render their
             own Back). */}
