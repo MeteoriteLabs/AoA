@@ -9,7 +9,7 @@ import type {
 } from "@armyofagents/shared";
 import { api } from "./client";
 
-function importPath(
+export function companyImportPath(
   request: CompanyPortabilityPreviewRequest,
   preview: boolean,
 ): string {
@@ -32,12 +32,12 @@ export const companyPortabilityApi = {
     ),
   previewImport: (request: CompanyPortabilityPreviewRequest) =>
     api.post<CompanyPortabilityPreviewResult>(
-      importPath(request, true),
+      companyImportPath(request, true),
       request,
     ),
   importBundle: (request: CompanyPortabilityImportRequest) =>
     api.post<CompanyPortabilityImportResult>(
-      importPath(request, false),
+      companyImportPath(request, false),
       request,
     ),
 };
