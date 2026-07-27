@@ -78,11 +78,12 @@ export function OnboardingFlowPage({
   const [spineDone, setSpineDone] = useState(false);
   const isNewFounderOrganization =
     journey === "founder" && searchParams.get("new") === "1";
-  const { data: session, isLoading } = useQuery({
+  const sessionQuery = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
     retry: false,
   });
+  const { data: session, isLoading } = sessionQuery;
   const userId = session?.user?.id;
   const profileProgressQuery = useQuery({
     queryKey: ["onboarding", "progress", "user-layer", userId],
@@ -115,6 +116,35 @@ export function OnboardingFlowPage({
     );
   }
 
+  if (sessionQuery.error) {
+    return (
+      <div className="onboarding-dark flex min-h-screen items-center justify-center bg-background px-6">
+        <AccountSwitchControl
+          onSwitch={() => void accountSwitch.switchAccount()}
+          isSwitching={accountSwitch.isSwitching}
+          error={accountSwitch.error}
+        />
+        <div className="w-full max-w-md text-center">
+          <h1 className="text-lg font-semibold text-text">
+            We couldn't load your session
+          </h1>
+          <p className="mt-2 text-sm text-destructive" role="alert">
+            {sessionQuery.error instanceof Error
+              ? sessionQuery.error.message
+              : "Your session is unavailable."}
+          </p>
+          <Button
+            type="button"
+            className="mt-5"
+            onClick={() => void sessionQuery.refetch()}
+          >
+            Retry
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
   if (!userId) {
     navigate("/auth", { replace: true });
     return null;
@@ -128,11 +158,23 @@ export function OnboardingFlowPage({
           isSwitching={accountSwitch.isSwitching}
           error={accountSwitch.error}
         />
-        <p className="text-sm text-destructive">
-          {profileProgressQuery.error instanceof Error
-            ? profileProgressQuery.error.message
-            : "Failed to prepare organization setup"}
-        </p>
+        <div className="w-full max-w-md text-center">
+          <h1 className="text-lg font-semibold text-text">
+            We couldn't prepare organization setup
+          </h1>
+          <p className="mt-2 text-sm text-destructive" role="alert">
+            {profileProgressQuery.error instanceof Error
+              ? profileProgressQuery.error.message
+              : "Failed to prepare organization setup"}
+          </p>
+          <Button
+            type="button"
+            className="mt-5"
+            onClick={() => void profileProgressQuery.refetch()}
+          >
+            Retry
+          </Button>
+        </div>
       </div>
     );
   }

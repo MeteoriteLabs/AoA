@@ -323,11 +323,14 @@ export function FlowEngine({
 
   return (
     <DarkShell>
-      <div className="relative z-10 mx-auto flex min-h-[100dvh] w-full max-w-xl flex-col px-4 pb-[max(1.25rem,env(safe-area-inset-bottom))] pt-[max(1.25rem,env(safe-area-inset-top))] sm:px-6 sm:py-8">
+      <div className="relative z-10 mx-auto flex min-h-[100dvh] w-full max-w-xl flex-col px-4 pb-[max(1.25rem,env(safe-area-inset-bottom))] sm:px-6 sm:pb-8">
         {/* Shared step chrome: one Back affordance + a stepper-pip / "Step N of
             M" position readout for every step (steps no longer render their
             own Back). */}
-        <div className="flex items-center justify-between gap-2 sm:gap-4">
+        <div
+          data-testid="onboarding-chrome"
+          className="sticky top-0 z-20 -mx-4 flex items-center justify-between gap-2 bg-background/95 px-4 pb-3 pt-[max(1.25rem,env(safe-area-inset-top))] backdrop-blur sm:-mx-6 sm:gap-4 sm:px-6 sm:pt-8"
+        >
           <div className="min-w-10 sm:min-w-16">
             {hasCompletedPredecessor && (
               <Button

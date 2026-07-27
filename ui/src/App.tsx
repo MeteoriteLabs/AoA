@@ -144,6 +144,19 @@ function CloudAccessGate() {
     );
   }
 
+  if (requiresSession && sessionQuery.error) {
+    return (
+      <JourneyGateSurface
+        error={
+          sessionQuery.error instanceof Error
+            ? sessionQuery.error.message
+            : "Could not load your session."
+        }
+        onRetry={() => void sessionQuery.refetch()}
+      />
+    );
+  }
+
   // A fresh instance with no admin is NOT a dead end anymore: the first Google
   // user to sign in becomes the instance admin (RB3). So a session-less user —
   // including on a brand-new instance (bootstrapStatus "bootstrap_pending") — is
@@ -216,7 +229,11 @@ function PostAuthJourneyGate() {
   const journeyQuery = useQuery({
     queryKey: queryKeys.onboarding.journeyForIdentity(identityKey),
     queryFn: () => fetchJourney(),
-    enabled: requiresSession && !sessionQuery.isLoading,
+    enabled:
+      requiresSession &&
+      !sessionQuery.isLoading &&
+      !sessionQuery.error &&
+      Boolean(sessionQuery.data),
     retry: false,
   });
 
@@ -232,6 +249,18 @@ function PostAuthJourneyGate() {
   if (!requiresSession) return <Outlet />;
   if (sessionQuery.isLoading || journeyQuery.isLoading)
     return <JourneyGateSurface />;
+  if (sessionQuery.error || !sessionQuery.data) {
+    return (
+      <JourneyGateSurface
+        error={
+          sessionQuery.error instanceof Error
+            ? sessionQuery.error.message
+            : "Your session is unavailable."
+        }
+        onRetry={() => void sessionQuery.refetch()}
+      />
+    );
+  }
   if (journeyQuery.error || !journey) {
     return (
       <JourneyGateSurface

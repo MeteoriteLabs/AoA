@@ -111,13 +111,15 @@ export function InvitedJoinTerminal() {
   // (no extra request, no server round-trip) and seed `company` when unset.
   const prepareEntry = useCallback(
     async (targetId: string | null) => {
-      queryClient.removeQueries({ queryKey: ["onboarding", "journey"], exact: true });
+      queryClient.removeQueries({ queryKey: queryKeys.onboarding.journey });
       await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
       if (!targetId) return;
-      const data = queryClient.getQueryData<{ companies: Array<{ id: string; name: string }> }>(
-        queryKeys.companies.all,
-      );
-      const name = data?.companies.find((c) => c.id === targetId)?.name;
+      const cachedCompanyLists = queryClient.getQueriesData<{
+        companies: Array<{ id: string; name: string }>;
+      }>({ queryKey: queryKeys.companies.all });
+      const name = cachedCompanyLists
+        .flatMap(([, data]) => data?.companies ?? [])
+        .find((candidate) => candidate.id === targetId)?.name;
       if (name) setCompany((prev) => prev ?? { name, role: "" });
     },
     [queryClient],

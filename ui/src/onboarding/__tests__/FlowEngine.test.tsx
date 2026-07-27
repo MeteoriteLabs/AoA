@@ -243,6 +243,12 @@ describe("FlowEngine (Stage B / B6)", () => {
     expect(shell?.className).toContain("h-[100dvh]");
     expect(shell?.className).toContain("[scrollbar-gutter:stable]");
     expect(shell?.querySelector("canvas")).toBeNull();
+    expect(screen.getByTestId("onboarding-chrome").className).toContain(
+      "sticky",
+    );
+    expect(screen.getByTestId("onboarding-chrome").className).toContain(
+      "top-0",
+    );
   });
 
   it("renders the shared chrome: 'Step N of M' position chip + a central Back control", async () => {
