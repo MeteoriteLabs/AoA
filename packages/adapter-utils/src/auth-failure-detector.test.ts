@@ -135,6 +135,14 @@ describe("detectAuthFailure — login URL", () => {
     expect(r.loginUrl).toBe("https://claude.ai/device/ABC-123");
   });
 
+  it("strips ANSI controls from one-shot verification URLs", () => {
+    const r = detectAuthFailure(
+      "Not logged in. Open \u001b[4mhttps://auth.openai.com/codex/device\u001b[0m to continue.",
+    );
+    expect(r.kind).toBe("signed_out");
+    expect(r.loginUrl).toBe("https://auth.openai.com/codex/device");
+  });
+
   it("returns null loginUrl when absent", () => {
     expect(detectAuthFailure("not logged in").loginUrl).toBeNull();
   });

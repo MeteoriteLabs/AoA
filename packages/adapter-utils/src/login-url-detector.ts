@@ -15,19 +15,30 @@
  * Pure and synchronous — the spawn/lifecycle wiring lives in `streaming-login`.
  */
 
+import { stripVTControlCharacters } from "node:util";
+
 // URLs are only considered complete when followed by a terminator, so a URL cut
 // off at a chunk boundary won't match until the rest (and its terminator) arrive.
 // Global so we can skip decoy URLs (see below) and take the first *real* one.
-const URL_WITH_TERMINATOR = /(https?:\/\/[^\s"'<>`]+)(?=[\s"'<>`])/g;
+const URL_WITH_TERMINATOR =
+  /(https?:\/\/[^\s\x00-\x1f\x7f"'<>`]+)(?=[\s\x00-\x1f\x7f"'<>`])/g;
 
 // One-shot variant for `extractVerificationUrl`: a URL at the very end of a
 // complete (non-streaming) string is not "still growing" — there is no more
 // input coming — so end-of-string is accepted as a terminator too.
-const URL_WITH_TERMINATOR_OR_EOS = /(https?:\/\/[^\s"'<>`]+)(?=[\s"'<>`]|$)/g;
+const URL_WITH_TERMINATOR_OR_EOS =
+  /(https?:\/\/[^\s\x00-\x1f\x7f"'<>`]+)(?=[\s\x00-\x1f\x7f"'<>`]|$)/g;
 
 // Trailing sentence punctuation that a CLI may print right after the URL
 // ("…authenticate: https://…/x." ) but that isn't part of the URL.
 const TRAILING_PUNCT = /[.,);:!?'"\]]+$/;
+
+// `stripVTControlCharacters` intentionally drops an incomplete control tail.
+// In a stream, that tail may sit between two URL fragments; treating the ESC
+// as a delimiter would permanently resolve a truncated URL. Wait until the
+// CSI/OSC sequence is complete before attempting a match.
+const INCOMPLETE_VT_TAIL =
+  /(?:\x1b|\x1b(?:\[[0-?]*[ -/]*|\][^\x07\x1b]*(?:\x1b)?))$/;
 
 /**
  * Loopback callback servers are NOT the verification URL. `codex login` prints
@@ -81,7 +92,11 @@ export function isLoopbackUrl(url: string): boolean {
 }
 
 function findFirstVerificationUrl(text: string, urlRegex: RegExp): string | null {
-  for (const match of text.matchAll(urlRegex)) {
+  // Parse normalized terminal text at this shared boundary so both streaming
+  // and one-shot callers reject color/control bytes as URL content. Normalizing
+  // accumulated text also handles a control sequence split across chunks.
+  const normalized = stripVTControlCharacters(text);
+  for (const match of normalized.matchAll(urlRegex)) {
     const url = match[1].replace(TRAILING_PUNCT, "");
     let host: string;
     try {
@@ -95,6 +110,7 @@ function findFirstVerificationUrl(text: string, urlRegex: RegExp): string | null
 }
 
 function firstVerificationUrl(text: string): string | null {
+  if (INCOMPLETE_VT_TAIL.test(text)) return null;
   return findFirstVerificationUrl(text, URL_WITH_TERMINATOR);
 }
 
