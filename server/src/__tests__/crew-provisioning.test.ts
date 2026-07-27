@@ -92,6 +92,7 @@ describe("describeLegacyCoverageGap", () => {
         "agent:aoa-curated/aoa-scout",
         "agent:aoa-curated/aoa-reviewer",
         "agent:aoa-curated/aoa-librarian",
+        "agent:aoa-curated/aoa-steward",
       ]),
     );
     expect(gap.source).toBe("catalog");
@@ -117,8 +118,9 @@ describe("describeLegacyCoverageGap", () => {
     expect(gap.itemIds).toEqual(["agent:aoa-curated/aoa-reviewer"]);
   });
 
-  it("the static coverage map records Reviewer as having no legacy seeder", () => {
+  it("the static coverage map records Reviewer as missing and Steward as covered", () => {
     expect(LEGACY_CREW_SEEDER_COVERAGE["agent:aoa-curated/aoa-reviewer"]).toBeNull();
+    expect(LEGACY_CREW_SEEDER_COVERAGE["agent:aoa-curated/aoa-steward"]).toBe("ensureSteward");
     // Everything else the team declares must map to a real seeder function name.
     for (const [id, seeder] of Object.entries(LEGACY_CREW_SEEDER_COVERAGE)) {
       if (id === "agent:aoa-curated/aoa-reviewer") continue;
@@ -234,7 +236,7 @@ describe("provisionCompanyCrew", () => {
   // throw (success DB write, or a throwing live-event subscriber), landing in
   // its own catch which overwrites the terminal patch with `failure`. Seeding
   // on top of that committed roster silently overwrites the marketplace rows'
-  // runtimeConfig/adapter/instructions while leaving templateOrigin intact —
+  // runtimeConfig/adapter while leaving templateOrigin intact —
   // permanently, and invisibly, beyond crew-updater's reach.
   it("does NOT seed over a crew that is actually installed, despite a `failed` result", async () => {
     bootstrapMock.mockResolvedValue({

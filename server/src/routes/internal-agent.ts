@@ -127,9 +127,9 @@ interface AgentAdapterFields {
  * when the adapter already matches, so a crew-only change leaves Commander
  * untouched and vice-versa.
  *
- * P8d: the marketplace gate suppresses the CREW half only. Infrastructure
- * (Commander, Steward) must still be re-ensured for a marketplace-managed
- * company — `shouldRewriteCrewAdapter` returns true whenever the resolved
+ * P8d / Phase 4B: the marketplace gate suppresses the CREW half only.
+ * Commander must still be re-ensured for a marketplace-managed company —
+ * `shouldRewriteCrewAdapter` returns true whenever the resolved
  * adapterType or model differs (resolve-crew-adapter.ts:259-264), so this is
  * the call that migrates Commander onto the founder's newly-picked CLI/model.
  * Skipping it wholesale stranded Commander on the old provider.

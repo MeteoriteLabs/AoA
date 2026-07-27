@@ -168,10 +168,10 @@ export function companyService(db: Db) {
         // used to provide.
         const crewIsMarketplaceManaged = await isCrewMarketplaceManaged(db, company.id);
 
-        // P8d: internal_agent_config + the infrastructure agents (Commander,
-        // Steward) are seeded UNCONDITIONALLY — they are not marketplace-owned,
-        // and a company without a config row has no autonomy/provider/model
-        // dial at all. Only the CREW roster is gated. config MUST precede
+        // P8d / Phase 4B: internal_agent_config + Commander are seeded
+        // UNCONDITIONALLY — Commander is not marketplace-owned, and a company
+        // without a config row has no autonomy/provider/model dial at all.
+        // Steward belongs to the gated CREW roster. Config MUST precede
         // ensureInfrastructureAgents: ensureCommanderAgent's
         // internal_agent_config UPDATE no-ops without an existing config row.
         await ensureInternalAgentConfig(db, company.id).catch((err: unknown) => {

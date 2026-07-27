@@ -62,7 +62,11 @@ import {
   STEWARD_CATALOG_ITEM_ID,
   STEWARD_RECONCILE_ENV,
 } from "../services/marketplace-install/legacy-steward-reconcile.js";
-import { ensureInfrastructureAgents } from "../services/internal-agent/aoa-agents/crew-seeding.js";
+import {
+  ensureCrewAgents,
+  ensureInfrastructureAgents,
+  isCrewMarketplaceManaged,
+} from "../services/internal-agent/aoa-agents/crew-seeding.js";
 import { backfillCrewTemplateOrigin } from "../services/internal-agent/aoa-agents/backfill-template-origin.js";
 import { agentInstructionsService } from "../services/agent-instructions.js";
 import { listEnabledOutboxAgents } from "../services/internal-agent/aoa-agents/triggers.js";
@@ -968,7 +972,7 @@ describe.skipIf(
     expect(reconciled.membersAdded).toBe(1);
   }, 240_000);
 
-  // Phase 4A: legacy Steward adoption.
+  // Phase 4A/4B boundary: direct marketplace creation and legacy adoption.
   it("keeps new-company marketplace provisioning atomic when the crew publishes Steward", async () => {
     assertSetupOk();
     const teamUrl = `${FIXTURE_HOST}/teams/default-crew/team.json`;
@@ -983,8 +987,8 @@ describe.skipIf(
       const stewardRows = (await crewRows(company.id)).filter((row) => row.name === "Steward");
       expect(stewardRows).toHaveLength(1);
       expect(stewardRows[0].template_origin).toBe(STEWARD_ID);
-      expect(stewardRows[0].template_version).toBe(ADOPTED_TEMPLATE_VERSION);
-      expect(stewardRows[0].instructions_customized).toBeNull();
+      expect(stewardRows[0].template_version).toBe("1.0.0");
+      expect(stewardRows[0].instructions_customized).toBe(false);
       expect(await triggerKinds(stewardRows[0].id)).toEqual(["sweep"]);
       expect(await teamMemberLinkCount(company.id, stewardRows[0].id)).toBe(1);
 
@@ -1119,13 +1123,30 @@ describe.skipIf(
     expect((await diagnoseCrewProvisioning(db, company.id)).verdict).toBe("healthy");
     expect(fixtureFetchCallCount).toBe(fetchesBefore);
 
-    // The still-unconditional Phase 4B seeder must neither duplicate Steward
-    // nor undo the adopted origin while 4A ships independently.
+    // Phase 4B discriminator: run the real managed startup boundary after
+    // planting a value the legacy Steward seeder would rewrite. Commander must
+    // still refresh, while the full legacy crew half stays off.
+    await db.execute(sql`
+      UPDATE agents
+      SET runtime_config = jsonb_set(
+        runtime_config,
+        '{aoa,toolAllowlist}',
+        '["phase4b-managed-sentinel"]'::jsonb
+      )
+      WHERE id = ${after[0].id}
+    `);
     await ensureInfrastructureAgents(db, company.id);
+    if (!(await isCrewMarketplaceManaged(db, company.id))) {
+      await ensureCrewAgents(db, company.id);
+    }
     const afterReseed = (await crewRows(company.id)).filter((row) => row.name === "Steward");
     expect(afterReseed).toHaveLength(1);
     expect(afterReseed[0].id).toBe(before[0].id);
     expect(afterReseed[0].template_origin).toBe(STEWARD_ID);
+    expect(
+      (afterReseed[0].runtime_config?.aoa as { toolAllowlist?: string[] } | undefined)
+        ?.toolAllowlist,
+    ).toEqual(["phase4b-managed-sentinel"]);
     expect(await triggerKinds(afterReseed[0].id)).toEqual(["sweep"]);
   }, 240_000);
 

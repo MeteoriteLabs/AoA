@@ -18,6 +18,7 @@ import {
   adoptLegacyCrewAgentPointer,
 } from "./crew-adoption.js";
 import {
+  catalogPublishesStewardInDefaultCrew,
   CREW_REPAIR_MAX_PER_PASS,
   DEFAULT_CREW_TEAM_ITEM_ID,
   STEWARD_CATALOG_ITEM_ID,
@@ -57,22 +58,6 @@ export function isLegacyStewardReconcileEnabled(
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
   return env[STEWARD_RECONCILE_ENV]?.trim().toLowerCase() !== "false";
-}
-
-function catalogPublishesStewardInDefaultCrew(catalogItems: readonly CatalogItem[]): boolean {
-  const catalogById = new Map(catalogItems.map((item) => [item.id, item]));
-  const teamItem = catalogById.get(DEFAULT_CREW_TEAM_ITEM_ID);
-  const stewardItem = catalogById.get(STEWARD_CATALOG_ITEM_ID);
-  return (
-    teamItem?.type === "team" &&
-    teamItem.status === "active" &&
-    stewardItem?.type === "agent" &&
-    stewardItem.status === "active" &&
-    teamItem.requires?.some(
-      (requirement) =>
-        requirement.type === "agent" && requirement.id === STEWARD_CATALOG_ITEM_ID,
-    ) === true
-  );
 }
 
 /**

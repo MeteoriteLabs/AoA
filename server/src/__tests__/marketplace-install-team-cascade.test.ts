@@ -58,6 +58,22 @@ const TEAM: CatalogItem = {
     { type: "agent", id: AGENT.id },
   ],
 };
+const STEWARD: CatalogItem = {
+  ...AGENT,
+  id: "agent:aoa-curated/aoa-steward",
+  name: "Steward",
+  resourceUrl: "https://.../aoa-steward/agent.json",
+  requires: [],
+};
+const DEFAULT_CREW_WITH_STEWARD: CatalogItem = {
+  ...TEAM,
+  id: "team:aoa-curated/default-crew",
+  name: "AoA Default Crew",
+  requires: [
+    { type: "agent", id: AGENT.id },
+    { type: "agent", id: STEWARD.id },
+  ],
+};
 
 const CATALOG: MarketplaceCatalogFile = {
   schemaVersion: "1.0.0", generatedAt: "2026-04-30T00:00:00Z", itemCount: 4, items: [PLUGIN, SKILL, AGENT, TEAM],
@@ -208,6 +224,28 @@ describe("installTeam — Saga cascade", () => {
         targetDepartmentId: "missing-dept", db: dbNoDept as any, installPlugin: mockPluginInstaller,
       }),
     ).rejects.toThrow(/department.*not found/i);
+  });
+
+  it("rejects a default-crew body that omits Steward before any install writes", async () => {
+    await expect(
+      installTeam({
+        catalogItem: DEFAULT_CREW_WITH_STEWARD,
+        catalog: {
+          ...CATALOG,
+          itemCount: 3,
+          items: [AGENT, STEWARD, DEFAULT_CREW_WITH_STEWARD],
+        },
+        companyId: "c1",
+        targetDepartmentId: null,
+        db: dbNoSelectAllowed as any,
+        installPlugin: mockPluginInstaller,
+      }),
+    ).rejects.toThrow(/default crew.*Steward/i);
+
+    expect(pluginInstalls).toHaveLength(0);
+    expect(skillInserts).toHaveLength(0);
+    expect(agentInserts).toHaveLength(0);
+    expect(teamInserts).toHaveLength(0);
   });
 
   // ── D21: company-wide teams (no parent department) ────────────────────────
