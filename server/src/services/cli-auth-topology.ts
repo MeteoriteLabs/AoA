@@ -262,7 +262,7 @@ export function scopedCliAuthEnv(
 
 const PROVIDER_HOSTS: Record<"openai" | "anthropic", readonly string[]> = {
   openai: ["auth.openai.com", "chatgpt.com"],
-  anthropic: ["claude.ai", "anthropic.com"],
+  anthropic: ["claude.ai", "claude.com", "anthropic.com"],
 };
 
 export function assertProviderLoginUrl(provider: "openai" | "anthropic", raw: string): string {

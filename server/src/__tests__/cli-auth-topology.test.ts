@@ -95,8 +95,18 @@ describe("CLI authentication topology", () => {
     expect(assertProviderLoginUrl("openai", "https://auth.openai.com/codex/device")).toContain(
       "auth.openai.com",
     );
+    expect(
+      assertProviderLoginUrl("anthropic", "https://claude.com/cai/oauth/authorize?code=abc"),
+    ).toContain("claude.com");
+    expect(
+      assertProviderLoginUrl("anthropic", "https://platform.claude.com/oauth/callback"),
+    ).toContain("platform.claude.com");
     expect(() => assertProviderLoginUrl("openai", "http://localhost:1455/callback")).toThrow();
     expect(() => assertProviderLoginUrl("anthropic", "https://claude.ai.evil.example/login")).toThrow();
+    expect(() => assertProviderLoginUrl("anthropic", "https://claude.com.evil.example/login")).toThrow();
+    expect(() => assertProviderLoginUrl("anthropic", "https://evilclaude.com/login")).toThrow();
+    expect(() => assertProviderLoginUrl("anthropic", "http://claude.com/login")).toThrow();
+    expect(() => assertProviderLoginUrl("anthropic", "https://user:pass@claude.com/login")).toThrow();
   });
 
   it("detects pinned CLI compatibility without trusting unknown versions", async () => {

@@ -72,6 +72,21 @@ describe("runStreamingLogin (Plan 3 T3)", () => {
     await expect(urlPromise).resolves.toBe("https://claude.ai/oauth?x=9");
   });
 
+  it("does not let a newline on one stream terminate a partial URL on the other", async () => {
+    const f = fakeSpawn();
+    const { urlPromise } = runStreamingLogin(base(f.spawn));
+    let resolved: string | undefined;
+    void urlPromise.then((url) => {
+      resolved = url;
+    });
+    f.stdout.emit("data", "visit https://auth.openai.com/codex/dev");
+    f.stderr.emit("data", "\n");
+    await Promise.resolve();
+    expect(resolved).toBeUndefined();
+    f.stdout.emit("data", "ice\n");
+    await expect(urlPromise).resolves.toBe("https://auth.openai.com/codex/device");
+  });
+
   it("exitPromise resolves with the code; urlPromise rejects no-url when the child exits first", async () => {
     const f = fakeSpawn();
     const { urlPromise, exitPromise } = runStreamingLogin(base(f.spawn));
