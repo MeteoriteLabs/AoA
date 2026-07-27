@@ -148,10 +148,11 @@ function rowsOf<T>(result: unknown): T[] {
 }
 
 // ── Fixture catalog ──────────────────────────────────────────────────────────
-// The roster carries THREE members on purpose: two (Scout, Adjutant) have legacy
-// rows in a degraded company, one (Reviewer) has none. Two legacy-matched members
-// is the minimum that can express a PARTIAL adoption — the state that mints a
-// permanent duplicate — so a one-member fixture cannot see that bug at all.
+// The current roster carries the three repair fixtures plus protected Steward.
+// Two non-Steward members (Scout, Adjutant) have legacy rows in a degraded
+// company, while Reviewer has none. Two legacy-matched members is the minimum
+// that can express a PARTIAL adoption — the state that mints a permanent
+// duplicate — so a one-member fixture cannot see that bug at all.
 
 function catalogItemBase(id: string, type: string, name: string, version = "1.0.0") {
   return {
@@ -177,7 +178,7 @@ function buildCatalog(version = "1.0.0"): MarketplaceCatalogFile {
   return {
     schemaVersion: "1.0.0",
     generatedAt: "2026-07-24T00:00:00.000Z",
-    itemCount: 6,
+    itemCount: 7,
     items: [
       {
         ...catalogItemBase(TEAM_ID, "team", "AoA Default Crew", version),
@@ -186,6 +187,7 @@ function buildCatalog(version = "1.0.0"): MarketplaceCatalogFile {
           { type: "agent", id: SCOUT_ID },
           { type: "agent", id: ADJUTANT_ID },
           { type: "agent", id: REVIEWER_ID },
+          { type: "agent", id: STEWARD_ID },
           { type: "skill", id: INLINE_SKILL_ID },
           { type: "skill", id: FETCHED_SKILL_ID },
         ],
@@ -201,6 +203,10 @@ function buildCatalog(version = "1.0.0"): MarketplaceCatalogFile {
       {
         ...catalogItemBase(REVIEWER_ID, "agent", "Reviewer", version),
         resourceUrl: `${FIXTURE_HOST}/agents/aoa-reviewer/agent.json`,
+      },
+      {
+        ...catalogItemBase(STEWARD_ID, "agent", "Steward", version),
+        resourceUrl: `${FIXTURE_HOST}/agents/aoa-steward/agent.json`,
       },
       {
         ...catalogItemBase(INLINE_SKILL_ID, "skill", "Fixture Inline Skill", version),
@@ -220,15 +226,7 @@ const FIXTURE_CATALOG = buildCatalog();
 const CATALOG_ITEMS = FIXTURE_CATALOG.items as CatalogItem[];
 
 function buildCatalogWithSteward(version = "1.0.0"): MarketplaceCatalogFile {
-  const catalog = buildCatalog(version);
-  const teamItem = catalog.items.find((item) => item.id === TEAM_ID)!;
-  teamItem.requires = [...(teamItem.requires ?? []), { type: "agent", id: STEWARD_ID }];
-  catalog.items.push({
-    ...catalogItemBase(STEWARD_ID, "agent", "Steward", version),
-    resourceUrl: `${FIXTURE_HOST}/agents/aoa-steward/agent.json`,
-  } as CatalogItem);
-  catalog.itemCount = catalog.items.length;
-  return catalog;
+  return buildCatalog(version);
 }
 
 const STEWARD_CATALOG_ITEMS = buildCatalogWithSteward().items as CatalogItem[];
@@ -257,7 +255,12 @@ const STEWARD_INSTALL_TEMPLATE: NormalizedMarketplaceAgentTemplate = {
   warnings: [],
 };
 
-function agentTemplate(id: string, name: string, triggerRole: string) {
+function agentTemplate(
+  id: string,
+  name: string,
+  triggerRole: string,
+  triggerKind: "mention" | "sweep" = "mention",
+) {
   return JSON.stringify({
     schemaVersion: "agent.v1",
     id,
@@ -274,7 +277,11 @@ function agentTemplate(id: string, name: string, triggerRole: string) {
       // schema that rejected every real body (see
       // `marketplace-trigger-enabled.test.ts`, which uses verbatim published
       // bodies rather than hand-written ones).
-      triggers: [{ kind: "mention", enabled: true, config: { role: triggerRole } }],
+      triggers: [{
+        kind: triggerKind,
+        enabled: true,
+        config: triggerKind === "mention" ? { role: triggerRole } : {},
+      }],
     },
   });
 }
@@ -282,11 +289,12 @@ function agentTemplate(id: string, name: string, triggerRole: string) {
 const TEAM_TEMPLATE = JSON.stringify({
   slug: "aoa-default-crew",
   description: "Fixture crew",
-  manifest: { installOrder: [SCOUT_ID, ADJUTANT_ID, REVIEWER_ID] },
+  manifest: { installOrder: [SCOUT_ID, ADJUTANT_ID, REVIEWER_ID, STEWARD_ID] },
   agents: [
     { templateOrigin: SCOUT_ID, name: "Scout" },
     { templateOrigin: ADJUTANT_ID, name: "Adjutant" },
     { templateOrigin: REVIEWER_ID, name: "Reviewer" },
+    { templateOrigin: STEWARD_ID, name: "Steward" },
   ],
 });
 
@@ -307,7 +315,12 @@ const FIXTURE_BODIES: Record<string, string> = {
   [`${FIXTURE_HOST}/agents/aoa-scout/agent.json`]: agentTemplate("aoa-scout", "Scout", "scout"),
   [`${FIXTURE_HOST}/agents/aoa-adjutant/agent.json`]: agentTemplate("aoa-adjutant", "Adjutant", "adjutant"),
   [`${FIXTURE_HOST}/agents/aoa-reviewer/agent.json`]: agentTemplate("aoa-reviewer", "Reviewer", "reviewer"),
-  [`${FIXTURE_HOST}/agents/aoa-steward/agent.json`]: agentTemplate("aoa-steward", "Steward", "steward"),
+  [`${FIXTURE_HOST}/agents/aoa-steward/agent.json`]: agentTemplate(
+    "aoa-steward",
+    "Steward",
+    "steward",
+    "sweep",
+  ),
   [SLOW_INLINE_SKILL_URL]: "---\nname: fixture-inline-skill\n---\n\nInline body.\n",
   [`${FIXTURE_HOST}/skills/fixture-fetched-skill/SKILL.md`]:
     "---\nname: fixture-fetched-skill\n---\n\nFetched body.\n",
@@ -447,6 +460,39 @@ async function teamMemberLinkCount(companyId: string, agentId: string): Promise<
     `),
   );
   return Number(rows[0].n);
+}
+
+/**
+ * Recreate the pre-Phase-4A state after provisioning through today's valid
+ * marketplace contract. Historical NULL-origin Steward rows can no longer be
+ * produced through company creation now that the default crew owns Steward.
+ */
+async function createHistoricalNullOriginStewardCompany(name: string) {
+  await withCatalog();
+  const company = await companyService(db).create({ name } as never);
+  const steward = (await crewRows(company.id)).find((row) => row.name === "Steward")!;
+
+  await db.execute(sql`
+    DELETE FROM team_members
+    WHERE agent_id = ${steward.id}
+      AND team_id IN (
+        SELECT id FROM teams
+        WHERE company_id = ${company.id}
+          AND template_origin = ${TEAM_ID}
+      )
+  `);
+  await db.execute(sql`
+    UPDATE agents
+    SET template_origin = NULL,
+        template_version = NULL,
+        instructions_customized = NULL
+    WHERE id = ${steward.id}
+  `);
+
+  const historicalSteward = (await crewRows(company.id)).find(
+    (row) => row.id === steward.id,
+  )!;
+  return { company, steward: historicalSteward };
 }
 
 async function crewRepairNotificationCount(companyId: string): Promise<number> {
@@ -719,7 +765,7 @@ describe.skipIf(
     // 5. The team row + membership an install would have written — what
     //    reconcileTeamMembers needs to add Reviewer later.
     expect(await teamRowCount(companyId)).toBe(1);
-    expect(await teamMemberNames(companyId)).toEqual(["Adjutant", "Scout"]);
+    expect(await teamMemberNames(companyId)).toEqual(["Adjutant", "Scout", "Steward"]);
     expect((await operationRow(companyId))[0].status).toBe("success");
 
     // 6. Founder-visible.
@@ -731,7 +777,9 @@ describe.skipIf(
     // Only now the mode.
     expect(result.action).toBe("adopted");
     if (result.action !== "adopted") throw new Error("unreachable");
-    expect([...result.adoptedItemIds].sort()).toEqual([ADJUTANT_ID, SCOUT_ID].sort());
+    expect([...result.adoptedItemIds].sort()).toEqual(
+      [ADJUTANT_ID, SCOUT_ID, STEWARD_ID].sort(),
+    );
     expect(result.unmatchedItemIds).toEqual([REVIEWER_ID]);
   }, 240_000);
 
@@ -1038,8 +1086,9 @@ describe.skipIf(
 
   it("adopts the same legacy Steward in place, links it once, and makes updates see it", async () => {
     assertSetupOk();
-    await withCatalog();
-    const company = await companyService(db).create({ name: "Steward Adoption Co" } as never);
+    const { company } = await createHistoricalNullOriginStewardCompany(
+      "Steward Adoption Co",
+    );
     const before = (await crewRows(company.id)).filter((row) => row.name === "Steward");
     expect(before).toHaveLength(1);
     expect(before[0].template_origin).toBeNull();
@@ -1128,11 +1177,8 @@ describe.skipIf(
     // still refresh, while the full legacy crew half stays off.
     await db.execute(sql`
       UPDATE agents
-      SET runtime_config = jsonb_set(
-        runtime_config,
-        '{aoa,toolAllowlist}',
-        '["phase4b-managed-sentinel"]'::jsonb
-      )
+      SET runtime_config = coalesce(runtime_config, '{}'::jsonb)
+        || '{"aoa":{"toolAllowlist":["phase4b-managed-sentinel"]}}'::jsonb
       WHERE id = ${after[0].id}
     `);
     await ensureInfrastructureAgents(db, company.id);
@@ -1152,8 +1198,9 @@ describe.skipIf(
 
   it("serializes adoption with direct Steward installation and refuses a duplicate", async () => {
     assertSetupOk();
-    await withCatalog();
-    const company = await companyService(db).create({ name: "Steward Install Race Co" } as never);
+    const { company } = await createHistoricalNullOriginStewardCompany(
+      "Steward Install Race Co",
+    );
     const before = (await crewRows(company.id)).find((row) => row.name === "Steward")!;
     const fetchesBefore = fixtureFetchCallCount;
 
@@ -1192,8 +1239,9 @@ describe.skipIf(
 
   it("fails closed when the loaded catalog does not publish Steward in the crew", async () => {
     assertSetupOk();
-    await withCatalog();
-    const company = await companyService(db).create({ name: "Steward Catalog Miss Co" } as never);
+    const { company } = await createHistoricalNullOriginStewardCompany(
+      "Steward Catalog Miss Co",
+    );
     const before = (await crewRows(company.id)).find((row) => row.name === "Steward")!;
     const fetchesBefore = fixtureFetchCallCount;
 
@@ -1214,8 +1262,9 @@ describe.skipIf(
 
   it("fails closed when Steward exists in the catalog but is absent from crew requirements", async () => {
     assertSetupOk();
-    await withCatalog();
-    const company = await companyService(db).create({ name: "Steward Requirement Miss Co" } as never);
+    const { company } = await createHistoricalNullOriginStewardCompany(
+      "Steward Requirement Miss Co",
+    );
     const before = (await crewRows(company.id)).find((row) => row.name === "Steward")!;
     const catalogWithoutStewardRequirement = buildCatalogWithSteward().items as CatalogItem[];
     const teamItem = catalogWithoutStewardRequirement.find((item) => item.id === TEAM_ID)!;
@@ -1238,8 +1287,9 @@ describe.skipIf(
 
   it("fails closed when either the crew team or Steward catalog item is inactive", async () => {
     assertSetupOk();
-    await withCatalog();
-    const company = await companyService(db).create({ name: "Steward Inactive Catalog Co" } as never);
+    const { company } = await createHistoricalNullOriginStewardCompany(
+      "Steward Inactive Catalog Co",
+    );
     const before = (await crewRows(company.id)).find((row) => row.name === "Steward")!;
     const fetchesBefore = fixtureFetchCallCount;
 
@@ -1280,9 +1330,9 @@ describe.skipIf(
 
   it("refuses a stray default-team row when no crew agent proves marketplace management", async () => {
     assertSetupOk();
-    await withCatalog();
-    const company = await companyService(db).create({ name: "Steward Partial Team Co" } as never);
-    const steward = (await crewRows(company.id)).find((row) => row.name === "Steward")!;
+    const { company, steward } = await createHistoricalNullOriginStewardCompany(
+      "Steward Partial Team Co",
+    );
     await db.execute(sql`
       UPDATE agents
       SET template_origin = NULL,
@@ -1307,9 +1357,9 @@ describe.skipIf(
 
   it("refuses adoption when any agent kind already carries Steward's published origin", async () => {
     assertSetupOk();
-    await withCatalog();
-    const company = await companyService(db).create({ name: "Steward Origin Collision Co" } as never);
-    const steward = (await crewRows(company.id)).find((row) => row.name === "Steward")!;
+    const { company, steward } = await createHistoricalNullOriginStewardCompany(
+      "Steward Origin Collision Co",
+    );
     await db.execute(sql`
       INSERT INTO agents (
         company_id,
@@ -1344,9 +1394,9 @@ describe.skipIf(
 
   it("the runtime switch disables only Steward reconciliation", async () => {
     assertSetupOk();
-    await withCatalog();
-    const company = await companyService(db).create({ name: "Steward Switch Co" } as never);
-    const steward = (await crewRows(company.id)).find((row) => row.name === "Steward")!;
+    const { company, steward } = await createHistoricalNullOriginStewardCompany(
+      "Steward Switch Co",
+    );
     process.env[STEWARD_RECONCILE_ENV] = "false";
 
     const result = await runLegacyStewardReconcilePass({
@@ -1463,7 +1513,7 @@ describe.skipIf(
         .filter((r) => r.template_origin?.startsWith("agent:aoa-curated/"))
         .map((r) => r.name)
         .sort(),
-    ).toEqual(["Adjutant", "Reviewer", "Scout"]);
+    ).toEqual(["Adjutant", "Reviewer", "Scout", "Steward"]);
     expect(crew.filter((r) => r.name === "Commander")).toHaveLength(1);
     expect(crew.filter((r) => r.name === "Steward")).toHaveLength(1);
     expect(await teamRowCount(companyId)).toBe(1);
@@ -1647,7 +1697,11 @@ describe.skipIf(
     expect(after.find((r) => r.name === "Recon Scout")!.template_origin).toBe(SCOUT_ID);
     expect(after.find((r) => r.name === "Recon Adjutant")!.template_origin).toBe(ADJUTANT_ID);
     expect(await teamRowCount(companyId)).toBe(1);
-    expect(await teamMemberNames(companyId)).toEqual(["Recon Adjutant", "Recon Scout"]);
+    expect(await teamMemberNames(companyId)).toEqual([
+      "Recon Adjutant",
+      "Recon Scout",
+      "Steward",
+    ]);
     expect(result.action).toBe("adopted");
   }, 240_000);
 
@@ -1736,7 +1790,7 @@ describe.skipIf(
         .filter((r) => r.template_origin?.startsWith("agent:aoa-curated/"))
         .map((r) => r.name)
         .sort(),
-    ).toEqual(["Adjutant", "Reviewer", "Scout"]);
+    ).toEqual(["Adjutant", "Reviewer", "Scout", "Steward"]);
     expect(after.filter((r) => r.name === "Dispatcher")).toHaveLength(1);
     expect(result.action).toBe("reprovisioned");
   }, 240_000);
