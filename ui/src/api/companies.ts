@@ -8,6 +8,16 @@ import type {
 } from "@armyofagents/shared";
 import { api } from "./client";
 
+function importPath(
+  request: CompanyPortabilityPreviewRequest,
+  preview: boolean,
+): string {
+  const suffix = preview ? "/preview" : "";
+  return request.target.mode === "new_company"
+    ? `/companies/import/new${suffix}`
+    : `/companies/${encodeURIComponent(request.target.companyId)}/import${suffix}`;
+}
+
 export type CompanyStats = Record<
   string,
   {
@@ -49,9 +59,9 @@ export const companiesApi = {
   exportBundle: (companyId: string, data: { include?: { company?: boolean; agents?: boolean } }) =>
     api.post<CompanyPortabilityExportResult>(`/companies/${companyId}/export`, data),
   importPreview: (data: CompanyPortabilityPreviewRequest) =>
-    api.post<CompanyPortabilityPreviewResult>("/companies/import/preview", data),
+    api.post<CompanyPortabilityPreviewResult>(importPath(data, true), data),
   importBundle: (data: CompanyPortabilityImportRequest) =>
-    api.post<CompanyPortabilityImportResult>("/companies/import", data),
+    api.post<CompanyPortabilityImportResult>(importPath(data, false), data),
   uploadLogo: (companyId: string, file: File) => {
     const formData = new FormData();
     formData.append("file", file);

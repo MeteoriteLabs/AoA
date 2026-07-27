@@ -200,6 +200,10 @@ import { companyPortabilityService } from "../services/company-portability.js";
 import { companyRoutes } from "../routes/companies.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { forbidden } from "../errors.js";
+import {
+  authorizeExistingCompanyImportBody,
+  authorizeNewCompanyImportBody,
+} from "../middleware/import-body-auth.js";
 
 function makeAgent(
   overrides: Partial<AgentRow> & { id: string; name: string }
@@ -570,6 +574,93 @@ function buildAppWithImportBodyCap(actorOverrides: Partial<any> = {}) {
   app.use(errorHandler);
   return app;
 }
+
+function buildPathAuthorizedImportParser(
+  actorOverrides: Partial<any>,
+  parsed: ReturnType<typeof vi.fn>
+) {
+  const app = express();
+  app.use((req, _res, next) => {
+    (req as any).actor = {
+      type: "board",
+      userId: "user-1",
+      companyIds: [SRC_CO_ID],
+      source: "session",
+      isInstanceAdmin: false,
+      ...actorOverrides,
+    };
+    next();
+  });
+  const parser = express.json({
+    limit: "20mb",
+    verify: () => parsed(),
+  });
+  app.use(
+    "/api/companies/import/new",
+    authorizeNewCompanyImportBody,
+    parser
+  );
+  app.use(
+    "/api/companies/:companyId/import",
+    authorizeExistingCompanyImportBody,
+    parser
+  );
+  app.post("/api/companies/import/new/preview", (_req, res) =>
+    res.status(204).end()
+  );
+  app.post("/api/companies/:companyId/import/preview", (_req, res) =>
+    res.status(204).end()
+  );
+  app.use(errorHandler);
+  return app;
+}
+
+describe("path-authorized import parser", () => {
+  const largeBody = JSON.stringify({ __pad: "x".repeat(1024 * 1024) });
+
+  it("rejects non-admin new-company imports before parsing the large body", async () => {
+    const parsed = vi.fn();
+    const res = await request(buildPathAuthorizedImportParser({}, parsed))
+      .post("/api/companies/import/new/preview")
+      .set("Content-Type", "application/json")
+      .send(largeBody);
+
+    expect(res.status).toBe(403);
+    expect(parsed).not.toHaveBeenCalled();
+  });
+
+  it("rejects cross-company imports before parsing the large body", async () => {
+    const parsed = vi.fn();
+    const res = await request(
+      buildPathAuthorizedImportParser(
+        { companyIds: [OTHER_CO_ID] },
+        parsed
+      )
+    )
+      .post(`/api/companies/${SRC_CO_ID}/import/preview`)
+      .set("Content-Type", "application/json")
+      .send(largeBody);
+
+    expect(res.status).toBe(403);
+    expect(parsed).not.toHaveBeenCalled();
+  });
+
+  it("parses a large body only after path authorization succeeds", async () => {
+    const parsed = vi.fn();
+    const res = await request(
+      buildPathAuthorizedImportParser(
+        { isInstanceAdmin: true },
+        parsed
+      )
+    )
+      .post("/api/companies/import/new/preview")
+      .set("Content-Type", "application/json")
+      .send(largeBody);
+
+    expect(res.status).toBe(204);
+    expect(parsed).toHaveBeenCalledOnce();
+  });
+});
 
 describe("import body-size cap", () => {
   const validExistingCompanyImport = {

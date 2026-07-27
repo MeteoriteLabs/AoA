@@ -14,6 +14,10 @@ import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import {
+  authorizeExistingCompanyImportBody,
+  authorizeNewCompanyImportBody,
+} from "./middleware/import-body-auth.js";
+import {
   privateHostnameGuard,
   resolvePrivateHostnameAllowSet,
 } from "./middleware/private-hostname-guard.js";
@@ -262,14 +266,13 @@ export async function createApp(
   // JSON default.
   app.use("/api", boardMutationGuard());
   app.use(
-    ["/api/companies/import", "/api/companies/import/preview"],
-    (req, res, next) => {
-      if (req.actor.type === "none") {
-        res.status(401).json({ error: "authentication required" });
-        return;
-      }
-      next();
-    },
+    "/api/companies/import/new",
+    authorizeNewCompanyImportBody,
+    express.json({ limit: "20mb", verify: captureRawBody })
+  );
+  app.use(
+    "/api/companies/:companyId/import",
+    authorizeExistingCompanyImportBody,
     express.json({ limit: "20mb", verify: captureRawBody })
   );
   // Runtime previews are a streaming proxy, not JSON API routes. Mount before

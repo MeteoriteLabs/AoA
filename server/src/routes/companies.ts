@@ -79,6 +79,112 @@ export function companyRoutes(
     next();
   };
 
+  const bindNewCompanyImportTarget: RequestHandler = (req, _res, next) => {
+    const requestedName =
+      typeof req.body?.target?.newCompanyName === "string"
+        ? req.body.target.newCompanyName
+        : null;
+    req.body = {
+      ...req.body,
+      target: {
+        mode: "new_company",
+        newCompanyName: requestedName,
+      },
+    };
+    next();
+  };
+
+  const bindExistingCompanyImportTarget: RequestHandler = (req, _res, next) => {
+    req.body = {
+      ...req.body,
+      target: {
+        mode: "existing_company",
+        companyId: req.params.companyId,
+      },
+    };
+    next();
+  };
+
+  const authorizeNewCompanyImport: RequestHandler = (req, _res, next) => {
+    assertBoard(req);
+    if (!(req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)) {
+      throw forbidden("Instance admin required");
+    }
+    next();
+  };
+
+  const authorizeExistingCompanyImportPreview: RequestHandler = (
+    req,
+    _res,
+    next
+  ) => {
+    assertCompanyAccess(req, req.params.companyId as string);
+    next();
+  };
+
+  const authorizeExistingCompanyImportCommit: RequestHandler = (
+    req,
+    _res,
+    next
+  ) => {
+    assertBoard(req);
+    assertCompanyAccess(req, req.params.companyId as string);
+    next();
+  };
+
+  const previewImport: RequestHandler = async (req, res) => {
+    const preview = await portability.previewImport(req.body);
+    res.json(preview);
+  };
+
+  const commitImport: RequestHandler = async (req, res) => {
+    const existingCompanyId =
+      req.body.target.mode === "existing_company"
+        ? req.body.target.companyId
+        : null;
+    const actor = getActorInfo(req);
+    const result = await portability.importBundle(
+      req.body,
+      req.actor.type === "board" ? req.actor.userId : null,
+      existingCompanyId
+        ? async ({
+            requiresTaskAssignmentPermission,
+            importsWorkflowTemplates,
+          }) => {
+            if (requiresTaskAssignmentPermission) {
+              await assertCanAssignTasks(req, existingCompanyId);
+            }
+            if (importsWorkflowTemplates) {
+              await assertRole(
+                db,
+                req,
+                existingCompanyId,
+                "founder",
+                "team_lead"
+              );
+            }
+          }
+        : undefined
+    );
+    await logActivity(db, {
+      companyId: result.company.id,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      action: "company.imported",
+      entityType: "company",
+      entityId: result.company.id,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      details: {
+        include: req.body.include ?? null,
+        agentCount: result.agents.length,
+        warningCount: result.warnings.length,
+        companyAction: result.company.action,
+      },
+    });
+    res.json(result);
+  };
+
   router.get("/", async (req, res) => {
     // rbac: instance-admin-not-required — list endpoint with no companyId in path; result is scope-filtered inline against req.actor.companyIds.
     assertBoard(req);
@@ -152,66 +258,51 @@ export function companyRoutes(
   );
 
   router.post(
+    "/import/new/preview",
+    authorizeNewCompanyImport,
+    bindNewCompanyImportTarget,
+    validate(companyPortabilityPreviewSchema),
+    previewImport
+  );
+
+  router.post(
+    "/import/new",
+    authorizeNewCompanyImport,
+    bindNewCompanyImportTarget,
+    validate(companyPortabilityImportSchema),
+    commitImport
+  );
+
+  router.post(
+    "/:companyId/import/preview",
+    authorizeExistingCompanyImportPreview,
+    bindExistingCompanyImportTarget,
+    validate(companyPortabilityPreviewSchema),
+    previewImport
+  );
+
+  router.post(
+    "/:companyId/import",
+    authorizeExistingCompanyImportCommit,
+    bindExistingCompanyImportTarget,
+    validate(companyPortabilityImportSchema),
+    commitImport
+  );
+
+  // Compatibility routes for older UIs. These use the global 100 KB parser;
+  // large imports must use the path-authorized routes above.
+  router.post(
     "/import/preview",
     authorizeImportPreview,
     validate(companyPortabilityPreviewSchema),
-    async (req, res) => {
-      const preview = await portability.previewImport(req.body);
-      res.json(preview);
-    }
+    previewImport
   );
 
   router.post(
     "/import",
     authorizeImportCommit,
     validate(companyPortabilityImportSchema),
-    async (req, res) => {
-      const existingCompanyId =
-        req.body.target.mode === "existing_company"
-          ? req.body.target.companyId
-          : null;
-      const actor = getActorInfo(req);
-      const result = await portability.importBundle(
-        req.body,
-        req.actor.type === "board" ? req.actor.userId : null,
-        existingCompanyId
-          ? async ({
-              requiresTaskAssignmentPermission,
-              importsWorkflowTemplates,
-            }) => {
-              if (requiresTaskAssignmentPermission) {
-                await assertCanAssignTasks(req, existingCompanyId);
-              }
-              if (importsWorkflowTemplates) {
-                await assertRole(
-                  db,
-                  req,
-                  existingCompanyId,
-                  "founder",
-                  "team_lead"
-                );
-              }
-            }
-          : undefined
-      );
-      await logActivity(db, {
-        companyId: result.company.id,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        action: "company.imported",
-        entityType: "company",
-        entityId: result.company.id,
-        agentId: actor.agentId,
-        runId: actor.runId,
-        details: {
-          include: req.body.include ?? null,
-          agentCount: result.agents.length,
-          warningCount: result.warnings.length,
-          companyAction: result.company.action,
-        },
-      });
-      res.json(result);
-    }
+    commitImport
   );
 
   router.post("/", validate(createCompanySchema), async (req, res) => {
