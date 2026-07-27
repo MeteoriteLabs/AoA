@@ -178,9 +178,47 @@ export async function applyConnectorRejection(
   }
 }
 
+/**
+ * The shared claim-first status transition for an approval — the SAME guards
+ * (company scope + status IN (pending, revision_requested) + RETURNING the
+ * claimed row) whether run on the pool `db` or inside a `db.transaction(tx)`.
+ * Extracted so the connector transaction branch and the pooled hire/crew path
+ * cannot drift (Codex plan review). Returns the claimed row, or `undefined` when
+ * the WHERE matched nothing (TOCTOU / tenancy mismatch).
+ */
+async function transitionApproval(
+  dbLike: Pick<Db, "update">,
+  args: {
+    id: string;
+    companyId: string;
+    status: "approved" | "rejected";
+    decidedByUserId: string;
+    decisionNote: string | null;
+    now: Date;
+  },
+): Promise<typeof approvals.$inferSelect | undefined> {
+  return dbLike
+    .update(approvals)
+    .set({
+      status: args.status,
+      decidedByUserId: args.decidedByUserId,
+      decisionNote: args.decisionNote,
+      decidedAt: args.now,
+      updatedAt: args.now,
+    })
+    .where(
+      and(
+        eq(approvals.id, args.id),
+        eq(approvals.companyId, args.companyId),
+        inArray(approvals.status, ["pending", "revision_requested"]),
+      ),
+    )
+    .returning()
+    .then((rows) => rows[0]);
+}
+
 export function approvalService(db: Db) {
   const agentsSvc = agentService(db);
-  const mcpConnectorSvc = mcpConnectorService(db);
   const canResolveStatuses = new Set(["pending", "revision_requested"]);
 
   async function getExistingApproval(id: string) {
@@ -292,19 +330,47 @@ export function approvalService(db: Db) {
         }
       }
 
+      // install_mcp_connector: the status flip AND the connector activation MUST
+      // be atomic. The two MCP callers pass a pooled `db` → without a transaction
+      // the flip commits, then a failure in applyConnectorApproval strands the
+      // install (approved, connector still pending_approval — unrecoverable in
+      // authenticated mode). Wrap both in ONE transaction. On the HTTP path `db`
+      // is already the route tx → this opens a savepoint (behavior unchanged).
+      // hire_agent / crew_dispatch never reach here — zero regression to them.
+      if (existing.type === "install_mcp_connector") {
+        return db.transaction(async (tx) => {
+          const updated = await transitionApproval(tx, {
+            id,
+            companyId,
+            status: "approved",
+            decidedByUserId,
+            decisionNote: decisionNote ?? null,
+            now: new Date(),
+          });
+          if (!updated) return null;
+          const payload = updated.payload as Record<string, unknown>;
+          const connectorId = typeof payload.connectorId === "string" ? payload.connectorId : null;
+          if (connectorId && connectorDeploymentMode !== null) {
+            await applyConnectorApproval(
+              mcpConnectorService(tx as unknown as Db),
+              companyId,
+              connectorId,
+              connectorDeploymentMode,
+            );
+          }
+          return updated;
+        });
+      }
+
       const now = new Date();
-      const updated = await db
-        .update(approvals)
-        .set({
-          status: "approved",
-          decidedByUserId,
-          decisionNote: decisionNote ?? null,
-          decidedAt: now,
-          updatedAt: now,
-        })
-        .where(and(eq(approvals.id, id), eq(approvals.companyId, companyId), inArray(approvals.status, ["pending", "revision_requested"])))
-        .returning()
-        .then((rows) => rows[0]);
+      const updated = await transitionApproval(db, {
+        id,
+        companyId,
+        status: "approved",
+        decidedByUserId,
+        decisionNote: decisionNote ?? null,
+        now,
+      });
 
       // Defense-in-depth: if the WHERE didn't match (companyId mismatch), no
       // row was updated. Return null so the caller can't act on stale data.
@@ -421,30 +487,8 @@ export function approvalService(db: Db) {
         await dispatchCreatedCrewTasks(db, companyId, toDispatch);
       }
 
-      // Plan 2 Task 4 / Plan 3a Task 7: install_mcp_connector approval side-effect — this
-      // is the SOLE activation path in `authenticated` mode (PATCH→active is blocked there,
-      // Plan 1 amendment C2). Runs AFTER the guarded status flip (like
-      // hire_agent/crew_dispatch), so a concurrent double-approve only runs the side-effect
-      // for the winner (whose `updated` is truthy). The decision itself — including all the
-      // null/tenancy/idempotence guards that keep it from throwing after the flip — lives in
-      // `applyConnectorApproval`, which routes through the single status resolver so an
-      // approval can never activate an uncredentialed connector.
-      if (updated.type === "install_mcp_connector") {
-        const payload = updated.payload as Record<string, unknown>;
-        const connectorId = typeof payload.connectorId === "string" ? payload.connectorId : null;
-        // `connectorDeploymentMode !== null` is true by construction (resolved above
-        // under this same `type` check). It is written as a guard rather than a `!`
-        // so that if the invariant ever breaks the result is a silent skip, not a
-        // throw after the flip.
-        if (connectorId && connectorDeploymentMode !== null) {
-          await applyConnectorApproval(
-            mcpConnectorSvc,
-            companyId,
-            connectorId,
-            connectorDeploymentMode,
-          );
-        }
-      }
+      // (install_mcp_connector is handled atomically by the early-return above,
+      // inside a transaction — it never reaches this shared post-flip path.)
 
       return updated;
     },
@@ -460,19 +504,40 @@ export function approvalService(db: Db) {
         throw unprocessable("Only pending or revision requested approvals can be rejected");
       }
 
+      // install_mcp_connector: reject MUST be atomic too — a rejection that commits
+      // while applyConnectorRejection fails leaves the connector pending_approval
+      // (its "rejected" state lost), or lets a needs_credentials row later bind →
+      // active, since connector status is treated as proof of prior approval. Wrap
+      // both in one transaction (savepoint on the HTTP path). Codex plan review.
+      if (existing.type === "install_mcp_connector") {
+        return db.transaction(async (tx) => {
+          const updated = await transitionApproval(tx, {
+            id,
+            companyId,
+            status: "rejected",
+            decidedByUserId,
+            decisionNote: decisionNote ?? null,
+            now: new Date(),
+          });
+          if (!updated) return null;
+          const payload = updated.payload as Record<string, unknown>;
+          const connectorId = typeof payload.connectorId === "string" ? payload.connectorId : null;
+          if (connectorId) {
+            await applyConnectorRejection(mcpConnectorService(tx as unknown as Db), companyId, connectorId);
+          }
+          return updated;
+        });
+      }
+
       const now = new Date();
-      const updated = await db
-        .update(approvals)
-        .set({
-          status: "rejected",
-          decidedByUserId,
-          decisionNote: decisionNote ?? null,
-          decidedAt: now,
-          updatedAt: now,
-        })
-        .where(and(eq(approvals.id, id), eq(approvals.companyId, companyId), inArray(approvals.status, ["pending", "revision_requested"])))
-        .returning()
-        .then((rows) => rows[0]);
+      const updated = await transitionApproval(db, {
+        id,
+        companyId,
+        status: "rejected",
+        decidedByUserId,
+        decisionNote: decisionNote ?? null,
+        now,
+      });
 
       // Defense-in-depth: companyId mismatch → no row updated → return null.
       if (!updated) {
@@ -491,19 +556,10 @@ export function approvalService(db: Db) {
       // tasks stay on the Crew Board as 'planning' (parked) — the founder can flip them
       // to Standard or delete them later. Rejecting only closes the dispatch approval.
 
-      // Plan 2 Task 4 / Plan 3a Task 7: rejecting an install_mcp_connector approval sets the
-      // connector `disabled` (NOT deleted — keeps an audit trail; a rejected connector should
-      // be visibly rejected, not vanish). `applyConnectorRejection` owns which statuses are
-      // in scope — pending_approval AND needs_credentials, the latter being the one the old
-      // inline guard silently skipped — plus the same null/tenancy guards as approve(), so it
-      // never throws after the flip.
-      if (updated.type === "install_mcp_connector") {
-        const payload = updated.payload as Record<string, unknown>;
-        const connectorId = typeof payload.connectorId === "string" ? payload.connectorId : null;
-        if (connectorId) {
-          await applyConnectorRejection(mcpConnectorSvc, companyId, connectorId);
-        }
-      }
+      // (install_mcp_connector reject is handled atomically by the early-return
+      // above, inside a transaction — it never reaches this shared post-flip path.
+      // applyConnectorRejection sets pending_approval AND needs_credentials →
+      // disabled, keeping an audit trail rather than deleting.)
 
       return updated;
     },

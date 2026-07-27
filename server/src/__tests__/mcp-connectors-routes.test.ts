@@ -101,7 +101,8 @@ const goodStdio = {
   displayName: "Local FS",
   transport: "stdio",
   command: "npx",
-  args: ["-y", "fs-mcp"],
+  // WS2: stdio packages must be exact-version pinned (assertStdioCommandSafe).
+  args: ["-y", "fs-mcp@1.0.0"],
 };
 
 function postConnector(app: express.Express, body: unknown) {
@@ -188,14 +189,18 @@ describe("mcp-connectors routes — validation (load-bearing)", () => {
     expect(mockConnectorSvc.create).not.toHaveBeenCalled();
   });
 
-  it("accepts a stdio command with a real path (no placeholder) -> 201", async () => {
+  // WS2 (semantic change from the pre-validator policy): an absolute-path binary
+  // is no longer an accepted launcher — only npx/uvx are (a bare path could run
+  // any executable on the host, defeating the package-identity guarantee). Even
+  // in local_trusted this is now rejected at the create chokepoint.
+  it("rejects a stdio command that is not an allowed launcher (absolute path) -> 400", async () => {
     deploymentMode = "local_trusted";
     const res = await postConnector(makeApp(founderActor), {
       ...goodStdio,
       command: "/usr/local/bin/fs-mcp",
     });
-    expect(res.status).toBe(201);
-    expect(mockConnectorSvc.create).toHaveBeenCalledTimes(1);
+    expect(res.status).toBe(400);
+    expect(mockConnectorSvc.create).not.toHaveBeenCalled();
   });
 
   it("rejects args as a string -> 400", async () => {
@@ -328,7 +333,7 @@ describe("mcp-connectors routes — FINDING 1: only the connector's own ${TOKEN}
     const res = await postConnector(makeApp(founderActor), {
       ...goodStdio,
       secretRef: "mcp:notion",
-      args: ["-y", "fs-mcp", "--token", "${TOKEN}", "--flag=${TOKEN}"],
+      args: ["-y", "fs-mcp@1.0.0", "--token", "${TOKEN}", "--flag=${TOKEN}"],
     });
     expect(res.status).toBe(201);
     expect(mockConnectorSvc.create).toHaveBeenCalledTimes(1);

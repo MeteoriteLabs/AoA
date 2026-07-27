@@ -121,48 +121,63 @@ function makeDb(
   };
 
   const issueUpdateSets: Array<Record<string, unknown>> = [];
-  const state = { approvalsUpdated: false };
+  // `transactionCalls` proves the F4 atomicity contract at the unit level: the
+  // install_mcp_connector approve()/reject() path must open exactly ONE
+  // transaction (so a side-effect failure rolls the status flip back), while
+  // hire_agent / crew_dispatch stay on the un-wrapped pooled path (zero calls).
+  // Real rollback is integration-only; this just proves the wrapper is present.
+  const state = { approvalsUpdated: false, transactionCalls: 0 };
 
   const dispatchable = (taskRows ?? []).filter(
     (t) => t.workMode === "planning" && t.status === "todo",
   );
   let flipIdx = 0;
 
+  const dbObject: any = {
+    select: () => {
+      const rows = selectResults[selectIdx] ?? [];
+      selectIdx += 1;
+      return makeSelectChain(rows);
+    },
+    update: (table: { _?: { name?: string } }) => ({
+      set: (values: Record<string, unknown>) => ({
+        where: () => {
+          if (table?._?.name === "approvals") state.approvalsUpdated = true;
+          const flipRow = dispatchable[flipIdx];
+          if (table?._?.name === "issues") flipIdx += 1;
+          const rows =
+            table?._?.name === "approvals"
+              ? [updatedApproval]
+              : table?._?.name === "issues"
+                ? flipRow
+                  ? [{ id: flipRow.id, assigneeAgentId: flipRow.assigneeAgentId }]
+                  : []
+                : [];
+          if (table?._?.name === "issues" && rows.length > 0) issueUpdateSets.push(values);
+          return {
+            returning: () => ({
+              then: (resolve: (r: unknown[]) => unknown) => resolve(rows),
+            }),
+          };
+        },
+      }),
+    }),
+    insert: () => ({
+      values: () => ({ returning: () => Promise.resolve([]) }),
+    }),
+    delete: () => ({ where: () => Promise.resolve() }),
+  };
+  // Pass-through transaction: the real postgres-js driver opens a savepoint and
+  // hands back a tx-scoped client; here the same mock db IS the client, so both
+  // the flip (transitionApproval(tx)) and the connector side-effect run against
+  // one observable object. mcpConnectorService is module-mocked, so it ignores tx.
+  dbObject.transaction = (fn: (tx: unknown) => unknown) => {
+    state.transactionCalls += 1;
+    return fn(dbObject);
+  };
+
   return {
-    db: {
-      select: () => {
-        const rows = selectResults[selectIdx] ?? [];
-        selectIdx += 1;
-        return makeSelectChain(rows);
-      },
-      update: (table: { _?: { name?: string } }) => ({
-        set: (values: Record<string, unknown>) => ({
-          where: () => {
-            if (table?._?.name === "approvals") state.approvalsUpdated = true;
-            const flipRow = dispatchable[flipIdx];
-            if (table?._?.name === "issues") flipIdx += 1;
-            const rows =
-              table?._?.name === "approvals"
-                ? [updatedApproval]
-                : table?._?.name === "issues"
-                  ? flipRow
-                    ? [{ id: flipRow.id, assigneeAgentId: flipRow.assigneeAgentId }]
-                    : []
-                  : [];
-            if (table?._?.name === "issues" && rows.length > 0) issueUpdateSets.push(values);
-            return {
-              returning: () => ({
-                then: (resolve: (r: unknown[]) => unknown) => resolve(rows),
-              }),
-            };
-          },
-        }),
-      }),
-      insert: () => ({
-        values: () => ({ returning: () => Promise.resolve([]) }),
-      }),
-      delete: () => ({ where: () => Promise.resolve() }),
-    } as any,
+    db: dbObject as any,
     issueUpdateSets,
     state,
   };
@@ -203,7 +218,7 @@ describe("approvalService.approve — install_mcp_connector branch", () => {
       secretRef: null,
     });
 
-    const { db } = makeDb(
+    const { db, state } = makeDb(
       pendingApproval("install_mcp_connector", { connectorId: "conn-1", serverName: "github" }),
       resolvedApproval("install_mcp_connector", "approved", {
         connectorId: "conn-1",
@@ -215,6 +230,8 @@ describe("approvalService.approve — install_mcp_connector branch", () => {
     const result = await svc.approve("ap1", COMPANY, "user-A", "ok");
 
     expect(result).not.toBeNull();
+    // F4 atomicity: the flip + activation ran inside exactly one transaction.
+    expect(state.transactionCalls).toBe(1);
     expect(mocks.connGetById).toHaveBeenCalledWith("conn-1");
     // Finding 6: the guarded write now re-checks secret-boundness too. This
     // connector needs no secret and has none → expectSecretBound=false.
@@ -327,7 +344,7 @@ describe("approvalService.reject — install_mcp_connector branch", () => {
     });
     mocks.connUpdate.mockResolvedValue({ id: "conn-1", status: "disabled" });
 
-    const { db } = makeDb(
+    const { db, state } = makeDb(
       pendingApproval("install_mcp_connector", { connectorId: "conn-1", serverName: "github" }),
       resolvedApproval("install_mcp_connector", "rejected", {
         connectorId: "conn-1",
@@ -339,6 +356,8 @@ describe("approvalService.reject — install_mcp_connector branch", () => {
     const result = await svc.reject("ap1", COMPANY, "user-A", "no");
 
     expect((result as { status?: string }).status).toBe("rejected");
+    // F4 atomicity: reject's flip + disable ran inside exactly one transaction.
+    expect(state.transactionCalls).toBe(1);
     expect(mocks.connUpdate).toHaveBeenCalledTimes(1);
     expect(mocks.connUpdate).toHaveBeenCalledWith("conn-1", { status: "disabled" });
   });
@@ -443,7 +462,7 @@ describe("regression — hire_agent and crew_dispatch unaffected by the connecto
   it("(6a) hire_agent approve still activates the pending agent and never touches the connector service", async () => {
     mocks.activatePendingApproval.mockResolvedValue(undefined);
 
-    const { db } = makeDb(
+    const { db, state } = makeDb(
       pendingApproval("hire_agent", { agentId: "agent-9" }),
       resolvedApproval("hire_agent", "approved", { agentId: "agent-9" }),
     );
@@ -452,6 +471,8 @@ describe("regression — hire_agent and crew_dispatch unaffected by the connecto
     const result = await svc.approve("ap1", COMPANY, "user-A", "hire");
 
     expect(result).not.toBeNull();
+    // Zero regression: hire_agent stays on the un-wrapped pooled path.
+    expect(state.transactionCalls).toBe(0);
     expect(mocks.activatePendingApproval).toHaveBeenCalledWith("agent-9");
     expect(mocks.connGetById).not.toHaveBeenCalled();
     expect(mocks.connUpdate).not.toHaveBeenCalled();
@@ -462,7 +483,7 @@ describe("regression — hire_agent and crew_dispatch unaffected by the connecto
   it("(6b) hire_agent reject still terminates the pending agent and never touches the connector service", async () => {
     mocks.terminate.mockResolvedValue(undefined);
 
-    const { db } = makeDb(
+    const { db, state } = makeDb(
       pendingApproval("hire_agent", { agentId: "agent-9" }),
       resolvedApproval("hire_agent", "rejected", { agentId: "agent-9" }),
     );
@@ -471,6 +492,8 @@ describe("regression — hire_agent and crew_dispatch unaffected by the connecto
     const result = await svc.reject("ap1", COMPANY, "user-A", "no");
 
     expect(result).not.toBeNull();
+    // Zero regression: hire_agent reject stays on the un-wrapped pooled path.
+    expect(state.transactionCalls).toBe(0);
     expect(mocks.terminate).toHaveBeenCalledWith("agent-9");
     expect(mocks.connGetById).not.toHaveBeenCalled();
     expect(mocks.connUpdate).not.toHaveBeenCalled();
@@ -481,7 +504,7 @@ describe("regression — hire_agent and crew_dispatch unaffected by the connecto
   it("(6c) crew_dispatch approve still dispatches and never touches the connector service", async () => {
     mocks.preflightCrewDispatch.mockResolvedValue({ allowed: true });
 
-    const { db, issueUpdateSets } = makeDb(
+    const { db, issueUpdateSets, state } = makeDb(
       pendingApproval("crew_dispatch", { threadId: "thread-1", taskIds: ["t1"] }),
       resolvedApproval("crew_dispatch", "approved", { threadId: "thread-1", taskIds: ["t1"] }),
       [{ id: "t1", assigneeAgentId: "agent-1", workMode: "planning", status: "todo" }],
@@ -491,6 +514,8 @@ describe("regression — hire_agent and crew_dispatch unaffected by the connecto
     await svc.approve("ap1", COMPANY, "user-A", "go");
 
     expect(issueUpdateSets).toHaveLength(1);
+    // Zero regression: crew_dispatch stays on the un-wrapped pooled path.
+    expect(state.transactionCalls).toBe(0);
     expect(mocks.dispatchCreatedCrewTasks).toHaveBeenCalledTimes(1);
     expect(mocks.connGetById).not.toHaveBeenCalled();
     expect(mocks.connUpdate).not.toHaveBeenCalled();

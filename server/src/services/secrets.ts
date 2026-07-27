@@ -467,6 +467,29 @@ export function secretService(db: Db) {
       return resolveSecretValue(companyId, secret.id, "latest", context);
     },
 
+    /**
+     * The NAMES of a company's currently-resolvable secrets — a row that exists
+     * (`deleted_at IS NULL`) AND is `status = "active"`. Deliberately a plain
+     * column select: NO version resolution, NO provider read, NO decryption — safe
+     * to call while listing many connectors (F2 deliverability). One grouped query,
+     * not N+1. NOTE: "active + not deleted" catches the common deleted/disabled
+     * case, not every runtime resolution failure (missing version / bad provider
+     * config) — the reason it feeds is named `credential_inactive_or_missing`.
+     */
+    async activeSecretNames(companyId: string): Promise<Set<string>> {
+      const rows = await db
+        .select({ name: companySecrets.name })
+        .from(companySecrets)
+        .where(
+          and(
+            eq(companySecrets.companyId, companyId),
+            eq(companySecrets.status, "active"),
+            isNull(companySecrets.deletedAt),
+          ),
+        );
+      return new Set(rows.map((r) => r.name));
+    },
+
     resolveSecretValue,
 
     listProviderConfigs: (companyId: string) =>

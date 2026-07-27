@@ -5,6 +5,7 @@ import {
   stdioSpecCarriesSecretPlaceholder,
 } from "@armyofagents/adapter-utils";
 import { isTransportAllowed } from "./mcp-connector-transport-gate.js";
+import { isStdioCommandSafe } from "./mcp-connector-command-safety.js";
 
 /**
  * Server-name charset a connector is allowed to use — the SAME regex the
@@ -84,6 +85,18 @@ export interface ResolvedConnectorRow {
   secretValue: string | null;
 }
 
+/**
+ * A resolved connector row PLUS the audit metadata the delivery-audit needs
+ * (`mcp_connector.delivered`, Decision #116 clause 7). The loader returns these;
+ * `buildConnectorSpecs` consumes only the {@link ResolvedConnectorRow} subset
+ * (the extra fields are ignored), so its many unit-test fixtures stay minimal.
+ */
+export interface LoadedConnectorRow extends ResolvedConnectorRow {
+  connectorId: string;
+  /** Catalog trust tier, or null for BYO. */
+  trustTier: string | null;
+}
+
 /** Why a connector row produced no spec. */
 export type ConnectorSkipReason =
   | "missing_url"
@@ -99,7 +112,17 @@ export type ConnectorSkipReason =
    * delivery-time re-assertion. Named so it can later surface in the UI (FU-1
    * already references a "D7 block" reason that did not previously exist).
    */
-  | "d7_blocked";
+  | "d7_blocked"
+  /**
+   * WS2 (Decision #116 clause 7): a stdio connector whose command is not a
+   * pinned launcher package. The create chokepoint refuses such a command, but
+   * legacy/imported/direct-DB rows can still carry one, so delivery re-checks the
+   * same predicate (`isStdioCommandSafe`) and fails closed. UNLIKE `d7_blocked`,
+   * this is MODE-INDEPENDENT — the pinning policy is universal. Only fires for a
+   * row that HAS a command; a stdio row with no command is `missing_command`
+   * (reported by `buildConnectorSpecs`), the pre-existing reason.
+   */
+  | "unsafe_command";
 
 export interface ConnectorBuildResult {
   specs: Record<string, McpServerSpec>;
@@ -173,6 +196,9 @@ interface D7RelevantRow {
   transport?: string;
   source?: string;
   trustTier?: string | null;
+  /** WS2: the stdio command + args the delivery-time command-safety re-check reads. */
+  command?: string | null;
+  args?: string[];
 }
 
 export interface ConnectorSelectionInput<T extends { id: string; status: string }> {
@@ -231,6 +257,21 @@ export function selectConnectorRowsForAgent<T extends { id: string; status: stri
         input.onSkip?.(c, "d7_blocked");
         return false;
       }
+    }
+    // WS2: command-safety re-check. MODE-INDEPENDENT (not gated on deploymentMode,
+    // unlike D7) — the pinning policy is universal. Only a stdio row that HAS a
+    // command is checked: a commandless stdio row stays and is reported
+    // `missing_command` by buildConnectorSpecs (the pre-existing reason), so this
+    // gate does not steal that classification. A legacy/imported row whose command
+    // the create chokepoint would now refuse is dropped WITH a reason, not run.
+    const safetyRow = c as unknown as D7RelevantRow;
+    if (
+      safetyRow.transport === "stdio" &&
+      safetyRow.command &&
+      !isStdioCommandSafe(safetyRow.command, safetyRow.args)
+    ) {
+      input.onSkip?.(c, "unsafe_command");
+      return false;
     }
     return true;
   });
@@ -365,7 +406,8 @@ const CODEX_ADAPTER_TYPE = "codex_local";
 export type ConnectorDeliverabilityReason =
   | ConnectorSkipReason
   | "secret_unreachable"
-  | "adapter_incapable";
+  | "adapter_incapable"
+  | "credential_inactive_or_missing";
 
 /** One assigned agent that would NOT receive an otherwise-active connector. */
 export interface BlockedAgentDeliverability {
@@ -415,6 +457,14 @@ export interface ConnectorDeliverabilityInput {
   };
   /** The host's CURRENT deployment mode — the axis the D7 re-gate evaluates. */
   deploymentMode: string;
+  /**
+   * Whether the connector's BOUND secret currently resolves — i.e. a company
+   * secret row exists that is not deleted and `status = "active"` (F2). The
+   * caller evaluates this (batched, non-decrypting) and passes it in; the pure
+   * function stays DB-free. `undefined` = caller did not evaluate → legacy
+   * presence-only behavior (no `credential_inactive_or_missing`).
+   */
+  secretResolvable?: boolean;
   /** The connector's per-agent opt-in set, resolved to name + adapter type. */
   assignedAgents: Array<{
     agentId: string;
@@ -462,9 +512,34 @@ export function computeConnectorDeliverability(
     return { deliverable: false, reason: "d7_blocked", blockedAgents: [] };
   }
 
+  // (1a) Command safety — connector-global (WS2), the exact predicate the delivery
+  // selector re-checks. MODE-INDEPENDENT: a stdio command the create chokepoint
+  // would now refuse reaches no recipient. Only a row that HAS a command is
+  // flagged here; a commandless stdio row falls through to the spec-shape build
+  // below, which reports `missing_command` (the faithful reason). Ordered D7 →
+  // unsafe_command → credential → spec, matching the delivery pipeline.
+  if (
+    connector.transport === "stdio" &&
+    connector.command &&
+    !isStdioCommandSafe(connector.command, connector.args)
+  ) {
+    return { deliverable: false, reason: "unsafe_command", blockedAgents: [] };
+  }
+
+  // (1b) Credential state — connector-global (F2). A connector active with a
+  // bound secret that no longer resolves (deleted or disabled) is dropped by the
+  // loader for EVERY recipient, yet the row stays `active` → the preview would
+  // otherwise show it healthy. `secretResolvable === false` means the bound
+  // secret is missing/inactive; `undefined` = caller did not evaluate (legacy).
+  // Order is faithful: after D7 (selector), before the loader's secret-resolve
+  // step that the spec-shape build models below.
+  const hasSecret = Boolean(connector.secretRef);
+  if (hasSecret && input.secretResolvable === false) {
+    return { deliverable: false, reason: "credential_inactive_or_missing", blockedAgents: [] };
+  }
+
   // (2) Spec shape — connector-global. Model secret PRESENCE (not value) so the
   // built spec's `secretEnvVar`/`authTokenEnvVar` signal matches production.
-  const hasSecret = Boolean(connector.secretRef);
   const { specs, skipped } = buildConnectorSpecs([
     {
       serverName: "preview", // key is irrelevant here; a single-row build
