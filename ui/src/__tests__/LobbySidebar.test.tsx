@@ -9,7 +9,9 @@ import { LobbySidebar } from "../components/LobbySidebar";
 const mockNavigate = vi.fn();
 
 vi.mock("react-router-dom", async () => {
-  const actual = await vi.importActual<typeof import("react-router-dom")>("react-router-dom");
+  const actual = await vi.importActual<typeof import("react-router-dom")>(
+    "react-router-dom"
+  );
   return {
     ...actual,
     useNavigate: () => mockNavigate,
@@ -38,7 +40,8 @@ vi.mock("@/api/profile", () => ({
 // doesn't supply. Stub Tooltip+children so collapsed-mode buttons render.
 vi.mock("@/components/ui/tooltip", () => ({
   Tooltip: ({ children }: any) => <>{children}</>,
-  TooltipTrigger: ({ children, asChild }: any) => asChild ? children : <>{children}</>,
+  TooltipTrigger: ({ children, asChild }: any) =>
+    asChild ? children : <>{children}</>,
   TooltipContent: () => null,
   TooltipProvider: ({ children }: any) => <>{children}</>,
 }));
@@ -51,7 +54,9 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
   DropdownMenuTrigger: ({ children }: any) => <>{children}</>,
   DropdownMenuContent: ({ children }: any) => <div>{children}</div>,
   DropdownMenuItem: ({ children, onSelect }: any) => (
-    <div role="menuitem" onClick={onSelect}>{children}</div>
+    <div role="menuitem" onClick={onSelect}>
+      {children}
+    </div>
   ),
 }));
 
@@ -88,7 +93,9 @@ describe("LobbySidebar", () => {
 
   it("renders the + New organization button at the top", () => {
     renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
-    expect(screen.getByRole("button", { name: /new organization/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /new organization/i })
+    ).toBeInTheDocument();
   });
 
   it("clicking + New organization calls the onCreateCompany handler", async () => {
@@ -100,12 +107,20 @@ describe("LobbySidebar", () => {
 
   it("renders Organizations (active), Marketplace, Learn, Documentation, Settings", async () => {
     renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
-    expect(screen.getByRole("button", { name: /organizations/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /marketplace/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /organizations/i })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /marketplace/i })
+    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /learn/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /documentation/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /documentation/i })
+    ).toBeInTheDocument();
     // Settings appears once the profile query resolves (instance admin).
-    expect(await screen.findByRole("button", { name: /settings/i })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: /settings/i })
+    ).toBeInTheDocument();
   });
 
   it("Organizations row is the active item (data-active=true)", () => {
@@ -121,7 +136,9 @@ describe("LobbySidebar", () => {
 
   it("renders the external collapse toggle button", () => {
     renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
-    expect(screen.getByRole("button", { name: /collapse sidebar/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /collapse sidebar/i })
+    ).toBeInTheDocument();
   });
 
   it("clicking Marketplace navigates to /marketplace", async () => {
@@ -148,7 +165,11 @@ describe("LobbySidebar", () => {
 
   function deferredProfile() {
     let resolveProfile!: (value: unknown) => void;
-    mockProfileGet.mockReturnValue(new Promise((resolve) => { resolveProfile = resolve; }));
+    mockProfileGet.mockReturnValue(
+      new Promise((resolve) => {
+        resolveProfile = resolve;
+      })
+    );
     return async (overrides: Record<string, unknown>) => {
       // react-query delivers observer notifications on its default scheduler
       // (setTimeout(cb, 0)). A fixed setTimeout(0) hop was NOT a reliable settle
@@ -191,7 +212,9 @@ describe("LobbySidebar", () => {
     await resolveWith({ isInstanceAdmin: true });
     // Must be present synchronously after the same flush the non-admin test
     // uses — proves that flush is sufficient for the absence assertions above.
-    expect(screen.getByRole("button", { name: /settings/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /settings/i })
+    ).toBeInTheDocument();
     expect(screen.getByText("System")).toBeInTheDocument();
   });
 
@@ -203,26 +226,34 @@ describe("LobbySidebar", () => {
 
   it("shows the Settings row for instance admins", async () => {
     renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
-    expect(await screen.findByRole("button", { name: /settings/i })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: /settings/i })
+    ).toBeInTheDocument();
     expect(screen.getByText("System")).toBeInTheDocument();
   });
 
   it("has an aside element", () => {
-    const { container } = renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
+    const { container } = renderWithProviders(
+      <LobbySidebar onCreateCompany={onCreateCompany} />
+    );
     const aside = container.querySelector("aside");
     expect(aside).toBeTruthy();
   });
 
-  it("applies the lobby-sidebar-enter mount-animation class", () => {
-    const { container } = renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
+  it("renders without a mount animation that can flash during route changes", () => {
+    const { container } = renderWithProviders(
+      <LobbySidebar onCreateCompany={onCreateCompany} />
+    );
     const aside = container.querySelector("aside");
     expect(aside).toBeTruthy();
-    expect(aside!.className).toContain("lobby-sidebar-enter");
+    expect(aside!.className).not.toContain("lobby-sidebar-enter");
   });
 
   it("toggling the collapse button flips data-collapsed on the aside", async () => {
     const user = userEvent.setup();
-    const { container } = renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
+    const { container } = renderWithProviders(
+      <LobbySidebar onCreateCompany={onCreateCompany} />
+    );
     const aside = container.querySelector("aside");
     expect(aside?.getAttribute("data-collapsed")).toBe("false");
     await user.click(screen.getByRole("button", { name: /collapse sidebar/i }));
@@ -232,15 +263,25 @@ describe("LobbySidebar", () => {
   it("force-collapses when a secondary sidebar is present, even if localStorage says expanded", () => {
     localStorage.setItem("aoa.lobby.sidebar-collapsed", "false");
     const { container } = renderWithProviders(
-      <LobbySidebar onCreateCompany={onCreateCompany} hasSecondarySidebar activeItem="settings" />,
+      <LobbySidebar
+        onCreateCompany={onCreateCompany}
+        hasSecondarySidebar
+        activeItem="settings"
+      />
     );
-    expect(container.querySelector("aside")?.getAttribute("data-collapsed")).toBe("true");
+    expect(
+      container.querySelector("aside")?.getAttribute("data-collapsed")
+    ).toBe("true");
   });
 
   it("reflects the stored preference when no secondary sidebar is present", () => {
     localStorage.setItem("aoa.lobby.sidebar-collapsed", "true");
-    const { container } = renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
-    expect(container.querySelector("aside")?.getAttribute("data-collapsed")).toBe("true");
+    const { container } = renderWithProviders(
+      <LobbySidebar onCreateCompany={onCreateCompany} />
+    );
+    expect(
+      container.querySelector("aside")?.getAttribute("data-collapsed")
+    ).toBe("true");
   });
 
   it("collapses/expands reactively when hasSecondarySidebar toggles without remount (persistent-layout transition)", () => {
@@ -248,32 +289,52 @@ describe("LobbySidebar", () => {
     // rerender (not remount) mirrors navigating into/out of Settings.
     localStorage.setItem("aoa.lobby.sidebar-collapsed", "false");
     const { container, rerender } = renderWithProviders(
-      <LobbySidebar onCreateCompany={onCreateCompany} />,
+      <LobbySidebar onCreateCompany={onCreateCompany} />
     );
-    expect(container.querySelector("aside")?.getAttribute("data-collapsed")).toBe("false");
+    expect(
+      container.querySelector("aside")?.getAttribute("data-collapsed")
+    ).toBe("false");
     // Navigate INTO a secondary-sidebar page → force-collapse.
-    rerender(<LobbySidebar onCreateCompany={onCreateCompany} hasSecondarySidebar activeItem="settings" />);
-    expect(container.querySelector("aside")?.getAttribute("data-collapsed")).toBe("true");
+    rerender(
+      <LobbySidebar
+        onCreateCompany={onCreateCompany}
+        hasSecondarySidebar
+        activeItem="settings"
+      />
+    );
+    expect(
+      container.querySelector("aside")?.getAttribute("data-collapsed")
+    ).toBe("true");
     // Navigate back OUT → restore the expanded preference.
     rerender(<LobbySidebar onCreateCompany={onCreateCompany} />);
-    expect(container.querySelector("aside")?.getAttribute("data-collapsed")).toBe("false");
+    expect(
+      container.querySelector("aside")?.getAttribute("data-collapsed")
+    ).toBe("false");
   });
 
   it("peek-expanding on a secondary-sidebar page does not persist the preference", async () => {
     const user = userEvent.setup();
     localStorage.setItem("aoa.lobby.sidebar-collapsed", "false");
     const { container } = renderWithProviders(
-      <LobbySidebar onCreateCompany={onCreateCompany} hasSecondarySidebar activeItem="settings" />,
+      <LobbySidebar
+        onCreateCompany={onCreateCompany}
+        hasSecondarySidebar
+        activeItem="settings"
+      />
     );
     await user.click(screen.getByRole("button", { name: /expand sidebar/i }));
-    expect(container.querySelector("aside")?.getAttribute("data-collapsed")).toBe("false");
+    expect(
+      container.querySelector("aside")?.getAttribute("data-collapsed")
+    ).toBe("false");
     expect(localStorage.getItem("aoa.lobby.sidebar-collapsed")).toBe("false");
   });
 
   // --- Rounded floating rail (Task 1) ---
 
   it("renders the primary rail as a rounded floating island (no right border)", () => {
-    const { container } = renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
+    const { container } = renderWithProviders(
+      <LobbySidebar onCreateCompany={onCreateCompany} />
+    );
     const aside = container.querySelector("aside")!;
     expect(aside.className).toContain("rounded-2xl");
     expect(aside.className).toContain("border-border");
@@ -283,7 +344,7 @@ describe("LobbySidebar", () => {
 
   it("drawer mode is full-width and NOT rounded", () => {
     const { container } = renderWithProviders(
-      <LobbySidebar onCreateCompany={onCreateCompany} drawer />,
+      <LobbySidebar onCreateCompany={onCreateCompany} drawer />
     );
     const aside = container.querySelector("aside")!;
     expect(aside.className).toContain("w-full");
@@ -294,28 +355,40 @@ describe("LobbySidebar", () => {
 
   it("expanded: renders the create button and the More-options trigger", () => {
     renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
-    expect(screen.getByRole("button", { name: /^new organization$/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /more organization options/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /^new organization$/i })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /more organization options/i })
+    ).toBeInTheDocument();
   });
 
   it("Import organization menuitem navigates to /import", async () => {
     const user = userEvent.setup();
     renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
-    await user.click(screen.getByRole("menuitem", { name: /import organization/i }));
+    await user.click(
+      screen.getByRole("menuitem", { name: /import organization/i })
+    );
     expect(mockNavigate).toHaveBeenCalledWith("/import", undefined);
   });
 
   it("primary + New organization still creates in one click (no regression)", async () => {
     const user = userEvent.setup();
     renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
-    await user.click(screen.getByRole("button", { name: /^new organization$/i }));
+    await user.click(
+      screen.getByRole("button", { name: /^new organization$/i })
+    );
     expect(onCreateCompany).toHaveBeenCalledTimes(1);
   });
 
   it("collapsed: no More-options trigger and no import menuitem (create-only)", () => {
     localStorage.setItem("aoa.lobby.sidebar-collapsed", "true");
     renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
-    expect(screen.queryByRole("button", { name: /more organization options/i })).toBeNull();
-    expect(screen.queryByRole("menuitem", { name: /import organization/i })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /more organization options/i })
+    ).toBeNull();
+    expect(
+      screen.queryByRole("menuitem", { name: /import organization/i })
+    ).toBeNull();
   });
 });
