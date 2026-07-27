@@ -782,13 +782,13 @@ if (config.heartbeatSchedulerEnabled) {
   setInterval(runProductivityReviewReconciliation, PRODUCTIVITY_REVIEW_RECONCILIATION_INTERVAL_MS);
 }
 
-// Idempotent backfill: ensure Command Staff (Router/Planner/Dispatcher/Memory Keeper)
-// and Adjutant exist for all companies. Safe to run on every startup — uses
+// Idempotent backfill: ensure Commander and the appropriate crew roster exist
+// for all companies. Safe to run on every startup — the seeders use
 // ON CONFLICT DO NOTHING. Pre-existing companies miss this because the seeders
-// only run on company creation.
-// T3.5 / P8d: the marketplace gate skips only the CREW roster. Infrastructure
-// (Commander, Steward) is seeded for every company regardless — a
-// marketplace-managed company still needs its Commander row and hub curation.
+// also run during company creation.
+// T3.5 / P8d / Phase 4B: the marketplace gate skips only the CREW roster.
+// Commander is seeded for every company regardless; Steward is now owned by
+// the marketplace default-crew package (or by the gated legacy fallback).
 void db
   .select({ id: companies.id })
   .from(companies)

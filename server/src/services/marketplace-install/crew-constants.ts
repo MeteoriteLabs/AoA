@@ -7,6 +7,7 @@
  * neighbours, so the value cannot live in either. Keep it to values that more
  * than one side genuinely reads.
  */
+import type { CatalogItem } from "@armyofagents/shared";
 
 /**
  * The `templateVersion` a crew row carries after T2.3b adoption re-points it at
@@ -30,6 +31,39 @@ export const STEWARD_CATALOG_ITEM_ID = "agent:aoa-curated/aoa-steward";
 
 /** Published identity of the default marketplace crew team. */
 export const DEFAULT_CREW_TEAM_ITEM_ID = "team:aoa-curated/default-crew";
+
+/**
+ * Whether a catalog is safe to use as the ownership source for Steward.
+ *
+ * This is stricter than a generic dependency lookup: both protected items must
+ * be unique and active, and the default crew must require Steward exactly once
+ * as an agent. A stale or ambiguous catalog must fall back to the legacy crew
+ * rather than commit a managed company with no Steward.
+ */
+export function catalogPublishesStewardInDefaultCrew(
+  catalogItems: readonly CatalogItem[],
+): boolean {
+  const teamItems = catalogItems.filter((item) => item.id === DEFAULT_CREW_TEAM_ITEM_ID);
+  const stewardItems = catalogItems.filter((item) => item.id === STEWARD_CATALOG_ITEM_ID);
+  if (teamItems.length !== 1 || stewardItems.length !== 1) return false;
+
+  const teamItem = teamItems[0];
+  const stewardItem = stewardItems[0];
+  if (
+    teamItem.type !== "team" ||
+    teamItem.status !== "active" ||
+    stewardItem.type !== "agent" ||
+    stewardItem.status !== "active"
+  ) {
+    return false;
+  }
+
+  const stewardRequirements = (teamItem.requires ?? []).filter(
+    (requirement) =>
+      requirement.type === "agent" && requirement.id === STEWARD_CATALOG_ITEM_ID,
+  );
+  return stewardRequirements.length === 1;
+}
 
 /**
  * Maximum number of productive crew repairs or legacy adoptions in one fleet

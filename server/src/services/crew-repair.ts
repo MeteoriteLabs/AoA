@@ -53,13 +53,14 @@
  *    `default-crew-2` sharing one `templateOrigin` while leaving the ORIGINAL
  *    rows — the ones tasks, runs and assignments point at by id — still frozen.
  * 2. **No roster row matches, and every remaining crew row is accounted for**
- *    (i.e. only infrastructure is left) → genuinely crewless. This is the
+ *    (i.e. only Commander or a protected historical Steward is left) →
+ *    genuinely crewless. This is the
  *    residual state T2.3's `unknown` witness leaves behind. Nothing can collide,
  *    so {@link provisionCompanyCrew} is re-run verbatim.
  * 3. **No roster row matches, but crew rows remain unaccounted for** → REFUSE.
  *    Those rows own real work; installing the roster beside them creates a
  *    second, parallel crew and the company then reads `healthy` forever. See
- *    {@link isInfrastructureRow} for why its exemption list is safe stale in
+ *    {@link isInfrastructureRow} for why its residual exemption list is safe stale in
  *    both directions, unlike the classification list it replaced.
  * 4. **Installed, but the operation row still reads claimable** → seal it. The
  *    T2.3 averted-clobber repair writes that row on the connection that just
@@ -492,17 +493,16 @@ async function repairDegradedCrew(
     }
 
     // ── The refusal that guards the crewless branch ─────────────────────────
-    // Every crew row that is NOT infrastructure and did NOT map to a roster
-    // entry is unaccounted for. Provisioning on top of those installs a second,
+    // Every crew row that is NOT a residual exemption and did NOT map to a
+    // roster entry is unaccounted for. Provisioning on top installs a second,
     // parallel crew beside rows that own every task, run and assignment — and
     // the company then reads `healthy`, so nothing ever revisits it. Refuse.
     //
-    // The infrastructure exemption is safe in BOTH stale directions, unlike the
-    // classification list it replaces: an entry that should have been removed
-    // (post-T2.4 Steward) only means we do not refuse over a row the roster has
-    // already claimed above; an entry that is missing means we refuse — which is
-    // the fail-closed direction. It is keyed on the legacy slug first so a
-    // renamed Commander is still recognised.
+    // The residual exemption is safe in BOTH stale directions, unlike the
+    // classification list it replaces: Steward remains here only for historical
+    // NULL-origin companies. When the roster carries Steward it is claimed
+    // above first; a missing exemption makes us refuse, which is fail-closed.
+    // It is keyed on the legacy slug first so a renamed Commander is recognised.
     const rosterSlugs = new Set<string>();
     for (const entry of roster) {
       for (const slug of legacySlugsForRosterEntry(entry)) rosterSlugs.add(slug);
@@ -773,15 +773,15 @@ function matchesLegacySlug(origin: string | null, slugs: ReadonlySet<string>): b
  *
  * ⚠️ This is NOT a classification input — it never decides whether a company has
  * a crew. It only suppresses a refusal, and it is consulted AFTER roster
- * matching, which makes both stale directions safe: a stale entry (Steward,
- * once T2.4 publishes it) can only fail to refuse over a row the roster already
- * claimed; a missing entry refuses, which is the fail-closed direction. An
+ * matching, which makes both stale directions safe: Steward is retained as a
+ * historical NULL-origin exemption, but a published roster claims it first; a
+ * missing entry refuses, which is the fail-closed direction. An
  * earlier revision used a list like this to decide classification, and a stale
  * entry there minted a duplicate — do not move it back.
  *
  * Matched on the legacy origin slug first so a RENAMED Commander is still
- * recognised; a renamed Steward (which has no origin — it is absent from
- * `CREW_NAMES`) falls through to the refusal, which is correct.
+ * recognised. A pre-adoption, renamed NULL-origin Steward falls through to the
+ * refusal, which is correct because its identity can no longer be proven.
  *
  * ⚠️ **This membership is deliberately LOCAL, not shared with D23's
  * `PROTECTED_AGENT_ROLES`, even though the two sets are currently identical.**
@@ -819,7 +819,8 @@ function isInfrastructureRow(row: CrewAgentSnapshot): boolean {
  * the roster beside it?
  *
  * Two ways to be sure, and one ambiguous case that must fail closed:
- * - **Infrastructure** — AoA seeds it, the catalog does not.
+ * - **Residual exemption** — Commander is app infrastructure; a historical
+ *   NULL-origin Steward may still exist before Phase 4A adoption.
  * - **A `…@legacy` origin naming a role the roster does NOT carry** (a retired
  *   Dispatcher, say). `backfillCrewTemplateOrigin` stamped that slug from the
  *   name at boot and nothing rewrites it, so the row provably is not a renamed

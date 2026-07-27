@@ -1307,9 +1307,9 @@ The two items deferred by Decision #107 shipped together on `feat/inbox-hub-tabb
 
 8. **The create-time `isCrewMarketplaceManaged` gate SURVIVES.** T2.3 was specified to delete it as unreachable. It was kept: it is what pins the **read-the-gate-before-any-seeding** ordering that `aoa-bootstrap-wiring.test.ts` (`stampsOriginOnSeed`) guards — a read-after-write gate would let a company see its own freshly-inserted Commander, conclude "marketplace-managed", and skip its entire crew — and it correctly short-circuits a concurrent create that already installed the marketplace crew. It costs one indexed query.
 
-9. **The degrade re-checks a WITNESS immediately before it seeds, and repairs the record.** `dispatchInstall` can commit the team-body transaction, write `success`, and *then* throw — the success DB write can fail, and `publishLiveEvent` is a bare synchronous `EventEmitter.emit` so a throwing subscriber propagates — landing in its own catch, which overwrites the terminal patch with `failure`. A `failed` result therefore does not prove nothing was installed. Seeding on top of a committed roster is silent and permanent: `seedCrewAgent` hits `ON CONFLICT DO NOTHING` on every name-overlapping role, takes the `!inserted` branch, and overwrites the **marketplace** rows' `runtimeConfig.aoa.toolAllowlist`, possibly their adapter, and their instruction bundle — while `templateOrigin`/`templateVersion` survive, so `crew-updater` sees managed rows at the current catalog version and never repairs them, and no duplicate row is minted to reveal the damage. One indexed query before the write closes the whole class rather than the two known triggers.
+9. **The degrade re-checks a WITNESS immediately before it seeds, and repairs the record.** `dispatchInstall` can commit the team-body transaction, write `success`, and *then* throw — the success DB write can fail, and `publishLiveEvent` is a bare synchronous `EventEmitter.emit` so a throwing subscriber propagates — landing in its own catch, which overwrites the terminal patch with `failure`. A `failed` result therefore does not prove nothing was installed. Seeding on top of a committed roster is silent and permanent: `seedCrewAgent` hits `ON CONFLICT DO NOTHING` on every name-overlapping role, takes the `!inserted` branch, and overwrites the **marketplace** rows' `runtimeConfig.aoa.toolAllowlist` and possibly their adapter — while `templateOrigin`/`templateVersion` survive, so `crew-updater` sees managed rows at the current catalog version and never repairs them, and no duplicate row is minted to reveal the damage. Instruction-bundle seeding itself is idempotent and preserves founder files; the DB mutation is already sufficient to corrupt the effective configuration. One indexed query before the write closes the whole class rather than the two known triggers.
 
-   The witness is the `teams` row carrying the crew team's `templateOrigin` — written in the same transaction as the agents, and `installTeam` now **refuses to write it with zero agents**, so it is exact in both directions. It is deliberately **not** `isCrewMarketplaceManaged`: that predicate also matches the infrastructure agents seeded moments earlier, and using it made a company skip its own crew as soon as any seeder stamped an origin (`aoa-bootstrap-wiring.test.ts`, `stampsOriginOnSeed`, caught exactly that). The witness is tri-state — `installed` / `absent` / `unknown` — and `unknown` fails closed *without* claiming the install succeeded.
+   The witness is the `teams` row carrying the crew team's `templateOrigin` — written in the same transaction as the agents, and `installTeam` now **refuses to write it with zero agents**, so it is exact in both directions. It is deliberately **not** `isCrewMarketplaceManaged`: that predicate also matches Commander if the infrastructure seeder ever stamps an origin, and using it made a company skip its own crew as soon as any seeder stamped an origin (`aoa-bootstrap-wiring.test.ts`, `stampsOriginOnSeed`, caught exactly that). The witness is tri-state — `installed` / `absent` / `unknown` — and `unknown` fails closed *without* claiming the install succeeded.
 
    **Refusing to seed is not sufficient on its own.** That guard protects the legacy-seeder path but not the marketplace **re-install** path, which consumes the same lying row: a later `provisionCompanyCrew` (T2.3b repair) claims the `failure` row and re-runs `installTeam` over a company that already has the roster, minting `Scout-2` / `Reviewer-2` / `default-crew-2` — all carrying the same `templateOrigin`, which additionally breaks the single-row team lookups in `resolver.ts` and `team-reconcile.ts`. So the averted path **repairs the operation row** to `success` (not claimable), which closes the hole and corrects the audit record in one move.
 
@@ -1338,23 +1338,19 @@ uninstall must never destroy them.
 **Decisions.**
 
 1. **Protection is an AoA fact, enforced server-side** — not catalog metadata.
-   Neither agent is published to the catalog, so there is nothing upstream to
-   express it with even if we wanted to.
+   Commander is not published; Steward is. Publication does not make essential
+   runtime identity a mutable catalog policy, so both remain protected here.
 
-2. **The set is keyed on agent IDENTITY, not on `templateOrigin`.** The obvious
-   origin-keyed design silently fails to protect the very agent it names:
-   `backfill-template-origin.ts`'s `CREW_NAMES` omits **Steward and
-   Chronicler**, and that backfill is the column's only writer, so Steward's
-   `templateOrigin` is `NULL` permanently. A canonical role slug is recovered
-   from **either** signal a row can carry — the origin (legacy-suffixed or a
-   catalog id) **or** the name — and either alone suffices.
+2. **The set is keyed on agent IDENTITY, not only on `templateOrigin`.** Older
+   Steward rows can have a NULL origin until Phase 4A adoption runs. A canonical
+   role slug is recovered from **either** signal a row can carry — the origin
+   (legacy-suffixed or a catalog id) **or** the name — and either alone suffices.
 
-3. **Steward's NULL origin must NOT be "fixed" by stamping it.** That NULL is
-   load-bearing: the marketplace-managed gate requires
-   `templateOrigin IS NOT NULL AND NOT LIKE '%@legacy'`, which is precisely why
-   seeding infrastructure agents cannot flip a company to "managed". Stamping
-   Steward a non-`@legacy` origin would make every company self-report as
-   marketplace-managed and **suppress its entire crew**.
+3. **Steward's NULL origin must not be blindly stamped by a seeder.** Before
+   the marketplace package existed, that would have flipped the broad managed
+   predicate and suppressed the crew. Phase 4A instead adopts only a verified
+   legacy Steward into an already marketplace-managed default crew; Phase 4B
+   then moves new Steward creation behind the same crew gate.
 
 4. **The guard belongs at team uninstall, not at agent delete.** `DELETE
    /agents/:id` already hard-refuses every `kind='aoa'` row for all actors.
@@ -1394,16 +1390,18 @@ uninstall must never destroy them.
    `sweep`/`role:steward` trigger and silently stop hub curation — the row
    survives while the function dies. Trigger replacement is therefore skipped
    for protected agents. Deliberate trade: a catalog-*added* trigger will never
-   reach Commander or Steward, whose triggers are AoA-seeded anyway; first
-   install still honours the template.
+   reach Commander or Steward through update; Commander is AoA-seeded, while
+   Steward's first marketplace install and Phase 4A adoption preserve the
+   required sweep trigger.
 
 8. **This is a guardrail, not an authorization boundary, and the code says so.**
    A founder who renames a NULL-origin Steward before uninstalling erases its
    last signal. Closing that with the `sweep`/`role:steward` trigger was
    considered and rejected: the trigger is founder-writable *and* deletable, so
    it adds a signal without closing the hole while making the predicate
-   db-aware. The gap closes for Steward the moment it is published (the origin
-   then carries the slug through any rename) and never applied to Commander.
+   db-aware. Phase 4A closes the historical gap by adopting the catalog origin;
+   Phase 4B installs new Stewards with that origin from birth. It never applied
+   to Commander.
 
 **Related.** [Decision #111] (company-wide teams), [Decision #112] (marketplace
 crew at company creation).

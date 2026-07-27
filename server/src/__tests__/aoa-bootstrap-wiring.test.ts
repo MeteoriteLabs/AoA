@@ -249,7 +249,7 @@ describe("A9.1 — Commander-Team seeds wired into createCompanyWithUniquePrefix
   });
 
   // ── P8d — the marketplace gate covers the CREW half only ────────────────
-  it("marketplace-managed company: config + infrastructure still seed, crew does NOT", async () => {
+  it("marketplace-managed company: config + Commander still seed, legacy crew does NOT", async () => {
     const db = makeDb({ managed: true });
     await companyService(db).create({ name: "Acme" } as any);
 
@@ -258,12 +258,12 @@ describe("A9.1 — Commander-Team seeds wired into createCompanyWithUniquePrefix
     // no autonomy dial, no provider/model config.
     expect(ensureConfigMock).toHaveBeenCalledWith(db, NEW_COMPANY_ID);
     expect(ensureCommanderMock).toHaveBeenCalledWith(db, NEW_COMPANY_ID);
-    expect(ensureStewardMock).toHaveBeenCalledWith(db, NEW_COMPANY_ID);
+    expect(ensureStewardMock).not.toHaveBeenCalled();
 
     // Discriminator: Scout IS published in the catalog, so the marketplace owns
     // it and the legacy seeder must stay off.
     expect(seedCalls).not.toContain("scout");
-    expect(seedCalls).toEqual(["config", "commander", "steward"]);
+    expect(seedCalls).toEqual(["config", "commander"]);
   });
 
   it("NOT marketplace-managed: the full legacy roster still seeds (regression)", async () => {

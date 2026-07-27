@@ -39,7 +39,10 @@ import { dispatchInstall, startInstallOperation, type Installers, type PublishLi
 import { claimOperationForDispatch, updateOperation } from "./operation-store.js";
 import { installSkill } from "./skill-installer.js";
 import { installTeam } from "./team-installer.js";
-import { DEFAULT_CREW_TEAM_ITEM_ID } from "./crew-constants.js";
+import {
+  catalogPublishesStewardInDefaultCrew,
+  DEFAULT_CREW_TEAM_ITEM_ID,
+} from "./crew-constants.js";
 
 export { DEFAULT_CREW_TEAM_ITEM_ID } from "./crew-constants.js";
 
@@ -112,7 +115,7 @@ export type CrewBootstrapResult =
   | { status: "already-dispatched"; operationId: string; operationStatus: string }
   | {
     status: "unavailable";
-    reason: "no-catalog" | "team-not-in-catalog";
+    reason: "no-catalog" | "team-not-in-catalog" | "default-crew-missing-steward";
     detail: CatalogUnavailableReason | null;
     catalog: MarketplaceCatalogFile | null;
   }
@@ -193,6 +196,14 @@ export async function bootstrapCrewFromMarketplace(
     );
     if (!teamItem) {
       return { status: "unavailable", reason: "team-not-in-catalog", detail: null, catalog };
+    }
+    if (!catalogPublishesStewardInDefaultCrew(catalog.items)) {
+      return {
+        status: "unavailable",
+        reason: "default-crew-missing-steward",
+        detail: null,
+        catalog,
+      };
     }
 
     const operation = await startInstallOperation({
@@ -304,12 +315,11 @@ export type CrewTeamInstallState =
  * witness in both directions: team row ⇔ crew agents committed.
  *
  * Deliberately NOT `isCrewMarketplaceManaged`. That predicate matches **any**
- * `kind='aoa'` row with a non-`@legacy` origin, including the infrastructure
- * agents (Commander, Steward) seeded moments earlier by
- * `ensureInfrastructureAgents`. Today nothing stamps an origin at seed time —
- * but `aoa-bootstrap-wiring.test.ts` (`stampsOriginOnSeed`) exists precisely
- * because nothing *enforces* that, and using the broad predicate here would
- * make a company skip its own crew entirely the day a seeder starts stamping.
+ * `kind='aoa'` row with a non-`@legacy` origin, including Commander if the
+ * infrastructure seeder ever starts stamping an origin.
+ * `aoa-bootstrap-wiring.test.ts` (`stampsOriginOnSeed`) exists precisely
+ * because nothing *enforces* today's NULL-origin behavior, and using the broad
+ * predicate here would make a company skip its own crew entirely that day.
  * (It did: that test failed when this guard was first written that way.)
  *
  * Callers must treat `unknown` as "do not seed". The asymmetry is deliberate: a

@@ -50,6 +50,7 @@ export const LEGACY_CREW_SEEDER_COVERAGE: Readonly<Record<string, string | null>
   "agent:aoa-curated/aoa-navigator": "ensureCommandStaff",
   "agent:aoa-curated/aoa-planner": "ensureCommandStaff",
   "agent:aoa-curated/aoa-memory-keeper": "ensureCommandStaff",
+  "agent:aoa-curated/aoa-steward": "ensureSteward",
   // No seeder. A degraded company is permanently missing its Reviewer.
   "agent:aoa-curated/aoa-reviewer": null,
 };
@@ -180,8 +181,10 @@ export async function provisionCompanyCrew(
   // Seeding on top of that committed roster is silent and permanent:
   // `seedCrewAgent` hits ON CONFLICT DO NOTHING on every name-overlapping role,
   // takes the `!inserted` branch, and overwrites the MARKETPLACE rows'
-  // `runtimeConfig.aoa.toolAllowlist`, possibly their adapter, and their
-  // instruction bundle — while `templateOrigin`/`templateVersion` survive. The
+  // `runtimeConfig.aoa.toolAllowlist` and possibly their adapter — while
+  // `templateOrigin`/`templateVersion` survive. The instruction bundle seeder
+  // is idempotent and preserves founder files, but the DB mutations alone are
+  // enough to make the marketplace record lie about the active configuration.
   // company then looks marketplace-managed at the current catalog version, so
   // `crew-updater` will never repair it, and no duplicate rows are minted so
   // nothing in the data reveals the damage.
@@ -231,8 +234,8 @@ export async function provisionCompanyCrew(
       },
       "crew bootstrap reported failure but the crew team IS installed — the install " +
         "committed and its bookkeeping failed. SKIPPING the legacy seeders (running them " +
-        "would silently overwrite the marketplace crew's runtimeConfig, adapter and " +
-        "instructions while leaving templateOrigin intact, putting the rows beyond the " +
+        "would silently overwrite the marketplace crew's runtimeConfig and adapter " +
+        "while leaving templateOrigin intact, putting the rows beyond the " +
         "reach of crew-updater).",
     );
     return { mode: "marketplace-clobber-averted", reason, operationRepaired };
