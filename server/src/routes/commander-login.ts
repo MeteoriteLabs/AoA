@@ -14,6 +14,7 @@ import {
   resolveCliAuthTopology,
   detectProviderCli,
 } from "../services/cli-auth-topology.js";
+import { logActivity } from "../services/activity-log.js";
 
 /**
  * Interactive CLI-login routes (Plan 3 / §6.2 Task 4). Founder-scoped: an
@@ -112,6 +113,7 @@ export function commanderLoginRoutes(db: Db): Router {
         .select({
           id: commanderLoginChallenges.id,
           companyId: commanderLoginChallenges.companyId,
+          provider: commanderLoginChallenges.provider,
         })
         .from(commanderLoginChallenges)
         .where(
@@ -121,12 +123,35 @@ export function commanderLoginRoutes(db: Db): Router {
           )
         );
 
-      await Promise.all(
-        pending.map((challenge) =>
-          service.cancel(challenge.companyId, challenge.id, null, actor.userId)
-        )
+      const cancellationResults = await Promise.all(
+        pending.map(async (challenge) => {
+          const cancelled = await service.cancel(
+            challenge.companyId,
+            challenge.id,
+            null,
+            actor.userId
+          );
+          if (!cancelled) return false;
+          await logActivity(db, {
+            companyId: challenge.companyId,
+            actorType: "user",
+            actorId: actor.userId!,
+            action: "provider.login.cancelled",
+            entityType: "provider",
+            entityId: challenge.provider,
+            details: {
+              providerId: challenge.provider,
+              challengeId: challenge.id,
+              cancelledVia: "account_switch",
+            },
+          });
+          return true;
+        })
       );
-      res.json({ ok: true, cancelled: pending.length });
+      res.json({
+        ok: true,
+        cancelled: cancellationResults.filter(Boolean).length,
+      });
     }
   );
 

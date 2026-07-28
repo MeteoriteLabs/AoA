@@ -3,6 +3,7 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockAssertRole = vi.hoisted(() => vi.fn(async () => {}));
+const mockLogActivity = vi.hoisted(() => vi.fn(async () => {}));
 const mockLoadConfig = vi.hoisted(() =>
   vi.fn(() => ({
     deploymentMode: "local_trusted",
@@ -20,6 +21,9 @@ vi.mock("../routes/authz.js", () => ({ assertCompanyAccess: vi.fn() }));
 vi.mock("../config.js", () => ({ loadConfig: mockLoadConfig }));
 vi.mock("../services/commander-login-runtime.js", () => ({
   buildCommanderLoginService: () => mockService,
+}));
+vi.mock("../services/activity-log.js", () => ({
+  logActivity: mockLogActivity,
 }));
 import { errorHandler } from "../middleware/error-handler.js";
 import { commanderLoginRoutes } from "../routes/commander-login.js";
@@ -61,8 +65,8 @@ describe("commander-login routes (Plan 3 T4)", () => {
 
   it("cancels all pending challenges owned by the current user before sign-out", async () => {
     const rows = [
-      { id: "ch-1", companyId: "c1" },
-      { id: "ch-2", companyId: "c2" },
+      { id: "ch-1", companyId: "c1", provider: "openai" },
+      { id: "ch-2", companyId: "c2", provider: "anthropic" },
     ];
     const db = {
       select: () => ({
@@ -71,14 +75,31 @@ describe("commander-login routes (Plan 3 T4)", () => {
         }),
       }),
     };
+    mockService.cancel
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false);
     const res = await request(makeApp(undefined, db))
       .post("/api/auth/commander-login/cancel-all")
       .send({});
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ ok: true, cancelled: 2 });
+    expect(res.body).toEqual({ ok: true, cancelled: 1 });
     expect(mockService.cancel).toHaveBeenCalledWith("c1", "ch-1", null, "u1");
     expect(mockService.cancel).toHaveBeenCalledWith("c2", "ch-2", null, "u1");
+    expect(mockLogActivity).toHaveBeenCalledOnce();
+    expect(mockLogActivity).toHaveBeenCalledWith(db, {
+      companyId: "c1",
+      actorType: "user",
+      actorId: "u1",
+      action: "provider.login.cancelled",
+      entityType: "provider",
+      entityId: "openai",
+      details: {
+        providerId: "openai",
+        challengeId: "ch-1",
+        cancelledVia: "account_switch",
+      },
+    });
   });
 
   it("403 for a team_member (assertRole throws)", async () => {

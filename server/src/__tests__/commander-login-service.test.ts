@@ -577,7 +577,7 @@ describe("commander-login service (Plan 3 T4)", () => {
       kill,
     });
     seedCancelRow(store, "live", startedAt, "pending", 333);
-    await svc.cancel("c1", "live");
+    await expect(svc.cancel("c1", "live")).resolves.toBe(true);
     expect(kill).toHaveBeenCalledWith(-333, "SIGKILL"); // legitimate live cancel still kills
     expect(store.rows.has("live")).toBe(false); // slot released
   });
@@ -670,7 +670,7 @@ describe("commander-login service (Plan 3 T4)", () => {
     f.resolveUrl("https://chatgpt.com/device?code=A");
     const { challengeId } = await startP;
     // Founder of company c2 guesses/leaks c1's challenge id.
-    await expect(svc.cancel("c2", challengeId)).resolves.toBeUndefined();
+    await expect(svc.cancel("c2", challengeId)).resolves.toBe(false);
     expect(terminate).not.toHaveBeenCalled();
     expect(store.rows.get(challengeId)?.status).toBe("pending"); // login still running
   });

@@ -201,7 +201,7 @@ export interface CommanderLoginService {
     id: string,
     expectedProvider?: CommanderLoginProvider | null,
     startedByUserId?: string,
-  ): Promise<void>;
+  ): Promise<boolean>;
   reapOrphans(): Promise<void>;
   /**
    * Deliver a pasted auth code to the challenge's LIVE child in THIS process.
@@ -699,7 +699,7 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
     id: string,
     expectedProvider?: CommanderLoginProvider | null,
     startedByUserId?: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const row = await deps.store.get(id);
     // Cross-tenant cancel is a silent no-op — as if absent (no distinct error
     // that would leak existence), and NEVER terminate another company's child.
@@ -709,7 +709,7 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
       (expectedProvider != null && row.provider !== expectedProvider) ||
       (startedByUserId !== undefined && row.startedByUserId !== startedByUserId)
     )
-      return;
+      return false;
     // Identity-verified cancel (Codex round-7 P1). The UI fires cancel-on-unmount
     // (VerifyStep) with a challengeId the BROWSER retains across a server restart /
     // after the CLI already exited, so this row's persisted pid can belong to an
@@ -727,6 +727,7 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
     // The row is gone either way — no code can be delivered to it anymore.
     liveRuns.delete(id);
     await deps.store.remove(id);
+    return true;
   }
 
   async function reapOrphans(): Promise<void> {
