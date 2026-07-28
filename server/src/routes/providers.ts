@@ -450,16 +450,10 @@ function canonicalStatus(input: {
     ? toIso(readiness?.staleAt) ??
       new Date(Date.parse(testedAt) + PROVIDER_READINESS_STALE_MS).toISOString()
     : null;
-  const assignment: ProviderCanonicalStatus["assignment"] = activeBinding
-    ? {
-        state: "commander_subscription",
-        intendedAgentId: commander!.agentId,
-        intendedAgentName: commander!.name,
-        credentialSource: "personal_subscription",
-        approvedAt: toIso(activeBinding.approvedAt),
-        revokedAt: toIso(activeBinding.revokedAt),
-      }
-    : existingKey.configured
+  // Runtime config gives an explicitly configured company API key precedence
+  // over the governed subscription home. Keep the projection aligned so the
+  // UI reports the credential source that Commander will actually use.
+  const assignment: ProviderCanonicalStatus["assignment"] = existingKey.configured
       ? {
           state: "company_key_fallback",
           intendedAgentId: commander?.agentId ?? null,
@@ -468,6 +462,15 @@ function canonicalStatus(input: {
           approvedAt: null,
           revokedAt: null,
         }
+      : activeBinding
+        ? {
+            state: "commander_subscription",
+            intendedAgentId: commander!.agentId,
+            intendedAgentName: commander!.name,
+            credentialSource: "personal_subscription",
+            approvedAt: toIso(activeBinding.approvedAt),
+            revokedAt: toIso(activeBinding.revokedAt),
+          }
       : {
           state: descriptor.credential.apiKey || descriptor.credential.manualLoginCommand
             ? "not_assigned"

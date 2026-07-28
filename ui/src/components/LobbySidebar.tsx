@@ -202,6 +202,10 @@ export function LobbySidebar({
     staleTime: 60_000,
   });
   const showInstanceSettings = profile?.isInstanceAdmin === true;
+  // The journey endpoint derives canCreateCompany from this same instance-admin
+  // role. Keep the create/import controls hidden until that capability is
+  // confirmed so members never see an action that only redirects them home.
+  const showOrganizationCreation = profile?.isInstanceAdmin === true;
 
   const navTo = (path: string) => {
     navigate(path);
@@ -241,6 +245,7 @@ export function LobbySidebar({
 
         {/* + New company button */}
         <div
+          hidden={!showOrganizationCreation}
           className={cn(
             "shrink-0 border-b border-border-soft",
             collapsed ? "px-2 py-2.5" : "px-3 py-3.5"

@@ -91,18 +91,40 @@ describe("LobbySidebar", () => {
     expect(screen.getByText("AoA")).toBeInTheDocument();
   });
 
-  it("renders the + New organization button at the top", () => {
+  it("renders the + New organization button at the top", async () => {
     renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
     expect(
-      screen.getByRole("button", { name: /new organization/i })
+      await screen.findByRole("button", { name: /new organization/i })
     ).toBeInTheDocument();
   });
 
   it("clicking + New organization calls the onCreateCompany handler", async () => {
     const user = userEvent.setup();
     renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
-    await user.click(screen.getByRole("button", { name: /new organization/i }));
+    await user.click(await screen.findByRole("button", { name: /new organization/i }));
     expect(onCreateCompany).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides organization creation actions from non-instance-admin users", async () => {
+    mockProfileGet.mockResolvedValue({
+      id: "user-2",
+      email: "member@example.com",
+      displayName: "Member",
+      avatarUrl: null,
+      isInstanceAdmin: false,
+    });
+
+    renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
+
+    expect(
+      await screen.findByRole("button", { name: /organizations/i })
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /new organization/i })
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /more organization options/i })
+    ).not.toBeInTheDocument();
   });
 
   it("renders Organizations (active), Marketplace, Learn, Documentation, Settings", async () => {
@@ -353,10 +375,10 @@ describe("LobbySidebar", () => {
 
   // --- New-organization split button + floating Import menu (Task 2) ---
 
-  it("expanded: renders the create button and the More-options trigger", () => {
+  it("expanded: renders the create button and the More-options trigger", async () => {
     renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
     expect(
-      screen.getByRole("button", { name: /^new organization$/i })
+      await screen.findByRole("button", { name: /^new organization$/i })
     ).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /more organization options/i })
@@ -367,7 +389,7 @@ describe("LobbySidebar", () => {
     const user = userEvent.setup();
     renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
     await user.click(
-      screen.getByRole("menuitem", { name: /import organization/i })
+      await screen.findByRole("menuitem", { name: /import organization/i })
     );
     expect(mockNavigate).toHaveBeenCalledWith("/import", undefined);
   });
@@ -376,7 +398,7 @@ describe("LobbySidebar", () => {
     const user = userEvent.setup();
     renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
     await user.click(
-      screen.getByRole("button", { name: /^new organization$/i })
+      await screen.findByRole("button", { name: /^new organization$/i })
     );
     expect(onCreateCompany).toHaveBeenCalledTimes(1);
   });

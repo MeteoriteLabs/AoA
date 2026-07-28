@@ -429,6 +429,58 @@ describe("GET /api/companies/:companyId/providers", () => {
     });
   });
 
+  it("projects the company API key as Commander runtime source when both auth methods are configured", async () => {
+    seedGet({
+      agents: [
+        {
+          id: AGENT_ID,
+          name: "Commander",
+          adapterType: "claude_local",
+        },
+      ],
+      secrets: [{ name: "provider:anthropic", status: "active" }],
+      credentials: [
+        {
+          id: "credential-1",
+          provider: "anthropic",
+          ownerUserId: "user-1",
+          executionTargetId: "control-plane",
+          kind: "personal_subscription",
+          state: "verified",
+          verifiedAt: new Date("2026-07-20T08:00:00.000Z"),
+          updatedAt: new Date("2026-07-20T08:00:00.000Z"),
+        },
+      ],
+      bindings: [
+        {
+          agentId: AGENT_ID,
+          credentialId: "credential-1",
+          approvedAt: new Date("2026-07-20T08:01:00.000Z"),
+          revokedAt: null,
+        },
+      ],
+      commander: [{ agentId: AGENT_ID }],
+    });
+
+    const res = await request(makeApp()).get(
+      `/api/companies/${COMPANY_ID}/providers`,
+    );
+    const claude = res.body.providers.find(
+      (provider: { descriptor: { id: string } }) =>
+        provider.descriptor.id === "anthropic",
+    );
+
+    expect(claude.status.credential).toMatchObject({
+      state: "verified",
+      method: "subscription",
+    });
+    expect(claude.status.assignment).toMatchObject({
+      state: "company_key_fallback",
+      intendedAgentId: AGENT_ID,
+      credentialSource: "company_api_key",
+    });
+  });
+
   it("does not project subscription credentials or bindings from another execution target", async () => {
     process.env.AOA_EXECUTION_TARGET_ID = "hetzner-qa";
     seedGet({
