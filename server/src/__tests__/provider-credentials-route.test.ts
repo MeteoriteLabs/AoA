@@ -12,6 +12,7 @@ vi.mock("@armyofagents/db", () => ({
     "agent_provider_credential_bindings"
   ),
   agents: makeTableProxy("agents"),
+  companyMemberships: makeTableProxy("company_memberships"),
   internalAgentConfig: makeTableProxy("internal_agent_config"),
   providerCredentials: makeTableProxy("provider_credentials"),
 }));
@@ -45,6 +46,7 @@ function query(result: unknown[], calls: string[]) {
   const chain: Record<string, unknown> = {};
   chain.from = () => chain;
   chain.innerJoin = () => chain;
+  chain.leftJoin = () => chain;
   chain.where = () => chain;
   chain.limit = async () => result;
   chain.for = async (mode: string) => {
@@ -312,6 +314,8 @@ describe("provider credential routes", () => {
             provider: "anthropic",
             kind: "personal_subscription",
             state: "verified",
+            executionTargetId: "target-1",
+            ownerMembershipStatus: "active",
           },
         ],
         [{ agentId: "commander-1" }],
@@ -341,6 +345,8 @@ describe("provider credential routes", () => {
             provider: "openai",
             kind: "personal_subscription",
             state: "verified",
+            executionTargetId: "target-1",
+            ownerMembershipStatus: "active",
           },
         ],
         [{ agentId: "agent-1" }],
@@ -364,7 +370,7 @@ describe("provider credential routes", () => {
     );
   });
 
-  it("allows a verified company API key credential to be assigned to an ordinary agent", async () => {
+  it("rejects company API key records from the personal-subscription binding endpoint", async () => {
     const { db, calls } = fakeDb({
       select: [
         [{ id: "agent-1" }],
@@ -376,17 +382,58 @@ describe("provider credential routes", () => {
             state: "verified",
           },
         ],
-        [],
       ],
-      insert: [[{ id: "binding-1" }]],
     });
 
     const response = await request(makeApp(db))
       .post(bindUrl)
       .send({ credentialId: "credential-1" });
 
-    expect(response.status).toBe(201);
-    expect(calls.filter((call) => call === "select")).toHaveLength(3);
+    expect(response.status).toBe(422);
+    expect(response.body.details.code).toBe("credential_kind_unsupported");
+    expect(calls).not.toContain("insert");
+  });
+
+  it.each([
+    [
+      "a different execution target",
+      {
+        executionTargetId: "target-2",
+        ownerMembershipStatus: "active",
+      },
+      "credential_target_mismatch",
+    ],
+    [
+      "an inactive owner",
+      {
+        executionTargetId: "target-1",
+        ownerMembershipStatus: "revoked",
+      },
+      "credential_owner_inactive",
+    ],
+  ])("rejects binding from %s", async (_label, overrides, expectedCode) => {
+    const { db, calls } = fakeDb({
+      select: [
+        [{ id: "agent-1" }],
+        [
+          {
+            id: "credential-1",
+            provider: "openai",
+            kind: "personal_subscription",
+            state: "verified",
+            ...overrides,
+          },
+        ],
+      ],
+    });
+
+    const response = await request(makeApp(db))
+      .post(bindUrl)
+      .send({ credentialId: "credential-1" });
+
+    expect(response.status).toBe(422);
+    expect(response.body.details.code).toBe(expectedCode);
+    expect(calls).not.toContain("insert");
   });
 
   it("returns 404 for an absent binding and atomically audits a successful revoke", async () => {

@@ -3,6 +3,7 @@ import type { Db } from "@armyofagents/db";
 import {
   agentProviderCredentialBindings,
   agents,
+  companyMemberships,
   internalAgentConfig,
   providerCredentials,
 } from "@armyofagents/db";
@@ -135,8 +136,22 @@ export function providerCredentialRoutes(db: Db): Router {
             provider: providerCredentials.provider,
             kind: providerCredentials.kind,
             state: providerCredentials.state,
+            ownerUserId: providerCredentials.ownerUserId,
+            executionTargetId: providerCredentials.executionTargetId,
+            ownerMembershipStatus: companyMemberships.status,
           })
           .from(providerCredentials)
+          .leftJoin(
+            companyMemberships,
+            and(
+              eq(companyMemberships.companyId, providerCredentials.companyId),
+              eq(companyMemberships.principalType, "user"),
+              eq(
+                companyMemberships.principalId,
+                providerCredentials.ownerUserId
+              )
+            )
+          )
           .where(
             and(
               eq(providerCredentials.id, credentialId),
@@ -154,18 +169,44 @@ export function providerCredentialRoutes(db: Db): Router {
             code: "credential_not_verified",
           });
         }
-        if (credential.kind === "personal_subscription") {
-          const [commander] = await txDb
-            .select({ agentId: internalAgentConfig.agentId })
-            .from(internalAgentConfig)
-            .where(eq(internalAgentConfig.companyId, companyId))
-            .limit(1);
-          if (commander?.agentId !== agentId) {
-            throw unprocessable(
-              "Personal subscription credentials can only be assigned to the company Commander",
-              { code: "subscription_commander_only" }
-            );
-          }
+        if (credential.kind !== "personal_subscription") {
+          throw unprocessable(
+            "Only personal CLI subscription credentials can be assigned here",
+            { code: "credential_kind_unsupported" }
+          );
+        }
+        if (
+          credential.provider !== "openai" &&
+          credential.provider !== "anthropic"
+        ) {
+          throw unprocessable("Unsupported CLI subscription provider", {
+            code: "credential_provider_unsupported",
+          });
+        }
+        const executionTargetId =
+          process.env.AOA_EXECUTION_TARGET_ID?.trim() || "control-plane";
+        if (credential.executionTargetId !== executionTargetId) {
+          throw unprocessable(
+            "Credential belongs to a different execution target",
+            { code: "credential_target_mismatch" }
+          );
+        }
+        if (credential.ownerMembershipStatus !== "active") {
+          throw unprocessable(
+            "Credential owner is not an active company member",
+            { code: "credential_owner_inactive" }
+          );
+        }
+        const [commander] = await txDb
+          .select({ agentId: internalAgentConfig.agentId })
+          .from(internalAgentConfig)
+          .where(eq(internalAgentConfig.companyId, companyId))
+          .limit(1);
+        if (commander?.agentId !== agentId) {
+          throw unprocessable(
+            "Personal subscription credentials can only be assigned to the company Commander",
+            { code: "subscription_commander_only" }
+          );
         }
 
         // Serialize replacement for one agent/provider. Without this lock two
