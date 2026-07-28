@@ -290,7 +290,7 @@ export function buildCommanderLoginService(db: Db): CommanderLoginService {
         provider,
         userId,
         actorUserId: userId,
-        executionTargetId,
+        executionTargetId: executionTargetId.trim() || "control-plane",
         allowRevokedReplacement: true,
         expectedEvidence,
       });

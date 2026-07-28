@@ -136,4 +136,54 @@ describe("Commander login production runtime finalization", () => {
     });
     expect([...rows.values()][0]).toMatchObject({ status: "completed" });
   });
+
+  it.each([
+    ["  hetzner-qa  ", "hetzner-qa"],
+    ["   ", "control-plane"],
+  ])(
+    "normalizes execution target %j before binding the completed credential",
+    async (executionTargetId, expectedTargetId) => {
+      runtimeMocks.verifyAndBind.mockClear();
+      let resolveExit!: (code: number | null) => void;
+      const exitPromise = new Promise<number | null>((resolve) => {
+        resolveExit = resolve;
+      });
+      runtimeMocks.runCodexLogin.mockReturnValue({
+        handle: {
+          child: {},
+          pid: 322,
+          pgid: 322,
+          startedAt: new Date(),
+          terminate: vi.fn(),
+        },
+        authHome: "/scoped/openai",
+        urlPromise: Promise.resolve("https://chatgpt.com/device"),
+        exitPromise,
+        submitCode: vi.fn(() => true),
+      });
+      runtimeMocks.readSafeCredentialEvidence
+        .mockResolvedValueOnce("generation-before")
+        .mockResolvedValueOnce("generation-after");
+
+      const { db } = runtimeDb();
+      const service = buildCommanderLoginService(db);
+      await service.startChallenge({
+        companyId: "company-1",
+        provider: "openai",
+        startedByUserId: "user-1",
+        executionTargetId,
+      });
+
+      resolveExit(0);
+
+      await vi.waitFor(() => {
+        expect(runtimeMocks.verifyAndBind).toHaveBeenCalledWith(
+          db,
+          expect.objectContaining({
+            executionTargetId: expectedTargetId,
+          }),
+        );
+      });
+    },
+  );
 });

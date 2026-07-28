@@ -204,7 +204,12 @@ export function OnboardingFlowPage({
         <div className="relative z-10 flex min-h-screen items-center justify-center px-6 py-8">
           <OrgStep
             ctx={orgCtx}
-            onComplete={() => navigate("/onboarding", { replace: true })}
+            onComplete={() => {
+              queryClient.removeQueries({
+                queryKey: queryKeys.onboarding.journey,
+              });
+              navigate("/onboarding", { replace: true });
+            }}
             onBack={() => navigate("/", { replace: true })}
           />
         </div>

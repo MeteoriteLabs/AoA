@@ -155,8 +155,15 @@ describe("OnboardingFlowPage", () => {
     renderWithProviders(<OnboardingFlowPage journey="founder" />);
     await screen.findByText("org-step-direct");
     expect(state.orgProps.ctx.companyId).toBeNull(); // user layer, not existing-co
-    // finishing the org step resumes the NEW company via a clean /onboarding
+    // Finishing the org step must evict the stale `returning` journey before
+    // dropping ?new=1, otherwise the parent gate immediately bounces home.
     state.orgProps.onComplete();
+    expect(mockRemoveQueries).toHaveBeenCalledWith({
+      queryKey: ["onboarding", "journey"],
+    });
+    expect(mockRemoveQueries.mock.invocationCallOrder[0]).toBeLessThan(
+      mockNavigate.mock.invocationCallOrder[0]!
+    );
     expect(mockNavigate).toHaveBeenCalledWith("/onboarding", { replace: true });
   });
 
