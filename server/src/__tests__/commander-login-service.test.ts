@@ -713,6 +713,53 @@ describe("commander-login service (Plan 3 T4)", () => {
     });
   });
 
+  it("does not report completed when credential finalization fails", async () => {
+    const f = fakeRun();
+    const { svc, store } = makeService({
+      runLogin: () => f.run,
+      credentialPresent: async () => true,
+      onCredentialEvidence: async () => {
+        throw new Error("finalization failed");
+      },
+    });
+    const pending = svc.startChallenge({
+      companyId: "c1",
+      provider: "openai",
+      startedByUserId: "u1",
+      executionTargetId: "target-1",
+    });
+    f.resolveUrl("https://chatgpt.com/device");
+    const { challengeId, completion } = await pending;
+    f.resolveExit(0);
+    await completion;
+
+    expect(store.rows.get(challengeId)?.status).toBe("failed");
+  });
+
+  it("does not accept an unchanged credential file after a zero exit", async () => {
+    const f = fakeRun();
+    const onCredentialEvidence = vi.fn(async () => {});
+    const { svc, store } = makeService({
+      runLogin: () => f.run,
+      captureCredentialEvidence: async () => "stale-generation",
+      credentialPresent: async () => true,
+      onCredentialEvidence,
+    });
+    const pending = svc.startChallenge({
+      companyId: "c1",
+      provider: "anthropic",
+      startedByUserId: "u1",
+      executionTargetId: "target-1",
+    });
+    f.resolveUrl("https://claude.ai/oauth/authorize");
+    const { challengeId, completion } = await pending;
+    f.resolveExit(0);
+    await completion;
+
+    expect(store.rows.get(challengeId)?.status).toBe("failed");
+    expect(onCredentialEvidence).not.toHaveBeenCalled();
+  });
+
   it("scopes status, cancel, and pasted-code delivery to the owning user", async () => {
     const f = fakeRun();
     const { svc, store } = makeService({ runLogin: () => f.run });

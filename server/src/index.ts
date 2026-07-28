@@ -1115,7 +1115,7 @@ process.once("SIGINT", () => commentWakeupOutboxWorker.stop());
 // the heartbeat scheduler). On shutdown, the same reap terminates in-flight
 // login children.
 const commanderLoginReaper = buildCommanderLoginService(db as any);
-void commanderLoginReaper.reapOrphans().catch((err) => {
+await commanderLoginReaper.reapOrphans().catch((err) => {
   logger.error({ err }, "startup reap of orphaned Commander login challenges failed");
 });
 process.once("SIGTERM", () => void commanderLoginReaper.reapOrphans().catch(() => {}));

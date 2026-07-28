@@ -118,12 +118,18 @@ export interface CommanderLoginServiceDeps {
   ) => LoginRunLike;
   /** Provider-specific completion evidence (codex auth.json / claude credential file). */
   credentialPresent: (provider: CommanderLoginProvider, authHome: string) => Promise<boolean>;
+  /** Snapshot used to prove that this challenge changed the credential file. */
+  captureCredentialEvidence?: (
+    provider: CommanderLoginProvider,
+    authHome: string,
+  ) => Promise<string | null>;
   /** Persist the logical owner/target record after provider-native evidence exists. */
   onCredentialEvidence?: (args: {
     companyId: string;
     provider: CommanderLoginProvider;
     userId: string;
     executionTargetId: string;
+    expectedEvidence?: string;
   }) => Promise<void>;
   /**
    * Kill a login child by its PERSISTED pid/pgid. `expected.startedAt` is
@@ -403,6 +409,15 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
       },
     });
 
+    let evidenceBeforeLogin: string | null | undefined;
+    try {
+      evidenceBeforeLogin = deps.captureCredentialEvidence
+        ? await deps.captureCredentialEvidence(args.provider, authHome)
+        : undefined;
+    } catch (err) {
+      await settleTerminal(id, "failed");
+      throw err;
+    }
     let run: LoginRunLike;
     try {
       run = deps.runLogin(args.provider, { runId: id, env, authHome });
@@ -601,14 +616,27 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
       const completed = (async (): Promise<ChallengeStatus> => {
         const result = await exited;
         if (result.kind === "exit-error") return "failed";
-        const ok =
-          result.code === 0 && (await deps.credentialPresent(args.provider, authHome));
+        let expectedEvidence: string | undefined;
+        let ok = false;
+        if (result.code === 0) {
+          if (deps.captureCredentialEvidence) {
+            const evidenceAfterLogin = await deps.captureCredentialEvidence(
+              args.provider,
+              authHome,
+            );
+            ok = Boolean(evidenceAfterLogin && evidenceAfterLogin !== evidenceBeforeLogin);
+            expectedEvidence = evidenceAfterLogin ?? undefined;
+          } else {
+            ok = await deps.credentialPresent(args.provider, authHome);
+          }
+        }
         if (ok && args.startedByUserId) {
           await deps.onCredentialEvidence?.({
             companyId: args.companyId,
             provider: args.provider,
             userId: args.startedByUserId,
             executionTargetId: args.executionTargetId ?? "control-plane",
+            ...(expectedEvidence ? { expectedEvidence } : {}),
           });
         }
         return ok ? "completed" : "failed";

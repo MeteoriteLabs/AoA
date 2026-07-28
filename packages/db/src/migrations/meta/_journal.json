@@ -1310,6 +1310,13 @@
       "when": 1785186076492,
       "tag": "0186_third_valkyrie",
       "breakpoints": true
+    },
+    {
+      "idx": 187,
+      "version": "7",
+      "when": 1785214468993,
+      "tag": "0187_supreme_psylocke",
+      "breakpoints": true
     }
   ]
 }

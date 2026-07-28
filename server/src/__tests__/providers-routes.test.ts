@@ -27,7 +27,10 @@ vi.mock("drizzle-orm", () => ({ ...drizzleOperatorStubs(), notInArray: mockNotIn
 
 vi.mock("@armyofagents/db", () => ({
   agents: makeTableProxy("agents"),
+  agentProviderCredentialBindings: makeTableProxy("agent_provider_credential_bindings"),
   companySecrets: makeTableProxy("company_secrets"),
+  internalAgentConfig: makeTableProxy("internal_agent_config"),
+  providerCredentials: makeTableProxy("provider_credentials"),
   providerReadinessStatus: makeTableProxy("provider_readiness_status"),
 }));
 
@@ -91,13 +94,51 @@ vi.mock("../adapters/index.js", () => ({
 const mockAssertRole = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock("../middleware/rbac.js", () => ({ assertRole: mockAssertRole }));
 
-import { providerRoutes } from "../routes/providers.js";
+import {
+  providerReadinessSourceFingerprint,
+  providerRoutes,
+} from "../routes/providers.js";
 import { errorHandler } from "../middleware/index.js";
 import { tryAcquireAdapterProbeSlot } from "../services/adapter-probe-concurrency.js";
 import { forbidden } from "../errors.js";
 
 const COMPANY_ID = "11111111-1111-4111-8111-111111111111";
 const AGENT_ID = "22222222-2222-4222-8222-222222222222";
+
+describe("provider readiness source fingerprint", () => {
+  it("changes with routing configuration but never with secret values", () => {
+    const base = {
+      providerId: "anthropic",
+      adapterType: "claude_local",
+      scope: { type: "company_default" as const },
+    };
+    const first = providerReadinessSourceFingerprint({
+      ...base,
+      adapterConfig: {
+        cwd: "/app",
+        env: { ANTHROPIC_API_KEY: "secret-a" },
+      },
+    });
+    const rotated = providerReadinessSourceFingerprint({
+      ...base,
+      adapterConfig: {
+        cwd: "/app",
+        env: { ANTHROPIC_API_KEY: "secret-b" },
+      },
+    });
+    const moved = providerReadinessSourceFingerprint({
+      ...base,
+      adapterConfig: {
+        cwd: "/workspace",
+        env: { ANTHROPIC_API_KEY: "secret-a" },
+      },
+    });
+
+    expect(rotated).toBe(first);
+    expect(moved).not.toBe(first);
+    expect(first).not.toContain("secret-a");
+  });
+});
 
 /** Results handed to successive `db.select()` chains, in call order. */
 let selectResults: unknown[][] = [];
@@ -135,8 +176,23 @@ function makeApp(actorOverride?: Record<string, unknown>) {
 }
 
 /** Default GET wiring: no agents, no secrets, no cached readiness rows. */
-function seedGet(opts: { agents?: unknown[]; secrets?: unknown[]; readiness?: unknown[] } = {}) {
-  selectResults = [opts.agents ?? [], opts.secrets ?? []];
+function seedGet(
+  opts: {
+    agents?: unknown[];
+    secrets?: unknown[];
+    readiness?: unknown[];
+    credentials?: unknown[];
+    bindings?: unknown[];
+    commander?: unknown[];
+  } = {},
+) {
+  selectResults = [
+    opts.agents ?? [],
+    opts.secrets ?? [],
+    opts.credentials ?? [],
+    opts.bindings ?? [],
+    opts.commander ?? [],
+  ];
   mockReadReadiness.mockResolvedValue(opts.readiness ?? []);
 }
 
@@ -223,6 +279,90 @@ describe("GET /api/companies/:companyId/providers", () => {
       testedAt: null,
     });
     expect(claude.agents).toEqual([]);
+    expect(claude.status).toMatchObject({
+      version: 1,
+      credential: { state: "not_configured" },
+      execution: { state: "not_checked" },
+      assignment: { state: "not_assigned" },
+    });
+  });
+
+  it("keeps API-key credential evidence separate from execution readiness", async () => {
+    seedGet({
+      secrets: [{ name: "provider:anthropic", status: "active" }],
+      readiness: [
+        {
+          ...cachedRow(
+            "anthropic",
+            { scopeType: "company_default" },
+            "needs_auth",
+          ),
+          staleAt: new Date(Date.now() + 60_000),
+        },
+      ],
+    });
+    const res = await request(makeApp()).get(
+      `/api/companies/${COMPANY_ID}/providers`,
+    );
+    const claude = res.body.providers.find(
+      (p: { descriptor: { id: string } }) =>
+        p.descriptor.id === "anthropic",
+    );
+
+    expect(claude.status.credential.state).toBe("verification_failed");
+    expect(claude.status.execution.state).toBe("probe_failed");
+    expect(claude.status.assignment.state).toBe("company_key_fallback");
+  });
+
+  it("projects a verified subscription and Commander assignment independently", async () => {
+    seedGet({
+      agents: [
+        {
+          id: AGENT_ID,
+          name: "Commander",
+          adapterType: "claude_local",
+        },
+      ],
+      credentials: [
+        {
+          id: "credential-1",
+          provider: "anthropic",
+          ownerUserId: "user-1",
+          kind: "personal_subscription",
+          state: "verified",
+          verifiedAt: new Date("2026-07-20T08:00:00.000Z"),
+          updatedAt: new Date("2026-07-20T08:00:00.000Z"),
+        },
+      ],
+      bindings: [
+        {
+          agentId: AGENT_ID,
+          credentialId: "credential-1",
+          approvedAt: new Date("2026-07-20T08:01:00.000Z"),
+          revokedAt: null,
+        },
+      ],
+      commander: [{ agentId: AGENT_ID }],
+    });
+    const res = await request(makeApp()).get(
+      `/api/companies/${COMPANY_ID}/providers`,
+    );
+    const claude = res.body.providers.find(
+      (p: { descriptor: { id: string } }) =>
+        p.descriptor.id === "anthropic",
+    );
+
+    expect(claude.status.credential).toMatchObject({
+      state: "verified",
+      method: "subscription",
+      ownerDisplay: "You",
+    });
+    expect(claude.status.assignment).toMatchObject({
+      state: "commander_subscription",
+      intendedAgentId: AGENT_ID,
+      intendedAgentName: "Commander",
+    });
+    expect(claude.status.execution.state).toBe("not_checked");
   });
 
   it("includes an agent-scoped entry for each in-use agent", async () => {

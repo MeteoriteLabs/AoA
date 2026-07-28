@@ -16,6 +16,8 @@ import {
   providerActionErrorCopy,
   detectPlatform,
   DEFAULT_INSTALL_PLATFORM,
+  deriveProviderBadge,
+  TONE_CLASS,
 } from "../ProviderReadinessCard";
 
 /**
@@ -71,14 +73,25 @@ function row(id: string, over: Partial<ProviderStatusRow> = {}): ProviderStatusR
 
 const noop = () => {};
 const noopSave = async () => {};
+let lastRenderedRow: ProviderStatusRow | null = null;
 
 function renderCard(r: ProviderStatusRow, props: Record<string, unknown> = {}) {
+  lastRenderedRow = r;
   return render(
     <ProviderReadinessCard row={r} onTest={noop} onSaveKey={noopSave} {...props} />,
   );
 }
 
-const badge = () => screen.getByTestId("provider-status-badge");
+// The aggregate badge algorithm is still consumed by agent-level surfaces,
+// but the provider Settings card intentionally renders three independent rows.
+const badge = () => {
+  if (!lastRenderedRow) throw new Error("renderCard must be called first");
+  const result = deriveProviderBadge(lastRenderedRow);
+  return {
+    textContent: result.label,
+    className: TONE_CLASS[result.tone],
+  };
+};
 
 /* ── status badge: exhaustive over all six outcomes ────────────────────── */
 
@@ -161,6 +174,52 @@ describe("ProviderReadinessCard — status badge", () => {
 });
 
 /* ── 409 error copy (login slot vs key-save conflict) ──────────────────── */
+
+describe("ProviderReadinessCard — canonical provider status", () => {
+  it("renders credential, execution, and assignment independently", () => {
+    renderCard(
+      row("openai", {
+        status: {
+          version: 1,
+          credential: {
+            state: "verified",
+            method: "subscription",
+            scope: "personal",
+            ownerDisplay: "User ••••1234",
+            checkedAt: "2026-07-28T00:00:00.000Z",
+          },
+          execution: {
+            state: "quota_limited",
+            outcome: "failed",
+            executionTargetId: "hetzner-qa",
+            sourceFingerprint: "sha256:abc",
+            testedAt: "2026-07-28T00:00:00.000Z",
+            staleAt: "2026-07-28T00:05:00.000Z",
+          },
+          assignment: {
+            state: "commander_subscription",
+            intendedAgentId: "commander-1",
+            intendedAgentName: "Commander",
+            credentialSource: "personal_subscription",
+            approvedAt: "2026-07-28T00:00:00.000Z",
+            revokedAt: null,
+          },
+        },
+      }),
+    );
+
+    expect(screen.getByTestId("provider-credential-status")).toHaveTextContent(
+      "Verified",
+    );
+    expect(screen.getByTestId("provider-execution-status")).toHaveTextContent(
+      "Quota limited",
+    );
+    expect(screen.getByTestId("provider-assignment-status")).toHaveTextContent(
+      "Commander subscription",
+    );
+    expect(screen.queryByTestId("provider-status-badge")).toBeNull();
+  });
+});
 
 describe("providerActionErrorCopy — 409 disambiguation", () => {
   it("shows the server's login-slot message verbatim for a login 409", () => {
@@ -417,8 +476,8 @@ describe("ProviderReadinessCard — login affordance", () => {
       onStartLogin: vi.fn(),
     });
     const text = screen.getByTestId("provider-login-section").textContent ?? "";
-    expect(text).toMatch(/applies to this whole machine/i);
-    expect(text).toMatch(/every company on this host/i);
+    expect(text).toMatch(/scoped to your user, this company/i);
+    expect(text).toMatch(/interactive login capacity is shared on this host/i);
     // The bug this replaces: a present-tense claim of being signed in, rendered
     // under a badge that says you are not, next to a button asking you to sign in.
     expect(text).not.toMatch(/signed in on this machine/i);
@@ -609,7 +668,7 @@ describe("ProviderReadinessCard — actions and errors", () => {
 
   it("marks the status badge as a live region — it swaps in place on Test", () => {
     renderCard(row("anthropic"));
-    const b = badge();
+    const b = screen.getByTestId("provider-status-rows");
     expect(b.getAttribute("role")).toBe("status");
     expect(b.getAttribute("aria-live")).toBe("polite");
   });

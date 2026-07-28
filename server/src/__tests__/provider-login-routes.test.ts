@@ -604,16 +604,9 @@ describe("provider login routes", () => {
       }),
     );
     expect(mockRecordReadiness).toHaveBeenCalledTimes(1);
-    expect(mockVerifyAndBind).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        companyId: COMPANY_ID,
-        userId: "user-1",
-        provider: "openai",
-        executionTargetId: "control-plane",
-        actorUserId: "user-1",
-      }),
-    );
+    // The login worker owns authentication finalization. Polling only observes
+    // completion and refreshes execution readiness.
+    expect(mockVerifyAndBind).not.toHaveBeenCalled();
     expect(res.body.readiness).toMatchObject({
       scopeType: "company_default",
       outcome: "verified",

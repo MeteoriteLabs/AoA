@@ -75,6 +75,7 @@ export function commanderVerifyRoutes(db: Db): Router {
           actorUserId: actor.userId,
           provider,
           executionTargetId,
+          providerProbeVerified: true,
         });
       }
       res.status(classified.outcome === "verified" ? 200 : 422).json(classified);

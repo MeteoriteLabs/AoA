@@ -1379,4 +1379,5 @@ export {
   isReadinessStale,
 } from "./adapter-probe.js";
 export * from "./providers/provider-catalog.js";
+export * from "./provider-status.js";
 export * from "./mcp-connector-catalog.js";

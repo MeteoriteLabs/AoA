@@ -1,10 +1,8 @@
-import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Db } from "@armyofagents/db";
 import {
   commanderLoginChallenges,
-  providerCredentials,
 } from "@armyofagents/db";
 import { and, eq, sql } from "drizzle-orm";
 import { runCodexLogin } from "@armyofagents/adapter-codex-local/server";
@@ -26,7 +24,10 @@ import {
   prepareScopedCliAuthHome,
   scopedCliAuthEnv,
 } from "./cli-auth-topology.js";
-import { verifyAndBindCommanderSubscriptionCredential } from "./provider-credentials.js";
+import {
+  readSafeCredentialEvidence,
+  verifyAndBindCommanderSubscriptionCredential,
+} from "./provider-credentials.js";
 
 /** Route-facing discovery cap — bounds how long `start` waits for the URL. */
 const LOGIN_URL_DISCOVERY_MS = 60_000;
@@ -265,43 +266,22 @@ export function buildCommanderLoginService(db: Db): CommanderLoginService {
         authHome,
         requireLoginRunner(provider).credentialFileName
       );
-      const stat = await fs.stat(file).catch(() => null);
-      return Boolean(stat?.isFile());
+      return (await readSafeCredentialEvidence(file)) !== null;
+    },
+    captureCredentialEvidence: async (provider, authHome) => {
+      const file = path.join(
+        authHome,
+        requireLoginRunner(provider).credentialFileName
+      );
+      return readSafeCredentialEvidence(file);
     },
     onCredentialEvidence: async ({
       companyId,
       provider,
       userId,
       executionTargetId,
+      expectedEvidence,
     }) => {
-      const now = new Date();
-      await db
-        .insert(providerCredentials)
-        .values({
-          companyId,
-          provider,
-          ownerUserId: userId,
-          executionTargetId,
-          kind: "personal_subscription",
-          state: "pending",
-          updatedAt: now,
-        })
-        .onConflictDoUpdate({
-          target: [
-            providerCredentials.companyId,
-            providerCredentials.provider,
-            providerCredentials.ownerUserId,
-            providerCredentials.executionTargetId,
-            providerCredentials.kind,
-          ],
-          set: {
-            state: "pending",
-            verifiedAt: null,
-            revokedAt: null,
-            suspendedAt: null,
-            updatedAt: now,
-          },
-        });
       // The login worker owns finalization. Browser polling is only an observer:
       // closing or reloading onboarding after the provider accepts the login must
       // not leave a valid credential stuck in `pending` or unbound.
@@ -311,6 +291,8 @@ export function buildCommanderLoginService(db: Db): CommanderLoginService {
         userId,
         actorUserId: userId,
         executionTargetId,
+        allowRevokedReplacement: true,
+        expectedEvidence,
       });
     },
     // Persisted-pid kill — ALWAYS identity-verified (Codex P1, round 6 →

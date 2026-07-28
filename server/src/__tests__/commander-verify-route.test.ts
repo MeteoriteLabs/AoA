@@ -156,6 +156,7 @@ describe("POST /companies/:companyId/internal-agent/verify", () => {
         actorUserId: "u1",
         provider: "anthropic",
         executionTargetId: "control-plane",
+        providerProbeVerified: true,
       },
     );
   });

@@ -295,7 +295,9 @@ describe("ProvidersSection cached rendering", () => {
       }),
     ]);
 
-    expect(screen.getByTestId("provider-status-badge").textContent).not.toMatch(/failing/i);
+    expect(screen.getByTestId("provider-execution-status").textContent).toBe(
+      "Compatible",
+    );
     expect(screen.queryByTestId("provider-failing-agents")).toBeNull();
     expect(screen.getByTestId("providers-section").textContent ?? "").not.toMatch(
       /can't run on this provider/i,

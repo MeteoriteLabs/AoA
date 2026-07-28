@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ProviderCredentialBindingError,
+  assertCommanderSubscriptionAgent,
   chooseGovernedSubscriptionBinding,
   mayUseLegacySubscriptionHome,
 } from "../services/provider-credential-bindings.js";
@@ -73,5 +74,15 @@ describe("governed provider credential binding", () => {
     expect(mayUseLegacySubscriptionHome(missing, true)).toBe(false);
     expect(mayUseLegacySubscriptionHome(revoked, false)).toBe(false);
     expect(mayUseLegacySubscriptionHome(new Error("database unavailable"), false)).toBe(false);
+  });
+
+  it("rejects personal subscription execution for every non-Commander agent", () => {
+    expect(() => assertCommanderSubscriptionAgent("agent-1", "commander-1")).toThrowError(
+      expect.objectContaining({ code: "credential_not_commander" }),
+    );
+    expect(() => assertCommanderSubscriptionAgent("agent-1", null)).toThrowError(
+      expect.objectContaining({ code: "credential_not_commander" }),
+    );
+    expect(() => assertCommanderSubscriptionAgent("commander-1", "commander-1")).not.toThrow();
   });
 });

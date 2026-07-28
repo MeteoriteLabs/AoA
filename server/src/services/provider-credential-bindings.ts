@@ -5,6 +5,7 @@ import type { Db } from "@armyofagents/db";
 import {
   agentProviderCredentialBindings,
   companyMemberships,
+  internalAgentConfig,
   providerCredentials,
 } from "@armyofagents/db";
 import { and, eq } from "drizzle-orm";
@@ -21,6 +22,7 @@ export class ProviderCredentialBindingError extends Error {
       | "credential_unavailable"
       | "credential_target_mismatch"
       | "credential_owner_inactive"
+      | "credential_not_commander"
       | "credential_path_invalid",
     message: string,
   ) {
@@ -38,6 +40,18 @@ export function mayUseLegacySubscriptionHome(
     error instanceof ProviderCredentialBindingError &&
     error.code === "binding_missing"
   );
+}
+
+export function assertCommanderSubscriptionAgent(
+  agentId: string,
+  commanderAgentId: string | null | undefined,
+): void {
+  if (commanderAgentId !== agentId) {
+    throw new ProviderCredentialBindingError(
+      "credential_not_commander",
+      "Personal subscription credentials can only be used by the company Commander.",
+    );
+  }
 }
 
 interface BindingCandidate {
@@ -147,6 +161,13 @@ export async function resolveAgentSubscriptionEnvironment(
     verifyPath?: boolean;
   },
 ): Promise<NodeJS.ProcessEnv> {
+  const [commander] = await db
+    .select({ agentId: internalAgentConfig.agentId })
+    .from(internalAgentConfig)
+    .where(eq(internalAgentConfig.companyId, args.companyId))
+    .limit(1);
+  assertCommanderSubscriptionAgent(args.agentId, commander?.agentId);
+
   const rows = await db
     .select({
       credentialId: providerCredentials.id,

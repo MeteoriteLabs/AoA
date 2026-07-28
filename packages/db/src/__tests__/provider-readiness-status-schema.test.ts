@@ -34,6 +34,9 @@ describe("provider_readiness_status schema", () => {
       "outcome",
       "checks",
       "testedAt",
+      "executionTargetId",
+      "sourceFingerprint",
+      "staleAt",
       "testedByUserId",
     ]) {
       expect(providerReadinessStatus, column).toHaveProperty(column);

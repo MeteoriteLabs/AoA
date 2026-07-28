@@ -3,12 +3,11 @@
  * the primary sidebar and the settings secondary nav). Presentational: it owns
  * no fetching and no selection state; the section supplies both.
  *
- * The status dot uses `deriveProviderBadge`, the SAME verdict the detail card's
- * pill shows, so the rail and the card can never disagree for one row.
+ * Deliberately carries no aggregate status dot. Credential, execution and
+ * assignment are independent and are shown only in the selected detail card.
  */
 import type { ProviderId } from "@armyofagents/shared";
 import type { ProviderStatusRow } from "../../api/providers";
-import { deriveProviderBadge, TONE_DOT } from "./ProviderReadinessCard";
 import { cn } from "@/lib/utils";
 
 export interface ProviderListProps {
@@ -71,7 +70,6 @@ function ProviderListItem({
   onSelect(id: ProviderId): void;
 }) {
   const { descriptor } = row;
-  const badge = deriveProviderBadge(row);
   return (
     <button
       type="button"
@@ -84,11 +82,6 @@ function ProviderListItem({
         selected ? "bg-background ring-1 ring-inset ring-border" : "hover:bg-white/[0.04]",
       )}
     >
-      <span
-        data-testid="provider-list-dot"
-        className={cn("size-2 shrink-0 rounded-full", TONE_DOT[badge.tone])}
-        aria-hidden
-      />
       <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{descriptor.label}</span>
     </button>
   );

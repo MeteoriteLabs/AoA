@@ -21,6 +21,7 @@ import {
   type AdapterEnvironmentCheckLevel,
   type ProbeOutcome,
   type ProviderDescriptor,
+  type ProviderCanonicalStatus,
   type ProviderId,
 } from "@armyofagents/shared";
 import { ApiError } from "../../api/client";
@@ -28,6 +29,7 @@ import {
   deriveCardStatus,
   keyInputState,
   loginUnavailableFrom,
+  providerStatusForRow,
   type ProviderLoginMode,
   type ProviderLoginStatus,
   type ProviderStatusRow,
@@ -348,6 +350,75 @@ export interface ProviderReadinessCardProps {
   platform?: InstallPlatform;
 }
 
+function credentialStatusLabel(status: ProviderCanonicalStatus): string {
+  const labels: Record<ProviderCanonicalStatus["credential"]["state"], string> = {
+    not_configured: "Not configured",
+    checking: "Checking",
+    verified: "Verified",
+    expired: "Expired",
+    revoked: "Revoked",
+    verification_failed: "Verification failed",
+  };
+  return labels[status.credential.state];
+}
+
+function credentialStatusDetail(status: ProviderCanonicalStatus): string {
+  if (status.credential.method === "none") return "No credential source";
+  const method = status.credential.method === "subscription" ? "Personal subscription" : "Company API key";
+  return [method, status.credential.ownerDisplay].filter(Boolean).join(" · ");
+}
+
+function executionStatusLabel(status: ProviderCanonicalStatus): string {
+  const labels: Record<ProviderCanonicalStatus["execution"]["state"], string> = {
+    not_checked: "Not checked",
+    checking: "Checking",
+    compatible: "Compatible",
+    stale: "Stale",
+    target_offline: "Target offline",
+    unsupported: "Unsupported",
+    quota_limited: "Quota limited",
+    probe_failed: "Probe failed",
+  };
+  return labels[status.execution.state];
+}
+
+function assignmentStatusLabel(status: ProviderCanonicalStatus): string {
+  const labels: Record<ProviderCanonicalStatus["assignment"]["state"], string> = {
+    commander_subscription: "Commander subscription",
+    company_key_fallback: "Company key fallback",
+    not_assigned: "Not assigned",
+    unsupported: "Unsupported",
+  };
+  return labels[status.assignment.state];
+}
+
+function CanonicalStatusRow({
+  label,
+  value,
+  detail,
+  tone,
+  testId,
+}: {
+  label: string;
+  value: string;
+  detail: string;
+  tone: OutcomeTone;
+  testId: string;
+}) {
+  return (
+    <div className="grid gap-2 px-3 py-2 sm:grid-cols-[90px_1fr_auto] sm:items-center">
+      <span className="text-xs font-medium text-muted-foreground">{label}</span>
+      <span className="min-w-0 break-words text-xs text-muted-foreground">{detail}</span>
+      <span
+        data-testid={testId}
+        className={`w-fit rounded-md border px-2 py-0.5 text-[11px] font-medium ${TONE_CLASS[tone]}`}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
 function normalizeBusy(busy: boolean | ProviderCardBusy | undefined): Required<ProviderCardBusy> {
   if (busy === true) return { test: true, key: true, login: true };
   if (!busy) return { test: false, key: false, login: false };
@@ -379,7 +450,7 @@ export function ProviderReadinessCard({
   // A verified company default is NOT sufficient to show a bare "Ready": an
   // agent binds its own credential via adapterConfig.env, so the company key can
   // authenticate while that agent's revoked key still 401s.
-  const badge = deriveProviderBadge(row);
+  const canonical = providerStatusForRow(row);
   const keyState = keyInputState(row);
   const install =
     outcome === "not_installed" ? installHintFor(descriptor.installHint, platform) : null;
@@ -444,20 +515,61 @@ export function ProviderReadinessCard({
             </div>
           )}
         </div>
-        {/*
-          role="status" + aria-live: pressing Test swaps this badge in place. On
-          the one surface whose entire purpose is announcing status, a
-          screen-reader user would otherwise get silence. Matches the convention
-          in AgentSaveWarnings / ComposerSendFailedBanner.
-        */}
-        <span
-          data-testid="provider-status-badge"
-          role="status"
-          aria-live="polite"
-          className={`shrink-0 rounded-md border px-2 py-0.5 text-[11px] font-medium ${TONE_CLASS[badge.tone]}`}
-        >
-          {badge.label}
-        </span>
+      </div>
+
+      <div
+        className="divide-y divide-border rounded-md border border-border"
+        data-testid="provider-status-rows"
+        role="status"
+        aria-live="polite"
+      >
+        <CanonicalStatusRow
+          label="Credential"
+          value={credentialStatusLabel(canonical)}
+          detail={credentialStatusDetail(canonical)}
+          tone={canonical.credential.state === "verified" ? "ready" : "neutral"}
+          testId="provider-credential-status"
+        />
+        <CanonicalStatusRow
+          label="Execution"
+          value={executionStatusLabel(canonical)}
+          detail={[
+            canonical.execution.executionTargetId,
+            canonical.execution.testedAt
+              ? `checked ${relativeTime(canonical.execution.testedAt)}`
+              : null,
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+          tone={
+            canonical.execution.state === "compatible"
+              ? "ready"
+              : canonical.execution.state === "probe_failed" ||
+                  canonical.execution.state === "target_offline"
+                ? "error"
+                : canonical.execution.state === "not_checked" ||
+                    canonical.execution.state === "stale"
+                  ? "neutral"
+                  : "warn"
+          }
+          testId="provider-execution-status"
+        />
+        <CanonicalStatusRow
+          label="Assignment"
+          value={assignmentStatusLabel(canonical)}
+          detail={
+            canonical.assignment.intendedAgentName ??
+            canonical.assignment.intendedAgentId ??
+            "No intended agent"
+          }
+          tone={
+            canonical.assignment.state === "commander_subscription" ||
+            canonical.assignment.state === "company_key_fallback"
+              ? "ready"
+              : "neutral"
+          }
+          testId="provider-assignment-status"
+        />
       </div>
 
       {failingAgents.length > 0 && (
@@ -710,7 +822,8 @@ export function ProviderReadinessCard({
             of being signed in, rendered inches beneath a badge saying you are not.
           */}
           <p className="text-[11px] text-muted-foreground">
-            Signing in here applies to this whole machine — every company on this host shares it.
+            This sign-in is scoped to your user, this company, and this execution
+            target. Interactive login capacity is shared on this host.
           </p>
         </div>
       )}
