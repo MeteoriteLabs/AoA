@@ -132,6 +132,33 @@ function ProvidersPanel({ companyId }: { companyId: string }) {
     [queryClient, companyId],
   );
 
+  /*
+    Canonical execution status is computed by the server. Keep that authority
+    intact while the page remains mounted by invalidating the cached list at
+    the earliest server-supplied expiry. This is a one-shot deadline, not
+    polling: the refreshed response either reports `stale` (and stops) or
+    supplies a new future deadline after a probe.
+  */
+  let nextStatusExpiry: number | null = null;
+  for (const row of data?.providers ?? []) {
+    const execution = row.status?.execution;
+    if (!execution?.staleAt || execution.state === "stale") continue;
+    const expiry = Date.parse(execution.staleAt);
+    if (!Number.isFinite(expiry)) continue;
+    nextStatusExpiry = nextStatusExpiry === null ? expiry : Math.min(nextStatusExpiry, expiry);
+  }
+  useEffect(() => {
+    if (nextStatusExpiry === null) return;
+    /*
+      Depend on the deadline value, not the response object. If a skewed browser
+      clock fires slightly before the server regards the evidence as stale and
+      the refetch returns the same deadline, this effect must not hot-loop.
+    */
+    const delay = Math.max(0, nextStatusExpiry - Date.now());
+    const timeout = window.setTimeout(() => void refreshList(), delay);
+    return () => window.clearTimeout(timeout);
+  }, [nextStatusExpiry, refreshList]);
+
   /* ── probing ─────────────────────────────────────────────────────────── */
 
   const runTest = useCallback(

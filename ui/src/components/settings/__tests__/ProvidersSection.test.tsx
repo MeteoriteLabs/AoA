@@ -18,6 +18,7 @@ import {
   ADAPTER_PROBE_RETRY_AFTER_SECONDS,
   PROVIDER_READINESS_STALE_MS,
   getProviderById,
+  type ProviderCanonicalStatus,
 } from "@armyofagents/shared";
 import { ApiError } from "@/api/client";
 import type {
@@ -106,6 +107,38 @@ function row(id: string, over: Partial<ProviderStatusRow> = {}): ProviderStatusR
       envVar: d.credential.apiKey?.envVar ?? null,
     },
     ...over,
+  };
+}
+
+function canonicalStatus(
+  state: ProviderCanonicalStatus["execution"]["state"],
+  staleAt: string | null,
+): ProviderCanonicalStatus {
+  return {
+    version: 1,
+    credential: {
+      state: "verified",
+      method: "subscription",
+      scope: "personal",
+      ownerDisplay: null,
+      checkedAt: FRESH,
+    },
+    execution: {
+      state,
+      outcome: "verified",
+      executionTargetId: "control-plane",
+      sourceFingerprint: null,
+      testedAt: FRESH,
+      staleAt,
+    },
+    assignment: {
+      state: "not_assigned",
+      intendedAgentId: null,
+      intendedAgentName: null,
+      credentialSource: null,
+      approvedAt: null,
+      revokedAt: null,
+    },
   };
 }
 
@@ -316,6 +349,49 @@ describe("ProvidersSection cached rendering", () => {
       }),
     ]);
     expect(screen.getByTestId("provider-checked-at").textContent).toMatch(/checked 3m ago/i);
+  });
+
+  it("refetches at the server-supplied execution expiry while still mounted", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-07-28T10:00:00.000Z"));
+    const staleAt = "2026-07-28T10:00:05.000Z";
+    const compatible = row("openai", {
+      status: canonicalStatus("compatible", staleAt),
+    });
+    const stale = row("openai", {
+      status: canonicalStatus("stale", staleAt),
+    });
+    listMock
+      .mockResolvedValueOnce({ providers: [compatible] })
+      .mockResolvedValue({ providers: [stale] });
+
+    renderSection();
+    expect(await screen.findByTestId("provider-execution-status")).toHaveTextContent("Compatible");
+    expect(listMock).toHaveBeenCalledTimes(1);
+
+    // Testing Library may advance fake time while settling its async query, so
+    // measure from the clock after the initial render rather than assuming the
+    // full five seconds remain.
+    const remaining = Date.parse(staleAt) - Date.now();
+    expect(remaining).toBeGreaterThan(0);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(remaining - 1);
+    });
+    expect(listMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(2));
+    expect(screen.getByTestId("provider-execution-status")).toHaveTextContent("Stale");
+    // This provider is not in use, so expiry refreshes server status without
+    // spawning a real CLI process.
+    expect(testMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(listMock).toHaveBeenCalledTimes(2);
   });
 
   it("defaults the detail pane to the first IN-USE provider, not merely the first row", async () => {
