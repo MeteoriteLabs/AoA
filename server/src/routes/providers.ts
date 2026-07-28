@@ -331,6 +331,7 @@ type CredentialProjectionRow = {
   id: string;
   provider: string;
   ownerUserId: string;
+  executionTargetId: string;
   kind: string;
   state: string;
   verifiedAt: Date | string | null;
@@ -346,6 +347,13 @@ type BindingProjectionRow = {
 
 function executionState(row: CachedRow): ProviderCanonicalStatus["execution"]["state"] {
   if (!row?.testedAt) return "not_checked";
+  const target = currentExecutionTargetId();
+  if (
+    (row.executionTargetId && row.executionTargetId !== target) ||
+    (!row.executionTargetId && target !== "control-plane")
+  ) {
+    return "stale";
+  }
   const staleAt = toIso(row.staleAt) ??
     new Date(new Date(row.testedAt).getTime() + PROVIDER_READINESS_STALE_MS).toISOString();
   if (Date.parse(staleAt) <= Date.now()) return "stale";
@@ -367,8 +375,14 @@ function canonicalStatus(input: {
   viewerUserId: string | null;
 }): ProviderCanonicalStatus {
   const { descriptor, readiness, existingKey, bindings, commander, viewerUserId } = input;
+  const executionTargetId = currentExecutionTargetId();
   const credentials = input.credentials
-    .filter((row) => row.provider === descriptor.id && row.kind === "personal_subscription")
+    .filter(
+      (row) =>
+        row.provider === descriptor.id &&
+        row.kind === "personal_subscription" &&
+        row.executionTargetId === executionTargetId,
+    )
     .sort((a, b) => Date.parse(String(b.updatedAt ?? 0)) - Date.parse(String(a.updatedAt ?? 0)));
   const subscription = credentials.find((row) => row.state === "verified") ?? credentials[0];
   const activeBinding = subscription && commander
@@ -881,6 +895,7 @@ export function providerRoutes(db: Db): Router {
         id: providerCredentials.id,
         provider: providerCredentials.provider,
         ownerUserId: providerCredentials.ownerUserId,
+        executionTargetId: providerCredentials.executionTargetId,
         kind: providerCredentials.kind,
         state: providerCredentials.state,
         verifiedAt: providerCredentials.verifiedAt,

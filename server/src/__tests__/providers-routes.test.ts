@@ -223,6 +223,7 @@ function passingProbe(checks?: unknown[]) {
 }
 
 beforeEach(() => {
+  delete process.env.AOA_EXECUTION_TARGET_ID;
   vi.clearAllMocks();
   selectResults = [];
   mockCanUser.mockResolvedValue(true);
@@ -255,6 +256,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  delete process.env.AOA_EXECUTION_TARGET_ID;
   // The probe slot is module-level process state; a leaked slot 429s every
   // later test in this file.
   tryAcquireAdapterProbeSlot(COMPANY_ID)?.();
@@ -328,6 +330,7 @@ describe("GET /api/companies/:companyId/providers", () => {
           id: "credential-1",
           provider: "anthropic",
           ownerUserId: "user-1",
+          executionTargetId: "control-plane",
           kind: "personal_subscription",
           state: "verified",
           verifiedAt: new Date("2026-07-20T08:00:00.000Z"),
@@ -363,6 +366,65 @@ describe("GET /api/companies/:companyId/providers", () => {
       intendedAgentName: "Commander",
     });
     expect(claude.status.execution.state).toBe("not_checked");
+  });
+
+  it("does not project subscription credentials or bindings from another execution target", async () => {
+    process.env.AOA_EXECUTION_TARGET_ID = "hetzner-qa";
+    seedGet({
+      agents: [{ id: AGENT_ID, name: "Commander", adapterType: "claude_local" }],
+      credentials: [
+        {
+          id: "credential-old-target",
+          provider: "anthropic",
+          ownerUserId: "user-1",
+          executionTargetId: "control-plane",
+          kind: "personal_subscription",
+          state: "verified",
+          verifiedAt: new Date("2026-07-20T08:00:00.000Z"),
+          updatedAt: new Date("2026-07-20T08:00:00.000Z"),
+        },
+      ],
+      bindings: [
+        {
+          agentId: AGENT_ID,
+          credentialId: "credential-old-target",
+          approvedAt: new Date("2026-07-20T08:01:00.000Z"),
+          revokedAt: null,
+        },
+      ],
+      commander: [{ agentId: AGENT_ID }],
+    });
+
+    const res = await request(makeApp()).get(`/api/companies/${COMPANY_ID}/providers`);
+    const claude = res.body.providers.find(
+      (provider: { descriptor: { id: string } }) => provider.descriptor.id === "anthropic",
+    );
+
+    expect(claude.status.credential.state).toBe("not_configured");
+    expect(claude.status.assignment.state).toBe("not_assigned");
+  });
+
+  it("marks a fresh cached probe from another execution target stale", async () => {
+    process.env.AOA_EXECUTION_TARGET_ID = "hetzner-qa";
+    seedGet({
+      readiness: [
+        {
+          ...cachedRow("anthropic", { scopeType: "company_default" }, "verified"),
+          executionTargetId: "control-plane",
+          staleAt: new Date(Date.now() + 60_000),
+        },
+      ],
+    });
+
+    const res = await request(makeApp()).get(`/api/companies/${COMPANY_ID}/providers`);
+    const claude = res.body.providers.find(
+      (provider: { descriptor: { id: string } }) => provider.descriptor.id === "anthropic",
+    );
+
+    expect(claude.status.execution).toMatchObject({
+      state: "stale",
+      executionTargetId: "control-plane",
+    });
   });
 
   it("includes an agent-scoped entry for each in-use agent", async () => {
