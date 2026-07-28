@@ -8,6 +8,7 @@ x-aoa-image: &aoa-image
     args:
       USER_UID: ${USER_UID:-1000}
       USER_GID: ${USER_GID:-1000}
+      AOA_IMAGE_REVISION: ${AOA_IMAGE_REVISION:-unknown}
 
 x-aoa-env: &aoa-env
   HOST: "0.0.0.0"
@@ -27,6 +28,7 @@ x-aoa-env: &aoa-env
   AOA_DEPLOYMENT_MODE: ${AOA_DEPLOYMENT_MODE:-authenticated}
   AOA_DEPLOYMENT_EXPOSURE: ${AOA_DEPLOYMENT_EXPOSURE:-private}
   AOA_PUBLIC_URL: ${AOA_PUBLIC_URL:-}
+  AOA_DEPLOY_SHA: ${AOA_DEPLOY_SHA:-}
   AOA_AUTH_PUBLIC_BASE_URL: ${AOA_AUTH_PUBLIC_BASE_URL:-}
   AOA_AUTH_BASE_URL_MODE: ${AOA_AUTH_BASE_URL_MODE:-}
   # Google OAuth is REQUIRED in `authenticated` mode (the server refuses to boot

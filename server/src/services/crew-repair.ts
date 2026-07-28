@@ -1062,6 +1062,8 @@ export function setCrewRepairClock(clock: () => number): void {
 // ── Boot-time reconcile ──────────────────────────────────────────────────────
 
 export interface CrewRepairPassResult {
+  /** The catalog contained the default crew team required to diagnose repairs. */
+  catalogReady: boolean;
   inspected: number;
   /** Companies that were degraded and were changed by this pass. */
   repaired: number;
@@ -1073,6 +1075,11 @@ export interface CrewRepairPassResult {
   skippedOverBudget: number;
   /** Diagnosis or repair threw. */
   failed: number;
+}
+
+export interface CrewRepairPassFailure {
+  companyId: string;
+  error: unknown;
 }
 
 /**
@@ -1091,10 +1098,13 @@ export async function runCrewRepairPass(opts: {
   companyIds: readonly string[];
   catalogItems: readonly CatalogItem[];
   maxPerPass?: number;
+  force?: boolean;
+  onFailure?: (failure: CrewRepairPassFailure) => void;
 }): Promise<CrewRepairPassResult> {
   const { db, companyIds, catalogItems } = opts;
   const maxPerPass = opts.maxPerPass ?? CREW_REPAIR_MAX_PER_PASS;
   const result: CrewRepairPassResult = {
+    catalogReady: true,
     inspected: 0,
     repaired: 0,
     skippedFailClosed: 0,
@@ -1111,6 +1121,7 @@ export async function runCrewRepairPass(opts: {
     (item) => item.id === DEFAULT_CREW_TEAM_ITEM_ID && item.type === "team",
   );
   if (!teamItem) {
+    result.catalogReady = false;
     logger.debug(
       { teamItemId: DEFAULT_CREW_TEAM_ITEM_ID },
       "crew repair pass: crew team item absent from the catalog — nothing to repair towards",
@@ -1137,6 +1148,7 @@ export async function runCrewRepairPass(opts: {
       const repair = await repairCompanyCrew(db, companyId, {
         catalogItems,
         requestedByUserId: "system:crew-repair",
+        force: opts.force,
       });
       if (repair.action === "skipped") {
         if (repair.reason === "cooldown") result.skippedCooldown += 1;
@@ -1152,6 +1164,7 @@ export async function runCrewRepairPass(opts: {
       }
     } catch (err) {
       result.failed += 1;
+      opts.onFailure?.({ companyId, error: err });
       logger.warn({ err, companyId }, "crew repair pass failed for company");
     }
   }

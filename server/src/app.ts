@@ -103,10 +103,12 @@ import { pluginRoutes, pluginCompanySettingsRoutes } from "./routes/plugins.js";
 import { companyPluginRoutes } from "./routes/company-plugins.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { createMarketplaceRouter } from "./routes/marketplace.js";
+import { createAdminMarketplaceRouter } from "./routes/admin-marketplace.js";
 import { createMarketplaceInstallRouter } from "./routes/marketplace-installs.js";
 import { createMarketplaceCompanyRouter } from "./routes/marketplace-company.js";
 import { providerRoutes } from "./routes/providers.js";
 import { MarketplaceCatalogService, registerMarketplaceCatalogService } from "./services/aoa-marketplace.js";
+import { runMarketplaceReconciliation } from "./services/marketplace-reconcile.js";
 import { pluginLoader } from "./services/plugin-loader.js";
 import { pluginRollbackService } from "./services/plugin-rollback.js";
 import { pluginRegistryService } from "./services/plugin-registry.js";
@@ -495,6 +497,17 @@ export async function createApp(
   registerMarketplaceCatalogService(marketplaceCatalogService);
   marketplaceCatalogService.startSyncLoop();
   api.use("/marketplace", createMarketplaceRouter({ service: marketplaceCatalogService }));
+  api.use(
+    "/admin/marketplace",
+    createAdminMarketplaceRouter({
+      reconcile: (actor) =>
+        runMarketplaceReconciliation({
+          db,
+          catalogService: marketplaceCatalogService,
+          actor,
+        }),
+    }),
+  );
 
   // Marketplace install routes (per-company, M.2.G).
   // Mounted under /api/companies/:companyId/marketplace, matching the per-company

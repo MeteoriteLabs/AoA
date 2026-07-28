@@ -138,6 +138,7 @@ function makeNotifyDb(
   liveState?: boolean | null,
   opts?: {
     pendingRowAlreadyExists?: boolean;
+    pendingInsertError?: Error;
     /** The row `checkCrewUpdates` reads back after `onConflictDoNothing` loses. */
     existingPendingRow?: { status: string; latestVersion: string };
   },
@@ -171,9 +172,15 @@ function makeNotifyDb(
         insertedValues.push(v);
         return {
           onConflictDoNothing: vi.fn().mockReturnValue({
-            returning: vi
-              .fn()
-              .mockResolvedValue(opts?.pendingRowAlreadyExists ? [] : [{ id: "pending-1" }]),
+            returning: opts?.pendingInsertError
+              ? vi.fn().mockRejectedValue(opts.pendingInsertError)
+              : vi
+                  .fn()
+                  .mockResolvedValue(
+                    opts?.pendingRowAlreadyExists
+                      ? []
+                      : [{ id: "pending-1" }],
+                  ),
           }),
         };
       }),
@@ -572,6 +579,22 @@ describe("checkCrewUpdates — conflict status (T2.7)", () => {
     expect(pendingUpdateSets[0]).toMatchObject({ status: "pending" });
   });
 
+  it("retries the idempotent notification for an existing live agent update", async () => {
+    const { marketplaceNotifications } =
+      await import("../services/marketplace-notifications.js");
+    vi.mocked(marketplaceNotifications.updateAvailable).mockClear();
+
+    await runNotify(false, NOTIFY_SETTINGS, {
+      pendingRowAlreadyExists: true,
+      existingPendingRow: {
+        status: "pending",
+        latestVersion: CATALOG_ITEM.version,
+      },
+    });
+
+    expect(marketplaceNotifications.updateAvailable).toHaveBeenCalledOnce();
+  });
+
   // ── F4: this block is the ONLY writer of `itemType: "agent"` rows ─────────
   //
   // `upsertPendingUpdate`, which owns re-opening for skills and plugins, has no
@@ -626,6 +649,40 @@ describe("checkCrewUpdates — conflict status (T2.7)", () => {
 // ── tests: checkCrewUpdates ────────────────────────────────────────────────
 
 describe("checkCrewUpdates", () => {
+  it("reports a pending-update persistence failure to its caller", async () => {
+    const persistenceError = new Error("pending insert failed");
+    const onFailure = vi.fn();
+    const { db } = makeNotifyDb(
+      [
+        {
+          ...AGENT_ROW,
+          companyId: "co-1",
+          templateOrigin: CATALOG_ITEM.id,
+          kind: "aoa",
+        },
+      ],
+      undefined,
+      { pendingInsertError: persistenceError },
+    );
+
+    await checkCrewUpdates({
+      db: db as any,
+      companyId: "co-1",
+      catalogItems: [CATALOG_ITEM],
+      settings: { ...AUTO_SETTINGS, agentUpdatePolicy: "notify" },
+      instructionsService: {} as any,
+      onFailure,
+    });
+
+    expect(onFailure).toHaveBeenCalledWith({
+      companyId: "co-1",
+      agentId: "agent-1",
+      catalogItemId: CATALOG_ITEM.id,
+      stage: "pending_update",
+      error: persistenceError,
+    });
+  });
+
   it("auto-applies when policy=auto and within update window", async () => {
     const { isWithinUpdateWindow } = await import("../services/marketplace-install/skill-auto-updater.js");
     vi.mocked(isWithinUpdateWindow).mockReturnValue(true);

@@ -84,11 +84,109 @@ compose_release() {
   local release="$1"
   local image_sha="$2"
   shift 2
-  AOA_IMAGE="aoa:$image_sha" docker compose \
+  AOA_IMAGE="aoa:$image_sha" \
+    AOA_IMAGE_REVISION="$image_sha" \
+    AOA_DEPLOY_SHA="$image_sha" \
+    docker compose \
     --env-file "$SHARED_ENV" \
     --project-directory "$release" \
     -f "$release/docker-compose.yml" \
     "$@"
+}
+
+verify_release_health() {
+  local release="$1"
+  local image_sha="$2"
+  local verification_mode="${3:-strict}"
+  local expected_image_id
+  local running_container_id
+  local running_image_id
+  local image_revision
+  local local_health
+  local public_health
+
+  expected_image_id="$(
+    docker image inspect --format '{{.Id}}' "aoa:$image_sha"
+  )" || {
+    log "could not inspect expected image aoa:$image_sha"
+    return 1
+  }
+  running_container_id="$(
+    compose_release "$release" "$image_sha" ps --quiet server
+  )" || {
+    log "could not identify the running server container"
+    return 1
+  }
+  [[ -n "$running_container_id" ]] || {
+    log "the release has no running server container"
+    return 1
+  }
+  running_image_id="$(
+    docker inspect --format '{{.Image}}' "$running_container_id"
+  )" || {
+    log "could not inspect the running server container"
+    return 1
+  }
+  [[ "$running_image_id" == "$expected_image_id" ]] || {
+    log "running server image does not match aoa:$image_sha"
+    return 1
+  }
+
+  local_health="$(
+    curl --fail --silent --show-error \
+      --retry 12 --retry-all-errors --retry-delay 5 --max-time 15 \
+      -- http://127.0.0.1:3100/api/health
+  )" || {
+    log "local release health check failed"
+    return 1
+  }
+  public_health="$(
+    curl --fail --silent --show-error \
+      --retry 12 --retry-all-errors --retry-delay 5 --max-time 15 \
+      -- "$PUBLIC_URL/api/health"
+  )" || {
+    log "public release health check failed"
+    return 1
+  }
+
+  image_revision="$(
+    docker image inspect \
+      --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
+      "aoa:$image_sha"
+  )" || {
+    log "could not inspect the image revision label"
+    return 1
+  }
+  if [[ -z "$image_revision" ||
+    "$image_revision" == "<no value>" ||
+    "$image_revision" == "unknown" ]]; then
+    if [[ "$verification_mode" != "legacy-rollback" ||
+      -z "$PREVIOUS_RELEASE" ||
+      "$release" != "$PREVIOUS_RELEASE" ||
+      "$image_sha" != "$(basename -- "$PREVIOUS_RELEASE")" ]]; then
+      log "image aoa:$image_sha does not provide revision evidence"
+      return 1
+    fi
+    if grep -Fq -- '"revision":' <<<"$local_health" ||
+      grep -Fq -- '"revision":' <<<"$public_health"; then
+      log "legacy rollback has partial or conflicting revision evidence"
+      return 1
+    fi
+    log "legacy rollback restored the selected previous image without certified revision evidence"
+    return 0
+  fi
+  [[ "$image_revision" == "$image_sha" ]] || {
+    log "image revision label does not match $image_sha"
+    return 1
+  }
+  grep -Fq -- "\"revision\":\"$image_sha\"" <<<"$local_health" || {
+    log "local health response does not report revision $image_sha"
+    return 1
+  }
+  grep -Fq -- "\"revision\":\"$image_sha\"" <<<"$public_health" || {
+    log "public health response does not report revision $image_sha"
+    return 1
+  }
 }
 
 ensure_fixed_directory() {
@@ -293,13 +391,11 @@ rollback_previous() {
     log "rollback startup failed with status $rollback_status"
     return "$rollback_status"
   fi
-  if curl --fail --silent --show-error \
-    --retry 12 --retry-all-errors --retry-delay 5 --max-time 15 \
-    -- http://127.0.0.1:3100/api/health >/dev/null; then
+  if verify_release_health "$PREVIOUS_RELEASE" "$previous_sha" legacy-rollback; then
     :
   else
     rollback_status=$?
-    log "rollback health check failed with status $rollback_status"
+    log "rollback release verification failed with status $rollback_status"
     return "$rollback_status"
   fi
   log "rollback restored $previous_sha"
@@ -521,12 +617,7 @@ compose_release "$RELEASE_DIR" "$DEPLOY_SHA" build --pull server
 compose_release "$RELEASE_DIR" "$DEPLOY_SHA" \
   up --detach --remove-orphans --wait --wait-timeout 300
 
-curl --fail --silent --show-error \
-  --retry 12 --retry-all-errors --retry-delay 5 --max-time 15 \
-  -- http://127.0.0.1:3100/api/health >/dev/null
-curl --fail --silent --show-error \
-  --retry 12 --retry-all-errors --retry-delay 5 --max-time 15 \
-  -- "$PUBLIC_URL/api/health" >/dev/null
+verify_release_health "$RELEASE_DIR" "$DEPLOY_SHA"
 
 ln -s -- "$RELEASE_DIR" "$NEXT_LINK"
 mv -Tf -- "$NEXT_LINK" "$CURRENT_LINK"
