@@ -90,7 +90,7 @@ Permanently deletes the company. Returns the deleted company object.
 
 ## Export / Import (Portability)
 
-AoA supports full company bundle export and import. The bundle format is `schemaVersion: 2` and is backward-compatible with Paperclip v1 bundles on import.
+AOA supports full company bundle export and import. The bundle format is `schemaVersion: 2` and remains backward-compatible with legacy AOA v1 bundles on import.
 
 ### Preview Export
 
@@ -130,10 +130,23 @@ POST /api/companies/{companyId}/export
 
 Returns a plan of what will be created or updated, with collision details and entity counts. Does not make any changes.
 
+Use the path-authorized endpoint that matches the target:
+
+| Target | Endpoint |
+|--------|----------|
+| New company | `POST /api/companies/import/new/preview` |
+| Existing company | `POST /api/companies/{companyId}/import/preview` |
+
+New-company preview requires an instance administrator:
+
 ```
-POST /api/companies/import/preview
+POST /api/companies/import/new/preview
 {
-  "bundle": { ... },
+  "source": {
+    "type": "inline",
+    "manifest": { ... },
+    "files": {}
+  },
   "target": {
     "mode": "new_company"
   },
@@ -141,16 +154,50 @@ POST /api/companies/import/preview
 }
 ```
 
-`target.mode` is either `new_company` or `existing_company` (requires `companyId`). For `existing_company`, the caller must have access to that company.
+Existing-company preview requires access to the company in the path:
+
+```
+POST /api/companies/{companyId}/import/preview
+{
+  "source": {
+    "type": "inline",
+    "manifest": { ... },
+    "files": {}
+  },
+  "target": {
+    "mode": "existing_company",
+    "companyId": "{companyId}"
+  },
+  "include": { ... }
+}
+```
+
+The server binds the authoritative target mode and company ID from the selected
+path before validating the request body.
+
+`source.type` may be `inline` (a manifest plus file map), `url`, or `github`.
 
 ### Import Bundle
 
 Executes the import.
 
+Use the path-authorized endpoint that matches the target:
+
+| Target | Endpoint |
+|--------|----------|
+| New company | `POST /api/companies/import/new` |
+| Existing company | `POST /api/companies/{companyId}/import` |
+
+New-company import requires an instance administrator:
+
 ```
-POST /api/companies/import
+POST /api/companies/import/new
 {
-  "bundle": { ... },
+  "source": {
+    "type": "inline",
+    "manifest": { ... },
+    "files": {}
+  },
   "target": { "mode": "new_company" },
   "include": { ... },
   "collisionStrategy": "skip",
@@ -158,7 +205,46 @@ POST /api/companies/import
 }
 ```
 
-Returns the created/updated company, agents list, and any warnings. Unknown bundle sections warn-and-continue — Paperclip v1 bundles import compatibly.
+Returns the created/updated company, agents list, and any warnings. Unknown bundle sections warn-and-continue — AOA v1 bundles import compatibly.
+
+Existing-company import requires board authentication and access to the company
+in the path:
+
+```
+POST /api/companies/{companyId}/import
+{
+  "source": {
+    "type": "inline",
+    "manifest": { ... },
+    "files": {}
+  },
+  "target": {
+    "mode": "existing_company",
+    "companyId": "{companyId}"
+  },
+  "include": { ... },
+  "collisionStrategy": "skip",
+  "overwriteCustomizedSkillKeys": []
+}
+```
+
+The four path-authorized preview and commit endpoints accept
+`Content-Type: application/json` request bodies up to **20 MB**. Authentication
+and target authorization run before this larger parser.
+
+### Legacy Import Routes
+
+The compatibility endpoints below remain available for older clients:
+
+```
+POST /api/companies/import/preview
+POST /api/companies/import
+```
+
+They use the global JSON parser and therefore accept at most **100 KB**. New
+clients and ordinary portability bundles must use the path-authorized endpoints
+above. A larger request sent to either legacy route returns `413 Payload Too
+Large`.
 
 For an `existing_company` import with `collisionStrategy: "replace"`, a matching
 skill that carries founder edits is shown in preview with

@@ -546,11 +546,6 @@ function buildAppWithImportBodyCap(actorOverrides: Partial<any> = {}) {
       (req as unknown as { rawBody?: Buffer }).rawBody = buf;
     }
   };
-  app.use(
-    ["/api/companies/import", "/api/companies/import/preview"],
-    express.json({ limit: "20mb", verify: captureRawBody })
-  );
-  app.use(express.json({ verify: captureRawBody }));
   app.use((req, _res, next) => {
     (req as any).actor = {
       type: "board",
@@ -562,6 +557,17 @@ function buildAppWithImportBodyCap(actorOverrides: Partial<any> = {}) {
     };
     next();
   });
+  app.use(
+    "/api/companies/import/new",
+    authorizeNewCompanyImportBody,
+    express.json({ limit: "20mb", verify: captureRawBody })
+  );
+  app.use(
+    "/api/companies/:companyId/import",
+    authorizeExistingCompanyImportBody,
+    express.json({ limit: "20mb", verify: captureRawBody })
+  );
+  app.use(express.json({ verify: captureRawBody }));
   app.use(
     "/api/companies",
     companyRoutes(
@@ -616,20 +622,24 @@ function buildPathAuthorizedImportParser(
 }
 
 describe("path-authorized import parser", () => {
-  const largeBody = JSON.stringify({ __pad: "x".repeat(1024 * 1024) });
+  // Parser invocation, not payload size, proves middleware ordering here. A
+  // megabyte upload can be interrupted by an intentional pre-body 403 and make
+  // supertest surface ECONNRESET instead of the already-sent response. The
+  // separate body-size-cap cases below cover large accepted/rejected payloads.
+  const parserProbeBody = JSON.stringify({ __probe: true });
 
-  it("rejects non-admin new-company imports before parsing the large body", async () => {
+  it("rejects non-admin new-company imports before invoking the large-body parser", async () => {
     const parsed = vi.fn();
     const res = await request(buildPathAuthorizedImportParser({}, parsed))
       .post("/api/companies/import/new/preview")
       .set("Content-Type", "application/json")
-      .send(largeBody);
+      .send(parserProbeBody);
 
     expect(res.status).toBe(403);
     expect(parsed).not.toHaveBeenCalled();
   });
 
-  it("rejects cross-company imports before parsing the large body", async () => {
+  it("rejects cross-company imports before invoking the large-body parser", async () => {
     const parsed = vi.fn();
     const res = await request(
       buildPathAuthorizedImportParser(
@@ -639,13 +649,13 @@ describe("path-authorized import parser", () => {
     )
       .post(`/api/companies/${SRC_CO_ID}/import/preview`)
       .set("Content-Type", "application/json")
-      .send(largeBody);
+      .send(parserProbeBody);
 
     expect(res.status).toBe(403);
     expect(parsed).not.toHaveBeenCalled();
   });
 
-  it("rejects a company-scoped agent commit before parsing the large body", async () => {
+  it("rejects a company-scoped agent commit before invoking the large-body parser", async () => {
     const parsed = vi.fn();
     const res = await request(
       buildPathAuthorizedImportParser(
@@ -659,7 +669,7 @@ describe("path-authorized import parser", () => {
     )
       .post(`/api/companies/${SRC_CO_ID}/import`)
       .set("Content-Type", "application/json")
-      .send(largeBody);
+      .send(parserProbeBody);
 
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("Board access required");
@@ -680,13 +690,13 @@ describe("path-authorized import parser", () => {
     )
       .post(`/api/companies/${SRC_CO_ID}/import/preview`)
       .set("Content-Type", "application/json")
-      .send(largeBody);
+      .send(parserProbeBody);
 
     expect(res.status).toBe(204);
     expect(parsed).toHaveBeenCalledOnce();
   });
 
-  it("parses a large body only after path authorization succeeds", async () => {
+  it("invokes the large-body parser only after path authorization succeeds", async () => {
     const parsed = vi.fn();
     const res = await request(
       buildPathAuthorizedImportParser(
@@ -696,7 +706,7 @@ describe("path-authorized import parser", () => {
     )
       .post("/api/companies/import/new/preview")
       .set("Content-Type", "application/json")
-      .send(largeBody);
+      .send(parserProbeBody);
 
     expect(res.status).toBe(204);
     expect(parsed).toHaveBeenCalledOnce();
@@ -729,7 +739,7 @@ describe("import body-size cap", () => {
   it("rejects new-company preview for a non-instance-admin before portability work", async () => {
     const app = buildAppWithImportBodyCap();
     const res = await request(app)
-      .post("/api/companies/import/preview")
+      .post("/api/companies/import/new/preview")
       .send(validNewCompanyImport);
 
     expect(res.status).toBe(403);
@@ -739,7 +749,7 @@ describe("import body-size cap", () => {
   it("rejects new-company import for a non-instance-admin before portability work", async () => {
     const app = buildAppWithImportBodyCap();
     const res = await request(app)
-      .post("/api/companies/import")
+      .post("/api/companies/import/new")
       .send(validNewCompanyImport);
 
     expect(res.status).toBe(403);
@@ -753,7 +763,7 @@ describe("import body-size cap", () => {
       companyId: SRC_CO_ID,
     });
     const res = await request(app)
-      .post("/api/companies/import/preview")
+      .post(`/api/companies/${SRC_CO_ID}/import/preview`)
       .send(validExistingCompanyImport);
 
     expect(res.status).toBe(200);
@@ -767,7 +777,7 @@ describe("import body-size cap", () => {
       companyId: SRC_CO_ID,
     });
     const res = await request(app)
-      .post("/api/companies/import")
+      .post(`/api/companies/${SRC_CO_ID}/import`)
       .send(validExistingCompanyImport);
 
     expect(res.status).toBe(403);
@@ -778,7 +788,7 @@ describe("import body-size cap", () => {
     mockCanUser.mockResolvedValueOnce(false);
     const app = buildAppWithImportBodyCap();
     const res = await request(app)
-      .post("/api/companies/import")
+      .post(`/api/companies/${SRC_CO_ID}/import`)
       .send({
         ...validExistingCompanyImport,
         source: {
@@ -818,7 +828,7 @@ describe("import body-size cap", () => {
     mockCanUser.mockResolvedValueOnce(false);
     const app = buildAppWithImportBodyCap();
     const res = await request(app)
-      .post("/api/companies/import")
+      .post(`/api/companies/${SRC_CO_ID}/import`)
       .send({
         ...validExistingCompanyImport,
         source: {
@@ -853,7 +863,7 @@ describe("import body-size cap", () => {
     );
     const app = buildAppWithImportBodyCap();
     const res = await request(app)
-      .post("/api/companies/import")
+      .post(`/api/companies/${SRC_CO_ID}/import`)
       .send({
         ...validExistingCompanyImport,
         source: {
@@ -895,7 +905,7 @@ describe("import body-size cap", () => {
     mockCanUser.mockResolvedValueOnce(false);
     const app = buildAppWithImportBodyCap();
     const res = await request(app)
-      .post("/api/companies/import")
+      .post(`/api/companies/${SRC_CO_ID}/import`)
       .send({
         ...validExistingCompanyImport,
         source: {
@@ -932,32 +942,33 @@ describe("import body-size cap", () => {
     );
   });
 
-  it("returns 413 for bodies over 20MB on /api/companies/import/preview", async () => {
+  it("returns 413 for bodies over 20MB on the canonical new-company preview route", async () => {
     const big = JSON.stringify({ __pad: "x".repeat(30 * 1024 * 1024) });
-    const app = buildAppWithImportBodyCap();
+    const app = buildAppWithImportBodyCap({ isInstanceAdmin: true });
     const res = await request(app)
-      .post("/api/companies/import/preview")
+      .post("/api/companies/import/new/preview")
       .set("Content-Type", "application/json")
       .send(big);
     expect(res.status).toBe(413);
   });
 
-  it("returns 413 for bodies over 20MB on /api/companies/import", async () => {
+  it("returns 413 for bodies over 20MB on the canonical existing-company import route", async () => {
     const big = JSON.stringify({ __pad: "x".repeat(30 * 1024 * 1024) });
     const app = buildAppWithImportBodyCap();
     const res = await request(app)
-      .post("/api/companies/import")
+      .post(`/api/companies/${SRC_CO_ID}/import`)
       .set("Content-Type", "application/json")
       .send(big);
     expect(res.status).toBe(413);
   });
 
-  it("accepts a 1MB body shape on /api/companies/import/preview without a 413", async () => {
+  it("accepts a 1MB body shape on the canonical new-company preview route", async () => {
     resetState();
     sourceAgents = [makeAgent({ id: "a1", name: "Ada" })];
-    const app = buildAppWithImportBodyCap();
+    const app = buildAppWithImportBodyCap({ isInstanceAdmin: true });
     // Build a payload that's ~1MB but invalid by schema (shape doesn't matter
-    // here — we only assert the body-cap gate doesn't 413 a small payload).
+    // here - we only assert the body-cap gate accepts the request before
+    // schema validation rejects it).
     const payload = {
       source: {
         type: "inline",
@@ -967,10 +978,23 @@ describe("import body-size cap", () => {
       target: { mode: "new_company" },
     };
     const res = await request(app)
-      .post("/api/companies/import/preview")
+      .post("/api/companies/import/new/preview")
       .set("Content-Type", "application/json")
       .send(JSON.stringify(payload));
-    expect(res.status).not.toBe(413);
+    expect(res.status).toBe(400);
+  });
+
+  it.each([
+    "/api/companies/import/preview",
+    "/api/companies/import",
+  ])("keeps the legacy route %s on the global 100KB limit", async (route) => {
+    const big = JSON.stringify({ __pad: "x".repeat(1 * 1024 * 1024) });
+    const app = buildAppWithImportBodyCap({ isInstanceAdmin: true });
+    const res = await request(app)
+      .post(route)
+      .set("Content-Type", "application/json")
+      .send(big);
+    expect(res.status).toBe(413);
   });
 
   it("does NOT apply the 20MB cap to non-import routes (global default still 413's)", async () => {
@@ -987,7 +1011,7 @@ describe("import body-size cap", () => {
 
 describe("import schema array caps", () => {
   it("rejects bundles whose manifest.issues array exceeds the 10000 cap", async () => {
-    const app = buildAppWithImportBodyCap();
+    const app = buildAppWithImportBodyCap({ isInstanceAdmin: true });
     const issues = Array.from({ length: 10_001 }, (_, i) => ({
       slug: `i-${i}`,
       title: `Task ${i}`,
@@ -1010,7 +1034,7 @@ describe("import schema array caps", () => {
       target: { mode: "new_company" },
     };
     const res = await request(app)
-      .post("/api/companies/import/preview")
+      .post("/api/companies/import/new/preview")
       .set("Content-Type", "application/json")
       .send(JSON.stringify(payload));
     expect(res.status).toBeGreaterThanOrEqual(400);

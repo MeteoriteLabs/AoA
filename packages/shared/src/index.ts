@@ -1366,6 +1366,7 @@ export {
   type OnboardingState,
   type PendingInvitation,
   type PostAuthJourneyResult,
+  type ParsePostAuthJourneyResultOptions,
   type FirstRunPersona,
 } from "./onboarding.js";
 

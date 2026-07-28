@@ -181,20 +181,55 @@ const legacyPostAuthJourneyResultSchema: z.ZodType<LegacyPostAuthJourneyResult> 
     resumeFirstRunCompanyId: z.string().min(1).nullable().optional(),
   });
 
+export type ParsePostAuthJourneyResultOptions = {
+  /**
+   * Set only after independently verifying the acting user's instance-admin
+   * authority (for example through GET /api/auth/profile). The preceding
+   * journey contract did not carry this capability and classified every user
+   * without a membership or invitation as `founder`, so legacy journey labels
+   * are not themselves proof of authority.
+   */
+  legacyActorIsInstanceAdmin?: boolean;
+};
+
 /**
  * Parse the current wire contract while tolerating the immediately preceding
- * response shape during a rolling UI/server deployment.
+ * response shape during a rolling UI/server deployment. Legacy founder
+ * responses fail closed unless the caller supplies independently verified
+ * instance-admin authority.
  */
 export function parsePostAuthJourneyResult(
-  value: unknown
+  value: unknown,
+  options: ParsePostAuthJourneyResultOptions = {}
 ): PostAuthJourneyResult {
   const current = postAuthJourneyResultSchema.safeParse(value);
   if (current.success) return current.data;
+
+  // A response that declares a schema version must satisfy that version. Never
+  // reinterpret a malformed or future versioned payload as the legacy shape.
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    Object.prototype.hasOwnProperty.call(value, "schemaVersion")
+  ) {
+    return postAuthJourneyResultSchema.parse(value);
+  }
 
   const legacy = legacyPostAuthJourneyResultSchema.parse(value);
   if (legacy.journey === "founder") {
     if (legacy.targetCompanyId !== null)
       throw new Error("Invalid founder journey target");
+    if (options.legacyActorIsInstanceAdmin !== true) {
+      return {
+        schemaVersion: 1,
+        journey: "access_required",
+        targetCompanyId: null,
+        pendingInvitations: legacy.pendingInvitations,
+        inviteToken: null,
+        canCreateCompany: false,
+        resumeFirstRunCompanyId: null,
+      };
+    }
     return {
       schemaVersion: 1,
       journey: "founder",
@@ -224,7 +259,7 @@ export function parsePostAuthJourneyResult(
     targetCompanyId: legacy.targetCompanyId,
     pendingInvitations: legacy.pendingInvitations,
     inviteToken: null,
-    canCreateCompany: false,
+    canCreateCompany: options.legacyActorIsInstanceAdmin === true,
     resumeFirstRunCompanyId: legacy.resumeFirstRunCompanyId ?? null,
   };
 }

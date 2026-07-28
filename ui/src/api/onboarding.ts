@@ -4,9 +4,15 @@ import type {
   OnboardingState,
   FirstRunPersona,
 } from "@armyofagents/shared";
-import { parsePostAuthJourneyResult } from "@armyofagents/shared";
+import {
+  currentUserProfileSchema,
+  parsePostAuthJourneyResult,
+  postAuthJourneyResultSchema,
+} from "@armyofagents/shared";
 
 export type FlowProgress = { completedStates: OnboardingState[] };
+
+const LEGACY_PROFILE_AUTHORITY_TIMEOUT_MS = 5_000;
 
 export async function getOnboardingProgress(
   companyId: string | null
@@ -169,7 +175,46 @@ export async function fetchJourney(): Promise<PostAuthJourneyResult> {
       status: res.status,
     });
   }
-  return parsePostAuthJourneyResult(await res.json());
+  const payload: unknown = await res.json();
+  const current = postAuthJourneyResultSchema.safeParse(payload);
+  if (current.success) return current.data;
+
+  // Validate and normalize the preceding contract first. Invited responses
+  // remain usable without another request. Legacy founder and returning
+  // responses need an independent capability check: the preceding contract
+  // neither carried canCreateCompany nor proved founder authority.
+  const legacy = parsePostAuthJourneyResult(payload);
+  if (legacy.journey === "invited") return legacy;
+
+  let legacyActorIsInstanceAdmin = false;
+  const profileAbort = new AbortController();
+  const profileTimeout = setTimeout(
+    () => profileAbort.abort(),
+    LEGACY_PROFILE_AUTHORITY_TIMEOUT_MS
+  );
+  try {
+    const profileResponse = await fetch("/api/auth/profile", {
+      credentials: "include",
+      headers: { Accept: "application/json" },
+      signal: profileAbort.signal,
+    });
+    if (profileResponse.ok) {
+      const profile = currentUserProfileSchema.safeParse(
+        await profileResponse.json()
+      );
+      legacyActorIsInstanceAdmin =
+        profile.success && profile.data.isInstanceAdmin;
+    }
+  } catch {
+    // Rolling-deploy compatibility is fail-closed. The access-required screen
+    // offers retry and account switching if the authority check is unavailable.
+  } finally {
+    clearTimeout(profileTimeout);
+  }
+
+  return parsePostAuthJourneyResult(payload, {
+    legacyActorIsInstanceAdmin,
+  });
 }
 
 /** Map a journey to the route the user should land on after login. */

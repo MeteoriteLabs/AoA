@@ -99,17 +99,28 @@ describe("onboarding progress client (Stage B / B7)", () => {
 });
 
 describe("journey contract negotiation", () => {
+  beforeEach(() => {
+    (globalThis as any).fetch = vi.fn();
+  });
+
   it("advertises support for the access-required discriminant", async () => {
-    (globalThis as any).fetch = vi.fn().mockResolvedValue({
+    (globalThis.fetch as any).mockResolvedValue({
       ok: true,
       json: async () => ({
+        schemaVersion: 1,
         journey: "founder",
         targetCompanyId: null,
         pendingInvitations: [],
+        inviteToken: null,
+        canCreateCompany: true,
+        resumeFirstRunCompanyId: null,
       }),
     });
 
-    await fetchJourney();
+    await expect(fetchJourney()).resolves.toMatchObject({
+      journey: "founder",
+      canCreateCompany: true,
+    });
 
     expect(globalThis.fetch).toHaveBeenCalledWith(
       "/api/onboarding/journey",
@@ -119,6 +130,246 @@ describe("journey contract negotiation", () => {
         }),
       })
     );
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("verifies a legacy founder through the authoritative profile endpoint", async () => {
+    (globalThis.fetch as any)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          journey: "founder",
+          targetCompanyId: null,
+          pendingInvitations: [],
+          inviteToken: null,
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          id: "admin-1",
+          email: "admin@example.com",
+          displayName: "Admin",
+          avatarUrl: null,
+          isInstanceAdmin: true,
+        }),
+      });
+
+    await expect(fetchJourney()).resolves.toMatchObject({
+      journey: "founder",
+      canCreateCompany: true,
+    });
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(
+      2,
+      "/api/auth/profile",
+      expect.objectContaining({ credentials: "include" })
+    );
+  });
+
+  it("fails a legacy non-admin founder closed to access-required", async () => {
+    (globalThis.fetch as any)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          journey: "founder",
+          targetCompanyId: null,
+          pendingInvitations: [],
+          inviteToken: null,
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          id: "member-1",
+          email: "member@example.com",
+          displayName: "Member",
+          avatarUrl: null,
+          isInstanceAdmin: false,
+        }),
+      });
+
+    await expect(fetchJourney()).resolves.toMatchObject({
+      journey: "access_required",
+      canCreateCompany: false,
+    });
+  });
+
+  it.each([
+    {
+      name: "profile request fails",
+      response: { ok: false, status: 500 },
+    },
+    {
+      name: "profile response is malformed",
+      response: {
+        ok: true,
+        json: async () => ({ id: "member-1", isInstanceAdmin: true }),
+      },
+    },
+  ])("fails closed when the legacy founder $name", async ({ response }) => {
+    (globalThis.fetch as any)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          journey: "founder",
+          targetCompanyId: null,
+          pendingInvitations: [],
+          inviteToken: null,
+        }),
+      })
+      .mockResolvedValueOnce(response);
+
+    await expect(fetchJourney()).resolves.toMatchObject({
+      journey: "access_required",
+      canCreateCompany: false,
+    });
+  });
+
+  it("keeps a legacy invited response on the one-request path", async () => {
+    (globalThis.fetch as any).mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        journey: "invited",
+        targetCompanyId: "company-1",
+        pendingInvitations: [],
+        inviteToken: null,
+      }),
+    });
+
+    await expect(fetchJourney()).resolves.toMatchObject({ journey: "invited" });
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("restores company creation for a legacy returning instance admin", async () => {
+    (globalThis.fetch as any)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          journey: "returning",
+          targetCompanyId: "company-1",
+          pendingInvitations: [],
+          inviteToken: null,
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          id: "admin-1",
+          email: "admin@example.com",
+          displayName: "Admin",
+          avatarUrl: null,
+          isInstanceAdmin: true,
+        }),
+      });
+
+    await expect(fetchJourney()).resolves.toMatchObject({
+      journey: "returning",
+      canCreateCompany: true,
+    });
+  });
+
+  it("keeps company creation disabled for a legacy returning non-admin", async () => {
+    (globalThis.fetch as any)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          journey: "returning",
+          targetCompanyId: "company-1",
+          pendingInvitations: [],
+          inviteToken: null,
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          id: "member-1",
+          email: "member@example.com",
+          displayName: "Member",
+          avatarUrl: null,
+          isInstanceAdmin: false,
+        }),
+      });
+
+    await expect(fetchJourney()).resolves.toMatchObject({
+      journey: "returning",
+      canCreateCompany: false,
+    });
+  });
+
+  it("fails a legacy returning capability check closed", async () => {
+    (globalThis.fetch as any)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          journey: "returning",
+          targetCompanyId: "company-1",
+          pendingInvitations: [],
+          inviteToken: null,
+        }),
+      })
+      .mockRejectedValueOnce(new Error("profile unavailable"));
+
+    await expect(fetchJourney()).resolves.toMatchObject({
+      journey: "returning",
+      canCreateCompany: false,
+    });
+  });
+
+  it("times out a stalled legacy profile capability check and fails closed", async () => {
+    vi.useFakeTimers();
+    try {
+      (globalThis.fetch as any)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            journey: "founder",
+            targetCompanyId: null,
+            pendingInvitations: [],
+            inviteToken: null,
+          }),
+        })
+        .mockImplementationOnce(
+          (_url: string, init: { signal: AbortSignal }) =>
+            new Promise((_resolve, reject) => {
+              init.signal.addEventListener(
+                "abort",
+                () => reject(new Error("profile request aborted")),
+                { once: true }
+              );
+            })
+        );
+
+      const journeyPromise = fetchJourney();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      await expect(journeyPromise).resolves.toMatchObject({
+        journey: "access_required",
+        canCreateCompany: false,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("fails closed when the legacy founder profile request rejects", async () => {
+    (globalThis.fetch as any)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          journey: "founder",
+          targetCompanyId: null,
+          pendingInvitations: [],
+          inviteToken: null,
+        }),
+      })
+      .mockRejectedValueOnce(new Error("profile unavailable"));
+
+    await expect(fetchJourney()).resolves.toMatchObject({
+      journey: "access_required",
+      canCreateCompany: false,
+    });
   });
 });
 
