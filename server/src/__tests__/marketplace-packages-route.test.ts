@@ -8,7 +8,7 @@ import type { MarketplacePackage } from "@armyofagents/shared";
 
 const mockService = vi.hoisted(() => ({
   readCache: vi.fn(),
-  sync: vi.fn(),
+  refresh: vi.fn(),
   getStatus: vi.fn(),
   getPackages: vi.fn(),
 }));

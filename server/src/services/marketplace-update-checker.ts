@@ -23,7 +23,11 @@ import { logger } from "../middleware/logger.js";
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function compareVersions(latest: string, current: string): number {
-  const parse = (v: string) => v.replace(/^v/, "").split(".").map((p) => parseInt(p, 10) || 0);
+  const parse = (v: string) =>
+    v
+      .replace(/^v/, "")
+      .split(".")
+      .map((p) => parseInt(p, 10) || 0);
   const [lMaj, lMin, lPat] = parse(latest);
   const [cMaj, cMin, cPat] = parse(current);
   if (lMaj !== cMaj) return lMaj! > cMaj! ? 1 : -1;
@@ -36,34 +40,102 @@ export function compareVersions(latest: string, current: string): number {
 // Main checker
 // ─────────────────────────────────────────────────────────────────────────────
 
-export async function runUpdateCheck(db: Db, catalogItems: CatalogItem[]): Promise<void> {
-  const allCompanies = await db.select({ id: companies.id }).from(companies);
-
-  for (const company of allCompanies) {
-    try {
-      await checkCompany(db, catalogItems, company.id);
-    } catch (err) {
-      logger.error({ err, companyId: company.id }, "marketplace-update-checker: error processing company");
-    }
-  }
+export interface RunMarketplaceUpdateCheckOptions {
+  /**
+   * Restrict the pass to an already-authorized/audited company snapshot.
+   * Omit only for ordinary periodic/manual catalog syncs that intentionally
+   * discover the current fleet.
+   */
+  companyIds?: readonly string[];
 }
 
-async function checkCompany(db: Db, catalogItems: CatalogItem[], companyId: string): Promise<void> {
+export interface MarketplaceUpdateCheckFailure {
+  companyId: string;
+  itemType: "company" | "skill" | "plugin";
+  catalogItemId?: string;
+  message: string;
+}
+
+export interface MarketplaceUpdateCheckResult {
+  companiesExamined: number;
+  failures: MarketplaceUpdateCheckFailure[];
+}
+
+function updateCheckFailure(
+  companyId: string,
+  itemType: MarketplaceUpdateCheckFailure["itemType"],
+  error: unknown,
+  catalogItemId?: string
+): MarketplaceUpdateCheckFailure {
+  return {
+    companyId,
+    itemType,
+    ...(catalogItemId ? { catalogItemId } : {}),
+    message: error instanceof Error ? error.message : String(error),
+  };
+}
+
+export async function runUpdateCheck(
+  db: Db,
+  catalogItems: CatalogItem[],
+  options: RunMarketplaceUpdateCheckOptions = {}
+): Promise<MarketplaceUpdateCheckResult> {
+  const companyIds = options.companyIds
+    ? [...new Set(options.companyIds)].sort()
+    : (await db.select({ id: companies.id }).from(companies)).map(
+        (company) => company.id
+      );
+  const failures: MarketplaceUpdateCheckFailure[] = [];
+
+  for (const companyId of companyIds) {
+    try {
+      failures.push(...(await checkCompany(db, catalogItems, companyId)));
+    } catch (err) {
+      logger.error(
+        { err, companyId },
+        "marketplace-update-checker: error processing company"
+      );
+      failures.push(updateCheckFailure(companyId, "company", err));
+    }
+  }
+
+  return {
+    companiesExamined: companyIds.length,
+    failures,
+  };
+}
+
+async function checkCompany(
+  db: Db,
+  catalogItems: CatalogItem[],
+  companyId: string
+): Promise<MarketplaceUpdateCheckFailure[]> {
+  const failures: MarketplaceUpdateCheckFailure[] = [];
   try {
-    const catalogMap = new Map<string, { version: string; name: string; type: string }>();
+    const catalogMap = new Map<
+      string,
+      { version: string; name: string; type: string }
+    >();
     for (const item of catalogItems) {
-      catalogMap.set(item.id, { version: item.version, name: item.name, type: item.type });
+      catalogMap.set(item.id, {
+        version: item.version,
+        name: item.name,
+        type: item.type,
+      });
     }
 
     // Check skills (sourceType=catalog means they came from marketplace)
     const skillRows = await db
-      .select({ sourceLocator: companySkills.sourceLocator, sourceRef: companySkills.sourceRef })
+      .select({
+        sourceLocator: companySkills.sourceLocator,
+        sourceRef: companySkills.sourceRef,
+      })
       .from(companySkills)
       .where(
         and(
           eq(companySkills.companyId, companyId),
-          eq(companySkills.sourceType, "catalog"),
-        ),
+          eq(companySkills.sourceType, "catalog")
+        )
       );
 
     for (const skill of skillRows) {
@@ -72,33 +144,52 @@ async function checkCompany(db: Db, catalogItems: CatalogItem[], companyId: stri
       if (!catalogEntry) continue;
 
       try {
-        const { inserted } = await upsertPendingUpdate(db, companyId, {
-          catalogItemId: skill.sourceLocator,
-          catalogItemName: catalogEntry.name,
-          itemType: "skill",
-          currentVersion: skill.sourceRef,
-          latestVersion: catalogEntry.version,
-        });
+        const { shouldNotify, shouldReopenNotification } =
+          await upsertPendingUpdate(db, companyId, {
+            catalogItemId: skill.sourceLocator,
+            catalogItemName: catalogEntry.name,
+            itemType: "skill",
+            currentVersion: skill.sourceRef,
+            latestVersion: catalogEntry.version,
+          });
 
-        if (!inserted) continue; // Already knew about this update — no action needed
+        if (!shouldNotify) continue;
 
-        // All skill updates unconditionally fire an updateAvailable notification.
-        // The founder (or auto-apply endpoint) decides whether to apply.
-        void marketplaceNotifications
-          .updateAvailable(db, companyId, catalogEntry.name, skill.sourceRef, catalogEntry.version)
-          .catch((err) => logger.error({ err }, "marketplace: updateAvailable notification failed"));
+        // Hub emits are idempotent by their stable source key. Retrying for an
+        // existing pending row repairs a prior notification failure without
+        // creating a duplicate founder item.
+        await marketplaceNotifications.updateAvailable(
+          db,
+          companyId,
+          skill.sourceLocator,
+          catalogEntry.name,
+          skill.sourceRef,
+          catalogEntry.version,
+          { reopenWhenArchived: shouldReopenNotification }
+        );
       } catch (err) {
         // Per-skill isolation: one skill error doesn't block the rest
-        logger.error({ err, catalogItemId: skill.sourceLocator, companyId }, "marketplace-update-checker: per-skill error");
+        logger.error(
+          { err, catalogItemId: skill.sourceLocator, companyId },
+          "marketplace-update-checker: per-skill error"
+        );
+        failures.push(
+          updateCheckFailure(companyId, "skill", err, skill.sourceLocator)
+        );
       }
     }
     // TODO: Add agent + team template checks when templateOrigin/templateVersion
     // columns are added to those schemas.
 
-    await checkPluginUpdates(db, companyId, catalogItems);
+    failures.push(...(await checkPluginUpdates(db, companyId, catalogItems)));
   } catch (err) {
-    logger.error({ err, companyId }, "marketplace-update-checker: error checking company");
+    logger.error(
+      { err, companyId },
+      "marketplace-update-checker: error checking company"
+    );
+    failures.push(updateCheckFailure(companyId, "company", err));
   }
+  return failures;
 }
 
 /**
@@ -110,8 +201,9 @@ async function checkCompany(db: Db, catalogItems: CatalogItem[], companyId: stri
 export async function checkPluginUpdates(
   db: Db,
   companyId: string,
-  catalogItems: CatalogItem[],
-): Promise<void> {
+  catalogItems: CatalogItem[]
+): Promise<MarketplaceUpdateCheckFailure[]> {
+  const failures: MarketplaceUpdateCheckFailure[] = [];
   const installedPlugins = await db
     .select({ packageName: plugins.packageName, version: plugins.version })
     .from(plugins)
@@ -131,24 +223,38 @@ export async function checkPluginUpdates(
     if (!catalogItem || !catalogItem.npm?.version) continue;
 
     try {
-      const { inserted } = await upsertPendingUpdate(db, companyId, {
-        catalogItemId: catalogItem.id,
-        catalogItemName: catalogItem.name,
-        itemType: "plugin",
-        currentVersion: plugin.version,
-        latestVersion: catalogItem.npm.version,
-      });
+      const { shouldNotify, shouldReopenNotification } =
+        await upsertPendingUpdate(db, companyId, {
+          catalogItemId: catalogItem.id,
+          catalogItemName: catalogItem.name,
+          itemType: "plugin",
+          currentVersion: plugin.version,
+          latestVersion: catalogItem.npm.version,
+        });
 
-      if (!inserted) continue; // Already knew about this update — no action needed
+      if (!shouldNotify) continue;
 
-      void marketplaceNotifications
-        .updateAvailable(db, companyId, catalogItem.name, plugin.version, catalogItem.npm.version)
-        .catch((err) => logger.error({ err }, "marketplace: plugin updateAvailable notification failed"));
+      await marketplaceNotifications.updateAvailable(
+        db,
+        companyId,
+        catalogItem.id,
+        catalogItem.name,
+        plugin.version,
+        catalogItem.npm.version,
+        { reopenWhenArchived: shouldReopenNotification }
+      );
     } catch (err) {
       // Per-plugin isolation: one plugin error doesn't block the rest
-      logger.error({ err, catalogItemId: catalogItem.id, companyId }, "marketplace-update-checker: per-plugin error");
+      logger.error(
+        { err, catalogItemId: catalogItem.id, companyId },
+        "marketplace-update-checker: per-plugin error"
+      );
+      failures.push(
+        updateCheckFailure(companyId, "plugin", err, catalogItem.id)
+      );
     }
   }
+  return failures;
 }
 
 export async function upsertPendingUpdate(
@@ -160,9 +266,19 @@ export async function upsertPendingUpdate(
     itemType: string;
     currentVersion: string;
     latestVersion: string;
-  },
-): Promise<{ inserted: boolean }> {
-  if (compareVersions(data.latestVersion, data.currentVersion) <= 0) return { inserted: false };
+  }
+): Promise<{
+  inserted: boolean;
+  shouldNotify: boolean;
+  shouldReopenNotification: boolean;
+}> {
+  if (compareVersions(data.latestVersion, data.currentVersion) <= 0) {
+    return {
+      inserted: false,
+      shouldNotify: false,
+      shouldReopenNotification: false,
+    };
+  }
 
   const inserted = await db
     .insert(marketplacePendingUpdates)
@@ -179,8 +295,11 @@ export async function upsertPendingUpdate(
     .returning({ id: marketplacePendingUpdates.id });
 
   if (inserted.length > 0) {
-    // Fresh row — caller decides whether to notify or auto-apply
-    return { inserted: true };
+    return {
+      inserted: true,
+      shouldNotify: true,
+      shouldReopenNotification: true,
+    };
   }
 
   // Conflict: a row already exists for this (companyId, catalogItemId).
@@ -194,16 +313,26 @@ export async function upsertPendingUpdate(
     .where(
       and(
         eq(marketplacePendingUpdates.companyId, companyId),
-        eq(marketplacePendingUpdates.catalogItemId, data.catalogItemId),
-      ),
+        eq(marketplacePendingUpdates.catalogItemId, data.catalogItemId)
+      )
     )
     .limit(1);
 
-  if (!existing) return { inserted: false }; // race: row disappeared between conflict and read
+  if (!existing) {
+    // Race: row disappeared between conflict and read. There is no durable
+    // pending update to back a notification, so let the next pass retry both.
+    return {
+      inserted: false,
+      shouldNotify: false,
+      shouldReopenNotification: false,
+    };
+  }
 
-  if (existing.status === "pending") {
+  if (existing.status === "pending" || existing.status === "conflict") {
     // Still pending — bump latestVersion if the catalog has advanced further
-    if (compareVersions(data.latestVersion, existing.latestVersion) > 0) {
+    const catalogAdvanced =
+      compareVersions(data.latestVersion, existing.latestVersion) > 0;
+    if (catalogAdvanced) {
       await db
         .update(marketplacePendingUpdates)
         .set({ latestVersion: data.latestVersion, updatedAt: new Date() })
@@ -211,15 +340,36 @@ export async function upsertPendingUpdate(
           and(
             eq(marketplacePendingUpdates.companyId, companyId),
             eq(marketplacePendingUpdates.catalogItemId, data.catalogItemId),
-            eq(marketplacePendingUpdates.status, "pending"),
-          ),
+            or(
+              eq(marketplacePendingUpdates.status, "pending"),
+              eq(marketplacePendingUpdates.status, "conflict")
+            )
+          )
         );
     }
-    return { inserted: false };
+    // A previous pass may have inserted this row and then failed to emit its
+    // founder hub item. Re-emit on every check; hubItemsService deduplicates by
+    // sourceUniqueKey and makes this a cheap no-op after successful delivery.
+    return {
+      inserted: false,
+      shouldNotify: true,
+      shouldReopenNotification: catalogAdvanced,
+    };
   }
 
   // Row is "applied" or "dismissed" — re-open it for the incoming catalog version.
   // The prior dismiss/apply was for an older version; this is a genuinely new release.
+  if (
+    (existing.status !== "applied" && existing.status !== "dismissed") ||
+    compareVersions(data.latestVersion, existing.latestVersion) <= 0
+  ) {
+    return {
+      inserted: false,
+      shouldNotify: false,
+      shouldReopenNotification: false,
+    };
+  }
+
   await db
     .update(marketplacePendingUpdates)
     .set({
@@ -234,10 +384,14 @@ export async function upsertPendingUpdate(
         eq(marketplacePendingUpdates.catalogItemId, data.catalogItemId),
         or(
           eq(marketplacePendingUpdates.status, "applied"),
-          eq(marketplacePendingUpdates.status, "dismissed"),
-        ),
-      ),
+          eq(marketplacePendingUpdates.status, "dismissed")
+        )
+      )
     );
 
-  return { inserted: true }; // treat re-opened row as new → caller notifies / auto-applies
+  return {
+    inserted: true,
+    shouldNotify: true,
+    shouldReopenNotification: true,
+  };
 }

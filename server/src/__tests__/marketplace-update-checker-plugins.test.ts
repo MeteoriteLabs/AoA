@@ -35,7 +35,11 @@ vi.mock("../services/marketplace-install/skill-auto-updater.js", () => ({
 }));
 
 // Import the pure compareVersions helper (already exists in update-checker)
-import { compareVersions, checkPluginUpdates } from "../services/marketplace-update-checker.js";
+import {
+  compareVersions,
+  checkPluginUpdates,
+} from "../services/marketplace-update-checker.js";
+import { marketplaceNotifications } from "../services/marketplace-notifications.js";
 import type { CatalogItem } from "@armyofagents/shared";
 
 describe("compareVersions", () => {
@@ -65,7 +69,12 @@ const PLUGIN_CATALOG_ITEM: CatalogItem = {
   description: "Discord plugin",
   version: "2.0.0",
   npm: { packageName: "@test/discord", version: "2.0.0" },
-  source: { adapter: "npm", url: "https://registry.npmjs.org", locator: "@test/discord", commitSha: "" },
+  source: {
+    adapter: "npm",
+    url: "https://registry.npmjs.org",
+    locator: "@test/discord",
+    commitSha: "",
+  },
   resourceUrl: "",
   content: { inline: "" },
   trust: { tier: "community", source: "npm" },
@@ -75,21 +84,42 @@ const PLUGIN_CATALOG_ITEM: CatalogItem = {
   tags: [],
 } as any;
 
-function buildPluginDb(pluginRows: Array<{ packageName: string; version: string }>) {
+function buildPluginDb(
+  pluginRows: Array<{ packageName: string; version: string }>,
+  {
+    insertReturning = [{ id: "upd-1" }] as Array<{ id: string }>,
+    existingPendingRow = null as {
+      status: string;
+      latestVersion: string;
+    } | null,
+  } = {}
+) {
   const insertedValues: any[] = [];
+  let selectCall = 0;
   return {
     db: {
-      select: () => ({
-        from: () => ({
-          where: () => Promise.resolve(pluginRows),
-        }),
-      }),
+      select: () => {
+        selectCall += 1;
+        return {
+          from: () => ({
+            where: () =>
+              selectCall === 1
+                ? Promise.resolve(pluginRows)
+                : {
+                    limit: () =>
+                      Promise.resolve(
+                        existingPendingRow ? [existingPendingRow] : []
+                      ),
+                  },
+          }),
+        };
+      },
       insert: () => ({
         values: (vals: any) => {
           insertedValues.push(vals);
           return {
             onConflictDoNothing: () => ({
-              returning: () => Promise.resolve([{ id: "upd-1" }]),
+              returning: () => Promise.resolve(insertReturning),
             }),
           };
         },
@@ -138,5 +168,40 @@ describe("checkPluginUpdates — company scoping", () => {
     await checkPluginUpdates(db, "co-a", [PLUGIN_CATALOG_ITEM]);
 
     expect(insertedValues).toHaveLength(0);
+  });
+
+  it("retries updateAvailable for an existing same-version pending plugin row", async () => {
+    const { db } = buildPluginDb(
+      [{ packageName: "@test/discord", version: "1.0.0" }],
+      {
+        insertReturning: [],
+        existingPendingRow: { status: "pending", latestVersion: "2.0.0" },
+      }
+    );
+
+    const result = await checkPluginUpdates(db, "co-a", [PLUGIN_CATALOG_ITEM]);
+
+    expect(marketplaceNotifications.updateAvailable).toHaveBeenCalledOnce();
+    expect(result).toEqual([]);
+  });
+
+  it("returns a structured failure when a pending plugin notification fails", async () => {
+    vi.mocked(marketplaceNotifications.updateAvailable).mockRejectedValueOnce(
+      new Error("notification unavailable")
+    );
+    const { db } = buildPluginDb([
+      { packageName: "@test/discord", version: "1.0.0" },
+    ]);
+
+    const result = await checkPluginUpdates(db, "co-a", [PLUGIN_CATALOG_ITEM]);
+
+    expect(result).toEqual([
+      {
+        companyId: "co-a",
+        itemType: "plugin",
+        catalogItemId: PLUGIN_CATALOG_ITEM.id,
+        message: "notification unavailable",
+      },
+    ]);
   });
 });

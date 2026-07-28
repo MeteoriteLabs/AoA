@@ -1,7 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+const { runUpdateCheckMock } = vi.hoisted(() => ({
+  runUpdateCheckMock: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((a: unknown, b: unknown) => ({ eq: [a, b] })),
+}));
+
+vi.mock("../services/marketplace-update-checker.js", () => ({
+  runUpdateCheck: runUpdateCheckMock,
 }));
 
 vi.mock("@armyofagents/db", () => ({
@@ -19,6 +27,7 @@ vi.mock("@armyofagents/db", () => ({
 }));
 
 import { MarketplaceCatalogService } from "../services/aoa-marketplace.js";
+import { withMarketplaceUpdateLock } from "../services/marketplace-update-coordinator.js";
 
 const VALID_CATALOG = {
   schemaVersion: "1.0.0",
@@ -104,13 +113,74 @@ describe("MarketplaceCatalogService", () => {
       bundledSnapshotProvider: async () => null,
     });
 
-    const result = await service.sync();
-    expect(result?.schemaVersion).toBe("1.0.0");
-    expect(result?.itemCount).toBe(1);
+    const result = await service.refresh();
+    expect(result.catalog?.schemaVersion).toBe("1.0.0");
+    expect(result.outcome).toBe("cdn_success");
+    expect(result.catalog?.itemCount).toBe(1);
     expect(inserted.length).toBeGreaterThan(0);
     expect(inserted[0].schemaVersion).toBe("1.0.0");
     expect(inserted[0].source).toBe("cdn");
     expect(inserted[0].lastSyncStatus).toBe("success");
+    expect(runUpdateCheckMock).not.toHaveBeenCalled();
+  });
+
+  it("runs update checks only through the explicit mutating refresh helper", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(VALID_CATALOG),
+    }) as any;
+    const { db } = makeDb([[]]);
+    const service = new MarketplaceCatalogService({
+      db,
+      cdnUrl: "https://example.com/catalog.json",
+      bundledSnapshotProvider: async () => null,
+    });
+
+    const result = await service.refreshAndCheckForUpdates();
+
+    expect(result.outcome).toBe("cdn_success");
+    await vi.waitFor(() =>
+      expect(runUpdateCheckMock).toHaveBeenCalledTimes(1),
+    );
+    expect(runUpdateCheckMock).toHaveBeenCalledWith(db, VALID_CATALOG.items);
+    await withMarketplaceUpdateLock(async () => undefined);
+  });
+
+  it("queues a sync update check behind the shared mutation lock", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(VALID_CATALOG),
+    }) as any;
+    const { db } = makeDb([[]]);
+    const service = new MarketplaceCatalogService({
+      db,
+      cdnUrl: "https://example.com/catalog.json",
+      bundledSnapshotProvider: async () => null,
+    });
+    let releaseBlocker!: () => void;
+    const blocker = new Promise<void>((resolve) => {
+      releaseBlocker = resolve;
+    });
+    let markLockHeld!: () => void;
+    const lockHeld = new Promise<void>((resolve) => {
+      markLockHeld = resolve;
+    });
+    const held = withMarketplaceUpdateLock(async () => {
+      markLockHeld();
+      await blocker;
+    });
+    await lockHeld;
+
+    const result = await service.refreshAndCheckForUpdates();
+
+    expect(result.outcome).toBe("cdn_success");
+    expect(runUpdateCheckMock).not.toHaveBeenCalled();
+    releaseBlocker();
+    await held;
+    await vi.waitFor(() =>
+      expect(runUpdateCheckMock).toHaveBeenCalledTimes(1),
+    );
+    await withMarketplaceUpdateLock(async () => undefined);
   });
 
   it("rejects unsupported schemaVersion", async () => {
@@ -257,11 +327,58 @@ describe("MarketplaceCatalogService", () => {
       bundledSnapshotProvider: async () => VALID_CATALOG as any,
     });
 
-    const result = await service.sync();
-    expect(result?.schemaVersion).toBe("1.0.0");
+    const result = await service.refresh();
+    expect(result.catalog?.schemaVersion).toBe("1.0.0");
+    expect(result.outcome).toBe("fallback_success");
     // bundled snapshot written via insert
     expect(inserted.length).toBeGreaterThan(0);
     expect(inserted[0].source).toBe("bundled");
     expect(inserted[0].lastSyncStatus).toBe("success");
+  });
+
+  it("joins concurrent refreshes and returns attempt-scoped status", async () => {
+    let resolveFetch!: (value: unknown) => void;
+    global.fetch = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          resolveFetch = resolve;
+        }),
+    ) as any;
+    const statusRow = {
+      schemaVersion: "1.0.0",
+      generatedAt: new Date("2026-04-30T00:00:00.000Z"),
+      itemCount: 1,
+      catalogJson: VALID_CATALOG,
+      lastSyncedAt: new Date("2026-07-28T00:00:00.000Z"),
+      lastSyncStatus: "success",
+      lastSyncError: null,
+      source: "cdn",
+    };
+    const { db } = makeDb([[statusRow]]);
+    const service = new MarketplaceCatalogService({
+      db,
+      cdnUrl: "https://example.com/catalog.json",
+      bundledSnapshotProvider: async () => null,
+    });
+
+    const first = service.refresh();
+    const concurrent = service.refresh();
+    expect(concurrent).toBe(first);
+    resolveFetch({
+      ok: true,
+      json: () => Promise.resolve(VALID_CATALOG),
+    });
+
+    const [firstResult, concurrentResult] = await Promise.all([first, concurrent]);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(concurrentResult).toEqual(firstResult);
+    expect(firstResult.catalog?.schemaVersion).toBe("1.0.0");
+    expect(firstResult.outcome).toBe("cdn_success");
+    expect(firstResult.status).toMatchObject({
+      lastSyncStatus: "success",
+      source: "cdn",
+      schemaVersion: "1.0.0",
+      itemCount: 1,
+    });
   });
 });

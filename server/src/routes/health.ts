@@ -40,6 +40,7 @@ export function healthRoutes(
 
     res.json({
       status: "ok",
+      revision: process.env.AOA_DEPLOY_SHA || null,
       deploymentMode: opts.deploymentMode,
       deploymentExposure: opts.deploymentExposure,
       authReady: opts.authReady,

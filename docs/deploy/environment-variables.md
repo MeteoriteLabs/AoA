@@ -19,6 +19,7 @@ All environment variables that AoA reads. Grouped by concern. The list is verifi
 | `AOA_DEPLOYMENT_MODE` | `local_trusted` | `local_trusted` or `authenticated` |
 | `AOA_DEPLOYMENT_EXPOSURE` | `private` | `private` or `public`. Only meaningful when `AOA_DEPLOYMENT_MODE=authenticated` |
 | `AOA_PUBLIC_URL` | (derived) | Public-facing URL for deployment. Used in invite links and webhook URLs |
+| `AOA_DEPLOY_SHA` | (unset) | Exact lowercase 40-character Git commit injected by the trusted deployment workflow. The server exposes it from `/api/health` so deployment health checks can prove the running container matches the requested revision. Leave unset for ordinary local development. |
 | `AOA_ALLOWED_HOSTNAMES` | (empty) | Comma-separated allowlist of hostnames the server will accept (Tailscale, Docker host alias, etc.) |
 | `AOA_TRUST_PROXY` | `false` | Express trust-proxy setting. Set to `true` (trust any proxy), a hop count like `1` (recommended for cloud), or a comma-separated CIDR list. Required when running behind Cloudflare/ALB/nginx — without it, `req.ip` reads the proxy IP and rate limits collapse. **Never set to `true` on a directly-exposed deployment** (allows X-Forwarded-For spoofing). |
 | `AOA_OPEN_ON_LISTEN` | `true` (CLI), `false` (server-only) | Auto-open default browser on first listen |

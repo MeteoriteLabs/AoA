@@ -74,10 +74,12 @@ ARG USER_UID=1000
 ARG USER_GID=1000
 ARG CODEX_CLI_VERSION=0.145.0
 ARG CLAUDE_CODE_VERSION=2.1.220
+ARG AOA_IMAGE_REVISION=unknown
 
 LABEL org.opencontainers.image.title="AoA"
 LABEL org.opencontainers.image.description="Army of Agents — Hybrid Workforce OS"
 LABEL org.opencontainers.image.source="https://github.com/meteoritelabs/aoa"
+LABEL org.opencontainers.image.revision="${AOA_IMAGE_REVISION}"
 
 WORKDIR /app
 COPY --chown=node:node --from=build /app /app

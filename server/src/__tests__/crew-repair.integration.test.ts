@@ -1928,6 +1928,50 @@ describe.skipIf(
     expect(pass3.repaired).toBe(1);
   }, 300_000);
 
+  it("a forced full-fleet pass bypasses the long cooldown but keeps the retry floor", async () => {
+    assertSetupOk();
+    const companyId = await createLegacyCompany("Forced Pass Cooldown Co");
+    await withCatalog();
+    let clock = Date.now();
+    setCrewRepairClock(() => clock);
+
+    brokenUrls.add(`${FIXTURE_HOST}/teams/default-crew/team.json`);
+    const failed = await runCrewRepairPass({
+      db,
+      companyIds: [companyId],
+      catalogItems: CATALOG_ITEMS,
+    });
+    expect(failed).toMatchObject({
+      repaired: 0,
+      skippedFailClosed: 1,
+      skippedCooldown: 0,
+    });
+
+    brokenUrls.clear();
+    clock += CREW_REPAIR_FORCE_FLOOR_MS - 1;
+    const tooSoon = await runCrewRepairPass({
+      db,
+      companyIds: [companyId],
+      catalogItems: CATALOG_ITEMS,
+      maxPerPass: 1,
+      force: true,
+    });
+    expect(tooSoon).toMatchObject({ repaired: 0, skippedCooldown: 1 });
+
+    clock += 2;
+    const forced = await runCrewRepairPass({
+      db,
+      companyIds: [companyId],
+      catalogItems: CATALOG_ITEMS,
+      maxPerPass: 1,
+      force: true,
+    });
+    expect(
+      (await crewRows(companyId)).find((r) => r.name === "Scout")!.template_origin,
+    ).toBe(SCOUT_ID);
+    expect(forced).toMatchObject({ repaired: 1, skippedCooldown: 0 });
+  }, 300_000);
+
   it("does no work at all when the catalog lacks the crew team item", async () => {
     assertSetupOk();
     const companyId = await createLegacyCompany("Stale Catalog Co");

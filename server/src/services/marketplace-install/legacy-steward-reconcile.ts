@@ -38,6 +38,11 @@ export interface LegacyStewardReconcilePassResult {
   failed: number;
 }
 
+export interface LegacyStewardReconcilePassFailure {
+  companyId: string;
+  error: unknown;
+}
+
 type CompanyReconcileResult =
   | {
       status: "adopted";
@@ -263,6 +268,7 @@ export async function runLegacyStewardReconcilePass(opts: {
   catalogItems: readonly CatalogItem[];
   maxPerPass?: number;
   env?: NodeJS.ProcessEnv;
+  onFailure?: (failure: LegacyStewardReconcilePassFailure) => void;
 }): Promise<LegacyStewardReconcilePassResult> {
   const result: LegacyStewardReconcilePassResult = {
     disabled: false,
@@ -310,6 +316,7 @@ export async function runLegacyStewardReconcilePass(opts: {
       }
     } catch (err) {
       result.failed += 1;
+      opts.onFailure?.({ companyId, error: err });
       logger.warn({ err, companyId }, "Steward reconcile failed for company");
     }
   }

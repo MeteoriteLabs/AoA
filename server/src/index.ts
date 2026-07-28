@@ -19,8 +19,6 @@ import {
   companies,
   companyMemberships,
   instanceUserRoles,
-  marketplaceCatalogCache,
-  marketplaceCompanySettings,
 } from "@armyofagents/db";
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
@@ -69,7 +67,7 @@ import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { tryRecoverOrphanPostgres } from "./postgres/embedded-orphan-recovery.js";
-import { DEFAULT_BACKUP_RETENTION, MARKETPLACE_SETTINGS_DEFAULTS } from "@armyofagents/shared";
+import { DEFAULT_BACKUP_RETENTION } from "@armyofagents/shared";
 import { runChroniclerSweep, CHRONICLER_SWEEP_INTERVAL_MS } from "./services/internal-agent/aoa-agents/sweep-chronicler.js";
 import { ensureCrewAgents, ensureInfrastructureAgents, isCrewMarketplaceManaged } from "./services/internal-agent/aoa-agents/crew-seeding.js";
 import { backfillGoalParents } from "./migrations/backfill-goal-parents.js";
@@ -80,11 +78,8 @@ import { normalizeLegacyOnboardingState } from "./migrations/normalize-legacy-on
 import { backfillCrewTemplateOrigin } from "./services/internal-agent/aoa-agents/backfill-template-origin.js";
 import { backfillCrewOriginKind } from "./services/internal-agent/aoa-agents/backfill-crew-origin-kind.js";
 import { reconcileAutonomyScale } from "./services/internal-agent/aoa-agents/reconcile-autonomy-scale.js";
-import { checkCrewUpdates } from "./services/marketplace-install/crew-updater.js";
-import { reconcileTeamMembers } from "./services/marketplace-install/team-reconcile.js";
-import { runCrewRepairPass } from "./services/crew-repair.js";
-import { runLegacyStewardReconcilePass } from "./services/marketplace-install/legacy-steward-reconcile.js";
-import { agentInstructionsService } from "./services/agent-instructions.js";
+import { loadCachedCatalog } from "./services/aoa-marketplace.js";
+import { runMarketplaceCrewMaintenance } from "./services/marketplace-reconcile.js";
 
 type BetterAuthSessionUser = {
   id: string;
@@ -895,89 +890,28 @@ const CREW_UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 async function runCrewUpdateCheck(): Promise<void> {
   try {
-    const catalogRows = await (db as any)
-      .select()
-      .from(marketplaceCatalogCache)
-      .where(eq(marketplaceCatalogCache.id, 1))
-      .limit(1);
-    if (catalogRows.length === 0) return;
-    const catalogData = (catalogRows[0].catalogJson as { items?: unknown }).items;
-    if (!Array.isArray(catalogData)) return;
+    const catalog = await loadCachedCatalog(db as any);
+    if (!catalog) return;
 
-    const allCompanies = await (db as any).select({ id: companies.id }).from(companies);
-
-    // T2.3b — repair BEFORE the update check, in the same pass, on the catalog
-    // already loaded above. Order matters: a company adopted here is inside the
-    // update pipeline immediately, and the reconcileTeamMembers loop below is
-    // what installs any roster member it had no local counterpart for (e.g.
-    // Reviewer, which has no legacy seeder at all).
-    //
-    // This runs only when a catalog exists (the early return above), so a
-    // genuinely offline instance does no repair work and retries nothing.
-    // Healthy companies cost one indexed query and nothing else.
-    await runCrewRepairPass({
+    // Shared with POST /api/admin/marketplace/reconcile. Scheduled runs retain
+    // the existing repair budget/cooldown and consume no network for catalog
+    // discovery; the admin operation refreshes first and uses manual mode.
+    const result = await runMarketplaceCrewMaintenance({
       db: db as any,
-      companyIds: allCompanies.map((c: { id: string }) => c.id),
-      catalogItems: catalogData as any,
-    }).catch((err) => logger.warn({ err }, "crew provisioning repair pass failed"));
-
-    // T2.4 / Phase 4A — a healthy marketplace-managed company can still carry
-    // the legacy NULL-origin Steward created before Steward joined the catalog.
-    // Adopt that exact row in place before the updater walks agents. This pass
-    // uses only `catalogData` already loaded above: no fetch and no change to
-    // `diagnoseCrewProvisioning`'s no-network healthy classification.
-    await runLegacyStewardReconcilePass({
-      db: db as any,
-      companyIds: allCompanies.map((c: { id: string }) => c.id),
-      catalogItems: catalogData as any,
-    }).catch((err) => logger.warn({ err }, "legacy Steward reconciliation pass failed"));
-
-    for (const company of allCompanies) {
-      // Per-company isolation: a failure for one company must not abort the
-      // update check for the remaining companies.
-      try {
-        const settingsRow = await (db as any)
-          .select({ settings: marketplaceCompanySettings.settings })
-          .from(marketplaceCompanySettings)
-          .where(eq(marketplaceCompanySettings.companyId, company.id))
-          .limit(1);
-        const settings = {
-          ...MARKETPLACE_SETTINGS_DEFAULTS,
-          ...((settingsRow[0]?.settings as object) ?? {}),
-        };
-        await checkCrewUpdates({
-          db: db as any,
-          companyId: company.id,
-          catalogItems: catalogData as any,
-          settings,
-          instructionsService: agentInstructionsService(),
-        });
-      } catch (err) {
-        logger.warn({ err, companyId: company.id }, "crew update check failed for company");
-      }
-
-      // WS6: member-add-on-update reconciliation. checkCrewUpdates only
-      // walks already-installed agent rows, so a team package that grew a
-      // new roster member (e.g. the Librarian, once it ships in the
-      // aoa-curated/standard-crew catalog entry — TODO(WS6-marketplace-cdn))
-      // is never discovered there. Separate try/catch: a reconcile failure
-      // must not be conflated with (or block) the version-update check above.
-      try {
-        const reconciled = await reconcileTeamMembers({
-          db: db as any,
-          companyId: company.id,
-          catalogItems: catalogData as any,
-          instructionsService: agentInstructionsService(),
-        });
-        if (reconciled.membersAdded > 0) {
-          logger.info(
-            { companyId: company.id, ...reconciled },
-            "marketplace: team roster reconciliation added missing members",
-          );
-        }
-      } catch (err) {
-        logger.warn({ err, companyId: company.id }, "team roster reconciliation failed for company");
-      }
+      catalogItems: catalog.items,
+      mode: "scheduled",
+    });
+    if (result.failures.length > 0) {
+      logger.warn(
+        { failures: result.failures },
+        "marketplace crew maintenance completed with company failures",
+      );
+    }
+    if (result.teamReconcile.membersAdded > 0) {
+      logger.info(
+        result.teamReconcile,
+        "marketplace: team roster reconciliation added missing members",
+      );
     }
   } catch (err) {
     logger.warn({ err }, "crew update check failed");
