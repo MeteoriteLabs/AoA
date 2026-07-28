@@ -32,6 +32,15 @@ export function postAuthJourneyRedirect(
     return pathname === "/onboarding" ? null : "/onboarding";
   }
 
+  const currentCompany = new URLSearchParams(search).get("company");
+  const isPendingInvitationFlow =
+    pathname === "/onboarding/join" &&
+    currentCompany !== null &&
+    journey.pendingInvitations.some(
+      (invitation) => invitation.companyId === currentCompany
+    );
+  if (isPendingInvitationFlow) return null;
+
   const isAuthorizedNewCompanyFlow =
     pathname === "/onboarding" &&
     journey.canCreateCompany &&

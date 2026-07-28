@@ -368,6 +368,67 @@ describe("GET /api/companies/:companyId/providers", () => {
     expect(claude.status.execution.state).toBe("not_checked");
   });
 
+  it("projects the verified subscription actually bound to Commander instead of the newest credential", async () => {
+    seedGet({
+      agents: [
+        {
+          id: AGENT_ID,
+          name: "Commander",
+          adapterType: "claude_local",
+        },
+      ],
+      credentials: [
+        {
+          id: "credential-bound-older",
+          provider: "anthropic",
+          ownerUserId: "user-1",
+          executionTargetId: "control-plane",
+          kind: "personal_subscription",
+          state: "verified",
+          verifiedAt: new Date("2026-07-20T08:00:00.000Z"),
+          updatedAt: new Date("2026-07-20T08:00:00.000Z"),
+        },
+        {
+          id: "credential-newer-unbound",
+          provider: "anthropic",
+          ownerUserId: "user-2",
+          executionTargetId: "control-plane",
+          kind: "personal_subscription",
+          state: "verified",
+          verifiedAt: new Date("2026-07-21T08:00:00.000Z"),
+          updatedAt: new Date("2026-07-21T08:00:00.000Z"),
+        },
+      ],
+      bindings: [
+        {
+          agentId: AGENT_ID,
+          credentialId: "credential-bound-older",
+          approvedAt: new Date("2026-07-20T08:01:00.000Z"),
+          revokedAt: null,
+        },
+      ],
+      commander: [{ agentId: AGENT_ID }],
+    });
+
+    const res = await request(makeApp()).get(
+      `/api/companies/${COMPANY_ID}/providers`,
+    );
+    const claude = res.body.providers.find(
+      (provider: { descriptor: { id: string } }) =>
+        provider.descriptor.id === "anthropic",
+    );
+
+    expect(claude.status.credential).toMatchObject({
+      state: "verified",
+      method: "subscription",
+      ownerDisplay: "You",
+    });
+    expect(claude.status.assignment).toMatchObject({
+      state: "commander_subscription",
+      intendedAgentId: AGENT_ID,
+    });
+  });
+
   it("does not project subscription credentials or bindings from another execution target", async () => {
     process.env.AOA_EXECUTION_TARGET_ID = "hetzner-qa";
     seedGet({

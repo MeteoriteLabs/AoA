@@ -101,4 +101,34 @@ describe("postAuthJourneyRedirect", () => {
       postAuthJourneyRedirect(journey("returning"), "/access-required")
     ).toBe("/");
   });
+
+  it("allows a returning member to review only a pending company invitation", () => {
+    const returning = journey("returning", {
+      pendingInvitations: [
+        {
+          companyId: "invited-company",
+          companyName: "Invited Company",
+          inviteId: "invite-1",
+          role: "team_member",
+          createdAt: "2026-07-28T00:00:00.000Z",
+          filed: false,
+        },
+      ],
+    });
+
+    expect(
+      postAuthJourneyRedirect(
+        returning,
+        "/onboarding/join",
+        "?company=invited-company"
+      )
+    ).toBeNull();
+    expect(
+      postAuthJourneyRedirect(
+        returning,
+        "/onboarding/join",
+        "?company=unrelated-company"
+      )
+    ).toBe("/");
+  });
 });

@@ -384,15 +384,28 @@ function canonicalStatus(input: {
         row.executionTargetId === executionTargetId,
     )
     .sort((a, b) => Date.parse(String(b.updatedAt ?? 0)) - Date.parse(String(a.updatedAt ?? 0)));
-  const subscription = credentials.find((row) => row.state === "verified") ?? credentials[0];
-  const activeBinding = subscription && commander
-    ? bindings.find(
-        (row) =>
-          row.credentialId === subscription.id &&
-          row.agentId === commander.agentId &&
-          !row.revokedAt,
+  const credentialById = new Map(
+    credentials.map((credential) => [credential.id, credential]),
+  );
+  const activeBindings = commander
+    ? bindings.filter(
+        (binding) =>
+          binding.agentId === commander.agentId &&
+          !binding.revokedAt &&
+          credentialById.get(binding.credentialId)?.state === "verified",
       )
+    : [];
+  // Mirror runtime eligibility: only one active, verified Commander binding is
+  // usable. Credential recency must not override an explicit older binding.
+  const activeBinding =
+    activeBindings.length === 1 ? activeBindings[0] : undefined;
+  const boundSubscription = activeBinding
+    ? credentialById.get(activeBinding.credentialId)
     : undefined;
+  const subscription =
+    boundSubscription ??
+    credentials.find((row) => row.state === "verified") ??
+    credentials[0];
 
   let credential: ProviderCanonicalStatus["credential"];
   if (subscription) {
