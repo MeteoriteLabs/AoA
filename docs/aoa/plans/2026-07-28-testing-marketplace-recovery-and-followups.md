@@ -1,1030 +1,1431 @@
-<!-- /autoplan restore point: C:\Users\TK\.gstack\projects\MeteoriteLabs-AoA\codex-testing-marketplace-recovery-autoplan-restore-20260728-022915.md -->
+<!-- /autoplan restore point: C:\Users\TK\.gstack\projects\AoA-main\codex-testing-marketplace-recovery-autoplan-restore-20260728-172030.md -->
 
-# Testing Marketplace Recovery and Follow-up Execution Plan
+# Testing Marketplace Recovery Incident Plan
 
 **Date:** 2026-07-28
-**Repos:** `MeteoriteLabs/AoA`, `MeteoriteLabs/aoa-marketplace`, `MeteoriteLabs/aoa-marketplace-cdn`
-**Starting AoA commit:** `3aa78b77539706957f28105c3656e4562a267ecc`
-**Target environment:** `https://testing.armyofagents.org`
+**Repository:** `MeteoriteLabs/AoA`
+**Environment:** `https://testing.armyofagents.org`
+**Reviewed base:** `32983b769a6fe4741b4e8144d42797048c095b53`
+**Scope:** A1 operability, evidence capture, A2 root-cause repair
 
 ## Outcome
 
-Restore the missing testing surfaces, publish a real connector catalog, finish the
-team-template update lifecycle, and remove the embedded PostgreSQL port collision
-flake. Each change is independently reviewable, reversible, and gated by its own
-CI result.
+Restore both testing companies to a complete, marketplace-managed default crew
+without duplicate agents, teams, or skills. The repair must survive a container
+restart and a second forced reconciliation must be a no-op.
 
-## Verified Starting State
+This document is an incident plan, not a roadmap. Connector publication,
+team-template product work, and embedded PostgreSQL test hygiene are split into:
 
-1. Testing is healthy but runs `f8891a958dd0b91f3e26c58b58fbae8fc1bcef32`,
-   not current `main`.
-2. Current `main` is `3aa78b77539706957f28105c3656e4562a267ecc`.
-3. Testing's cached marketplace shows 501 skills, 0 plugins, 0 agents, and 0
-   teams.
-4. The current public `catalog.json` contains 504 skills, 4 plugins, 12 agents,
-   and 1 team.
-5. The public `connectors.json` returns 404.
-6. The authenticated test company has 10 AoA crew agents under
-   Team -> AoA Team. The ordinary Agents page intentionally lists only
-   organization agents.
-7. The test account resumes unfinished onboarding at step 5, so `/` intentionally
-   shows the full-screen onboarding route instead of normal navigation.
-8. Phase 4B changed crew seeding and repair code only. It did not change the
-   sidebar, marketplace routes, connector UI, or Agents UI, and it is not yet
-   deployed to testing.
+- `docs/aoa/plans/2026-07-28-connector-catalog-product-gate.md`
+- `docs/aoa/plans/2026-07-28-team-template-update-discovery.md`
+- `docs/aoa/plans/2026-07-28-embedded-pg-port-sweep.md`
 
-## Premises
+The prior umbrella is retained only as historical context under
+`docs/aoa/plans/archive/2026-07-28-testing-marketplace-recovery-and-followups-umbrella.md`.
 
-1. The missing marketplace categories should be fixed by deploying current
-   `main` and refreshing the existing cache, not by adding duplicate UI routes.
-2. Built-in crew should remain separate from founder-created organization agents.
-3. Curated connectors should continue to use a separate `connectors.json`
-   contract rather than becoming ordinary `catalog.json` items.
-4. Team updates must preserve founder changes by default. Unknown provenance is
-   treated as customized or conflicting, never safe to overwrite.
-5. The embedded PostgreSQL sweep is test-only and must be isolated from production
-   behavior changes.
-6. Live CDN publication is a separate approval gate because it affects every AoA
-   instance using the default URL.
+## Live Incident Evidence
 
-The user approved this direction after the live investigation on 2026-07-28.
+1. PR `#311` is merged. Testing is healthy on exact revision
+   `32983b769a6fe4741b4e8144d42797048c095b53`.
+2. Testing's loaded catalog identity and counts match the public
+   `catalog.json`.
+3. Reconciliation operation
+   `9e9ebe10-92a5-4b4d-afa5-319e01925f07` returned:
+   - `status: "partial"`
+   - 2 companies examined
+   - 0 repaired
+   - `skippedFailClosed: 2`
+   - no thrown `failures`
+4. Both companies still have 10 AoA agents. Reviewer is absent, no default crew
+   team is present, Steward and Chronicler retain NULL origins, and all 17 crew
+   skills are absent.
+5. The response and completion audits expose skip counters but not the guarded
+   reason or diagnostic cause.
+6. An instance-admin board key works only when the caller fabricates a browser
+   Origin header because `board-mutation-guard.ts` treats `board_key` like a
+   cookie-backed browser session.
+7. `managedMarketplaceSkillsRoot()` resolves below `process.cwd()`
+   (`/app/.aoa/marketplace-skills` in Docker), while the image persists `/aoa`.
+   Managed bundles therefore have a confirmed restart-durability defect even if
+   it is not the immediate cause of the two skips.
 
-## Delivery Boundaries
+## Confirmed Premises
 
-This program has one operational recovery and five serialized code PR tracks:
+1. Only an authenticated board actor with `source === "board_key"` bypasses the
+   Origin/Referer check. Browser sessions keep the existing CSRF protection.
+2. Every aggregate reconciliation skip must have one safe, structured,
+   company-scoped diagnostic in the response and matching completion audit.
+3. Raw exception strings are server-log material. Public/audit diagnostics use
+   allowlisted codes and context only.
+4. A1 changes authentication semantics and observability, not repair decisions.
+5. A2 is selected from the A1 rerun evidence. The persistent-root defect is
+   fixed in A2 regardless of whether it is the immediate skip cause.
+6. Founder bytes are never silently overwritten. No recovery shortcut may
+   clear a customized flag, invent an installed inventory, or bypass the
+   marketplace-skills containment jail.
+7. The operator must not extract, paste, print, or otherwise handle a stored
+   board token after login. The CLI is the supported recovery client.
+8. From an already-authenticated CLI, time to a typed recovery verdict is at
+   most five minutes. A timeout is not a verdict; it must leave an operation ID
+   that can be inspected safely.
 
-| Gate | Deliverable | Repository | Production behavior |
-|---|---|---|---|
-| A0 | Exact-SHA deploy input and deterministic catalog/crew maintenance | AoA | Operations control |
-| A | Deploy current `main`, refresh catalog, verify crew | AoA testing | Testing only |
-| B0 | Amend stale connector architecture decision | AoA | Documentation only |
-| B1 | Connector aggregation, content, validation, publication | aoa-marketplace | New curated catalog |
-| C1 | Marketplace-team schema, baseline persistence, detection | AoA | Detection only |
-| C2 | Team-template diff, merge, and apply API | AoA | Marketplace update behavior |
-| C3 | Team-template update UI | AoA | User-facing update workflow |
-| D | Embedded PostgreSQL allocator sweep | AoA | Test-only |
+## Delivery Boundary
 
-Do not combine B, C1, C2, C3, and D in one PR. Their rollback units, reviewers,
-and verification surfaces are different. Keep one-click team apply disabled
-until C2 has proved the baseline and transaction invariants.
+| PR | Purpose | May change repair behavior? | Deploy gate |
+|---|---|---:|---|
+| A1 | Board-key/CLI operability, durable inspection, and structured diagnostics | No | security tests, diagnostic invariants, full verify |
+| A2 | Reproduce and fix the observed cause; persist managed bundles | Yes, reason-specific only | Linux CI, Docker restart proof, live forced reconcile |
 
-## Gate A - Recover Testing First
+A1 and A2 remain separate. A1 must deploy before A2's cause-specific repair is
+finalized because its diagnostic output selects that branch.
 
-### A0 - Make the Operation Deterministic
+## CEO Review - Strategy and Scope
 
-The current testing workflow accepts no input, permits only `main`, and always
-deploys `github.sha`. The marketplace sync endpoint does not rerun crew repair or
-team reconciliation. Before the recovery deploy, ship one small operations PR:
+### Premise Challenge
 
-1. Add required `deploy_sha` to `.github/workflows/deploy-testing.yml`.
-2. Validate that the SHA exists, is an ancestor of `origin/main`, and has the
-   required CI success before building.
-3. Check out and label the image with that exact SHA. Print it in the deployment
-   summary and health evidence.
-4. Extract the boot-only catalog/crew sequence into a reusable service.
-5. Add `POST /api/admin/marketplace/reconcile`, restricted to instance admins.
-   It synchronously:
-   - refreshes the marketplace catalog from the CDN; cache/bundled fallback
-     remains available to normal reads but never authorizes fleet mutation
-   - records the actor-attributed fleet start audit, then runs the catalog
-     skill/plugin update check; catalog refresh itself does not mutate
-     installed-item update state, periodic checks serialize behind the audited
-     operation, the update checker uses the exact audited company snapshot, and
-     any per-company/item failures make the result `partial` under the
-     `marketplace_update` failure stage
-   - runs crew repair
-   - runs legacy Steward reconciliation
-   - reconciles team members
-6. Return the catalog `generatedAt` and digest, companies examined, repaired
-   agents/members, and per-company failures. Log one structured operation ID.
-7. Add route authorization, partial-failure, replay, and exact-SHA workflow
-   contract tests.
-
-Deploy:
-
-```sh
-gh workflow run deploy-testing.yml --ref main -f deploy_sha=<reviewed-sha>
-```
-
-Reconcile after health is green:
-
-```sh
-curl -X POST \
-  -H "Authorization: Bearer <instance-admin-token>" \
-  https://testing.armyofagents.org/api/admin/marketplace/reconcile
-```
-
-The response is the deployment handoff artifact. `canonicalDigestSha256` is the
-SHA-256 of the catalog after recursive JSON key sorting, so compare it with the
-public catalog using the same canonicalization rather than hashing transport
-whitespace. `status: "partial"` means at least one company failed or a guarded
-repair was skipped; use `failures` and the aggregate skip counters before
-retrying.
-
-```json
-{
-  "operationId": "f44ac1b9-...",
-  "replayed": false,
-  "status": "success",
-  "catalog": {
-    "generatedAt": "2026-07-28T00:00:00.000Z",
-    "canonicalDigestSha256": "<64 lowercase hex>",
-    "schemaVersion": "1.0.0",
-    "itemCount": 521,
-    "source": "cdn"
-  },
-  "companiesExamined": 2,
-  "repairs": {
-    "crewCompaniesRepaired": 1,
-    "legacyStewardsAdopted": 1,
-    "teamsReconciled": 1,
-    "teamMembersAdded": 1
-  },
-  "failures": []
-}
-```
-
-Rollback uses the same workflow with a recorded prior SHA only when that image
-implements the OCI-label and `/api/health` revision contract. The trusted driver
-fails closed when either proof is missing for a candidate or contract-aware
-rollback. During automatic rollback only, it may accept the already-selected
-previous image when its OCI label and both health payloads uniformly predate the
-revision contract; the deployment workflow remains failed and the log explicitly
-states that availability was restored without certified revision evidence. Any
-partial or conflicting revision evidence still fails. The first successful A0
-deployment therefore becomes the first certified rollback anchor.
-
-### Procedure
-
-1. Confirm `origin/main` is CI-green at `3aa78b77539706957f28105c3656e4562a267ecc`.
-2. Dispatch the manual testing deployment workflow with that exact SHA.
-3. Verify the deployment log names the exact image SHA and reports a healthy
-   server.
-4. Verify `/api/health`.
-5. Trigger or verify a marketplace catalog refresh after the new server is
-   running.
-6. At dispatch time, record the public catalog's `generatedAt`, response digest,
-   and category counts. Confirm testing loads that exact artifact. Record three
-   separate views of the data:
-   - raw artifact counts by type
-   - community shelf counts
-   - AoA shelf counts
-   The UI deliberately partitions AoA and community items, so no single shelf is
-   expected to equal the raw total. The observed 2026-07-28 raw counts are 504
-   skills, 4 plugins, 12 agents, and 1 team, but the captured artifact identity
-   is authoritative if the catalog changes legitimately during deployment.
-7. Run or verify the crew repair and reconciliation pass after the refreshed
-   catalog is available.
-8. Confirm Team -> AoA Team contains Steward and Reviewer with no duplicate
-   crew identities.
-9. Confirm the ordinary Agents page still excludes AoA crew.
-10. Confirm onboarding step 5 remains the only reason `/` redirects away from
-    the lobby.
-11. Capture desktop and mobile evidence for this route/session matrix, using the
-    authenticated company route prefix where required:
-
-| Route | Expected result |
-|---|---|
-| `/marketplace` | Community marketplace categories and captured counts |
-| `/marketplace?view=aoa` | AoA marketplace categories and captured counts |
-| `/<prefix>/team?tab=aoa&aoaTab=roster` | Steward and Reviewer exactly once |
-| `/<prefix>/agents/all` | Organization agents only |
-| `/` | Onboarding step 5 for the current testing account |
-
-Verify the deep links first and `/` last so the intentional onboarding redirect
-cannot be misdiagnosed as missing navigation.
-
-### Rollback
-
-Redeploy the most recent recorded **contract-aware** SHA if a later image fails
-its health check or introduces a verified regression. The pre-A0
-`f8891a958dd0b91f3e26c58b58fbae8fc1bcef32` image may be restored automatically
-or manually for emergency availability during the first rollout, but it cannot
-satisfy exact revision evidence and is not an eligible certified deployment
-target. The legacy automatic-rollback compatibility path reports availability
-recovery only; it never certifies the SHA.
-Do not roll back merely because the founder's onboarding state still resumes at
-step 5.
-
-### Exit Criteria
-
-- Deployment SHA is exact.
-- Health is green.
-- Catalog counts are current.
-- Steward and Reviewer exist exactly once.
-- No UI route or navigation regression is observed.
-
-## Gate B - Publish the Curated Connector Catalog
-
-Gate B follows
-`docs/aoa/plans/2026-07-25-plan3b-connector-catalog-publishing.md`.
+| Premise | Verdict | Evidence |
+|---|---|---|
+| This is an incident, not a marketplace roadmap | confirmed | 2/2 companies remain degraded after the deployed recovery operation |
+| Operability precedes behavior changes | confirmed | current response loses the reason behind both fail-closed skips |
+| A1 and A2 must be separate | confirmed | A2's correct branch is unknowable until A1 returns typed evidence |
+| Persistent storage is incident scope | confirmed | Docker persists `/aoa`, while managed bundles resolve below `/app` |
+| Fully offline first-party packaging is incident scope | rejected for now | valuable architecture direction, but broader than the proven restart and repair failure |
 
 ### What Already Exists
 
-AoA commit `19fba089` already shipped the build-time snapshot fetcher, bundled
-snapshot, server fallback, and fallback/live-cache precedence tests. Gate B must
-verify those paths, not rebuild them.
+| Need | Existing leverage | Treatment |
+|---|---|---|
+| Credential-source identity | `actorMiddleware` emits `source: "board_key"` after DB validation | reuse as the exact guard boundary |
+| Browser mutation protection | `boardMutationGuard` already handles safe methods, local implicit actors, Origin, and Referer | add one source-specific branch; preserve the rest |
+| Guarded repair reasons | `CrewRepairResult` carries `reason` and `detail` | retain internally; replace string-only skill-install cause with typed diagnostics |
+| Fleet aggregation | `runCrewRepairPass` owns counters and company loop | collect skips at the counter increment sites |
+| Public operation contract | `MarketplaceReconcileResponse` and per-company activity audit | extend POST and add one read-only inspection endpoint over the same operation |
+| Operation correlation | reconciliation already emits a stable `operationId` | propagate into full-error structured logs |
+| Managed-path jail | `managed-skills-root.ts` centralizes containment and case probing | move the resolver once; keep callers on the shared boundary |
+| Atomic bundle replacement | marketplace materialization already stages and renames | preserve while relocating to persistent storage |
 
-### B0 - Reconcile the Architecture Contract
+### Implementation Alternatives
 
-Amend Decision #116 in `docs/architecture/decisions.md` before publication:
+| Approach | Effort | Incident value | Risk | Decision |
+|---|---:|---:|---:|---|
+| Guess the likely filesystem cause and patch it immediately | low | uncertain | high: hides another cause and repeats blind operation | rejected |
+| A1 typed diagnostics, then A2 evidence-selected repair plus persistence | medium | high | bounded and reversible | selected |
+| Bundle every first-party crew resource into the image and remove CDN dependency | high | potentially high | broad packaging/versioning change during incident | defer to architecture follow-up |
+| Return raw error text to the admin endpoint | low | high short-term | durable secret/path disclosure risk | rejected |
 
-1. Replace the stale "fifth marketplace item type" wording with the shipped
-   separate `connectors.json` contract.
-2. Record the fleet-freeze reason: older `catalog.json` parsers reject an unknown
-   item-type enum and retain stale cache.
-3. Point to `packages/shared/src/mcp-connector-catalog.ts` and
-   `connector-catalog-isolation.test.ts` as the enforced boundary.
-4. Correct the older Plan 3b note that says AoA still needs a snapshot fallback.
-5. Export a versioned contract bundle under
-   `docs/contracts/mcp-connectors/v1/`: generated JSON Schema, raw-input
-   conformance cases with accepted/dropped expectations, and SHA256 manifest.
-   The cases cover reserved names, value-bearing aliases, duplicate IDs,
-   defaults, transport coherence, and additive unknown fields.
+### Temporal Interrogation
 
-This is a small documentation PR and must merge before B1 publishes bytes that
-depend on the corrected contract.
+```text
+DAY 1      A1 contracts, guard, durable inspection, and CLI
+DAY 2      A1 fetch/root hardening, scripts, docs, and full verification
+DAY 3      A1 CI/review, exact-SHA deploy, diagnostic run, evidence capture
+DAY 4      A2 exact reproduction and evidence-selected repair
+DAY 5+     A2 persistence, fencing, Linux chaos gate, and review
+DEPLOY 2   restart/recreation proof and two-pass incident closure
+```
 
-### B1 - Marketplace Builder and Content
+The stop condition is explicit: if A1 cannot classify both live skips without
+raw details, A2 does not start. If A2 cannot reproduce the observed code, it
+does not mutate repair behavior.
 
-1. Add `content/connectors/<slug>/connector.json`.
-2. Implement `aggregateConnectors()` with the same schema AoA enforces.
-3. Emit `{ schemaVersion, entries }` to `connectors.json`.
-4. Derive trust from `trusted-sources.json`; never trust entry self-assertion.
-5. Reject invalid server names, incoherent transports, secret values, malformed
-   auth requirements, duplicate IDs, and duplicate server names.
-6. Extend validation and CI to build and inspect `connectors.json`.
-7. Extend publication so `connectors.json` is committed alongside `catalog.json`
-   in `aoa-marketplace-cdn`.
-8. Do not add that copy step to the existing push-to-main publisher. Add a
-   `publish-connectors.yml` `workflow_dispatch` using a protected environment,
-   fixed inputs `source_sha`, `artifact_sha256`, and `dry_run`, and a reviewed
-   `connectors.json`-only CDN diff. The environment owner approves publication;
-   rollback reverts the resulting CDN commit.
-9. Add `docs/marketplace/standards/connectors.md`, a connector section in
-   `agent-workflows.md`, a valid example, and an ownership/credential-review
-   sidecar. Include the exact local AoA seam:
-   `AOA_E2E_CONNECTOR_CATALOG_PATH=<absolute connectors.json path>`.
+### Dream State Delta
 
-### Initial Launch Set and Value Target
+This incident leaves AoA with a bearer-key-operable fleet recovery endpoint,
+auditable company-level diagnostics, and restart-durable managed bundles. The
+12-month ideal additionally makes first-party crew provisioning independently
+available from a signed, content-addressed release artifact, uses the public CDN
+only as an update channel, validates required inventory at boot, and alerts
+before a founder discovers a degraded crew. That broader packaging platform is
+not smuggled into A2.
 
-The first publication targets the founder workflow "give a crew agent access to
-project files, web retrieval, source control, or product knowledge without
-hand-authoring MCP configuration."
+### CEO Dual-voice Consensus
 
-The named launch candidates are:
-
-| Connector | Transport | Availability gate | Founder value |
+| Dimension | Independent reviewer | Codex reviewer | Consensus |
 |---|---|---|---|
-| Fetch | stdio, no secret | Primary-source package check plus live request | Web retrieval |
-| Notion local | stdio, `NOTION_TOKEN` | Already live-proven; re-run list query | Product knowledge |
-| Notion hosted | HTTP, OAuth | Visible but explicitly unavailable | Shows the future hosted path honestly |
-| GitHub hosted | HTTP, token | Publish only after primary-source auth check and live tool call | Repository/issues workflow |
+| Umbrella plan was over-broad | split incident from B/C/D | split into four programs | confirmed and applied |
+| Recovery is the immediate problem | A1/A2 first | A1/A2 first | confirmed |
+| Product metrics belong in connector/team plans | required | required | confirmed; moved out |
+| General offline crew packaging belongs in incident | required | not raised as incident blocker | disagreement; deferred as explicit architecture follow-up |
+| Exact-SHA deployment is the long-term ideal | not challenged | prefer immutable image promotion | long-term follow-up; A0 is already shipped |
 
-Filesystem is deliberately excluded from the first catalog publish. The current
-catalog installer cannot bind a founder-selected, workspace-contained path, so a
-static fleet-wide argv would be either useless or unsafe. It remains available
-through the existing BYO path until typed install parameters exist.
+### CEO Completion Summary
 
-Every candidate must have its package or URL, transport, authentication model,
-maintenance owner, and test credential owner recorded in its content review.
-If GitHub hosted does not pass the token-auth live test, exclude it from the
-first publish rather than relabeling it optimistically. OAuth-only entries are
-visible but non-installable until OAuth installation exists.
+Mode: selective expansion. The original umbrella was rejected because incident
+recovery, connector product validation, team-template product discovery, and
+test-infrastructure hygiene have different evidence and exit criteria. The user
+accepted the split. A1/A2 keep only the work required to produce a trustworthy
+diagnosis, repair the evidence-selected cause, and prove storage durability.
 
-### End-to-end Verification
+The review added no UI/product surface and did not broaden crew policy. General
+offline first-party packaging and immutable image promotion remain explicit
+post-incident architecture choices. CEO review exits with zero unresolved
+incident-scope decisions.
 
-1. Pin an AoA contract-bundle commit and SHA256. Validate generated entries
-   against its JSON Schema and run the entire conformance corpus through the
-   marketplace validator.
-2. Aggregation is all-or-nothing: any rejected/dropped connector exits nonzero
-   and does not write `dist/connectors.json`. Diagnostics include source file,
-   JSON pointer, stable error code, cause, and fix.
-3. Point a local AoA server at it.
-4. Verify shelf rendering, details, install, consent, secret binding, and one
-   actual tool call for each supported transport class.
-5. Verify an OAuth-only entry cannot be installed.
-6. Verify malformed and untrusted entries fail the producer build; verify AoA
-   still drop-and-warns a deliberately bad remote fixture defensively.
+## Architecture
 
-### Publication Gate
+```text
+INSTANCE-ADMIN CALLER
+  |
+  | Authorization: Bearer <board key>
+  v
+actorMiddleware
+  |-- invalid/revoked key ----------------------------> 401/403
+  `-- board + source=board_key
+         |
+         v
+boardMutationGuard
+  |-- board_key --------------------------------------> allow without Origin
+  |-- session + trusted Origin/Referer ---------------> allow
+  `-- session + missing/untrusted Origin/Referer -----> 403
+         |
+         v
+POST /api/admin/marketplace/reconcile
+  |
+  v
+runMarketplaceReconciliation
+  |-- snapshot fleet + durable start audit
+  |-- fresh guarded CDN catalog
+  |-- crew repair pass
+  |     |-- repaired
+  |     |-- skipped -> typed internal diagnostic
+  |     `-- thrown  -> failures[]
+  |-- legacy Steward / update / team reconciliation
+  `-- completed audit + public response
+            |
+            `-- skips[] contains only safe mapped diagnostics
+```
 
-Publishing is outward-facing. Before publication:
+After A2:
 
-- Both PRs are merged and CI-green.
-- Generated bytes are reviewed.
-- The CDN diff contains only the expected connector artifact and catalog refresh.
-- A rollback commit is prepared.
+```text
+catalog resource
+  -> stage bundle under persisted AOA_HOME
+  -> validate inventory and containment
+  -> atomic rename
+  -> persist DB row/inventory
+  -> reconcile crew transaction
+  -> restart container
+  -> validate materialized inventory
+  -> forced second pass = no-op
+```
 
-After publication:
+## A1 - Make Reconciliation Operable
 
-- `connectors.json` returns 200 with the expected content type.
-- Testing refreshes and shows the curated shelf.
-- At least one connector completes browse -> install -> bind -> invoke.
+### A1.1 Board-key Mutation Semantics
 
-## Gate C - Phase 4b-prime Team-template Updates
+Change `server/src/middleware/board-mutation-guard.ts` only after authentication:
 
-### Current Gap
+```ts
+if (
+  req.actor.type === "board" &&
+  (req.actor.source === "local_implicit" ||
+   req.actor.source === "board_key")
+) {
+  next();
+  return;
+}
+```
 
-`marketplace-update-checker.ts` does not scan installed teams. The narrow
-`reconcileTeamMembers()` pass only adds missing catalog members. It does not
-create pending updates, compare team metadata, detect removals or role changes,
-or preserve founder modifications. `POST /updates/:id/apply` returns 501 for
-teams, while the suggested `/merge` endpoint rejects team updates.
+Do not exempt all bearer requests, all board actors, or instance admins. The
+credential source is the boundary: a board key is explicitly attached by the
+caller and is not ambient browser authority; a session cookie is ambient and
+still requires same-origin proof.
 
-### C1 - Contract, Baseline, and Detection-only Rollout
+### A1.2 Strict Shared Wire Contract
 
-1. Add a versioned `MarketplaceTeamTemplateSchema`; do not reuse
-   `TeamManifestSchema`, whose inline/ref agent and routing model is a different
-   export contract.
-2. Use the new schema in install, reconcile, and detection paths. Define how
-   existing v1 `team.json` inputs are normalized and rejected.
-3. Normalize each member to an explicit role and an allowlisted override shape.
-   Legacy v1 inputs normalize the first member to `lead`; all remaining members
-   receive their schema-defined default role. Reject unknown override keys.
-4. Add `marketplace_team_baselines`, keyed by `team_id`, containing:
-   - normalized applied team body, including catalog `requires`
-   - schema version and applied catalog version
-   - canonical body digest
-   - provenance (`known` or `unknown`)
-   - monotonically increasing baseline revision
-5. Write the baseline atomically on install and successful apply. Existing teams
-   migrate to `provenance=unknown`; never synthesize "last applied" bytes from
-   today's catalog.
-6. Add `targetTeamId` to team pending updates. Replace the current broad
-   `(companyId, catalogItemId)` identity with explicit team and non-team partial
-   unique indexes, plus checks for valid `itemType`, status, and team-target
-   presence.
-7. Key members by stable `templateOrigin`, never display name.
-8. Treat missing or unprovable provenance as customized.
-9. Scan company-scoped installed teams with `templateOrigin` and
-   `templateVersion`.
-10. Match the current catalog team by origin and compare versions using the
-   existing marketplace version policy.
-11. Replace `upsertPendingUpdate` with a compare-and-set state machine using
-    `UPDATE ... RETURNING`: never reopen a dismissal for the same target version,
-    reopen only for a proven newer target, and handle `conflict` explicitly.
-12. Fetch and normalize each target team once per detection pass, memoized by
-    catalog item ID, version, and resource digest. Company loops perform DB
-    comparisons against that result.
-13. Make `reconcileTeamMembers()` repair only against the stored applied
-    baseline. It must never import a newer catalog version behind the update
-    workflow.
-14. Roll out detection only. Team pending rows and notifications remain hidden
-    until C2 exposes an actionable read-only diff endpoint. The update remains
-    non-applicable until C2 lands.
+Add strict Zod schemas plus inferred public types in
+`packages/shared/src/marketplace.ts`. TypeScript interfaces alone are not a
+serialization boundary:
 
-### C2 - Structured Diff and Transactional Apply/Merge API
+```ts
+const MarketplaceReconcileRequestSchema = z.object({
+  scope: z.literal("fleet"),
+  mode: z.literal("repair"),
+  operationId: z.string().uuid(),
+}).strict();
 
-The diff must cover:
+type MarketplaceReconcileSkipCategory =
+  | "fail_closed"
+  | "cooldown"
+  | "over_budget";
 
-- name
-- slug
-- description
-- manifest
-- member additions
-- member removals
-- role changes
-- agent override changes
-- missing catalog dependencies
-- founder-created or shared member conflicts
+type MarketplaceReconcileDiagnosticCode =
+  | "install_in_flight"
+  | "team_item_not_in_catalog"
+  | "team_template_unavailable"
+  | "empty_roster"
+  | "unadoptable_roster_member"
+  | "unaccounted_crew_rows"
+  | "skill_resource_temporarily_unavailable"
+  | "skill_resource_fetch_failed"
+  | "skill_resource_invalid"
+  | "skill_bundle_materialization_failed"
+  | "skill_bundle_missing"
+  | "skill_filesystem_permission_denied"
+  | "repair_cooldown"
+  | "repair_budget_exhausted"
+  | "unknown_fail_closed";
 
-Each field or member decision is classified as:
+type MarketplaceReconcileFailureCode =
+  | "marketplace_update_failed"
+  | "crew_repair_failed"
+  | "legacy_steward_failed"
+  | "crew_update_failed"
+  | "team_reconcile_failed"
+  | "unknown_internal_failure";
 
-- unchanged
-- upstream-only
-- local-only
-- conflict
+type MarketplaceReconcileErrorCode =
+  | "invalid_request"
+  | "authentication_required"
+  | "instance_admin_required"
+  | "operation_not_found"
+  | "operation_in_flight"
+  | "catalog_temporarily_unavailable"
+  | "catalog_refresh_failed"
+  | "outcome_unknown_after_mutation"
+  | "internal_error";
 
-C2 owns the stable UI contract. Return a typed team-diff DTO with:
+interface MarketplaceReconcileSkip {
+  companyId: string;
+  stage: "crew_repair";
+  category: MarketplaceReconcileSkipCategory;
+  reason: MarketplaceReconcileDiagnosticCode;
+  message: string;
+  retry: MarketplaceRetryInstruction;
+  context?: {
+    catalogItemId?: string;
+    httpStatus?: number;
+    filesystemOperation?: "read" | "write" | "rename" | "mkdir";
+  };
+}
 
-- `snapshotToken`
-- `changeId`
-- `group` (`metadata`, `member`, `dependency`)
-- `classification`
-- typed old and new values
-- default decision and allowed decisions
-- blocking reason
-- affected member/dependency IDs
+interface MarketplaceReconcileFailure {
+  companyId: string;
+  stage: MarketplaceMaintenanceStage;
+  code: MarketplaceReconcileFailureCode;
+  message: string;
+  retry: MarketplaceRetryInstruction;
+  occurrences?: number;
+}
 
-Do not encode team changes as free-form markdown sections. C3 may reuse the
-existing dialog shell, but not the skill-oriented string-section decision model.
+interface MarketplaceReconcileDiagnostic {
+  scope: "operation";
+  stage: MarketplaceMaintenanceStage;
+  code:
+    | "crew_catalog_not_ready"
+    | "legacy_steward_disabled"
+    | "legacy_steward_catalog_not_ready";
+  message: string;
+  retry: MarketplaceRetryInstruction;
+}
 
-1. Allow one-click apply only when the stored baseline proves no local
-   divergence.
-2. Otherwise require reviewed merge decisions.
-3. Default every conflict to preserve local founder state.
-4. Acquire one shared per-team advisory lock for every team metadata, manifest,
-   membership add/remove/role, reconcile, and marketplace apply mutation. This
-   prevents update-vs-founder-write races, not only apply-vs-apply races.
-5. Define `snapshotToken` as a digest of the baseline revision, relevant team
-   fields, sorted memberships and roles, relevant agent revisions, and target
-   catalog digest.
-6. Update the team row, memberships, template version, baseline, pending update,
-   and audit log in one transaction.
-7. Add `team_update_applications`, keyed by client idempotency key, storing the
-   target team, snapshot token, response, and before/after state. Use it for
-   response-loss replay and explicit post-commit rollback.
-8. Never delete founder-created agents.
-9. Never delete shared agents merely because one team template removed them.
-10. Make stale snapshots, retries, and response-loss replays safe.
-11. Require founder authority for apply/merge. Team leads receive read-only diff
-    access and a stable `founder_approval_required` 403 problem code.
-12. Return problem, cause, and recovery instructions for every rejected update.
-13. Define exact shared Zod contracts in `packages/shared/src/marketplace.ts`:
-    - apply: `{ snapshotToken, idempotencyKey }`
-    - merge: `{ snapshotToken, idempotencyKey, decisionsByChangeId }`
-    - success response with application ID, applied version, replay flag, and
-      structured outcome summary
-    - problem response:
-      `{ code, message, cause, recovery, retryable, details }`
-14. Require the client to generate one idempotency key when the review opens and
-    retain it across timeout, connection-loss, and other ambiguous retries.
-15. Implement and document this HTTP/code matrix:
+interface MarketplaceReconcileErrorResponse {
+  ok: false;
+  error: {
+    code: MarketplaceReconcileErrorCode;
+    message: string;
+  };
+  operationId: string | null;
+  retry: MarketplaceRetryInstruction;
+  docUrl: string;
+}
+```
 
-| Condition | HTTP | Code | Retryable |
-|---|---:|---|---|
-| pending update missing/dismissed | 404 | `team_update_not_found` | false |
-| caller cannot mutate | 403 | `founder_approval_required` | false |
-| local/target digest changed | 409 | `stale_snapshot` | true after refresh |
-| required decision absent | 422 | `unresolved_conflict` | false |
-| catalog agent/dependency absent | 422 | `missing_dependency` | true after resolution |
-| key reused for different payload | 409 | `idempotency_key_reused` | false |
-| catalog resource unavailable | 503 | `upstream_unavailable` | true |
+`MarketplaceRetryInstruction` is a discriminated union with
+`kind: "immediate" | "after" | "after_correction" | "inspect_first" |
+"never"`, an allowlisted `recoveryCode`, and `notBefore` only for `after`.
+There is one checked-in mapping table from every public diagnostic/error code
+to message and retry instruction. A boolean `retryable` is rejected because it
+cannot distinguish "wait", "fix first", and "inspect committed state first".
 
-16. Update `docs/api/marketplace-and-plugins.md`, narrow unknown API errors in the
-    UI client through the shared problem schema, and add route contract tests for
-    every matrix row.
+The POST body is mandatory. Empty or unknown input is `400`; the explicit
+`scope: "fleet"` prevents an accidental full-fleet mutation. The CLI generates
+the operation UUID before POSTing, prints it first, and the server rejects a
+previously used ID rather than rerunning it. A retry with the same ID inspects
+or joins the matching in-process promise; a different ID while a pass is active
+returns typed `409 operation_in_flight` with the active operation ID. The
+response replaces ambiguous `replayed` semantics with
+`executionDisposition: "started" | "joined_in_flight"`. Keep `replayed` as a
+deprecated compatibility field for one release and test the equivalence.
 
-### C3 - UI
+The server may keep its more detailed internal `CrewRepairSkipReason`. Map it to
+this wire contract at the reconciliation boundary. Unknown internal errors map
+to `unknown_fail_closed`; they never leak `Error.message`.
 
-1. Add a dedicated `TeamUpdateReviewDialog`, reusing the existing `Dialog`
-   shell and marketplace visual vocabulary.
-2. Link update notifications to
-   `/<prefix>/marketplace-updates?update=<pending-update-id>`. Auto-open and
-   focus the matching update; if it is stale or dismissed, show the updates
-   list with a clear explanation.
-   C3 also enables replay-safe notification emission using a unique source key
-   containing pending-update ID and target version; notification creation and
-   pending-update visibility use the same transaction/executor boundary.
-3. Show team pending updates with accurate type labels and one primary action
-   per state:
+Every string has a schema maximum and every object is strict. Construct the
+public response explicitly and parse it through
+`MarketplaceReconcileResponseSchema` before passing it to either the audit
+writer or Express. Do not spread internal maintenance results into the wire
+object. `crewRepair` stays counter-only and there is exactly one top-level
+`skips[]`.
 
-| State | Primary action |
-|---|---|
-| untouched and safely applicable | Update team |
-| local/upstream conflict | Review changes |
-| missing dependency | Resolve dependencies |
-| stale snapshot | Refresh |
-| unauthorized actor | Read-only detail and Ask founder |
-| success | View team |
+The strict boundary covers every endpoint result, including 400, 401, 403, 404,
+409, 500, and 502. Route/auth middleware must map to
+`MarketplaceReconcileErrorResponseSchema`; raw `catalogError`, middleware
+strings, and exception text never cross the boundary. `operationId` is null
+only when no operation was accepted.
 
-4. Render structured metadata and roster changes. Label comparisons "Current
-   team" and "Marketplace version", not "Mine" and "Upstream".
-5. Default conflicts to "Keep current team - recommended" and explain "Keeps
-   your changes". Remove bulk upstream replacement or require an explicit
-   destructive confirmation.
-6. Show explicit list-error and diff-error states with `role="alert"`, Retry,
-   and no false "all up to date" empty state. Disable apply until a valid,
-   current snapshot is loaded.
-7. Cover loading, empty, conflict, stale, partial dependency, unauthorized,
-   success, and failure states. Success copy summarizes the outcome, for
-   example "2 members added; 1 local role kept unchanged."
-8. At widths below `sm`, stack update cards and diff choices, use a full-height
-   review layout with a sticky action footer, and keep all targets at least
-   44px.
-9. Use semantic radio groups, visible focus, focus return to the originating
-   card, and announced stale/error/success changes.
+### A1.3 Typed Diagnostic Capture
 
-### Tests by PR
+Replace the current string-only `skill-install-failed` catch with a typed,
+server-private diagnostic carrying:
 
-**C1**
+- an allowlisted cause code
+- safe catalog item ID, when known
+- HTTP status, when known
+- filesystem operation, never the unrestricted absolute path
+- original error as a logged cause, never as wire data
 
-- valid and invalid versioned `team.json`
-- legacy input normalization
-- unknown-provenance migration never claims today's catalog as a baseline
-- installed-team detection
-- dismissed same-version update stays dismissed; newer target reopens it
-- concurrent detection and compare-and-set behavior
-- company boundary enforcement
-- target fetch memoization
-- reconciliation uses the applied baseline, not the latest catalog
+Use a deterministic message and recovery table keyed by public diagnostic code.
+Cap every public string even though it is currently constant-generated. Reject
+or drop any optional context outside its schema.
 
-**C2**
+Apply the same boundary to existing `failures[]`. Today unrestricted exception
+text reaches the HTTP response and company-readable completion audits. Replace
+it with allowlisted failure codes, deterministic messages, and structured retry
+instructions.
 
-- untouched team detection and one-click apply
-- founder-edited metadata preserved
-- upstream member addition
-- upstream member removal without deleting the agent
-- role and override changes
-- founder-created same-name member
-- shared member protection
-- missing catalog dependency
-- concurrent apply
-- apply concurrent with founder metadata, membership, and role edits
-- response-loss replay
-- stale snapshot/version race
-- transaction rollback
-- post-commit rollback from a durable application record
-- audit log and company boundary enforcement
-- founder/team-lead authorization matrix and stable problem codes
+Add a dedicated internal error serializer for logs. It may preserve error
+class/code, stack, safe hostname, HTTP status, operation, and cause class; it
+strips URL userinfo/query/fragment, bearer/token-like values, and unnecessary
+absolute paths. Test the Pino sink itself.
 
-**C3**
+`CrewRepairPassResult` gains `skips: CrewRepairPassSkip[]`. Add one entry at
+the same branch that increments each skip counter, including budget exhaustion.
+Enforce:
 
-- structured metadata and roster diff
-- preserve-local default rendering
-- notification deep-link, auto-open, and stale fallback
-- transactional notification deduplication by pending ID and target version
-- keyboard and focus management
-- mobile stacked/full-height layout and 44px targets
-- list-error and diff-error states do not masquerade as empty/loading
-- loading, empty, conflict, stale, partial dependency, success, and failure
-  states
+```text
+count(skips.category == fail_closed) == skippedFailClosed
+count(skips.category == cooldown)    == skippedCooldown
+count(skips.category == over_budget) == skippedOverBudget
+```
 
-### Rollout
+### A1.4 Response, Audit, and Logs
 
-Keep `reconcileTeamMembers()` as a narrow repair safety net until the new update
-path proves stable. Do not silently broaden it into a destructive synchronizer.
-C1 may create hidden pending updates but cannot notify or apply them. C2 enables
-the read-only diff and server-side application only after its concurrency and
-rollback tests pass. C3 makes pending rows visible, emits notifications, and
-exposes the reviewed user flow.
+- `MarketplaceReconcileResponse` returns fleet-level `skips`.
+- Operation-level `diagnostics[]` represents prerequisite/disabled-stage
+  conditions that also make a result partial.
+- Each `marketplace.reconciliation_completed` activity row receives only the
+  entries matching that row's company ID.
+- `failures[]` remains reserved for thrown/per-company failures but is typed
+  and sanitized.
+- Structured logs include `operationId`, `companyId`, internal reason, and the
+  sanitized internal error serialization.
+- `status` remains `partial` when any skip counter is non-zero.
+- Every predicate that can set `status: "partial"` has a corresponding entry
+  in `skips[]`, `failures[]`, or `diagnostics[]`.
 
-## Gate D - Phase 5 Embedded PostgreSQL Port Sweep
+Index skips and failures by company ID once before building activity rows.
 
-The roadmap count is stale. Current `origin/main` contains 45 integration suites
-with module-level random embedded PostgreSQL port allocation. One additional
-suite already uses `allocateEmbeddedPgPort()` but still contains unrelated random
-test identifiers.
+Completion-audit failure after maintenance is explicitly
+`outcome_unknown_after_mutation`, not "fail closed": mutations may already have
+committed. Return 500 with the operation ID and safe outcome code, log a safe
+completion summary, retain the start audit, and require state inspection before
+an idempotent retry.
 
-### Implementation
+### A1.5 Durable Operation Inspection
 
-1. Replace the probe-only allocator with
-   `startEmbeddedPostgresWithAllocatedPort(options)`. It allocates, initializes,
-   and starts the server as one helper operation and performs bounded
-   reallocation on a verified bind collision. A closed probe socket alone does
-   not eliminate the TOCTOU race.
-   The helper returns `{ postgres, port, stop }`, attempts at most five ports,
-   treats only verified bind collisions as retryable, and exposes an idempotent
-   `stop()` that the owning suite calls from `afterAll`.
-2. Add
-   `server/src/__tests__/embedded-pg-port-helper.test.ts` and
-   `server/src/__tests__/embedded-pg-port-hygiene.test.ts`. The first starts
-   multiple clusters in parallel and proves unique bound ports plus cleanup on
-   partial failure; the second rejects fixed random ports in integration suites.
-3. Use the start helper in all 45 affected suites.
-4. Delete module-level fixed random port constants.
-5. Return the selected port from the helper. Ten suites need it after startup:
-   the eight `hub-*` suites plus the two MCP connector end-to-end suites.
-   Prefer UUIDs for unrelated run/test identifiers in the MCP suites; otherwise
-   use a module-level `let port = 0`.
-6. Remove obsolete offset comments.
-7. Add a hygiene meta-test that rejects fixed random embedded PostgreSQL ports in
-   future integration suites.
+Add instance-admin-only
+`GET /api/admin/marketplace/reconciliations/:operationId`. It derives durable
+state from `activity_log` rows keyed by the already-indexed
+`entityType = "marketplace_reconciliation"` and `entityId = operationId`, plus
+the current process's in-flight operation ID:
 
-### Verification
+```ts
+interface MarketplaceReconciliationInspection {
+  operationId: string;
+  state:
+    | "running"
+    | "success"
+    | "partial"
+    | "failed_before_mutation"
+    | "outcome_unknown_after_mutation";
+  startedAt: string;
+  completedAt: string | null;
+  deploymentSha: string;
+  targetCount: number;
+  targets: Array<{
+    companyId: string;
+    crewState: "healthy" | "repairable" | "blocked" | "unknown";
+    diagnosticCode: MarketplaceReconcileDiagnosticCode | null;
+  }>;
+  safeToRetry: boolean;
+  retry: MarketplaceRetryInstruction;
+}
+```
 
-1. On Windows, run:
-   `pnpm exec vitest run --config server/vitest.config.ts server/src/__tests__/embedded-pg-port-helper.test.ts server/src/__tests__/embedded-pg-port-hygiene.test.ts`.
-2. Run typecheck and all cross-platform unit tests locally.
-3. Treat Linux CI as the load-bearing proof because Windows skips embedded
-   PostgreSQL integration suites.
-4. In Linux CI, run the helper stress test 20 times plus the full integration
-   shard. Any verified bind collision after helper retries fails the PR and must
-   be diagnosed; it is not cleared by an unspecified rerun.
+Discover and start-audit the sorted fleet before catalog refresh so even a
+catalog failure is inspectable; the strict started-audit shape allows
+`catalog: null` until refresh succeeds. Write one allowlisted terminal audit
+for pre-mutation failures. All target rows are inserted in one statement;
+partial target audit sets are invalid. A zero-company fleet returns synchronous
+success without starting maintenance. A started operation with no terminal
+audit is `running` only while the matching process-local promise exists;
+otherwise it is `outcome_unknown_after_mutation`.
 
-### Exit Criteria
+For outcome-unknown operations, run the existing read-only crew diagnosis for
+each recorded company. `safeToRetry` is true only when every target is
+`healthy` or an explicitly idempotent `repairable` state, no active
+reconciliation/install writer exists, and there are no unaccounted/customized
+rows. A2 extends the same check with its durable crew lease. Any query failure,
+unaccounted row, customization ambiguity, or active writer returns
+`crewState: "unknown" | "blocked"` and `safeToRetry: false`. The GET route never
+repairs or writes domain state.
 
-- No affected suite declares a fixed random PostgreSQL port.
-- All affected suites start through the retrying helper.
-- The parallel allocator stress test is green.
-- The hygiene test is green.
-- Linux integration CI is green.
-- No production file is changed.
+Test the exact hard case: maintenance commits, completion audit throws, POST
+returns the typed 500, GET reports the target state, and only a safe inspection
+permits a duplicate-free retry.
 
-## Cross-cutting Failure Modes
+### A1.6 CLI Golden Path
 
-| Failure | User impact | Prevention | Recovery |
-|---|---|---|---|
-| Deploy wrong SHA | Testing does not contain reviewed fixes | Verify image SHA in workflow log | Redeploy exact prior SHA |
-| Catalog refresh races boot | Old category counts remain | Refresh after server is healthy | Manual refresh, then rerun repair |
-| Connector schema drift | Published entries disappear | Shared schema or drift test | Revert CDN artifact |
-| Wrong auth classification | Connector card cannot install | Per-entry primary-source verification | Mark unavailable or remove entry |
-| Team false-negative customization | Founder edits overwritten | Baseline proof and preserve default | Use the durable application record to restore prior state |
-| Team member removal deletes agent | Founder loses reusable agent | Remove membership only | Restore membership from audit/baseline |
-| Duplicate pending update | Repeated notifications and races | Unique key plus transaction/lock | Seal duplicate operation |
-| Committed bad team update | Founder state remains wrong after transaction succeeds | Durable before/after application record | Execute audited rollback under the same team lock |
-| Random database port collision | Intermittent CI failure | Start-and-retry allocator, stress test, hygiene test | Inspect bind diagnostics before rerun |
+The CLI currently stores the board credential produced by
+`aoa auth login`, but `resolveCommandContext()` does not consume it. Fix the
+credential precedence to:
 
-## Required Verification Before Each Handoff
+1. explicit `--api-key`
+2. `AOA_API_KEY`
+3. selected profile's key environment variable
+4. stored board credential for the resolved API base
 
-For every AoA code PR:
+Rename the option help from "agent-authenticated calls" to "Bearer token
+override"; never print the selected token. This makes `auth whoami` and other
+board commands use the credential that login already stored.
+
+Add:
 
 ```sh
+pnpm aoa marketplace reconcile \
+  --api-base https://testing.armyofagents.org \
+  --confirm-fleet \
+  --timeout-ms 300000 \
+  --json
+
+pnpm aoa marketplace inspect <operation-id> \
+  --api-base https://testing.armyofagents.org \
+  --json
+```
+
+`reconcile` generates and prints a UUID, then sends the strict
+`{scope:"fleet", mode:"repair", operationId}` body only when
+`--confirm-fleet` is present. It prints the operation ID first, uses the stored
+board credential, validates all success and error bodies with the shared Zod
+schemas, renders the recovery instruction, and on timeout directs the operator
+to `inspect` instead of retrying. JSON mode is deterministic and contains no
+credential. `inspect` calls the read-only GET endpoint.
+
+The measured golden path for an already-valid credential is exactly:
+
+```sh
+pnpm aoa auth whoami --api-base https://testing.armyofagents.org
+pnpm aoa marketplace reconcile --api-base https://testing.armyofagents.org --confirm-fleet --timeout-ms 300000 --json
+pnpm aoa marketplace inspect <operation-id> --api-base https://testing.armyofagents.org --json
+```
+
+A fresh operator runs
+`pnpm aoa auth login --api-base https://testing.armyofagents.org
+--instance-admin` once before this path. No manual token extraction or fabricated
+Origin header appears in the supported workflow.
+
+### A1.7 Outbound Resource Boundary
+
+Before deliberately rerunning fleet repair, route catalog resource fetches
+through the existing `outbound-url-guard` and pinned request executor:
+
+- HTTPS only and no URL userinfo
+- public, non-reserved resolved addresses only
+- manual redirects with every hop revalidated
+- expected marketplace CDN host/path or commit-pinned GitHub resource form
+- no loopback, link-local, RFC1918, cloud-metadata, or DNS-rebinding target
+
+This is security hardening for the existing privileged reconciliation path, not
+an A2 repair guess.
+
+### A1.8 Root Compatibility Substrate
+
+A1 must remain a safe rollback target for A2. Add one managed-root resolver
+with two always-known, always-jailed roots:
+
+- legacy: `path.join(process.cwd(), ".aoa", "marketplace-skills")`
+- persistent:
+  `path.join(resolveAoaInstanceRoot(), "marketplace-skills")`
+
+Selection is independent:
+`AOA_MARKETPLACE_SKILLS_WRITE_ROOT=legacy|persistent`, defaulting to `legacy`
+in A1. Do not accept an arbitrary path override. Reads and containment checks
+cover both roots regardless of the write selector. A2 changes the testing
+deployment selector to `persistent`; rollback changes only the selector while
+remaining on dual-root-aware code.
+
+Wire the selector through `docker-compose.yml` and
+`scripts/deploy/write-compose-env.mjs`; document it in the environment-variable
+reference so the brand/env guard enforces freshness. Deployment preflight fails
+unless the effective selector, resolved persistent root, `/aoa` mount, image
+revision, and instance ID equal the release manifest.
+
+### A1.9 Operator Documentation
+
+Create `docs/guides/board-operator/marketplace-recovery.md` and link it from
+Authentication, Marketplace API, Activity Log, Docker, Upgrade Guide, CLI
+Overview, and `docs/docs.json`. It contains:
+
+- the CLI-first login/reconcile/inspect/logout golden path
+- an advanced board-key curl example without Origin/Referer, explicitly not the
+  normal workflow
+- response example containing `skips[]`
+- difference between `skips[]` and `failures[]`
+- the complete public diagnostic/error-to-retry mapping table
+- how to join response, audit, and logs by `operationId`
+- explicit warning not to retry until the typed recovery action is complete
+- the `outcome_unknown_after_mutation` inspection/retry procedure
+- an authoritative storage table: host/Compose path `/aoa`, instance path,
+  legacy root, persistent root, write selector, and rollback behavior
+
+Reconcile the current `/paperclip` prose in `docs/deploy/docker.md` and
+`docs/deploy/upgrade-guide.md` with the actual `/aoa` Compose mount and the
+intentional compatibility symlink. No deployment guide may describe
+`/paperclip` as the authoritative persistent mount.
+
+### A1 Test Matrix
+
+| Layer | Required case |
+|---|---|
+| Guard unit | board key without Origin succeeds |
+| Guard regression | session without Origin remains 403 |
+| Guard regression | trusted Origin and Referer still succeed |
+| Full auth/route | valid, expired, revoked, malformed, and non-admin board keys |
+| Full auth/route | agent and MCP bearer keys remain unauthorized |
+| Full auth/route | invalid bearer plus valid session does not fall back to session authority |
+| Request boundary | empty/unknown body is 400; fleet/mode/UUID is accepted; reused/concurrent IDs are safe |
+| Error boundary | 400/401/403/404/409/500/502 all parse as the strict error schema |
+| Pass unit | each skip branch produces one entry and one counter |
+| Pass unit | two companies keep distinct diagnostics |
+| Pass boundary | over-budget skip names the correct company |
+| Mapping unit | every internal reason maps to a public code |
+| Retry mapping | every diagnostic/error has one exhaustive retry instruction |
+| Strict schema | unknown context is rejected/stripped and strings are bounded |
+| Redaction | secrets, credential URLs, long messages, and paths do not cross skips or failures |
+| Log sink | original/cause errors cannot persist secrets or signed URLs |
+| Service | every partial predicate produces a skip, failure, or operation diagnostic |
+| Audit | each company gets only its own skips and failures |
+| Audit failure | maintenance commits, completion audit throws, outcome is unknown, retry is duplicate-free |
+| Inspection | running/completed/pre-mutation-failed/outcome-unknown are distinguished durably |
+| Inspection | query ambiguity or active writer forces `safeToRetry: false` |
+| CLI auth | stored board credential is the last fallback and never printed |
+| CLI reconcile | `--confirm-fleet` required; success/error/timeout/inspect paths are schema-checked |
+| SSRF | private/reserved targets and unsafe redirect hops are rejected |
+| Root compatibility | both fixed roots are jailed regardless of write selector |
+| Compose contract | selector is passed through and deploy env records the expected value |
+
+Run the focused tests, then the repository handoff gate:
+
+```sh
+pnpm exec vitest run \
+  server/src/__tests__/board-mutation-guard.test.ts \
+  server/src/__tests__/admin-marketplace-routes.test.ts \
+  server/src/__tests__/marketplace-reconcile.test.ts \
+  server/src/__tests__/crew-repair.integration.test.ts \
+  cli/src/__tests__/board-auth.test.ts \
+  cli/src/__tests__/marketplace-recovery.test.ts
 pnpm -r typecheck
 pnpm test:run
 pnpm build
 ```
 
-Run targeted tests before the full gate. Report every skipped test and why.
+The `pnpm exec vitest run ...` invocation is the verified repository-root
+runner. Do not use `pnpm --filter @armyofagents/server test`; that package has
+no `test` script.
 
-For marketplace code:
+### A1 Deployment and Exit
 
-- run aggregate
-- run validate
-- run catalog tests
-- inspect generated artifacts
-- run the publication workflow in dry-run or non-publishing mode
+1. Merge only after CI and review are clean.
+2. Deploy the exact reviewed SHA to testing.
+3. Run a checked-in, read-only
+   `scripts/verify-marketplace-recovery-preflight.mjs` that emits JSON and fails
+   closed unless health, deployment SHA, one server replica, `/aoa` volume,
+   write selector `legacy`, catalog identity, and instance-admin identity match.
+4. Use the stored short-lived credential via the CLI golden path; capture the
+   reconcile and inspect JSON without printing the token.
+5. Read both company completion audits and verify skip-counter equality.
+6. Save a restricted incident envelope containing sanitized live response,
+   audits, deployment SHA, operation ID, and catalog/resource identities. Never
+   commit production/test data or credentials.
+7. Separately commit a minimal non-secret fixture with equivalent catalog
+   entries, pinned bytes/SHAs, manifest, and canonical digest. One offline test
+   command must reproduce every observed diagnostic from that fixture.
+8. Run
+   `pnpm aoa auth logout --api-base https://testing.armyofagents.org`, then
+   verify the revoked credential returns the strict 401 envelope.
+9. Record the safe diagnostic codes that select A2.
 
-## Contributor Pickup Table
+A1 exits when an operator can identify each company's exact safe failure class
+from CLI output and inspection without shell access, every partial condition is
+accounted for, the non-secret fixture reproduces offline, and the measured
+already-authenticated golden path returns a verdict in at most five minutes.
 
-Repository bases must be rechecked immediately before branching; these are the
-verified 2026-07-28 starting points.
+## A2 - Repair the Proven Cause and Persist Bundles
 
-| Work | Repository/base | Branch | Owned modules | Prerequisite | Primary verification | Handoff artifact |
-|---|---|---|---|---|---|---|
-| A0 | AoA `3aa78b77539706957f28105c3656e4562a267ecc` | `codex/testing-deploy-reconcile` | deploy workflow, marketplace/crew maintenance route/service, tests/docs | none | targeted contracts + full AoA gate | exact-SHA runbook and response example |
-| D | AoA same base, rebased after A0 | `codex/embedded-pg-port-sweep` | integration tests and test helper only | A0 merged | helper/hygiene tests + Linux integration shard | affected-suite inventory |
-| B0 | AoA after A0 | `codex/connector-contract-amendment` | architecture decisions and connector contract bundle | none | contract generation + conformance test | contract SHA256 manifest |
-| B1 | aoa-marketplace `3b312e7dbb6869ae7895d29b2ac4763eec70d29b` | `codex/connectors-catalog` | connector content, aggregate/validate, docs, publish workflow | B0 contract bundle | aggregate, validate, tests, dry-run publisher | `connectors.json` SHA256 |
-| Publication | aoa-marketplace-cdn `926381037c30041474339f68aaf0e767433ee312` | workflow-created reviewed commit | `connectors.json` only | B0+B1 merged | CDN diff + HTTP smoke | CDN commit and rollback SHA |
-| C1 | AoA after A0 | `codex/team-update-baseline-detection` | shared schema, DB migration, detection/reconcile, tests | none | migration + detection/concurrency tests + full gate | schema/baseline contract |
-| C2 | AoA after C1 | `codex/team-update-apply-api` | shared API, team mutation service/routes, audit/rollback, docs/tests | C1 merged | route/state/race/replay tests + full gate | HTTP/error matrix |
-| C3 | AoA after C2 | `codex/team-update-review-ui` | marketplace update UI/client/tests | C2 merged | UI unit/a11y/responsive tests + full gate | route/state evidence |
+### A2.1 Evidence-selected Branch
 
-## Not in Scope
+The first A2 commit records the A1 operation ID, observed diagnostic codes, and
+the automated reproduction. Select only the matching branch:
 
-- Long-tail external connector registry search
-- OAuth connector installation
-- Combining AoA crew with organization agents in one UI list
-- Bypassing unfinished onboarding state
-- Phase 6 viewer polish
-- Phase 7 workspace reference ingress or TTL lifecycle
-- Phase 3c package-imported skill ownership decision
-- General marketplace redesign
+| Diagnostic | Repair |
+|---|---|
+| `skill_resource_temporarily_unavailable` | preserve state, honor server retry deadline, and reproduce bounded recovery |
+| `skill_resource_fetch_failed` | repair bounded fetch/resource availability; add exact resource fixture |
+| `skill_resource_invalid` | repair publisher/parser contract; add invalid-resource regression |
+| `skill_bundle_materialization_failed` | repair staging/rename/inventory path |
+| `skill_bundle_missing` | re-materialize when a DB row exists but its declared bundle is absent |
+| `skill_filesystem_permission_denied` | repair entrypoint ownership and add production-user container test |
+| another code | smallest cause-specific repair with captured regression |
 
-## Execution Order
+No broad catch-and-retry loop is allowed. A2 must reproduce the captured cause
+before changing behavior.
 
-1. Gate A0 operations PR.
-2. Gate A exact-SHA recovery deployment and verification.
-3. Gate D immediately after Gate A so later PRs receive a cleaner CI signal.
-4. Gate B0, then Gate B1 marketplace content and builder.
-5. Gate B publication after B0 and B1 merge.
-6. Gate C1 -> C2 -> C3 as serialized AoA PRs.
-7. Re-evaluate Chronicler legacy origin, catalog-contract hardening, Phase 6, and
-   Phase 7 after these gates are banked.
+### A2.2 Managed-bundle Health Classifier
 
-## What Already Exists
+The current installer returns `alreadyInstalled` from DB provenance alone, and
+crew repair computes "missing skills" from DB keys alone. Add a dedicated
+`classifyManagedCatalogBundle` check before either shortcut:
 
-| Capability | Existing implementation | Plan treatment |
+- expected persistent path derived from DB provenance
+- path is a real directory below an approved managed root
+- `SKILL.md` exists
+- catalog bundle metadata carries the pinned repo/commit/path
+- canonical tree digest matches
+- no unexpected symlink/junction or extra/missing file
+
+`healthy` reuses the row. `missing` or `corrupt` on an uncustomized catalog row
+routes to explicit re-materialization. A customized row fails closed for
+operator review; it is never replaced because its bundle disappeared.
+Do not overload initial `installSkill()` semantics with an ambiguous boolean.
+
+### A2.3 Persistent Managed Root
+
+Move managed marketplace bundles from `process.cwd()/.aoa/marketplace-skills`
+to `path.join(resolveAoaInstanceRoot(), "marketplace-skills")`, activated by
+`AOA_MARKETPLACE_SKILLS_WRITE_ROOT=persistent`. Use the same dual-root resolver
+for materialization, reads, and containment.
+
+Requirements:
+
+- use collision-resistant company/item/version segments (readable prefix plus
+  digest), not lossy character replacement
+- preserve case-sensitive/case-insensitive containment behavior
+- `lstat` ancestors, reject symlink/junction roots, and compare `realpath` for
+  existing paths; new paths are created only below a trusted real ancestor
+- never delete the last known-good bundle before replacement validates
+- detect an installed row whose bundle/inventory is absent and re-materialize
+- never copy legacy bytes: re-fetch the row's pinned
+  `catalogSkillBundle.commitSha`, materialize into the new root, and compare the
+  resulting markdown/customization contract before a conditional DB update
+- keep legacy cleanup rollback-safe until the new root survives restart
+- never follow a founder-controlled path into the managed root
+
+Existing `fileInventory` records only path and kind, so it cannot prove byte
+integrity. Store
+`{ algorithm: "sha256", formatVersion: 1, digest: "<lowercase hex>" }` in the
+catalog bundle JSONB metadata and require it for persistent-root health.
+
+The v1 digest byte stream is exact and cross-platform:
+
+```text
+"aoa-marketplace-tree\0v1\0"
+for each regular file sorted by normalized relative-path UTF-8 bytes:
+  u32be(pathByteLength) || pathUtf8 || u64be(fileByteLength) || fileBytes
+```
+
+Normalize separators to `/` and each path component to Unicode NFC. Include
+empty files. Reject absolute paths, `.`/`..`, duplicate normalized paths,
+case-fold collisions on case-insensitive filesystems, symlinks/junctions, and
+non-regular entries. Directory entries and host permission bits are excluded so
+the same pinned tree hashes identically on Linux and Windows. Golden fixtures
+cover empty files, non-ASCII/hostile names, separator variants, path-order
+ambiguity, and same-length byte tampering.
+
+Existing rows without the digest re-fetch from their pinned source rather than
+authenticating legacy bytes.
+
+### A2.4 Atomic Materialization and Crash Protocol
+
+Treat the filesystem as a reconstructible cache whose authority comes from DB
+provenance plus the pinned catalog commit:
+
+1. Always build in a unique sibling staging directory, including when the
+   destination does not exist.
+2. Validate `SKILL.md`, containment, inventory, byte count, and tree digest in
+   staging.
+3. Rename staging into the deterministic destination on the same device.
+4. If another writer won the destination race, validate and reuse the winner;
+   never overwrite it blindly.
+5. Conditionally update/insert DB provenance and digest.
+6. Defer old-root cleanup until the DB points at the new valid tree and the
+   rollout passes restart proof.
+7. At startup/reconcile, remove or recover orphan incoming/outgoing trees by
+   comparing them with DB provenance.
+
+The current repair advisory lock begins after skill materialization. Add a
+`marketplace_crew_claims` table with:
+
+- `company_id uuid`
+- `template_origin text`
+- `owner_operation_id uuid`
+- `fencing_token bigint`
+- `lease_expires_at timestamptz`
+- `created_at` / `updated_at`
+- primary key `(company_id, template_origin)`
+
+Acquire before any crew skill work through an INSERT-or-compare-and-set using
+the database clock. A live owner returns the typed `install_in_flight` skip.
+An expired lease may be taken over only while atomically incrementing the
+fencing token. Use a 120-second lease and renew every 30 seconds during bounded
+network/materialization work. Release is conditional on owner operation ID and
+fencing token.
+
+Bootstrap, repair, and public team installation must carry the token into their
+final transaction and re-check that the lease is current, unexpired, and still
+owned before committing crew/team provenance. A stale writer can leave a
+validated reconstructible bundle but cannot commit crew state. Expired rows are
+reusable tombstones; no correctness path depends on deleting them.
+
+Skill installation still relies on its unique DB key plus
+always-stage/destination-race validation; a losing identical pinned install
+reuses the winner. Generate and check in the Drizzle migration and schema
+export. A1 rollback ignores the additive claim table safely.
+
+Do not add the broader partial unique index on
+`(company_id, template_origin)` in this incident. It changes semantics for all
+marketplace teams and requires fleet duplicate remediation. The shared claim
+closes the incident race; the database invariant remains a separately reviewed
+follow-up.
+
+### A2 Test Matrix
+
+| Layer | Required case |
+|---|---|
+| Reproduction | exact A1 diagnostic is triggered before the fix |
+| Resolver unit | Docker/default and custom `AOA_HOME` resolve inside persistent instance storage |
+| Jail regression | inside, ancestor, sibling, case-variant, different-root, symlink, junction, and swap paths |
+| Encoding | distinct hostile IDs/versions never collide at one directory |
+| Health classifier | absent, non-directory, missing SKILL.md, digest mismatch, extra file, customized row |
+| Materialization integration | DB row + missing directory re-materializes atomically |
+| Atomicity | a reader never observes partial bytes for a new or replacement destination |
+| Fault injection | ENOSPC, EROFS, inode exhaustion, EXDEV, EBUSY, and rename failure |
+| Kill points | before rename, after rename, before DB update, and after DB update |
+| Integrity | same-path tampering, truncation, extra/missing files, path normalization, and cross-platform golden digest |
+| Founder safety | customized bytes and flags remain untouched |
+| Migration | every legacy row re-fetches its pinned commit; legacy bytes are never trusted/copied |
+| Docker | non-root production user materializes, restarts, recreates container, and reads the same bytes |
+| Concurrency | separate DB sessions/processes: repair/repair, repair/bootstrap, repair/public install |
+| Claim recovery | dead owner lease expires; one successor takes over |
+| Fencing | stale owner cannot commit after lease takeover |
+| Destination race | losing writer validates and reuses the winning pinned tree |
+| Rollback | selector set to legacy under A1; both roots remain protected and mutations stay consistent |
+| Idempotency | second forced reconciliation performs zero repairs |
+
+Add a named `marketplace-persistence-chaos` job to
+`.github/workflows/pr.yml`. It runs on Linux for every non-draft code PR (a
+fast no-op is allowed only when a checked path filter proves no marketplace,
+crew, DB schema, Docker, or deploy file changed) and is added to branch
+protection before A2 merges. For A2 it must:
+
+1. build the production image and run as its non-root user
+2. use a real Postgres service and named `aoa-data` volume
+3. run the separate-process lease/fencing suite
+4. inject the filesystem/DB kill points
+5. restart and force-recreate the server with the same volume
+6. execute the A2-to-A1 selector rollback pair
+7. upload redacted preflight, mount, digest, claim, and reconciliation JSON
+
+Linux CI is authoritative for container, filesystem, and integration coverage;
+Windows skips are not closure evidence.
+
+### A2 Deployment and Incident Exit
+
+1. On A1, run the checked-in preflight and require exactly one server replica,
+   the expected named volume mounted at `/aoa`, correct UID/GID ownership,
+   sufficient free bytes/inodes, staging/destination on one device, the exact
+   A1 image revision, effective selector `legacy`, and a generated A2 env
+   preview selecting `persistent`.
+2. Deploy the exact A2 SHA with
+   `AOA_MARKETPLACE_SKILLS_WRITE_ROOT=persistent` emitted by
+   `scripts/deploy/write-compose-env.mjs` and passed by `docker-compose.yml`.
+3. Re-run preflight and require the exact A2 revision and effective selector
+   `persistent`.
+4. Run the CLI reconcile and inspect commands; capture response/audits.
+5. Verify both companies have:
+   - one default crew team
+   - one Reviewer
+   - Steward adopted according to the locked rules
+   - all required roster agents exactly once
+   - all 17 required skills with materialized, matching tree digests
+6. Restart, then forcibly recreate the container from the same named volume.
+7. Verify every managed bundle still exists and matches its tree digest.
+8. Force reconciliation again.
+9. Require `status: "success"`, zero repairs, zero skips, and no duplicate rows.
+10. Run a checked-in
+   `scripts/verify-marketplace-recovery-closure.mjs --operation-id <id>` that
+   emits the redacted closure JSON and fails unless all company, bundle,
+   digest, volume, audit, and no-op invariants hold.
+
+Rollback:
+
+- A1 is a normal code revert; browser-session protection must remain intact.
+- A2 rolls back by changing the selector to `legacy` while retaining A1's
+  dual-root reads and jail. Do not redeploy code unaware of the persistent root.
+- On this single-server testing environment, the operational freeze is an
+  explicit short outage: `docker compose stop server`, then fail unless
+  `docker compose ps -q --status running server` returns no container. Change
+  the selector in the generated runtime env, force-recreate the A1-compatible
+  server, and require its health/revision/root preflight before unfreezing.
+- Do not invent a partial maintenance mode in the incident PR. Production
+  multi-replica maintenance semantics require a separate design.
+- If persistent-root reads fail, keep both roots, operation IDs, and audit
+  evidence. Never clear DB provenance or customization state.
+
+The incident closes only after the restart and second-pass proof succeeds.
+
+## Design Review Applicability
+
+Skipped: A1/A2 add no UI surface, visual workflow, or interaction component.
+The operator interface is CLI/API documentation and is covered by the DX
+review. Any future recovery UI requires its own design review.
+
+## Engineering and Security Review
+
+### Engineering Scope Challenge
+
+The smallest safe A1 is larger than a guard tweak. Inspection of
+`board-mutation-guard.ts`, `admin-marketplace.ts`,
+`marketplace-reconcile.ts`, `commands/client/common.ts`,
+`managed-skills-root.ts`, `docker-compose.yml`, and the deploy env writer shows
+that the same privileged path also has raw error leakage, no durable uncertain-
+outcome inspection, an unused stored credential, unguarded resource fetches,
+and no deploy wiring for root selection. These are direct importers or release
+surfaces in the changed path, so the plan accepts them under the blast-radius
+rule.
+
+The smallest safe A2 must cover the health shortcut, filesystem/DB crash
+boundary, and all default-crew writers; fixing only a path string would leave
+corrupt bundles treated as installed and permit stale concurrent commits. The
+plan rejects expansion into the marketplace-wide unique team-origin invariant,
+general offline packaging, production multi-replica maintenance, connector
+publication, or team-update product work.
+
+### Verified Findings and Decisions
+
+| Finding | Severity/confidence | Decision |
 |---|---|---|
-| Connector snapshot and fallback | `scripts/fetch-bundled-connectors.ts`; `createConnectorCatalogService` snapshot precedence | Verify, do not rebuild |
-| Connector trust/parser safety | `McpConnectorCatalogEntrySchema`, raw alias checks, reserved names, duplicate-ID drop | Export a versioned conformance bundle |
-| Marketplace update rows | `marketplace_pending_updates` plus current skill/plugin checker | Replace the unsafe upsert state machine and add team target identity |
-| Team install/reconcile | `team-installer.ts`; narrow `reconcileTeamMembers()` | Validate with the new schema; make reconcile baseline-only |
-| Skill merge UI | `SnapshotUpdateModal`, `MergeDiffPane`, `Dialog` | Reuse dialog shell only; team diff is a typed flow |
-| Embedded PostgreSQL helper | `allocateEmbeddedPgPort()` | Replace probe-only behavior with start-and-retry ownership |
-| Testing deploy | Manual `deploy-testing.yml` | Add exact-SHA input and rollback symmetry |
+| Existing `failures[]` exposes unrestricted exception messages | P1, 10/10 | sanitize through the same strict boundary as skips |
+| Resource errors embed full URLs and logger has no arbitrary-message redaction | P1, 9/10 | add/test a dedicated redacting error serializer |
+| Resource fetch bypasses the shared outbound URL guard | P1, 9/10 | close before the deliberate A1 rerun |
+| Internal results are spread into the response | P2, 9/10 | construct and strict-parse one explicit wire shape |
+| Some `partial` predicates have no diagnostic | P2, 10/10 | require one skip/failure/operation diagnostic per predicate |
+| Completion audit can fail after committed mutations | P1, 10/10 | report `outcome_unknown_after_mutation`; test inspection/retry |
+| Stored login credential is not consumed by normal CLI commands | P1, 10/10 | add credential fallback plus reconcile/inspect commands |
+| Non-2xx auth/catalog/route bodies have no strict common contract | P1, 10/10 | strict-parse 400/401/403/404/409/500/502 |
+| Root override was not deploy-wired and made the rollback root unknowable | P1, 10/10 | fixed dual roots plus `legacy|persistent` write selector |
+| New destinations copy directly into the live path | P1, 10/10 | always stage, validate, then rename |
+| DB rows are treated as installed without bundle health | P1, 10/10 | add a dedicated managed-bundle health classifier |
+| Existing inventory records paths/kinds, not bytes | P1, 10/10 | persist a canonical tree digest; re-fetch unverifiable legacy rows |
+| Lexical jail does not cover symlinks/junctions | P1, 10/10 | use lstat/realpath trusted-ancestor rules for the new dual-root flow |
+| Repair coordination starts after skill materialization | P1, 10/10 | acquire a cross-process DB lease before crew skill work |
+| Lease semantics were underspecified | P1, 10/10 | define table, DB-clock CAS, renewal, release, and fencing |
+| Filesystem rename and DB provenance can diverge on crash | P1, 9/10 | reconstructible-cache protocol plus orphan reconciliation |
+| Lossy path sanitization permits ID/version collisions | P2, 9/10 | prefix-plus-digest encoding and collision tests |
+| Reverting to code unaware of the new root is unsafe | P1, 10/10 | A1 dual-root compatibility and selector rollback |
+| Restart does not prove volume survival across recreation | P2, 10/10 | mount/replica preflight plus forced container recreation |
+| No named Linux gate proves persistence/chaos behavior | P1, 10/10 | required `marketplace-persistence-chaos` PR job |
+| Per-company audit filtering is quadratic | P3, 9/10 | index diagnostics by company once |
 
-## Dream State Delta
-
-After these gates, testing is reproducibly deployable, the curated connector
-shelf has an owned publication contract, team updates cannot overwrite founder
-changes without proof and review, and integration suites no longer rely on a
-probabilistic port convention. The remaining 12-month delta is OAuth connector
-installation, parameterized Filesystem installs, long-tail connector discovery,
-automatic connector revocation/demotion handling, and broader marketplace
-update UX consolidation.
-
-## Architecture Review
-
-### System Architecture
-
-```text
-GitHub Actions A0/A
-  deploy_sha -> ancestry + CI proof -> exact image -> testing health
-                                      |
-                                      v
-                    instance-admin reconcile operation
-                    catalog sync -> crew repair -> Steward pass -> team repair
-
-AoA connector contract bundle --pinned SHA/digest--> aoa-marketplace validator
-                                                        |
-                                                        v
-                                             immutable connectors.json
-                                                        |
-                                      protected workflow / reviewed CDN commit
-                                                        |
-                                                        v
-AoA bundled snapshot <- fallback <- remote connector catalog <- testing shelf
-
-catalog team.json -> C1 schema/baseline/detection -> hidden pending update
-                                                -> C2 typed diff/apply/rollback API
-                                                -> C3 review dialog + notification
-```
-
-### Data Flow and Shadow Paths
+### Materialization State Machine
 
 ```text
-TEAM TARGET
-  -> fetch once
-     | missing/timeout -> upstream_unavailable, no state mutation
-     v
-  -> MarketplaceTeamTemplateSchema
-     | invalid/empty -> reject target, actionable validation log
-     v
-  -> compare baseline + locked live team + target
-     | baseline unknown -> all risky fields conflict/preserve
-     | no changes -> no pending row
-     v
-  -> CAS pending state
-     | same dismissed version -> remain dismissed
-     | concurrent winner -> return winner row
-     v
-  -> typed diff -> founder decisions -> locked transaction
-     | stale snapshot -> 409, refresh
-     | dependency missing -> 422, preserve live state
-     | response lost -> replay stored application response
-     v
-  -> team + membership + baseline + audit committed
-     | bad committed result -> audited rollback from before-state
+ABSENT / UNHEALTHY
+    |
+    | claim owner + fetch pinned source
+    v
+STAGING
+    |-- validation/fetch/disk error ------> CLEAN STAGING -> SAFE SKIP
+    |-- process death --------------------> ORPHAN (reconciled at startup)
+    `-- validated tree digest
+            |
+            v
+RENAMED DESTINATION
+    |-- destination race ----------------> VALIDATE/REUSE WINNER
+    |-- DB CAS success ------------------> HEALTHY
+    `-- process death / DB failure ------> ORPHAN VALID TREE
+                                               |
+                                               `-> reconcile with DB provenance
+
+HEALTHY + customized=true + missing/corrupt bytes -> FAIL CLOSED, NEVER REPLACE
+HEALTHY + customized=false + missing/corrupt bytes -> RE-MATERIALIZE PINNED SOURCE
 ```
 
-### Team Update State Machine
+### Root Rollout State Machine
 
 ```text
-                 newer target
-  absent/dismissed -----------> detected_hidden
-        ^                           |
-        | same target dismissed     | C2 read API ready
-        |                           v
-     dismissed <------------- reviewable
-                                |   |
-                  conflict      |   | baseline proves untouched
-                                v   v
-                           needs_review -----> safely_applicable
-                                |                    |
-                                +------ apply -------+
-                                           |
-                                           v
-                                        applied
+LEGACY
+  -> deploy A1: protect/read both roots, selector=legacy
+  -> deploy A2 + selector=persistent: re-fetch pinned legacy rows
+  -> restart + recreate proof: persistent active, legacy retained
+  -> later cleanup PR: remove legacy bytes only after fleet evidence
 
-Invalid transitions:
-- detected_hidden -> apply: blocked until C2 and valid snapshot
-- stale snapshot -> applied: blocked by digest check
-- non-founder -> mutation: blocked with founder_approval_required
-- same idempotency key + different payload: blocked with 409
+ROLLBACK from A2
+  -> stop the sole testing server and prove zero replicas
+  -> selector=legacy under A1-compatible code
+  -> read/protect both roots, write legacy, recreate server
+  -> investigate and roll forward
+
+INVALID: deploy code that does not recognize the persistent root after DB paths
+point there. The rollout prevents this transition.
 ```
 
-### Deployment and Rollback
+### Test Coverage Diagram
 
 ```text
-A0 merge -> required CI green -> dispatch reviewed SHA -> protected testing job
--> image reports SHA -> health -> admin reconcile -> route matrix evidence
--> keep deployment
+A1
+  actorMiddleware -> boardMutationGuard -> admin route
+    [TEST] valid/expired/revoked/malformed/non-admin board key
+    [TEST] session Origin/Referer regression
+    [TEST] agent/MCP and invalid-bearer-no-session-fallback
+  internal result -> safe mapper -> strict Zod -> audit/HTTP
+    [TEST] every skip/failure/partial predicate
+    [TEST] every non-2xx response and retry instruction
+    [TEST] redaction at response, audit, and logger sink
+    [TEST] completion-audit failure after committed mutation
+  stored auth -> CLI reconcile/inspect -> strict response parsing
+    [TEST] credential precedence, no secret output, confirm-fleet, timeout
+  resource URL -> DNS/IP validation -> pinned request
+    [TEST] protocol/userinfo/private IP/rebind/redirect
+  root resolver
+    [TEST] legacy default, persistent selector, invalid selector, dual jail
 
-Any verified regression
--> dispatch recorded prior SHA through the same workflow
--> health -> reconcile only if catalog state requires it
--> attach failed/new and restored/prior evidence to the incident/PR
+A2
+  captured fixture -> exact reproduction -> selected fix
+    [TEST] fixture digest and pinned resource identities
+  health classifier -> re-materialize or fail closed
+    [TEST] missing/corrupt/customized/unverifiable states
+  stage -> validate digest -> rename -> DB CAS -> cleanup
+    [TEST] race, crash, disk, rename, DB conflict, orphan recovery
+  crew writer lease
+    [TEST] separate-process repair/repair, repair/bootstrap, repair/public, stale fencing
+  deployment
+    [TEST] non-root container restart, recreation, selector rollback, no-op pass
 ```
 
-## Error and Rescue Registry
+The 2 a.m. Friday test is container recreation from the named volume followed
+by a successful no-op forced reconciliation. The hostile test kills the process
+at every filesystem/DB boundary while a second process competes for the same
+crew. The chaos test combines an expired owner lease, a stranded staging tree,
+and a completion-audit failure, then proves one duplicate-free recovery.
 
-| Codepath | Failure | Rescue/action | User/operator sees |
+### Performance
+
+- A1 keeps audit projection O(companies + diagnostics) by pre-indexing per
+  company.
+- A2 retains bounded crew fetch concurrency; it does not hold a database
+  transaction across network fetches.
+- The durable lease is one claim/renew/release sequence per company crew, not
+  one database connection pinned for the full network interval.
+- Tree hashing is linear in bundle bytes and occurs in staging before exposure.
+- Startup orphan cleanup is bounded to managed roots and ignores unrelated
+  filesystem trees.
+
+### Parallelization
+
+| Lane | Work | Dependency |
+|---|---|---|
+| A1-A | board-key guard and full auth-route tests | none |
+| A1-B | strict request/response/error schemas, mapping, audit, logger | none |
+| A1-C | durable inspection plus CLI credential/reconcile/inspect commands | A1-B contract |
+| A1-D | outbound fetch guard and fixed dual-root selector/deploy wiring | none |
+| A1-E | scripts, docs, integration, full verification | A1-A + A1-B + A1-C + A1-D |
+| A2-A | captured-cause reproduction | deployed A1 evidence |
+| A2-B | health classifier, digest, always-stage protocol | A2-A |
+| A2-C | persistent resolver, lease, migration/re-fetch | A2-B |
+| A2-D | Docker/chaos/rollout proof | A2-C |
+
+A1-A/B/D may start in separate worktrees but all touch `server/`, so merge them
+one at a time before A1-C/E. A2 is intentionally sequential because the same
+installer/materializer invariants carry through every step.
+
+### Engineering Dual-voice Consensus
+
+| Dimension | Independent reviewer | Codex reviewer | Consensus |
 |---|---|---|---|
-| deploy SHA validation | SHA missing, not on main, or CI red | fail before build | failed workflow with exact reason |
-| admin reconcile | one company repair fails | continue other companies; return per-company failure | partial result, operation ID, retry guidance |
-| connector aggregate | invalid entry or contract drift | fail nonzero; write no artifact | file, JSON pointer, code, cause, fix |
-| connector publish | digest mismatch | fail before CDN mutation | expected/actual digest |
-| connector runtime fetch | timeout/malformed remote | serve valid cache/snapshot and log staleness | stale badge or empty-state recovery |
-| team target fetch | unavailable | no pending/apply mutation | `upstream_unavailable`, retry |
-| team diff | baseline unknown | classify risky changes as conflicts | preserve-local defaults |
-| team apply | snapshot stale | abort before mutation | `stale_snapshot`, Refresh |
-| team apply | missing dependency | abort before mutation | dependency list and recovery |
-| team apply | response lost | replay durable response by key | same application result |
-| team apply | bad committed result | lock and restore before-state | audited rollback result |
-| embedded PostgreSQL start | bind collision | clean partial attempt; retry up to five | final diagnostic if exhausted |
+| Auth boundary | source-specific exemption is correct | source-specific exemption is correct | confirmed |
+| Wire safety | skips alone are insufficient | skips and failures need strict schemas | confirmed |
+| Concurrency | current locks start too late | current locks are process-local/late | confirmed |
+| Integrity | inventory cannot prove bytes | inventory cannot prove bytes | confirmed |
+| Rollback | prior image reintroduces ephemeral writes | prior image creates split-brain/jail gap | confirmed |
+| Test/deploy | multi-process and recreation proof missing | full auth, chaos, and real-image rollback missing | confirmed |
 
-No planned row is both silent, untested, and unrescued.
+### Engineering Completion Summary
 
-## Test Coverage Diagram
+Full review found and resolved in-plan the wire-leak, SSRF, outcome-unknown,
+ephemeral-root, byte-integrity, atomicity, path-jail, concurrency/fencing,
+rollback, and Linux-proof gaps. The design keeps network work outside database
+transactions, makes the filesystem reconstructible from pinned provenance, and
+uses the database only for the minimum durable coordination state.
 
-```text
-Gate A0/A
-  [contract] deploy_sha required / ancestry / CI / exact image
-  [route] instance-admin only / partial company failure / replay
-  [live] health / artifact partitions / roster / org agents / onboarding
+The executable test plan artifact is:
+`C:\Users\TK\.gstack\projects\AoA-main\testing-marketplace-recovery-eng-test-plan-20260728.md`.
+Engineering review exits with zero unresolved critical gaps; implementation
+must still pass the named A1 and A2 gates before either PR merges.
 
-Gate B
-  [unit] schema + conformance corpus + trust + duplicates + aliases
-  [integration] all-or-nothing aggregate; no artifact on rejection
-  [E2E] local shelf -> install -> bind -> invoke
-  [workflow] dry_run digest -> protected publish -> CDN smoke -> rollback
+## Operator and Developer Experience Review
 
-Gate C1
-  [migration] unknown provenance / partial uniqueness / DB checks
-  [unit] v1 normalization / role + override allowlist
-  [integration] detection CAS / dismissal / memoized fetch / baseline repair
+### Developer Persona Card
 
-Gate C2
-  [unit] classifications / DTO / snapshot digest / problems
-  [integration] apply vs apply / apply vs founder write / rollback / replay
-  [route] founder + team-lead matrix / every HTTP error code
+| Attribute | Definition |
+|---|---|
+| Primary user | AoA maintainer acting as testing instance administrator during an incident |
+| Goal | establish whether recovery ran, why each company skipped, and what safe action comes next |
+| Environment | authenticated remote Docker deployment, one testing server, no assumed shell access |
+| Existing knowledge | understands SHA/CI/PRs; should not need internal service or database knowledge |
+| Risk tolerance | zero founder-data loss, zero duplicate crew rows, short testing-only downtime acceptable for rollback |
+| Success | one terminal session, no token extraction, typed verdict within five minutes |
 
-Gate C3
-  [component] action matrix / explicit errors / preserve defaults
-  [a11y] radio semantics / focus / alerts / 44px targets
-  [responsive] stacked cards / full-height review / sticky footer
-  [E2E] notification deep-link -> review -> retry/replay -> View team
+### Developer Empathy Narrative
 
-Gate D
-  [unit] collision retry / cleanup / stop idempotency
-  [stress] parallel cluster starts x20 on Linux
-  [meta] no fixed random ports
-  [integration] full Linux shard
-```
+> I know the deployment is healthy and the operation says "partial", but that
+> does not tell me whether it changed anything or why both companies were
+> skipped. I do not want to fabricate a browser header, copy a privileged token,
+> grep production logs, or guess whether retrying will duplicate the crew. Give
+> me one authenticated command, show me the operation ID immediately, classify
+> every company, and tell me whether I can retry. If the network drops, I want
+> the same answer from an inspect command.
 
-The hostile tests are apply-vs-founder-write, idempotency-key reuse with a
-different payload, a producer entry containing a secret-bearing alias, and a
-forced bind collision during parallel cluster startup. The chaos tests are a
-catalog timeout during detection, process response loss after team commit, and
-partial cluster startup failure.
+### Competitive DX Benchmark and Magical Moment
 
-## Design Review
-
-### Scores
-
-| Pass | Before | After | Resolution |
+| Experience | Steps | Time | Verdict |
 |---|---:|---:|---|
-| Information architecture | 6 | 9 | dedicated team review dialog and direct notification route |
-| Interaction states | 5 | 9 | explicit action/error/stale/auth/success matrix |
-| User journey | 4 | 9 | pending ID deep-link, focus, fallback, and View team |
-| AI-slop risk | 8 | 9 | existing calm app shell; team-specific utility copy |
-| Design system fit | 7 | 9 | reuse Dialog and marketplace vocabulary, not skill diff internals |
-| Responsive/accessibility | 4 | 9 | mobile stack, 44px targets, semantic choices, focus/alerts |
-| Unresolved decisions | 5 | 10 | DTO, copy, actions, destructive confirmation all specified |
+| Current testing recovery | manual key/curl/header/audit correlation | 20+ min | red flag |
+| Planned authenticated path | whoami, reconcile, inspect | <= 5 min | competitive |
+| Target after incident | preflight + one reconcile command with automatic terminal inspection | < 2 min | champion follow-up |
 
-Litmus: product is clear, each view has one primary job, cards are used only for
-update records, motion is not required for comprehension, and the review remains
-useful without decorative shadows. The post-implementation gate is a live
-`/design-review` of C3.
+The magical moment is the CLI printing a known operation ID before network work,
+then returning one safe company-level reason and prescribed action without
+exposing a token or requiring server access. The delivery vehicle is
+`aoa marketplace reconcile`; `aoa marketplace inspect` preserves the moment
+through timeouts, restarts, and uncertain completion audits.
 
-## Developer Experience Review
+### Developer Journey Map
 
-### Target Persona
-
-**Who:** an AoA maintainer or new contributor shipping a cross-repo marketplace
-or operations change.
-**Context:** they pick up one PR lane from this plan and must prove it locally and
-in CI without access to the prior conversation.
-**Tolerance:** ten minutes to identify the owned files, first command, expected
-output, and rollback unit.
-**Expects:** pinned bases, exact commands, stable error codes, a dry-run path,
-and a handoff artifact.
-
-### Developer Perspective
-
-I open the plan because testing is missing marketplace surfaces. The original
-version tells me to deploy an exact SHA, but the workflow has no SHA input, so my
-first “safe” command cannot do what the runbook claims. It also tells me to
-refresh and repair, but those operations live in different startup paths. I
-would either trust timing or start reading `server/src/index.ts`. The reviewed
-plan fixes that first: A0 gives me one exact deploy command and one authorized
-reconcile call with an operation ID. For connector work, I no longer have to
-guess which of two schema-sharing ideas won. I pin one contract bundle, run its
-conformance corpus, and aggregation writes nothing if any entry fails. For team
-updates, every retry uses one retained idempotency key and every rejection has a
-stable code and recovery. For the port sweep, the helper owns startup, cleanup,
-and retry, and the plan names the Windows and Linux proof. I can now tell what
-worked, what failed, and what to do next without reconstructing the prior session.
-
-### Benchmark and Target
-
-| Reference | Useful pattern | Plan adoption |
+| Stage | Current friction | Planned resolution |
 |---|---|---|
-| GitHub Actions environments | required reviewers/protection before deploy | protected connector publication and testing deploy |
-| Stripe idempotent requests | client key enables safe ambiguous retry | durable team-application replay |
-| RFC 9457 problem details | machine-readable problem plus recovery context | typed team update problem envelope |
-| Current AoA plan before review | first safe proof required code archaeology | estimated 20+ minutes |
-| Reviewed target | pinned pickup to first valid check | under 10 minutes |
-
-The developer "magical moment" is deterministic proof: the first dry run prints
-the exact source SHA, artifact digest, validation result, and next command.
-
-### Journey Map
-
-| Stage | Contributor does | Friction removed |
-|---|---|---|
-| Discover | selects one row in the pickup table | no cross-repo scope ambiguity |
-| Install | uses existing pnpm 9.15.4 workspace | package-manager guard remains authoritative |
-| First proof | runs the named targeted command | expected artifact/error contract is specified |
-| Real use | opens PR with handoff artifact | reviewer sees digest, route matrix, or test inventory |
-| Debug | follows stable code/cause/recovery | no unknown response parsing or silent partial output |
-| Upgrade/rollback | uses pinned SHA and recorded prior artifact | same workflow handles forward and reverse |
+| Discover | recovery route buried in API knowledge | board-operator runbook linked from API, CLI, auth, activity, and deploy docs |
+| Evaluate | no declared blast radius or retry semantics | preflight and explicit fleet confirmation |
+| Install | no published CLI artifact in this repo flow | use repository `pnpm aoa`; publishing remains outside incident |
+| Hello world | stored login credential is ignored | `auth whoami` consumes the stored credential |
+| Integrate | operator hand-builds curl and Origin | first-class reconcile command and strict request schema |
+| Debug | `partial` loses per-company cause | typed diagnostics, exhaustive recovery map, durable inspect |
+| Upgrade | root/mount docs contradict deployment | authoritative storage table and dual-root upgrade/rollback procedure |
+| Scale | in-memory locks do not span processes | A2 DB lease/fencing; general multi-replica maintenance remains deferred |
+| Migrate | arbitrary override makes rollback ambiguous | fixed legacy/persistent roots with one write selector |
 
 ### First-time Confusion Report
 
-```text
-T+0:00  Pick a lane from the contributor table.
-T+1:00  Confirm base SHA and prerequisite PR.
-T+3:00  Run targeted contract/helper test.
-T+6:00  Inspect generated digest or typed error.
-T+9:00  Know whether to proceed, retry, or stop; attach handoff artifact.
-```
+| Confusion | Status in plan |
+|---|---|
+| "Did login actually give the next command a credential?" | fixed by shared CLI credential precedence and tests |
+| "Does an empty POST really mutate every company?" | fixed by mandatory fleet/mode/operation ID body and confirmation flag |
+| "Does retryable mean now, later, or after a fix?" | fixed by discriminated retry instructions |
+| "Did the timed-out operation commit?" | fixed by client-known ID and read-only inspect |
+| "Which Docker path is persistent?" | fixed by `/aoa` storage table and deploy-script validation |
+| "Which focused test command actually runs?" | fixed by verified repository-root Vitest command |
+
+### Operator Contract
+
+The primary persona is the testing instance administrator with an already-valid
+CLI credential and no server shell. The supported path must provide:
+
+- preflight answer in 30 seconds or less
+- client-generated correlation ID immediately, followed by server acceptance
+- typed terminal verdict in five minutes or less
+- read-only inspection after timeout, disconnect, restart, or audit failure
+- one prescribed next action per public code
+- a redacted JSON artifact suitable for attaching to the incident
+
+The unsupported path is token extraction plus hand-written curl. It remains
+documented only for API debugging.
+
+### Exhaustive Recovery Mapping
+
+The checked-in table and the docs use these exact defaults:
+
+| Public code | Retry kind | Recovery code |
+|---|---|---|
+| `install_in_flight` | `after` | `wait_for_active_install` |
+| `team_item_not_in_catalog` | `after_correction` | `restore_team_catalog_item` |
+| `team_template_unavailable` | `after_correction` | `restore_team_template` |
+| `empty_roster` | `after_correction` | `repair_team_manifest` |
+| `unadoptable_roster_member` | `after_correction` | `resolve_roster_origin` |
+| `unaccounted_crew_rows` | `inspect_first` | `review_unaccounted_rows` |
+| `skill_resource_temporarily_unavailable` | `after` | `wait_for_resource_retry` |
+| `skill_resource_fetch_failed` | `after_correction` | `restore_pinned_resource` |
+| `skill_resource_invalid` | `after_correction` | `repair_resource_contract` |
+| `skill_bundle_materialization_failed` | `after_correction` | `repair_bundle_storage` |
+| `skill_bundle_missing` | `after_correction` | `restore_managed_bundle` |
+| `skill_filesystem_permission_denied` | `after_correction` | `repair_storage_permissions` |
+| `repair_cooldown` | `after` | `wait_for_cooldown` |
+| `repair_budget_exhausted` | `after` | `wait_for_next_repair_window` |
+| `unknown_fail_closed` | `inspect_first` | `inspect_operation` |
+| `crew_catalog_not_ready` | `after_correction` | `restore_crew_catalog` |
+| `legacy_steward_disabled` | `never` | `enable_steward_reconcile_if_desired` |
+| `legacy_steward_catalog_not_ready` | `after_correction` | `restore_steward_catalog` |
+| `marketplace_update_failed` | `inspect_first` | `inspect_operation` |
+| `crew_repair_failed` | `inspect_first` | `inspect_operation` |
+| `legacy_steward_failed` | `inspect_first` | `inspect_operation` |
+| `crew_update_failed` | `inspect_first` | `inspect_operation` |
+| `team_reconcile_failed` | `inspect_first` | `inspect_operation` |
+| `unknown_internal_failure` | `inspect_first` | `inspect_operation` |
+| `invalid_request` | `after_correction` | `correct_request` |
+| `authentication_required` | `after_correction` | `login_instance_admin` |
+| `instance_admin_required` | `never` | `request_instance_admin_access` |
+| `operation_not_found` | `never` | `verify_operation_id` |
+| `operation_in_flight` | `after` | `wait_for_active_operation` |
+| `catalog_temporarily_unavailable` | `after` | `wait_for_catalog_retry` |
+| `catalog_refresh_failed` | `after_correction` | `restore_catalog_availability` |
+| `outcome_unknown_after_mutation` | `inspect_first` | `inspect_operation` |
+| `internal_error` | `inspect_first` | `inspect_operation` |
+
+`notBefore` comes from the actual lease, cooldown, or server-side resource retry
+deadline for `after`; it is never guessed by the client. A response fails
+schema validation if a public code has no table entry.
+
+### Docs and Command Verification
+
+The runbook includes copy/paste commands for login, whoami, preflight,
+reconcile, inspect, closure, and logout. Each command is exercised in CLI tests
+or the Linux recovery job. Examples use placeholders only for operation IDs;
+they do not require company IDs, board-token environment variables, or an
+Origin header.
+
+The authoritative storage table and deploy scripts remove the current
+`/paperclip` versus `/aoa` contradiction. The restricted live evidence envelope
+is never a CI dependency; the committed non-secret fixture is the offline
+contract.
+
+### DX Dual-voice Consensus
+
+| Dimension | Independent reviewer | Codex reviewer | Consensus |
+|---|---|---|---|
+| Existing curl/key workflow meets operator target | no | no | add first-class CLI commands |
+| Stored login credential is usable by commands | no | no | fix shared credential resolution |
+| Outcome-unknown has a conclusive inspection path | no | no | add durable read-only GET/CLI inspect |
+| Retry boolean is sufficient | no | no | use discriminated retry instructions |
+| Existing focused test commands are valid | no | no | use verified root Vitest invocation |
+| Docker/root docs and env wiring agree | no | no | reconcile docs and wire selector |
+| Linux proof is currently a named gate | no | no | add required chaos/persistence job |
+| Community/ecosystem work belongs in incident | no gap found | no gap found | no additional incident scope |
+
+### What Already Exists for DX
+
+- `aoa auth login --instance-admin`, a per-API-base credential store, and
+  `aoa auth whoami`
+- shared Commander client option/context helpers and JSON output
+- operation IDs and activity-log entity indexing
+- API/authentication, marketplace, activity, Docker, upgrade, CLI, and
+  environment-variable documentation surfaces
+- full repository `typecheck`, `test:run`, and `build` gates
+
+### DX-specific Not in Scope
+
+- publishing the CLI to npm; the current docs explicitly say it is unpublished
+- a recovery UI; the incident is deliberately CLI/API-first
+- a generalized maintenance-mode framework for multi-replica production
+- community programs, SDK-language expansion, playgrounds, or free-tier design
 
 ### DX Scorecard
 
-| Dimension | Before | After |
-|---|---:|---:|
-| Getting started | 4 | 8 |
-| API/workflow design | 5 | 9 |
-| Error messages/debugging | 3 | 9 |
-| Documentation/learning | 4 | 8 |
-| Upgrade/rollback path | 5 | 9 |
-| Developer environment/tooling | 5 | 8 |
-| Community/contribution pickup | 5 | 8 |
-| Measurement/feedback | 4 | 8 |
+| Dimension | Before | Plan after review | Gap to 10 |
+|---|---:|---:|---|
+| Getting Started | 3/10 | 8/10 | published binary and one-command preflight/reconcile |
+| API/CLI/SDK | 4/10 | 9/10 | remove deprecated `replayed` after compatibility window |
+| Error Messages | 3/10 | 9/10 | validate messages against real incident codes |
+| Documentation | 4/10 | 8/10 | versioned command-output snapshots |
+| Upgrade Path | 3/10 | 8/10 | production multi-replica migration design |
+| Dev Environment | 5/10 | 8/10 | cross-platform container chaos parity |
+| Community | 6/10 | 6/10 | intentionally not incident scope |
+| DX Measurement | 2/10 | 8/10 | automate longitudinal TTHW tracking |
+| **Overall** | **4/10** | **8/10** | ship and measure the plan |
 
-Target time to first valid proof: under 10 minutes. After implementation, run
-`/devex-review` on the A0 and connector authoring flows.
+TTHW moves from more than 20 minutes to at most five minutes for an
+already-authenticated operator, reaching the competitive tier. Zero Friction,
+Fight Uncertainty, Opinionated Defaults with Escape Hatches, Code in Context,
+and the Magical Moment are covered. Learn by Doing is covered by the runnable
+runbook and fixture; broader community desirability is intentionally deferred.
 
 ### DX Implementation Checklist
 
-- [ ] Exact source SHA and artifact digest appear in every deploy/publish run.
-- [ ] Dry-run makes no external mutation.
-- [ ] Invalid connector content writes no output artifact.
-- [ ] Every team update error provides code, cause, recovery, and retryability.
-- [ ] Ambiguous team retries reuse the same idempotency key.
-- [ ] API and connector authoring docs contain copy-paste commands.
-- [ ] Windows shows deterministic unit/hygiene proof; Linux owns integration proof.
-- [ ] Every PR hands off the artifact named in the contributor table.
+- [ ] Already-authenticated recovery verdict is <= 5 minutes
+- [ ] Client operation ID is printed before the network request and accepted ID is confirmed
+- [ ] `auth whoami`, reconcile, inspect, and logout work with the stored key
+- [ ] No supported command prints or requires copying the bearer token
+- [ ] Every error has problem, stable code, fix/retry instruction, and docs URL
+- [ ] CLI naming is guessable and fleet mutation requires explicit confirmation
+- [ ] Runbook commands are copy/paste tested
+- [ ] Examples show success, partial, pre-mutation failure, timeout, and outcome-unknown
+- [ ] A1-to-A2 upgrade and selector rollback are documented and exercised
+- [ ] CI uses the verified root Vitest command and the named Linux chaos job
+- [ ] Restricted live evidence is separate from the committed offline fixture
+- [ ] TTHW and operation stage durations are captured in closure evidence
+
+### DX Completion Summary
+
+Mode: DX polish for a platform/API operational workflow. Both voices found the
+same blocking usability gap: the only proven route required secret handling and
+manual HTTP knowledge, while outcome-unknown had no conclusive inspection path.
+The revised plan closes those gaps without adding a UI or broad product surface.
+DX review exits at 8/10 with zero unresolved incident-scope decisions.
 
 ## Cross-phase Themes
 
-1. **Determinism over timing:** CEO, engineering, and DX reviews all found flows
-   that relied on mutable counts, boot order, auto-publish, or random ports.
-2. **Explicit contracts across boundaries:** design, engineering, and DX reviews
-   all required typed DTOs, stable problems, pinned connector conformance, and
-   exact artifact identity.
-3. **Founder-state preservation:** CEO, design, and engineering reviews all
-   rejected any team update path that cannot prove its baseline or defaults to
-   upstream replacement.
-4. **Independent rollback units:** all phases converged on A0, D, B0/B1, and
-   C1/C2/C3 as separate PRs.
+- **Scope isolation** — CEO and engineering reviews independently required
+  separating incident recovery from connector, team-update, and port-sweep work.
+- **Operator certainty** — CEO, engineering, and DX reviews all rejected a
+  response that says `partial` or `500` without a safe company-level next step.
+- **Knowable rollback** — engineering and DX both flagged the ephemeral root,
+  undocumented Compose wiring, and ambiguous override as one combined rollout
+  risk.
+- **Security at the serialization boundary** — engineering and DX both required
+  strict error schemas, redacted logs/audits, no token extraction, and guarded
+  outbound fetches.
+
+## Failure Modes Registry
+
+| Codepath | Failure | Rescued? | Test | Operator sees |
+|---|---|---:|---:|---|
+| Board-key auth | invalid/revoked key | yes | route integration | 401/403 |
+| Session mutation | missing/untrusted origin | yes | guard regression | 403 |
+| CLI request | timeout/disconnect after acceptance | yes | CLI/route integration | known operation ID + inspect action |
+| Catalog refresh | CDN unavailable/fallback only | yes | existing service tests | 502 + operation ID |
+| Skill install | resource fetch/parse failure | yes | A1 mapping + A2 reproduction | safe skip code |
+| Skill fetch | catalog URL targets private/reserved network | yes | SSRF tests | safe failure code |
+| Skill install | filesystem permission/staging failure | yes | A1 mapping + Docker test | safe skip code |
+| Crew pass | repair budget exhausted | yes | pass unit | over-budget skip |
+| Completion audit | audit write fails after mutations | outcome unknown | service/retry test | 500 + operation ID + inspection action |
+| Re-materialization | DB row exists, directory absent | A2 | integration | repaired or safe skip |
+| Root migration | legacy bytes partial/tampered | A2 | pinned re-fetch test | legacy bytes ignored |
+| Materialization | process dies between filesystem and DB steps | reconciled on next pass | kill-point tests | recovered or safe skip |
+| Concurrent repair | two processes claim default crew | DB lease | multi-process test | one owner |
+| Destination race | two writers finish one pinned skill | validate/reuse winner | race test | one valid tree |
+| Restart/recreate | bundle path or volume was ephemeral | rollout blocked/repaired | Docker tests | persistent bytes |
+| Rollback | old code does not protect new root | prevented by A1 compatibility | downgrade test | selector rollback |
+
+## Error and Rescue Registry
+
+| Method/codepath | Error class | Rescue/action | Public/audit output |
+|---|---|---|---|
+| `actorMiddleware` board-key lookup | invalid, expired, revoked, DB error | reject credential or safe-map middleware error | strict 401/403/500 |
+| `boardMutationGuard` session mutation | missing/untrusted Origin/Referer | reject before route | strict 403 |
+| reconcile request parser | empty, malformed, reused ID, concurrent ID | reject or join matching operation | strict 400/409 |
+| catalog refresh | network, timeout, fallback-only, malformed catalog | terminal pre-mutation audit | strict 502 + operation ID |
+| guarded resource fetch | unsafe URL, DNS/private IP, redirect, HTTP failure | reject or typed fetch failure | typed failure/skip |
+| `repairCompanyCrew` | typed guarded decline | return internal skip | mapped `skips[]` |
+| repair pass | unexpected company exception | continue other companies; safe-map failure | typed `failures[]` |
+| completion audit | DB error after maintenance | mark outcome unknown; preserve start audit | 500 + operation ID |
+| operation inspection | missing/ambiguous audit or diagnosis query failure | fail closed, never mutate | strict 404 or `safeToRetry: false` |
+| materializer staging | disk/read/write/rename failure | retain last good; clean/reconcile staging | typed skip |
+| bundle health classifier | missing/corrupt/unverifiable bytes | re-fetch only when uncustomized | repair or typed skip |
+| crew claim | live owner, expired owner, DB failure | skip/lease takeover/fail | safe skip/failure |
+| DB provenance CAS | conflict after valid destination | validate winner, re-read row | reuse or safe failure |
+
+Catch-all conversion is allowed only at the outer company isolation boundary,
+where it maps to a safe failure code and logs through the redacting serializer.
+No inner catch may swallow an unknown error and continue as success.
+
+## Not in Scope
+
+- Connector catalog publication or marketplace connector taxonomy
+- Team-template merge/apply UI or generalized team update platform
+- Embedded PostgreSQL port migration
+- Combining AoA crew and organization agents in one list
+- Changing onboarding state
+- Chronicler product-policy changes beyond what the proven repair requires
+- General offline-first packaging of every first-party resource; file a separate
+  architecture plan after the incident if restart persistence is insufficient
 
 ## Implementation Tasks
 
-- [ ] **T1 (P1)** - A0 - add exact-SHA testing deployment and authorized reconcile operation.
-- [ ] **T2 (P1)** - D - replace probe-only port allocation and sweep integration suites.
-- [ ] **T3 (P1)** - B0 - amend Decision #116 and export the connector contract bundle.
-- [ ] **T4 (P1)** - B1 - build, validate, document, and dry-run publish the named connector set.
-- [ ] **T5 (P1)** - C1 - add marketplace team schema, baselines, pending identity, and hidden detection.
-- [ ] **T6 (P1)** - C2 - add locked diff/apply/replay/rollback API and problem contracts.
-- [ ] **T7 (P1)** - C3 - add the accessible team update review journey and notification links.
-- [ ] **T8 (P2)** - post-ship - run design and DX boomerang reviews on rendered/operational behavior.
+- [ ] **A1-T1 (P1)** — Correct board-key mutation-guard semantics and regress session protection.
+- [ ] **A1-T2 (P1)** — Add strict fleet request, success, diagnostic, failure, inspection, and all-error schemas.
+- [ ] **A1-T3 (P1)** — Propagate typed skips through counters, response, per-company audit, redacted logs, and exhaustive retry mapping.
+- [ ] **A1-T4 (P1)** — Persist inspectable start/terminal audits and add the read-only operation inspection route.
+- [ ] **A1-T5 (P1)** — Make stored board credentials usable and add confirmed fleet reconcile/inspect CLI commands.
+- [ ] **A1-T6 (P1)** — Guard outbound resources and add fixed dual-root selection in code, Compose, deploy env, and env docs.
+- [ ] **A1-T7 (P1)** — Add verified preflight, fixture, runbook, focused/full tests, and documentation links.
+- [ ] **A1-T8 (P1)** — Deploy, rerun, inspect, revoke credentials, measure time-to-verdict, and record A2 evidence.
+- [ ] **A2-T1 (P1)** — Reproduce the captured diagnostic in an automated test.
+- [ ] **A2-T2 (P1)** — Implement the smallest evidence-selected repair.
+- [ ] **A2-T3 (P1)** — Implement versioned canonical tree digests, bundle health, and always-stage crash recovery.
+- [ ] **A2-T4 (P1)** — Add the fenced DB crew claim and wire every crew writer.
+- [ ] **A2-T5 (P1)** — Select persistent writes, re-fetch legacy rows, and preserve founder state.
+- [ ] **A2-T6 (P1)** — Add the required Linux persistence/chaos job and rollback-pair proof.
+- [ ] **A2-T7 (P1)** — Deploy and close with restart, recreation, closure script, and successful no-op second pass.
 
+<!-- AUTONOMOUS DECISION LOG -->
 ## Decision Audit Trail
 
-| # | Phase | Decision | Classification | Principle | Rationale | Rejected |
-|---|---|---|---|---|---|---|
-| 1 | Intake | Split operational recovery and three code tracks | Mechanical | Independent rollback | Each track has a different blast radius and verification surface | One giant PR |
-| 2 | Connectors | Keep separate connector artifact | Mechanical | Preserve contract | AoA already consumes a fail-closed connector-specific schema | Fold into catalog items |
-| 3 | Team updates | Preserve founder changes by default | Mechanical | Prevent data loss | Unknown or customized state is not safe to overwrite | Upstream wins |
-| 4 | Test infrastructure | Keep Phase 5 production-free | Mechanical | Minimize blast radius | Port allocation is only a CI concern | Mix with runtime changes |
-| 5 | CEO review | Delete connector read-side implementation from scope | Mechanical | Reuse shipped code | Snapshot fetch and fallback shipped in `19fba089` | Rebuild B1 |
-| 6 | CEO review | Split team updates into C1/C2/C3 | Product-shaped | Limit blast radius | Persistence/detection, mutation, and UI have independent rollback and proof | One large team-update PR |
-| 7 | CEO review | Run Phase 5 before feature PRs | Mechanical | Improve signal | Removing port collisions strengthens every later Linux CI result | Leave it last |
-| 8 | CEO review | Pin Gate A to catalog artifact identity | Mechanical | Avoid mutable assertions | Counts can change legitimately during deploy | Treat observed counts as immutable |
-| 9 | Design review | Make C2 own a typed team-diff DTO | Mechanical | Stable UI contract | The existing skill string-section model cannot represent roster/dependency decisions safely | Teach C3 to parse free-form sections |
-| 10 | Design review | Deep-link notifications by pending update ID | Mechanical | Coherent journey | A generic marketplace route loses the update the notification refers to | Generic `/marketplace` link |
-| 11 | Design review | Use a dedicated team review dialog | Product-shaped | Make preservation legible | Team roster/role decisions need team language, action states, and mobile behavior | Reuse the skill merge pane unchanged |
-| 12 | Eng review | Persist explicit per-team baselines | Mechanical | Prove customization | Live team state and today's catalog cannot reconstruct the last applied upstream | Infer baseline during detection |
-| 13 | Eng review | Share one lock across every team mutation | Mechanical | Prevent lost updates | A transaction in apply cannot exclude concurrent founder writes | Lock apply only |
-| 14 | Eng review | Hide detection until an actionable read surface exists | Product-shaped | Avoid dead UI | Current UI offers actions whose team routes return 501/404 | Emit C1 notifications immediately |
-| 15 | Eng review | Make connector publication manual and artifact-pinned | Mechanical | Preserve approval gate | The current marketplace workflow publishes on merge to `main` | Extend automatic publisher |
-| 16 | Eng review | Remove Filesystem from launch content | Mechanical | Avoid unsafe static paths | Catalog install cannot bind a founder-approved contained workspace path | Publish a fleet-wide hard-coded path |
-| 17 | Eng review | Start embedded PostgreSQL with bind-collision retry | Mechanical | Eliminate the actual flake | Probe-then-close retains a TOCTOU race | Sweep callers around the existing probe only |
-| 18 | DX review | Add A0 exact-SHA deploy and maintenance controls | Mechanical | Executable runbook | The current workflow cannot select/rollback a SHA and sync does not rerun repair | Depend on boot timing and `github.sha` |
-| 19 | DX review | Version a cross-repo connector contract bundle | Mechanical | Fight uncertainty | Schema-only duplication misses parser prechecks and drifts silently | Copied happy-path fixture |
-| 20 | DX review | Standardize team update problem responses | Mechanical | Actionable errors | Stable codes and recovery text let the UI distinguish refresh, conflict, dependency, and auth failures | Parse unknown response bodies ad hoc |
-| 21 | DX review | Pin every repo and handoff artifact | Mechanical | Reproducible pickup | Cross-repo work otherwise depends on unstated base commits and commands | Pin AoA only |
+| # | Phase | Decision | Classification | Principle | Rationale | Rejected/deferred alternative |
+|---:|---|---|---|---|---|---|
+| 1 | CEO | Split the umbrella into incident, connector, team-update, and port-sweep plans | User Challenge, accepted by user | Choose completeness | each program has a different owner, metric, and exit gate | one multi-phase PR/plan |
+| 2 | CEO | Keep A1 and A2 as separate PRs | Mechanical | Explicit over clever | deployed A1 evidence selects the only allowed A2 repair branch | speculative combined PR |
+| 3 | Eng | Exempt only authenticated `board_key` from Origin/Referer | Mechanical | Pragmatic | explicit bearer authority is non-ambient; browser sessions remain CSRF-protected | exempt every board/admin actor |
+| 4 | Eng | Strict-parse request, success, inspection, and all error responses | Mechanical | Choose completeness | durable API/audit surfaces cannot expose internal shapes | TypeScript-only interfaces |
+| 5 | Eng | Sanitize failures and the logger sink, not only new skips | Mechanical | Boil lakes | existing failures/URLs are in the same disclosure blast radius | sanitize only the new field |
+| 6 | Eng | Add durable read-only operation inspection | Mechanical | Choose completeness | timeout/audit failure otherwise leaves mutation outcome unknowable | tell operator to retry |
+| 7 | DX | Make CLI the supported recovery client and consume stored board credentials | Mechanical | DRY | login and credential storage already exist | manual token extraction/curl |
+| 8 | DX | Require explicit fleet/mode/client operation UUID | Mechanical | Explicit over clever | prevents accidental fleet mutation and preserves correlation through timeout | empty POST/full fleet |
+| 9 | DX | Use discriminated retry instructions | Mechanical | Explicit over clever | "retryable" cannot express wait, correct, inspect, or never | retry boolean |
+| 10 | Eng | Guard all privileged resource fetches before rerun | Mechanical | Boil lakes | the existing reconcile path can fetch catalog-provided URLs | defer SSRF closure |
+| 11 | Eng | Use two fixed roots plus `legacy|persistent` selector | Mechanical | Explicit over clever | read scope and rollback remain knowable independent of environment | arbitrary path override |
+| 12 | CEO | Fix persistent storage in A2 even if another code caused the skip | Mechanical | Choose completeness | `/app/.aoa` outside `/aoa` is independently proven defective | cause-only repair |
+| 13 | Eng | Version and specify the canonical byte-tree digest | Mechanical | Explicit over clever | path/kind inventory cannot authenticate content | trust legacy inventory |
+| 14 | Eng | Add DB-clock lease renewal and fencing across every crew writer | Mechanical | Choose completeness | process-local/late locks permit duplicate final commits | repair-only lock |
+| 15 | DX | Stop the sole testing server during selector rollback | Mechanical | Pragmatic | an explicit short outage is safer than an incident-only maintenance framework | build generalized maintenance mode |
+| 16 | Eng | Split restricted live evidence from committed offline fixture | Mechanical | Pragmatic | CI must be reproducible without exposing environment data | use live fixture in CI |
+| 17 | Eng | Defer broad unique `(company_id, template_origin)` invariant | Mechanical | Bias toward action | it requires fleet remediation and marketplace-wide semantics outside incident | add index during A2 |
+| 18 | CEO | Defer general offline first-party packaging | Taste | Pragmatic | valuable resilience platform, but broader than the proven incident root/fetch defect | bundle every first-party resource now |
+| 19 | CEO | Defer immutable image promotion | Taste | Bias toward action | A0 exact-SHA deployment is already shipped; promotion design is a separate release concern | expand this incident into release architecture |
 
 ## GSTACK REVIEW REPORT
 
-| Review | Trigger | Why | Runs | Status | Findings |
-|---|---|---|---:|---|---|
-| CEO Review | `/autoplan` | Scope and sequencing | 1 | CLEAR | 7 findings folded; deleted redundant connector work and split team delivery |
-| Codex Review | Codex CLI outside voice | Independent model | 1 attempted | UNAVAILABLE | Authenticated, but account quota exhausted until 2026-08-03 |
-| Eng Review | `/autoplan` | Architecture, data safety, tests | 1 | CLEAR | 10 findings folded; explicit baseline, shared lock, publication gate, port retry |
-| Design Review | `/autoplan` | Team-update UX | 1 | CLEAR | 8 findings folded; 6/10 to 9/10 overall |
-| DX Review | `/autoplan` | Operator and contributor experience | 1 | CLEAR | 8 findings folded; 4/10 to 8/10 overall |
+**Status:** APPROVED for implementation on 2026-07-28
 
-**CROSS-MODEL:** Independent review agents converged on deterministic operations,
-explicit cross-boundary contracts, founder-state preservation, and smaller rollback
-units. Codex CLI produced no verdict because its quota was exhausted.
+| Phase | Result | Dual voices | Unresolved |
+|---|---|---|---:|
+| CEO | 9/10; incident split and scope locked | Codex + independent reviewer; 3 confirmed, 2 taste disagreements | 0 |
+| Design | skipped; no UI scope | not applicable | 0 |
+| Engineering/Security | 9/10; 21 findings resolved in plan | Codex + independent reviewer; 6/6 consensus dimensions | 0 |
+| Developer Experience | 8/10; TTHW >20 min -> <=5 min target | Codex + independent reviewer; 8/8 consensus dimensions | 0 |
 
-**VERDICT:** CEO + DESIGN + ENG + DX CLEARED. Founder approved all recommendations
-on 2026-07-28; implementation may begin with A0.
+The review made 19 decisions: 16 mechanical auto-decisions, two taste
+recommendations, and one user challenge that the user accepted. The two taste
+recommendations are to defer general offline first-party packaging and immutable
+image promotion until after the incident.
+
+Cross-phase high-confidence themes were scope isolation, conclusive operator
+state, knowable storage rollback, and strict/redacted security boundaries.
+The plan contains the complete implementation checklist, failure registry,
+error/rescue registry, architecture and test diagrams, operator journey,
+exhaustive retry map, and decision audit.
+
+Artifacts:
+
+- engineering test plan:
+  `C:\Users\TK\.gstack\projects\AoA-main\testing-marketplace-recovery-eng-test-plan-20260728.md`
+- CEO tasks: 2 valid JSONL records
+- engineering tasks: 6 valid JSONL records
+- DX tasks: 4 valid JSONL records
+- restore point:
+  `C:\Users\TK\.gstack\projects\AoA-main\codex-testing-marketplace-recovery-autoplan-restore-20260728-172030.md`
+
+The user approved the plan and authorized A1 implementation. A2 remains gated
+on deployed A1 diagnostic evidence, not on a missing technical or product
+decision.
 
 NO UNRESOLVED DECISIONS
