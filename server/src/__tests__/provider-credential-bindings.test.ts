@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ProviderCredentialBindingError,
   assertCommanderSubscriptionAgent,
+  chooseCommanderSubscriptionBinding,
   chooseGovernedSubscriptionBinding,
   mayUseLegacySubscriptionHome,
 } from "../services/provider-credential-bindings.js";
@@ -84,5 +85,21 @@ describe("governed provider credential binding", () => {
       expect.objectContaining({ code: "credential_not_commander" }),
     );
     expect(() => assertCommanderSubscriptionAgent("commander-1", "commander-1")).not.toThrow();
+  });
+
+  it("surfaces a missing binding before Commander authorization so legacy fallback remains possible", () => {
+    expect(
+      codeOf(() =>
+        chooseCommanderSubscriptionBinding([], expected, "agent-1", "commander-1"),
+      ),
+    ).toBe("binding_missing");
+  });
+
+  it("still rejects a real eligible personal binding for a non-Commander agent", () => {
+    expect(
+      codeOf(() =>
+        chooseCommanderSubscriptionBinding([base], expected, "agent-1", "commander-1"),
+      ),
+    ).toBe("credential_not_commander");
   });
 });

@@ -133,6 +133,24 @@ export function chooseGovernedSubscriptionBinding(
   return active[0]!;
 }
 
+export function chooseCommanderSubscriptionBinding(
+  candidates: BindingCandidate[],
+  expected: {
+    companyId: string;
+    provider: CliSubscriptionProvider;
+    executionTargetId: string;
+  },
+  agentId: string,
+  commanderAgentId: string | null | undefined,
+): BindingCandidate {
+  // Selection intentionally precedes authorization. No binding is the one case
+  // that may fall back to the legacy local CLI home when strict scoping is off.
+  // A real personal-subscription binding remains Commander-only.
+  const selected = chooseGovernedSubscriptionBinding(candidates, expected);
+  assertCommanderSubscriptionAgent(agentId, commanderAgentId);
+  return selected;
+}
+
 async function assertSafeCredentialHome(authHome: string, aoaHome: string): Promise<void> {
   const [resolvedHome, resolvedRoot] = await Promise.all([
     fs.realpath(authHome).catch(() => null),
@@ -161,13 +179,6 @@ export async function resolveAgentSubscriptionEnvironment(
     verifyPath?: boolean;
   },
 ): Promise<NodeJS.ProcessEnv> {
-  const [commander] = await db
-    .select({ agentId: internalAgentConfig.agentId })
-    .from(internalAgentConfig)
-    .where(eq(internalAgentConfig.companyId, args.companyId))
-    .limit(1);
-  assertCommanderSubscriptionAgent(args.agentId, commander?.agentId);
-
   const rows = await db
     .select({
       credentialId: providerCredentials.id,
@@ -201,7 +212,25 @@ export async function resolveAgentSubscriptionEnvironment(
       ),
     );
 
-  const selected = chooseGovernedSubscriptionBinding(rows, args);
+  // Read Commander identity only after loading candidates, then authorize via a
+  // helper whose ordering is pinned by unit tests.
+  // Preserve the legacy local-CLI fallback for ordinary agents with no governed
+  // binding: `chooseGovernedSubscriptionBinding` must surface `binding_missing`
+  // before Commander-only authorization is evaluated. Once a binding really
+  // exists and is eligible, personal subscription use still fails closed for
+  // every non-Commander agent.
+  const [commander] = await db
+    .select({ agentId: internalAgentConfig.agentId })
+    .from(internalAgentConfig)
+    .where(eq(internalAgentConfig.companyId, args.companyId))
+    .limit(1);
+  const selected = chooseCommanderSubscriptionBinding(
+    rows,
+    args,
+    args.agentId,
+    commander?.agentId,
+  );
+
   const env = args.env ?? process.env;
   const authHome = resolveScopedCliAuthHome({
     env,

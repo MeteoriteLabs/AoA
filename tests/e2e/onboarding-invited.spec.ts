@@ -69,14 +69,9 @@ async function completeProfileStep(page: Page, name = "E2E Invitee") {
 
 /** The admitted teammate lands on "/" INSIDE the company (not the empty lobby). */
 async function expectInsideCompany(page: Page, companyName: string, timeout = 30_000) {
-  // Post-admission the invited journey shows a "Welcome to {company}" terminal
-  // (a MiniMap of the company you're joining) gated behind an explicit
-  // "Enter {company}" button — click through it to reach the returning-user
-  // Lobby. companyName is `E2E-…-${Date.now()}` (letters/digits/hyphens only),
-  // so it needs no regex escaping.
-  await page
-    .getByRole("button", { name: new RegExp(`enter ${companyName}`, "i") })
-    .click({ timeout });
+  // The identity journey gate re-resolves immediately after admission and
+  // routes returning members straight to the Lobby. Waiting for the superseded
+  // intermediate "Enter company" terminal made a successful admission time out.
   await expect(page.getByRole("heading", { name: /welcome back/i })).toBeVisible({ timeout });
   // .first(): the company name may legitimately render more than once on the
   // landed page (card title, subtitles, …) — any visible occurrence proves the
