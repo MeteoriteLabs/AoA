@@ -28,6 +28,7 @@ vi.mock("drizzle-orm", () => ({ ...drizzleOperatorStubs(), notInArray: mockNotIn
 vi.mock("@armyofagents/db", () => ({
   agents: makeTableProxy("agents"),
   agentProviderCredentialBindings: makeTableProxy("agent_provider_credential_bindings"),
+  companyMemberships: makeTableProxy("company_memberships"),
   companySecrets: makeTableProxy("company_secrets"),
   internalAgentConfig: makeTableProxy("internal_agent_config"),
   providerCredentials: makeTableProxy("provider_credentials"),
@@ -148,7 +149,7 @@ function makeDb() {
     select: () => {
       const rows = selectResults.shift() ?? [];
       const builder: Record<string, unknown> = {};
-      for (const m of ["from", "where", "limit", "orderBy", "for"]) {
+      for (const m of ["from", "leftJoin", "where", "limit", "orderBy", "for"]) {
         builder[m] = () => builder;
       }
       builder.then = (resolve: (v: unknown) => unknown) => Promise.resolve(rows).then(resolve);
@@ -189,7 +190,10 @@ function seedGet(
   selectResults = [
     opts.agents ?? [],
     opts.secrets ?? [],
-    opts.credentials ?? [],
+    (opts.credentials ?? []).map((credential) => ({
+      ownerMembershipStatus: "active",
+      ...(credential as Record<string, unknown>),
+    })),
     opts.bindings ?? [],
     opts.commander ?? [],
   ];
@@ -478,6 +482,59 @@ describe("GET /api/companies/:companyId/providers", () => {
       state: "company_key_fallback",
       intendedAgentId: AGENT_ID,
       credentialSource: "company_api_key",
+    });
+  });
+
+  it("does not project a Commander subscription assignment owned by an inactive member", async () => {
+    seedGet({
+      agents: [
+        {
+          id: AGENT_ID,
+          name: "Commander",
+          adapterType: "claude_local",
+        },
+      ],
+      credentials: [
+        {
+          id: "credential-inactive-owner",
+          provider: "anthropic",
+          ownerUserId: "user-2",
+          ownerMembershipStatus: "inactive",
+          executionTargetId: "control-plane",
+          kind: "personal_subscription",
+          state: "verified",
+          verifiedAt: new Date("2026-07-20T08:00:00.000Z"),
+          updatedAt: new Date("2026-07-20T08:00:00.000Z"),
+        },
+      ],
+      bindings: [
+        {
+          agentId: AGENT_ID,
+          credentialId: "credential-inactive-owner",
+          approvedAt: new Date("2026-07-20T08:01:00.000Z"),
+          revokedAt: null,
+        },
+      ],
+      commander: [{ agentId: AGENT_ID }],
+    });
+
+    const res = await request(makeApp()).get(
+      `/api/companies/${COMPANY_ID}/providers`,
+    );
+    const claude = res.body.providers.find(
+      (provider: { descriptor: { id: string } }) =>
+        provider.descriptor.id === "anthropic",
+    );
+
+    expect(claude.status.credential).toMatchObject({
+      state: "verified",
+      method: "subscription",
+      ownerDisplay: "Another user",
+    });
+    expect(claude.status.assignment).toMatchObject({
+      state: "not_assigned",
+      intendedAgentId: AGENT_ID,
+      credentialSource: null,
     });
   });
 

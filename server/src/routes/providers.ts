@@ -155,6 +155,7 @@ import {
   agentProviderCredentialBindings,
   agents,
   commanderLoginChallenges,
+  companyMemberships,
   companySecrets,
   internalAgentConfig,
   providerCredentials,
@@ -334,6 +335,7 @@ type CredentialProjectionRow = {
   executionTargetId: string;
   kind: string;
   state: string;
+  ownerMembershipStatus: string | null;
   verifiedAt: Date | string | null;
   updatedAt: Date | string | null;
 };
@@ -391,8 +393,11 @@ function canonicalStatus(input: {
     ? bindings.filter(
         (binding) =>
           binding.agentId === commander.agentId &&
+          Boolean(binding.approvedAt) &&
           !binding.revokedAt &&
-          credentialById.get(binding.credentialId)?.state === "verified",
+          credentialById.get(binding.credentialId)?.state === "verified" &&
+          credentialById.get(binding.credentialId)?.ownerMembershipStatus ===
+            "active",
       )
     : [];
   // Mirror runtime eligibility: only one active, verified Commander binding is
@@ -914,10 +919,22 @@ export function providerRoutes(db: Db): Router {
         executionTargetId: providerCredentials.executionTargetId,
         kind: providerCredentials.kind,
         state: providerCredentials.state,
+        ownerMembershipStatus: companyMemberships.status,
         verifiedAt: providerCredentials.verifiedAt,
         updatedAt: providerCredentials.updatedAt,
       })
       .from(providerCredentials)
+      .leftJoin(
+        companyMemberships,
+        and(
+          eq(companyMemberships.companyId, providerCredentials.companyId),
+          eq(companyMemberships.principalType, "user"),
+          eq(
+            companyMemberships.principalId,
+            providerCredentials.ownerUserId,
+          ),
+        ),
+      )
       .where(eq(providerCredentials.companyId, companyId))) as CredentialProjectionRow[];
     const bindingRows = (await db
       .select({
