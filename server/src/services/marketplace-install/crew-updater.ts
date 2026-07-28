@@ -28,6 +28,14 @@ export interface CrewAgentRow {
   instructionsCustomized: boolean | null;
 }
 
+export interface CrewUpdateCheckFailure {
+  companyId: string;
+  agentId: string;
+  catalogItemId: string;
+  stage: "pending_update" | "notification";
+  error: unknown;
+}
+
 /**
  * Thrown when the agent's instruction bundle is (or may be) founder-edited, so
  * a full replacement would destroy work. The caller falls back to notify.
@@ -326,8 +334,16 @@ export async function checkCrewUpdates(opts: {
   catalogItems: CatalogItem[];
   settings: MarketplaceSettings;
   instructionsService: AgentInstructionsServiceLike;
+  onFailure?: (failure: CrewUpdateCheckFailure) => void;
 }): Promise<void> {
-  const { db, companyId, catalogItems, settings, instructionsService } = opts;
+  const {
+    db,
+    companyId,
+    catalogItems,
+    settings,
+    instructionsService,
+    onFailure,
+  } = opts;
   const catalogById = new Map(catalogItems.map((item) => [item.id, item]));
 
   const crewAgents = await db
@@ -420,13 +436,11 @@ export async function checkCrewUpdates(opts: {
     const divergent = !isReplaceable(agent.instructionsCustomized);
     const nextStatus = divergent ? "conflict" : "pending";
 
-    // Notify path: record pending update + fire notification only on first detection.
-    // onConflictDoNothing().returning() returns the newly-inserted row when the
-    // (companyId, catalogItemId) pair is new, and returns [] when the row already
-    // exists.  Gating the notification on a non-empty return prevents the same
-    // founder from receiving duplicate "update available" notifications every time
-    // checkCrewUpdates runs (every boot + every catalog sync cycle).
-    let pendingInserted = false;
+    // Notify path: record the pending update, then emit its idempotent founder
+    // hub item. Existing live rows also re-emit so a prior delivery failure is
+    // repaired; hubItemsService deduplicates successful retries by source key.
+    let shouldNotify = false;
+    let shouldReopenNotification = false;
     try {
       const inserted = await db
         .insert(marketplacePendingUpdates)
@@ -441,9 +455,10 @@ export async function checkCrewUpdates(opts: {
         })
         .onConflictDoNothing()
         .returning({ id: marketplacePendingUpdates.id });
-      pendingInserted = inserted.length > 0;
+      shouldNotify = inserted.length > 0;
+      shouldReopenNotification = shouldNotify;
 
-      if (!pendingInserted) {
+      if (!shouldNotify) {
         // A row already exists for this (companyId, catalogItemId) — the unique
         // index means `onConflictDoNothing` can never update it, so every
         // transition has to happen here.
@@ -482,10 +497,13 @@ export async function checkCrewUpdates(opts: {
           .limit(1);
 
         const isLive = existing?.status === "pending" || existing?.status === "conflict";
+        const catalogAdvanced =
+          existing !== undefined
+          && compareVersions(catalogItem.version, existing.latestVersion) > 0;
         const isNewerRelease =
           existing !== undefined
           && !isLive
-          && compareVersions(catalogItem.version, existing.latestVersion) > 0;
+          && catalogAdvanced;
 
         if (existing && (isLive || isNewerRelease)) {
           await db
@@ -509,24 +527,42 @@ export async function checkCrewUpdates(opts: {
                 ),
               ),
             );
-          // A re-opened row is news; a reconciled live row is not.
-          pendingInserted = isNewerRelease;
+          // Re-opened rows are news. Live rows re-emit too: the previous pass
+          // may have persisted the row before its founder notification failed.
+          shouldNotify = isLive || isNewerRelease;
+          shouldReopenNotification = catalogAdvanced;
         }
       }
     } catch (err) {
       logger.error({ err }, "marketplace: failed to record pending update");
+      onFailure?.({
+        companyId,
+        agentId: agent.id,
+        catalogItemId: catalogItem.id,
+        stage: "pending_update",
+        error: err,
+      });
     }
-    if (pendingInserted) {
+    if (shouldNotify) {
       try {
         await marketplaceNotifications.updateAvailable(
           db,
           companyId,
+          catalogItem.id,
           catalogItem.name,
           agent.templateVersion ?? "0.0.0",
           catalogItem.version,
+          { reopenWhenArchived: shouldReopenNotification },
         );
       } catch (err) {
         logger.error({ err }, "marketplace: updateAvailable notification failed");
+        onFailure?.({
+          companyId,
+          agentId: agent.id,
+          catalogItemId: catalogItem.id,
+          stage: "notification",
+          error: err,
+        });
       }
     }
   }

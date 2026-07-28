@@ -20,6 +20,7 @@ import {
 } from "@armyofagents/shared";
 import { derivePackages } from "./derivePackages.js";
 import { runUpdateCheck } from "./marketplace-update-checker.js";
+import { withMarketplaceUpdateLock } from "./marketplace-update-coordinator.js";
 import { logger } from "../middleware/logger.js";
 
 const DEFAULT_CDN_URL =
@@ -120,12 +121,22 @@ export type CatalogAvailability =
   | { status: "ok"; catalog: MarketplaceCatalogFile; source: "cache" | "sync" }
   | { status: "unavailable"; reason: CatalogUnavailableReason };
 
+export interface MarketplaceCatalogRefreshResult {
+  catalog: MarketplaceCatalogFile | null;
+  /** Status captured before the shared sync lock is released. */
+  status: CatalogSyncStatus | null;
+  /** Whether this attempt actually fetched the CDN or used an availability fallback. */
+  outcome: "cdn_success" | "fallback_success" | "failure";
+  /** Attempt-scoped CDN/cache error, preserved even when fallback succeeds. */
+  error: string | null;
+}
+
 export class MarketplaceCatalogService {
   private readonly db: Db;
   private readonly cdnUrl: string;
   private readonly bundledSnapshotProvider: () => Promise<MarketplaceCatalogFile | null>;
   private syncTimer: NodeJS.Timeout | null = null;
-  private inFlightSync: Promise<MarketplaceCatalogFile | null> | null = null;
+  private inFlightSync: Promise<MarketplaceCatalogRefreshResult> | null = null;
   /** Epoch ms of the last sync attempt that produced no catalog (R4 backoff). */
   private lastSyncFailureAt: number | null = null;
 
@@ -138,9 +149,9 @@ export class MarketplaceCatalogService {
   /** Start the periodic sync loop. */
   startSyncLoop(): void {
     if (this.syncTimer) return;
-    void this.runDedupedSync();
+    void this.refreshAndCheckForUpdates();
     this.syncTimer = setInterval(() => {
-      void this.runDedupedSync();
+      void this.refreshAndCheckForUpdates();
     }, SYNC_INTERVAL_MS);
   }
 
@@ -158,17 +169,26 @@ export class MarketplaceCatalogService {
    * failure internally; anything past that (e.g. a cache write error) is logged
    * and reported as `null`.
    */
-  private runDedupedSync(): Promise<MarketplaceCatalogFile | null> {
+  private runDedupedSync(): Promise<MarketplaceCatalogRefreshResult> {
     if (this.inFlightSync) return this.inFlightSync;
-    const started = this.sync()
+    const started = this.performSync()
+      .then(async (attempt) => ({
+        ...attempt,
+        status: await this.getStatus(),
+      }))
       .catch((err) => {
         logger.error({ err }, "marketplace: catalog sync failed");
-        return null;
+        return {
+          catalog: null,
+          status: null,
+          outcome: "failure" as const,
+          error: err instanceof Error ? err.message : String(err),
+        };
       })
       .then((result) => {
         // R4: "no catalog produced" is the condition worth backing off from —
         // a CDN failure that still resolved from cache/snapshot is a success.
-        this.lastSyncFailureAt = result ? null : Date.now();
+        this.lastSyncFailureAt = result.catalog ? null : Date.now();
         return result;
       });
     this.inFlightSync = started;
@@ -176,6 +196,36 @@ export class MarketplaceCatalogService {
       if (this.inFlightSync === started) this.inFlightSync = null;
     });
     return started;
+  }
+
+  /**
+   * Force a fresh catalog attempt while joining any sync already in progress.
+   * Catalog and status describe the same attempt because status is captured
+   * before this shared in-flight promise is released.
+   */
+  refresh(): Promise<MarketplaceCatalogRefreshResult> {
+    return this.runDedupedSync();
+  }
+
+  /**
+   * Refresh the catalog and then launch the ordinary fleet update check.
+   *
+   * Keep this explicit rather than hiding the mutation inside `refresh()`:
+   * privileged reconciliation must be able to fetch and validate a fresh
+   * catalog, persist its actor-attributed start audit, and only then create
+   * pending-update rows or notifications.
+   */
+  async refreshAndCheckForUpdates(): Promise<MarketplaceCatalogRefreshResult> {
+    const result = await this.refresh();
+    const catalog = result.catalog;
+    if (catalog && result.outcome === "cdn_success") {
+      void withMarketplaceUpdateLock(() =>
+        runUpdateCheck(this.db, catalog.items),
+      ).catch((err) =>
+        logger.error({ err }, "marketplace: update check failed after sync"),
+      );
+    }
+    return result;
   }
 
   /**
@@ -218,15 +268,29 @@ export class MarketplaceCatalogService {
     });
     try {
       const synced = await Promise.race([this.runDedupedSync(), budget]);
-      if (synced) return { status: "ok", catalog: synced, source: "sync" };
+      if (synced?.catalog) {
+        return { status: "ok", catalog: synced.catalog, source: "sync" };
+      }
       return { status: "unavailable", reason: "sync-unavailable" };
     } finally {
       if (timer) clearTimeout(timer);
     }
   }
 
-  /** Fetch catalog from CDN and cache. Returns the synced catalog or null on failure. */
+  /**
+   * Backward-compatible catalog-only sync API. It joins the same in-flight
+   * attempt as the boot loop and operator recovery.
+   */
   async sync(): Promise<MarketplaceCatalogFile | null> {
+    return (await this.refresh()).catalog;
+  }
+
+  /** Fetch catalog from CDN and cache. Returns the synced catalog or null on failure. */
+  private async performSync(): Promise<{
+    catalog: MarketplaceCatalogFile | null;
+    outcome: MarketplaceCatalogRefreshResult["outcome"];
+    error: string | null;
+  }> {
     try {
       const res = await fetch(this.cdnUrl, {
         signal: AbortSignal.timeout(SYNC_TIMEOUT_MS),
@@ -267,11 +331,7 @@ export class MarketplaceCatalogService {
         );
       }
       await this.writeCache(parsed, "cdn", "success", null);
-      // Fire-and-forget update check after successful catalog sync
-      void runUpdateCheck(this.db, parsed.items).catch((err) =>
-        logger.error({ err }, "marketplace: update check failed after sync"),
-      );
-      return parsed;
+      return { catalog: parsed, outcome: "cdn_success", error: null };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const cached = await this.writeCache(null, "cdn", "failure", message);
@@ -281,10 +341,14 @@ export class MarketplaceCatalogService {
         const bundled = await this.bundledSnapshotProvider();
         if (bundled) {
           await this.writeCache(bundled, "bundled", "success", null);
-          return bundled;
+          return {
+            catalog: bundled,
+            outcome: "fallback_success",
+            error: message,
+          };
         }
       }
-      return cached;
+      return { catalog: cached, outcome: "failure", error: message };
     }
   }
 

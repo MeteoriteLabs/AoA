@@ -2,6 +2,11 @@ name: Deploy testing
 
 on:
   workflow_dispatch:
+    inputs:
+      deploy_sha:
+        description: Full reviewed commit SHA from main to deploy or roll back to
+        required: true
+        type: string
 
 permissions: {}
 
@@ -22,13 +27,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
+      checks: read
       contents: read
 
     steps:
       - name: Select deployment SHA
         id: revision
         env:
-          MANUAL_SHA: ${{ github.sha }}
+          MANUAL_SHA: ${{ inputs.deploy_sha }}
         run: |
           set -euo pipefail
           sha="$MANUAL_SHA"
@@ -38,6 +44,23 @@ jobs:
           }
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
+      - name: Checkout main history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify revision is tested main history
+        env:
+          DEPLOY_SHA: ${{ steps.revision.outputs.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          bash scripts/deploy/verify-testing-revision.sh "$DEPLOY_SHA"
+          install -m 700 scripts/deploy/remote-compose-deploy.sh \
+            "$RUNNER_TEMP/remote-compose-deploy.sh"
+
       - name: Checkout tested revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -45,7 +68,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Verify checked-out revision
+      - name: Confirm exact checkout
         env:
           DEPLOY_SHA: ${{ steps.revision.outputs.sha }}
         run: |
@@ -135,7 +158,7 @@ jobs:
           scp "${scp_options[@]}" \
             "$ARCHIVE_PATH" \
             "$RUNTIME_ENV_PATH" \
-            scripts/deploy/remote-compose-deploy.sh \
+            "$RUNNER_TEMP/remote-compose-deploy.sh" \
             "$target:$remote_stage/"
           ssh "${ssh_options[@]}" "$target" \
             "bash '$remote_stage/remote-compose-deploy.sh' \
@@ -148,6 +171,7 @@ jobs:
             echo
             echo "- SHA: \`$DEPLOY_SHA\`"
             echo "- URL: $DEPLOY_PUBLIC_URL"
+            echo "- Health: verified healthy at revision \`$DEPLOY_SHA\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Clean deployment credentials and staging

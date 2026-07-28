@@ -6,6 +6,7 @@ vi.mock("@armyofagents/db", () => {
     marketplacePendingUpdates: tableProxy,
     companies: tableProxy,
     companySkills: tableProxy,
+    plugins: tableProxy,
   };
 });
 vi.mock("drizzle-orm", () => ({
@@ -22,17 +23,27 @@ vi.mock("../services/marketplace-install/skill-auto-updater.js", () => ({
   applySkillUpdate: vi.fn().mockResolvedValue(undefined),
   isWithinUpdateWindow: vi.fn().mockReturnValue(true),
   SkillCustomizedError: class SkillCustomizedError extends Error {
-    constructor(id: string) { super(id); this.name = "SkillCustomizedError"; }
+    constructor(id: string) {
+      super(id);
+      this.name = "SkillCustomizedError";
+    }
   },
   SkillDeletedError: class SkillDeletedError extends Error {
-    constructor(id: string) { super(id); this.name = "SkillDeletedError"; }
+    constructor(id: string) {
+      super(id);
+      this.name = "SkillDeletedError";
+    }
   },
 }));
 vi.mock("../middleware/logger.js", () => ({
   logger: { error: vi.fn() },
 }));
 
-import { runUpdateCheck, upsertPendingUpdate, compareVersions } from "../services/marketplace-update-checker.js";
+import {
+  runUpdateCheck,
+  upsertPendingUpdate,
+  compareVersions,
+} from "../services/marketplace-update-checker.js";
 import { marketplaceNotifications } from "../services/marketplace-notifications.js";
 import { applySkillUpdate } from "../services/marketplace-install/skill-auto-updater.js";
 import type { CatalogItem } from "@armyofagents/shared";
@@ -45,7 +56,12 @@ const SKILL_CATALOG_ITEM: CatalogItem = {
   name: "Code Review",
   description: "...",
   version: "1.1.0",
-  source: { adapter: "aoa-curated", url: "...", locator: "...", commitSha: "abc" },
+  source: {
+    adapter: "aoa-curated",
+    url: "...",
+    locator: "...",
+    commitSha: "abc",
+  },
   resourceUrl: "https://example.com/SKILL.md",
   content: { inline: "# Code Review v1.1.0" },
   trust: { tier: "verified", source: "aoa-curated" },
@@ -58,9 +74,11 @@ const SKILL_CATALOG_ITEM: CatalogItem = {
 function buildMockDb({
   skillRows = [{ sourceLocator: SKILL_CATALOG_ITEM.id, sourceRef: "1.0.0" }],
   insertReturning = [{ id: "upd-1" }],
+  existingPendingRow = null as { status: string; latestVersion: string } | null,
 }: {
   skillRows?: Array<{ sourceLocator: string; sourceRef: string }>;
   insertReturning?: Array<{ id: string }>;
+  existingPendingRow?: { status: string; latestVersion: string } | null;
 } = {}) {
   let selectCall = 0;
   return {
@@ -70,7 +88,18 @@ function buildMockDb({
       return {
         from: () => {
           if (n === 1) return Promise.resolve([{ id: "c1" }]); // companies
-          return { where: () => Promise.resolve(skillRows) };   // companySkills
+          if (n === 2) return { where: () => Promise.resolve(skillRows) }; // companySkills
+          if (n === 3 && insertReturning.length === 0) {
+            return {
+              where: () => ({
+                limit: () =>
+                  Promise.resolve(
+                    existingPendingRow ? [existingPendingRow] : []
+                  ),
+              }),
+            };
+          }
+          return { where: () => Promise.resolve([]) }; // plugins
         },
       };
     },
@@ -127,7 +156,7 @@ describe("compareVersions", () => {
 // ─── upsertPendingUpdate ──────────────────────────────────────────────────────
 
 describe("upsertPendingUpdate", () => {
-  it("returns { inserted: false } when latest version is not newer than current", async () => {
+  it("does not notify when latest version is not newer than current", async () => {
     const db = buildUpsertDb();
     const result = await upsertPendingUpdate(db as any, "c1", {
       catalogItemId: "skill:x",
@@ -136,7 +165,11 @@ describe("upsertPendingUpdate", () => {
       currentVersion: "1.0.0",
       latestVersion: "1.0.0", // same version
     });
-    expect(result).toEqual({ inserted: false });
+    expect(result).toEqual({
+      inserted: false,
+      shouldNotify: false,
+      shouldReopenNotification: false,
+    });
   });
 
   it("returns { inserted: true } when a new row is inserted", async () => {
@@ -148,11 +181,17 @@ describe("upsertPendingUpdate", () => {
       currentVersion: "1.0.0",
       latestVersion: "1.1.0",
     });
-    expect(result).toEqual({ inserted: true });
+    expect(result).toEqual({
+      inserted: true,
+      shouldNotify: true,
+      shouldReopenNotification: true,
+    });
   });
 
-  it("returns { inserted: false } on conflict when existing row is still pending", async () => {
-    const db = buildUpsertDb({ existingRow: { status: "pending", latestVersion: "1.1.0" } });
+  it("retries the idempotent notification when an existing row is still pending", async () => {
+    const db = buildUpsertDb({
+      existingRow: { status: "pending", latestVersion: "1.1.0" },
+    });
     const result = await upsertPendingUpdate(db as any, "c1", {
       catalogItemId: "skill:x",
       catalogItemName: "X",
@@ -160,12 +199,37 @@ describe("upsertPendingUpdate", () => {
       currentVersion: "1.0.0",
       latestVersion: "1.1.0",
     });
-    expect(result).toEqual({ inserted: false });
+    expect(result).toEqual({
+      inserted: false,
+      shouldNotify: true,
+      shouldReopenNotification: false,
+    });
+  });
+
+  it("reopens the stable hub item when a live pending row advances", async () => {
+    const db = buildUpsertDb({
+      existingRow: { status: "pending", latestVersion: "1.1.0" },
+    });
+    const result = await upsertPendingUpdate(db as any, "c1", {
+      catalogItemId: "skill:x",
+      catalogItemName: "X",
+      itemType: "skill",
+      currentVersion: "1.0.0",
+      latestVersion: "1.2.0",
+    });
+
+    expect(result).toEqual({
+      inserted: false,
+      shouldNotify: true,
+      shouldReopenNotification: true,
+    });
   });
 
   it("returns { inserted: true } when existing row is applied — re-opens for new catalog version", async () => {
     // Bug scenario: v1.1 was auto-applied. v1.2 arrives. Must re-open.
-    const db = buildUpsertDb({ existingRow: { status: "applied", latestVersion: "1.1.0" } });
+    const db = buildUpsertDb({
+      existingRow: { status: "applied", latestVersion: "1.1.0" },
+    });
     const result = await upsertPendingUpdate(db as any, "c1", {
       catalogItemId: "skill:x",
       catalogItemName: "X",
@@ -173,12 +237,18 @@ describe("upsertPendingUpdate", () => {
       currentVersion: "1.1.0",
       latestVersion: "1.2.0",
     });
-    expect(result).toEqual({ inserted: true });
+    expect(result).toEqual({
+      inserted: true,
+      shouldNotify: true,
+      shouldReopenNotification: true,
+    });
   });
 
   it("returns { inserted: true } when existing row is dismissed — re-opens for new catalog version", async () => {
     // Dismiss was for v1.1; v1.2 is a different release and should re-notify.
-    const db = buildUpsertDb({ existingRow: { status: "dismissed", latestVersion: "1.1.0" } });
+    const db = buildUpsertDb({
+      existingRow: { status: "dismissed", latestVersion: "1.1.0" },
+    });
     const result = await upsertPendingUpdate(db as any, "c1", {
       catalogItemId: "skill:x",
       catalogItemName: "X",
@@ -186,7 +256,30 @@ describe("upsertPendingUpdate", () => {
       currentVersion: "1.1.0",
       latestVersion: "1.2.0",
     });
-    expect(result).toEqual({ inserted: true });
+    expect(result).toEqual({
+      inserted: true,
+      shouldNotify: true,
+      shouldReopenNotification: true,
+    });
+  });
+
+  it("keeps a dismissal closed for the same catalog version", async () => {
+    const db = buildUpsertDb({
+      existingRow: { status: "dismissed", latestVersion: "1.2.0" },
+    });
+    const result = await upsertPendingUpdate(db as any, "c1", {
+      catalogItemId: "skill:x",
+      catalogItemName: "X",
+      itemType: "skill",
+      currentVersion: "1.1.0",
+      latestVersion: "1.2.0",
+    });
+
+    expect(result).toEqual({
+      inserted: false,
+      shouldNotify: false,
+      shouldReopenNotification: false,
+    });
   });
 
   it("returns { inserted: false } when row disappears after conflict (race condition)", async () => {
@@ -199,7 +292,11 @@ describe("upsertPendingUpdate", () => {
       currentVersion: "1.0.0",
       latestVersion: "1.1.0",
     });
-    expect(result).toEqual({ inserted: false });
+    expect(result).toEqual({
+      inserted: false,
+      shouldNotify: false,
+      shouldReopenNotification: false,
+    });
   });
 });
 
@@ -218,6 +315,18 @@ describe("runUpdateCheck — always-notify behavior", () => {
     expect(applySkillUpdate).not.toHaveBeenCalled();
   });
 
+  it("retries updateAvailable for an existing same-version pending skill row", async () => {
+    const db = buildMockDb({
+      insertReturning: [],
+      existingPendingRow: { status: "pending", latestVersion: "1.1.0" },
+    });
+
+    const result = await runUpdateCheck(db as any, [SKILL_CATALOG_ITEM]);
+
+    expect(marketplaceNotifications.updateAvailable).toHaveBeenCalledOnce();
+    expect(result.failures).toEqual([]);
+  });
+
   it("does NOT call applySkillUpdate — auto-apply is removed", async () => {
     const db = buildMockDb();
     await runUpdateCheck(db as any, [SKILL_CATALOG_ITEM]);
@@ -226,7 +335,11 @@ describe("runUpdateCheck — always-notify behavior", () => {
   });
 
   it("fires updateAvailable for each skill that has a newer catalog version", async () => {
-    const SKILL_2: CatalogItem = { ...SKILL_CATALOG_ITEM, id: "skill:aoa-curated/web-search", name: "Web Search" };
+    const SKILL_2: CatalogItem = {
+      ...SKILL_CATALOG_ITEM,
+      id: "skill:aoa-curated/web-search",
+      name: "Web Search",
+    };
     const db = buildMockDb({
       skillRows: [
         { sourceLocator: SKILL_CATALOG_ITEM.id, sourceRef: "1.0.0" },
@@ -260,7 +373,14 @@ describe("runUpdateCheck — always-notify behavior", () => {
           };
         }
         // Second company skill rows — return one skill
-        return { from: () => ({ where: () => Promise.resolve([{ sourceLocator: SKILL_CATALOG_ITEM.id, sourceRef: "1.0.0" }]) }) };
+        return {
+          from: () => ({
+            where: () =>
+              Promise.resolve([
+                { sourceLocator: SKILL_CATALOG_ITEM.id, sourceRef: "1.0.0" },
+              ]),
+          }),
+        };
       },
       insert: () => ({
         values: () => ({
@@ -272,9 +392,66 @@ describe("runUpdateCheck — always-notify behavior", () => {
       update: () => ({ set: () => ({ where: () => Promise.resolve() }) }),
     };
 
-    await runUpdateCheck(twoCompanyDb as any, [SKILL_CATALOG_ITEM]);
+    const result = await runUpdateCheck(twoCompanyDb as any, [
+      SKILL_CATALOG_ITEM,
+    ]);
 
     // updateAvailable should have been called for company c2 (despite c1 failing)
     expect(marketplaceNotifications.updateAvailable).toHaveBeenCalledOnce();
+    expect(result).toEqual({
+      companiesExamined: 2,
+      failures: [
+        {
+          companyId: "c1",
+          itemType: "company",
+          message: "DB error for c1",
+        },
+      ],
+    });
+  });
+
+  it("returns a structured failure when a pending skill notification fails", async () => {
+    vi.mocked(marketplaceNotifications.updateAvailable).mockRejectedValueOnce(
+      new Error("notification unavailable")
+    );
+    const db = buildMockDb();
+
+    const result = await runUpdateCheck(db as any, [SKILL_CATALOG_ITEM]);
+
+    expect(result).toEqual({
+      companiesExamined: 1,
+      failures: [
+        {
+          companyId: "c1",
+          itemType: "skill",
+          catalogItemId: SKILL_CATALOG_ITEM.id,
+          message: "notification unavailable",
+        },
+      ],
+    });
+  });
+
+  it("uses an audited company snapshot without rediscovering the fleet", async () => {
+    const where = vi.fn().mockResolvedValue([]);
+    const from = vi.fn().mockReturnValue({ where });
+    const select = vi.fn().mockReturnValue({ from });
+    const db = { select };
+
+    await runUpdateCheck(db as any, [], {
+      companyIds: ["company-b", "company-a", "company-b"],
+    });
+
+    // One skill query + one plugin query for each unique supplied company.
+    // A fleet-discovery query would add a fifth select (and is forbidden here).
+    expect(select).toHaveBeenCalledTimes(4);
+    expect(where).toHaveBeenCalledTimes(4);
+  });
+
+  it("does no database work for an explicitly empty company snapshot", async () => {
+    const select = vi.fn();
+
+    await runUpdateCheck({ select } as any, [], { companyIds: [] });
+
+    expect(select).not.toHaveBeenCalled();
   });
 });

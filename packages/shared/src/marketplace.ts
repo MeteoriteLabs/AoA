@@ -330,6 +330,75 @@ export interface CatalogSyncStatus {
   itemCount: number;
 }
 
+export type MarketplaceMaintenanceStage =
+  | "marketplace_update"
+  | "crew_repair"
+  | "legacy_steward"
+  | "crew_update"
+  | "team_reconcile";
+
+export interface MarketplaceReconcileFailure {
+  companyId: string;
+  stage: MarketplaceMaintenanceStage;
+  message: string;
+  occurrences?: number;
+}
+
+/** Public wire contract for POST /api/admin/marketplace/reconcile. */
+export interface MarketplaceReconcileResponse {
+  operationId: string;
+  replayed: boolean;
+  status: "success" | "partial";
+  repairs: {
+    crewCompaniesRepaired: number;
+    legacyStewardsAdopted: number;
+    teamsReconciled: number;
+    teamMembersAdded: number;
+  };
+  catalog: {
+    generatedAt: string;
+    canonicalDigestSha256: string;
+    schemaVersion: string;
+    itemCount: number;
+    source: CatalogSyncStatus["source"];
+  };
+  companiesExamined: number;
+  crewRepair: {
+    catalogReady: boolean;
+    inspected: number;
+    repaired: number;
+    skippedFailClosed: number;
+    skippedCooldown: number;
+    skippedOverBudget: number;
+    failed: number;
+  };
+  legacySteward: {
+    disabled: boolean;
+    catalogReady: boolean;
+    inspected: number;
+    adopted: number;
+    skippedOverBudget: number;
+    failed: number;
+  };
+  crewUpdates: {
+    succeeded: number;
+    failed: number;
+  };
+  teamReconcile: {
+    teamsReconciled: number;
+    membersAdded: number;
+  };
+  failures: MarketplaceReconcileFailure[];
+}
+
+export interface MarketplaceReconcileErrorResponse {
+  error: string;
+  operationId: string;
+  catalogStatus?: CatalogSyncStatus | null;
+  catalogOutcome?: "cdn_success" | "fallback_success" | "failure";
+  catalogError?: string | null;
+}
+
 function parseSemver(v: string): [number, number, number] | null {
   const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(v.trim());
   if (!m) return null;

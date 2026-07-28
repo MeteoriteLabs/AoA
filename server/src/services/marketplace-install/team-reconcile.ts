@@ -49,6 +49,15 @@ export interface ReconcileTeamMembersOpts {
   companyId: string;
   catalogItems: CatalogItem[];
   instructionsService: AgentInstructionsServiceLike;
+  onFailure?: (failure: ReconcileTeamMembersFailure) => void;
+}
+
+export interface ReconcileTeamMembersFailure {
+  companyId: string;
+  teamId: string;
+  templateOrigin?: string;
+  stage: "team_template" | "member_install";
+  error: unknown;
 }
 
 export interface ReconcileTeamMembersResult {
@@ -86,6 +95,12 @@ export async function reconcileTeamMembers(
       const text = await fetchCatalogResource(catalogTeamItem, "team template (reconcile)");
       teamBody = JSON.parse(text) as TeamTemplateBody;
     } catch (err) {
+      opts.onFailure?.({
+        companyId,
+        teamId: teamRow.id,
+        stage: "team_template",
+        error: err,
+      });
       logger.error(
         { err, companyId, teamId: teamRow.id },
         "team-reconcile: failed to fetch/parse team template — skipping this team",
@@ -145,6 +160,15 @@ export async function reconcileTeamMembers(
         unmanagedNames.has(memberSpec.name) ||
         [...crewLegacySlugCandidates(memberSpec)].some((slug) => unmanagedLegacySlugs.has(slug))
       ) {
+        opts.onFailure?.({
+          companyId,
+          teamId: teamRow.id,
+          templateOrigin: memberSpec.templateOrigin,
+          stage: "member_install",
+          error: new Error(
+            `Unmanaged agent collision for roster member ${memberSpec.templateOrigin}`,
+          ),
+        });
         logger.warn(
           { companyId, teamId: teamRow.id, templateOrigin: memberSpec.templateOrigin, name: memberSpec.name },
           "team-reconcile: an unmanaged agent already holds this roster member's name — refusing " +
@@ -154,6 +178,15 @@ export async function reconcileTeamMembers(
       }
       const agentItem = catalogById.get(memberSpec.templateOrigin);
       if (!agentItem || agentItem.type !== "agent") {
+        opts.onFailure?.({
+          companyId,
+          teamId: teamRow.id,
+          templateOrigin: memberSpec.templateOrigin,
+          stage: "member_install",
+          error: new Error(
+            `Roster member ${memberSpec.templateOrigin} is missing from the catalog or is not an agent`,
+          ),
+        });
         logger.warn(
           { companyId, teamId: teamRow.id, templateOrigin: memberSpec.templateOrigin },
           "team-reconcile: roster member not found in catalog (or wrong type) — skipping",
@@ -189,6 +222,13 @@ export async function reconcileTeamMembers(
           "team-reconcile: added missing roster member to existing team install",
         );
       } catch (err) {
+        opts.onFailure?.({
+          companyId,
+          teamId: teamRow.id,
+          templateOrigin: memberSpec.templateOrigin,
+          stage: "member_install",
+          error: err,
+        });
         logger.error(
           { err, companyId, teamId: teamRow.id, templateOrigin: memberSpec.templateOrigin },
           "team-reconcile: failed to install missing roster member",
