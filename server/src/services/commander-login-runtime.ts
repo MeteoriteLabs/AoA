@@ -28,6 +28,10 @@ import {
   readSafeCredentialEvidence,
   verifyAndBindCommanderSubscriptionCredential,
 } from "./provider-credentials.js";
+import {
+  deleteAgentReadinessForProvider,
+  deleteReadinessForScope,
+} from "./providers/readiness.js";
 
 /** Route-facing discovery cap — bounds how long `start` waits for the URL. */
 const LOGIN_URL_DISCOVERY_MS = 60_000;
@@ -285,6 +289,16 @@ export function buildCommanderLoginService(db: Db): CommanderLoginService {
       // The login worker owns finalization. Browser polling is only an observer:
       // closing or reloading onboarding after the provider accepts the login must
       // not leave a valid credential stuck in `pending` or unbound.
+      //
+      // Invalidate before binding: once credential evidence changed, every
+      // cached verdict derived from the prior auth state is already obsolete,
+      // even if binding the new credential subsequently fails.
+      await Promise.all([
+        deleteReadinessForScope(db, companyId, provider, {
+          type: "company_default",
+        }),
+        deleteAgentReadinessForProvider(db, companyId, provider),
+      ]);
       await verifyAndBindCommanderSubscriptionCredential(db, {
         companyId,
         provider,

@@ -1,10 +1,12 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { makeTableProxy } from "./helpers/drizzle-mock.js";
 
 const runtimeMocks = vi.hoisted(() => ({
   runCodexLogin: vi.fn(),
   readSafeCredentialEvidence: vi.fn(),
   verifyAndBind: vi.fn(async () => ({ credentialIds: ["credential-1"], bindingIds: ["binding-1"] })),
+  deleteReadinessForScope: vi.fn(async () => undefined),
+  deleteAgentReadinessForProvider: vi.fn(async () => undefined),
 }));
 
 vi.mock("drizzle-orm", () => ({
@@ -35,6 +37,10 @@ vi.mock("../services/cli-auth-topology.js", () => ({
 vi.mock("../services/provider-credentials.js", () => ({
   readSafeCredentialEvidence: runtimeMocks.readSafeCredentialEvidence,
   verifyAndBindCommanderSubscriptionCredential: runtimeMocks.verifyAndBind,
+}));
+vi.mock("../services/providers/readiness.js", () => ({
+  deleteReadinessForScope: runtimeMocks.deleteReadinessForScope,
+  deleteAgentReadinessForProvider: runtimeMocks.deleteAgentReadinessForProvider,
 }));
 vi.mock("../utils/terminate-process.js", () => ({
   terminateByPidIfMatches: vi.fn(),
@@ -89,6 +95,10 @@ function runtimeDb() {
 }
 
 describe("Commander login production runtime finalization", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it("commits fresh credential evidence after CLI exit without browser status polling", async () => {
     let resolveExit!: (code: number | null) => void;
     const exitPromise = new Promise<number | null>((resolve) => {
@@ -134,6 +144,23 @@ describe("Commander login production runtime finalization", () => {
         }),
       );
     });
+    expect(runtimeMocks.deleteReadinessForScope).toHaveBeenCalledWith(
+      db,
+      "company-1",
+      "openai",
+      { type: "company_default" },
+    );
+    expect(runtimeMocks.deleteAgentReadinessForProvider).toHaveBeenCalledWith(
+      db,
+      "company-1",
+      "openai",
+    );
+    expect(
+      runtimeMocks.deleteReadinessForScope.mock.invocationCallOrder[0],
+    ).toBeLessThan(runtimeMocks.verifyAndBind.mock.invocationCallOrder[0]);
+    expect(
+      runtimeMocks.deleteAgentReadinessForProvider.mock.invocationCallOrder[0],
+    ).toBeLessThan(runtimeMocks.verifyAndBind.mock.invocationCallOrder[0]);
     expect([...rows.values()][0]).toMatchObject({ status: "completed" });
   });
 

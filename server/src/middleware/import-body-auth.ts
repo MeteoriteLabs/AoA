@@ -26,6 +26,14 @@ export const authorizeExistingCompanyImportBody: RequestHandler = (
   _res,
   next
 ) => {
+  // This middleware is mounted on the shared `/import` prefix, so req.path is
+  // `/preview` for the read-only preview endpoint and `/` for the mutating
+  // commit endpoint. Preview remains available to company-scoped actors, while
+  // a commit must reject agent/MCP credentials before the 20 MB parser runs.
+  const isPreview = /^\/preview\/?$/.test(req.path);
+  if (!isPreview) {
+    assertBoard(req);
+  }
   assertCompanyAccess(req, req.params.companyId as string);
   next();
 };

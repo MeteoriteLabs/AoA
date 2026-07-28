@@ -645,6 +645,47 @@ describe("path-authorized import parser", () => {
     expect(parsed).not.toHaveBeenCalled();
   });
 
+  it("rejects a company-scoped agent commit before parsing the large body", async () => {
+    const parsed = vi.fn();
+    const res = await request(
+      buildPathAuthorizedImportParser(
+        {
+          type: "agent",
+          agentId: "agent-1",
+          companyId: SRC_CO_ID,
+        },
+        parsed
+      )
+    )
+      .post(`/api/companies/${SRC_CO_ID}/import`)
+      .set("Content-Type", "application/json")
+      .send(largeBody);
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Board access required");
+    expect(parsed).not.toHaveBeenCalled();
+  });
+
+  it("still permits a company-scoped agent preview through the large parser", async () => {
+    const parsed = vi.fn();
+    const res = await request(
+      buildPathAuthorizedImportParser(
+        {
+          type: "agent",
+          agentId: "agent-1",
+          companyId: SRC_CO_ID,
+        },
+        parsed
+      )
+    )
+      .post(`/api/companies/${SRC_CO_ID}/import/preview`)
+      .set("Content-Type", "application/json")
+      .send(largeBody);
+
+    expect(res.status).toBe(204);
+    expect(parsed).toHaveBeenCalledOnce();
+  });
+
   it("parses a large body only after path authorization succeeds", async () => {
     const parsed = vi.fn();
     const res = await request(
