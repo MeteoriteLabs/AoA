@@ -163,8 +163,10 @@ For quick local trials, `docker-compose.quickstart.yml` runs one AoA container w
 docker compose -f docker-compose.quickstart.yml up --build
 ```
 
-Data is persisted in the `aoa-data` named volume and mounted at `/aoa` in the
-container. The image keeps `/paperclip` only as a compatibility symlink to
+Data is persisted in a host bind mount at
+`${AOA_DATA_DIR:-./data/docker-aoa}` and mounted at `/aoa` in the container.
+The default host directory is `./data/docker-aoa`; set `AOA_DATA_DIR` to
+override it. The image keeps `/paperclip` only as a compatibility symlink to
 `/aoa`; do not mount a second volume there.
 
 Like the main stack, quickstart runs in `authenticated` mode and needs Google

@@ -8,6 +8,7 @@ import {
   marketplaceInstallOperations,
   marketplaceCompanySettings,
   marketplaceReconciliationOperations,
+  teamMembers,
   type MarketplaceReconciliationOperationState,
 } from "@armyofagents/db";
 import {
@@ -39,6 +40,7 @@ import {
 import {
   diagnoseCrewProvisioning,
   runCrewRepairPass,
+  type CrewRepairDiagnosis,
   type CrewRepairPassResult,
   type CrewRepairPassSkip,
 } from "./crew-repair.js";
@@ -1372,6 +1374,10 @@ export interface MarketplaceInspectionOptions {
   diagnose?: typeof diagnoseCrewProvisioning;
   hasCustomizedRows?: (db: Db, companyId: string) => Promise<boolean>;
   hasActiveWriter?: (db: Db, companyId: string) => Promise<boolean>;
+  hasUnaccountedCrewRows?: (
+    db: Db,
+    diagnosis: CrewRepairDiagnosis,
+  ) => Promise<boolean>;
   loadOperation?: (
     db: Db,
     operationId: string,
@@ -1414,6 +1420,77 @@ async function hasActiveMarketplaceWriter(
     )
     .limit(1);
   return rows.length > 0;
+}
+
+const COMMANDER_LEGACY_ORIGIN =
+  "aoa-curated/standard-crew/commander@legacy";
+
+function isCommanderInfrastructureRow(
+  row: CrewRepairDiagnosis["unmanagedCrew"][number],
+): boolean {
+  return (
+    row.templateOrigin === COMMANDER_LEGACY_ORIGIN ||
+    (row.templateOrigin === null && row.name === "Commander")
+  );
+}
+
+/**
+ * Proves that the cheap crew diagnosis has no rows outside the installed
+ * default-team witness. Commander is the sole exception: it is application
+ * infrastructure, is not published in the crew roster, and therefore is not a
+ * team member. Steward is deliberately not exempt because it is now catalog
+ * managed and belongs to the default crew.
+ */
+export function crewRowsAccountedForDefaultTeam(
+  diagnosis: Pick<
+    CrewRepairDiagnosis,
+    "teamId" | "managedCrew" | "unmanagedCrew"
+  >,
+  teamMemberIds: readonly string[],
+): boolean {
+  if (diagnosis.teamId === null) return false;
+
+  const managedIds = new Set(diagnosis.managedCrew.map((row) => row.id));
+  const managedOrigins = new Set(
+    diagnosis.managedCrew.map((row) => row.templateOrigin),
+  );
+  const memberIds = new Set(teamMemberIds);
+
+  if (
+    diagnosis.managedCrew.length === 0 ||
+    managedIds.size !== diagnosis.managedCrew.length ||
+    managedOrigins.size !== diagnosis.managedCrew.length ||
+    diagnosis.managedCrew.some(
+      (row) =>
+        row.templateOrigin === null ||
+        row.templateOrigin.length === 0 ||
+        row.templateOrigin.endsWith("@legacy"),
+    ) ||
+    memberIds.size !== teamMemberIds.length ||
+    diagnosis.unmanagedCrew.some((row) => !isCommanderInfrastructureRow(row))
+  ) {
+    return false;
+  }
+
+  return (
+    memberIds.size === managedIds.size &&
+    [...managedIds].every((id) => memberIds.has(id))
+  );
+}
+
+async function hasUnaccountedMarketplaceCrewRows(
+  db: Db,
+  diagnosis: CrewRepairDiagnosis,
+): Promise<boolean> {
+  if (diagnosis.teamId === null) return true;
+  const rows = await db
+    .select({ agentId: teamMembers.agentId })
+    .from(teamMembers)
+    .where(eq(teamMembers.teamId, diagnosis.teamId));
+  return !crewRowsAccountedForDefaultTeam(
+    diagnosis,
+    rows.map((row) => row.agentId),
+  );
 }
 
 /**
@@ -1552,6 +1629,8 @@ export async function inspectMarketplaceReconciliation(
       options.hasCustomizedRows ?? hasCustomizedMarketplaceRows;
     const activeWriter =
       options.hasActiveWriter ?? hasActiveMarketplaceWriter;
+    const hasUnaccountedCrewRows =
+      options.hasUnaccountedCrewRows ?? hasUnaccountedMarketplaceCrewRows;
     for (const companyId of targetCompanyIds) {
       try {
         const [diagnosis, hasCustomizedRows, hasActiveWriter] =
@@ -1575,11 +1654,20 @@ export async function inspectMarketplaceReconciliation(
             diagnosticCode: "unknown_fail_closed",
           });
         } else if (diagnosis.verdict === "healthy") {
-          targets.push({
-            companyId,
-            crewState: "healthy",
-            diagnosticCode: null,
-          });
+          if (await hasUnaccountedCrewRows(options.db, diagnosis)) {
+            safeToRetry = false;
+            targets.push({
+              companyId,
+              crewState: "blocked",
+              diagnosticCode: "unaccounted_crew_rows",
+            });
+          } else {
+            targets.push({
+              companyId,
+              crewState: "healthy",
+              diagnosticCode: null,
+            });
+          }
         } else if (
           diagnosis.verdict === "operation-row-stale" ||
           (diagnosis.teamId === null &&

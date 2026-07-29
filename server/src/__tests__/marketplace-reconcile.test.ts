@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  crewRowsAccountedForDefaultTeam,
   digestMarketplaceCatalog,
   inspectMarketplaceReconciliation,
   runMarketplaceCrewMaintenance,
@@ -1257,12 +1258,28 @@ describe("marketplace reconciliation", () => {
         companyId: "company-a",
         verdict: "healthy" as const,
         teamId: "team-a",
-        managedCrew: [],
-        unmanagedCrew: [],
+        managedCrew: [
+          {
+            id: "agent-a",
+            name: "Scout",
+            templateOrigin: "agent:aoa-curated/aoa-scout",
+            templateVersion: "1.0.0",
+          },
+        ],
+        unmanagedCrew: [
+          {
+            id: "commander-a",
+            name: "Commander",
+            templateOrigin:
+              "aoa-curated/standard-crew/commander@legacy",
+            templateVersion: null,
+          },
+        ],
         operation: null,
       })),
       hasCustomizedRows: vi.fn(async () => false),
       hasActiveWriter: vi.fn(async () => false),
+      hasUnaccountedCrewRows: vi.fn(async () => false),
     });
     expect(unknown).toMatchObject({
       state: "outcome_unknown_after_mutation",
@@ -1325,6 +1342,149 @@ describe("marketplace reconciliation", () => {
       safeToRetry: false,
       retry: { kind: "never" },
       targets: [{ companyId: "company-a", crewState: "unknown" }],
+    });
+  });
+
+  it("requires every non-Commander crew row to be linked exactly once to the default team", () => {
+    const managedCrew = [
+      {
+        id: "agent-scout",
+        name: "Scout",
+        templateOrigin: "agent:aoa-curated/aoa-scout",
+        templateVersion: "1.0.0",
+      },
+      {
+        id: "agent-steward",
+        name: "Steward",
+        templateOrigin: "agent:aoa-curated/aoa-steward",
+        templateVersion: "1.0.0",
+      },
+    ];
+    const commander = {
+      id: "agent-commander",
+      name: "Ops Lead",
+      templateOrigin: "aoa-curated/standard-crew/commander@legacy",
+      templateVersion: null,
+    };
+    const base = {
+      teamId: "team-a",
+      managedCrew,
+      unmanagedCrew: [commander],
+    };
+
+    expect(
+      crewRowsAccountedForDefaultTeam(base, [
+        "agent-scout",
+        "agent-steward",
+      ]),
+    ).toBe(true);
+    expect(
+      crewRowsAccountedForDefaultTeam(
+        {
+          ...base,
+          managedCrew: [
+            ...managedCrew,
+            {
+              ...managedCrew[0]!,
+              id: "agent-scout-duplicate",
+            },
+          ],
+        },
+        ["agent-scout", "agent-steward", "agent-scout-duplicate"],
+      ),
+    ).toBe(false);
+    expect(
+      crewRowsAccountedForDefaultTeam(
+        {
+          ...base,
+          unmanagedCrew: [
+            commander,
+            {
+              id: "agent-adjutant",
+              name: "Adjutant",
+              templateOrigin:
+                "aoa-curated/standard-crew/adjutant@legacy",
+              templateVersion: null,
+            },
+          ],
+        },
+        ["agent-scout", "agent-steward"],
+      ),
+    ).toBe(false);
+    expect(
+      crewRowsAccountedForDefaultTeam(base, ["agent-scout"]),
+    ).toBe(false);
+    expect(
+      crewRowsAccountedForDefaultTeam(
+        { teamId: "team-a", managedCrew: [], unmanagedCrew: [commander] },
+        [],
+      ),
+    ).toBe(false);
+  });
+
+  it("blocks an uncertain retry when a healthy diagnosis has unaccounted crew rows", async () => {
+    const rows = [
+      {
+        companyId: "company-a",
+        action: "marketplace.reconciliation_started",
+        details: {
+          operationId: OPERATION_ID_1,
+          phase: "started",
+          deploymentSha: "reviewed-sha",
+          targetCount: 1,
+        },
+        createdAt: new Date("2026-07-28T00:00:00.000Z"),
+      },
+    ];
+    const db = {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({
+            orderBy: vi.fn().mockResolvedValue(rows),
+          })),
+        })),
+      })),
+    };
+
+    const result = await inspectMarketplaceReconciliation({
+      db: db as any,
+      operationId: OPERATION_ID_1,
+      isActive: false,
+      loadOperation: vi.fn(async () => operationRecord()),
+      diagnose: vi.fn(async () => ({
+        companyId: "company-a",
+        verdict: "healthy" as const,
+        teamId: "team-a",
+        managedCrew: [
+          {
+            id: "agent-a",
+            name: "Scout",
+            templateOrigin: "agent:aoa-curated/aoa-scout",
+            templateVersion: "1.0.0",
+          },
+        ],
+        unmanagedCrew: [],
+        operation: null,
+      })),
+      hasCustomizedRows: vi.fn(async () => false),
+      hasActiveWriter: vi.fn(async () => false),
+      hasUnaccountedCrewRows: vi.fn(async () => true),
+    });
+
+    expect(result).toMatchObject({
+      state: "outcome_unknown_after_mutation",
+      safeToRetry: false,
+      targets: [
+        {
+          companyId: "company-a",
+          crewState: "blocked",
+          diagnosticCode: "unaccounted_crew_rows",
+        },
+      ],
+      retry: {
+        kind: "inspect_first",
+        recoveryCode: "inspect_operation",
+      },
     });
   });
 
