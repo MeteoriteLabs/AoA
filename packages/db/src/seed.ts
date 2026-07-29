@@ -1,5 +1,6 @@
 import { createDb } from "./client.js";
-import { companies, agents, goals, projects, issues } from "./schema/index.js";
+import { companies, agents, goals, projects, issues, organizations } from "./schema/index.js";
+import { DEFAULT_ORGANIZATION_ID, DEFAULT_ORGANIZATION_SLUG } from "@armyofagents/shared";
 
 const url = process.env.DATABASE_URL;
 if (!url) throw new Error("DATABASE_URL is required");
@@ -8,6 +9,11 @@ const db = createDb(url);
 
 console.log("Seeding database...");
 
+await db
+  .insert(organizations)
+  .values({ id: DEFAULT_ORGANIZATION_ID, name: "Default Organization", slug: DEFAULT_ORGANIZATION_SLUG })
+  .onConflictDoNothing({ target: organizations.id });
+
 const [company] = await db
   .insert(companies)
   .values({
@@ -15,6 +21,7 @@ const [company] = await db
     description: "A demo autonomous company",
     status: "active",
     budgetMonthlyCents: 50000,
+    organizationId: DEFAULT_ORGANIZATION_ID,
   })
   .returning();
 

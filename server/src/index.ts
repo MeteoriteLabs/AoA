@@ -36,6 +36,7 @@ import {
   WORKER_INTERVAL_MS,
   workQuestionContinuationService,
   workQuestionSlaService,
+  organizationService,
 } from "./services/index.js";
 import { getDbCapabilities, probeDbCapabilities } from "./services/db-capabilities.js";
 import { runExtractionSweep } from "./services/internal-agent/subagents/extraction-sweeper.js";
@@ -463,6 +464,12 @@ if (!process.env.DATABASE_URL) {
 // Probe optional database capabilities (pgvector). Services read the result
 // via getDbCapabilities() to gate semantic-search paths and embedding columns.
 await probeDbCapabilities(db as any);
+
+// Phase 1 (multi-tenant cloud): guarantee the sentinel default Organization
+// exists before any company-scoped work runs. Idempotent (ON CONFLICT DO
+// NOTHING) — safe on every boot. Must run after migrations (the organizations
+// table only exists post-0187) and before any company create/list flow below.
+await organizationService(db as any).ensureDefaultOrganization();
 
 if (config.deploymentMode === "local_trusted" && !isLoopbackHost(config.host)) {
   throw new Error(

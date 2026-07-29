@@ -8,6 +8,7 @@ import {
   companyPortabilityPreviewSchema,
   createCompanySchema,
   updateCompanySchema,
+  DEFAULT_ORGANIZATION_ID,
   type DeploymentMode,
 } from "@armyofagents/shared";
 import { forbidden } from "../errors.js";
@@ -155,8 +156,10 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
     // requestedByUserId attributes the crew's marketplace install operation
     // (T2.3). The column is free text with no FK, and `local_trusted` actors
     // legitimately have no userId — hence the null fallback.
+    // Single-tenant / self-hosted: attach to the sentinel Organization. In
+    // cloud_auth, later phases resolve the caller's real org context here.
     const company = await svc.create(
-      { ...req.body, requireBoardApprovalForNewAgents },
+      { ...req.body, requireBoardApprovalForNewAgents, organizationId: DEFAULT_ORGANIZATION_ID },
       { requestedByUserId: req.actor.userId ?? null },
     );
     const operatorId = await access.ensureRealOperator(company.id, req.actor.userId);

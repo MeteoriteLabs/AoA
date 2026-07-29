@@ -12,7 +12,10 @@ describe("companyService issue prefix allocation", () => {
     const duplicatePrefixError = Object.assign(new Error("Failed query"), {
       cause: {
         code: "23505",
-        constraint_name: "companies_issue_prefix_idx",
+        // Phase 1 (multi-tenant cloud): the index was re-scoped to
+        // (organization_id, issue_prefix) and renamed accordingly; the retry
+        // handler in companies.ts must key on the new name.
+        constraint_name: "companies_org_issue_prefix_idx",
       },
     });
     const returning = vi
