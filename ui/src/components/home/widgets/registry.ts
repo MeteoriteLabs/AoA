@@ -1,0 +1,14 @@
+import type { WidgetDef, WidgetKey } from "./types";
+import { ActionQueueWidget } from "./ActionQueueWidget";
+import { SuggestionsWidget } from "./SuggestionsWidget";
+import { ObjectivesWidget } from "./ObjectivesWidget";
+import { ActivityFeedWidget } from "./ActivityFeedWidget";
+
+export const widgetRegistry: Record<WidgetKey, WidgetDef> = {
+  "action-queue": { key: "action-queue", title: "Action queue", Component: ActionQueueWidget },
+  suggestions: { key: "suggestions", title: "Suggestions", Component: SuggestionsWidget },
+  objectives: { key: "objectives", title: "Objectives", Component: ObjectivesWidget },
+  "activity-feed": { key: "activity-feed", title: "Today's activity", Component: ActivityFeedWidget },
+};
+export function getWidget(key: WidgetKey): WidgetDef | undefined { return widgetRegistry[key]; }
+export function listWidgets(): WidgetDef[] { return Object.values(widgetRegistry); }
