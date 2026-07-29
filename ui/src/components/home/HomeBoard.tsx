@@ -135,6 +135,13 @@ export function HomeBoard({
             layouts={layouts}
             rowHeight={120}
             margin={[12, 12]}
+            // Plan 7 Task 2: `containerPadding` defaults to null (falls back to
+            // `margin`), which put a 12px outer inset around the grid — flush
+            // with nothing, overhanging the pinned header's edges by 12px on
+            // each side. Zeroing it removes that outer inset while leaving the
+            // 12px inter-tile gutter (`margin` above) intact, so the grid's
+            // outer edge lines up with the header above it.
+            containerPadding={[0, 0]}
             compactor={verticalCompactor}
             dragConfig={{ enabled: editableNow, cancel: REMOVE_BUTTON_CANCEL_SELECTOR }}
             resizeConfig={{ enabled: editableNow }}

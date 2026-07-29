@@ -24,6 +24,18 @@ function getGreeting(): string {
   return "Good evening";
 }
 
+// Plan 7 Task 2: a small muted date line under the greeting, e.g.
+// "Wednesday, 30 July 2026". `new Date()` in a component is fine — app code,
+// not a workflow script.
+function getDateLine(): string {
+  return new Date().toLocaleDateString(undefined, {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
+}
+
 export function Dashboard() {
   const { selectedCompanyId, companies } = useCompany();
   const navigate = useNavigate();
@@ -91,18 +103,23 @@ export function Dashboard() {
     <div className="space-y-6">
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
-      {/* Plan 6 Task 1: the pinned header is a single line — greeting on the
-          left, the "+ New" creator menu + the board's customize/edit
-          controls on the right. Renders regardless of the home-summary/grid
-          loading state below, and survives a per-widget error (each widget
-          has its own WidgetErrorBoundary inside HomeBoard, so one failing
-          widget can never take this out). The old "N items need attention"/
-          "All clear" subline and the three always-visible QuickActionCard
-          creators are gone — the creators live behind NewMenu now, and the
-          bottom "Nothing needs attention" card (below) still surfaces the
-          all-clear state. */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-2xl font-semibold tracking-tight">{greeting}</h1>
+      {/* Plan 6 Task 1 (pinned header) + Plan 7 Task 2 (date subline): a single
+          pinned row — greeting + muted date line on the left, the "Create"
+          menu + the board's customize/edit controls on the right. Renders
+          regardless of the home-summary/grid loading state below, and
+          survives a per-widget error (each widget has its own
+          WidgetErrorBoundary inside HomeBoard, so one failing widget can
+          never take this out). The old "N items need attention"/"All clear"
+          subline and the three always-visible QuickActionCard creators are
+          gone — the creators live behind NewMenu now, and the bottom
+          "Nothing needs attention" card (below) still surfaces the all-clear
+          state. */}
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">{greeting}</h1>
+          {/* Plan 7 Task 2: muted weekday + date line, e.g. "Wednesday, 30 July 2026". */}
+          <p className="text-sm text-muted-foreground">{getDateLine()}</p>
+        </div>
         <div className="flex items-center gap-2">
           <NewMenu />
           <HomeBoardControls boardEdit={boardEdit} />

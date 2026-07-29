@@ -414,6 +414,21 @@ describe("Dashboard", () => {
     });
   });
 
+  describe("Plan 7 Task 2: date subline", () => {
+    it("renders a muted weekday + date line under the greeting", async () => {
+      renderWithProviders(<Dashboard />);
+
+      expect(await screen.findByText("Turn launch prep into a task")).toBeInTheDocument();
+
+      // Weekday + "D Month YYYY" (e.g. "Wednesday, 30 July 2026") computed from
+      // the real clock — match on the weekday name rather than the exact date
+      // string so the test isn't tied to "today" or a mocked clock.
+      expect(
+        screen.getByText(/^(Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday), \d{1,2} \S+ \d{4}$/),
+      ).toBeInTheDocument();
+    });
+  });
+
   describe("Task D3: pinned header controls + attention line", () => {
     it("the pinned header (greeting + Customize board control) renders before the grid/summary data has loaded, not blocked by isLoading", async () => {
       renderWithProviders(<Dashboard />);
