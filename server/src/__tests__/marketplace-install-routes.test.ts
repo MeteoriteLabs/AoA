@@ -31,13 +31,19 @@ vi.mock("../routes/authz.js", () => ({
   assertBoard: vi.fn(),
   assertCompanyAccess: vi.fn(),
 }));
+vi.mock(
+  "../services/outbound-url-guard.js",
+  () => import("./helpers/outbound-url-guard.mock.js"),
+);
 
 import { createMarketplaceInstallRouter } from "../routes/marketplace-installs.js";
 
+const PINNED_RESOURCE_BASE =
+  `https://raw.githubusercontent.com/MeteoriteLabs/aoa-marketplace/${"f".repeat(40)}`;
 const SKILL = {
   id: "skill:aoa-curated/code-review", type: "skill", name: "Code Review", description: "...", version: "1.0.0",
   source: { adapter: "aoa-curated", url: "https://github.com/aoa-curated/package", locator: "...", commitSha: "abc" },
-  resourceUrl: "https://.../SKILL.md",
+  resourceUrl: `${PINNED_RESOURCE_BASE}/content/skills/code-review/SKILL.md`,
   content: { inline: "# Code Review" },
   trust: { tier: "verified", source: "aoa-curated" }, status: "active",
   addedAt: "2026-04-30T00:00:00Z", category: "engineering", tags: [],
@@ -53,7 +59,7 @@ const SKILL_B = {
 const AGENT = {
   id: "agent:aoa-curated/engineer", type: "agent", name: "Engineer", description: "...", version: "1.0.0",
   source: { adapter: "aoa-curated", url: "...", locator: "...", commitSha: "abc" },
-  resourceUrl: "https://.../AGENT.json",
+  resourceUrl: `${PINNED_RESOURCE_BASE}/content/agents/engineer/agent.json`,
   content: undefined,
   trust: { tier: "verified", source: "aoa-curated" }, status: "active",
   addedAt: "2026-04-30T00:00:00Z", category: "engineering", tags: [],
@@ -232,8 +238,12 @@ describe("GET /api/companies/:companyId/marketplace/resolve/:catalogItemId", () 
   it("returns non-404 when agent preview resolution fails after the item is found", async () => {
     const badAgent = {
       ...AGENT,
-      resourceUrl: "data:application/json,%7Bnot-json",
+      resourceUrl: `${PINNED_RESOURCE_BASE}/content/agents/bad/agent.json`,
     };
+    global.fetch = vi.fn(async () => ({
+      status: 200,
+      text: async () => "{not-json",
+    })) as any;
     const res = await request(buildApp({ ...CATALOG, items: [badAgent] }))
       .get(`/api/companies/${C_ID}/marketplace/resolve/${encodeURIComponent(AGENT.id)}`);
 
@@ -251,6 +261,6 @@ describe("GET /api/companies/:companyId/marketplace/resolve/:catalogItemId", () 
 
     expect(res.status).toBe(502);
     expect(res.body.error).toMatch(/failed to fetch agent template/i);
-    expect(res.body.error).toMatch(/fetch failed/i);
+    expect(res.body.error).not.toContain("fetch failed");
   });
 });

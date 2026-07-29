@@ -36,6 +36,7 @@ import type { AgentInstructionsServiceLike } from "./agent-create.js";
 import { resolveAgentNameConflict } from "./conflict-resolver.js";
 import { crewLegacySlugCandidates } from "./crew-constants.js";
 import { logger } from "../../middleware/logger.js";
+import { serializeSafeError } from "../safe-error.js";
 
 interface TeamTemplateBody {
   slug: string;
@@ -102,7 +103,7 @@ export async function reconcileTeamMembers(
         error: err,
       });
       logger.error(
-        { err, companyId, teamId: teamRow.id },
+        { error: serializeSafeError(err), companyId, teamId: teamRow.id },
         "team-reconcile: failed to fetch/parse team template — skipping this team",
       );
       continue;
@@ -230,7 +231,12 @@ export async function reconcileTeamMembers(
           error: err,
         });
         logger.error(
-          { err, companyId, teamId: teamRow.id, templateOrigin: memberSpec.templateOrigin },
+          {
+            error: serializeSafeError(err),
+            companyId,
+            teamId: teamRow.id,
+            templateOrigin: memberSpec.templateOrigin,
+          },
           "team-reconcile: failed to install missing roster member",
         );
       }

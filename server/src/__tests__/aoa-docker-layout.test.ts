@@ -24,6 +24,9 @@ describe("AOA Docker data layout and CLI compatibility", () => {
     expect(compose).toContain("AOA_INSTALL_PROFILE:");
     expect(compose).toContain("AOA_CODEX_DEVICE_AUTH:");
     expect(compose).toContain("AOA_CLAUDE_PASTE_AUTH:");
+    expect(compose).toContain(
+      "AOA_MARKETPLACE_SKILLS_WRITE_ROOT: ${AOA_MARKETPLACE_SKILLS_WRITE_ROOT:-legacy}",
+    );
   });
 
   it("fails closed for an old Compose mount and records a data-layout sentinel", () => {
@@ -69,6 +72,9 @@ describe("AOA Docker data layout and CLI compatibility", () => {
       expect(generated).toContain('AOA_CLAUDE_PASTE_AUTH="true"');
       expect(generated).toContain('AOA_EXECUTION_TARGET_ID="hetzner-qa"');
       expect(generated).toContain('AOA_SCOPED_CLI_AUTH="true"');
+      expect(generated).toContain(
+        'AOA_MARKETPLACE_SKILLS_WRITE_ROOT="legacy"',
+      );
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }

@@ -3,6 +3,7 @@ import { activityLog } from "@armyofagents/db";
 import type { ActivityActorType } from "@armyofagents/shared";
 import { publishLiveEvent } from "./live-events.js";
 import { sanitizeRecord } from "../redaction.js";
+import { assertUnreservedActivityNamespace } from "./activity-namespace.js";
 
 export interface LogActivityInput {
   companyId: string;
@@ -17,6 +18,7 @@ export interface LogActivityInput {
 }
 
 export async function logActivity(db: Db, input: LogActivityInput) {
+  assertUnreservedActivityNamespace(input);
   const sanitizedDetails = input.details ? sanitizeRecord(input.details) : null;
   await db.insert(activityLog).values({
     companyId: input.companyId,

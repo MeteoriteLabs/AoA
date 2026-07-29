@@ -3,6 +3,7 @@ import type { Command } from "commander";
 import { readConfig } from "../../config/store.js";
 import { readContext, resolveProfile, type ClientContextProfile } from "../../client/context.js";
 import { ApiRequestError, AoaApiClient } from "../../client/http.js";
+import { getStoredBoardCredential } from "../../client/board-auth.js";
 
 export interface BaseClientOptions {
   config?: string;
@@ -30,7 +31,7 @@ export function addCommonClientOptions(command: Command, opts?: { includeCompany
     .option("--context <path>", "Path to CLI context file")
     .option("--profile <name>", "CLI context profile name")
     .option("--api-base <url>", "Base URL for the AoA API")
-    .option("--api-key <token>", "Bearer token for agent-authenticated calls")
+    .option("--api-key <token>", "Bearer token override")
     .option("--json", "Output raw JSON");
 
   if (opts?.includeCompany) {
@@ -56,7 +57,8 @@ export function resolveCommandContext(
   const apiKey =
     options.apiKey?.trim() ||
     process.env.AOA_API_KEY?.trim() ||
-    readKeyFromProfileEnv(profile);
+    readKeyFromProfileEnv(profile) ||
+    getStoredBoardCredential(apiBase)?.token;
 
   const companyId =
     options.companyId?.trim() ||
