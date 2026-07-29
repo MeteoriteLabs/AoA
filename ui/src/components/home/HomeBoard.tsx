@@ -84,7 +84,10 @@ export function HomeBoard({
   };
 
   return (
-    <div>
+    // Plan 4 Task 4 (a11y sweep): a labeled landmark so assistive tech can
+    // name/jump to the widget grid as a whole, independent of the per-tile
+    // labels below.
+    <div role="region" aria-label="Home widget board">
       {/* Task D2 keyboard a11y: announces each keyboard move/resize. Always
           mounted (not conditionally rendered) so screen readers are already
           watching it before the first announcement ever lands. */}
