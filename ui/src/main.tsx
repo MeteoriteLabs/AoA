@@ -19,6 +19,8 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { initPluginBridge } from "./plugins/bridge-init";
 import { runStorageMigrations } from "./lib/storage-migrations";
 import "@mdxeditor/editor/style.css";
+import "react-grid-layout/css/styles.css";
+import "react-resizable/css/styles.css";
 import "./index.css";
 
 // Migrate legacy Paperclip localStorage keys to AoA names before any
