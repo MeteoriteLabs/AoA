@@ -148,7 +148,7 @@ describe("HomeBoard", () => {
     containerWidthMock.width = 1024;
   });
 
-  it('renders the founder board: all 10 widgets, each in its own error boundary, in getDefaultLayout("founder") order', async () => {
+  it('renders the founder board: all 8 widgets, each in its own error boundary, in getDefaultLayout("founder") order', async () => {
     renderWithProviders(<HomeBoardHarness companyId="co-1" role="founder" />);
 
     // The query-backed widgets (My tasks, Budget, Approvals) render only after
@@ -157,43 +157,44 @@ describe("HomeBoard", () => {
     expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
     // Every widget renders (each self-hides when its data is empty, so this also
-    // proves the board composed real content, not just headers).
+    // proves the board composed real content, not just headers). Plan 7 Task 5
+    // curated the founder default down to 8 widgets — suggestions and
+    // memory-review are tray-only now.
     const headings = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
     expect(headings).toEqual([
-      "Action queue",
       "Waiting on you",
-      "Agents working now",
-      "Today's activity",
+      "Action queue",
       "Objectives",
-      "Suggestions",
       "My tasks",
       "Discussions",
-      "Memory review",
+      "Today's activity",
+      "Agents working now",
       "Budget",
     ]);
   });
 
-  it("renders the member board: execution subset led by My tasks, no Budget/Approvals", async () => {
+  it("renders the member board: execution subset led by My tasks, includes Waiting on you, no Budget/Memory review", async () => {
     renderWithProviders(<HomeBoardHarness companyId="co-1" role="team_member" />);
 
     expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
+    // Plan 7 Task 5: approvals ("Waiting on you") flipped onto the member
+    // default board (it was excluded before).
     const headings = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
     expect(headings).toEqual([
       "My tasks",
       "Action queue",
+      "Waiting on you",
       "Objectives",
-      "Today's activity",
-      "Suggestions",
       "Discussions",
+      "Today's activity",
       "Agents working now",
     ]);
     expect(headings).not.toContain("Budget");
-    expect(headings).not.toContain("Waiting on you");
     expect(headings).not.toContain("Memory review");
   });
 
-  it("founder vs member default divergence: founder gets all 10, member gets the execution subset led by My tasks with no Budget/Approvals (Plan 4 Task 6)", async () => {
+  it("founder vs member default divergence: founder gets the curated 8-widget board, member gets the execution subset led by My tasks with no Budget/Memory review (Plan 7 Task 5)", async () => {
     // The two tests above each prove one side independently; this one holds
     // both roles side by side in a single assertion so a future change that
     // drifts one default without the other fails here explicitly.
@@ -205,12 +206,11 @@ describe("HomeBoard", () => {
     expect(await screen.findByText("Ship it")).toBeInTheDocument();
     const memberHeadings = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
 
-    expect(founderHeadings).toHaveLength(10);
+    expect(founderHeadings).toHaveLength(8);
     expect(memberHeadings).toHaveLength(7);
     expect(memberHeadings.length).toBeLessThan(founderHeadings.length);
     expect(memberHeadings[0]).toBe("My tasks");
     expect(memberHeadings).not.toContain("Budget");
-    expect(memberHeadings).not.toContain("Waiting on you");
     expect(memberHeadings).not.toContain("Memory review");
     // Every member widget is also on the founder board (execution subset,
     // not a disjoint set).
@@ -228,7 +228,7 @@ describe("HomeBoard", () => {
 
     expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
-    // Only the two saved widgets render — reconcileLg never adds the other 8
+    // Only the two saved widgets render — reconcileLg never adds the other 6
     // founder-default widgets back in, even though this is a founder board.
     const headings = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
     expect(headings.sort()).toEqual(["Budget", "My tasks"]);
@@ -253,7 +253,7 @@ describe("HomeBoard", () => {
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       // Not editing: header links exist, no remove buttons, resize hidden.
-      expect(screen.getAllByRole("link", { name: /^Open / }).length).toBe(10);
+      expect(screen.getAllByRole("link", { name: /^Open / }).length).toBe(8);
       expect(screen.queryAllByLabelText(/^Remove /)).toHaveLength(0);
       // Task 5: `data-home-board-editing` scopes the resize-handle-visibility
       // CSS (index.css) — absent while read-only.
@@ -265,14 +265,14 @@ describe("HomeBoard", () => {
       // Editing: WidgetShell headers stop being links...
       expect(screen.queryAllByRole("link", { name: /^Open / })).toHaveLength(0);
       // ...and every tile grows a remove button.
-      expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(10);
+      expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(8);
       // Task 5: present while editing so the resize-handle CSS applies.
       expect(document.querySelector('[data-home-board-editing="true"]')).not.toBeNull();
 
       // Drag/resize are wired to `editing`: RGL marks each grid item
       // draggable and un-hides its resize handle only while editing.
       const gridItems = document.querySelectorAll(".react-grid-item");
-      expect(gridItems.length).toBe(10);
+      expect(gridItems.length).toBe(8);
       gridItems.forEach((el) => {
         expect(el.classList.contains("react-draggable")).toBe(true);
         expect(el.classList.contains("react-resizable-hide")).toBe(false);
@@ -291,7 +291,7 @@ describe("HomeBoard", () => {
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const idleTiles = document.querySelectorAll(".react-grid-item");
-      expect(idleTiles.length).toBe(10);
+      expect(idleTiles.length).toBe(8);
       idleTiles.forEach((el) => {
         expect(el.classList.contains("home-board-tile-editable")).toBe(false);
       });
@@ -300,7 +300,7 @@ describe("HomeBoard", () => {
       await enterEditMode(user);
 
       const editingTiles = document.querySelectorAll(".react-grid-item");
-      expect(editingTiles.length).toBe(10);
+      expect(editingTiles.length).toBe(8);
       editingTiles.forEach((el) => {
         expect(el.classList.contains("home-board-tile-editable")).toBe(true);
       });
@@ -312,11 +312,11 @@ describe("HomeBoard", () => {
 
       const user = userEvent.setup();
       await enterEditMode(user);
-      expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(10);
+      expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(8);
 
       await user.click(screen.getByLabelText("Remove Budget"));
 
-      expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(9);
+      expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(7);
       expect(screen.queryByRole("heading", { level: 2, name: "Budget" })).not.toBeInTheDocument();
     });
 
@@ -394,9 +394,9 @@ describe("HomeBoard", () => {
       await user.click(screen.getByRole("button", { name: "Done" }));
 
       expect(await screen.findByText(/Couldn't save/)).toBeInTheDocument();
-      // Still editing — the Done toggle and the (now 9) remove buttons remain.
+      // Still editing — the Done toggle and the (now 7) remove buttons remain.
       expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
-      expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(9);
+      expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(7);
 
       await user.click(screen.getByRole("button", { name: "Retry" }));
 
@@ -415,7 +415,7 @@ describe("HomeBoard", () => {
 
       const user = userEvent.setup();
       await enterEditMode(user);
-      expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(10);
+      expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(8);
       expect(screen.getByRole("button", { name: "Add widget" })).toBeInTheDocument();
 
       // Simulate the window between clicking Done and the save settling:
@@ -487,7 +487,7 @@ describe("HomeBoard", () => {
       const user = userEvent.setup();
       await enterEditMode(user);
       await user.click(screen.getByLabelText("Remove Budget"));
-      expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(9);
+      expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(7);
 
       rerender(<HomeBoardHarness companyId="co-2" role="founder" />);
 
@@ -514,20 +514,26 @@ describe("HomeBoard", () => {
       const user = userEvent.setup();
       await enterEditMode(user);
 
-      // Budget sits at the founder default's x:0 (leftmost column, see
-      // gridLayout.ts packing) — column 1 of 4.
-      const budgetTile = screen.getByRole("group", { name: /^Budget tile, column 1,/ });
+      // Plan 7 Task 5: Budget now sits at x:1 (column 2 of 4) — the last row
+      // it shares with agents-now (x:0); columns 3-4 are free (see
+      // defaultLayout.ts's packing comment / gridLayout.ts packing).
+      const budgetTile = screen.getByRole("group", { name: /^Budget tile, column 2,/ });
       budgetTile.focus();
       expect(budgetTile).toHaveFocus();
 
-      // Blocked: already at the left edge — no-op, same tile, same column.
-      await user.keyboard("{ArrowLeft}");
-      expect(screen.getByRole("group", { name: /^Budget tile, column 1,/ })).toBe(budgetTile);
+      // Moves right into the free cell at column 3.
+      await user.keyboard("{ArrowRight}");
+      expect(screen.getByRole("group", { name: /^Budget tile, column 3,/ })).toBe(budgetTile);
       expect(budgetTile).toHaveFocus();
 
-      // Moves right one cell.
+      // Moves right again into the free cell at column 4 (the grid's right edge).
       await user.keyboard("{ArrowRight}");
-      expect(screen.getByRole("group", { name: /^Budget tile, column 2,/ })).toBe(budgetTile);
+      expect(screen.getByRole("group", { name: /^Budget tile, column 4,/ })).toBe(budgetTile);
+      expect(budgetTile).toHaveFocus();
+
+      // Blocked: already at the right edge — no-op, same tile, same column.
+      await user.keyboard("{ArrowRight}");
+      expect(screen.getByRole("group", { name: /^Budget tile, column 4,/ })).toBe(budgetTile);
       expect(budgetTile).toHaveFocus();
     });
 
@@ -561,10 +567,10 @@ describe("HomeBoard", () => {
       budgetTile.focus();
       await user.keyboard("{ArrowRight}");
 
-      // Budget is last in the founder default order (Plan 6 Task 7 moved it
-      // there to clear a second interior shadow gap — see defaultLayout.ts),
-      // at y:8 (row 9).
-      expect(liveRegion).toHaveTextContent(/Budget moved to column 2, row 9/);
+      // Plan 7 Task 5: Budget is last in the founder default order, packed
+      // at x:1/y:6 (column 2, row 7) — see defaultLayout.ts's packing
+      // comment. Column 3 is free, so the move lands there with no cascade.
+      expect(liveRegion).toHaveTextContent(/Budget moved to column 3, row 7/);
 
       await user.keyboard("{Shift>}{ArrowRight}{/Shift}");
       expect(liveRegion).toHaveTextContent(/Budget resized to 2 by 1/);
@@ -627,7 +633,7 @@ describe("HomeBoard", () => {
       expect(screen.getByRole("button", { name: "Done" })).toBeEnabled();
       // Every tile is navigable again now that editableNow is false — nav
       // suppression is keyed on editableNow, not the raw `editing` flag.
-      expect(screen.getAllByRole("link", { name: /^Open / }).length).toBe(10);
+      expect(screen.getAllByRole("link", { name: /^Open / }).length).toBe(8);
     });
   });
 
@@ -690,8 +696,8 @@ describe("HomeBoard", () => {
       await user.click(screen.getByRole("button", { name: /^reset/i }));
 
       expect(homeBoardLayoutMock.reset).toHaveBeenCalledTimes(1);
-      // Founder's role default includes all 10 registered widgets.
-      await waitFor(() => expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(10));
+      // Founder's role default is the curated 8-widget board (Plan 7 Task 5).
+      await waitFor(() => expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(8));
       expect(screen.queryByText("Unsaved changes")).not.toBeInTheDocument();
 
       await user.click(screen.getByRole("button", { name: "Done" }));

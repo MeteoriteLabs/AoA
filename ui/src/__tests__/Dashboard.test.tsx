@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { HomeBoardLayoutItem } from "@armyofagents/shared";
 import { renderWithProviders, mockBreadcrumbContext, mockCompanyContext, mockDialogContext, makeCompany } from "./test-utils";
 import { Dashboard } from "../pages/Dashboard";
 
@@ -165,6 +166,38 @@ vi.mock("../hooks/useLiveAgentCount", () => ({
   useLiveAgentCount: () => 2,
 }));
 
+// Plan 7 Task 5: the founder/member DEFAULT board no longer includes the
+// "suggestions" widget (curated down to a smaller default set — it's
+// tray-only now), but several tests below exercise the Suggestions widget's
+// own behavior (accept/dismiss, founder-gating, agent-badge rendering) as it
+// runs inside Dashboard. Rather than rely on incidental default-board
+// membership (which the curated default no longer provides), those tests
+// pin a small explicit saved layout that puts "suggestions" back on the
+// board — exactly like HomeBoard.test.tsx's `homeBoardLayoutMock` pattern.
+// Tests that only used a suggestion card's text as a "wait for the board to
+// settle" signal (not actually testing suggestions) were switched to wait on
+// a widget that IS in the real curated default instead (see below).
+const homeBoardLayoutMock = vi.hoisted(() => ({
+  layout: null as HomeBoardLayoutItem[] | null,
+}));
+vi.mock("../hooks/useHomeBoardLayout", () => ({
+  useHomeBoardLayout: () => ({
+    layout: homeBoardLayoutMock.layout,
+    schemaVersion: null,
+    isLoading: false,
+    isFetching: false,
+    refetch: vi.fn(),
+    save: vi.fn(),
+    saveAsync: vi.fn().mockResolvedValue({ layout: [], schemaVersion: 1 }),
+    isSaving: false,
+    saveError: null,
+    reset: vi.fn(),
+    resetAsync: vi.fn(),
+    isResetting: false,
+    resetError: null,
+  }),
+}));
+
 // N2: the suggestions-detect trigger is founder-gated client-side. Default to
 // founder so the pre-existing tests (which assert detect fires) keep passing.
 const teamAccessMock = vi.hoisted(() => ({ role: "founder" as string | null }));
@@ -215,12 +248,22 @@ vi.mock("../lib/timeAgo", () => ({
 // A founder who hasn't finished their tail is routed back to /onboarding by the
 // index gate, so Home is always the steady dashboard here.
 
+// Plan 7 Task 5: a minimal saved layout that puts the Suggestions widget back
+// on the board for tests that specifically exercise it (see the
+// homeBoardLayoutMock comment above). "agents-now" rides along because one
+// of those tests also asserts "Agents working now" is present.
+const SUGGESTIONS_TEST_LAYOUT: HomeBoardLayoutItem[] = [
+  { i: "suggestions", x: 0, y: 0, w: 2, h: 2 },
+  { i: "agents-now", x: 2, y: 0, w: 1, h: 1 },
+];
+
 describe("Dashboard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockCompanyContext.selectedCompanyId = "comp-1";
     mockCompanyContext.companies = [makeCompany()];
     teamAccessMock.role = "founder";
+    homeBoardLayoutMock.layout = null;
     suggestionsApiMock.pending.mockResolvedValue(suggestionFixtures);
     suggestionsApiMock.detect.mockResolvedValue({ ok: true });
     suggestionsApiMock.accept.mockResolvedValue({});
@@ -229,6 +272,7 @@ describe("Dashboard", () => {
   });
 
   it("renders the New menu trigger and suggestion cards from the API", async () => {
+    homeBoardLayoutMock.layout = SUGGESTIONS_TEST_LAYOUT;
     renderWithProviders(<Dashboard />);
 
     expect(await screen.findByText("Turn launch prep into a task")).toBeInTheDocument();
@@ -247,6 +291,7 @@ describe("Dashboard", () => {
 
   it("does not fire suggestions detect for non-founders (server founder-gates it)", async () => {
     teamAccessMock.role = "team_member";
+    homeBoardLayoutMock.layout = SUGGESTIONS_TEST_LAYOUT;
     renderWithProviders(<Dashboard />);
 
     // Wait for the page to settle (suggestions listed) before asserting absence.
@@ -256,6 +301,7 @@ describe("Dashboard", () => {
 
   it("hides suggestion accept/dismiss actions for non-founders (server founder-gates them)", async () => {
     teamAccessMock.role = "team_member";
+    homeBoardLayoutMock.layout = SUGGESTIONS_TEST_LAYOUT;
     renderWithProviders(<Dashboard />);
 
     // Cards still render (suggestions are visible to everyone)...
@@ -266,6 +312,7 @@ describe("Dashboard", () => {
   });
 
   it("create_task accept opens the task dialog with suggestion defaults", async () => {
+    homeBoardLayoutMock.layout = SUGGESTIONS_TEST_LAYOUT;
     const user = userEvent.setup();
     renderWithProviders(<Dashboard />);
 
@@ -283,6 +330,7 @@ describe("Dashboard", () => {
   });
 
   it("flag_risk accept calls the accept API and shows a toast", async () => {
+    homeBoardLayoutMock.layout = SUGGESTIONS_TEST_LAYOUT;
     const user = userEvent.setup();
     renderWithProviders(<Dashboard />);
 
@@ -298,6 +346,7 @@ describe("Dashboard", () => {
   });
 
   it("dismiss removes a suggestion card", async () => {
+    homeBoardLayoutMock.layout = SUGGESTIONS_TEST_LAYOUT;
     const user = userEvent.setup();
     renderWithProviders(<Dashboard />);
 
@@ -309,6 +358,7 @@ describe("Dashboard", () => {
   });
 
   it("shows the empty state when there are no suggestions", async () => {
+    homeBoardLayoutMock.layout = SUGGESTIONS_TEST_LAYOUT;
     suggestionsApiMock.pending.mockResolvedValue([]);
     renderWithProviders(<Dashboard />);
 
@@ -316,6 +366,7 @@ describe("Dashboard", () => {
   });
 
   it("shows agent proposals with the agent badge", async () => {
+    homeBoardLayoutMock.layout = SUGGESTIONS_TEST_LAYOUT;
     renderWithProviders(<Dashboard />);
 
     expect(await screen.findByText("Scout")).toBeInTheDocument();
@@ -354,6 +405,7 @@ describe("Dashboard", () => {
   });
 
   it("suggest_memory accept opens the suggested memory dialog", async () => {
+    homeBoardLayoutMock.layout = SUGGESTIONS_TEST_LAYOUT;
     const user = userEvent.setup();
     renderWithProviders(<Dashboard />);
 
@@ -369,7 +421,9 @@ describe("Dashboard", () => {
     it("the header is a single line: greeting renders with no attention subline, and the New trigger is present", async () => {
       renderWithProviders(<Dashboard />);
 
-      expect(await screen.findByText("Turn launch prep into a task")).toBeInTheDocument();
+      // Wait for the board to settle on a widget from the real curated
+      // default (Plan 7 Task 5 dropped "suggestions" from the default set).
+      expect(await screen.findByText("Agents working now")).toBeInTheDocument();
 
       // The old "N items need attention"/"All clear" subline is gone.
       expect(screen.queryByText(/items? need attention/)).not.toBeInTheDocument();
@@ -386,7 +440,7 @@ describe("Dashboard", () => {
     it("opening the New menu reveals the three creators, still reachable behind one trigger", async () => {
       const user = userEvent.setup();
       renderWithProviders(<Dashboard />);
-      expect(await screen.findByText("Turn launch prep into a task")).toBeInTheDocument();
+      expect(await screen.findByText("Agents working now")).toBeInTheDocument();
 
       await user.click(screen.getByRole("button", { name: "Create" }));
 
@@ -398,7 +452,7 @@ describe("Dashboard", () => {
     it("Task / Discussion / Goal each call their respective useDialog opener", async () => {
       const user = userEvent.setup();
       renderWithProviders(<Dashboard />);
-      expect(await screen.findByText("Turn launch prep into a task")).toBeInTheDocument();
+      expect(await screen.findByText("Agents working now")).toBeInTheDocument();
 
       await user.click(screen.getByRole("button", { name: "Create" }));
       await user.click(await screen.findByRole("menuitem", { name: "Task" }));
@@ -418,7 +472,7 @@ describe("Dashboard", () => {
     it("renders a muted weekday + date line under the greeting", async () => {
       renderWithProviders(<Dashboard />);
 
-      expect(await screen.findByText("Turn launch prep into a task")).toBeInTheDocument();
+      expect(await screen.findByText("Agents working now")).toBeInTheDocument();
 
       // Weekday + "D Month YYYY" (e.g. "Wednesday, 30 July 2026") computed from
       // the real clock — match on the weekday name rather than the exact date
@@ -443,14 +497,13 @@ describe("Dashboard", () => {
 
       // Let the pending queries settle before the test ends (avoids an
       // act() warning from state updates landing after this test returns).
-      expect(await screen.findByText("Turn launch prep into a task")).toBeInTheDocument();
+      expect(await screen.findByText("Agents working now")).toBeInTheDocument();
     });
 
     it("the header's Customize board control and the board below it share one edit session (not two independent ones)", async () => {
       const user = userEvent.setup();
       renderWithProviders(<Dashboard />);
 
-      expect(await screen.findByText("Turn launch prep into a task")).toBeInTheDocument();
       expect(await screen.findByText("Agents working now")).toBeInTheDocument();
 
       // Not editing yet: no per-tile remove buttons.

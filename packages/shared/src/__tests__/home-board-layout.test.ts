@@ -12,7 +12,11 @@ import type { HomeBoardLayoutItem } from "../home-board.js";
 const VALID_FULL_LAYOUT: HomeBoardLayoutItem[] = [
   { i: "agents-now", x: 0, y: 0, w: 1, h: 1 },
   { i: "budget", x: 1, y: 0, w: 1, h: 1 },
-  { i: "approvals", x: 2, y: 0, w: 1, h: 1 },
+  // approvals ("Waiting on you") is now a list widget (Plan 7 Task 5): its
+  // allowed sizes dropped 1×1, so this fixture uses its 2×1 compact size.
+  // NOT 2×2 — a 2×2 footprint here (h:2 at cols 2-3) would overlap
+  // suggestions at (2,1,2,1) below.
+  { i: "approvals", x: 2, y: 0, w: 2, h: 1 },
   { i: "action-queue", x: 0, y: 1, w: 2, h: 1 },
   { i: "suggestions", x: 2, y: 1, w: 2, h: 1 },
   { i: "objectives", x: 0, y: 2, w: 2, h: 2 },

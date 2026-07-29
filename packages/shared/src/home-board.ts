@@ -7,19 +7,24 @@ export const HOME_BOARD_LAYOUT_SCHEMA_VERSION = 1;
  * Allowed desktop {w,h} footprints per widget (w in lg cols ≤ 4). Readonly
  * single source of truth — first entry per widget is its default.
  *
- * Stats stay 2 footprints (1×1 compact / 2×1 wide). Do NOT add 2×2 — a square
- * stat is poor UX, and `agents-now 2×2` is the canonical "disallowed size" in
- * multiple existing tests (shared home-board-layout.test.ts, gridLayout.test.ts
- * clamp + cycle-wrap, server routes-home-board-layout.test.ts OVERSIZE_LAYOUT).
- * Keeping stats at 2 sizes preserves all of them; the resize-range win is on
- * the LIST widgets below, which now default to 2×2 (fits content — e.g.
- * Suggestions' Accept/Dismiss no longer falls below the fold) and add a 4×2
- * wide footprint for extra resize range.
+ * Stats (`agents-now`/`budget`) stay 2 footprints (1×1 compact / 2×1 wide).
+ * Do NOT add 2×2 — a square stat is poor UX, and `agents-now 2×2` is the
+ * canonical "disallowed size" in multiple existing tests (shared
+ * home-board-layout.test.ts, gridLayout.test.ts clamp + cycle-wrap, server
+ * routes-home-board-layout.test.ts OVERSIZE_LAYOUT).
+ *
+ * `approvals` ("Waiting on you") is no longer a stat — Plan 7 Task 5 turned
+ * it into a list widget (it renders actual approval rows, not a count), so
+ * it now takes the same 3-footprint shape as the other list widgets below
+ * (2×2 default / 2×1 compact / 4×2 wide) instead of the old 1×1/2×1 stat
+ * pair. This drops 1×1 as an allowed size for approvals specifically —
+ * existing saved boards with approvals at 1×1 clamp to the nearest allowed
+ * size (2×1) via reconcileLg/nearestAllowedSize on next load.
  */
 export const HOME_BOARD_ALLOWED_SIZES = {
   "agents-now": [{ w: 1, h: 1 }, { w: 2, h: 1 }],
   budget: [{ w: 1, h: 1 }, { w: 2, h: 1 }],
-  approvals: [{ w: 1, h: 1 }, { w: 2, h: 1 }],
+  approvals: [{ w: 2, h: 2 }, { w: 2, h: 1 }, { w: 4, h: 2 }],
   "action-queue": [{ w: 2, h: 2 }, { w: 2, h: 1 }, { w: 4, h: 2 }],
   suggestions: [{ w: 2, h: 2 }, { w: 2, h: 1 }, { w: 4, h: 2 }],
   objectives: [{ w: 2, h: 2 }, { w: 2, h: 1 }, { w: 4, h: 2 }],

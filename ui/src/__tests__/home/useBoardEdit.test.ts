@@ -845,11 +845,12 @@ describe("useBoardEdit", () => {
       const { result } = renderHook(() => useBoardEdit(COMPANY_A, "founder"));
       act(() => result.current.startEdit());
       const before = result.current.lg;
-      // The founder default's "budget" tile sits at x:0 (leftmost) — moving
-      // left is blocked.
-      expect(before.find((item) => item.i === "budget")!.x).toBe(0);
+      // Plan 7 Task 5: "agents-now" sits at the founder default's x:0
+      // (leftmost column, sharing the final row with budget at x:1 — see
+      // defaultLayout.ts's packing comment) — moving left is blocked.
+      expect(before.find((item) => item.i === "agents-now")!.x).toBe(0);
 
-      act(() => result.current.moveWidget("budget", -1, 0));
+      act(() => result.current.moveWidget("agents-now", -1, 0));
 
       expect(result.current.lg).toEqual(before);
       expect(result.current.announcement).toBe("");

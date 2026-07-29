@@ -139,7 +139,7 @@ describe("HomeBoard under React.StrictMode", () => {
     apiSpies.suggestionsPending.mockResolvedValue([]);
     apiSpies.suggestionsDetect.mockResolvedValue({ ok: true });
     apiSpies.liveRunsForCompany.mockResolvedValue([]);
-    apiSpies.layoutGet.mockResolvedValue(null); // no saved layout -> founder role default (10 widgets)
+    apiSpies.layoutGet.mockResolvedValue(null); // no saved layout -> founder role default (8 widgets, Plan 7 Task 5)
     apiSpies.layoutSave.mockResolvedValue({ layout: [], schemaVersion: 1 });
     apiSpies.layoutReset.mockResolvedValue({ ok: true });
     apiSpies.discussionsList.mockResolvedValue({ discussions: [], total: 0, limit: 0, offset: 0 });
@@ -153,12 +153,12 @@ describe("HomeBoard under React.StrictMode", () => {
       </React.StrictMode>,
     );
 
-    // The board renders once settled: all 10 founder widgets, each in its own
-    // heading (proves real content composed, not just StrictMode not
+    // The board renders once settled: all 8 curated founder widgets, each in
+    // its own heading (proves real content composed, not just StrictMode not
     // crashing).
     expect(await screen.findByText("Ship it")).toBeInTheDocument();
     const headings = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
-    expect(headings).toHaveLength(10);
+    expect(headings).toHaveLength(8);
 
     // Not editing: save is NEVER called on mount, despite StrictMode's
     // mount->cleanup->mount of useBoardEdit/useHomeBoardLayout.
@@ -187,7 +187,7 @@ describe("HomeBoard under React.StrictMode", () => {
     expect(await screen.findByText("Ship it")).toBeInTheDocument();
     // Let the board settle fully (every widget's own query resolved) before
     // reading final call counts.
-    await waitFor(() => expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(10));
+    await waitFor(() => expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(8));
 
     // homeApi.summary is shared by 3 widgets (Action queue, Objectives,
     // Today's activity) via the SAME queryKeys.home(companyId) cache entry;
@@ -201,22 +201,23 @@ describe("HomeBoard under React.StrictMode", () => {
     expect(apiSpies.approvalsList.mock.calls.length).toBeLessThanOrEqual(1);
     expect(apiSpies.workQuestionsList.mock.calls.length).toBeLessThanOrEqual(1);
     expect(apiSpies.issuesList.mock.calls.length).toBeLessThanOrEqual(1);
-    // suggestionsApi.pending is a documented EXCEPTION, not a StrictMode
-    // artifact: SuggestionsWidget fires a founder-only "detect" mutation on
-    // mount whose onSuccess unconditionally invalidates the pending query,
-    // so a founder board always does 1 initial fetch + 1 detect-triggered
-    // refetch = 2, WITH OR WITHOUT StrictMode (verified by running this same
-    // assertion without the <React.StrictMode> wrapper — still 2). Capped at
-    // 2 (not unbounded) so a real StrictMode-induced regression (e.g. detect
-    // itself double-firing) would still be caught.
-    expect(apiSpies.suggestionsPending.mock.calls.length).toBeLessThanOrEqual(2);
-    expect(apiSpies.suggestionsDetect.mock.calls.length).toBeLessThanOrEqual(1);
+    // Plan 7 Task 5: "suggestions" and "memory-review" were curated OFF the
+    // founder default board (tray-only now) — neither widget mounts here, so
+    // neither's query/mutation fires at all. (Previously suggestionsApi.pending
+    // was a documented exception at exactly 2 calls — 1 initial fetch + 1
+    // founder-only "detect"-triggered refetch — back when SuggestionsWidget
+    // was part of the founder default; see git history for that reasoning if
+    // suggestions/memory-review ever return to the default set.)
+    expect(apiSpies.suggestionsPending).not.toHaveBeenCalled();
+    expect(apiSpies.suggestionsDetect).not.toHaveBeenCalled();
+    expect(apiSpies.memoryListPending).not.toHaveBeenCalled();
     expect(apiSpies.liveRunsForCompany.mock.calls.length).toBeLessThanOrEqual(1);
     // The board's own persisted-layout query (useHomeBoardLayout, underneath
     // useBoardEdit) — the literal "query dedup" the plan calls out.
     expect(apiSpies.layoutGet.mock.calls.length).toBeLessThanOrEqual(1);
-    // Plan 6: the two new Task 5/6 widgets, each with their own single query.
+    // Plan 6: "discussions" — the one Plan 6 widget that stayed in the
+    // curated founder default (Task 5/6's other addition, memory-review, did
+    // not — see above).
     expect(apiSpies.discussionsList.mock.calls.length).toBeLessThanOrEqual(1);
-    expect(apiSpies.memoryListPending.mock.calls.length).toBeLessThanOrEqual(1);
   });
 });

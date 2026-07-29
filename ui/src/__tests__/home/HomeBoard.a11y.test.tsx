@@ -98,17 +98,17 @@ function HomeBoardHarness({ companyId, role }: { companyId: string; role: UserRo
   );
 }
 
-// The founder default's full 10-widget title set, in getDefaultLayout("founder") order.
+// Plan 7 Task 5: the founder default's curated 8-widget title set, in
+// getDefaultLayout("founder") order (suggestions and memory-review dropped
+// to tray-only).
 const FOUNDER_TITLES = [
-  "Action queue",
   "Waiting on you",
-  "Agents working now",
-  "Today's activity",
+  "Action queue",
   "Objectives",
-  "Suggestions",
   "My tasks",
   "Discussions",
-  "Memory review",
+  "Today's activity",
+  "Agents working now",
   "Budget",
 ];
 
@@ -173,12 +173,11 @@ describe("HomeBoard a11y contract sweep (Plan 4 Task 4)", () => {
     it("the add-widget tray is a labeled menu whose items are labeled buttons", async () => {
       const user = await renderAndEnterEdit();
 
-      // Founder default already has all 10 widgets, so the tray would be
-      // empty of offerable items — remove one FIRST, before opening the
-      // dropdown. (Radix DropdownMenu is modal by default: once open, it
-      // marks the rest of the page aria-hidden, so "Remove Budget" elsewhere
-      // on the page would no longer be reachable by role if we opened the
-      // dropdown first.)
+      // Founder default already has Budget on the board, so the tray would
+      // exclude it — remove it FIRST, before opening the dropdown. (Radix
+      // DropdownMenu is modal by default: once open, it marks the rest of
+      // the page aria-hidden, so "Remove Budget" elsewhere on the page would
+      // no longer be reachable by role if we opened the dropdown first.)
       await user.click(screen.getByRole("button", { name: "Remove Budget" }));
 
       await user.click(screen.getByRole("button", { name: "Add widget" }));

@@ -139,20 +139,20 @@ describe("HomeBoard query-count (no over-fetch)", () => {
     apiSpies.suggestionsPending.mockResolvedValue([]);
     apiSpies.suggestionsDetect.mockResolvedValue({ ok: true });
     apiSpies.liveRunsForCompany.mockResolvedValue([{ id: "run-1" }]);
-    apiSpies.layoutGet.mockResolvedValue(null); // no saved layout -> founder role default (10 widgets)
+    apiSpies.layoutGet.mockResolvedValue(null); // no saved layout -> founder role default (8 widgets, Plan 7 Task 5)
     apiSpies.layoutSave.mockResolvedValue({ layout: [], schemaVersion: 1 });
     apiSpies.layoutReset.mockResolvedValue({ ok: true });
     apiSpies.discussionsList.mockResolvedValue({ discussions: [], total: 0, limit: 0, offset: 0 });
     apiSpies.memoryListPending.mockResolvedValue({ items: [], versions: [], archives: [], totalCount: 0 });
   });
 
-  it("fetches every widget api exactly once for the founder (all-10) board — no N+1, dashboard dedup confirmed", async () => {
+  it("fetches every widget api exactly once for the founder (curated 8-widget) board — no N+1, dashboard dedup confirmed", async () => {
     renderWithProviders(<HomeBoardHarness companyId="co-1" role="founder" />);
 
-    // Settle: wait for the slowest widget (My tasks) plus the full 10-widget
-    // composition before reading final call counts.
+    // Settle: wait for the slowest widget (My tasks) plus the full curated
+    // 8-widget composition (Plan 7 Task 5) before reading final call counts.
     expect(await screen.findByText("Ship it")).toBeInTheDocument();
-    await waitFor(() => expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(10));
+    await waitFor(() => expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(8));
     // Also wait for the Waiting-on-you widget's merged list content to
     // settle, since it depends on BOTH approvalsApi.list AND
     // workQuestionsApi.list resolving (Plan 6 Task 4: no longer a single
@@ -174,17 +174,15 @@ describe("HomeBoard query-count (no over-fetch)", () => {
     // issuesApi.list: only My tasks calls this (with assigneeUserId: "me").
     // Expected count is 1.
     expect(apiSpies.issuesList).toHaveBeenCalledTimes(1);
-    // suggestionsApi.pending: only Suggestions calls this DIRECTLY, but the
-    // founder-only "detect" mutation's onSuccess unconditionally invalidates
-    // this same query key, so a founder board always does 1 initial fetch +
-    // 1 detect-triggered refetch. Expected count is 2 — NOT 1 — a documented
-    // deviation from a naive "every api exactly once" reading; see
-    // HomeBoard.strictmode.test.tsx for the same finding reproduced with and
-    // without StrictMode (identical either way, so this isn't react-query
-    // over-fetching — it's SuggestionsWidget's own intentional
-    // detect-then-refresh design).
-    expect(apiSpies.suggestionsPending).toHaveBeenCalledTimes(2);
-    expect(apiSpies.suggestionsDetect).toHaveBeenCalledTimes(1);
+    // Plan 7 Task 5: "suggestions" and "memory-review" were curated OFF the
+    // founder default board (tray-only now, not dropped from the registry) —
+    // neither widget mounts here, so neither's api fires at all. (Previously
+    // suggestionsApi.pending did 1 initial fetch + 1 founder-only
+    // "detect"-triggered refetch = 2 calls, back when SuggestionsWidget was
+    // part of the founder default — see HomeBoard.strictmode.test.tsx for the
+    // same history if suggestions/memory-review ever return to the default.)
+    expect(apiSpies.suggestionsPending).not.toHaveBeenCalled();
+    expect(apiSpies.suggestionsDetect).not.toHaveBeenCalled();
     // heartbeatsApi.liveRunsForCompany: only Agents working now (via
     // useLiveAgentCount) calls this. Expected count is 1.
     expect(apiSpies.liveRunsForCompany).toHaveBeenCalledTimes(1);
@@ -194,8 +192,10 @@ describe("HomeBoard query-count (no over-fetch)", () => {
     expect(apiSpies.layoutGet).toHaveBeenCalledTimes(1);
     // discussionsApi.list: only Discussions calls this. Expected count is 1.
     expect(apiSpies.discussionsList).toHaveBeenCalledTimes(1);
-    // memoryApi.listPending: only Memory review calls this. Expected count is 1.
-    expect(apiSpies.memoryListPending).toHaveBeenCalledTimes(1);
+    // memoryApi.listPending: Memory review is curated off the founder
+    // default too (see the suggestions/memory-review comment above) — never
+    // fires.
+    expect(apiSpies.memoryListPending).not.toHaveBeenCalled();
     // Never triggered by a plain mount/read.
     expect(apiSpies.layoutSave).not.toHaveBeenCalled();
     expect(apiSpies.layoutReset).not.toHaveBeenCalled();
@@ -205,25 +205,30 @@ describe("HomeBoard query-count (no over-fetch)", () => {
     renderWithProviders(<HomeBoardHarness companyId="co-1" role="team_member" />);
 
     expect(await screen.findByText("Ship it")).toBeInTheDocument();
-    // Member default is a 7-widget subset led by My tasks, no Budget/Approvals.
+    // Plan 7 Task 5: member default is still a 7-widget subset led by My
+    // tasks, but approvals ("Waiting on you") flipped ONTO it (previously
+    // excluded) — see defaultLayout.ts's MEMBER array.
     await waitFor(() => expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(7));
 
     expect(apiSpies.homeSummary).toHaveBeenCalledTimes(1);
     expect(apiSpies.issuesList).toHaveBeenCalledTimes(1);
     expect(apiSpies.liveRunsForCompany).toHaveBeenCalledTimes(1);
-    // Discussions IS on the member board (Task 5 added it to both roles).
+    // Discussions IS on the member board (Task 5 [Plan 6] added it to both roles).
     expect(apiSpies.discussionsList).toHaveBeenCalledTimes(1);
-    // Budget/Waiting-on-you/Memory review aren't on the member board — their apis never fire.
+    // Plan 7 Task 5: approvals ("Waiting on you") is now on the member board
+    // too, so BOTH of its apis fire once each — this is the flip from the
+    // pre-Task-5 board, where approvals was founder-only.
+    expect(apiSpies.approvalsList).toHaveBeenCalledTimes(1);
+    expect(apiSpies.workQuestionsList).toHaveBeenCalledTimes(1);
+    // Budget/Memory review/Suggestions aren't (and never were) on the member
+    // board — their apis never fire.
     expect(apiSpies.dashboardSummary).not.toHaveBeenCalled();
-    expect(apiSpies.approvalsList).not.toHaveBeenCalled();
-    expect(apiSpies.workQuestionsList).not.toHaveBeenCalled();
     expect(apiSpies.memoryListPending).not.toHaveBeenCalled();
-    // team_member is not founder -> canAct is false -> the auto-detect effect
-    // never fires, so suggestionsApi.pending is a plain single fetch here
-    // (no detect-triggered refetch) — confirms the "2" above is specifically
-    // a founder-role characteristic, not a universal Suggestions behavior.
+    // Plan 7 Task 5: "suggestions" was ALSO curated off the member default
+    // (tray-only for both roles now), so — unlike the pre-Task-5 board, where
+    // it was a plain single fetch here — its api never fires at all.
     expect(apiSpies.suggestionsDetect).not.toHaveBeenCalled();
-    expect(apiSpies.suggestionsPending).toHaveBeenCalledTimes(1);
+    expect(apiSpies.suggestionsPending).not.toHaveBeenCalled();
     expect(apiSpies.layoutGet).toHaveBeenCalledTimes(1);
   });
 });
