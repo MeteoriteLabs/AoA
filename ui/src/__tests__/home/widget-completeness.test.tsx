@@ -14,6 +14,12 @@ import { WidgetErrorBoundary } from "../../components/home/WidgetErrorBoundary";
  * as the boundary's "This widget couldn't load" fallback instead of an
  * uncaught exception, giving a single, uniform assertion this loop can check
  * for every widget without needing widget-specific markup knowledge.
+ *
+ * Plan 5: widgets no longer self-hide (`return null`) on empty/loading/error
+ * data — the contract tightens from "null OR a titled shell" to "ALWAYS a
+ * titled shell" (data, empty state, error, or loading all render INSIDE
+ * WidgetShell now), so this loop additionally asserts the widget's heading is
+ * present, not just that it didn't throw.
  */
 const genericApiSpies = vi.hoisted(() => ({
   dashboardSummary: vi.fn(),
@@ -27,7 +33,13 @@ const genericApiSpies = vi.hoisted(() => ({
 }));
 
 vi.mock("../../context/CompanyContext", () => ({ useCompany: () => mockCompanyContext }));
-vi.mock("../../context/DialogContext", () => ({ useDialog: () => ({ openNewIssue: vi.fn() }) }));
+// Plan 5: ObjectivesWidget's empty state CTA reads openNewGoal from useDialog
+// — omitting it here wouldn't throw (the CTA button just silently fails to
+// render, since WidgetEmpty only renders its button when BOTH ctaLabel and
+// onCta are truthy), so it would slip past the "no throw" check below without
+// ever exercising the real opener. Both openers are mocked so every widget's
+// CTA (Objectives' "+ New goal", My tasks' "+ New task") gets a real handler.
+vi.mock("../../context/DialogContext", () => ({ useDialog: () => ({ openNewIssue: vi.fn(), openNewGoal: vi.fn() }) }));
 vi.mock("../../context/ToastContext", () => ({ useToast: () => ({ pushToast: vi.fn() }) }));
 vi.mock("../../lib/timeAgo", () => ({ timeAgo: () => "2m ago" }));
 
@@ -82,7 +94,7 @@ describe("widget completeness: every registered widget survives empty data", () 
   });
 
   for (const def of listWidgets()) {
-    it(`${def.key} (${def.title}) renders without throwing on empty data`, async () => {
+    it(`${def.key} (${def.title}) always renders a titled shell (never null) on empty data`, async () => {
       const Widget = def.Component;
       renderWithProviders(
         <WidgetErrorBoundary>
@@ -98,10 +110,14 @@ describe("widget completeness: every registered widget survives empty data", () 
       });
 
       // Never the boundary's fallback (which only renders after a caught
-      // throw) — every widget must produce either null or a safe shell.
+      // throw) — every widget must produce a safe shell.
       // Regex (not an exact string) so this can't silently stop matching on
       // a punctuation/whitespace tweak to WidgetErrorBoundary's copy.
       expect(screen.queryByText(/This widget couldn't load/)).not.toBeInTheDocument();
+
+      // Plan 5: never a blank tile — the widget's titled WidgetShell is
+      // always present, whatever data/loading/error state it settled into.
+      expect(screen.getByRole("heading", { level: 2, name: def.title })).toBeInTheDocument();
     });
   }
 
