@@ -10,9 +10,10 @@ test.describe("home widget board", () => {
     const company = await seedCompany(request, `E2E-HomeBoard-${Date.now()}`);
     await page.goto(`/${company.issuePrefix}/home`);
 
-    // A freshly-seeded company has no goals/activity/suggestions, so those widgets
-    // render nothing; assert the always-present header + quick actions. Widget
-    // content-parity is covered by ui/src/__tests__/Dashboard.test.tsx.
+    // A freshly-seeded company has no goals/activity, so those widgets self-hide,
+    // and Suggestions shows its "All caught up" empty state. We assert the
+    // always-present header + quick actions here; full widget content-parity and
+    // composition are covered by ui/src/__tests__/Dashboard.test.tsx and HomeBoard.test.tsx.
     await expect(page.getByText("+ New Task")).toBeVisible();
     await expect(page.getByRole("heading", { level: 1 })).toBeVisible(); // greeting
   });
