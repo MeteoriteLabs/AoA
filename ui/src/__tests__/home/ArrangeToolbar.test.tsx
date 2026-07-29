@@ -80,6 +80,41 @@ describe("ArrangeToolbar (Plan 7 Task 3: floating arrange-mode toolbar)", () => 
     expect(screen.getByRole("button", { name: "Reset" })).toBeDisabled();
   });
 
+  // Coordinator follow-up fix: an earlier version gated the toolbar's own
+  // MOUNT on editableNow, which took Done away entirely below lg / mid-save
+  // — stranding the founder with no way to exit edit mode. Done is now
+  // reachable at any breakpoint/save-state (disabled only while isSaving, to
+  // avoid a double-click); only Add widget/Reset mirror the tiles' own
+  // editableNow gate (disabled, not unmounted).
+  describe("editableNow gating (below lg / mid-save): Add widget and Reset disable, Done does not", () => {
+    it("disables Add widget and Reset below the lg breakpoint, while Done stays present and enabled", () => {
+      render(<ArrangeToolbar boardEdit={makeBoardEdit({ activeBreakpoint: "md" })} role="founder" />);
+
+      expect(screen.getByRole("button", { name: "Add widget" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Reset" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Done" })).toBeEnabled();
+    });
+
+    it("disables Add widget and Reset while a save is in flight, while Done stays present (just disabled to avoid a double-click)", () => {
+      render(<ArrangeToolbar boardEdit={makeBoardEdit({ isSaving: true })} role="founder" />);
+
+      expect(screen.getByRole("button", { name: "Add widget" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Reset" })).toBeDisabled();
+      // Still present — disabled for a different reason (see the "disables
+      // Done while a save is in flight" test above) than Add widget/Reset.
+      expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Done" })).toBeDisabled();
+    });
+
+    it("enables Add widget and Reset again once back at lg and not saving", () => {
+      render(<ArrangeToolbar boardEdit={makeBoardEdit({ activeBreakpoint: "lg", isSaving: false })} role="founder" />);
+
+      expect(screen.getByRole("button", { name: "Add widget" })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "Reset" })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "Done" })).toBeEnabled();
+    });
+  });
+
   describe("status states", () => {
     it("renders nothing extra when not dirty and not saving", () => {
       render(<ArrangeToolbar boardEdit={makeBoardEdit()} role="founder" />);

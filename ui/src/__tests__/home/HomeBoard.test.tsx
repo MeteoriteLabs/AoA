@@ -424,30 +424,60 @@ describe("HomeBoard", () => {
       homeBoardLayoutMock.isSaving = true;
       rerender(<HomeBoardHarness companyId="co-1" role="founder" />);
 
-      // Plan 7 Task 3: the "Saving…" status (like the rest of the floating
-      // ArrangeToolbar — see below) is gated on editableNow too, so it does
-      // NOT render here despite isSaving being true; ArrangeToolbar.test.tsx
-      // covers that status rendering directly (a fixture with isSaving:true
-      // passed straight as a prop, bypassing this mount-level gate).
-      expect(screen.queryByText("Saving…")).not.toBeInTheDocument();
+      // Follow-up fix: the floating ArrangeToolbar mounts on `editing` alone
+      // (not editableNow), so it — and its "Saving…" status and Done — stay
+      // reachable through the in-flight-save window. Only its Add
+      // widget/Reset controls mirror the tiles' own editableNow gate
+      // (disabled, not unmounted), same as the tiles' drag/resize/remove.
+      expect(screen.getByText("Saving…")).toBeInTheDocument();
       // Every mutating affordance is gone, even though editing is still true.
       expect(screen.queryAllByLabelText(/^Remove /)).toHaveLength(0);
-      expect(screen.queryByRole("button", { name: "Add widget" })).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Add widget" })).toBeDisabled();
       const gridItems = document.querySelectorAll(".react-grid-item");
       expect(gridItems.length).toBeGreaterThan(0);
       gridItems.forEach((el) => {
         expect(el.classList.contains("react-draggable")).toBe(false);
       });
-      // Plan 7 Task 3: the floating ArrangeToolbar (Done included) is gated
-      // on the SAME editableNow as the tiles' own drag/resize/remove/add
-      // affordances above, so it unmounts in lockstep with them during the
-      // in-flight-save window rather than staying visible-but-disabled — a
-      // failed save re-mounts it with the error + Retry (see "a failed save
-      // keeps the board in edit mode..." above). The pinned header's
-      // customize icon (which never had a "Done" state of its own — see
-      // HomeBoardControls) just stays a disabled inert icon throughout.
-      expect(screen.queryByRole("button", { name: "Done" })).not.toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Customize board" })).toBeDisabled();
+      // Done stays reachable (present) — disabled only to prevent a
+      // double-click on the already-in-flight save, never because it's
+      // meant to be unreachable (coordinator-flagged regression: an earlier
+      // version unmounted the whole toolbar here, taking Done with it).
+      expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Done" })).toBeDisabled();
+    });
+
+    // Coordinator follow-up fix: the ArrangeToolbar (and specifically Done)
+    // previously unmounted whenever `editableNow` was false — even just from
+    // narrowing the window below lg mid-edit, or during the brief isSaving
+    // window — stranding the founder with no way to exit edit mode short of
+    // widening the window back or navigating away. It mounts on `editing`
+    // alone now; only Add widget/Reset (not Done, not the toolbar's mount)
+    // mirror the tiles' own editableNow gate.
+    it("keeps the ArrangeToolbar — and Done — mounted whenever editing is true, even when editableNow is false (below lg, and mid-save)", async () => {
+      const { rerender } = renderWithProviders(<HomeBoardHarness companyId="co-1" role="founder" />);
+      expect(await screen.findByText("Ship it")).toBeInTheDocument();
+
+      const user = userEvent.setup();
+      await enterEditMode(user);
+      expect(screen.getByRole("button", { name: "Done" })).toBeEnabled();
+
+      // Below lg: editableNow is false (activeBreakpoint !== "lg"), but
+      // editing is still true.
+      containerWidthMock.width = 500;
+      rerender(<HomeBoardHarness companyId="co-1" role="founder" />);
+      await waitFor(() => expect(screen.queryByRole("group", { name: /^Budget/ })).not.toBeInTheDocument());
+      expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Done" })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "Add widget" })).toBeDisabled();
+
+      // Back to lg, then mid-save: editableNow is false again (isSaving),
+      // but editing is still true.
+      containerWidthMock.width = 1024;
+      homeBoardLayoutMock.isSaving = true;
+      rerender(<HomeBoardHarness companyId="co-1" role="founder" />);
+      expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Done" })).toBeDisabled(); // disabled to avoid a double-click, not gone
+      expect(screen.getByRole("button", { name: "Add widget" })).toBeDisabled();
     });
 
     it("switching companyId mid-edit discards the draft without saving", async () => {
@@ -560,13 +590,13 @@ describe("HomeBoard", () => {
       await waitFor(() => {
         expect(screen.queryByRole("group", { name: /^Budget/ })).not.toBeInTheDocument();
       });
-      // Editing is still on internally (the draft survives), but the
-      // floating ArrangeToolbar — Done included — is gated on the same
-      // editableNow as every mutating affordance (remove, add, keyboard), so
-      // it unmounts below lg right along with them (Plan 7 Task 3). The
-      // pinned header's customize icon stays a disabled inert icon (it never
-      // had a "Done" state of its own).
-      expect(screen.queryByRole("button", { name: "Done" })).not.toBeInTheDocument();
+      // Editing is still on internally (the draft survives). The floating
+      // ArrangeToolbar mounts on `editing` alone (follow-up fix), so Done
+      // stays reachable below lg — only the tiles' own affordances (remove,
+      // add, keyboard) and ArrangeToolbar's own Add widget/Reset controls
+      // (which mirror the tiles' editableNow gate) go inert.
+      expect(screen.getByRole("button", { name: "Done" })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "Add widget" })).toBeDisabled();
       expect(screen.getByRole("button", { name: "Customize board" })).toBeDisabled();
       expect(screen.queryAllByLabelText(/^Remove /)).toHaveLength(0);
     });
@@ -592,9 +622,9 @@ describe("HomeBoard", () => {
       await waitFor(() => {
         expect(screen.queryByRole("group", { name: /^Budget/ })).not.toBeInTheDocument();
       });
-      // The floating ArrangeToolbar (Done included) unmounts below lg too —
-      // same editableNow gate as the tiles' own affordances (Plan 7 Task 3).
-      expect(screen.queryByRole("button", { name: "Done" })).not.toBeInTheDocument();
+      // The floating ArrangeToolbar mounts on `editing` alone (follow-up
+      // fix), so Done stays reachable below lg too.
+      expect(screen.getByRole("button", { name: "Done" })).toBeEnabled();
       // Every tile is navigable again now that editableNow is false — nav
       // suppression is keyed on editableNow, not the raw `editing` flag.
       expect(screen.getAllByRole("link", { name: /^Open / }).length).toBe(10);

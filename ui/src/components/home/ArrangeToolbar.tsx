@@ -19,20 +19,41 @@ export interface ArrangeToolbarProps {
  * — inert while arranging — so the header never reflows/shifts the Create
  * button next to it (the founder complaint Plan 7 responds to).
  *
- * Mounted by `HomeBoard`, gated on its own `editableNow` (editing &&
- * activeBreakpoint==="lg" && !isSaving) — the exact same gate that already
- * freezes drag/resize/remove on the grid tiles, so this floating toolbar
- * unmounts in lockstep with them on company-switch / drop-below-lg /
- * isSaving. See HomeBoard's own comment on that gate for the full rationale
- * (in particular: this means the toolbar — Done included — briefly
- * disappears during the in-flight-save window, same as the tiles'
- * affordances; a failed save re-mounts it with the error + Retry).
+ * Mounted by `HomeBoard` whenever `editing` is true (see HomeBoard's own
+ * comment) — NOT gated on `editableNow`, so the toolbar (and Done) stay
+ * reachable at any breakpoint and during an in-flight save, mirroring how
+ * the pre-Plan-7 HomeBoardControls kept "Done" reachable whenever `editing`.
+ * Internally, though, `editableNow` (computed here from the same three
+ * boardEdit fields HomeBoard itself uses) still gates the mutating Add
+ * widget/Reset affordances exactly like it gates the grid tiles' own drag/
+ * resize/remove — DISABLED, not unmounted, below lg or mid-save. Done is
+ * deliberately NOT gated on editableNow: it's always enabled except while
+ * isSaving (disabled there only to prevent a double-click on an
+ * already-in-flight save, not because it's unreachable).
  *
  * `position: fixed` + a bottom offset keeps it clear of the board's last row.
  */
 export function ArrangeToolbar({ boardEdit, role }: ArrangeToolbarProps) {
-  const { lg, dirty, isSaving, isResetting, saveError, resetError, exitEdit, retrySave, addWidget, resetBoard } =
-    boardEdit;
+  const {
+    lg,
+    editing,
+    activeBreakpoint,
+    dirty,
+    isSaving,
+    isResetting,
+    saveError,
+    resetError,
+    exitEdit,
+    retrySave,
+    addWidget,
+    resetBoard,
+  } = boardEdit;
+
+  // Mirrors HomeBoard's own gate exactly (Task D1/P2) — Add widget/Reset are
+  // mutating edit affordances, same as the tiles' drag/resize/remove, so
+  // they're disabled (not removed) below lg or during an in-flight save.
+  // Done is intentionally excluded from this — see the doc comment above.
+  const editableNow = editing && activeBreakpoint === "lg" && !isSaving;
 
   return (
     <div
@@ -42,7 +63,9 @@ export function ArrangeToolbar({ boardEdit, role }: ArrangeToolbarProps) {
     >
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button type="button" variant="outline" size="sm">
+          {/* Mutating affordance — disabled (not unmounted) below lg or
+              mid-save, mirroring the tiles' own drag/resize/remove gate. */}
+          <Button type="button" variant="outline" size="sm" disabled={!editableNow}>
             <Plus className="h-4 w-4" aria-hidden="true" />
             Add widget
           </Button>
@@ -56,8 +79,9 @@ export function ArrangeToolbar({ boardEdit, role }: ArrangeToolbarProps) {
           customize dropdown's view-mode "Reset to default" (which DOES
           confirm; see HomeBoardControls), this button is only reachable
           while already mid-arrange, matching the retired AddWidgetTray's own
-          unconfirmed Reset row. */}
-      <Button type="button" variant="outline" size="sm" onClick={resetBoard} disabled={isResetting}>
+          unconfirmed Reset row. Same editableNow gate as Add widget above
+          (plus its own isResetting guard, unaffected by that gate). */}
+      <Button type="button" variant="outline" size="sm" onClick={resetBoard} disabled={!editableNow || isResetting}>
         <RotateCcw className="h-4 w-4" aria-hidden="true" />
         Reset
       </Button>
@@ -85,6 +109,11 @@ export function ArrangeToolbar({ boardEdit, role }: ArrangeToolbarProps) {
         <span className="text-sm text-muted-foreground">Unsaved changes</span>
       )}
 
+      {/* Reachable at ANY breakpoint/save-state (not gated on editableNow —
+          see this component's own doc comment): disabled only while
+          isSaving, purely to prevent a double-click on an already-in-flight
+          save, never because the affordance itself is meant to be
+          unreachable. */}
       <Button type="button" size="sm" disabled={isSaving} onClick={exitEdit}>
         Done
       </Button>

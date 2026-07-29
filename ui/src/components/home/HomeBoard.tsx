@@ -78,10 +78,9 @@ export function HomeBoard({
   // edited). `editing` alone isn't enough to gate drag/resize/remove/
   // keyboard: if the viewport shrinks below 1024px mid-edit-session
   // (activeBreakpoint flips away from "lg"), every mutating affordance
-  // freezes until it's back at lg. Widening the window back to lg (or
-  // exiting via navigation, which flushes a dirty draft best-effort — see
-  // useBoardEdit's unmount handler) are the ways out while below lg; see the
-  // ArrangeToolbar note below for why "Done" itself isn't reachable either.
+  // freezes until it's back at lg — the user can still hit "Done" (in the
+  // floating ArrangeToolbar) to exit/save, they just can't keep
+  // dragging/resizing/adding/nudging below desktop width.
   //
   // P2 fix: also require !isSaving. Without this, drag/resize/remove/
   // keyboard stayed live during the "Saving…" window between clicking Done
@@ -90,11 +89,16 @@ export function HomeBoard({
   // instant the save resolved. Freezing every mutating affordance for that
   // (usually brief) window closes the gap.
   //
-  // Plan 7 Task 3: this is now ALSO the gate for the floating ArrangeToolbar
-  // (Add widget/Reset/status/Done) below — so unlike before this plan, Done
-  // is NOT reachable below lg or during isSaving; the whole toolbar unmounts
-  // right along with the tiles' own affordances rather than staying visible-
-  // but-disabled (see ArrangeToolbar's own doc comment).
+  // Plan 7 Task 3 follow-up fix: this gate is deliberately NOT used to
+  // decide whether the floating ArrangeToolbar mounts (see below) — an
+  // earlier version of this plan gated the toolbar's mount on editableNow
+  // too, which meant narrowing the window below lg mid-edit, or the brief
+  // isSaving window, made the ONLY "Done"/exit affordance vanish entirely
+  // (the old pre-Plan-7 HomeBoardControls kept "Done" reachable whenever
+  // `editing`, regardless of breakpoint/isSaving — this restores that
+  // guarantee). ArrangeToolbar's own Add widget/Reset controls still mirror
+  // this exact editableNow gate (disabled, not unmounted) — only Done and
+  // the toolbar's own mount are keyed on `editing` alone.
   const editableNow = editing && activeBreakpoint === "lg" && !isSaving;
 
   const layouts = {
@@ -240,14 +244,22 @@ export function HomeBoard({
         )}
       </div>
 
-      {/* Plan 7 Task 3: the floating arrange-mode toolbar (Add widget/Reset/
-          status/Done) — gated on the exact same `editableNow` that already
-          freezes drag/resize/remove on the tiles above, so it mounts/
-          unmounts in lockstep with them (company-switch, drop-below-lg,
-          isSaving). Mounted here (not Dashboard) so the four
-          HomeBoard.*.test.tsx harnesses — which render HomeBoardControls +
-          HomeBoard with no Dashboard — can still reach Done. */}
-      {editableNow && <ArrangeToolbar boardEdit={boardEdit} role={role} />}
+      {/* Plan 7 Task 3 (follow-up fix): the floating arrange-mode toolbar
+          (Add widget/Reset/status/Done) mounts on `editing` alone — NOT
+          `editableNow`. Gating the mount on editableNow (as an earlier
+          version of this did) meant narrowing the window below lg mid-edit,
+          or the brief isSaving window, unmounted the toolbar entirely —
+          taking the only "Done"/exit affordance with it and stranding the
+          founder with no way out short of widening the window back or
+          navigating away. `editing` alone keeps the toolbar (and Done)
+          reachable at any breakpoint/save-state, exactly like the pre-Plan-7
+          HomeBoardControls did; ArrangeToolbar's own Add widget/Reset
+          controls still mirror the tiles' editableNow gate internally
+          (disabled, not unmounted — see ArrangeToolbar's own doc comment).
+          Mounted here (not Dashboard) so the four HomeBoard.*.test.tsx
+          harnesses — which render HomeBoardControls + HomeBoard with no
+          Dashboard — can still reach Done. */}
+      {editing && <ArrangeToolbar boardEdit={boardEdit} role={role} />}
     </div>
   );
 }
