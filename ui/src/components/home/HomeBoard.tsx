@@ -56,6 +56,7 @@ export function HomeBoard({
   const {
     lg,
     editing,
+    isSaving,
     activeBreakpoint,
     announcement,
     removeWidget,
@@ -75,7 +76,15 @@ export function HomeBoard({
   // freezes until it's back at lg — the user can still hit "Done" to
   // exit/save (see HomeBoardControls), they just can't keep
   // dragging/resizing/adding/nudging below desktop width.
-  const editableNow = editing && activeBreakpoint === "lg";
+  //
+  // P2 fix: also require !isSaving. Without this, drag/resize/remove/
+  // keyboard stayed live during the "Saving…" window between clicking Done
+  // and the mutation settling; attemptSave's `.then` does `setDraft(null)`
+  // on success, so any edit made in that window was silently discarded the
+  // instant the save resolved. Freezing every mutating affordance for that
+  // (usually brief) window closes the gap; Done itself stays visible
+  // (disabled) so the user can see something is happening.
+  const editableNow = editing && activeBreakpoint === "lg" && !isSaving;
 
   const layouts = {
     lg,
@@ -170,7 +179,14 @@ export function HomeBoard({
                       widget that errored for one company recovers when you change
                       companies. */}
                   <WidgetErrorBoundary key={`${item.i}-${companyId}`}>
-                    <Widget companyId={companyId} role={role} editing={editing} size={{ w: item.w, h: item.h }} />
+                    {/* P2 fix: editableNow, not editing — WidgetShell suppresses
+                        header navigation whenever `editing` is truthy, but below
+                        the lg breakpoint (or while isSaving) editableNow is false
+                        and every mutating affordance (drag/resize/remove/
+                        keyboard) is already disabled. Passing bare `editing`
+                        left the tile neither navigable (nav suppressed) nor
+                        editable (affordances gated on editableNow) — inert. */}
+                    <Widget companyId={companyId} role={role} editing={editableNow} size={{ w: item.w, h: item.h }} />
                   </WidgetErrorBoundary>
                 </div>
               );

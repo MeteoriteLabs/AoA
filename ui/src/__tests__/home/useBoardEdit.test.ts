@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
+import { StrictMode, createElement } from "react";
+import type { ReactNode } from "react";
 import type { HomeBoardLayoutItem } from "@armyofagents/shared";
 
 // Stable mock fns (never reassigned — only reconfigured via
@@ -14,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   isResetting: false,
   saveAsync: vi.fn(),
   reset: vi.fn(),
+  resetError: null as unknown,
 }));
 
 vi.mock("../../hooks/useHomeBoardLayout", () => ({
@@ -30,12 +33,42 @@ vi.mock("../../hooks/useHomeBoardLayout", () => ({
     reset: mocks.reset,
     resetAsync: vi.fn(),
     isResetting: mocks.isResetting,
-    resetError: null,
+    resetError: mocks.resetError,
   }),
 }));
 
+// P2 (StrictMode purity, moveWidget/cycleWidgetSize): wraps the real
+// gridLayout implementation with call-counting spies for moveTileKeyboard/
+// cycleTileSize — the two functions that used to run INSIDE a
+// setDraft(prev => ...) functional updater alongside setAnnouncement. React
+// Strict Mode double-invokes updater functions to catch impurities, so
+// before the fix these ran twice per real keyboard move/resize under
+// StrictMode; after the fix they run in the plain callback body (setDraft
+// receives a plain value, not a function), so StrictMode has no updater to
+// double-invoke and they run exactly once. `importOriginal` preserves every
+// other export (buildDefaultLg etc., used directly by tests below) untouched.
+const gridLayoutSpies = vi.hoisted(() => ({
+  moveTileKeyboard: vi.fn(),
+  cycleTileSize: vi.fn(),
+}));
+vi.mock("../../components/home/gridLayout", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../components/home/gridLayout")>();
+  gridLayoutSpies.moveTileKeyboard.mockImplementation(actual.moveTileKeyboard);
+  gridLayoutSpies.cycleTileSize.mockImplementation(actual.cycleTileSize);
+  return {
+    ...actual,
+    moveTileKeyboard: gridLayoutSpies.moveTileKeyboard,
+    cycleTileSize: gridLayoutSpies.cycleTileSize,
+  };
+});
+
 import { useBoardEdit, layoutsEqual } from "../../components/home/useBoardEdit";
 import { buildDefaultLg } from "../../components/home/gridLayout";
+
+/** Wraps renderHook's tree in a real React.StrictMode, for tests that need to
+ * observe StrictMode's double-invoke of setState updater functions. */
+const strictModeWrapper = ({ children }: { children?: ReactNode }) =>
+  createElement(StrictMode, null, children);
 
 const COMPANY_A = "11111111-1111-1111-1111-111111111111";
 const COMPANY_B = "22222222-2222-2222-2222-222222222222";
@@ -80,6 +113,9 @@ describe("useBoardEdit", () => {
     mocks.isResetting = false;
     mocks.saveAsync.mockReset().mockResolvedValue({ layout: [], schemaVersion: 1 });
     mocks.reset.mockReset();
+    mocks.resetError = null;
+    gridLayoutSpies.moveTileKeyboard.mockClear();
+    gridLayoutSpies.cycleTileSize.mockClear();
   });
 
   it("is not editing by default and renders the computed (role-default) lg", () => {
@@ -505,6 +541,39 @@ describe("useBoardEdit", () => {
       expect(mocks.reset).not.toHaveBeenCalled();
       expect(result.current.editing).toBe(true); // still editing — reset was a no-op, not a crash
     });
+
+    // [P2] Reset-vs-save race: attemptSave used to guard only `isSaving`, not
+    // `isResetting` — a Reset (DELETE) in flight followed by an edit + Done
+    // would fire a concurrent PATCH against the same layout row, racing the
+    // delete non-deterministically. This is the OTHER half of that guard
+    // (resetBoard's own isSaving/isResetting guard is already covered above
+    // and in "resetBoard also no-ops...").
+    it("attemptSave (exitEdit/retrySave) also no-ops while a reset is in flight (isResetting) — no concurrent PATCH during a DELETE", async () => {
+      const { result, rerender } = renderHook(() => useBoardEdit(COMPANY_A, "founder"));
+      act(() => result.current.startEdit());
+      act(() => result.current.removeWidget("budget"));
+      expect(result.current.dirty).toBe(true);
+      const draftWhileResetting = result.current.lg;
+
+      // Simulate a reset now in flight (e.g. triggered moments earlier from
+      // the Add-widget tray) while this edit session is still dirty.
+      mocks.isResetting = true;
+      rerender();
+
+      await act(async () => {
+        result.current.exitEdit();
+      });
+      expect(mocks.saveAsync).not.toHaveBeenCalled();
+      expect(result.current.editing).toBe(true); // exit was swallowed, not applied
+      expect(result.current.dirty).toBe(true);
+      expect(result.current.lg).toEqual(draftWhileResetting); // draft untouched
+
+      // retrySave is the exact same guarded attemptSave.
+      await act(async () => {
+        result.current.retrySave();
+      });
+      expect(mocks.saveAsync).not.toHaveBeenCalled();
+    });
   });
 
   describe("resetBoard", () => {
@@ -536,6 +605,126 @@ describe("useBoardEdit", () => {
 
       expect(mocks.saveAsync).not.toHaveBeenCalled();
       expect(result.current.editing).toBe(false);
+    });
+  });
+
+  // [P2] Reset failure was silent: useBoardEdit never threaded
+  // useHomeBoardLayout's `resetError` through at all, so HomeBoardControls
+  // had nothing to render on a failed Reset (only saveError was ever
+  // surfaced). This just proves the wiring at the hook level; HomeBoard.
+  // test.tsx covers the rendered "Couldn't reset" + Retry affordance.
+  describe("resetError (P2 — reset failure was silently dropped)", () => {
+    it("is null by default", () => {
+      const { result } = renderHook(() => useBoardEdit(COMPANY_A, "founder"));
+      expect(result.current.resetError).toBeFalsy();
+    });
+
+    it("exposes the underlying reset mutation's error", () => {
+      mocks.resetError = new Error("delete failed");
+      const { result } = renderHook(() => useBoardEdit(COMPANY_A, "founder"));
+      expect(result.current.resetError).toBeTruthy();
+    });
+  });
+
+  // [P2] Dirty draft lost on navigate-away: Home's save-on-exit discipline
+  // only ever fires from Done (attemptSave) — there was no flush at all if
+  // the user navigated away from Home mid-edit with unsaved changes (a route
+  // change unmounts Dashboard, and useBoardEdit with it). The fix is a
+  // best-effort, fire-and-forget saveAsync on unmount while editing && dirty.
+  describe("unmount-while-dirty flush (P2 — no lost edits on navigate-away)", () => {
+    it("fires a best-effort save when unmounting while editing with a dirty draft", () => {
+      const { result, unmount } = renderHook(() => useBoardEdit(COMPANY_A, "founder"));
+      act(() => result.current.startEdit());
+      act(() => result.current.removeWidget("budget"));
+      expect(result.current.dirty).toBe(true);
+      const draftAtUnmount = result.current.lg;
+
+      unmount();
+
+      expect(mocks.saveAsync).toHaveBeenCalledTimes(1);
+      const [savedLayout] = mocks.saveAsync.mock.calls[0]!;
+      expect(savedLayout).toEqual(draftAtUnmount);
+    });
+
+    it("clamps disallowed sizes in the unmount flush too (same defense-in-depth as attemptSave)", () => {
+      const { result, unmount } = renderHook(() => useBoardEdit(COMPANY_A, "founder"));
+      act(() => result.current.startEdit());
+      const baseline = result.current.lg;
+      act(() => {
+        result.current.onLayoutChange([], { lg: baseline }); // consume the init echo
+      });
+      const bogusLayout = baseline.map((item) =>
+        item.i === "agents-now" ? { ...item, w: 2, h: 2 } : item,
+      );
+      const newItem = bogusLayout.find((item) => item.i === "agents-now")!;
+      act(() => {
+        // onResizeStop alone (no follow-up onLayoutChange) so the draft's
+        // OTHER items stay whatever onResizeStop leaves them as — not
+        // exercised further here, this test only cares about the resized
+        // item's own clamp reaching the unmount flush.
+        result.current.onResizeStop(bogusLayout, null, newItem, null, new Event("mouseup"), null);
+      });
+
+      unmount();
+
+      expect(mocks.saveAsync).toHaveBeenCalledTimes(1);
+      const [savedLayout] = mocks.saveAsync.mock.calls[0]! as [HomeBoardLayoutItem[]];
+      const savedAgentsNow = savedLayout.find((i) => i.i === "agents-now")!;
+      expect({ w: savedAgentsNow.w, h: savedAgentsNow.h }).toEqual({ w: 2, h: 1 });
+    });
+
+    it("does not save on unmount when not editing", () => {
+      const { unmount } = renderHook(() => useBoardEdit(COMPANY_A, "founder"));
+      unmount();
+      expect(mocks.saveAsync).not.toHaveBeenCalled();
+    });
+
+    it("does not save on unmount when editing but the draft is clean (not dirty)", () => {
+      const { result, unmount } = renderHook(() => useBoardEdit(COMPANY_A, "founder"));
+      act(() => result.current.startEdit());
+      expect(result.current.dirty).toBe(false);
+
+      unmount();
+
+      expect(mocks.saveAsync).not.toHaveBeenCalled();
+    });
+  });
+
+  // [P2] setAnnouncement was called from INSIDE moveWidget/cycleWidgetSize's
+  // setDraft(prev => ...) functional updater — an impure side effect. React
+  // Strict Mode double-invokes updater functions specifically to catch this
+  // class of bug. The fix moves the layout computation out of the updater
+  // (reads `draft` directly, calls setDraft with a plain value) so there's no
+  // updater slot left for StrictMode to double-invoke. Proven here by
+  // spying on the pure helper each one delegates to (moveTileKeyboard /
+  // cycleTileSize) — before the fix, StrictMode ran it twice per call
+  // (it lived inside the updater); after the fix, exactly once (it runs in
+  // the plain callback body).
+  describe("moveWidget/cycleWidgetSize keep setDraft updaters pure (P2 — StrictMode double-invoke)", () => {
+    it("moveTileKeyboard runs exactly once per moveWidget call under real StrictMode", () => {
+      const { result } = renderHook(() => useBoardEdit(COMPANY_A, "founder"), {
+        wrapper: strictModeWrapper,
+      });
+      act(() => result.current.startEdit());
+      gridLayoutSpies.moveTileKeyboard.mockClear();
+
+      act(() => result.current.moveWidget("budget", 1, 0));
+
+      expect(gridLayoutSpies.moveTileKeyboard).toHaveBeenCalledTimes(1);
+      expect(result.current.announcement).toMatch(/Budget/);
+    });
+
+    it("cycleTileSize runs exactly once per cycleWidgetSize call under real StrictMode", () => {
+      const { result } = renderHook(() => useBoardEdit(COMPANY_A, "founder"), {
+        wrapper: strictModeWrapper,
+      });
+      act(() => result.current.startEdit());
+      gridLayoutSpies.cycleTileSize.mockClear();
+
+      act(() => result.current.cycleWidgetSize("agents-now"));
+
+      expect(gridLayoutSpies.cycleTileSize).toHaveBeenCalledTimes(1);
+      expect(result.current.announcement).toMatch(/Agents working now/);
     });
   });
 

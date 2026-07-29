@@ -30,6 +30,7 @@ export function HomeBoardControls({ boardEdit }: HomeBoardControlsProps) {
     isSaving,
     isResetting,
     saveError,
+    resetError,
     activeBreakpoint,
     startEdit,
     exitEdit,
@@ -42,7 +43,14 @@ export function HomeBoardControls({ boardEdit }: HomeBoardControlsProps) {
   // Task D1: Add widget/Reset are mutating edit affordances too — hidden
   // below the lg breakpoint even mid-edit-session, exactly like HomeBoard's
   // drag/resize/remove/keyboard gating (see HomeBoard's `editableNow`).
-  const editableNow = editing && activeBreakpoint === "lg";
+  //
+  // P2 fix: also require !isSaving, mirroring HomeBoard's own editableNow —
+  // addWidget has no isSaving guard of its own (unlike resetBoard, which
+  // already no-ops on isSaving), so leaving this tray reachable during the
+  // "Saving…" window let an add silently get discarded the instant the save
+  // resolved (attemptSave's `.then` does `setDraft(null)`), the same bug as
+  // HomeBoard's drag/resize/remove, just via this affordance instead.
+  const editableNow = editing && activeBreakpoint === "lg" && !isSaving;
 
   // Never let a stale tray-open flag resurface later (e.g. after a company
   // switch discards the current edit session mid-tray, or the viewport
@@ -61,10 +69,22 @@ export function HomeBoardControls({ boardEdit }: HomeBoardControlsProps) {
           </button>
         </span>
       )}
-      {editing && saveError == null && isSaving && (
+      {/* P2 fix: resetError was silently dropped — only saveError was ever
+          rendered, so a failed Reset (the DELETE mutation) left the founder
+          with no feedback at all. Mirrors saveError's own Retry affordance,
+          re-invoking resetBoard (which itself guards isSaving/isResetting). */}
+      {editing && saveError == null && resetError != null && (
+        <span className="text-sm text-destructive">
+          Couldn't reset your board.{" "}
+          <button type="button" onClick={resetBoard} className="underline">
+            Retry
+          </button>
+        </span>
+      )}
+      {editing && saveError == null && resetError == null && isSaving && (
         <span className="text-sm text-muted-foreground">Saving…</span>
       )}
-      {editing && saveError == null && !isSaving && dirty && (
+      {editing && saveError == null && resetError == null && !isSaving && dirty && (
         <span className="text-sm text-muted-foreground">Unsaved changes</span>
       )}
       {editableNow && (

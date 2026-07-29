@@ -43,6 +43,7 @@ const homeBoardLayoutMock = vi.hoisted(() => ({
   isResetting: false,
   saveAsync: vi.fn(),
   reset: vi.fn(),
+  resetError: null as unknown,
 }));
 vi.mock("../../hooks/useHomeBoardLayout", () => ({
   useHomeBoardLayout: () => ({
@@ -58,7 +59,7 @@ vi.mock("../../hooks/useHomeBoardLayout", () => ({
     reset: homeBoardLayoutMock.reset,
     resetAsync: vi.fn(),
     isResetting: homeBoardLayoutMock.isResetting,
-    resetError: null,
+    resetError: homeBoardLayoutMock.resetError,
   }),
 }));
 
@@ -121,6 +122,7 @@ describe("HomeBoard", () => {
     homeBoardLayoutMock.isResetting = false;
     homeBoardLayoutMock.saveAsync.mockReset().mockResolvedValue({ layout: [], schemaVersion: 1 });
     homeBoardLayoutMock.reset.mockReset();
+    homeBoardLayoutMock.resetError = null;
     containerWidthMock.width = 1024;
   });
 
@@ -337,6 +339,40 @@ describe("HomeBoard", () => {
       await waitFor(() => expect(screen.getByRole("button", { name: "Edit board" })).toBeInTheDocument());
     });
 
+    // [P2] Edits during an in-flight save were silently discarded: editableNow
+    // only gated on editing+lg, so drag/resize/remove/add-widget stayed live
+    // during "Saving…"; attemptSave's `.then` does `setDraft(null)` on
+    // success, dropping anything changed in that window. Fixed by also
+    // requiring !isSaving.
+    it("disables drag/resize/remove/add-widget while a save is in flight, even though editing is still true (P2: no silent mid-save discard)", async () => {
+      const { rerender } = renderWithProviders(<HomeBoardHarness companyId="co-1" role="founder" />);
+      expect(await screen.findByText("Ship it")).toBeInTheDocument();
+
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Edit board" }));
+      expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(8);
+      expect(screen.getByRole("button", { name: "Add widget" })).toBeInTheDocument();
+
+      // Simulate the window between clicking Done and the save settling:
+      // `editing` is still true (attemptSave hasn't resolved yet) but the
+      // underlying mutation is now pending.
+      homeBoardLayoutMock.isSaving = true;
+      rerender(<HomeBoardHarness companyId="co-1" role="founder" />);
+
+      expect(screen.getByText("Saving…")).toBeInTheDocument();
+      // Every mutating affordance is gone, even though editing is still true.
+      expect(screen.queryAllByLabelText(/^Remove /)).toHaveLength(0);
+      expect(screen.queryByRole("button", { name: "Add widget" })).not.toBeInTheDocument();
+      const gridItems = document.querySelectorAll(".react-grid-item");
+      expect(gridItems.length).toBeGreaterThan(0);
+      gridItems.forEach((el) => {
+        expect(el.classList.contains("react-draggable")).toBe(false);
+      });
+      // Done itself stays visible (disabled — pre-existing behavior) so the
+      // user can see something is happening.
+      expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
+    });
+
     it("switching companyId mid-edit discards the draft without saving", async () => {
       const { rerender } = renderWithProviders(<HomeBoardHarness companyId="co-1" role="founder" />);
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
@@ -449,6 +485,33 @@ describe("HomeBoard", () => {
       expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
       expect(screen.queryAllByLabelText(/^Remove /)).toHaveLength(0);
     });
+
+    // [P2] Below-lg edit left tiles inert: HomeBoard passed the raw `editing`
+    // flag to each Widget/WidgetShell, which suppresses header navigation
+    // whenever `editing` is truthy — regardless of activeBreakpoint. Below
+    // lg, editableNow is false (drag/remove/keyboard are already disabled,
+    // per the test above), so a tile was neither navigable (nav suppressed)
+    // nor editable: a dead end. Fixed by passing `editableNow` instead.
+    it("stays navigable (header links) below the lg breakpoint mid-edit, even though drag/remove/keyboard are disabled (P2: was inert)", async () => {
+      const { rerender } = renderWithProviders(<HomeBoardHarness companyId="co-1" role="founder" />);
+      expect(await screen.findByText("Ship it")).toBeInTheDocument();
+
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Edit board" }));
+      // While editing at lg, header nav is suppressed in favor of drag/select.
+      expect(screen.queryAllByRole("link", { name: /^Open / })).toHaveLength(0);
+
+      containerWidthMock.width = 500;
+      rerender(<HomeBoardHarness companyId="co-1" role="founder" />);
+
+      await waitFor(() => {
+        expect(screen.queryByRole("group", { name: /^Budget/ })).not.toBeInTheDocument();
+      });
+      expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
+      // Every tile is navigable again now that editableNow is false — nav
+      // suppression is keyed on editableNow, not the raw `editing` flag.
+      expect(screen.getAllByRole("link", { name: /^Open / }).length).toBe(8);
+    });
   });
 
   describe("add-widget tray (Task C2)", () => {
@@ -507,6 +570,28 @@ describe("HomeBoard", () => {
       // No delete-then-upsert race: exiting right after a reset must not re-save.
       await waitFor(() => expect(screen.getByRole("button", { name: "Edit board" })).toBeInTheDocument());
       expect(homeBoardLayoutMock.saveAsync).not.toHaveBeenCalled();
+    });
+
+    // [P2] Reset failure was silent: only saveError was ever rendered, so a
+    // failed Reset (the DELETE mutation) left the founder with no feedback
+    // at all and no way to retry from the UI.
+    it("surfaces a reset failure with a Retry affordance (P2: resetError was previously never rendered)", async () => {
+      renderWithProviders(<HomeBoardHarness companyId="co-1" role="founder" />);
+      expect(await screen.findByText("Ship it")).toBeInTheDocument();
+
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Edit board" }));
+      await user.click(screen.getByRole("button", { name: "Add widget" }));
+
+      homeBoardLayoutMock.resetError = new Error("delete failed");
+      await user.click(screen.getByRole("button", { name: /^reset/i }));
+
+      expect(await screen.findByText(/Couldn't reset/i)).toBeInTheDocument();
+      expect(homeBoardLayoutMock.reset).toHaveBeenCalledTimes(1);
+
+      // Retry re-invokes resetBoard (a second reset attempt).
+      await user.click(screen.getByRole("button", { name: "Retry" }));
+      expect(homeBoardLayoutMock.reset).toHaveBeenCalledTimes(2);
     });
   });
 });

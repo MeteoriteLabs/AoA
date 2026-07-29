@@ -75,6 +75,8 @@ export interface UseBoardEditResult {
   isSaving: boolean;
   isResetting: boolean;
   saveError: unknown;
+  /** Surfaces a failed Reset (the underlying DELETE mutation's error) — previously silently dropped. */
+  resetError: unknown;
   /**
    * The RGL breakpoint currently in effect ("lg" | "md" | "sm"). Task D1:
    * editing is enforced lg-only — callers (HomeBoard/HomeBoardControls) gate
@@ -130,22 +132,28 @@ export interface UseBoardEditResult {
  *     result (sourceLg) is only adopted (resyncing draft+baseline) while
  *     editing and NOT dirty, since there's nothing to lose in that case.
  *  7. exitEdit calls save(draft) immediately when dirty (not debounced).
- *     While a save is in flight, re-entry/exit/reset are no-ops. On failure,
- *     the draft + dirty state are kept and saveError is exposed with a
- *     retry. On success, editing clears and the draft resets to null (the
- *     persisted/query-derived lg takes back over). When NOT dirty, exit just
- *     closes edit mode without saving — this is what makes Reset (Task C2)
- *     safe: resetBoard marks the draft clean, so the exit that follows it
- *     does not re-upsert the layout it just asked the server to delete.
+ *     While a save OR a reset is in flight, re-entry/exit/reset are no-ops
+ *     (attemptSave bails on isSaving OR isResetting — a reset's DELETE must
+ *     never race a concurrent save PATCH; resetBoard bails on isSaving OR
+ *     isResetting symmetrically). On failure, the draft + dirty state are
+ *     kept and saveError is exposed with a retry; resetError is exposed the
+ *     same way for a failed Reset. On success, editing clears and the draft
+ *     resets to null (the persisted/query-derived lg takes back over). When
+ *     NOT dirty, exit just closes edit mode without saving — this is what
+ *     makes Reset (Task C2) safe: resetBoard marks the draft clean, so the
+ *     exit that follows it does not re-upsert the layout it just asked the
+ *     server to delete.
  *  8. The draft is scoped to companyId: if companyId changes while a draft
  *     exists, it's discarded unconditionally (editing/draft/baseline all
  *     reset) — a stale draft must never be saved against a new company.
  *  9. dirty = draft differs (by value) from the baseline.
  *  10. Every {w,h} written into the draft — from onLayoutChange (RGL's raw
- *      post-resize emit) or into a save payload (attemptSave) — is clamped
- *      to nearestAllowedSize first, so the draft can never hold a footprint
- *      the server validator rejects regardless of which path produced it
- *      (see clampToAllowedSizes).
+ *      post-resize emit) or into a save payload (attemptSave, the unmount
+ *      flush) — is clamped to nearestAllowedSize first, so the draft can
+ *      never hold a footprint the server validator rejects regardless of
+ *      which path produced it (see clampToAllowedSizes). Unmounting while
+ *      editing && dirty (e.g. navigating away from Home) fires a best-effort
+ *      fire-and-forget save of the draft.
  */
 export function useBoardEdit(
   companyId: string | null | undefined,
@@ -157,6 +165,7 @@ export function useBoardEdit(
     isSaving,
     reset: resetMutation,
     isResetting,
+    resetError,
   } = useHomeBoardLayout(companyId);
 
   const sourceLg = useMemo(
@@ -209,6 +218,40 @@ export function useBoardEdit(
     baselineRef.current = sourceLg;
   }, [editing, dirty, sourceLg]);
 
+  // Rule 10 — unmount-while-dirty flush: navigating away from Home (route
+  // change unmounts Dashboard, and this hook with it) is currently the only
+  // way to lose a dirty draft with no save attempt at all — Done/exitEdit is
+  // the sole other save trigger. Best-effort, not a replacement for that
+  // discipline: no beforeunload/route-guard prompt, just a fire-and-forget
+  // saveAsync so a stray navigation doesn't silently discard the edit. Refs
+  // (kept fresh every render via the effect below, not closed over) so the
+  // CLEANUP — which fires exactly once, on true unmount, since its own
+  // effect has an empty dependency array — reads the LATEST editing/dirty/
+  // draft/saveAsync, not whatever was current when this effect first ran.
+  const editingRef = useRef(editing);
+  const dirtyRef = useRef(dirty);
+  const draftRef = useRef(draft);
+  const saveAsyncRef = useRef(saveAsync);
+  useEffect(() => {
+    editingRef.current = editing;
+    dirtyRef.current = dirty;
+    draftRef.current = draft;
+    saveAsyncRef.current = saveAsync;
+  });
+
+  useEffect(() => {
+    return () => {
+      if (editingRef.current && dirtyRef.current && draftRef.current) {
+        // The mutation lives on the persistent QueryClient (see
+        // useHomeBoardLayout) and can complete after this component has
+        // unmounted — there's nothing left mounted to update on success or
+        // failure, so this deliberately doesn't chain more than swallowing a
+        // rejection (an unmounted Home can't show saveError or offer Retry).
+        saveAsyncRef.current(clampToAllowedSizes(draftRef.current)).catch(() => {});
+      }
+    };
+  }, []);
+
   const startEdit = useCallback(() => {
     if (isSaving) return; // rule 7 — no re-entry while a save is in flight
     setDraft(sourceLg);
@@ -221,6 +264,12 @@ export function useBoardEdit(
 
   const attemptSave = useCallback(() => {
     if (isSaving) return;
+    // P2 fix (reset-vs-save race): a Reset (DELETE) may still be in flight —
+    // saving now would fire a concurrent PATCH against the same layout row,
+    // racing the delete non-deterministically. Bail out; the draft/dirty
+    // state is untouched, so a later exit (once the reset settles) can
+    // still flush it correctly.
+    if (isResetting) return;
     if (!editing) return;
     if (!draft || !dirty) {
       // Nothing to persist — either there's no draft, or it matches the
@@ -245,7 +294,7 @@ export function useBoardEdit(
       .catch((err: unknown) => {
         setSaveError(err);
       });
-  }, [dirty, draft, editing, isSaving, saveAsync]);
+  }, [dirty, draft, editing, isResetting, isSaving, saveAsync]);
 
   const exitEdit = useCallback(() => attemptSave(), [attemptSave]);
   const retrySave = useCallback(() => attemptSave(), [attemptSave]);
@@ -336,22 +385,29 @@ export function useBoardEdit(
   // independently unit-tested) and only sets an announcement when something
   // actually changed — a move blocked at bounds stays silent rather than
   // announcing a no-op.
+  // P2 fix: neither of these calls setDraft with a functional updater
+  // anymore — both read `draft` directly (already a dependency of this
+  // callback) to compute `next` in a local variable, THEN call setDraft(next)
+  // and setAnnouncement(...) as separate, sequential statements. Previously
+  // setAnnouncement was called from INSIDE the setDraft(prev => ...) updater,
+  // an impure side effect React's Strict Mode double-invokes (updater
+  // functions must be pure) — harmless today only because the computation is
+  // fully deterministic, but a latent landmine and against React's own
+  // documented contract. Behavior is unchanged.
   const moveWidget = useCallback(
     (key: WidgetKey, dx: number, dy: number) => {
       if (!editing || activeBreakpoint !== "lg") return;
-      setDraft((prev) => {
-        const current = prev ?? [];
-        const next = moveTileKeyboard(current, key, dx, dy, HOME_BOARD_LG_COLS);
-        if (next === current) return current; // blocked at bounds — no-op, no announcement
-        const def = getWidget(key);
-        const moved = next.find((item) => item.i === key);
-        if (def && moved) {
-          setAnnouncement(`${def.title} moved to column ${moved.x + 1}, row ${moved.y + 1}`);
-        }
-        return next;
-      });
+      const current = draft ?? [];
+      const next = moveTileKeyboard(current, key, dx, dy, HOME_BOARD_LG_COLS);
+      if (next === current) return; // blocked at bounds — no-op, no announcement
+      setDraft(next);
+      const def = getWidget(key);
+      const moved = next.find((item) => item.i === key);
+      if (def && moved) {
+        setAnnouncement(`${def.title} moved to column ${moved.x + 1}, row ${moved.y + 1}`);
+      }
     },
-    [editing, activeBreakpoint],
+    [editing, activeBreakpoint, draft],
   );
 
   const cycleWidgetSize = useCallback(
@@ -359,18 +415,16 @@ export function useBoardEdit(
       if (!editing || activeBreakpoint !== "lg") return;
       const def = getWidget(key);
       if (!def) return;
-      setDraft((prev) => {
-        const current = prev ?? [];
-        const next = cycleTileSize(current, key, def.allowedSizes, HOME_BOARD_LG_COLS);
-        if (next === current) return current; // only one allowed size — no-op, no announcement
-        const resized = next.find((item) => item.i === key);
-        if (resized) {
-          setAnnouncement(`${def.title} resized to ${resized.w} by ${resized.h}`);
-        }
-        return next;
-      });
+      const current = draft ?? [];
+      const next = cycleTileSize(current, key, def.allowedSizes, HOME_BOARD_LG_COLS);
+      if (next === current) return; // only one allowed size — no-op, no announcement
+      setDraft(next);
+      const resized = next.find((item) => item.i === key);
+      if (resized) {
+        setAnnouncement(`${def.title} resized to ${resized.w} by ${resized.h}`);
+      }
     },
-    [editing, activeBreakpoint],
+    [editing, activeBreakpoint, draft],
   );
 
   return {
@@ -380,6 +434,7 @@ export function useBoardEdit(
     isSaving,
     isResetting,
     saveError,
+    resetError,
     activeBreakpoint,
     announcement,
     startEdit,
