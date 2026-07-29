@@ -2,14 +2,14 @@ import type { GoalProgress } from "@armyofagents/shared";
 import { Target } from "lucide-react";
 import { Link } from "@/lib/router";
 import { useHomeSummary } from "../../../hooks/useHomeSummary";
+import { WidgetShell } from "./WidgetShell";
 import type { WidgetProps } from "./types";
 
-export function ObjectivesWidget({ companyId }: WidgetProps) {
+export function ObjectivesWidget({ companyId, editing }: WidgetProps) {
   const { data } = useHomeSummary(companyId);
   if (!data || data.goalProgress.length === 0) return null; // matches today: section hidden when empty
   return (
-    <div>
-      <h2 className="mb-3 text-sm font-semibold text-muted-foreground">Active Goals</h2>
+    <WidgetShell title="Objectives" icon={Target} to="/objectives" editing={editing}>
       <div className="divide-y divide-border overflow-hidden rounded-md border border-border">
         {data.goalProgress.map((goal: GoalProgress) => (
           <Link key={goal.id} to={`/goals/${goal.id}`} className="flex items-center gap-3 px-4 py-3 text-sm text-inherit no-underline transition-colors hover:bg-accent/50">
@@ -37,6 +37,6 @@ export function ObjectivesWidget({ companyId }: WidgetProps) {
           </Link>
         ))}
       </div>
-    </div>
+    </WidgetShell>
   );
 }

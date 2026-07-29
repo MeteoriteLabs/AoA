@@ -48,11 +48,11 @@ describe("HomeBoard", () => {
     // proves the board composed real content, not just headers).
     const headings = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
     expect(headings).toEqual([
-      "Action Queue",
+      "Action queue",
       "Approvals & questions",
       "Agents working now",
-      "Today's Activity",
-      "Active Goals",
+      "Today's activity",
+      "Objectives",
       "Suggestions",
       "My tasks",
       "Budget",
@@ -67,9 +67,9 @@ describe("HomeBoard", () => {
     const headings = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
     expect(headings).toEqual([
       "My tasks",
-      "Action Queue",
-      "Active Goals",
-      "Today's Activity",
+      "Action queue",
+      "Objectives",
+      "Today's activity",
       "Suggestions",
       "Agents working now",
     ]);

@@ -36,6 +36,7 @@ import {
   Workflow,
   type LucideIcon,
 } from "lucide-react";
+import { WidgetShell } from "./WidgetShell";
 import type { WidgetProps } from "./types";
 
 interface SuggestedMemoryDraft {
@@ -374,7 +375,7 @@ function SuggestedMemoryDialog({
   );
 }
 
-export function SuggestionsWidget({ companyId, role }: WidgetProps) {
+export function SuggestionsWidget({ companyId, role, editing }: WidgetProps) {
   const canAct = role === "founder";
   const { openNewIssue } = useDialog();
   const { pushToast } = useToast();
@@ -521,47 +522,45 @@ export function SuggestionsWidget({ companyId, role }: WidgetProps) {
 
   return (
     <>
-      <div className="space-y-3">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <Lightbulb className="h-4 w-4 text-muted-foreground" />
-            <h2 className="text-sm font-semibold text-muted-foreground">Suggestions</h2>
-          </div>
+      <WidgetShell title="Suggestions" icon={Lightbulb} to="/inbox" editing={editing}>
+        <div className="space-y-3">
           {suggestions.length > 10 && (
-            <Button variant="link" size="sm" onClick={() => setShowAllSuggestions((current) => !current)}>
-              {showAllSuggestions ? "Show less" : "View all"}
-            </Button>
+            <div className="flex items-center justify-end">
+              <Button variant="link" size="sm" onClick={() => setShowAllSuggestions((current) => !current)}>
+                {showAllSuggestions ? "Show less" : "View all"}
+              </Button>
+            </div>
+          )}
+
+          {suggestionsLoading ? (
+            <div className="rounded-md border border-border p-4 text-sm text-muted-foreground">
+              Refreshing suggestions...
+            </div>
+          ) : suggestions.length === 0 ? (
+            <div className="rounded-md border border-dashed border-border p-6 text-center">
+              <div className="mx-auto mb-2 flex h-10 w-10 items-center justify-center rounded-full bg-muted">
+                <CheckCircle2 className="h-5 w-5 text-muted-foreground" />
+              </div>
+              <p className="text-sm font-medium">All caught up</p>
+              <p className="mt-1 text-sm text-muted-foreground">No pending suggestions right now.</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {visibleSuggestions.map((suggestion) => (
+                <SuggestionCard
+                  key={suggestion.id}
+                  suggestion={suggestion}
+                  exiting={exitingSuggestionIds.includes(suggestion.id)}
+                  busy={busySuggestionIds.includes(suggestion.id)}
+                  canAct={canAct}
+                  onAccept={handleAccept}
+                  onDismiss={handleDismiss}
+                />
+              ))}
+            </div>
           )}
         </div>
-
-        {suggestionsLoading ? (
-          <div className="rounded-md border border-border p-4 text-sm text-muted-foreground">
-            Refreshing suggestions...
-          </div>
-        ) : suggestions.length === 0 ? (
-          <div className="rounded-md border border-dashed border-border p-6 text-center">
-            <div className="mx-auto mb-2 flex h-10 w-10 items-center justify-center rounded-full bg-muted">
-              <CheckCircle2 className="h-5 w-5 text-muted-foreground" />
-            </div>
-            <p className="text-sm font-medium">All caught up</p>
-            <p className="mt-1 text-sm text-muted-foreground">No pending suggestions right now.</p>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {visibleSuggestions.map((suggestion) => (
-              <SuggestionCard
-                key={suggestion.id}
-                suggestion={suggestion}
-                exiting={exitingSuggestionIds.includes(suggestion.id)}
-                busy={busySuggestionIds.includes(suggestion.id)}
-                canAct={canAct}
-                onAccept={handleAccept}
-                onDismiss={handleDismiss}
-              />
-            ))}
-          </div>
-        )}
-      </div>
+      </WidgetShell>
 
       <ConfirmDialog
         open={archiveConfirm !== null}

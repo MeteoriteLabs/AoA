@@ -4,11 +4,12 @@ import type { Issue } from "@armyofagents/shared";
 import { Link } from "@/lib/router";
 import { issuesApi } from "../../../api/issues";
 import { queryKeys } from "../../../lib/queryKeys";
+import { WidgetShell } from "./WidgetShell";
 import type { WidgetProps } from "./types";
 
 const TERMINAL = new Set(["done", "cancelled"]);
 
-export function MyTasksWidget({ companyId }: WidgetProps) {
+export function MyTasksWidget({ companyId, editing }: WidgetProps) {
   const { data } = useQuery({
     queryKey: queryKeys.issues.listAssignedToMe(companyId),
     queryFn: () => issuesApi.list(companyId, { assigneeUserId: "me" }),
@@ -17,8 +18,7 @@ export function MyTasksWidget({ companyId }: WidgetProps) {
   const tasks = (data ?? []).filter((t: Issue) => !TERMINAL.has(t.status)).slice(0, 5);
   if (!data || tasks.length === 0) return null;
   return (
-    <div>
-      <h2 className="mb-3 text-sm font-semibold text-muted-foreground">My tasks</h2>
+    <WidgetShell title="My tasks" icon={ListChecks} to="/issues" editing={editing}>
       <div className="divide-y divide-border overflow-hidden rounded-md border border-border">
         {tasks.map((t: Issue) => (
           <Link key={t.id} to={`/issues/${t.id}`} className="flex items-center gap-3 px-4 py-2.5 text-sm text-inherit no-underline transition-colors hover:bg-accent/50">
@@ -28,6 +28,6 @@ export function MyTasksWidget({ companyId }: WidgetProps) {
           </Link>
         ))}
       </div>
-    </div>
+    </WidgetShell>
   );
 }
