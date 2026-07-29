@@ -7,9 +7,22 @@ describe("getDefaultLayout", () => {
     for (const role of ["founder", "team_lead", "team_member", null] as const)
       for (const key of getDefaultLayout(role)) expect(widgetRegistry[key]).toBeDefined();
   });
-  it("preserves today's section order for every role (behavior-preserving in Plan 1)", () => {
-    const expected = ["action-queue", "suggestions", "objectives", "activity-feed"];
-    for (const role of ["founder", "team_lead", "team_member", null] as const)
-      expect(getDefaultLayout(role)).toEqual(expected);
+
+  it("founder default is the full 8-widget board, including budget and approvals", () => {
+    const founder = getDefaultLayout("founder");
+    expect(founder).toContain("budget");
+    expect(founder).toContain("approvals");
+  });
+
+  it("team_lead and null get the same oversight board as founder", () => {
+    expect(getDefaultLayout("team_lead")).toEqual(getDefaultLayout("founder"));
+    expect(getDefaultLayout(null)).toEqual(getDefaultLayout("founder"));
+  });
+
+  it("member default excludes budget and approvals and starts with my-tasks", () => {
+    const member = getDefaultLayout("team_member");
+    expect(member).not.toContain("budget");
+    expect(member).not.toContain("approvals");
+    expect(member[0]).toBe("my-tasks");
   });
 });

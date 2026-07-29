@@ -1,11 +1,15 @@
 import type { UserRole } from "@armyofagents/shared";
 import type { WidgetKey } from "./widgets/types";
 
-// Plan 1 preserves today's exact section order for EVERY role (behavior-preserving —
-// today's Home renders the same order for everyone). Role-aware ordering is a Plan 3
-// concern, introduced with the customizable board.
-const DEFAULT_ORDER: WidgetKey[] = ["action-queue", "suggestions", "objectives", "activity-feed"];
+// Plan 2: role-aware default boards. Founder/team_lead get the full oversight
+// board (incl. Budget + Approvals); members get an execution-weighted subset.
+// Data stays team-visible either way (2026-07-29 decision) — this is
+// arrangement-only, not data-gating.
+const FOUNDER: WidgetKey[] = ["action-queue", "approvals", "agents-now", "activity-feed", "objectives", "suggestions", "my-tasks", "budget"];
+const MEMBER: WidgetKey[] = ["my-tasks", "action-queue", "objectives", "activity-feed", "suggestions", "agents-now"];
 
-export function getDefaultLayout(_role: UserRole | null): WidgetKey[] {
-  return DEFAULT_ORDER;
+// Only team_member gets the execution board; founder, team_lead, null, and
+// instance-admin (null role) all get the oversight board.
+export function getDefaultLayout(role: UserRole | null): WidgetKey[] {
+  return role === "team_member" ? MEMBER : FOUNDER;
 }
