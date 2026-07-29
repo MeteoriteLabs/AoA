@@ -1,4 +1,4 @@
-import { Activity, Bell, CircleDollarSign, Cpu, Inbox, Lightbulb, ListChecks, Target } from "lucide-react";
+import { Activity, Bell, CircleDollarSign, Cpu, Inbox, Lightbulb, ListChecks, MessagesSquare, Target } from "lucide-react";
 import { HOME_BOARD_ALLOWED_SIZES } from "@armyofagents/shared";
 import type { WidgetDef, WidgetKey } from "./types";
 import { ActionQueueWidget } from "./ActionQueueWidget";
@@ -9,6 +9,7 @@ import { AgentsNowWidget } from "./AgentsNowWidget";
 import { BudgetWidget } from "./BudgetWidget";
 import { ApprovalsWidget } from "./ApprovalsWidget";
 import { MyTasksWidget } from "./MyTasksWidget";
+import { DiscussionsWidget } from "./DiscussionsWidget";
 
 export const widgetRegistry: Record<WidgetKey, WidgetDef> = {
   "action-queue": {
@@ -74,6 +75,14 @@ export const widgetRegistry: Record<WidgetKey, WidgetDef> = {
     Component: MyTasksWidget,
     allowedSizes: HOME_BOARD_ALLOWED_SIZES["my-tasks"],
     defaultSize: HOME_BOARD_ALLOWED_SIZES["my-tasks"][0],
+  },
+  discussions: {
+    key: "discussions",
+    title: "Discussions",
+    icon: MessagesSquare,
+    Component: DiscussionsWidget,
+    allowedSizes: HOME_BOARD_ALLOWED_SIZES.discussions,
+    defaultSize: HOME_BOARD_ALLOWED_SIZES.discussions[0],
   },
 };
 export function getWidget(key: WidgetKey): WidgetDef | undefined { return widgetRegistry[key]; }

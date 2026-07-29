@@ -9,20 +9,21 @@ describe("widgetRegistry", () => {
   it("returns undefined for an unknown key (no throw)", () => {
     expect(getWidget("nope" as never)).toBeUndefined();
   });
-  it("registers the four Plan-1 widgets plus the four Plan-2 widgets", () => {
+  it("registers the four Plan-1 widgets plus the four Plan-2 widgets plus the Plan-6 widgets", () => {
     expect(Object.keys(widgetRegistry).sort()).toEqual([
       "action-queue",
       "activity-feed",
       "agents-now",
       "approvals",
       "budget",
+      "discussions",
       "my-tasks",
       "objectives",
       "suggestions",
     ]);
   });
   it("listWidgets returns every def", () => {
-    expect(listWidgets()).toHaveLength(8);
+    expect(listWidgets()).toHaveLength(9);
   });
 
   it("references HOME_BOARD_ALLOWED_SIZES[key] for allowedSizes (not a copy)", () => {

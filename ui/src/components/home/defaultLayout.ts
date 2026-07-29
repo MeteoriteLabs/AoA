@@ -32,8 +32,13 @@ import type { WidgetKey } from "./widgets/types";
 // same-size 2x2s can't pair evenly against a single 1x1 leftover).
 // If HOME_BOARD_ALLOWED_SIZES changes again, re-verify with buildDefaultLg
 // before re-deriving this reasoning from scratch.
-const FOUNDER: WidgetKey[] = ["action-queue", "approvals", "agents-now", "activity-feed", "objectives", "suggestions", "my-tasks", "budget"];
-const MEMBER: WidgetKey[] = ["my-tasks", "action-queue", "objectives", "activity-feed", "suggestions", "agents-now"];
+// Plan 6 Task 5 (2026-07-29): appended "discussions" to both roles' end —
+// packing/ordering for the resulting 9-widget (soon 10, once Task 6 adds
+// memory-review) board is re-verified against buildDefaultLg holistically in
+// Task 7, once the final widget set for this plan is known. Do not re-derive
+// packing reasoning from this intermediate state.
+const FOUNDER: WidgetKey[] = ["action-queue", "approvals", "agents-now", "activity-feed", "objectives", "suggestions", "my-tasks", "budget", "discussions"];
+const MEMBER: WidgetKey[] = ["my-tasks", "action-queue", "objectives", "activity-feed", "suggestions", "agents-now", "discussions"];
 
 // Only team_member gets the execution board; founder, team_lead, null, and
 // instance-admin (null role) all get the oversight board.

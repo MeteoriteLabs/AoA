@@ -31,6 +31,7 @@ const genericApiSpies = vi.hoisted(() => ({
   suggestionsDetect: vi.fn(),
   goalsList: vi.fn(),
   memoryCreate: vi.fn(),
+  discussionsList: vi.fn(),
 }));
 
 vi.mock("../../context/CompanyContext", () => ({ useCompany: () => mockCompanyContext }));
@@ -40,7 +41,9 @@ vi.mock("../../context/CompanyContext", () => ({ useCompany: () => mockCompanyCo
 // onCta are truthy), so it would slip past the "no throw" check below without
 // ever exercising the real opener. Both openers are mocked so every widget's
 // CTA (Objectives' "+ New goal", My tasks' "+ New task") gets a real handler.
-vi.mock("../../context/DialogContext", () => ({ useDialog: () => ({ openNewIssue: vi.fn(), openNewGoal: vi.fn() }) }));
+vi.mock("../../context/DialogContext", () => ({
+  useDialog: () => ({ openNewIssue: vi.fn(), openNewGoal: vi.fn(), openDiscussionCapture: vi.fn() }),
+}));
 vi.mock("../../context/ToastContext", () => ({ useToast: () => ({ pushToast: vi.fn() }) }));
 vi.mock("../../lib/timeAgo", () => ({ timeAgo: () => "2m ago" }));
 
@@ -78,6 +81,9 @@ vi.mock("../../api/suggestions", () => ({
 // exist purely as defensive stubs (matches Dashboard.test.tsx's own pattern).
 vi.mock("../../api/goals", () => ({ goalsApi: { list: genericApiSpies.goalsList } }));
 vi.mock("../../api/memory", () => ({ memoryApi: { create: genericApiSpies.memoryCreate } }));
+vi.mock("../../api/discussions", () => ({
+  discussionsApi: { list: genericApiSpies.discussionsList },
+}));
 
 const ROLE: UserRole = "founder";
 
@@ -96,6 +102,7 @@ describe("widget completeness: every registered widget survives empty data", () 
     genericApiSpies.suggestionsDetect.mockResolvedValue({ ok: true });
     genericApiSpies.goalsList.mockResolvedValue([]);
     genericApiSpies.memoryCreate.mockResolvedValue({});
+    genericApiSpies.discussionsList.mockResolvedValue({ discussions: [], total: 0, limit: 0, offset: 0 });
   });
 
   for (const def of listWidgets()) {

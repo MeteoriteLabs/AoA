@@ -1,4 +1,4 @@
-export const HOME_BOARD_WIDGET_KEYS = ["action-queue","suggestions","objectives","activity-feed","agents-now","budget","approvals","my-tasks"] as const;
+export const HOME_BOARD_WIDGET_KEYS = ["action-queue","suggestions","objectives","activity-feed","agents-now","budget","approvals","my-tasks","discussions"] as const;
 export type HomeBoardWidgetKey = (typeof HOME_BOARD_WIDGET_KEYS)[number];
 export const HOME_BOARD_LG_COLS = 4;
 export const HOME_BOARD_MAX_ROWS = 50;           // y ceiling (sanity)
@@ -25,6 +25,7 @@ export const HOME_BOARD_ALLOWED_SIZES = {
   objectives: [{ w: 2, h: 2 }, { w: 2, h: 1 }, { w: 4, h: 2 }],
   "my-tasks": [{ w: 2, h: 2 }, { w: 2, h: 1 }, { w: 4, h: 2 }],
   "activity-feed": [{ w: 2, h: 2 }, { w: 4, h: 2 }, { w: 2, h: 1 }],
+  discussions: [{ w: 2, h: 2 }, { w: 2, h: 1 }, { w: 4, h: 2 }],
 } as const satisfies Record<HomeBoardWidgetKey, readonly { w: number; h: number }[]>;
 export const HOME_BOARD_MAX_ITEMS = HOME_BOARD_WIDGET_KEYS.length; // one instance per widget
 
