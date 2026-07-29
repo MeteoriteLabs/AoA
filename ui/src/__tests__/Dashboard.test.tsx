@@ -390,18 +390,18 @@ describe("Dashboard", () => {
 
       await user.click(screen.getByRole("button", { name: "Create" }));
 
-      expect(await screen.findByRole("menuitem", { name: "New task" })).toBeInTheDocument();
+      expect(await screen.findByRole("menuitem", { name: "Task" })).toBeInTheDocument();
       expect(screen.getByRole("menuitem", { name: "Discussion" })).toBeInTheDocument();
-      expect(screen.getByRole("menuitem", { name: "New goal" })).toBeInTheDocument();
+      expect(screen.getByRole("menuitem", { name: "Goal" })).toBeInTheDocument();
     });
 
-    it("New task / Discussion / New goal each call their respective useDialog opener", async () => {
+    it("Task / Discussion / Goal each call their respective useDialog opener", async () => {
       const user = userEvent.setup();
       renderWithProviders(<Dashboard />);
       expect(await screen.findByText("Turn launch prep into a task")).toBeInTheDocument();
 
       await user.click(screen.getByRole("button", { name: "Create" }));
-      await user.click(await screen.findByRole("menuitem", { name: "New task" }));
+      await user.click(await screen.findByRole("menuitem", { name: "Task" }));
       expect(mockDialogContext.openNewIssue).toHaveBeenCalledWith();
 
       await user.click(screen.getByRole("button", { name: "Create" }));
@@ -409,7 +409,7 @@ describe("Dashboard", () => {
       expect(mockDialogContext.openDiscussionCapture).toHaveBeenCalledWith();
 
       await user.click(screen.getByRole("button", { name: "Create" }));
-      await user.click(await screen.findByRole("menuitem", { name: "New goal" }));
+      await user.click(await screen.findByRole("menuitem", { name: "Goal" }));
       expect(mockDialogContext.openNewGoal).toHaveBeenCalledWith();
     });
   });
