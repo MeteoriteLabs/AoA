@@ -1,4 +1,4 @@
-import { Activity, Bell, CircleDollarSign, Cpu, Inbox, Lightbulb, ListChecks, MessagesSquare, Target } from "lucide-react";
+import { Activity, Bell, Brain, CircleDollarSign, Cpu, Inbox, Lightbulb, ListChecks, MessagesSquare, Target } from "lucide-react";
 import { HOME_BOARD_ALLOWED_SIZES } from "@armyofagents/shared";
 import type { WidgetDef, WidgetKey } from "./types";
 import { ActionQueueWidget } from "./ActionQueueWidget";
@@ -10,6 +10,7 @@ import { BudgetWidget } from "./BudgetWidget";
 import { ApprovalsWidget } from "./ApprovalsWidget";
 import { MyTasksWidget } from "./MyTasksWidget";
 import { DiscussionsWidget } from "./DiscussionsWidget";
+import { MemoryReviewWidget } from "./MemoryReviewWidget";
 
 export const widgetRegistry: Record<WidgetKey, WidgetDef> = {
   "action-queue": {
@@ -83,6 +84,15 @@ export const widgetRegistry: Record<WidgetKey, WidgetDef> = {
     Component: DiscussionsWidget,
     allowedSizes: HOME_BOARD_ALLOWED_SIZES.discussions,
     defaultSize: HOME_BOARD_ALLOWED_SIZES.discussions[0],
+  },
+  "memory-review": {
+    key: "memory-review",
+    title: "Memory review",
+    icon: Brain,
+    requiresFounder: true,
+    Component: MemoryReviewWidget,
+    allowedSizes: HOME_BOARD_ALLOWED_SIZES["memory-review"],
+    defaultSize: HOME_BOARD_ALLOWED_SIZES["memory-review"][0],
   },
 };
 export function getWidget(key: WidgetKey): WidgetDef | undefined { return widgetRegistry[key]; }

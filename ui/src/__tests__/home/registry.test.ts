@@ -17,13 +17,14 @@ describe("widgetRegistry", () => {
       "approvals",
       "budget",
       "discussions",
+      "memory-review",
       "my-tasks",
       "objectives",
       "suggestions",
     ]);
   });
   it("listWidgets returns every def", () => {
-    expect(listWidgets()).toHaveLength(9);
+    expect(listWidgets()).toHaveLength(10);
   });
 
   it("references HOME_BOARD_ALLOWED_SIZES[key] for allowedSizes (not a copy)", () => {

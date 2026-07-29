@@ -31,6 +31,7 @@ const genericApiSpies = vi.hoisted(() => ({
   suggestionsDetect: vi.fn(),
   goalsList: vi.fn(),
   memoryCreate: vi.fn(),
+  memoryListPending: vi.fn(),
   discussionsList: vi.fn(),
 }));
 
@@ -80,7 +81,9 @@ vi.mock("../../api/suggestions", () => ({
 // memory dialog — its queries are `enabled: false` while closed, so these
 // exist purely as defensive stubs (matches Dashboard.test.tsx's own pattern).
 vi.mock("../../api/goals", () => ({ goalsApi: { list: genericApiSpies.goalsList } }));
-vi.mock("../../api/memory", () => ({ memoryApi: { create: genericApiSpies.memoryCreate } }));
+vi.mock("../../api/memory", () => ({
+  memoryApi: { create: genericApiSpies.memoryCreate, listPending: genericApiSpies.memoryListPending },
+}));
 vi.mock("../../api/discussions", () => ({
   discussionsApi: { list: genericApiSpies.discussionsList },
 }));
@@ -102,6 +105,7 @@ describe("widget completeness: every registered widget survives empty data", () 
     genericApiSpies.suggestionsDetect.mockResolvedValue({ ok: true });
     genericApiSpies.goalsList.mockResolvedValue([]);
     genericApiSpies.memoryCreate.mockResolvedValue({});
+    genericApiSpies.memoryListPending.mockResolvedValue({ items: [], versions: [], archives: [], totalCount: 0 });
     genericApiSpies.discussionsList.mockResolvedValue({ discussions: [], total: 0, limit: 0, offset: 0 });
   });
 

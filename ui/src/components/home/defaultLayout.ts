@@ -32,12 +32,14 @@ import type { WidgetKey } from "./widgets/types";
 // same-size 2x2s can't pair evenly against a single 1x1 leftover).
 // If HOME_BOARD_ALLOWED_SIZES changes again, re-verify with buildDefaultLg
 // before re-deriving this reasoning from scratch.
-// Plan 6 Task 5 (2026-07-29): appended "discussions" to both roles' end —
-// packing/ordering for the resulting 9-widget (soon 10, once Task 6 adds
-// memory-review) board is re-verified against buildDefaultLg holistically in
-// Task 7, once the final widget set for this plan is known. Do not re-derive
-// packing reasoning from this intermediate state.
-const FOUNDER: WidgetKey[] = ["action-queue", "approvals", "agents-now", "activity-feed", "objectives", "suggestions", "my-tasks", "budget", "discussions"];
+// Plan 6 Task 5 (2026-07-29): appended "discussions" to both roles' end.
+// Plan 6 Task 6 (2026-07-29): appended "memory-review" to FOUNDER only
+// (matching approvals/budget — member never gets it, per the widget's
+// requiresFounder flag). Packing/ordering for the resulting 10-widget
+// founder / 7-widget member board is re-verified against buildDefaultLg
+// holistically in Task 7, now that the final widget set for this plan is
+// known. Do not re-derive packing reasoning from this intermediate state.
+const FOUNDER: WidgetKey[] = ["action-queue", "approvals", "agents-now", "activity-feed", "objectives", "suggestions", "my-tasks", "budget", "discussions", "memory-review"];
 const MEMBER: WidgetKey[] = ["my-tasks", "action-queue", "objectives", "activity-feed", "suggestions", "agents-now", "discussions"];
 
 // Only team_member gets the execution board; founder, team_lead, null, and
