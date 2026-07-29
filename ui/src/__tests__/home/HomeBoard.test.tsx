@@ -1,5 +1,6 @@
-import { beforeEach, describe, it, expect } from "vitest";
-import { screen } from "@testing-library/react";
+import { beforeEach, describe, it, expect, vi } from "vitest";
+import { screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { HomeBoardLayoutItem } from "@armyofagents/shared";
 import { renderWithProviders, mockCompanyContext } from "../test-utils";
 import { HomeBoard } from "../../components/home/HomeBoard";
@@ -25,7 +26,17 @@ vi.mock("react-grid-layout", async (importOriginal) => {
 
 // Default: no saved layout (role default applies). Individual tests override
 // `homeBoardLayoutMock.layout` to exercise the saved/reconciled path.
-const homeBoardLayoutMock = vi.hoisted(() => ({ layout: null as HomeBoardLayoutItem[] | null }));
+// saveAsync/reset are STABLE fn references (never reassigned) so a
+// useCallback closing over them never goes stale across renders — tests
+// reconfigure behavior via mockResolvedValue/mockRejectedValueOnce on the
+// same instance instead of swapping the reference.
+const homeBoardLayoutMock = vi.hoisted(() => ({
+  layout: null as HomeBoardLayoutItem[] | null,
+  isSaving: false,
+  isResetting: false,
+  saveAsync: vi.fn(),
+  reset: vi.fn(),
+}));
 vi.mock("../../hooks/useHomeBoardLayout", () => ({
   useHomeBoardLayout: () => ({
     layout: homeBoardLayoutMock.layout,
@@ -34,12 +45,12 @@ vi.mock("../../hooks/useHomeBoardLayout", () => ({
     isFetching: false,
     refetch: vi.fn(),
     save: vi.fn(),
-    saveAsync: vi.fn(),
-    isSaving: false,
+    saveAsync: homeBoardLayoutMock.saveAsync,
+    isSaving: homeBoardLayoutMock.isSaving,
     saveError: null,
-    reset: vi.fn(),
+    reset: homeBoardLayoutMock.reset,
     resetAsync: vi.fn(),
-    isResetting: false,
+    isResetting: homeBoardLayoutMock.isResetting,
     resetError: null,
   }),
 }));
@@ -80,6 +91,10 @@ vi.mock("../../hooks/useLiveAgentCount", () => ({ useLiveAgentCount: () => 2 }))
 describe("HomeBoard", () => {
   beforeEach(() => {
     homeBoardLayoutMock.layout = null;
+    homeBoardLayoutMock.isSaving = false;
+    homeBoardLayoutMock.isResetting = false;
+    homeBoardLayoutMock.saveAsync.mockReset().mockResolvedValue({ layout: [], schemaVersion: 1 });
+    homeBoardLayoutMock.reset.mockReset();
   });
 
   it('renders the founder board: all 8 widgets, each in its own error boundary, in getDefaultLayout("founder") order', async () => {
@@ -149,5 +164,118 @@ describe("HomeBoard", () => {
 
     const headings = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
     expect(headings).toEqual(["My tasks"]);
+  });
+
+  describe("edit mode (Task C1)", () => {
+    it("entering edit mode shows a remove button per tile, suppresses header navigation, and enables drag/resize", async () => {
+      renderWithProviders(<HomeBoard companyId="co-1" role="founder" />);
+      expect(await screen.findByText("Ship it")).toBeInTheDocument();
+
+      // Not editing: header links exist, no remove buttons, resize hidden.
+      expect(screen.getAllByRole("link", { name: /^Open / }).length).toBe(8);
+      expect(screen.queryAllByLabelText(/^Remove /)).toHaveLength(0);
+
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Edit board" }));
+
+      // Editing: WidgetShell headers stop being links...
+      expect(screen.queryAllByRole("link", { name: /^Open / })).toHaveLength(0);
+      // ...and every tile grows a remove button.
+      expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(8);
+
+      // Drag/resize are wired to `editing`: RGL marks each grid item
+      // draggable and un-hides its resize handle only while editing.
+      const gridItems = document.querySelectorAll(".react-grid-item");
+      expect(gridItems.length).toBe(8);
+      gridItems.forEach((el) => {
+        expect(el.classList.contains("react-draggable")).toBe(true);
+        expect(el.classList.contains("react-resizable-hide")).toBe(false);
+      });
+
+      expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
+    });
+
+    it("removing a tile via its x button drops it from the board immediately", async () => {
+      renderWithProviders(<HomeBoard companyId="co-1" role="founder" />);
+      expect(await screen.findByText("Ship it")).toBeInTheDocument();
+
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Edit board" }));
+      expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(8);
+
+      await user.click(screen.getByLabelText("Remove Budget"));
+
+      expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(7);
+      expect(screen.queryByRole("heading", { level: 2, name: "Budget" })).not.toBeInTheDocument();
+    });
+
+    it("exiting edit mode after a change calls save with the updated (dirty) draft", async () => {
+      renderWithProviders(<HomeBoard companyId="co-1" role="founder" />);
+      expect(await screen.findByText("Ship it")).toBeInTheDocument();
+
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Edit board" }));
+      await user.click(screen.getByLabelText("Remove Budget"));
+      await user.click(screen.getByRole("button", { name: "Done" }));
+
+      await waitFor(() => expect(homeBoardLayoutMock.saveAsync).toHaveBeenCalledTimes(1));
+      const [savedLayout] = homeBoardLayoutMock.saveAsync.mock.calls[0] as [HomeBoardLayoutItem[]];
+      expect(savedLayout.some((item) => item.i === "budget")).toBe(false);
+
+      // Back to read-only chrome once the save resolves.
+      await waitFor(() => expect(screen.getByRole("button", { name: "Edit board" })).toBeInTheDocument());
+      expect(screen.queryAllByLabelText(/^Remove /)).toHaveLength(0);
+    });
+
+    it("exiting edit mode with no changes does not call save", async () => {
+      renderWithProviders(<HomeBoard companyId="co-1" role="founder" />);
+      expect(await screen.findByText("Ship it")).toBeInTheDocument();
+
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Edit board" }));
+      await user.click(screen.getByRole("button", { name: "Done" }));
+
+      await waitFor(() => expect(screen.getByRole("button", { name: "Edit board" })).toBeInTheDocument());
+      expect(homeBoardLayoutMock.saveAsync).not.toHaveBeenCalled();
+    });
+
+    it("a failed save keeps the board in edit mode and dirty, and a retry can succeed", async () => {
+      homeBoardLayoutMock.saveAsync.mockRejectedValueOnce(new Error("network down"));
+      renderWithProviders(<HomeBoard companyId="co-1" role="founder" />);
+      expect(await screen.findByText("Ship it")).toBeInTheDocument();
+
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Edit board" }));
+      await user.click(screen.getByLabelText("Remove Budget"));
+      await user.click(screen.getByRole("button", { name: "Done" }));
+
+      expect(await screen.findByText(/Couldn't save/)).toBeInTheDocument();
+      // Still editing — the Done toggle and the (now 7) remove buttons remain.
+      expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
+      expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(7);
+
+      await user.click(screen.getByRole("button", { name: "Retry" }));
+
+      await waitFor(() => expect(homeBoardLayoutMock.saveAsync).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(screen.getByRole("button", { name: "Edit board" })).toBeInTheDocument());
+    });
+
+    it("switching companyId mid-edit discards the draft without saving", async () => {
+      const { rerender } = renderWithProviders(<HomeBoard companyId="co-1" role="founder" />);
+      expect(await screen.findByText("Ship it")).toBeInTheDocument();
+
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Edit board" }));
+      await user.click(screen.getByLabelText("Remove Budget"));
+      expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(7);
+
+      rerender(<HomeBoard companyId="co-2" role="founder" />);
+
+      // Back to read-only chrome for the new company — the dirty draft
+      // (Budget removed) from co-1 is discarded, not carried over or saved.
+      await waitFor(() => expect(screen.getByRole("button", { name: "Edit board" })).toBeInTheDocument());
+      expect(screen.queryAllByLabelText(/^Remove /)).toHaveLength(0);
+      expect(homeBoardLayoutMock.saveAsync).not.toHaveBeenCalled();
+    });
   });
 });

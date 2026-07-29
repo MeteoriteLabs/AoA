@@ -50,8 +50,13 @@ function packRowMajorNextFit(items: readonly SizedItem[], cols: number): HomeBoa
   return packed;
 }
 
-/** Pick the allowed {w,h} entry nearest to `size` (squared-distance, first-minimal wins). */
-function nearestAllowedSize(size: WidgetSize, allowed: readonly WidgetSize[]): WidgetSize {
+/**
+ * Pick the allowed {w,h} entry nearest to `size` (squared-distance,
+ * first-minimal wins). Exported for reuse by useBoardEdit's onResizeStop
+ * snapping (Task C1) — the same "clamp to nearest allowed footprint" logic
+ * used here for reconcile, so it isn't duplicated.
+ */
+export function nearestAllowedSize(size: WidgetSize, allowed: readonly WidgetSize[]): WidgetSize {
   let best: WidgetSize = allowed[0]!;
   let bestDistance = Number.POSITIVE_INFINITY;
   for (const candidate of allowed) {
