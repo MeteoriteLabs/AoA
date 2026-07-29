@@ -9,14 +9,14 @@ vi.mock("../../hooks/useLiveAgentCount", () => ({ useLiveAgentCount: useLiveAgen
 describe("AgentsNowWidget", () => {
   it("shows the live agent count", () => {
     useLiveAgentCountMock.mockReturnValue(3);
-    renderWithProviders(<AgentsNowWidget companyId="co-1" role="founder" />);
+    renderWithProviders(<AgentsNowWidget companyId="co-1" role="founder" size={{ w: 1, h: 1 }} />);
     expect(screen.getByText("Agents working now")).toBeInTheDocument();
     expect(screen.getByText("3")).toBeInTheDocument();
   });
 
   it("renders 0 (not hidden) when no agents are working", () => {
     useLiveAgentCountMock.mockReturnValue(0);
-    renderWithProviders(<AgentsNowWidget companyId="co-1" role="founder" />);
+    renderWithProviders(<AgentsNowWidget companyId="co-1" role="founder" size={{ w: 1, h: 1 }} />);
     expect(screen.getByText("0")).toBeInTheDocument();
     expect(screen.getByText("Agents working now")).toBeInTheDocument();
   });

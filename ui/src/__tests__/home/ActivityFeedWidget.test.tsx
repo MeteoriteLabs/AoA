@@ -12,7 +12,7 @@ vi.mock("../../hooks/useHomeSummary", () => ({
 
 describe("ActivityFeedWidget", () => {
   it("renders activity rows with the issue→task word substitution", () => {
-    renderWithProviders(<ActivityFeedWidget companyId="co-1" role="founder" />);
+    renderWithProviders(<ActivityFeedWidget companyId="co-1" role="founder" size={{ w: 2, h: 2 }} />);
     expect(screen.getByText(/task completed/i)).toBeInTheDocument();
     expect(screen.getByText("Draft spec")).toBeInTheDocument();
   });

@@ -14,7 +14,8 @@ export function HomeBoard({ companyId, role }: { companyId: string; role: UserRo
           // Key includes companyId so a switch remounts the boundary — a widget
           // that errored for one company recovers when you change companies.
           <WidgetErrorBoundary key={`${key}-${companyId}`}>
-            <Widget companyId={companyId} role={role} />
+            {/* size is a placeholder until Task B3 wires the real react-grid-layout grid (canonical lg + derived breakpoints). */}
+            <Widget companyId={companyId} role={role} size={{ w: 2, h: 2 }} />
           </WidgetErrorBoundary>
         );
       })}

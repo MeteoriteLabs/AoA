@@ -12,7 +12,7 @@ vi.mock("../../hooks/useHomeSummary", () => ({
 
 describe("ActionQueueWidget", () => {
   it("renders the Needs Review, Blocked, and Due Today groups (collapsible)", () => {
-    renderWithProviders(<ActionQueueWidget companyId="co-1" role="founder" />);
+    renderWithProviders(<ActionQueueWidget companyId="co-1" role="founder" size={{ w: 2, h: 1 }} />);
     expect(screen.getByText("Needs Review")).toBeInTheDocument();
     expect(screen.getByText("Blocked")).toBeInTheDocument();
     expect(screen.getByText("Due Today")).toBeInTheDocument();

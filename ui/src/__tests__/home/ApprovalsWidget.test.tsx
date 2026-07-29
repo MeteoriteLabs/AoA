@@ -13,14 +13,14 @@ describe("ApprovalsWidget", () => {
     wqApiMock.list.mockResolvedValue([{ id: "q1" }, { id: "q2" }]);
   });
   it("sums approvals + questions waiting", async () => {
-    renderWithProviders(<ApprovalsWidget companyId="co-1" role="founder" />);
+    renderWithProviders(<ApprovalsWidget companyId="co-1" role="founder" size={{ w: 1, h: 1 }} />);
     expect(await screen.findByText("3")).toBeInTheDocument(); // 1 approval + 2 questions
     expect(screen.getByText(/waiting on you/i)).toBeInTheDocument();
   });
 
   it("renders nothing (no misleading partial total) when questions fails but dash resolves", async () => {
     wqApiMock.list.mockReset().mockRejectedValue(new Error("network error"));
-    const { container } = renderWithProviders(<ApprovalsWidget companyId="co-1" role="founder" />);
+    const { container } = renderWithProviders(<ApprovalsWidget companyId="co-1" role="founder" size={{ w: 1, h: 1 }} />);
     await waitFor(() => expect(wqApiMock.list).toHaveBeenCalled());
     await waitFor(() => expect(container.firstChild).toBeNull());
     expect(screen.queryByText(/waiting on you/i)).not.toBeInTheDocument();

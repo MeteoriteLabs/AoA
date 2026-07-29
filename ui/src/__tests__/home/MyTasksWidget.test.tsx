@@ -15,7 +15,7 @@ describe("MyTasksWidget", () => {
     ]);
   });
   it("lists my non-terminal tasks with status", async () => {
-    renderWithProviders(<MyTasksWidget companyId="co-1" role="team_member" />);
+    renderWithProviders(<MyTasksWidget companyId="co-1" role="team_member" size={{ w: 2, h: 1 }} />);
     expect(await screen.findByText("Draft launch post")).toBeInTheDocument();
     expect(screen.getByText("Review crew output")).toBeInTheDocument();
     // terminal tasks excluded
@@ -24,7 +24,7 @@ describe("MyTasksWidget", () => {
 
   it("renders nothing when I have no assigned tasks", async () => {
     issuesApiMock.list.mockResolvedValue([]);
-    const { container } = renderWithProviders(<MyTasksWidget companyId="co-1" role="team_member" />);
+    const { container } = renderWithProviders(<MyTasksWidget companyId="co-1" role="team_member" size={{ w: 2, h: 1 }} />);
     await waitFor(() => expect(issuesApiMock.list).toHaveBeenCalled());
     await waitFor(() => expect(container.firstChild).toBeNull());
   });
@@ -34,7 +34,7 @@ describe("MyTasksWidget", () => {
       { id: "t1", title: "Done thing", status: "done", priority: "low" },
       { id: "t2", title: "Cancelled thing", status: "cancelled", priority: "low" },
     ]);
-    const { container } = renderWithProviders(<MyTasksWidget companyId="co-1" role="team_member" />);
+    const { container } = renderWithProviders(<MyTasksWidget companyId="co-1" role="team_member" size={{ w: 2, h: 1 }} />);
     await waitFor(() => expect(issuesApiMock.list).toHaveBeenCalled());
     await waitFor(() => expect(container.firstChild).toBeNull());
   });
@@ -43,7 +43,7 @@ describe("MyTasksWidget", () => {
     issuesApiMock.list.mockResolvedValue(
       Array.from({ length: 8 }, (_, i) => ({ id: `t${i}`, title: `Task ${i}`, status: "todo", priority: "medium" })),
     );
-    renderWithProviders(<MyTasksWidget companyId="co-1" role="team_member" />);
+    renderWithProviders(<MyTasksWidget companyId="co-1" role="team_member" size={{ w: 2, h: 1 }} />);
     expect(await screen.findByText("Task 0")).toBeInTheDocument();
     expect(screen.getByText("Task 4")).toBeInTheDocument();
     expect(screen.queryByText("Task 5")).not.toBeInTheDocument();

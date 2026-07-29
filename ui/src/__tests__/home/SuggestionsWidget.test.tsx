@@ -24,14 +24,14 @@ describe("SuggestionsWidget", () => {
 
   it("renders pending suggestions with founder actions and dismiss calls the API", async () => {
     const user = userEvent.setup();
-    renderWithProviders(<SuggestionsWidget companyId="co-1" role="founder" />);
+    renderWithProviders(<SuggestionsWidget companyId="co-1" role="founder" size={{ w: 2, h: 1 }} />);
     expect(await screen.findByText("Flag launch risk")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Dismiss" }));
     await vi.waitFor(() => expect(suggestionsApiMock.dismiss).toHaveBeenCalledWith("co-1", "s-risk"));
   });
 
   it("hides accept/dismiss for non-founders", async () => {
-    renderWithProviders(<SuggestionsWidget companyId="co-1" role="team_member" />);
+    renderWithProviders(<SuggestionsWidget companyId="co-1" role="team_member" size={{ w: 2, h: 1 }} />);
     expect(await screen.findByText("Flag launch risk")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Dismiss" })).toBeNull();
   });

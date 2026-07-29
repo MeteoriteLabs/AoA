@@ -12,13 +12,13 @@ vi.mock("../../hooks/useHomeSummary", () => ({
 
 describe("ObjectivesWidget", () => {
   it("renders goals with the At Risk pill and task counts", () => {
-    renderWithProviders(<ObjectivesWidget companyId="co-1" role="founder" />);
+    renderWithProviders(<ObjectivesWidget companyId="co-1" role="founder" size={{ w: 2, h: 1 }} />);
     expect(screen.getByText("Launch v1.1")).toBeInTheDocument();
     expect(screen.getByText("At Risk")).toBeInTheDocument();
     expect(screen.getByText("7/10 tasks")).toBeInTheDocument();
   });
   it("shows 'no tasks yet' instead of a 0% bar for a zero-task goal", () => {
-    renderWithProviders(<ObjectivesWidget companyId="co-1" role="founder" />);
+    renderWithProviders(<ObjectivesWidget companyId="co-1" role="founder" size={{ w: 2, h: 1 }} />);
     expect(screen.getByText(/no tasks yet/i)).toBeInTheDocument();
   });
 });
