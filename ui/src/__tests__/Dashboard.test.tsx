@@ -114,6 +114,27 @@ const {
   },
 }));
 
+// jsdom has no real layout: react-grid-layout's useContainerWidth() (used by
+// the HomeBoard this page renders) measures containerRef.current.offsetWidth
+// in a mount effect (jsdom always reports 0) and the globally-stubbed
+// ResizeObserver (see __tests__/setup.ts) never fires again after that, so
+// width would be pinned at 0 and RGL would render no tiles at all. Fix: mock
+// just this hook to a fixed, non-zero width so the real Responsive/
+// verticalCompactor still run and lay out real tiles. See HomeBoard.test.tsx
+// for the same mock applied directly.
+vi.mock("react-grid-layout", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("react-grid-layout")>();
+  return {
+    ...actual,
+    useContainerWidth: () => ({
+      width: 1024,
+      mounted: true,
+      containerRef: { current: null },
+      measureWidth: vi.fn(),
+    }),
+  };
+});
+
 vi.mock("@/lib/router", async () => {
   const actual = await vi.importActual<typeof import("react-router-dom")>("react-router-dom");
   return {
