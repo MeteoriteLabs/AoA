@@ -8,10 +8,19 @@ describe("widgetRegistry", () => {
   it("returns undefined for an unknown key (no throw)", () => {
     expect(getWidget("nope" as never)).toBeUndefined();
   });
-  it("registers the four Plan-1 widgets", () => {
-    expect(Object.keys(widgetRegistry).sort()).toEqual(["action-queue", "activity-feed", "objectives", "suggestions"]);
+  it("registers the four Plan-1 widgets plus the four Plan-2 widgets", () => {
+    expect(Object.keys(widgetRegistry).sort()).toEqual([
+      "action-queue",
+      "activity-feed",
+      "agents-now",
+      "approvals",
+      "budget",
+      "my-tasks",
+      "objectives",
+      "suggestions",
+    ]);
   });
   it("listWidgets returns every def", () => {
-    expect(listWidgets()).toHaveLength(4);
+    expect(listWidgets()).toHaveLength(8);
   });
 });

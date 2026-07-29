@@ -1,8 +1,15 @@
 import type { ComponentType } from "react";
 import type { UserRole } from "@armyofagents/shared";
 
-export type WidgetKey = "action-queue" | "suggestions" | "objectives" | "activity-feed";
-// Plan 2 extends: | "agents-now" | "budget" | "approvals" | "my-tasks"
+export type WidgetKey =
+  | "action-queue"
+  | "suggestions"
+  | "objectives"
+  | "activity-feed"
+  | "agents-now"
+  | "budget"
+  | "approvals"
+  | "my-tasks";
 
 /** Props every widget receives. Widgets own their own data hooks internally. */
 export interface WidgetProps {
