@@ -65,6 +65,16 @@ import {
   grantsFromDefaults,
   inviteConfersPrivilegedAuthority,
 } from "../services/join-approval.js";
+import { instanceAdminBootstrapEnabled } from "../services/first-user-bootstrap.js";
+
+/**
+ * Task 7 (Phase 2 lockout cluster) — gate the `bootstrap_ceo` invite
+ * promotion through the single chokepoint. `cloud_auth` mints zero runtime
+ * instance_admins; self-hosted local_trusted/authenticated are unaffected.
+ */
+export function bootstrapCeoPromotionAllowed(mode: DeploymentMode): boolean {
+  return instanceAdminBootstrapEnabled(mode);
+}
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -2037,9 +2047,13 @@ export function accessRoutes(
           );
         }
         const userId = req.actor.userId ?? "local-board";
-        const existingAdmin = await access.isInstanceAdmin(userId);
-        if (!existingAdmin) {
-          await access.promoteInstanceAdmin(userId);
+        if (bootstrapCeoPromotionAllowed(opts.deploymentMode)) {
+          const existingAdmin = await access.isInstanceAdmin(userId);
+          if (!existingAdmin) {
+            await access.promoteInstanceAdmin(userId);
+          }
+        } else {
+          throw forbidden("Bootstrap CEO promotion is disabled in this deployment mode");
         }
         const updatedInvite = await db
           .update(invites)
