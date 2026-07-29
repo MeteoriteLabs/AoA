@@ -199,9 +199,29 @@ describe("marketplace reconciliation wire contracts", () => {
         operationId: OPERATION_ID,
       }),
     ).toBeTruthy();
+    expect(
+      MarketplaceReconcileRequestSchema.parse({
+        scope: "fleet",
+        mode: "repair",
+        operationId: "22222222-2222-4222-8222-222222222222",
+        retryOfOperationId: OPERATION_ID,
+      }),
+    ).toBeTruthy();
     for (const body of [
       {},
       { scope: "fleet", mode: "repair" },
+      {
+        scope: "fleet",
+        mode: "repair",
+        operationId: OPERATION_ID,
+        retryOfOperationId: OPERATION_ID,
+      },
+      {
+        scope: "fleet",
+        mode: "repair",
+        operationId: OPERATION_ID,
+        retryOfOperationId: null,
+      },
       {
         scope: "fleet",
         mode: "repair",

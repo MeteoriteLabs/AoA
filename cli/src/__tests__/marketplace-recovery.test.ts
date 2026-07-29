@@ -125,6 +125,44 @@ describe("marketplace recovery CLI", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("links a retry to the explicitly inspected predecessor", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const fetchMock = vi.fn(
+      async (_url: string, init: RequestInit) => {
+        const body = JSON.parse(String(init.body));
+        expect(body).toEqual({
+          scope: "fleet",
+          mode: "repair",
+          operationId: expect.any(String),
+          retryOfOperationId: OPERATION_ID,
+        });
+        expect(body.operationId).not.toBe(OPERATION_ID);
+        return new Response(
+          JSON.stringify(successBody(body.operationId)),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        );
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await program().parseAsync([
+      "node",
+      "aoa",
+      "marketplace",
+      "reconcile",
+      "--confirm-fleet",
+      "--retry-of",
+      OPERATION_ID,
+      "--json",
+    ]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("schema-checks and prints durable inspection JSON", async () => {
     const output: string[] = [];
     vi.spyOn(console, "log").mockImplementation((value) => {

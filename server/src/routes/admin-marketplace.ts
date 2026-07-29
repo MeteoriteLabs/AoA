@@ -2,6 +2,7 @@ import { Router } from "express";
 import {
   MarketplaceReconcileRequestSchema,
   MarketplaceReconcileResponseSchema,
+  MarketplaceReconciliationOperationIdSchema,
   MarketplaceReconciliationInspectionSchema,
   type MarketplaceReconciliationInspection,
 } from "@armyofagents/shared";
@@ -11,6 +12,9 @@ import {
   MarketplaceReconciliationAlreadyExistsError,
   MarketplaceReconciliationInFlightError,
   MarketplaceReconciliationNotFoundError,
+  MarketplaceReconciliationRetryReferenceInvalidError,
+  MarketplaceReconciliationRetryRequiredError,
+  MarketplaceReconciliationRetryUnsafeError,
   type MarketplaceReconciliationActor,
   type MarketplaceReconcileResult,
 } from "../services/marketplace-reconcile.js";
@@ -24,6 +28,7 @@ export interface AdminMarketplaceRoutesDeps {
   reconcile: (
     actor: MarketplaceReconciliationActor,
     operationId: string,
+    retryOfOperationId: string | null,
   ) => Promise<MarketplaceReconcileResult>;
   inspect: (
     operationId: string,
@@ -67,8 +72,8 @@ export function createAdminMarketplaceRouter(
       res.status(400).json(marketplaceErrorResponse("invalid_request", null));
       return;
     }
-    const { operationId } = parsedRequest.data;
-
+    const { operationId, retryOfOperationId = null } =
+      parsedRequest.data;
     if (inFlight && inFlight.operationId !== operationId) {
       res
         .status(409)
@@ -98,9 +103,29 @@ export function createAdminMarketplaceRouter(
             throw error;
           }
         }
+        if (retryOfOperationId) {
+          let inspection: MarketplaceReconciliationInspection;
+          try {
+            inspection = await deps.inspect(retryOfOperationId, false);
+          } catch {
+            throw new MarketplaceReconciliationRetryUnsafeError(
+              retryOfOperationId,
+            );
+          }
+          if (
+            inspection.operationId !== retryOfOperationId ||
+            inspection.state !== "outcome_unknown_after_mutation" ||
+            !inspection.safeToRetry
+          ) {
+            throw new MarketplaceReconciliationRetryUnsafeError(
+              retryOfOperationId,
+            );
+          }
+        }
         return deps.reconcile(
           { actorType: "user", actorId: actorInfo.actorId },
           operationId,
+          retryOfOperationId,
         );
       })();
       // Publish the promise before the durable lookup yields so concurrent
@@ -134,6 +159,37 @@ export function createAdminMarketplaceRouter(
               error.activeOperationId,
             ),
           );
+        return;
+      }
+      if (error instanceof MarketplaceReconciliationRetryRequiredError) {
+        res
+          .status(409)
+          .json(
+            marketplaceErrorResponse(
+              "outcome_unknown_after_mutation",
+              error.requiredOperationId,
+            ),
+          );
+        return;
+      }
+      if (error instanceof MarketplaceReconciliationRetryUnsafeError) {
+        res
+          .status(409)
+          .json(
+            marketplaceErrorResponse(
+              "outcome_unknown_after_mutation",
+              error.retryOfOperationId,
+            ),
+          );
+        return;
+      }
+      if (
+        error instanceof
+        MarketplaceReconciliationRetryReferenceInvalidError
+      ) {
+        res
+          .status(409)
+          .json(marketplaceErrorResponse("invalid_request", operationId));
         return;
       }
       if (error instanceof MarketplaceCatalogRefreshError) {
@@ -173,9 +229,10 @@ export function createAdminMarketplaceRouter(
       return;
     }
 
-    const parsedId = MarketplaceReconcileRequestSchema.shape.operationId.safeParse(
-      req.params.operationId,
-    );
+    const parsedId =
+      MarketplaceReconciliationOperationIdSchema.safeParse(
+        req.params.operationId,
+      );
     if (!parsedId.success) {
       res.status(400).json(marketplaceErrorResponse("invalid_request", null));
       return;

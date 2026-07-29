@@ -3,6 +3,8 @@ import {
   crewRowsAccountedForDefaultTeam,
   digestMarketplaceCatalog,
   inspectMarketplaceReconciliation,
+  MarketplaceReconciliationRetryRequiredError,
+  MarketplaceReconciliationRetryUnsafeError,
   runMarketplaceCrewMaintenance,
   runMarketplaceReconciliation,
   writeMarketplaceReconciliationAudit,
@@ -524,6 +526,111 @@ describe("marketplace reconciliation", () => {
     });
     expect(updateCheck).not.toHaveBeenCalled();
     expect(maintenance).not.toHaveBeenCalled();
+  });
+
+  it("requires the current outcome-unknown operation reference before claiming a retry", async () => {
+    const store = operationStore({
+      claim: vi.fn(async () => ({
+        status: "retry_required" as const,
+        requiredOperationId: OPERATION_ID_1,
+      })),
+    });
+    const refresh = vi.fn();
+
+    await expect(
+      runTestReconciliation({
+        db: {} as any,
+        actor: ADMIN_ACTOR,
+        operationId: OPERATION_ID_2,
+        catalogService: { refresh },
+        operationStore: store,
+      }),
+    ).rejects.toBeInstanceOf(
+      MarketplaceReconciliationRetryRequiredError,
+    );
+
+    expect(store.claim).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operationId: OPERATION_ID_2,
+        retryOfOperationId: undefined,
+      }),
+    );
+    expect(refresh).not.toHaveBeenCalled();
+    expect(store.finish).not.toHaveBeenCalled();
+  });
+
+  it("re-inspects a referenced predecessor after claim and fails before mutation when unsafe", async () => {
+    const store = operationStore();
+    const refresh = vi.fn();
+    const inspectRetry = vi.fn(async () => ({
+      operationId: OPERATION_ID_1,
+      state: "outcome_unknown_after_mutation" as const,
+      safeToRetry: false,
+    }));
+
+    await expect(
+      runTestReconciliation({
+        db: {} as any,
+        actor: ADMIN_ACTOR,
+        operationId: OPERATION_ID_2,
+        retryOfOperationId: OPERATION_ID_1,
+        inspectRetry: inspectRetry as any,
+        catalogService: { refresh },
+        operationStore: store,
+      }),
+    ).rejects.toBeInstanceOf(
+      MarketplaceReconciliationRetryUnsafeError,
+    );
+
+    expect(store.claim).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operationId: OPERATION_ID_2,
+        retryOfOperationId: OPERATION_ID_1,
+      }),
+    );
+    expect(inspectRetry).toHaveBeenCalledWith(
+      expect.anything(),
+      OPERATION_ID_1,
+    );
+    expect(refresh).not.toHaveBeenCalled();
+    expect(store.finish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operationId: OPERATION_ID_2,
+        state: "failed_before_mutation",
+        catalog: null,
+      }),
+    );
+  });
+
+  it("continues a referenced retry only after the current inspection is safe", async () => {
+    const store = operationStore();
+    const refresh = vi
+      .fn()
+      .mockRejectedValue(new Error("catalog unavailable"));
+    const inspectRetry = vi.fn(async () => ({
+      operationId: OPERATION_ID_1,
+      state: "outcome_unknown_after_mutation" as const,
+      safeToRetry: true,
+    }));
+
+    await expect(
+      runTestReconciliation({
+        db: {} as any,
+        actor: ADMIN_ACTOR,
+        operationId: OPERATION_ID_2,
+        retryOfOperationId: OPERATION_ID_1,
+        inspectRetry: inspectRetry as any,
+        catalogService: { refresh },
+        operationStore: store,
+        listCompanyIds: async () => [],
+        audit: vi.fn(async () => undefined),
+      }),
+    ).rejects.toMatchObject({
+      operationId: OPERATION_ID_2,
+    });
+
+    expect(inspectRetry).toHaveBeenCalledTimes(1);
+    expect(refresh).toHaveBeenCalledTimes(1);
   });
 
   it("reports outcome unknown when completion audit fails after maintenance", async () => {
@@ -1422,71 +1529,74 @@ describe("marketplace reconciliation", () => {
     ).toBe(false);
   });
 
-  it("blocks an uncertain retry when a healthy diagnosis has unaccounted crew rows", async () => {
-    const rows = [
-      {
-        companyId: "company-a",
-        action: "marketplace.reconciliation_started",
-        details: {
-          operationId: OPERATION_ID_1,
-          phase: "started",
-          deploymentSha: "reviewed-sha",
-          targetCount: 1,
-        },
-        createdAt: new Date("2026-07-28T00:00:00.000Z"),
-      },
-    ];
-    const db = {
-      select: vi.fn(() => ({
-        from: vi.fn(() => ({
-          where: vi.fn(() => ({
-            orderBy: vi.fn().mockResolvedValue(rows),
-          })),
-        })),
-      })),
-    };
-
-    const result = await inspectMarketplaceReconciliation({
-      db: db as any,
-      operationId: OPERATION_ID_1,
-      isActive: false,
-      loadOperation: vi.fn(async () => operationRecord()),
-      diagnose: vi.fn(async () => ({
-        companyId: "company-a",
-        verdict: "healthy" as const,
-        teamId: "team-a",
-        managedCrew: [
-          {
-            id: "agent-a",
-            name: "Scout",
-            templateOrigin: "agent:aoa-curated/aoa-scout",
-            templateVersion: "1.0.0",
-          },
-        ],
-        unmanagedCrew: [],
-        operation: null,
-      })),
-      hasCustomizedRows: vi.fn(async () => false),
-      hasActiveWriter: vi.fn(async () => false),
-      hasUnaccountedCrewRows: vi.fn(async () => true),
-    });
-
-    expect(result).toMatchObject({
-      state: "outcome_unknown_after_mutation",
-      safeToRetry: false,
-      targets: [
+  it.each(["healthy", "operation-row-stale"] as const)(
+    "blocks an uncertain retry when a %s diagnosis has unaccounted crew rows",
+    async (verdict) => {
+      const rows = [
         {
           companyId: "company-a",
-          crewState: "blocked",
-          diagnosticCode: "unaccounted_crew_rows",
+          action: "marketplace.reconciliation_started",
+          details: {
+            operationId: OPERATION_ID_1,
+            phase: "started",
+            deploymentSha: "reviewed-sha",
+            targetCount: 1,
+          },
+          createdAt: new Date("2026-07-28T00:00:00.000Z"),
         },
-      ],
-      retry: {
-        kind: "inspect_first",
-        recoveryCode: "inspect_operation",
-      },
-    });
-  });
+      ];
+      const db = {
+        select: vi.fn(() => ({
+          from: vi.fn(() => ({
+            where: vi.fn(() => ({
+              orderBy: vi.fn().mockResolvedValue(rows),
+            })),
+          })),
+        })),
+      };
+
+      const result = await inspectMarketplaceReconciliation({
+        db: db as any,
+        operationId: OPERATION_ID_1,
+        isActive: false,
+        loadOperation: vi.fn(async () => operationRecord()),
+        diagnose: vi.fn(async () => ({
+          companyId: "company-a",
+          verdict,
+          teamId: "team-a",
+          managedCrew: [
+            {
+              id: "agent-a",
+              name: "Scout",
+              templateOrigin: "agent:aoa-curated/aoa-scout",
+              templateVersion: "1.0.0",
+            },
+          ],
+          unmanagedCrew: [],
+          operation: null,
+        })),
+        hasCustomizedRows: vi.fn(async () => false),
+        hasActiveWriter: vi.fn(async () => false),
+        hasUnaccountedCrewRows: vi.fn(async () => true),
+      });
+
+      expect(result).toMatchObject({
+        state: "outcome_unknown_after_mutation",
+        safeToRetry: false,
+        targets: [
+          {
+            companyId: "company-a",
+            crewState: "blocked",
+            diagnosticCode: "unaccounted_crew_rows",
+          },
+        ],
+        retry: {
+          kind: "inspect_first",
+          recoveryCode: "inspect_operation",
+        },
+      });
+    },
+  );
 
   it("supports a durable successful operation over an empty fleet", async () => {
     const db = {

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Command } from "commander";
 import {
   MarketplaceReconcileErrorResponseSchema,
+  MarketplaceReconcileRequestSchema,
   MarketplaceReconcileResponseSchema,
   MarketplaceReconciliationInspectionSchema,
 } from "@armyofagents/shared";
@@ -17,6 +18,7 @@ import {
 interface MarketplaceReconcileOptions extends BaseClientOptions {
   confirmFleet?: boolean;
   timeoutMs?: string;
+  retryOf?: string;
 }
 
 function parseTimeout(value: string | undefined): number {
@@ -84,6 +86,10 @@ export function registerMarketplaceCommands(program: Command): void {
         "Maximum local wait; timeout requires inspect, never an automatic retry",
         "300000",
       )
+      .option(
+        "--retry-of <operation-id>",
+        "Retry the currently inspected outcome-unknown operation",
+      )
       .action(async (opts: MarketplaceReconcileOptions) => {
         try {
           if (!opts.confirmFleet) {
@@ -94,11 +100,19 @@ export function registerMarketplaceCommands(program: Command): void {
           const timeoutMs = parseTimeout(opts.timeoutMs);
           const ctx = resolveCommandContext(opts);
           const operationId = randomUUID();
+          const request = MarketplaceReconcileRequestSchema.parse({
+            scope: "fleet",
+            mode: "repair",
+            operationId,
+            ...(opts.retryOf
+              ? { retryOfOperationId: opts.retryOf }
+              : {}),
+          });
           printOperationStart(operationId, ctx.json);
           try {
             const response = await ctx.api.post(
               "/api/admin/marketplace/reconcile",
-              { scope: "fleet", mode: "repair", operationId },
+              request,
               { timeoutMs },
             );
             const parsed = MarketplaceReconcileResponseSchema.parse(response);

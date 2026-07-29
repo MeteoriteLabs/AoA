@@ -243,6 +243,7 @@ const MarketplaceReconcileRequestSchema = z.object({
   scope: z.literal("fleet"),
   mode: z.literal("repair"),
   operationId: z.string().uuid(),
+  retryOfOperationId: z.string().uuid().optional(),
 }).strict();
 
 type MarketplaceReconcileSkipCategory =
@@ -345,7 +346,12 @@ the operation UUID before POSTing, prints it first, and the server rejects a
 previously used ID rather than rerunning it. A retry with the same ID inspects
 or joins the matching in-process promise; a different ID while a pass is active
 returns typed `409 operation_in_flight` with the active operation ID. The
-response replaces ambiguous `replayed` semantics with
+optional `retryOfOperationId` becomes mandatory whenever the durable ledger's
+latest mutation-capable outcome is `outcome_unknown_after_mutation`. The server
+atomically rejects an omitted or mismatched predecessor, re-inspects the
+referenced operation, and starts the new operation only when `safeToRetry` is
+still true. A `failed_before_mutation` retry attempt does not clear that
+durable barrier. The response replaces ambiguous `replayed` semantics with
 `executionDisposition: "started" | "joined_in_flight"`. Keep `replayed` as a
 deprecated compatibility field for one release and test the equivalence.
 
@@ -475,7 +481,9 @@ repairs or writes domain state.
 
 Test the exact hard case: maintenance commits, completion audit throws, POST
 returns the typed 500, GET reports the target state, and only a safe inspection
-permits a duplicate-free retry.
+plus a matching `retryOfOperationId` permits a duplicate-free retry. The claim
+path enforces the predecessor reference as a durable cross-replica
+precondition; CLI guidance alone is not an authorization boundary.
 
 ### A1.6 CLI Golden Path
 
@@ -507,12 +515,14 @@ pnpm aoa marketplace inspect <operation-id> \
 ```
 
 `reconcile` generates and prints a UUID, then sends the strict
-`{scope:"fleet", mode:"repair", operationId}` body only when
+`{scope:"fleet", mode:"repair", operationId, retryOfOperationId?}` body only when
 `--confirm-fleet` is present. It prints the operation ID first, uses the stored
 board credential, validates all success and error bodies with the shared Zod
 schemas, renders the recovery instruction, and on timeout directs the operator
-to `inspect` instead of retrying. JSON mode is deterministic and contains no
-credential. `inspect` calls the read-only GET endpoint.
+to `inspect` instead of retrying. A safe retry supplies
+`--retry-of <inspected-operation-id>`; the server validates that reference
+again. JSON mode is deterministic and contains no credential. `inspect` calls
+the read-only GET endpoint.
 
 The measured golden path for an already-valid credential is exactly:
 

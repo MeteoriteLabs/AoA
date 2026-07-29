@@ -12,6 +12,7 @@ import {
   MarketplaceReconcileExecutionError,
   MarketplaceReconciliationInFlightError,
   MarketplaceReconciliationNotFoundError,
+  MarketplaceReconciliationRetryRequiredError,
   type MarketplaceReconcileResult,
 } from "../services/marketplace-reconcile.js";
 
@@ -177,7 +178,126 @@ describe("POST /api/admin/marketplace/reconcile", () => {
     expect(reconcile).toHaveBeenCalledWith(
       { actorType: "user", actorId: "admin-1" },
       OPERATION_ID,
+      null,
     );
+  });
+
+  it("permits a retry only after re-inspecting the referenced predecessor as safe", async () => {
+    const safeInspection: MarketplaceReconciliationInspection = {
+      ...INSPECTION,
+      state: "outcome_unknown_after_mutation",
+      safeToRetry: true,
+      retry: {
+        kind: "immediate",
+        recoveryCode: "retry_now",
+        message: "The inspected state is safe to retry.",
+      },
+    };
+    const inspect = vi.fn(async (operationId: string) => {
+      if (operationId === OTHER_OPERATION_ID) {
+        throw new MarketplaceReconciliationNotFoundError(operationId);
+      }
+      return safeInspection;
+    });
+    const reconcile = vi.fn().mockResolvedValue({
+      ...RESULT,
+      operationId: OTHER_OPERATION_ID,
+    });
+    const app = makeApp(
+      {
+        type: "board",
+        source: "board_key",
+        userId: "admin-1",
+        isInstanceAdmin: true,
+        companyIds: [],
+      },
+      reconcile,
+      undefined,
+      inspect,
+    );
+
+    const response = await request(app)
+      .post("/api/admin/marketplace/reconcile")
+      .send({
+        scope: "fleet",
+        mode: "repair",
+        operationId: OTHER_OPERATION_ID,
+        retryOfOperationId: OPERATION_ID,
+      });
+
+    expect(response.status).toBe(200);
+    expect(inspect).toHaveBeenNthCalledWith(
+      1,
+      OTHER_OPERATION_ID,
+      false,
+    );
+    expect(inspect).toHaveBeenNthCalledWith(2, OPERATION_ID, false);
+    expect(reconcile).toHaveBeenCalledWith(
+      { actorType: "user", actorId: "admin-1" },
+      OTHER_OPERATION_ID,
+      OPERATION_ID,
+    );
+  });
+
+  it("rejects an unsafe predecessor and an omitted required predecessor", async () => {
+    const inspect = vi.fn(async (operationId: string) => {
+      if (operationId === OTHER_OPERATION_ID) {
+        throw new MarketplaceReconciliationNotFoundError(operationId);
+      }
+      return {
+        ...INSPECTION,
+        state: "outcome_unknown_after_mutation" as const,
+        safeToRetry: false,
+      };
+    });
+    const reconcile = vi.fn().mockResolvedValue({
+      ...RESULT,
+      operationId: OTHER_OPERATION_ID,
+    });
+    const actor = {
+      type: "board",
+      source: "board_key",
+      userId: "admin-1",
+      isInstanceAdmin: true,
+      companyIds: [],
+    };
+    const unsafe = await request(
+      makeApp(actor, reconcile, undefined, inspect),
+    )
+      .post("/api/admin/marketplace/reconcile")
+      .send({
+        scope: "fleet",
+        mode: "repair",
+        operationId: OTHER_OPERATION_ID,
+        retryOfOperationId: OPERATION_ID,
+      });
+
+    expect(unsafe.status).toBe(409);
+    expect(unsafe.body).toMatchObject({
+      error: { code: "outcome_unknown_after_mutation" },
+      operationId: OPERATION_ID,
+      retry: { kind: "inspect_first" },
+    });
+    expect(reconcile).not.toHaveBeenCalled();
+
+    const retryRequired = vi
+      .fn()
+      .mockRejectedValue(
+        new MarketplaceReconciliationRetryRequiredError(OPERATION_ID),
+      );
+    const omitted = await request(makeApp(actor, retryRequired))
+      .post("/api/admin/marketplace/reconcile")
+      .send({
+        scope: "fleet",
+        mode: "repair",
+        operationId: OTHER_OPERATION_ID,
+      });
+
+    expect(omitted.status).toBe(409);
+    expect(omitted.body).toMatchObject({
+      error: { code: "outcome_unknown_after_mutation" },
+      operationId: OPERATION_ID,
+    });
   });
 
   it("joins a concurrent replay to the same operation", async () => {

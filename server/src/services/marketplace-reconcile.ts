@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   activityLog,
@@ -485,6 +485,24 @@ export class MarketplaceReconciliationInFlightError extends Error {
   }
 }
 
+export class MarketplaceReconciliationRetryRequiredError extends Error {
+  constructor(public readonly requiredOperationId: string) {
+    super("An outcome-unknown reconciliation must be inspected before retry");
+  }
+}
+
+export class MarketplaceReconciliationRetryReferenceInvalidError extends Error {
+  constructor(public readonly retryOfOperationId: string) {
+    super("The referenced reconciliation is not the current retry barrier");
+  }
+}
+
+export class MarketplaceReconciliationRetryUnsafeError extends Error {
+  constructor(public readonly retryOfOperationId: string) {
+    super("The referenced reconciliation is not currently safe to retry");
+  }
+}
+
 export class MarketplaceReconciliationLeaseLostError extends Error {
   constructor(public readonly operationId: string) {
     super("Marketplace reconciliation operation lease was lost");
@@ -506,7 +524,9 @@ export interface MarketplaceReconciliationOperationRecord {
 export type MarketplaceReconciliationClaimResult =
   | { status: "claimed" }
   | { status: "already_exists" }
-  | { status: "operation_in_flight"; activeOperationId: string };
+  | { status: "operation_in_flight"; activeOperationId: string }
+  | { status: "retry_required"; requiredOperationId: string }
+  | { status: "retry_reference_invalid"; retryOfOperationId: string };
 
 export interface MarketplaceReconciliationOperationStore {
   claim(input: {
@@ -515,6 +535,7 @@ export interface MarketplaceReconciliationOperationStore {
     actor: MarketplaceReconciliationActor;
     deploymentSha: string;
     leaseOwnerId: string;
+    retryOfOperationId?: string | null;
   }): Promise<MarketplaceReconciliationClaimResult>;
   heartbeat(input: {
     db: Db;
@@ -600,6 +621,71 @@ export const marketplaceReconciliationOperationStore: MarketplaceReconciliationO
         for (let attempt = 0; attempt < 2; attempt += 1) {
           const inserted = await insertClaim();
           if (inserted.length === 1) {
+            // Ignore failed-before-mutation rows: they cannot resolve an older
+            // uncertain mutation. The newest success/partial result resolves
+            // all earlier uncertainty because this gate only permits it after
+            // a safe inspection of the newest outcome-unknown predecessor.
+            const [latestMutationOutcome] = await db
+              .select({
+                operationId:
+                  marketplaceReconciliationOperations.operationId,
+                state: marketplaceReconciliationOperations.state,
+              })
+              .from(marketplaceReconciliationOperations)
+              .where(
+                and(
+                  ne(
+                    marketplaceReconciliationOperations.operationId,
+                    input.operationId,
+                  ),
+                  inArray(marketplaceReconciliationOperations.state, [
+                    "success",
+                    "partial",
+                    "outcome_unknown_after_mutation",
+                  ]),
+                ),
+              )
+              .orderBy(
+                desc(marketplaceReconciliationOperations.startedAt),
+                desc(marketplaceReconciliationOperations.updatedAt),
+              )
+              .limit(1);
+            const requiredOperationId =
+              latestMutationOutcome?.state ===
+              "outcome_unknown_after_mutation"
+                ? latestMutationOutcome.operationId
+                : null;
+            const retryOfOperationId =
+              input.retryOfOperationId ?? null;
+
+            if (requiredOperationId !== retryOfOperationId) {
+              // The row is not visible outside this transaction. Delete it so
+              // a rejected precondition does not consume an operation UUID.
+              await db
+                .delete(marketplaceReconciliationOperations)
+                .where(
+                  and(
+                    eq(
+                      marketplaceReconciliationOperations.operationId,
+                      input.operationId,
+                    ),
+                    eq(
+                      marketplaceReconciliationOperations.leaseOwnerId,
+                      input.leaseOwnerId,
+                    ),
+                  ),
+                );
+              if (requiredOperationId) {
+                return {
+                  status: "retry_required" as const,
+                  requiredOperationId,
+                };
+              }
+              return {
+                status: "retry_reference_invalid" as const,
+                retryOfOperationId: retryOfOperationId!,
+              };
+            }
             return { status: "claimed" as const };
           }
 
@@ -782,6 +868,11 @@ export interface RunMarketplaceReconciliationOptions {
   catalogService: Pick<MarketplaceCatalogService, "refresh">;
   actor: MarketplaceReconciliationActor;
   operationId: string;
+  retryOfOperationId?: string | null;
+  inspectRetry?: (
+    db: Db,
+    operationId: string,
+  ) => Promise<MarketplaceReconciliationInspection>;
   maintenance?: typeof runMarketplaceCrewMaintenance;
   listCompanyIds?: MarketplaceMaintenanceDeps["listCompanyIds"];
   audit?: MarketplaceReconciliationAuditWriter;
@@ -802,6 +893,7 @@ export async function runMarketplaceReconciliation(
     actor: options.actor,
     deploymentSha: reconciliationDeploymentSha(),
     leaseOwnerId,
+    retryOfOperationId: options.retryOfOperationId,
   });
   if (claim.status === "already_exists") {
     throw new MarketplaceReconciliationAlreadyExistsError(operationId);
@@ -809,6 +901,16 @@ export async function runMarketplaceReconciliation(
   if (claim.status === "operation_in_flight") {
     throw new MarketplaceReconciliationInFlightError(
       claim.activeOperationId,
+    );
+  }
+  if (claim.status === "retry_required") {
+    throw new MarketplaceReconciliationRetryRequiredError(
+      claim.requiredOperationId,
+    );
+  }
+  if (claim.status === "retry_reference_invalid") {
+    throw new MarketplaceReconciliationRetryReferenceInvalidError(
+      claim.retryOfOperationId,
     );
   }
 
@@ -852,6 +954,36 @@ export async function runMarketplaceReconciliation(
   };
 
   try {
+    if (options.retryOfOperationId) {
+      const inspectRetry =
+        options.inspectRetry ??
+        ((db: Db, operationId: string) =>
+          inspectMarketplaceReconciliation({
+            db,
+            operationId,
+            isActive: false,
+          }));
+      let inspection: MarketplaceReconciliationInspection;
+      try {
+        inspection = await inspectRetry(
+          options.db,
+          options.retryOfOperationId,
+        );
+      } catch {
+        throw new MarketplaceReconciliationRetryUnsafeError(
+          options.retryOfOperationId,
+        );
+      }
+      if (
+        inspection.operationId !== options.retryOfOperationId ||
+        inspection.state !== "outcome_unknown_after_mutation" ||
+        !inspection.safeToRetry
+      ) {
+        throw new MarketplaceReconciliationRetryUnsafeError(
+          options.retryOfOperationId,
+        );
+      }
+    }
     const result = await withMarketplaceUpdateLock(() =>
       withMaintenanceLock(() =>
         runMarketplaceReconciliationLocked(
@@ -888,6 +1020,7 @@ export async function runMarketplaceReconciliation(
     await stopHeartbeat();
     const state =
       error instanceof MarketplaceCatalogRefreshError ||
+      error instanceof MarketplaceReconciliationRetryUnsafeError ||
       (error instanceof MarketplaceReconcileExecutionError &&
         error.outcome === "internal_error")
         ? "failed_before_mutation"
@@ -1653,7 +1786,10 @@ export async function inspectMarketplaceReconciliation(
             crewState: "blocked",
             diagnosticCode: "unknown_fail_closed",
           });
-        } else if (diagnosis.verdict === "healthy") {
+        } else if (
+          diagnosis.verdict === "healthy" ||
+          diagnosis.verdict === "operation-row-stale"
+        ) {
           if (await hasUnaccountedCrewRows(options.db, diagnosis)) {
             safeToRetry = false;
             targets.push({
@@ -1664,12 +1800,14 @@ export async function inspectMarketplaceReconciliation(
           } else {
             targets.push({
               companyId,
-              crewState: "healthy",
+              crewState:
+                diagnosis.verdict === "healthy"
+                  ? "healthy"
+                  : "repairable",
               diagnosticCode: null,
             });
           }
         } else if (
-          diagnosis.verdict === "operation-row-stale" ||
           (diagnosis.teamId === null &&
             diagnosis.managedCrew.length === 0 &&
             diagnosis.unmanagedCrew.length === 0)

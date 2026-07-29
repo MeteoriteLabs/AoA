@@ -85,17 +85,26 @@ describe.skipIf(process.platform === "win32")(
       const firstOperationId = randomUUID();
       const secondOperationId = randomUUID();
       const thirdOperationId = randomUUID();
+      const fourthOperationId = randomUUID();
+      const fifthOperationId = randomUUID();
       const firstOwnerId = randomUUID();
       const secondOwnerId = randomUUID();
       const thirdOwnerId = randomUUID();
+      const fourthOwnerId = randomUUID();
+      const fifthOwnerId = randomUUID();
       const actor = { actorType: "user" as const, actorId: "admin-test" };
-      const claim = (operationId: string, leaseOwnerId: string) =>
+      const claim = (
+        operationId: string,
+        leaseOwnerId: string,
+        retryOfOperationId?: string,
+      ) =>
         marketplaceReconciliationOperationStore.claim({
           db,
           operationId,
           leaseOwnerId,
           actor,
           deploymentSha: "test-sha",
+          retryOfOperationId,
         });
 
       await expect(claim(firstOperationId, firstOwnerId)).resolves.toEqual({
@@ -142,6 +151,12 @@ describe.skipIf(process.platform === "win32")(
       `);
 
       await expect(claim(thirdOperationId, thirdOwnerId)).resolves.toEqual({
+        status: "retry_required",
+        requiredOperationId: secondOperationId,
+      });
+      await expect(
+        claim(thirdOperationId, thirdOwnerId, secondOperationId),
+      ).resolves.toEqual({
         status: "claimed",
       });
       await expect(
@@ -155,6 +170,49 @@ describe.skipIf(process.platform === "win32")(
       ).resolves.toMatchObject({
         state: "claimed",
         leaseActive: true,
+      });
+
+      await marketplaceReconciliationOperationStore.markRunning({
+        db,
+        operationId: thirdOperationId,
+        leaseOwnerId: thirdOwnerId,
+        companyIds: [],
+      });
+      await marketplaceReconciliationOperationStore.finish({
+        db,
+        operationId: thirdOperationId,
+        leaseOwnerId: thirdOwnerId,
+        state: "failed_before_mutation",
+        catalog: null,
+      });
+      await expect(
+        claim(fourthOperationId, fourthOwnerId),
+      ).resolves.toEqual({
+        status: "retry_required",
+        requiredOperationId: secondOperationId,
+      });
+      await expect(
+        claim(fourthOperationId, fourthOwnerId, secondOperationId),
+      ).resolves.toEqual({
+        status: "claimed",
+      });
+      await marketplaceReconciliationOperationStore.markRunning({
+        db,
+        operationId: fourthOperationId,
+        leaseOwnerId: fourthOwnerId,
+        companyIds: [],
+      });
+      await marketplaceReconciliationOperationStore.finish({
+        db,
+        operationId: fourthOperationId,
+        leaseOwnerId: fourthOwnerId,
+        state: "success",
+        catalog: null,
+      });
+      await expect(
+        claim(fifthOperationId, fifthOwnerId),
+      ).resolves.toEqual({
+        status: "claimed",
       });
     });
   },

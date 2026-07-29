@@ -47,7 +47,21 @@ node scripts/verify-marketplace-recovery-preflight.mjs \
 The CLI prints the operation UUID to stderr before the POST, keeping `--json`
 stdout as one parseable response document. If the local request times
 out, do not retry. Inspect that UUID first. A second operation may be safe only
-when inspection returns `safeToRetry: true`; always use a new UUID for it.
+when inspection returns `safeToRetry: true`. Retry with a new UUID linked to
+the inspected predecessor:
+
+```bash
+pnpm aoa marketplace reconcile \
+  --api-base https://testing.armyofagents.org \
+  --confirm-fleet \
+  --retry-of <inspected-operation-id> \
+  --timeout-ms 300000 \
+  --json
+```
+
+The server re-runs the inspection and rejects an omitted, stale, mismatched, or
+unsafe predecessor reference. A failed-before-mutation attempt does not clear
+the retry barrier.
 
 ## Reading the result
 
@@ -144,8 +158,9 @@ is heartbeated while the operation waits for local maintenance locks and while
 it runs, so another app replica reports `operation_in_flight` rather than
 starting overlapping writes. After a crashed worker's lease expires,
 inspection reports `outcome_unknown_after_mutation`; a later POST atomically
-fences that stale owner before it can claim a new operation. Follow the
-inspection result and never bypass the ledger with manual activity rows.
+fences that stale owner and requires the stale operation ID as
+`retryOfOperationId` before it can claim a new operation. Follow the inspection
+result and never bypass the ledger with manual activity rows.
 
 ## Advanced board-key request
 
@@ -159,6 +174,11 @@ curl -sS -X POST https://testing.armyofagents.org/api/admin/marketplace/reconcil
   -H "Content-Type: application/json" \
   --data '{"scope":"fleet","mode":"repair","operationId":"<uuid>"}'
 ```
+
+For a verified-safe retry, add
+`"retryOfOperationId":"<inspected-operation-id>"`. The referenced operation
+must be the server's current outcome-unknown retry barrier and must still
+inspect with `safeToRetry: true`.
 
 Never place the key in the URL, command history, incident bundle, or committed
 fixture.

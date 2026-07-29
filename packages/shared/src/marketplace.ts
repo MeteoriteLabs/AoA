@@ -350,13 +350,26 @@ export const MarketplaceMaintenanceStageSchema = z.enum([
   "team_reconcile",
 ]);
 
+export const MarketplaceReconciliationOperationIdSchema = z.string().uuid();
+
 export const MarketplaceReconcileRequestSchema = z
   .object({
     scope: z.literal("fleet"),
     mode: z.literal("repair"),
-    operationId: z.string().uuid(),
+    operationId: MarketplaceReconciliationOperationIdSchema,
+    retryOfOperationId:
+      MarketplaceReconciliationOperationIdSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.retryOfOperationId === value.operationId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["retryOfOperationId"],
+        message: "retryOfOperationId must name a predecessor operation",
+      });
+    }
+  });
 export type MarketplaceReconcileRequest = z.infer<
   typeof MarketplaceReconcileRequestSchema
 >;

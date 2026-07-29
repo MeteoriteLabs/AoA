@@ -1211,6 +1211,7 @@ export {
   MarketplaceCatalogFileSchema,
   MarketplacePackageSchema,
   MarketplaceMaintenanceStageSchema,
+  MarketplaceReconciliationOperationIdSchema,
   MarketplaceReconcileRequestSchema,
   MarketplaceReconcileSkipCategorySchema,
   MarketplaceReconcileDiagnosticCodeSchema,

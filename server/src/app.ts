@@ -503,12 +503,13 @@ export async function createApp(
   api.use(
     "/admin/marketplace",
     createAdminMarketplaceRouter({
-      reconcile: (actor, operationId) =>
+      reconcile: (actor, operationId, retryOfOperationId) =>
         runMarketplaceReconciliation({
           db,
           catalogService: marketplaceCatalogService,
           actor,
           operationId,
+          retryOfOperationId,
         }),
       inspect: (operationId, isActive) =>
         inspectMarketplaceReconciliation({ db, operationId, isActive }),
