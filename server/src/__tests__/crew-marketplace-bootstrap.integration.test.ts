@@ -55,6 +55,10 @@ vi.mock("../services/marketplace-install/skill-bundle-materializer.js", async ()
   >("../services/marketplace-install/skill-bundle-materializer.js");
   return { ...actual, materializeSkillBundle: materializerMock };
 });
+vi.mock(
+  "../services/outbound-url-guard.js",
+  () => import("./helpers/outbound-url-guard.mock.js"),
+);
 
 import {
   MarketplaceCatalogService,
@@ -114,7 +118,8 @@ const PORT = 57900 + Math.floor(Math.random() * 500);
 
 /** A CDN URL that is never reachable — the fixture fetch always rejects it. */
 const FIXTURE_CDN_URL = "https://cdn.fixture.invalid/catalog.json";
-const FIXTURE_HOST = "https://raw.fixture.invalid";
+const FIXTURE_HOST =
+  `https://raw.githubusercontent.com/MeteoriteLabs/aoa-marketplace/${"f".repeat(40)}`;
 
 const TEAM_ID = "team:aoa-curated/default-crew";
 const SCOUT_ID = "agent:aoa-curated/aoa-scout";
