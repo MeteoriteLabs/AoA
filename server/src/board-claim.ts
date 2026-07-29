@@ -84,8 +84,14 @@ export function inspectBoardClaimChallenge(token: string, code: string | undefin
 
 export async function claimBoardOwnership(
   db: Db,
-  opts: { token: string; code: string | undefined; userId: string },
+  opts: { token: string; code: string | undefined; userId: string; deploymentMode?: DeploymentMode },
 ): Promise<{ status: ChallengeStatus; claimedByUserId?: string }> {
+  // Task 8 (Phase 2 lockout cluster): board-claim is a single-tenant
+  // local_trusted->authenticated handoff; it must be inert in cloud_auth.
+  // Explicit short-circuit BEFORE any DB access, not just reliance on
+  // initializeBoardClaimChallenge() never having created a challenge — this
+  // is the defense-in-depth the no-write regression test proves.
+  if (opts.deploymentMode === "cloud_auth") return { status: "invalid" };
   const status = getChallengeStatus(opts.token, opts.code);
   if (status !== "available") return { status };
 

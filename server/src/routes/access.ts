@@ -1617,7 +1617,8 @@ export function accessRoutes(
     const claimed = await claimBoardOwnership(db, {
       token,
       code,
-      userId: req.actor.userId
+      userId: req.actor.userId,
+      deploymentMode: opts.deploymentMode
     });
 
     if (claimed.status === "invalid")
