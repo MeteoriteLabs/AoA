@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { classifyCrewSkillFailure } from "../services/crew-repair.js";
+import { MarketplaceResourceFetchError } from "../services/marketplace-install/fetch-resource.js";
 
 describe("crew repair skill failure classification", () => {
   it.each([
@@ -28,6 +29,44 @@ describe("crew repair skill failure classification", () => {
         name: "AbortError",
       }),
       code: "resource-temporarily-unavailable",
+      context: {},
+    },
+    {
+      cause: new MarketplaceResourceFetchError(
+        "Failed to fetch skill content",
+        "transport_error",
+        undefined,
+        {
+          cause: Object.assign(new Error("upstream secret timed out"), {
+            name: "TimeoutError",
+          }),
+        },
+      ),
+      code: "resource-temporarily-unavailable",
+      context: {},
+    },
+    {
+      cause: new MarketplaceResourceFetchError(
+        "Failed to fetch skill content",
+        "transport_error",
+        undefined,
+        {
+          cause: Object.assign(new Error("upstream secret aborted"), {
+            name: "AbortError",
+          }),
+        },
+      ),
+      code: "resource-temporarily-unavailable",
+      context: {},
+    },
+    {
+      cause: new MarketplaceResourceFetchError(
+        "Failed to fetch skill content",
+        "transport_error",
+        undefined,
+        { cause: new Error("upstream secret socket closed") },
+      ),
+      code: "resource-fetch-failed",
       context: {},
     },
     {

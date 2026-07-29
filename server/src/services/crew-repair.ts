@@ -88,7 +88,10 @@ import type { CatalogItem } from "@armyofagents/shared";
 import { logger } from "../middleware/logger.js";
 import { marketplaceNotifications } from "./marketplace-notifications.js";
 import { resolveTeamSlugConflict } from "./marketplace-install/conflict-resolver.js";
-import { fetchCatalogResource } from "./marketplace-install/fetch-resource.js";
+import {
+  fetchCatalogResource,
+  MarketplaceResourceFetchError,
+} from "./marketplace-install/fetch-resource.js";
 import { installSkill } from "./marketplace-install/skill-installer.js";
 import {
   createBundleCheckoutCache,
@@ -982,6 +985,46 @@ class CrewSkillInstallError extends Error {
   }
 }
 
+function isTransientMarketplaceTransportCause(cause: unknown): boolean {
+  let current = cause;
+  const seen = new Set<object>();
+
+  for (let depth = 0; depth < 4; depth += 1) {
+    if (current === null || typeof current !== "object" || seen.has(current)) {
+      return false;
+    }
+    seen.add(current);
+
+    const error = current as {
+      cause?: unknown;
+      message?: unknown;
+      name?: unknown;
+      status?: unknown;
+    };
+    const message =
+      typeof error.message === "string" ? error.message.toLowerCase() : "";
+    const status =
+      typeof error.status === "number"
+        ? error.status
+        : Number(/\bHTTP\s+(\d{3})\b/i.exec(message)?.[1] ?? NaN);
+    if (
+      status === 408 ||
+      status === 425 ||
+      status === 429 ||
+      (Number.isInteger(status) && status >= 500 && status <= 599) ||
+      error.name === "AbortError" ||
+      error.name === "TimeoutError" ||
+      message.includes("timed out") ||
+      message.includes("timeout")
+    ) {
+      return true;
+    }
+    current = error.cause;
+  }
+
+  return false;
+}
+
 export function classifyCrewSkillFailure(
   catalogItemId: string,
   cause: unknown,
@@ -1009,6 +1052,10 @@ export function classifyCrewSkillFailure(
     ["read", "write", "rename", "mkdir"].includes(error.syscall)
       ? (error.syscall as "read" | "write" | "rename" | "mkdir")
       : undefined;
+  const wrappedTransportIsTransient =
+    cause instanceof MarketplaceResourceFetchError &&
+    cause.code === "transport_error" &&
+    isTransientMarketplaceTransportCause(cause.cause);
 
   let failureCode: CrewRepairSkillFailureCode;
   if (
@@ -1025,8 +1072,10 @@ export function classifyCrewSkillFailure(
     httpStatus === 429 ||
     (httpStatus !== undefined && httpStatus >= 500) ||
     error?.name === "AbortError" ||
+    error?.name === "TimeoutError" ||
     message.includes("timed out") ||
-    message.includes("timeout")
+    message.includes("timeout") ||
+    wrappedTransportIsTransient
   ) {
     failureCode = "resource-temporarily-unavailable";
   } else if (
