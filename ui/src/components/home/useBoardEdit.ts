@@ -44,6 +44,15 @@ export interface UseBoardEditResult {
   isSaving: boolean;
   isResetting: boolean;
   saveError: unknown;
+  /**
+   * The RGL breakpoint currently in effect ("lg" | "md" | "sm"). Task D1:
+   * editing is enforced lg-only — callers (HomeBoard/HomeBoardControls) gate
+   * every mutating edit affordance (drag, resize, remove, add, keyboard
+   * move/resize, and starting edit mode at all) on `activeBreakpoint ===
+   * "lg"`, since only the lg layout is canonical/persisted; md/sm are
+   * always-derived projections (see gridLayout.ts projectToBreakpoint).
+   */
+  activeBreakpoint: string;
   startEdit: () => void;
   /** Flushes: saves the draft if dirty, otherwise just closes edit mode. No-op while a save is in flight. */
   exitEdit: () => void;
@@ -276,6 +285,7 @@ export function useBoardEdit(
     isSaving,
     isResetting,
     saveError,
+    activeBreakpoint,
     startEdit,
     exitEdit,
     retrySave,

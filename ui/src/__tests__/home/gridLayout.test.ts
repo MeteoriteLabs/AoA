@@ -173,3 +173,40 @@ describe("projectToBreakpoint", () => {
     expect(projectToBreakpoint(lg, 1)).toEqual(projectToBreakpoint(lg, 1));
   });
 });
+
+describe("canonical lg round-trip (Task D1)", () => {
+  // Only the lg array is ever persisted (useHomeBoardLayout.save posts exactly
+  // what useBoardEdit's draft holds, which is always lg-shaped). "Reload" is
+  // simulated by feeding the saved lg straight back through reconcileLg, the
+  // same step HomeBoard/useBoardEdit takes for a freshly-fetched saved
+  // layout — the round trip must be lossless when nothing about the registry
+  // has changed since save.
+  it("save -> reload (reconcileLg) reproduces an identical lg for the founder default board", () => {
+    const saved = buildDefaultLg("founder");
+    const reloaded = reconcileLg(saved, "founder");
+    expect(reloaded).toEqual(saved);
+  });
+
+  it("save -> reload (reconcileLg) reproduces an identical lg for a custom (subset/reordered) layout", () => {
+    const saved: HomeBoardLayoutItem[] = [
+      { i: "budget", x: 0, y: 0, w: 1, h: 1 },
+      { i: "my-tasks", x: 1, y: 0, w: 2, h: 1 },
+      { i: "agents-now", x: 3, y: 0, w: 1, h: 1 },
+    ];
+    const reloaded = reconcileLg(saved, "founder");
+    expect(reloaded).toEqual(saved);
+  });
+
+  it("md/sm are pure derivations of lg — never persisted, always recomputed from the same lg", () => {
+    const lg = buildDefaultLg("founder");
+
+    // "Pure derivation" means: given the same lg + cols, the projection is
+    // always the same value (no hidden state, no persistence round-trip
+    // needed to reproduce it) — re-deriving from a round-tripped
+    // (save->reload) lg gives byte-identical md/sm to deriving straight from
+    // the original.
+    const reloaded = reconcileLg(lg, "founder");
+    expect(projectToBreakpoint(reloaded, 2)).toEqual(projectToBreakpoint(lg, 2));
+    expect(projectToBreakpoint(reloaded, 1)).toEqual(projectToBreakpoint(lg, 1));
+  });
+});

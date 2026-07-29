@@ -40,6 +40,7 @@ export function HomeBoard({ companyId, role }: { companyId: string; role: UserRo
     isSaving,
     isResetting,
     saveError,
+    activeBreakpoint,
     startEdit,
     exitEdit,
     retrySave,
@@ -52,6 +53,16 @@ export function HomeBoard({ companyId, role }: { companyId: string; role: UserRo
   } = useBoardEdit(companyId, role);
   const { width, mounted, containerRef } = useContainerWidth();
   const [trayOpen, setTrayOpen] = useState(false);
+
+  // Task D1: editing is enforced lg-only (the persisted layout is the
+  // canonical desktop lg array — md/sm are always-derived projections, never
+  // edited). `editing` alone isn't enough to gate drag/resize/remove/add:
+  // if the viewport shrinks below 1024px mid-edit-session (activeBreakpoint
+  // flips away from "lg"), every mutating affordance freezes until it's back
+  // at lg — the user can still hit "Done" to exit/save (see
+  // HomeBoardControls), they just can't keep dragging/resizing/adding below
+  // desktop width.
+  const editableNow = editing && activeBreakpoint === "lg";
 
   // Never let a stale tray-open flag resurface on a later edit session (e.g.
   // after a company switch discards the current one mid-tray).
@@ -83,7 +94,7 @@ export function HomeBoard({ companyId, role }: { companyId: string; role: UserRo
         {editing && saveError == null && !isSaving && dirty && (
           <span className="text-sm text-muted-foreground">Unsaved changes</span>
         )}
-        {editing && (
+        {editableNow && (
           <div className="relative">
             <Button
               type="button"
@@ -109,7 +120,8 @@ export function HomeBoard({ companyId, role }: { companyId: string; role: UserRo
           type="button"
           variant="outline"
           size="sm"
-          disabled={isSaving}
+          disabled={isSaving || (!editing && activeBreakpoint !== "lg")}
+          title={!editing && activeBreakpoint !== "lg" ? "Edit on a larger screen (1024px+)" : undefined}
           onClick={editing ? exitEdit : startEdit}
         >
           {editing ? "Done" : "Edit board"}
@@ -126,8 +138,8 @@ export function HomeBoard({ companyId, role }: { companyId: string; role: UserRo
             rowHeight={104}
             margin={[12, 12]}
             compactor={verticalCompactor}
-            dragConfig={{ enabled: editing, cancel: REMOVE_BUTTON_CANCEL_SELECTOR }}
-            resizeConfig={{ enabled: editing }}
+            dragConfig={{ enabled: editableNow, cancel: REMOVE_BUTTON_CANCEL_SELECTOR }}
+            resizeConfig={{ enabled: editableNow }}
             onLayoutChange={onLayoutChange}
             onBreakpointChange={onBreakpointChange}
             onResizeStop={onResizeStop}
@@ -138,7 +150,7 @@ export function HomeBoard({ companyId, role }: { companyId: string; role: UserRo
               const Widget = def.Component;
               return (
                 <div key={item.i} className="relative h-full w-full">
-                  {editing && (
+                  {editableNow && (
                     <button
                       type="button"
                       onClick={() => removeWidget(item.i)}

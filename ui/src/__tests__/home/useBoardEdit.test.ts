@@ -173,6 +173,22 @@ describe("useBoardEdit", () => {
     });
   });
 
+  describe("activeBreakpoint (Task D1 — edit is lg-only)", () => {
+    it("defaults to lg", () => {
+      const { result } = renderHook(() => useBoardEdit(COMPANY_A, "founder"));
+      expect(result.current.activeBreakpoint).toBe("lg");
+    });
+
+    it("tracks onBreakpointChange", () => {
+      const { result } = renderHook(() => useBoardEdit(COMPANY_A, "founder"));
+      act(() => result.current.onBreakpointChange("sm", 1));
+      expect(result.current.activeBreakpoint).toBe("sm");
+
+      act(() => result.current.onBreakpointChange("lg", 4));
+      expect(result.current.activeBreakpoint).toBe("lg");
+    });
+  });
+
   describe("onResizeStop", () => {
     it("snaps the resized item to the nearest allowed size before committing to the draft", () => {
       const { result } = renderHook(() => useBoardEdit(COMPANY_A, "founder"));
