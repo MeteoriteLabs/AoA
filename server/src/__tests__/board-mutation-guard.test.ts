@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import express from "express";
 import request from "supertest";
+import { MarketplaceReconcileErrorResponseSchema } from "@armyofagents/shared";
 import { boardMutationGuard } from "../middleware/board-mutation-guard.js";
 
 function createApp(
@@ -17,6 +18,9 @@ function createApp(
   });
   app.use(boardMutationGuard());
   app.post("/mutate", (_req, res) => {
+    res.status(204).end();
+  });
+  app.post("/api/admin/marketplace/reconcile", (_req, res) => {
     res.status(204).end();
   });
   app.get("/read", (_req, res) => {
@@ -67,6 +71,19 @@ describe("boardMutationGuard", () => {
       .set("Referer", "http://localhost:3100/issues/abc")
       .send({ ok: true });
     expect(res.status).toBe(204);
+  });
+
+  it("uses the strict marketplace envelope when the origin guard rejects first", async () => {
+    const app = createApp("board");
+    const res = await request(app)
+      .post("/api/admin/marketplace/reconcile")
+      .send({ ok: true });
+
+    expect(res.status).toBe(403);
+    expect(() =>
+      MarketplaceReconcileErrorResponseSchema.parse(res.body),
+    ).not.toThrow();
+    expect(res.body.error.code).toBe("invalid_request");
   });
 
   it("does not block authenticated agent mutations", async () => {

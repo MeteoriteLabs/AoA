@@ -1,5 +1,5 @@
 {
-  "id": "acfacb38-4c19-484d-a2b4-48e1cca92c52",
+  "id": "e8731447-d21e-4752-8840-fc63b174a5f6",
   "prevId": "e404ce55-b221-492b-b528-57d11e1f7c27",
   "version": "7",
   "dialect": "postgresql",
@@ -5202,12 +5202,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "resource_key": {
-          "name": "resource_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "login_url": {
           "name": "login_url",
           "type": "text",
@@ -5306,22 +5300,6 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "commander_login_challenges_active_resource_uq": {
-          "name": "commander_login_challenges_active_resource_uq",
-          "columns": [
-            {
-              "expression": "resource_key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"commander_login_challenges\".\"status\" = 'pending' AND \"commander_login_challenges\".\"resource_key\" IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -20619,6 +20597,160 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.marketplace_reconciliation_operations": {
+      "name": "marketplace_reconciliation_operations",
+      "schema": "",
+      "columns": {
+        "operation_id": {
+          "name": "operation_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "actor_type": {
+          "name": "actor_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor_id": {
+          "name": "actor_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'claimed'"
+        },
+        "deployment_sha": {
+          "name": "deployment_sha",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "target_count": {
+          "name": "target_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "target_company_ids": {
+          "name": "target_company_ids",
+          "type": "uuid[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "ARRAY[]::uuid[]"
+        },
+        "catalog": {
+          "name": "catalog",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "active_slot": {
+          "name": "active_slot",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "lease_owner_id": {
+          "name": "lease_owner_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lease_expires_at": {
+          "name": "lease_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "marketplace_reconciliation_operations_state_updated_idx": {
+          "name": "marketplace_reconciliation_operations_state_updated_idx",
+          "columns": [
+            {
+              "expression": "state",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "updated_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "marketplace_reconciliation_operations_one_active_idx": {
+          "name": "marketplace_reconciliation_operations_one_active_idx",
+          "columns": [
+            {
+              "expression": "active_slot",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"marketplace_reconciliation_operations\".\"state\" in ('claimed', 'running')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "marketplace_reconciliation_operations_state_check": {
+          "name": "marketplace_reconciliation_operations_state_check",
+          "value": "\"marketplace_reconciliation_operations\".\"state\" in (\n        'claimed',\n        'running',\n        'success',\n        'partial',\n        'failed_before_mutation',\n        'outcome_unknown_after_mutation'\n      )"
+        },
+        "marketplace_reconciliation_operations_active_slot_check": {
+          "name": "marketplace_reconciliation_operations_active_slot_check",
+          "value": "\"marketplace_reconciliation_operations\".\"active_slot\" = 1"
+        },
+        "marketplace_reconciliation_operations_lease_check": {
+          "name": "marketplace_reconciliation_operations_lease_check",
+          "value": "(\n        (\"marketplace_reconciliation_operations\".\"state\" in ('claimed', 'running')\n          and \"marketplace_reconciliation_operations\".\"lease_owner_id\" is not null\n          and \"marketplace_reconciliation_operations\".\"lease_expires_at\" is not null)\n        or\n        (\"marketplace_reconciliation_operations\".\"state\" not in ('claimed', 'running')\n          and \"marketplace_reconciliation_operations\".\"lease_owner_id\" is null\n          and \"marketplace_reconciliation_operations\".\"lease_expires_at\" is null)\n      )"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.mcp_api_keys": {

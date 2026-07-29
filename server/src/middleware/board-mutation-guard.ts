@@ -1,4 +1,8 @@
 import type { Request, RequestHandler } from "express";
+import {
+  isMarketplaceAdminPath,
+  marketplaceErrorResponse,
+} from "../services/marketplace-http-contract.js";
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 const DEFAULT_DEV_ORIGINS = [
@@ -51,7 +55,8 @@ export function boardMutationGuard(): RequestHandler {
 
     // Local-trusted requests and explicit bearer board keys are not ambient
     // cookie credentials, so they are not vulnerable to browser CSRF. The CLI
-    // intentionally sends its board key without an Origin/Referer header.
+    // intentionally sends its board key without an Origin/Referer header, and
+    // local multipart clients may omit those browser-only headers too.
     if (
       req.actor.source === "local_implicit" ||
       req.actor.source === "board_key"
@@ -61,7 +66,15 @@ export function boardMutationGuard(): RequestHandler {
     }
 
     if (!isTrustedBoardMutationRequest(req)) {
-      res.status(403).json({ error: "Board mutation requires trusted browser origin" });
+      if (isMarketplaceAdminPath(req.originalUrl)) {
+        res
+          .status(403)
+          .json(marketplaceErrorResponse("invalid_request", null));
+        return;
+      }
+      res.status(403).json({
+        error: "Board mutation requires trusted browser origin",
+      });
       return;
     }
 

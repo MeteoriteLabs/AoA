@@ -28,7 +28,15 @@
  * embedded-postgres — Issue #114); Linux CI is the authoritative gate. On a
  * Windows dev box set `AOA_RUN_WIN_INTEGRATION=1` to run it for real.
  */
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import express from "express";
 import request from "supertest";
 import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
@@ -79,6 +87,31 @@ import type { NormalizedMarketplaceAgentTemplate } from "../services/marketplace
 import { createMarketplaceCompanyRouter } from "../routes/marketplace-company.js";
 import { errorHandler } from "../middleware/error-handler.js";
 
+vi.mock("../services/outbound-url-guard.js", () => ({
+  validateAndResolveFetchUrl: vi.fn(async (url: string) => ({
+    parsedUrl: new URL(url),
+    resolvedAddress: "93.184.216.34",
+    hostHeader: new URL(url).host,
+    tlsServername: new URL(url).hostname,
+    useTls: true,
+  })),
+  executePinnedRequest: vi.fn(
+    async (
+      target: { parsedUrl: URL },
+      init: RequestInit | undefined,
+      signal: AbortSignal,
+    ) => {
+      const response = await fetch(target.parsedUrl, { ...init, signal });
+      return {
+        status: response.status,
+        statusText: response.statusText,
+        headers: Object.fromEntries(response.headers.entries()),
+        body: await response.text(),
+      };
+    },
+  ),
+}));
+
 type EmbeddedPostgresInstance = {
   initialise(): Promise<void>;
   start(): Promise<void>;
@@ -125,7 +158,8 @@ function assertSetupOk(): void {
 const PORT = 58500 + Math.floor(Math.random() * 400);
 
 const FIXTURE_CDN_URL = "https://cdn.repairfixture.invalid/catalog.json";
-const FIXTURE_HOST = "https://raw.repairfixture.invalid";
+const FIXTURE_HOST =
+  `https://raw.githubusercontent.com/MeteoriteLabs/aoa-marketplace/${"f".repeat(40)}`;
 
 const TEAM_ID = "team:aoa-curated/default-crew";
 const SCOUT_ID = "agent:aoa-curated/aoa-scout";
@@ -1841,6 +1875,9 @@ describe.skipIf(
       skippedFailClosed: 0,
       failed: 0,
     });
+    expect(
+      pass1.skips.filter((skip) => skip.category === "over_budget"),
+    ).toHaveLength(pass1.skippedOverBudget);
 
     clock += CREW_REPAIR_COOLDOWN_MS + 1;
     const pass2 = await runCrewRepairPass({
@@ -1894,6 +1931,9 @@ describe.skipIf(
       skippedFailClosed: 1,
       skippedOverBudget: 0,
     });
+    expect(
+      pass.skips.filter((skip) => skip.category === "fail_closed"),
+    ).toHaveLength(pass.skippedFailClosed);
   }, 300_000);
 
   it("the cooldown, not luck, is what stops a degraded company being retried every pass", async () => {
@@ -1919,6 +1959,10 @@ describe.skipIf(
       /@legacy$/,
     );
     expect(pass2).toMatchObject({ skippedCooldown: 1, repaired: 0 });
+    expect(
+      pass2.skips.filter((skip) => skip.category === "cooldown"),
+    ).toHaveLength(1);
+    expect(pass2.skips[0]?.notBefore).toBeTruthy();
 
     clock += 2;
     const pass3 = await runCrewRepairPass({ db, companyIds: [companyId], catalogItems: CATALOG_ITEMS });

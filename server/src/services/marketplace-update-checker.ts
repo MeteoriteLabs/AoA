@@ -17,6 +17,7 @@ import {
 import type { CatalogItem } from "@armyofagents/shared";
 import { marketplaceNotifications } from "./marketplace-notifications.js";
 import { logger } from "../middleware/logger.js";
+import { sanitizeErrorText, serializeSafeError } from "./safe-error.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pure utility functions (exported for unit testing)
@@ -71,7 +72,9 @@ function updateCheckFailure(
     companyId,
     itemType,
     ...(catalogItemId ? { catalogItemId } : {}),
-    message: error instanceof Error ? error.message : String(error),
+    message: sanitizeErrorText(
+      error instanceof Error ? error.message : String(error),
+    ),
   };
 }
 
@@ -92,7 +95,7 @@ export async function runUpdateCheck(
       failures.push(...(await checkCompany(db, catalogItems, companyId)));
     } catch (err) {
       logger.error(
-        { err, companyId },
+        { error: serializeSafeError(err), companyId },
         "marketplace-update-checker: error processing company"
       );
       failures.push(updateCheckFailure(companyId, "company", err));
@@ -170,7 +173,11 @@ async function checkCompany(
       } catch (err) {
         // Per-skill isolation: one skill error doesn't block the rest
         logger.error(
-          { err, catalogItemId: skill.sourceLocator, companyId },
+          {
+            error: serializeSafeError(err),
+            catalogItemId: skill.sourceLocator,
+            companyId,
+          },
           "marketplace-update-checker: per-skill error"
         );
         failures.push(
@@ -184,7 +191,7 @@ async function checkCompany(
     failures.push(...(await checkPluginUpdates(db, companyId, catalogItems)));
   } catch (err) {
     logger.error(
-      { err, companyId },
+      { error: serializeSafeError(err), companyId },
       "marketplace-update-checker: error checking company"
     );
     failures.push(updateCheckFailure(companyId, "company", err));
@@ -246,7 +253,11 @@ export async function checkPluginUpdates(
     } catch (err) {
       // Per-plugin isolation: one plugin error doesn't block the rest
       logger.error(
-        { err, catalogItemId: catalogItem.id, companyId },
+        {
+          error: serializeSafeError(err),
+          catalogItemId: catalogItem.id,
+          companyId,
+        },
         "marketplace-update-checker: per-plugin error"
       );
       failures.push(

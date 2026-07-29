@@ -5,6 +5,9 @@ summary: Catalog, installs, company plugin settings, skill imports, plugin jobs,
 
 Marketplace routes install AoA catalog items. Plugin routes manage installed plugin manifests, settings, jobs, UI contributions, bridge calls, and version history.
 
+The guarded fleet endpoint and its read-only inspection contract are documented
+in [Marketplace recovery](/guides/board-operator/marketplace-recovery).
+
 ## Marketplace
 
 ```
@@ -13,6 +16,7 @@ POST /api/marketplace/catalog/sync
 GET /api/marketplace/catalog/status
 GET /api/marketplace/packages
 POST /api/admin/marketplace/reconcile
+GET /api/admin/marketplace/reconciliations/{operationId}
 GET /api/companies/{companyId}/marketplace/settings
 PATCH /api/companies/{companyId}/marketplace/settings
 GET /api/companies/{companyId}/marketplace/updates
@@ -80,20 +84,37 @@ is stuck. Both share a 6-hour per-company cooldown — send `{"force": true}` to
 override it after fixing the underlying cause.
 
 `POST /api/admin/marketplace/reconcile` is an instance-admin recovery operation
-with an empty request body. It first performs a fresh, deduplicated CDN catalog
-sync; a cache or bundled-snapshot fallback never authorizes fleet mutation.
-Only a successful CDN attempt may drive the full-fleet crew repair, legacy
-Steward adoption, crew update, and team-member reconciliation sequence. A 200
-response
-has `status: "success" | "partial"`, a stable `operationId`, `replayed`,
-catalog identity, aggregate repair/skip counters, and per-company failures.
-Concurrent requests join the same operation; the joining response reports
-`replayed: true`. Before any fleet mutation, the service writes an
-actor-attributed `marketplace.reconciliation_started` activity entry for every
-target company using the operation ID and exact catalog identity. If that audit
-cannot be persisted, the operation fails closed before maintenance. A matching
-`marketplace.reconciliation_completed` entry records the final status, aggregate
-repairs, and that company's failures.
+with the mandatory strict body
+`{"scope":"fleet","mode":"repair","operationId":"<uuid>"}`. It first performs a
+fresh, deduplicated CDN catalog sync; a cache or bundled-snapshot fallback never
+authorizes fleet mutation. Only a successful CDN attempt may drive the
+full-fleet crew repair, legacy Steward adoption, crew update, and team-member
+reconciliation sequence.
+
+A 200 response has `status: "success" | "partial"`, the caller-provided
+`operationId`, `executionDisposition: "started" | "joined_in_flight"`, catalog
+identity, aggregate counters, typed `skips[]`, operation `diagnostics[]`, and
+sanitized per-company `failures[]`. The deprecated `replayed` field remains for
+one compatibility release and is true exactly when `executionDisposition` is
+`joined_in_flight`. A matching concurrent request joins the same promise; a
+different ID receives typed `409 operation_in_flight`, and a completed ID is
+never executed again.
+
+Operation identity and state are stored in the instance-scoped
+`marketplace_reconciliation_operations` ledger before the fleet is discovered.
+A database-enforced singleton lease prevents different app replicas from
+running overlapping fleet operations. The ledger remains authoritative across
+restarts and for a zero-company fleet; company `activity_log` rows provide
+per-company audit detail and cannot be created through the generic activity or
+plugin logging APIs under the reserved reconciliation namespace.
+
+Before catalog refresh or fleet mutation, the service records the sorted target
+set with `catalog: null`. A successful completion audit records final catalog
+identity and gives each company only its own skips and failures. A terminal
+pre-mutation catalog failure remains inspectable. If mutation may have committed
+but the completion audit fails, the POST returns
+`outcome_unknown_after_mutation`; operators must inspect before deciding whether
+another operation is safe.
 
 Catalog refresh is side-effect-free with respect to installed marketplace
 items. Reconciliation snapshots its target companies and persists the start
@@ -101,17 +122,21 @@ audit before running the catalog skill/plugin update check, so pending-update
 rows and notifications cannot precede the audit boundary. A shared mutation
 lock queues periodic/manual catalog update checks behind an in-flight audited
 reconciliation, and the reconciliation update check receives the exact audited
-company-ID snapshot rather than rediscovering the fleet.
+company-ID snapshot owned by the ledger rather than rediscovering the fleet.
 
-A catalog refresh failure returns 502 with
-`{ error, operationId, catalogStatus, catalogOutcome, catalogError }` and
-performs no maintenance. `catalogError` preserves the CDN failure even when
-`catalogStatus` describes a healthy bundled fallback. An unexpected
-reconciliation failure returns 500 with `{ error, operationId }`.
-Callers should retain the operation ID for logs and retry a `partial` result only
-after reviewing its failure and skip counters. Pending-update persistence and
-notification errors from the crew-update pass are included as `crew_update`
-failures rather than being reduced to application-log-only warnings.
+Every 400, 401, 403, 404, 409, 500, and 502 response uses the strict envelope
+`{ok:false,error:{code,message},operationId,retry,docUrl}`. Raw catalog or
+exception text is never returned. `GET
+/api/admin/marketplace/reconciliations/{operationId}` returns durable
+`running`, `success`, `partial`, `failed_before_mutation`, or
+`outcome_unknown_after_mutation` state plus `safeToRetry` and a typed recovery
+instruction. Callers should retain the operation ID and follow that instruction;
+do not infer retry safety from an HTTP timeout.
+
+Pending-update persistence and notification errors from the crew-update pass
+are included as sanitized `crew_update` failures rather than being reduced to
+application-log-only warnings. The full operator workflow and code-to-recovery
+table are in [Marketplace recovery](/guides/board-operator/marketplace-recovery).
 
 `DELETE .../marketplace/teams/{teamId}` is founder-only and permanently deletes
 every agent on the team — **except protected AoA agents** (Commander, Steward),
