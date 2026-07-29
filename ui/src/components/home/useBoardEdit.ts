@@ -36,6 +36,36 @@ function bottomEdge(items: readonly HomeBoardLayoutItem[]): number {
   return items.reduce((max, item) => Math.max(max, item.y + item.h), 0);
 }
 
+/**
+ * Clamp every item's `{w,h}` to its own widget's nearest allowed footprint
+ * (gridLayout's nearestAllowedSize). Unknown/retired widget keys pass through
+ * unchanged — membership (dropping retired keys) is reconcileLg's job, not
+ * this helper's; this only guards size.
+ *
+ * Shared by two call sites for two different reasons:
+ *  - onLayoutChange (the load-bearing fix): RGL fires onLayoutChange
+ *    synchronously right after onResizeStop, with its OWN internal layout
+ *    state — which still reflects the user's raw, possibly-disallowed drag
+ *    target, not the snap onResizeStop already computed. Without clamping
+ *    here too, that raw emit clobbers the snap and the draft can end up
+ *    holding a footprint the server validator rejects (400 on save, forever,
+ *    since Retry just re-sends the same bad draft). A no-op for drags, which
+ *    only ever change x/y.
+ *  - attemptSave (defense-in-depth): a save must never send a disallowed
+ *    size regardless of how one made it into the draft — e.g. onResizeStop's
+ *    own snap only touches the item actually being resized, so an unrelated
+ *    item elsewhere in the same RGL layout callback could in principle carry
+ *    a stale/bogus size through untouched.
+ */
+function clampToAllowedSizes(items: readonly HomeBoardLayoutItem[]): HomeBoardLayoutItem[] {
+  return items.map((item) => {
+    const def = getWidget(item.i);
+    if (!def) return item;
+    const size = nearestAllowedSize({ w: item.w, h: item.h }, def.allowedSizes);
+    return size.w === item.w && size.h === item.h ? item : { ...item, w: size.w, h: size.h };
+  });
+}
+
 export interface UseBoardEditResult {
   /** The lg to render: the draft while editing, else the computed (saved-reconciled or role-default) layout. */
   lg: HomeBoardLayoutItem[];
@@ -111,6 +141,11 @@ export interface UseBoardEditResult {
  *     exists, it's discarded unconditionally (editing/draft/baseline all
  *     reset) — a stale draft must never be saved against a new company.
  *  9. dirty = draft differs (by value) from the baseline.
+ *  10. Every {w,h} written into the draft — from onLayoutChange (RGL's raw
+ *      post-resize emit) or into a save payload (attemptSave) — is clamped
+ *      to nearestAllowedSize first, so the draft can never hold a footprint
+ *      the server validator rejects regardless of which path produced it
+ *      (see clampToAllowedSizes).
  */
 export function useBoardEdit(
   companyId: string | null | undefined,
@@ -198,7 +233,9 @@ export function useBoardEdit(
       setSaveError(null);
       return;
     }
-    saveAsync(draft)
+    // P1 defense-in-depth: never send a disallowed size, regardless of how
+    // one made it into the draft (see clampToAllowedSizes' own comment).
+    saveAsync(clampToAllowedSizes(draft))
       .then(() => {
         setEditing(false);
         setDraft(null);
@@ -264,7 +301,11 @@ export function useBoardEdit(
       }
       const baseline = baselineRef.current;
       if (!baseline) return;
-      const newLg = (all.lg ?? []) as unknown as HomeBoardLayoutItem[];
+      const rawLg = (all.lg ?? []) as unknown as HomeBoardLayoutItem[];
+      // P1 fix: clamp BEFORE the baseline-diff comparison and before
+      // setDraft — see clampToAllowedSizes' own comment for why RGL's raw
+      // post-resize emit needs this, regardless of onResizeStop's snap.
+      const newLg = clampToAllowedSizes(rawLg);
       if (layoutsEqual(newLg, baseline)) return; // spurious echo — never dirty on a no-op
       setDraft(newLg);
     },

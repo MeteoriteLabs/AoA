@@ -221,6 +221,128 @@ describe("useBoardEdit", () => {
     });
   });
 
+  // [P1] Resize snap is clobbered by RGL's post-resize onLayoutChange: RGL
+  // fires onLayoutChange synchronously right after onResizeStop, with its
+  // OWN internal layout state — which still reflects the raw, un-snapped
+  // resize target, not the snap onResizeStop already computed. Before the
+  // fix, onLayoutChange's setDraft(rawLg) unconditionally overwrote the
+  // snap, leaving the draft holding a disallowed {w,h} the server validator
+  // rejects (400 on save, and Retry just re-sends the same bad draft
+  // forever). The fix clamps every item to nearestAllowedSize in
+  // onLayoutChange BEFORE the baseline-diff/setDraft, and again
+  // (defense-in-depth) in attemptSave before saveAsync.
+  describe("onLayoutChange clamps disallowed sizes (P1 — RGL raw-emit clobber)", () => {
+    it("keeps the onResizeStop snap when RGL's own onLayoutChange fires next with the RAW un-snapped layout", () => {
+      const { result } = renderHook(() => useBoardEdit(COMPANY_A, "founder"));
+      act(() => result.current.startEdit());
+      const baseline = result.current.lg;
+      act(() => {
+        result.current.onLayoutChange([], { lg: baseline }); // consume the init echo
+      });
+
+      // Real RGL order: onResizeStop fires first with the resize (agents-now
+      // dragged to a disallowed {w:2,h:2}; allowedSizes are only
+      // [{w:1,h:1},{w:2,h:1}]) and snaps it...
+      const rawResized = baseline.map((item) =>
+        item.i === "agents-now" ? { ...item, w: 2, h: 2 } : item,
+      );
+      const newItem = rawResized.find((item) => item.i === "agents-now")!;
+      act(() => {
+        result.current.onResizeStop(rawResized, null, newItem, null, new Event("mouseup"), null);
+      });
+      expect(result.current.lg.find((i) => i.i === "agents-now")).toMatchObject({ w: 2, h: 1 });
+
+      // ...then RGL synchronously fires onLayoutChange with ITS OWN raw
+      // internal layout (still {w:2,h:2} for agents-now) — this must NOT
+      // clobber the snap.
+      act(() => {
+        result.current.onLayoutChange(rawResized, { lg: rawResized });
+      });
+
+      const afterLayoutChange = result.current.lg.find((i) => i.i === "agents-now")!;
+      expect({ w: afterLayoutChange.w, h: afterLayoutChange.h }).toEqual({ w: 2, h: 1 });
+      expect(result.current.dirty).toBe(true);
+    });
+
+    it("clamps a raw disallowed size from onLayoutChange even with no prior onResizeStop call", () => {
+      // Guards against relying SOLELY on onResizeStop's own snap — the fix
+      // must hold regardless of which RGL callback produced the disallowed
+      // size.
+      const { result } = renderHook(() => useBoardEdit(COMPANY_A, "founder"));
+      act(() => result.current.startEdit());
+      const baseline = result.current.lg;
+      act(() => {
+        result.current.onLayoutChange([], { lg: baseline }); // consume the init echo
+      });
+
+      const rawLg = baseline.map((item) =>
+        item.i === "agents-now" ? { ...item, w: 2, h: 2 } : item,
+      );
+      act(() => {
+        result.current.onLayoutChange(rawLg, { lg: rawLg });
+      });
+
+      const agentsNow = result.current.lg.find((i) => i.i === "agents-now")!;
+      expect({ w: agentsNow.w, h: agentsNow.h }).toEqual({ w: 2, h: 1 });
+    });
+
+    it("attemptSave (exitEdit) sends only allowed sizes — defense-in-depth even for an item onResizeStop's own snap doesn't touch", async () => {
+      // onResizeStop's `next` mapping only snaps the item actually being
+      // resized (newItem.i); every OTHER item in the same `layout` array
+      // passes through unchanged. Simulate a bogus size landing on an
+      // unrelated widget (budget) via that path, with no follow-up
+      // onLayoutChange to clean it up, and prove attemptSave clamps it
+      // anyway before the payload reaches saveAsync.
+      const { result } = renderHook(() => useBoardEdit(COMPANY_A, "founder"));
+      act(() => result.current.startEdit());
+      const baseline = result.current.lg;
+
+      const bogusLayout = baseline.map((item) => {
+        if (item.i === "agents-now") return { ...item, w: 2, h: 2 }; // being resized
+        if (item.i === "budget") return { ...item, w: 3, h: 3 }; // bogus — not an allowed budget size
+        return item;
+      });
+      const newItem = bogusLayout.find((item) => item.i === "agents-now")!;
+      act(() => {
+        result.current.onResizeStop(bogusLayout, null, newItem, null, new Event("mouseup"), null);
+      });
+      // Sanity: budget's bogus size DID make it into the draft — proves this
+      // test actually exercises the gap (onResizeStop alone doesn't clamp
+      // items other than the one being resized).
+      expect(result.current.lg.find((i) => i.i === "budget")).toMatchObject({ w: 3, h: 3 });
+
+      await act(async () => {
+        result.current.exitEdit();
+      });
+
+      expect(mocks.saveAsync).toHaveBeenCalledTimes(1);
+      const [savedLayout] = mocks.saveAsync.mock.calls[0]! as [HomeBoardLayoutItem[]];
+      const savedBudget = savedLayout.find((i) => i.i === "budget")!;
+      // budget's allowedSizes are [{w:1,h:1},{w:2,h:1}]; nearest to {w:3,h:3}
+      // is {w:2,h:1} (squared distance 1+4=5 vs {w:1,h:1}'s 4+4=8).
+      expect({ w: savedBudget.w, h: savedBudget.h }).toEqual({ w: 2, h: 1 });
+      const savedAgentsNow = savedLayout.find((i) => i.i === "agents-now")!;
+      expect({ w: savedAgentsNow.w, h: savedAgentsNow.h }).toEqual({ w: 2, h: 1 });
+    });
+
+    it("a drag (x/y only, size unchanged) through onLayoutChange is unaffected by the clamp", () => {
+      const { result } = renderHook(() => useBoardEdit(COMPANY_A, "founder"));
+      act(() => result.current.startEdit());
+      const baseline = result.current.lg;
+      act(() => {
+        result.current.onLayoutChange([], { lg: baseline }); // consume the init echo
+      });
+
+      const dragged = baseline.map((item, idx) => (idx === 0 ? { ...item, x: item.x + 1 } : item));
+      act(() => {
+        result.current.onLayoutChange(dragged, { lg: dragged });
+      });
+
+      expect(result.current.lg).toEqual(dragged);
+      expect(result.current.dirty).toBe(true);
+    });
+  });
+
   describe("removeWidget / addWidget", () => {
     it("removeWidget drops the item from the draft and dirties it", () => {
       const { result } = renderHook(() => useBoardEdit(COMPANY_A, "founder"));
