@@ -328,6 +328,63 @@ describe("useBoardEdit", () => {
     });
   });
 
+  // Plan 4 Task 5: the ONE genuine gap found in this file — startEdit/
+  // exitEdit(attemptSave)/resetBoard are all individually guarded by
+  // `isSaving` in the source (see useBoardEdit.ts rules 1/7 and resetBoard's
+  // own `if (isSaving || isResetting) return;`), but nothing exercised that
+  // guard while a save is ACTUALLY in flight (as opposed to before it starts
+  // or after it settles). The other three cases this task asked for —
+  // "failed save keeps dirty+editing+retrySave", "retry succeeds", and
+  // "refetch-while-editing doesn't clobber a dirty draft" — are already
+  // covered above (see "a failed save keeps editing..." in this describe,
+  // and the "background refetch vs a dirty draft" describe below) and are
+  // intentionally NOT duplicated here.
+  describe("save-in-flight guards (isSaving)", () => {
+    it("exitEdit/startEdit/resetBoard all no-op while a save is genuinely in flight — no second save, no re-entry", () => {
+      const { result, rerender } = renderHook(() => useBoardEdit(COMPANY_A, "founder"));
+      act(() => result.current.startEdit());
+      act(() => result.current.removeWidget("budget"));
+      expect(result.current.dirty).toBe(true);
+      const draftWhileSaving = result.current.lg;
+
+      // Simulate the underlying mutation now being in flight — this is the
+      // window between saveAsync's call and its resolution that a single
+      // exitEdit()-then-await-resolve test never observes.
+      mocks.isSaving = true;
+      rerender();
+
+      act(() => result.current.exitEdit()); // attemptSave's `if (isSaving) return;` guard
+      expect(mocks.saveAsync).not.toHaveBeenCalled();
+      expect(result.current.editing).toBe(true); // exit was swallowed, not applied
+      expect(result.current.lg).toEqual(draftWhileSaving); // draft untouched
+
+      act(() => result.current.startEdit()); // startEdit's own `if (isSaving) return;` guard
+      expect(result.current.editing).toBe(true);
+      expect(result.current.dirty).toBe(true); // re-entry did not reset the draft/baseline
+      expect(result.current.lg).toEqual(draftWhileSaving);
+
+      act(() => result.current.resetBoard()); // resetBoard's `if (isSaving || isResetting) return;` guard
+      expect(mocks.reset).not.toHaveBeenCalled();
+      expect(result.current.lg).toEqual(draftWhileSaving);
+
+      // retrySave is the exact same guarded attemptSave as exitEdit.
+      act(() => result.current.retrySave());
+      expect(mocks.saveAsync).not.toHaveBeenCalled();
+    });
+
+    it("resetBoard also no-ops while a reset is already in flight (isResetting)", () => {
+      const { result, rerender } = renderHook(() => useBoardEdit(COMPANY_A, "founder"));
+      act(() => result.current.startEdit());
+
+      mocks.isResetting = true;
+      rerender();
+
+      act(() => result.current.resetBoard());
+      expect(mocks.reset).not.toHaveBeenCalled();
+      expect(result.current.editing).toBe(true); // still editing — reset was a no-op, not a crash
+    });
+  });
+
   describe("resetBoard", () => {
     it("calls the reset mutation, falls back to the role default, and marks the draft clean", () => {
       mocks.layout = [{ i: "budget", x: 0, y: 0, w: 1, h: 1 }];
