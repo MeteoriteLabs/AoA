@@ -34,6 +34,7 @@ vi.mock("react-grid-layout", async (importOriginal) => {
 const apiSpies = vi.hoisted(() => ({
   homeSummary: vi.fn(),
   dashboardSummary: vi.fn(),
+  approvalsList: vi.fn(),
   workQuestionsList: vi.fn(),
   issuesList: vi.fn(),
   suggestionsPending: vi.fn(),
@@ -52,6 +53,9 @@ vi.mock("../../lib/timeAgo", () => ({ timeAgo: () => "2m ago" }));
 vi.mock("../../api/dashboard", () => ({
   homeApi: { summary: apiSpies.homeSummary },
   dashboardApi: { summary: apiSpies.dashboardSummary },
+}));
+vi.mock("../../api/approvals", () => ({
+  approvalsApi: { list: apiSpies.approvalsList },
 }));
 vi.mock("../../api/work-questions", () => ({
   workQuestionsApi: { list: apiSpies.workQuestionsList },
@@ -121,6 +125,7 @@ describe("HomeBoard under React.StrictMode", () => {
       costs: { monthSpendCents: 0, monthBudgetCents: 0, monthUtilizationPercent: 0 },
       pendingApprovals: 0,
     });
+    apiSpies.approvalsList.mockResolvedValue([]);
     apiSpies.workQuestionsList.mockResolvedValue([]);
     apiSpies.issuesList.mockResolvedValue([{ id: "t1", title: "Ship it", status: "in_progress", priority: "high" }]);
     apiSpies.suggestionsPending.mockResolvedValue([]);
@@ -173,12 +178,14 @@ describe("HomeBoard under React.StrictMode", () => {
 
     // homeApi.summary is shared by 3 widgets (Action queue, Objectives,
     // Today's activity) via the SAME queryKeys.home(companyId) cache entry;
-    // dashboardApi.summary is shared by 2 (Budget, Approvals). Both dedup to
-    // one call each even under StrictMode's synthetic double-mount, because
-    // react-query's in-flight-promise dedup is keyed on the query hash, not
-    // on how many times an observer (re)subscribes.
+    // dashboardApi.summary is called by Budget alone (Waiting-on-you moved to
+    // approvalsApi.list in Plan 6 Task 4). Each still dedups to one call under
+    // StrictMode's synthetic double-mount, because react-query's in-flight-
+    // promise dedup is keyed on the query hash, not on how many times an
+    // observer (re)subscribes.
     expect(apiSpies.homeSummary.mock.calls.length).toBeLessThanOrEqual(1);
     expect(apiSpies.dashboardSummary.mock.calls.length).toBeLessThanOrEqual(1);
+    expect(apiSpies.approvalsList.mock.calls.length).toBeLessThanOrEqual(1);
     expect(apiSpies.workQuestionsList.mock.calls.length).toBeLessThanOrEqual(1);
     expect(apiSpies.issuesList.mock.calls.length).toBeLessThanOrEqual(1);
     // suggestionsApi.pending is a documented EXCEPTION, not a StrictMode

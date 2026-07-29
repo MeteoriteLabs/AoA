@@ -70,6 +70,9 @@ vi.mock("../../api/dashboard", () => ({
   }) },
   homeApi: { summary: vi.fn() },
 }));
+vi.mock("../../api/approvals", () => ({
+  approvalsApi: { list: vi.fn().mockResolvedValue([]) },
+}));
 vi.mock("../../api/work-questions", () => ({
   workQuestionsApi: { list: vi.fn().mockResolvedValue([]) },
 }));
@@ -92,7 +95,7 @@ function HomeBoardHarness({ companyId, role }: { companyId: string; role: UserRo
 // The founder default's full 8-widget title set, in getDefaultLayout("founder") order.
 const FOUNDER_TITLES = [
   "Action queue",
-  "Approvals & questions",
+  "Waiting on you",
   "Agents working now",
   "Today's activity",
   "Objectives",

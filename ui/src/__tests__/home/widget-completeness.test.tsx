@@ -24,6 +24,7 @@ import { WidgetErrorBoundary } from "../../components/home/WidgetErrorBoundary";
 const genericApiSpies = vi.hoisted(() => ({
   dashboardSummary: vi.fn(),
   homeApiSummary: vi.fn(),
+  approvalsList: vi.fn(),
   workQuestionsList: vi.fn(),
   issuesList: vi.fn(),
   suggestionsPending: vi.fn(),
@@ -55,6 +56,9 @@ vi.mock("../../api/dashboard", () => ({
   dashboardApi: { summary: genericApiSpies.dashboardSummary },
   homeApi: { summary: genericApiSpies.homeApiSummary },
 }));
+vi.mock("../../api/approvals", () => ({
+  approvalsApi: { list: genericApiSpies.approvalsList },
+}));
 vi.mock("../../api/work-questions", () => ({
   workQuestionsApi: { list: genericApiSpies.workQuestionsList },
 }));
@@ -85,6 +89,7 @@ describe("widget completeness: every registered widget survives empty data", () 
       pendingApprovals: 0,
     });
     genericApiSpies.homeApiSummary.mockResolvedValue(undefined);
+    genericApiSpies.approvalsList.mockResolvedValue([]);
     genericApiSpies.workQuestionsList.mockResolvedValue([]);
     genericApiSpies.issuesList.mockResolvedValue([]);
     genericApiSpies.suggestionsPending.mockResolvedValue([]);

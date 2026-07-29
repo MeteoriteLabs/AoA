@@ -13,7 +13,7 @@ describe("AddWidgetTray", () => {
     expect(screen.getByRole("button", { name: "Today's activity" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Agents working now" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Budget" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Approvals & questions" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Waiting on you" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "My tasks" })).toBeInTheDocument();
   });
 

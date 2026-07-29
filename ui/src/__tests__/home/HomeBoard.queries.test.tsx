@@ -29,6 +29,7 @@ vi.mock("react-grid-layout", async (importOriginal) => {
 const apiSpies = vi.hoisted(() => ({
   homeSummary: vi.fn(),
   dashboardSummary: vi.fn(),
+  approvalsList: vi.fn(),
   workQuestionsList: vi.fn(),
   issuesList: vi.fn(),
   suggestionsPending: vi.fn(),
@@ -47,6 +48,9 @@ vi.mock("../../lib/timeAgo", () => ({ timeAgo: () => "2m ago" }));
 vi.mock("../../api/dashboard", () => ({
   homeApi: { summary: apiSpies.homeSummary },
   dashboardApi: { summary: apiSpies.dashboardSummary },
+}));
+vi.mock("../../api/approvals", () => ({
+  approvalsApi: { list: apiSpies.approvalsList },
 }));
 vi.mock("../../api/work-questions", () => ({
   workQuestionsApi: { list: apiSpies.workQuestionsList },
@@ -117,7 +121,12 @@ describe("HomeBoard query-count (no over-fetch)", () => {
       costs: { monthSpendCents: 41200, monthBudgetCents: 200000, monthUtilizationPercent: 21 },
       pendingApprovals: 1,
     });
-    apiSpies.workQuestionsList.mockResolvedValue([{ id: "q1" }]);
+    apiSpies.approvalsList.mockResolvedValue([
+      { id: "appr-1", companyId: "co-1", type: "hire_agent", status: "pending", payload: {}, createdAt: new Date().toISOString() },
+    ]);
+    apiSpies.workQuestionsList.mockResolvedValue([
+      { id: "q1", title: "Need input", question: "", issueId: "iss-1", issueIdentifierSnapshot: null },
+    ]);
     apiSpies.issuesList.mockResolvedValue([{ id: "t1", title: "Ship it", status: "in_progress", priority: "high" }]);
     apiSpies.suggestionsPending.mockResolvedValue([]);
     apiSpies.suggestionsDetect.mockResolvedValue({ ok: true });
@@ -134,21 +143,23 @@ describe("HomeBoard query-count (no over-fetch)", () => {
     // composition before reading final call counts.
     expect(await screen.findByText("Ship it")).toBeInTheDocument();
     await waitFor(() => expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(8));
-    // Also wait for the two-total (approvals + questions) Approvals widget
-    // content to settle, since it depends on BOTH dashboardApi.summary AND
-    // workQuestionsApi.list resolving.
-    expect(await screen.findByText("2")).toBeInTheDocument(); // 1 approval + 1 question
+    // Also wait for the Waiting-on-you widget's merged list content to
+    // settle, since it depends on BOTH approvalsApi.list AND
+    // workQuestionsApi.list resolving (Plan 6 Task 4: no longer a single
+    // dashboard-summary-derived count).
+    expect(await screen.findByText("Need input")).toBeInTheDocument();
 
     // homeApi.summary: shared by Action queue, Objectives, and Today's
     // activity via the SAME queryKeys.home(companyId) cache entry — expected
     // count is 1, not 3, proving react-query's dedup (not each widget
     // independently fetching).
     expect(apiSpies.homeSummary).toHaveBeenCalledTimes(1);
-    // dashboardApi.summary: shared by Budget and Approvals via the SAME
-    // queryKeys.dashboard(companyId) cache entry — the plan's headline
-    // assertion. Expected count is 1, not 2.
+    // dashboardApi.summary: only Budget calls this now (Waiting-on-you moved
+    // to approvalsApi.list in Plan 6 Task 4). Expected count is 1.
     expect(apiSpies.dashboardSummary).toHaveBeenCalledTimes(1);
-    // workQuestionsApi.list: only Approvals calls this. Expected count is 1.
+    // approvalsApi.list: only Waiting-on-you calls this. Expected count is 1.
+    expect(apiSpies.approvalsList).toHaveBeenCalledTimes(1);
+    // workQuestionsApi.list: only Waiting-on-you calls this. Expected count is 1.
     expect(apiSpies.workQuestionsList).toHaveBeenCalledTimes(1);
     // issuesApi.list: only My tasks calls this (with assigneeUserId: "me").
     // Expected count is 1.
@@ -186,8 +197,9 @@ describe("HomeBoard query-count (no over-fetch)", () => {
     expect(apiSpies.homeSummary).toHaveBeenCalledTimes(1);
     expect(apiSpies.issuesList).toHaveBeenCalledTimes(1);
     expect(apiSpies.liveRunsForCompany).toHaveBeenCalledTimes(1);
-    // Budget/Approvals aren't on the member board — their apis never fire.
+    // Budget/Waiting-on-you aren't on the member board — their apis never fire.
     expect(apiSpies.dashboardSummary).not.toHaveBeenCalled();
+    expect(apiSpies.approvalsList).not.toHaveBeenCalled();
     expect(apiSpies.workQuestionsList).not.toHaveBeenCalled();
     // team_member is not founder -> canAct is false -> the auto-detect effect
     // never fires, so suggestionsApi.pending is a plain single fetch here

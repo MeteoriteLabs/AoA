@@ -1,4 +1,4 @@
-import { Activity, CheckSquare, CircleDollarSign, Cpu, Inbox, Lightbulb, ListChecks, Target } from "lucide-react";
+import { Activity, Bell, CircleDollarSign, Cpu, Inbox, Lightbulb, ListChecks, Target } from "lucide-react";
 import { HOME_BOARD_ALLOWED_SIZES } from "@armyofagents/shared";
 import type { WidgetDef, WidgetKey } from "./types";
 import { ActionQueueWidget } from "./ActionQueueWidget";
@@ -61,8 +61,8 @@ export const widgetRegistry: Record<WidgetKey, WidgetDef> = {
   },
   approvals: {
     key: "approvals",
-    title: "Approvals & questions",
-    icon: CheckSquare,
+    title: "Waiting on you",
+    icon: Bell,
     Component: ApprovalsWidget,
     allowedSizes: HOME_BOARD_ALLOWED_SIZES.approvals,
     defaultSize: HOME_BOARD_ALLOWED_SIZES.approvals[0],

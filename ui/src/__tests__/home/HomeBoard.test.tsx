@@ -139,7 +139,7 @@ describe("HomeBoard", () => {
     const headings = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
     expect(headings).toEqual([
       "Action queue",
-      "Approvals & questions",
+      "Waiting on you",
       "Agents working now",
       "Today's activity",
       "Objectives",
@@ -164,7 +164,7 @@ describe("HomeBoard", () => {
       "Agents working now",
     ]);
     expect(headings).not.toContain("Budget");
-    expect(headings).not.toContain("Approvals & questions");
+    expect(headings).not.toContain("Waiting on you");
   });
 
   it("founder vs member default divergence: founder gets all 8, member gets the execution subset led by My tasks with no Budget/Approvals (Plan 4 Task 6)", async () => {
@@ -184,7 +184,7 @@ describe("HomeBoard", () => {
     expect(memberHeadings.length).toBeLessThan(founderHeadings.length);
     expect(memberHeadings[0]).toBe("My tasks");
     expect(memberHeadings).not.toContain("Budget");
-    expect(memberHeadings).not.toContain("Approvals & questions");
+    expect(memberHeadings).not.toContain("Waiting on you");
     // Every member widget is also on the founder board (execution subset,
     // not a disjoint set).
     for (const title of memberHeadings) {
