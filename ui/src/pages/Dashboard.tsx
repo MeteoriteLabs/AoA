@@ -122,7 +122,11 @@ export function Dashboard() {
     : "All clear — nothing needs your attention right now.";
 
   return (
-    <div className="space-y-6 max-w-3xl">
+    // Full content width: the widget board's grid measures this container to pick
+    // its responsive breakpoint. A narrow cap (was `max-w-3xl` = 768px) pinned the
+    // board to the `md` 2-col layout and made edit mode (gated on `lg` ≥ 1024px)
+    // permanently unreachable, so the board spans the full content area.
+    <div className="space-y-6">
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
       {/* Task D3: the pinned header — greeting, the "needs attention" status
