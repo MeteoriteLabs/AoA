@@ -122,7 +122,7 @@ export function Dashboard() {
         </div>
         <div className="flex items-center gap-2">
           <NewMenu />
-          <HomeBoardControls boardEdit={boardEdit} />
+          <HomeBoardControls boardEdit={boardEdit} role={teamRole} />
         </div>
       </div>
 

@@ -429,6 +429,63 @@ describe("useBoardEdit", () => {
     });
   });
 
+  // Plan 7 Task 3: the view-mode "Add widget" entry point (the customize
+  // dropdown's submenu, reachable before Rearrange has ever been clicked).
+  describe("addWidgetAndEdit (Task 3 — view-mode add-widget entry point)", () => {
+    it("enters edit mode, appends the widget at its registry defaultSize, and is dirty — callable while NOT already editing", () => {
+      mocks.layout = [{ i: "budget", x: 0, y: 0, w: 1, h: 1 }];
+      const { result } = renderHook(() => useBoardEdit(COMPANY_A, "founder"));
+      expect(result.current.editing).toBe(false);
+
+      act(() => result.current.addWidgetAndEdit("agents-now"));
+
+      expect(result.current.editing).toBe(true);
+      const added = result.current.lg.find((item) => item.i === "agents-now");
+      expect(added).toBeDefined();
+      expect({ w: added!.w, h: added!.h }).toEqual({ w: 1, h: 1 }); // agents-now defaultSize
+      expect(result.current.lg).toHaveLength(2);
+      expect(result.current.dirty).toBe(true);
+    });
+
+    it("is a no-op while a save is in flight (mirrors startEdit's own isSaving guard)", () => {
+      const { result, rerender } = renderHook(() => useBoardEdit(COMPANY_A, "founder"));
+      mocks.isSaving = true;
+      rerender();
+
+      act(() => result.current.addWidgetAndEdit("agents-now"));
+
+      expect(result.current.editing).toBe(false);
+    });
+
+    it("is a no-op for an unrecognized widget key (defensive, mirrors addWidget's own guard)", () => {
+      const { result } = renderHook(() => useBoardEdit(COMPANY_A, "founder"));
+      const before = result.current.lg;
+
+      act(() => result.current.addWidgetAndEdit("not-a-real-widget" as never));
+
+      expect(result.current.editing).toBe(false);
+      expect(result.current.lg).toEqual(before);
+    });
+
+    it("a subsequent exitEdit saves the appended widget — baseline is sourceLg (pre-add), not next, so the add is dirty", async () => {
+      mocks.layout = [{ i: "budget", x: 0, y: 0, w: 1, h: 1 }];
+      const { result } = renderHook(() => useBoardEdit(COMPANY_A, "founder"));
+
+      act(() => result.current.addWidgetAndEdit("agents-now"));
+      expect(result.current.dirty).toBe(true);
+
+      await act(async () => {
+        result.current.exitEdit();
+      });
+
+      expect(mocks.saveAsync).toHaveBeenCalledTimes(1);
+      const [savedLayout] = mocks.saveAsync.mock.calls[0]! as [HomeBoardLayoutItem[]];
+      expect(savedLayout.some((item) => item.i === "agents-now")).toBe(true);
+      expect(result.current.editing).toBe(false);
+      expect(result.current.dirty).toBe(false);
+    });
+  });
+
   describe("exitEdit / save-on-exit", () => {
     it("does not call save when the draft is not dirty", async () => {
       const { result } = renderHook(() => useBoardEdit(COMPANY_A, "founder"));

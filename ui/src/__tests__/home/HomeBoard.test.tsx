@@ -119,10 +119,22 @@ function HomeBoardHarness({ companyId, role }: { companyId: string; role: UserRo
   const boardEdit = useBoardEdit(companyId, role);
   return (
     <>
-      <HomeBoardControls boardEdit={boardEdit} />
+      <HomeBoardControls boardEdit={boardEdit} role={role} />
       <HomeBoard companyId={companyId} role={role} boardEdit={boardEdit} />
     </>
   );
+}
+
+/**
+ * Plan 7 Task 3 (P1-1): "Customize board" now opens a dropdown instead of
+ * entering edit mode directly — every pre-existing test below that used to
+ * click straight into edit mode now needs this extra "Rearrange tiles"
+ * selection too. Centralized here so the ~20 call sites below stay a single
+ * line each.
+ */
+async function enterEditMode(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: "Customize board" }));
+  await user.click(await screen.findByRole("menuitem", { name: "Rearrange tiles" }));
 }
 
 describe("HomeBoard", () => {
@@ -248,7 +260,7 @@ describe("HomeBoard", () => {
       expect(document.querySelector("[data-home-board-editing]")).toBeNull();
 
       const user = userEvent.setup();
-      await user.click(screen.getByRole("button", { name: "Customize board" }));
+      await enterEditMode(user);
 
       // Editing: WidgetShell headers stop being links...
       expect(screen.queryAllByRole("link", { name: /^Open / })).toHaveLength(0);
@@ -285,7 +297,7 @@ describe("HomeBoard", () => {
       });
 
       const user = userEvent.setup();
-      await user.click(screen.getByRole("button", { name: "Customize board" }));
+      await enterEditMode(user);
 
       const editingTiles = document.querySelectorAll(".react-grid-item");
       expect(editingTiles.length).toBe(10);
@@ -299,7 +311,7 @@ describe("HomeBoard", () => {
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const user = userEvent.setup();
-      await user.click(screen.getByRole("button", { name: "Customize board" }));
+      await enterEditMode(user);
       expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(10);
 
       await user.click(screen.getByLabelText("Remove Budget"));
@@ -314,7 +326,7 @@ describe("HomeBoard", () => {
       expect(await screen.findByRole("heading", { level: 2, name: "Budget" })).toBeInTheDocument();
 
       const user = userEvent.setup();
-      await user.click(screen.getByRole("button", { name: "Customize board" }));
+      await enterEditMode(user);
       await user.click(screen.getByLabelText("Remove Budget"));
 
       expect(await screen.findByText("Your board is empty")).toBeInTheDocument();
@@ -325,10 +337,18 @@ describe("HomeBoard", () => {
       expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Add widget" })).toBeInTheDocument();
 
-      // Re-adding a widget from the tray replaces the empty state with the grid again.
+      // Re-adding a widget from the ArrangeToolbar's own Add-widget dropdown
+      // (Plan 7 Task 3 — no longer HomeBoardControls' hand-rolled tray)
+      // replaces the empty state with the grid again.
       await user.click(screen.getByRole("button", { name: "Add widget" }));
-      const tray = screen.getByRole("menu", { name: "Add widget" });
+      const tray = await screen.findByRole("menu", { name: "Add widget" });
       await user.click(within(tray).getByRole("button", { name: "Budget" }));
+      // AddWidgetMenu's rows are plain buttons, not Radix DropdownMenuItems
+      // (Task 3 — needs to be embeddable/testable outside any Radix
+      // surface), so selecting one doesn't auto-close the surrounding
+      // (modal-by-default) DropdownMenu; close it explicitly so the rest of
+      // the page is no longer aria-hidden behind it before asserting there.
+      await user.keyboard("{Escape}");
       expect(await screen.findByRole("heading", { level: 2, name: "Budget" })).toBeInTheDocument();
       expect(screen.queryByText("Your board is empty")).not.toBeInTheDocument();
     });
@@ -338,7 +358,7 @@ describe("HomeBoard", () => {
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const user = userEvent.setup();
-      await user.click(screen.getByRole("button", { name: "Customize board" }));
+      await enterEditMode(user);
       await user.click(screen.getByLabelText("Remove Budget"));
       await user.click(screen.getByRole("button", { name: "Done" }));
 
@@ -356,7 +376,7 @@ describe("HomeBoard", () => {
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const user = userEvent.setup();
-      await user.click(screen.getByRole("button", { name: "Customize board" }));
+      await enterEditMode(user);
       await user.click(screen.getByRole("button", { name: "Done" }));
 
       await waitFor(() => expect(screen.getByRole("button", { name: "Customize board" })).toBeInTheDocument());
@@ -369,7 +389,7 @@ describe("HomeBoard", () => {
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const user = userEvent.setup();
-      await user.click(screen.getByRole("button", { name: "Customize board" }));
+      await enterEditMode(user);
       await user.click(screen.getByLabelText("Remove Budget"));
       await user.click(screen.getByRole("button", { name: "Done" }));
 
@@ -394,7 +414,7 @@ describe("HomeBoard", () => {
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const user = userEvent.setup();
-      await user.click(screen.getByRole("button", { name: "Customize board" }));
+      await enterEditMode(user);
       expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(10);
       expect(screen.getByRole("button", { name: "Add widget" })).toBeInTheDocument();
 
@@ -404,7 +424,12 @@ describe("HomeBoard", () => {
       homeBoardLayoutMock.isSaving = true;
       rerender(<HomeBoardHarness companyId="co-1" role="founder" />);
 
-      expect(screen.getByText("Saving…")).toBeInTheDocument();
+      // Plan 7 Task 3: the "Saving…" status (like the rest of the floating
+      // ArrangeToolbar — see below) is gated on editableNow too, so it does
+      // NOT render here despite isSaving being true; ArrangeToolbar.test.tsx
+      // covers that status rendering directly (a fixture with isSaving:true
+      // passed straight as a prop, bypassing this mount-level gate).
+      expect(screen.queryByText("Saving…")).not.toBeInTheDocument();
       // Every mutating affordance is gone, even though editing is still true.
       expect(screen.queryAllByLabelText(/^Remove /)).toHaveLength(0);
       expect(screen.queryByRole("button", { name: "Add widget" })).not.toBeInTheDocument();
@@ -413,9 +438,16 @@ describe("HomeBoard", () => {
       gridItems.forEach((el) => {
         expect(el.classList.contains("react-draggable")).toBe(false);
       });
-      // Done itself stays visible (disabled — pre-existing behavior) so the
-      // user can see something is happening.
-      expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
+      // Plan 7 Task 3: the floating ArrangeToolbar (Done included) is gated
+      // on the SAME editableNow as the tiles' own drag/resize/remove/add
+      // affordances above, so it unmounts in lockstep with them during the
+      // in-flight-save window rather than staying visible-but-disabled — a
+      // failed save re-mounts it with the error + Retry (see "a failed save
+      // keeps the board in edit mode..." above). The pinned header's
+      // customize icon (which never had a "Done" state of its own — see
+      // HomeBoardControls) just stays a disabled inert icon throughout.
+      expect(screen.queryByRole("button", { name: "Done" })).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Customize board" })).toBeDisabled();
     });
 
     it("switching companyId mid-edit discards the draft without saving", async () => {
@@ -423,7 +455,7 @@ describe("HomeBoard", () => {
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const user = userEvent.setup();
-      await user.click(screen.getByRole("button", { name: "Customize board" }));
+      await enterEditMode(user);
       await user.click(screen.getByLabelText("Remove Budget"));
       expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(9);
 
@@ -450,7 +482,7 @@ describe("HomeBoard", () => {
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const user = userEvent.setup();
-      await user.click(screen.getByRole("button", { name: "Customize board" }));
+      await enterEditMode(user);
 
       // Budget sits at the founder default's x:0 (leftmost column, see
       // gridLayout.ts packing) — column 1 of 4.
@@ -474,7 +506,7 @@ describe("HomeBoard", () => {
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const user = userEvent.setup();
-      await user.click(screen.getByRole("button", { name: "Customize board" }));
+      await enterEditMode(user);
 
       const budgetTile = screen.getByRole("group", { name: /^Budget tile,.*size 1 by 1/ });
       budgetTile.focus();
@@ -490,7 +522,7 @@ describe("HomeBoard", () => {
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const user = userEvent.setup();
-      await user.click(screen.getByRole("button", { name: "Customize board" }));
+      await enterEditMode(user);
 
       const liveRegion = screen.getByRole("status");
       expect(liveRegion).toHaveTextContent("");
@@ -513,7 +545,7 @@ describe("HomeBoard", () => {
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const user = userEvent.setup();
-      await user.click(screen.getByRole("button", { name: "Customize board" }));
+      await enterEditMode(user);
       expect(screen.getByRole("group", { name: /^Budget/ })).toBeInTheDocument();
 
       // Shrink below the 1024px lg breakpoint and re-render so the REAL
@@ -528,9 +560,14 @@ describe("HomeBoard", () => {
       await waitFor(() => {
         expect(screen.queryByRole("group", { name: /^Budget/ })).not.toBeInTheDocument();
       });
-      // Editing is still on (Done/exit stays reachable) — just every
-      // mutating affordance (remove, add, keyboard) is gone below lg.
-      expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
+      // Editing is still on internally (the draft survives), but the
+      // floating ArrangeToolbar — Done included — is gated on the same
+      // editableNow as every mutating affordance (remove, add, keyboard), so
+      // it unmounts below lg right along with them (Plan 7 Task 3). The
+      // pinned header's customize icon stays a disabled inert icon (it never
+      // had a "Done" state of its own).
+      expect(screen.queryByRole("button", { name: "Done" })).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Customize board" })).toBeDisabled();
       expect(screen.queryAllByLabelText(/^Remove /)).toHaveLength(0);
     });
 
@@ -545,7 +582,7 @@ describe("HomeBoard", () => {
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const user = userEvent.setup();
-      await user.click(screen.getByRole("button", { name: "Customize board" }));
+      await enterEditMode(user);
       // While editing at lg, header nav is suppressed in favor of drag/select.
       expect(screen.queryAllByRole("link", { name: /^Open / })).toHaveLength(0);
 
@@ -555,7 +592,9 @@ describe("HomeBoard", () => {
       await waitFor(() => {
         expect(screen.queryByRole("group", { name: /^Budget/ })).not.toBeInTheDocument();
       });
-      expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
+      // The floating ArrangeToolbar (Done included) unmounts below lg too —
+      // same editableNow gate as the tiles' own affordances (Plan 7 Task 3).
+      expect(screen.queryByRole("button", { name: "Done" })).not.toBeInTheDocument();
       // Every tile is navigable again now that editableNow is false — nav
       // suppression is keyed on editableNow, not the raw `editing` flag.
       expect(screen.getAllByRole("link", { name: /^Open / }).length).toBe(10);
@@ -576,11 +615,11 @@ describe("HomeBoard", () => {
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const user = userEvent.setup();
-      await user.click(screen.getByRole("button", { name: "Customize board" }));
+      await enterEditMode(user);
       expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(2);
 
       await user.click(screen.getByRole("button", { name: "Add widget" }));
-      const tray = screen.getByRole("menu", { name: "Add widget" });
+      const tray = await screen.findByRole("menu", { name: "Add widget" });
 
       // On-board widgets (Budget, My tasks) are excluded from the tray...
       expect(within(tray).queryByRole("button", { name: "Budget" })).not.toBeInTheDocument();
@@ -590,11 +629,21 @@ describe("HomeBoard", () => {
 
       await user.click(within(tray).getByRole("button", { name: "Objectives" }));
 
-      // Added to the board (draft): a new tile + remove button appear...
+      // The tray immediately reflects it's no longer available to add —
+      // checked while it's still open (a plain-button click, not a Radix
+      // Item select, doesn't auto-close it).
+      expect(within(tray).queryByRole("button", { name: "Objectives" })).not.toBeInTheDocument();
+
+      // AddWidgetMenu's rows are plain buttons, not Radix DropdownMenuItems
+      // (Task 3 — needs to be embeddable/testable outside any Radix
+      // surface), so selecting one doesn't auto-close the surrounding
+      // (modal-by-default) DropdownMenu; close it explicitly so the rest of
+      // the page is no longer aria-hidden behind it before asserting there.
+      await user.keyboard("{Escape}");
+
+      // Added to the board (draft): a new tile + remove button appear.
       expect(await screen.findByRole("heading", { level: 2, name: "Objectives" })).toBeInTheDocument();
       expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(3);
-      // ...and the tray immediately reflects it's no longer available to add.
-      expect(within(tray).queryByRole("button", { name: "Objectives" })).not.toBeInTheDocument();
     });
 
     it("reset restores the role-default board and marks the draft clean (a later exit does not re-save)", async () => {
@@ -602,10 +651,12 @@ describe("HomeBoard", () => {
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const user = userEvent.setup();
-      await user.click(screen.getByRole("button", { name: "Customize board" }));
+      await enterEditMode(user);
       expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(2);
 
-      await user.click(screen.getByRole("button", { name: "Add widget" }));
+      // Plan 7 Task 3: Reset is now its own standalone button in the
+      // floating ArrangeToolbar — no longer nested inside the Add-widget
+      // dropdown/tray.
       await user.click(screen.getByRole("button", { name: /^reset/i }));
 
       expect(homeBoardLayoutMock.reset).toHaveBeenCalledTimes(1);
@@ -628,8 +679,7 @@ describe("HomeBoard", () => {
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const user = userEvent.setup();
-      await user.click(screen.getByRole("button", { name: "Customize board" }));
-      await user.click(screen.getByRole("button", { name: "Add widget" }));
+      await enterEditMode(user);
 
       homeBoardLayoutMock.resetError = new Error("delete failed");
       await user.click(screen.getByRole("button", { name: /^reset/i }));

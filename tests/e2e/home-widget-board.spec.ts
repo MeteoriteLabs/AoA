@@ -56,8 +56,13 @@ test.describe("home widget board", () => {
     await expect(page).toHaveURL(homeUrl);
 
     // Step 2: enter edit mode -> a remove `x` and a keyboard-focusable tile
-    // (role=group + tabindex=0, Task D2) appear per tile.
+    // (role=group + tabindex=0, Task D2) appear per tile. Plan 7 Task 3: the
+    // customize icon now opens a Radix dropdown instead of entering edit
+    // mode directly — select "Rearrange tiles" to actually enter it. Done
+    // (and every other arrange-mode affordance) now lives in the floating
+    // ArrangeToolbar, not the pinned header.
     await page.getByRole("button", { name: "Customize board", exact: true }).click();
+    await page.getByRole("menuitem", { name: "Rearrange tiles", exact: true }).click();
     await expect(page.getByRole("button", { name: "Done", exact: true })).toBeVisible();
     const agentsNowTile = page.getByRole("group", { name: /^Agents working now tile/ });
     await expect(agentsNowTile).toBeVisible();
@@ -69,14 +74,20 @@ test.describe("home widget board", () => {
     await removeAgentsNow.click();
     await expect(page.getByRole("group", { name: /^Agents working now tile/ })).toHaveCount(0);
 
-    // Step 3 (add from the tray): "Agents working now" is guaranteed to be
-    // offered now that it was just removed, regardless of whether the seeded
-    // actor's default board was the founder 8-widget set or the team_member
-    // 6-widget subset (see the widget-choice note above the test).
+    // Step 3 (add from the floating ArrangeToolbar's own Add-widget dropdown
+    // — Plan 7 Task 3 retired HomeBoardControls' hand-rolled tray):
+    // "Agents working now" is guaranteed to be offered now that it was just
+    // removed, regardless of whether the seeded actor's default board was
+    // the founder 8-widget set or the team_member 6-widget subset (see the
+    // widget-choice note above the test).
     await page.getByRole("button", { name: "Add widget", exact: true }).click();
     const tray = page.getByRole("menu", { name: "Add widget", exact: true });
     await expect(tray).toBeVisible();
     await tray.getByRole("button", { name: "Agents working now", exact: true }).click();
+    // AddWidgetMenu's rows are plain buttons, not Radix DropdownMenuItems, so
+    // selecting one doesn't auto-close the surrounding (modal-by-default)
+    // dropdown — close it explicitly before interacting elsewhere on the page.
+    await page.keyboard.press("Escape");
     await expect(page.getByRole("group", { name: /^Agents working now tile/ })).toBeVisible();
 
     // Step 5: keyboard move + resize on the (untouched) "Suggestions" tile —
@@ -131,6 +142,7 @@ test.describe("home widget board", () => {
     await expect(reloadedAgentsNowLink).toHaveCount(1);
 
     await page.getByRole("button", { name: "Customize board", exact: true }).click();
+    await page.getByRole("menuitem", { name: "Rearrange tiles", exact: true }).click();
     await expect(page.getByRole("group", { name: /^Suggestions tile/ })).toHaveAttribute(
       "aria-label",
       finalLabel as string,

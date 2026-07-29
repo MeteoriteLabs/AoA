@@ -92,7 +92,7 @@ function HomeBoardHarness({ companyId, role }: { companyId: string; role: UserRo
   const boardEdit = useBoardEdit(companyId, role);
   return (
     <>
-      <HomeBoardControls boardEdit={boardEdit} />
+      <HomeBoardControls boardEdit={boardEdit} role={role} />
       <HomeBoard companyId={companyId} role={role} boardEdit={boardEdit} />
     </>
   );
@@ -140,11 +140,15 @@ describe("HomeBoard a11y contract sweep (Plan 4 Task 4)", () => {
   });
 
   describe("edit mode", () => {
+    // Plan 7 Task 3 (P1-1): "Customize board" now opens a dropdown instead
+    // of entering edit mode directly — an extra "Rearrange tiles" selection
+    // is needed to actually enter edit mode.
     async function renderAndEnterEdit() {
       renderWithProviders(<HomeBoardHarness companyId="co-1" role="founder" />);
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
       const user = userEvent.setup();
       await user.click(screen.getByRole("button", { name: "Customize board" }));
+      await user.click(await screen.findByRole("menuitem", { name: "Rearrange tiles" }));
       return user;
     }
 
@@ -168,13 +172,17 @@ describe("HomeBoard a11y contract sweep (Plan 4 Task 4)", () => {
 
     it("the add-widget tray is a labeled menu whose items are labeled buttons", async () => {
       const user = await renderAndEnterEdit();
-      await user.click(screen.getByRole("button", { name: "Add widget" }));
 
-      // Founder default already has all 10 widgets, so the tray is empty of
-      // offerable items — remove one first so at least one item is offered.
+      // Founder default already has all 10 widgets, so the tray would be
+      // empty of offerable items — remove one FIRST, before opening the
+      // dropdown. (Radix DropdownMenu is modal by default: once open, it
+      // marks the rest of the page aria-hidden, so "Remove Budget" elsewhere
+      // on the page would no longer be reachable by role if we opened the
+      // dropdown first.)
       await user.click(screen.getByRole("button", { name: "Remove Budget" }));
 
-      const tray = screen.getByRole("menu", { name: "Add widget" });
+      await user.click(screen.getByRole("button", { name: "Add widget" }));
+      const tray = await screen.findByRole("menu", { name: "Add widget" });
       expect(within(tray).getByRole("button", { name: "Budget" })).toBeInTheDocument();
     });
 

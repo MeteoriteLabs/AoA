@@ -95,6 +95,14 @@ export interface UseBoardEditResult {
   retrySave: () => void;
   removeWidget: (key: WidgetKey) => void;
   addWidget: (key: WidgetKey) => void;
+  /**
+   * Appends a widget AND enters edit mode in one atomic action (Plan 7 Task
+   * 3) — the view-mode "Add widget" entry point (the customize dropdown's
+   * submenu). Unlike `addWidget`, callable while NOT already editing; see
+   * this function's own implementation comment for why `addWidget` itself
+   * can't be used for that (a stale-closure trap).
+   */
+  addWidgetAndEdit: (key: WidgetKey) => void;
   /** Deletes the persisted layout, falls back to the role default, and marks the draft clean (no re-save on exit). */
   resetBoard: () => void;
   onLayoutChange: (current: Layout, all: ResponsiveLayouts) => void;
@@ -324,6 +332,43 @@ export function useBoardEdit(
     [editing],
   );
 
+  // Plan 7 Task 3 — view-mode "Add widget" entry point (the customize
+  // dropdown's submenu, before Rearrange has ever been clicked). A naive
+  // handler would try `startEdit(); addWidget(key);` in one click callback,
+  // but `addWidget` is a `useCallback` closed over `editing` (dep
+  // `[editing]`, see above) and guards `if (!editing) return;` — calling it
+  // synchronously right after `startEdit()` in the SAME event handler still
+  // reads the STALE `editing` captured when this render's closures were
+  // created (false), so it silently no-ops. This action exists specifically
+  // to avoid that trap: it mirrors `startEdit` FULLY (identical five
+  // setters, identical order) and inlines `addWidget`'s own bottomEdge/
+  // append shape for the new item, all in one body that never depends on
+  // `editing` at all. Deps are `[isSaving, sourceLg]` — NOT `[editing]` —
+  // precisely because depending on `editing` here would reintroduce the same
+  // staleness this action exists to avoid (the whole point is to be callable
+  // while `editing` is false). Baseline is set to `sourceLg` (the PRE-add
+  // layout), not the freshly-built `next` — so the new widget is immediately
+  // dirty and a subsequent Done actually saves it, exactly like any other
+  // edit-session change.
+  const addWidgetAndEdit = useCallback(
+    (key: WidgetKey) => {
+      if (isSaving) return; // rule 7, mirrored — no entry while a save is in flight
+      const def = getWidget(key);
+      if (!def) return; // unknown key — defensive no-op, mirrors addWidget's own guard
+      const next: HomeBoardLayoutItem[] = [
+        ...sourceLg,
+        { i: key, x: 0, y: bottomEdge(sourceLg), w: def.defaultSize.w, h: def.defaultSize.h },
+      ];
+      setDraft(next);
+      baselineRef.current = sourceLg; // NOT next — so dirty is true and Done saves
+      setInitialized(false);
+      setSaveError(null);
+      setAnnouncement("");
+      setEditing(true);
+    },
+    [isSaving, sourceLg],
+  );
+
   const resetBoard = useCallback(() => {
     if (isSaving || isResetting) return;
     resetMutation();
@@ -442,6 +487,7 @@ export function useBoardEdit(
     retrySave,
     removeWidget,
     addWidget,
+    addWidgetAndEdit,
     resetBoard,
     onLayoutChange,
     onBreakpointChange,

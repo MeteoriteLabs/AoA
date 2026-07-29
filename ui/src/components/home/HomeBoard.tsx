@@ -5,6 +5,7 @@ import { getWidget } from "./widgets/registry";
 import { WidgetErrorBoundary } from "./WidgetErrorBoundary";
 import type { UseBoardEditResult } from "./useBoardEdit";
 import { projectToBreakpoint } from "./gridLayout";
+import { ArrangeToolbar } from "./ArrangeToolbar";
 import { cn } from "../../lib/utils";
 
 // Native v2 RGL API (see RGL_V2_API.md) — breakpoints/cols are fixed, not
@@ -38,12 +39,15 @@ const ARROW_KEY_DELTAS: Record<string, readonly [number, number]> = {
  *
  * Task D3: the `useBoardEdit` hook is owned by the caller (Dashboard), not
  * by this component — the pinned page header (HomeBoardControls) needs the
- * SAME edit session (draft/dirty/save state) to render its Customize board/
- * Done/Add widget/Reset controls, so Dashboard computes one `boardEdit` and
- * shares it with both HomeBoardControls (header) and this component (grid)
- * as a plain prop. HomeBoard itself only renders the grid, the per-tile
- * remove `×` button, and keyboard move/resize handling (Task D2) — none of
- * which need to live in the header.
+ * SAME edit session (draft/dirty/save state) as the grid, so Dashboard
+ * computes one `boardEdit` and shares it with both HomeBoardControls (header)
+ * and this component (grid) as a plain prop. HomeBoard renders the grid, the
+ * per-tile remove `×` button, keyboard move/resize handling (Task D2), and
+ * — Plan 7 Task 3 — the floating `ArrangeToolbar` (Add widget/Reset/status/
+ * Done), gated on the same `editableNow` that already freezes the tiles'
+ * drag/resize/remove. The header (HomeBoardControls) itself only ever shows
+ * the customize icon now — a Radix dropdown while not editing, an inert
+ * disabled icon while editing — so it never reflows regardless of edit state.
  */
 export function HomeBoard({
   companyId,
@@ -74,17 +78,23 @@ export function HomeBoard({
   // edited). `editing` alone isn't enough to gate drag/resize/remove/
   // keyboard: if the viewport shrinks below 1024px mid-edit-session
   // (activeBreakpoint flips away from "lg"), every mutating affordance
-  // freezes until it's back at lg — the user can still hit "Done" to
-  // exit/save (see HomeBoardControls), they just can't keep
-  // dragging/resizing/adding/nudging below desktop width.
+  // freezes until it's back at lg. Widening the window back to lg (or
+  // exiting via navigation, which flushes a dirty draft best-effort — see
+  // useBoardEdit's unmount handler) are the ways out while below lg; see the
+  // ArrangeToolbar note below for why "Done" itself isn't reachable either.
   //
   // P2 fix: also require !isSaving. Without this, drag/resize/remove/
   // keyboard stayed live during the "Saving…" window between clicking Done
   // and the mutation settling; attemptSave's `.then` does `setDraft(null)`
   // on success, so any edit made in that window was silently discarded the
   // instant the save resolved. Freezing every mutating affordance for that
-  // (usually brief) window closes the gap; Done itself stays visible
-  // (disabled) so the user can see something is happening.
+  // (usually brief) window closes the gap.
+  //
+  // Plan 7 Task 3: this is now ALSO the gate for the floating ArrangeToolbar
+  // (Add widget/Reset/status/Done) below — so unlike before this plan, Done
+  // is NOT reachable below lg or during isSaving; the whole toolbar unmounts
+  // right along with the tiles' own affordances rather than staying visible-
+  // but-disabled (see ArrangeToolbar's own doc comment).
   const editableNow = editing && activeBreakpoint === "lg" && !isSaving;
 
   const layouts = {
@@ -111,7 +121,14 @@ export function HomeBoard({
           (see resizeConfig.enabled below); this attribute is what makes it a
           clearly-visible grab affordance (not just a hover-revealed sliver)
           while editing. */}
-      <div ref={containerRef} data-home-board-editing={editableNow ? "true" : undefined}>
+      <div
+        ref={containerRef}
+        data-home-board-editing={editableNow ? "true" : undefined}
+        // Plan 7 Task 3: leaves clearance under the last row for the fixed,
+        // bottom-center ArrangeToolbar so it never sits on top of tile
+        // content when the page is scrolled all the way down.
+        className={cn(editableNow && "pb-24")}
+      >
         {mounted && lg.length === 0 && (
           // Plan 4 Task 6: every widget removed (in edit mode, or a saved
           // empty layout on a later visit) — a plain, centered nudge rather
@@ -222,6 +239,15 @@ export function HomeBoard({
           </Responsive>
         )}
       </div>
+
+      {/* Plan 7 Task 3: the floating arrange-mode toolbar (Add widget/Reset/
+          status/Done) — gated on the exact same `editableNow` that already
+          freezes drag/resize/remove on the tiles above, so it mounts/
+          unmounts in lockstep with them (company-switch, drop-below-lg,
+          isSaving). Mounted here (not Dashboard) so the four
+          HomeBoard.*.test.tsx harnesses — which render HomeBoardControls +
+          HomeBoard with no Dashboard — can still reach Done. */}
+      {editableNow && <ArrangeToolbar boardEdit={boardEdit} role={role} />}
     </div>
   );
 }

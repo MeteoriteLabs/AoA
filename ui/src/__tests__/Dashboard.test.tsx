@@ -456,15 +456,21 @@ describe("Dashboard", () => {
       // Not editing yet: no per-tile remove buttons.
       expect(screen.queryAllByLabelText(/^Remove /)).toHaveLength(0);
 
+      // Plan 7 Task 3 (P1-1): "Customize board" opens a dropdown now —
+      // select "Rearrange tiles" to actually enter edit mode.
       await user.click(screen.getByRole("button", { name: "Customize board" }));
+      await user.click(await screen.findByRole("menuitem", { name: "Rearrange tiles" }));
 
       // Remove buttons appear on the widget tiles rendered by HomeBoard below
       // — proof the header (HomeBoardControls) and the grid (HomeBoard)
       // consume the SAME useBoardEdit instance from Dashboard, not two
       // separately-created ones that would drift out of sync.
       expect(screen.getAllByLabelText(/^Remove /).length).toBeGreaterThan(0);
+      // Done now lives in the floating ArrangeToolbar (mounted by HomeBoard),
+      // not the header — the header's own customize icon stays put (no
+      // header morph/shift) but goes inert/disabled while arranging.
       expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
-      expect(screen.queryByRole("button", { name: "Customize board" })).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Customize board" })).toBeDisabled();
     });
   });
 });

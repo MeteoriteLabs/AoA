@@ -97,7 +97,7 @@ function HomeBoardHarness({ companyId, role }: { companyId: string; role: UserRo
   const boardEdit = useBoardEdit(companyId, role);
   return (
     <>
-      <HomeBoardControls boardEdit={boardEdit} />
+      <HomeBoardControls boardEdit={boardEdit} role={role} />
       <HomeBoard companyId={companyId} role={role} boardEdit={boardEdit} />
     </>
   );
@@ -168,7 +168,10 @@ describe("HomeBoard under React.StrictMode", () => {
     // means exitEdit's attemptSave is a no-op (Task C1 rule 7) — save stays
     // at zero calls.
     const user = userEvent.setup();
+    // Plan 7 Task 3 (P1-1): "Customize board" opens a dropdown now — select
+    // "Rearrange tiles" to actually enter edit mode.
     await user.click(screen.getByRole("button", { name: "Customize board" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Rearrange tiles" }));
     await user.click(screen.getByRole("button", { name: "Done" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Customize board" })).toBeInTheDocument());
     expect(apiSpies.layoutSave).not.toHaveBeenCalled();
