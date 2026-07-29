@@ -472,7 +472,7 @@ export interface AdapterEnvironmentTestContext {
   executionTarget?: AdapterExecutionTarget;
   environmentName?: string | null;
   deployment?: {
-    mode?: "local_trusted" | "authenticated";
+    mode?: "local_trusted" | "authenticated" | "cloud_auth";
     exposure?: "private" | "public";
     bindHost?: string | null;
     allowedHostnames?: string[];
