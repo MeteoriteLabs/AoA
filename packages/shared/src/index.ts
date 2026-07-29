@@ -349,6 +349,18 @@ export {
 export type { CrewProvider, CommanderProvider, CliTool, CrewAdapterType } from "./provider-mapping.js";
 
 export type {
+  Organization,
+  OrganizationMembership,
+  OrganizationInvitation,
+} from "./types/organization.js";
+export {
+  createOrganizationSchema,
+  inviteToOrganizationSchema,
+  type CreateOrganization,
+  type InviteToOrganization,
+} from "./validators/organization.js";
+
+export type {
   Company,
   Agent,
   AgentPermissions,
