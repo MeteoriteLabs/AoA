@@ -1,5 +1,5 @@
 import { beforeEach, describe, it, expect, vi } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { HomeBoardLayoutItem } from "@armyofagents/shared";
 import { renderWithProviders, mockCompanyContext } from "../test-utils";
@@ -275,6 +275,65 @@ describe("HomeBoard", () => {
       // (Budget removed) from co-1 is discarded, not carried over or saved.
       await waitFor(() => expect(screen.getByRole("button", { name: "Edit board" })).toBeInTheDocument());
       expect(screen.queryAllByLabelText(/^Remove /)).toHaveLength(0);
+      expect(homeBoardLayoutMock.saveAsync).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("add-widget tray (Task C2)", () => {
+    beforeEach(() => {
+      // A custom, smaller saved layout so there's room to add widgets.
+      homeBoardLayoutMock.layout = [
+        { i: "budget", x: 0, y: 0, w: 1, h: 1 },
+        { i: "my-tasks", x: 1, y: 0, w: 2, h: 1 },
+      ];
+    });
+
+    it("the tray lists only widgets not on the board, and adding one adds it to the board", async () => {
+      renderWithProviders(<HomeBoard companyId="co-1" role="founder" />);
+      expect(await screen.findByText("Ship it")).toBeInTheDocument();
+
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Edit board" }));
+      expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(2);
+
+      await user.click(screen.getByRole("button", { name: "Add widget" }));
+      const tray = screen.getByRole("menu", { name: "Add widget" });
+
+      // On-board widgets (Budget, My tasks) are excluded from the tray...
+      expect(within(tray).queryByRole("button", { name: "Budget" })).not.toBeInTheDocument();
+      expect(within(tray).queryByRole("button", { name: "My tasks" })).not.toBeInTheDocument();
+      // ...the other six are offered.
+      expect(within(tray).getByRole("button", { name: "Objectives" })).toBeInTheDocument();
+
+      await user.click(within(tray).getByRole("button", { name: "Objectives" }));
+
+      // Added to the board (draft): a new tile + remove button appear...
+      expect(await screen.findByRole("heading", { level: 2, name: "Objectives" })).toBeInTheDocument();
+      expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(3);
+      // ...and the tray immediately reflects it's no longer available to add.
+      expect(within(tray).queryByRole("button", { name: "Objectives" })).not.toBeInTheDocument();
+    });
+
+    it("reset restores the role-default board and marks the draft clean (a later exit does not re-save)", async () => {
+      renderWithProviders(<HomeBoard companyId="co-1" role="founder" />);
+      expect(await screen.findByText("Ship it")).toBeInTheDocument();
+
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Edit board" }));
+      expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(2);
+
+      await user.click(screen.getByRole("button", { name: "Add widget" }));
+      await user.click(screen.getByRole("button", { name: /^reset/i }));
+
+      expect(homeBoardLayoutMock.reset).toHaveBeenCalledTimes(1);
+      // Founder's role default includes all 8 registered widgets.
+      await waitFor(() => expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(8));
+      expect(screen.queryByText("Unsaved changes")).not.toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "Done" }));
+
+      // No delete-then-upsert race: exiting right after a reset must not re-save.
+      await waitFor(() => expect(screen.getByRole("button", { name: "Edit board" })).toBeInTheDocument());
       expect(homeBoardLayoutMock.saveAsync).not.toHaveBeenCalled();
     });
   });

@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { X } from "lucide-react";
 import { Responsive, useContainerWidth, verticalCompactor } from "react-grid-layout";
 import type { UserRole } from "@armyofagents/shared";
@@ -5,6 +6,7 @@ import { getWidget } from "./widgets/registry";
 import { WidgetErrorBoundary } from "./WidgetErrorBoundary";
 import { useBoardEdit } from "./useBoardEdit";
 import { projectToBreakpoint } from "./gridLayout";
+import { AddWidgetTray } from "./AddWidgetTray";
 import { Button } from "../ui/button";
 
 // Native v2 RGL API (see RGL_V2_API.md) — breakpoints/cols are fixed, not
@@ -36,16 +38,26 @@ export function HomeBoard({ companyId, role }: { companyId: string; role: UserRo
     editing,
     dirty,
     isSaving,
+    isResetting,
     saveError,
     startEdit,
     exitEdit,
     retrySave,
     removeWidget,
+    addWidget,
+    resetBoard,
     onLayoutChange,
     onBreakpointChange,
     onResizeStop,
   } = useBoardEdit(companyId, role);
   const { width, mounted, containerRef } = useContainerWidth();
+  const [trayOpen, setTrayOpen] = useState(false);
+
+  // Never let a stale tray-open flag resurface on a later edit session (e.g.
+  // after a company switch discards the current one mid-tray).
+  useEffect(() => {
+    if (!editing) setTrayOpen(false);
+  }, [editing]);
 
   const layouts = {
     lg,
@@ -70,6 +82,28 @@ export function HomeBoard({ companyId, role }: { companyId: string; role: UserRo
         )}
         {editing && saveError == null && !isSaving && dirty && (
           <span className="text-sm text-muted-foreground">Unsaved changes</span>
+        )}
+        {editing && (
+          <div className="relative">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setTrayOpen((open) => !open)}
+            >
+              Add widget
+            </Button>
+            {trayOpen && (
+              <div className="absolute right-0 top-full z-20 mt-1">
+                <AddWidgetTray
+                  boardKeys={lg.map((item) => item.i)}
+                  onAdd={addWidget}
+                  onReset={resetBoard}
+                  resetting={isResetting}
+                />
+              </div>
+            )}
+          </div>
         )}
         <Button
           type="button"
