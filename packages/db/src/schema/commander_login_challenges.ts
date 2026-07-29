@@ -1,4 +1,13 @@
-import { pgTable, uuid, text, integer, timestamp, index } from "drizzle-orm/pg-core";
+import {
+  pgTable,
+  uuid,
+  text,
+  integer,
+  timestamp,
+  index,
+  uniqueIndex,
+} from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { companies } from "./companies.js";
 import { authUsers } from "./auth.js";
 
@@ -21,19 +30,45 @@ export const commanderLoginChallenges = pgTable(
       .references(() => companies.id, { onDelete: "cascade" }),
     provider: text("provider").notNull(), // 'anthropic' | 'openai'
     authHome: text("auth_home").notNull(),
+    /**
+     * Canonical login-worker resource. Nullable only for rolling compatibility
+     * with rows written before the resource-key migration.
+     */
+    resourceKey: text("resource_key"),
     loginUrl: text("login_url"),
     pid: integer("pid"),
     pgid: integer("pgid"),
     status: text("status").notNull().default("pending"), // pending|completed|failed|timeout
-    startedByUserId: text("started_by_user_id").references(() => authUsers.id, { onDelete: "set null" }),
-    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    startedByUserId: text("started_by_user_id").references(() => authUsers.id, {
+      onDelete: "set null",
+    }),
+    startedAt: timestamp("started_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (table) => ({
-    companyIdx: index("commander_login_challenges_company_idx").on(table.companyId),
-    lockIdx: index("commander_login_challenges_lock_idx").on(table.provider, table.authHome, table.status),
+    companyIdx: index("commander_login_challenges_company_idx").on(
+      table.companyId
+    ),
+    lockIdx: index("commander_login_challenges_lock_idx").on(
+      table.provider,
+      table.authHome,
+      table.status
+    ),
+    activeResourceUq: uniqueIndex(
+      "commander_login_challenges_active_resource_uq"
+    )
+      .on(table.resourceKey)
+      .where(
+        sql`${table.status} = 'pending' AND ${table.resourceKey} IS NOT NULL`
+      ),
     statusIdx: index("commander_login_challenges_status_idx").on(table.status),
-  }),
+  })
 );

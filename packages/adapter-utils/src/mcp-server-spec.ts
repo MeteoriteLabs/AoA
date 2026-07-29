@@ -114,6 +114,12 @@ export type McpWriterSkipReason =
   | "reserved_name"
   /** Transport this CLI cannot express (or an unrecognized `kind`). */
   | "unsupported_transport"
+  /**
+   * The CLI stores its provider credential in a file readable by same-user
+   * child processes, so a local stdio connector cannot safely be spawned until
+   * it has a separate OS-user/container/filesystem boundary.
+   */
+  | "filesystem_isolation_required"
   /** Name is not expressible in this CLI's config (e.g. not a TOML bare key). */
   | "unsafe_name"
   /**

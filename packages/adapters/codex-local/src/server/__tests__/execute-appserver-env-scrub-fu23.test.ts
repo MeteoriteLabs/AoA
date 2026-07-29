@@ -1,13 +1,8 @@
 /**
- * FU-23 (codex_local, app-server / bridged path) — the supervised
- * `codex app-server` spawn must strip the SAME connector-aware set as the exec
- * path. `execute()` computes `codexUnsetEnvKeys` once and feeds BOTH spawns; here
- * we inject `deps.runAppServerTurn` and assert the list it receives.
- *
- * ABLATION: remove `unsetEnvKeys: codexUnsetEnvKeys` from the runAppServerTurn
- * call in execute.ts → `input.unsetEnvKeys` falls back to the app-server default
- * `["OPENAI_API_KEY"]` and the "connectors present → DATABASE_URL stripped"
- * assertion goes RED.
+ * Codex app-server mirrors the exec path's connector policy. Stdio connectors
+ * are rejected before spawn because they do not have a separate filesystem
+ * view from CODEX_HOME/auth.json; therefore no connector-aware parent-env
+ * broadening is needed. The always-on OPENAI_API_KEY billing guard remains.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import fs from "node:fs/promises";
@@ -50,9 +45,7 @@ const NOTION: McpServerSpec = {
   headers: { Authorization: "Bearer ${AOA_MCP_NOTION_TOKEN}" },
   authTokenEnvVar: "AOA_MCP_NOTION_TOKEN",
 };
-// STDIO — the ONLY transport that spawns a local child inheriting the env, so the
-// ONLY one that triggers env isolation (F4). An http-only run must stay
-// byte-identical to a no-connector run.
+// Codex rejects stdio connectors until they have a filesystem sandbox.
 const PG_STDIO: McpServerSpec = {
   kind: "stdio",
   command: "npx",
@@ -145,19 +138,15 @@ async function captureAppServerInput(
   return captured;
 }
 
-describe("codex_local FU-23 env scrub (app-server path)", () => {
-  it("STDIO connector present → app-server receives the broadened ambient-secret strip", async () => {
+describe("codex_local connector isolation (app-server path)", () => {
+  it("rejected stdio keeps only the normal OPENAI_API_KEY billing strip", async () => {
     const input = await captureAppServerInput("stdio");
-    expect(input.unsetEnvKeys).toContain("OPENAI_API_KEY");
-    expect(input.unsetEnvKeys).toContain("DATABASE_URL");
-    expect(input.unsetEnvKeys).toContain("AOA_SECRETS_MASTER_KEY");
+    expect(input.unsetEnvKeys).toEqual(["OPENAI_API_KEY"]);
   });
 
-  // WS1 — the run-scoped API bearer must NOT be in the env handed to the codex
-  // app-server on a stdio-connector run (a stdio connector child would inherit it).
-  it("STDIO connector present → AOA_API_KEY is stripped from the app-server env", async () => {
+  it("rejected stdio leaves the run bearer available to the Codex agent", async () => {
     const input = await captureAppServerInput("stdio");
-    expect(input.env.AOA_API_KEY).toBeUndefined();
+    expect(input.env.AOA_API_KEY).toBe("secret-run-token");
   });
 
   it("no connectors → app-server keeps only the pre-existing OPENAI_API_KEY strip", async () => {

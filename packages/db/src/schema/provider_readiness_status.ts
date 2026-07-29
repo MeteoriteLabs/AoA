@@ -75,6 +75,12 @@ export const providerReadinessStatus = pgTable(
       .notNull()
       .default([]),
     testedAt: timestamp("tested_at", { withTimezone: true }).notNull().defaultNow(),
+    /** Execution target observed by this probe. Nullable for rolling compatibility. */
+    executionTargetId: text("execution_target_id"),
+    /** Non-secret hash of provider/scope/config source. Nullable for legacy rows. */
+    sourceFingerprint: text("source_fingerprint"),
+    /** Server-derived freshness deadline. Nullable for legacy rows. */
+    staleAt: timestamp("stale_at", { withTimezone: true }),
     /** Who ran the probe. Nulled (not cascaded) when the user is deleted. */
     testedByUserId: text("tested_by_user_id").references(() => authUsers.id, {
       onDelete: "set null",

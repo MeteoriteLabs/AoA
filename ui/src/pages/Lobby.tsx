@@ -1,4 +1,3 @@
-import { type CSSProperties } from "react";
 import type { PendingInvitation } from "@armyofagents/shared";
 import { useNavigate } from "@/lib/router";
 import { useQueries, useQuery } from "@tanstack/react-query";
@@ -33,7 +32,11 @@ export function Lobby({
 }: {
   pendingInvitations?: PendingInvitation[];
 }) {
-  const { companies, loading: companiesLoading, setSelectedCompanyId } = useCompany();
+  const {
+    companies,
+    loading: companiesLoading,
+    setSelectedCompanyId,
+  } = useCompany();
   const navigate = useNavigate();
 
   const { data: profile } = useQuery({
@@ -51,10 +54,13 @@ export function Lobby({
       staleTime: 30_000,
     })),
   });
-  const pendingOrganization = profile?.id ? readPendingOrganization(profile.id) : null;
+  const pendingOrganization = profile?.id
+    ? readPendingOrganization(profile.id)
+    : null;
   const interruptedCompanies = visibleCompanies.filter((_, index) => {
     const progress = progressQueries[index]?.data;
-    if (progress == null) return pendingOrganization?.id === visibleCompanies[index]?.id;
+    if (progress == null)
+      return pendingOrganization?.id === visibleCompanies[index]?.id;
     return !progress.completedStates.includes("SETUP_COMPLETE");
   });
 
@@ -110,7 +116,7 @@ export function Lobby({
       <LobbyShellMobileMenuButton className="mb-4" />
 
       {/* Welcome */}
-      <div className="mb-6 sm:mb-7 lobby-heading-enter">
+      <div className="mb-6 sm:mb-7">
         <h1 className="text-[1.25rem] sm:text-[1.4rem] md:text-[1.55rem] font-bold tracking-[-0.025em] text-foreground">
           Welcome back, {firstName}
           <span className="text-brand">.</span>
@@ -130,7 +136,9 @@ export function Lobby({
               aria-label={`Review invitation to ${invitation.companyName}`}
               onClick={() =>
                 navigate(
-                  `/onboarding/join?company=${encodeURIComponent(invitation.companyId)}`,
+                  `/onboarding/join?company=${encodeURIComponent(
+                    invitation.companyId
+                  )}`
                 )
               }
             >
@@ -139,8 +147,9 @@ export function Lobby({
                   Invitation to {invitation.companyName}
                 </span>
                 <span className="mt-0.5 block text-xs text-muted-foreground">
-                  Join as {HUMAN_ROLE_LABELS[invitation.role] ?? invitation.role} · review to
-                  accept
+                  Join as{" "}
+                  {HUMAN_ROLE_LABELS[invitation.role] ?? invitation.role} ·
+                  review to accept
                 </span>
               </span>
               <span className="text-xs font-semibold text-brand">Review</span>
@@ -181,12 +190,8 @@ export function Lobby({
       </div>
 
       <div className="flex flex-col gap-3 sm:gap-3.5">
-        {visibleCompanies.map((company, i) => (
-          <div
-            key={company.id}
-            className="lobby-card-enter"
-            style={{ "--lobby-card-index": i } as CSSProperties}
-          >
+        {visibleCompanies.map((company) => (
+          <div key={company.id}>
             <LobbyCompanyCard
               company={company}
               stats={stats?.[company.id]}

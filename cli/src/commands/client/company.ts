@@ -46,6 +46,21 @@ interface CompanyImportOptions extends BaseClientOptions {
   dryRun?: boolean;
 }
 
+export function resolveCompanyImportPath(
+  target: CompanyImportTargetMode,
+  companyId: string | undefined,
+  preview: boolean,
+): string {
+  const suffix = preview ? "/preview" : "";
+  if (target === "new") {
+    return `/api/companies/import/new${suffix}`;
+  }
+  if (!companyId) {
+    throw new Error("Target existing company requires --company-id (or context default companyId).");
+  }
+  return `/api/companies/${encodeURIComponent(companyId)}/import${suffix}`;
+}
+
 function isUuidLike(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
@@ -377,14 +392,17 @@ export function registerCompanyCommands(program: Command): void {
 
           if (opts.dryRun) {
             const preview = await ctx.api.post<CompanyPortabilityPreviewResult>(
-              "/api/companies/import/preview",
+              resolveCompanyImportPath(target, existingTargetCompanyId, true),
               payload,
             );
             printOutput(preview, { json: ctx.json });
             return;
           }
 
-          const imported = await ctx.api.post<CompanyPortabilityImportResult>("/api/companies/import", payload);
+          const imported = await ctx.api.post<CompanyPortabilityImportResult>(
+            resolveCompanyImportPath(target, existingTargetCompanyId, false),
+            payload,
+          );
           printOutput(imported, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);

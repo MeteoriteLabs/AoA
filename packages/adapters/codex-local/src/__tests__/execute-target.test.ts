@@ -142,6 +142,74 @@ describe("codex execute target", () => {
     }
   });
 
+  it("seeds the managed agent home from config.env CODEX_HOME instead of the server-global Codex home", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-codex-scoped-auth-"));
+    const workspace = path.join(root, "workspace");
+    const commandBase = path.join(root, "agent");
+    const capturePath = path.join(root, "capture.json");
+    const ambientHome = path.join(root, "ambient-codex");
+    const scopedHome = path.join(root, "scoped-codex");
+    await Promise.all([
+      fs.mkdir(workspace, { recursive: true }),
+      fs.mkdir(ambientHome, { recursive: true }),
+      fs.mkdir(scopedHome, { recursive: true }),
+    ]);
+    await fs.writeFile(path.join(ambientHome, "auth.json"), JSON.stringify({ source: "ambient" }));
+    await fs.writeFile(path.join(scopedHome, "auth.json"), JSON.stringify({ source: "scoped" }));
+    const commandPath = await writeFakeCodexCommand(commandBase);
+    const previousCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = ambientHome;
+
+    try {
+      const result = await execute({
+        runId: "run-scoped-auth",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            AOA_TEST_CAPTURE_PATH: capturePath,
+            CODEX_HOME: scopedHome,
+          },
+          timeoutSec: 10,
+          graceSec: 1,
+        },
+        context: {},
+        executionTarget: { type: "local" },
+        runtimeCommandSpec: { command: "codex", installCommand: "do-not-run" },
+        authToken: "secret-run-token",
+        onLog: async () => {},
+        onMeta: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as {
+        env: Record<string, string>;
+      };
+      const managedHome = path.join(scopedHome, "aoa-instances", "company-1", "agent-1");
+      expect(capture.env.CODEX_HOME).toBe(managedHome);
+      await expect(
+        fs.readFile(path.join(managedHome, "auth.json"), "utf8").then(JSON.parse),
+      ).resolves.toEqual({ source: "scoped" });
+    } finally {
+      if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousCodexHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   async function runCodexAndCaptureEnv(configEnv: Record<string, string>): Promise<Record<string, string>> {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-codex-envstrip-"));
     const workspace = path.join(root, "workspace");
@@ -325,6 +393,7 @@ describe("codex execute target", () => {
           command: "codex",
           env: {
             CUSTOM_ENV: "custom-value",
+            OPENAI_API_KEY: "sk-agent-scoped-remote",
           },
           timeoutSec: 10,
           graceSec: 1,
@@ -351,7 +420,113 @@ describe("codex execute target", () => {
       expect(providerInput!.env.CUSTOM_ENV).toBe("custom-value");
       expect(providerInput!.command).toBe("bash");
       expect(providerInput!.args[1]).toContain('mkdir -p "/home/user/aoa-workspace/.aoa-codex-home"');
+      expect(providerInput!.args[1]).toContain(
+        'rm -f "/home/user/aoa-workspace/.aoa-codex-home"/auth.json "/home/user/aoa-workspace/.aoa-codex-home"/config.toml',
+      );
       expect(providerInput!.args[1]).toContain("codex login --with-api-key");
+      expect(providerInput!.args[1]).not.toContain("subscription credentials are not transferred");
+    } finally {
+      if (previousCodexHome === undefined) {
+        delete process.env.CODEX_HOME;
+      } else {
+        process.env.CODEX_HOME = previousCodexHome;
+      }
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("scrubs stale remote Codex state and fails closed without scoped auth or remote MCP provisioning", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-codex-remote-policy-"));
+    const previousCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = path.join(root, "host-codex-home");
+    const providerInputs: AdapterProviderSandboxRunInput[] = [];
+    const providerRunner = {
+      execute: vi.fn(async (input: AdapterProviderSandboxRunInput) => {
+        providerInputs.push(input);
+        const script = input.args[1] ?? "";
+        const refused = script.includes("exit 78");
+        return {
+          exitCode: refused ? 78 : 0,
+          signal: null,
+          timedOut: false,
+          stderr: refused ? "remote policy refused the run" : "",
+          stdout: "",
+        };
+      }),
+    };
+    const executionTarget = {
+      type: "provider-sandbox" as const,
+      provider: "e2b",
+      providerLeaseId: "sandbox-policy",
+      remoteCwd: "/home/user/aoa-workspace",
+      shell: "bash" as const,
+      runner: providerRunner,
+    };
+    const base = {
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Codex Coder",
+        adapterType: "codex_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      executionTarget,
+      runtimeCommandSpec: {
+        command: "codex",
+        installCommand: "npm install -g @openai/codex",
+      },
+      authToken: "secret-run-token",
+      onLog: async () => {},
+    };
+
+    try {
+      const missingAuth = await execute({
+        ...base,
+        runId: "run-remote-no-key",
+        config: { command: "codex", timeoutSec: 10, graceSec: 1 },
+        context: {},
+      });
+      const missingAuthScript = providerInputs[0]!.args[1]!;
+      expect(missingAuth.exitCode).toBe(78);
+      expect(missingAuthScript).toContain(
+        'rm -f "/home/user/aoa-workspace/.aoa-codex-home"/auth.json "/home/user/aoa-workspace/.aoa-codex-home"/config.toml',
+      );
+      expect(missingAuthScript).toContain(
+        "requires an explicit per-agent OPENAI_API_KEY",
+      );
+      expect(missingAuthScript.indexOf("rm -f")).toBeLessThan(
+        missingAuthScript.indexOf("requires an explicit"),
+      );
+
+      const remoteMcp = await execute({
+        ...base,
+        runId: "run-remote-mcp",
+        config: {
+          command: "codex",
+          env: { OPENAI_API_KEY: "sk-agent-scoped-remote" },
+          timeoutSec: 10,
+          graceSec: 1,
+        },
+        context: {},
+        mcpServers: {},
+      });
+      const remoteMcpScript = providerInputs[1]!.args[1]!;
+      expect(remoteMcp.exitCode).toBe(78);
+      expect(remoteMcpScript).toContain(
+        "Remote Codex MCP configuration is not supported",
+      );
+      expect(remoteMcpScript.indexOf("rm -f")).toBeLessThan(
+        remoteMcpScript.indexOf("Remote Codex MCP"),
+      );
+      expect(remoteMcpScript.indexOf("Remote Codex MCP")).toBeLessThan(
+        remoteMcpScript.indexOf("codex login --with-api-key"),
+      );
     } finally {
       if (previousCodexHome === undefined) {
         delete process.env.CODEX_HOME;

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { screen, fireEvent } from "@testing-library/react";
+import { screen, fireEvent, waitFor } from "@testing-library/react";
 import { renderWithProviders } from "../../__tests__/test-utils";
 import { OnboardingFlowPage } from "../OnboardingFlow";
 
@@ -7,14 +7,25 @@ const state = vi.hoisted(() => ({
   searchParams: new URLSearchParams(),
   selectedCompanyId: null as string | null,
   session: { user: { id: "u1" } } as unknown,
-  flowProps: null as unknown as { companyId: string | null; onFinished?: () => void },
-  orgProps: null as unknown as { ctx: { companyId: string | null }; onComplete: () => void },
-  firstRunProps: null as unknown as { companyId: string; onComplete: () => void },
+  flowProps: null as unknown as {
+    companyId: string | null;
+    onFinished?: () => void;
+  },
+  orgProps: null as unknown as {
+    ctx: { companyId: string | null };
+    onComplete: () => void;
+  },
+  firstRunProps: null as unknown as {
+    companyId: string;
+    onComplete: () => void;
+  },
 }));
 const mockNavigate = vi.hoisted(() => vi.fn());
 const mockRemoveQueries = vi.hoisted(() => vi.fn());
 const mockGetOnboardingProgress = vi.hoisted(() => vi.fn());
 const mockAdvanceOnboarding = vi.hoisted(() => vi.fn());
+const mockGetSession = vi.hoisted(() => vi.fn());
+const mockSwitchAccount = vi.hoisted(() => vi.fn());
 
 vi.mock("@tanstack/react-query", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-query")>();
@@ -32,7 +43,14 @@ vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({ selectedCompanyId: state.selectedCompanyId }),
 }));
 vi.mock("../../api/auth", () => ({
-  authApi: { getSession: () => Promise.resolve(state.session) },
+  authApi: { getSession: mockGetSession },
+}));
+vi.mock("../../hooks/useAccountSwitch", () => ({
+  useAccountSwitch: () => ({
+    switchAccount: mockSwitchAccount,
+    isSwitching: false,
+    error: null,
+  }),
 }));
 vi.mock("../../api/onboarding", () => ({
   onboardingApi: { getProgress: vi.fn(), advance: vi.fn() },
@@ -40,7 +58,10 @@ vi.mock("../../api/onboarding", () => ({
   advanceOnboarding: mockAdvanceOnboarding,
 }));
 vi.mock("../../onboarding/FlowEngine", () => ({
-  FlowEngine: (props: { companyId: string | null; onFinished?: () => void }) => {
+  FlowEngine: (props: {
+    companyId: string | null;
+    onFinished?: () => void;
+  }) => {
     state.flowProps = props;
     return (
       <button type="button" onClick={() => props.onFinished?.()}>
@@ -54,7 +75,10 @@ vi.mock("../../onboarding/FlowEngine", () => ({
   DarkShell: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 vi.mock("../../onboarding/steps/OrgStep", () => ({
-  OrgStep: (props: { ctx: { companyId: string | null }; onComplete: () => void }) => {
+  OrgStep: (props: {
+    ctx: { companyId: string | null };
+    onComplete: () => void;
+  }) => {
     state.orgProps = props;
     return <div>org-step-direct</div>;
   },
@@ -85,6 +109,7 @@ describe("OnboardingFlowPage", () => {
     state.session = { user: { id: "u1" } };
     state.flowProps = null as never;
     state.orgProps = null as never;
+    mockGetSession.mockResolvedValue(state.session);
     mockGetOnboardingProgress.mockResolvedValue({
       completedStates: ["AUTHENTICATED", "PROFILE_SET"],
     });
@@ -117,10 +142,9 @@ describe("OnboardingFlowPage", () => {
     fireEvent.click(finishTail);
     expect(mockRemoveQueries).toHaveBeenCalledWith({
       queryKey: ["onboarding", "journey"],
-      exact: true,
     });
     expect(mockRemoveQueries.mock.invocationCallOrder[0]).toBeLessThan(
-      mockNavigate.mock.invocationCallOrder[0]!,
+      mockNavigate.mock.invocationCallOrder[0]!
     );
     expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true });
   });
@@ -131,8 +155,15 @@ describe("OnboardingFlowPage", () => {
     renderWithProviders(<OnboardingFlowPage journey="founder" />);
     await screen.findByText("org-step-direct");
     expect(state.orgProps.ctx.companyId).toBeNull(); // user layer, not existing-co
-    // finishing the org step resumes the NEW company via a clean /onboarding
+    // Finishing the org step must evict the stale `returning` journey before
+    // dropping ?new=1, otherwise the parent gate immediately bounces home.
     state.orgProps.onComplete();
+    expect(mockRemoveQueries).toHaveBeenCalledWith({
+      queryKey: ["onboarding", "journey"],
+    });
+    expect(mockRemoveQueries.mock.invocationCallOrder[0]).toBeLessThan(
+      mockNavigate.mock.invocationCallOrder[0]!
+    );
     expect(mockNavigate).toHaveBeenCalledWith("/onboarding", { replace: true });
   });
 
@@ -149,6 +180,44 @@ describe("OnboardingFlowPage", () => {
       journey: "founder",
       requestedState: "PROFILE_SET",
     });
+  });
+
+  it("keeps a session lookup failure recoverable with retry and account switching", async () => {
+    mockGetSession
+      .mockRejectedValueOnce(new Error("Session service unavailable"))
+      .mockResolvedValueOnce({ user: { id: "u1" } });
+
+    renderWithProviders(<OnboardingFlowPage journey="founder" />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Session service unavailable",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Switch account" }));
+    expect(mockSwitchAccount).toHaveBeenCalledOnce();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await screen.findByText("finish-flow");
+    expect(mockGetSession).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries preparation for a new organization without abandoning onboarding", async () => {
+    state.searchParams = new URLSearchParams("new=1");
+    mockGetOnboardingProgress
+      .mockRejectedValueOnce(new Error("Progress service unavailable"))
+      .mockResolvedValueOnce({
+        completedStates: ["AUTHENTICATED", "PROFILE_SET"],
+      });
+
+    renderWithProviders(<OnboardingFlowPage journey="founder" />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Progress service unavailable",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() =>
+      expect(screen.getByText("org-step-direct")).toBeInTheDocument(),
+    );
+    expect(mockGetOnboardingProgress).toHaveBeenCalledTimes(2);
   });
 
   it("invited: renders the join terminal on finish instead of looping to /", async () => {

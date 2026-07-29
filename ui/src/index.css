@@ -81,8 +81,10 @@
   --color-sidebar-ring: var(--brand);
 
   /* === Fonts === */
-  --font-sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", ui-monospace, monospace;
+  --font-sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", ui-monospace,
+    monospace;
 
   /* === Radius === */
   --radius-sm: 4px;
@@ -100,25 +102,29 @@
 }
 
 @keyframes shimmer {
-  0% { background-position: -120% 0; }
-  100% { background-position: 220% 0; }
+  0% {
+    background-position: -120% 0;
+  }
+  100% {
+    background-position: 220% 0;
+  }
 }
 
 @keyframes pulse-glow {
-  0%, 100% {
-    box-shadow:
-      0 0 0 0 color-mix(in srgb, var(--brand) 60%, transparent),
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--brand) 60%, transparent),
       0 0 6px color-mix(in srgb, var(--brand) 40%, transparent);
   }
   50% {
-    box-shadow:
-      0 0 0 5px color-mix(in srgb, var(--brand) 0%, transparent),
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--brand) 0%, transparent),
       0 0 12px color-mix(in srgb, var(--brand) 60%, transparent);
   }
 }
 
 @keyframes thread-attention {
-  0%, 100% {
+  0%,
+  100% {
     box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.35);
   }
   50% {
@@ -137,16 +143,26 @@
 }
 
 @keyframes float-gentle {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-3px); }
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-3px);
+  }
 }
 
 /* Commander confirmation card border pulse — border-color only (no box-shadow, no paint cost).
    30 iterations × 2s = 60s then auto-stops. Wrapped in prefers-reduced-motion so the class
    is safe to apply unconditionally; reduced-motion users see a static amber border. */
 @keyframes commander-pulse-border {
-  0%, 100% { border-color: #fde68a; /* amber-200 */ }
-  50%       { border-color: #f59e0b; /* amber-400 */ }
+  0%,
+  100% {
+    border-color: #fde68a; /* amber-200 */
+  }
+  50% {
+    border-color: #f59e0b; /* amber-400 */
+  }
 }
 
 @media (prefers-reduced-motion: no-preference) {
@@ -373,14 +389,18 @@
   }
   html {
     height: 100%;
-    -webkit-tap-highlight-color: color-mix(in oklab, var(--foreground) 20%, transparent);
+    -webkit-tap-highlight-color: color-mix(
+      in oklab,
+      var(--foreground) 20%,
+      transparent
+    );
   }
   body {
     @apply bg-background text-foreground;
     height: 100%;
     overflow: hidden;
     font-family: var(--font-sans);
-    font-feature-settings: 'cv11', 'ss01', 'ss03';
+    font-feature-settings: "cv11", "ss01", "ss03";
   }
   h1,
   h2,
@@ -498,68 +518,12 @@
 }
 
 .activity-row-enter {
-  animation:
-    dashboard-activity-enter 520ms cubic-bezier(0.16, 1, 0.3, 1),
+  animation: dashboard-activity-enter 520ms cubic-bezier(0.16, 1, 0.3, 1),
     dashboard-activity-highlight 920ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 @media (prefers-reduced-motion: reduce) {
   .activity-row-enter {
-    animation: none;
-  }
-}
-
-/* Lobby mount choreography — sidebar slides in, heading fades+rises, cards stagger fade+rise */
-@keyframes lobby-sidebar-enter {
-  from {
-    opacity: 0;
-    transform: translateX(-32px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
-}
-
-@keyframes lobby-heading-enter {
-  from {
-    opacity: 0;
-    transform: translateY(-8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes lobby-card-enter {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-.lobby-sidebar-enter {
-  animation: lobby-sidebar-enter 200ms ease-out both;
-}
-
-.lobby-heading-enter {
-  animation: lobby-heading-enter 200ms ease-out 200ms both;
-}
-
-.lobby-card-enter {
-  animation: lobby-card-enter 200ms ease-out both;
-  animation-delay: calc(250ms + var(--lobby-card-index, 0) * 30ms);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .lobby-sidebar-enter,
-  .lobby-heading-enter,
-  .lobby-card-enter {
     animation: none;
   }
 }
@@ -576,7 +540,8 @@
 }
 
 .card-hover {
-  transition: border-color .2s ease, box-shadow .25s ease, transform .15s ease;
+  transition: border-color 0.2s ease, box-shadow 0.25s ease,
+    transform 0.15s ease;
 }
 
 .card-hover:hover {
@@ -749,7 +714,8 @@
 }
 
 .aoa-mdxeditor-content code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
   font-size: 0.84em;
 }
 
@@ -772,7 +738,8 @@
 }
 
 .prose code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
   font-size: 0.84em;
 }
 
@@ -851,7 +818,8 @@ a.aoa-skill-mention-chip {
   border: 1px solid var(--toast-border);
   -webkit-backdrop-filter: blur(17px) saturate(1.35);
   backdrop-filter: blur(17px) saturate(1.35);
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3), inset 0 1px 0 var(--toast-highlight);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 var(--toast-highlight);
 }
 @media (prefers-reduced-transparency: reduce) {
   .toast-glass {
@@ -863,8 +831,12 @@ a.aoa-skill-mention-chip {
 
 /* Indeterminate loading rail */
 @keyframes toastRail {
-  0% { left: -44%; }
-  100% { left: 100%; }
+  0% {
+    left: -44%;
+  }
+  100% {
+    left: 100%;
+  }
 }
 .toast-rail {
   position: absolute;
@@ -877,7 +849,12 @@ a.aoa-skill-mention-chip {
   animation: toastRail 1.25s ease-in-out infinite;
 }
 @media (prefers-reduced-motion: reduce) {
-  .toast-rail { animation: none; left: 0; width: 100%; opacity: 0.5; }
+  .toast-rail {
+    animation: none;
+    left: 0;
+    width: 100%;
+    opacity: 0.5;
+  }
 }
 
 /* ---------------------------------------------------------------------------

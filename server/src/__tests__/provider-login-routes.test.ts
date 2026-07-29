@@ -231,6 +231,13 @@ function memStore(seed: ChallengeRow[]): ChallengeStore {
       rows.set(id, { ...r, ...patch });
       return 1;
     },
+    async finalizeIfPending(id, finalize) {
+      const r = rows.get(id);
+      if (!r || r.status !== "pending") return false;
+      const status = await finalize(undefined);
+      rows.set(id, { ...r, status });
+      return true;
+    },
     async remove(id) {
       rows.delete(id);
     },
@@ -604,16 +611,9 @@ describe("provider login routes", () => {
       }),
     );
     expect(mockRecordReadiness).toHaveBeenCalledTimes(1);
-    expect(mockVerifyAndBind).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        companyId: COMPANY_ID,
-        userId: "user-1",
-        provider: "openai",
-        executionTargetId: "control-plane",
-        actorUserId: "user-1",
-      }),
-    );
+    // The login worker owns authentication finalization. Polling only observes
+    // completion and refreshes execution readiness.
+    expect(mockVerifyAndBind).not.toHaveBeenCalled();
     expect(res.body.readiness).toMatchObject({
       scopeType: "company_default",
       outcome: "verified",

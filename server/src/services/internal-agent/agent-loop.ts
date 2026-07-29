@@ -419,8 +419,12 @@ export function agentLoopService(db: Db, storage?: RuntimeAttachmentStorage) {
         let assembledContent = params.content;
         let systemContext: string | undefined;
         let cliContextScope: NormalizedCommanderContextScope | null = null;
+        let commanderAgentId =
+          typeof config.agentId === "string" && config.agentId.length > 0
+            ? config.agentId
+            : null;
         try {
-          const commanderAgentId = await ensureCommanderAgent(db, params.companyId);
+          commanderAgentId = await ensureCommanderAgent(db, params.companyId);
           const agentRow = await db
             .select({ id: agents.id, companyId: agents.companyId, name: agents.name, adapterConfig: agents.adapterConfig })
             .from(agents)
@@ -527,6 +531,7 @@ export function agentLoopService(db: Db, storage?: RuntimeAttachmentStorage) {
         const effectiveConfig = {
           ...config,
           cliTool: (config as { cliTool?: string | null }).cliTool ?? "claude_cli",
+          commanderAgentId,
         };
 
         let accumulatedAssistant = "";

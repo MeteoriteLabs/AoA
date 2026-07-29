@@ -116,7 +116,7 @@ function sourceFiles(dir = serverSrc, out: string[] = []): string[] {
 describe("repo-wide inventory of runtime config resolution", () => {
   const files = sourceFiles();
 
-  it("resolveAdapterConfigForRuntime is called from exactly the seven known sites", () => {
+  it("resolveAdapterConfigForRuntime is called from exactly the eight known sites", () => {
     const found: Record<string, number> = {};
     for (const file of files) {
       const n = readFileSync(file, "utf8").split(CALL).length - 1;
@@ -129,6 +129,7 @@ describe("repo-wide inventory of runtime config resolution", () => {
       "services/commander-verify.ts": 1,
       "services/company-skills.ts": 1,
       "services/internal-agent/aoa-agents/runner.ts": 1,
+      "services/internal-agent/commander-runtime-auth.ts": 1,
       // The declaration itself, not a call — a call from here would recurse.
       "services/secrets.ts": 1,
     });

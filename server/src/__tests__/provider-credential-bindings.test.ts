@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   ProviderCredentialBindingError,
+  assertCommanderSubscriptionAgent,
+  chooseCommanderSubscriptionBinding,
   chooseGovernedSubscriptionBinding,
   mayUseLegacySubscriptionHome,
 } from "../services/provider-credential-bindings.js";
@@ -73,5 +75,39 @@ describe("governed provider credential binding", () => {
     expect(mayUseLegacySubscriptionHome(missing, true)).toBe(false);
     expect(mayUseLegacySubscriptionHome(revoked, false)).toBe(false);
     expect(mayUseLegacySubscriptionHome(new Error("database unavailable"), false)).toBe(false);
+  });
+
+  it("rejects personal subscription execution for every non-Commander agent", () => {
+    expect(() => assertCommanderSubscriptionAgent("agent-1", "commander-1")).toThrowError(
+      expect.objectContaining({ code: "credential_not_commander" }),
+    );
+    expect(() => assertCommanderSubscriptionAgent("agent-1", null)).toThrowError(
+      expect.objectContaining({ code: "credential_not_commander" }),
+    );
+    expect(() => assertCommanderSubscriptionAgent("commander-1", "commander-1")).not.toThrow();
+  });
+
+  it("rejects a non-Commander before a missing binding can enable legacy fallback", () => {
+    expect(
+      codeOf(() =>
+        chooseCommanderSubscriptionBinding([], expected, "agent-1", "commander-1"),
+      ),
+    ).toBe("credential_not_commander");
+  });
+
+  it("preserves missing-binding legacy fallback for Commander when enforcement is off", () => {
+    expect(
+      codeOf(() =>
+        chooseCommanderSubscriptionBinding([], expected, "commander-1", "commander-1"),
+      ),
+    ).toBe("binding_missing");
+  });
+
+  it("still rejects a real eligible personal binding for a non-Commander agent", () => {
+    expect(
+      codeOf(() =>
+        chooseCommanderSubscriptionBinding([base], expected, "agent-1", "commander-1"),
+      ),
+    ).toBe("credential_not_commander");
   });
 });

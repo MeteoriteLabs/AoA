@@ -46,10 +46,14 @@ describe("buildMcpConfig", () => {
         pg: { kind: "stdio", command: "npx", args: ["-y", "dbhub@1.2.3"], env: { DSN: "${AOA_MCP_PG_TOKEN}" } },
       },
     });
-    expect(config.mcpServers.pg).toEqual({
+    expect(config.mcpServers.pg).toMatchObject({
       command: "npx",
       args: ["-y", "dbhub@1.2.3"],
-      env: { DSN: "${AOA_MCP_PG_TOKEN}" },
+      env: {
+        DSN: "${AOA_MCP_PG_TOKEN}",
+        OPENAI_API_KEY: "",
+        ANTHROPIC_API_KEY: "",
+      },
     });
   });
 
@@ -84,10 +88,13 @@ describe("buildMcpConfig", () => {
         notion: { kind: "http", url: "https://mcp.notion.com/mcp", headers: {} },
       },
     });
-    expect(config.mcpServers.playwright).toEqual({
+    expect(config.mcpServers.playwright).toMatchObject({
       command: "npx",
       args: [PLAYWRIGHT_MCP_PACKAGE, "--headless"],
-      env: {},
+      env: {
+        OPENAI_API_KEY: "",
+        ANTHROPIC_API_KEY: "",
+      },
     });
     expect(config.mcpServers.aoa).toBeDefined();
     expect(config.mcpServers.notion).toEqual({

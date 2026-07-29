@@ -9,6 +9,16 @@ import type {
 } from "@armyofagents/shared";
 import { api } from "./client";
 
+export function companyImportPath(
+  request: CompanyPortabilityPreviewRequest,
+  preview: boolean,
+): string {
+  const suffix = preview ? "/preview" : "";
+  return request.target.mode === "new_company"
+    ? `/companies/import/new${suffix}`
+    : `/companies/${encodeURIComponent(request.target.companyId)}/import${suffix}`;
+}
+
 export const companyPortabilityApi = {
   previewExport: (companyId: string, include: CompanyPortabilityInclude) =>
     api.post<CompanyPortabilityExportPreviewResult>(
@@ -22,12 +32,12 @@ export const companyPortabilityApi = {
     ),
   previewImport: (request: CompanyPortabilityPreviewRequest) =>
     api.post<CompanyPortabilityPreviewResult>(
-      `/companies/import/preview`,
+      companyImportPath(request, true),
       request,
     ),
   importBundle: (request: CompanyPortabilityImportRequest) =>
     api.post<CompanyPortabilityImportResult>(
-      `/companies/import`,
+      companyImportPath(request, false),
       request,
     ),
 };

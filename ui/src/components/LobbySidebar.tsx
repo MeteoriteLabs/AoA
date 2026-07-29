@@ -21,7 +21,11 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { SidebarCollapseToggle } from "@/components/SidebarCollapseToggle";
 import { cn } from "@/lib/utils";
 
@@ -42,7 +46,13 @@ interface LobbyNavRowProps {
   onClick: () => void;
 }
 
-function LobbyNavRow({ icon: Icon, label, active, collapsed, onClick }: LobbyNavRowProps) {
+function LobbyNavRow({
+  icon: Icon,
+  label,
+  active,
+  collapsed,
+  onClick,
+}: LobbyNavRowProps) {
   const button = (
     <button
       type="button"
@@ -54,7 +64,7 @@ function LobbyNavRow({ icon: Icon, label, active, collapsed, onClick }: LobbyNav
         collapsed ? "h-9 justify-center px-0" : "px-3 py-2",
         active
           ? "bg-brand/[0.08] text-sidebar-active-text"
-          : "text-foreground/[0.78] hover:bg-white/[0.04] hover:text-foreground",
+          : "text-foreground/[0.78] hover:bg-white/[0.04] hover:text-foreground"
       )}
     >
       <Icon className="size-4 shrink-0" />
@@ -64,7 +74,9 @@ function LobbyNavRow({ icon: Icon, label, active, collapsed, onClick }: LobbyNav
           aria-hidden
           className={cn(
             "absolute size-[5px] rounded-full bg-brand shadow-[0_0_6px_rgba(184,45,28,0.55)]",
-            collapsed ? "right-1.5 top-1.5" : "right-2.5 top-1/2 -translate-y-1/2",
+            collapsed
+              ? "right-1.5 top-1.5"
+              : "right-2.5 top-1/2 -translate-y-1/2"
           )}
         />
       )}
@@ -75,7 +87,9 @@ function LobbyNavRow({ icon: Icon, label, active, collapsed, onClick }: LobbyNav
   return (
     <Tooltip>
       <TooltipTrigger asChild>{button}</TooltipTrigger>
-      <TooltipContent side="right" sideOffset={8}>{label}</TooltipContent>
+      <TooltipContent side="right" sideOffset={8}>
+        {label}
+      </TooltipContent>
     </Tooltip>
   );
 }
@@ -148,7 +162,7 @@ export function LobbySidebar({
     }
   });
   const [collapsed, setCollapsed] = useState<boolean>(() =>
-    drawer ? false : hasSecondarySidebar ? true : pref,
+    drawer ? false : hasSecondarySidebar ? true : pref
   );
 
   // React to navigating into/out of a secondary-sidebar page: force-collapse
@@ -188,6 +202,10 @@ export function LobbySidebar({
     staleTime: 60_000,
   });
   const showInstanceSettings = profile?.isInstanceAdmin === true;
+  // The journey endpoint derives canCreateCompany from this same instance-admin
+  // role. Keep the create/import controls hidden until that capability is
+  // confirmed so members never see an action that only redirects them home.
+  const showOrganizationCreation = profile?.isInstanceAdmin === true;
 
   const navTo = (path: string) => {
     navigate(path);
@@ -209,15 +227,14 @@ export function LobbySidebar({
           drawer
             ? "w-full h-dvh"
             : "h-[calc(100dvh-1rem)] my-2 ml-2 overflow-hidden rounded-2xl border border-border bg-card/50 backdrop-blur-sm transition-[width] duration-[180ms]",
-          !drawer && (collapsed ? "w-[56px]" : "w-[220px]"),
-          !drawer && "lobby-sidebar-enter",
+          !drawer && (collapsed ? "w-[56px]" : "w-[220px]")
         )}
       >
         {/* Header — AoA. wordmark */}
         <div
           className={cn(
             "flex h-14 shrink-0 items-center border-b border-border",
-            collapsed ? "justify-center px-0" : "px-4",
+            collapsed ? "justify-center px-0" : "px-4"
           )}
         >
           <span className="text-base font-extrabold tracking-[-0.02em] text-foreground">
@@ -228,9 +245,10 @@ export function LobbySidebar({
 
         {/* + New company button */}
         <div
+          hidden={!showOrganizationCreation}
           className={cn(
             "shrink-0 border-b border-border-soft",
-            collapsed ? "px-2 py-2.5" : "px-3 py-3.5",
+            collapsed ? "px-2 py-2.5" : "px-3 py-3.5"
           )}
         >
           {collapsed ? (
@@ -245,7 +263,9 @@ export function LobbySidebar({
                   <Plus />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent side="right" sideOffset={8}>New organization</TooltipContent>
+              <TooltipContent side="right" sideOffset={8}>
+                New organization
+              </TooltipContent>
             </Tooltip>
           ) : (
             <DropdownMenu>
@@ -270,7 +290,11 @@ export function LobbySidebar({
                   </Button>
                 </DropdownMenuTrigger>
               </div>
-              <DropdownMenuContent align="end" sideOffset={6} className="min-w-[200px]">
+              <DropdownMenuContent
+                align="end"
+                sideOffset={6}
+                className="min-w-[200px]"
+              >
                 <DropdownMenuItem onSelect={() => navTo("/import")}>
                   <Upload />
                   Import organization
@@ -302,7 +326,9 @@ export function LobbySidebar({
               Learn
             </div>
           )}
-          {collapsed && <div className="my-2 mx-1 h-px bg-border-soft" aria-hidden />}
+          {collapsed && (
+            <div className="my-2 mx-1 h-px bg-border-soft" aria-hidden />
+          )}
           <LobbyNavRow
             icon={BookOpen}
             label="Learn"
@@ -325,7 +351,9 @@ export function LobbySidebar({
                   System
                 </div>
               )}
-              {collapsed && <div className="my-2 mx-1 h-px bg-border-soft" aria-hidden />}
+              {collapsed && (
+                <div className="my-2 mx-1 h-px bg-border-soft" aria-hidden />
+              )}
               <LobbyNavRow
                 icon={Settings}
                 label="Settings"

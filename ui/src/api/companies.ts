@@ -7,6 +7,7 @@ import type {
   CompanyPortabilityPreviewResult,
 } from "@armyofagents/shared";
 import { api } from "./client";
+import { companyImportPath } from "./company-portability";
 
 export type CompanyStats = Record<
   string,
@@ -49,9 +50,9 @@ export const companiesApi = {
   exportBundle: (companyId: string, data: { include?: { company?: boolean; agents?: boolean } }) =>
     api.post<CompanyPortabilityExportResult>(`/companies/${companyId}/export`, data),
   importPreview: (data: CompanyPortabilityPreviewRequest) =>
-    api.post<CompanyPortabilityPreviewResult>("/companies/import/preview", data),
+    api.post<CompanyPortabilityPreviewResult>(companyImportPath(data, true), data),
   importBundle: (data: CompanyPortabilityImportRequest) =>
-    api.post<CompanyPortabilityImportResult>("/companies/import", data),
+    api.post<CompanyPortabilityImportResult>(companyImportPath(data, false), data),
   uploadLogo: (companyId: string, file: File) => {
     const formData = new FormData();
     formData.append("file", file);

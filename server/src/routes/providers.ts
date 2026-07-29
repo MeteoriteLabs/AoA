@@ -149,12 +149,22 @@
  * than the lifecycle's raw message (which names the filesystem authHome).
  */
 import { Router, type Request, type Response } from "express";
+import { createHash } from "node:crypto";
 import type { Db } from "@armyofagents/db";
-import { agents, commanderLoginChallenges, companySecrets } from "@armyofagents/db";
+import {
+  agentProviderCredentialBindings,
+  agents,
+  commanderLoginChallenges,
+  companyMemberships,
+  companySecrets,
+  internalAgentConfig,
+  providerCredentials,
+} from "@armyofagents/db";
 import { and, eq, inArray, isNull, notInArray } from "drizzle-orm";
 import {
   KNOWN_EXTERNAL_SECRET_BINDINGS,
   PROVIDER_CATALOG,
+  PROVIDER_READINESS_STALE_MS,
   getCredentialOwner,
   getProviderById,
   type AdapterEnvironmentCheck,
@@ -162,6 +172,7 @@ import {
   type AdapterEnvironmentTestResult,
   type ProbeOutcome,
   type ProviderDescriptor,
+  type ProviderCanonicalStatus,
   type ProviderId,
 } from "@armyofagents/shared";
 import { accessService } from "../services/access.js";
@@ -189,7 +200,6 @@ import {
   resolveScopedCliAuthHome,
   scopedCliAuthEnv,
 } from "../services/cli-auth-topology.js";
-import { verifyAndBindCommanderSubscriptionCredential } from "../services/provider-credentials.js";
 import {
   LoginChallengeConflictError,
   type CommanderLoginProvider,
@@ -247,6 +257,9 @@ type CachedRow = {
   outcome: string;
   checks: unknown;
   testedAt: Date | string | null;
+  executionTargetId?: string | null;
+  sourceFingerprint?: string | null;
+  staleAt?: Date | string | null;
 } | undefined;
 
 function toIso(value: Date | string | null | undefined): string | null {
@@ -276,6 +289,216 @@ function toScopedDto(
     // Re-redacted on the way out: the persisted row SHOULD already be clean, but
     // "should" is not an invariant and the wire is the boundary that matters.
     checks: redactChecks(rawChecks),
+  };
+}
+
+function currentExecutionTargetId(): string {
+  return process.env.AOA_EXECUTION_TARGET_ID?.trim() || "control-plane";
+}
+
+function fingerprintConfigValue(value: unknown, key = ""): unknown {
+  if (key.toLowerCase() === "env" && value && typeof value === "object") {
+    return Object.keys(value as Record<string, unknown>).sort();
+  }
+  if (/secret|token|password|credential|api.?key|auth/i.test(key)) return "[redacted]";
+  if (Array.isArray(value)) return value.map((item) => fingerprintConfigValue(item));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([childKey, child]) => [childKey, fingerprintConfigValue(child, childKey)]),
+    );
+  }
+  return value;
+}
+
+/** Stable, non-secret attribution for the config/source a probe observed. */
+export function providerReadinessSourceFingerprint(input: {
+  providerId: string;
+  adapterType: string;
+  scope: ReadinessScope;
+  adapterConfig: Record<string, unknown>;
+}): string {
+  const canonical = JSON.stringify({
+    providerId: input.providerId,
+    adapterType: input.adapterType,
+    scope: input.scope,
+    config: fingerprintConfigValue(input.adapterConfig),
+  });
+  return `sha256:${createHash("sha256").update(canonical).digest("hex")}`;
+}
+
+type CredentialProjectionRow = {
+  id: string;
+  provider: string;
+  ownerUserId: string;
+  executionTargetId: string;
+  kind: string;
+  state: string;
+  ownerMembershipStatus: string | null;
+  verifiedAt: Date | string | null;
+  updatedAt: Date | string | null;
+};
+
+type BindingProjectionRow = {
+  agentId: string;
+  credentialId: string;
+  approvedAt: Date | string | null;
+  revokedAt: Date | string | null;
+};
+
+function executionState(row: CachedRow): ProviderCanonicalStatus["execution"]["state"] {
+  if (!row?.testedAt) return "not_checked";
+  const target = currentExecutionTargetId();
+  if (
+    (row.executionTargetId && row.executionTargetId !== target) ||
+    (!row.executionTargetId && target !== "control-plane")
+  ) {
+    return "stale";
+  }
+  const staleAt = toIso(row.staleAt) ??
+    new Date(new Date(row.testedAt).getTime() + PROVIDER_READINESS_STALE_MS).toISOString();
+  if (Date.parse(staleAt) <= Date.now()) return "stale";
+  if (row.outcome === "verified") return "compatible";
+  if (row.outcome === "not_installed" || row.outcome === "unverifiable") return "unsupported";
+  const diagnostic = JSON.stringify(row.checks ?? []).toLowerCase();
+  if (/quota|rate.?limit|billing/.test(diagnostic)) return "quota_limited";
+  if (/offline|unreachable|econnrefused|timed?out/.test(diagnostic)) return "target_offline";
+  return "probe_failed";
+}
+
+function canonicalStatus(input: {
+  descriptor: ProviderDescriptor;
+  readiness: CachedRow;
+  existingKey: ExistingKeyDto;
+  credentials: CredentialProjectionRow[];
+  bindings: BindingProjectionRow[];
+  commander: { agentId: string; name: string | null } | null;
+  viewerUserId: string | null;
+}): ProviderCanonicalStatus {
+  const { descriptor, readiness, existingKey, bindings, commander, viewerUserId } = input;
+  const executionTargetId = currentExecutionTargetId();
+  const credentials = input.credentials
+    .filter(
+      (row) =>
+        row.provider === descriptor.id &&
+        row.kind === "personal_subscription" &&
+        row.executionTargetId === executionTargetId,
+    )
+    .sort((a, b) => Date.parse(String(b.updatedAt ?? 0)) - Date.parse(String(a.updatedAt ?? 0)));
+  const credentialById = new Map(
+    credentials.map((credential) => [credential.id, credential]),
+  );
+  const activeBindings = commander
+    ? bindings.filter(
+        (binding) =>
+          binding.agentId === commander.agentId &&
+          Boolean(binding.approvedAt) &&
+          !binding.revokedAt &&
+          credentialById.get(binding.credentialId)?.state === "verified" &&
+          credentialById.get(binding.credentialId)?.ownerMembershipStatus ===
+            "active",
+      )
+    : [];
+  // Mirror runtime eligibility: only one active, verified Commander binding is
+  // usable. Credential recency must not override an explicit older binding.
+  const activeBinding =
+    activeBindings.length === 1 ? activeBindings[0] : undefined;
+  const boundSubscription = activeBinding
+    ? credentialById.get(activeBinding.credentialId)
+    : undefined;
+  const subscription =
+    boundSubscription ??
+    credentials.find((row) => row.state === "verified") ??
+    credentials[0];
+
+  let credential: ProviderCanonicalStatus["credential"];
+  if (subscription) {
+    const stateMap: Record<string, ProviderCanonicalStatus["credential"]["state"]> = {
+      pending: "checking",
+      verified: "verified",
+      revoked: "revoked",
+      suspended: "expired",
+    };
+    credential = {
+      state: stateMap[subscription.state] ?? "verification_failed",
+      method: "subscription",
+      scope: "personal",
+      ownerDisplay: subscription.ownerUserId === viewerUserId ? "You" : "Another user",
+      checkedAt: toIso(subscription.verifiedAt ?? subscription.updatedAt),
+    };
+  } else if (existingKey.configured) {
+    credential = {
+      state:
+        readiness?.outcome === "verified"
+          ? "verified"
+          : readiness?.outcome === "needs_auth"
+            ? "verification_failed"
+            : "checking",
+      method: "api_key",
+      scope: "company",
+      ownerDisplay: null,
+      checkedAt: toIso(readiness?.testedAt),
+    };
+  } else {
+    credential = {
+      state: "not_configured",
+      method: "none",
+      scope: "none",
+      ownerDisplay: null,
+      checkedAt: null,
+    };
+  }
+
+  const testedAt = toIso(readiness?.testedAt);
+  const staleAt = testedAt
+    ? toIso(readiness?.staleAt) ??
+      new Date(Date.parse(testedAt) + PROVIDER_READINESS_STALE_MS).toISOString()
+    : null;
+  // Runtime config gives an explicitly configured company API key precedence
+  // over the governed subscription home. Keep the projection aligned so the
+  // UI reports the credential source that Commander will actually use.
+  const assignment: ProviderCanonicalStatus["assignment"] = existingKey.configured
+      ? {
+          state: "company_key_fallback",
+          intendedAgentId: commander?.agentId ?? null,
+          intendedAgentName: commander?.name ?? null,
+          credentialSource: "company_api_key",
+          approvedAt: null,
+          revokedAt: null,
+        }
+      : activeBinding
+        ? {
+            state: "commander_subscription",
+            intendedAgentId: commander!.agentId,
+            intendedAgentName: commander!.name,
+            credentialSource: "personal_subscription",
+            approvedAt: toIso(activeBinding.approvedAt),
+            revokedAt: toIso(activeBinding.revokedAt),
+          }
+      : {
+          state: descriptor.credential.apiKey || descriptor.credential.manualLoginCommand
+            ? "not_assigned"
+            : "unsupported",
+          intendedAgentId: commander?.agentId ?? null,
+          intendedAgentName: commander?.name ?? null,
+          credentialSource: null,
+          approvedAt: null,
+          revokedAt: null,
+        };
+
+  return {
+    version: 1,
+    credential,
+    execution: {
+      state: executionState(readiness),
+      outcome: (readiness?.outcome as ProbeOutcome | undefined) ?? "unknown",
+      executionTargetId: readiness?.executionTargetId || currentExecutionTargetId(),
+      sourceFingerprint: readiness?.sourceFingerprint ?? null,
+      testedAt,
+      staleAt,
+    },
+    assignment,
   };
 }
 
@@ -507,6 +730,13 @@ export function providerRoutes(db: Db): Router {
     adapterConfig: Record<string, unknown>;
   }): Promise<{ outcome: ProbeOutcome; checks: AdapterEnvironmentCheck[]; testedAt: string } | null> {
     const { req, companyId, descriptor, scope, adapterConfig } = input;
+    const executionTargetId = currentExecutionTargetId();
+    const sourceFingerprint = providerReadinessSourceFingerprint({
+      providerId: descriptor.id,
+      adapterType: descriptor.adapterType,
+      scope,
+      adapterConfig,
+    });
     const adapter = findServerAdapter(descriptor.adapterType);
     if (!adapter?.testEnvironment) return null;
 
@@ -551,6 +781,8 @@ export function providerRoutes(db: Db): Router {
             },
           ],
           testedByUserId: req.actor.type === "board" ? (req.actor.userId ?? null) : null,
+          executionTargetId,
+          sourceFingerprint,
         });
         throw err;
       }
@@ -579,6 +811,8 @@ export function providerRoutes(db: Db): Router {
             },
           ],
           testedByUserId: req.actor.type === "board" ? (req.actor.userId ?? null) : null,
+          executionTargetId,
+          sourceFingerprint,
         });
         throw err;
       }
@@ -591,6 +825,8 @@ export function providerRoutes(db: Db): Router {
         outcome: classified.outcome,
         checks: result.checks,
         testedByUserId: req.actor.type === "board" ? (req.actor.userId ?? null) : null,
+        executionTargetId,
+        sourceFingerprint,
       });
       return {
         outcome: classified.outcome,
@@ -664,6 +900,9 @@ export function providerRoutes(db: Db): Router {
       outcome: string;
       checks: unknown;
       testedAt: Date | string | null;
+      executionTargetId?: string | null;
+      sourceFingerprint?: string | null;
+      staleAt?: Date | string | null;
     }[]) {
       cache.set(scopeCacheKey(row.providerId, row.scopeType, row.scopeId), row);
     }
@@ -671,6 +910,52 @@ export function providerRoutes(db: Db): Router {
       cache.get(
         scopeCacheKey(providerId, scope.type, scope.type === "agent" ? scope.agentId : null),
       );
+
+    const credentialRows = (await db
+      .select({
+        id: providerCredentials.id,
+        provider: providerCredentials.provider,
+        ownerUserId: providerCredentials.ownerUserId,
+        executionTargetId: providerCredentials.executionTargetId,
+        kind: providerCredentials.kind,
+        state: providerCredentials.state,
+        ownerMembershipStatus: companyMemberships.status,
+        verifiedAt: providerCredentials.verifiedAt,
+        updatedAt: providerCredentials.updatedAt,
+      })
+      .from(providerCredentials)
+      .leftJoin(
+        companyMemberships,
+        and(
+          eq(companyMemberships.companyId, providerCredentials.companyId),
+          eq(companyMemberships.principalType, "user"),
+          eq(
+            companyMemberships.principalId,
+            providerCredentials.ownerUserId,
+          ),
+        ),
+      )
+      .where(eq(providerCredentials.companyId, companyId))) as CredentialProjectionRow[];
+    const bindingRows = (await db
+      .select({
+        agentId: agentProviderCredentialBindings.agentId,
+        credentialId: agentProviderCredentialBindings.credentialId,
+        approvedAt: agentProviderCredentialBindings.approvedAt,
+        revokedAt: agentProviderCredentialBindings.revokedAt,
+      })
+      .from(agentProviderCredentialBindings)
+      .where(eq(agentProviderCredentialBindings.companyId, companyId))) as BindingProjectionRow[];
+    const [commanderConfig] = (await db
+      .select({ agentId: internalAgentConfig.agentId })
+      .from(internalAgentConfig)
+      .where(eq(internalAgentConfig.companyId, companyId))
+      .limit(1)) as { agentId: string }[];
+    const commander = commanderConfig
+      ? {
+          agentId: commanderConfig.agentId,
+          name: agentRows.find((agent) => agent.id === commanderConfig.agentId)?.name ?? "Commander",
+        }
+      : null;
 
     const providers = [];
     for (const descriptor of PROVIDER_CATALOG) {
@@ -685,11 +970,21 @@ export function providerRoutes(db: Db): Router {
         scoped.push(toScopedDto(cached(descriptor.id, scope), scope, agent.name));
       }
 
+      const existingKey = detectExistingKey(descriptor, activeSecretNames);
       providers.push({
         descriptor,
         companyDefault,
         agents: scoped,
-        existingKey: detectExistingKey(descriptor, activeSecretNames),
+        existingKey,
+        status: canonicalStatus({
+          descriptor,
+          readiness: cached(descriptor.id, { type: "company_default" }),
+          existingKey,
+          credentials: credentialRows,
+          bindings: bindingRows,
+          commander,
+          viewerUserId: req.actor.type === "board" ? (req.actor.userId ?? null) : null,
+        }),
       });
     }
 
@@ -1161,15 +1456,6 @@ export function providerRoutes(db: Db): Router {
           },
         });
         if (probed) {
-          if (probed.outcome === "verified") {
-            await verifyAndBindCommanderSubscriptionCredential(db, {
-              companyId,
-              userId: founderUserId,
-              provider: loginProvider,
-              executionTargetId,
-              actorUserId: founderUserId,
-            });
-          }
           if (reprobedChallenges.size >= REPROBED_CHALLENGES_MAX) reprobedChallenges.clear();
           reprobedChallenges.add(challengeId);
           readiness = {

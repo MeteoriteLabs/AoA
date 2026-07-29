@@ -6,10 +6,7 @@ import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
   runAdapterExecutionTargetProcess,
-  aoaAmbientSecretEnvKeys,
-  stripConnectorRunBearers,
   isStdioServerSpec,
-  stdioSpecCarriesSecretPlaceholder,
   type AdapterExecutionContext,
   type AdapterExecutionResult,
   type AdapterRuntimeCommandSpec,
@@ -319,29 +316,42 @@ export async function execute(
     typeof env.OPENAI_API_KEY === "string" && env.OPENAI_API_KEY.trim().length > 0
       ? env.OPENAI_API_KEY.trim()
       : null;
+  const isRemoteExecutionTarget = adapterExecutionTargetIsRemote(executionTarget);
+  const remoteMcpProvisioningRequested =
+    isRemoteExecutionTarget &&
+    (ctx.mcpBridge !== undefined || ctx.mcpServers !== undefined);
 
   // The managed home is per-AGENT (Plan 2b B1): codex reads its MCP servers
   // from one config.toml per CODEX_HOME, so sharing a home across a company's
   // agents would leak one agent's opted-in connectors to another and race two
   // concurrent runs onto the same file.
   const managedCodexHome = await prepareManagedCodexHome(
-    process.env,
+    { ...process.env, ...env },
     (msg) => onLog("stderr", `${msg}\n`),
     agent.companyId,
     agent.id,
     { apiKey: configuredOpenAiApiKey },
   );
-  const isRemoteExecutionTarget = adapterExecutionTargetIsRemote(executionTarget);
   const remoteCodexHome = `${adapterExecutionTargetRemoteCwd(executionTarget, cwd).replace(/\/+$/, "")}/${REMOTE_CODEX_HOME_DIR_NAME}`;
   env.CODEX_HOME = isRemoteExecutionTarget ? remoteCodexHome : managedCodexHome;
+  const quotedRemoteCodexHome = `"${remoteCodexHome.replace(/"/g, '\\"')}"`;
   const runtimeCommandSpec: AdapterRuntimeCommandSpec | null | undefined = isRemoteExecutionTarget
     ? {
         command: ctx.runtimeCommandSpec?.command ?? command,
         detectCommand: ctx.runtimeCommandSpec?.detectCommand ?? null,
         installCommand: [
-          `mkdir -p "${remoteCodexHome.replace(/"/g, '\\"')}"`,
+          // Remote targets can outlive a run. Scrub first so deleting or
+          // revoking an AOA credential cannot leave old Codex auth/config live.
+          `mkdir -p ${quotedRemoteCodexHome}`,
+          `rm -f ${quotedRemoteCodexHome}/auth.json ${quotedRemoteCodexHome}/config.toml`,
+          !configuredOpenAiApiKey
+            ? `echo "[aoa] Remote Codex execution requires an explicit per-agent OPENAI_API_KEY; subscription credentials are not transferred to remote targets." >&2; exit 78`
+            : null,
+          remoteMcpProvisioningRequested
+            ? `echo "[aoa] Remote Codex MCP configuration is not supported until the bridge and sanitized config.toml can be provisioned on the execution target." >&2; exit 78`
+            : null,
           ctx.runtimeCommandSpec?.installCommand,
-          `if [ -n "$OPENAI_API_KEY" ]; then printf '%s' "$OPENAI_API_KEY" | codex login --with-api-key; fi`,
+          `printf '%s' "$OPENAI_API_KEY" | codex login --with-api-key`,
         ].filter(Boolean).join("\n"),
       }
     : ctx.runtimeCommandSpec;
@@ -365,19 +375,20 @@ export async function execute(
   // the agent would keep the tool. Same reason `ctx.mcpBridge` alone no longer
   // guards this: the day the bridge becomes conditional, cleanup must not stop.
   if (ctx.mcpBridge !== undefined || ctx.mcpServers !== undefined) {
-    if (executionTarget.type === "sandbox-docker") {
-      // MX3: sandbox-docker codex MCP wiring is a follow-up — CODEX_HOME there
-      // is the container path "/tmp/aoa-codex-home" which is not writable from
-      // the host at this point. The §17 acceptance path is type:"local".
+    if (isRemoteExecutionTarget) {
+      // Remote Codex MCP wiring is a follow-up: CODEX_HOME on the target is not
+      // writable from the host. The setup script fails closed before Codex.
       await onLog(
         "stderr",
-        `[aoa] codex MCP bridge + external connector config.toml is not yet wired for sandbox-docker execution targets; skipping both (MX3 follow-up).\n`,
+        `[aoa] codex MCP bridge + external connector config.toml is not yet wired for remote execution targets; the remote run will stop before Codex starts.\n`,
       );
     } else {
       const result = await writeCodexMcpConfigToml(managedCodexHome, ctx.mcpBridge ?? null, {
         externalServers: ctx.mcpServers ?? {},
       });
-      const connectorCount = Object.keys(ctx.mcpServers ?? {}).length;
+      const connectorCount = result.managedServerNames.filter(
+        (name) => name !== "aoa",
+      ).length;
       await onLog(
         "stderr",
         `[aoa] Wrote managed Codex config.toml (${ctx.mcpBridge ? "[mcp_servers.aoa] + " : ""}${connectorCount} external connector${connectorCount === 1 ? "" : "s"}) for company ${agent.companyId}\n`,
@@ -395,50 +406,17 @@ export async function execute(
     }
   }
 
-  // FU-23: codex already strips the ambient OPENAI_API_KEY on EVERY run (billing
-  // safety). When THIS run also hosts a STDIO MCP connector, broaden the strip
-  // to ALL of AoA's ambient secrets so a stdio connector child codex spawns
-  // cannot inherit them. codex passes the OVERLAY-only `env` to its spawns, so
-  // mergeChildEnv strips these from the inherited process.env while preserving
-  // the connector's own overlay token. The `aoa` bridge is unaffected: codex
-  // scrubs its own env before spawning MCP children and reads the bridge's env
-  // from `[mcp_servers.aoa.env]` in the managed config.toml (buildMcpBridgeSpec
-  // re-supplies DATABASE_URL + secrets config). Runs without a stdio connector
-  // keep the existing `["OPENAI_API_KEY"]` strip, byte-identical.
-  //
-  // F4 — http connectors inherit nothing; env isolation is stdio-only. An HTTP
-  // connector is remote and spawns NO local child that inherits the CLI env, so
-  // isolating the env on an http-only run has zero benefit and wrongly strips the
-  // agent's own AOA_API_KEY → its curl/REST calls 401 in authenticated mode. Gate
-  // every env-isolation use (ambient scrub, bearer strip, authToken:null) on a
-  // stdio connector that codex will ACTUALLY spawn locally. Connector CONFIG
-  // delivery (config.toml) is unchanged for all transports — this gate is
-  // env-isolation only.
-  //
-  // Codex F4 round 2 — the gate must reflect codex's DELIVERED stdio set, not the
-  // raw ctx.mcpServers, because the codex writer drops some stdio specs before any
-  // child spawns: (1) a secret-bearing stdio spec is dropped as `secret_unreachable`
-  // (codex cannot pass a stdio secret — same predicate the writer uses, no drift),
-  // and (2) sandbox-docker skips ALL codex MCP wiring (MX3 below). If the only
-  // stdio connectors are ones codex won't spawn, no child inherits the env, so the
-  // strip is pure downside (401s the agent's own REST).
-  const hasStdioConnector =
-    executionTarget.type !== "sandbox-docker" &&
-    ctx.mcpServers != null &&
-    Object.values(ctx.mcpServers).some(
-      (s) => isStdioServerSpec(s) && !stdioSpecCarriesSecretPlaceholder(s),
-    );
-  const codexUnsetEnvKeys = hasStdioConnector
-    ? [...new Set(["OPENAI_API_KEY", ...aoaAmbientSecretEnvKeys()])]
-    : ["OPENAI_API_KEY"];
-  // WS1 — strip the run bearer from the overlay so neither codex spawn path (exec
-  // or app-server) hands it to a connector child. Covers both because both use
-  // this shared `env`. No-op without a stdio connector (F4).
-  stripConnectorRunBearers(env, {
-    connectorsPresent: hasStdioConnector,
-    secretValues: [authToken],
-  });
-
+  // Codex's writer rejects every stdio connector until it can run behind a
+  // separate filesystem boundary. Remove the corresponding token overlay too:
+  // a disabled connector must not leave an otherwise-unused credential visible
+  // to the Codex process or its shell tools. HTTP connector tokens remain
+  // because Codex consumes them through bearer_token_env_var.
+  const codexUnsetEnvKeys = ["OPENAI_API_KEY"];
+  for (const spec of Object.values(ctx.mcpServers ?? {})) {
+    if (isStdioServerSpec(spec) && spec.secretEnvVar) {
+      delete env[spec.secretEnvVar];
+    }
+  }
   const billingType = resolveCodexBillingType(env);
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   if (executionTarget.type === "local") {
@@ -582,12 +560,11 @@ export async function execute(
       // never reach a Codex agent run and silently flip it to api-key billing.
       // Strip it from the inherited env; a key the agent set in its own config
       // (config.env / overlay) still survives. See mergeChildEnv in adapter-utils.
-      // FU-23: broadened to all AoA ambient secrets on connector-hosting runs.
       unsetEnvKeys: codexUnsetEnvKeys,
       stdin: prompt,
-      // F4 — http connectors inherit nothing; env isolation is stdio-only. Only a
-      // stdio connector run nulls the bearer (a local child would inherit it).
-      authToken: hasStdioConnector ? null : (env.AOA_API_KEY ?? authToken ?? null),
+      // No third-party stdio process is delivered, so the run-scoped AoA bearer
+      // remains available to the Codex agent itself.
+      authToken: env.AOA_API_KEY ?? authToken ?? null,
       apiBaseUrl: env.AOA_API_URL ?? null,
       runtimeCommandSpec,
       timeoutSec,

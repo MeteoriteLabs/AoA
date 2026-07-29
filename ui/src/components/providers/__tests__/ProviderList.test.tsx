@@ -2,7 +2,6 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { getProviderById } from "@armyofagents/shared";
 import type { ProviderStatusRow, ScopedReadiness } from "@/api/providers";
-import { deriveProviderBadge, TONE_DOT } from "../ProviderReadinessCard";
 import { ProviderList } from "../ProviderList";
 
 function scope(over: Partial<ScopedReadiness> = {}): ScopedReadiness {
@@ -60,12 +59,9 @@ describe("ProviderList", () => {
     expect(onSelect).toHaveBeenCalledWith("openai");
   });
 
-  it("paints the status dot with the same tone the card badge would show", () => {
-    // A verified default with a needs_auth agent -> warn tone.
+  it("does not collapse the three states into an aggregate status dot", () => {
     const r = row("anthropic", { agents: [{ scopeType: "agent", scopeId: "A", agentName: "A", outcome: "needs_auth", testedAt: null, checks: [] }] });
     render(<ProviderList rows={[r]} selectedId={null} onSelect={() => {}} />);
-    const dot = item("anthropic")!.querySelector("[data-testid='provider-list-dot']")!;
-    expect(deriveProviderBadge(r).tone).toBe("warn");
-    expect(dot.className).toContain(TONE_DOT.warn);
+    expect(item("anthropic")!.querySelector("[data-testid='provider-list-dot']")).toBeNull();
   });
 });

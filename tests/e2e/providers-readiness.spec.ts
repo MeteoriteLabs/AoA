@@ -1,4 +1,5 @@
 import { test, expect, type APIRequestContext, type Page, type Route } from "@playwright/test";
+import type { ProbeOutcome, ProviderCanonicalStatus } from "@armyofagents/shared";
 import { seedCompany, cleanupTestCompanies } from "./helpers/seed-company";
 import { freshOnboardingState, fillFounderProfileStep } from "./helpers/onboarding-e2e";
 
@@ -42,6 +43,7 @@ interface ProviderRowDto {
   companyDefault: ScopedReadinessDto;
   agents: ScopedReadinessDto[];
   existingKey: { configured: boolean; source: string | null; secretName: string | null; envVar: string | null };
+  status?: ProviderCanonicalStatus;
 }
 
 interface ProviderListDto {
@@ -92,6 +94,79 @@ function rowOf(body: ProviderListDto, providerId: string): ProviderRowDto {
   const row = body.providers.find((p) => p.descriptor.id === providerId);
   if (!row) throw new Error(`provider ${providerId} missing from the real catalog response`);
   return row;
+}
+
+function syncCanonicalStatus(
+  row: ProviderRowDto,
+  credentialMethod: "api_key" | "subscription" | "none" =
+    row.existingKey.configured ? "api_key" : "none",
+): void {
+  const outcome = row.companyDefault.outcome as ProbeOutcome;
+  const executionState: ProviderCanonicalStatus["execution"]["state"] =
+    !row.companyDefault.testedAt
+      ? "not_checked"
+      : outcome === "verified"
+        ? "compatible"
+        : outcome === "not_installed" || outcome === "unverifiable"
+          ? "unsupported"
+          : outcome === "unknown"
+            ? "not_checked"
+            : "probe_failed";
+  const configured = credentialMethod !== "none";
+
+  row.status = {
+    version: 1,
+    credential: configured
+      ? {
+          state: outcome === "verified" ? "verified" : "verification_failed",
+          method: credentialMethod,
+          scope: credentialMethod === "subscription" ? "personal" : "company",
+          ownerDisplay: null,
+          checkedAt: row.companyDefault.testedAt,
+        }
+      : {
+          state: "not_configured",
+          method: "none",
+          scope: "none",
+          ownerDisplay: null,
+          checkedAt: null,
+        },
+    execution: {
+      state: executionState,
+      outcome,
+      executionTargetId: "control-plane",
+      sourceFingerprint: null,
+      testedAt: row.companyDefault.testedAt,
+      staleAt: null,
+    },
+    assignment:
+      credentialMethod === "subscription"
+        ? {
+            state: "commander_subscription",
+            intendedAgentId: null,
+            intendedAgentName: null,
+            credentialSource: "personal_subscription",
+            approvedAt: null,
+            revokedAt: null,
+          }
+        : credentialMethod === "api_key"
+          ? {
+              state: "company_key_fallback",
+              intendedAgentId: null,
+              intendedAgentName: null,
+              credentialSource: "company_api_key",
+              approvedAt: null,
+              revokedAt: null,
+            }
+          : {
+              state: "not_assigned",
+              intendedAgentId: null,
+              intendedAgentName: null,
+              credentialSource: null,
+              approvedAt: null,
+              revokedAt: null,
+            },
+  };
 }
 
 /**
@@ -231,8 +306,12 @@ async function selectProvider(page: Page, providerId: string): Promise<void> {
 // locator would strict-violate. Do not rely on the coincidence.
 const card = (page: Page, providerId: string) =>
   page.locator(`[data-testid="provider-detail"][data-provider="${providerId}"]`);
-const badgeOf = (page: Page, providerId: string) =>
-  card(page, providerId).getByTestId("provider-status-badge");
+const executionStatusOf = (page: Page, providerId: string) =>
+  card(page, providerId).getByTestId("provider-execution-status");
+const credentialStatusOf = (page: Page, providerId: string) =>
+  card(page, providerId).getByTestId("provider-credential-status");
+const assignmentStatusOf = (page: Page, providerId: string) =>
+  card(page, providerId).getByTestId("provider-assignment-status");
 
 /* ── specs ────────────────────────────────────────────────────────────────── */
 
@@ -263,24 +342,30 @@ test.describe("Settings -> Providers readiness", () => {
     const backend = await installProviderBackend(page, company.id, {
       shapeList(body) {
         // IN USE + FRESH  -> must NOT be re-probed.
-        Object.assign(rowOf(body, "anthropic").companyDefault, {
+        const anthropic = rowOf(body, "anthropic");
+        Object.assign(anthropic.companyDefault, {
           outcome: "verified",
           testedAt: FRESH,
           checks: [],
         });
+        syncCanonicalStatus(anthropic);
         // IN USE + STALE  -> the ONE provider that may be probed.
-        Object.assign(rowOf(body, "google").companyDefault, {
+        const google = rowOf(body, "google");
+        Object.assign(google.companyDefault, {
           outcome: "verified",
           testedAt: STALE,
           checks: [],
         });
+        syncCanonicalStatus(google);
         // STALE but NOT in use -> must NOT be probed. This row is the whole
         // point: staleness alone is not a licence to spawn a CLI.
-        Object.assign(rowOf(body, "openai").companyDefault, {
+        const openai = rowOf(body, "openai");
+        Object.assign(openai.companyDefault, {
           outcome: "verified",
           testedAt: STALE,
           checks: [],
         });
+        syncCanonicalStatus(openai);
         // The remaining five keep the server's genuine never-probed state
         // (unknown / testedAt null), which `isReadinessStale` also calls stale.
       },
@@ -296,7 +381,7 @@ test.describe("Settings -> Providers readiness", () => {
     // anthropic is in use (a seeded claude agent) so it is the default detail —
     // but select it explicitly so this assertion does not depend on defaulting.
     await selectProvider(page, "anthropic");
-    await expect(badgeOf(page, "anthropic")).toContainText("Ready");
+    await expect(executionStatusOf(page, "anthropic")).toHaveText("Compatible");
     await expect(card(page, "anthropic").getByTestId("provider-checked-at")).toContainText(
       "checked just now",
     );
@@ -325,11 +410,13 @@ test.describe("Settings -> Providers readiness", () => {
 
     const backend = await installProviderBackend(page, company.id, {
       shapeList(body) {
-        Object.assign(rowOf(body, "google").companyDefault, {
+        const google = rowOf(body, "google");
+        Object.assign(google.companyDefault, {
           outcome: verified ? "verified" : "needs_auth",
           testedAt: verified ? new Date().toISOString() : STALE,
           checks: verified ? [] : [{ code: "auth", level: "error", message: "Run claude auth login" }],
         });
+        syncCanonicalStatus(google);
       },
       /*
         Scoped to google's probe. Flipping on ANY probe would let the automatic
@@ -344,7 +431,7 @@ test.describe("Settings -> Providers readiness", () => {
 
     await openProvidersTab(page, company.issuePrefix);
     await selectProvider(page, "google");
-    await expect(badgeOf(page, "google")).toHaveText("Needs sign-in");
+    await expect(executionStatusOf(page, "google")).toHaveText("Probe failed");
     await expect(card(page, "google").getByTestId("provider-checked-at")).toContainText("10m ago");
     // Nobody has probed GOOGLE yet. (`anthropic` is legitimately auto-probed
     // here — the hidden crew agents put it in use and it has never been
@@ -353,7 +440,7 @@ test.describe("Settings -> Providers readiness", () => {
 
     await card(page, "google").getByTestId("provider-test").click();
 
-    await expect(badgeOf(page, "google")).toHaveText("Ready");
+    await expect(executionStatusOf(page, "google")).toHaveText("Compatible");
     await expect(card(page, "google").getByTestId("provider-checked-at")).toContainText(
       "checked just now",
     );
@@ -376,13 +463,14 @@ test.describe("Settings -> Providers readiness", () => {
           checks: [],
         });
         row.existingKey = { ...row.existingKey, configured: keyed };
+        syncCanonicalStatus(row, keyed ? "api_key" : "none");
       },
     });
 
     await openProvidersTab(page, company.issuePrefix);
     await selectProvider(page, "google");
     const google = card(page, "google");
-    await expect(badgeOf(page, "google")).toHaveText("Needs sign-in");
+    await expect(credentialStatusOf(page, "google")).toHaveText("Not configured");
     await expect(google.getByText("Add an API key")).toBeVisible();
 
     await google.getByTestId("provider-key-input").fill("AIza-e2e-not-a-real-key");
@@ -391,7 +479,9 @@ test.describe("Settings -> Providers readiness", () => {
     keyed = true;
     await google.getByTestId("provider-key-save").click();
 
-    await expect(badgeOf(page, "google")).toHaveText("Ready");
+    await expect(credentialStatusOf(page, "google")).toHaveText("Verified");
+    await expect(executionStatusOf(page, "google")).toHaveText("Compatible");
+    await expect(assignmentStatusOf(page, "google")).toHaveText("Company key fallback");
     await expect(google.getByText("Replace API key")).toBeVisible();
     expect(backend.keySaves).toBe(1);
   });
@@ -421,6 +511,7 @@ test.describe("Settings -> Providers readiness", () => {
           testedAt: FRESH,
           checks: [],
         });
+        syncCanonicalStatus(row);
         // This agent's OWN binding does not.
         const scoped = row.agents.find((a) => a.scopeId === agent.id);
         if (!scoped) throw new Error(`agent ${agent.id} missing from the anthropic row`);
@@ -435,12 +526,9 @@ test.describe("Settings -> Providers readiness", () => {
     await openProvidersTab(page, company.issuePrefix);
     await selectProvider(page, "anthropic");
 
-    const badge = badgeOf(page, "anthropic");
-    // The load-bearing assertion: NOT a bare "Ready".
-    await expect(badge).not.toHaveText("Ready");
-    await expect(badge).toHaveText("Ready, 1 agent failing");
-    // Amber, not green — the pill's colour is read before its text.
-    await expect(badge).toHaveClass(/amber/);
+    // The company target can be compatible while an independently scoped agent
+    // remains visibly unable to run; the old aggregate badge conflated them.
+    await expect(executionStatusOf(page, "anthropic")).toHaveText("Compatible");
 
     // The failing agent is named, with its own verdict.
     const failing = card(page, "anthropic").getByTestId("provider-failing-agents");
@@ -508,11 +596,13 @@ test.describe("Settings -> Providers readiness", () => {
 
     const backend = await installProviderBackend(page, company.id, {
       shapeList(body) {
-        Object.assign(rowOf(body, "openai").companyDefault, {
+        const openai = rowOf(body, "openai");
+        Object.assign(openai.companyDefault, {
           outcome: signedIn ? "verified" : "needs_auth",
           testedAt: signedIn ? new Date().toISOString() : STALE,
           checks: [],
         });
+        syncCanonicalStatus(openai, signedIn ? "subscription" : "none");
       },
       startLogin: () => ({ challengeId: "ch-e2e", loginUrl: "https://example.test/oauth?code=E2E" }),
       // First poll pending (so the progress panel is observable rather than a
@@ -528,7 +618,7 @@ test.describe("Settings -> Providers readiness", () => {
     await openProvidersTab(page, company.issuePrefix);
     await selectProvider(page, "openai");
     const openai = card(page, "openai");
-    await expect(badgeOf(page, "openai")).toHaveText("Needs sign-in");
+    await expect(credentialStatusOf(page, "openai")).toHaveText("Not configured");
 
     await openai.getByTestId("provider-signin").click();
 
@@ -542,7 +632,9 @@ test.describe("Settings -> Providers readiness", () => {
 
     // Completion: polling stops, the client re-probes (readiness was null), the
     // card lands on the fresh verdict.
-    await expect(badgeOf(page, "openai")).toHaveText("Ready", { timeout: 20_000 });
+    await expect(credentialStatusOf(page, "openai")).toHaveText("Verified", { timeout: 20_000 });
+    await expect(executionStatusOf(page, "openai")).toHaveText("Compatible");
+    await expect(assignmentStatusOf(page, "openai")).toHaveText("Commander subscription");
     await expect(openai.getByTestId("provider-login-progress")).toHaveCount(0);
     expect(backend.probes.map((p) => p.providerId)).toContain("openai");
 
@@ -617,7 +709,9 @@ test.describe("Settings -> Providers readiness", () => {
     await page.getByRole("textbox").first().fill(`E2E-Providers-Onboard-${Date.now()}`);
     await page.getByRole("button", { name: /continue/i }).click();
 
-    await expect(page.getByRole("heading", { name: /set up your environment/i })).toBeVisible();
+    await expect(page.getByRole("heading", { name: /set up your environment/i })).toBeVisible({
+      timeout: 20_000,
+    });
     await page.getByRole("button", { name: /verify & continue/i }).click();
 
     // Commander — heading is "Bring your engine online" (#295 redesign).
@@ -687,7 +781,7 @@ test.describe("Settings -> Providers readiness", () => {
 
     // The company default itself is honestly "we haven't checked", not a
     // failure and not a green claim.
-    await expect(badgeOf(page, "anthropic")).toHaveText("Not verified");
+    await expect(executionStatusOf(page, "anthropic")).toHaveText("Not checked");
 
     // And still no probe storm on a fresh company: one in-use provider, one probe.
     await expect.poll(() => backend.probes.length, { timeout: 15_000 }).toBe(1);

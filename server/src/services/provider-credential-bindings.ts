@@ -5,6 +5,7 @@ import type { Db } from "@armyofagents/db";
 import {
   agentProviderCredentialBindings,
   companyMemberships,
+  internalAgentConfig,
   providerCredentials,
 } from "@armyofagents/db";
 import { and, eq } from "drizzle-orm";
@@ -21,6 +22,7 @@ export class ProviderCredentialBindingError extends Error {
       | "credential_unavailable"
       | "credential_target_mismatch"
       | "credential_owner_inactive"
+      | "credential_not_commander"
       | "credential_path_invalid",
     message: string,
   ) {
@@ -38,6 +40,18 @@ export function mayUseLegacySubscriptionHome(
     error instanceof ProviderCredentialBindingError &&
     error.code === "binding_missing"
   );
+}
+
+export function assertCommanderSubscriptionAgent(
+  agentId: string,
+  commanderAgentId: string | null | undefined,
+): void {
+  if (commanderAgentId !== agentId) {
+    throw new ProviderCredentialBindingError(
+      "credential_not_commander",
+      "Personal subscription credentials can only be used by the company Commander.",
+    );
+  }
 }
 
 interface BindingCandidate {
@@ -119,6 +133,23 @@ export function chooseGovernedSubscriptionBinding(
   return active[0]!;
 }
 
+export function chooseCommanderSubscriptionBinding(
+  candidates: BindingCandidate[],
+  expected: {
+    companyId: string;
+    provider: CliSubscriptionProvider;
+    executionTargetId: string;
+  },
+  agentId: string,
+  commanderAgentId: string | null | undefined,
+): BindingCandidate {
+  // Authorization precedes selection so an absent governed binding can never
+  // let an ordinary agent fall back to the operator's legacy personal CLI home.
+  // The compatibility fallback remains available only to Commander.
+  assertCommanderSubscriptionAgent(agentId, commanderAgentId);
+  return chooseGovernedSubscriptionBinding(candidates, expected);
+}
+
 async function assertSafeCredentialHome(authHome: string, aoaHome: string): Promise<void> {
   const [resolvedHome, resolvedRoot] = await Promise.all([
     fs.realpath(authHome).catch(() => null),
@@ -180,7 +211,21 @@ export async function resolveAgentSubscriptionEnvironment(
       ),
     );
 
-  const selected = chooseGovernedSubscriptionBinding(rows, args);
+  // Read Commander identity after loading candidates, then authorize before
+  // selection. A missing governed binding may use the legacy local-CLI fallback
+  // only for Commander; ordinary agents must use a company API key.
+  const [commander] = await db
+    .select({ agentId: internalAgentConfig.agentId })
+    .from(internalAgentConfig)
+    .where(eq(internalAgentConfig.companyId, args.companyId))
+    .limit(1);
+  const selected = chooseCommanderSubscriptionBinding(
+    rows,
+    args,
+    args.agentId,
+    commander?.agentId,
+  );
+
   const env = args.env ?? process.env;
   const authHome = resolveScopedCliAuthHome({
     env,

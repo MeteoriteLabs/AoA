@@ -190,7 +190,12 @@ describe("codex execute — runtime-decision path routing", () => {
           runId: "run-remote",
           agent: { id: "agent-1", companyId: "company-1", name: "Codex", adapterType: "codex_local", adapterConfig: {} },
           runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
-          config: { command: "codex", timeoutSec: 10, graceSec: 1 },
+          config: {
+            command: "codex",
+            env: { OPENAI_API_KEY: "sk-agent-scoped-remote" },
+            timeoutSec: 10,
+            graceSec: 1,
+          },
           context: {},
           executionTarget: {
             type: "provider-sandbox",

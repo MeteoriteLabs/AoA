@@ -10,26 +10,39 @@ authenticated actor; callers cannot read or advance another user's progress.
 
 ```http
 GET /api/onboarding/journey
+X-AOA-Journey-Schema-Version: 1
 ```
 
 Returns:
 
 ```json
 {
-  "journey": "founder",
+  "schemaVersion": 1,
+  "journey": "access_required",
   "targetCompanyId": null,
   "pendingInvitations": [],
-  "inviteToken": null
+  "inviteToken": null,
+  "canCreateCompany": false,
+  "resumeFirstRunCompanyId": null
 }
 ```
 
 `journey` is:
 
 - `returning` when the user has an active membership, or an instance
-  administrator can see an existing company;
+  administrator can see an existing company. `targetCompanyId` identifies the
+  selected company, `canCreateCompany` reports instance-admin authority, and
+  `resumeFirstRunCompanyId` identifies an unfinished first-run flow when one
+  must be resumed;
 - `invited` when a pending human request belongs to the user or a currently open
-  invite matches their verified email;
-- `founder` when neither condition applies.
+  invite matches their verified email. `targetCompanyId` identifies that
+  company and `canCreateCompany` is `false`;
+- `founder` only when the user has no membership or invitation and is an
+  instance administrator authorized to create the first company.
+  `canCreateCompany` is `true`;
+- `access_required` when the user has no membership or invitation and is not an
+  instance administrator. This is a terminal access-denied journey;
+  `canCreateCompany` is `false`.
 
 `pendingInvitations` contains `companyId`, `companyName`, `inviteId`, `role`,
 `createdAt`, and `filed`. `filed: false` means an open verified-email match was
@@ -37,7 +50,21 @@ discovered but no request has been filed; the UI must obtain explicit consent
 before claiming it. `inviteToken` is retained only for response compatibility
 and is always `null`.
 
-Returns `401` without an authenticated board user.
+Clients that implement schema version 1 should send
+`X-AOA-Journey-Schema-Version: 1`. Returns `401` without an authenticated board
+user. When the result is `access_required`, a missing or unsupported schema
+header returns:
+
+```http
+409 Conflict
+```
+
+```json
+{
+  "error": "This AoA client must be refreshed before access can continue.",
+  "code": "journey_schema_upgrade_required"
+}
+```
 
 ## Read Progress
 

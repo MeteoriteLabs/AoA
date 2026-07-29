@@ -29,6 +29,7 @@ import {
   type AdapterEnvironmentCheckLevel,
   type ProbeOutcome,
   type ProviderDescriptor,
+  type ProviderCanonicalStatus,
   type ProviderId,
 } from "@armyofagents/shared";
 import { ApiError, api } from "./client";
@@ -38,6 +39,7 @@ export type {
   AdapterEnvironmentCheckLevel,
   ProbeOutcome,
   ProviderDescriptor,
+  ProviderCanonicalStatus,
   ProviderId,
 };
 
@@ -104,6 +106,71 @@ export interface ProviderStatusRow {
   agents: ScopedReadiness[];
   /** ADDITION over the plan's sketch — see `ExistingKey`. */
   existingKey: ExistingKey;
+  /** Canonical v1 projection. Optional while old servers remain in rotation. */
+  status?: ProviderCanonicalStatus;
+}
+
+/** Rolling-compatible projection for a response from a pre-v1 server. */
+export function providerStatusForRow(row: ProviderStatusRow): ProviderCanonicalStatus {
+  if (row.status) return row.status;
+  const testedAt = row.companyDefault.testedAt;
+  const executionState: ProviderCanonicalStatus["execution"]["state"] =
+    !testedAt
+      ? "not_checked"
+      : row.companyDefault.outcome === "verified"
+        ? "compatible"
+        : row.companyDefault.outcome === "unverifiable" ||
+            row.companyDefault.outcome === "not_installed"
+          ? "unsupported"
+          : "probe_failed";
+  return {
+    version: 1,
+    credential: row.existingKey.configured
+      ? {
+          state:
+            row.companyDefault.outcome === "verified"
+              ? "verified"
+              : row.companyDefault.outcome === "needs_auth"
+                ? "verification_failed"
+                : "checking",
+          method: "api_key",
+          scope: "company",
+          ownerDisplay: null,
+          checkedAt: testedAt,
+        }
+      : {
+          state: "not_configured",
+          method: "none",
+          scope: "none",
+          ownerDisplay: null,
+          checkedAt: null,
+        },
+    execution: {
+      state: executionState,
+      outcome: row.companyDefault.outcome,
+      executionTargetId: "control-plane",
+      sourceFingerprint: null,
+      testedAt,
+      staleAt: null,
+    },
+    assignment: row.existingKey.configured
+      ? {
+          state: "company_key_fallback",
+          intendedAgentId: null,
+          intendedAgentName: null,
+          credentialSource: "company_api_key",
+          approvedAt: null,
+          revokedAt: null,
+        }
+      : {
+          state: "not_assigned",
+          intendedAgentId: null,
+          intendedAgentName: null,
+          credentialSource: null,
+          approvedAt: null,
+          revokedAt: null,
+        },
+  };
 }
 
 export interface ProviderListResponse {

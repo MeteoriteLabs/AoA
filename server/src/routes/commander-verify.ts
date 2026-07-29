@@ -14,7 +14,11 @@ import {
 } from "../services/adapter-probe-concurrency.js";
 import { assertRole } from "../middleware/rbac.js";
 import { assertCompanyAccess } from "./authz.js";
-import { redactChecks } from "../services/providers/readiness.js";
+import {
+  deleteAgentReadinessForProvider,
+  deleteReadinessForScope,
+  redactChecks,
+} from "../services/providers/readiness.js";
 import { verifyAndBindCommanderSubscriptionCredential } from "../services/provider-credentials.js";
 
 /**
@@ -33,6 +37,7 @@ export function commanderVerifyRoutes(db: Db): Router {
       res.status(401).json({ error: "authentication required" });
       return;
     }
+    const actorUserId = actor.userId;
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     await assertRole(db, req, companyId, "founder");
@@ -45,7 +50,7 @@ export function commanderVerifyRoutes(db: Db): Router {
     // §6.1 (Codex P1 #8): probe the RESOLVED Commander config (its adapter env
     // secret_refs resolved) so a saved API key unblocks re-probe; falls back to
     // {} = CLI defaults / subscription-login path when no key/agent is set.
-    const probeConfig = await resolveCommanderProbeConfig(db, companyId, adapterType, actor.userId);
+    const probeConfig = await resolveCommanderProbeConfig(db, companyId, adapterType, actorUserId);
     const releaseProbeSlot = tryAcquireAdapterProbeSlot(companyId);
     if (!releaseProbeSlot) {
       res
@@ -69,12 +74,20 @@ export function commanderVerifyRoutes(db: Db): Router {
       ) {
         const provider = adapterType === "codex_local" ? "openai" : "anthropic";
         const executionTargetId = process.env.AOA_EXECUTION_TARGET_ID?.trim() || "control-plane";
-        await verifyAndBindCommanderSubscriptionCredential(db, {
-          companyId,
-          userId: actor.userId,
-          actorUserId: actor.userId,
-          provider,
-          executionTargetId,
+        await db.transaction(async (tx) => {
+          const txDb = tx as unknown as Db;
+          await verifyAndBindCommanderSubscriptionCredential(txDb, {
+            companyId,
+            userId: actorUserId,
+            actorUserId,
+            provider,
+            executionTargetId,
+            providerProbeVerified: true,
+          });
+          await deleteReadinessForScope(txDb, companyId, provider, {
+            type: "company_default",
+          });
+          await deleteAgentReadinessForProvider(txDb, companyId, provider);
         });
       }
       res.status(classified.outcome === "verified" ? 200 : 422).json(classified);

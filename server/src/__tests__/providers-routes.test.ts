@@ -27,7 +27,11 @@ vi.mock("drizzle-orm", () => ({ ...drizzleOperatorStubs(), notInArray: mockNotIn
 
 vi.mock("@armyofagents/db", () => ({
   agents: makeTableProxy("agents"),
+  agentProviderCredentialBindings: makeTableProxy("agent_provider_credential_bindings"),
+  companyMemberships: makeTableProxy("company_memberships"),
   companySecrets: makeTableProxy("company_secrets"),
+  internalAgentConfig: makeTableProxy("internal_agent_config"),
+  providerCredentials: makeTableProxy("provider_credentials"),
   providerReadinessStatus: makeTableProxy("provider_readiness_status"),
 }));
 
@@ -91,13 +95,51 @@ vi.mock("../adapters/index.js", () => ({
 const mockAssertRole = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock("../middleware/rbac.js", () => ({ assertRole: mockAssertRole }));
 
-import { providerRoutes } from "../routes/providers.js";
+import {
+  providerReadinessSourceFingerprint,
+  providerRoutes,
+} from "../routes/providers.js";
 import { errorHandler } from "../middleware/index.js";
 import { tryAcquireAdapterProbeSlot } from "../services/adapter-probe-concurrency.js";
 import { forbidden } from "../errors.js";
 
 const COMPANY_ID = "11111111-1111-4111-8111-111111111111";
 const AGENT_ID = "22222222-2222-4222-8222-222222222222";
+
+describe("provider readiness source fingerprint", () => {
+  it("changes with routing configuration but never with secret values", () => {
+    const base = {
+      providerId: "anthropic",
+      adapterType: "claude_local",
+      scope: { type: "company_default" as const },
+    };
+    const first = providerReadinessSourceFingerprint({
+      ...base,
+      adapterConfig: {
+        cwd: "/app",
+        env: { ANTHROPIC_API_KEY: "secret-a" },
+      },
+    });
+    const rotated = providerReadinessSourceFingerprint({
+      ...base,
+      adapterConfig: {
+        cwd: "/app",
+        env: { ANTHROPIC_API_KEY: "secret-b" },
+      },
+    });
+    const moved = providerReadinessSourceFingerprint({
+      ...base,
+      adapterConfig: {
+        cwd: "/workspace",
+        env: { ANTHROPIC_API_KEY: "secret-a" },
+      },
+    });
+
+    expect(rotated).toBe(first);
+    expect(moved).not.toBe(first);
+    expect(first).not.toContain("secret-a");
+  });
+});
 
 /** Results handed to successive `db.select()` chains, in call order. */
 let selectResults: unknown[][] = [];
@@ -107,7 +149,7 @@ function makeDb() {
     select: () => {
       const rows = selectResults.shift() ?? [];
       const builder: Record<string, unknown> = {};
-      for (const m of ["from", "where", "limit", "orderBy", "for"]) {
+      for (const m of ["from", "leftJoin", "where", "limit", "orderBy", "for"]) {
         builder[m] = () => builder;
       }
       builder.then = (resolve: (v: unknown) => unknown) => Promise.resolve(rows).then(resolve);
@@ -135,8 +177,26 @@ function makeApp(actorOverride?: Record<string, unknown>) {
 }
 
 /** Default GET wiring: no agents, no secrets, no cached readiness rows. */
-function seedGet(opts: { agents?: unknown[]; secrets?: unknown[]; readiness?: unknown[] } = {}) {
-  selectResults = [opts.agents ?? [], opts.secrets ?? []];
+function seedGet(
+  opts: {
+    agents?: unknown[];
+    secrets?: unknown[];
+    readiness?: unknown[];
+    credentials?: unknown[];
+    bindings?: unknown[];
+    commander?: unknown[];
+  } = {},
+) {
+  selectResults = [
+    opts.agents ?? [],
+    opts.secrets ?? [],
+    (opts.credentials ?? []).map((credential) => ({
+      ownerMembershipStatus: "active",
+      ...(credential as Record<string, unknown>),
+    })),
+    opts.bindings ?? [],
+    opts.commander ?? [],
+  ];
   mockReadReadiness.mockResolvedValue(opts.readiness ?? []);
 }
 
@@ -167,6 +227,7 @@ function passingProbe(checks?: unknown[]) {
 }
 
 beforeEach(() => {
+  delete process.env.AOA_EXECUTION_TARGET_ID;
   vi.clearAllMocks();
   selectResults = [];
   mockCanUser.mockResolvedValue(true);
@@ -199,6 +260,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  delete process.env.AOA_EXECUTION_TARGET_ID;
   // The probe slot is module-level process state; a leaked slot 429s every
   // later test in this file.
   tryAcquireAdapterProbeSlot(COMPANY_ID)?.();
@@ -223,6 +285,316 @@ describe("GET /api/companies/:companyId/providers", () => {
       testedAt: null,
     });
     expect(claude.agents).toEqual([]);
+    expect(claude.status).toMatchObject({
+      version: 1,
+      credential: { state: "not_configured" },
+      execution: { state: "not_checked" },
+      assignment: { state: "not_assigned" },
+    });
+  });
+
+  it("keeps API-key credential evidence separate from execution readiness", async () => {
+    seedGet({
+      secrets: [{ name: "provider:anthropic", status: "active" }],
+      readiness: [
+        {
+          ...cachedRow(
+            "anthropic",
+            { scopeType: "company_default" },
+            "needs_auth",
+          ),
+          staleAt: new Date(Date.now() + 60_000),
+        },
+      ],
+    });
+    const res = await request(makeApp()).get(
+      `/api/companies/${COMPANY_ID}/providers`,
+    );
+    const claude = res.body.providers.find(
+      (p: { descriptor: { id: string } }) =>
+        p.descriptor.id === "anthropic",
+    );
+
+    expect(claude.status.credential.state).toBe("verification_failed");
+    expect(claude.status.execution.state).toBe("probe_failed");
+    expect(claude.status.assignment.state).toBe("company_key_fallback");
+  });
+
+  it("projects a verified subscription and Commander assignment independently", async () => {
+    seedGet({
+      agents: [
+        {
+          id: AGENT_ID,
+          name: "Commander",
+          adapterType: "claude_local",
+        },
+      ],
+      credentials: [
+        {
+          id: "credential-1",
+          provider: "anthropic",
+          ownerUserId: "user-1",
+          executionTargetId: "control-plane",
+          kind: "personal_subscription",
+          state: "verified",
+          verifiedAt: new Date("2026-07-20T08:00:00.000Z"),
+          updatedAt: new Date("2026-07-20T08:00:00.000Z"),
+        },
+      ],
+      bindings: [
+        {
+          agentId: AGENT_ID,
+          credentialId: "credential-1",
+          approvedAt: new Date("2026-07-20T08:01:00.000Z"),
+          revokedAt: null,
+        },
+      ],
+      commander: [{ agentId: AGENT_ID }],
+    });
+    const res = await request(makeApp()).get(
+      `/api/companies/${COMPANY_ID}/providers`,
+    );
+    const claude = res.body.providers.find(
+      (p: { descriptor: { id: string } }) =>
+        p.descriptor.id === "anthropic",
+    );
+
+    expect(claude.status.credential).toMatchObject({
+      state: "verified",
+      method: "subscription",
+      ownerDisplay: "You",
+    });
+    expect(claude.status.assignment).toMatchObject({
+      state: "commander_subscription",
+      intendedAgentId: AGENT_ID,
+      intendedAgentName: "Commander",
+    });
+    expect(claude.status.execution.state).toBe("not_checked");
+  });
+
+  it("projects the verified subscription actually bound to Commander instead of the newest credential", async () => {
+    seedGet({
+      agents: [
+        {
+          id: AGENT_ID,
+          name: "Commander",
+          adapterType: "claude_local",
+        },
+      ],
+      credentials: [
+        {
+          id: "credential-bound-older",
+          provider: "anthropic",
+          ownerUserId: "user-1",
+          executionTargetId: "control-plane",
+          kind: "personal_subscription",
+          state: "verified",
+          verifiedAt: new Date("2026-07-20T08:00:00.000Z"),
+          updatedAt: new Date("2026-07-20T08:00:00.000Z"),
+        },
+        {
+          id: "credential-newer-unbound",
+          provider: "anthropic",
+          ownerUserId: "user-2",
+          executionTargetId: "control-plane",
+          kind: "personal_subscription",
+          state: "verified",
+          verifiedAt: new Date("2026-07-21T08:00:00.000Z"),
+          updatedAt: new Date("2026-07-21T08:00:00.000Z"),
+        },
+      ],
+      bindings: [
+        {
+          agentId: AGENT_ID,
+          credentialId: "credential-bound-older",
+          approvedAt: new Date("2026-07-20T08:01:00.000Z"),
+          revokedAt: null,
+        },
+      ],
+      commander: [{ agentId: AGENT_ID }],
+    });
+
+    const res = await request(makeApp()).get(
+      `/api/companies/${COMPANY_ID}/providers`,
+    );
+    const claude = res.body.providers.find(
+      (provider: { descriptor: { id: string } }) =>
+        provider.descriptor.id === "anthropic",
+    );
+
+    expect(claude.status.credential).toMatchObject({
+      state: "verified",
+      method: "subscription",
+      ownerDisplay: "You",
+    });
+    expect(claude.status.assignment).toMatchObject({
+      state: "commander_subscription",
+      intendedAgentId: AGENT_ID,
+    });
+  });
+
+  it("projects the company API key as Commander runtime source when both auth methods are configured", async () => {
+    seedGet({
+      agents: [
+        {
+          id: AGENT_ID,
+          name: "Commander",
+          adapterType: "claude_local",
+        },
+      ],
+      secrets: [{ name: "provider:anthropic", status: "active" }],
+      credentials: [
+        {
+          id: "credential-1",
+          provider: "anthropic",
+          ownerUserId: "user-1",
+          executionTargetId: "control-plane",
+          kind: "personal_subscription",
+          state: "verified",
+          verifiedAt: new Date("2026-07-20T08:00:00.000Z"),
+          updatedAt: new Date("2026-07-20T08:00:00.000Z"),
+        },
+      ],
+      bindings: [
+        {
+          agentId: AGENT_ID,
+          credentialId: "credential-1",
+          approvedAt: new Date("2026-07-20T08:01:00.000Z"),
+          revokedAt: null,
+        },
+      ],
+      commander: [{ agentId: AGENT_ID }],
+    });
+
+    const res = await request(makeApp()).get(
+      `/api/companies/${COMPANY_ID}/providers`,
+    );
+    const claude = res.body.providers.find(
+      (provider: { descriptor: { id: string } }) =>
+        provider.descriptor.id === "anthropic",
+    );
+
+    expect(claude.status.credential).toMatchObject({
+      state: "verified",
+      method: "subscription",
+    });
+    expect(claude.status.assignment).toMatchObject({
+      state: "company_key_fallback",
+      intendedAgentId: AGENT_ID,
+      credentialSource: "company_api_key",
+    });
+  });
+
+  it("does not project a Commander subscription assignment owned by an inactive member", async () => {
+    seedGet({
+      agents: [
+        {
+          id: AGENT_ID,
+          name: "Commander",
+          adapterType: "claude_local",
+        },
+      ],
+      credentials: [
+        {
+          id: "credential-inactive-owner",
+          provider: "anthropic",
+          ownerUserId: "user-2",
+          ownerMembershipStatus: "inactive",
+          executionTargetId: "control-plane",
+          kind: "personal_subscription",
+          state: "verified",
+          verifiedAt: new Date("2026-07-20T08:00:00.000Z"),
+          updatedAt: new Date("2026-07-20T08:00:00.000Z"),
+        },
+      ],
+      bindings: [
+        {
+          agentId: AGENT_ID,
+          credentialId: "credential-inactive-owner",
+          approvedAt: new Date("2026-07-20T08:01:00.000Z"),
+          revokedAt: null,
+        },
+      ],
+      commander: [{ agentId: AGENT_ID }],
+    });
+
+    const res = await request(makeApp()).get(
+      `/api/companies/${COMPANY_ID}/providers`,
+    );
+    const claude = res.body.providers.find(
+      (provider: { descriptor: { id: string } }) =>
+        provider.descriptor.id === "anthropic",
+    );
+
+    expect(claude.status.credential).toMatchObject({
+      state: "verified",
+      method: "subscription",
+      ownerDisplay: "Another user",
+    });
+    expect(claude.status.assignment).toMatchObject({
+      state: "not_assigned",
+      intendedAgentId: AGENT_ID,
+      credentialSource: null,
+    });
+  });
+
+  it("does not project subscription credentials or bindings from another execution target", async () => {
+    process.env.AOA_EXECUTION_TARGET_ID = "hetzner-qa";
+    seedGet({
+      agents: [{ id: AGENT_ID, name: "Commander", adapterType: "claude_local" }],
+      credentials: [
+        {
+          id: "credential-old-target",
+          provider: "anthropic",
+          ownerUserId: "user-1",
+          executionTargetId: "control-plane",
+          kind: "personal_subscription",
+          state: "verified",
+          verifiedAt: new Date("2026-07-20T08:00:00.000Z"),
+          updatedAt: new Date("2026-07-20T08:00:00.000Z"),
+        },
+      ],
+      bindings: [
+        {
+          agentId: AGENT_ID,
+          credentialId: "credential-old-target",
+          approvedAt: new Date("2026-07-20T08:01:00.000Z"),
+          revokedAt: null,
+        },
+      ],
+      commander: [{ agentId: AGENT_ID }],
+    });
+
+    const res = await request(makeApp()).get(`/api/companies/${COMPANY_ID}/providers`);
+    const claude = res.body.providers.find(
+      (provider: { descriptor: { id: string } }) => provider.descriptor.id === "anthropic",
+    );
+
+    expect(claude.status.credential.state).toBe("not_configured");
+    expect(claude.status.assignment.state).toBe("not_assigned");
+  });
+
+  it("marks a fresh cached probe from another execution target stale", async () => {
+    process.env.AOA_EXECUTION_TARGET_ID = "hetzner-qa";
+    seedGet({
+      readiness: [
+        {
+          ...cachedRow("anthropic", { scopeType: "company_default" }, "verified"),
+          executionTargetId: "control-plane",
+          staleAt: new Date(Date.now() + 60_000),
+        },
+      ],
+    });
+
+    const res = await request(makeApp()).get(`/api/companies/${COMPANY_ID}/providers`);
+    const claude = res.body.providers.find(
+      (provider: { descriptor: { id: string } }) => provider.descriptor.id === "anthropic",
+    );
+
+    expect(claude.status.execution).toMatchObject({
+      state: "stale",
+      executionTargetId: "control-plane",
+    });
   });
 
   it("includes an agent-scoped entry for each in-use agent", async () => {

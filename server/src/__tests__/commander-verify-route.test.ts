@@ -16,6 +16,10 @@ const mockAssertRole = vi.hoisted(() => vi.fn());
 const mockVerifyAndBindSubscription = vi.hoisted(() =>
   vi.fn(async () => ({ credentialIds: [], bindingIds: [] })),
 );
+const mockDeleteReadinessForScope = vi.hoisted(() => vi.fn(async () => {}));
+const mockDeleteAgentReadinessForProvider = vi.hoisted(() =>
+  vi.fn(async () => {})
+);
 
 vi.mock("../services/commander-verify.js", async (importActual) => {
   const actual = (await importActual()) as Record<string, unknown>;
@@ -27,13 +31,25 @@ vi.mock("../middleware/rbac.js", () => ({ assertRole: mockAssertRole }));
 vi.mock("../services/provider-credentials.js", () => ({
   verifyAndBindCommanderSubscriptionCredential: mockVerifyAndBindSubscription,
 }));
+vi.mock("../services/providers/readiness.js", async (importActual) => ({
+  ...((await importActual()) as Record<string, unknown>),
+  deleteReadinessForScope: mockDeleteReadinessForScope,
+  deleteAgentReadinessForProvider: mockDeleteAgentReadinessForProvider,
+}));
 
 import { commanderVerifyRoutes } from "../routes/commander-verify.js";
 
 const COMPANY_ID = "c1";
 
 function dbWithMembership(rows: unknown[]) {
-  return { select: () => ({ from: () => ({ where: () => ({ limit: async () => rows }) }) }) } as never;
+  const db = {
+    select: () => ({
+      from: () => ({ where: () => ({ limit: async () => rows }) }),
+    }),
+    transaction: async <T>(callback: (tx: unknown) => Promise<T>) =>
+      callback(db),
+  };
+  return db as never;
 }
 function makeApp(db: unknown, actorOverride?: Record<string, unknown>) {
   const app = express();
@@ -156,7 +172,19 @@ describe("POST /companies/:companyId/internal-agent/verify", () => {
         actorUserId: "u1",
         provider: "anthropic",
         executionTargetId: "control-plane",
+        providerProbeVerified: true,
       },
+    );
+    expect(mockDeleteReadinessForScope).toHaveBeenCalledWith(
+      expect.anything(),
+      COMPANY_ID,
+      "anthropic",
+      { type: "company_default" },
+    );
+    expect(mockDeleteAgentReadinessForProvider).toHaveBeenCalledWith(
+      expect.anything(),
+      COMPANY_ID,
+      "anthropic",
     );
   });
 

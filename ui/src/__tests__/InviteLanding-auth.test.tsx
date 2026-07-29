@@ -194,7 +194,9 @@ describe("InviteLandingPage authentication", () => {
       );
     });
 
-    expect(removeQueriesSpy).toHaveBeenCalledWith({ queryKey: ["onboarding", "journey"], exact: true });
+    expect(removeQueriesSpy).toHaveBeenCalledWith({
+      queryKey: ["onboarding", "journey"],
+    });
     expect(screen.queryByText(/join request submitted/i)).not.toBeInTheDocument();
   });
 

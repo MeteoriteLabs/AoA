@@ -1,13 +1,17 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithProviders, mockCompanyContext } from "./test-utils";
 import { UserMenu } from "../components/UserMenu";
+import { cancelChallengesWithinTimeout } from "../hooks/useAccountSwitch";
 
 const mockNavigate = vi.fn();
+const replaceWithSignedOutPage = vi.fn();
 
 vi.mock("react-router-dom", async () => {
-  const actual = await vi.importActual<typeof import("react-router-dom")>("react-router-dom");
+  const actual = await vi.importActual<typeof import("react-router-dom")>(
+    "react-router-dom"
+  );
   return {
     ...actual,
     useNavigate: () => mockNavigate,
@@ -18,15 +22,24 @@ vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => mockCompanyContext,
 }));
 
+vi.mock("@/lib/accountSwitchNavigation", () => ({
+  replaceWithSignedOutPage: () => replaceWithSignedOutPage(),
+}));
+
 const profileGet = vi.fn();
 const signOut = vi.fn();
+const cancelOwnLoginChallenges = vi.fn();
 
 vi.mock("@/api/profile", () => ({
   profileApi: { get: (...args: unknown[]) => profileGet(...args) },
 }));
 
 vi.mock("@/api/auth", () => ({
-  authApi: { signOut: (...args: unknown[]) => signOut(...args) },
+  authApi: {
+    signOut: (...args: unknown[]) => signOut(...args),
+    cancelOwnLoginChallenges: (...args: unknown[]) =>
+      cancelOwnLoginChallenges(...args),
+  },
 }));
 
 const resetSidebar = vi.fn();
@@ -53,11 +66,18 @@ describe("UserMenu", () => {
       avatarUrl: null,
     });
     signOut.mockResolvedValue(undefined);
+    cancelOwnLoginChallenges.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("renders avatar trigger with user initials", async () => {
     renderWithProviders(<UserMenu />);
-    const trigger = await screen.findByRole("button", { name: /account menu/i });
+    const trigger = await screen.findByRole("button", {
+      name: /account menu/i,
+    });
     expect(trigger).toBeInTheDocument();
     // Initials derive from displayName "Alice" → "AL"
     await waitFor(() => expect(trigger).toHaveTextContent(/AL/i));
@@ -73,38 +93,87 @@ describe("UserMenu", () => {
   it("opens dropdown with Profile and Sign out items on click", async () => {
     const user = userEvent.setup();
     renderWithProviders(<UserMenu />);
-    const trigger = await screen.findByRole("button", { name: /account menu/i });
+    const trigger = await screen.findByRole("button", {
+      name: /account menu/i,
+    });
     await user.click(trigger);
-    expect(await screen.findByRole("menuitem", { name: /profile/i })).toBeInTheDocument();
-    expect(screen.getByRole("menuitem", { name: /sign out/i })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("menuitem", { name: /profile/i })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("menuitem", { name: /sign out/i })
+    ).toBeInTheDocument();
   });
 
   it("navigates to /me when Profile is clicked", async () => {
     const user = userEvent.setup();
     renderWithProviders(<UserMenu />);
-    await user.click(await screen.findByRole("button", { name: /account menu/i }));
+    await user.click(
+      await screen.findByRole("button", { name: /account menu/i })
+    );
     await user.click(await screen.findByRole("menuitem", { name: /profile/i }));
     expect(mockNavigate).toHaveBeenCalledWith("/me", undefined);
   });
 
-  it("calls signOut and navigates to /auth when Sign out is clicked", async () => {
+  it("calls signOut and replaces the document when Sign out is clicked", async () => {
     const user = userEvent.setup();
     renderWithProviders(<UserMenu />);
-    await user.click(await screen.findByRole("button", { name: /account menu/i }));
-    await user.click(await screen.findByRole("menuitem", { name: /sign out/i }));
+    await user.click(
+      await screen.findByRole("button", { name: /account menu/i })
+    );
+    await user.click(
+      await screen.findByRole("menuitem", { name: /sign out/i })
+    );
+    await waitFor(() => expect(cancelOwnLoginChallenges).toHaveBeenCalled());
     await waitFor(() => expect(signOut).toHaveBeenCalled());
-    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/auth", undefined));
+    await waitFor(() => expect(replaceWithSignedOutPage).toHaveBeenCalledOnce());
+    expect(cancelOwnLoginChallenges.mock.invocationCallOrder[0]).toBeLessThan(
+      signOut.mock.invocationCallOrder[0]!
+    );
+    expect(mockCompanyContext.resetCompanySelection).toHaveBeenCalledOnce();
+  });
+
+  it("still signs out when active provider sign-in cancellation fails", async () => {
+    cancelOwnLoginChallenges.mockRejectedValueOnce(new Error("cancel failed"));
+    const user = userEvent.setup();
+    renderWithProviders(<UserMenu />);
+
+    await user.click(
+      await screen.findByRole("button", { name: /account menu/i })
+    );
+    await user.click(
+      await screen.findByRole("menuitem", { name: /sign out/i })
+    );
+
+    await waitFor(() => expect(signOut).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(replaceWithSignedOutPage).toHaveBeenCalledOnce());
+    expect(mockCompanyContext.resetCompanySelection).toHaveBeenCalledOnce();
+  });
+
+  it("still signs out when active provider sign-in cancellation times out", async () => {
+    vi.useFakeTimers();
+    cancelOwnLoginChallenges.mockReturnValueOnce(new Promise(() => {}));
+    const rejection = expect(cancelChallengesWithinTimeout()).rejects.toThrow(
+      "Could not cancel active provider sign-in"
+    );
+    await vi.advanceTimersByTimeAsync(5_000);
+    await rejection;
   });
 
   it("calls sidebar resetToDefault when 'Reset sidebar to default' is selected", async () => {
     const previous = mockCompanyContext.selectedCompanyId;
-    mockCompanyContext.selectedCompanyId = "11111111-1111-1111-1111-111111111111";
+    mockCompanyContext.selectedCompanyId =
+      "11111111-1111-1111-1111-111111111111";
     try {
       const user = userEvent.setup();
       renderWithProviders(<UserMenu />);
-      await user.click(await screen.findByRole("button", { name: /account menu/i }));
       await user.click(
-        await screen.findByRole("menuitem", { name: /reset sidebar to default/i }),
+        await screen.findByRole("button", { name: /account menu/i })
+      );
+      await user.click(
+        await screen.findByRole("menuitem", {
+          name: /reset sidebar to default/i,
+        })
       );
       expect(resetSidebar).toHaveBeenCalledTimes(1);
     } finally {

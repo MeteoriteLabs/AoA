@@ -115,6 +115,13 @@ export async function testEnvironment(
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
+  const configuredOpenAiApiKey =
+    typeof env.OPENAI_API_KEY === "string" && env.OPENAI_API_KEY.trim().length > 0
+      ? env.OPENAI_API_KEY.trim()
+      : null;
+  const remoteCodexHome = targetIsRemote
+    ? `${adapterExecutionTargetRemoteCwd(target, cwd).replace(/\/+$/, "")}/.aoa-codex-home`
+    : null;
   const runtimeEnv = ensurePathInEnv({ ...(targetIsRemote ? {} : process.env), ...env });
   try {
     await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv, {
@@ -146,13 +153,24 @@ export async function testEnvironment(
     ...(isNonEmpty(env.CODEX_HOME) ? { CODEX_HOME: env.CODEX_HOME } : {}),
   };
   const sharedAuthPath = path.join(resolveSharedCodexHomeDir(authSourceEnv), "auth.json");
-  const sharedAuthReady = await fs.stat(sharedAuthPath).then((stat) => stat.isFile()).catch(() => false);
+  // A host-side subscription file is not remote authentication evidence: AOA
+  // deliberately never transfers it to a sandbox/container target.
+  const sharedAuthReady = targetIsRemote
+    ? false
+    : await fs.stat(sharedAuthPath).then((stat) => stat.isFile()).catch(() => false);
   if (isNonEmpty(configOpenAiKey)) {
     checks.push({
       code: "codex_openai_api_key_present",
       level: "info",
       message: "OPENAI_API_KEY is set for Codex authentication.",
       detail: "Detected in adapter config env.",
+    });
+  } else if (targetIsRemote) {
+    checks.push({
+      code: "codex_remote_api_key_required",
+      level: "error",
+      message: "Remote Codex verification requires an explicit per-agent OPENAI_API_KEY.",
+      hint: "Configure OPENAI_API_KEY for this agent. Personal subscription credentials are not transferred to remote execution targets.",
     });
   } else if (sharedAuthReady) {
     checks.push({
@@ -176,7 +194,69 @@ export async function testEnvironment(
     });
   }
 
+  // Run this independently of commandLooksLike(). A custom wrapper must not
+  // bypass stale remote auth/config cleanup or make a host subscription look
+  // usable on the target.
+  let remotePreflightOk = true;
+  if (targetIsRemote && remoteCodexHome) {
+    const quotedRemoteCodexHome = shellDoubleQuote(remoteCodexHome);
+    try {
+      const preflight = await runAdapterExecutionTargetProcess(
+        target!,
+        {
+          runId: `${runId}-auth-preflight`,
+          command: "true",
+          args: [],
+          cwd,
+          env: { ...env, CODEX_HOME: remoteCodexHome },
+          unsetEnvKeys: ["OPENAI_API_KEY"],
+          runtimeCommandSpec: {
+            command: "true",
+            installCommand: [
+              `mkdir -p ${quotedRemoteCodexHome}`,
+              `rm -f ${quotedRemoteCodexHome}/auth.json ${quotedRemoteCodexHome}/config.toml`,
+              !configuredOpenAiApiKey
+                ? `echo "[aoa] Remote Codex verification requires an explicit per-agent OPENAI_API_KEY; subscription credentials are not transferred to remote targets." >&2; exit 78`
+                : null,
+              SANDBOX_INSTALL_COMMAND,
+              `printf '%s' "$OPENAI_API_KEY" | codex login --with-api-key`,
+            ].filter(Boolean).join("\n"),
+          },
+          timeoutSec: 45,
+          graceSec: 5,
+          onLog: async () => {},
+        },
+      );
+      remotePreflightOk = !preflight.timedOut && (preflight.exitCode ?? 1) === 0;
+      checks.push(
+        remotePreflightOk
+          ? {
+              code: "codex_remote_auth_preflight_passed",
+              level: "info",
+              message: "Remote Codex authentication was provisioned from the explicit API key.",
+            }
+          : {
+              code: "codex_remote_auth_preflight_failed",
+              level: "error",
+              message: "Remote Codex authentication preflight failed.",
+              detail: summarizeProbeDetail(preflight.stdout, preflight.stderr, null),
+              hint: "Configure a valid per-agent OPENAI_API_KEY and retry.",
+            },
+      );
+    } catch (err) {
+      remotePreflightOk = false;
+      checks.push({
+        code: "codex_remote_auth_preflight_failed",
+        level: "error",
+        message: "Remote Codex authentication preflight failed.",
+        detail: err instanceof Error ? err.message : String(err),
+        hint: "Verify the remote execution target and configure a valid per-agent OPENAI_API_KEY.",
+      });
+    }
+  }
+
   const canRunProbe =
+    remotePreflightOk &&
     checks.every((check) => check.code !== "codex_cwd_invalid" && check.code !== "codex_command_unresolvable");
   if (canRunProbe) {
     if (!commandLooksLike(command, "codex")) {
@@ -229,13 +309,8 @@ export async function testEnvironment(
       // Do NOT fall back to the ambient process.env.OPENAI_API_KEY: agent runs strip
       // that key, so materializing it here would let "Test environment" report a
       // passing connection while the saved agent immediately runs without auth.
-      const configuredOpenAiApiKey =
-        typeof env.OPENAI_API_KEY === "string" && env.OPENAI_API_KEY.trim().length > 0
-          ? env.OPENAI_API_KEY.trim()
-          : null;
-
       const managedCodexHome = targetIsRemote
-        ? `${adapterExecutionTargetRemoteCwd(target, cwd).replace(/\/+$/, "")}/.aoa-codex-home`
+        ? remoteCodexHome!
         : await prepareManagedCodexHome(
             authSourceEnv,
             () => {},
@@ -249,14 +324,21 @@ export async function testEnvironment(
             { apiKey: configuredOpenAiApiKey },
           );
       const probeEnv = { ...env, CODEX_HOME: managedCodexHome };
+      const quotedRemoteCodexHome = shellDoubleQuote(managedCodexHome);
       const runtimeCommandSpec = targetIsRemote
         ? {
             command,
             installCommand: [
-              `mkdir -p ${shellDoubleQuote(managedCodexHome)}`,
+              // A remote target may retain files between probes. Scrub first so
+              // revoking an AOA credential cannot leave an old login active.
+              `mkdir -p ${quotedRemoteCodexHome}`,
+              `rm -f ${quotedRemoteCodexHome}/auth.json ${quotedRemoteCodexHome}/config.toml`,
+              !configuredOpenAiApiKey
+                ? `echo "[aoa] Remote Codex verification requires an explicit per-agent OPENAI_API_KEY; subscription credentials are not transferred to remote targets." >&2; exit 78`
+                : null,
               SANDBOX_INSTALL_COMMAND,
-              `if [ -n "$OPENAI_API_KEY" ]; then printf '%s' "$OPENAI_API_KEY" | codex login --with-api-key; fi`,
-            ].join("\n"),
+              `printf '%s' "$OPENAI_API_KEY" | codex login --with-api-key`,
+            ].filter(Boolean).join("\n"),
           }
         : null;
 

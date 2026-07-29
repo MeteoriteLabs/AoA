@@ -55,7 +55,7 @@ API: http://127.0.0.1:3110/api
 - Secret access audit rows require valid referenced heartbeat runs when `heartbeatRunId` is provided. Direct low-level runtime smoke tests must create/use a real heartbeat run row, or call through the normal heartbeat path.
 - The product-level process-adapter smoke emitted harmless stderr from the remote shell setup: `source: not found`. The E2B environment defaulted to `sh`; Codex/Claude-style adapter runs should use `bash` in the E2B environment config or the runtime wrapper should avoid `source` under `sh`.
 - `process` is the right first E2B heartbeat smoke because it proves the AoA runtime plumbing without depending on AI CLI install/auth.
-- Codex/Claude provider-sandbox readiness is now covered by focused adapter tests: provider-sandbox commands use runtime install wrapping, Codex receives sandbox-local `CODEX_HOME`, and Claude preserves API-key env through the remote wrapper.
+- Codex/Claude provider-sandbox readiness is now covered by focused adapter tests: provider-sandbox commands use runtime install wrapping, Codex receives a sandbox-local `CODEX_HOME` that is scrubbed before explicit API-key login, and Claude preserves API-key env through the remote wrapper. Remote Codex MCP execution remains fail-closed until sanitized config and bridge provisioning are implemented inside the target.
 
 ## Bugs Found And Fixed
 

@@ -1,9 +1,8 @@
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { ChevronLeft } from "lucide-react";
+import { ChevronLeft, LogOut } from "lucide-react";
 import type { OnboardingJourney, OnboardingState } from "@armyofagents/shared";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { ConstellationBg } from "./motion";
 import {
   resolveNextStep,
   ONBOARDING_REGISTRY,
@@ -33,10 +32,14 @@ export type FlowEngineProps = {
   registry?: StepDefinition[];
   onFinished?: () => void;
   onBack?: () => void;
+  onSwitchAccount?: () => void;
+  isSwitchingAccount?: boolean;
+  switchAccountError?: string | null;
 };
 
 /**
- * Shared dark chrome shell: `.onboarding-dark` scope + drifting constellation.
+ * Shared dark chrome shell. The standalone route owns one vertical scroller so
+ * long verification and authentication errors always remain reachable.
  * Exported so non-FlowEngine onboarding surfaces (e.g. the org-only branch in
  * `pages/OnboardingFlow.tsx`) render the same chrome instead of hand-duplicating
  * it.
@@ -49,16 +52,23 @@ export type FlowEngineProps = {
  * `fill` swaps to `min-h-full` (fills the available height, still grows with
  * content) so `<main>` stays the single scroll container.
  */
-export function DarkShell({ children, fill = false }: { children: React.ReactNode; fill?: boolean }) {
+export function DarkShell({
+  children,
+  fill = false,
+}: {
+  children: React.ReactNode;
+  fill?: boolean;
+}) {
   return (
     <div
       data-aoa-onboarding-theme="dark"
       className={cn(
         "onboarding-dark relative w-full overflow-x-hidden bg-background text-foreground [color-scheme:dark]",
-        fill ? "min-h-full" : "h-screen min-h-screen overflow-y-auto [height:100dvh]",
+        fill
+          ? "min-h-full"
+          : "h-[100dvh] min-h-0 overflow-y-auto overscroll-y-contain [scrollbar-gutter:stable]"
       )}
     >
-      <ConstellationBg />
       {children}
     </div>
   );
@@ -85,18 +95,53 @@ export function FlowEngine({
   registry = ONBOARDING_REGISTRY,
   onFinished,
   onBack,
+  onSwitchAccount,
+  isSwitchingAccount = false,
+  switchAccountError,
 }: FlowEngineProps) {
   const [completed, setCompleted] = useState<OnboardingState[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [progressLoading, setProgressLoading] = useState(true);
   const [backStepId, setBackStepId] = useState<string | null>(null);
   const finishedRef = useRef(false);
   const companyIdRef = useRef(companyId);
+  const loadGenerationRef = useRef(0);
+  const recoveryHeadingRef = useRef<HTMLHeadingElement>(null);
   companyIdRef.current = companyId;
 
   const load = useCallback(async () => {
     const requestedCompanyId = companyId;
-    const p = await api.getProgress(requestedCompanyId);
     if (companyIdRef.current !== requestedCompanyId) return;
-    setCompleted(p?.completedStates ?? ["AUTHENTICATED"]);
+    const generation = ++loadGenerationRef.current;
+    setProgressLoading(true);
+    try {
+      const p = await api.getProgress(requestedCompanyId);
+      if (
+        companyIdRef.current !== requestedCompanyId ||
+        loadGenerationRef.current !== generation
+      )
+        return;
+      setCompleted(p?.completedStates ?? ["AUTHENTICATED"]);
+      setLoadError(null);
+    } catch (error) {
+      if (
+        companyIdRef.current !== requestedCompanyId ||
+        loadGenerationRef.current !== generation
+      )
+        return;
+      setLoadError(
+        error instanceof Error
+          ? error.message
+          : "We couldn't load your onboarding progress."
+      );
+    } finally {
+      if (
+        companyIdRef.current === requestedCompanyId &&
+        loadGenerationRef.current === generation
+      ) {
+        setProgressLoading(false);
+      }
+    }
   }, [api, companyId]);
 
   useEffect(() => {
@@ -106,8 +151,14 @@ export function FlowEngine({
     void load();
   }, [load]);
 
+  useEffect(() => {
+    if (loadError) recoveryHeadingRef.current?.focus();
+  }, [loadError]);
+
   const ctx: StepContext | null =
-    completed === null ? null : { userId, companyId, journey, completedStates: completed };
+    completed === null
+      ? null
+      : { userId, companyId, journey, completedStates: completed };
   const applicableSteps = ctx
     ? registry
         .filter((candidate) => candidate.journeys.includes(ctx.journey))
@@ -116,7 +167,8 @@ export function FlowEngine({
     : [];
   const nextStep = ctx ? resolveNextStep(registry, ctx) : null;
   const step = backStepId
-    ? (applicableSteps.find((candidate) => candidate.id === backStepId) ?? nextStep)
+    ? applicableSteps.find((candidate) => candidate.id === backStepId) ??
+      nextStep
     : nextStep;
 
   useEffect(() => {
@@ -135,7 +187,9 @@ export function FlowEngine({
 
   const handleBack = useCallback(() => {
     if (!ctx || !step) return;
-    const currentIndex = applicableSteps.findIndex((candidate) => candidate.id === step.id);
+    const currentIndex = applicableSteps.findIndex(
+      (candidate) => candidate.id === step.id
+    );
     const previous = applicableSteps
       .slice(0, currentIndex)
       .reverse()
@@ -147,10 +201,74 @@ export function FlowEngine({
     onBack?.();
   }, [applicableSteps, ctx, onBack, step]);
 
-  if (!ctx) {
+  if (loadError) {
     return (
       <DarkShell>
-        <div className="relative z-10 flex min-h-screen items-center justify-center px-6">
+        <div className="relative z-10 flex min-h-[100dvh] items-center justify-center px-4 py-16 sm:px-6">
+          <div
+            className="w-full max-w-md rounded-xl border border-border bg-card p-5 text-center"
+            aria-busy={progressLoading}
+          >
+            <h1
+              ref={recoveryHeadingRef}
+              tabIndex={-1}
+              className="text-lg font-semibold text-text outline-none"
+            >
+              We couldn't load onboarding
+            </h1>
+            <p
+              className="mt-2 break-words text-sm text-destructive"
+              role="alert"
+            >
+              {loadError}
+            </p>
+            <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:justify-center">
+              <Button
+                type="button"
+                disabled={progressLoading}
+                onClick={() => void load()}
+              >
+                {progressLoading ? "Trying again…" : "Try again"}
+              </Button>
+              {onSwitchAccount && (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  disabled={isSwitchingAccount}
+                  onClick={onSwitchAccount}
+                >
+                  {isSwitchingAccount ? "Signing out…" : "Switch account"}
+                </Button>
+              )}
+            </div>
+            {switchAccountError && (
+              <p className="mt-3 text-xs text-destructive" role="alert">
+                {switchAccountError}
+              </p>
+            )}
+          </div>
+        </div>
+      </DarkShell>
+    );
+  }
+
+  if (progressLoading || !ctx) {
+    return (
+      <DarkShell>
+        {onSwitchAccount && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="fixed right-4 top-4 z-20 gap-1.5 text-dim hover:bg-white/5 hover:text-text"
+            disabled={isSwitchingAccount}
+            onClick={onSwitchAccount}
+          >
+            <LogOut className="h-3.5 w-3.5" aria-hidden />
+            {isSwitchingAccount ? "Signing out…" : "Switch account"}
+          </Button>
+        )}
+        <div className="relative z-10 flex min-h-[100dvh] items-center justify-center px-6">
           <p className="text-sm text-dim">Loading…</p>
         </div>
       </DarkShell>
@@ -159,7 +277,20 @@ export function FlowEngine({
   if (!step) {
     return (
       <DarkShell>
-        <div className="relative z-10 flex min-h-screen items-center justify-center px-6">
+        {onSwitchAccount && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="fixed right-4 top-4 z-20 gap-1.5 text-dim hover:bg-white/5 hover:text-text"
+            disabled={isSwitchingAccount}
+            onClick={onSwitchAccount}
+          >
+            <LogOut className="h-3.5 w-3.5" aria-hidden />
+            {isSwitchingAccount ? "Signing out…" : "Switch account"}
+          </Button>
+        )}
+        <div className="relative z-10 flex min-h-[100dvh] items-center justify-center px-6">
           <div data-testid="onboarding-complete" className="text-sm text-dim">
             Onboarding complete.
           </div>
@@ -169,50 +300,89 @@ export function FlowEngine({
   }
 
   const Step = step.Component;
-  const stepNumber = applicableSteps.findIndex((candidate) => candidate.id === step.id) + 1;
+  const stepNumber =
+    applicableSteps.findIndex((candidate) => candidate.id === step.id) + 1;
   // Back renders only when a COMPLETED predecessor exists to walk back to.
   // On the first step the fallthrough (onBack → navigate "/") would bounce:
   // the index gate resolves the same journey and sends the user straight back
   // here — a flash-reload, not an exit.
   const hasCompletedPredecessor =
     stepNumber > 0 &&
-    applicableSteps.slice(0, stepNumber - 1).some((candidate) => candidate.isComplete(ctx));
+    applicableSteps
+      .slice(0, stepNumber - 1)
+      .some((candidate) => candidate.isComplete(ctx));
   // BASE = visible spine steps + the Map (founder only). The spine now counts
   // toward this continuous total, so the last spine step reads "N of BASE" and
   // the post-spine Map/In-flight surfaces continue the same count (see
   // onboardingProgress.ts).
-  const base = applicableSteps.length + (journeyHasFirstRunMap(journey) ? 1 : 0);
+  const base =
+    applicableSteps.length + (journeyHasFirstRunMap(journey) ? 1 : 0);
   // The chip hides on single-step journeys where it carries no information
   // (e.g. invited's lone human-profile step).
   const showStepChrome = stepNumber > 0 && base > 1;
 
   return (
     <DarkShell>
-      <div className="relative z-10 mx-auto flex min-h-full w-full max-w-xl flex-col px-4 py-5 sm:px-6 sm:py-8">
+      <div className="relative z-10 mx-auto flex min-h-[100dvh] w-full max-w-xl flex-col px-4 pb-[max(1.25rem,env(safe-area-inset-bottom))] sm:px-6 sm:pb-8">
         {/* Shared step chrome: one Back affordance + a stepper-pip / "Step N of
             M" position readout for every step (steps no longer render their
             own Back). */}
-        <div className="flex items-center justify-between gap-4">
-          <div className="min-w-[64px]">
+        <div
+          data-testid="onboarding-chrome"
+          className="sticky top-0 z-20 -mx-4 flex items-center justify-between gap-2 bg-background/95 px-4 pb-3 pt-[max(1.25rem,env(safe-area-inset-top))] backdrop-blur sm:-mx-6 sm:gap-4 sm:px-6 sm:pt-8"
+        >
+          <div className="min-w-10 sm:min-w-16">
             {hasCompletedPredecessor && (
               <Button
                 type="button"
                 variant="ghost"
                 size="sm"
-                className="-ml-2 gap-1 text-dim hover:bg-white/5 hover:text-text"
+                aria-label="Back"
+                className="gap-1 px-2 text-dim hover:bg-white/5 hover:text-text sm:-ml-2 sm:px-3"
                 onClick={handleBack}
               >
                 <ChevronLeft className="h-3.5 w-3.5" aria-hidden />
-                Back
+                <span className="hidden sm:inline">Back</span>
               </Button>
             )}
           </div>
           {showStepChrome && <StepPosition current={stepNumber} total={base} />}
+          <div className="flex min-w-10 justify-end sm:min-w-[104px]">
+            {onSwitchAccount && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                aria-label="Switch account"
+                className="gap-1.5 px-2 text-dim hover:bg-white/5 hover:text-text sm:-mr-2 sm:px-3"
+                disabled={isSwitchingAccount}
+                onClick={onSwitchAccount}
+              >
+                <LogOut className="h-3.5 w-3.5" aria-hidden />
+                <span className="hidden sm:inline">
+                  {isSwitchingAccount ? "Signing out…" : "Switch account"}
+                </span>
+              </Button>
+            )}
+          </div>
         </div>
+        {switchAccountError && (
+          <p className="mt-2 text-right text-xs text-destructive" role="alert">
+            {switchAccountError}
+          </p>
+        )}
         <div className="flex min-h-0 flex-1 flex-col">
-          <div className="my-auto w-full">
-            <Suspense fallback={<p className="text-center text-sm text-dim">Loading step…</p>}>
-              <Step ctx={ctx} onComplete={() => void handleComplete()} onBack={handleBack} />
+          <div className="w-full py-6 sm:py-10">
+            <Suspense
+              fallback={
+                <p className="text-center text-sm text-dim">Loading step…</p>
+              }
+            >
+              <Step
+                ctx={ctx}
+                onComplete={() => void handleComplete()}
+                onBack={handleBack}
+              />
             </Suspense>
           </div>
         </div>

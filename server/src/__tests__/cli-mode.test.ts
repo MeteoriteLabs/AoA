@@ -50,9 +50,9 @@ vi.mock("@armyofagents/adapter-codex-local/server", async (importOriginal) => {
 // Task 3 (MCP connectors → Commander): the claude_cli chat now resolves the
 // company's active connectors via resolveAgentConnectors before spawning. Stub
 // it so the DB-less cliModeService({} as any) tests never hit real DB I/O.
-// DEFAULT = no connectors → the claude wiring stays byte-identical to pre-Task-3
-// (the existing argv/writeFile/spawnEnv assertions below still hold). The
-// connector-delivery test overrides this per-test with mockResolvedValue.
+// DEFAULT = no connectors. The connector-delivery test overrides this per-test
+// with mockResolvedValue; governed CLI auth tests still verify that ambient
+// server secrets are removed from the spawn environment.
 vi.mock("../services/mcp-connectors-loader.js", () => ({
   resolveAgentConnectors: vi.fn(async () => ({ extraMcpServers: {}, connectorEnv: {} })),
 }));
@@ -1751,7 +1751,7 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
     }
   });
 
-  it("codex: NO connectors → externalServers is {} and the spawn env is byte-identical (full process.env + CODEX_HOME, no scrub, no connector token)", async () => {
+  it("codex: NO connectors → externalServers is {} and ambient AoA secrets are still scrubbed", async () => {
     const cp = await import("node:child_process");
     vi.mocked(cp.execSync).mockReturnValue("/usr/local/bin/codex\n" as any);
     const proc = makeOneShotProcess({ stdout: CODEX_TURN1_JSONL });
@@ -1766,8 +1766,8 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
       connectorEnv: {},
     } as any);
 
-    // With NO connectors the codex spawn keeps the FULL process.env — an AoA
-    // secret present here must SURVIVE (proves the no-scrub path is unchanged).
+    // Connector resolution must not control credential isolation: even with no
+    // connectors, an ambient AoA server secret must not reach the Codex child.
     const savedSecret = process.env.AOA_SECRETS_MASTER_KEY;
     process.env.AOA_SECRETS_MASTER_KEY = "present-when-no-connectors";
     try {
@@ -1787,7 +1787,7 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
       const env = (spawnOpts as any).env;
       expect(env.CODEX_HOME).toBe(codexDir);
       expect(env.AOA_MCP_NOTION_TOKEN).toBeUndefined(); // no connector token
-      expect(env.AOA_SECRETS_MASTER_KEY).toBe("present-when-no-connectors"); // full env, no scrub
+      expect(env.AOA_SECRETS_MASTER_KEY).toBeUndefined();
     } finally {
       if (savedSecret === undefined) delete process.env.AOA_SECRETS_MASTER_KEY;
       else process.env.AOA_SECRETS_MASTER_KEY = savedSecret;

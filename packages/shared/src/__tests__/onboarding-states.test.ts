@@ -5,6 +5,7 @@ import {
   FOUNDER_PHASE1_STATES,
   INVITED_PHASE1_STATES,
   orderedStatesFor,
+  parsePostAuthJourneyResult,
 } from "../onboarding.js";
 
 describe("onboarding states (Stage B / B2)", () => {
@@ -48,5 +49,115 @@ describe("onboarding states (Stage B / B2)", () => {
   it("orderedStatesFor picks the right sequence per journey", () => {
     expect(orderedStatesFor("founder")).toBe(FOUNDER_PHASE1_STATES);
     expect(orderedStatesFor("invited")).toBe(INVITED_PHASE1_STATES);
+  });
+});
+
+describe("post-auth journey contract", () => {
+  it("parses access-required without admitting company creation", () => {
+    expect(
+      parsePostAuthJourneyResult({
+        schemaVersion: 1,
+        journey: "access_required",
+        targetCompanyId: null,
+        pendingInvitations: [],
+        inviteToken: null,
+        canCreateCompany: false,
+        resumeFirstRunCompanyId: null,
+      })
+    ).toMatchObject({ journey: "access_required", canCreateCompany: false });
+  });
+
+  it("fails closed for the previous founder response without verified authority", () => {
+    expect(
+      parsePostAuthJourneyResult({
+        journey: "founder",
+        targetCompanyId: null,
+        pendingInvitations: [],
+        inviteToken: null,
+      })
+    ).toMatchObject({
+      schemaVersion: 1,
+      journey: "access_required",
+      canCreateCompany: false,
+    });
+  });
+
+  it("upgrades the previous founder response after independent admin verification", () => {
+    expect(
+      parsePostAuthJourneyResult(
+        {
+          journey: "founder",
+          targetCompanyId: null,
+          pendingInvitations: [],
+          inviteToken: null,
+        },
+        { legacyActorIsInstanceAdmin: true }
+      )
+    ).toMatchObject({
+      schemaVersion: 1,
+      journey: "founder",
+      canCreateCompany: true,
+    });
+  });
+
+  it("restores company creation for a previous returning response after admin verification", () => {
+    expect(
+      parsePostAuthJourneyResult(
+        {
+          journey: "returning",
+          targetCompanyId: "company-1",
+          pendingInvitations: [],
+          inviteToken: null,
+        },
+        { legacyActorIsInstanceAdmin: true }
+      )
+    ).toMatchObject({
+      schemaVersion: 1,
+      journey: "returning",
+      canCreateCompany: true,
+    });
+  });
+
+  it("keeps company creation disabled for an unverified previous returning response", () => {
+    expect(
+      parsePostAuthJourneyResult({
+        journey: "returning",
+        targetCompanyId: "company-1",
+        pendingInvitations: [],
+        inviteToken: null,
+      })
+    ).toMatchObject({
+      schemaVersion: 1,
+      journey: "returning",
+      canCreateCompany: false,
+    });
+  });
+
+  it("does not reinterpret an invalid versioned response as legacy", () => {
+    expect(() =>
+      parsePostAuthJourneyResult({
+        schemaVersion: 1,
+        journey: "founder",
+        targetCompanyId: null,
+        pendingInvitations: [],
+        inviteToken: null,
+        canCreateCompany: false,
+        resumeFirstRunCompanyId: null,
+      })
+    ).toThrow();
+  });
+
+  it("rejects impossible access-required targets", () => {
+    expect(() =>
+      parsePostAuthJourneyResult({
+        schemaVersion: 1,
+        journey: "access_required",
+        targetCompanyId: "company-1",
+        pendingInvitations: [],
+        inviteToken: null,
+        canCreateCompany: false,
+        resumeFirstRunCompanyId: null,
+      })
+    ).toThrow();
   });
 });

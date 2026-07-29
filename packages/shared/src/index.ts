@@ -346,7 +346,12 @@ export {
   providerToCrewAdapter,
   cliToolToProvider,
 } from "./provider-mapping.js";
-export type { CrewProvider, CommanderProvider, CliTool, CrewAdapterType } from "./provider-mapping.js";
+export type {
+  CrewProvider,
+  CommanderProvider,
+  CliTool,
+  CrewAdapterType,
+} from "./provider-mapping.js";
 
 export type {
   Company,
@@ -1276,8 +1281,15 @@ export {
   stringifyRoutineVariableValue,
   interpolateRoutineTemplate,
 } from "./routine-variables.js";
-export { normalizeAgentUrlKey, deriveAgentUrlKey, isUuidLike } from "./agent-url-key.js";
-export { deriveProjectUrlKey, normalizeProjectUrlKey } from "./project-url-key.js";
+export {
+  normalizeAgentUrlKey,
+  deriveAgentUrlKey,
+  isUuidLike,
+} from "./agent-url-key.js";
+export {
+  deriveProjectUrlKey,
+  normalizeProjectUrlKey,
+} from "./project-url-key.js";
 export {
   PROJECT_MENTION_SCHEME,
   buildProjectMentionHref,
@@ -1376,15 +1388,23 @@ export {
   INVITED_PHASE1_STATES,
   orderedStatesFor,
   FIRST_RUN_PERSONAS,
+  pendingInvitationSchema,
+  postAuthJourneyResultSchema,
+  parsePostAuthJourneyResult,
   type OnboardingJourney,
   type OnboardingState,
   type PendingInvitation,
   type PostAuthJourneyResult,
+  type ParsePostAuthJourneyResultOptions,
   type FirstRunPersona,
 } from "./onboarding.js";
 
 // Provider readiness (Provider Readiness initiative)
-export { PROBE_OUTCOMES, NON_BLOCKING_PROBE_OUTCOMES, isNonBlockingProbeOutcome } from "./probe-outcome.js";
+export {
+  PROBE_OUTCOMES,
+  NON_BLOCKING_PROBE_OUTCOMES,
+  isNonBlockingProbeOutcome,
+} from "./probe-outcome.js";
 export type { ProbeOutcome, NonBlockingProbeOutcome } from "./probe-outcome.js";
 export {
   ADAPTER_PROBE_RETRY_AFTER_SECONDS,
@@ -1393,4 +1413,5 @@ export {
   isReadinessStale,
 } from "./adapter-probe.js";
 export * from "./providers/provider-catalog.js";
+export * from "./provider-status.js";
 export * from "./mcp-connector-catalog.js";

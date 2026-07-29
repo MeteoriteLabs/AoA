@@ -117,7 +117,7 @@ export function InviteLandingPage() {
         // Human accepts continue into the guided invited onboarding (profile →
         // auto-admit/pending) instead of the inline "request submitted" screen.
         const companyId = (payload as { companyId?: string | null })?.companyId ?? "";
-        queryClient.removeQueries({ queryKey: ["onboarding", "journey"], exact: true });
+        queryClient.removeQueries({ queryKey: queryKeys.onboarding.journey });
         navigate(`/onboarding/join?company=${encodeURIComponent(companyId)}`, { replace: true });
         return;
       }

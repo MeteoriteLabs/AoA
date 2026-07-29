@@ -5,12 +5,53 @@ import { useCompany } from "@/context/CompanyContext";
 import type { OnboardingJourney, OnboardingState } from "@armyofagents/shared";
 import { authApi } from "../api/auth";
 import { queryKeys } from "../lib/queryKeys";
-import { advanceOnboarding, getOnboardingProgress, onboardingApi } from "../api/onboarding";
+import {
+  advanceOnboarding,
+  getOnboardingProgress,
+  onboardingApi,
+} from "../api/onboarding";
 import { DarkShell, FlowEngine } from "../onboarding/FlowEngine";
 import { ONBOARDING_STEPS } from "../onboarding/steps";
 import { OrgStep } from "../onboarding/steps/OrgStep";
 import { InvitedJoinTerminal } from "../onboarding/InvitedJoinTerminal";
 import { FirstRunHome } from "../onboarding/FirstRunHome";
+import { Button } from "../components/ui/button";
+import { LogOut } from "lucide-react";
+import { useAccountSwitch } from "../hooks/useAccountSwitch";
+
+function AccountSwitchControl({
+  onSwitch,
+  isSwitching,
+  error,
+}: {
+  onSwitch: () => void;
+  isSwitching: boolean;
+  error: string | null;
+}) {
+  return (
+    <div className="fixed right-4 top-4 z-50 flex flex-col items-end gap-2">
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="gap-1.5 text-dim hover:bg-white/5 hover:text-text"
+        disabled={isSwitching}
+        onClick={onSwitch}
+      >
+        <LogOut className="h-3.5 w-3.5" aria-hidden />
+        {isSwitching ? "Signing out…" : "Switch account"}
+      </Button>
+      {error && (
+        <p
+          className="max-w-xs text-right text-xs text-destructive"
+          role="alert"
+        >
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
 
 /**
  * The onboarding route (Stage B / B7). Wires the FlowEngine with the real
@@ -18,11 +59,16 @@ import { FirstRunHome } from "../onboarding/FirstRunHome";
  * layer), and the real progress API. Steps own their own advance; the engine
  * only reads + resolves.
  */
-export function OnboardingFlowPage({ journey }: { journey: OnboardingJourney }) {
+export function OnboardingFlowPage({
+  journey,
+}: {
+  journey: OnboardingJourney;
+}) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
   const { selectedCompanyId } = useCompany();
+  const accountSwitch = useAccountSwitch();
   const [invitedDone, setInvitedDone] = useState(false);
   // Founder: after the spine finishes, the persona fork + in-flight tail run
   // INLINE here (same dark flow) rather than on the dashboard — onboarding never
@@ -32,11 +78,12 @@ export function OnboardingFlowPage({ journey }: { journey: OnboardingJourney }) 
   const [spineDone, setSpineDone] = useState(false);
   const isNewFounderOrganization =
     journey === "founder" && searchParams.get("new") === "1";
-  const { data: session, isLoading } = useQuery({
+  const sessionQuery = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
     retry: false,
   });
+  const { data: session, isLoading } = sessionQuery;
   const userId = session?.user?.id;
   const profileProgressQuery = useQuery({
     queryKey: ["onboarding", "progress", "user-layer", userId],
@@ -53,10 +100,47 @@ export function OnboardingFlowPage({ journey }: { journey: OnboardingJourney }) 
     retry: false,
   });
 
-  if (isLoading || (isNewFounderOrganization && profileProgressQuery.isLoading)) {
+  if (
+    isLoading ||
+    (isNewFounderOrganization && profileProgressQuery.isLoading)
+  ) {
     return (
       <div className="onboarding-dark flex min-h-screen items-center justify-center bg-background">
+        <AccountSwitchControl
+          onSwitch={() => void accountSwitch.switchAccount()}
+          isSwitching={accountSwitch.isSwitching}
+          error={accountSwitch.error}
+        />
         <p className="text-sm text-dim">Loading…</p>
+      </div>
+    );
+  }
+
+  if (sessionQuery.error) {
+    return (
+      <div className="onboarding-dark flex min-h-screen items-center justify-center bg-background px-6">
+        <AccountSwitchControl
+          onSwitch={() => void accountSwitch.switchAccount()}
+          isSwitching={accountSwitch.isSwitching}
+          error={accountSwitch.error}
+        />
+        <div className="w-full max-w-md text-center">
+          <h1 className="text-lg font-semibold text-text">
+            We couldn't load your session
+          </h1>
+          <p className="mt-2 text-sm text-destructive" role="alert">
+            {sessionQuery.error instanceof Error
+              ? sessionQuery.error.message
+              : "Your session is unavailable."}
+          </p>
+          <Button
+            type="button"
+            className="mt-5"
+            onClick={() => void sessionQuery.refetch()}
+          >
+            Retry
+          </Button>
+        </div>
       </div>
     );
   }
@@ -69,11 +153,28 @@ export function OnboardingFlowPage({ journey }: { journey: OnboardingJourney }) 
   if (isNewFounderOrganization && profileProgressQuery.error) {
     return (
       <div className="onboarding-dark flex min-h-screen items-center justify-center bg-background px-6">
-        <p className="text-sm text-destructive">
-          {profileProgressQuery.error instanceof Error
-            ? profileProgressQuery.error.message
-            : "Failed to prepare organization setup"}
-        </p>
+        <AccountSwitchControl
+          onSwitch={() => void accountSwitch.switchAccount()}
+          isSwitching={accountSwitch.isSwitching}
+          error={accountSwitch.error}
+        />
+        <div className="w-full max-w-md text-center">
+          <h1 className="text-lg font-semibold text-text">
+            We couldn't prepare organization setup
+          </h1>
+          <p className="mt-2 text-sm text-destructive" role="alert">
+            {profileProgressQuery.error instanceof Error
+              ? profileProgressQuery.error.message
+              : "Failed to prepare organization setup"}
+          </p>
+          <Button
+            type="button"
+            className="mt-5"
+            onClick={() => void profileProgressQuery.refetch()}
+          >
+            Retry
+          </Button>
+        </div>
       </div>
     );
   }
@@ -95,10 +196,20 @@ export function OnboardingFlowPage({ journey }: { journey: OnboardingJourney }) 
     };
     return (
       <DarkShell>
+        <AccountSwitchControl
+          onSwitch={() => void accountSwitch.switchAccount()}
+          isSwitching={accountSwitch.isSwitching}
+          error={accountSwitch.error}
+        />
         <div className="relative z-10 flex min-h-screen items-center justify-center px-6 py-8">
           <OrgStep
             ctx={orgCtx}
-            onComplete={() => navigate("/onboarding", { replace: true })}
+            onComplete={() => {
+              queryClient.removeQueries({
+                queryKey: queryKeys.onboarding.journey,
+              });
+              navigate("/onboarding", { replace: true });
+            }}
             onBack={() => navigate("/", { replace: true })}
           />
         </div>
@@ -107,7 +218,16 @@ export function OnboardingFlowPage({ journey }: { journey: OnboardingJourney }) 
   }
 
   if (journey === "invited" && invitedDone) {
-    return <InvitedJoinTerminal />;
+    return (
+      <>
+        <AccountSwitchControl
+          onSwitch={() => void accountSwitch.switchAccount()}
+          isSwitching={accountSwitch.isSwitching}
+          error={accountSwitch.error}
+        />
+        <InvitedJoinTerminal />
+      </>
+    );
   }
 
   // Founder tail: the spine is done — run the persona fork + in-flight tail
@@ -120,6 +240,11 @@ export function OnboardingFlowPage({ journey }: { journey: OnboardingJourney }) 
     if (!selectedCompanyId) {
       return (
         <DarkShell>
+          <AccountSwitchControl
+            onSwitch={() => void accountSwitch.switchAccount()}
+            isSwitching={accountSwitch.isSwitching}
+            error={accountSwitch.error}
+          />
           <div className="relative z-10 flex min-h-screen items-center justify-center px-6">
             <p className="text-sm text-dim">Loading…</p>
           </div>
@@ -127,26 +252,38 @@ export function OnboardingFlowPage({ journey }: { journey: OnboardingJourney }) 
       );
     }
     return (
-      <FirstRunHome
-        companyId={selectedCompanyId}
-        onComplete={() => {
-          // Re-resolve the journey (now firstRunCompleted) so the index gate
-          // doesn't bounce us back into onboarding, then hand off to the Lobby.
-          queryClient.removeQueries({ queryKey: ["onboarding", "journey"], exact: true });
-          navigate("/", { replace: true });
-        }}
-      />
+      <>
+        <AccountSwitchControl
+          onSwitch={() => void accountSwitch.switchAccount()}
+          isSwitching={accountSwitch.isSwitching}
+          error={accountSwitch.error}
+        />
+        <FirstRunHome
+          companyId={selectedCompanyId}
+          onComplete={() => {
+            // Re-resolve the journey (now firstRunCompleted) so the index gate
+            // doesn't bounce us back into onboarding, then hand off to the Lobby.
+            queryClient.removeQueries({
+              queryKey: queryKeys.onboarding.journey,
+            });
+            navigate("/", { replace: true });
+          }}
+        />
+      </>
     );
   }
 
   return (
     <FlowEngine
       userId={userId}
-      companyId={journey === "invited" ? null : (selectedCompanyId ?? null)}
+      companyId={journey === "invited" ? null : selectedCompanyId ?? null}
       journey={journey}
       api={onboardingApi}
       registry={ONBOARDING_STEPS}
       onBack={() => navigate("/", { replace: true })}
+      onSwitchAccount={() => void accountSwitch.switchAccount()}
+      isSwitchingAccount={accountSwitch.isSwitching}
+      switchAccountError={accountSwitch.error}
       onFinished={() => {
         if (journey === "invited") {
           setInvitedDone(true);

@@ -1310,6 +1310,13 @@
       "when": 1785301279704,
       "tag": "0186_cold_psylocke",
       "breakpoints": true
+    },
+    {
+      "idx": 187,
+      "version": "7",
+      "when": 1785317675762,
+      "tag": "0187_luxuriant_newton_destine",
+      "breakpoints": true
     }
   ]
 }

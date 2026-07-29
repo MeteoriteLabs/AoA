@@ -155,6 +155,9 @@ export interface RecordReadinessInput {
   /** Raw probe checks. Redacted by this function before they reach the DB. */
   checks: readonly AdapterEnvironmentCheck[];
   testedByUserId?: string | null;
+  /** Additive during rollout; new probe writers always supply both fields. */
+  executionTargetId?: string | null;
+  sourceFingerprint?: string | null;
 }
 
 const OUTCOME_SET: ReadonlySet<string> = new Set(PROBE_OUTCOMES);
@@ -180,6 +183,9 @@ async function insertReadinessRow(
     outcome: ProbeOutcome;
     checks: RedactedCheck[];
     testedAt: Date;
+    executionTargetId: string | null;
+    sourceFingerprint: string | null;
+    staleAt: Date;
     testedByUserId: string | null;
   },
 ) {
@@ -208,6 +214,9 @@ async function insertReadinessRow(
         outcome: row.outcome,
         checks: row.checks,
         testedAt: row.testedAt,
+        executionTargetId: row.executionTargetId,
+        sourceFingerprint: row.sourceFingerprint,
+        staleAt: row.staleAt,
         testedByUserId: row.testedByUserId,
       },
     })
@@ -229,6 +238,7 @@ export async function recordReadiness(db: Db, input: RecordReadinessInput) {
     throw badRequest("Agent-scoped readiness requires an agentId (scope shape)");
   }
 
+  const testedAt = new Date();
   return insertReadinessRow(db, {
     companyId: input.companyId,
     providerId: input.providerId,
@@ -236,7 +246,10 @@ export async function recordReadiness(db: Db, input: RecordReadinessInput) {
     scopeId: input.scope.type === "agent" ? input.scope.agentId : null,
     outcome: input.outcome,
     checks: redactChecks(input.checks),
-    testedAt: new Date(),
+    testedAt,
+    executionTargetId: input.executionTargetId ?? null,
+    sourceFingerprint: input.sourceFingerprint ?? null,
+    staleAt: new Date(testedAt.getTime() + READINESS_STALE_MS),
     testedByUserId: input.testedByUserId ?? null,
   });
 }

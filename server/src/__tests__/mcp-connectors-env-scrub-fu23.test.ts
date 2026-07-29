@@ -106,7 +106,7 @@ describe("FU-23 — the aoa bridge keeps its minimal first-party env", () => {
     const env = buildMcpBridgeSpec(bridgeParams).env;
     // These would land in the on-disk MCP config file — deliberately excluded.
     expect(env.AOA_SECRETS_MASTER_KEY).toBeUndefined();
-    expect(env.OPENAI_API_KEY).toBeUndefined();
+    expect(env.OPENAI_API_KEY).toBe("");
     expect(env.BETTER_AUTH_SECRET).toBeUndefined();
     expect(env.AOA_AGENT_JWT_SECRET).toBeUndefined();
   });

@@ -49,7 +49,7 @@ describe("boardMutationGuard", () => {
     expect(res.status).toBe(204);
   });
 
-  it("allows an explicitly supplied board key without origin", async () => {
+  it("allows bearer board-key mutations without browser origin headers", async () => {
     const app = createApp("board", "board_key");
     const res = await request(app).post("/mutate").send({ ok: true });
     expect(res.status).toBe(204);

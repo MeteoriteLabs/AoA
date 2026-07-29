@@ -13,13 +13,19 @@
 
 import { and, desc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { agents, companyMcpConnectorAgents, companyMcpConnectors } from "@armyofagents/db";
+import {
+  agents,
+  companyMcpConnectorAgents,
+  companyMcpConnectors,
+  internalAgentConfig,
+} from "@armyofagents/db";
 import {
   computeConnectorDeliverability,
   type ConnectorDeliverabilitySummary,
 } from "./mcp-connectors.js";
 import { loadConfig } from "../config.js";
 import { secretService } from "./secrets.js";
+import { cliToolToAdapterType } from "./commander-verify.js";
 
 export type ConnectorInsert = {
   serverName: string;
@@ -148,6 +154,32 @@ export function mcpConnectorService(db: Db) {
         }
       }
 
+      // Commander receives every active company connector regardless of the
+      // per-agent junction table (D3). Include that implicit recipient here or
+      // Settings can claim a Codex-incompatible connector is healthy merely
+      // because nobody explicitly assigned it.
+      const [commanderConfig] = await db
+        .select({
+          agentId: internalAgentConfig.agentId,
+          cliTool: internalAgentConfig.cliTool,
+        })
+        .from(internalAgentConfig)
+        .where(eq(internalAgentConfig.companyId, companyId))
+        .limit(1);
+      const commanderRecipient = commanderConfig
+        ? {
+            // The linked agent can be temporarily null after deletion; the next
+            // Commander chat recreates it. Keep the implicit recipient visible
+            // meanwhile using a stable, company-scoped UI identity.
+            agentId: commanderConfig.agentId ?? `commander:${companyId}`,
+            agentName:
+              (commanderConfig.agentId
+                ? agentInfo.get(commanderConfig.agentId)?.name
+                : null) ?? "Commander",
+            adapterType: cliToolToAdapterType(commanderConfig.cliTool),
+          }
+        : null;
+
       const deploymentMode = loadConfig().deploymentMode;
       // F2 — ONE grouped, non-decrypting query so the deliverability preview
       // reflects real resolvability: a connector active with a bound secret that
@@ -173,17 +205,24 @@ export function mcpConnectorService(db: Db) {
             },
             deploymentMode,
             secretResolvable: r.secretRef ? resolvableSecretNames.has(r.secretRef) : undefined,
-            assignedAgents: enabledAgentIds.map((agentId) => {
-              const info = agentInfo.get(agentId);
-              return {
-                agentId,
-                // An assigned agent that no longer resolves (deleted between the
-                // link read and here) is named generically rather than dropped —
-                // it still cannot receive the connector.
-                agentName: info?.name ?? "Unknown agent",
-                adapterType: info?.adapterType,
-              };
-            }),
+            assignedAgents: [
+              ...enabledAgentIds
+                // If Commander was explicitly assigned too, evaluate that
+                // identity once with its actual Commander CLI runtime below.
+                .filter((agentId) => agentId !== commanderRecipient?.agentId)
+                .map((agentId) => {
+                  const info = agentInfo.get(agentId);
+                  return {
+                    agentId,
+                    // An assigned agent that no longer resolves (deleted between
+                    // the link read and here) is named generically rather than
+                    // dropped — it still cannot receive the connector.
+                    agentName: info?.name ?? "Unknown agent",
+                    adapterType: info?.adapterType,
+                  };
+                }),
+              ...(commanderRecipient ? [commanderRecipient] : []),
+            ],
           });
         return { ...r, enabledAgentIds, deliverability };
       });
