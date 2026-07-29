@@ -25,6 +25,7 @@ import { providerCredentialRoutes } from "./routes/provider-credentials.js";
 import { userProfileRoutes } from "./routes/user-profiles.js";
 import { operationsHealthRoutes } from "./routes/operations-health.js";
 import { companyRoutes } from "./routes/companies.js";
+import { organizationRoutes } from "./routes/organizations.js";
 import { agentRoutes } from "./routes/agents.js";
 import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
@@ -305,6 +306,7 @@ export async function createApp(
     }),
   );
   api.use("/companies", companyRoutes(db, { deploymentMode: opts.deploymentMode }));
+  api.use("/organizations", organizationRoutes(db));
   // Settings -> Providers. Path-mounted (mergeParams) so the provider endpoints
   // share one /companies/:companyId/providers prefix.
   api.use("/companies/:companyId/providers", providerRoutes(db));

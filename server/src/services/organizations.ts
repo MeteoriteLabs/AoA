@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { organizations, organizationMemberships } from "@armyofagents/db";
 import { DEFAULT_ORGANIZATION_ID, DEFAULT_ORGANIZATION_SLUG } from "@armyofagents/shared";
+import type { organizationAccessService } from "./organization-access.js";
 
 /** Lowercase kebab-case slug base; falls back to "org" when name has no [a-z0-9]. */
 export function slugifyOrganizationName(name: string): string {
@@ -92,4 +93,23 @@ export function organizationService(db: Db) {
       throw new Error("Unable to allocate unique organization slug");
     },
   };
+}
+
+/**
+ * Self-serve Organization creation (Phase 2, Task 6): any signed-in board user
+ * creates a fresh tenant and becomes its owner. Reuses this file's own
+ * `organizationService(db).create` for the row insert + slug de-dup — NOT
+ * passing `createdByUserId` here, since the owner-membership write goes
+ * through the injected `orgAccess.ensureOrgOwner` instead (idempotent /
+ * onConflictDoNothing-safe — see organization-access.ts — because P1's
+ * ensureRealOperator/backfill may also touch the same membership row).
+ */
+export async function createSelfServeOrganization(
+  db: Db,
+  input: { name: string; ownerUserId: string },
+  orgAccess: Pick<ReturnType<typeof organizationAccessService>, "ensureOrgOwner">,
+) {
+  const org = await organizationService(db).create({ name: input.name });
+  await orgAccess.ensureOrgOwner(org.id, input.ownerUserId);
+  return org;
 }
