@@ -454,7 +454,10 @@ describe("HomeBoard", () => {
       budgetTile.focus();
       await user.keyboard("{ArrowRight}");
 
-      expect(liveRegion).toHaveTextContent(/Budget moved to column 2, row 5/);
+      // Budget is last in the founder default order, at y:6 (row 7) — the
+      // five list widgets ahead of it now default to 2×2 (Task 4 sizing
+      // recalibration), so the board packs one row taller than before.
+      expect(liveRegion).toHaveTextContent(/Budget moved to column 2, row 7/);
 
       await user.keyboard("{Shift>}{ArrowRight}{/Shift}");
       expect(liveRegion).toHaveTextContent(/Budget resized to 2 by 1/);

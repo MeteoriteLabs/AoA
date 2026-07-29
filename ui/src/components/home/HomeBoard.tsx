@@ -124,7 +124,7 @@ export function HomeBoard({
             breakpoints={BREAKPOINTS}
             cols={COLS}
             layouts={layouts}
-            rowHeight={104}
+            rowHeight={120}
             margin={[12, 12]}
             compactor={verticalCompactor}
             dragConfig={{ enabled: editableNow, cancel: REMOVE_BUTTON_CANCEL_SELECTOR }}
