@@ -1,5 +1,6 @@
 import { eq, count, isNull, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
+import { DEFAULT_ORGANIZATION_ID } from "@armyofagents/shared";
 import { memoryFoldersService, seedCompanyRootFolder } from "./memory-folders.js";
 import { ensureInternalAgentConfig } from "./internal-agent/aoa-agents/ensure-internal-agent-config.js";
 import {
@@ -95,7 +96,7 @@ export function companyService(db: Db) {
           ? candidate.constraint_name
           : undefined;
 
-      if (candidate.code === "23505" && constraint === "companies_issue_prefix_idx") {
+      if (candidate.code === "23505" && constraint === "companies_org_issue_prefix_idx") {
         return true;
       }
 
@@ -106,7 +107,7 @@ export function companyService(db: Db) {
   }
 
   async function createCompanyWithUniquePrefix(
-    data: typeof companies.$inferInsert,
+    data: Omit<typeof companies.$inferInsert, "organizationId"> & { organizationId?: string },
     opts: CreateCompanyOptions = {},
   ) {
     const base = deriveIssuePrefixBase(data.name);
@@ -116,7 +117,13 @@ export function companyService(db: Db) {
       try {
         const rows = await db
           .insert(companies)
-          .values({ ...data, issuePrefix: candidate })
+          .values({
+            ...data,
+            // Self-hosted single-tenant + company-portability import land in the
+            // sentinel Organization unless a real org context is supplied.
+            organizationId: data.organizationId ?? DEFAULT_ORGANIZATION_ID,
+            issuePrefix: candidate,
+          })
           .returning();
         const company = rows[0];
         await seedCompanyRootFolder(memoryFoldersService(db), {
@@ -210,8 +217,10 @@ export function companyService(db: Db) {
         .where(eq(companies.id, id))
         .then((rows) => rows[0] ?? null),
 
-    create: async (data: typeof companies.$inferInsert, opts: CreateCompanyOptions = {}) =>
-      createCompanyWithUniquePrefix(data, opts),
+    create: async (
+      data: Omit<typeof companies.$inferInsert, "organizationId"> & { organizationId?: string },
+      opts: CreateCompanyOptions = {},
+    ) => createCompanyWithUniquePrefix(data, opts),
 
     update: (id: string, data: Partial<typeof companies.$inferInsert>) =>
       db
