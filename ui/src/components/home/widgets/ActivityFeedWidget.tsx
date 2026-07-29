@@ -2,7 +2,7 @@ import { Activity } from "lucide-react";
 import { useHomeSummary } from "../../../hooks/useHomeSummary";
 import { timeAgo } from "../../../lib/timeAgo";
 import { entityLink } from "../../../lib/activityFormat";
-import { formatAction, activityEntityName } from "../activityFormat";
+import { formatAction, activityEntityName, collapseActivity } from "../activityFormat";
 import { WidgetShell } from "./WidgetShell";
 import { WidgetEmpty, WidgetLoading } from "./WidgetStates";
 import { WidgetRowLink } from "./WidgetRowLink";
@@ -10,7 +10,7 @@ import type { WidgetProps } from "./types";
 
 export function ActivityFeedWidget({ companyId, editing }: WidgetProps) {
   const { data, isLoading, isError } = useHomeSummary(companyId);
-  const activity = data?.recentActivity ?? [];
+  const activity = collapseActivity(data?.recentActivity ?? []);
   return (
     <WidgetShell title="Today's activity" icon={Activity} to="/activity" editing={editing}>
       {isLoading ? (
@@ -32,6 +32,7 @@ export function ActivityFeedWidget({ companyId, editing }: WidgetProps) {
               <span className="min-w-0 flex-1 truncate">
                 <span className="text-muted-foreground">{formatAction(item)}</span>{" "}
                 <span className="font-medium">{activityEntityName(item)}</span>
+                {item.count > 1 && <span className="text-muted-foreground"> ×{item.count}</span>}
               </span>
               <span className="shrink-0 text-xs text-muted-foreground">{timeAgo(item.createdAt)}</span>
             </WidgetRowLink>
