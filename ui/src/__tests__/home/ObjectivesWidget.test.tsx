@@ -1,0 +1,24 @@
+import { screen } from "@testing-library/react";
+import { renderWithProviders, mockCompanyContext } from "../test-utils";
+import { ObjectivesWidget } from "../../components/home/widgets/ObjectivesWidget";
+
+vi.mock("../../context/CompanyContext", () => ({ useCompany: () => mockCompanyContext }));
+vi.mock("../../hooks/useHomeSummary", () => ({
+  useHomeSummary: () => ({ data: { goalProgress: [
+    { id: "g1", title: "Launch v1.1", status: "at_risk", totalTasks: 10, doneTasks: 7, inProgressTasks: 2, blockedTasks: 1, progressPercent: 70 },
+    { id: "g2", title: "No tasks goal", status: "active", totalTasks: 0, doneTasks: 0, inProgressTasks: 0, blockedTasks: 0, progressPercent: 0 },
+  ] }, isLoading: false }),
+}));
+
+describe("ObjectivesWidget", () => {
+  it("renders goals with the At Risk pill and task counts", () => {
+    renderWithProviders(<ObjectivesWidget companyId="co-1" role="founder" />);
+    expect(screen.getByText("Launch v1.1")).toBeInTheDocument();
+    expect(screen.getByText("At Risk")).toBeInTheDocument();
+    expect(screen.getByText("7/10 tasks")).toBeInTheDocument();
+  });
+  it("shows 'no tasks yet' instead of a 0% bar for a zero-task goal", () => {
+    renderWithProviders(<ObjectivesWidget companyId="co-1" role="founder" />);
+    expect(screen.getByText(/no tasks yet/i)).toBeInTheDocument();
+  });
+});
