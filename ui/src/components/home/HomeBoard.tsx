@@ -96,7 +96,20 @@ export function HomeBoard({
       </div>
 
       <div ref={containerRef}>
-        {mounted && (
+        {mounted && lg.length === 0 && (
+          // Plan 4 Task 6: every widget removed (in edit mode, or a saved
+          // empty layout on a later visit) — a plain, centered nudge rather
+          // than blank space. Points at whichever affordance is currently
+          // reachable: "Add widget" while editing at lg, "Edit board"
+          // otherwise (mirrors HomeBoardControls' own editableNow gating).
+          <div className="flex flex-col items-center justify-center gap-1 rounded-md border border-dashed border-border p-12 text-center">
+            <p className="text-sm font-medium">Your board is empty</p>
+            <p className="text-sm text-muted-foreground">
+              {editableNow ? "Use Add widget above to add one." : "Click Edit board above to add a widget."}
+            </p>
+          </div>
+        )}
+        {mounted && lg.length > 0 && (
           <Responsive
             width={width}
             breakpoints={BREAKPOINTS}

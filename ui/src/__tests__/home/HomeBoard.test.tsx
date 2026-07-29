@@ -165,6 +165,31 @@ describe("HomeBoard", () => {
     expect(headings).not.toContain("Approvals & questions");
   });
 
+  it("founder vs member default divergence: founder gets all 8, member gets the execution subset led by My tasks with no Budget/Approvals (Plan 4 Task 6)", async () => {
+    // The two tests above each prove one side independently; this one holds
+    // both roles side by side in a single assertion so a future change that
+    // drifts one default without the other fails here explicitly.
+    const { rerender } = renderWithProviders(<HomeBoardHarness companyId="co-1" role="founder" />);
+    expect(await screen.findByText("Ship it")).toBeInTheDocument();
+    const founderHeadings = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
+
+    rerender(<HomeBoardHarness companyId="co-1" role="team_member" />);
+    expect(await screen.findByText("Ship it")).toBeInTheDocument();
+    const memberHeadings = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
+
+    expect(founderHeadings).toHaveLength(8);
+    expect(memberHeadings).toHaveLength(6);
+    expect(memberHeadings.length).toBeLessThan(founderHeadings.length);
+    expect(memberHeadings[0]).toBe("My tasks");
+    expect(memberHeadings).not.toContain("Budget");
+    expect(memberHeadings).not.toContain("Approvals & questions");
+    // Every member widget is also on the founder board (execution subset,
+    // not a disjoint set).
+    for (const title of memberHeadings) {
+      expect(founderHeadings).toContain(title);
+    }
+  });
+
   it("renders a saved layout reconciled against the live registry (subset + reordered)", async () => {
     homeBoardLayoutMock.layout = [
       { i: "budget", x: 0, y: 0, w: 1, h: 1 },
@@ -234,6 +259,31 @@ describe("HomeBoard", () => {
 
       expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(7);
       expect(screen.queryByRole("heading", { level: 2, name: "Budget" })).not.toBeInTheDocument();
+    });
+
+    it("removing every widget shows a centered empty-board state, and the pinned header controls remain (Plan 4 Task 6)", async () => {
+      homeBoardLayoutMock.layout = [{ i: "budget", x: 0, y: 0, w: 1, h: 1 }];
+      renderWithProviders(<HomeBoardHarness companyId="co-1" role="founder" />);
+      expect(await screen.findByRole("heading", { level: 2, name: "Budget" })).toBeInTheDocument();
+
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Edit board" }));
+      await user.click(screen.getByLabelText("Remove Budget"));
+
+      expect(await screen.findByText("Your board is empty")).toBeInTheDocument();
+      expect(screen.getByText(/Use Add widget above/i)).toBeInTheDocument();
+      // The pinned header controls (from HomeBoardControls, a sibling of
+      // this empty grid) remain reachable — the empty state never takes the
+      // header with it.
+      expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Add widget" })).toBeInTheDocument();
+
+      // Re-adding a widget from the tray replaces the empty state with the grid again.
+      await user.click(screen.getByRole("button", { name: "Add widget" }));
+      const tray = screen.getByRole("menu", { name: "Add widget" });
+      await user.click(within(tray).getByRole("button", { name: "Budget" }));
+      expect(await screen.findByRole("heading", { level: 2, name: "Budget" })).toBeInTheDocument();
+      expect(screen.queryByText("Your board is empty")).not.toBeInTheDocument();
     });
 
     it("exiting edit mode after a change calls save with the updated (dirty) draft", async () => {
