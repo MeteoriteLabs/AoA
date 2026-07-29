@@ -13,27 +13,67 @@ vi.mock("../../api/suggestions", () => ({ suggestionsApi: { pending: vi.fn().moc
 vi.mock("../../context/DialogContext", () => ({ useDialog: () => ({}) }));
 vi.mock("../../context/ToastContext", () => ({ useToast: () => ({ pushToast: vi.fn() }) }));
 
+// Plan 2: data deps for the 4 new-data widgets (Budget + Approvals share the
+// dashboard summary query; My tasks needs at least one non-terminal issue so
+// it doesn't self-hide; Agents working now needs the live-count hook).
+vi.mock("../../api/dashboard", () => ({
+  dashboardApi: {
+    summary: vi.fn().mockResolvedValue({
+      costs: { monthSpendCents: 41200, monthBudgetCents: 200000, monthUtilizationPercent: 21 },
+      pendingApprovals: 1,
+    }),
+  },
+  homeApi: { summary: vi.fn() },
+}));
+vi.mock("../../api/work-questions", () => ({
+  workQuestionsApi: { list: vi.fn().mockResolvedValue([]) },
+}));
+vi.mock("../../api/issues", () => ({
+  issuesApi: {
+    list: vi.fn().mockResolvedValue([{ id: "t1", title: "Ship it", status: "in_progress", priority: "high" }]),
+  },
+}));
+vi.mock("../../hooks/useLiveAgentCount", () => ({ useLiveAgentCount: () => 2 }));
+
 describe("HomeBoard", () => {
-  it("renders all four widgets, each in its own error boundary, in the default order", () => {
+  it('renders the founder board: all 8 widgets, each in its own error boundary, in getDefaultLayout("founder") order', async () => {
     renderWithProviders(<HomeBoard companyId="co-1" role="founder" />);
+
+    // The query-backed widgets (My tasks, Budget, Approvals) render only after
+    // their mocked API calls resolve, so wait for the slowest one before
+    // asserting the full composition.
+    expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
     // Every widget renders (each self-hides when its data is empty, so this also
     // proves the board composed real content, not just headers).
-    expect(screen.getByText("Action Queue")).toBeInTheDocument();
-    expect(screen.getByText("Suggestions")).toBeInTheDocument();
-    expect(screen.getByText("Active Goals")).toBeInTheDocument();
-    expect(screen.getByText("Today's Activity")).toBeInTheDocument();
-
-    // Section order matches getDefaultLayout: action-queue, suggestions, objectives, activity-feed.
     const headings = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
-    expect(headings).toEqual(["Action Queue", "Suggestions", "Active Goals", "Today's Activity"]);
+    expect(headings).toEqual([
+      "Action Queue",
+      "Approvals & questions",
+      "Agents working now",
+      "Today's Activity",
+      "Active Goals",
+      "Suggestions",
+      "My tasks",
+      "Budget",
+    ]);
   });
 
-  it("skips unknown widget keys without crashing (defensive)", () => {
-    // A populated board still renders even though getDefaultLayout only yields
-    // registered keys; getWidget returns undefined for anything unknown and the
-    // board returns null for it (verified in registry.test.ts).
+  it("renders the member board: execution subset led by My tasks, no Budget/Approvals", async () => {
     renderWithProviders(<HomeBoard companyId="co-1" role="team_member" />);
-    expect(screen.getByText("Active Goals")).toBeInTheDocument();
+
+    expect(await screen.findByText("Ship it")).toBeInTheDocument();
+
+    const headings = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
+    expect(headings).toEqual([
+      "My tasks",
+      "Action Queue",
+      "Active Goals",
+      "Today's Activity",
+      "Suggestions",
+      "Agents working now",
+    ]);
+    expect(headings).not.toContain("Budget");
+    expect(headings).not.toContain("Approvals & questions");
   });
 });

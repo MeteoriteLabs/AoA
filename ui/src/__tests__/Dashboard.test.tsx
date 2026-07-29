@@ -153,6 +153,16 @@ vi.mock("../hooks/useTeamAccess", () => ({
 
 vi.mock("../api/dashboard", () => ({
   homeApi: { summary: vi.fn().mockResolvedValue(mockHomeSummary) },
+  dashboardApi: {
+    summary: vi.fn().mockResolvedValue({
+      costs: { monthSpendCents: 0, monthBudgetCents: 0, monthUtilizationPercent: 0 },
+      pendingApprovals: 0,
+    }),
+  },
+}));
+
+vi.mock("../api/work-questions", () => ({
+  workQuestionsApi: { list: vi.fn().mockResolvedValue([]) },
 }));
 
 vi.mock("../api/auth", () => ({
@@ -204,6 +214,10 @@ describe("Dashboard", () => {
     expect(screen.getByText("Flag launch risk")).toBeInTheDocument();
     expect(screen.getByText("+ New Task")).toBeInTheDocument();
     await waitFor(() => expect(suggestionsApiMock.detect).toHaveBeenCalledWith("comp-1"));
+
+    // Plan 2: the founder board also renders the new data widgets — the
+    // live-agent-count widget is mocked to 2, so it always renders.
+    expect(await screen.findByText("Agents working now")).toBeInTheDocument();
   });
 
   it("does not fire suggestions detect for non-founders (server founder-gates it)", async () => {
