@@ -43,10 +43,12 @@ const apiSpies = vi.hoisted(() => ({
   layoutGet: vi.fn(),
   layoutSave: vi.fn(),
   layoutReset: vi.fn(),
+  discussionsList: vi.fn(),
+  memoryListPending: vi.fn(),
 }));
 
 vi.mock("../../context/CompanyContext", () => ({ useCompany: () => mockCompanyContext }));
-vi.mock("../../context/DialogContext", () => ({ useDialog: () => ({}) }));
+vi.mock("../../context/DialogContext", () => ({ useDialog: () => ({ openDiscussionCapture: vi.fn() }) }));
 vi.mock("../../context/ToastContext", () => ({ useToast: () => ({ pushToast: vi.fn() }) }));
 vi.mock("../../lib/timeAgo", () => ({ timeAgo: () => "2m ago" }));
 
@@ -80,6 +82,12 @@ vi.mock("../../api/home-board-layout", () => ({
     save: apiSpies.layoutSave,
     reset: apiSpies.layoutReset,
   },
+}));
+vi.mock("../../api/discussions", () => ({
+  discussionsApi: { list: apiSpies.discussionsList },
+}));
+vi.mock("../../api/memory", () => ({
+  memoryApi: { listPending: apiSpies.memoryListPending },
 }));
 
 /** Mirrors HomeBoard.test.tsx's harness: Dashboard owns ONE useBoardEdit and
@@ -131,9 +139,11 @@ describe("HomeBoard under React.StrictMode", () => {
     apiSpies.suggestionsPending.mockResolvedValue([]);
     apiSpies.suggestionsDetect.mockResolvedValue({ ok: true });
     apiSpies.liveRunsForCompany.mockResolvedValue([]);
-    apiSpies.layoutGet.mockResolvedValue(null); // no saved layout -> founder role default (8 widgets)
+    apiSpies.layoutGet.mockResolvedValue(null); // no saved layout -> founder role default (10 widgets)
     apiSpies.layoutSave.mockResolvedValue({ layout: [], schemaVersion: 1 });
     apiSpies.layoutReset.mockResolvedValue({ ok: true });
+    apiSpies.discussionsList.mockResolvedValue({ discussions: [], total: 0, limit: 0, offset: 0 });
+    apiSpies.memoryListPending.mockResolvedValue({ items: [], versions: [], archives: [], totalCount: 0 });
   });
 
   it("mounts cleanly with no spurious save, and a no-op edit round-trip never saves", async () => {
@@ -143,12 +153,12 @@ describe("HomeBoard under React.StrictMode", () => {
       </React.StrictMode>,
     );
 
-    // The board renders once settled: all 8 founder widgets, each in its own
+    // The board renders once settled: all 10 founder widgets, each in its own
     // heading (proves real content composed, not just StrictMode not
     // crashing).
     expect(await screen.findByText("Ship it")).toBeInTheDocument();
     const headings = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
-    expect(headings).toHaveLength(8);
+    expect(headings).toHaveLength(10);
 
     // Not editing: save is NEVER called on mount, despite StrictMode's
     // mount->cleanup->mount of useBoardEdit/useHomeBoardLayout.
@@ -174,7 +184,7 @@ describe("HomeBoard under React.StrictMode", () => {
     expect(await screen.findByText("Ship it")).toBeInTheDocument();
     // Let the board settle fully (every widget's own query resolved) before
     // reading final call counts.
-    await waitFor(() => expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(8));
+    await waitFor(() => expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(10));
 
     // homeApi.summary is shared by 3 widgets (Action queue, Objectives,
     // Today's activity) via the SAME queryKeys.home(companyId) cache entry;
@@ -202,5 +212,8 @@ describe("HomeBoard under React.StrictMode", () => {
     // The board's own persisted-layout query (useHomeBoardLayout, underneath
     // useBoardEdit) — the literal "query dedup" the plan calls out.
     expect(apiSpies.layoutGet.mock.calls.length).toBeLessThanOrEqual(1);
+    // Plan 6: the two new Task 5/6 widgets, each with their own single query.
+    expect(apiSpies.discussionsList.mock.calls.length).toBeLessThanOrEqual(1);
+    expect(apiSpies.memoryListPending.mock.calls.length).toBeLessThanOrEqual(1);
   });
 });

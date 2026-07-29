@@ -137,13 +137,15 @@ describe("widget completeness: every registered widget survives empty data", () 
     });
   }
 
-  it("covers all 8 registered widgets (guards against a silently-shrunk registry)", () => {
+  it("covers all 10 registered widgets (guards against a silently-shrunk registry)", () => {
     expect(listWidgets().map((def) => def.key).sort()).toEqual([
       "action-queue",
       "activity-feed",
       "agents-now",
       "approvals",
       "budget",
+      "discussions",
+      "memory-review",
       "my-tasks",
       "objectives",
       "suggestions",

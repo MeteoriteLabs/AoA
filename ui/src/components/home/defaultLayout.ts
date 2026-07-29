@@ -32,15 +32,49 @@ import type { WidgetKey } from "./widgets/types";
 // same-size 2x2s can't pair evenly against a single 1x1 leftover).
 // If HOME_BOARD_ALLOWED_SIZES changes again, re-verify with buildDefaultLg
 // before re-deriving this reasoning from scratch.
-// Plan 6 Task 5 (2026-07-29): appended "discussions" to both roles' end.
-// Plan 6 Task 6 (2026-07-29): appended "memory-review" to FOUNDER only
-// (matching approvals/budget — member never gets it, per the widget's
-// requiresFounder flag). Packing/ordering for the resulting 10-widget
-// founder / 7-widget member board is re-verified against buildDefaultLg
-// holistically in Task 7, now that the final widget set for this plan is
-// known. Do not re-derive packing reasoning from this intermediate state.
-const FOUNDER: WidgetKey[] = ["action-queue", "approvals", "agents-now", "activity-feed", "objectives", "suggestions", "my-tasks", "budget", "discussions", "memory-review"];
-const MEMBER: WidgetKey[] = ["my-tasks", "action-queue", "objectives", "activity-feed", "suggestions", "agents-now", "discussions"];
+// Plan 6 Task 5 added "discussions" (2x2, both roles); Task 6 added
+// "memory-review" (2x2, FOUNDER only — matches approvals/budget; member never
+// gets it, per the widget's requiresFounder flag). Task 7 (2026-07-29)
+// re-verified packing against buildDefaultLg with a throwaway script that
+// prints the actual grid (not hand-derived) now that the widget set for this
+// plan is final, and retuned BOTH orders — each via a single minimal
+// relocation, not a redesign:
+//
+//   - FOUNDER (10 widgets: 7×2x2 + 3×1x1 stats). Naively appending
+//     discussions/memory-review straight after "budget" (the Task 5/6
+//     intermediate order) put budget on the same shelf as "discussions" (a
+//     2x2), forcing a second interior shadow gap (3 cells: budget's own row
+//     is only h:1 but its 2x2 shelf-mate is h:2) on top of the pre-existing,
+//     already-accepted action-queue/approvals/agents-now shadow (2 cells).
+//     Moving ONLY "budget" to the very end (nothing else reordered — action-
+//     queue/approvals/agents-now keep their original Plan-5 first-row
+//     positions) removes that second shadow entirely: the 7 list widgets now
+//     pair up perfectly (0 waste across 3 shelves), leaving just the
+//     unavoidable action-queue-shelf shadow (2 cells) + budget's own trailing
+//     row, now alone with nothing left to pair against (3 cells). Result: 9
+//     rows / 5 wasted cells of 36 (down from 10 rows / 9 wasted of 40 for the
+//     intermediate order). This is the mathematical floor for a 7×2x2 + 3×1x1
+//     mix under this next-fit packer — splitting the 3 stats differently
+//     (e.g. 2 riding with the odd-one-out 2x2, 1 alone) always sums to the
+//     same 5, so this is a genuine optimum, not a guess, and it's the
+//     cheapest path there (one relocation, zero UX-priority tradeoff — unlike
+//     the Plan-5 "stats-first" option below, action-queue/approvals stay put).
+//   - MEMBER (7 widgets: 6×2x2 + 1×1x1 stat, agents-now). The Task-5
+//     intermediate order sandwiched agents-now between suggestions and
+//     discussions, so it rode partway onto suggestions' shelf (shadow: 2
+//     cells) and then bumped discussions into its own lone shelf (trailing: 4
+//     cells) = 7 wasted cells / 8 rows. Swapping the last two entries so
+//     "discussions" precedes "agents-now" lets all 6 twos pair perfectly (0
+//     waste) and leaves agents-now alone on a final h:1 row (3 cells
+//     trailing, unavoidable — 6 is even, so no 2x2 is ever left unpaired for
+//     agents-now to ride with for free). Result: 7 rows / 3 wasted cells of
+//     28 (down from 8 rows / 7 wasted of 32) — also the floor for this mix.
+//
+// If HOME_BOARD_ALLOWED_SIZES or either role's widget SET changes again,
+// re-verify with buildDefaultLg before re-deriving this reasoning from
+// scratch — don't assume a naive append stays optimal.
+const FOUNDER: WidgetKey[] = ["action-queue", "approvals", "agents-now", "activity-feed", "objectives", "suggestions", "my-tasks", "discussions", "memory-review", "budget"];
+const MEMBER: WidgetKey[] = ["my-tasks", "action-queue", "objectives", "activity-feed", "suggestions", "discussions", "agents-now"];
 
 // Only team_member gets the execution board; founder, team_lead, null, and
 // instance-admin (null role) all get the oversight board.

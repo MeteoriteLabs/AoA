@@ -38,10 +38,12 @@ const apiSpies = vi.hoisted(() => ({
   layoutGet: vi.fn(),
   layoutSave: vi.fn(),
   layoutReset: vi.fn(),
+  discussionsList: vi.fn(),
+  memoryListPending: vi.fn(),
 }));
 
 vi.mock("../../context/CompanyContext", () => ({ useCompany: () => mockCompanyContext }));
-vi.mock("../../context/DialogContext", () => ({ useDialog: () => ({}) }));
+vi.mock("../../context/DialogContext", () => ({ useDialog: () => ({ openDiscussionCapture: vi.fn() }) }));
 vi.mock("../../context/ToastContext", () => ({ useToast: () => ({ pushToast: vi.fn() }) }));
 vi.mock("../../lib/timeAgo", () => ({ timeAgo: () => "2m ago" }));
 
@@ -75,6 +77,12 @@ vi.mock("../../api/home-board-layout", () => ({
     save: apiSpies.layoutSave,
     reset: apiSpies.layoutReset,
   },
+}));
+vi.mock("../../api/discussions", () => ({
+  discussionsApi: { list: apiSpies.discussionsList },
+}));
+vi.mock("../../api/memory", () => ({
+  memoryApi: { listPending: apiSpies.memoryListPending },
 }));
 
 /** Mirrors HomeBoard.test.tsx's harness (Task D3): Dashboard owns ONE
@@ -131,18 +139,20 @@ describe("HomeBoard query-count (no over-fetch)", () => {
     apiSpies.suggestionsPending.mockResolvedValue([]);
     apiSpies.suggestionsDetect.mockResolvedValue({ ok: true });
     apiSpies.liveRunsForCompany.mockResolvedValue([{ id: "run-1" }]);
-    apiSpies.layoutGet.mockResolvedValue(null); // no saved layout -> founder role default (8 widgets)
+    apiSpies.layoutGet.mockResolvedValue(null); // no saved layout -> founder role default (10 widgets)
     apiSpies.layoutSave.mockResolvedValue({ layout: [], schemaVersion: 1 });
     apiSpies.layoutReset.mockResolvedValue({ ok: true });
+    apiSpies.discussionsList.mockResolvedValue({ discussions: [], total: 0, limit: 0, offset: 0 });
+    apiSpies.memoryListPending.mockResolvedValue({ items: [], versions: [], archives: [], totalCount: 0 });
   });
 
-  it("fetches every widget api exactly once for the founder (all-8) board — no N+1, dashboard dedup confirmed", async () => {
+  it("fetches every widget api exactly once for the founder (all-10) board — no N+1, dashboard dedup confirmed", async () => {
     renderWithProviders(<HomeBoardHarness companyId="co-1" role="founder" />);
 
-    // Settle: wait for the slowest widget (My tasks) plus the full 8-widget
+    // Settle: wait for the slowest widget (My tasks) plus the full 10-widget
     // composition before reading final call counts.
     expect(await screen.findByText("Ship it")).toBeInTheDocument();
-    await waitFor(() => expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(8));
+    await waitFor(() => expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(10));
     // Also wait for the Waiting-on-you widget's merged list content to
     // settle, since it depends on BOTH approvalsApi.list AND
     // workQuestionsApi.list resolving (Plan 6 Task 4: no longer a single
@@ -182,6 +192,10 @@ describe("HomeBoard query-count (no over-fetch)", () => {
     // (useHomeBoardLayout, underneath useBoardEdit) — exactly one caller.
     // Expected count is 1.
     expect(apiSpies.layoutGet).toHaveBeenCalledTimes(1);
+    // discussionsApi.list: only Discussions calls this. Expected count is 1.
+    expect(apiSpies.discussionsList).toHaveBeenCalledTimes(1);
+    // memoryApi.listPending: only Memory review calls this. Expected count is 1.
+    expect(apiSpies.memoryListPending).toHaveBeenCalledTimes(1);
     // Never triggered by a plain mount/read.
     expect(apiSpies.layoutSave).not.toHaveBeenCalled();
     expect(apiSpies.layoutReset).not.toHaveBeenCalled();
@@ -191,16 +205,19 @@ describe("HomeBoard query-count (no over-fetch)", () => {
     renderWithProviders(<HomeBoardHarness companyId="co-1" role="team_member" />);
 
     expect(await screen.findByText("Ship it")).toBeInTheDocument();
-    // Member default is a 6-widget subset led by My tasks, no Budget/Approvals.
-    await waitFor(() => expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(6));
+    // Member default is a 7-widget subset led by My tasks, no Budget/Approvals.
+    await waitFor(() => expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(7));
 
     expect(apiSpies.homeSummary).toHaveBeenCalledTimes(1);
     expect(apiSpies.issuesList).toHaveBeenCalledTimes(1);
     expect(apiSpies.liveRunsForCompany).toHaveBeenCalledTimes(1);
-    // Budget/Waiting-on-you aren't on the member board — their apis never fire.
+    // Discussions IS on the member board (Task 5 added it to both roles).
+    expect(apiSpies.discussionsList).toHaveBeenCalledTimes(1);
+    // Budget/Waiting-on-you/Memory review aren't on the member board — their apis never fire.
     expect(apiSpies.dashboardSummary).not.toHaveBeenCalled();
     expect(apiSpies.approvalsList).not.toHaveBeenCalled();
     expect(apiSpies.workQuestionsList).not.toHaveBeenCalled();
+    expect(apiSpies.memoryListPending).not.toHaveBeenCalled();
     // team_member is not founder -> canAct is false -> the auto-detect effect
     // never fires, so suggestionsApi.pending is a plain single fetch here
     // (no detect-triggered refetch) — confirms the "2" above is specifically

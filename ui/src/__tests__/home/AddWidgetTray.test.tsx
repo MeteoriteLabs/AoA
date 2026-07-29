@@ -50,6 +50,8 @@ describe("AddWidgetTray", () => {
       "budget",
       "approvals",
       "my-tasks",
+      "discussions",
+      "memory-review",
     ] as const;
     render(<AddWidgetTray boardKeys={allKeys} onAdd={vi.fn()} onReset={vi.fn()} />);
 

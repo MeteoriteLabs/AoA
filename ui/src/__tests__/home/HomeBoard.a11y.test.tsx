@@ -61,7 +61,7 @@ vi.mock("../../hooks/useHomeSummary", () => ({
 }));
 vi.mock("../../lib/timeAgo", () => ({ timeAgo: () => "2m ago" }));
 vi.mock("../../api/suggestions", () => ({ suggestionsApi: { pending: vi.fn().mockResolvedValue([]), detect: vi.fn(), accept: vi.fn(), dismiss: vi.fn() } }));
-vi.mock("../../context/DialogContext", () => ({ useDialog: () => ({}) }));
+vi.mock("../../context/DialogContext", () => ({ useDialog: () => ({ openDiscussionCapture: vi.fn() }) }));
 vi.mock("../../context/ToastContext", () => ({ useToast: () => ({ pushToast: vi.fn() }) }));
 vi.mock("../../api/dashboard", () => ({
   dashboardApi: { summary: vi.fn().mockResolvedValue({
@@ -80,6 +80,12 @@ vi.mock("../../api/issues", () => ({
   issuesApi: { list: vi.fn().mockResolvedValue([{ id: "t1", title: "Ship it", status: "in_progress", priority: "high" }]) },
 }));
 vi.mock("../../hooks/useLiveAgentCount", () => ({ useLiveAgentCount: () => 2 }));
+vi.mock("../../api/discussions", () => ({
+  discussionsApi: { list: vi.fn().mockResolvedValue({ discussions: [], total: 0, limit: 0, offset: 0 }) },
+}));
+vi.mock("../../api/memory", () => ({
+  memoryApi: { listPending: vi.fn().mockResolvedValue({ items: [], versions: [], archives: [], totalCount: 0 }) },
+}));
 
 /** Mirrors HomeBoard.test.tsx's harness (Task D3). */
 function HomeBoardHarness({ companyId, role }: { companyId: string; role: UserRole | null }) {
@@ -92,7 +98,7 @@ function HomeBoardHarness({ companyId, role }: { companyId: string; role: UserRo
   );
 }
 
-// The founder default's full 8-widget title set, in getDefaultLayout("founder") order.
+// The founder default's full 10-widget title set, in getDefaultLayout("founder") order.
 const FOUNDER_TITLES = [
   "Action queue",
   "Waiting on you",
@@ -101,6 +107,8 @@ const FOUNDER_TITLES = [
   "Objectives",
   "Suggestions",
   "My tasks",
+  "Discussions",
+  "Memory review",
   "Budget",
 ];
 
@@ -162,7 +170,7 @@ describe("HomeBoard a11y contract sweep (Plan 4 Task 4)", () => {
       const user = await renderAndEnterEdit();
       await user.click(screen.getByRole("button", { name: "Add widget" }));
 
-      // Founder default already has all 8 widgets, so the tray is empty of
+      // Founder default already has all 10 widgets, so the tray is empty of
       // offerable items — remove one first so at least one item is offered.
       await user.click(screen.getByRole("button", { name: "Remove Budget" }));
 

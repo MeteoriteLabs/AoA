@@ -71,7 +71,7 @@ vi.mock("../../hooks/useHomeSummary", () => ({ useHomeSummary: () => ({ data: {
 }, isLoading: false }) }));
 vi.mock("../../lib/timeAgo", () => ({ timeAgo: () => "2m ago" }));
 vi.mock("../../api/suggestions", () => ({ suggestionsApi: { pending: vi.fn().mockResolvedValue([]), detect: vi.fn(), accept: vi.fn(), dismiss: vi.fn() } }));
-vi.mock("../../context/DialogContext", () => ({ useDialog: () => ({}) }));
+vi.mock("../../context/DialogContext", () => ({ useDialog: () => ({ openDiscussionCapture: vi.fn() }) }));
 vi.mock("../../context/ToastContext", () => ({ useToast: () => ({ pushToast: vi.fn() }) }));
 
 // Plan 2: data deps for the 4 new-data widgets (Budget + Approvals share the
@@ -95,6 +95,16 @@ vi.mock("../../api/issues", () => ({
   },
 }));
 vi.mock("../../hooks/useLiveAgentCount", () => ({ useLiveAgentCount: () => 2 }));
+// Plan 6: Waiting-on-you (approvals) + the two new Task 5/6 widgets.
+vi.mock("../../api/approvals", () => ({
+  approvalsApi: { list: vi.fn().mockResolvedValue([]) },
+}));
+vi.mock("../../api/discussions", () => ({
+  discussionsApi: { list: vi.fn().mockResolvedValue({ discussions: [], total: 0, limit: 0, offset: 0 }) },
+}));
+vi.mock("../../api/memory", () => ({
+  memoryApi: { listPending: vi.fn().mockResolvedValue({ items: [], versions: [], archives: [], totalCount: 0 }) },
+}));
 
 /**
  * Task D3: HomeBoard no longer owns useBoardEdit itself — Dashboard does,
@@ -126,7 +136,7 @@ describe("HomeBoard", () => {
     containerWidthMock.width = 1024;
   });
 
-  it('renders the founder board: all 8 widgets, each in its own error boundary, in getDefaultLayout("founder") order', async () => {
+  it('renders the founder board: all 10 widgets, each in its own error boundary, in getDefaultLayout("founder") order', async () => {
     renderWithProviders(<HomeBoardHarness companyId="co-1" role="founder" />);
 
     // The query-backed widgets (My tasks, Budget, Approvals) render only after
@@ -145,6 +155,8 @@ describe("HomeBoard", () => {
       "Objectives",
       "Suggestions",
       "My tasks",
+      "Discussions",
+      "Memory review",
       "Budget",
     ]);
   });
@@ -161,13 +173,15 @@ describe("HomeBoard", () => {
       "Objectives",
       "Today's activity",
       "Suggestions",
+      "Discussions",
       "Agents working now",
     ]);
     expect(headings).not.toContain("Budget");
     expect(headings).not.toContain("Waiting on you");
+    expect(headings).not.toContain("Memory review");
   });
 
-  it("founder vs member default divergence: founder gets all 8, member gets the execution subset led by My tasks with no Budget/Approvals (Plan 4 Task 6)", async () => {
+  it("founder vs member default divergence: founder gets all 10, member gets the execution subset led by My tasks with no Budget/Approvals (Plan 4 Task 6)", async () => {
     // The two tests above each prove one side independently; this one holds
     // both roles side by side in a single assertion so a future change that
     // drifts one default without the other fails here explicitly.
@@ -179,12 +193,13 @@ describe("HomeBoard", () => {
     expect(await screen.findByText("Ship it")).toBeInTheDocument();
     const memberHeadings = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
 
-    expect(founderHeadings).toHaveLength(8);
-    expect(memberHeadings).toHaveLength(6);
+    expect(founderHeadings).toHaveLength(10);
+    expect(memberHeadings).toHaveLength(7);
     expect(memberHeadings.length).toBeLessThan(founderHeadings.length);
     expect(memberHeadings[0]).toBe("My tasks");
     expect(memberHeadings).not.toContain("Budget");
     expect(memberHeadings).not.toContain("Waiting on you");
+    expect(memberHeadings).not.toContain("Memory review");
     // Every member widget is also on the founder board (execution subset,
     // not a disjoint set).
     for (const title of memberHeadings) {
@@ -201,7 +216,7 @@ describe("HomeBoard", () => {
 
     expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
-    // Only the two saved widgets render — reconcileLg never adds the other 6
+    // Only the two saved widgets render — reconcileLg never adds the other 8
     // founder-default widgets back in, even though this is a founder board.
     const headings = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
     expect(headings.sort()).toEqual(["Budget", "My tasks"]);
@@ -226,7 +241,7 @@ describe("HomeBoard", () => {
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       // Not editing: header links exist, no remove buttons, resize hidden.
-      expect(screen.getAllByRole("link", { name: /^Open / }).length).toBe(8);
+      expect(screen.getAllByRole("link", { name: /^Open / }).length).toBe(10);
       expect(screen.queryAllByLabelText(/^Remove /)).toHaveLength(0);
       // Task 5: `data-home-board-editing` scopes the resize-handle-visibility
       // CSS (index.css) — absent while read-only.
@@ -238,14 +253,14 @@ describe("HomeBoard", () => {
       // Editing: WidgetShell headers stop being links...
       expect(screen.queryAllByRole("link", { name: /^Open / })).toHaveLength(0);
       // ...and every tile grows a remove button.
-      expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(8);
+      expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(10);
       // Task 5: present while editing so the resize-handle CSS applies.
       expect(document.querySelector('[data-home-board-editing="true"]')).not.toBeNull();
 
       // Drag/resize are wired to `editing`: RGL marks each grid item
       // draggable and un-hides its resize handle only while editing.
       const gridItems = document.querySelectorAll(".react-grid-item");
-      expect(gridItems.length).toBe(8);
+      expect(gridItems.length).toBe(10);
       gridItems.forEach((el) => {
         expect(el.classList.contains("react-draggable")).toBe(true);
         expect(el.classList.contains("react-resizable-hide")).toBe(false);
@@ -264,7 +279,7 @@ describe("HomeBoard", () => {
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const idleTiles = document.querySelectorAll(".react-grid-item");
-      expect(idleTiles.length).toBe(8);
+      expect(idleTiles.length).toBe(10);
       idleTiles.forEach((el) => {
         expect(el.classList.contains("home-board-tile-editable")).toBe(false);
       });
@@ -273,7 +288,7 @@ describe("HomeBoard", () => {
       await user.click(screen.getByRole("button", { name: "Customize board" }));
 
       const editingTiles = document.querySelectorAll(".react-grid-item");
-      expect(editingTiles.length).toBe(8);
+      expect(editingTiles.length).toBe(10);
       editingTiles.forEach((el) => {
         expect(el.classList.contains("home-board-tile-editable")).toBe(true);
       });
@@ -285,11 +300,11 @@ describe("HomeBoard", () => {
 
       const user = userEvent.setup();
       await user.click(screen.getByRole("button", { name: "Customize board" }));
-      expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(8);
+      expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(10);
 
       await user.click(screen.getByLabelText("Remove Budget"));
 
-      expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(7);
+      expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(9);
       expect(screen.queryByRole("heading", { level: 2, name: "Budget" })).not.toBeInTheDocument();
     });
 
@@ -359,9 +374,9 @@ describe("HomeBoard", () => {
       await user.click(screen.getByRole("button", { name: "Done" }));
 
       expect(await screen.findByText(/Couldn't save/)).toBeInTheDocument();
-      // Still editing — the Done toggle and the (now 7) remove buttons remain.
+      // Still editing — the Done toggle and the (now 9) remove buttons remain.
       expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
-      expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(7);
+      expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(9);
 
       await user.click(screen.getByRole("button", { name: "Retry" }));
 
@@ -380,7 +395,7 @@ describe("HomeBoard", () => {
 
       const user = userEvent.setup();
       await user.click(screen.getByRole("button", { name: "Customize board" }));
-      expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(8);
+      expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(10);
       expect(screen.getByRole("button", { name: "Add widget" })).toBeInTheDocument();
 
       // Simulate the window between clicking Done and the save settling:
@@ -410,7 +425,7 @@ describe("HomeBoard", () => {
       const user = userEvent.setup();
       await user.click(screen.getByRole("button", { name: "Customize board" }));
       await user.click(screen.getByLabelText("Remove Budget"));
-      expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(7);
+      expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(9);
 
       rerender(<HomeBoardHarness companyId="co-2" role="founder" />);
 
@@ -484,10 +499,10 @@ describe("HomeBoard", () => {
       budgetTile.focus();
       await user.keyboard("{ArrowRight}");
 
-      // Budget is last in the founder default order, at y:6 (row 7) — the
-      // five list widgets ahead of it now default to 2×2 (Task 4 sizing
-      // recalibration), so the board packs one row taller than before.
-      expect(liveRegion).toHaveTextContent(/Budget moved to column 2, row 7/);
+      // Budget is last in the founder default order (Plan 6 Task 7 moved it
+      // there to clear a second interior shadow gap — see defaultLayout.ts),
+      // at y:8 (row 9).
+      expect(liveRegion).toHaveTextContent(/Budget moved to column 2, row 9/);
 
       await user.keyboard("{Shift>}{ArrowRight}{/Shift}");
       expect(liveRegion).toHaveTextContent(/Budget resized to 2 by 1/);
@@ -543,7 +558,7 @@ describe("HomeBoard", () => {
       expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
       // Every tile is navigable again now that editableNow is false — nav
       // suppression is keyed on editableNow, not the raw `editing` flag.
-      expect(screen.getAllByRole("link", { name: /^Open / }).length).toBe(8);
+      expect(screen.getAllByRole("link", { name: /^Open / }).length).toBe(10);
     });
   });
 
@@ -570,7 +585,7 @@ describe("HomeBoard", () => {
       // On-board widgets (Budget, My tasks) are excluded from the tray...
       expect(within(tray).queryByRole("button", { name: "Budget" })).not.toBeInTheDocument();
       expect(within(tray).queryByRole("button", { name: "My tasks" })).not.toBeInTheDocument();
-      // ...the other six are offered.
+      // ...the other eight are offered.
       expect(within(tray).getByRole("button", { name: "Objectives" })).toBeInTheDocument();
 
       await user.click(within(tray).getByRole("button", { name: "Objectives" }));
@@ -594,8 +609,8 @@ describe("HomeBoard", () => {
       await user.click(screen.getByRole("button", { name: /^reset/i }));
 
       expect(homeBoardLayoutMock.reset).toHaveBeenCalledTimes(1);
-      // Founder's role default includes all 8 registered widgets.
-      await waitFor(() => expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(8));
+      // Founder's role default includes all 10 registered widgets.
+      await waitFor(() => expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(10));
       expect(screen.queryByText("Unsaved changes")).not.toBeInTheDocument();
 
       await user.click(screen.getByRole("button", { name: "Done" }));
