@@ -10,6 +10,15 @@ import {
 // `_whereCalls` / `_orderByCalls` capture each where()/orderBy() argument list
 // (REAL drizzle-orm SQL objects — this file does not mock drizzle) so tests
 // can regression-lock query gates and ordering.
+//
+// Call order inside getJourneyForUser (Phase 2 Task 9 — org-first): user row,
+// THEN company memberships + organization memberships together (a
+// Promise.all — company memberships resolves first, org memberships
+// second, matching array-literal evaluation order), THEN filed
+// join_requests ("pendingRows"), THEN (if emailVerified) open invites, THEN
+// (if returningCompanyIds is empty and the caller is instance-admin) the
+// admin-visible-companies fallback, THEN (if journey === "returning" with a
+// company id) the first-run resume query.
 function seqDb(results: unknown[][]) {
   let i = 0;
   const whereCalls: unknown[] = [];
@@ -86,6 +95,7 @@ describe("getJourneyForUser (A5 + RB7/RB9 wiring)", () => {
     const db = seqDb([
       [{ email: "u@x.com", emailVerified: true }],
       [{ companyId: "c1" }],
+      [], // organization memberships (Task 9)
       [
         {
           inviteId: "i2",
@@ -111,10 +121,24 @@ describe("getJourneyForUser (A5 + RB7/RB9 wiring)", () => {
     ]);
   });
 
+  it("returning via ORGANIZATION membership alone — zero company memberships (Phase 2 Task 9, org-first)", async () => {
+    const db = seqDb([
+      [{ email: "u@x.com", emailVerified: true }], // user
+      [], // company memberships — none yet
+      [{ organizationId: "org1" }], // organization memberships — owner of a fresh tenant
+      [], // pending requests
+      [], // open invites
+    ]);
+    const r = await getJourneyForUser(db, { userId: "u1" });
+    expect(r.journey).toBe("returning");
+    expect(r.targetCompanyId).toBeNull();
+  });
+
   it("returning founder with an UNFINISHED first-run tail → resumeFirstRunCompanyId set (resume into /onboarding)", async () => {
     const db = seqDb([
       [{ email: "u@x.com", emailVerified: true }], // user
       [{ companyId: "c1" }], // memberships → returning
+      [], // organization memberships (Task 9)
       [], // pending requests
       [], // open invites
       [{ companyId: "c1" }], // resume query: c1's own first-run isn't complete
@@ -141,6 +165,7 @@ describe("getJourneyForUser (A5 + RB7/RB9 wiring)", () => {
     const db = seqDb([
       [{ email: "u@x.com", emailVerified: true }], // user
       [{ companyId: "c1" }], // memberships → returning
+      [], // organization memberships (Task 9)
       [], // pending requests
       [], // open invites
       [], // resume query: no incomplete first-run row
@@ -154,6 +179,7 @@ describe("getJourneyForUser (A5 + RB7/RB9 wiring)", () => {
     const db = seqDb([
       [{ email: "u@x.com", emailVerified: true }],
       [],
+      [], // organization memberships (Task 9)
       [
         {
           inviteId: "i2",
@@ -171,7 +197,7 @@ describe("getJourneyForUser (A5 + RB7/RB9 wiring)", () => {
   });
 
   it("founder when no membership and no pending request", async () => {
-    const db = seqDb([[{ email: "u@x.com", emailVerified: true }], [], []]);
+    const db = seqDb([[{ email: "u@x.com", emailVerified: true }], [], [], []]);
     const r = await getJourneyForUser(db, { userId: "u1" });
     expect(r).toEqual({
       journey: "founder",
@@ -185,6 +211,7 @@ describe("getJourneyForUser (A5 + RB7/RB9 wiring)", () => {
     const db = seqDb([
       [{ email: "admin@x.com", emailVerified: true }],
       [],
+      [], // organization memberships (Task 9)
       [
         {
           inviteId: "i2",
@@ -212,6 +239,7 @@ describe("getJourneyForUser (A5 + RB7/RB9 wiring)", () => {
     const db = seqDb([
       [{ email: "admin@x.com", emailVerified: true }],
       [{ companyId: "member-company" }],
+      [], // organization memberships (Task 9)
       [],
     ]);
 
@@ -225,7 +253,7 @@ describe("getJourneyForUser (A5 + RB7/RB9 wiring)", () => {
   });
 
   it("keeps an instance admin on the founder journey when the instance is empty", async () => {
-    const db = seqDb([[{ email: "admin@x.com", emailVerified: true }], [], [], []]);
+    const db = seqDb([[{ email: "admin@x.com", emailVerified: true }], [], [], [], []]);
 
     const r = await getJourneyForUser(db, {
       userId: "admin-1",
@@ -246,6 +274,7 @@ describe("getJourneyForUser — open-invite detection (tokenless invited entry)"
     const db = seqDb([
       [{ email: "u@x.com", emailVerified: true }],
       [], // memberships
+      [], // organization memberships (Task 9)
       [], // filed join_requests
       [
         {
@@ -279,6 +308,7 @@ describe("getJourneyForUser — open-invite detection (tokenless invited entry)"
     const db = seqDb([
       [{ email: "u@x.com", emailVerified: true }],
       [], // memberships
+      [], // organization memberships (Task 9)
       [
         {
           inviteId: "jr-invite",
@@ -299,6 +329,7 @@ describe("getJourneyForUser — open-invite detection (tokenless invited entry)"
     const db = seqDb([
       [{ email: "u@x.com", emailVerified: true }],
       [], // memberships
+      [], // organization memberships (Task 9)
       [], // filed join_requests
       [
         // SQL returns newest-first (desc(createdAt)); the merge keeps the first
@@ -336,6 +367,7 @@ describe("getJourneyForUser — open-invite detection (tokenless invited entry)"
     const db = seqDb([
       [{ email: "u@x.com", emailVerified: true }],
       [], // memberships
+      [], // organization memberships (Task 9)
       [], // filed join_requests
       [], // open invites
     ]);
@@ -354,6 +386,7 @@ describe("getJourneyForUser — open-invite detection (tokenless invited entry)"
     const db = seqDb([
       [{ email: "u@x.com", emailVerified: false }],
       [], // memberships
+      [], // organization memberships (Task 9)
       [], // filed join_requests
       // Would-be open invite: MUST NOT be consumed — detection is gated on a
       // verified email. If the query ran, this row would flip the journey.
@@ -371,6 +404,7 @@ describe("getJourneyForUser — open-invite detection (tokenless invited entry)"
     const db = seqDb([
       [{ email: "u@x.com", emailVerified: true }],
       [], // memberships
+      [], // organization memberships (Task 9)
       [], // filed join_requests
       [], // open invites — an expired/revoked/accepted invite comes back empty
     ]);
@@ -396,6 +430,7 @@ describe("getJourneyForUser — open-invite detection (tokenless invited entry)"
     const db = seqDb([
       [{ email: "u@x.com", emailVerified: true }],
       [], // memberships
+      [], // organization memberships (Task 9)
       [
         {
           inviteId: "jr-invite",
@@ -437,6 +472,7 @@ describe("GET /api/onboarding/journey", () => {
     const db = seqDb([
       [{ email: "admin@x.com", emailVerified: true }],
       [],
+      [], // organization memberships (Task 9)
       [],
       [], // open invites (tokenless detection)
       [{ companyId: "c1" }],
@@ -462,6 +498,7 @@ describe("GET /api/onboarding/journey", () => {
     const db = seqDb([
       [{ email: "member@x.com", emailVerified: true }],
       [],
+      [], // organization memberships (Task 9)
       [],
       [], // open invites (tokenless detection)
       [{ companyId: "c1" }],

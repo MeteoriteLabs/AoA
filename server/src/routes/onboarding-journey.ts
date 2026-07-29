@@ -11,6 +11,7 @@ import {
 import { and, desc, eq, gt, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import type { PostAuthJourneyResult, PendingInvitation } from "@armyofagents/shared";
 import { resolvePostAuthJourney } from "../services/post-auth-journey.js";
+import { organizationAccessService } from "../services/organization-access.js";
 
 const TEAM_INVITE_KEY = "teamInvite";
 
@@ -21,10 +22,13 @@ function roleFromInviteDefaults(defaults: Record<string, unknown> | null | undef
 }
 
 /**
- * Resolve the post-auth journey for a user (A5 + RB7/RB9).
+ * Resolve the post-auth journey for a user (A5 + RB7/RB9, org-first per
+ * Phase 2 Task 9).
  *
- * - `returning` if the user has any active company membership, or if an
- *   instance admin can see an existing company through the global admin bypass.
+ * - `returning` if the user has any active Organization membership OR any
+ *   active company membership, or if an instance admin can see an existing
+ *   company through the global admin bypass. An org membership alone (zero
+ *   company memberships yet — e.g. a fresh multi-tenant org owner) is enough.
  * - `invited` if the user has an open, non-rejected human join_request they made
  *   (or, only when their email is verified, one snapshotting their email), OR —
  *   tokenless entry — an OPEN company-join invite matching their verified email
@@ -54,6 +58,15 @@ export async function getJourneyForUser(
   const email = user?.email ?? null;
   const emailVerified = Boolean(user?.emailVerified);
 
+  const orgAccess = organizationAccessService(db);
+  // Sequential (not Promise.all) — deliberately: this route isn't a hot path,
+  // and a plain query builder thenable racing an async-function-wrapped
+  // thenable inside Promise.all resolves in a JS-engine-dependent order (the
+  // async wrapper schedules its PromiseResolveThenableJob a tick earlier),
+  // which is exactly the kind of implicit ordering the seqDb test mock
+  // (server/src/__tests__/onboarding-journey-route.test.ts) must NOT depend
+  // on. Sequential awaits keep the call order simple and match every other
+  // query in this function.
   const memberships = await db
     .select({ companyId: companyMemberships.companyId })
     .from(companyMemberships)
@@ -64,6 +77,8 @@ export async function getJourneyForUser(
         eq(companyMemberships.status, "active"),
       ),
     );
+  const orgMembershipRows = await orgAccess.listOrgMemberships(args.userId);
+  const organizationMemberships = orgMembershipRows.map((r) => r.organizationId);
 
   // Match the user's own pending human requests, plus (verified email only) any
   // pending human request snapshotting their verified email.
@@ -167,6 +182,7 @@ export async function getJourneyForUser(
   }
 
   const result = resolvePostAuthJourney({
+    organizationMemberships,
     memberships: returningCompanyIds,
     pendingInvitations,
     deepLinkCompanyId: args.deepLinkCompanyId ?? null,
