@@ -15,6 +15,7 @@ import {
 } from "@armyofagents/db";
 import type { HomeSummary, GoalProgress, GoalGapNudge, RecentActivityItem, SetupStatus } from "@armyofagents/shared";
 import { notCrewAssigned } from "./issue-crew-scope.js";
+import { computeGoalProgressPercent } from "./goal-progress.js";
 
 const TERMINAL_STATUSES = ["done", "cancelled"];
 
@@ -245,7 +246,7 @@ export function homeService(db: Db) {
               doneTasks: done,
               inProgressTasks: inProgress,
               blockedTasks: blocked,
-              progressPercent: total > 0 ? Math.round((done / total) * 100) : 0,
+              progressPercent: computeGoalProgressPercent({ total, done, cancelled }),
             });
 
             // Gap: zero tasks in non-terminal statuses
