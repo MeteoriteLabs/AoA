@@ -19,7 +19,7 @@ export function ActionQueueWidget({ companyId, editing }: WidgetProps) {
         <WidgetEmpty icon={Inbox} message="Nothing needs review — all clear" />
       ) : (
         <div className="space-y-3">
-          {groups.map((group) => <ActionQueueGroup key={group.id} group={group} />)}
+          {groups.map((group) => <ActionQueueGroup key={group.id} group={group} editing={editing} />)}
         </div>
       )}
     </WidgetShell>

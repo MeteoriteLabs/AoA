@@ -68,4 +68,16 @@ describe("ObjectivesWidget", () => {
     expect(screen.getByText("Couldn't load objectives")).toBeInTheDocument();
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
+
+  it("renders each goal row as a deep link to its objective when not editing", () => {
+    renderWithProviders(<ObjectivesWidget companyId="co-1" role="founder" size={{ w: 2, h: 1 }} />);
+    const link = screen.getByRole("link", { name: /Launch v1\.1/i });
+    expect(link).toHaveAttribute("href", "/goals/g1");
+  });
+
+  it("does not render goal rows as links while editing", () => {
+    renderWithProviders(<ObjectivesWidget companyId="co-1" role="founder" size={{ w: 2, h: 1 }} editing />);
+    expect(screen.getByText("Launch v1.1")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Launch v1\.1/i })).not.toBeInTheDocument();
+  });
 });

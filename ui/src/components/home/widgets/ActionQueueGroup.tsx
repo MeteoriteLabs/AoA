@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { ChevronDown } from "lucide-react";
-import { Link } from "@/lib/router";
 import type { ActionGroup } from "../actionQueue";
+import { WidgetRowLink } from "./WidgetRowLink";
 
-export function ActionQueueGroup({ group }: { group: ActionGroup }) {
+export function ActionQueueGroup({ group, editing }: { group: ActionGroup; editing?: boolean }) {
   const [expanded, setExpanded] = useState(true);
   const Icon = group.icon;
 
@@ -27,14 +27,15 @@ export function ActionQueueGroup({ group }: { group: ActionGroup }) {
       {expanded && (
         <div className="border-t border-border divide-y divide-border">
           {group.items.map((item) => (
-            <Link
+            <WidgetRowLink
               key={item.key}
               to={item.to}
+              editing={editing}
               className="flex items-center gap-3 px-4 py-2.5 text-sm hover:bg-accent/50 transition-colors no-underline text-inherit"
             >
               <span className="flex-1 min-w-0 truncate">{item.label}</span>
               {item.sublabel && <span className="text-xs text-muted-foreground shrink-0">{item.sublabel}</span>}
-            </Link>
+            </WidgetRowLink>
           ))}
         </div>
       )}

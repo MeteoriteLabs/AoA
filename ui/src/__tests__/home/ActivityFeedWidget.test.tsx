@@ -50,4 +50,34 @@ describe("ActivityFeedWidget", () => {
     expect(screen.getByText("Couldn't load activity")).toBeInTheDocument();
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
+
+  it("renders the activity row as a deep link to its entity when not editing", () => {
+    renderWithProviders(<ActivityFeedWidget companyId="co-1" role="founder" size={{ w: 2, h: 2 }} />);
+    const link = screen.getByRole("link", { name: /Draft spec/i });
+    expect(link).toHaveAttribute("href", "/issues/i1");
+  });
+
+  it("does not render the activity row as a link while editing", () => {
+    renderWithProviders(<ActivityFeedWidget companyId="co-1" role="founder" size={{ w: 2, h: 2 }} editing />);
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+    expect(screen.getByText("Draft spec")).toBeInTheDocument();
+  });
+
+  it("renders a plain (non-navigating) row when the activity's entity type has no deep link", () => {
+    useHomeSummaryMock.mockReturnValue({
+      data: {
+        recentActivity: [
+          { id: "a2", action: "cost.recorded", entityType: "cost", entityId: "c1", details: null, createdAt: "x", actorType: "agent", actorId: "z" },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    });
+    renderWithProviders(<ActivityFeedWidget companyId="co-1" role="founder" size={{ w: 2, h: 2 }} />);
+    // The widget's own header link ("Open Today's activity" -> /activity) still
+    // renders — only the row itself must stay a non-navigating element.
+    expect(screen.queryByRole("link", { name: /cost recorded/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/cost recorded/i)).toBeInTheDocument();
+  });
 });

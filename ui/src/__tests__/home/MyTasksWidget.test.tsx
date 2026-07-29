@@ -68,6 +68,27 @@ describe("MyTasksWidget", () => {
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 
+  it("renders each task row as a deep link to its issue, preferring identifier over id", async () => {
+    issuesApiMock.list.mockResolvedValue([
+      { id: "t1", identifier: "TC-42", title: "Draft launch post", status: "in_progress", priority: "high" },
+      { id: "t2", title: "Review crew output", status: "todo", priority: "medium" },
+    ]);
+    renderWithProviders(<MyTasksWidget companyId="co-1" role="team_member" size={{ w: 2, h: 1 }} />);
+
+    const withIdentifier = await screen.findByRole("link", { name: /Draft launch post/i });
+    expect(withIdentifier).toHaveAttribute("href", "/issues/TC-42");
+
+    const withoutIdentifier = screen.getByRole("link", { name: /Review crew output/i });
+    expect(withoutIdentifier).toHaveAttribute("href", "/issues/t2");
+  });
+
+  it("does not render task rows as links while editing", async () => {
+    renderWithProviders(<MyTasksWidget companyId="co-1" role="team_member" size={{ w: 2, h: 1 }} editing />);
+
+    expect(await screen.findByText("Draft launch post")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Draft launch post/i })).not.toBeInTheDocument();
+  });
+
   it("caps the list at 5 tasks", async () => {
     issuesApiMock.list.mockResolvedValue(
       Array.from({ length: 8 }, (_, i) => ({ id: `t${i}`, title: `Task ${i}`, status: "todo", priority: "medium" })),

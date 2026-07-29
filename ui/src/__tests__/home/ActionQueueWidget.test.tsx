@@ -58,4 +58,16 @@ describe("ActionQueueWidget", () => {
     expect(screen.getByText("Couldn't load")).toBeInTheDocument();
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
+
+  it("renders each action-queue row as a deep link to its target when not editing", () => {
+    renderWithProviders(<ActionQueueWidget companyId="co-1" role="founder" size={{ w: 2, h: 1 }} />);
+    const link = screen.getByRole("link", { name: /Ship it/i });
+    expect(link).toHaveAttribute("href", "/issues/t1");
+  });
+
+  it("does not render action-queue rows as links while editing", () => {
+    renderWithProviders(<ActionQueueWidget companyId="co-1" role="founder" size={{ w: 2, h: 1 }} editing />);
+    expect(screen.getByText("Ship it")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Ship it/i })).not.toBeInTheDocument();
+  });
 });
