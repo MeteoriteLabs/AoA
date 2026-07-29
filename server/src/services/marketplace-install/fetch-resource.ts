@@ -56,7 +56,7 @@ function assertMarketplaceResourceUrl(raw: string): URL {
     FULL_COMMIT_SHA.test(parts[2]!);
   const githubPinned =
     host === "github.com" &&
-    parts.length >= 6 &&
+    parts.length >= 5 &&
     parts[2] === "raw" &&
     FULL_COMMIT_SHA.test(parts[3]!);
   const marketplaceCdn =

@@ -71,6 +71,22 @@ describe("loadSkillContent", () => {
     expect(executePinnedRequest).toHaveBeenCalled();
   });
 
+  it("accepts a commit-pinned GitHub root-level resource", async () => {
+    const resourceUrl =
+      `https://github.com/example/skills/raw/${"f".repeat(40)}/SKILL.md`;
+    vi.mocked(executePinnedRequest).mockResolvedValueOnce({
+      status: 200,
+      statusText: "OK",
+      headers: {},
+      body: "# Root-level skill",
+    });
+
+    await expect(
+      loadSkillContent({ ...BASE_ITEM, resourceUrl }),
+    ).resolves.toBe("# Root-level skill");
+    expect(validateAndResolveFetchUrl).toHaveBeenCalledWith(resourceUrl);
+  });
+
   it("throws an error containing 'HTTP 404' when fetch returns non-ok", async () => {
     vi.mocked(executePinnedRequest).mockResolvedValueOnce({
       status: 404,
@@ -157,6 +173,8 @@ describe("loadSkillContent", () => {
         `${"f".repeat(40)}/SKILL.md`,
       "https://127.0.0.1/resource",
       "https://raw.githubusercontent.com/acme/repo/main/SKILL.md",
+      `https://github.com/acme/repo/raw/${"f".repeat(40)}`,
+      "https://github.com/acme/repo/raw/main/SKILL.md",
     ]) {
       await expect(
         loadSkillContent({ ...BASE_ITEM, resourceUrl }),
