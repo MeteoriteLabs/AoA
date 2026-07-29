@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { HomeBoardLayoutItem, UserRole } from "@armyofagents/shared";
+import { HOME_BOARD_LG_COLS } from "@armyofagents/shared";
 import type { EventCallback, Layout, ResponsiveLayouts } from "react-grid-layout";
 import { useHomeBoardLayout } from "../../hooks/useHomeBoardLayout";
-import { buildDefaultLg, nearestAllowedSize, reconcileLg } from "./gridLayout";
+import { buildDefaultLg, cycleTileSize, moveTileKeyboard, nearestAllowedSize, reconcileLg } from "./gridLayout";
 import { getWidget } from "./widgets/registry";
 import type { WidgetKey } from "./widgets/types";
 
@@ -53,6 +54,8 @@ export interface UseBoardEditResult {
    * always-derived projections (see gridLayout.ts projectToBreakpoint).
    */
   activeBreakpoint: string;
+  /** Latest human-readable description of a keyboard move/resize (Task D2), for an aria-live region. Empty until the first keyboard operation this edit session. */
+  announcement: string;
   startEdit: () => void;
   /** Flushes: saves the draft if dirty, otherwise just closes edit mode. No-op while a save is in flight. */
   exitEdit: () => void;
@@ -65,6 +68,10 @@ export interface UseBoardEditResult {
   onLayoutChange: (current: Layout, all: ResponsiveLayouts) => void;
   onBreakpointChange: (breakpoint: string, cols: number) => void;
   onResizeStop: EventCallback;
+  /** Keyboard a11y (Task D2): nudge a focused tile by (dx,dy) grid cells. No-op unless editing at the lg breakpoint, or when blocked at bounds. */
+  moveWidget: (key: WidgetKey, dx: number, dy: number) => void;
+  /** Keyboard a11y (Task D2): step a focused tile forward through its allowedSizes (wrapping). No-op unless editing at the lg breakpoint. */
+  cycleWidgetSize: (key: WidgetKey) => void;
 }
 
 /**
@@ -127,6 +134,7 @@ export function useBoardEdit(
   const [activeBreakpoint, setActiveBreakpoint] = useState<string>("lg");
   const [initialized, setInitialized] = useState(false);
   const [saveError, setSaveError] = useState<unknown>(null);
+  const [announcement, setAnnouncement] = useState("");
   const baselineRef = useRef<HomeBoardLayoutItem[] | null>(null);
 
   const dirty =
@@ -146,6 +154,7 @@ export function useBoardEdit(
     setDraft(null);
     baselineRef.current = null;
     setSaveError(null);
+    setAnnouncement("");
   }, [companyId]);
 
   // Rule 6 — adopt a fresh source layout (e.g. a background refetch) only
@@ -171,6 +180,7 @@ export function useBoardEdit(
     baselineRef.current = sourceLg;
     setInitialized(false);
     setSaveError(null);
+    setAnnouncement("");
     setEditing(true);
   }, [isSaving, sourceLg]);
 
@@ -278,6 +288,50 @@ export function useBoardEdit(
     [editing, activeBreakpoint],
   );
 
+  // Task D2 — keyboard a11y. Both moveWidget/cycleWidgetSize are gated
+  // exactly like every other mutating edit affordance: editing AND at the lg
+  // breakpoint (Task D1 — edit is lg-only). Each delegates the actual
+  // move/resize-with-collision-cascade math to gridLayout.ts (pure,
+  // independently unit-tested) and only sets an announcement when something
+  // actually changed — a move blocked at bounds stays silent rather than
+  // announcing a no-op.
+  const moveWidget = useCallback(
+    (key: WidgetKey, dx: number, dy: number) => {
+      if (!editing || activeBreakpoint !== "lg") return;
+      setDraft((prev) => {
+        const current = prev ?? [];
+        const next = moveTileKeyboard(current, key, dx, dy, HOME_BOARD_LG_COLS);
+        if (next === current) return current; // blocked at bounds — no-op, no announcement
+        const def = getWidget(key);
+        const moved = next.find((item) => item.i === key);
+        if (def && moved) {
+          setAnnouncement(`${def.title} moved to column ${moved.x + 1}, row ${moved.y + 1}`);
+        }
+        return next;
+      });
+    },
+    [editing, activeBreakpoint],
+  );
+
+  const cycleWidgetSize = useCallback(
+    (key: WidgetKey) => {
+      if (!editing || activeBreakpoint !== "lg") return;
+      const def = getWidget(key);
+      if (!def) return;
+      setDraft((prev) => {
+        const current = prev ?? [];
+        const next = cycleTileSize(current, key, def.allowedSizes, HOME_BOARD_LG_COLS);
+        if (next === current) return current; // only one allowed size — no-op, no announcement
+        const resized = next.find((item) => item.i === key);
+        if (resized) {
+          setAnnouncement(`${def.title} resized to ${resized.w} by ${resized.h}`);
+        }
+        return next;
+      });
+    },
+    [editing, activeBreakpoint],
+  );
+
   return {
     lg: editing && draft ? draft : sourceLg,
     editing,
@@ -286,6 +340,7 @@ export function useBoardEdit(
     isResetting,
     saveError,
     activeBreakpoint,
+    announcement,
     startEdit,
     exitEdit,
     retrySave,
@@ -295,5 +350,7 @@ export function useBoardEdit(
     onLayoutChange,
     onBreakpointChange,
     onResizeStop,
+    moveWidget,
+    cycleWidgetSize,
   };
 }

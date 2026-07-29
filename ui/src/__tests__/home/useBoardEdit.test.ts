@@ -396,6 +396,97 @@ describe("useBoardEdit", () => {
     });
   });
 
+  describe("moveWidget (Task D2 — keyboard nudge)", () => {
+    it("moves the widget in the draft by (dx,dy) and dirties it", () => {
+      const { result } = renderHook(() => useBoardEdit(COMPANY_A, "founder"));
+      act(() => result.current.startEdit());
+      const before = result.current.lg.find((item) => item.i === "budget")!;
+
+      act(() => result.current.moveWidget("budget", 1, 0));
+
+      const after = result.current.lg.find((item) => item.i === "budget")!;
+      expect(after).toEqual({ ...before, x: before.x + 1 });
+      expect(result.current.dirty).toBe(true);
+    });
+
+    it("sets an announcement naming the widget and its new position", () => {
+      const { result } = renderHook(() => useBoardEdit(COMPANY_A, "founder"));
+      act(() => result.current.startEdit());
+      act(() => result.current.moveWidget("budget", 1, 0));
+      expect(result.current.announcement).toMatch(/Budget/);
+    });
+
+    it("is a no-op (including no announcement) when blocked at bounds", () => {
+      const { result } = renderHook(() => useBoardEdit(COMPANY_A, "founder"));
+      act(() => result.current.startEdit());
+      const before = result.current.lg;
+      // The founder default's "budget" tile sits at x:0 (leftmost) — moving
+      // left is blocked.
+      expect(before.find((item) => item.i === "budget")!.x).toBe(0);
+
+      act(() => result.current.moveWidget("budget", -1, 0));
+
+      expect(result.current.lg).toEqual(before);
+      expect(result.current.announcement).toBe("");
+    });
+
+    it("is a no-op before editing starts", () => {
+      const { result } = renderHook(() => useBoardEdit(COMPANY_A, "founder"));
+      const before = result.current.lg;
+      act(() => result.current.moveWidget("budget", 1, 0));
+      expect(result.current.lg).toEqual(before);
+    });
+
+    it("is ignored while the active breakpoint is not lg", () => {
+      const { result } = renderHook(() => useBoardEdit(COMPANY_A, "founder"));
+      act(() => result.current.startEdit());
+      act(() => result.current.onBreakpointChange("sm", 1));
+      const before = result.current.lg;
+
+      act(() => result.current.moveWidget("budget", 1, 0));
+
+      expect(result.current.lg).toEqual(before);
+    });
+  });
+
+  describe("cycleWidgetSize (Task D2 — keyboard resize)", () => {
+    it("cycles the widget's size in the draft and dirties it", () => {
+      const { result } = renderHook(() => useBoardEdit(COMPANY_A, "founder"));
+      act(() => result.current.startEdit());
+
+      act(() => result.current.cycleWidgetSize("agents-now"));
+
+      const item = result.current.lg.find((entry) => entry.i === "agents-now")!;
+      expect({ w: item.w, h: item.h }).toEqual({ w: 2, h: 1 });
+      expect(result.current.dirty).toBe(true);
+    });
+
+    it("sets an announcement naming the widget and its new size", () => {
+      const { result } = renderHook(() => useBoardEdit(COMPANY_A, "founder"));
+      act(() => result.current.startEdit());
+      act(() => result.current.cycleWidgetSize("agents-now"));
+      expect(result.current.announcement).toMatch(/Agents working now/);
+    });
+
+    it("is a no-op before editing starts", () => {
+      const { result } = renderHook(() => useBoardEdit(COMPANY_A, "founder"));
+      const before = result.current.lg;
+      act(() => result.current.cycleWidgetSize("agents-now"));
+      expect(result.current.lg).toEqual(before);
+    });
+
+    it("is ignored while the active breakpoint is not lg", () => {
+      const { result } = renderHook(() => useBoardEdit(COMPANY_A, "founder"));
+      act(() => result.current.startEdit());
+      act(() => result.current.onBreakpointChange("md", 2));
+      const before = result.current.lg;
+
+      act(() => result.current.cycleWidgetSize("agents-now"));
+
+      expect(result.current.lg).toEqual(before);
+    });
+  });
+
   describe("company scoping", () => {
     it("discards the draft when companyId changes mid-edit (never saves the old company's layout)", async () => {
       const { result, rerender } = renderHook(

@@ -11,12 +11,17 @@ import { HomeBoard } from "../../components/home/HomeBoard";
 // again after that, so width would be pinned at 0 and RGL would render no
 // tiles at all. Fix: mock just this hook to a fixed, non-zero width so the
 // real Responsive/verticalCompactor still run and lay out real tiles.
+// `containerWidthMock.width` is mutable (reset to 1024 in beforeEach) so a
+// single test (Task D1/D2 breakpoint gating) can shrink it and force RGL's
+// own real width->breakpoint detection to fire onBreakpointChange, without
+// every other test needing to know or care.
+const containerWidthMock = vi.hoisted(() => ({ width: 1024 }));
 vi.mock("react-grid-layout", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react-grid-layout")>();
   return {
     ...actual,
     useContainerWidth: () => ({
-      width: 1024,
+      width: containerWidthMock.width,
       mounted: true,
       containerRef: { current: null },
       measureWidth: vi.fn(),
@@ -95,6 +100,7 @@ describe("HomeBoard", () => {
     homeBoardLayoutMock.isResetting = false;
     homeBoardLayoutMock.saveAsync.mockReset().mockResolvedValue({ layout: [], schemaVersion: 1 });
     homeBoardLayoutMock.reset.mockReset();
+    containerWidthMock.width = 1024;
   });
 
   it('renders the founder board: all 8 widgets, each in its own error boundary, in getDefaultLayout("founder") order', async () => {
@@ -276,6 +282,101 @@ describe("HomeBoard", () => {
       await waitFor(() => expect(screen.getByRole("button", { name: "Edit board" })).toBeInTheDocument());
       expect(screen.queryAllByLabelText(/^Remove /)).toHaveLength(0);
       expect(homeBoardLayoutMock.saveAsync).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("keyboard a11y (Task D2)", () => {
+    it("tiles are not focusable/operable outside edit mode", async () => {
+      renderWithProviders(<HomeBoard companyId="co-1" role="founder" />);
+      expect(await screen.findByText("Ship it")).toBeInTheDocument();
+
+      expect(screen.queryByRole("group", { name: /^Budget/ })).not.toBeInTheDocument();
+    });
+
+    it("arrow keys nudge the focused tile in the draft, blocked at bounds, with focus retained", async () => {
+      renderWithProviders(<HomeBoard companyId="co-1" role="founder" />);
+      expect(await screen.findByText("Ship it")).toBeInTheDocument();
+
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Edit board" }));
+
+      // Budget sits at the founder default's x:0 (leftmost column, see
+      // gridLayout.ts packing) — column 1 of 4.
+      const budgetTile = screen.getByRole("group", { name: /^Budget tile, column 1,/ });
+      budgetTile.focus();
+      expect(budgetTile).toHaveFocus();
+
+      // Blocked: already at the left edge — no-op, same tile, same column.
+      await user.keyboard("{ArrowLeft}");
+      expect(screen.getByRole("group", { name: /^Budget tile, column 1,/ })).toBe(budgetTile);
+      expect(budgetTile).toHaveFocus();
+
+      // Moves right one cell.
+      await user.keyboard("{ArrowRight}");
+      expect(screen.getByRole("group", { name: /^Budget tile, column 2,/ })).toBe(budgetTile);
+      expect(budgetTile).toHaveFocus();
+    });
+
+    it("shift+arrow cycles the focused tile's allowed size", async () => {
+      renderWithProviders(<HomeBoard companyId="co-1" role="founder" />);
+      expect(await screen.findByText("Ship it")).toBeInTheDocument();
+
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Edit board" }));
+
+      const budgetTile = screen.getByRole("group", { name: /^Budget tile,.*size 1 by 1/ });
+      budgetTile.focus();
+
+      await user.keyboard("{Shift>}{ArrowRight}{/Shift}");
+
+      expect(screen.getByRole("group", { name: /^Budget tile,.*size 2 by 1/ })).toBe(budgetTile);
+      expect(budgetTile).toHaveFocus();
+    });
+
+    it("announces each keyboard move/resize via the aria-live region", async () => {
+      renderWithProviders(<HomeBoard companyId="co-1" role="founder" />);
+      expect(await screen.findByText("Ship it")).toBeInTheDocument();
+
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Edit board" }));
+
+      const liveRegion = screen.getByRole("status");
+      expect(liveRegion).toHaveTextContent("");
+
+      const budgetTile = screen.getByRole("group", { name: /^Budget/ });
+      budgetTile.focus();
+      await user.keyboard("{ArrowRight}");
+
+      expect(liveRegion).toHaveTextContent(/Budget moved to column 2, row 5/);
+
+      await user.keyboard("{Shift>}{ArrowRight}{/Shift}");
+      expect(liveRegion).toHaveTextContent(/Budget resized to 2 by 1/);
+    });
+
+    it("hides tile focusability once the real viewport drops below the lg breakpoint mid-edit (Task D1)", async () => {
+      const { rerender } = renderWithProviders(<HomeBoard companyId="co-1" role="founder" />);
+      expect(await screen.findByText("Ship it")).toBeInTheDocument();
+
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Edit board" }));
+      expect(screen.getByRole("group", { name: /^Budget/ })).toBeInTheDocument();
+
+      // Shrink below the 1024px lg breakpoint and re-render so the REAL
+      // Responsive component recomputes the breakpoint from the new width
+      // (not a simulated onBreakpointChange call) — this is the one place
+      // that exercises RGL's actual width->breakpoint detection end to end;
+      // the gating logic itself is unit-tested directly in
+      // useBoardEdit.test.ts's "activeBreakpoint" and lg-only-gating cases.
+      containerWidthMock.width = 500;
+      rerender(<HomeBoard companyId="co-1" role="founder" />);
+
+      await waitFor(() => {
+        expect(screen.queryByRole("group", { name: /^Budget/ })).not.toBeInTheDocument();
+      });
+      // Editing is still on (Done/exit stays reachable) — just every
+      // mutating affordance (remove, add, keyboard) is gone below lg.
+      expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
+      expect(screen.queryAllByLabelText(/^Remove /)).toHaveLength(0);
     });
   });
 

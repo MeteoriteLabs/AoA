@@ -1,7 +1,13 @@
 import { describe, it, expect } from "vitest";
 import type { HomeBoardLayoutItem } from "@armyofagents/shared";
 import { HOME_BOARD_LG_COLS } from "@armyofagents/shared";
-import { buildDefaultLg, reconcileLg, projectToBreakpoint } from "../../components/home/gridLayout";
+import {
+  buildDefaultLg,
+  reconcileLg,
+  projectToBreakpoint,
+  moveTileKeyboard,
+  cycleTileSize,
+} from "../../components/home/gridLayout";
 import { getDefaultLayout } from "../../components/home/defaultLayout";
 import { widgetRegistry } from "../../components/home/widgets/registry";
 
@@ -208,5 +214,117 @@ describe("canonical lg round-trip (Task D1)", () => {
     const reloaded = reconcileLg(lg, "founder");
     expect(projectToBreakpoint(reloaded, 2)).toEqual(projectToBreakpoint(lg, 2));
     expect(projectToBreakpoint(reloaded, 1)).toEqual(projectToBreakpoint(lg, 1));
+  });
+});
+
+describe("moveTileKeyboard (Task D2)", () => {
+  it("moves the target tile by (dx,dy) and leaves other tiles untouched when nothing collides", () => {
+    const lg: HomeBoardLayoutItem[] = [
+      { i: "budget", x: 0, y: 0, w: 1, h: 1 },
+      { i: "agents-now", x: 3, y: 0, w: 1, h: 1 },
+    ];
+    const result = moveTileKeyboard(lg, "budget", 1, 0, 4);
+    expect(result.find((item) => item.i === "budget")).toEqual({ i: "budget", x: 1, y: 0, w: 1, h: 1 });
+    expect(result.find((item) => item.i === "agents-now")).toEqual({ i: "agents-now", x: 3, y: 0, w: 1, h: 1 });
+  });
+
+  it("moves down (increasing y) without being reverted — no global compaction is applied", () => {
+    const lg: HomeBoardLayoutItem[] = [{ i: "budget", x: 0, y: 0, w: 1, h: 1 }];
+    const result = moveTileKeyboard(lg, "budget", 0, 2, 4);
+    expect(result.find((item) => item.i === "budget")).toEqual({ i: "budget", x: 0, y: 2, w: 1, h: 1 });
+  });
+
+  it("is blocked (same array reference, no-op) at the left bound", () => {
+    const lg: HomeBoardLayoutItem[] = [{ i: "budget", x: 0, y: 0, w: 1, h: 1 }];
+    expect(moveTileKeyboard(lg, "budget", -1, 0, 4)).toBe(lg);
+  });
+
+  it("is blocked (same array reference, no-op) at the top bound", () => {
+    const lg: HomeBoardLayoutItem[] = [{ i: "budget", x: 0, y: 0, w: 1, h: 1 }];
+    expect(moveTileKeyboard(lg, "budget", 0, -1, 4)).toBe(lg);
+  });
+
+  it("is blocked (same array reference, no-op) at the right bound (x+w > cols)", () => {
+    const lg: HomeBoardLayoutItem[] = [{ i: "action-queue", x: 2, y: 0, w: 2, h: 1 }];
+    expect(moveTileKeyboard(lg, "action-queue", 1, 0, 4)).toBe(lg);
+  });
+
+  it("returns the same array reference (not just an equal one) for an unknown key", () => {
+    const lg: HomeBoardLayoutItem[] = [{ i: "budget", x: 0, y: 0, w: 1, h: 1 }];
+    expect(moveTileKeyboard(lg, "nope" as HomeBoardLayoutItem["i"], 1, 0, 4)).toBe(lg);
+  });
+
+  it("cascades a colliding neighbor out of the way instead of overlapping it", () => {
+    const lg: HomeBoardLayoutItem[] = [
+      { i: "budget", x: 0, y: 0, w: 1, h: 1 },
+      { i: "agents-now", x: 1, y: 0, w: 1, h: 1 },
+    ];
+    const result = moveTileKeyboard(lg, "budget", 1, 0, 4);
+
+    const budget = result.find((item) => item.i === "budget")!;
+    expect(budget.x).toBe(1);
+    expect(budget.y).toBe(0);
+    assertNoOverlap(result);
+    assertInBounds(result, 4);
+    // Both tiles still present — cascading relocates, never drops, a widget.
+    expect(result).toHaveLength(2);
+  });
+
+  it("horizontal moves are unaffected by compaction (compaction only ever adjusts y)", () => {
+    const lg: HomeBoardLayoutItem[] = [
+      { i: "budget", x: 0, y: 0, w: 1, h: 1 },
+      { i: "agents-now", x: 2, y: 1, w: 1, h: 1 },
+    ];
+    const result = moveTileKeyboard(lg, "budget", 1, 0, 4);
+    expect(result.find((item) => item.i === "budget")).toEqual({ i: "budget", x: 1, y: 0, w: 1, h: 1 });
+  });
+});
+
+describe("cycleTileSize (Task D2)", () => {
+  const AGENTS_NOW_ALLOWED = widgetRegistry["agents-now"].allowedSizes; // [{w:1,h:1},{w:2,h:1}]
+
+  it("cycles to the next allowed size", () => {
+    const lg: HomeBoardLayoutItem[] = [{ i: "agents-now", x: 0, y: 0, w: 1, h: 1 }];
+    const result = cycleTileSize(lg, "agents-now", AGENTS_NOW_ALLOWED, 4);
+    const item = result.find((entry) => entry.i === "agents-now")!;
+    expect({ w: item.w, h: item.h }).toEqual({ w: 2, h: 1 });
+  });
+
+  it("wraps back to the first allowed size after the last", () => {
+    const lg: HomeBoardLayoutItem[] = [{ i: "agents-now", x: 0, y: 0, w: 2, h: 1 }];
+    const result = cycleTileSize(lg, "agents-now", AGENTS_NOW_ALLOWED, 4);
+    const item = result.find((entry) => entry.i === "agents-now")!;
+    expect({ w: item.w, h: item.h }).toEqual({ w: 1, h: 1 });
+  });
+
+  it("clamps x so a larger footprint stays within bounds", () => {
+    const lg: HomeBoardLayoutItem[] = [{ i: "agents-now", x: 3, y: 0, w: 1, h: 1 }];
+    const result = cycleTileSize(lg, "agents-now", AGENTS_NOW_ALLOWED, 4);
+    const item = result.find((entry) => entry.i === "agents-now")!;
+    expect(item.w).toBe(2);
+    expect(item.x + item.w).toBeLessThanOrEqual(4);
+  });
+
+  it("cascades a colliding neighbor when the new footprint now overlaps it", () => {
+    const lg: HomeBoardLayoutItem[] = [
+      { i: "agents-now", x: 0, y: 0, w: 1, h: 1 },
+      { i: "budget", x: 1, y: 0, w: 1, h: 1 },
+    ];
+    const result = cycleTileSize(lg, "agents-now", AGENTS_NOW_ALLOWED, 4);
+    const agentsNow = result.find((entry) => entry.i === "agents-now")!;
+    expect({ w: agentsNow.w, h: agentsNow.h }).toEqual({ w: 2, h: 1 });
+    assertNoOverlap(result);
+    assertInBounds(result, 4);
+    expect(result).toHaveLength(2);
+  });
+
+  it("returns the same array reference (no-op) for an unknown key", () => {
+    const lg: HomeBoardLayoutItem[] = [{ i: "agents-now", x: 0, y: 0, w: 1, h: 1 }];
+    expect(cycleTileSize(lg, "nope" as HomeBoardLayoutItem["i"], AGENTS_NOW_ALLOWED, 4)).toBe(lg);
+  });
+
+  it("returns the same array reference (no-op) when only one size is allowed", () => {
+    const lg: HomeBoardLayoutItem[] = [{ i: "agents-now", x: 0, y: 0, w: 1, h: 1 }];
+    expect(cycleTileSize(lg, "agents-now", [{ w: 1, h: 1 }], 4)).toBe(lg);
   });
 });

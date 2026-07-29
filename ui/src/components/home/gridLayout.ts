@@ -1,6 +1,7 @@
-import { collides } from "react-grid-layout";
+import { collides, moveElement } from "react-grid-layout";
+import type { LayoutItem } from "react-grid-layout";
 import type { HomeBoardLayoutItem, UserRole } from "@armyofagents/shared";
-import { HOME_BOARD_LG_COLS } from "@armyofagents/shared";
+import { HOME_BOARD_LG_COLS, HOME_BOARD_MAX_ROWS } from "@armyofagents/shared";
 import { getDefaultLayout } from "./defaultLayout";
 import { getWidget } from "./widgets/registry";
 import type { WidgetKey, WidgetSize } from "./widgets/types";
@@ -142,4 +143,107 @@ export function reconcileLg(saved: readonly HomeBoardLayoutItem[], role: UserRol
 export function projectToBreakpoint(lg: readonly HomeBoardLayoutItem[], cols: number): HomeBoardLayoutItem[] {
   const items = lg.map((item) => ({ i: item.i, w: Math.min(item.w, cols), h: item.h }));
   return packRowMajorNextFit(items, cols);
+}
+
+function isWithinBounds(items: readonly HomeBoardLayoutItem[], cols: number): boolean {
+  return items.every(
+    (item) => item.x >= 0 && item.y >= 0 && item.x + item.w <= cols && item.y + item.h <= HOME_BOARD_MAX_ROWS,
+  );
+}
+
+/**
+ * Re-normalize react-grid-layout's LayoutItem shape back down to our clean
+ * {i,x,y,w,h} — moveElement mutates internal bookkeeping fields onto items
+ * it touches (notably `moved: true`), which must never leak into the draft:
+ * it'd survive into the save payload and make layoutsEqual/toEqual
+ * comparisons see phantom differences.
+ */
+function toHomeBoardLayoutItems(items: readonly LayoutItem[]): HomeBoardLayoutItem[] {
+  return items.map((item) => ({
+    i: item.i as WidgetKey,
+    x: item.x,
+    y: item.y,
+    w: item.w,
+    h: item.h,
+  }));
+}
+
+/**
+ * Safety net shared by moveTileKeyboard/cycleTileSize: if RGL's moveElement
+ * cascade ever left something invalid (shouldn't happen per its documented
+ * collision handling, but a keyboard-driven mutation must never hand back a
+ * broken draft), fall back to the same deterministic row-major packer used
+ * everywhere else in this file rather than surfacing an inconsistent layout.
+ */
+function ensureValid(items: readonly HomeBoardLayoutItem[], cols: number): HomeBoardLayoutItem[] {
+  if (isWithinBounds(items, cols) && !hasOverlap(items)) return items as HomeBoardLayoutItem[];
+  return packRowMajorNextFit(items, cols);
+}
+
+/**
+ * Keyboard-driven nudge (Task D2): move `key`'s tile by (dx, dy) grid cells.
+ * Blocked (returns the SAME array reference, so callers can cheaply detect a
+ * no-op) at grid bounds: x>=0, x+w<=cols, y>=0 (plus the HOME_BOARD_MAX_ROWS
+ * sanity ceiling the server validator also enforces).
+ *
+ * On a valid move, a newly-colliding neighbor is cascaded out of the way via
+ * react-grid-layout's own moveElement — collision-aware repositioning
+ * WITHOUT a full-board vertical compact. This distinction matters: compact()
+ * would silently undo a "move down" by pulling the tile straight back up to
+ * fill the gap it just vacated, defeating the whole point of an explicit
+ * keyboard nudge. moveElement mutates its inputs in place, so every item is
+ * cloned first — the caller's arrays (which may be the SAME object
+ * references as useBoardEdit's baseline snapshot) must never be mutated.
+ */
+export function moveTileKeyboard(
+  lg: readonly HomeBoardLayoutItem[],
+  key: WidgetKey,
+  dx: number,
+  dy: number,
+  cols: number,
+): HomeBoardLayoutItem[] {
+  const current = lg.find((item) => item.i === key);
+  if (!current) return lg as HomeBoardLayoutItem[];
+
+  const nextX = current.x + dx;
+  const nextY = current.y + dy;
+  const inBounds = nextX >= 0 && nextX + current.w <= cols && nextY >= 0 && nextY + current.h <= HOME_BOARD_MAX_ROWS;
+  if (!inBounds) return lg as HomeBoardLayoutItem[]; // blocked at bounds — no-op
+
+  const cloned: LayoutItem[] = lg.map((item) => ({ ...item }));
+  const target = cloned.find((item) => item.i === key)!;
+  const result = moveElement(cloned, target, nextX, nextY, true, false, "vertical", cols);
+  return ensureValid(toHomeBoardLayoutItems(result), cols);
+}
+
+/**
+ * Keyboard-driven resize (Task D2): step `key`'s tile forward through its
+ * `allowedSizes` (wrapping past the end back to the first), clamping x so
+ * the new footprint stays in bounds, then cascading away any neighbor the
+ * resize now overlaps (same moveElement approach as moveTileKeyboard, for
+ * the same reason — no global compaction). Returns the SAME array reference
+ * for a no-op (unknown key, or a single-entry allowedSizes with nothing to
+ * cycle to).
+ */
+export function cycleTileSize(
+  lg: readonly HomeBoardLayoutItem[],
+  key: WidgetKey,
+  allowedSizes: readonly WidgetSize[],
+  cols: number,
+): HomeBoardLayoutItem[] {
+  if (allowedSizes.length === 0) return lg as HomeBoardLayoutItem[];
+  const current = lg.find((item) => item.i === key);
+  if (!current) return lg as HomeBoardLayoutItem[];
+
+  const currentIndex = allowedSizes.findIndex((size) => size.w === current.w && size.h === current.h);
+  const nextSize = allowedSizes[(currentIndex + 1) % allowedSizes.length]!;
+  if (nextSize.w === current.w && nextSize.h === current.h) return lg as HomeBoardLayoutItem[]; // nothing to cycle to
+
+  const cloned: LayoutItem[] = lg.map((item) => ({ ...item }));
+  const target = cloned.find((item) => item.i === key)!;
+  target.w = nextSize.w;
+  target.h = nextSize.h;
+  target.x = Math.max(0, Math.min(target.x, cols - nextSize.w));
+  const result = moveElement(cloned, target, target.x, target.y, true, false, "vertical", cols);
+  return ensureValid(toHomeBoardLayoutItems(result), cols);
 }

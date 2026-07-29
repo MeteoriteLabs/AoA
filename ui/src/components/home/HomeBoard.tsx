@@ -21,6 +21,16 @@ const COLS = { lg: 4, md: 2, sm: 1 };
 // resize handle, as a potential drag).
 const REMOVE_BUTTON_CANCEL_SELECTOR = ".home-board-tile-remove";
 
+// Task D2 — keyboard a11y: arrow key -> (dx,dy) grid-cell nudge. Shift+Arrow
+// (any direction) instead cycles the tile's size — direction is irrelevant
+// there, it just needs to be a documented modifier+key combo.
+const ARROW_KEY_DELTAS: Record<string, readonly [number, number]> = {
+  ArrowUp: [0, -1],
+  ArrowDown: [0, 1],
+  ArrowLeft: [-1, 0],
+  ArrowRight: [1, 0],
+};
+
 /**
  * The Home widget board: a react-grid-layout tile grid with an edit mode
  * (Task C1). The canonical desktop (lg) layout is either the user's saved
@@ -41,6 +51,7 @@ export function HomeBoard({ companyId, role }: { companyId: string; role: UserRo
     isResetting,
     saveError,
     activeBreakpoint,
+    announcement,
     startEdit,
     exitEdit,
     retrySave,
@@ -50,6 +61,8 @@ export function HomeBoard({ companyId, role }: { companyId: string; role: UserRo
     onLayoutChange,
     onBreakpointChange,
     onResizeStop,
+    moveWidget,
+    cycleWidgetSize,
   } = useBoardEdit(companyId, role);
   const { width, mounted, containerRef } = useContainerWidth();
   const [trayOpen, setTrayOpen] = useState(false);
@@ -78,6 +91,13 @@ export function HomeBoard({ companyId, role }: { companyId: string; role: UserRo
 
   return (
     <div>
+      {/* Task D2 keyboard a11y: announces each keyboard move/resize. Always
+          mounted (not conditionally rendered) so screen readers are already
+          watching it before the first announcement ever lands. */}
+      <div aria-live="polite" role="status" className="sr-only">
+        {announcement}
+      </div>
+
       {/* TEMPORARY edit controls — Task D3 moves these into the pinned header. */}
       <div className="mb-2 flex items-center justify-end gap-2">
         {editing && saveError != null && (
@@ -148,8 +168,34 @@ export function HomeBoard({ companyId, role }: { companyId: string; role: UserRo
               const def = getWidget(item.i);
               if (!def) return null; // unknown key — skip defensively (design §11)
               const Widget = def.Component;
+              // Included in the accessible name so an assistive-tech user
+              // gets the current position/size just from focusing the tile,
+              // in addition to the aria-live announcement on each change.
+              const tileLabel = `${def.title} tile, column ${item.x + 1}, row ${item.y + 1}, size ${item.w} by ${item.h}`;
               return (
-                <div key={item.i} className="relative h-full w-full">
+                <div
+                  key={item.i}
+                  className="relative h-full w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-focus-ring"
+                  tabIndex={editableNow ? 0 : undefined}
+                  role={editableNow ? "group" : undefined}
+                  aria-label={editableNow ? tileLabel : undefined}
+                  onKeyDown={
+                    editableNow
+                      ? (event) => {
+                          const delta = ARROW_KEY_DELTAS[event.key];
+                          if (!delta) return;
+                          // Also prevents arrow keys from scrolling the page
+                          // out from under a focused tile.
+                          event.preventDefault();
+                          if (event.shiftKey) {
+                            cycleWidgetSize(item.i);
+                          } else {
+                            moveWidget(item.i, delta[0], delta[1]);
+                          }
+                        }
+                      : undefined
+                  }
+                >
                   {editableNow && (
                     <button
                       type="button"
