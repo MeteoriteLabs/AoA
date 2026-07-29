@@ -12,6 +12,24 @@ export function parseComposePs(raw) {
   }
 }
 
+export const MARKETPLACE_RECOVERY_PREFLIGHT_REQUESTS = Object.freeze([
+  Object.freeze({
+    key: "health",
+    endpoint: "/api/health",
+    authenticated: false,
+  }),
+  Object.freeze({
+    key: "catalog",
+    endpoint: "/api/marketplace/catalog/status",
+    authenticated: true,
+  }),
+  Object.freeze({
+    key: "identity",
+    endpoint: "/api/cli-auth/me",
+    authenticated: true,
+  }),
+]);
+
 const PREFLIGHT_SECRET_PATTERN =
   /(bearer\s+|token[=:]\s*|api[_-]?key[=:]\s*|password[=:]\s*)[^\s,;"']+/gi;
 const PREFLIGHT_TOKEN_LIKE_PATTERN =

@@ -7,6 +7,7 @@ import path from "node:path";
 import {
   composeEvidenceFromDocker,
   evaluatePreflight,
+  MARKETPLACE_RECOVERY_PREFLIGHT_REQUESTS,
   parseComposePs,
   sanitizePreflightError,
 } from "./lib/marketplace-recovery-preflight.mjs";
@@ -142,11 +143,13 @@ function composeEvidence() {
 }
 
 try {
-  const [health, catalog, identity] = await Promise.all([
-    getJson("/api/health"),
-    getJson("/api/marketplace/catalog/status"),
-    getJson("/api/cli-auth/me", true),
-  ]);
+  const responses = await Promise.all(
+    MARKETPLACE_RECOVERY_PREFLIGHT_REQUESTS.map(async (request) => [
+      request.key,
+      await getJson(request.endpoint, request.authenticated),
+    ]),
+  );
+  const { health, catalog, identity } = Object.fromEntries(responses);
   const compose = composeEvidence();
   const { ok, checks } = evaluatePreflight({
     health,

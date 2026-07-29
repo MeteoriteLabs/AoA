@@ -204,7 +204,7 @@ describe("MarketplaceDetail", () => {
     await waitFor(() => expect(screen.getByText("Install Slack")).toBeInTheDocument());
   });
 
-  it("primary breadcrumb links back to the AoA view for an AoA item", async () => {
+  it("primary breadcrumb links back to the AoA view for an AoA package member", async () => {
     // isAoaItem() keys off the github owner in source.url (not the id), so give
     // code-review an aoa-curated source → AoA first-party. Opened from ?view=aoa,
     // the breadcrumb must return to the AoA view, not Home (where it's hidden).
@@ -216,6 +216,17 @@ describe("MarketplaceDetail", () => {
           : item,
       ),
     });
+    vi.mocked(marketplaceApi.getPackages).mockResolvedValueOnce([
+      {
+        id: "MeteoriteLabs/aoa-marketplace",
+        name: "AoA skills",
+        sourceUrl: "https://github.com/MeteoriteLabs/aoa-marketplace",
+        memberItemIds: ["skill:aoa-curated/code-review"],
+        count: 1,
+        verified: true,
+        explicit: false,
+      },
+    ]);
     const { container } = wrap("/marketplace/skill/aoa-curated/code-review");
     await waitFor(() =>
       expect(

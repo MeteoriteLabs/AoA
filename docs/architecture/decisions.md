@@ -1725,9 +1725,25 @@ it by routing the agent merge through `materializeManagedBundle`).
 
 ## Decision #116 - External MCP connectors: transport union, strict isolation, env-indirection secrets (2026-07-23)
 
-**Status:** Locked 2026-07-23 (design). Not yet implemented — see the plan below. Establishes how AoA consumes EXTERNAL MCP servers. Does not change Decision #93 or #14, which govern AoA as an inbound MCP *server*; this is the outbound direction and is a separate concern.
+**Status:** Implemented. Locked 2026-07-23 and corrected 2026-07-29 to
+record the fleet-compatible catalog boundary. Establishes how AoA consumes
+EXTERNAL MCP servers. Does not change Decision #93 or #14, which govern AoA as
+an inbound MCP *server*; this is the outbound direction and is a separate
+concern.
 
-1. **Connector and plugin are distinct product types.** A **plugin** is code AoA runs (a forked Node worker with UI slots, jobs, webhooks). A **connector** is a pointer plus credentials to an external MCP server, giving agents tools and nothing else. Deciding rule: if it must render UI, run jobs, or receive webhooks inside AoA it is a plugin; if it only gives agents tools it is a connector. A plugin MAY additionally declare a connector. `connector` becomes a fifth marketplace item type alongside `skill | agent | team | plugin` (requires the coordinated two-repo bump of Decision #96).
+1. **Connector and plugin are distinct product types and distinct CDN
+   artifacts.** A **plugin** is code AoA runs (a forked Node worker with UI
+   slots, jobs, webhooks). A **connector** is a pointer plus credentials to an
+   external MCP server, giving agents tools and nothing else. Deciding rule: if
+   it must render UI, run jobs, or receive webhooks inside AoA it is a plugin;
+   if it only gives agents tools it is a connector. A plugin MAY additionally
+   declare a connector. Connectors are published in `connectors.json`; they are
+   never a fifth `catalog.json` item type. Older AoA instances reject an unknown
+   catalog item enum and retain their last-known-good catalog, so adding
+   `connector` to the four-type union would freeze marketplace updates across
+   that fleet. The consumer contract is
+   `packages/shared/src/mcp-connector-catalog.ts`, with frozen producer vectors
+   and hashes in `docs/contracts/mcp-connectors/v1/`.
 
 2. **Additive types, never a breaking union.** `McpBridgeSpec` keeps its exact stdio shape and continues to describe only AoA's own loopback bridge. External servers use a new `McpServerSpec` discriminated union (`stdio | http`) carried on a new optional `AdapterExecutionContext.mcpServers` map. Rationale: `McpBridgeSpec` is hand-duplicated in five packages by deliberate convention with no cross-boundary compiler enforcement, so a breaking edit risks silent drift.
 
@@ -1747,6 +1763,17 @@ it by routing the agent merge through `materializeManagedBundle`).
 
 10. **Adapter rollout is phased by writer complexity, not capability.** All four CLIs already support remote HTTP with auth headers; AoA's writers do not. `claude_local` ships first (its writer is raw `JSON.stringify`), then `gemini_local`, `opencode_local`, `codex_local`. The codex TOML stripper targets only `[mcp_servers.X]` and `[mcp_servers.X.env]`, so header support MUST land with a stripper fix or stale credentials accumulate across runs.
 
-**Deferred:** marketplace `connector` type and bulk registry import; flagship plugin track and the OAuth broker itself; connector tool-call audit logging (deferred until all adapters land so the event shape covers them); tool-count budgeting.
+**Deferred:** bulk registry import; flagship plugin track and the OAuth broker
+itself; connector tool-call audit logging (deferred until all adapters land so
+the event shape covers them); tool-count budgeting.
 
-**Key files:** `packages/adapter-utils/src/types.ts`, `server/src/services/internal-agent/cli-mode.ts`, `server/src/services/heartbeat-mcp.ts`, `server/src/services/internal-agent/aoa-agents/runner.ts`, `server/src/services/cli-spawn-safety.ts`, `packages/db/src/schema/company_mcp_connectors.ts`. Plan: `docs/aoa/plans/2026-07-23-mcp-connectors-foundation-byo.md`.
+**Key files:** `packages/shared/src/mcp-connector-catalog.ts`,
+`packages/adapter-utils/src/types.ts`,
+`server/src/services/mcp-connector-catalog.ts`,
+`server/src/services/mcp-connectors-loader.ts`,
+`server/src/services/internal-agent/cli-mode.ts`,
+`server/src/services/heartbeat-mcp.ts`,
+`server/src/services/internal-agent/aoa-agents/runner.ts`,
+`server/src/services/cli-spawn-safety.ts`,
+`packages/db/src/schema/company_mcp_connectors.ts`. Plan:
+`docs/aoa/plans/2026-07-23-mcp-connectors-foundation-byo.md`.

@@ -22,9 +22,9 @@ import { SnapshotInstallModal } from "@/components/marketplace/install/SnapshotI
 import {
   TYPE_ICONS,
   TYPE_LABELS_PLURAL,
+  deriveMarketplacePlacement,
   pathToItemType,
   shortSource,
-  isAoaItem,
 } from "@/lib/marketplace-constants";
 import { useMarketplaceSidebar } from "@/components/marketplace/useMarketplaceSidebar";
 import type { MarketplaceItemType, PluginRecord } from "@armyofagents/shared";
@@ -38,9 +38,13 @@ const TYPE_AVATAR_BG: Record<MarketplaceItemType, string> = {
   team:   "bg-amber-500/15  text-amber-400",
 };
 
-export default function MarketplaceDetail() {
+export interface MarketplaceDetailProps {
+  fixedType?: MarketplaceItemType;
+}
+
+export default function MarketplaceDetail({ fixedType }: MarketplaceDetailProps = {}) {
   const params = useParams<{ type: string; slug: string; "*": string }>();
-  const itemType = params.type ? pathToItemType(params.type) : null;
+  const itemType = fixedType ?? (params.type ? pathToItemType(params.type) : null);
   const slugSegment = params.slug ?? "";
   const restPath = params["*"] ?? "";
   const fullSlug = restPath ? `${slugSegment}/${restPath}` : slugSegment;
@@ -63,9 +67,13 @@ export default function MarketplaceDetail() {
     return catalog.items.find((i) => i.id === catalogItemId) ?? null;
   }, [catalog, catalogItemId]);
 
-  // AoA-first-party items live under the AoA view, not their type section — so the
-  // sidebar highlight + back link point to AoA for them.
-  const isAoa = item ? isAoaItem(item) : false;
+  const placement = useMemo(
+    () => deriveMarketplacePlacement(catalog?.items ?? [], packages ?? []),
+    [catalog, packages],
+  );
+  const isAoa = item
+    ? placement.aoaRepresentedItemIds.has(item.id)
+    : false;
   useMarketplaceSidebar(isAoa ? "aoa" : itemType ?? "home");
   const backTo = isAoa
     ? "/marketplace?view=aoa"

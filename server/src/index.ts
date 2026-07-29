@@ -78,8 +78,12 @@ import { normalizeLegacyOnboardingState } from "./migrations/normalize-legacy-on
 import { backfillCrewTemplateOrigin } from "./services/internal-agent/aoa-agents/backfill-template-origin.js";
 import { backfillCrewOriginKind } from "./services/internal-agent/aoa-agents/backfill-crew-origin-kind.js";
 import { reconcileAutonomyScale } from "./services/internal-agent/aoa-agents/reconcile-autonomy-scale.js";
-import { loadCachedCatalog } from "./services/aoa-marketplace.js";
+import {
+  getMarketplaceCatalogService,
+  loadCachedCatalog,
+} from "./services/aoa-marketplace.js";
 import { runMarketplaceCrewMaintenance } from "./services/marketplace-reconcile.js";
+import { runStartupMarketplaceMaintenance } from "./services/marketplace-startup-maintenance.js";
 import { serializeSafeError } from "./services/safe-error.js";
 
 type BetterAuthSessionUser = {
@@ -889,6 +893,23 @@ void reconcileAutonomyScale(db as any)
 // notify policy → record pending_update + send updateAvailable notification.
 const CREW_UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
+function reportMarketplaceMaintenanceResult(
+  result: Awaited<ReturnType<typeof runMarketplaceCrewMaintenance>>,
+): void {
+  if (result.failures.length > 0) {
+    logger.warn(
+      { failures: result.failures },
+      "marketplace crew maintenance completed with company failures",
+    );
+  }
+  if (result.teamReconcile.membersAdded > 0) {
+    logger.info(
+      result.teamReconcile,
+      "marketplace: team roster reconciliation added missing members",
+    );
+  }
+}
+
 async function runCrewUpdateCheck(): Promise<void> {
   try {
     const catalog = await loadCachedCatalog(db as any);
@@ -902,18 +923,7 @@ async function runCrewUpdateCheck(): Promise<void> {
       catalogItems: catalog.items,
       mode: "scheduled",
     });
-    if (result.failures.length > 0) {
-      logger.warn(
-        { failures: result.failures },
-        "marketplace crew maintenance completed with company failures",
-      );
-    }
-    if (result.teamReconcile.membersAdded > 0) {
-      logger.info(
-        result.teamReconcile,
-        "marketplace: team roster reconciliation added missing members",
-      );
-    }
+    reportMarketplaceMaintenanceResult(result);
   } catch (err) {
     logger.warn(
       { error: serializeSafeError(err) },
@@ -922,7 +932,35 @@ async function runCrewUpdateCheck(): Promise<void> {
   }
 }
 
-void runCrewUpdateCheck();
+async function runInitialCrewUpdateCheck(): Promise<void> {
+  try {
+    const catalogService = getMarketplaceCatalogService();
+    if (!catalogService) {
+      logger.warn(
+        "marketplace catalog service unavailable during startup maintenance",
+      );
+      return;
+    }
+    const result = await runStartupMarketplaceMaintenance({
+      db: db as any,
+      catalogService,
+    });
+    if (!result) {
+      logger.warn(
+        "marketplace startup maintenance skipped because the initial catalog refresh produced no catalog",
+      );
+      return;
+    }
+    reportMarketplaceMaintenanceResult(result);
+  } catch (err) {
+    logger.warn(
+      { error: serializeSafeError(err) },
+      "initial marketplace crew maintenance failed",
+    );
+  }
+}
+
+void runInitialCrewUpdateCheck();
 setInterval(
   () =>
     void runCrewUpdateCheck().catch((err) =>

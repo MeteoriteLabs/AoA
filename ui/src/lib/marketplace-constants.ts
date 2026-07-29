@@ -149,6 +149,13 @@ export function authorFromSource(url: string): string {
 
 /** GitHub orgs (lowercased) whose marketplace items/packages are AoA first-party. */
 export const AOA_OWNERS = new Set(["aoa-curated", "meteoritelabs", "armyofagents"]);
+export const AOA_DEFAULT_CREW_ITEM_ID = "team:aoa-curated/default-crew";
+export const AOA_DEFAULT_CREW_MARKETPLACE_ROUTE =
+  "marketplace/team/aoa-curated/default-crew";
+export const AOA_DEFAULT_CREW_MARKETPLACE_PATH =
+  `/${AOA_DEFAULT_CREW_MARKETPLACE_ROUTE}`;
+export const AOA_DEFAULT_CREW_ROSTER_PATH = "/team?tab=aoa&aoaTab=roster";
+export const MARKETPLACE_TEAM_DETAIL_ROUTE = "marketplace/team/:slug/*";
 
 export function isAoaOwner(owner: string | null | undefined): boolean {
   return owner != null && AOA_OWNERS.has(owner.toLowerCase());
@@ -166,10 +173,8 @@ function githubOwner(url: string): string | null {
 }
 
 /**
- * AoA's own catalog item — segregated into the marketplace "AoA" section and
- * excluded from the general type sections, search, and packages. Matches by
- * github owner or `provider.id` only (NOT the provider display name — "Army of
- * Agents" is not a slug).
+ * AoA first-party identity. This is deliberately not the shelf-placement rule:
+ * first-party plugins and standalone agents still belong in Plugins/Agents.
  */
 export function isAoaItem(item: MarketplaceCatalogItem): boolean {
   return isAoaOwner(githubOwner(item.source.url)) || isAoaOwner(item.provider?.id);
@@ -178,4 +183,58 @@ export function isAoaItem(item: MarketplaceCatalogItem): boolean {
 /** AoA's own derived package. `id` is `owner/repo` for synthesized packages. */
 export function isAoaPackage(pkg: MarketplacePackage): boolean {
   return isAoaOwner(pkg.id.split("/")[0]) || isAoaOwner(pkg.provider?.id);
+}
+
+export interface MarketplacePlacement {
+  /** Default Crew plus the first-party agents required by its catalog relationship. */
+  aoaItems: MarketplaceCatalogItem[];
+  /** Items shown in the ordinary type shelves and global search. */
+  mainItems: MarketplaceCatalogItem[];
+  /** First-party skill packages shown only on the AoA shelf. */
+  aoaPackages: MarketplacePackage[];
+  /** Packages shown on Home and Skills. */
+  mainPackages: MarketplacePackage[];
+  /** Items whose detail breadcrumb belongs to AoA, including packaged skill members. */
+  aoaRepresentedItemIds: ReadonlySet<string>;
+}
+
+/**
+ * Build the marketplace's no-duplication placement policy from catalog
+ * relationships. The Default Crew manifest is the source of truth for crew
+ * membership; the UI does not carry a second list of agent slugs.
+ */
+export function deriveMarketplacePlacement(
+  items: readonly MarketplaceCatalogItem[],
+  packages: readonly MarketplacePackage[] = [],
+): MarketplacePlacement {
+  const defaultCrew = items.find((item) => item.id === AOA_DEFAULT_CREW_ITEM_ID);
+  const crewAgentIds = new Set(
+    (defaultCrew?.requires ?? [])
+      .filter((requirement) => requirement.type === "agent")
+      .map((requirement) => requirement.id),
+  );
+
+  const aoaItems = items.filter(
+    (item) =>
+      item.id === AOA_DEFAULT_CREW_ITEM_ID ||
+      (item.type === "agent" && crewAgentIds.has(item.id) && isAoaItem(item)),
+  );
+  const aoaItemIds = new Set(aoaItems.map((item) => item.id));
+
+  const aoaPackages = packages.filter(isAoaPackage);
+  const aoaPackageMemberIds = new Set(
+    aoaPackages.flatMap((pkg) => pkg.memberItemIds),
+  );
+  const aoaRepresentedItemIds = new Set([
+    ...aoaItemIds,
+    ...aoaPackageMemberIds,
+  ]);
+
+  return {
+    aoaItems,
+    mainItems: items.filter((item) => !aoaRepresentedItemIds.has(item.id)),
+    aoaPackages,
+    mainPackages: packages.filter((pkg) => !isAoaPackage(pkg)),
+    aoaRepresentedItemIds,
+  };
 }

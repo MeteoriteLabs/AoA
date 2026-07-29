@@ -8,11 +8,17 @@ vi.mock("../middleware/logger.js", () => ({
   logger: { warn, error: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
 
-const { createConnectorCatalogService, resolveConnectorCatalogService, CONNECTOR_CATALOG_TTL_MS } =
-  await import("../services/mcp-connector-catalog.js");
+const {
+  applyConnectorEmergencyPolicy,
+  createConnectorCatalogService,
+  resolveConnectorCatalogService,
+  CONNECTOR_CATALOG_TTL_MS,
+} = await import("../services/mcp-connector-catalog.js");
 
 const URL_ = "https://cdn.example.test/connectors.json";
 const T0 = 1_000_000;
+const originalConnectorsEnabled = process.env.AOA_MCP_CONNECTORS_ENABLED;
+const originalConnectorDenylist = process.env.AOA_MCP_CONNECTOR_DENYLIST;
 
 function httpEntry(id: string) {
   return {
@@ -31,6 +37,21 @@ function okJson(body: unknown) {
 
 beforeEach(() => {
   warn.mockClear();
+  delete process.env.AOA_MCP_CONNECTORS_ENABLED;
+  delete process.env.AOA_MCP_CONNECTOR_DENYLIST;
+});
+
+afterEach(() => {
+  if (originalConnectorsEnabled === undefined) {
+    delete process.env.AOA_MCP_CONNECTORS_ENABLED;
+  } else {
+    process.env.AOA_MCP_CONNECTORS_ENABLED = originalConnectorsEnabled;
+  }
+  if (originalConnectorDenylist === undefined) {
+    delete process.env.AOA_MCP_CONNECTOR_DENYLIST;
+  } else {
+    process.env.AOA_MCP_CONNECTOR_DENYLIST = originalConnectorDenylist;
+  }
 });
 
 describe("connector catalog service — happy path", () => {
@@ -380,5 +401,42 @@ describe("resolveConnectorCatalogService — the E2E fixture seam", () => {
     process.env.NODE_ENV = "test";
     resolveConnectorCatalogService();
     expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+describe("connector catalog service - emergency policy", () => {
+  it("removes denylisted connectors without poisoning the underlying cache", async () => {
+    const fetchFn = vi.fn(async () =>
+      okJson({ entries: [httpEntry("context7"), httpEntry("healthy")] }),
+    );
+    const underlying = createConnectorCatalogService({
+      url: URL_,
+      fetchFn: fetchFn as unknown as typeof fetch,
+    });
+    const guarded = applyConnectorEmergencyPolicy(underlying);
+
+    process.env.AOA_MCP_CONNECTOR_DENYLIST = "context7";
+    const denied = await guarded.load(T0);
+    expect(denied.entries.map((entry) => entry.id)).toEqual(["healthy"]);
+
+    delete process.env.AOA_MCP_CONNECTOR_DENYLIST;
+    const restored = await guarded.load(T0 + 1);
+    expect(restored.entries.map((entry) => entry.id)).toEqual(["context7", "healthy"]);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed when the global connector switch is explicitly disabled", async () => {
+    const underlying = createConnectorCatalogService({
+      url: URL_,
+      fetchFn: vi.fn(async () =>
+        okJson({ entries: [httpEntry("context7")] }),
+      ) as unknown as typeof fetch,
+    });
+
+    process.env.AOA_MCP_CONNECTORS_ENABLED = "false";
+    const result = await applyConnectorEmergencyPolicy(underlying).load(T0);
+
+    expect(result.entries).toEqual([]);
+    expect(result.stale).toBe(false);
   });
 });

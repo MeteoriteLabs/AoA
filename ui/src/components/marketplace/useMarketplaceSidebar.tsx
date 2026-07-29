@@ -3,7 +3,8 @@ import { Bot, Cable, Home, Puzzle, Sparkles, Users } from "lucide-react";
 import type { MarketplaceItemType } from "@armyofagents/shared";
 import { useNavigate, useOutletContext } from "@/lib/router";
 import { useCatalog } from "@/hooks/useCatalog";
-import { isAoaItem } from "@/lib/marketplace-constants";
+import { usePackages } from "@/hooks/usePackages";
+import { deriveMarketplacePlacement } from "@/lib/marketplace-constants";
 import {
   SecondarySidebar,
   type SecondarySidebarItem,
@@ -33,20 +34,25 @@ export function useMarketplaceSidebar(activeKey: MarketplaceSidebarKey): {
   const { setSecondarySidebar } = useOutletContext<LobbyOutletContext>();
   const navigate = useNavigate();
   const { data: catalog } = useCatalog();
+  const { data: packages } = usePackages();
   const [collapsed, setCollapsed] = useState(false);
 
   const counts = useMemo(() => {
-    const items = catalog?.items ?? [];
-    const main = items.filter((i) => !isAoaItem(i));
+    // Package membership is part of placement, not optional decoration. Until
+    // both queries resolve, omit counts instead of temporarily counting AoA
+    // package members in Home/Skills.
+    if (!catalog || packages === undefined) return null;
+    const placement = deriveMarketplacePlacement(catalog.items, packages);
+    const main = placement.mainItems;
     return {
       home: main.length,
       skill: main.filter((i) => i.type === "skill").length,
       plugin: main.filter((i) => i.type === "plugin").length,
       agent: main.filter((i) => i.type === "agent").length,
       team: main.filter((i) => i.type === "team").length,
-      aoa: items.filter(isAoaItem).length,
+      aoa: placement.aoaItems.length + placement.aoaPackages.length,
     };
-  }, [catalog]);
+  }, [catalog, packages]);
 
   const pillItems = useMemo<SecondarySidebarItem[]>(() => {
     const go = (key: MarketplaceSidebarKey) => {
@@ -68,7 +74,10 @@ export function useMarketplaceSidebar(activeKey: MarketplaceSidebarKey): {
       // Connectors carry no count: their catalog is company-scoped AND
       // founder-only, so fetching it just to badge the rail would fire a
       // privileged request from every marketplace page, for every role.
-      count: counts[id as keyof typeof counts],
+      count:
+        id === "connector"
+          ? undefined
+          : counts?.[id as keyof NonNullable<typeof counts>],
       active: activeKey === id,
       onClick: () => go(id),
     });
