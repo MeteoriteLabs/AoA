@@ -7,7 +7,6 @@ import {
   isHttpServerSpec,
   isStdioServerSpec,
   reservedMcpServerNameCollisions,
-  stdioSpecCarriesSecretPlaceholder,
   stripReservedMcpServerNames,
   type McpServerSpec,
   type McpWriterResult,
@@ -238,55 +237,11 @@ function renderExternalMcpBlock(name: string, spec: McpServerSpec): RenderedExte
   if (!SAFE_MCP_SERVER_NAME.test(name)) return { block: null, reason: "unsafe_name" };
 
   if (isStdioServerSpec(spec)) {
-    // ── B2N9: codex CANNOT deliver a stdio connector's secret ───────────────
-    // Probed against the real CLI with a recorder MCP server that dumps the
-    // env/argv it was actually spawned with:
-    //   * codex does NOT expand `${VAR}` in stdio `args` or `env` — the child
-    //     receives the literal eight characters, and
-    //   * codex SCRUBS its own environment before spawning an MCP child, so the
-    //     "the child inherits the token anyway" fallback that makes opencode
-    //     forgiving does not exist here, and
-    //   * `--bearer-token-env-var` is HTTP-ONLY; stdio's `--env` takes a
-    //     literal `KEY=VALUE`. There is no stdio name-indirection.
-    // So there is NO route by which this credential reaches the server. Writing
-    // the block anyway produces a connector that silently authenticates as
-    // no-one — the exact failure the classified-skip channel exists to prevent,
-    // and strictly worse than a reported absence.
-    //
-    // The two tempting "fixes" are both REGRESSIONS, not fixes:
-    //   * expanding the placeholder at write time writes a LIVE credential into
-    //     config.toml on disk, reversing D5 (placeholder on disk, value in the
-    //     spawn env);
-    //   * `shell_environment_policy.inherit = "all"` is GLOBAL — it would leak
-    //     every env var, including OTHER connectors' tokens, into every shell
-    //     command the agent runs.
-    // Stdio connectors WITHOUT a secret are unaffected and deliver normally;
-    // HTTP connectors are unaffected (`bearer_token_env_var` works).
-    if (stdioSpecCarriesSecretPlaceholder(spec)) {
-      return { block: null, reason: "secret_unreachable" };
-    }
-
-    const envEntries = Object.entries(spec.env ?? {});
-    // M1: a key that is not a TOML bare key used to be silently dropped, which
-    // shipped a connector missing part of its environment while reporting
-    // success. Partial delivery is indistinguishable from a broken server at
-    // runtime, so refuse the whole connector and say why.
-    if (envEntries.some(([key]) => !SAFE_MCP_SERVER_NAME.test(key))) {
-      return { block: null, reason: "unsafe_name" };
-    }
-
-    const lines: string[] = [];
-    lines.push(`[mcp_servers.${name}]`);
-    lines.push(`command = ${tomlString(spec.command)}`);
-    lines.push(`args = ${tomlStringArray(spec.args ?? [])}`);
-    if (envEntries.length > 0) {
-      lines.push("");
-      lines.push(`[mcp_servers.${name}.env]`);
-      for (const [key, value] of envEntries) {
-        lines.push(`${key} = ${tomlString(value)}`);
-      }
-    }
-    return { block: lines.join("\n") };
+    // Codex authenticates from CODEX_HOME/auth.json. A stdio MCP server is a
+    // same-OS-user child and can read that file even if provider variables are
+    // cleared from its environment. Environment scrubbing is not a security
+    // boundary, so fail closed until the child has a separate filesystem view.
+    return { block: null, reason: "filesystem_isolation_required" };
   }
 
   if (isHttpServerSpec(spec)) {
@@ -614,8 +569,11 @@ export interface WriteCodexMcpConfigOptions {
   /**
    * EXTERNAL MCP connectors keyed by server name (Plan 2b Task 5). Rendered
    * into the SAME fenced region as the bridge. Reserved names (`aoa`,
-   * `playwright`) are filtered here; entries whose transport codex cannot
-   * express, or whose name is not a safe TOML bare key, are skipped.
+   * `playwright`) are filtered here. HTTP entries are rendered when safe.
+   * Stdio entries are skipped until the runtime provides a separate filesystem
+   * boundary, because same-user children could read CODEX_HOME/auth.json.
+   * Entries whose transport codex cannot express, or whose name is not a safe
+   * TOML bare key, are also skipped.
    *
    * Pass an EMPTY object (rather than omitting the field) to mean "this run has
    * no connectors" — the writer then removes every previously-written connector

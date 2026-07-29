@@ -158,6 +158,33 @@ interface McpConfig {
 export const PLAYWRIGHT_MCP_PACKAGE = "@playwright/mcp@0.0.75";
 
 /**
+ * Provider credentials belong to the parent CLI only. Stdio MCP children
+ * inherit that process environment, so every child spec explicitly clears the
+ * known provider-secret variables unless the connector deliberately supplies
+ * its own separately governed placeholder for the same key.
+ */
+const CHILD_PROVIDER_CREDENTIAL_MASK: Readonly<Record<string, string>> = {
+  OPENAI_API_KEY: "",
+  ANTHROPIC_API_KEY: "",
+  ANTHROPIC_AUTH_TOKEN: "",
+  CLAUDE_CODE_OAUTH_TOKEN: "",
+  AWS_ACCESS_KEY_ID: "",
+  AWS_SECRET_ACCESS_KEY: "",
+  AWS_SESSION_TOKEN: "",
+  AWS_BEARER_TOKEN_BEDROCK: "",
+};
+
+function withoutProviderCredentialEnv(
+  env: Record<string, string>,
+): Record<string, string> {
+  const sanitized = { ...env };
+  for (const key of Object.keys(CHILD_PROVIDER_CREDENTIAL_MASK)) {
+    delete sanitized[key];
+  }
+  return sanitized;
+}
+
+/**
  * Provider-neutral inner MCP server spec ({command,args,env}). This shape is
  * already provider-agnostic; later milestones reuse it to wire codex/opencode
  * MCP bridges without going through claude's mcpServers.aoa envelope.
@@ -189,6 +216,7 @@ export function buildMcpBridgeSpec(params: McpConfigParams): McpBridgeSpec {
       ? [tsxCliPath, params.bridgeEntrypoint]
       : [params.bridgeEntrypoint],
     env: {
+      ...CHILD_PROVIDER_CREDENTIAL_MASK,
       // The bridge owns stdout for JSON-RPC frames. Force its pino logger to
       // stderr (see middleware/logger.ts) so a stray log (e.g. the embeddings
       // "OPENAI_API_KEY is not set" WARN fired by createServiceContainer at
@@ -256,7 +284,7 @@ export function buildMcpConfig(params: McpConfigParams): McpConfig {
     reserved.playwright = {
       command: "npx",
       args: [PLAYWRIGHT_MCP_PACKAGE, "--headless"],
-      env: {},
+      env: { ...CHILD_PROVIDER_CREDENTIAL_MASK },
     };
   }
 
@@ -286,7 +314,11 @@ export function buildMcpConfig(params: McpConfigParams): McpConfig {
             aoaSecretPlaceholderFor,
           ),
         }
-      : { command: spec.command, args: spec.args, env: spec.env },
+      : {
+          command: spec.command,
+          args: spec.args,
+          env: { ...CHILD_PROVIDER_CREDENTIAL_MASK, ...spec.env },
+        },
   );
 
   return { mcpServers };
@@ -467,6 +499,10 @@ export async function resolveCliInvocation(
   // unaffected (string is assignable to the prior commanderModel slot, so a
   // mid-list insert mis-bound rawContent without a typecheck error).
   commanderModel?: string | null,
+  // Credential environment resolved by the control plane for this Commander
+  // run. It is deliberately explicit so the CLI never authenticates from an
+  // unrelated server-global vendor key.
+  runtimeEnv: Record<string, string> = {},
 ): Promise<CliInvocation | null> {
   const isWin = platform() === "win32";
   const claudeBypassArgs = vendorCliBypassEnabled
@@ -526,7 +562,10 @@ export async function resolveCliInvocation(
             "--include-partial-messages",
             "--verbose",
           ],
-          spawnEnv: { MAX_THINKING_TOKENS: String(COMMANDER_MAX_THINKING_TOKENS) },
+          spawnEnv: {
+            ...runtimeEnv,
+            MAX_THINKING_TOKENS: String(COMMANDER_MAX_THINKING_TOKENS),
+          },
           mcpArtifactPath: configPath,
           stdinPrompt: systemSplitArgs.rawContent,
         };
@@ -545,7 +584,10 @@ export async function resolveCliInvocation(
           "--include-partial-messages",
           "--verbose",
         ],
-        spawnEnv: { MAX_THINKING_TOKENS: String(COMMANDER_MAX_THINKING_TOKENS) },
+        spawnEnv: {
+          ...runtimeEnv,
+          MAX_THINKING_TOKENS: String(COMMANDER_MAX_THINKING_TOKENS),
+        },
         mcpArtifactPath: configPath,
         // Prefer the explicit raw prompt; fall back to safeContent only if the
         // caller didn't thread rawContent (defensive — the chat caller always
@@ -561,37 +603,59 @@ export async function resolveCliInvocation(
       // there via the MX3 writer. Prompt is delivered over stdin: `codex
       // exec --json -` reads instructions from stdin (matches the chat's
       // persistent stdin-piping model for multi-turn).
-      const { writeCodexMcpConfigToml, ensureCodexAuthInHome, readSharedCodexModel } =
+      const {
+        writeCodexMcpConfigToml,
+        ensureCodexAuthInHome,
+        readSharedCodexModel,
+        writeApiKeyAuthJson,
+      } =
         await import("@armyofagents/adapter-codex-local/server");
       const codexHomeDir = codexHomeDirFor(params.companyId, params.userId);
-      // FU-8: deliver EXTERNAL connectors alongside the bridge, exactly the way
-      // the codex ADAPTER does (execute.ts) — the SAME writer renders the bridge
-      // and every connector into one fenced region. `params.extraMcpServers`
-      // carries the Commander-resolved specs (D3 all-active; each with only a
-      // `${AOA_MCP_*_TOKEN}` placeholder — the real secret rides the spawn env,
-      // never this file). An empty/absent map means "no connectors": the writer
-      // treats `{}` and omitted identically (its fence strip still runs), so the
-      // no-connectors config.toml stays byte-identical to pre-FU-8. Codex's known
-      // limit (a stdio connector carrying a secret is undeliverable — FU-5) is
-      // handled INSIDE the writer, which SKIPS those with a reason; we pass all
-      // resolved specs and let it filter.
-      await writeCodexMcpConfigToml(codexHomeDir, buildMcpBridgeSpec(params), {
+      // The shared writer delivers HTTP connectors alongside the first-party
+      // bridge and fails closed for every stdio connector. Codex reads provider
+      // credentials from auth.json in this same home, and a same-user stdio
+      // child could read that file without a separate filesystem boundary.
+      const mcpWriteResult = await writeCodexMcpConfigToml(
+        codexHomeDir,
+        buildMcpBridgeSpec(params),
+        {
         externalServers: params.extraMcpServers ?? {},
-      });
+        },
+      );
+      for (const skip of mcpWriteResult?.skipped ?? []) {
+        logger.warn(
+          { serverName: skip.serverName, reason: skip.reason },
+          "Commander Codex MCP connector skipped",
+        );
+      }
       // MX-chatauth: the per-session CODEX_HOME has config.toml but no
       // credentials, so `codex exec` run with it 401s ("Missing bearer or
       // basic authentication"). Provision auth.json into the SAME dir by
       // copying the user's shared ~/.codex/auth.json (no-op if absent).
       // Session-isolated: this home/config.toml encodes THIS chat
       // session's identity and must not be shared with the agent path.
-      await ensureCodexAuthInHome(codexHomeDir);
+      const codexAuthSourceEnv = { ...process.env, ...runtimeEnv };
+      const openAiApiKey = runtimeEnv.OPENAI_API_KEY?.trim();
+      if (openAiApiKey) {
+        await writeApiKeyAuthJson(codexHomeDir, openAiApiKey);
+      } else {
+        const copied = await ensureCodexAuthInHome(
+          codexHomeDir,
+          codexAuthSourceEnv,
+        );
+        if (!copied && runtimeEnv.CODEX_HOME?.trim()) {
+          throw new Error(
+            "Governed Codex credential evidence is missing; sign in again.",
+          );
+        }
+      }
       // MX-chatmodel: pin a subscription-supported model + effort. The
       // per-session CODEX_HOME has no `model` line, so without --model codex
       // falls back to its default (gpt-5.3-codex), which a ChatGPT-account
       // codex rejects with a 400 → empty turn. effort=high is REQUIRED for
       // codex to emit reasoning summaries (medium emits none). The summary
       // flag stays BARE (quoted emits nothing). See codex-model.ts + the plan.
-      const sharedCodexModel = await readSharedCodexModel(); // shared ~/.codex, NOT the per-session home
+      const sharedCodexModel = await readSharedCodexModel(codexAuthSourceEnv);
       const resolvedCodexModel = resolveCodexChatModel(codexModel, sharedCodexModel);
       const modelArgs = ["--model", resolvedCodexModel];
       const reasoningArgs = [
@@ -606,7 +670,13 @@ export async function resolveCliInvocation(
       return {
         binary: "codex",
         args: codexArgs,
-        spawnEnv: { CODEX_HOME: codexHomeDir },
+        // Codex authenticates from the managed auth.json above. Keeping the
+        // raw provider key in the parent env would also expose it to every
+        // stdio MCP connector Codex spawns.
+        spawnEnv: {
+          ...withoutProviderCredentialEnv(runtimeEnv),
+          CODEX_HOME: codexHomeDir,
+        },
         // Record the config.toml so the existing best-effort unlink cleanup
         // (cli-session-store.killSession) reaps the primary artifact, the
         // same way it reaps claude's tmp .json. Parity, no new machinery.
@@ -657,6 +727,10 @@ export function cliModeService(db: Db) {
         vendorCliBypassEnabled?: boolean;
         /** internal_agent_config.model — used (validated) for the codex spawn. */
         model?: string | null;
+        /** Optional governed Commander credential env supplied by a caller. */
+        runtimeEnv?: Record<string, string>;
+        /** Commander agent principal used to resolve governed credentials. */
+        commanderAgentId?: string | null;
       },
     ): AsyncGenerator<AgentStreamChunk> {
       // 1. Validate CLI tool config
@@ -673,6 +747,32 @@ export function cliModeService(db: Db) {
       if (!detection.available) {
         yield { type: "error", message: detection.error! };
         return;
+      }
+
+      let runtimeEnv = config.runtimeEnv;
+      if (!runtimeEnv && config.commanderAgentId) {
+        // Lazy to keep the pure CLI invocation/test surface independent from
+        // the credential-topology module (which initializes OS process probes).
+        const { resolveCommanderRuntimeEnvironment } = await import(
+          "./commander-runtime-auth.js"
+        );
+        runtimeEnv = await resolveCommanderRuntimeEnvironment(db, {
+          companyId: params.companyId,
+          commanderAgentId: config.commanderAgentId,
+          actorUserId: params.userId,
+        });
+      }
+      if (!runtimeEnv) {
+        const scopedCliAuthRequired = /^(1|true|yes)$/i.test(
+          process.env.AOA_SCOPED_CLI_AUTH?.trim() ?? "",
+        );
+        if (
+          scopedCliAuthRequired &&
+          (config.cliTool === "codex" || config.cliTool === "claude_cli")
+        ) {
+          throw new Error("Commander credential binding is unavailable for this company.");
+        }
+        runtimeEnv = {};
       }
 
       // Provider sessions must follow the persisted Commander conversation.
@@ -756,6 +856,7 @@ export function cliModeService(db: Db) {
             resumeSessionId: session?.codexSessionId ?? null,
             vendorCliBypassEnabled: config.vendorCliBypassEnabled ?? true,
             codexModel: config.model ?? null,
+            runtimeEnv,
             onSessionId: (sid) => {
               const existing = sessionStore.get(sessionKey);
               if (existing) {
@@ -906,6 +1007,7 @@ export function cliModeService(db: Db) {
             undefined,        // codexModel (codex routes through runCodexTurn, not here)
             params.content,   // rawContent — raw prompt for claude's stdin (plain-path fallback)
             config.model,     // commanderModel — shell-safe --model for claude_cli (LAST param)
+            runtimeEnv,
           );
           if (!invocation) {
             yield {
@@ -926,13 +1028,6 @@ export function cliModeService(db: Db) {
           // so a connector added/removed mid-conversation won't take effect
           // until that session recycles. Real debugging gotcha ("I added a
           // connector and Commander still can't see it").
-          // P1 (Codex): gate on the resolved SPEC map, not connectorEnv. A
-          // secretless connector (stdio filesystem, unauth'd http) yields a
-          // nonempty spec map but an EMPTY connectorEnv — gating on connectorEnv
-          // would skip the FU-23 scrub below and let that connector's stdio child
-          // inherit AoA's ambient secrets. Presence of ANY external spec is what
-          // means "a third-party child may spawn → scrub".
-          const connectorsPresent = Object.keys(connectorSpecs).length > 0;
           if (Object.keys(connectorEnv).length > 0) {
             invocation.spawnEnv = { ...(invocation.spawnEnv ?? {}), ...connectorEnv };
           }
@@ -954,18 +1049,17 @@ export function cliModeService(db: Db) {
           // last so MAX_THINKING_TOKENS wins. The `aoa` bridge stays functional
           // because buildMcpBridgeSpec re-supplies DATABASE_URL + the
           // secrets-provider config on `mcpServers.aoa.env` — the bridge does NOT
-          // depend on this inherited env. No-connectors turns keep the full env
-          // (byte-identical; there is no third-party child to protect).
+          // depend on this inherited env. Every turn is scrubbed so the server's
+          // embeddings key can never become accidental Commander authentication;
+          // the governed runtime credential is re-applied through spawnEnv.
           // NOTE: sibling-connector-token isolation is NOT reachable here — every
           // token must sit in the one CLI env for `${VAR}` expansion, and the CLI
           // (not AoA) spawns the connector children. This scrub targets AoA's OWN
           // secrets, which is what the module + [ESC-7] cover.
-          const cliEnv = connectorsPresent
-            ? {
-                ...mergeConnectorEnv(buildScrubbedCliEnv(), connectorEnv),
-                ...(invocation.spawnEnv ?? {}),
-              }
-            : { ...process.env, ...invocation.spawnEnv };
+          const cliEnv = {
+            ...mergeConnectorEnv(buildScrubbedCliEnv(), connectorEnv),
+            ...(invocation.spawnEnv ?? {}),
+          };
           const cliProcess = spawn(invocation.binary, invocation.args, {
             stdio: ["pipe", "pipe", "pipe"],
             env: cliEnv,
@@ -1283,11 +1377,9 @@ async function* streamProcessOutput(
 interface RunCodexTurnArgs {
   mcpParams: McpConfigParams;
   /**
-   * FU-8: real connector secret values keyed by their `${AOA_MCP_*_TOKEN}` env
-   * var name. Empty ⇒ no connectors (byte-identical spawn env). When present,
-   * the spawn base is scrubbed of AoA's own ambient secrets and these tokens
-   * are re-applied — the CLI (and any stdio connector child it spawns) never
-   * inherits DATABASE_URL / the embeddings key / the secrets master key / etc.
+   * Real HTTP-connector secret values keyed by their `${AOA_MCP_*_TOKEN}` env
+   * var name. Stdio connector values are removed before spawn because Codex
+   * does not deliver stdio connectors without filesystem isolation.
    */
   connectorEnv: Record<string, string>;
   prompt: string;
@@ -1296,6 +1388,8 @@ interface RunCodexTurnArgs {
   vendorCliBypassEnabled: boolean;
   /** internal_agent_config.model (validated downstream) — pins the codex model. */
   codexModel?: string | null;
+  /** Governed Commander credential env resolved before the Codex spawn. */
+  runtimeEnv: Record<string, string>;
   /** Called with the parsed codex sessionId so the caller can persist it. */
   onSessionId: (sessionId: string | null) => void;
 }
@@ -1331,6 +1425,9 @@ async function* runCodexTurn(
       undefined,
       args.vendorCliBypassEnabled,
       args.codexModel ?? null,
+      undefined,
+      undefined,
+      args.runtimeEnv,
     );
     if (!invocation) {
       // codex is a wired CLI — resolveCliInvocation never returns null for
@@ -1343,25 +1440,19 @@ async function* runCodexTurn(
     // contain internal implementation details (e.g. "Paperclip") not meant
     // to surface to users.
     //
-    // FU-23 secret scrub (mirrors the claude_cli spawn): when this turn hosts
-    // third-party MCP connectors, the CLI — and every stdio connector child it
-    // spawns — must NOT inherit AoA's ambient secret env. Scrub the base down to
-    // PATH/HOME/etc., re-apply only the connector `${AOA_MCP_*_TOKEN}` values the
-    // config placeholders expand from, then overlay codex's CODEX_HOME last (the
-    // `aoa` bridge stays functional — buildMcpBridgeSpec re-supplies its own
-    // config on the bridge spec env). No-connectors turns keep the full env
-    // (byte-identical to pre-FU-8; there is no third-party child to protect).
-    // P1 (Codex): gate on the resolved SPEC map, not connectorEnv. A secretless
-    // connector yields a nonempty spec map but empty connectorEnv; gating on
-    // connectorEnv would skip this scrub and leak AoA's ambient secrets into that
-    // connector's stdio child. Presence of ANY external spec means "scrub".
-    const connectorsPresent = Object.keys(args.mcpParams.extraMcpServers ?? {}).length > 0;
-    const spawnEnv = connectorsPresent
-      ? {
-          ...mergeConnectorEnv(buildScrubbedCliEnv(), args.connectorEnv),
-          ...(invocation.spawnEnv ?? {}),
-        }
-      : { ...process.env, ...invocation.spawnEnv };
+    // Scrub the server base and re-apply only HTTP connector credentials. Stdio
+    // connectors are rejected by the Codex writer; their token variables must
+    // not remain visible to Codex's shell tools after that rejection.
+    const codexConnectorEnv = { ...args.connectorEnv };
+    for (const spec of Object.values(args.mcpParams.extraMcpServers ?? {})) {
+      if (spec.kind === "stdio" && spec.secretEnvVar) {
+        delete codexConnectorEnv[spec.secretEnvVar];
+      }
+    }
+    const spawnEnv = {
+      ...mergeConnectorEnv(buildScrubbedCliEnv(), codexConnectorEnv),
+      ...(invocation.spawnEnv ?? {}),
+    };
     const proc = spawn(invocation.binary, invocation.args, {
       stdio: ["pipe", "pipe", "pipe"],
       env: spawnEnv,

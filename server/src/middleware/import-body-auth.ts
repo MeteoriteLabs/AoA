@@ -1,5 +1,5 @@
 import type { RequestHandler } from "express";
-import { forbidden } from "../errors.js";
+import { forbidden, unauthorized } from "../errors.js";
 import {
   assertBoard,
   assertCompanyAccess,
@@ -35,5 +35,27 @@ export const authorizeExistingCompanyImportBody: RequestHandler = (
     assertBoard(req);
   }
   assertCompanyAccess(req, req.params.companyId as string);
+  next();
+};
+
+/**
+ * Legacy import routes carry their target in the body, so company-level
+ * authorization cannot run until after parsing. Still require an authenticated
+ * actor (and a board actor for the mutating route) before accepting the larger
+ * compatibility payload.
+ */
+export const authorizeLegacyCompanyImportBody: RequestHandler = (
+  req,
+  _res,
+  next
+) => {
+  const isPreview = /\/preview\/?$/.test(req.path);
+  if (isPreview) {
+    if (req.actor.type === "none") {
+      throw unauthorized();
+    }
+  } else {
+    assertBoard(req);
+  }
   next();
 };

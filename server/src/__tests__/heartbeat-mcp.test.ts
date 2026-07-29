@@ -309,10 +309,14 @@ describe("heartbeat MCP delivery with connectors (Plan 1, claude_local)", () => 
     });
 
     const written = lastWrittenMcpConfig();
-    expect(written.mcpServers["gh-cli"]).toEqual({
+    expect(written.mcpServers["gh-cli"]).toMatchObject({
       command: "gh-mcp",
       args: ["--token", "${AOA_MCP_GH_CLI_TOKEN}"],
-      env: { GH_TOKEN: "${AOA_MCP_GH_CLI_TOKEN}" },
+      env: {
+        GH_TOKEN: "${AOA_MCP_GH_CLI_TOKEN}",
+        OPENAI_API_KEY: "",
+        ANTHROPIC_API_KEY: "",
+      },
     });
     expect(JSON.stringify(written)).not.toContain("ghp_secret_value");
     expect(delivery.config.env).toEqual({ AOA_MCP_GH_CLI_TOKEN: "ghp_secret_value" });

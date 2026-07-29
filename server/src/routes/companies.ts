@@ -289,8 +289,9 @@ export function companyRoutes(
     commitImport
   );
 
-  // Compatibility routes for older UIs. These use the global 100 KB parser;
-  // large imports must use the path-authorized routes above.
+  // Compatibility routes for older clients. Their 20 MB parser authenticates
+  // the actor before reading the body; target authorization remains here
+  // because the legacy contract carries the target inside that body.
   router.post(
     "/import/preview",
     authorizeImportPreview,

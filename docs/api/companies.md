@@ -241,10 +241,10 @@ POST /api/companies/import/preview
 POST /api/companies/import
 ```
 
-They use the global JSON parser and therefore accept at most **100 KB**. New
-clients and ordinary portability bundles must use the path-authorized endpoints
-above. A larger request sent to either legacy route returns `413 Payload Too
-Large`.
+They retain the **20 MB** compatibility limit. The server authenticates the
+actor before accepting the larger body, then authorizes the body-selected
+target after parsing. New clients should use the path-authorized endpoints
+above because those can authorize the exact company target before parsing.
 
 For an `existing_company` import with `collisionStrategy: "replace"`, a matching
 skill that carries founder edits is shown in preview with

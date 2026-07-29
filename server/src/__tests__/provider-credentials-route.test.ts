@@ -21,6 +21,10 @@ const mockAssertRole = vi.hoisted(() => vi.fn(async () => {}));
 const mockAssertCompanyAccess = vi.hoisted(() => vi.fn());
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => {}));
 const mockRemoveCredentialHome = vi.hoisted(() => vi.fn(async () => true));
+const mockDeleteReadinessForScope = vi.hoisted(() => vi.fn(async () => {}));
+const mockDeleteAgentReadinessForProvider = vi.hoisted(() =>
+  vi.fn(async () => {})
+);
 
 vi.mock("../middleware/rbac.js", () => ({ assertRole: mockAssertRole }));
 vi.mock("../routes/authz.js", () => ({
@@ -31,6 +35,10 @@ vi.mock("../services/activity-log.js", () => ({
 }));
 vi.mock("../services/provider-credentials.js", () => ({
   removeScopedSubscriptionCredentialHome: mockRemoveCredentialHome,
+}));
+vi.mock("../services/providers/readiness.js", () => ({
+  deleteReadinessForScope: mockDeleteReadinessForScope,
+  deleteAgentReadinessForProvider: mockDeleteAgentReadinessForProvider,
 }));
 
 import { errorHandler } from "../middleware/error-handler.js";
@@ -368,6 +376,12 @@ describe("provider credential routes", () => {
         entityId: "binding-1",
       })
     );
+    expect(mockDeleteReadinessForScope).toHaveBeenCalledWith(
+      handle,
+      "company-1",
+      "openai",
+      { type: "agent", agentId: "agent-1" }
+    );
   });
 
   it("rejects company API key records from the personal-subscription binding endpoint", async () => {
@@ -442,7 +456,10 @@ describe("provider credential routes", () => {
     expect(missing.status).toBe(404);
     expect(mockLogActivity).not.toHaveBeenCalled();
 
-    const success = fakeDb({ update: [[{ id: "binding-1" }]] });
+    const success = fakeDb({
+      select: [[{ provider: "openai" }]],
+      update: [[{ id: "binding-1", credentialId: "credential-1" }]],
+    });
     const revoked = await request(makeApp(success.db)).delete(bindingUrl);
     expect(revoked.status).toBe(204);
     expect(mockLogActivity).toHaveBeenCalledWith(
@@ -452,13 +469,22 @@ describe("provider credential routes", () => {
         entityId: "binding-1",
       })
     );
+    expect(mockDeleteReadinessForScope).toHaveBeenCalledWith(
+      success.handle,
+      "company-1",
+      "openai",
+      { type: "agent", agentId: "agent-1" }
+    );
   });
 
   it("fails the binding-revoke transaction when its required audit write fails", async () => {
     mockLogActivity.mockRejectedValueOnce(
       new Error("activity store unavailable")
     );
-    const attempted = fakeDb({ update: [[{ id: "binding-1" }]] });
+    const attempted = fakeDb({
+      select: [[{ provider: "openai" }]],
+      update: [[{ id: "binding-1", credentialId: "credential-1" }]],
+    });
     const response = await request(makeApp(attempted.db)).delete(bindingUrl);
     expect(response.status).toBe(500);
     expect(attempted.calls).toContain("transaction");
@@ -553,6 +579,17 @@ describe("provider credential routes", () => {
       provider: "openai",
       executionTargetId: "target-1",
     });
+    expect(mockDeleteReadinessForScope).toHaveBeenCalledWith(
+      success.handle,
+      "company-1",
+      "openai",
+      { type: "company_default" }
+    );
+    expect(mockDeleteAgentReadinessForProvider).toHaveBeenCalledWith(
+      success.handle,
+      "company-1",
+      "openai"
+    );
   });
 
   it("surfaces scoped filesystem cleanup failure only after the audited logical revoke", async () => {

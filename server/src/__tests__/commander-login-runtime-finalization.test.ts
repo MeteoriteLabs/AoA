@@ -54,12 +54,14 @@ function runtimeDb() {
     execute: vi.fn(async () => undefined),
     select: () => ({
       from: () => ({
-        where: () => ({
-          orderBy: () => ({
-            limit: async () =>
-              [...rows.values()].filter((row) => row.status === "pending").slice(0, 1),
-          }),
-        }),
+        where: () => {
+          const limit = async () =>
+            [...rows.values()].filter((row) => row.status === "pending").slice(0, 1);
+          return {
+            limit,
+            orderBy: () => ({ limit }),
+          };
+        },
       }),
     }),
     insert: () => ({
@@ -87,6 +89,7 @@ function runtimeDb() {
   };
   return {
     rows,
+    tx,
     db: {
       transaction: async <T>(callback: (transaction: typeof tx) => Promise<T>) => callback(tx),
       ...tx,
@@ -121,7 +124,7 @@ describe("Commander login production runtime finalization", () => {
       .mockResolvedValueOnce("generation-before")
       .mockResolvedValueOnce("generation-after");
 
-    const { db, rows } = runtimeDb();
+    const { db, rows, tx } = runtimeDb();
     const service = buildCommanderLoginService(db);
     await service.startChallenge({
       companyId: "company-1",
@@ -134,7 +137,7 @@ describe("Commander login production runtime finalization", () => {
 
     await vi.waitFor(() => {
       expect(runtimeMocks.verifyAndBind).toHaveBeenCalledWith(
-        db,
+        tx,
         expect.objectContaining({
           companyId: "company-1",
           provider: "openai",
@@ -145,13 +148,13 @@ describe("Commander login production runtime finalization", () => {
       );
     });
     expect(runtimeMocks.deleteReadinessForScope).toHaveBeenCalledWith(
-      db,
+      tx,
       "company-1",
       "openai",
       { type: "company_default" },
     );
     expect(runtimeMocks.deleteAgentReadinessForProvider).toHaveBeenCalledWith(
-      db,
+      tx,
       "company-1",
       "openai",
     );
@@ -192,7 +195,7 @@ describe("Commander login production runtime finalization", () => {
         .mockResolvedValueOnce("generation-before")
         .mockResolvedValueOnce("generation-after");
 
-      const { db } = runtimeDb();
+      const { db, tx } = runtimeDb();
       const service = buildCommanderLoginService(db);
       await service.startChallenge({
         companyId: "company-1",
@@ -205,7 +208,7 @@ describe("Commander login production runtime finalization", () => {
 
       await vi.waitFor(() => {
         expect(runtimeMocks.verifyAndBind).toHaveBeenCalledWith(
-          db,
+          tx,
           expect.objectContaining({
             executionTargetId: expectedTargetId,
           }),

@@ -15,6 +15,7 @@ import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import {
   authorizeExistingCompanyImportBody,
+  authorizeLegacyCompanyImportBody,
   authorizeNewCompanyImportBody,
 } from "./middleware/import-body-auth.js";
 import {
@@ -275,6 +276,11 @@ export async function createApp(
   app.use(
     "/api/companies/:companyId/import",
     authorizeExistingCompanyImportBody,
+    express.json({ limit: "20mb", verify: captureRawBody })
+  );
+  app.post(
+    ["/api/companies/import", "/api/companies/import/preview"],
+    authorizeLegacyCompanyImportBody,
     express.json({ limit: "20mb", verify: captureRawBody })
   );
   // Runtime previews are a streaming proxy, not JSON API routes. Mount before

@@ -554,7 +554,7 @@ describe("computeConnectorDeliverability (FU-1)", () => {
     expect(summary?.reason).toBe("d7_blocked"); // preview agrees
   });
 
-  it("surfaces secret_unreachable per-agent for codex + stdio + secret, but not for claude", () => {
+  it("requires filesystem isolation per-agent for codex + stdio, but not for claude", () => {
     const summary = computeConnectorDeliverability({
       connector: stdioWithSecret,
       deploymentMode: "local_trusted",
@@ -563,17 +563,31 @@ describe("computeConnectorDeliverability (FU-1)", () => {
     expect(summary?.deliverable).toBe(false);
     expect(summary?.reason).toBeNull();
     expect(summary?.blockedAgents).toEqual([
-      { agentId: "a2", agentName: "Codey", reason: "secret_unreachable" },
+      {
+        agentId: "a2",
+        agentName: "Codey",
+        reason: "filesystem_isolation_required",
+      },
     ]);
   });
 
-  it("does NOT flag secret_unreachable for a codex stdio connector with no secret", () => {
+  it("also requires filesystem isolation for a secretless Codex stdio connector", () => {
     const summary = computeConnectorDeliverability({
       connector: { ...stdioWithSecret, secretRef: null, args: ["fs-mcp@1.0.0"] },
       deploymentMode: "local_trusted",
       assignedAgents: [codexAgent],
     });
-    expect(summary).toEqual({ deliverable: true, reason: null, blockedAgents: [] });
+    expect(summary).toEqual({
+      deliverable: false,
+      reason: null,
+      blockedAgents: [
+        {
+          agentId: "a2",
+          agentName: "Codey",
+          reason: "filesystem_isolation_required",
+        },
+      ],
+    });
   });
 
   it("flags adapter_incapable for an assigned agent whose adapter has no MCP client", () => {

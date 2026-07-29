@@ -12,7 +12,7 @@ import { api } from "./client";
  * Why an ACTIVE connector would not currently reach an intended recipient.
  * Mirrors the server's `ConnectorDeliverabilityReason` (a superset of the two
  * skip vocabularies): connector-global row/D7 reasons plus the per-adapter
- * `secret_unreachable` (codex can't deliver a stdio secret) and
+ * `filesystem_isolation_required` (Codex stdio needs a process/filesystem sandbox) and
  * `adapter_incapable` (the agent's adapter has no MCP client).
  */
 export type ConnectorDeliverabilityReason =
@@ -23,6 +23,7 @@ export type ConnectorDeliverabilityReason =
   | "d7_blocked"
   | "unsafe_command"
   | "secret_unreachable"
+  | "filesystem_isolation_required"
   | "adapter_incapable"
   | "credential_inactive_or_missing";
 

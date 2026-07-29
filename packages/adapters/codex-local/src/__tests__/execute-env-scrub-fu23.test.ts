@@ -45,17 +45,16 @@ const NOTION: McpServerSpec = {
   headers: { Authorization: "Bearer ${AOA_MCP_NOTION_TOKEN}" },
   authTokenEnvVar: "AOA_MCP_NOTION_TOKEN",
 };
-// A STDIO connector — the ONLY transport that spawns a local child inheriting the
-// CLI env, so the ONLY one that triggers env isolation (F4).
+// Codex rejects every stdio connector until it has a separate filesystem
+// boundary, even when the connector itself carries no secret.
 const PG_STDIO: McpServerSpec = {
   kind: "stdio",
   command: "npx",
   args: ["-y", "dbhub@1.0.0"],
   env: {},
 };
-// A SECRET-bearing stdio connector — codex CANNOT deliver a stdio secret, so its
-// writer drops this as `secret_unreachable` (no child spawns). The isolation gate
-// must therefore NOT fire for it (F4 round 2 / Codex round 3).
+// A secret-bearing stdio connector. Its config block and token overlay must both
+// be removed when the filesystem-isolation policy rejects it.
 const SECRET_STDIO: McpServerSpec = {
   kind: "stdio",
   command: "npx",
@@ -136,7 +135,11 @@ async function runOnce(
       config: {
         command: commandPath,
         cwd: workspace,
-        env: { AOA_TEST_CAPTURE_PATH: capturePath, AOA_MCP_NOTION_TOKEN: "connector-token" },
+        env: {
+          AOA_TEST_CAPTURE_PATH: capturePath,
+          AOA_MCP_NOTION_TOKEN: "connector-token",
+          AOA_MCP_PG_TOKEN: "stdio-token",
+        },
         promptTemplate: "Prompt.",
         timeoutSec: 15,
         graceSec: 1,
@@ -158,16 +161,14 @@ async function runOnce(
 }
 
 describe("codex_local FU-23 env scrub (exec path)", () => {
-  it("STDIO connector present → ALL AoA ambient secrets absent, run bearer stripped, connector token + PATH survive", async () => {
+  it("secretless stdio is not delivered, so the Codex agent keeps its normal run env", async () => {
     const env = await runOnce("stdio");
-    for (const key of Object.keys(AMBIENT_SECRETS)) {
-      expect(env[key], `${key} must not leak to a connector child`).toBeUndefined();
-    }
+    expect(env.OPENAI_API_KEY).toBeUndefined();
+    expect(env.DATABASE_URL).toBe(AMBIENT_SECRETS.DATABASE_URL);
+    expect(env.GITHUB_PAT).toBe(AMBIENT_SECRETS.GITHUB_PAT);
     expect(env.AOA_MCP_NOTION_TOKEN).toBe("connector-token");
     expect(env.PATH ?? env.Path).toBeTruthy();
-    // WS1 — the run-scoped API bearer must NOT reach a stdio connector child.
-    // ABLATION: gate stripConnectorRunBearers off `hasStdioConnector` → RED.
-    expect(env.AOA_API_KEY, "run token must not leak to a connector child").toBeUndefined();
+    expect(env.AOA_API_KEY).toBe("secret-run-token");
   });
 
   it("no connectors → only the pre-existing OPENAI_API_KEY strip applies (DATABASE_URL still present)", async () => {
@@ -197,16 +198,10 @@ describe("codex_local FU-23 env scrub (exec path)", () => {
     expect(env.AOA_MCP_NOTION_TOKEN).toBe("connector-token");
   });
 
-  it("SECRET-bearing stdio only → codex drops it (secret_unreachable), so bearer KEPT (Codex round 3)", async () => {
-    // codex cannot deliver a stdio secret, so its writer drops a secret-bearing
-    // stdio spec before any child spawns. With no delivered stdio child, isolating
-    // the env is pure downside — it must NOT strip AOA_API_KEY (else the codex
-    // agent's own authenticated REST 401s merely because it was ASSIGNED a
-    // connector codex can't run). Uses the writer's OWN predicate
-    // (stdioSpecCarriesSecretPlaceholder) so the gate can never disagree with the
-    // drop. ABLATION: gate on any-stdio-present → AOA_API_KEY goes undefined → RED.
+  it("secret-bearing stdio is rejected and its unused token overlay is removed", async () => {
     const env = await runOnce("secret-stdio");
     expect(env.AOA_API_KEY).toBe("secret-run-token");
+    expect(env.AOA_MCP_PG_TOKEN).toBeUndefined();
     // Byte-identical to no-connectors otherwise: ambient present, only the always-on
     // billing strip fires.
     expect(env.DATABASE_URL).toBe(AMBIENT_SECRETS.DATABASE_URL);

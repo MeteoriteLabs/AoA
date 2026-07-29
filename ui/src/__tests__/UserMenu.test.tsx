@@ -6,6 +6,7 @@ import { UserMenu } from "../components/UserMenu";
 import { cancelChallengesWithinTimeout } from "../hooks/useAccountSwitch";
 
 const mockNavigate = vi.fn();
+const replaceWithSignedOutPage = vi.fn();
 
 vi.mock("react-router-dom", async () => {
   const actual = await vi.importActual<typeof import("react-router-dom")>(
@@ -19,6 +20,10 @@ vi.mock("react-router-dom", async () => {
 
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => mockCompanyContext,
+}));
+
+vi.mock("@/lib/accountSwitchNavigation", () => ({
+  replaceWithSignedOutPage: () => replaceWithSignedOutPage(),
 }));
 
 const profileGet = vi.fn();
@@ -110,7 +115,7 @@ describe("UserMenu", () => {
     expect(mockNavigate).toHaveBeenCalledWith("/me", undefined);
   });
 
-  it("calls signOut and navigates to /auth when Sign out is clicked", async () => {
+  it("calls signOut and replaces the document when Sign out is clicked", async () => {
     const user = userEvent.setup();
     renderWithProviders(<UserMenu />);
     await user.click(
@@ -121,9 +126,7 @@ describe("UserMenu", () => {
     );
     await waitFor(() => expect(cancelOwnLoginChallenges).toHaveBeenCalled());
     await waitFor(() => expect(signOut).toHaveBeenCalled());
-    await waitFor(() =>
-      expect(mockNavigate).toHaveBeenCalledWith("/auth", { replace: true })
-    );
+    await waitFor(() => expect(replaceWithSignedOutPage).toHaveBeenCalledOnce());
     expect(cancelOwnLoginChallenges.mock.invocationCallOrder[0]).toBeLessThan(
       signOut.mock.invocationCallOrder[0]!
     );
@@ -143,9 +146,7 @@ describe("UserMenu", () => {
     );
 
     await waitFor(() => expect(signOut).toHaveBeenCalledTimes(1));
-    await waitFor(() =>
-      expect(mockNavigate).toHaveBeenCalledWith("/auth", { replace: true })
-    );
+    await waitFor(() => expect(replaceWithSignedOutPage).toHaveBeenCalledOnce());
     expect(mockCompanyContext.resetCompanySelection).toHaveBeenCalledOnce();
   });
 

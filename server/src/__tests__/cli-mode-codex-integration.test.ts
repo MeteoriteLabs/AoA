@@ -174,6 +174,17 @@ function readInvocations(inv: string): Array<{
   }
 }
 
+function fakeCodexRuntimeEnv(): Record<string, string> {
+  return {
+    ...(process.env.AOA_E2E_FAKE_CODEX_CONTROL
+      ? { AOA_E2E_FAKE_CODEX_CONTROL: process.env.AOA_E2E_FAKE_CODEX_CONTROL }
+      : {}),
+    ...(process.env.AOA_E2E_FAKE_CODEX_INVOCATIONS
+      ? { AOA_E2E_FAKE_CODEX_INVOCATIONS: process.env.AOA_E2E_FAKE_CODEX_INVOCATIONS }
+      : {}),
+  };
+}
+
 // Helper: drain cliModeService.chat chunks.
 // Uses a unique companyId per call to isolate session-store state.
 async function drainCodexChat(
@@ -195,6 +206,7 @@ async function drainCodexChat(
     {
       cliTool: "codex",
       executionMode: "cli",
+      runtimeEnv: fakeCodexRuntimeEnv(),
       model: "claude-sonnet-4-6", // claude default → should resolve to gpt-5.5
       ...configOverride,
     } as any,
@@ -364,7 +376,12 @@ describe("cli-mode-codex-integration — real fake-codex spawn (no child_process
       enabledCapabilities: [],
       conversationId: "conversation-resume",
     };
-    const chatConfig: any = { cliTool: "codex", executionMode: "cli", model: "claude-sonnet-4-6" };
+    const chatConfig: any = {
+      cliTool: "codex",
+      executionMode: "cli",
+      model: "claude-sonnet-4-6",
+      runtimeEnv: fakeCodexRuntimeEnv(),
+    };
 
     // Turn 1
     const t1: any[] = [];

@@ -70,10 +70,17 @@ export async function ensureCodexAuthInHome(
   const sharedHome = resolveSharedCodexHomeDir(env);
   const source = path.join(sharedHome, "auth.json");
   const target = path.join(targetHomeDir, "auth.json");
-  if (path.resolve(source) === path.resolve(target)) return true;
-
   const sourceStat = await fs.stat(source).catch(() => null);
-  if (!sourceStat?.isFile()) return false;
+  if (!sourceStat?.isFile()) {
+    // A managed target may contain a credential copied by an earlier run.
+    // Missing source authority must revoke that stale copy, not silently reuse
+    // it. `rm` removes a file or symlink without following it.
+    if (path.resolve(source) !== path.resolve(target)) {
+      await fs.rm(target, { force: true }).catch(() => {});
+    }
+    return false;
+  }
+  if (path.resolve(source) === path.resolve(target)) return true;
 
   await fs.mkdir(targetHomeDir, { recursive: true });
   await fs.rm(target, { force: true });

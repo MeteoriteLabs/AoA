@@ -2,7 +2,6 @@ import type { McpServerSpec } from "@armyofagents/adapter-utils";
 import {
   RESERVED_MCP_SERVER_NAMES,
   isStdioServerSpec,
-  stdioSpecCarriesSecretPlaceholder,
 } from "@armyofagents/adapter-utils";
 import { isTransportAllowed } from "./mcp-connector-transport-gate.js";
 import { isStdioCommandSafe } from "./mcp-connector-command-safety.js";
@@ -393,11 +392,10 @@ const CODEX_ADAPTER_TYPE = "codex_local";
  *    | `d7_blocked` — the server-side {@link ConnectorSkipReason} (bad row → no
  *    spec, or the delivery-time D7 re-gate). These are CONNECTOR-GLOBAL: they do
  *    not depend on which agent receives the connector.
- *  - `secret_unreachable` — the adapter-writer skip
- *    (`McpWriterSkipReason` in `@armyofagents/adapter-utils`). This is
- *    PER-ADAPTER: only codex cannot deliver a stdio secret, so the same
- *    connector can be deliverable to a claude agent and undeliverable to a codex
- *    one.
+ *  - `filesystem_isolation_required` — the Codex adapter-writer skip for every
+ *    stdio connector. Codex's same-user child could read CODEX_HOME/auth.json,
+ *    so local connector processes stay disabled until they have a filesystem
+ *    sandbox. This is per-adapter; Claude can still deliver the connector.
  *  - `adapter_incapable` — the assigned agent's adapter has no MCP client at all
  *    (`process`/`http`/…); the connector is silently absent for that agent.
  *    Also per-adapter, and not expressible in either upstream vocabulary because
@@ -406,6 +404,7 @@ const CODEX_ADAPTER_TYPE = "codex_local";
 export type ConnectorDeliverabilityReason =
   | ConnectorSkipReason
   | "secret_unreachable"
+  | "filesystem_isolation_required"
   | "adapter_incapable"
   | "credential_inactive_or_missing";
 
@@ -465,7 +464,10 @@ export interface ConnectorDeliverabilityInput {
    * presence-only behavior (no `credential_inactive_or_missing`).
    */
   secretResolvable?: boolean;
-  /** The connector's per-agent opt-in set, resolved to name + adapter type. */
+  /**
+   * Intended recipients resolved to name + adapter type: the per-agent opt-in
+   * set plus Commander, who receives every active connector implicitly.
+   */
   assignedAgents: Array<{
     agentId: string;
     agentName: string;
@@ -488,9 +490,8 @@ export interface ConnectorDeliverabilityInput {
  *     by a sentinel `secretValue` derived from `secretRef` so the spec's
  *     `secretEnvVar` signal is set exactly when a real secret is bound — the
  *     real value is neither known nor needed here.
- *  3. Per-adapter writer — `stdioSpecCarriesSecretPlaceholder` (the exact
- *     predicate the codex TOML writer skips on) for codex, and
- *     `adapterSupportsConnectors` for a non-MCP adapter.
+ *  3. Per-adapter writer — every Codex stdio connector requires filesystem
+ *     isolation, while `adapterSupportsConnectors` covers non-MCP adapters.
  *
  * Returns `null` for a non-active connector: its status badge is the surface.
  */
@@ -560,9 +561,8 @@ export function computeConnectorDeliverability(
 
   const spec = specs.preview;
 
-  // (3) Per-assigned-agent adapter checks. A connector with no assigned agents
-  // is not a failure: it still reaches Commander (all-active) and any agent the
-  // founder later assigns, so there is nothing to warn about.
+  // (3) Per-recipient adapter checks. Callers include Commander as an implicit
+  // recipient when one is configured, in addition to explicitly assigned agents.
   const blockedAgents: BlockedAgentDeliverability[] = [];
   for (const agent of assignedAgents) {
     if (!adapterSupportsConnectors(agent.adapterType)) {
@@ -573,18 +573,18 @@ export function computeConnectorDeliverability(
       });
       continue;
     }
-    // codex cannot deliver a stdio secret at all — the SAME predicate its TOML
-    // writer skips on, so this preview cannot disagree with the real write.
+    // Codex cannot safely spawn any stdio connector while provider auth lives
+    // in a same-user-readable CODEX_HOME/auth.json. Match the TOML writer's
+    // fail-closed policy so this preview cannot disagree with the real write.
     if (
       agent.adapterType === CODEX_ADAPTER_TYPE &&
       spec &&
-      isStdioServerSpec(spec) &&
-      stdioSpecCarriesSecretPlaceholder(spec)
+      isStdioServerSpec(spec)
     ) {
       blockedAgents.push({
         agentId: agent.agentId,
         agentName: agent.agentName,
-        reason: "secret_unreachable",
+        reason: "filesystem_isolation_required",
       });
     }
   }

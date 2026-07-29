@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AdapterProviderSandboxRunInput } from "@armyofagents/adapter-utils";
 import { testEnvironment } from "./test.js";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 describe("codex_local testEnvironment", () => {
   it("probes provider-sandbox targets through the selected environment with remote CODEX_HOME", async () => {
@@ -72,6 +75,82 @@ describe("codex_local testEnvironment", () => {
       },
     });
     expect(runInput!.args.join("\n")).toContain("codex login --with-api-key");
+  });
+
+  it("fails remote custom-command verification after scrubbing when only host subscription auth exists", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-codex-remote-probe-"));
+    const hostCodexHome = path.join(root, "host-codex-home");
+    await fs.mkdir(hostCodexHome, { recursive: true });
+    await fs.writeFile(path.join(hostCodexHome, "auth.json"), "{}");
+    const previousCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = hostCodexHome;
+    const providerInputs: AdapterProviderSandboxRunInput[] = [];
+    const providerRunner = {
+      execute: vi.fn(async (input: AdapterProviderSandboxRunInput) => {
+        providerInputs.push(input);
+        const refused = input.args.join("\n").includes(
+          "requires an explicit per-agent OPENAI_API_KEY",
+        );
+        return {
+          exitCode: refused ? 78 : 0,
+          signal: null,
+          timedOut: false,
+          stderr: refused ? "explicit remote API key required" : "",
+          stdout: "",
+        };
+      }),
+    };
+
+    try {
+      const result = await testEnvironment({
+        adapterType: "codex_local",
+        companyId: "company-1",
+        config: { command: "custom-codex-wrapper", env: {} },
+        environmentName: "E2B Cloud QA",
+        executionTarget: {
+          type: "provider-sandbox",
+          provider: "e2b",
+          providerLeaseId: "sandbox-no-key",
+          remoteCwd: "/home/user/aoa-workspace",
+          shell: "bash",
+          runner: providerRunner,
+        },
+      });
+
+      expect(result.status).toBe("fail");
+      expect(result.checks).toContainEqual(
+        expect.objectContaining({
+          code: "codex_remote_api_key_required",
+          level: "error",
+        }),
+      );
+      expect(result.checks).toContainEqual(
+        expect.objectContaining({
+          code: "codex_remote_auth_preflight_failed",
+          level: "error",
+        }),
+      );
+      expect(
+        result.checks.some((check) => check.code === "codex_auth_json_present"),
+      ).toBe(false);
+      expect(
+        result.checks.some(
+          (check) => check.code === "codex_hello_probe_skipped_custom_command",
+        ),
+      ).toBe(false);
+      const preflight = providerInputs.find((input) =>
+        input.args.join("\n").includes("rm -f"),
+      );
+      expect(preflight).toBeDefined();
+      const script = preflight!.args.join("\n");
+      expect(script.indexOf("rm -f")).toBeLessThan(
+        script.indexOf("requires an explicit"),
+      );
+    } finally {
+      if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousCodexHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 });
 

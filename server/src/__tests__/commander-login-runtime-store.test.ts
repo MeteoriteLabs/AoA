@@ -50,6 +50,7 @@ function makeDb(existingRows: unknown[]) {
   const executed: CapturedSql[] = [];
   const inserted: Array<Record<string, unknown>> = [];
   const deleted: unknown[] = [];
+  const updated: Array<Record<string, unknown>> = [];
   const events: string[] = [];
   let txCount = 0;
   const tx = {
@@ -60,14 +61,16 @@ function makeDb(existingRows: unknown[]) {
     },
     select: () => ({
       from: () => ({
-        where: () => ({
-          orderBy: () => ({
-            limit: async () => {
-              events.push("select");
-              return existingRows;
-            },
-          }),
-        }),
+        where: () => {
+          const limit = async () => {
+            events.push("select");
+            return existingRows;
+          };
+          return {
+            limit,
+            orderBy: () => ({ limit }),
+          };
+        },
       }),
     }),
     insert: () => ({
@@ -82,6 +85,17 @@ function makeDb(existingRows: unknown[]) {
         deleted.push(cond);
       },
     }),
+    update: () => ({
+      set: (patch: Record<string, unknown>) => ({
+        where: () => ({
+          returning: async () => {
+            events.push("update");
+            updated.push(patch);
+            return existingRows.length > 0 ? [{ id: "updated" }] : [];
+          },
+        }),
+      }),
+    }),
   };
   const db = {
     transaction: async (fn: (t: typeof tx) => unknown) => {
@@ -94,7 +108,9 @@ function makeDb(existingRows: unknown[]) {
     executed,
     inserted,
     deleted,
+    updated,
     events,
+    tx,
     get txCount() {
       return txCount;
     },
@@ -190,7 +206,8 @@ describe("drizzleChallengeStore.claim (atomic single-flight)", () => {
     expect(seen[0]!.pid).toBe(555); // the service gets the prior child's pid to terminate
     expect(h.deleted).toHaveLength(1);
     expect(h.inserted).toHaveLength(1);
-    expect(h.events).toEqual(["execute", "select", "delete", "insert"]);
+    expect(h.events).toEqual(["execute", "select", "execute", "delete", "insert"]);
+    expect(h.executed[1]!.values).toEqual(["commander-login-challenge:ch-old"]);
   });
 
   it("conflict: onExisting throws → the claim aborts, nothing deleted or inserted", async () => {
@@ -209,5 +226,64 @@ describe("drizzleChallengeStore.claim (atomic single-flight)", () => {
     ).rejects.toThrow(/conflict/);
     expect(h.deleted).toHaveLength(0);
     expect(h.inserted).toHaveLength(0);
+  });
+});
+
+describe("drizzleChallengeStore terminal authority", () => {
+  it("runs credential finalization and the terminal write under one challenge lock", async () => {
+    const h = makeDb([row()]);
+    const store = drizzleChallengeStore(h.db);
+    const finalized = await store.finalizeIfPending("ch-new", async (transactionContext) => {
+      expect(transactionContext).toBe(h.tx);
+      h.events.push("finalize");
+      return "completed";
+    });
+
+    expect(finalized).toBe(true);
+    expect(h.txCount).toBe(1);
+    expect(h.executed).toHaveLength(1);
+    expect(h.executed[0]!.values).toEqual(["commander-login-challenge:ch-new"]);
+    expect(h.events).toEqual(["execute", "select", "finalize", "update"]);
+    expect(h.updated[0]).toMatchObject({ status: "completed" });
+  });
+
+  it("does not invoke credential finalization after the row is no longer pending", async () => {
+    const h = makeDb([row({ status: "timeout" })]);
+    const store = drizzleChallengeStore(h.db);
+    const finalize = vi.fn(async () => "completed" as const);
+
+    await expect(store.finalizeIfPending("ch-new", finalize)).resolves.toBe(false);
+    expect(finalize).not.toHaveBeenCalled();
+    expect(h.updated).toHaveLength(0);
+  });
+
+  it("rejects instead of committing callback mutations when the conditional terminal write loses authority", async () => {
+    const h = makeDb([]);
+    // The select observes a pending row, but the mocked conditional update
+    // returns no row, simulating an out-of-band removal after the callback.
+    h.tx.select = () => ({
+      from: () => ({
+        where: () => ({
+          limit: async () => [row()],
+        }),
+      }),
+    }) as never;
+    const store = drizzleChallengeStore(h.db);
+    const finalize = vi.fn(async () => "completed" as const);
+
+    await expect(store.finalizeIfPending("ch-new", finalize)).rejects.toThrow(
+      "lost finalization authority",
+    );
+    expect(finalize).toHaveBeenCalledTimes(1);
+  });
+
+  it("serializes removal with the same per-challenge lock", async () => {
+    const h = makeDb([row()]);
+    const store = drizzleChallengeStore(h.db);
+    await store.remove("ch-new");
+
+    expect(h.txCount).toBe(1);
+    expect(h.executed[0]!.values).toEqual(["commander-login-challenge:ch-new"]);
+    expect(h.events).toEqual(["execute", "delete"]);
   });
 });

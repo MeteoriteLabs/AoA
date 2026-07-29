@@ -102,6 +102,21 @@ describe("commander-login routes (Plan 3 T4)", () => {
     });
   });
 
+  it.each([
+    ["an agent actor", { type: "agent", userId: "agent-user" }],
+    ["a board actor without a user identity", { type: "board" }],
+  ])("rejects cancel-all for %s before reading or mutating challenges", async (_label, actor) => {
+    const select = vi.fn();
+    const res = await request(makeApp(actor, { select }))
+      .post("/api/auth/commander-login/cancel-all")
+      .send({});
+
+    expect(res.status).toBe(401);
+    expect(select).not.toHaveBeenCalled();
+    expect(mockService.cancel).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
   it("403 for a team_member (assertRole throws)", async () => {
     mockAssertRole.mockRejectedValueOnce(
       Object.assign(new Error("forbidden"), { status: 403, statusCode: 403 })

@@ -601,8 +601,8 @@ describe("writeCodexMcpConfigToml", () => {
     `AOA_MCP_${serverName.replace(/[^a-zA-Z0-9]/g, "_").toUpperCase()}_TOKEN`;
 
   describe("external connectors", () => {
-    it("emits the aoa bridge AND one block per connector inside ONE fence", async () => {
-      await writeCodexMcpConfigToml(tmpDir, BRIDGE, {
+    it("emits the bridge and HTTP connectors in one fence while rejecting stdio", async () => {
+      const result = await writeCodexMcpConfigToml(tmpDir, BRIDGE, {
         externalServers: {
           notion: {
             kind: "http",
@@ -631,7 +631,6 @@ describe("writeCodexMcpConfigToml", () => {
       for (const header of [
         "[mcp_servers.aoa]",
         "[mcp_servers.notion]",
-        "[mcp_servers.filesystem]",
       ]) {
         const idx = raw.indexOf(header);
         expect(idx).toBeGreaterThan(startIdx);
@@ -641,6 +640,11 @@ describe("writeCodexMcpConfigToml", () => {
       const parsed = parseToml(raw);
       expect(parsed["mcp_servers.aoa"].command).toBe("node");
       expect(parsed["mcp_servers.aoa.env"].AOA_SESSION_COMPANY_ID).toBe("c");
+      expect(raw).not.toContain("[mcp_servers.filesystem]");
+      expect(result.skipped).toContainEqual({
+        serverName: "filesystem",
+        reason: "filesystem_isolation_required",
+      });
     });
 
     it("emits the FLAT bearer_token_env_var form for an http connector — no headers sub-table, no plaintext token", async () => {
@@ -686,8 +690,8 @@ describe("writeCodexMcpConfigToml", () => {
       expect(raw).not.toContain("bearer_token_env_var");
     });
 
-    it("emits command/args + a nested .env table for a SECRETLESS stdio connector", async () => {
-      await writeCodexMcpConfigToml(tmpDir, BRIDGE, {
+    it("rejects a secretless stdio connector without filesystem isolation", async () => {
+      const result = await writeCodexMcpConfigToml(tmpDir, BRIDGE, {
         externalServers: {
           filesystem: {
             kind: "stdio",
@@ -699,14 +703,13 @@ describe("writeCodexMcpConfigToml", () => {
       });
 
       const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
-      const parsed = parseToml(raw);
-      expect(parsed["mcp_servers.filesystem"].command).toBe("npx");
-      expect(parsed["mcp_servers.filesystem"].args).toEqual([
-        "-y",
-        "@modelcontextprotocol/server-filesystem",
-        "/data",
+      expect(raw).not.toContain("[mcp_servers.filesystem]");
+      expect(result.skipped).toEqual([
+        {
+          serverName: "filesystem",
+          reason: "filesystem_isolation_required",
+        },
       ]);
-      expect(parsed["mcp_servers.filesystem.env"].FS_ROOT).toBe("/data");
       expect(raw).not.toContain(REAL_TOKEN);
     });
 
@@ -733,7 +736,7 @@ describe("writeCodexMcpConfigToml", () => {
         const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
         expect(raw).not.toContain("[mcp_servers.filesystem]");
         expect(result.skipped).toEqual([
-          { serverName: "filesystem", reason: "secret_unreachable" },
+          { serverName: "filesystem", reason: "filesystem_isolation_required" },
         ]);
         expect(result.managedServerNames).toEqual(["aoa"]);
         // The bridge is unaffected — one bad connector must not take the run down.
@@ -757,7 +760,7 @@ describe("writeCodexMcpConfigToml", () => {
         expect(raw).not.toContain("[mcp_servers.slack]");
         expect(raw).not.toContain("${AOA_MCP_SLACK_TOKEN}");
         expect(result.skipped).toEqual([
-          { serverName: "slack", reason: "secret_unreachable" },
+          { serverName: "slack", reason: "filesystem_isolation_required" },
         ]);
       });
 
@@ -1024,7 +1027,7 @@ describe("writeCodexMcpConfigToml", () => {
       });
 
       // M1 — partial delivery is indistinguishable from a broken server.
-      it("SKIPS a stdio connector with an unsafe ENV key instead of dropping the key", async () => {
+      it("applies the filesystem-isolation block before inspecting stdio env", async () => {
         const result = await writeCodexMcpConfigToml(tmpDir, BRIDGE, {
           externalServers: {
             fs2: {
@@ -1039,11 +1042,13 @@ describe("writeCodexMcpConfigToml", () => {
         expect(raw).not.toContain("[mcp_servers.fs2]");
         expect(raw).not.toContain("injected");
         expect(raw).not.toContain("[evil");
-        expect(result.skipped).toEqual([{ serverName: "fs2", reason: "unsafe_name" }]);
+        expect(result.skipped).toEqual([
+          { serverName: "fs2", reason: "filesystem_isolation_required" },
+        ]);
       });
 
       // M3 — the skip must track a real secret, not placeholder shape.
-      it("does NOT skip a SECRETLESS stdio connector that mentions another connector's var", async () => {
+      it("also skips a secretless stdio connector that mentions another connector's var", async () => {
         const result = await writeCodexMcpConfigToml(tmpDir, BRIDGE, {
           externalServers: {
             tool: {
@@ -1055,8 +1060,10 @@ describe("writeCodexMcpConfigToml", () => {
           },
         });
         const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
-        expect(raw).toContain("[mcp_servers.tool]");
-        expect(result.skipped).toEqual([]);
+        expect(raw).not.toContain("[mcp_servers.tool]");
+        expect(result.skipped).toEqual([
+          { serverName: "tool", reason: "filesystem_isolation_required" },
+        ]);
       });
 
       it("classifies an unsafe name and an unknown transport distinctly", async () => {
@@ -1472,7 +1479,7 @@ describe("codex execute writes the MCP bridge into managed CODEX_HOME", () => {
     }
   });
 
-  it("delivers BOTH the aoa bridge and external connectors from one execute()", async () => {
+  it("delivers the aoa bridge while rejecting a same-user stdio connector", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-codex-both-"));
     const workspace = path.join(root, "workspace");
     const commandBase = path.join(root, "agent");
@@ -1527,8 +1534,8 @@ describe("codex execute writes the MCP bridge into managed CODEX_HOME", () => {
       const raw = await fs.readFile(path.join(managedHome, "config.toml"), "utf8");
       const parsed = parseToml(raw);
       expect(parsed["mcp_servers.aoa"].args).toEqual(["/path/mcp-bridge.js"]);
-      expect(parsed["mcp_servers.filesystem"].command).toBe("npx");
-      expect(parsed["mcp_servers.filesystem.env"].FS_ROOT).toBe("/data");
+      expect(parsed["mcp_servers.filesystem"]).toBeUndefined();
+      expect(raw).not.toContain("[mcp_servers.filesystem]");
       // Still ONE fence.
       expect(raw.match(/^# >>> aoa-managed/gm) ?? []).toHaveLength(1);
     } finally {

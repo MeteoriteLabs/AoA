@@ -26,6 +26,14 @@ describe("buildMcpBridgeSpec", () => {
     // Mirror cli-mode.ts's exact conditional-omission for DATABASE_URL so the
     // assertion is robust to its presence/absence in the test environment.
     const expectedEnv: Record<string, string> = {
+      OPENAI_API_KEY: "",
+      ANTHROPIC_API_KEY: "",
+      ANTHROPIC_AUTH_TOKEN: "",
+      CLAUDE_CODE_OAUTH_TOKEN: "",
+      AWS_ACCESS_KEY_ID: "",
+      AWS_SECRET_ACCESS_KEY: "",
+      AWS_SESSION_TOKEN: "",
+      AWS_BEARER_TOKEN_BEDROCK: "",
       // Routes the bridge's pino logger to stderr so a stray log can't corrupt
       // the JSON-RPC stdout stream (see middleware/logger.ts + the pino-leak fix).
       AOA_LOG_STDOUT: "0",

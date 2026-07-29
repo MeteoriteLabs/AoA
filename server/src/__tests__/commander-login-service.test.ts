@@ -15,6 +15,23 @@ import { terminateByPidIfMatches } from "../utils/terminate-process.js";
  */
 function memStore(): ChallengeStore & { rows: Map<string, ChallengeRow> } {
   const rows = new Map<string, ChallengeRow>();
+  const lockTails = new Map<string, Promise<void>>();
+  async function withChallengeLock<T>(id: string, operation: () => Promise<T>): Promise<T> {
+    const previous = lockTails.get(id) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.then(() => current);
+    lockTails.set(id, tail);
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (lockTails.get(id) === tail) lockTails.delete(id);
+    }
+  }
   return {
     rows,
     async claim({ provider, authHome, row, onExisting }) {
@@ -42,8 +59,19 @@ function memStore(): ChallengeStore & { rows: Map<string, ChallengeRow> } {
       rows.set(id, { ...r, ...patch });
       return 1;
     },
+    async finalizeIfPending(id, finalize) {
+      return withChallengeLock(id, async () => {
+        const r = rows.get(id);
+        if (!r || r.status !== "pending") return false;
+        const status = await finalize(undefined);
+        rows.set(id, { ...r, status });
+        return true;
+      });
+    },
     async remove(id) {
-      rows.delete(id);
+      await withChallengeLock(id, async () => {
+        rows.delete(id);
+      });
     },
     async listActive() {
       return [...rows.values()].filter((r) => r.status === "pending").map((r) => ({ ...r }));
@@ -713,14 +741,111 @@ describe("commander-login service (Plan 3 T4)", () => {
     });
   });
 
+  it("cancellation that removes the pending row first revokes credential-finalization authority", async () => {
+    const f = fakeRun();
+    const store = memStore();
+    const baseFinalize = store.finalizeIfPending.bind(store);
+    let releaseFinalizer!: () => void;
+    const finalizerGate = new Promise<void>((resolve) => {
+      releaseFinalizer = resolve;
+    });
+    let finalizerReached!: () => void;
+    const reached = new Promise<void>((resolve) => {
+      finalizerReached = resolve;
+    });
+    store.finalizeIfPending = async (id, finalize) => {
+      finalizerReached();
+      await finalizerGate;
+      return baseFinalize(id, finalize);
+    };
+    const onCredentialEvidence = vi.fn(async () => {});
+    const svc = createCommanderLoginService({
+      store,
+      resolveAuthHome: () => "/home/.codex",
+      runLogin: () => f.run,
+      credentialPresent: async () => true,
+      onCredentialEvidence,
+      terminate: vi.fn(),
+      newId: () => "ch-cancel-wins",
+      env: () => ({}) as never,
+      setDeadlineTimer: () => () => {},
+    });
+
+    const pending = svc.startChallenge({
+      companyId: "c1",
+      provider: "openai",
+      startedByUserId: "u1",
+      executionTargetId: "target-1",
+    });
+    f.resolveUrl("https://chatgpt.com/device");
+    const { challengeId, completion } = await pending;
+    f.resolveExit(0);
+    await reached;
+
+    await expect(svc.cancel("c1", challengeId, null, "u1")).resolves.toBe(true);
+    releaseFinalizer();
+    await completion;
+
+    expect(store.rows.has(challengeId)).toBe(false);
+    expect(onCredentialEvidence).not.toHaveBeenCalled();
+  });
+
+  it("finalization that owns the row first completes before cancellation returns", async () => {
+    const f = fakeRun();
+    let releaseCredentialMutation!: () => void;
+    const credentialMutationGate = new Promise<void>((resolve) => {
+      releaseCredentialMutation = resolve;
+    });
+    let mutationStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      mutationStarted = resolve;
+    });
+    const onCredentialEvidence = vi.fn(async () => {
+      mutationStarted();
+      await credentialMutationGate;
+    });
+    const { svc, store } = makeService({
+      runLogin: () => f.run,
+      credentialPresent: async () => true,
+      onCredentialEvidence,
+    });
+
+    const pending = svc.startChallenge({
+      companyId: "c1",
+      provider: "openai",
+      startedByUserId: "u1",
+      executionTargetId: "target-1",
+    });
+    f.resolveUrl("https://chatgpt.com/device");
+    const { challengeId, completion } = await pending;
+    f.resolveExit(0);
+    await started;
+
+    let cancelReturned = false;
+    const cancel = svc.cancel("c1", challengeId, null, "u1").then((result) => {
+      cancelReturned = true;
+      return result;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(cancelReturned).toBe(false);
+
+    releaseCredentialMutation();
+    await completion;
+    await expect(cancel).resolves.toBe(true);
+    expect(onCredentialEvidence).toHaveBeenCalledTimes(1);
+    expect(store.rows.has(challengeId)).toBe(false);
+  });
+
   it("does not report completed when credential finalization fails", async () => {
     const f = fakeRun();
+    const onCredentialFinalizationFailure = vi.fn(async () => {});
     const { svc, store } = makeService({
       runLogin: () => f.run,
       credentialPresent: async () => true,
       onCredentialEvidence: async () => {
         throw new Error("finalization failed");
       },
+      onCredentialFinalizationFailure,
     });
     const pending = svc.startChallenge({
       companyId: "c1",
@@ -734,6 +859,12 @@ describe("commander-login service (Plan 3 T4)", () => {
     await completion;
 
     expect(store.rows.get(challengeId)?.status).toBe("failed");
+    expect(onCredentialFinalizationFailure).toHaveBeenCalledWith({
+      companyId: "c1",
+      provider: "openai",
+      userId: "u1",
+      executionTargetId: "target-1",
+    });
   });
 
   it("does not accept an unchanged credential file after a zero exit", async () => {
@@ -1289,6 +1420,52 @@ describe("commander-login service (Plan 3 T4)", () => {
     expect(store.rows.get(challengeId)?.status).toBe("timeout"); // NOT stranded pending
   });
 
+  it("a credential check that resolves after timeout cannot perform credential finalization", async () => {
+    let fire: (() => void) | null = null;
+    let resolveCredential!: (present: boolean) => void;
+    const credentialResult = new Promise<boolean>((resolve) => {
+      resolveCredential = resolve;
+    });
+    let credentialCheckFinished!: () => void;
+    const checkFinished = new Promise<void>((resolve) => {
+      credentialCheckFinished = resolve;
+    });
+    const f = fakeRun(556, 556);
+    const onCredentialEvidence = vi.fn(async () => {});
+    const { svc, store } = makeService({
+      runLogin: () => f.run,
+      credentialPresent: async () => {
+        const present = await credentialResult;
+        credentialCheckFinished();
+        return present;
+      },
+      onCredentialEvidence,
+      setDeadlineTimer: (fn) => {
+        fire = fn;
+        return () => {};
+      },
+    });
+    const pending = svc.startChallenge({
+      companyId: "c1",
+      provider: "openai",
+      startedByUserId: "u1",
+      executionTargetId: "target-1",
+    });
+    f.resolveUrl("https://chatgpt.com/device?code=A");
+    const { challengeId, completion } = await pending;
+    f.resolveExit(0);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    fire!();
+    await completion;
+    resolveCredential(true);
+    await checkFinished;
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(store.rows.get(challengeId)?.status).toBe("timeout");
+    expect(onCredentialEvidence).not.toHaveBeenCalled();
+  });
+
   it("(P2-348) finalize terminal write that rejects on EVERY retry REMOVES the row (releases the slot) instead of stranding `pending`", async () => {
     // If the terminal status write transiently rejects, finalize has already set
     // `settled` + cancelled the timer; the outer catch used to swallow it, leaving
@@ -1296,16 +1473,12 @@ describe("commander-login service (Plan 3 T4)", () => {
     // The fix retries a bounded number of times, then best-effort REMOVES the row.
     const f = fakeRun(666, 666);
     const store = memStore();
-    const baseUpdate = store.update.bind(store);
     const baseRemove = store.remove.bind(store);
     let terminalWriteAttempts = 0;
     let removed = false;
-    store.update = async (id, patch) => {
-      if (patch.status && patch.status !== "pending") {
-        terminalWriteAttempts += 1;
-        throw new Error("db-down"); // every terminal write attempt rejects
-      }
-      return baseUpdate(id, patch);
+    store.finalizeIfPending = async () => {
+      terminalWriteAttempts += 1;
+      throw new Error("db-down"); // every terminal write attempt rejects
     };
     store.remove = async (id) => {
       removed = true;
@@ -1324,7 +1497,7 @@ describe("commander-login service (Plan 3 T4)", () => {
     const startP = svc.startChallenge({ companyId: "c1", provider: "openai", startedByUserId: "u1" });
     f.resolveUrl("https://chatgpt.com/device?code=A");
     const { challengeId, completion } = await startP;
-    f.resolveExit(0); // would finalize `completed`, but the terminal write rejects on all retries
+    f.resolveExit(1); // finalizes `failed`, but the terminal write rejects on all retries
     await completion;
     expect(terminalWriteAttempts).toBe(3); // bounded retry exhausted
     expect(removed).toBe(true); // fell back to remove → slot released

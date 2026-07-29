@@ -27,6 +27,7 @@ vi.mock("@armyofagents/db", () => {
     companyMcpConnectorAgents: makeTable("company_mcp_connector_agents"),
     companyMcpConnectors: makeTable("company_mcp_connectors"),
     companySecrets: makeTable("company_secrets"),
+    internalAgentConfig: makeTable("internal_agent_config"),
   };
 });
 
@@ -35,7 +36,7 @@ import { mcpConnectorService } from "../services/mcp-connectors-crud.js";
 /** A thenable query chain that resolves to `rows` after any method calls. */
 function makeChain(rows: unknown[]) {
   const chain: Record<string, unknown> = {};
-  for (const m of ["from", "where", "orderBy"]) chain[m] = () => chain;
+  for (const m of ["from", "where", "orderBy", "limit"]) chain[m] = () => chain;
   chain.then = (resolve: (v: unknown[]) => unknown) => Promise.resolve(rows).then(resolve);
   return chain;
 }
@@ -84,5 +85,79 @@ describe("mcpConnectorService.list() — enabledAgentIds (A34)", () => {
     expect(rows).toEqual([]);
     // Only the connector query ran — no follow-up junction query on an empty set.
     expect(select).toHaveBeenCalledTimes(1);
+  });
+
+  it("includes Commander's implicit Codex runtime in delivery warnings", async () => {
+    const db = makeSeqDb(
+      [
+        {
+          id: C1,
+          companyId: COMPANY,
+          serverName: "filesystem",
+          status: "active",
+          transport: "stdio",
+          source: "catalog",
+          trustTier: "verified",
+          url: null,
+          command: "npx",
+          args: ["filesystem-mcp@1.0.0"],
+          headerTemplate: {},
+          envTemplate: {},
+          secretRef: null,
+        },
+      ],
+      [], // no explicit agent assignments
+      [{ agentId: "commander-1", cliTool: "codex" }],
+      [], // active company-secret names
+    );
+
+    const [connector] = await mcpConnectorService(db).list(COMPANY);
+
+    expect(connector.deliverability).toEqual({
+      deliverable: false,
+      reason: null,
+      blockedAgents: [
+        {
+          agentId: "commander-1",
+          agentName: "Commander",
+          reason: "filesystem_isolation_required",
+        },
+      ],
+    });
+  });
+
+  it("keeps Commander in delivery warnings while its linked agent is absent", async () => {
+    const db = makeSeqDb(
+      [
+        {
+          id: C1,
+          companyId: COMPANY,
+          serverName: "filesystem",
+          status: "active",
+          transport: "stdio",
+          source: "catalog",
+          trustTier: "verified",
+          url: null,
+          command: "npx",
+          args: ["filesystem-mcp@1.0.0"],
+          headerTemplate: {},
+          envTemplate: {},
+          secretRef: null,
+        },
+      ],
+      [],
+      [{ agentId: null, cliTool: "codex" }],
+      [],
+    );
+
+    const [connector] = await mcpConnectorService(db).list(COMPANY);
+
+    expect(connector.deliverability?.blockedAgents).toEqual([
+      {
+        agentId: `commander:${COMPANY}`,
+        agentName: "Commander",
+        reason: "filesystem_isolation_required",
+      },
+    ]);
   });
 });

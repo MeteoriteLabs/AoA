@@ -55,6 +55,22 @@ describe("ensureCodexAuthInHome", () => {
     expect(entries).not.toContain("auth.json");
   });
 
+  it("removes a stale managed auth.json when the governed source disappears", async () => {
+    await fs.writeFile(
+      path.join(targetDir, "auth.json"),
+      JSON.stringify({ tokens: { id: "stale-token" } }),
+    );
+
+    const copied = await ensureCodexAuthInHome(targetDir, {
+      CODEX_HOME: sharedDir,
+    });
+
+    expect(copied).toBe(false);
+    await expect(fs.stat(path.join(targetDir, "auth.json"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
   it("does not disturb an existing unrelated file (e.g. a pre-written config.toml) in the target home", async () => {
     const tomlBody = '[mcp_servers.aoa]\ncommand = "node"\n';
     await fs.writeFile(path.join(targetDir, "config.toml"), tomlBody);

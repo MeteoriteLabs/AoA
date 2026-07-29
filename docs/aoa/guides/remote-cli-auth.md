@@ -70,6 +70,13 @@ rejects direct attempts to assign one to an ordinary agent. Use a verified
 company API key for unattended ordinary agents; API billing is separate from
 the user's ChatGPT or Claude subscription.
 
+This remote-install login flow is for a CLI process running on the dedicated
+AOA host. It is not copied into a separate provider sandbox or Docker execution
+target. A Codex process on one of those targets requires an explicit per-agent
+`OPENAI_API_KEY`; AOA scrubs stale remote Codex auth/config first and refuses
+remote Codex MCP execution until the bridge and sanitized `config.toml` can be
+provisioned within the target.
+
 Revoking a local subscription credential requires founder access and an exact
 credential-ID confirmation. AOA revokes all of its agent bindings before deleting
 that credential's validated scoped provider directory.

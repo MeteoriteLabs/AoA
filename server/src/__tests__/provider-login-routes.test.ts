@@ -231,6 +231,13 @@ function memStore(seed: ChallengeRow[]): ChallengeStore {
       rows.set(id, { ...r, ...patch });
       return 1;
     },
+    async finalizeIfPending(id, finalize) {
+      const r = rows.get(id);
+      if (!r || r.status !== "pending") return false;
+      const status = await finalize(undefined);
+      rows.set(id, { ...r, status });
+      return true;
+    },
     async remove(id) {
       rows.delete(id);
     },

@@ -1,8 +1,8 @@
 import { useCallback, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "@/lib/router";
 import { authApi } from "@/api/auth";
 import { useCompany } from "@/context/CompanyContext";
+import { replaceWithSignedOutPage } from "@/lib/accountSwitchNavigation";
 import { advanceSessionEpoch } from "@/lib/sessionEpoch";
 
 const CHALLENGE_CANCEL_TIMEOUT_MS = 5_000;
@@ -30,7 +30,6 @@ export async function cancelChallengesWithinTimeout() {
 }
 
 export function useAccountSwitch() {
-  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { resetCompanySelection } = useCompany();
   const [isSwitching, setIsSwitching] = useState(false);
@@ -60,7 +59,7 @@ export function useAccountSwitch() {
       await authApi.signOut();
       resetCompanySelection();
       queryClient.clear();
-      navigate("/auth", { replace: true });
+      replaceWithSignedOutPage();
     } catch (cause) {
       const signOutError =
         cause instanceof Error ? cause.message : "Could not switch accounts.";
@@ -71,7 +70,7 @@ export function useAccountSwitch() {
       );
       setIsSwitching(false);
     }
-  }, [isSwitching, navigate, queryClient, resetCompanySelection]);
+  }, [isSwitching, queryClient, resetCompanySelection]);
 
   return { switchAccount, isSwitching, error };
 }

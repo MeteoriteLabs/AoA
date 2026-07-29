@@ -13,6 +13,7 @@
 
 export type CommanderLoginProvider = "anthropic" | "openai";
 export type ChallengeStatus = "pending" | "completed" | "failed" | "timeout";
+export type TerminalChallengeStatus = Exclude<ChallengeStatus, "pending">;
 
 export interface ChallengeRow {
   id: string;
@@ -63,6 +64,23 @@ export interface ChallengeStore {
    * that must detect being superseded inspect this count; callers that don't ignore it.
    */
   update(id: string, patch: Partial<ChallengeRow>): Promise<number>;
+  /**
+   * Finalize only while this challenge still owns its pending row.
+   *
+   * Implementations MUST serialize the callback with `remove` and takeover of
+   * the same challenge. Production runs the callback and terminal status write
+   * in one transaction under a per-challenge lock. This is the cancellation
+   * authority boundary: once `remove` returns, a stale worker cannot mutate
+   * credentials for this challenge.
+   *
+   * The transaction context is intentionally opaque to the lifecycle. The
+   * production store passes its Drizzle transaction; memory stores may pass
+   * `undefined`.
+   */
+  finalizeIfPending(
+    id: string,
+    finalize: (transactionContext: unknown) => Promise<TerminalChallengeStatus>,
+  ): Promise<boolean>;
   remove(id: string): Promise<void>;
   /** All rows still `pending` (orphans after a restart). */
   listActive(): Promise<ChallengeRow[]>;
@@ -130,6 +148,18 @@ export interface CommanderLoginServiceDeps {
     userId: string;
     executionTargetId: string;
     expectedEvidence?: string;
+    transactionContext?: unknown;
+  }) => Promise<void>;
+  /**
+   * Conservatively invalidate cached readiness if credential evidence changed
+   * but the atomic bind/status transaction failed. This runs after rollback,
+   * outside the challenge transaction.
+   */
+  onCredentialFinalizationFailure?: (args: {
+    companyId: string;
+    provider: CommanderLoginProvider;
+    userId: string;
+    executionTargetId: string;
   }) => Promise<void>;
   /**
    * Kill a login child by its PERSISTED pid/pgid. `expected.startedAt` is
@@ -301,10 +331,10 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
    * completion `finalize` AND the synchronous spawn/backfill/url-failure cleanup
    * paths so no terminal-status write anywhere can leave a `pending` row behind.
    */
-  async function settleTerminal(id: string, status: ChallengeStatus): Promise<void> {
+  async function settleTerminal(id: string, status: TerminalChallengeStatus): Promise<void> {
     for (let attempt = 1; attempt <= FINALIZE_WRITE_ATTEMPTS; attempt++) {
       try {
-        await deps.store.update(id, { status });
+        await deps.store.finalizeIfPending(id, async () => status);
         return;
       } catch {
         if (attempt === FINALIZE_WRITE_ATTEMPTS) {
@@ -580,7 +610,11 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
       // RESILIENT (Codex round-8 P2 :348): a transient reject retries, then removes
       // the row to release the slot, so a finalize failure can never strand the row
       // `pending` forever (which would block the global slot after the DB recovers).
-      const finalize = async (status: ChallengeStatus): Promise<void> => {
+      const finalize = async (
+        outcome:
+          | { status: "completed"; expectedEvidence?: string }
+          | { status: "failed" | "timeout" },
+      ): Promise<void> => {
         if (settled) return;
         settled = true;
         cancelDeadline?.();
@@ -588,7 +622,39 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
         // Terminal for THIS run (completed/failed/timeout) — the live-child
         // registry entry is no longer valid for a pasted code either way.
         liveRuns.delete(id);
-        await settleTerminal(id, status);
+        if (outcome.status !== "completed" || !args.startedByUserId) {
+          await settleTerminal(id, outcome.status);
+          return;
+        }
+        try {
+          await deps.store.finalizeIfPending(id, async (transactionContext) => {
+            await deps.onCredentialEvidence?.({
+              companyId: args.companyId,
+              provider: args.provider,
+              userId: args.startedByUserId!,
+              executionTargetId: args.executionTargetId ?? "control-plane",
+              ...(outcome.expectedEvidence
+                ? { expectedEvidence: outcome.expectedEvidence }
+                : {}),
+              ...(transactionContext !== undefined ? { transactionContext } : {}),
+            });
+            return "completed";
+          });
+        } catch {
+          // The credential mutation and completed status share one transaction.
+          // Any failure rolls both back before this cancellation-aware fallback.
+          try {
+            await deps.onCredentialFinalizationFailure?.({
+              companyId: args.companyId,
+              provider: args.provider,
+              userId: args.startedByUserId,
+              executionTargetId: args.executionTargetId ?? "control-plane",
+            });
+          } catch {
+            // Best-effort cache invalidation; terminal settlement still proceeds.
+          }
+          await settleTerminal(id, "failed");
+        }
       };
 
       const deadlineHit = new Promise<"deadline">((resolve) => {
@@ -613,9 +679,12 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
       // surface as an unhandled rejection; a genuine HANG simply never settles and
       // the deadline wins. When it completes in time the original semantics hold:
       // exit 0 + credential present → completed, else failed.
-      const completed = (async (): Promise<ChallengeStatus> => {
+      const completed = (async (): Promise<
+        | { status: "completed"; expectedEvidence?: string }
+        | { status: "failed" }
+      > => {
         const result = await exited;
-        if (result.kind === "exit-error") return "failed";
+        if (result.kind === "exit-error") return { status: "failed" };
         let expectedEvidence: string | undefined;
         let ok = false;
         if (result.code === 0) {
@@ -630,19 +699,15 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
             ok = await deps.credentialPresent(args.provider, authHome);
           }
         }
-        if (ok && args.startedByUserId) {
-          await deps.onCredentialEvidence?.({
-            companyId: args.companyId,
-            provider: args.provider,
-            userId: args.startedByUserId,
-            executionTargetId: args.executionTargetId ?? "control-plane",
-            ...(expectedEvidence ? { expectedEvidence } : {}),
-          });
-        }
-        return ok ? "completed" : "failed";
+        return ok
+          ? {
+              status: "completed",
+              ...(expectedEvidence ? { expectedEvidence } : {}),
+            }
+          : { status: "failed" };
       })().then(
-        (status) => ({ kind: "done" as const, status }),
-        () => ({ kind: "done" as const, status: "failed" as ChallengeStatus }),
+        (outcome) => ({ kind: "done" as const, outcome }),
+        () => ({ kind: "done" as const, outcome: { status: "failed" as const } }),
       );
 
       const outcome = await Promise.race([completed, deadlineHit]);
@@ -656,10 +721,10 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
         } catch {
           /* best-effort — the row is finalized regardless */
         }
-        await finalize("timeout");
+        await finalize({ status: "timeout" });
         return;
       }
-      await finalize(outcome.status);
+      await finalize(outcome.outcome);
     })().catch(() => {
       // Completion is fire-and-forget from the route's perspective; store writes
       // are best-effort, so a failed finalize must never surface as an unhandled

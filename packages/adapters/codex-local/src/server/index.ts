@@ -16,6 +16,7 @@ export {
   readSharedCodexModel,
   resolveManagedCodexHomeDir,
   resolveSharedCodexHomeDir,
+  writeApiKeyAuthJson,
   CODEX_ENV_TEST_AGENT_ID,
 } from "./codex-home.js";
 export { runCodexLogin } from "./login.js";

@@ -15,6 +15,7 @@ POST /api/companies/{companyId}/internal-agent/commander-key
 POST /api/companies/{companyId}/internal-agent/commander-login/start
 GET  /api/companies/{companyId}/internal-agent/commander-login/{challengeId}
 POST /api/companies/{companyId}/internal-agent/commander-login/{challengeId}/cancel
+POST /api/auth/commander-login/cancel-all
 ```
 
 Commander key and login-challenge mutations are founder board actions.
@@ -22,6 +23,60 @@ Commander key and login-challenge mutations are founder board actions.
 credential, stores it through the encrypted company-secret path, and records the
 mutation. Login challenges are company-scoped; a concurrent challenge returns
 `409`, and a provider start failure returns `502`.
+
+`cancel-all` is self-scoped to the authenticated board user. It cancels that
+user's pending Codex/Claude login challenges across companies before account
+switch or sign-out and returns `{ "ok": true, "cancelled": number }`.
+
+### Personal subscription assignment
+
+```http
+GET    /api/companies/{companyId}/agents/{agentId}/provider-credential-bindings
+POST   /api/companies/{companyId}/agents/{agentId}/provider-credential-binding
+DELETE /api/companies/{companyId}/agents/{agentId}/provider-credential-binding/{bindingId}
+```
+
+The POST route is not a generic credential-assignment endpoint. In this
+release it accepts only a verified `personal_subscription` credential for
+OpenAI Codex or Anthropic Claude when all of the following are true:
+
+- the credential belongs to the same company and current execution target;
+- its owner is an active company member;
+- `{agentId}` is the company's configured Commander; and
+- the caller is an authenticated founder board user.
+
+The request body is `{ "credentialId": "..." }`. A successful assignment
+returns `201 { "id": "binding-id" }`, serially revokes any other active
+Commander binding for that provider, and writes an activity record. Validation
+failures return `422` with a stable `code`:
+
+- `credential_not_verified`
+- `credential_kind_unsupported`
+- `credential_provider_unsupported`
+- `credential_target_mismatch`
+- `credential_owner_inactive`
+- `subscription_commander_only`
+
+Use company API keys for ordinary agents. A separately governed and versioned
+API is required before any broader personal-subscription assignment policy is
+introduced.
+
+Codex provider authentication is materialized in an isolated managed
+`CODEX_HOME` for each Commander or agent run. The built-in AOA bridge and
+remote HTTP MCP connectors remain available. Local stdio MCP connectors are
+not delivered to Codex yet: a same-OS-user child could read
+`CODEX_HOME/auth.json`, and clearing environment variables is not a filesystem
+security boundary. They fail closed with
+`filesystem_isolation_required` until execution can place those processes
+behind a separate OS user, container, or equivalent filesystem sandbox. Claude
+stdio connectors continue to use explicit provider-variable masking.
+
+That MCP statement applies to Codex running on AOA's local execution target.
+For a provider-sandbox or Docker execution target, AOA does not transfer a
+personal subscription login. Codex requires an explicit per-agent
+`OPENAI_API_KEY`, deletes any stale remote `auth.json` and `config.toml` before
+each run, and fails closed when MCP configuration is requested until the
+sanitized config and bridge can be provisioned inside that target.
 
 ## Chat, Conversation, and Runs
 

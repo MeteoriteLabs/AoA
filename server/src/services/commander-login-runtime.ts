@@ -176,6 +176,12 @@ export function drizzleChallengeStore(db: Db): ChallengeStore {
           .orderBy(commanderLoginChallenges.startedAt)
           .limit(1);
         if (existing) {
+          // Takeover and completion share one ordering boundary. If completion
+          // owns this lock it commits first; otherwise takeover removes the row
+          // first and the stale finalizer is denied.
+          await tx.execute(
+            sql`SELECT pg_advisory_xact_lock(hashtext(${`commander-login-challenge:${existing.id}`}))`
+          );
           // Throws on conflict → transaction rolls back, nothing inserted.
           onExisting(mapRow(existing));
           await tx
@@ -224,10 +230,60 @@ export function drizzleChallengeStore(db: Db): ChallengeStore {
         .returning({ id: commanderLoginChallenges.id });
       return updated.length;
     },
+    async finalizeIfPending(id, finalize) {
+      return await (
+        db as unknown as {
+          transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T>;
+        }
+      ).transaction(async (tx) => {
+        await tx.execute(
+          sql`SELECT pg_advisory_xact_lock(hashtext(${`commander-login-challenge:${id}`}))`
+        );
+        const [existing] = await tx
+          .select()
+          .from(commanderLoginChallenges)
+          .where(eq(commanderLoginChallenges.id, id))
+          .limit(1);
+        if (!existing || existing.status !== "pending") return false;
+
+        const status = await finalize(tx);
+        const updated = await tx
+          .update(commanderLoginChallenges)
+          .set({
+            status,
+            updatedAt: new Date(),
+            finishedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(commanderLoginChallenges.id, id),
+              eq(commanderLoginChallenges.status, "pending")
+            )
+          )
+          .returning({ id: commanderLoginChallenges.id });
+        if (updated.length === 0) {
+          // Do not commit callback mutations unless this transaction also won
+          // the conditional pending -> terminal transition. The advisory lock
+          // makes this unreachable for normal cancel/takeover paths; retaining
+          // the guard protects against future out-of-band row removal.
+          throw new Error("Commander login challenge lost finalization authority.");
+        }
+        return true;
+      });
+    },
     async remove(id) {
-      await db
-        .delete(commanderLoginChallenges)
-        .where(eq(commanderLoginChallenges.id, id));
+      await (
+        db as unknown as {
+          transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T>;
+        }
+      ).transaction(async (tx) => {
+        await tx.execute(
+          sql`SELECT pg_advisory_xact_lock(hashtext(${`commander-login-challenge:${id}`}))`
+        );
+        await tx
+          .delete(commanderLoginChallenges)
+          .where(eq(commanderLoginChallenges.id, id));
+      });
     },
     async listActive() {
       const rows = await db
@@ -285,6 +341,7 @@ export function buildCommanderLoginService(db: Db): CommanderLoginService {
       userId,
       executionTargetId,
       expectedEvidence,
+      transactionContext,
     }) => {
       // The login worker owns finalization. Browser polling is only an observer:
       // closing or reloading onboarding after the provider accepts the login must
@@ -293,13 +350,15 @@ export function buildCommanderLoginService(db: Db): CommanderLoginService {
       // Invalidate before binding: once credential evidence changed, every
       // cached verdict derived from the prior auth state is already obsolete,
       // even if binding the new credential subsequently fails.
-      await Promise.all([
-        deleteReadinessForScope(db, companyId, provider, {
-          type: "company_default",
-        }),
-        deleteAgentReadinessForProvider(db, companyId, provider),
-      ]);
-      await verifyAndBindCommanderSubscriptionCredential(db, {
+      const finalizationDb = (transactionContext ?? db) as Db;
+      // Use the challenge transaction for every mutation. The credential helper's
+      // nested transaction is a savepoint, so cancellation, readiness
+      // invalidation, credential binding, and terminal status commit together.
+      await deleteReadinessForScope(finalizationDb, companyId, provider, {
+        type: "company_default",
+      });
+      await deleteAgentReadinessForProvider(finalizationDb, companyId, provider);
+      await verifyAndBindCommanderSubscriptionCredential(finalizationDb, {
         companyId,
         provider,
         userId,
@@ -308,6 +367,17 @@ export function buildCommanderLoginService(db: Db): CommanderLoginService {
         allowRevokedReplacement: true,
         expectedEvidence,
       });
+    },
+    onCredentialFinalizationFailure: async ({ companyId, provider }) => {
+      // The atomic transaction rolled back, including its readiness deletes.
+      // Evidence still changed on disk, so retry both invalidations outside the
+      // transaction to avoid retaining a false-green verdict.
+      await Promise.allSettled([
+        deleteReadinessForScope(db, companyId, provider, {
+          type: "company_default",
+        }),
+        deleteAgentReadinessForProvider(db, companyId, provider),
+      ]);
     },
     // Persisted-pid kill — ALWAYS identity-verified (Codex P1, round 6 →
     // round 7). Every caller (BOOT reaper, single-flight takeover in `onExisting`,

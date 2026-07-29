@@ -87,10 +87,18 @@ describe("governed provider credential binding", () => {
     expect(() => assertCommanderSubscriptionAgent("commander-1", "commander-1")).not.toThrow();
   });
 
-  it("surfaces a missing binding before Commander authorization so legacy fallback remains possible", () => {
+  it("rejects a non-Commander before a missing binding can enable legacy fallback", () => {
     expect(
       codeOf(() =>
         chooseCommanderSubscriptionBinding([], expected, "agent-1", "commander-1"),
+      ),
+    ).toBe("credential_not_commander");
+  });
+
+  it("preserves missing-binding legacy fallback for Commander when enforcement is off", () => {
+    expect(
+      codeOf(() =>
+        chooseCommanderSubscriptionBinding([], expected, "commander-1", "commander-1"),
       ),
     ).toBe("binding_missing");
   });

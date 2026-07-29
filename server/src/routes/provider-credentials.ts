@@ -12,6 +12,10 @@ import { assertRole } from "../middleware/rbac.js";
 import { assertCompanyAccess } from "./authz.js";
 import { logActivity } from "../services/activity-log.js";
 import { removeScopedSubscriptionCredentialHome } from "../services/provider-credentials.js";
+import {
+  deleteAgentReadinessForProvider,
+  deleteReadinessForScope,
+} from "../services/providers/readiness.js";
 import { HttpError, unprocessable } from "../errors.js";
 
 export function providerCredentialRoutes(db: Db): Router {
@@ -269,6 +273,12 @@ export function providerCredentialRoutes(db: Db): Router {
           })
           .returning({ id: agentProviderCredentialBindings.id });
         if (!binding) throw new Error("Credential binding was not created");
+        await deleteReadinessForScope(
+          txDb,
+          companyId,
+          credential.provider,
+          { type: "agent", agentId }
+        );
         await logActivity(txDb, {
           companyId,
           actorType: "user",
@@ -313,8 +323,34 @@ export function providerCredentialRoutes(db: Db): Router {
               isNull(agentProviderCredentialBindings.revokedAt)
             )
           )
-          .returning({ id: agentProviderCredentialBindings.id });
+          .returning({
+            id: agentProviderCredentialBindings.id,
+            credentialId: agentProviderCredentialBindings.credentialId,
+          });
         if (!row) return null;
+        const [credential] = await txDb
+          .select({ provider: providerCredentials.provider })
+          .from(providerCredentials)
+          .where(
+            and(
+              eq(providerCredentials.id, row.credentialId),
+              eq(providerCredentials.companyId, companyId)
+            )
+          )
+          .limit(1);
+        if (
+          !credential ||
+          (credential.provider !== "openai" &&
+            credential.provider !== "anthropic")
+        ) {
+          throw new Error("Credential binding provider is unavailable");
+        }
+        await deleteReadinessForScope(
+          txDb,
+          companyId,
+          credential.provider,
+          { type: "agent", agentId }
+        );
         await logActivity(txDb, {
           companyId,
           actorType: "user",
@@ -388,6 +424,7 @@ export function providerCredentialRoutes(db: Db): Router {
         });
         return;
       }
+      const provider = credential.provider;
       const localTargetId =
         process.env.AOA_EXECUTION_TARGET_ID?.trim() || "control-plane";
       if (credential.executionTargetId !== localTargetId) {
@@ -420,6 +457,17 @@ export function providerCredentialRoutes(db: Db): Router {
               isNull(agentProviderCredentialBindings.revokedAt)
             )
           );
+        await deleteReadinessForScope(
+          txDb,
+          companyId,
+          provider,
+          { type: "company_default" }
+        );
+        await deleteAgentReadinessForProvider(
+          txDb,
+          companyId,
+          provider
+        );
         await logActivity(txDb, {
           companyId,
           actorType: "user",

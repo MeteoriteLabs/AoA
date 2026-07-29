@@ -202,6 +202,7 @@ import { errorHandler } from "../middleware/error-handler.js";
 import { forbidden } from "../errors.js";
 import {
   authorizeExistingCompanyImportBody,
+  authorizeLegacyCompanyImportBody,
   authorizeNewCompanyImportBody,
 } from "../middleware/import-body-auth.js";
 
@@ -567,6 +568,11 @@ function buildAppWithImportBodyCap(actorOverrides: Partial<any> = {}) {
     authorizeExistingCompanyImportBody,
     express.json({ limit: "20mb", verify: captureRawBody })
   );
+  app.post(
+    ["/api/companies/import", "/api/companies/import/preview"],
+    authorizeLegacyCompanyImportBody,
+    express.json({ limit: "20mb", verify: captureRawBody })
+  );
   app.use(express.json({ verify: captureRawBody }));
   app.use(
     "/api/companies",
@@ -611,12 +617,21 @@ function buildPathAuthorizedImportParser(
     authorizeExistingCompanyImportBody,
     parser
   );
+  app.post(
+    ["/api/companies/import", "/api/companies/import/preview"],
+    authorizeLegacyCompanyImportBody,
+    parser
+  );
   app.post("/api/companies/import/new/preview", (_req, res) =>
     res.status(204).end()
   );
   app.post("/api/companies/:companyId/import/preview", (_req, res) =>
     res.status(204).end()
   );
+  app.post("/api/companies/import/preview", (_req, res) =>
+    res.status(204).end()
+  );
+  app.post("/api/companies/import", (_req, res) => res.status(204).end());
   app.use(errorHandler);
   return app;
 }
@@ -710,6 +725,39 @@ describe("path-authorized import parser", () => {
 
     expect(res.status).toBe(204);
     expect(parsed).toHaveBeenCalledOnce();
+  });
+
+  it("rejects an unauthenticated legacy preview before invoking the large-body parser", async () => {
+    const parsed = vi.fn();
+    const res = await request(
+      buildPathAuthorizedImportParser({ type: "none" }, parsed)
+    )
+      .post("/api/companies/import/preview")
+      .set("Content-Type", "application/json")
+      .send(parserProbeBody);
+
+    expect(res.status).toBe(401);
+    expect(parsed).not.toHaveBeenCalled();
+  });
+
+  it("rejects an agent legacy commit before invoking the large-body parser", async () => {
+    const parsed = vi.fn();
+    const res = await request(
+      buildPathAuthorizedImportParser(
+        {
+          type: "agent",
+          agentId: "agent-1",
+          companyId: SRC_CO_ID,
+        },
+        parsed
+      )
+    )
+      .post("/api/companies/import")
+      .set("Content-Type", "application/json")
+      .send(parserProbeBody);
+
+    expect(res.status).toBe(403);
+    expect(parsed).not.toHaveBeenCalled();
   });
 });
 
@@ -987,14 +1035,14 @@ describe("import body-size cap", () => {
   it.each([
     "/api/companies/import/preview",
     "/api/companies/import",
-  ])("keeps the legacy route %s on the global 100KB limit", async (route) => {
+  ])("accepts a 1MB body on the legacy compatibility route %s", async (route) => {
     const big = JSON.stringify({ __pad: "x".repeat(1 * 1024 * 1024) });
     const app = buildAppWithImportBodyCap({ isInstanceAdmin: true });
     const res = await request(app)
       .post(route)
       .set("Content-Type", "application/json")
       .send(big);
-    expect(res.status).toBe(413);
+    expect(res.status).toBe(400);
   });
 
   it("does NOT apply the 20MB cap to non-import routes (global default still 413's)", async () => {

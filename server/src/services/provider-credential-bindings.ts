@@ -143,12 +143,11 @@ export function chooseCommanderSubscriptionBinding(
   agentId: string,
   commanderAgentId: string | null | undefined,
 ): BindingCandidate {
-  // Selection intentionally precedes authorization. No binding is the one case
-  // that may fall back to the legacy local CLI home when strict scoping is off.
-  // A real personal-subscription binding remains Commander-only.
-  const selected = chooseGovernedSubscriptionBinding(candidates, expected);
+  // Authorization precedes selection so an absent governed binding can never
+  // let an ordinary agent fall back to the operator's legacy personal CLI home.
+  // The compatibility fallback remains available only to Commander.
   assertCommanderSubscriptionAgent(agentId, commanderAgentId);
-  return selected;
+  return chooseGovernedSubscriptionBinding(candidates, expected);
 }
 
 async function assertSafeCredentialHome(authHome: string, aoaHome: string): Promise<void> {
@@ -212,13 +211,9 @@ export async function resolveAgentSubscriptionEnvironment(
       ),
     );
 
-  // Read Commander identity only after loading candidates, then authorize via a
-  // helper whose ordering is pinned by unit tests.
-  // Preserve the legacy local-CLI fallback for ordinary agents with no governed
-  // binding: `chooseGovernedSubscriptionBinding` must surface `binding_missing`
-  // before Commander-only authorization is evaluated. Once a binding really
-  // exists and is eligible, personal subscription use still fails closed for
-  // every non-Commander agent.
+  // Read Commander identity after loading candidates, then authorize before
+  // selection. A missing governed binding may use the legacy local-CLI fallback
+  // only for Commander; ordinary agents must use a company API key.
   const [commander] = await db
     .select({ agentId: internalAgentConfig.agentId })
     .from(internalAgentConfig)

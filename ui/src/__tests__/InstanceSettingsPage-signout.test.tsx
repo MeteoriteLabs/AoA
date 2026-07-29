@@ -47,6 +47,7 @@ vi.mock("../api/instanceSettings", () => ({
 
 const mockSignOut = vi.fn();
 const mockCancelOwnLoginChallenges = vi.fn();
+const mockReplaceWithSignedOutPage = vi.fn();
 
 vi.mock("../api/auth", () => ({
   authApi: {
@@ -56,6 +57,10 @@ vi.mock("../api/auth", () => ({
       mockCancelOwnLoginChallenges(...args),
     signOut: (...args: unknown[]) => mockSignOut(...args),
   },
+}));
+
+vi.mock("@/lib/accountSwitchNavigation", () => ({
+  replaceWithSignedOutPage: () => mockReplaceWithSignedOutPage(),
 }));
 
 const mockGetHealth = vi.fn();
@@ -185,6 +190,9 @@ describe("InstanceSettingsPage Sign out section", () => {
     await user.click(button);
 
     await waitFor(() => expect(mockSignOut).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(mockReplaceWithSignedOutPage).toHaveBeenCalledTimes(1)
+    );
   });
 
   it("disables the button while sign-out is pending", async () => {

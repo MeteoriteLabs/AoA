@@ -70,6 +70,8 @@ const DELIVERABILITY_REASON_COPY: Record<ConnectorDeliverabilityReason, string> 
   malformed_row: "This connector's configuration is malformed, so it can't be delivered.",
   secret_unreachable:
     "the Codex CLI can't pass a local (stdio) connector's secret to the server, so it would authenticate as no-one",
+  filesystem_isolation_required:
+    "the Codex CLI stores provider authentication in a same-user-readable file, so local (stdio) connectors are disabled until they have a separate filesystem sandbox",
   adapter_incapable: "this agent's runtime can't host MCP connectors",
   credential_inactive_or_missing:
     "This connector's secret is missing or disabled, so it can't authenticate and reaches no agents.",
