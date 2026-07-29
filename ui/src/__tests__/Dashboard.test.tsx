@@ -228,12 +228,16 @@ describe("Dashboard", () => {
     memoryApiMock.create.mockResolvedValue({});
   });
 
-  it("renders quick actions and suggestion cards from the API", async () => {
+  it("renders the New menu trigger and suggestion cards from the API", async () => {
     renderWithProviders(<Dashboard />);
 
     expect(await screen.findByText("Turn launch prep into a task")).toBeInTheDocument();
     expect(screen.getByText("Flag launch risk")).toBeInTheDocument();
-    expect(screen.getByText("+ New Task")).toBeInTheDocument();
+    // Plan 6 Task 1: the three always-visible "+ New Task"/"+ Discussion"/
+    // "+ New Goal" cards are gone — the creators now live behind the "New"
+    // trigger (aria-label "Create"; see NewMenu.test.tsx for its own menu
+    // contract).
+    expect(screen.getByRole("button", { name: "Create" })).toBeInTheDocument();
     await waitFor(() => expect(suggestionsApiMock.detect).toHaveBeenCalledWith("comp-1"));
 
     // Plan 2: the founder board also renders the new data widgets — the
@@ -327,7 +331,7 @@ describe("Dashboard", () => {
     renderWithProviders(<Dashboard />);
 
     // The steady dashboard renders, NOT a first-run takeover.
-    expect(await screen.findByText("+ New Task")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Create" })).toBeInTheDocument();
     expect(screen.queryByTestId("first-run-home")).not.toBeInTheDocument();
   });
 
@@ -345,7 +349,7 @@ describe("Dashboard", () => {
     });
     renderWithProviders(<Dashboard />);
 
-    expect(await screen.findByText("+ New Task")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Create" })).toBeInTheDocument();
     expect(screen.queryByTestId("first-run-home")).not.toBeInTheDocument();
   });
 
@@ -359,6 +363,55 @@ describe("Dashboard", () => {
     expect(await screen.findByRole("dialog")).toBeInTheDocument();
     expect(screen.getByDisplayValue("Always include rollout checklist")).toBeInTheDocument();
     expect(screen.getByDisplayValue("Every production launch needs a rollout checklist.")).toBeInTheDocument();
+  });
+
+  describe("Plan 6 Task 1: + New menu + single-line header", () => {
+    it("the header is a single line: greeting renders with no attention subline, and the New trigger is present", async () => {
+      renderWithProviders(<Dashboard />);
+
+      expect(await screen.findByText("Turn launch prep into a task")).toBeInTheDocument();
+
+      // The old "N items need attention"/"All clear" subline is gone.
+      expect(screen.queryByText(/items? need attention/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/All clear/)).not.toBeInTheDocument();
+      // The three always-visible creator cards are gone too.
+      expect(screen.queryByText("+ New Task")).not.toBeInTheDocument();
+      expect(screen.queryByText("+ Discussion")).not.toBeInTheDocument();
+      expect(screen.queryByText("+ New Goal")).not.toBeInTheDocument();
+
+      expect(screen.getByRole("heading", { level: 1 })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Create" })).toBeInTheDocument();
+    });
+
+    it("opening the New menu reveals the three creators, still reachable behind one trigger", async () => {
+      const user = userEvent.setup();
+      renderWithProviders(<Dashboard />);
+      expect(await screen.findByText("Turn launch prep into a task")).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "Create" }));
+
+      expect(await screen.findByRole("menuitem", { name: "New task" })).toBeInTheDocument();
+      expect(screen.getByRole("menuitem", { name: "Discussion" })).toBeInTheDocument();
+      expect(screen.getByRole("menuitem", { name: "New goal" })).toBeInTheDocument();
+    });
+
+    it("New task / Discussion / New goal each call their respective useDialog opener", async () => {
+      const user = userEvent.setup();
+      renderWithProviders(<Dashboard />);
+      expect(await screen.findByText("Turn launch prep into a task")).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "Create" }));
+      await user.click(await screen.findByRole("menuitem", { name: "New task" }));
+      expect(mockDialogContext.openNewIssue).toHaveBeenCalledWith();
+
+      await user.click(screen.getByRole("button", { name: "Create" }));
+      await user.click(await screen.findByRole("menuitem", { name: "Discussion" }));
+      expect(mockDialogContext.openDiscussionCapture).toHaveBeenCalledWith();
+
+      await user.click(screen.getByRole("button", { name: "Create" }));
+      await user.click(await screen.findByRole("menuitem", { name: "New goal" }));
+      expect(mockDialogContext.openNewGoal).toHaveBeenCalledWith();
+    });
   });
 
   describe("Task D3: pinned header controls + attention line", () => {

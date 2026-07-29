@@ -12,9 +12,11 @@ test.describe("home widget board", () => {
 
     // A freshly-seeded company has no goals/activity, so those widgets self-hide,
     // and Suggestions shows its "All caught up" empty state. We assert the
-    // always-present header + quick actions here; full widget content-parity and
-    // composition are covered by ui/src/__tests__/Dashboard.test.tsx and HomeBoard.test.tsx.
-    await expect(page.getByText("+ New Task")).toBeVisible();
+    // always-present header + the "+ New" creator menu trigger (Plan 6 Task 1
+    // replaced the three always-visible quick-action cards with this single
+    // trigger) here; full widget content-parity and composition are covered by
+    // ui/src/__tests__/Dashboard.test.tsx and HomeBoard.test.tsx.
+    await expect(page.getByRole("button", { name: "Create", exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { level: 1 })).toBeVisible(); // greeting
   });
 

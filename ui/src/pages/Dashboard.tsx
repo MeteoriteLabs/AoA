@@ -1,22 +1,21 @@
-import { useEffect, type ElementType } from "react";
+import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
 import { useHomeSummary } from "../hooks/useHomeSummary";
 import { authApi } from "../api/auth";
 import { suggestionsApi } from "../api/suggestions";
 import { useCompany } from "../context/CompanyContext";
-import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
-import { useLiveAgentCount } from "../hooks/useLiveAgentCount";
 import { useTeamAccess } from "../hooks/useTeamAccess";
 import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { HomeBoard } from "../components/home/HomeBoard";
 import { HomeBoardControls } from "../components/home/HomeBoardControls";
+import { NewMenu } from "../components/home/NewMenu";
 import { useBoardEdit } from "../components/home/useBoardEdit";
-import { buildActionGroups, getTotalActionCount } from "../components/home/actionQueue";
-import { Home, MessageSquare, Plus, Target } from "lucide-react";
+import { buildActionGroups } from "../components/home/actionQueue";
+import { Home } from "lucide-react";
 
 function getGreeting(): string {
   const hour = new Date().getHours();
@@ -25,34 +24,10 @@ function getGreeting(): string {
   return "Good evening";
 }
 
-function QuickActionCard({
-  icon: Icon,
-  label,
-  onClick,
-}: {
-  icon: ElementType;
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className="flex items-center gap-2.5 px-4 py-3 border border-border rounded-md hover:bg-accent/50 hover:border-accent transition-colors text-sm font-medium group"
-    >
-      <div className="h-7 w-7 rounded-md bg-muted flex items-center justify-center shrink-0 group-hover:bg-primary/10 transition-colors">
-        <Icon className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors" />
-      </div>
-      <span>{label}</span>
-    </button>
-  );
-}
-
 export function Dashboard() {
   const { selectedCompanyId, companies } = useCompany();
-  const { openNewIssue, openDiscussionCapture, openNewGoal } = useDialog();
   const navigate = useNavigate();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const liveAgentCount = useLiveAgentCount();
 
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
@@ -107,19 +82,6 @@ export function Dashboard() {
   // always the steady dashboard here.
 
   const actionGroups = data ? buildActionGroups(data) : [];
-  const totalActions = getTotalActionCount(actionGroups, suggestions.length);
-  const statusParts: string[] = [];
-
-  if (liveAgentCount > 0) {
-    statusParts.push(`${liveAgentCount} agent${liveAgentCount === 1 ? "" : "s"} working`);
-  }
-  if (totalActions > 0) {
-    statusParts.push(`${totalActions} item${totalActions === 1 ? "" : "s"} need attention`);
-  }
-
-  const statusLine = statusParts.length > 0
-    ? statusParts.join(" · ")
-    : "All clear — nothing needs your attention right now.";
 
   return (
     // Full content width: the widget board's grid measures this container to pick
@@ -129,29 +91,28 @@ export function Dashboard() {
     <div className="space-y-6">
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
-      {/* Task D3: the pinned header — greeting, the "needs attention" status
-          line, and the board's edit/add/reset controls — renders regardless
-          of the home-summary/grid loading state below, and survives a
-          per-widget error (each widget has its own WidgetErrorBoundary
-          inside HomeBoard, so one failing widget can never take this out). */}
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{greeting}</h1>
-          <p className="text-sm text-muted-foreground mt-1">{statusLine}</p>
+      {/* Plan 6 Task 1: the pinned header is a single line — greeting on the
+          left, the "+ New" creator menu + the board's customize/edit
+          controls on the right. Renders regardless of the home-summary/grid
+          loading state below, and survives a per-widget error (each widget
+          has its own WidgetErrorBoundary inside HomeBoard, so one failing
+          widget can never take this out). The old "N items need attention"/
+          "All clear" subline and the three always-visible QuickActionCard
+          creators are gone — the creators live behind NewMenu now, and the
+          bottom "Nothing needs attention" card (below) still surfaces the
+          all-clear state. */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-2xl font-semibold tracking-tight">{greeting}</h1>
+        <div className="flex items-center gap-2">
+          <NewMenu />
+          <HomeBoardControls boardEdit={boardEdit} />
         </div>
-        <HomeBoardControls boardEdit={boardEdit} />
       </div>
 
       {isLoading ? (
         <PageSkeleton variant="dashboard" />
       ) : (
         <>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <QuickActionCard icon={Plus} label="+ New Task" onClick={() => openNewIssue()} />
-            <QuickActionCard icon={MessageSquare} label="+ Discussion" onClick={() => openDiscussionCapture()} />
-            <QuickActionCard icon={Target} label="+ New Goal" onClick={() => openNewGoal()} />
-          </div>
-
           <HomeBoard companyId={selectedCompanyId} role={teamRole} boardEdit={boardEdit} />
 
           {data && actionGroups.length === 0 && suggestions.length === 0 && data.recentActivity.length === 0 && (
