@@ -360,4 +360,43 @@ describe("Dashboard", () => {
     expect(screen.getByDisplayValue("Always include rollout checklist")).toBeInTheDocument();
     expect(screen.getByDisplayValue("Every production launch needs a rollout checklist.")).toBeInTheDocument();
   });
+
+  describe("Task D3: pinned header controls + attention line", () => {
+    it("the pinned header (greeting + Edit board control) renders before the grid/summary data has loaded, not blocked by isLoading", async () => {
+      renderWithProviders(<Dashboard />);
+
+      // Synchronously right after the initial render — before the mocked
+      // home-summary promise has had a chance to resolve — Dashboard's own
+      // isLoading is still true (the grid area below shows a skeleton
+      // instead of quick actions/HomeBoard), but the pinned header itself
+      // (greeting + the board's Edit board control) is never gated on it.
+      expect(screen.getByRole("heading", { level: 1 })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Edit board" })).toBeInTheDocument();
+
+      // Let the pending queries settle before the test ends (avoids an
+      // act() warning from state updates landing after this test returns).
+      expect(await screen.findByText("Turn launch prep into a task")).toBeInTheDocument();
+    });
+
+    it("the header's Edit board control and the board below it share one edit session (not two independent ones)", async () => {
+      const user = userEvent.setup();
+      renderWithProviders(<Dashboard />);
+
+      expect(await screen.findByText("Turn launch prep into a task")).toBeInTheDocument();
+      expect(await screen.findByText("Agents working now")).toBeInTheDocument();
+
+      // Not editing yet: no per-tile remove buttons.
+      expect(screen.queryAllByLabelText(/^Remove /)).toHaveLength(0);
+
+      await user.click(screen.getByRole("button", { name: "Edit board" }));
+
+      // Remove buttons appear on the widget tiles rendered by HomeBoard below
+      // — proof the header (HomeBoardControls) and the grid (HomeBoard)
+      // consume the SAME useBoardEdit instance from Dashboard, not two
+      // separately-created ones that would drift out of sync.
+      expect(screen.getAllByLabelText(/^Remove /).length).toBeGreaterThan(0);
+      expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Edit board" })).not.toBeInTheDocument();
+    });
+  });
 });

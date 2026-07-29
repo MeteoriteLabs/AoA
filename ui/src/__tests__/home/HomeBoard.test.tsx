@@ -1,9 +1,11 @@
 import { beforeEach, describe, it, expect, vi } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { HomeBoardLayoutItem } from "@armyofagents/shared";
+import type { HomeBoardLayoutItem, UserRole } from "@armyofagents/shared";
 import { renderWithProviders, mockCompanyContext } from "../test-utils";
 import { HomeBoard } from "../../components/home/HomeBoard";
+import { HomeBoardControls } from "../../components/home/HomeBoardControls";
+import { useBoardEdit } from "../../components/home/useBoardEdit";
 
 // jsdom has no real layout: react-grid-layout's useContainerWidth() measures
 // containerRef.current.offsetWidth in a mount effect (jsdom always reports 0)
@@ -93,6 +95,25 @@ vi.mock("../../api/issues", () => ({
 }));
 vi.mock("../../hooks/useLiveAgentCount", () => ({ useLiveAgentCount: () => 2 }));
 
+/**
+ * Task D3: HomeBoard no longer owns useBoardEdit itself — Dashboard does,
+ * sharing ONE bundle with both HomeBoardControls (the pinned header, in
+ * Dashboard) and HomeBoard (the grid) as a prop, so there's exactly one edit
+ * session/draft. This harness reproduces that exact composition so the
+ * pre-existing test bodies below (which exercise the Edit board/Done/Add
+ * widget/Reset controls formerly rendered inline by HomeBoard) keep working
+ * with only the render call itself changed, from <HomeBoard> alone to this.
+ */
+function HomeBoardHarness({ companyId, role }: { companyId: string; role: UserRole | null }) {
+  const boardEdit = useBoardEdit(companyId, role);
+  return (
+    <>
+      <HomeBoardControls boardEdit={boardEdit} />
+      <HomeBoard companyId={companyId} role={role} boardEdit={boardEdit} />
+    </>
+  );
+}
+
 describe("HomeBoard", () => {
   beforeEach(() => {
     homeBoardLayoutMock.layout = null;
@@ -104,7 +125,7 @@ describe("HomeBoard", () => {
   });
 
   it('renders the founder board: all 8 widgets, each in its own error boundary, in getDefaultLayout("founder") order', async () => {
-    renderWithProviders(<HomeBoard companyId="co-1" role="founder" />);
+    renderWithProviders(<HomeBoardHarness companyId="co-1" role="founder" />);
 
     // The query-backed widgets (My tasks, Budget, Approvals) render only after
     // their mocked API calls resolve, so wait for the slowest one before
@@ -127,7 +148,7 @@ describe("HomeBoard", () => {
   });
 
   it("renders the member board: execution subset led by My tasks, no Budget/Approvals", async () => {
-    renderWithProviders(<HomeBoard companyId="co-1" role="team_member" />);
+    renderWithProviders(<HomeBoardHarness companyId="co-1" role="team_member" />);
 
     expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
@@ -149,7 +170,7 @@ describe("HomeBoard", () => {
       { i: "budget", x: 0, y: 0, w: 1, h: 1 },
       { i: "my-tasks", x: 1, y: 0, w: 2, h: 1 },
     ];
-    renderWithProviders(<HomeBoard companyId="co-1" role="founder" />);
+    renderWithProviders(<HomeBoardHarness companyId="co-1" role="founder" />);
 
     expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
@@ -164,7 +185,7 @@ describe("HomeBoard", () => {
       { i: "my-tasks", x: 0, y: 0, w: 2, h: 1 },
       { i: "retired-widget" as HomeBoardLayoutItem["i"], x: 2, y: 0, w: 1, h: 1 },
     ];
-    renderWithProviders(<HomeBoard companyId="co-1" role="founder" />);
+    renderWithProviders(<HomeBoardHarness companyId="co-1" role="founder" />);
 
     expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
@@ -174,7 +195,7 @@ describe("HomeBoard", () => {
 
   describe("edit mode (Task C1)", () => {
     it("entering edit mode shows a remove button per tile, suppresses header navigation, and enables drag/resize", async () => {
-      renderWithProviders(<HomeBoard companyId="co-1" role="founder" />);
+      renderWithProviders(<HomeBoardHarness companyId="co-1" role="founder" />);
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       // Not editing: header links exist, no remove buttons, resize hidden.
@@ -202,7 +223,7 @@ describe("HomeBoard", () => {
     });
 
     it("removing a tile via its x button drops it from the board immediately", async () => {
-      renderWithProviders(<HomeBoard companyId="co-1" role="founder" />);
+      renderWithProviders(<HomeBoardHarness companyId="co-1" role="founder" />);
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const user = userEvent.setup();
@@ -216,7 +237,7 @@ describe("HomeBoard", () => {
     });
 
     it("exiting edit mode after a change calls save with the updated (dirty) draft", async () => {
-      renderWithProviders(<HomeBoard companyId="co-1" role="founder" />);
+      renderWithProviders(<HomeBoardHarness companyId="co-1" role="founder" />);
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const user = userEvent.setup();
@@ -234,7 +255,7 @@ describe("HomeBoard", () => {
     });
 
     it("exiting edit mode with no changes does not call save", async () => {
-      renderWithProviders(<HomeBoard companyId="co-1" role="founder" />);
+      renderWithProviders(<HomeBoardHarness companyId="co-1" role="founder" />);
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const user = userEvent.setup();
@@ -247,7 +268,7 @@ describe("HomeBoard", () => {
 
     it("a failed save keeps the board in edit mode and dirty, and a retry can succeed", async () => {
       homeBoardLayoutMock.saveAsync.mockRejectedValueOnce(new Error("network down"));
-      renderWithProviders(<HomeBoard companyId="co-1" role="founder" />);
+      renderWithProviders(<HomeBoardHarness companyId="co-1" role="founder" />);
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const user = userEvent.setup();
@@ -267,7 +288,7 @@ describe("HomeBoard", () => {
     });
 
     it("switching companyId mid-edit discards the draft without saving", async () => {
-      const { rerender } = renderWithProviders(<HomeBoard companyId="co-1" role="founder" />);
+      const { rerender } = renderWithProviders(<HomeBoardHarness companyId="co-1" role="founder" />);
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const user = userEvent.setup();
@@ -275,7 +296,7 @@ describe("HomeBoard", () => {
       await user.click(screen.getByLabelText("Remove Budget"));
       expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(7);
 
-      rerender(<HomeBoard companyId="co-2" role="founder" />);
+      rerender(<HomeBoardHarness companyId="co-2" role="founder" />);
 
       // Back to read-only chrome for the new company — the dirty draft
       // (Budget removed) from co-1 is discarded, not carried over or saved.
@@ -287,14 +308,14 @@ describe("HomeBoard", () => {
 
   describe("keyboard a11y (Task D2)", () => {
     it("tiles are not focusable/operable outside edit mode", async () => {
-      renderWithProviders(<HomeBoard companyId="co-1" role="founder" />);
+      renderWithProviders(<HomeBoardHarness companyId="co-1" role="founder" />);
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       expect(screen.queryByRole("group", { name: /^Budget/ })).not.toBeInTheDocument();
     });
 
     it("arrow keys nudge the focused tile in the draft, blocked at bounds, with focus retained", async () => {
-      renderWithProviders(<HomeBoard companyId="co-1" role="founder" />);
+      renderWithProviders(<HomeBoardHarness companyId="co-1" role="founder" />);
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const user = userEvent.setup();
@@ -318,7 +339,7 @@ describe("HomeBoard", () => {
     });
 
     it("shift+arrow cycles the focused tile's allowed size", async () => {
-      renderWithProviders(<HomeBoard companyId="co-1" role="founder" />);
+      renderWithProviders(<HomeBoardHarness companyId="co-1" role="founder" />);
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const user = userEvent.setup();
@@ -334,7 +355,7 @@ describe("HomeBoard", () => {
     });
 
     it("announces each keyboard move/resize via the aria-live region", async () => {
-      renderWithProviders(<HomeBoard companyId="co-1" role="founder" />);
+      renderWithProviders(<HomeBoardHarness companyId="co-1" role="founder" />);
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const user = userEvent.setup();
@@ -354,7 +375,7 @@ describe("HomeBoard", () => {
     });
 
     it("hides tile focusability once the real viewport drops below the lg breakpoint mid-edit (Task D1)", async () => {
-      const { rerender } = renderWithProviders(<HomeBoard companyId="co-1" role="founder" />);
+      const { rerender } = renderWithProviders(<HomeBoardHarness companyId="co-1" role="founder" />);
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const user = userEvent.setup();
@@ -368,7 +389,7 @@ describe("HomeBoard", () => {
       // the gating logic itself is unit-tested directly in
       // useBoardEdit.test.ts's "activeBreakpoint" and lg-only-gating cases.
       containerWidthMock.width = 500;
-      rerender(<HomeBoard companyId="co-1" role="founder" />);
+      rerender(<HomeBoardHarness companyId="co-1" role="founder" />);
 
       await waitFor(() => {
         expect(screen.queryByRole("group", { name: /^Budget/ })).not.toBeInTheDocument();
@@ -390,7 +411,7 @@ describe("HomeBoard", () => {
     });
 
     it("the tray lists only widgets not on the board, and adding one adds it to the board", async () => {
-      renderWithProviders(<HomeBoard companyId="co-1" role="founder" />);
+      renderWithProviders(<HomeBoardHarness companyId="co-1" role="founder" />);
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const user = userEvent.setup();
@@ -416,7 +437,7 @@ describe("HomeBoard", () => {
     });
 
     it("reset restores the role-default board and marks the draft clean (a later exit does not re-save)", async () => {
-      renderWithProviders(<HomeBoard companyId="co-1" role="founder" />);
+      renderWithProviders(<HomeBoardHarness companyId="co-1" role="founder" />);
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const user = userEvent.setup();

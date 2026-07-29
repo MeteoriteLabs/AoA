@@ -1,13 +1,10 @@
-import { useEffect, useState } from "react";
 import { X } from "lucide-react";
 import { Responsive, useContainerWidth, verticalCompactor } from "react-grid-layout";
 import type { UserRole } from "@armyofagents/shared";
 import { getWidget } from "./widgets/registry";
 import { WidgetErrorBoundary } from "./WidgetErrorBoundary";
-import { useBoardEdit } from "./useBoardEdit";
+import type { UseBoardEditResult } from "./useBoardEdit";
 import { projectToBreakpoint } from "./gridLayout";
-import { AddWidgetTray } from "./AddWidgetTray";
-import { Button } from "../ui/button";
 
 // Native v2 RGL API (see RGL_V2_API.md) — breakpoints/cols are fixed, not
 // props, since Home's board only ever has 3 tiers (lg/md/sm) and doesn't
@@ -38,50 +35,47 @@ const ARROW_KEY_DELTAS: Record<string, readonly [number, number]> = {
  * read-only; while editing it's the draft owned by useBoardEdit. md/sm are
  * always *derived* from lg at render, never persisted (Task D1).
  *
- * The "Edit board"/"Done" toggle here is TEMPORARY — Task D3 relocates it
- * (plus Add widget/Reset/dirty state) into the pinned page header. It's kept
- * here for now purely so edit mode is reachable and testable.
+ * Task D3: the `useBoardEdit` hook is owned by the caller (Dashboard), not
+ * by this component — the pinned page header (HomeBoardControls) needs the
+ * SAME edit session (draft/dirty/save state) to render its Edit board/Done/
+ * Add widget/Reset controls, so Dashboard computes one `boardEdit` and
+ * shares it with both HomeBoardControls (header) and this component (grid)
+ * as a plain prop. HomeBoard itself only renders the grid, the per-tile
+ * remove `×` button, and keyboard move/resize handling (Task D2) — none of
+ * which need to live in the header.
  */
-export function HomeBoard({ companyId, role }: { companyId: string; role: UserRole | null }) {
+export function HomeBoard({
+  companyId,
+  role,
+  boardEdit,
+}: {
+  companyId: string;
+  role: UserRole | null;
+  boardEdit: UseBoardEditResult;
+}) {
   const {
     lg,
     editing,
-    dirty,
-    isSaving,
-    isResetting,
-    saveError,
     activeBreakpoint,
     announcement,
-    startEdit,
-    exitEdit,
-    retrySave,
     removeWidget,
-    addWidget,
-    resetBoard,
     onLayoutChange,
     onBreakpointChange,
     onResizeStop,
     moveWidget,
     cycleWidgetSize,
-  } = useBoardEdit(companyId, role);
+  } = boardEdit;
   const { width, mounted, containerRef } = useContainerWidth();
-  const [trayOpen, setTrayOpen] = useState(false);
 
   // Task D1: editing is enforced lg-only (the persisted layout is the
   // canonical desktop lg array — md/sm are always-derived projections, never
-  // edited). `editing` alone isn't enough to gate drag/resize/remove/add:
-  // if the viewport shrinks below 1024px mid-edit-session (activeBreakpoint
-  // flips away from "lg"), every mutating affordance freezes until it's back
-  // at lg — the user can still hit "Done" to exit/save (see
-  // HomeBoardControls), they just can't keep dragging/resizing/adding below
-  // desktop width.
+  // edited). `editing` alone isn't enough to gate drag/resize/remove/
+  // keyboard: if the viewport shrinks below 1024px mid-edit-session
+  // (activeBreakpoint flips away from "lg"), every mutating affordance
+  // freezes until it's back at lg — the user can still hit "Done" to
+  // exit/save (see HomeBoardControls), they just can't keep
+  // dragging/resizing/adding/nudging below desktop width.
   const editableNow = editing && activeBreakpoint === "lg";
-
-  // Never let a stale tray-open flag resurface on a later edit session (e.g.
-  // after a company switch discards the current one mid-tray).
-  useEffect(() => {
-    if (!editing) setTrayOpen(false);
-  }, [editing]);
 
   const layouts = {
     lg,
@@ -96,56 +90,6 @@ export function HomeBoard({ companyId, role }: { companyId: string; role: UserRo
           watching it before the first announcement ever lands. */}
       <div aria-live="polite" role="status" className="sr-only">
         {announcement}
-      </div>
-
-      {/* TEMPORARY edit controls — Task D3 moves these into the pinned header. */}
-      <div className="mb-2 flex items-center justify-end gap-2">
-        {editing && saveError != null && (
-          <span className="text-sm text-destructive">
-            Couldn't save your changes.{" "}
-            <button type="button" onClick={retrySave} className="underline">
-              Retry
-            </button>
-          </span>
-        )}
-        {editing && saveError == null && isSaving && (
-          <span className="text-sm text-muted-foreground">Saving…</span>
-        )}
-        {editing && saveError == null && !isSaving && dirty && (
-          <span className="text-sm text-muted-foreground">Unsaved changes</span>
-        )}
-        {editableNow && (
-          <div className="relative">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => setTrayOpen((open) => !open)}
-            >
-              Add widget
-            </Button>
-            {trayOpen && (
-              <div className="absolute right-0 top-full z-20 mt-1">
-                <AddWidgetTray
-                  boardKeys={lg.map((item) => item.i)}
-                  onAdd={addWidget}
-                  onReset={resetBoard}
-                  resetting={isResetting}
-                />
-              </div>
-            )}
-          </div>
-        )}
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          disabled={isSaving || (!editing && activeBreakpoint !== "lg")}
-          title={!editing && activeBreakpoint !== "lg" ? "Edit on a larger screen (1024px+)" : undefined}
-          onClick={editing ? exitEdit : startEdit}
-        >
-          {editing ? "Done" : "Edit board"}
-        </Button>
       </div>
 
       <div ref={containerRef}>

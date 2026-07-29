@@ -13,6 +13,8 @@ import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { HomeBoard } from "../components/home/HomeBoard";
+import { HomeBoardControls } from "../components/home/HomeBoardControls";
+import { useBoardEdit } from "../components/home/useBoardEdit";
 import { buildActionGroups, getTotalActionCount } from "../components/home/actionQueue";
 import { Home, MessageSquare, Plus, Target } from "lucide-react";
 
@@ -73,6 +75,15 @@ export function Dashboard() {
 
   const { role: teamRole } = useTeamAccess(selectedCompanyId);
 
+  // Task D3: lifted here (rather than owned inside HomeBoard) so the pinned
+  // header controls (HomeBoardControls, below) and the grid (HomeBoard)
+  // share exactly one edit session/draft — see HomeBoard's and
+  // HomeBoardControls' doc comments. Called unconditionally, before the
+  // !selectedCompanyId early return, same as every other hook above (Rules
+  // of Hooks) — useBoardEdit/useHomeBoardLayout already tolerate a null
+  // companyId (the query is simply disabled until one is selected).
+  const boardEdit = useBoardEdit(selectedCompanyId, teamRole);
+
   if (!selectedCompanyId) {
     if (companies.length === 0) {
       return (
@@ -85,10 +96,6 @@ export function Dashboard() {
       );
     }
     return <EmptyState icon={Home} message="Create or select a company to get started." />;
-  }
-
-  if (isLoading) {
-    return <PageSkeleton variant="dashboard" />;
   }
 
   const userName = session?.user?.name?.split(" ")[0] ?? null;
@@ -118,23 +125,37 @@ export function Dashboard() {
     <div className="space-y-6 max-w-3xl">
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">{greeting}</h1>
-        {data && <p className="text-sm text-muted-foreground mt-1">{statusLine}</p>}
-      </div>
-
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        <QuickActionCard icon={Plus} label="+ New Task" onClick={() => openNewIssue()} />
-        <QuickActionCard icon={MessageSquare} label="+ Discussion" onClick={() => openDiscussionCapture()} />
-        <QuickActionCard icon={Target} label="+ New Goal" onClick={() => openNewGoal()} />
-      </div>
-
-      <HomeBoard companyId={selectedCompanyId} role={teamRole} />
-
-      {data && actionGroups.length === 0 && suggestions.length === 0 && data.recentActivity.length === 0 && (
-        <div className="border border-border rounded-md p-8 text-center">
-          <p className="text-sm text-muted-foreground">Nothing needs your attention right now.</p>
+      {/* Task D3: the pinned header — greeting, the "needs attention" status
+          line, and the board's edit/add/reset controls — renders regardless
+          of the home-summary/grid loading state below, and survives a
+          per-widget error (each widget has its own WidgetErrorBoundary
+          inside HomeBoard, so one failing widget can never take this out). */}
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">{greeting}</h1>
+          <p className="text-sm text-muted-foreground mt-1">{statusLine}</p>
         </div>
+        <HomeBoardControls boardEdit={boardEdit} />
+      </div>
+
+      {isLoading ? (
+        <PageSkeleton variant="dashboard" />
+      ) : (
+        <>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <QuickActionCard icon={Plus} label="+ New Task" onClick={() => openNewIssue()} />
+            <QuickActionCard icon={MessageSquare} label="+ Discussion" onClick={() => openDiscussionCapture()} />
+            <QuickActionCard icon={Target} label="+ New Goal" onClick={() => openNewGoal()} />
+          </div>
+
+          <HomeBoard companyId={selectedCompanyId} role={teamRole} boardEdit={boardEdit} />
+
+          {data && actionGroups.length === 0 && suggestions.length === 0 && data.recentActivity.length === 0 && (
+            <div className="border border-border rounded-md p-8 text-center">
+              <p className="text-sm text-muted-foreground">Nothing needs your attention right now.</p>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
