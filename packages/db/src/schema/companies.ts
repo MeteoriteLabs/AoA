@@ -1,9 +1,18 @@
 import { pgTable, uuid, text, integer, timestamp, boolean, uniqueIndex, jsonb } from "drizzle-orm/pg-core";
+import { organizations } from "./organizations.js";
 
 export const companies = pgTable(
   "companies",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    // Phase 1 tenant FK. RESTRICT: an Organization cannot be deleted while it
+    // still owns companies (org teardown is out of Phase 1 scope). Injected on
+    // every existing row by migration 0187.
+    // DB-level DEFAULT = the sentinel org: belt-and-suspenders so ANY missed
+    // writer (raw e2e seeds, portability edge paths, future migrations) lands
+    // in the default org instead of hitting a NOT NULL violation. SET DEFAULT
+    // does NOT rewrite existing rows, so 0187's explicit backfill still runs.
+    organizationId: uuid("organization_id").notNull().default("00000000-0000-0000-0000-000000000001").references(() => organizations.id, { onDelete: "restrict" }),
     name: text("name").notNull(),
     description: text("description"),
     status: text("status").notNull().default("active"),
@@ -52,6 +61,8 @@ export const companies = pgTable(
     enableTeams: boolean("enable_teams").notNull().default(false),
   },
   (table) => ({
-    issuePrefixUniqueIdx: uniqueIndex("companies_issue_prefix_idx").on(table.issuePrefix),
+    // Re-scoped in Phase 1: prefix uniqueness is per-Organization, not global.
+    // The 23505 retry in companyService keys on this constraint name.
+    issuePrefixUniqueIdx: uniqueIndex("companies_org_issue_prefix_idx").on(table.organizationId, table.issuePrefix),
   }),
 );
