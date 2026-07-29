@@ -16,6 +16,7 @@ describe("ActivityFeedWidget", () => {
         ],
       },
       isLoading: false,
+      isError: false,
       error: null,
     });
   });
@@ -26,27 +27,27 @@ describe("ActivityFeedWidget", () => {
     expect(screen.getByText("Draft spec")).toBeInTheDocument();
   });
 
-  it("renders nothing while loading (no data yet)", () => {
-    useHomeSummaryMock.mockReturnValue({ data: undefined, isLoading: true, error: null });
-    const { container } = renderWithProviders(
-      <ActivityFeedWidget companyId="co-1" role="founder" size={{ w: 2, h: 2 }} />,
-    );
-    expect(container.firstChild).toBeNull();
+  it("shows the shell + loading placeholder while the summary query is in flight", () => {
+    useHomeSummaryMock.mockReturnValue({ data: undefined, isLoading: true, isError: false, error: null });
+    renderWithProviders(<ActivityFeedWidget companyId="co-1" role="founder" size={{ w: 2, h: 2 }} />);
+
+    expect(screen.getByText("Today's activity")).toBeInTheDocument();
+    expect(screen.getByText(/Loading/)).toBeInTheDocument();
   });
 
-  it("renders nothing when there is no recent activity (empty)", () => {
-    useHomeSummaryMock.mockReturnValue({ data: { recentActivity: [] }, isLoading: false, error: null });
-    const { container } = renderWithProviders(
-      <ActivityFeedWidget companyId="co-1" role="founder" size={{ w: 2, h: 2 }} />,
-    );
-    expect(container.firstChild).toBeNull();
+  it("shows the empty state (no CTA) when there is no recent activity", () => {
+    useHomeSummaryMock.mockReturnValue({ data: { recentActivity: [] }, isLoading: false, isError: false, error: null });
+    renderWithProviders(<ActivityFeedWidget companyId="co-1" role="founder" size={{ w: 2, h: 2 }} />);
+
+    expect(screen.getByText("Agent activity will show up here as your crew starts working.")).toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 
-  it("renders nothing (no throw) when the summary query errors", () => {
-    useHomeSummaryMock.mockReturnValue({ data: undefined, isLoading: false, error: new Error("network error") });
-    const { container } = renderWithProviders(
-      <ActivityFeedWidget companyId="co-1" role="founder" size={{ w: 2, h: 2 }} />,
-    );
-    expect(container.firstChild).toBeNull();
+  it("shows an error empty state (no throw) when the summary query errors", () => {
+    useHomeSummaryMock.mockReturnValue({ data: undefined, isLoading: false, isError: true, error: new Error("network error") });
+    renderWithProviders(<ActivityFeedWidget companyId="co-1" role="founder" size={{ w: 2, h: 2 }} />);
+
+    expect(screen.getByText("Couldn't load activity")).toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 });

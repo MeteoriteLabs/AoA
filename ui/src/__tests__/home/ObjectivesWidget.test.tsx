@@ -1,13 +1,16 @@
 import { screen } from "@testing-library/react";
-import { renderWithProviders, mockCompanyContext } from "../test-utils";
+import userEvent from "@testing-library/user-event";
+import { renderWithProviders, mockCompanyContext, mockDialogContext } from "../test-utils";
 import { ObjectivesWidget } from "../../components/home/widgets/ObjectivesWidget";
 
 const { useHomeSummaryMock } = vi.hoisted(() => ({ useHomeSummaryMock: vi.fn() }));
 vi.mock("../../context/CompanyContext", () => ({ useCompany: () => mockCompanyContext }));
+vi.mock("../../context/DialogContext", () => ({ useDialog: () => mockDialogContext }));
 vi.mock("../../hooks/useHomeSummary", () => ({ useHomeSummary: useHomeSummaryMock }));
 
 describe("ObjectivesWidget", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     useHomeSummaryMock.mockReturnValue({
       data: {
         goalProgress: [
@@ -16,6 +19,7 @@ describe("ObjectivesWidget", () => {
         ],
       },
       isLoading: false,
+      isError: false,
       error: null,
     });
   });
@@ -31,27 +35,37 @@ describe("ObjectivesWidget", () => {
     expect(screen.getByText(/no tasks yet/i)).toBeInTheDocument();
   });
 
-  it("renders nothing while loading (no data yet)", () => {
-    useHomeSummaryMock.mockReturnValue({ data: undefined, isLoading: true, error: null });
-    const { container } = renderWithProviders(
-      <ObjectivesWidget companyId="co-1" role="founder" size={{ w: 2, h: 1 }} />,
-    );
-    expect(container.firstChild).toBeNull();
+  it("shows the shell + loading placeholder while the summary query is in flight", () => {
+    useHomeSummaryMock.mockReturnValue({ data: undefined, isLoading: true, isError: false, error: null });
+    renderWithProviders(<ObjectivesWidget companyId="co-1" role="founder" size={{ w: 2, h: 1 }} />);
+    // The shell (title) always renders now — never a blank tile.
+    expect(screen.getByText("Objectives")).toBeInTheDocument();
+    expect(screen.getByText(/Loading/)).toBeInTheDocument();
   });
 
-  it("renders nothing when there are zero goals (empty)", () => {
-    useHomeSummaryMock.mockReturnValue({ data: { goalProgress: [] }, isLoading: false, error: null });
-    const { container } = renderWithProviders(
-      <ObjectivesWidget companyId="co-1" role="founder" size={{ w: 2, h: 1 }} />,
-    );
-    expect(container.firstChild).toBeNull();
+  it("shows the empty state with a New goal CTA when there are zero goals", async () => {
+    useHomeSummaryMock.mockReturnValue({ data: { goalProgress: [] }, isLoading: false, isError: false, error: null });
+    const user = userEvent.setup();
+    renderWithProviders(<ObjectivesWidget companyId="co-1" role="founder" size={{ w: 2, h: 1 }} />);
+
+    expect(screen.getByText("No objectives yet")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "+ New goal" }));
+    expect(mockDialogContext.openNewGoal).toHaveBeenCalledTimes(1);
   });
 
-  it("renders nothing (no throw) when the summary query errors", () => {
-    useHomeSummaryMock.mockReturnValue({ data: undefined, isLoading: false, error: new Error("network error") });
-    const { container } = renderWithProviders(
-      <ObjectivesWidget companyId="co-1" role="founder" size={{ w: 2, h: 1 }} />,
-    );
-    expect(container.firstChild).toBeNull();
+  it("hides the New goal CTA while the board is in edit mode (review P2: no add-dialog mid-drag)", () => {
+    useHomeSummaryMock.mockReturnValue({ data: { goalProgress: [] }, isLoading: false, isError: false, error: null });
+    renderWithProviders(<ObjectivesWidget companyId="co-1" role="founder" size={{ w: 2, h: 1 }} editing />);
+
+    expect(screen.getByText("No objectives yet")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "+ New goal" })).not.toBeInTheDocument();
+  });
+
+  it("shows an error empty state (no CTA, no throw) when the summary query errors", () => {
+    useHomeSummaryMock.mockReturnValue({ data: undefined, isLoading: false, isError: true, error: new Error("network error") });
+    renderWithProviders(<ObjectivesWidget companyId="co-1" role="founder" size={{ w: 2, h: 1 }} />);
+
+    expect(screen.getByText("Couldn't load objectives")).toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 });

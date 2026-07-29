@@ -17,6 +17,7 @@ describe("ActionQueueWidget", () => {
         myTasksDueToday: [{ id: "t1", title: "Ship it", status: "in_progress", priority: "high", dueDate: null, assigneeAgentId: null, assigneeUserId: "u1" }],
       },
       isLoading: false,
+      isError: false,
       error: null,
     });
   });
@@ -29,31 +30,32 @@ describe("ActionQueueWidget", () => {
     expect(screen.getByText("Ship it")).toBeInTheDocument();
   });
 
-  it("renders nothing while loading (no data yet)", () => {
-    useHomeSummaryMock.mockReturnValue({ data: undefined, isLoading: true, error: null });
-    const { container } = renderWithProviders(
-      <ActionQueueWidget companyId="co-1" role="founder" size={{ w: 2, h: 1 }} />,
-    );
-    expect(container.firstChild).toBeNull();
+  it("shows the shell + loading placeholder while the summary query is in flight", () => {
+    useHomeSummaryMock.mockReturnValue({ data: undefined, isLoading: true, isError: false, error: null });
+    renderWithProviders(<ActionQueueWidget companyId="co-1" role="founder" size={{ w: 2, h: 1 }} />);
+
+    expect(screen.getByText("Action queue")).toBeInTheDocument();
+    expect(screen.getByText(/Loading/)).toBeInTheDocument();
   });
 
-  it("renders nothing when the summary has zero actionable items (empty)", () => {
+  it("shows the empty state (no CTA) when the summary has zero actionable items", () => {
     useHomeSummaryMock.mockReturnValue({
       data: { tasksInReview: 0, blockedTasks: 0, discussionsPendingReview: 0, myTasksDueToday: [] },
       isLoading: false,
+      isError: false,
       error: null,
     });
-    const { container } = renderWithProviders(
-      <ActionQueueWidget companyId="co-1" role="founder" size={{ w: 2, h: 1 }} />,
-    );
-    expect(container.firstChild).toBeNull();
+    renderWithProviders(<ActionQueueWidget companyId="co-1" role="founder" size={{ w: 2, h: 1 }} />);
+
+    expect(screen.getByText("Nothing needs review — all clear")).toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 
-  it("renders nothing (no throw) when the summary query errors", () => {
-    useHomeSummaryMock.mockReturnValue({ data: undefined, isLoading: false, error: new Error("network error") });
-    const { container } = renderWithProviders(
-      <ActionQueueWidget companyId="co-1" role="founder" size={{ w: 2, h: 1 }} />,
-    );
-    expect(container.firstChild).toBeNull();
+  it("shows an error empty state (no throw) when the summary query errors", () => {
+    useHomeSummaryMock.mockReturnValue({ data: undefined, isLoading: false, isError: true, error: new Error("network error") });
+    renderWithProviders(<ActionQueueWidget companyId="co-1" role="founder" size={{ w: 2, h: 1 }} />);
+
+    expect(screen.getByText("Couldn't load")).toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 });
