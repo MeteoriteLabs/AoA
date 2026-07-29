@@ -7,6 +7,9 @@ AoA authenticates humans, board clients, and agents differently. Authentication
 establishes identity; company membership and RBAC determine what that identity
 may access.
 
+For the short-lived instance-admin board credential used by fleet recovery, see
+[Marketplace recovery](/guides/board-operator/marketplace-recovery).
+
 ## Human Authentication
 
 Google is the only interactive human sign-in provider. Email/password sign-in,

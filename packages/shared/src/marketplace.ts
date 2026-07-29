@@ -337,67 +337,375 @@ export type MarketplaceMaintenanceStage =
   | "crew_update"
   | "team_reconcile";
 
-export interface MarketplaceReconcileFailure {
-  companyId: string;
-  stage: MarketplaceMaintenanceStage;
-  message: string;
-  occurrences?: number;
-}
+const PUBLIC_ID_MAX = 160;
+const PUBLIC_MESSAGE_MAX = 500;
+const PUBLIC_URL_MAX = 500;
+const CountSchema = z.number().int().nonnegative();
 
-/** Public wire contract for POST /api/admin/marketplace/reconcile. */
-export interface MarketplaceReconcileResponse {
-  operationId: string;
-  replayed: boolean;
-  status: "success" | "partial";
-  repairs: {
-    crewCompaniesRepaired: number;
-    legacyStewardsAdopted: number;
-    teamsReconciled: number;
-    teamMembersAdded: number;
-  };
-  catalog: {
-    generatedAt: string;
-    canonicalDigestSha256: string;
-    schemaVersion: string;
-    itemCount: number;
-    source: CatalogSyncStatus["source"];
-  };
-  companiesExamined: number;
-  crewRepair: {
-    catalogReady: boolean;
-    inspected: number;
-    repaired: number;
-    skippedFailClosed: number;
-    skippedCooldown: number;
-    skippedOverBudget: number;
-    failed: number;
-  };
-  legacySteward: {
-    disabled: boolean;
-    catalogReady: boolean;
-    inspected: number;
-    adopted: number;
-    skippedOverBudget: number;
-    failed: number;
-  };
-  crewUpdates: {
-    succeeded: number;
-    failed: number;
-  };
-  teamReconcile: {
-    teamsReconciled: number;
-    membersAdded: number;
-  };
-  failures: MarketplaceReconcileFailure[];
-}
+export const MarketplaceMaintenanceStageSchema = z.enum([
+  "marketplace_update",
+  "crew_repair",
+  "legacy_steward",
+  "crew_update",
+  "team_reconcile",
+]);
 
-export interface MarketplaceReconcileErrorResponse {
-  error: string;
-  operationId: string;
-  catalogStatus?: CatalogSyncStatus | null;
-  catalogOutcome?: "cdn_success" | "fallback_success" | "failure";
-  catalogError?: string | null;
-}
+export const MarketplaceReconcileRequestSchema = z
+  .object({
+    scope: z.literal("fleet"),
+    mode: z.literal("repair"),
+    operationId: z.string().uuid(),
+  })
+  .strict();
+export type MarketplaceReconcileRequest = z.infer<
+  typeof MarketplaceReconcileRequestSchema
+>;
+
+export const MarketplaceReconcileSkipCategorySchema = z.enum([
+  "fail_closed",
+  "cooldown",
+  "over_budget",
+]);
+export type MarketplaceReconcileSkipCategory = z.infer<
+  typeof MarketplaceReconcileSkipCategorySchema
+>;
+
+export const MarketplaceReconcileDiagnosticCodeSchema = z.enum([
+  "install_in_flight",
+  "team_item_not_in_catalog",
+  "team_template_unavailable",
+  "empty_roster",
+  "unadoptable_roster_member",
+  "unaccounted_crew_rows",
+  "skill_resource_temporarily_unavailable",
+  "skill_resource_fetch_failed",
+  "skill_resource_invalid",
+  "skill_bundle_materialization_failed",
+  "skill_bundle_missing",
+  "skill_filesystem_permission_denied",
+  "repair_cooldown",
+  "repair_budget_exhausted",
+  "unknown_fail_closed",
+]);
+export type MarketplaceReconcileDiagnosticCode = z.infer<
+  typeof MarketplaceReconcileDiagnosticCodeSchema
+>;
+
+export const MarketplaceOperationDiagnosticCodeSchema = z.enum([
+  "crew_catalog_not_ready",
+  "legacy_steward_disabled",
+  "legacy_steward_catalog_not_ready",
+]);
+export type MarketplaceOperationDiagnosticCode = z.infer<
+  typeof MarketplaceOperationDiagnosticCodeSchema
+>;
+
+export const MarketplaceReconcileFailureCodeSchema = z.enum([
+  "marketplace_update_failed",
+  "crew_repair_failed",
+  "legacy_steward_failed",
+  "crew_update_failed",
+  "team_reconcile_failed",
+  "unknown_internal_failure",
+]);
+export type MarketplaceReconcileFailureCode = z.infer<
+  typeof MarketplaceReconcileFailureCodeSchema
+>;
+
+export const MarketplaceReconcileErrorCodeSchema = z.enum([
+  "invalid_request",
+  "authentication_required",
+  "instance_admin_required",
+  "operation_not_found",
+  "operation_in_flight",
+  "catalog_temporarily_unavailable",
+  "catalog_refresh_failed",
+  "outcome_unknown_after_mutation",
+  "internal_error",
+]);
+export type MarketplaceReconcileErrorCode = z.infer<
+  typeof MarketplaceReconcileErrorCodeSchema
+>;
+
+export const MarketplaceRecoveryCodeSchema = z.enum([
+  "retry_now",
+  "wait_then_retry",
+  "inspect_operation",
+  "authenticate",
+  "use_instance_admin",
+  "use_new_operation_id",
+  "restore_catalog",
+  "restore_resource",
+  "correct_resource",
+  "repair_bundle_storage",
+  "repair_filesystem_permissions",
+  "review_crew_state",
+  "do_not_retry",
+]);
+export type MarketplaceRecoveryCode = z.infer<
+  typeof MarketplaceRecoveryCodeSchema
+>;
+
+const RetryBaseSchema = z.object({
+  recoveryCode: MarketplaceRecoveryCodeSchema,
+  message: z.string().min(1).max(PUBLIC_MESSAGE_MAX),
+});
+
+export const MarketplaceRetryInstructionSchema = z.discriminatedUnion("kind", [
+  RetryBaseSchema.extend({ kind: z.literal("immediate") }).strict(),
+  RetryBaseSchema.extend({
+    kind: z.literal("after"),
+    notBefore: z.string().datetime(),
+  }).strict(),
+  RetryBaseSchema.extend({ kind: z.literal("after_correction") }).strict(),
+  RetryBaseSchema.extend({ kind: z.literal("inspect_first") }).strict(),
+  RetryBaseSchema.extend({ kind: z.literal("never") }).strict(),
+]);
+export type MarketplaceRetryInstruction = z.infer<
+  typeof MarketplaceRetryInstructionSchema
+>;
+
+const ReconcileContextSchema = z
+  .object({
+    catalogItemId: z.string().min(1).max(PUBLIC_ID_MAX).optional(),
+    httpStatus: z.number().int().min(100).max(599).optional(),
+    filesystemOperation: z
+      .enum(["read", "write", "rename", "mkdir"])
+      .optional(),
+  })
+  .strict();
+
+export const MarketplaceReconcileSkipSchema = z
+  .object({
+    companyId: z.string().min(1).max(PUBLIC_ID_MAX),
+    stage: z.literal("crew_repair"),
+    category: MarketplaceReconcileSkipCategorySchema,
+    reason: MarketplaceReconcileDiagnosticCodeSchema,
+    message: z.string().min(1).max(PUBLIC_MESSAGE_MAX),
+    retry: MarketplaceRetryInstructionSchema,
+    context: ReconcileContextSchema.optional(),
+  })
+  .strict();
+export type MarketplaceReconcileSkip = z.infer<
+  typeof MarketplaceReconcileSkipSchema
+>;
+
+export const MarketplaceReconcileFailureSchema = z
+  .object({
+    companyId: z.string().min(1).max(PUBLIC_ID_MAX),
+    stage: MarketplaceMaintenanceStageSchema,
+    code: MarketplaceReconcileFailureCodeSchema,
+    message: z.string().min(1).max(PUBLIC_MESSAGE_MAX),
+    retry: MarketplaceRetryInstructionSchema,
+    occurrences: z.number().int().positive().optional(),
+  })
+  .strict();
+export type MarketplaceReconcileFailure = z.infer<
+  typeof MarketplaceReconcileFailureSchema
+>;
+
+export const MarketplaceReconcileDiagnosticSchema = z
+  .object({
+    scope: z.literal("operation"),
+    stage: MarketplaceMaintenanceStageSchema,
+    code: MarketplaceOperationDiagnosticCodeSchema,
+    message: z.string().min(1).max(PUBLIC_MESSAGE_MAX),
+    retry: MarketplaceRetryInstructionSchema,
+  })
+  .strict();
+export type MarketplaceReconcileDiagnostic = z.infer<
+  typeof MarketplaceReconcileDiagnosticSchema
+>;
+
+const CatalogIdentitySchema = z
+  .object({
+    generatedAt: z.string().datetime(),
+    canonicalDigestSha256: z.string().regex(/^[0-9a-f]{64}$/),
+    schemaVersion: z.string().min(1).max(40),
+    itemCount: CountSchema,
+    source: z.enum(["cdn", "bundled"]),
+  })
+  .strict();
+
+const CrewRepairCountersSchema = z
+  .object({
+    catalogReady: z.boolean(),
+    inspected: CountSchema,
+    repaired: CountSchema,
+    skippedFailClosed: CountSchema,
+    skippedCooldown: CountSchema,
+    skippedOverBudget: CountSchema,
+    failed: CountSchema,
+  })
+  .strict();
+
+const LegacyStewardCountersSchema = z
+  .object({
+    disabled: z.boolean(),
+    catalogReady: z.boolean(),
+    inspected: CountSchema,
+    adopted: CountSchema,
+    skippedOverBudget: CountSchema,
+    failed: CountSchema,
+  })
+  .strict();
+
+/** Strict public wire contract for POST /api/admin/marketplace/reconcile. */
+export const MarketplaceReconcileResponseSchema = z
+  .object({
+    ok: z.literal(true),
+    operationId: z.string().uuid(),
+    executionDisposition: z.enum(["started", "joined_in_flight"]),
+    /** @deprecated Use executionDisposition. Kept for one compatibility release. */
+    replayed: z.boolean(),
+    status: z.enum(["success", "partial"]),
+    repairs: z
+      .object({
+        crewCompaniesRepaired: CountSchema,
+        legacyStewardsAdopted: CountSchema,
+        teamsReconciled: CountSchema,
+        teamMembersAdded: CountSchema,
+      })
+      .strict(),
+    catalog: CatalogIdentitySchema,
+    companiesExamined: CountSchema,
+    crewRepair: CrewRepairCountersSchema,
+    legacySteward: LegacyStewardCountersSchema,
+    crewUpdates: z
+      .object({ succeeded: CountSchema, failed: CountSchema })
+      .strict(),
+    teamReconcile: z
+      .object({
+        teamsReconciled: CountSchema,
+        membersAdded: CountSchema,
+      })
+      .strict(),
+    skips: z.array(MarketplaceReconcileSkipSchema),
+    diagnostics: z.array(MarketplaceReconcileDiagnosticSchema),
+    failures: z.array(MarketplaceReconcileFailureSchema),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    const replayed = value.executionDisposition === "joined_in_flight";
+    if (value.replayed !== replayed) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["replayed"],
+        message: "replayed must match executionDisposition",
+      });
+    }
+  });
+export type MarketplaceReconcileResponse = z.infer<
+  typeof MarketplaceReconcileResponseSchema
+>;
+
+export const MarketplaceReconcileErrorResponseSchema = z
+  .object({
+    ok: z.literal(false),
+    error: z
+      .object({
+        code: MarketplaceReconcileErrorCodeSchema,
+        message: z.string().min(1).max(PUBLIC_MESSAGE_MAX),
+      })
+      .strict(),
+    operationId: z.string().uuid().nullable(),
+    retry: MarketplaceRetryInstructionSchema,
+    docUrl: z.string().min(1).max(PUBLIC_URL_MAX),
+  })
+  .strict();
+export type MarketplaceReconcileErrorResponse = z.infer<
+  typeof MarketplaceReconcileErrorResponseSchema
+>;
+
+export const MarketplaceReconciliationInspectionSchema = z
+  .object({
+    operationId: z.string().uuid(),
+    state: z.enum([
+      "running",
+      "success",
+      "partial",
+      "failed_before_mutation",
+      "outcome_unknown_after_mutation",
+    ]),
+    startedAt: z.string().datetime(),
+    completedAt: z.string().datetime().nullable(),
+    deploymentSha: z.string().min(1).max(PUBLIC_ID_MAX),
+    targetCount: CountSchema,
+    targets: z.array(
+      z
+        .object({
+          companyId: z.string().min(1).max(PUBLIC_ID_MAX),
+          crewState: z.enum(["healthy", "repairable", "blocked", "unknown"]),
+          diagnosticCode:
+            MarketplaceReconcileDiagnosticCodeSchema.nullable(),
+        })
+        .strict(),
+    ),
+    safeToRetry: z.boolean(),
+    retry: MarketplaceRetryInstructionSchema,
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.targetCount !== value.targets.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["targetCount"],
+        message: "targetCount must match targets.length",
+      });
+    }
+  });
+export type MarketplaceReconciliationInspection = z.infer<
+  typeof MarketplaceReconciliationInspectionSchema
+>;
+
+export const MARKETPLACE_RECOVERY_DOC_URL =
+  "/docs/guides/board-operator/marketplace-recovery";
+
+type PublicRecovery =
+  | MarketplaceReconcileDiagnosticCode
+  | MarketplaceOperationDiagnosticCode
+  | MarketplaceReconcileFailureCode
+  | MarketplaceReconcileErrorCode;
+
+/** Exhaustive, checked-in public message and recovery policy. */
+export const MARKETPLACE_RECOVERY: Record<
+  PublicRecovery,
+  { message: string; retry: MarketplaceRetryInstruction }
+> = {
+  install_in_flight: { message: "A crew installation is already in progress.", retry: { kind: "after", recoveryCode: "wait_then_retry", message: "Wait for the active installation to finish, then inspect again.", notBefore: new Date(0).toISOString() } },
+  team_item_not_in_catalog: { message: "The standard crew team is absent from the catalog.", retry: { kind: "after_correction", recoveryCode: "restore_catalog", message: "Restore the standard crew catalog entry before retrying." } },
+  team_template_unavailable: { message: "The standard crew team template could not be loaded.", retry: { kind: "after_correction", recoveryCode: "restore_resource", message: "Restore the pinned team resource before retrying." } },
+  empty_roster: { message: "The standard crew template has an empty roster.", retry: { kind: "after_correction", recoveryCode: "correct_resource", message: "Publish a valid non-empty team template before retrying." } },
+  unadoptable_roster_member: { message: "An existing crew row cannot be safely matched to the catalog roster.", retry: { kind: "after_correction", recoveryCode: "review_crew_state", message: "Review the company crew mapping before retrying." } },
+  unaccounted_crew_rows: { message: "Crew rows exist that are not accounted for by the catalog roster.", retry: { kind: "after_correction", recoveryCode: "review_crew_state", message: "Review the unaccounted crew rows before retrying." } },
+  skill_resource_temporarily_unavailable: { message: "A required skill resource is temporarily unavailable.", retry: { kind: "after", recoveryCode: "wait_then_retry", message: "Wait until the resource retry deadline, then inspect again.", notBefore: new Date(0).toISOString() } },
+  skill_resource_fetch_failed: { message: "A required skill resource could not be fetched.", retry: { kind: "after_correction", recoveryCode: "restore_resource", message: "Restore the pinned skill resource before retrying." } },
+  skill_resource_invalid: { message: "A required skill resource is invalid.", retry: { kind: "after_correction", recoveryCode: "correct_resource", message: "Correct and republish the pinned skill resource before retrying." } },
+  skill_bundle_materialization_failed: { message: "A skill bundle could not be materialized.", retry: { kind: "after_correction", recoveryCode: "repair_bundle_storage", message: "Repair bundle storage before retrying." } },
+  skill_bundle_missing: { message: "A required managed skill bundle is missing.", retry: { kind: "after_correction", recoveryCode: "repair_bundle_storage", message: "Restore or re-materialize the managed bundle before retrying." } },
+  skill_filesystem_permission_denied: { message: "The managed skill root is not writable.", retry: { kind: "after_correction", recoveryCode: "repair_filesystem_permissions", message: "Correct managed-root ownership and permissions before retrying." } },
+  repair_cooldown: { message: "Crew repair is within its cooldown window.", retry: { kind: "after", recoveryCode: "wait_then_retry", message: "Wait until the repair cooldown expires, then inspect again.", notBefore: new Date(0).toISOString() } },
+  repair_budget_exhausted: { message: "The crew repair budget was exhausted before this company.", retry: { kind: "immediate", recoveryCode: "retry_now", message: "Start a new bounded reconciliation after this operation completes." } },
+  unknown_fail_closed: { message: "Crew repair stopped at an unclassified safety boundary.", retry: { kind: "after_correction", recoveryCode: "review_crew_state", message: "Inspect the company and server logs before retrying." } },
+  crew_catalog_not_ready: { message: "The catalog is missing the standard crew prerequisite.", retry: { kind: "after_correction", recoveryCode: "restore_catalog", message: "Restore the standard crew catalog entry before retrying." } },
+  legacy_steward_disabled: { message: "Legacy Steward reconciliation is disabled.", retry: { kind: "after_correction", recoveryCode: "review_crew_state", message: "Confirm the Steward migration policy before retrying." } },
+  legacy_steward_catalog_not_ready: { message: "The Steward catalog prerequisite is unavailable.", retry: { kind: "after_correction", recoveryCode: "restore_catalog", message: "Restore the Steward catalog entry before retrying." } },
+  marketplace_update_failed: { message: "A marketplace update check failed for this company.", retry: { kind: "after_correction", recoveryCode: "review_crew_state", message: "Inspect the company update state before retrying." } },
+  crew_repair_failed: { message: "Crew repair failed for this company.", retry: { kind: "after_correction", recoveryCode: "review_crew_state", message: "Inspect the company crew state before retrying." } },
+  legacy_steward_failed: { message: "Legacy Steward reconciliation failed for this company.", retry: { kind: "after_correction", recoveryCode: "review_crew_state", message: "Inspect the Steward state before retrying." } },
+  crew_update_failed: { message: "A crew agent update failed for this company.", retry: { kind: "after_correction", recoveryCode: "review_crew_state", message: "Inspect the affected crew update before retrying." } },
+  team_reconcile_failed: { message: "Team membership reconciliation failed for this company.", retry: { kind: "after_correction", recoveryCode: "review_crew_state", message: "Inspect the company team state before retrying." } },
+  unknown_internal_failure: { message: "Marketplace reconciliation encountered an internal failure.", retry: { kind: "inspect_first", recoveryCode: "inspect_operation", message: "Inspect the operation before any retry." } },
+  invalid_request: { message: "The marketplace reconciliation request is invalid.", retry: { kind: "never", recoveryCode: "do_not_retry", message: "Correct the request and use a new operation ID." } },
+  authentication_required: { message: "Board authentication is required.", retry: { kind: "after_correction", recoveryCode: "authenticate", message: "Authenticate with a board credential before retrying." } },
+  instance_admin_required: { message: "Instance-admin access is required.", retry: { kind: "after_correction", recoveryCode: "use_instance_admin", message: "Authenticate as an instance admin before retrying." } },
+  operation_not_found: { message: "The reconciliation operation was not found.", retry: { kind: "never", recoveryCode: "do_not_retry", message: "Verify the operation ID; do not infer that it is safe to retry." } },
+  operation_in_flight: { message: "Another marketplace reconciliation is already running.", retry: { kind: "inspect_first", recoveryCode: "inspect_operation", message: "Inspect the active operation before starting another." } },
+  catalog_temporarily_unavailable: { message: "The marketplace catalog is temporarily unavailable.", retry: { kind: "after", recoveryCode: "wait_then_retry", message: "Wait for catalog availability, then inspect the operation.", notBefore: new Date(0).toISOString() } },
+  catalog_refresh_failed: { message: "The marketplace catalog refresh failed before mutation.", retry: { kind: "after_correction", recoveryCode: "restore_catalog", message: "Restore catalog availability before using a new operation ID." } },
+  outcome_unknown_after_mutation: { message: "Reconciliation may have committed changes, but completion could not be recorded.", retry: { kind: "inspect_first", recoveryCode: "inspect_operation", message: "Inspect the operation and retry only when safeToRetry is true." } },
+  internal_error: { message: "Marketplace reconciliation failed internally.", retry: { kind: "inspect_first", recoveryCode: "inspect_operation", message: "Inspect the operation before any retry." } },
+};
 
 function parseSemver(v: string): [number, number, number] | null {
   const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(v.trim());

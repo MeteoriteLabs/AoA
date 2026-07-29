@@ -15,6 +15,7 @@ export class ApiRequestError extends Error {
 
 interface RequestOptions {
   ignoreNotFound?: boolean;
+  timeoutMs?: number;
 }
 
 interface ApiClientOptions {
@@ -79,6 +80,9 @@ export class AoaApiClient {
     const response = await fetch(url, {
       ...init,
       headers,
+      ...(opts?.timeoutMs && opts.timeoutMs > 0
+        ? { signal: AbortSignal.timeout(opts.timeoutMs) }
+        : {}),
     });
 
     if (opts?.ignoreNotFound && response.status === 404) {
@@ -125,6 +129,11 @@ async function toApiError(response: Response): Promise<ApiRequestError> {
     const body = parsed as Record<string, unknown>;
     const message =
       (typeof body.error === "string" && body.error.trim()) ||
+      (typeof body.error === "object" &&
+      body.error !== null &&
+      typeof (body.error as Record<string, unknown>).message === "string"
+        ? String((body.error as Record<string, unknown>).message)
+        : "") ||
       (typeof body.message === "string" && body.message.trim()) ||
       `Request failed with status ${response.status}`;
 

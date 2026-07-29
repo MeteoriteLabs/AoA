@@ -6,7 +6,10 @@ import { describe, it, expect } from "vitest";
 // not guessed from process.platform.
 const CASE_INSENSITIVE_FS = isCaseInsensitiveFilesystem();
 import {
+  legacyMarketplaceSkillsRoot,
   managedMarketplaceSkillsRoot,
+  managedMarketplaceSkillsRoots,
+  persistentMarketplaceSkillsRoot,
   isInsideManagedMarketplaceSkillsRoot,
   overlapsManagedMarketplaceSkillsRoot,
   isCaseInsensitiveFilesystem,
@@ -17,6 +20,43 @@ describe("managedMarketplaceSkillsRoot", () => {
     expect(managedMarketplaceSkillsRoot()).toBe(
       path.join(process.cwd(), ".aoa", "marketplace-skills"),
     );
+  });
+
+  it("selects only between the two fixed roots", () => {
+    const previous = process.env.AOA_MARKETPLACE_SKILLS_WRITE_ROOT;
+    try {
+      process.env.AOA_MARKETPLACE_SKILLS_WRITE_ROOT = "persistent";
+      expect(managedMarketplaceSkillsRoot()).toBe(
+        persistentMarketplaceSkillsRoot(),
+      );
+      process.env.AOA_MARKETPLACE_SKILLS_WRITE_ROOT = "legacy";
+      expect(managedMarketplaceSkillsRoot()).toBe(
+        legacyMarketplaceSkillsRoot(),
+      );
+      process.env.AOA_MARKETPLACE_SKILLS_WRITE_ROOT = "C:\\arbitrary";
+      expect(() => managedMarketplaceSkillsRoot()).toThrow(
+        /legacy or persistent/,
+      );
+    } finally {
+      if (previous === undefined) {
+        delete process.env.AOA_MARKETPLACE_SKILLS_WRITE_ROOT;
+      } else {
+        process.env.AOA_MARKETPLACE_SKILLS_WRITE_ROOT = previous;
+      }
+    }
+  });
+
+  it("always jails both fixed roots regardless of the write selector", () => {
+    const roots = managedMarketplaceSkillsRoots();
+    expect(roots).toContain(path.resolve(legacyMarketplaceSkillsRoot()));
+    expect(roots).toContain(path.resolve(persistentMarketplaceSkillsRoot()));
+    for (const root of roots) {
+      expect(
+        isInsideManagedMarketplaceSkillsRoot(
+          path.join(root, "company", "skill", "1.0.0"),
+        ),
+      ).toBe(true);
+    }
   });
 });
 

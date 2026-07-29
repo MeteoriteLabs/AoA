@@ -108,7 +108,10 @@ import { createMarketplaceInstallRouter } from "./routes/marketplace-installs.js
 import { createMarketplaceCompanyRouter } from "./routes/marketplace-company.js";
 import { providerRoutes } from "./routes/providers.js";
 import { MarketplaceCatalogService, registerMarketplaceCatalogService } from "./services/aoa-marketplace.js";
-import { runMarketplaceReconciliation } from "./services/marketplace-reconcile.js";
+import {
+  inspectMarketplaceReconciliation,
+  runMarketplaceReconciliation,
+} from "./services/marketplace-reconcile.js";
 import { pluginLoader } from "./services/plugin-loader.js";
 import { pluginRollbackService } from "./services/plugin-rollback.js";
 import { pluginRegistryService } from "./services/plugin-registry.js";
@@ -500,12 +503,15 @@ export async function createApp(
   api.use(
     "/admin/marketplace",
     createAdminMarketplaceRouter({
-      reconcile: (actor) =>
+      reconcile: (actor, operationId) =>
         runMarketplaceReconciliation({
           db,
           catalogService: marketplaceCatalogService,
           actor,
+          operationId,
         }),
+      inspect: (operationId, isActive) =>
+        inspectMarketplaceReconciliation({ db, operationId, isActive }),
     }),
   );
 

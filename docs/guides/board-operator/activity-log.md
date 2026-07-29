@@ -5,6 +5,12 @@ summary: Audit trail for all mutations
 
 Every mutation in AoA is recorded in the activity log. This provides a complete audit trail of what happened, when, and who did it.
 
+Fleet marketplace operations use their operation UUID to join response, audit,
+and logs. Their authoritative identity/state lives in the instance operation
+ledger; `marketplace_reconciliation` and `marketplace.reconciliation_*` are
+reserved activity namespaces that generic activity and plugin writers cannot
+forge. See [Marketplace recovery](/guides/board-operator/marketplace-recovery).
+
 ## What Gets Logged
 
 - Agent creation, updates, pausing, resuming, termination

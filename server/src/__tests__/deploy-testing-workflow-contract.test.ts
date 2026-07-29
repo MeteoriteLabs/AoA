@@ -127,6 +127,9 @@ describe("testing deployment workflow contract", () => {
       "AOA_IMAGE_REVISION: ${AOA_IMAGE_REVISION:-unknown}"
     );
     expect(compose).toContain("AOA_DEPLOY_SHA: ${AOA_DEPLOY_SHA:-}");
+    expect(compose).toContain(
+      "AOA_MARKETPLACE_SKILLS_WRITE_ROOT: ${AOA_MARKETPLACE_SKILLS_WRITE_ROOT:-legacy}",
+    );
     expect(dockerfile).toContain(
       'LABEL org.opencontainers.image.revision="${AOA_IMAGE_REVISION}"'
     );

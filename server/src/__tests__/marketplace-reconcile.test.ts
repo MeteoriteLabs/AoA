@@ -1,9 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   digestMarketplaceCatalog,
+  inspectMarketplaceReconciliation,
   runMarketplaceCrewMaintenance,
   runMarketplaceReconciliation,
   writeMarketplaceReconciliationAudit,
+  type MarketplaceReconciliationOperationRecord,
+  type MarketplaceReconciliationOperationStore,
 } from "../services/marketplace-reconcile.js";
 import { MARKETPLACE_SETTINGS_DEFAULTS } from "@armyofagents/shared";
 import { withMarketplaceUpdateLock } from "../services/marketplace-update-coordinator.js";
@@ -14,6 +17,8 @@ const CATALOG = {
   itemCount: 0,
   items: [],
 };
+const OPERATION_ID_1 = "11111111-1111-4111-8111-111111111111";
+const OPERATION_ID_2 = "22222222-2222-4222-8222-222222222222";
 
 const EMPTY_REPAIR = {
   catalogReady: true,
@@ -23,6 +28,7 @@ const EMPTY_REPAIR = {
   skippedCooldown: 0,
   skippedOverBudget: 0,
   failed: 0,
+  skips: [],
 };
 
 const EMPTY_STEWARD = {
@@ -44,17 +50,58 @@ const EMPTY_UPDATE_CHECK = {
   failures: [],
 };
 
+function operationStore(
+  overrides: Partial<MarketplaceReconciliationOperationStore> = {},
+): MarketplaceReconciliationOperationStore {
+  return {
+    claim: vi.fn(async () => ({ status: "claimed" as const })),
+    heartbeat: vi.fn(async () => undefined),
+    markRunning: vi.fn(async () => undefined),
+    finish: vi.fn(async () => undefined),
+    load: vi.fn(async () => null),
+    ...overrides,
+  };
+}
+
+function runTestReconciliation(
+  options: Parameters<typeof runMarketplaceReconciliation>[0],
+) {
+  return runMarketplaceReconciliation({
+    ...options,
+    operationStore: options.operationStore ?? operationStore(),
+  });
+}
+
+function operationRecord(
+  overrides: Partial<MarketplaceReconciliationOperationRecord> = {},
+): MarketplaceReconciliationOperationRecord {
+  return {
+    operationId: OPERATION_ID_1,
+    state: "running",
+    deploymentSha: "reviewed-sha",
+    targetCount: 1,
+    targetCompanyIds: ["company-a"],
+    catalog: null,
+    leaseActive: false,
+    startedAt: new Date("2026-07-28T00:00:00.000Z"),
+    completedAt: null,
+    ...overrides,
+  };
+}
+
 describe("marketplace reconciliation", () => {
   it("isolates a company failure and continues the remaining companies", async () => {
     const checkCrewUpdates = vi.fn(
       async ({ companyId }: { companyId: string }) => {
-        if (companyId === "company-a") throw new Error("update failed");
+        if (companyId === "company-a") {
+          throw new Error("Bearer secret-update-token");
+        }
       }
     );
     const runCrewRepair = vi.fn(async (opts) => {
       opts.onFailure?.({
         companyId: "company-a",
-        error: new Error("repair failed"),
+        error: new Error("Bearer secret-repair-token"),
       });
       return { ...EMPTY_REPAIR, failed: 1 };
     });
@@ -102,17 +149,19 @@ describe("marketplace reconciliation", () => {
       membersAdded: 2,
     });
     expect(result.failures).toEqual([
-      {
+      expect.objectContaining({
         companyId: "company-a",
         stage: "crew_repair",
-        message: "repair failed",
-      },
-      {
+        code: "crew_repair_failed",
+      }),
+      expect.objectContaining({
         companyId: "company-a",
         stage: "crew_update",
-        message: "update failed",
-      },
+        code: "crew_update_failed",
+      }),
     ]);
+    expect(JSON.stringify(result.failures)).not.toContain("secret-repair-token");
+    expect(JSON.stringify(result.failures)).not.toContain("secret-update-token");
   });
 
   it("reports a swallowed crew-update persistence error as a company failure", async () => {
@@ -145,11 +194,11 @@ describe("marketplace reconciliation", () => {
 
     expect(result.crewUpdates).toEqual({ succeeded: 0, failed: 1 });
     expect(result.failures).toEqual([
-      {
+      expect.objectContaining({
         companyId: "company-a",
         stage: "crew_update",
-        message: "pending update insert failed",
-      },
+        code: "crew_update_failed",
+      }),
     ]);
   });
 
@@ -183,12 +232,12 @@ describe("marketplace reconciliation", () => {
     });
 
     expect(result.failures).toEqual([
-      {
+      expect.objectContaining({
         companyId: "company-a",
         stage: "team_reconcile",
-        message: "first member failed",
+        code: "team_reconcile_failed",
         occurrences: 2,
-      },
+      }),
     ]);
   });
 
@@ -221,21 +270,21 @@ describe("marketplace reconciliation", () => {
     const listCompanyIds = vi.fn().mockResolvedValue(["company-1"]);
     const updateCheck = vi.fn().mockResolvedValue(EMPTY_UPDATE_CHECK);
 
-    const first = await runMarketplaceReconciliation({
+    const first = await runTestReconciliation({
       db: {} as any,
       catalogService,
       actor: ADMIN_ACTOR,
-      operationId: "operation-1",
+      operationId: OPERATION_ID_1,
       maintenance,
       listCompanyIds,
       audit,
       updateCheck,
     });
-    const replay = await runMarketplaceReconciliation({
+    const replay = await runTestReconciliation({
       db: {} as any,
       catalogService,
       actor: ADMIN_ACTOR,
-      operationId: "operation-2",
+      operationId: OPERATION_ID_2,
       maintenance,
       listCompanyIds,
       audit,
@@ -268,7 +317,7 @@ describe("marketplace reconciliation", () => {
       1,
       expect.objectContaining({
         phase: "started",
-        operationId: "operation-1",
+        operationId: OPERATION_ID_1,
         actor: ADMIN_ACTOR,
         companyIds: ["company-1"],
       }),
@@ -277,7 +326,7 @@ describe("marketplace reconciliation", () => {
       2,
       expect.objectContaining({
         phase: "completed",
-        operationId: "operation-1",
+        operationId: OPERATION_ID_1,
         actor: ADMIN_ACTOR,
         result: expect.objectContaining({ status: "success" }),
       }),
@@ -327,6 +376,82 @@ describe("marketplace reconciliation", () => {
     ]);
   });
 
+  it("writes only each company's skips and failures to its completion audit", async () => {
+    const returning = vi
+      .fn()
+      .mockResolvedValue([{ id: "audit-1" }, { id: "audit-2" }]);
+    const values = vi.fn().mockReturnValue({ returning });
+    const db = { insert: vi.fn().mockReturnValue({ values }) };
+    const failure = (companyId: string) => ({
+      companyId,
+      stage: "crew_repair" as const,
+      code: "crew_repair_failed" as const,
+      message: "Crew repair failed for this company.",
+      retry: {
+        kind: "after_correction" as const,
+        recoveryCode: "review_crew_state" as const,
+        message: "Inspect the company crew state before retrying.",
+      },
+    });
+    const skip = (companyId: string) => ({
+      companyId,
+      stage: "crew_repair" as const,
+      category: "fail_closed" as const,
+      reason: "unknown_fail_closed" as const,
+      message: "Crew repair stopped at an unclassified safety boundary.",
+      retry: {
+        kind: "after_correction" as const,
+        recoveryCode: "review_crew_state" as const,
+        message: "Inspect the company and server logs before retrying.",
+      },
+    });
+    const result = {
+      operationId: OPERATION_ID_1,
+      status: "partial" as const,
+      repairs: {
+        crewCompaniesRepaired: 0,
+        legacyStewardsAdopted: 0,
+        teamsReconciled: 0,
+        teamMembersAdded: 0,
+      },
+      catalog: {
+        generatedAt: CATALOG.generatedAt,
+        canonicalDigestSha256: "a".repeat(64),
+        schemaVersion: CATALOG.schemaVersion,
+        itemCount: 0,
+        source: "cdn" as const,
+      },
+      companiesExamined: 2,
+      crewRepair: { ...EMPTY_REPAIR, skippedFailClosed: 2 },
+      legacySteward: EMPTY_STEWARD,
+      crewUpdates: { succeeded: 0, failed: 0 },
+      teamReconcile: { teamsReconciled: 0, membersAdded: 0 },
+      skips: [skip("company-a"), skip("company-b")],
+      diagnostics: [],
+      failures: [failure("company-a"), failure("company-b")],
+    };
+
+    await writeMarketplaceReconciliationAudit({
+      db: db as any,
+      phase: "completed",
+      operationId: OPERATION_ID_1,
+      actor: ADMIN_ACTOR,
+      companyIds: ["company-a", "company-b"],
+      catalog: result.catalog,
+      result,
+    });
+
+    const inserted = values.mock.calls[0]![0];
+    expect(inserted[0].details.companySkips).toEqual([skip("company-a")]);
+    expect(inserted[0].details.companyFailures).toEqual([
+      failure("company-a"),
+    ]);
+    expect(inserted[1].details.companySkips).toEqual([skip("company-b")]);
+    expect(inserted[1].details.companyFailures).toEqual([
+      failure("company-b"),
+    ]);
+  });
+
   it("does not run maintenance when the required catalog refresh fails", async () => {
     const maintenance = vi.fn();
     const catalogStatus = {
@@ -339,7 +464,7 @@ describe("marketplace reconciliation", () => {
     };
 
     await expect(
-      runMarketplaceReconciliation({
+      runTestReconciliation({
         db: {} as any,
         actor: ADMIN_ACTOR,
         catalogService: {
@@ -352,11 +477,13 @@ describe("marketplace reconciliation", () => {
               error: "cdn unavailable",
             }),
         },
-        operationId: "operation-catalog-failure",
+        operationId: OPERATION_ID_1,
         maintenance,
+        listCompanyIds: async () => ["company-1"],
+        audit: vi.fn(),
       })
     ).rejects.toMatchObject({
-      operationId: "operation-catalog-failure",
+      operationId: OPERATION_ID_1,
       catalogStatus,
     });
     expect(maintenance).not.toHaveBeenCalled();
@@ -367,10 +494,10 @@ describe("marketplace reconciliation", () => {
     const updateCheck = vi.fn();
 
     await expect(
-      runMarketplaceReconciliation({
+      runTestReconciliation({
         db: {} as any,
         actor: ADMIN_ACTOR,
-        operationId: "operation-audit-failure",
+        operationId: OPERATION_ID_1,
         catalogService: {
           refresh: vi.fn().mockResolvedValue({
             catalog: CATALOG,
@@ -392,10 +519,60 @@ describe("marketplace reconciliation", () => {
         updateCheck,
       }),
     ).rejects.toMatchObject({
-      operationId: "operation-audit-failure",
+      operationId: OPERATION_ID_1,
     });
     expect(updateCheck).not.toHaveBeenCalled();
     expect(maintenance).not.toHaveBeenCalled();
+  });
+
+  it("reports outcome unknown when completion audit fails after maintenance", async () => {
+    let maintenanceCommitted = false;
+    const audit = vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("completion audit unavailable"));
+
+    await expect(
+      runTestReconciliation({
+        db: {} as any,
+        actor: ADMIN_ACTOR,
+        operationId: OPERATION_ID_1,
+        catalogService: {
+          refresh: vi.fn().mockResolvedValue({
+            catalog: CATALOG,
+            status: {
+              lastSyncedAt: "2026-07-28T00:00:01.000Z",
+              lastSyncStatus: "success",
+              lastSyncError: null,
+              source: "cdn",
+              schemaVersion: "1.0.0",
+              itemCount: 0,
+            },
+            outcome: "cdn_success",
+            error: null,
+          }),
+        },
+        listCompanyIds: async () => ["company-1"],
+        audit,
+        updateCheck: vi.fn().mockResolvedValue(EMPTY_UPDATE_CHECK),
+        maintenance: vi.fn(async () => {
+          maintenanceCommitted = true;
+          return {
+            companiesExamined: 1,
+            crewRepair: EMPTY_REPAIR,
+            legacySteward: EMPTY_STEWARD,
+            crewUpdates: { succeeded: 1, failed: 0 },
+            teamReconcile: { teamsReconciled: 0, membersAdded: 0 },
+            failures: [],
+          };
+        }),
+      }),
+    ).rejects.toMatchObject({
+      operationId: OPERATION_ID_1,
+      outcome: "outcome_unknown_after_mutation",
+    });
+    expect(maintenanceCommitted).toBe(true);
+    expect(audit).toHaveBeenCalledTimes(2);
   });
 
   it("runs catalog update mutations only after the start audit succeeds", async () => {
@@ -409,10 +586,10 @@ describe("marketplace reconciliation", () => {
       failures: [],
     };
 
-    await runMarketplaceReconciliation({
+    await runTestReconciliation({
       db: {} as any,
       actor: ADMIN_ACTOR,
-      operationId: "operation-order",
+      operationId: OPERATION_ID_1,
       catalogService: {
         refresh: vi.fn(async () => {
           order.push("refresh");
@@ -449,9 +626,9 @@ describe("marketplace reconciliation", () => {
     });
 
     expect(order).toEqual([
-      "refresh",
       "targets",
       "audit:started",
+      "refresh",
       "update-check",
       "maintenance",
       "audit:completed",
@@ -491,10 +668,10 @@ describe("marketplace reconciliation", () => {
       failures: [],
     };
 
-    const reconciliation = runMarketplaceReconciliation({
+    const reconciliation = runTestReconciliation({
       db: {} as any,
       actor: ADMIN_ACTOR,
-      operationId: "operation-serialized",
+      operationId: OPERATION_ID_1,
       catalogService: {
         refresh: vi.fn(async () => {
           order.push("refresh");
@@ -524,7 +701,7 @@ describe("marketplace reconciliation", () => {
       order.push("background-update");
     });
     await Promise.resolve();
-    expect(order).toEqual(["refresh"]);
+    expect(order).toEqual(["targets", "audit:started", "refresh"]);
 
     resolveRefresh({
       catalog: CATALOG,
@@ -543,9 +720,9 @@ describe("marketplace reconciliation", () => {
     await backgroundUpdate;
 
     expect(order).toEqual([
-      "refresh",
       "targets",
       "audit:started",
+      "refresh",
       "admin-update",
       "maintenance",
       "audit:completed",
@@ -565,7 +742,7 @@ describe("marketplace reconciliation", () => {
     };
 
     await expect(
-      runMarketplaceReconciliation({
+      runTestReconciliation({
         db: {} as any,
         actor: ADMIN_ACTOR,
         catalogService: {
@@ -576,11 +753,13 @@ describe("marketplace reconciliation", () => {
             error: "network down",
           }),
         },
-        operationId: "operation-bundled-fallback",
+        operationId: OPERATION_ID_1,
         maintenance,
+        listCompanyIds: async () => ["company-1"],
+        audit: vi.fn(),
       }),
     ).rejects.toMatchObject({
-      operationId: "operation-bundled-fallback",
+      operationId: OPERATION_ID_1,
       catalogStatus,
       catalogOutcome: "fallback_success",
       catalogError: "network down",
@@ -639,9 +818,10 @@ describe("marketplace reconciliation", () => {
       failures: [],
     },
   ])("reports partial status for $name", async (maintenanceResult) => {
-    const result = await runMarketplaceReconciliation({
+    const result = await runTestReconciliation({
       db: {} as any,
       actor: ADMIN_ACTOR,
+      operationId: OPERATION_ID_1,
       catalogService: {
         refresh: vi.fn().mockResolvedValue({
           catalog: CATALOG,
@@ -670,6 +850,138 @@ describe("marketplace reconciliation", () => {
     expect(result.status).toBe("partial");
   });
 
+  it.each([
+    {
+      internalCode: "resource-temporarily-unavailable",
+      publicReason: "skill_resource_temporarily_unavailable",
+      extra: {
+        httpStatus: 503,
+        notBefore: "2026-07-28T00:01:00.000Z",
+      },
+      expectedContext: {
+        catalogItemId: "skill:aoa-curated/example",
+        httpStatus: 503,
+      },
+      retryKind: "after",
+    },
+    {
+      internalCode: "resource-fetch-failed",
+      publicReason: "skill_resource_fetch_failed",
+      extra: { httpStatus: 404 },
+      expectedContext: {
+        catalogItemId: "skill:aoa-curated/example",
+        httpStatus: 404,
+      },
+      retryKind: "after_correction",
+    },
+    {
+      internalCode: "resource-invalid",
+      publicReason: "skill_resource_invalid",
+      extra: {},
+      expectedContext: { catalogItemId: "skill:aoa-curated/example" },
+      retryKind: "after_correction",
+    },
+    {
+      internalCode: "bundle-materialization-failed",
+      publicReason: "skill_bundle_materialization_failed",
+      extra: {},
+      expectedContext: { catalogItemId: "skill:aoa-curated/example" },
+      retryKind: "after_correction",
+    },
+    {
+      internalCode: "bundle-missing",
+      publicReason: "skill_bundle_missing",
+      extra: {},
+      expectedContext: { catalogItemId: "skill:aoa-curated/example" },
+      retryKind: "after_correction",
+    },
+    {
+      internalCode: "filesystem-permission-denied",
+      publicReason: "skill_filesystem_permission_denied",
+      extra: { filesystemOperation: "write" },
+      expectedContext: {
+        catalogItemId: "skill:aoa-curated/example",
+        filesystemOperation: "write",
+      },
+      retryKind: "after_correction",
+    },
+  ] as const)(
+    "maps $internalCode to the stable public recovery contract",
+    async ({
+      internalCode,
+      publicReason,
+      extra,
+      expectedContext,
+      retryKind,
+    }) => {
+      const result = await runTestReconciliation({
+        db: {} as any,
+        actor: ADMIN_ACTOR,
+        operationId: OPERATION_ID_1,
+        catalogService: {
+          refresh: vi.fn().mockResolvedValue({
+            catalog: CATALOG,
+            status: {
+              lastSyncedAt: "2026-07-28T00:00:01.000Z",
+              lastSyncStatus: "success",
+              lastSyncError: null,
+              source: "cdn",
+              schemaVersion: "1.0.0",
+              itemCount: 0,
+            },
+            outcome: "cdn_success",
+            error: null,
+          }),
+        },
+        maintenance: vi.fn().mockResolvedValue({
+          companiesExamined: 1,
+          crewRepair: {
+            ...EMPTY_REPAIR,
+            inspected: 1,
+            skippedFailClosed: 1,
+            skips: [
+              {
+                companyId: "company-1",
+                category: "fail_closed",
+                reason: "skill-install-failed",
+                skillFailure: {
+                  code: internalCode,
+                  catalogItemId: "skill:aoa-curated/example",
+                  ...extra,
+                },
+                ...("notBefore" in extra
+                  ? { notBefore: extra.notBefore }
+                  : {}),
+              },
+            ],
+          },
+          legacySteward: EMPTY_STEWARD,
+          crewUpdates: { succeeded: 1, failed: 0 },
+          teamReconcile: { teamsReconciled: 0, membersAdded: 0 },
+          failures: [],
+        }),
+        listCompanyIds: async () => ["company-1"],
+        audit: vi.fn(),
+        updateCheck: vi.fn().mockResolvedValue(EMPTY_UPDATE_CHECK),
+      });
+
+      expect(result.status).toBe("partial");
+      expect(result.skips).toEqual([
+        expect.objectContaining({
+          companyId: "company-1",
+          stage: "crew_repair",
+          category: "fail_closed",
+          reason: publicReason,
+          retry: expect.objectContaining({ kind: retryKind }),
+          context: expectedContext,
+        }),
+      ]);
+      expect(JSON.stringify(result.skips)).not.toContain(
+        "skill-install-failed",
+      );
+    },
+  );
+
   it("reports marketplace update-check failures as a partial audited result", async () => {
     const audit = vi.fn();
     const maintenance = vi.fn().mockResolvedValue({
@@ -681,10 +993,10 @@ describe("marketplace reconciliation", () => {
       failures: [],
     });
 
-    const result = await runMarketplaceReconciliation({
+    const result = await runTestReconciliation({
       db: {} as any,
       actor: ADMIN_ACTOR,
-      operationId: "operation-update-failure",
+      operationId: OPERATION_ID_1,
       catalogService: {
         refresh: vi.fn().mockResolvedValue({
           catalog: CATALOG,
@@ -718,13 +1030,15 @@ describe("marketplace reconciliation", () => {
 
     expect(result.status).toBe("partial");
     expect(result.failures).toEqual([
-      {
+      expect.objectContaining({
         companyId: "company-1",
         stage: "marketplace_update",
-        message:
-          "skill skill:aoa-curated/code-review: notification unavailable",
-      },
+        code: "marketplace_update_failed",
+      }),
     ]);
+    expect(JSON.stringify(result.failures)).not.toContain(
+      "notification unavailable",
+    );
     expect(audit).toHaveBeenLastCalledWith(
       expect.objectContaining({
         phase: "completed",
@@ -835,10 +1149,10 @@ describe("marketplace reconciliation", () => {
     const audit = vi.fn(async ({ phase }) => {
       order.push(`audit:${phase}`);
     });
-    const reconciliation = runMarketplaceReconciliation({
+    const reconciliation = runTestReconciliation({
       db: {} as any,
       actor: ADMIN_ACTOR,
-      operationId: "operation-maintenance-boundary",
+      operationId: OPERATION_ID_1,
       catalogService: {
         refresh: vi.fn(async () => {
           order.push("refresh");
@@ -876,8 +1190,8 @@ describe("marketplace reconciliation", () => {
     expect(order).toEqual([
       "scheduled:start",
       "scheduled:end",
-      "refresh",
       "audit:started",
+      "refresh",
       "admin:maintenance",
       "audit:completed",
     ]);
@@ -893,5 +1207,299 @@ describe("marketplace reconciliation", () => {
     expect(digestMarketplaceCatalog(reordered)).toBe(
       digestMarketplaceCatalog(CATALOG)
     );
+  });
+
+  it("distinguishes running and outcome-unknown operations from durable audit rows", async () => {
+    const rows = [
+      {
+        companyId: "company-a",
+        action: "marketplace.reconciliation_started",
+        details: {
+          operationId: OPERATION_ID_1,
+          phase: "started",
+          deploymentSha: "reviewed-sha",
+          targetCount: 1,
+          catalog: null,
+        },
+        createdAt: new Date("2026-07-28T00:00:00.000Z"),
+      },
+    ];
+    const db = {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({
+            orderBy: vi.fn().mockResolvedValue(rows),
+          })),
+        })),
+      })),
+    };
+
+    const running = await inspectMarketplaceReconciliation({
+      db: db as any,
+      operationId: OPERATION_ID_1,
+      isActive: true,
+      loadOperation: vi.fn(async () =>
+        operationRecord({ leaseActive: true }),
+      ),
+    });
+    expect(running).toMatchObject({
+      state: "running",
+      safeToRetry: false,
+      deploymentSha: "reviewed-sha",
+    });
+
+    const unknown = await inspectMarketplaceReconciliation({
+      db: db as any,
+      operationId: OPERATION_ID_1,
+      isActive: false,
+      loadOperation: vi.fn(async () => operationRecord()),
+      diagnose: vi.fn(async () => ({
+        companyId: "company-a",
+        verdict: "healthy" as const,
+        teamId: "team-a",
+        managedCrew: [],
+        unmanagedCrew: [],
+        operation: null,
+      })),
+      hasCustomizedRows: vi.fn(async () => false),
+      hasActiveWriter: vi.fn(async () => false),
+    });
+    expect(unknown).toMatchObject({
+      state: "outcome_unknown_after_mutation",
+      safeToRetry: true,
+      targets: [{ companyId: "company-a", crewState: "healthy" }],
+    });
+  });
+
+  it("uses a consistent terminal ledger and audit set as the canonical result", async () => {
+    const rows = [
+      {
+        companyId: "company-a",
+        action: "marketplace.reconciliation_started",
+        details: {
+          operationId: OPERATION_ID_1,
+          phase: "started",
+          deploymentSha: "reviewed-sha",
+          targetCount: 1,
+        },
+        createdAt: new Date("2026-07-28T00:00:00.000Z"),
+      },
+      {
+        companyId: "company-a",
+        action: "marketplace.reconciliation_completed",
+        details: {
+          operationId: OPERATION_ID_1,
+          phase: "completed",
+          status: "success",
+          deploymentSha: "reviewed-sha",
+          targetCount: 1,
+        },
+        createdAt: new Date("2026-07-28T00:00:05.000Z"),
+      },
+    ];
+    const db = {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({
+            orderBy: vi.fn().mockResolvedValue(rows),
+          })),
+        })),
+      })),
+    };
+
+    const result = await inspectMarketplaceReconciliation({
+      db: db as any,
+      operationId: OPERATION_ID_1,
+      isActive: false,
+      loadOperation: vi.fn(async () =>
+        operationRecord({
+          state: "success",
+          completedAt: new Date("2026-07-28T00:00:05.000Z"),
+        }),
+      ),
+    });
+
+    expect(result).toMatchObject({
+      state: "success",
+      targetCount: 1,
+      safeToRetry: false,
+      retry: { kind: "never" },
+      targets: [{ companyId: "company-a", crewState: "unknown" }],
+    });
+  });
+
+  it("supports a durable successful operation over an empty fleet", async () => {
+    const db = {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({
+            orderBy: vi.fn().mockResolvedValue([]),
+          })),
+        })),
+      })),
+    };
+
+    const result = await inspectMarketplaceReconciliation({
+      db: db as any,
+      operationId: OPERATION_ID_1,
+      isActive: false,
+      loadOperation: vi.fn(async () =>
+        operationRecord({
+          state: "success",
+          targetCount: 0,
+          targetCompanyIds: [],
+          completedAt: new Date("2026-07-28T00:00:05.000Z"),
+        }),
+      ),
+    });
+
+    expect(result).toMatchObject({
+      state: "success",
+      targetCount: 0,
+      targets: [],
+      safeToRetry: false,
+      retry: { kind: "never" },
+    });
+  });
+
+  it("fails a poisoned terminal audit closed even when the ledger says success", async () => {
+    const rows = [
+      {
+        companyId: "company-a",
+        action: "marketplace.reconciliation_started",
+        details: {
+          operationId: OPERATION_ID_1,
+          phase: "started",
+          deploymentSha: "reviewed-sha",
+          targetCount: 1,
+        },
+        createdAt: new Date("2026-07-28T00:00:00.000Z"),
+      },
+      {
+        companyId: "company-a",
+        action: "marketplace.reconciliation_completed",
+        details: {
+          operationId: OPERATION_ID_1,
+          phase: "completed",
+          status: "partial",
+          deploymentSha: "reviewed-sha",
+          targetCount: 1,
+        },
+        createdAt: new Date("2026-07-28T00:00:05.000Z"),
+      },
+    ];
+    const db = {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({
+            orderBy: vi.fn().mockResolvedValue(rows),
+          })),
+        })),
+      })),
+    };
+
+    const result = await inspectMarketplaceReconciliation({
+      db: db as any,
+      operationId: OPERATION_ID_1,
+      isActive: false,
+      loadOperation: vi.fn(async () =>
+        operationRecord({
+          state: "success",
+          completedAt: new Date("2026-07-28T00:00:05.000Z"),
+        }),
+      ),
+    });
+
+    expect(result).toMatchObject({
+      state: "outcome_unknown_after_mutation",
+      safeToRetry: false,
+      retry: {
+        kind: "inspect_first",
+        recoveryCode: "inspect_operation",
+      },
+    });
+  });
+
+  it("fails inspection closed on customization, an active writer, or a query failure", async () => {
+    const rows = [
+      {
+        companyId: "company-a",
+        action: "marketplace.reconciliation_started",
+        details: {
+          operationId: OPERATION_ID_1,
+          phase: "started",
+          deploymentSha: "reviewed-sha",
+          targetCount: 1,
+        },
+        createdAt: new Date("2026-07-28T00:00:00.000Z"),
+      },
+    ];
+    const db = {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({
+            orderBy: vi.fn().mockResolvedValue(rows),
+          })),
+        })),
+      })),
+    };
+    const diagnosis = {
+      companyId: "company-a",
+      verdict: "healthy" as const,
+      teamId: "team-a",
+      managedCrew: [],
+      unmanagedCrew: [],
+      operation: null,
+    };
+
+    const customized = await inspectMarketplaceReconciliation({
+      db: db as any,
+      operationId: OPERATION_ID_1,
+      isActive: false,
+      loadOperation: vi.fn(async () => operationRecord()),
+      diagnose: vi.fn(async () => diagnosis),
+      hasCustomizedRows: vi.fn(async () => true),
+      hasActiveWriter: vi.fn(async () => false),
+    });
+    expect(customized.safeToRetry).toBe(false);
+    expect(customized.targets[0]?.crewState).toBe("blocked");
+
+    const activeWriter = await inspectMarketplaceReconciliation({
+      db: db as any,
+      operationId: OPERATION_ID_1,
+      isActive: false,
+      loadOperation: vi.fn(async () => operationRecord()),
+      diagnose: vi.fn(async () => diagnosis),
+      hasCustomizedRows: vi.fn(async () => false),
+      hasActiveWriter: vi.fn(async () => true),
+    });
+    expect(activeWriter).toMatchObject({
+      safeToRetry: false,
+      targets: [
+        {
+          companyId: "company-a",
+          crewState: "blocked",
+          diagnosticCode: "install_in_flight",
+        },
+      ],
+      retry: {
+        kind: "inspect_first",
+        recoveryCode: "inspect_operation",
+      },
+    });
+
+    const queryFailure = await inspectMarketplaceReconciliation({
+      db: db as any,
+      operationId: OPERATION_ID_1,
+      isActive: false,
+      loadOperation: vi.fn(async () => operationRecord()),
+      diagnose: vi.fn(async () => {
+        throw new Error("database unavailable");
+      }),
+      hasCustomizedRows: vi.fn(async () => false),
+      hasActiveWriter: vi.fn(async () => false),
+    });
+    expect(queryFailure.safeToRetry).toBe(false);
+    expect(queryFailure.targets[0]?.crewState).toBe("unknown");
   });
 });

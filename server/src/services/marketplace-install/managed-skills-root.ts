@@ -3,7 +3,7 @@
  * that jails it (plan task T2.8c(b)).
  *
  * `managedCatalogSkillDir(...)` materializes every catalog skill bundle under
- * `<cwd>/.aoa/marketplace-skills/<company>/<item>/<version>`. The catalog
+ * the selected fixed managed root at `<company>/<item>/<version>`. The catalog
  * installer is the ONLY writer that tree is meant to have: a re-materialize
  * stages-and-renames a fresh copy of the upstream tree, and `trustLevel` /
  * `fileInventory` on the row describe exactly those bytes. Anything else
@@ -38,8 +38,9 @@
  */
 import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
+import { resolveAoaInstanceRoot } from "../../home-paths.js";
 
-let cachedCaseInsensitive: boolean | undefined;
+const cachedCaseInsensitiveByRoot = new Map<string, boolean>();
 
 /**
  * Whether the filesystem backing the managed root treats differently-cased
@@ -57,17 +58,22 @@ let cachedCaseInsensitive: boolean | undefined;
  * Exported so the containment test observes the same signal instead of
  * re-deriving (and drifting from) it.
  */
-export function isCaseInsensitiveFilesystem(): boolean {
-  if (cachedCaseInsensitive !== undefined) return cachedCaseInsensitive;
-  const { value, cacheable } = probeCaseInsensitive();
-  if (cacheable) cachedCaseInsensitive = value;
+export function isCaseInsensitiveFilesystem(
+  managedRoot = managedMarketplaceSkillsRoot(),
+): boolean {
+  const cacheKey = path.resolve(managedRoot);
+  const cached = cachedCaseInsensitiveByRoot.get(cacheKey);
+  if (cached !== undefined) return cached;
+  const { value, cacheable } = probeCaseInsensitive(cacheKey);
+  if (cacheable) cachedCaseInsensitiveByRoot.set(cacheKey, value);
   return value;
 }
 
-function probeCaseInsensitive(): { value: boolean; cacheable: boolean } {
+function probeCaseInsensitive(
+  managedRoot: string,
+): { value: boolean; cacheable: boolean } {
   const platformDefault = process.platform === "win32" || process.platform === "darwin";
   try {
-    const managedRoot = managedMarketplaceSkillsRoot();
     const managedParent = path.dirname(managedRoot); // `<cwd>/.aoa`
     // Walk up from the managed root to the nearest EXISTING directory — the root
     // may not exist yet. Probing here (not cwd) tests the filesystem the managed
@@ -130,16 +136,20 @@ function measureCaseSensitivityByTempEntry(dir: string): boolean | undefined {
   }
 }
 
-/** Resolve to absolute, then fold case on case-insensitive filesystems. */
-function normalizeForContainment(candidatePath: string): string {
+/** Resolve to absolute, then fold case using the parent root's filesystem. */
+function normalizeForContainment(
+  candidatePath: string,
+  caseInsensitive: boolean,
+): string {
   const resolved = path.resolve(candidatePath);
-  return isCaseInsensitiveFilesystem() ? resolved.toLowerCase() : resolved;
+  return caseInsensitive ? resolved.toLowerCase() : resolved;
 }
 
 /** True when `childPath` equals `parentPath` or is nested inside it. */
 function contains(parentPath: string, childPath: string): boolean {
-  const parent = normalizeForContainment(parentPath);
-  const child = normalizeForContainment(childPath);
+  const caseInsensitive = isCaseInsensitiveFilesystem(parentPath);
+  const parent = normalizeForContainment(parentPath, caseInsensitive);
+  const child = normalizeForContainment(childPath, caseInsensitive);
   if (child === parent) return true;
   const rel = path.relative(parent, child);
   // A different drive/root yields an absolute rel — not contained.
@@ -151,22 +161,48 @@ function contains(parentPath: string, childPath: string): boolean {
 }
 
 /**
- * The parent of every {@link managedCatalogSkillDir}. Keyed off `process.cwd()`
- * so it always agrees with where bundles are actually materialized — do not
- * swap this for `resolveAoaInstanceRoot()`, which is a different (AOA_HOME-aware)
- * base used for managed *instruction* bundles.
+ * The selected parent of every {@link managedCatalogSkillDir}. A1 defaults to
+ * the legacy cwd-relative root; A2 can select the fixed instance root without
+ * changing the containment jail, which always recognizes both.
  */
 export function managedMarketplaceSkillsRoot(): string {
+  const selector =
+    process.env.AOA_MARKETPLACE_SKILLS_WRITE_ROOT?.trim().toLowerCase() ||
+    "legacy";
+  if (selector === "legacy") return legacyMarketplaceSkillsRoot();
+  if (selector === "persistent") return persistentMarketplaceSkillsRoot();
+  throw new Error(
+    "AOA_MARKETPLACE_SKILLS_WRITE_ROOT must be either legacy or persistent",
+  );
+}
+
+export function legacyMarketplaceSkillsRoot(): string {
   return path.join(process.cwd(), ".aoa", "marketplace-skills");
+}
+
+export function persistentMarketplaceSkillsRoot(): string {
+  return path.join(resolveAoaInstanceRoot(), "marketplace-skills");
+}
+
+/** Both fixed roots are always recognized, regardless of the write selector. */
+export function managedMarketplaceSkillsRoots(): readonly string[] {
+  return [
+    ...new Set([
+      path.resolve(legacyMarketplaceSkillsRoot()),
+      path.resolve(persistentMarketplaceSkillsRoot()),
+    ]),
+  ];
 }
 
 /**
  * True when `candidatePath` resolves to the managed marketplace-skills root or
- * anything nested inside it. A path equal to the root, or on a different drive,
- * or above/beside the root, is not contained.
+ * anything nested inside it. A path equal to either root is contained; a path
+ * on a different drive or above/beside both roots is not.
  */
 export function isInsideManagedMarketplaceSkillsRoot(candidatePath: string): boolean {
-  return contains(managedMarketplaceSkillsRoot(), candidatePath);
+  return managedMarketplaceSkillsRoots().some((root) =>
+    contains(root, candidatePath),
+  );
 }
 
 /**
@@ -181,6 +217,7 @@ export function isInsideManagedMarketplaceSkillsRoot(candidatePath: string): boo
  * {@link isInsideManagedMarketplaceSkillsRoot} instead.
  */
 export function overlapsManagedMarketplaceSkillsRoot(candidatePath: string): boolean {
-  const root = managedMarketplaceSkillsRoot();
-  return contains(root, candidatePath) || contains(candidatePath, root);
+  return managedMarketplaceSkillsRoots().some(
+    (root) => contains(root, candidatePath) || contains(candidatePath, root),
+  );
 }

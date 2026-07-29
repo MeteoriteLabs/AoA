@@ -6,16 +6,33 @@ import { activityService } from "../services/activity.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { issueService } from "../services/index.js";
 import { sanitizeRecord } from "../redaction.js";
+import {
+  MARKETPLACE_RECONCILIATION_ACTION_PREFIX,
+  MARKETPLACE_RECONCILIATION_ENTITY_TYPE,
+} from "../services/activity-namespace.js";
 
-const createActivitySchema = z.object({
-  actorType: z.enum(["agent", "user", "system", "autonomy"]).optional().default("system"),
-  actorId: z.string().min(1),
-  action: z.string().min(1),
-  entityType: z.string().min(1),
-  entityId: z.string().min(1),
-  agentId: z.string().uuid().optional().nullable(),
-  details: z.record(z.unknown()).optional().nullable(),
-});
+const createActivitySchema = z
+  .object({
+    actorType: z.enum(["agent", "user", "system", "autonomy"]).optional().default("system"),
+    actorId: z.string().min(1),
+    action: z.string().min(1),
+    entityType: z.string().min(1),
+    entityId: z.string().min(1),
+    agentId: z.string().uuid().optional().nullable(),
+    details: z.record(z.unknown()).optional().nullable(),
+  })
+  .superRefine((event, ctx) => {
+    if (
+      event.entityType === MARKETPLACE_RECONCILIATION_ENTITY_TYPE ||
+      event.action.startsWith(MARKETPLACE_RECONCILIATION_ACTION_PREFIX)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "Marketplace reconciliation audit events are reserved for the reconciliation service",
+      });
+    }
+  });
 
 export function activityRoutes(db: Db) {
   const router = Router();

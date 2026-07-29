@@ -11,6 +11,10 @@ vi.mock("drizzle-orm", () => ({
   eq: () => Symbol("op:eq"),
   and: () => Symbol("op:and"),
 }));
+vi.mock(
+  "../services/outbound-url-guard.js",
+  () => import("./helpers/outbound-url-guard.mock.js"),
+);
 
 import { installAgent } from "../services/marketplace-install/agent-installer.js";
 
@@ -25,6 +29,8 @@ const crewConfigSelect = () => ({
 });
 import type { CatalogItem } from "@armyofagents/shared";
 
+const PINNED_RESOURCE_BASE =
+  `https://raw.githubusercontent.com/MeteoriteLabs/aoa-marketplace/${"f".repeat(40)}`;
 const AGENT_TEMPLATE: CatalogItem = {
   id: "agent:aoa-curated/engineer",
   type: "agent",
@@ -32,7 +38,7 @@ const AGENT_TEMPLATE: CatalogItem = {
   description: "Senior engineer agent",
   version: "1.0.0",
   source: { adapter: "aoa-curated", url: "https://...", locator: "content/agents/engineer", commitSha: "abc123" },
-  resourceUrl: "https://raw.githubusercontent.com/.../abc123/content/agents/engineer/agent.json",
+  resourceUrl: `${PINNED_RESOURCE_BASE}/content/agents/engineer/agent.json`,
   trust: { tier: "verified", source: "aoa-curated" },
   status: "active",
   addedAt: "2026-04-30T00:00:00Z",

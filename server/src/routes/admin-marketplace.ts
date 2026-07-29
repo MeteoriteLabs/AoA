@@ -1,84 +1,201 @@
 import { Router } from "express";
-import type {
-  MarketplaceReconcileErrorResponse,
-  MarketplaceReconcileResponse,
+import {
+  MarketplaceReconcileRequestSchema,
+  MarketplaceReconcileResponseSchema,
+  MarketplaceReconciliationInspectionSchema,
+  type MarketplaceReconciliationInspection,
 } from "@armyofagents/shared";
 import {
   MarketplaceCatalogRefreshError,
   MarketplaceReconcileExecutionError,
+  MarketplaceReconciliationAlreadyExistsError,
+  MarketplaceReconciliationInFlightError,
+  MarketplaceReconciliationNotFoundError,
   type MarketplaceReconciliationActor,
   type MarketplaceReconcileResult,
 } from "../services/marketplace-reconcile.js";
+import { marketplaceErrorResponse } from "../services/marketplace-http-contract.js";
 import {
-  assertBoard,
-  assertCanManageInstanceSettings,
+  canManageInstanceSettings,
   getActorInfo,
 } from "./authz.js";
 
 export interface AdminMarketplaceRoutesDeps {
   reconcile: (
     actor: MarketplaceReconciliationActor,
+    operationId: string,
   ) => Promise<MarketplaceReconcileResult>;
+  inspect: (
+    operationId: string,
+    isActive: boolean,
+  ) => Promise<MarketplaceReconciliationInspection>;
+}
+
+function authorize(req: Parameters<typeof canManageInstanceSettings>[0]) {
+  if (req.actor.type === "none") {
+    return { status: 401, code: "authentication_required" as const };
+  }
+  if (!canManageInstanceSettings(req)) {
+    return { status: 403, code: "instance_admin_required" as const };
+  }
+  return null;
 }
 
 /**
- * Instance-wide operational controls. The in-flight join prevents an
- * ambiguous client retry from starting a second fleet pass concurrently.
- * Sequential retries remain safe because every underlying repair is
- * idempotent and re-diagnoses before mutation.
+ * Instance-wide operational controls. A matching concurrent operation joins
+ * the same promise; a different ID cannot run until the active pass finishes.
  */
 export function createAdminMarketplaceRouter(
-  deps: AdminMarketplaceRoutesDeps
+  deps: AdminMarketplaceRoutesDeps,
 ): Router {
   const router = Router();
-  let inFlight: Promise<MarketplaceReconcileResult> | null = null;
+  let inFlight:
+    | { operationId: string; promise: Promise<MarketplaceReconcileResult> }
+    | null = null;
 
-  router.post("/reconcile", async (req, res, next) => {
-    try {
-      assertBoard(req);
-      assertCanManageInstanceSettings(req);
+  router.post("/reconcile", async (req, res) => {
+    const denied = authorize(req);
+    if (denied) {
+      res
+        .status(denied.status)
+        .json(marketplaceErrorResponse(denied.code, null));
+      return;
+    }
 
-      const replayed = inFlight !== null;
+    const parsedRequest = MarketplaceReconcileRequestSchema.safeParse(req.body);
+    if (!parsedRequest.success) {
+      res.status(400).json(marketplaceErrorResponse("invalid_request", null));
+      return;
+    }
+    const { operationId } = parsedRequest.data;
+
+    if (inFlight && inFlight.operationId !== operationId) {
+      res
+        .status(409)
+        .json(
+          marketplaceErrorResponse(
+            "operation_in_flight",
+            inFlight.operationId,
+          ),
+        );
+      return;
+    }
+
+    let executionDisposition: "started" | "joined_in_flight" =
+      "joined_in_flight";
+    let operation = inFlight?.promise ?? null;
+    if (!operation) {
+      executionDisposition = "started";
       const actorInfo = getActorInfo(req);
-      const operation =
-        inFlight ??
-        deps.reconcile({
-          actorType: "user",
-          actorId: actorInfo.actorId,
-        });
-      if (!inFlight) inFlight = operation;
+      operation = (async () => {
+        try {
+          await deps.inspect(operationId, false);
+          throw new MarketplaceReconciliationAlreadyExistsError(operationId);
+        } catch (error) {
+          if (
+            !(error instanceof MarketplaceReconciliationNotFoundError)
+          ) {
+            throw error;
+          }
+        }
+        return deps.reconcile(
+          { actorType: "user", actorId: actorInfo.actorId },
+          operationId,
+        );
+      })();
+      // Publish the promise before the durable lookup yields so concurrent
+      // callers either join this exact operation or receive operation_in_flight.
+      inFlight = { operationId, promise: operation };
+    }
 
-      try {
-        const result = await operation;
-        const response: MarketplaceReconcileResponse = {
+    try {
+      const result = await operation;
+      res.json(
+        MarketplaceReconcileResponseSchema.parse({
+          ok: true,
           ...result,
-          replayed,
-        };
-        res.json(response);
-      } finally {
-        if (inFlight === operation) inFlight = null;
-      }
+          executionDisposition,
+          replayed: executionDisposition === "joined_in_flight",
+        }),
+      );
     } catch (error) {
+      if (error instanceof MarketplaceReconciliationAlreadyExistsError) {
+        res
+          .status(409)
+          .json(marketplaceErrorResponse("invalid_request", operationId));
+        return;
+      }
+      if (error instanceof MarketplaceReconciliationInFlightError) {
+        res
+          .status(409)
+          .json(
+            marketplaceErrorResponse(
+              "operation_in_flight",
+              error.activeOperationId,
+            ),
+          );
+        return;
+      }
       if (error instanceof MarketplaceCatalogRefreshError) {
-        const response: MarketplaceReconcileErrorResponse = {
-          error: error.message,
-          operationId: error.operationId,
-          catalogStatus: error.catalogStatus,
-          catalogOutcome: error.catalogOutcome,
-          catalogError: error.catalogError,
-        };
-        res.status(502).json(response);
+        const code =
+          error.catalogOutcome === "failure"
+            ? "catalog_temporarily_unavailable"
+            : "catalog_refresh_failed";
+        res
+          .status(502)
+          .json(marketplaceErrorResponse(code, error.operationId));
         return;
       }
       if (error instanceof MarketplaceReconcileExecutionError) {
-        const response: MarketplaceReconcileErrorResponse = {
-          error: error.message,
-          operationId: error.operationId,
-        };
-        res.status(500).json(response);
+        res
+          .status(500)
+          .json(
+            marketplaceErrorResponse(error.outcome, error.operationId),
+          );
         return;
       }
-      next(error);
+      res
+        .status(500)
+        .json(marketplaceErrorResponse("internal_error", operationId));
+    } finally {
+      if (inFlight?.promise === operation) {
+        inFlight = null;
+      }
+    }
+  });
+
+  router.get("/reconciliations/:operationId", async (req, res) => {
+    const denied = authorize(req);
+    if (denied) {
+      res
+        .status(denied.status)
+        .json(marketplaceErrorResponse(denied.code, null));
+      return;
+    }
+
+    const parsedId = MarketplaceReconcileRequestSchema.shape.operationId.safeParse(
+      req.params.operationId,
+    );
+    if (!parsedId.success) {
+      res.status(400).json(marketplaceErrorResponse("invalid_request", null));
+      return;
+    }
+    try {
+      const inspection = await deps.inspect(
+        parsedId.data,
+        inFlight?.operationId === parsedId.data,
+      );
+      res.json(MarketplaceReconciliationInspectionSchema.parse(inspection));
+    } catch (error) {
+      if (error instanceof MarketplaceReconciliationNotFoundError) {
+        res
+          .status(404)
+          .json(marketplaceErrorResponse("operation_not_found", parsedId.data));
+        return;
+      }
+      res
+        .status(500)
+        .json(marketplaceErrorResponse("internal_error", parsedId.data));
     }
   });
 

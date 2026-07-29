@@ -104,6 +104,10 @@ import {
 } from "./marketplace-install/crew-bootstrap.js";
 import { provisionCompanyCrew, type CrewProvisioningOutcome } from "./crew-provisioning.js";
 import {
+  sanitizeErrorText,
+  serializeSafeError,
+} from "./safe-error.js";
+import {
   ADOPTED_TEMPLATE_VERSION,
   CREW_REPAIR_MAX_PER_PASS,
   crewLegacySlugCandidates,
@@ -286,6 +290,22 @@ export type CrewRepairSkipReason =
   | "unaccounted-crew-rows"
   | "skill-install-failed";
 
+export type CrewRepairSkillFailureCode =
+  | "resource-temporarily-unavailable"
+  | "resource-fetch-failed"
+  | "resource-invalid"
+  | "bundle-materialization-failed"
+  | "bundle-missing"
+  | "filesystem-permission-denied";
+
+export interface CrewRepairSkillFailure {
+  code: CrewRepairSkillFailureCode;
+  catalogItemId: string;
+  httpStatus?: number;
+  filesystemOperation?: "read" | "write" | "rename" | "mkdir";
+  notBefore?: string;
+}
+
 export type CrewRepairResult =
   | { action: "none"; verdict: CrewRepairVerdict }
   | { action: "operation-repaired"; operationId: string; teamId: string }
@@ -305,7 +325,14 @@ export type CrewRepairResult =
       installedSkillIds: string[];
     }
   /** Diagnosed as repairable, but deliberately not repaired. Always logged. */
-  | { action: "skipped"; verdict: CrewRepairVerdict; reason: CrewRepairSkipReason; detail: string };
+  | {
+      action: "skipped";
+      verdict: CrewRepairVerdict;
+      reason: CrewRepairSkipReason;
+      detail: string;
+      skillFailure?: CrewRepairSkillFailure;
+      notBefore?: string;
+    };
 
 export interface CrewRepairDeps {
   /** Catalog items — the same array the boot update pass already loaded. */
@@ -563,7 +590,27 @@ async function repairDegradedCrew(
         catalogById,
       });
     } catch (err) {
-      return skip(diagnosis, "skill-install-failed", errText(err));
+      const skillFailure =
+        err instanceof CrewSkillInstallError
+          ? classifyCrewSkillFailure(err.catalogItemId, err.cause)
+          : classifyCrewSkillFailure("unknown", err);
+      logger.warn(
+        {
+          companyId,
+          catalogItemId: skillFailure.catalogItemId,
+          failureCode: skillFailure.code,
+          error: serializeSafeError(
+            err instanceof CrewSkillInstallError ? err.cause : err,
+          ),
+        },
+        "crew repair skill installation failed",
+      );
+      return skip(
+        diagnosis,
+        "skill-install-failed",
+        errText(err),
+        skillFailure,
+      );
     }
 
     const rosterOrigins = roster.map((entry) => entry.templateOrigin);
@@ -676,7 +723,10 @@ async function repairDegradedCrew(
     await marketplaceNotifications
       .crewRepaired(db, companyId, adoptedItemIds.length)
       .catch((err: unknown) =>
-        logger.warn({ err, companyId }, "crew repair: founder notification failed"),
+        logger.warn(
+          { error: serializeSafeError(err), companyId },
+          "crew repair: founder notification failed",
+        ),
       );
 
     return {
@@ -743,7 +793,11 @@ async function installMissingRosterSkills(
   const checkoutCache = createBundleCheckoutCache();
   try {
     await mapWithConcurrency(missing, CREW_REPAIR_FETCH_CONCURRENCY, async (item) => {
-      await installSkill({ catalogItem: item, companyId, db, checkoutCache });
+      try {
+        await installSkill({ catalogItem: item, companyId, db, checkoutCache });
+      } catch (cause) {
+        throw new CrewSkillInstallError(item.id, cause);
+      }
     });
   } finally {
     await disposeBundleCheckoutCache(checkoutCache);
@@ -875,23 +929,135 @@ function skip(
   diagnosis: CrewRepairDiagnosis,
   reason: CrewRepairSkipReason,
   detail: string,
+  skillFailure?: CrewRepairSkillFailure,
 ): CrewRepairResult {
+  const safeDetail = sanitizeErrorText(detail);
   if (reason === "cooldown") {
     logger.debug(
-      { companyId: diagnosis.companyId, verdict: diagnosis.verdict, reason, detail },
+      {
+        companyId: diagnosis.companyId,
+        verdict: diagnosis.verdict,
+        reason,
+        detail: safeDetail,
+      },
       "crew repair: not attempted (cooldown)",
     );
   } else {
     logger.warn(
-      { companyId: diagnosis.companyId, verdict: diagnosis.verdict, reason, detail },
+      {
+        companyId: diagnosis.companyId,
+        verdict: diagnosis.verdict,
+        reason,
+        detail: safeDetail,
+      },
       "crew repair: SKIPPED — the company stays degraded and excluded from crew updates",
     );
   }
-  return { action: "skipped", verdict: diagnosis.verdict, reason, detail };
+  return {
+    action: "skipped",
+    verdict: diagnosis.verdict,
+    reason,
+    detail: safeDetail,
+    ...(skillFailure ? { skillFailure } : {}),
+    ...(reason === "install-in-flight"
+      ? {
+          notBefore: new Date(
+            Date.now() + OPERATION_CLAIM_STALE_AFTER_MS,
+          ).toISOString(),
+        }
+      : {}),
+  };
 }
 
 function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+class CrewSkillInstallError extends Error {
+  constructor(
+    readonly catalogItemId: string,
+    override readonly cause: unknown,
+  ) {
+    super(`crew skill installation failed for ${catalogItemId}`, { cause });
+  }
+}
+
+export function classifyCrewSkillFailure(
+  catalogItemId: string,
+  cause: unknown,
+): CrewRepairSkillFailure {
+  const error = cause as {
+    message?: unknown;
+    code?: unknown;
+    status?: unknown;
+    syscall?: unknown;
+    name?: unknown;
+  };
+  const message =
+    typeof error?.message === "string" ? error.message.toLowerCase() : "";
+  const code = typeof error?.code === "string" ? error.code.toUpperCase() : "";
+  const status =
+    typeof error?.status === "number"
+      ? error.status
+      : Number(/\bHTTP\s+(\d{3})\b/i.exec(message)?.[1] ?? NaN);
+  const httpStatus =
+    Number.isInteger(status) && status >= 100 && status <= 599
+      ? status
+      : undefined;
+  const filesystemOperation =
+    typeof error?.syscall === "string" &&
+    ["read", "write", "rename", "mkdir"].includes(error.syscall)
+      ? (error.syscall as "read" | "write" | "rename" | "mkdir")
+      : undefined;
+
+  let failureCode: CrewRepairSkillFailureCode;
+  if (
+    code === "EACCES" ||
+    code === "EPERM" ||
+    message.includes("permission denied")
+  ) {
+    failureCode = "filesystem-permission-denied";
+  } else if (code === "ENOENT" || message.includes("skill.md") && message.includes("missing")) {
+    failureCode = "bundle-missing";
+  } else if (
+    httpStatus === 408 ||
+    httpStatus === 425 ||
+    httpStatus === 429 ||
+    (httpStatus !== undefined && httpStatus >= 500) ||
+    error?.name === "AbortError" ||
+    message.includes("timed out") ||
+    message.includes("timeout")
+  ) {
+    failureCode = "resource-temporarily-unavailable";
+  } else if (
+    httpStatus !== undefined ||
+    message.includes("failed to fetch") ||
+    message.includes("dns ") ||
+    message.includes("socket")
+  ) {
+    failureCode = "resource-fetch-failed";
+  } else if (
+    error?.name === "SyntaxError" ||
+    message.includes("invalid") ||
+    message.includes("parse")
+  ) {
+    failureCode = "resource-invalid";
+  } else {
+    failureCode = "bundle-materialization-failed";
+  }
+
+  return {
+    code: failureCode,
+    catalogItemId:
+      catalogItemId.length > 0 && catalogItemId.length <= 160
+        ? catalogItemId
+        : "unknown",
+    ...(httpStatus !== undefined ? { httpStatus } : {}),
+    ...(filesystemOperation ? { filesystemOperation } : {}),
+    ...(failureCode === "resource-temporarily-unavailable"
+      ? { notBefore: new Date(Date.now() + 60_000).toISOString() }
+      : {}),
+  };
 }
 
 /**
@@ -1075,6 +1241,16 @@ export interface CrewRepairPassResult {
   skippedOverBudget: number;
   /** Diagnosis or repair threw. */
   failed: number;
+  /** One safe, structured entry for every skip counter increment. */
+  skips: CrewRepairPassSkip[];
+}
+
+export interface CrewRepairPassSkip {
+  companyId: string;
+  category: "fail_closed" | "cooldown" | "over_budget";
+  reason: CrewRepairSkipReason | "repair-budget-exhausted";
+  notBefore?: string;
+  skillFailure?: CrewRepairSkillFailure;
 }
 
 export interface CrewRepairPassFailure {
@@ -1111,6 +1287,7 @@ export async function runCrewRepairPass(opts: {
     skippedCooldown: 0,
     skippedOverBudget: 0,
     failed: 0,
+    skips: [],
   };
 
   // A cache row can exist whose `items` array lacks the crew team (an empty or
@@ -1142,6 +1319,11 @@ export async function runCrewRepairPass(opts: {
 
       if (budget <= 0) {
         result.skippedOverBudget += 1;
+        result.skips.push({
+          companyId,
+          category: "over_budget",
+          reason: "repair-budget-exhausted",
+        });
         continue;
       }
 
@@ -1151,8 +1333,36 @@ export async function runCrewRepairPass(opts: {
         force: opts.force,
       });
       if (repair.action === "skipped") {
-        if (repair.reason === "cooldown") result.skippedCooldown += 1;
-        else result.skippedFailClosed += 1;
+        if (repair.reason === "cooldown") {
+          result.skippedCooldown += 1;
+          const minGapMs = opts.force
+            ? CREW_REPAIR_FORCE_FLOOR_MS
+            : CREW_REPAIR_COOLDOWN_MS;
+          result.skips.push({
+            companyId,
+            category: "cooldown",
+            reason: repair.reason,
+            notBefore: new Date(
+              (recentAttempts.get(companyId) ?? repairClock()) + minGapMs,
+            ).toISOString(),
+          });
+        } else {
+          result.skippedFailClosed += 1;
+          result.skips.push({
+            companyId,
+            category: "fail_closed",
+            reason: repair.reason,
+            ...(repair.skillFailure
+              ? { skillFailure: repair.skillFailure }
+              : {}),
+            ...(repair.notBefore || repair.skillFailure?.notBefore
+              ? {
+                  notBefore:
+                    repair.notBefore ?? repair.skillFailure?.notBefore,
+                }
+              : {}),
+          });
+        }
         // Neither consumes budget: a skip did no productive work, and charging
         // for it lets a few unrepairable companies starve the rest forever.
       } else if (repair.action === "none") {
@@ -1165,12 +1375,44 @@ export async function runCrewRepairPass(opts: {
     } catch (err) {
       result.failed += 1;
       opts.onFailure?.({ companyId, error: err });
-      logger.warn({ err, companyId }, "crew repair pass failed for company");
+      logger.warn(
+        { error: serializeSafeError(err), companyId },
+        "crew repair pass failed for company",
+      );
     }
   }
 
   if (result.repaired > 0 || result.failed > 0 || result.skippedFailClosed > 0) {
-    logger.info(result, "crew provisioning repair pass complete");
+    logger.info(
+      {
+        catalogReady: result.catalogReady,
+        inspected: result.inspected,
+        repaired: result.repaired,
+        skippedFailClosed: result.skippedFailClosed,
+        skippedCooldown: result.skippedCooldown,
+        skippedOverBudget: result.skippedOverBudget,
+        failed: result.failed,
+        skips: result.skips.map((entry) => ({
+          companyId: entry.companyId,
+          category: entry.category,
+          reason: entry.reason,
+          notBefore: entry.notBefore,
+          ...(entry.skillFailure
+            ? {
+                skillFailure: {
+                  code: entry.skillFailure.code,
+                  catalogItemId: entry.skillFailure.catalogItemId,
+                  httpStatus: entry.skillFailure.httpStatus,
+                  filesystemOperation:
+                    entry.skillFailure.filesystemOperation,
+                  notBefore: entry.skillFailure.notBefore,
+                },
+              }
+            : {}),
+        })),
+      },
+      "crew provisioning repair pass complete",
+    );
   }
   return result;
 }

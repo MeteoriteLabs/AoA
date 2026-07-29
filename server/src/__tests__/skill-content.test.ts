@@ -1,7 +1,25 @@
-import { describe, it, expect, vi } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
 import type { CatalogItem } from "@armyofagents/shared";
 
-import { loadSkillContent } from "../services/marketplace-install/fetch-resource.js";
+vi.mock("../services/outbound-url-guard.js", () => ({
+  validateAndResolveFetchUrl: vi.fn(async (url: string) => ({
+    parsedUrl: new URL(url),
+    resolvedAddress: "93.184.216.34",
+    hostHeader: new URL(url).host,
+    tlsServername: new URL(url).hostname,
+    useTls: true,
+  })),
+  executePinnedRequest: vi.fn(),
+}));
+
+import {
+  loadSkillContent,
+  MarketplaceResourceFetchError,
+} from "../services/marketplace-install/fetch-resource.js";
+import {
+  executePinnedRequest,
+  validateAndResolveFetchUrl,
+} from "../services/outbound-url-guard.js";
 
 const BASE_ITEM: CatalogItem = {
   id: "skill:aoa-curated/code-review",
@@ -10,7 +28,7 @@ const BASE_ITEM: CatalogItem = {
   description: "Reviews code for issues",
   version: "1.0.0",
   source: { adapter: "aoa-curated", url: "https://example.com", locator: "content/skills/code-review", commitSha: "abc123" },
-  resourceUrl: "https://raw.githubusercontent.com/example/abc123/SKILL.md",
+  resourceUrl: `https://raw.githubusercontent.com/example/skills/${"f".repeat(40)}/SKILL.md`,
   content: undefined,
   trust: { tier: "verified", source: "aoa-curated" },
   status: "active",
@@ -20,35 +38,130 @@ const BASE_ITEM: CatalogItem = {
 };
 
 describe("loadSkillContent", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it("returns inline content without making any HTTP request", async () => {
-    const fetchMock = vi.fn();
-    global.fetch = fetchMock as any;
+    vi.mocked(validateAndResolveFetchUrl).mockClear();
+    vi.mocked(executePinnedRequest).mockClear();
 
     const item = { ...BASE_ITEM, content: { inline: "# Code Review\n\nCheck for bugs." } };
     const result = await loadSkillContent(item);
 
     expect(result).toBe("# Code Review\n\nCheck for bugs.");
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(executePinnedRequest).not.toHaveBeenCalled();
   });
 
   it("fetches from resourceUrl when no inline content present", async () => {
     const body = "# Web Search\n\nFetched from CDN.";
-    global.fetch = vi.fn(async () => ({
-      ok: true,
+    vi.mocked(executePinnedRequest).mockResolvedValueOnce({
       status: 200,
-      text: async () => body,
-    })) as any;
+      statusText: "OK",
+      headers: {},
+      body,
+    });
 
     const result = await loadSkillContent(BASE_ITEM);
 
     expect(result).toBe(body);
-    expect(global.fetch).toHaveBeenCalledWith(BASE_ITEM.resourceUrl, expect.any(Object));
+    expect(validateAndResolveFetchUrl).toHaveBeenCalledWith(
+      BASE_ITEM.resourceUrl,
+    );
+    expect(executePinnedRequest).toHaveBeenCalled();
   });
 
   it("throws an error containing 'HTTP 404' when fetch returns non-ok", async () => {
-    global.fetch = vi.fn(async () => ({ ok: false, status: 404 })) as any;
+    vi.mocked(executePinnedRequest).mockResolvedValueOnce({
+      status: 404,
+      statusText: "Not Found",
+      headers: {},
+      body: "",
+    });
 
     await expect(loadSkillContent(BASE_ITEM)).rejects.toThrow("HTTP 404");
+  });
+
+  it("revalidates and follows an allowlisted relative redirect", async () => {
+    vi.mocked(executePinnedRequest)
+      .mockResolvedValueOnce({
+        status: 302,
+        statusText: "Found",
+        headers: { location: "README.md" },
+        body: "",
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        statusText: "OK",
+        headers: {},
+        body: "# Redirected skill",
+      });
+
+    await expect(loadSkillContent(BASE_ITEM)).resolves.toBe(
+      "# Redirected skill",
+    );
+    expect(validateAndResolveFetchUrl).toHaveBeenNthCalledWith(
+      2,
+      new URL("README.md", BASE_ITEM.resourceUrl).toString(),
+    );
+    expect(executePinnedRequest).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects an unsafe redirect before issuing another request", async () => {
+    vi.mocked(executePinnedRequest).mockResolvedValueOnce({
+      status: 302,
+      statusText: "Found",
+      headers: { location: "https://127.0.0.1/internal" },
+      body: "",
+    });
+
+    await expect(loadSkillContent(BASE_ITEM)).rejects.toMatchObject({
+      code: "unsafe_url",
+    });
+    expect(executePinnedRequest).toHaveBeenCalledTimes(1);
+    expect(validateAndResolveFetchUrl).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed when a redirect omits Location", async () => {
+    vi.mocked(executePinnedRequest).mockResolvedValueOnce({
+      status: 302,
+      statusText: "Found",
+      headers: {},
+      body: "",
+    });
+
+    await expect(loadSkillContent(BASE_ITEM)).rejects.toMatchObject({
+      code: "http_error",
+      status: 302,
+    });
+  });
+
+  it("stops after the bounded redirect limit", async () => {
+    vi.mocked(executePinnedRequest).mockResolvedValue({
+      status: 302,
+      statusText: "Found",
+      headers: { location: "README.md" },
+      body: "",
+    });
+
+    const error = await loadSkillContent(BASE_ITEM).catch((cause) => cause);
+    expect(error).toBeInstanceOf(MarketplaceResourceFetchError);
+    expect(error).toMatchObject({ code: "redirect_limit", status: 302 });
+    expect(executePinnedRequest).toHaveBeenCalledTimes(6);
+    expect(validateAndResolveFetchUrl).toHaveBeenCalledTimes(6);
+  });
+
+  it("rejects credentialed, private, and unpinned resource forms before DNS", async () => {
+    for (const resourceUrl of [
+      "https://user:secret@raw.githubusercontent.com/acme/repo/" +
+        `${"f".repeat(40)}/SKILL.md`,
+      "https://127.0.0.1/resource",
+      "https://raw.githubusercontent.com/acme/repo/main/SKILL.md",
+    ]) {
+      await expect(
+        loadSkillContent({ ...BASE_ITEM, resourceUrl }),
+      ).rejects.toThrow(/credential-free HTTPS|allowlist/);
+    }
   });
 
   it("throws when item has no inline content and no resourceUrl", async () => {

@@ -80,6 +80,7 @@ import { backfillCrewOriginKind } from "./services/internal-agent/aoa-agents/bac
 import { reconcileAutonomyScale } from "./services/internal-agent/aoa-agents/reconcile-autonomy-scale.js";
 import { loadCachedCatalog } from "./services/aoa-marketplace.js";
 import { runMarketplaceCrewMaintenance } from "./services/marketplace-reconcile.js";
+import { serializeSafeError } from "./services/safe-error.js";
 
 type BetterAuthSessionUser = {
   id: string;
@@ -914,13 +915,22 @@ async function runCrewUpdateCheck(): Promise<void> {
       );
     }
   } catch (err) {
-    logger.warn({ err }, "crew update check failed");
+    logger.warn(
+      { error: serializeSafeError(err) },
+      "crew update check failed",
+    );
   }
 }
 
 void runCrewUpdateCheck();
 setInterval(
-  () => void runCrewUpdateCheck().catch((err) => logger.warn({ err }, "crew update check interval failed")),
+  () =>
+    void runCrewUpdateCheck().catch((err) =>
+      logger.warn(
+        { error: serializeSafeError(err) },
+        "crew update check interval failed",
+      ),
+    ),
   CREW_UPDATE_CHECK_INTERVAL_MS,
 );
 

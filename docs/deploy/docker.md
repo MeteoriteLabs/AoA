@@ -5,6 +5,9 @@ summary: Docker Compose deployment
 
 Run AoA in Docker without installing Node or pnpm locally.
 
+For the deployment checks required before a fleet repair, see
+[Marketplace recovery](/guides/board-operator/marketplace-recovery).
+
 ## Compose Deployment
 
 The default `docker-compose.yml` is the recommended remote-dev deployment. It starts:
@@ -44,7 +47,7 @@ If you are exposing the container directly during early testing, `AOA_PUBLIC_URL
 Defaults:
 
 - Host port: `3100` (`AOA_PORT=3200` changes it)
-- App data volume: `aoa-data` mounted at `/paperclip`
+- App data volume: `aoa-data` mounted at `/aoa`
 - Database volume: `aoa-postgres`
 - Database URL: `postgres://paperclip:paperclip@db:5432/paperclip`
 - Image tag: `aoa:local`
@@ -56,10 +59,10 @@ The database image now uses Postgres 18 with pgvector and mounts storage at
 an old Postgres 17 data directory; take a `pg_dump`/backup from the old stack
 and restore it into the new database.
 
-On a blank `/paperclip` volume, the entrypoint creates:
+On a blank `/aoa` volume, the entrypoint creates:
 
-- `/paperclip/instances/default/config.json`
-- `/paperclip/instances/default/.env` with generated `BETTER_AUTH_SECRET` and `AOA_AGENT_JWT_SECRET`
+- `/aoa/instances/default/config.json`
+- `/aoa/instances/default/.env` with generated `BETTER_AUTH_SECRET` and `AOA_AGENT_JWT_SECRET`
 - local storage, logs, backup, secrets, and workspace directories
 
 Pending migrations are applied automatically in the Compose stack with `AOA_MIGRATION_AUTO_APPLY=true`.
@@ -117,7 +120,7 @@ Compose-specific variables:
 | `USER_UID`, `USER_GID` | `1000` | Runtime UID/GID for the `node` user inside the image. |
 | `AOA_BIND_ADDRESS` | `0.0.0.0` | Host interface used for the published app port. |
 | `AOA_PORT` | `3100` | Host port mapped to container port `3100`. |
-| `AOA_INSTANCE_ID` | `default` | Instance directory under `/paperclip/instances/`. |
+| `AOA_INSTANCE_ID` | `default` | Instance directory under `/aoa/instances/`. |
 | `AOA_POSTGRES_IMAGE` | `pgvector/pgvector:pg18` | Database image used by the default Compose stack and `psql` tool profile. |
 | `AOA_POSTGRES_USER` | `paperclip` | Database user. |
 | `AOA_POSTGRES_PASSWORD` | `paperclip` | Database password. Set this for shared or long-lived deployments. URL-reserved characters (`/ # ? % @ :`) are safe — the entrypoint percent-encodes the value into `DATABASE_URL` automatically, so no manual escaping is needed. |
@@ -160,7 +163,9 @@ For quick local trials, `docker-compose.quickstart.yml` runs one AoA container w
 docker compose -f docker-compose.quickstart.yml up --build
 ```
 
-Data is bind-mounted by default at `./data/docker-aoa` on the host and `/paperclip` in the container.
+Data is persisted in the `aoa-data` named volume and mounted at `/aoa` in the
+container. The image keeps `/paperclip` only as a compatibility symlink to
+`/aoa`; do not mount a second volume there.
 
 Like the main stack, quickstart runs in `authenticated` mode and needs Google
 OAuth credentials (the first Google sign-in becomes the instance admin):
@@ -195,11 +200,11 @@ docker build -t aoa-local .
 docker run --name aoa \
   -p 3100:3100 \
   -e HOST=0.0.0.0 \
-  -e AOA_HOME=/paperclip \
+  -e AOA_HOME=/aoa \
   -e AOA_PUBLIC_URL=http://localhost:3100 \
   -e GOOGLE_CLIENT_ID=... \
   -e GOOGLE_CLIENT_SECRET=... \
-  -v aoa-data:/paperclip \
+  -v aoa-data:/aoa \
   aoa-local
 ```
 
@@ -209,16 +214,21 @@ With no `DATABASE_URL`, this uses embedded PostgreSQL. To use an external databa
 docker run --name aoa \
   -p 3100:3100 \
   -e HOST=0.0.0.0 \
-  -e AOA_HOME=/paperclip \
+  -e AOA_HOME=/aoa \
   -e DATABASE_URL=postgres://paperclip:paperclip@db:5432/paperclip \
   -e GOOGLE_CLIENT_ID=... \
   -e GOOGLE_CLIENT_SECRET=... \
-  -v aoa-data:/paperclip \
+  -v aoa-data:/aoa \
   aoa-local
 ```
 
-The auth secrets are generated on first boot and persisted under `/paperclip/instances/default/.env`. You may still pass `BETTER_AUTH_SECRET` and `AOA_AGENT_JWT_SECRET` explicitly if secrets are managed outside the container.
+The auth secrets are generated on first boot and persisted under
+`/aoa/instances/default/.env`. You may still pass `BETTER_AUTH_SECRET` and
+`AOA_AGENT_JWT_SECRET` explicitly if secrets are managed outside the container.
 
 ## Data Persistence
 
-The `/paperclip` volume stores instance config, generated secrets, local encrypted-secret key material, uploaded assets, run logs, backups, and agent workspace data. Do not run authenticated deployments without a durable `/paperclip` mount or volume.
+The `/aoa` volume stores instance config, generated secrets, local
+encrypted-secret key material, uploaded assets, run logs, backups, and agent
+workspace data. Do not run authenticated deployments without a durable `/aoa`
+mount or volume.

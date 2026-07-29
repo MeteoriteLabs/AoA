@@ -3,6 +3,9 @@ title: "Upgrading from Paperclip"
 summary: "Migration steps from a Paperclip-era install to AoA"
 ---
 
+Marketplace managed-root selection and rollback are covered in
+[Marketplace recovery](/guides/board-operator/marketplace-recovery).
+
 If you've been running this project under the legacy "Paperclip" name (or any version &le; 1.0.0-rc.5), this guide covers exactly what changes when you upgrade to the AoA-rebranded release. Most things are automatic — read through the sections below to know what, if anything, you need to touch.
 
 ## What's automatic (no action required)
@@ -25,7 +28,11 @@ If you roll back code after this migration has run, the server already has dual-
 
 ## What requires user action
 
-**Docker host bind path.** The compose file's default host-side mount changed from `./data/docker-paperclip` to `./data/docker-aoa`. The in-container path remains `/paperclip` (the Dockerfile sets `AOA_HOME=/paperclip`), so your container data is intact — only the host directory name changed in the default.
+**Docker data mount.** Current Compose mounts the `aoa-data` volume at `/aoa`
+and sets `AOA_HOME=/aoa`. The image keeps `/paperclip` only as a compatibility
+symlink to `/aoa`. A legacy deployment that mounted real data directly at
+`/paperclip` must move or restore that data into the `/aoa` volume before
+starting the current image; the entrypoint refuses two divergent roots.
 
 You have two options:
 

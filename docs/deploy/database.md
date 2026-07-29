@@ -97,6 +97,16 @@ export function createDb(url: string) {
 
 The Drizzle schema (`packages/db/src/schema/`) is the same regardless of mode.
 
+### Marketplace recovery operation ledger
+
+Fleet marketplace reconciliation uses the
+`marketplace_reconciliation_operations` table as an instance-scoped,
+restart-durable operation ledger. Its primary key prevents operation-ID reuse,
+and its partial unique index plus owner-scoped lease prevents two application
+replicas from running different fleet reconciliations concurrently. Company
+`activity_log` rows remain audit detail; they are not the operation lock or
+terminal-state authority.
+
 ## Backups
 
 AoA includes a built-in backup utility in `packages/db/src/backup-lib.ts`. It exports `runDatabaseBackup` and `runDatabaseRestore`.

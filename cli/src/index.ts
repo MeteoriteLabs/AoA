@@ -17,6 +17,7 @@ import { registerAgentCommands } from "./commands/client/agent.js";
 import { registerApprovalCommands } from "./commands/client/approval.js";
 import { registerActivityCommands } from "./commands/client/activity.js";
 import { registerDashboardCommands } from "./commands/client/dashboard.js";
+import { registerMarketplaceCommands } from "./commands/client/marketplace.js";
 import { applyDataDirOverride, type DataDirOptionLike } from "./config/data-dir.js";
 
 const program = new Command();
@@ -117,7 +118,7 @@ heartbeat
   .option("--context <path>", "Path to CLI context file")
   .option("--profile <name>", "CLI context profile name")
   .option("--api-base <url>", "Base URL for the AoA server API")
-  .option("--api-key <token>", "Bearer token for agent-authenticated calls")
+  .option("--api-key <token>", "Bearer token override")
   .option(
     "--source <source>",
     "Invocation source (timer | assignment | on_demand | automation)",
@@ -136,6 +137,7 @@ registerAgentCommands(program);
 registerApprovalCommands(program);
 registerActivityCommands(program);
 registerDashboardCommands(program);
+registerMarketplaceCommands(program);
 
 const auth = program.command("auth").description("Authentication and bootstrap utilities");
 

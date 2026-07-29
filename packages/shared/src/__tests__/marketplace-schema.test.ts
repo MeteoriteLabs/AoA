@@ -2,9 +2,18 @@ import { describe, expect, it } from "vitest";
 import {
   MarketplaceCatalogItemSchema,
   MarketplaceSkillBundleSchema,
+  MarketplaceReconcileErrorResponseSchema,
+  MarketplaceReconcileRequestSchema,
+  MarketplaceReconcileResponseSchema,
+  MarketplaceReconcileSkipSchema,
+  MarketplaceRetryInstructionSchema,
+  MARKETPLACE_RECOVERY,
+  MARKETPLACE_RECOVERY_DOC_URL,
   parseMarketplaceCatalog,
   isSchemaVersionSupported,
 } from "../marketplace.js";
+
+const OPERATION_ID = "11111111-1111-4111-8111-111111111111";
 
 describe("MarketplaceCatalogItemSchema", () => {
   it("preserves provider logo metadata", () => {
@@ -180,6 +189,125 @@ describe("isSchemaVersionSupported (FU-14 same-major loosening)", () => {
     },
   );
 });
+
+describe("marketplace reconciliation wire contracts", () => {
+  it("requires an explicit strict fleet repair request", () => {
+    expect(
+      MarketplaceReconcileRequestSchema.parse({
+        scope: "fleet",
+        mode: "repair",
+        operationId: OPERATION_ID,
+      }),
+    ).toBeTruthy();
+    for (const body of [
+      {},
+      { scope: "fleet", mode: "repair" },
+      {
+        scope: "fleet",
+        mode: "repair",
+        operationId: OPERATION_ID,
+        force: true,
+      },
+    ]) {
+      expect(MarketplaceReconcileRequestSchema.safeParse(body).success).toBe(
+        false,
+      );
+    }
+  });
+
+  it("rejects a replay compatibility field that disagrees with disposition", () => {
+    const response = makeReconcileResponse();
+    expect(MarketplaceReconcileResponseSchema.parse(response)).toBeTruthy();
+    expect(
+      MarketplaceReconcileResponseSchema.safeParse({
+        ...response,
+        replayed: true,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects unknown diagnostic context and unknown error fields", () => {
+    const recovery = MARKETPLACE_RECOVERY.unknown_fail_closed;
+    const skip = {
+      companyId: "company-1",
+      stage: "crew_repair",
+      category: "fail_closed",
+      reason: "unknown_fail_closed",
+      message: recovery.message,
+      retry: recovery.retry,
+      context: { absolutePath: "/secret/path" },
+    };
+    expect(MarketplaceReconcileSkipSchema.safeParse(skip).success).toBe(false);
+
+    const error = {
+      ok: false,
+      error: {
+        code: "internal_error",
+        message: MARKETPLACE_RECOVERY.internal_error.message,
+      },
+      operationId: OPERATION_ID,
+      retry: MARKETPLACE_RECOVERY.internal_error.retry,
+      docUrl: MARKETPLACE_RECOVERY_DOC_URL,
+      catalogError: "signed-url-secret",
+    };
+    expect(
+      MarketplaceReconcileErrorResponseSchema.safeParse(error).success,
+    ).toBe(false);
+  });
+
+  it("keeps every checked-in recovery instruction inside the allowlist", () => {
+    for (const entry of Object.values(MARKETPLACE_RECOVERY)) {
+      expect(MarketplaceRetryInstructionSchema.parse(entry.retry)).toBeTruthy();
+      expect(entry.message.length).toBeLessThanOrEqual(500);
+    }
+  });
+});
+
+function makeReconcileResponse() {
+  return {
+    ok: true,
+    operationId: OPERATION_ID,
+    executionDisposition: "started",
+    replayed: false,
+    status: "success",
+    repairs: {
+      crewCompaniesRepaired: 0,
+      legacyStewardsAdopted: 0,
+      teamsReconciled: 0,
+      teamMembersAdded: 0,
+    },
+    catalog: {
+      generatedAt: "2026-07-28T00:00:00.000Z",
+      canonicalDigestSha256: "a".repeat(64),
+      schemaVersion: "1.0.0",
+      itemCount: 0,
+      source: "cdn",
+    },
+    companiesExamined: 0,
+    crewRepair: {
+      catalogReady: true,
+      inspected: 0,
+      repaired: 0,
+      skippedFailClosed: 0,
+      skippedCooldown: 0,
+      skippedOverBudget: 0,
+      failed: 0,
+    },
+    legacySteward: {
+      disabled: false,
+      catalogReady: true,
+      inspected: 0,
+      adopted: 0,
+      skippedOverBudget: 0,
+      failed: 0,
+    },
+    crewUpdates: { succeeded: 0, failed: 0 },
+    teamReconcile: { teamsReconciled: 0, membersAdded: 0 },
+    skips: [],
+    diagnostics: [],
+    failures: [],
+  };
+}
 
 function makeBundle(overrides: Record<string, unknown> = {}) {
   return {

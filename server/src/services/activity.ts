@@ -1,6 +1,7 @@
 import { and, desc, eq, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { activityLog, heartbeatRuns, issues } from "@armyofagents/db";
+import { assertUnreservedActivityNamespace } from "./activity-namespace.js";
 
 export interface ActivityFilters {
   companyId: string;
@@ -172,11 +173,13 @@ export function activityService(db: Db) {
       return [fromContext, ...fromActivity];
     },
 
-    create: (data: typeof activityLog.$inferInsert) =>
-      db
+    create: (data: typeof activityLog.$inferInsert) => {
+      assertUnreservedActivityNamespace(data);
+      return db
         .insert(activityLog)
         .values(data)
         .returning()
-        .then((rows) => rows[0]),
+        .then((rows) => rows[0]);
+    },
   };
 }

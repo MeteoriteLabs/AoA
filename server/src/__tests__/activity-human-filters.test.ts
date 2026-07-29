@@ -8,6 +8,7 @@ import { errorHandler } from "../middleware/index.js";
 
 const mockActivityService = vi.hoisted(() => ({
   list: vi.fn(),
+  create: vi.fn(),
 }));
 
 vi.mock("../services/activity.js", () => ({
@@ -38,6 +39,7 @@ describe("activity human filters", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockActivityService.list.mockResolvedValue([]);
+    mockActivityService.create.mockResolvedValue({ id: "activity-1" });
   });
 
   it("forwards actorType and actorId through the company activity list route", async () => {
@@ -101,4 +103,38 @@ describe("activity human filters", () => {
     expect(source).toContain("eq(activityLog.actorId, filters.actorId)");
     expect(source).toContain("isNull(issues.hiddenAt)");
   });
+
+  it.each([
+    {
+      action: "marketplace.reconciliation_started",
+      entityType: "issue",
+    },
+    {
+      action: "issue.created",
+      entityType: "marketplace_reconciliation",
+    },
+  ])(
+    "rejects service-reserved marketplace reconciliation audit events",
+    async ({ action, entityType }) => {
+      const app = createApp({
+        type: "board",
+        userId: "user-board",
+        source: "session",
+        companyIds: [companyId],
+      });
+
+      const res = await request(app)
+        .post(`/api/companies/${companyId}/activity`)
+        .send({
+          actorType: "user",
+          actorId: "user-board",
+          action,
+          entityType,
+          entityId: "22222222-2222-4222-8222-222222222222",
+        });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(400);
+      expect(mockActivityService.create).not.toHaveBeenCalled();
+    },
+  );
 });

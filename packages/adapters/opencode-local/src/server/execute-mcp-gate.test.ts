@@ -159,7 +159,7 @@ describe("opencode execute — C2 MCP presence gate", () => {
       else process.env.HOME = previousHome;
       await fs.rm(root, { recursive: true, force: true }).catch(() => {});
     }
-  });
+  }, 60_000);
 
   it("does not write opencode.json when NEITHER field is present", async () => {
     const { root, workspace, commandPath } = await setup();

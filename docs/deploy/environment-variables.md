@@ -284,6 +284,7 @@ membership link has been checked.
 |----------|---------|-------------|
 | `AOA_PLUGIN_DIR` | `<AOA_HOME>/plugins` | Plugin discovery directory |
 | `AOA_MARKETPLACE_CDN_URL` | AoA marketplace CDN | Override the marketplace catalog URL. Developer/e2e harnesses can point this at an unreachable local URL to force the bundled catalog snapshot fallback |
+| `AOA_MARKETPLACE_SKILLS_WRITE_ROOT` | `legacy` | Select the fixed root for new managed marketplace skill bundles: `legacy` writes under `<cwd>/.aoa/marketplace-skills`; `persistent` writes under the active AoA instance root. Both fixed roots remain protected and readable. Arbitrary paths are rejected. |
 | `AOA_UI_DEV_MIDDLEWARE` | `false` | Set to `true` to mount the Vite UI as Express middleware (used by `pnpm dev`) |
 | `AOA_VITE_HMR_PORT` | (Vite default) | Override the Vite hot-module-reload websocket port when the UI is mounted as Express middleware. Useful for parallel local/e2e AoA instances |
 | `AOA_OPENCODE_COMMAND` | `opencode` | Override path to the `opencode` CLI binary for the OpenCode Local adapter |

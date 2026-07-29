@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import express from "express";
 import request from "supertest";
+import { MarketplaceReconcileErrorResponseSchema } from "@armyofagents/shared";
 import { boardMutationGuard } from "../middleware/board-mutation-guard.js";
 
-function createApp(actorType: "board" | "agent", boardSource: "session" | "local_implicit" = "session") {
+function createApp(
+  actorType: "board" | "agent",
+  boardSource: "session" | "local_implicit" | "board_key" = "session",
+) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -14,6 +18,9 @@ function createApp(actorType: "board" | "agent", boardSource: "session" | "local
   });
   app.use(boardMutationGuard());
   app.post("/mutate", (_req, res) => {
+    res.status(204).end();
+  });
+  app.post("/api/admin/marketplace/reconcile", (_req, res) => {
     res.status(204).end();
   });
   app.get("/read", (_req, res) => {
@@ -42,6 +49,12 @@ describe("boardMutationGuard", () => {
     expect(res.status).toBe(204);
   });
 
+  it("allows an explicitly supplied board key without origin", async () => {
+    const app = createApp("board", "board_key");
+    const res = await request(app).post("/mutate").send({ ok: true });
+    expect(res.status).toBe(204);
+  });
+
   it("allows board mutations from trusted origin", async () => {
     const app = createApp("board");
     const res = await request(app)
@@ -58,6 +71,19 @@ describe("boardMutationGuard", () => {
       .set("Referer", "http://localhost:3100/issues/abc")
       .send({ ok: true });
     expect(res.status).toBe(204);
+  });
+
+  it("uses the strict marketplace envelope when the origin guard rejects first", async () => {
+    const app = createApp("board");
+    const res = await request(app)
+      .post("/api/admin/marketplace/reconcile")
+      .send({ ok: true });
+
+    expect(res.status).toBe(403);
+    expect(() =>
+      MarketplaceReconcileErrorResponseSchema.parse(res.body),
+    ).not.toThrow();
+    expect(res.body.error.code).toBe("invalid_request");
   });
 
   it("does not block authenticated agent mutations", async () => {

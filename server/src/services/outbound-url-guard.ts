@@ -21,6 +21,46 @@ export const ALLOWED_PROTOCOLS = new Set(["http:", "https:"]);
 /** Maximum time (ms) to wait for a DNS lookup before aborting. */
 export const DNS_LOOKUP_TIMEOUT_MS = 5_000;
 
+function parseIpv6Words(ip: string): number[] | null {
+  const normalized = ip.toLowerCase().replace(/^\[|\]$/g, "").split("%", 1)[0]!;
+  if (!normalized.includes(":")) return null;
+  const halves = normalized.split("::");
+  if (halves.length > 2) return null;
+
+  const parseHalf = (value: string): number[] | null => {
+    if (!value) return [];
+    const words: number[] = [];
+    for (const token of value.split(":")) {
+      if (!/^[0-9a-f]{1,4}$/.test(token)) return null;
+      words.push(Number.parseInt(token, 16));
+    }
+    return words;
+  };
+  const left = parseHalf(halves[0] ?? "");
+  const right = parseHalf(halves[1] ?? "");
+  if (!left || !right) return null;
+  if (halves.length === 1) return left.length === 8 ? left : null;
+  const omitted = 8 - left.length - right.length;
+  if (omitted < 1) return null;
+  return [...left, ...Array<number>(omitted).fill(0), ...right];
+}
+
+function mappedIpv4(words: readonly number[]): string | null {
+  if (
+    words.length !== 8 ||
+    words.slice(0, 5).some((word) => word !== 0) ||
+    words[5] !== 0xffff
+  ) {
+    return null;
+  }
+  return [
+    words[6]! >> 8,
+    words[6]! & 0xff,
+    words[7]! >> 8,
+    words[7]! & 0xff,
+  ].join(".");
+}
+
 /**
  * Check if an IP address is in a private/reserved range (RFC 1918, loopback,
  * link-local, etc.) that outbound HTTP should never be able to reach.
@@ -29,13 +69,32 @@ export const DNS_LOOKUP_TIMEOUT_MS = 5_000;
  * dns.lookup may return depending on OS configuration.
  */
 export function isPrivateIP(ip: string): boolean {
-  const lower = ip.toLowerCase();
+  const lower = ip.toLowerCase().replace(/^\[|\]$/g, "");
 
   // Unwrap IPv4-mapped IPv6 addresses (::ffff:x.x.x.x) and re-check as IPv4
   const v4MappedMatch = lower.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
   if (v4MappedMatch && v4MappedMatch[1]) return isPrivateIP(v4MappedMatch[1]);
+  const ipv6Words = parseIpv6Words(lower);
+  const canonicalMapped = ipv6Words ? mappedIpv4(ipv6Words) : null;
+  if (canonicalMapped) return isPrivateIP(canonicalMapped);
 
   // IPv4 patterns
+  const octets = ip.split(".").map(Number);
+  if (
+    octets.length === 4 &&
+    octets.every((part) => Number.isInteger(part) && part >= 0 && part <= 255)
+  ) {
+    const [first, second, third] = octets as [number, number, number, number];
+    if (first === 0) return true; // current network / unspecified
+    if (first === 100 && second >= 64 && second <= 127) return true; // carrier-grade NAT
+    if (first === 192 && second === 0 && third === 0) return true; // IETF protocol assignments
+    if (first === 192 && second === 0 && third === 2) return true; // TEST-NET-1
+    if (first === 192 && second === 88 && third === 99) return true; // deprecated 6to4 relay
+    if (first === 198 && (second === 18 || second === 19)) return true; // benchmarking
+    if (first === 198 && second === 51 && third === 100) return true; // TEST-NET-2
+    if (first === 203 && second === 0 && third === 113) return true; // TEST-NET-3
+    if (first >= 224) return true; // multicast and reserved
+  }
   if (ip.startsWith("10.")) return true;
   if (ip.startsWith("172.")) {
     const second = parseInt(ip.split(".")[1]!, 10);
@@ -46,11 +105,42 @@ export function isPrivateIP(ip: string): boolean {
   if (ip.startsWith("169.254.")) return true;               // link-local
   if (ip === "0.0.0.0") return true;
 
-  // IPv6 patterns
-  if (lower === "::1") return true;                          // loopback
-  if (lower.startsWith("fc") || lower.startsWith("fd")) return true; // ULA
-  if (lower.startsWith("fe80")) return true;                 // link-local
-  if (lower === "::") return true;
+  // IPv6 special-use ranges. Compare parsed words so compressed and canonical
+  // forms receive identical treatment.
+  if (ipv6Words) {
+    const [first, second, third, fourth] = ipv6Words;
+    if (first === 0) return true; // unspecified, loopback, IPv4-compatible
+    if ((first! & 0xfe00) === 0xfc00) return true; // fc00::/7 ULA
+    if ((first! & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
+    if ((first! & 0xffc0) === 0xfec0) return true; // fec0::/10 deprecated site-local
+    if ((first! & 0xff00) === 0xff00) return true; // ff00::/8 multicast
+    if (
+      first === 0x0064 &&
+      second === 0xff9b &&
+      (third === 0 || third === 1)
+    ) {
+      return true; // NAT64 translation prefixes
+    }
+    if (
+      first === 0x0100 &&
+      second === 0 &&
+      third === 0 &&
+      fourth === 0
+    ) {
+      return true; // 100::/64 discard-only
+    }
+    if (
+      first === 0x2001 &&
+      (second === 0 ||
+        second === 0x0002 ||
+        (second! >= 0x0010 && second! <= 0x002f) ||
+        second === 0x0db8)
+    ) {
+      return true; // Teredo/benchmark/ORCHID/documentation
+    }
+    if (first === 0x2002) return true; // 2002::/16 6to4
+    if (first! >= 0x3ff0 && first! <= 0x3fff) return true; // 3fff::/20 docs
+  }
 
   return false;
 }

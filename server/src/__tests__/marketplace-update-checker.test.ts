@@ -431,6 +431,26 @@ describe("runUpdateCheck — always-notify behavior", () => {
     });
   });
 
+  it("redacts secrets, URLs, and absolute paths from returned failures", async () => {
+    const secret = `sk-ant-${"a".repeat(24)}`;
+    vi.mocked(marketplaceNotifications.updateAvailable).mockRejectedValueOnce(
+      new Error(
+        `Bearer ${secret} failed at C:\\Users\\operator\\secrets.json via https://user:pass@example.com/resource?token=hidden`,
+      ),
+    );
+    const db = buildMockDb();
+
+    const result = await runUpdateCheck(db as any, [SKILL_CATALOG_ITEM]);
+    const serialized = JSON.stringify(result.failures);
+
+    expect(serialized).toContain("[redacted]");
+    expect(serialized).toContain("[redacted-path]");
+    expect(serialized).not.toContain(secret);
+    expect(serialized).not.toContain("operator");
+    expect(serialized).not.toContain("user:pass");
+    expect(serialized).not.toContain("token=hidden");
+  });
+
   it("uses an audited company snapshot without rediscovering the fleet", async () => {
     const where = vi.fn().mockResolvedValue([]);
     const from = vi.fn().mockReturnValue({ where });

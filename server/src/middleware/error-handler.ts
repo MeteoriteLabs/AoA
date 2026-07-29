@@ -2,6 +2,11 @@ import type { Request, Response, NextFunction } from "express";
 import { ZodError } from "zod";
 import { HttpError } from "../errors.js";
 import { redactSensitiveBodyFields } from "./redact-sensitive.js";
+import {
+  isMarketplaceAdminPath,
+  marketplaceErrorResponse,
+} from "../services/marketplace-http-contract.js";
+import { serializeSafeError } from "../services/safe-error.js";
 
 export interface ErrorContext {
   error: { message: string; stack?: string; name?: string; details?: unknown; raw?: unknown };
@@ -18,6 +23,55 @@ export function errorHandler(
   res: Response,
   _next: NextFunction,
 ) {
+  if (isMarketplaceAdminPath(req.originalUrl)) {
+    const status =
+      err instanceof HttpError
+        ? err.status
+        : err instanceof ZodError
+          ? 400
+          : err &&
+              typeof err === "object" &&
+              ("status" in err || "statusCode" in err)
+            ? Number(
+                (err as { status?: unknown }).status ??
+                  (err as { statusCode?: unknown }).statusCode,
+              )
+            : 500;
+    const safeStatus =
+      Number.isInteger(status) && status >= 400 && status < 600
+        ? status
+        : 500;
+    const code =
+      safeStatus === 401
+        ? "authentication_required"
+        : safeStatus === 403
+          ? "instance_admin_required"
+          : safeStatus >= 400 && safeStatus < 500
+            ? "invalid_request"
+            : "internal_error";
+    if (safeStatus >= 500) {
+      const safeError = serializeSafeError(err);
+      (res as any).__errorContext = {
+        error: {
+          message: String(safeError.message ?? "Marketplace request failed"),
+          ...(typeof safeError.stack === "string"
+            ? { stack: safeError.stack }
+            : {}),
+          ...(typeof safeError.name === "string"
+            ? { name: safeError.name }
+            : {}),
+        },
+        method: req.method,
+        url: req.originalUrl,
+        reqBody: redactSensitiveBodyFields(req.body),
+        reqParams: redactSensitiveBodyFields(req.params),
+        reqQuery: redactSensitiveBodyFields(req.query),
+      } satisfies ErrorContext;
+    }
+    res.status(safeStatus).json(marketplaceErrorResponse(code, null));
+    return;
+  }
+
   if (err instanceof HttpError) {
     if (err.status >= 500) {
       (res as any).__errorContext = {

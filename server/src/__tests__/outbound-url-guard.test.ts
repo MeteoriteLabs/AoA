@@ -28,6 +28,32 @@ describe("isPrivateIP", () => {
   it("rejects 0.0.0.0", () => {
     expect(isPrivateIP("0.0.0.0")).toBe(true);
   });
+  it.each([
+    "0.1.2.3",
+    "100.64.0.0",
+    "100.127.255.255",
+    "192.0.0.1",
+    "192.0.2.1",
+    "192.88.99.1",
+    "198.18.0.1",
+    "198.19.255.255",
+    "198.51.100.1",
+    "203.0.113.1",
+    "224.0.0.1",
+    "255.255.255.255",
+  ])("rejects reserved IPv4 range address %s", (ip) => {
+    expect(isPrivateIP(ip)).toBe(true);
+  });
+  it.each([
+    "100.63.255.255",
+    "100.128.0.0",
+    "192.0.1.1",
+    "198.17.255.255",
+    "198.20.0.0",
+    "223.255.255.255",
+  ])("does not over-block adjacent public IPv4 address %s", (ip) => {
+    expect(isPrivateIP(ip)).toBe(false);
+  });
   it("rejects IPv6 loopback + ULA + link-local", () => {
     expect(isPrivateIP("::1")).toBe(true);
     expect(isPrivateIP("::")).toBe(true);
@@ -39,7 +65,27 @@ describe("isPrivateIP", () => {
     expect(isPrivateIP("::ffff:127.0.0.1")).toBe(true);
     expect(isPrivateIP("::ffff:10.0.0.1")).toBe(true);
     expect(isPrivateIP("::ffff:169.254.169.254")).toBe(true);
+    expect(isPrivateIP("::ffff:7f00:1")).toBe(true);
+    expect(isPrivateIP("::ffff:a9fe:a9fe")).toBe(true);
+    expect(isPrivateIP("::ffff:808:808")).toBe(false);
   });
+  it.each([
+    "ff02::1",
+    "ffff::1",
+    "2001:db8::1",
+    "fe90::1",
+    "febf::1",
+    "fec0::1",
+    "64:ff9b::7f00:1",
+    "100::1",
+    "2002:7f00:1::1",
+    "3fff::1",
+  ])(
+    "rejects reserved IPv6 address %s",
+    (ip) => {
+      expect(isPrivateIP(ip)).toBe(true);
+    },
+  );
   it("does NOT reject 172.15.x.x or 172.32.x.x (boundary)", () => {
     expect(isPrivateIP("172.15.255.255")).toBe(false);
     expect(isPrivateIP("172.32.0.0")).toBe(false);
@@ -86,6 +132,20 @@ describe("validateAndResolveFetchUrl — private IP gate (literal IPs in hostnam
   it("rejects IPv6 loopback ([::1])", async () => {
     await expect(validateAndResolveFetchUrl("http://[::1]/"))
       .rejects.toThrow(/private/);
+  });
+  it.each([
+    "http://100.64.0.1/",
+    "http://192.0.2.1/",
+    "http://198.18.0.1/",
+    "http://203.0.113.1/",
+    "http://224.0.0.1/",
+    "http://[ff02::1]/",
+    "http://[2001:db8::1]/",
+    "http://[::ffff:127.0.0.1]/",
+    "http://[::ffff:169.254.169.254]/",
+    "http://[2002:7f00:1::1]/",
+  ])("rejects reserved literal target %s", async (url) => {
+    await expect(validateAndResolveFetchUrl(url)).rejects.toThrow(/private/);
   });
 });
 

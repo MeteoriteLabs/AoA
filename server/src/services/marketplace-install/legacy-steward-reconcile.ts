@@ -13,6 +13,7 @@ import type { Db } from "@armyofagents/db";
 import { activityLog, agents, teams, teamMembers } from "@armyofagents/db";
 import type { CatalogItem } from "@armyofagents/shared";
 import { logger } from "../../middleware/logger.js";
+import { serializeSafeError } from "../safe-error.js";
 import {
   acquireCrewRepairAdvisoryLock,
   adoptLegacyCrewAgentPointer,
@@ -317,7 +318,10 @@ export async function runLegacyStewardReconcilePass(opts: {
     } catch (err) {
       result.failed += 1;
       opts.onFailure?.({ companyId, error: err });
-      logger.warn({ err, companyId }, "Steward reconcile failed for company");
+      logger.warn(
+        { error: serializeSafeError(err), companyId },
+        "Steward reconcile failed for company",
+      );
     }
   }
 
