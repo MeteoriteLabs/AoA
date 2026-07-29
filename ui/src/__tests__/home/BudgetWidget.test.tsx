@@ -16,17 +16,27 @@ describe("BudgetWidget", () => {
     expect(screen.getByText(/of \$2,000/)).toBeInTheDocument();
   });
 
-  it("renders nothing while budget data is missing (still loading)", () => {
+  it("shows the shell + loading placeholder while budget data is missing (still loading)", () => {
     dashboardApiMock.summary.mockReturnValue(new Promise(() => {})); // never resolves
-    const { container } = renderWithProviders(<BudgetWidget companyId="co-1" role="founder" size={{ w: 1, h: 1 }} />);
-    expect(container.firstChild).toBeNull();
+    renderWithProviders(<BudgetWidget companyId="co-1" role="founder" size={{ w: 1, h: 1 }} />);
+    expect(screen.getByText("Budget")).toBeInTheDocument();
+    expect(screen.getByText(/Loading/)).toBeInTheDocument();
+  });
+
+  it("shows an error empty state (no throw) when the summary query errors", async () => {
+    dashboardApiMock.summary.mockRejectedValue(new Error("network error"));
+    renderWithProviders(<BudgetWidget companyId="co-1" role="founder" size={{ w: 1, h: 1 }} />);
+    expect(await screen.findByText("Couldn't load")).toBeInTheDocument();
   });
 
   it("renders $0 of $0 (not null) when budget data resolves to all-zero costs", async () => {
     dashboardApiMock.summary.mockResolvedValue({ costs: { monthSpendCents: 0, monthBudgetCents: 0, monthUtilizationPercent: 0 }, pendingApprovals: 0 });
     renderWithProviders(<BudgetWidget companyId="co-1" role="founder" size={{ w: 1, h: 1 }} />);
-    expect(await screen.findByText("Budget")).toBeInTheDocument();
-    expect(screen.getByText("$0")).toBeInTheDocument();
+    // The shell (title) renders immediately regardless of loading state now,
+    // so wait on the actual content ("$0") rather than the title as the
+    // "data has loaded" proxy.
+    expect(await screen.findByText("$0")).toBeInTheDocument();
+    expect(screen.getByText("Budget")).toBeInTheDocument();
     expect(screen.getByText(/of \$0 this month/)).toBeInTheDocument();
   });
 });
