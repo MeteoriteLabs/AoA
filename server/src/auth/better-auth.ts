@@ -13,6 +13,7 @@ import {
 } from "@armyofagents/db";
 import type { Config } from "../config.js";
 import { logger } from "../middleware/logger.js";
+import { instanceAdminBootstrapEnabled } from "../services/first-user-bootstrap.js";
 
 const DEV_FALLBACK_SECRET = "aoa-dev-secret";
 
@@ -210,32 +211,43 @@ export function buildBetterAuthConfig(
   // Fires at real user creation and again at session creation. The service is
   // advisory-locked + idempotent, so the session hook backfills an admin-less
   // instance after a transient create-hook failure without blocking sign-in.
-  authConfig.databaseHooks = {
-    user: {
-      create: {
-        after: async (user: { id: string }) => {
-          await attemptFirstAdminBootstrap(
-            db,
-            user.id,
-            "user_create",
-            config.headlessBootstrap === true,
-          );
+  //
+  // Task 10 (Phase 2 lockout cluster, ATOMIC cutover) — gated through the
+  // Task-4 chokepoint. `cloud_auth` (hosted multi-tenant beta) mints ZERO
+  // runtime instance_admins: both hooks are omitted entirely, not merely
+  // no-op'd, so there is no code path in that mode that can ever promote a
+  // user to the self-hosted global-admin role. Self-hosted local_trusted /
+  // authenticated keep both hooks exactly as before this change.
+  if (instanceAdminBootstrapEnabled(config.deploymentMode)) {
+    authConfig.databaseHooks = {
+      user: {
+        create: {
+          after: async (user: { id: string }) => {
+            await attemptFirstAdminBootstrap(
+              db,
+              user.id,
+              "user_create",
+              config.headlessBootstrap === true,
+            );
+          },
         },
       },
-    },
-    session: {
-      create: {
-        after: async (session: { userId: string }) => {
-          await attemptFirstAdminBootstrap(
-            db,
-            session.userId,
-            "session_create",
-            config.headlessBootstrap === true,
-          );
+      session: {
+        create: {
+          after: async (session: { userId: string }) => {
+            await attemptFirstAdminBootstrap(
+              db,
+              session.userId,
+              "session_create",
+              config.headlessBootstrap === true,
+            );
+          },
         },
       },
-    },
-  };
+    };
+  } else {
+    authConfig.databaseHooks = {};
+  }
 
   if (!baseUrl) {
     delete (authConfig as { baseURL?: string }).baseURL;

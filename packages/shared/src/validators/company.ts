@@ -10,6 +10,13 @@ export const createCompanySchema = z.object({
   description: z.string().optional().nullable(),
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
   rootFolder: z.string().min(1).optional().nullable(),
+  // Phase 2 Task 10 (cloud_auth cutover): OPTIONAL. Self-hosted single-tenant
+  // clients never send this; the route derives DEFAULT_ORGANIZATION_ID
+  // server-side. In cloud_auth, if a caller belongs to more than one
+  // Organization, this lets them pick which one -- but the route re-derives
+  // and authorizes it against the caller's own membership (never trusts this
+  // value directly as an authorization target -- anti-tenant-hop).
+  organizationId: z.string().uuid().optional(),
   // Phase 1 Phase E batch 2 (T20): OnboardingWizard now collects Commander +
   // Crew adapter picks at company-create time. Both are optional — when
   // omitted, the companies row keeps its `{}` default and downstream code

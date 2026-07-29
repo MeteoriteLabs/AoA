@@ -20,6 +20,36 @@ import { seedAoaNativeSkills } from "../services/internal-agent/aoa-skills-seede
 import { ensureCommanderAgent } from "../services/internal-agent/aoa-agents/ensure-commander.js";
 import { materializeCompanyProfileFromGlobal } from "../services/team.js";
 import { logger } from "../middleware/logger.js";
+import { organizationAccessService } from "../services/organization-access.js";
+import type { OrgCapability } from "../services/organization-access.js";
+
+/**
+ * Task 10 (Phase 2 lockout cluster, ATOMIC cutover) — anti-tenant-hop:
+ * the Organization used to AUTHORIZE the create is the SAME Organization
+ * written to the company row. When the client omits organizationId
+ * (self-hosted single-tenant), fall back to P1's DEFAULT_ORGANIZATION_ID —
+ * never to a client-supplied "target" with no authorization check.
+ *
+ * P2 lockout-scoped gate; P3 is last-writer — final authz moves to
+ * req.tenant.enforced calling canOrg.
+ */
+export function resolveCompanyOrganizationId(body: { organizationId?: string | null }): string {
+  return body.organizationId ?? DEFAULT_ORGANIZATION_ID;
+}
+
+/**
+ * Throws unless the caller is an owner/admin of the EXACT organizationId
+ * that will be written to the new company row (see resolveCompanyOrganizationId
+ * above) — the caller can never authorize for one org and create under another.
+ */
+export async function assertCompanyCreateAuthorized(
+  orgAccess: { canOrg: (organizationId: string, userId: string, cap: OrgCapability) => Promise<boolean> },
+  organizationId: string,
+  userId: string,
+): Promise<void> {
+  const ok = await orgAccess.canOrg(organizationId, userId, "company:create");
+  if (!ok) throw forbidden("You are not an owner/admin of this organization");
+}
 
 export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) {
   const router = Router();
@@ -145,10 +175,22 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
   });
 
   router.post("/", validate(createCompanySchema), async (req, res) => {
-    // rbac: instance-admin-not-required — inline isInstanceAdmin check on the next line is the gate; assertCanManageInstanceSettings would be a synonym refactor.
+    // Task 10 (Phase 2 lockout cluster, ATOMIC cutover): the isInstanceAdmin
+    // gate is swapped for org-owner/admin authorization scoped to a
+    // server-derived organizationId. Self-hosted local_trusted/authenticated
+    // are UNCHANGED (local_implicit / isInstanceAdmin still bypass, exactly
+    // as before) — this only OPENS a new path for cloud_auth org owners who
+    // are not (and in cloud_auth, cannot be) instance_admin. P2 lockout-scoped
+    // gate; P3 is last-writer — final authz moves to req.tenant.enforced
+    // calling canOrg.
+    // rbac: instance-admin-not-required — the isSelfHostedOperator/canOrg check below is the gate.
     assertBoard(req);
-    if (!(req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)) {
-      throw forbidden("Instance admin required");
+    const orgAccess = organizationAccessService(db);
+    const isSelfHostedOperator = req.actor.source === "local_implicit" || req.actor.isInstanceAdmin;
+    const organizationId = resolveCompanyOrganizationId(req.body); // server-derived; never a raw client "target"
+    if (!isSelfHostedOperator) {
+      if (!req.actor.userId) throw forbidden("Sign in to create a company");
+      await assertCompanyCreateAuthorized(orgAccess, organizationId, req.actor.userId);
     }
     // D6: local_trusted = single trust boundary (loopback); one-click approve is friction.
     // authenticated = real multi-human board; approval is multi-person accountability.
@@ -156,10 +198,8 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
     // requestedByUserId attributes the crew's marketplace install operation
     // (T2.3). The column is free text with no FK, and `local_trusted` actors
     // legitimately have no userId — hence the null fallback.
-    // Single-tenant / self-hosted: attach to the sentinel Organization. In
-    // cloud_auth, later phases resolve the caller's real org context here.
     const company = await svc.create(
-      { ...req.body, requireBoardApprovalForNewAgents, organizationId: DEFAULT_ORGANIZATION_ID },
+      { ...req.body, requireBoardApprovalForNewAgents, organizationId },
       { requestedByUserId: req.actor.userId ?? null },
     );
     const operatorId = await access.ensureRealOperator(company.id, req.actor.userId);

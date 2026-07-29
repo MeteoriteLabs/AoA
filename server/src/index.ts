@@ -572,6 +572,18 @@ let resolveSessionFromHeaders:
   assertAuthProviderConfigured(config);
 }
 
+// Task 10 (Phase 2 lockout cluster, ATOMIC cutover) — boot-time invariant:
+// cloud_auth must never have a runtime instance_admin promotion path
+// enabled. Belt to the Task 7/8/10(a) code-level gates: if a future change
+// somehow re-enables bootstrap for cloud_auth, refuse to boot rather than
+// silently minting global admins in a hosted multi-tenant deployment.
+{
+  const { assertInstanceAdminBootstrapInvariant } = await import(
+    "./services/first-user-bootstrap.js"
+  );
+  assertInstanceAdminBootstrapInvariant({ deploymentMode: config.deploymentMode });
+}
+
 // RB4/R5 — the synthetic `local-board` admin is created ONLY under the dev
 // escape hatch, and refused on a populated instance unless explicitly forced.
 // Without the hatch, the real admin is the first Google user (see A7/RB3).

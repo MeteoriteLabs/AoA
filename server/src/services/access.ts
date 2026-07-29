@@ -3,10 +3,12 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { Db } from "@armyofagents/db";
 import {
   authUsers,
+  companies as companiesTable,
   companyMemberships,
   instanceUserRoles,
   invites,
   mcpApiKeys,
+  organizationMemberships,
   principalPermissionGrants,
   userRoles,
 } from "@armyofagents/db";
@@ -300,6 +302,29 @@ export function accessService(db: Db) {
       .limit(1).then((r) => r[0]);
     if (!existingRole) {
       await db.insert(userRoles).values({ companyId, userId: operatorId, role: "founder" });
+    }
+    // Task 10 (Phase 2 lockout cluster, ATOMIC cutover): the company's
+    // founding operator is ALSO made an owner member of the company's
+    // Organization (tenant). This is what lets a cloud_auth org owner who
+    // creates their first company keep passing the org:* capability checks
+    // for that org afterward (e.g. inviting teammates), without relying on
+    // any instance_admin role -- cloud_auth mints none. Idempotent: does
+    // nothing if a membership row already exists (P1's 0187 backfill or
+    // organizationAccessService.ensureOrgOwner may already have written one
+    // for this (organizationId, operatorId) pair -- never downgrades it).
+    const companyRow = await db.select({ organizationId: companiesTable.organizationId })
+      .from(companiesTable).where(eq(companiesTable.id, companyId)).limit(1).then((r) => r[0]);
+    if (companyRow?.organizationId) {
+      const existingOrgMembership = await db.select({ id: organizationMemberships.id }).from(organizationMemberships)
+        .where(and(
+          eq(organizationMemberships.organizationId, companyRow.organizationId),
+          eq(organizationMemberships.userId, operatorId),
+        )).limit(1).then((r) => r[0]);
+      if (!existingOrgMembership) {
+        await db.insert(organizationMemberships).values({
+          organizationId: companyRow.organizationId, userId: operatorId, role: "owner", status: "active",
+        });
+      }
     }
     return operatorId;
   }

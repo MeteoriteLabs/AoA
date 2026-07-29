@@ -79,6 +79,13 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
             type: "board",
             userId,
             companyIds: memberships.map((row) => row.companyId),
+            // Phase 2 Task 10 note: `opts.deploymentMode` is in scope here
+            // (closure param, referenced elsewhere in this function) so a
+            // future change can force this false for cloud_auth. P2 does
+            // NOT do that clamp — P2 only mints zero instance_admin rows in
+            // cloud_auth (Tasks 4/7/8/10); that is a sufficient lockout fix
+            // on its own. The clamp itself (`opts.deploymentMode ===
+            // "cloud_auth" ? false : Boolean(roleRow)`) is Phase 3's.
             isInstanceAdmin: Boolean(roleRow),
             runId: runIdHeader ?? undefined,
             source: "session",
@@ -151,6 +158,8 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         type: "board",
         userId: boardKeyRow.userId,
         companyIds: memberships.map((row) => row.companyId),
+        // Phase 2 Task 10 note: see the matching comment at the session-path
+        // derivation above — same P2/P3 boundary applies to this board-key path.
         isInstanceAdmin: Boolean(roleRow),
         keyId: boardKeyRow.id,
         runId: runIdHeader || undefined,
