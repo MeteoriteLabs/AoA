@@ -18,6 +18,7 @@ import {
   authUsers,
   companies,
   companyMemberships,
+  instanceSettings,
   instanceUserRoles,
 } from "@armyofagents/db";
 import detectPort from "detect-port";
@@ -68,6 +69,7 @@ import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { tryRecoverOrphanPostgres } from "./postgres/embedded-orphan-recovery.js";
+import { shouldBlockForMissingSnapshot, SnapshotGateError } from "./postgres/snapshot-gate.js";
 import { DEFAULT_BACKUP_RETENTION } from "@armyofagents/shared";
 import { runChroniclerSweep, CHRONICLER_SWEEP_INTERVAL_MS } from "./services/internal-agent/aoa-agents/sweep-chronicler.js";
 import { ensureCrewAgents, ensureInfrastructureAgents, isCrewMarketplaceManaged } from "./services/internal-agent/aoa-agents/crew-seeding.js";
@@ -163,6 +165,54 @@ type EnsureMigrationsOptions = {
   autoApply?: boolean;
 };
 
+// Phase 1 (multi-tenant cloud) reversibility follow-up: refuse to apply 0187
+// on a cloud_auth deployment with real company data and no recorded snapshot
+// marker. No-ops entirely outside cloud_auth (self-hosted local_trusted /
+// authenticated never gate). Opens its OWN short-lived connection because this
+// runs BEFORE `db` exists — `ensureMigrations` only has a connection string at
+// this point. Fails safe: a missing `companies`/`instance_settings` table (a
+// genuinely fresh DB) is treated as "nothing to lose" rather than blocking.
+async function checkMigrationSnapshotGate(
+  connectionString: string,
+  pendingMigrationTags: string[],
+): Promise<void> {
+  if (config.deploymentMode !== "cloud_auth") return;
+
+  let companyCount = 0;
+  let recordedSnapshots: string[] = [];
+  const gateDb = createDb(connectionString);
+  try {
+    try {
+      const companyRows = await gateDb.execute(sql`SELECT count(*)::int AS count FROM companies`);
+      const rows = Array.isArray(companyRows) ? companyRows : (companyRows as any).rows;
+      companyCount = Number(rows?.[0]?.count ?? 0);
+    } catch {
+      // companies table does not exist yet (fresh DB) — nothing to lose.
+      companyCount = 0;
+    }
+    try {
+      const settingsRows = await gateDb.select().from(instanceSettings).limit(1);
+      const general = settingsRows[0]?.general as { migrationSnapshots?: string[] } | undefined;
+      recordedSnapshots = general?.migrationSnapshots ?? [];
+    } catch {
+      recordedSnapshots = [];
+    }
+  } finally {
+    await gateDb.$client.end({ timeout: 5 }).catch(() => {});
+  }
+
+  if (
+    shouldBlockForMissingSnapshot({
+      deploymentMode: config.deploymentMode,
+      pendingMigrationTags,
+      companyCount,
+      recordedSnapshots,
+    })
+  ) {
+    throw new SnapshotGateError();
+  }
+}
+
 async function ensureMigrations(
   connectionString: string,
   label: string,
@@ -182,6 +232,9 @@ async function ensureMigrations(
     }
   }
   if (state.status === "upToDate") return "already applied";
+
+  await checkMigrationSnapshotGate(connectionString, state.pendingMigrations);
+
   if (state.status === "needsMigrations" && state.reason === "no-migration-journal-non-empty-db") {
     logger.warn(
       { tableCount: state.tableCount },
