@@ -15,7 +15,9 @@ export const COMPOSER_ATTACHMENT_CONTENT_TYPES = [
   "application/json",
 ] as const;
 
-export const DEPLOYMENT_MODES = ["local_trusted", "authenticated"] as const;
+// cloud_auth = network-private controlled-beta multi-tenant cloud (Phase 1, Decision 2).
+// Self-hosted local_trusted / authenticated behavior is unchanged.
+export const DEPLOYMENT_MODES = ["local_trusted", "authenticated", "cloud_auth"] as const;
 export type DeploymentMode = (typeof DEPLOYMENT_MODES)[number];
 
 export const DEPLOYMENT_EXPOSURES = ["private", "public"] as const;
@@ -383,6 +385,26 @@ export type PrincipalType = (typeof PRINCIPAL_TYPES)[number];
 
 export const MEMBERSHIP_STATUSES = ["pending", "active", "suspended"] as const;
 export type MembershipStatus = (typeof MEMBERSHIP_STATUSES)[number];
+
+export const ORGANIZATION_STATUSES = ["active", "suspended", "archived"] as const;
+export type OrganizationStatus = (typeof ORGANIZATION_STATUSES)[number];
+
+export const ORGANIZATION_ROLES = ["owner", "admin", "member", "billing"] as const;
+export type OrganizationRole = (typeof ORGANIZATION_ROLES)[number];
+
+export const ORGANIZATION_INVITATION_STATUSES = [
+  "pending",
+  "accepted",
+  "revoked",
+  "expired",
+] as const;
+export type OrganizationInvitationStatus =
+  (typeof ORGANIZATION_INVITATION_STATUSES)[number];
+
+// Sentinel Organization that owns every company on self-hosted single-tenant
+// installs and every pre-existing company after the Phase 1 backfill.
+export const DEFAULT_ORGANIZATION_ID = "00000000-0000-0000-0000-000000000001";
+export const DEFAULT_ORGANIZATION_SLUG = "default";
 
 export const INSTANCE_USER_ROLES = ["instance_admin"] as const;
 export type InstanceUserRole = (typeof INSTANCE_USER_ROLES)[number];
