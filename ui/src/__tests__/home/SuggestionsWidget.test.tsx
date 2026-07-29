@@ -35,4 +35,25 @@ describe("SuggestionsWidget", () => {
     expect(await screen.findByText("Flag launch risk")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Dismiss" })).toBeNull();
   });
+
+  it("shows the loading placeholder while the pending-suggestions query is in flight", () => {
+    suggestionsApiMock.pending.mockReset().mockReturnValue(new Promise(() => {})); // never resolves
+    renderWithProviders(<SuggestionsWidget companyId="co-1" role="team_member" size={{ w: 2, h: 1 }} />);
+    expect(screen.getByText(/Refreshing suggestions/i)).toBeInTheDocument();
+  });
+
+  it("shows the 'All caught up' empty state when there are zero pending suggestions", async () => {
+    suggestionsApiMock.pending.mockReset().mockResolvedValue([]);
+    renderWithProviders(<SuggestionsWidget companyId="co-1" role="team_member" size={{ w: 2, h: 1 }} />);
+    expect(await screen.findByText("All caught up")).toBeInTheDocument();
+  });
+
+  it("falls back to the empty state (no throw) when the pending-suggestions query errors", async () => {
+    suggestionsApiMock.pending.mockReset().mockRejectedValue(new Error("network error"));
+    renderWithProviders(<SuggestionsWidget companyId="co-1" role="team_member" size={{ w: 2, h: 1 }} />);
+    // useQuery's `data` defaults to [] on error (`const { data: suggestions =
+    // [] } = useQuery(...)`), so the widget settles into its normal empty
+    // shell rather than throwing or hanging on the loading placeholder.
+    expect(await screen.findByText("All caught up")).toBeInTheDocument();
+  });
 });
