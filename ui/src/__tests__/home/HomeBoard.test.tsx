@@ -228,6 +228,9 @@ describe("HomeBoard", () => {
       // Not editing: header links exist, no remove buttons, resize hidden.
       expect(screen.getAllByRole("link", { name: /^Open / }).length).toBe(8);
       expect(screen.queryAllByLabelText(/^Remove /)).toHaveLength(0);
+      // Task 5: `data-home-board-editing` scopes the resize-handle-visibility
+      // CSS (index.css) — absent while read-only.
+      expect(document.querySelector("[data-home-board-editing]")).toBeNull();
 
       const user = userEvent.setup();
       await user.click(screen.getByRole("button", { name: "Edit board" }));
@@ -236,6 +239,8 @@ describe("HomeBoard", () => {
       expect(screen.queryAllByRole("link", { name: /^Open / })).toHaveLength(0);
       // ...and every tile grows a remove button.
       expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(8);
+      // Task 5: present while editing so the resize-handle CSS applies.
+      expect(document.querySelector('[data-home-board-editing="true"]')).not.toBeNull();
 
       // Drag/resize are wired to `editing`: RGL marks each grid item
       // draggable and un-hides its resize handle only while editing.

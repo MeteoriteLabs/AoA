@@ -467,6 +467,55 @@
   transition: max-width 200ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+/* Home widget board — resize handle visible + prominent only in edit mode
+   (Plan 5 Task 5). react-grid-layout ships the handle at opacity:0 except on
+   tile :hover, and even then it's just a faint ~5px corner mark rendered from
+   react-resizable's hardcoded (non-theme-aware) black glyph — easy to miss,
+   and wrong on dark backgrounds. Outside edit mode react-grid-layout already
+   removes the handle from interaction (and hides it) via its own
+   `.react-resizable-hide` class (driven by HomeBoard.tsx's
+   `resizeConfig.enabled`), so nothing extra is needed there. While editing
+   (`[data-home-board-editing]`, set by HomeBoard.tsx), replace the glyph with
+   a small theme-toned "chip" so the grab affordance reads clearly at rest,
+   without needing a hover to discover it. */
+[data-home-board-editing] .react-grid-item > .react-resizable-handle {
+  opacity: 1;
+  width: 18px;
+  height: 18px;
+  background-image: none;
+  border: 1px solid var(--border-strong);
+  border-top: none;
+  border-left: none;
+  border-radius: 0 0 var(--radius-sm) 0;
+  background-color: var(--card-2);
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+[data-home-board-editing] .react-grid-item > .react-resizable-handle::after {
+  right: 4px;
+  bottom: 4px;
+  width: 6px;
+  height: 6px;
+  border-right: 2px solid var(--dim);
+  border-bottom: 2px solid var(--dim);
+}
+
+[data-home-board-editing] .react-grid-item:hover > .react-resizable-handle {
+  background-color: var(--brand-wash);
+  border-color: var(--brand);
+}
+
+[data-home-board-editing] .react-grid-item:hover > .react-resizable-handle::after {
+  border-right-color: var(--brand);
+  border-bottom-color: var(--brand);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-home-board-editing] .react-grid-item > .react-resizable-handle {
+    transition: none;
+  }
+}
+
 /* Dashboard activity row entry motion */
 @keyframes dashboard-activity-enter {
   0% {

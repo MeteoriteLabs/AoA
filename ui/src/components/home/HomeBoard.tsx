@@ -104,7 +104,13 @@ export function HomeBoard({
         {announcement}
       </div>
 
-      <div ref={containerRef}>
+      {/* Task 5: `data-home-board-editing` scopes the resize-handle visibility
+          CSS in index.css — react-grid-layout's own `react-resizable-hide`
+          class already removes the handle from the DOM outside edit mode
+          (see resizeConfig.enabled below); this attribute is what makes it a
+          clearly-visible grab affordance (not just a hover-revealed sliver)
+          while editing. */}
+      <div ref={containerRef} data-home-board-editing={editableNow ? "true" : undefined}>
         {mounted && lg.length === 0 && (
           // Plan 4 Task 6: every widget removed (in edit mode, or a saved
           // empty layout on a later visit) — a plain, centered nudge rather
