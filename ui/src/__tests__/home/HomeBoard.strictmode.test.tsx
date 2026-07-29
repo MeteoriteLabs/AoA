@@ -153,9 +153,9 @@ describe("HomeBoard under React.StrictMode", () => {
     // means exitEdit's attemptSave is a no-op (Task C1 rule 7) — save stays
     // at zero calls.
     const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Edit board" }));
+    await user.click(screen.getByRole("button", { name: "Customize board" }));
     await user.click(screen.getByRole("button", { name: "Done" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Edit board" })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Customize board" })).toBeInTheDocument());
     expect(apiSpies.layoutSave).not.toHaveBeenCalled();
   });
 

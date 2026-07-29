@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { LayoutGrid } from "lucide-react";
 import type { UseBoardEditResult } from "./useBoardEdit";
 import { AddWidgetTray } from "./AddWidgetTray";
 import { Button } from "../ui/button";
@@ -8,11 +9,11 @@ export interface HomeBoardControlsProps {
 }
 
 /**
- * The Home board's edit chrome (Task D3): the "Edit board"/"Done" toggle, a
- * Saving…/dirty/Retry status indicator, and — edit-mode + lg-breakpoint only
- * (Task D1) — "Add widget" (opens AddWidgetTray) and Reset. Lives in
- * Dashboard's pinned header, above the grid; `HomeBoard` itself only renders
- * the grid + per-tile remove buttons/keyboard handling.
+ * The Home board's edit chrome (Task D3): the "Customize board" (icon)/
+ * "Done" toggle, a Saving…/dirty/Retry status indicator, and — edit-mode +
+ * lg-breakpoint only (Task D1) — "Add widget" (opens AddWidgetTray) and
+ * Reset. Lives in Dashboard's pinned header, above the grid; `HomeBoard`
+ * itself only renders the grid + per-tile remove buttons/keyboard handling.
  *
  * Purely presentational: every piece of state and every callback comes from
  * the single `boardEdit` bundle Dashboard computes via `useBoardEdit` and
@@ -109,15 +110,20 @@ export function HomeBoardControls({ boardEdit }: HomeBoardControlsProps) {
           )}
         </div>
       )}
+      {/* Plan 6 Task 2: the view-mode toggle becomes an icon button —
+          aria-label carries the accessible name since the glyph alone has
+          none. Edit-mode chrome (this same element rendering "Done") is
+          unchanged: same gate, same exitEdit handler. */}
       <Button
         type="button"
         variant="outline"
         size="sm"
         disabled={isSaving || (!editing && activeBreakpoint !== "lg")}
         title={!editing && activeBreakpoint !== "lg" ? "Edit on a larger screen (1024px+)" : undefined}
+        aria-label={editing ? undefined : "Customize board"}
         onClick={editing ? exitEdit : startEdit}
       >
-        {editing ? "Done" : "Edit board"}
+        {editing ? "Done" : <LayoutGrid className="h-4 w-4" aria-hidden="true" />}
       </Button>
     </div>
   );

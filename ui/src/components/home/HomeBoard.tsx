@@ -5,6 +5,7 @@ import { getWidget } from "./widgets/registry";
 import { WidgetErrorBoundary } from "./WidgetErrorBoundary";
 import type { UseBoardEditResult } from "./useBoardEdit";
 import { projectToBreakpoint } from "./gridLayout";
+import { cn } from "../../lib/utils";
 
 // Native v2 RGL API (see RGL_V2_API.md) — breakpoints/cols are fixed, not
 // props, since Home's board only ever has 3 tiers (lg/md/sm) and doesn't
@@ -37,8 +38,8 @@ const ARROW_KEY_DELTAS: Record<string, readonly [number, number]> = {
  *
  * Task D3: the `useBoardEdit` hook is owned by the caller (Dashboard), not
  * by this component — the pinned page header (HomeBoardControls) needs the
- * SAME edit session (draft/dirty/save state) to render its Edit board/Done/
- * Add widget/Reset controls, so Dashboard computes one `boardEdit` and
+ * SAME edit session (draft/dirty/save state) to render its Customize board/
+ * Done/Add widget/Reset controls, so Dashboard computes one `boardEdit` and
  * shares it with both HomeBoardControls (header) and this component (grid)
  * as a plain prop. HomeBoard itself only renders the grid, the per-tile
  * remove `×` button, and keyboard move/resize handling (Task D2) — none of
@@ -115,12 +116,14 @@ export function HomeBoard({
           // Plan 4 Task 6: every widget removed (in edit mode, or a saved
           // empty layout on a later visit) — a plain, centered nudge rather
           // than blank space. Points at whichever affordance is currently
-          // reachable: "Add widget" while editing at lg, "Edit board"
-          // otherwise (mirrors HomeBoardControls' own editableNow gating).
+          // reachable: "Add widget" while editing at lg, "Customize board"
+          // otherwise (mirrors HomeBoardControls' own editableNow gating;
+          // Plan 6 Task 2 renamed the latter from a text "Edit board" button
+          // to an icon labeled "Customize board").
           <div className="flex flex-col items-center justify-center gap-1 rounded-md border border-dashed border-border p-12 text-center">
             <p className="text-sm font-medium">Your board is empty</p>
             <p className="text-sm text-muted-foreground">
-              {editableNow ? "Use Add widget above to add one." : "Click Edit board above to add a widget."}
+              {editableNow ? "Use Add widget above to add one." : "Click Customize board above to add a widget."}
             </p>
           </div>
         )}
@@ -150,7 +153,19 @@ export function HomeBoard({
               return (
                 <div
                   key={item.i}
-                  className="relative h-full w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-focus-ring"
+                  className={cn(
+                    "relative h-full w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-focus-ring",
+                    // Task 2 (Plan 6): the whole tile already drags while
+                    // editing (dragConfig sets no `handle`, only the remove-
+                    // button `cancel` selector below) — this class is the
+                    // visual affordance (grab cursor + outline) that makes
+                    // that obvious. Actual cursor/outline styles live in
+                    // index.css, scoped under the same
+                    // `[data-home-board-editing]` attribute as the
+                    // resize-handle CSS (Plan 5), for a single source of
+                    // truth on "is the board in arrange mode".
+                    editableNow && "home-board-tile-editable",
+                  )}
                   tabIndex={editableNow ? 0 : undefined}
                   role={editableNow ? "group" : undefined}
                   aria-label={editableNow ? tileLabel : undefined}

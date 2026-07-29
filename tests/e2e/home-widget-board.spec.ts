@@ -57,7 +57,7 @@ test.describe("home widget board", () => {
 
     // Step 2: enter edit mode -> a remove `x` and a keyboard-focusable tile
     // (role=group + tabindex=0, Task D2) appear per tile.
-    await page.getByRole("button", { name: "Edit board", exact: true }).click();
+    await page.getByRole("button", { name: "Customize board", exact: true }).click();
     await expect(page.getByRole("button", { name: "Done", exact: true })).toBeVisible();
     const agentsNowTile = page.getByRole("group", { name: /^Agents working now tile/ });
     await expect(agentsNowTile).toBeVisible();
@@ -110,7 +110,7 @@ test.describe("home widget board", () => {
       page.getByRole("button", { name: "Done", exact: true }).click(),
     ]);
     expect(patchResponse.ok()).toBe(true);
-    await expect(page.getByRole("button", { name: "Edit board", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Customize board", exact: true })).toBeVisible();
 
     // Step 7: reload -> the layout persisted. Wait for the layout GET so the
     // subsequent assertions read the persisted state rather than a
@@ -130,7 +130,7 @@ test.describe("home widget board", () => {
     await expect(reloadedAgentsNowLink).toBeVisible({ timeout: 10_000 });
     await expect(reloadedAgentsNowLink).toHaveCount(1);
 
-    await page.getByRole("button", { name: "Edit board", exact: true }).click();
+    await page.getByRole("button", { name: "Customize board", exact: true }).click();
     await expect(page.getByRole("group", { name: /^Suggestions tile/ })).toHaveAttribute(
       "aria-label",
       finalLabel as string,

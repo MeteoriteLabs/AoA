@@ -516,6 +516,37 @@
   }
 }
 
+/* Home widget board — arrange-mode affordance (Plan 6 Task 2). The whole
+   tile is already draggable while editing (HomeBoard.tsx's dragConfig sets
+   no RGL `handle`, only a `cancel` selector for the remove button) — nothing
+   about that was visible before. `.home-board-tile-editable` is applied to
+   every tile only while `editableNow` (see HomeBoard.tsx) and is scoped
+   under the same `[data-home-board-editing]` attribute as the resize-handle
+   CSS above, so both affordances turn on/off from the same signal. A grab
+   cursor plus a dashed outline read as "pick this up", without shrinking the
+   drag surface to a header handle (which would be the opposite of the goal). */
+[data-home-board-editing] .home-board-tile-editable {
+  cursor: grab;
+  outline: 2px dashed var(--border-strong);
+  outline-offset: 2px;
+  border-radius: var(--radius-md);
+  transition: outline-color 120ms ease;
+}
+
+[data-home-board-editing] .home-board-tile-editable:hover {
+  outline-color: var(--brand);
+}
+
+[data-home-board-editing] .home-board-tile-editable:active {
+  cursor: grabbing;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-home-board-editing] .home-board-tile-editable {
+    transition: none;
+  }
+}
+
 /* Dashboard activity row entry motion */
 @keyframes dashboard-activity-enter {
   0% {

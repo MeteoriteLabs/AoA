@@ -101,7 +101,7 @@ vi.mock("../../hooks/useLiveAgentCount", () => ({ useLiveAgentCount: () => 2 }))
  * sharing ONE bundle with both HomeBoardControls (the pinned header, in
  * Dashboard) and HomeBoard (the grid) as a prop, so there's exactly one edit
  * session/draft. This harness reproduces that exact composition so the
- * pre-existing test bodies below (which exercise the Edit board/Done/Add
+ * pre-existing test bodies below (which exercise the Customize board/Done/Add
  * widget/Reset controls formerly rendered inline by HomeBoard) keep working
  * with only the render call itself changed, from <HomeBoard> alone to this.
  */
@@ -233,7 +233,7 @@ describe("HomeBoard", () => {
       expect(document.querySelector("[data-home-board-editing]")).toBeNull();
 
       const user = userEvent.setup();
-      await user.click(screen.getByRole("button", { name: "Edit board" }));
+      await user.click(screen.getByRole("button", { name: "Customize board" }));
 
       // Editing: WidgetShell headers stop being links...
       expect(screen.queryAllByRole("link", { name: /^Open / })).toHaveLength(0);
@@ -254,12 +254,37 @@ describe("HomeBoard", () => {
       expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
     });
 
+    // Plan 6 Task 2: the whole tile is already draggable while editing (no
+    // RGL `handle` — see HomeBoard's dragConfig comment), but nothing said so
+    // visually. `home-board-tile-editable` (scoped in index.css under the
+    // same `[data-home-board-editing]` attribute as the resize-handle CSS
+    // above) supplies the grab cursor + a clearer outline.
+    it("tiles carry the arrange-mode grab-cursor/outline affordance class while editing, and not when idle", async () => {
+      renderWithProviders(<HomeBoardHarness companyId="co-1" role="founder" />);
+      expect(await screen.findByText("Ship it")).toBeInTheDocument();
+
+      const idleTiles = document.querySelectorAll(".react-grid-item");
+      expect(idleTiles.length).toBe(8);
+      idleTiles.forEach((el) => {
+        expect(el.classList.contains("home-board-tile-editable")).toBe(false);
+      });
+
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Customize board" }));
+
+      const editingTiles = document.querySelectorAll(".react-grid-item");
+      expect(editingTiles.length).toBe(8);
+      editingTiles.forEach((el) => {
+        expect(el.classList.contains("home-board-tile-editable")).toBe(true);
+      });
+    });
+
     it("removing a tile via its x button drops it from the board immediately", async () => {
       renderWithProviders(<HomeBoardHarness companyId="co-1" role="founder" />);
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const user = userEvent.setup();
-      await user.click(screen.getByRole("button", { name: "Edit board" }));
+      await user.click(screen.getByRole("button", { name: "Customize board" }));
       expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(8);
 
       await user.click(screen.getByLabelText("Remove Budget"));
@@ -274,7 +299,7 @@ describe("HomeBoard", () => {
       expect(await screen.findByRole("heading", { level: 2, name: "Budget" })).toBeInTheDocument();
 
       const user = userEvent.setup();
-      await user.click(screen.getByRole("button", { name: "Edit board" }));
+      await user.click(screen.getByRole("button", { name: "Customize board" }));
       await user.click(screen.getByLabelText("Remove Budget"));
 
       expect(await screen.findByText("Your board is empty")).toBeInTheDocument();
@@ -298,7 +323,7 @@ describe("HomeBoard", () => {
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const user = userEvent.setup();
-      await user.click(screen.getByRole("button", { name: "Edit board" }));
+      await user.click(screen.getByRole("button", { name: "Customize board" }));
       await user.click(screen.getByLabelText("Remove Budget"));
       await user.click(screen.getByRole("button", { name: "Done" }));
 
@@ -307,7 +332,7 @@ describe("HomeBoard", () => {
       expect(savedLayout.some((item) => item.i === "budget")).toBe(false);
 
       // Back to read-only chrome once the save resolves.
-      await waitFor(() => expect(screen.getByRole("button", { name: "Edit board" })).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByRole("button", { name: "Customize board" })).toBeInTheDocument());
       expect(screen.queryAllByLabelText(/^Remove /)).toHaveLength(0);
     });
 
@@ -316,10 +341,10 @@ describe("HomeBoard", () => {
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const user = userEvent.setup();
-      await user.click(screen.getByRole("button", { name: "Edit board" }));
+      await user.click(screen.getByRole("button", { name: "Customize board" }));
       await user.click(screen.getByRole("button", { name: "Done" }));
 
-      await waitFor(() => expect(screen.getByRole("button", { name: "Edit board" })).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByRole("button", { name: "Customize board" })).toBeInTheDocument());
       expect(homeBoardLayoutMock.saveAsync).not.toHaveBeenCalled();
     });
 
@@ -329,7 +354,7 @@ describe("HomeBoard", () => {
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const user = userEvent.setup();
-      await user.click(screen.getByRole("button", { name: "Edit board" }));
+      await user.click(screen.getByRole("button", { name: "Customize board" }));
       await user.click(screen.getByLabelText("Remove Budget"));
       await user.click(screen.getByRole("button", { name: "Done" }));
 
@@ -341,7 +366,7 @@ describe("HomeBoard", () => {
       await user.click(screen.getByRole("button", { name: "Retry" }));
 
       await waitFor(() => expect(homeBoardLayoutMock.saveAsync).toHaveBeenCalledTimes(2));
-      await waitFor(() => expect(screen.getByRole("button", { name: "Edit board" })).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByRole("button", { name: "Customize board" })).toBeInTheDocument());
     });
 
     // [P2] Edits during an in-flight save were silently discarded: editableNow
@@ -354,7 +379,7 @@ describe("HomeBoard", () => {
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const user = userEvent.setup();
-      await user.click(screen.getByRole("button", { name: "Edit board" }));
+      await user.click(screen.getByRole("button", { name: "Customize board" }));
       expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(8);
       expect(screen.getByRole("button", { name: "Add widget" })).toBeInTheDocument();
 
@@ -383,7 +408,7 @@ describe("HomeBoard", () => {
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const user = userEvent.setup();
-      await user.click(screen.getByRole("button", { name: "Edit board" }));
+      await user.click(screen.getByRole("button", { name: "Customize board" }));
       await user.click(screen.getByLabelText("Remove Budget"));
       expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(7);
 
@@ -391,7 +416,7 @@ describe("HomeBoard", () => {
 
       // Back to read-only chrome for the new company — the dirty draft
       // (Budget removed) from co-1 is discarded, not carried over or saved.
-      await waitFor(() => expect(screen.getByRole("button", { name: "Edit board" })).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByRole("button", { name: "Customize board" })).toBeInTheDocument());
       expect(screen.queryAllByLabelText(/^Remove /)).toHaveLength(0);
       expect(homeBoardLayoutMock.saveAsync).not.toHaveBeenCalled();
     });
@@ -410,7 +435,7 @@ describe("HomeBoard", () => {
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const user = userEvent.setup();
-      await user.click(screen.getByRole("button", { name: "Edit board" }));
+      await user.click(screen.getByRole("button", { name: "Customize board" }));
 
       // Budget sits at the founder default's x:0 (leftmost column, see
       // gridLayout.ts packing) — column 1 of 4.
@@ -434,7 +459,7 @@ describe("HomeBoard", () => {
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const user = userEvent.setup();
-      await user.click(screen.getByRole("button", { name: "Edit board" }));
+      await user.click(screen.getByRole("button", { name: "Customize board" }));
 
       const budgetTile = screen.getByRole("group", { name: /^Budget tile,.*size 1 by 1/ });
       budgetTile.focus();
@@ -450,7 +475,7 @@ describe("HomeBoard", () => {
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const user = userEvent.setup();
-      await user.click(screen.getByRole("button", { name: "Edit board" }));
+      await user.click(screen.getByRole("button", { name: "Customize board" }));
 
       const liveRegion = screen.getByRole("status");
       expect(liveRegion).toHaveTextContent("");
@@ -473,7 +498,7 @@ describe("HomeBoard", () => {
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const user = userEvent.setup();
-      await user.click(screen.getByRole("button", { name: "Edit board" }));
+      await user.click(screen.getByRole("button", { name: "Customize board" }));
       expect(screen.getByRole("group", { name: /^Budget/ })).toBeInTheDocument();
 
       // Shrink below the 1024px lg breakpoint and re-render so the REAL
@@ -505,7 +530,7 @@ describe("HomeBoard", () => {
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const user = userEvent.setup();
-      await user.click(screen.getByRole("button", { name: "Edit board" }));
+      await user.click(screen.getByRole("button", { name: "Customize board" }));
       // While editing at lg, header nav is suppressed in favor of drag/select.
       expect(screen.queryAllByRole("link", { name: /^Open / })).toHaveLength(0);
 
@@ -536,7 +561,7 @@ describe("HomeBoard", () => {
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const user = userEvent.setup();
-      await user.click(screen.getByRole("button", { name: "Edit board" }));
+      await user.click(screen.getByRole("button", { name: "Customize board" }));
       expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(2);
 
       await user.click(screen.getByRole("button", { name: "Add widget" }));
@@ -562,7 +587,7 @@ describe("HomeBoard", () => {
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const user = userEvent.setup();
-      await user.click(screen.getByRole("button", { name: "Edit board" }));
+      await user.click(screen.getByRole("button", { name: "Customize board" }));
       expect(screen.getAllByLabelText(/^Remove /)).toHaveLength(2);
 
       await user.click(screen.getByRole("button", { name: "Add widget" }));
@@ -576,7 +601,7 @@ describe("HomeBoard", () => {
       await user.click(screen.getByRole("button", { name: "Done" }));
 
       // No delete-then-upsert race: exiting right after a reset must not re-save.
-      await waitFor(() => expect(screen.getByRole("button", { name: "Edit board" })).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByRole("button", { name: "Customize board" })).toBeInTheDocument());
       expect(homeBoardLayoutMock.saveAsync).not.toHaveBeenCalled();
     });
 
@@ -588,7 +613,7 @@ describe("HomeBoard", () => {
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
 
       const user = userEvent.setup();
-      await user.click(screen.getByRole("button", { name: "Edit board" }));
+      await user.click(screen.getByRole("button", { name: "Customize board" }));
       await user.click(screen.getByRole("button", { name: "Add widget" }));
 
       homeBoardLayoutMock.resetError = new Error("delete failed");

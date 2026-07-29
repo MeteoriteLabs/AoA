@@ -133,7 +133,7 @@ describe("HomeBoard a11y contract sweep (Plan 4 Task 4)", () => {
       renderWithProviders(<HomeBoardHarness companyId="co-1" role="founder" />);
       expect(await screen.findByText("Ship it")).toBeInTheDocument();
       const user = userEvent.setup();
-      await user.click(screen.getByRole("button", { name: "Edit board" }));
+      await user.click(screen.getByRole("button", { name: "Customize board" }));
       return user;
     }
 
