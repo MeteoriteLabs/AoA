@@ -39,4 +39,20 @@ describe("BudgetWidget", () => {
     expect(screen.getByText("Budget")).toBeInTheDocument();
     expect(screen.getByText(/of \$0 this month/)).toBeInTheDocument();
   });
+
+  it("the tile body is a link to /budget when not editing", async () => {
+    renderWithProviders(<BudgetWidget companyId="co-1" role="founder" size={{ w: 1, h: 1 }} />);
+    const rowLink = await screen.findByRole("link", { name: /\$412/ });
+    expect(rowLink).toHaveAttribute("href", "/budget");
+  });
+
+  // Regression: the row was a hardcoded <Link>, ignoring `editing` — a click
+  // during arrange mode navigated away instead of letting drag/select work,
+  // unlike every other widget (which use WidgetRowLink to swap to a plain
+  // div while editing).
+  it("does not render any link while editing, so a click during arrange doesn't navigate", async () => {
+    renderWithProviders(<BudgetWidget companyId="co-1" role="founder" size={{ w: 1, h: 1 }} editing />);
+    expect(await screen.findByText(/\$412/)).toBeInTheDocument();
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+  });
 });

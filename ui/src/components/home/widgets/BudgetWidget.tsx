@@ -1,11 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
 import { CircleDollarSign } from "lucide-react";
-import { Link } from "@/lib/router";
 import { dashboardApi } from "../../../api/dashboard";
 import { queryKeys } from "../../../lib/queryKeys";
 import { formatDollars } from "../money";
 import { WidgetShell } from "./WidgetShell";
 import { WidgetEmpty, WidgetLoading } from "./WidgetStates";
+import { WidgetRowLink } from "./WidgetRowLink";
 import type { WidgetProps } from "./types";
 
 export function BudgetWidget({ companyId, editing }: WidgetProps) {
@@ -17,7 +17,7 @@ export function BudgetWidget({ companyId, editing }: WidgetProps) {
       ) : isError || !data ? (
         <WidgetEmpty icon={CircleDollarSign} message="Couldn't load" />
       ) : (
-        <Link to="/budget" className="block rounded-md border border-border px-4 py-3 text-inherit no-underline transition-colors hover:bg-accent/50">
+        <WidgetRowLink to="/budget" editing={editing} className="block rounded-md border border-border px-4 py-3 text-inherit no-underline transition-colors hover:bg-accent/50">
           <div className="flex items-center gap-2">
             <CircleDollarSign className="h-4 w-4 shrink-0 text-muted-foreground" />
             <span className="text-2xl font-semibold tabular-nums">{formatDollars(data.costs.monthSpendCents)}</span>
@@ -29,7 +29,7 @@ export function BudgetWidget({ companyId, editing }: WidgetProps) {
               style={{ width: `${Math.min(100, Math.max(0, Math.round(data.costs.monthUtilizationPercent)))}%` }} // server-computed; clamp only the bar width
             />
           </div>
-        </Link>
+        </WidgetRowLink>
       )}
     </WidgetShell>
   );
