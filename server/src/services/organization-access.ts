@@ -8,18 +8,24 @@ export type OrgCapability =
   | "company:create" | "company:delete"
   | "org:member:manage" | "org:role:set" | "org:transfer" | "org:dissolve"
   | "billing:manage"
-  | "company:list:all" | "company:list:scoped" | "company:list:metadata";
+  | "company:list:all" | "company:list:scoped" | "company:list:metadata"
+  // Phase 5: fleet inventory (execution_targets) management + read-only spend
+  // visibility. Fleet management is an infra/admin concern (owner+admin);
+  // spend is financial visibility, so it also reaches the billing role.
+  | "execution_target:manage" | "org:spend:view";
 
 const MATRIX: Record<OrganizationRole, ReadonlySet<OrgCapability>> = {
   owner: new Set<OrgCapability>([
     "company:create", "company:delete", "org:member:manage", "org:role:set",
     "org:transfer", "org:dissolve", "billing:manage", "company:list:all",
+    "execution_target:manage", "org:spend:view",
   ]),
   admin: new Set<OrgCapability>([
     "company:create", "company:delete", "org:member:manage", "org:role:set", "company:list:all",
+    "execution_target:manage", "org:spend:view",
   ]),
   member: new Set<OrgCapability>(["company:list:scoped"]),
-  billing: new Set<OrgCapability>(["billing:manage", "company:list:metadata"]),
+  billing: new Set<OrgCapability>(["billing:manage", "company:list:metadata", "org:spend:view"]),
 };
 
 export function orgRoleCan(role: OrganizationRole, cap: OrgCapability): boolean {
