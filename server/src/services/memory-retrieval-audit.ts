@@ -12,8 +12,8 @@ const log = logger.child({ service: "memory-retrieval-audit" });
  *  - similarityScore: cosine 1-distance from semantic search; null for
  *    keyword-only / temporal-only / skill-materialize hits.
  *  - shownToAgent: false when the item was returned by the search but
- *    filtered out by `filterMemoryForScope` before reaching the agent
- *    (still useful audit signal for "queried but not delivered").
+ *    filtered out by the RBAC gate (`filterMemoryForActor`) before reaching
+ *    the agent (still useful audit signal for "queried but not delivered").
  */
 export interface MemoryRetrievalItem {
   id: string;

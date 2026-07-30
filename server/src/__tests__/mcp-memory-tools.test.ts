@@ -56,6 +56,16 @@ vi.mock("../services/company-brain-graph.js", () => ({
   })),
 }));
 
+// The MCP memory-read path now resolves an RBAC actor + in-SQL access conditions
+// (P1-T5). Those hit the DB, which is a bare {} in this unit test — mock the
+// db-backed resolvers to a founder actor + no-op conditions so the suite stays a
+// handler-wiring/audit/graph test. The REAL SQL gate is proven against embedded-pg
+// in mcp-memory-read-rbac.integration.test.ts + memory-rbac-leakage.integration.test.ts.
+vi.mock("../services/memory-access-sql.js", () => ({
+  actorForMcp: vi.fn(async () => ({ kind: "founder" as const })),
+  memoryAccessConditions: vi.fn(() => []),
+}));
+
 vi.mock("../services/index.js", () => {
   const noopFactory = () => ({});
   return {
@@ -318,7 +328,9 @@ describe("MCP memory.get tool", () => {
     const res = await callTool(app, "memory.get", { id: item.id });
 
     expect(res.status).toBe(200);
-    expect(memorySvc.getById).toHaveBeenCalledWith("company-1", item.id);
+    // getById now receives the in-SQL access conditions ([] under the mock) as a
+    // 3rd arg so a by-id read is RBAC-gated at the fetch (P1-T5).
+    expect(memorySvc.getById).toHaveBeenCalledWith("company-1", item.id, []);
     const data = JSON.parse(res.body.result.content[0].text);
     expect(data.id).toBe(item.id);
   });

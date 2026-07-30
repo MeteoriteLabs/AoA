@@ -81,7 +81,7 @@ export async function actorForMcp(
  * `db` is needed to build the scope subqueries:
  *   - goal→project resolves through the `project_goals` junction (the `goals`
  *     table has NO projectId column; see `goalProjectMap` in mcp/tools/scope.ts).
- *   - task→project reads `issues.projectId` directly (see `memoryTaskProjectMap`).
+ *   - task→project reads `issues.projectId` directly.
  */
 export function memoryAccessConditions(db: Db, actor: MemoryActor): SQL[] {
   // Correction/forgetting: invalidated rows never surface (all actors).

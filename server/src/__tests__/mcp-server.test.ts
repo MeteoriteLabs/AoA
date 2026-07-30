@@ -54,6 +54,15 @@ vi.mock("../services/index.js", () => {
   };
 });
 
+// The memory resource read now resolves an RBAC actor + in-SQL access conditions
+// (P1-T5), which hit the DB (a bare {} here). Mock the db-backed resolvers so the
+// resource-scope tests stay wiring tests; the real gate is proven against
+// embedded-pg in the *.integration.test.ts suites.
+vi.mock("../services/memory-access-sql.js", () => ({
+  actorForMcp: vi.fn(async () => ({ kind: "founder" as const })),
+  memoryAccessConditions: vi.fn(() => []),
+}));
+
 import { mcpServerRoutes } from "../mcp/server.js";
 
 function buildApp(options?: {

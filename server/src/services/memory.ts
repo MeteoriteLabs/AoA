@@ -38,6 +38,12 @@ export interface MemoryFilters {
   layer?: string;
   tags?: string[];
   search?: string;
+  /**
+   * RBAC WHERE conditions (from `memoryAccessConditions`) AND-ed into the query
+   * so a scoped actor can never list memory it isn't entitled to. Empty/undefined
+   * leaves the list unfiltered (the prior behavior for board/founder callers).
+   */
+  accessConditions?: SQL[];
 }
 
 export interface SemanticSearchFilters {
@@ -252,6 +258,10 @@ export function memoryService(db: Db) {
           conditions.push(sql`${memoryItems.tags} @> ${JSON.stringify([tag])}::jsonb`);
         }
       }
+      // RBAC gate (P1-T5): AND the caller's access conditions into the list so a
+      // scoped actor never sees memory outside its entitlement. Resolves goal/task
+      // scope in-SQL via the project_goals junction + issues.projectId.
+      if (filters.accessConditions?.length) conditions.push(...filters.accessConditions);
 
       const rows = await db.select(memoryItemsSelection()).from(memoryItems).where(and(...conditions));
       // Enrich with per-item indexStatus (Task W5 — additive field, array contract preserved).
@@ -296,11 +306,21 @@ export function memoryService(db: Db) {
         .limit(Math.min(filters.limit ?? 50, 100));
     },
 
-    getById: async (companyId: string, id: string) => {
+    getById: async (companyId: string, id: string, accessConditions?: SQL[]) => {
+      // RBAC gate (P1-T5): the optional accessConditions (from
+      // `memoryAccessConditions`) are AND-ed into the WHERE so a by-id read
+      // resolves goal/task scope in-SQL — a row the actor can't see returns null
+      // (not a post-fetch-only decision, which would leak goal/task-scoped rows).
       const rows = await db
         .select(memoryItemsSelection())
         .from(memoryItems)
-        .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)));
+        .where(
+          and(
+            eq(memoryItems.id, id),
+            eq(memoryItems.companyId, companyId),
+            ...(accessConditions ?? []),
+          ),
+        );
       const row = rows[0] ?? null;
       if (!row) return null;
       // Enrich with per-item indexStatus (Task W5 — additive field, same outer shape).
@@ -581,8 +601,9 @@ export function memoryService(db: Db) {
      * embedding the query). p50 ~150ms.
      *
      * Scope filters (departmentId, projectId, goalId, layer, category) apply
-     * BEFORE search runs. Caller is responsible for downstream RBAC
-     * filtering (filterMemoryForScope).
+     * BEFORE search runs. RBAC is enforced in-SQL via `accessConditions`
+     * (from `memoryAccessConditions`) AND-ed into every pathway; the caller
+     * still runs `filterMemoryForActor` over the results as a safety net.
      */
     searchMultiPath: async (
       companyId: string,
