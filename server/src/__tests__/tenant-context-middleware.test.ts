@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import type { Request } from "express";
 import { actorMiddleware } from "../middleware/auth.js";
+import { tenantContextMiddleware } from "../middleware/tenant-context.js";
 
 // Promise.all order in auth.ts session path: [instanceUserRoles, companyMemberships, organizationMemberships]
 function fakeDb(isAdmin: boolean, companyIds: string[], orgIds: string[]) {
@@ -43,5 +44,13 @@ describe("actorMiddleware org + operator + admin clamp", () => {
   it("preserves isInstanceAdmin=true in authenticated (self-hosted)", async () => {
     const actor = await run(fakeDb(true, ["c1"], ["org-1"]), "authenticated");
     expect(actor.isInstanceAdmin).toBe(true);
+  });
+});
+
+describe("tenantContextMiddleware", () => {
+  it("sets a reserved req.tenant hint (organizationId null until resolved)", () => {
+    const req = {} as any;
+    tenantContextMiddleware()(req, {} as any, () => {});
+    expect(req.tenant).toEqual({ organizationId: null });
   });
 });

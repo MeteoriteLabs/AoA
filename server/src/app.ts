@@ -8,6 +8,7 @@ import type { DeploymentExposure, DeploymentMode, PaperclipPluginManifestV1 } fr
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
+import { tenantContextMiddleware } from "./middleware/tenant-context.js";
 import { setDeploymentMode } from "./config/deployment-mode.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
@@ -256,6 +257,10 @@ export async function createApp(
       resolveSession: opts.resolveSession,
     }),
   );
+  // Reserved per-request tenant hint (req.tenant). NOT the enforcement source —
+  // isolation is driven by the static tenantIsolationEnforced(). Mounted after
+  // actorMiddleware (needs the actor) and before boardMutationGuard.
+  app.use(tenantContextMiddleware());
   // Runtime previews are a streaming proxy, not JSON API routes. Mount before
   // the global body parser so POST/PUT/uploads reach the upstream unchanged.
   app.use("/preview", createPreviewRouter(db));
