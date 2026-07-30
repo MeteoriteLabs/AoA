@@ -76,6 +76,7 @@ import { backfillWorkQuestionSnapshots } from "./migrations/backfill-work-questi
 import { backfillFirstRunCompleted } from "./migrations/backfill-first-run-completed.js";
 import { normalizeLegacyOnboardingState } from "./migrations/normalize-legacy-onboarding-state.js";
 import { backfillCrewTemplateOrigin } from "./services/internal-agent/aoa-agents/backfill-template-origin.js";
+import { backfillAllCompaniesIdentityMemory } from "./services/identity-backfill.js";
 import { backfillCrewOriginKind } from "./services/internal-agent/aoa-agents/backfill-crew-origin-kind.js";
 import { reconcileAutonomyScale } from "./services/internal-agent/aoa-agents/reconcile-autonomy-scale.js";
 import {
@@ -839,6 +840,18 @@ void backfillMemoryFolderSeeds(db as any)
 void backfillCrewTemplateOrigin(db as any).catch((err: unknown) =>
   logger.warn({ err }, "crew templateOrigin backfill failed"),
 );
+
+// P1-T9 — idempotent backfill: mirror each company's vision/mission/values into
+// layer='identity' memory items (the single home for company identity; the
+// `companies` columns stay as a temporary mirror). Runs every boot; second run
+// inserts 0 rows. Best-effort — never blocks startup.
+void backfillAllCompaniesIdentityMemory(db as any)
+  .then((res) => {
+    if (res.items > 0) {
+      logger.info(res, "company identity memory backfill complete");
+    }
+  })
+  .catch((err: unknown) => logger.warn({ err }, "company identity memory backfill failed"));
 
 // WS0b — idempotent backfill: stamp firstRunCompletedAt=now() onto every
 // onboarding_progress row that is already SETUP_COMPLETE (currentState OR
