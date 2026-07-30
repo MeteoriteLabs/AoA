@@ -83,17 +83,30 @@ export default function MarketplaceDetail({ fixedType }: MarketplaceDetailProps 
     item && packagesResolved
       ? placement.aoaRepresentedItemIds.has(item.id)
       : false;
-  useMarketplaceSidebar(isAoa ? "aoa" : itemType ?? "home");
-  const backTo = isAoa
-    ? "/marketplace?view=aoa"
-    : itemType
-      ? `/marketplace?type=${itemType}`
-      : "/marketplace";
-  const backLabel = isAoa
-    ? "AoA"
-    : itemType
-      ? TYPE_LABELS_PLURAL[itemType]
-      : "marketplace";
+  // Navigation (sidebar, breadcrumb, back-link) must reflect RESOLVED placement.
+  // Until both the item and the packages query resolve, AoA-vs-type membership is
+  // unknown, so neutralize nav to the generic marketplace target instead of
+  // committing to a possibly-wrong type/AoA target while loading or after a
+  // packages-load failure — otherwise an AoA package member flashes (or, on
+  // failure, persistently shows) a wrong "Skills" back-link (Codex P3; AGENTS.md §10).
+  const navResolved = item != null && packagesResolved;
+  useMarketplaceSidebar(
+    navResolved ? (isAoa ? "aoa" : itemType ?? "home") : "home",
+  );
+  const backTo = navResolved
+    ? isAoa
+      ? "/marketplace?view=aoa"
+      : itemType
+        ? `/marketplace?type=${itemType}`
+        : "/marketplace"
+    : "/marketplace";
+  const backLabel = navResolved
+    ? isAoa
+      ? "AoA"
+      : itemType
+        ? TYPE_LABELS_PLURAL[itemType]
+        : "marketplace"
+    : "marketplace";
 
   const parentPackage = useMemo(() => {
     if (!item || !packages) return null;

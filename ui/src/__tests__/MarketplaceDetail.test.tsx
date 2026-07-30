@@ -281,6 +281,12 @@ describe("MarketplaceDetail", () => {
     expect(
       screen.queryByTestId("marketplace-detail-hero-card"),
     ).not.toBeInTheDocument();
+    // P3: with placement unresolved (packages failed), the back-link is neutralized
+    // to the generic marketplace target — not a wrong "Skills"/"AoA" target derived
+    // from the empty packages fallback.
+    expect(
+      screen.getByRole("link", { name: /back to marketplace/i }),
+    ).toHaveAttribute("href", "/marketplace");
   });
 
   it("renders 404 for unknown item id", async () => {
