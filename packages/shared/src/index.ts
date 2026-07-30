@@ -1148,6 +1148,12 @@ export {
   type E2bEnvironmentConfig,
   type ProbeEnvironmentInput,
   type UpdateEnvironmentInput,
+  // Phase 5 execution-target registry (Task 5/13) — see the matching note in
+  // validators/index.ts.
+  dockerIsolationSchema,
+  gvisorEnvironmentConfigSchema,
+  createExecutionTargetSchema,
+  type CreateExecutionTargetInput,
 } from "./validators/index.js";
 
 export {

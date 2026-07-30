@@ -98,6 +98,7 @@ import { cliAuthRoutes } from "./routes/cli-auth.js";
 import { authProfileRoutes } from "./routes/auth-profile.js";
 import { environmentRoutes } from "./routes/environments.js";
 import { orgSpendRoutes } from "./routes/org-spend.js";
+import { executionTargetRoutes } from "./routes/execution-targets.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { workspaceGitRoutes } from "./routes/workspace-git.js";
 import { filesystemRoutes } from "./routes/filesystem.js";
@@ -400,6 +401,7 @@ export async function createApp(
   api.use(cliAuthRoutes(db));
   api.use(environmentRoutes({ db }));
   api.use(orgSpendRoutes({ db }));
+  api.use(executionTargetRoutes({ db }));
   api.use(executionWorkspaceRoutes(db));
   api.use(workspaceGitRoutes(db));
   api.use(filesystemRoutes());
