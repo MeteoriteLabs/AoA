@@ -196,8 +196,47 @@ function resolveDockerSandboxConfig(environment: Pick<Environment, "config">): R
   };
 }
 
+export function resolveGvisorSandboxTarget(config: Record<string, unknown>): {
+  type: "sandbox-docker";
+  image: string;
+  workdir: string;
+  network: "none" | "bridge" | "host";
+  runtime: "runsc";
+  allowHostGateway: boolean;
+  isolation: Record<string, unknown>;
+} {
+  const image = readString(config.image);
+  if (!image) throw new Error("gVisor environments require config.image.");
+  const iso = (config.isolation && typeof config.isolation === "object" && !Array.isArray(config.isolation)
+    ? (config.isolation as Record<string, unknown>)
+    : {});
+  const networkRaw = readString(config.network) ?? "none";
+  return {
+    type: "sandbox-docker",
+    image,
+    workdir: readString(config.workdir) ?? "/workspace",
+    network: networkRaw === "bridge" || networkRaw === "host" ? networkRaw : "none",
+    runtime: "runsc",
+    allowHostGateway: config.allowHostGateway === true,
+    isolation: {
+      user: readString(iso.user) ?? "1000:1000",
+      capDropAll: iso.capDropAll !== false,
+      noNewPrivileges: iso.noNewPrivileges !== false,
+      seccompProfile: readString(iso.seccompProfile),
+      readOnlyRootfs: iso.readOnlyRootfs !== false,
+      tmpfs: Array.isArray(iso.tmpfs) && iso.tmpfs.length > 0
+        ? iso.tmpfs
+        : ["/tmp:rw,noexec,nosuid,size=64m", "/home/agent:rw,nosuid,size=256m"],
+      memory: readString(iso.memory) ?? "2g",
+      cpus: readString(iso.cpus) ?? "2",
+      pidsLimit: typeof iso.pidsLimit === "number" ? iso.pidsLimit : 512,
+      ipcPrivate: iso.ipcPrivate !== false,
+    },
+  };
+}
+
 function isDockerSandboxProvider(provider: string): boolean {
-  return provider === "sandbox-docker" || provider === "docker" || provider === "local-docker";
+  return provider === "sandbox-docker" || provider === "docker" || provider === "local-docker" || provider === "gvisor";
 }
 
 type RuntimeProviderKeyResolver = Pick<ReturnType<typeof runtimeProviderKeyService>, "resolveCredential">;
