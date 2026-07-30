@@ -46,6 +46,7 @@ import { runControllerSweep } from "./services/internal-agent/aoa-agents/sweep-c
 import { runMemoryKeeperSweep, MK_SWEEP_DEBOUNCE_MS } from "./services/internal-agent/aoa-agents/sweep-memory-keeper.js";
 import { runInboxSweep } from "./services/internal-agent/aoa-agents/sweep-inbox.js";
 import { runStewardSweep, STEWARD_SWEEP_INTERVAL_MS } from "./services/internal-agent/aoa-agents/sweep-steward.js";
+import { operatorBreakGlassService, realBreakGlassDeps } from "./services/operator-break-glass.js";
 import {
   reconcilePersistedRuntimeServicesOnStartup,
   restartDesiredRuntimeServicesOnStartup,
@@ -1310,6 +1311,31 @@ setInterval(() => {
       runtimeDecisionTimeoutSweepInFlight = false;
     });
 }, RUNTIME_DECISION_TIMEOUT_SWEEP_INTERVAL_MS);
+
+// Operator break-glass sweeper (Phase 3, B3). Deletes the ORGANIZATION
+// membership materialized for a grant once the grant is past expiry or revoked,
+// then marks the grant swept. Authorization itself is TTL-checked live at each
+// access (hasActiveBreakGlass); this sweep is the janitor that reclaims the
+// standing tenant-access row afterward. Runs once at boot (clears anything a
+// crash left behind) then every 60s. Best-effort — never blocks or fails boot.
+// .unref() so it cannot keep the process alive on shutdown.
+{
+  const breakGlass = operatorBreakGlassService(db as any, realBreakGlassDeps(db as any));
+  void breakGlass.sweepExpired().catch((err: unknown) =>
+    logger.warn({ err }, "operator break-glass sweep (boot) failed"),
+  );
+  let breakGlassSweepInFlight = false;
+  setInterval(() => {
+    if (breakGlassSweepInFlight) return;
+    breakGlassSweepInFlight = true;
+    void breakGlass
+      .sweepExpired()
+      .catch((err: unknown) => logger.warn({ err }, "operator break-glass sweep tick failed"))
+      .finally(() => {
+        breakGlassSweepInFlight = false;
+      });
+  }, 60_000).unref();
+}
 
 if (config.databaseBackupEnabled) {
   const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
