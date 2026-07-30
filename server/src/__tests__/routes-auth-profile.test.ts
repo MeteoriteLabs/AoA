@@ -96,6 +96,9 @@ describe("auth profile routes", () => {
       type: "board",
       userId: "admin-1",
       source: "session",
+      // Profile reports isInstanceAdmin from canManageInstanceSettings (operator
+      // plane); a genuine operator carries operator=true (minted by actorMiddleware).
+      operator: true,
       isInstanceAdmin: true,
     });
     const res = await request(app).get("/api/auth/profile");

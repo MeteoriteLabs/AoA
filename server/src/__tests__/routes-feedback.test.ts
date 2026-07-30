@@ -95,6 +95,9 @@ function boardActor(
     userId: overrides.userId ?? USER_A,
     source: overrides.source ?? "session",
     companyIds: overrides.companyIds ?? [COMPANY_A],
+    // Operator-plane authority mirrors a genuine operator (actorMiddleware mints
+    // operator alongside isInstanceAdmin); the operator-plane routes read it.
+    operator: overrides.isInstanceAdmin ?? false,
     isInstanceAdmin: overrides.isInstanceAdmin ?? false,
   };
 }

@@ -8,7 +8,12 @@ function appFor(actor: Record<string, unknown>) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = actor;
+    // Mirror actorMiddleware: a genuine operator carries operator=true alongside
+    // isInstanceAdmin. The operator-plane gate (canManageInstanceSettings) reads it.
+    (req as any).actor =
+      actor.type === "board" && actor.operator === undefined
+        ? { ...actor, operator: actor.isInstanceAdmin === true }
+        : actor;
     next();
   });
   app.use(

@@ -49,11 +49,21 @@ describe("assertCanManageInstanceSettings", () => {
     ).not.toThrow();
   });
 
-  it("allows session board with isInstanceAdmin=true", async () => {
+  it("allows session board with operator=true (operator plane)", async () => {
     const { assertCanManageInstanceSettings } = await import("../routes/authz.js");
     expect(() =>
-      assertCanManageInstanceSettings(makeReq({ isInstanceAdmin: true }) as any)
+      assertCanManageInstanceSettings(makeReq({ operator: true }) as any)
     ).not.toThrow();
+  });
+
+  it("rejects session board with isInstanceAdmin=true but no operator (data plane does NOT grant operator plane)", async () => {
+    const { assertCanManageInstanceSettings } = await import("../routes/authz.js");
+    // Security-critical: the operator plane reads req.actor.operator, NOT the
+    // data-plane isInstanceAdmin (clamped to false in cloud_auth). A stray
+    // isInstanceAdmin=true must not unlock instance-settings management.
+    expect(() =>
+      assertCanManageInstanceSettings(makeReq({ isInstanceAdmin: true }) as any)
+    ).toThrow(/Instance admin access required/);
   });
 
   it("throws 403 for session board with isInstanceAdmin=false", async () => {
