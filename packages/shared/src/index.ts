@@ -1057,6 +1057,14 @@ export {
   updateSidebarPreferencesSchema,
   type SidebarPreferences,
   type UpdateSidebarPreferences,
+  homeBoardLayoutItemSchema,
+  homeBoardLayoutArraySchema,
+  updateHomeBoardLayoutSchema,
+  validateHomeBoardLayout,
+  type HomeBoardLayoutItemInput,
+  type HomeBoardLayoutItemLike,
+  type HomeBoardLayoutValidationResult,
+  type UpdateHomeBoardLayout,
   INBOX_DISMISSAL_ITEM_KEY_REGEX,
   inboxDismissalSchema,
   createInboxDismissalSchema,
@@ -1330,6 +1338,7 @@ export {
 } from "./config-schema.js";
 
 export * from "./teams.js";
+export * from "./home-board.js";
 export * from "./composer-contracts.js";
 export * from "./autonomy-levels.js";
 export * from "./inbound-routing.js";
