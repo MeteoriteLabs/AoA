@@ -57,3 +57,31 @@ export function materializeEnvPatch(input: MaterializeInput): Record<string, str
     }
   }
 }
+
+import type { AssignmentScopeType } from "@armyofagents/shared";
+
+export interface Candidate {
+  connectionId: string;
+  authMethod: AuthMethod;
+  scopeType: AssignmentScopeType;
+  priority: number;
+  connectionUpdatedAt: number;
+}
+
+const SCOPE_RANK: Record<AssignmentScopeType, number> = {
+  agent_override: 3,
+  personal_execution_default: 2,
+  company_default: 1,
+  org_default: 0,
+};
+
+/** Deterministic precedence order: scope rank, then priority DESC, then recency DESC. */
+export function orderCandidates<T extends Candidate>(candidates: readonly T[]): T[] {
+  return [...candidates].sort((a, b) => {
+    if (SCOPE_RANK[a.scopeType] !== SCOPE_RANK[b.scopeType]) {
+      return SCOPE_RANK[b.scopeType] - SCOPE_RANK[a.scopeType];
+    }
+    if (a.priority !== b.priority) return b.priority - a.priority;
+    return b.connectionUpdatedAt - a.connectionUpdatedAt;
+  });
+}
