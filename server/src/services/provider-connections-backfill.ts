@@ -103,7 +103,35 @@ export interface BackfillSummary {
 export async function runProviderConnectionsBackfill(
   db: Db,
   log: (level: "info" | "warn", msg: string, meta?: Record<string, unknown>) => void = () => {},
+  opts: { skipSubscriptions?: boolean } = {},
 ): Promise<BackfillSummary> {
+  // Personal-subscription connections are banned on a shared multi-tenant host —
+  // this boot reconciler is a personal_subscription MINT path, so it must honor the
+  // same ban (assertSubscriptionAllowed on the create route / verify() / login).
+  // A self-hosted → multi_tenant data-dir cutover preserves the founder's legacy
+  // verified subscription + binding; without this gate the backfill would revive it
+  // into a resolvable connection. (The resolver ALSO refuses to resolve a
+  // personal_subscription in multi_tenant — this is the belt to that suspenders.)
+  // Resolved from deployment config unless the caller overrides (tests).
+  let skipSubscriptions = opts.skipSubscriptions;
+  if (skipSubscriptions === undefined) {
+    try {
+      const { loadConfig } = await import("../config.js");
+      const { resolveCliAuthTopology } = await import("./cli-auth-topology.js");
+      const cfg = loadConfig();
+      const topology = resolveCliAuthTopology({
+        deploymentMode: cfg.deploymentMode,
+        deploymentExposure: cfg.deploymentExposure,
+      });
+      skipSubscriptions = topology.trustBoundary === "multi_tenant";
+    } catch {
+      // Config unavailable (e.g. a minimal test harness) → default to the historical
+      // behavior (mint subscriptions). Safe: only multi_tenant needs the ban, and a
+      // multi_tenant deployment always has resolvable config.
+      skipSubscriptions = false;
+    }
+  }
+
   // (1) Company provider API keys → api_key connections.
   const keyRows = await db
     .select({
@@ -135,32 +163,34 @@ export async function runProviderConnectionsBackfill(
   // defense-in-depth (a future nullable-column migration would silently start
   // relying on them). The real exclusion this WHERE enforces is the binding gate:
   // a verified subscription with no APPROVED, unrevoked binding is excluded.
-  const subRows = await db
-    .select({
-      companyId: providerCredentials.companyId,
-      provider: providerCredentials.provider,
-      ownerUserId: providerCredentials.ownerUserId,
-      executionTargetId: providerCredentials.executionTargetId,
-      agentId: agentProviderCredentialBindings.agentId,
-    })
-    .from(providerCredentials)
-    .innerJoin(
-      agentProviderCredentialBindings,
-      eq(agentProviderCredentialBindings.credentialId, providerCredentials.id),
-    )
-    .where(
-      and(
-        eq(providerCredentials.kind, "personal_subscription"),
-        eq(providerCredentials.state, "verified"),
-        // M4: a verified sub with NULL owner/target would violate the connection
-        // subscription CHECK (23514) and abort the whole reconciler — pre-filter.
-        // (Defensive: both columns are NOT NULL in the real schema today.)
-        isNotNull(providerCredentials.ownerUserId),
-        isNotNull(providerCredentials.executionTargetId),
-        isNotNull(agentProviderCredentialBindings.approvedAt),
-        isNull(agentProviderCredentialBindings.revokedAt),
-      ),
-    );
+  const subRows = skipSubscriptions
+    ? []
+    : await db
+        .select({
+          companyId: providerCredentials.companyId,
+          provider: providerCredentials.provider,
+          ownerUserId: providerCredentials.ownerUserId,
+          executionTargetId: providerCredentials.executionTargetId,
+          agentId: agentProviderCredentialBindings.agentId,
+        })
+        .from(providerCredentials)
+        .innerJoin(
+          agentProviderCredentialBindings,
+          eq(agentProviderCredentialBindings.credentialId, providerCredentials.id),
+        )
+        .where(
+          and(
+            eq(providerCredentials.kind, "personal_subscription"),
+            eq(providerCredentials.state, "verified"),
+            // M4: a verified sub with NULL owner/target would violate the connection
+            // subscription CHECK (23514) and abort the whole reconciler — pre-filter.
+            // (Defensive: both columns are NOT NULL in the real schema today.)
+            isNotNull(providerCredentials.ownerUserId),
+            isNotNull(providerCredentials.executionTargetId),
+            isNotNull(agentProviderCredentialBindings.approvedAt),
+            isNull(agentProviderCredentialBindings.revokedAt),
+          ),
+        );
   const subscriptionBindings: SubscriptionBindingRow[] = subRows.map((r) => ({
     companyId: r.companyId,
     provider: r.provider,

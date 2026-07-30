@@ -3073,9 +3073,14 @@ export function heartbeatService(db: Db) {
       // The former standalone subscription block (was heartbeat.ts :3991-4035)
       // becomes the legacy subscription fallback, preserving the
       // mayUseLegacySubscriptionHome semantics for unmigrated companies.
-      legacySubscriptionEnv: async () => {
+      legacySubscriptionEnv: async (postLegacyEnv: Record<string, string>) => {
         if (hbProviderId !== "openai" && hbProviderId !== "anthropic") return null;
-        const cfgEnv = resolvedEnv as Record<string, string>;
+        // Read the POST-company-key env (the resolver passes it in) so the
+        // "company key present ⇒ skip subscription home" short-circuit matches the
+        // pre-P4 ordering. Reading the raw pre-fallback `resolvedEnv` here would add
+        // a CODEX_HOME/CLAUDE_CONFIG_DIR redirect on top of a company key for an
+        // unmigrated company that has BOTH — a strangler-faithfulness regression.
+        const cfgEnv = postLegacyEnv;
         const apiKeyName = hbProviderId === "openai" ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY";
         if (typeof cfgEnv[apiKeyName] === "string" && cfgEnv[apiKeyName].trim().length > 0) {
           return null;

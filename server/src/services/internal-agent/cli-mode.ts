@@ -710,7 +710,15 @@ export function cliModeService(db: Db) {
           adapterType,
           provider: providerId,
           executionTargetId: process.env.AOA_EXECUTION_TARGET_ID?.trim() || "control-plane",
-          currentEnv: process.env as Record<string, string>,
+          // NOT process.env: the server process legitimately carries the ambient
+          // embeddings OPENAI_API_KEY (and possibly ANTHROPIC_API_KEY). Passing it
+          // as currentEnv would trip Step-0 agent_env_override, which (a) defeats the
+          // multi_tenant fail-closed throw (Commander would silently spawn against the
+          // operator's shared account) and (b) shadows a founder-configured connection.
+          // Commander declares no per-agent key here, so the correct currentEnv is
+          // empty; self-hosted still lands on host_login_fallback and uses the ambient
+          // login at spawn time exactly as before.
+          currentEnv: {},
           context: {
             consumerType: "system",
             consumerId: userId,

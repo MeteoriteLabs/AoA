@@ -63,6 +63,47 @@ const deps = (rows: CandidateRow[], secret = "sk") => ({
   selfHostedSingleTenant: true,
 });
 
+describe("multi_tenant personal_subscription backstop (BUG A fix)", () => {
+  const subRow = () =>
+    row({
+      connectionId: "sub",
+      scopeType: "agent_override",
+      scopeId: "ag1",
+      authMethod: "personal_subscription",
+      sharingPolicy: "owner_only",
+      connectionOwnerUserId: "u1", // CandidateRow field (owner_only self-match for agent runs)
+      executionTargetId: "t1",
+      secretRef: null,
+    });
+
+  it("NEVER resolves a personal_subscription in multi_tenant — fails closed, materialize not reached", async () => {
+    const d = deps([subRow()]);
+    d.selfHostedSingleTenant = false; // multi_tenant / shared host
+    await expect(
+      resolveProviderCredential({} as never, baseArgs, d as never),
+    ).rejects.toBeInstanceOf(ProviderUnavailableError);
+    // The backstop skips BEFORE Step 3, so the subscription env is never materialized.
+    expect(d.resolveSubscriptionEnv).not.toHaveBeenCalled();
+  });
+
+  it("does NOT let a backfill-revived agent_override sub resolve on a shared host", async () => {
+    // Even a fully verified, terms-attested, owner-matched agent_override sub (the
+    // exact shape the boot backfill mints from a legacy credential) is refused.
+    const d = deps([subRow()]);
+    d.selfHostedSingleTenant = false;
+    await expect(
+      resolveProviderCredential({} as never, baseArgs, d as never),
+    ).rejects.toBeInstanceOf(ProviderUnavailableError);
+  });
+
+  it("the SAME personal_subscription DOES resolve on self-hosted single-tenant (backstop is topology-scoped)", async () => {
+    const d = deps([subRow()]); // selfHostedSingleTenant defaults true
+    const r = await resolveProviderCredential({} as never, baseArgs, d as never);
+    expect(r.source).toBe("connection");
+    expect(d.resolveSubscriptionEnv).toHaveBeenCalled();
+  });
+});
+
 describe("precedence matrix", () => {
   it("agent_override wins over company + org", async () => {
     const r = await resolveProviderCredential(

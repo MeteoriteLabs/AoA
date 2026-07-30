@@ -207,8 +207,12 @@ export interface ResolveDeps {
   envVarForProvider: (provider: string) => string;
   /** LEGACY fallback = secrets.ts resolveAdapterConfigForRuntime output env delta. */
   legacyResolveConfig: (cfg: Record<string, unknown>) => Promise<Record<string, unknown>>;
-  /** LEGACY subscription home (heartbeat block), or null when N/A. */
-  legacySubscriptionEnv: () => Promise<Record<string, string> | null>;
+  /** LEGACY subscription home (heartbeat block), or null when N/A. Receives the
+   *  POST-legacyResolveConfig env (i.e. AFTER the company-key fallback ran) so the
+   *  closure can honor the pre-P4 ordering "company key present ⇒ NO subscription-
+   *  home redirect". Reading the pre-fallback env here would inject a subscription
+   *  home on top of a company key for an unmigrated company (a strangler regression). */
+  legacySubscriptionEnv: (postLegacyEnv: Record<string, string>) => Promise<Record<string, string> | null>;
   selfHostedSingleTenant: boolean;
   /** AOA_PROVIDER_RESOLVER=legacy → skip the new-model read (Steps 1-3). */
   bypassNewModel: boolean;
@@ -310,6 +314,23 @@ export async function resolveProviderCredential(
   // so the multi-tenant fail-closed error names a real connection + reason.
   let lastRejection: { connectionId: string; reason: string } | null = null;
   for (const row of ordered) {
+    // ── Multi-tenant fail-closed backstop (defense-in-depth over the mint-time
+    // assertSubscriptionAllowed gate) ────────────────────────────────────────────
+    // A personal_subscription is a HOST-tied on-disk CLI login; it can NEVER be
+    // resolved on a shared multi-tenant host, regardless of HOW the connection row
+    // was minted. The mint gates (create route / verify() / login-runtime) are the
+    // first line, but a self-hosted → multi_tenant data-dir cutover can still revive
+    // a legacy subscription into a verified connection via the boot backfill — so
+    // this is the last line: any personal_subscription candidate is skipped when the
+    // run is NOT self-hosted single-tenant. (selfHostedSingleTenant === false ⇔
+    // trustBoundary === "multi_tenant".)
+    if (row.authMethod === "personal_subscription" && !deps.selfHostedSingleTenant) {
+      lastRejection = {
+        connectionId: row.connectionId,
+        reason: "subscription_disabled_multi_tenant",
+      };
+      continue;
+    }
     const gate = candidatePassesStaticGates({
       authMethod: row.authMethod,
       scopeType: row.scopeType,
@@ -384,7 +405,10 @@ export async function resolveProviderCredential(
   for (const [k, v] of Object.entries(legacyEnv)) {
     if (legacyEnvBefore[k] !== v) legacyPatch[k] = v;
   }
-  const legacySub = await deps.legacySubscriptionEnv();
+  // Pass the POST-company-key env so the closure's "api key already present ⇒ skip
+  // subscription home" short-circuit sees the company key the legacy fallback just
+  // injected (restores the pre-P4 heartbeat ordering).
+  const legacySub = await deps.legacySubscriptionEnv(legacyEnv);
   if (legacySub) Object.assign(legacyPatch, legacySub);
 
   if (Object.keys(legacyPatch).length > 0) return { source: "legacy", envPatch: legacyPatch };

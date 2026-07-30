@@ -55,6 +55,15 @@ describe("resolveProviderCredential", () => {
     expect(deps.legacyResolveConfig).toHaveBeenCalled();
   });
 
+  it("passes the POST-legacy env into legacySubscriptionEnv (BUG C fix — company-key-present ordering)", async () => {
+    // legacyResolveConfig injects ANTHROPIC_API_KEY; the subscription-home closure
+    // must receive that POST-fallback env so a company-key-present run skips the
+    // subscription home (pre-P4 ordering), not the raw pre-fallback env.
+    const deps = makeDeps();
+    await resolveProviderCredential({} as never, args, deps as never);
+    expect(deps.legacySubscriptionEnv).toHaveBeenCalledWith({ ANTHROPIC_API_KEY: "sk-legacy" });
+  });
+
   it("verified company_default api_key → connection env patch", async () => {
     const deps = makeDeps({
       loadCandidateRows: vi.fn(async () => [{

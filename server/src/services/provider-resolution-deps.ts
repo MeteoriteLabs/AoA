@@ -122,7 +122,7 @@ export function buildResolveDeps(db: Db, topology: CliAuthTopology): ResolveDeps
       return cfg;
     },
 
-    async legacySubscriptionEnv() {
+    async legacySubscriptionEnv(_postLegacyEnv) {
       return null;
     },
 
