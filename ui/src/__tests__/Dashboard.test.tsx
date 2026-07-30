@@ -438,11 +438,14 @@ describe("Dashboard", () => {
 
       expect(await screen.findByText("Agents working now")).toBeInTheDocument();
 
-      // Weekday + "D Month YYYY" (e.g. "Wednesday, 30 July 2026") computed from
-      // the real clock — match on the weekday name rather than the exact date
-      // string so the test isn't tied to "today" or a mocked clock.
+      // Weekday + localized date, computed from the real clock via
+      // toLocaleDateString(undefined) — so the DAY/MONTH ORDER is locale-
+      // dependent (en-GB "Wednesday, 30 July 2026" vs en-US "Wednesday, July
+      // 30, 2026"). Assert only the stable parts — a leading weekday name and a
+      // trailing 4-digit year — so this passes on any CI/dev locale (a strict
+      // "D Month YYYY" regex went red on Linux/en-US) and isn't tied to "today".
       expect(
-        screen.getByText(/^(Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday), \d{1,2} \S+ \d{4}$/),
+        screen.getByText(/^(Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday),.*\d{4}$/),
       ).toBeInTheDocument();
     });
   });

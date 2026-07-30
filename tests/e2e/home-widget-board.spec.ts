@@ -2,6 +2,14 @@ import { test, expect } from "@playwright/test";
 import { cleanupTestCompanies, seedCompany } from "./helpers/seed-company";
 
 test.describe("home widget board", () => {
+  // The board's edit affordances are gated to the lg breakpoint (container
+  // >= 1024px; see HomeBoard.tsx BREAKPOINTS + HomeBoardControls' disabled
+  // "Edit on a larger screen (1024px+)" state). At Playwright's default
+  // 1280x720 the sidebar + padding leave the board container BELOW 1024, so the
+  // customize button stays disabled and edit mode is unreachable. Pin a wide
+  // desktop viewport so the board mounts at lg and the arrange flow is testable.
+  test.use({ viewport: { width: 1600, height: 900 } });
+
   test.beforeEach(async ({ request }) => {
     await cleanupTestCompanies(request, /^E2E-HomeBoard-/);
   });
@@ -19,7 +27,12 @@ test.describe("home widget board", () => {
     // composition are covered by ui/src/__tests__/Dashboard.test.tsx and
     // HomeBoard.test.tsx.
     await expect(page.getByRole("button", { name: "Create", exact: true })).toBeVisible();
-    await expect(page.getByRole("heading", { level: 1 })).toBeVisible(); // greeting
+    // Target the greeting by its accessible name — the app shell renders its
+    // own level-1 heading too, so a bare getByRole("heading",{level:1}) is a
+    // strict-mode violation (2 elements).
+    await expect(
+      page.getByRole("heading", { level: 1, name: /Good (morning|afternoon|evening)/ }),
+    ).toBeVisible();
   });
 
   // Task D4: the real RGL drag/resize smoke the Phase-0 spike mandated, plus
