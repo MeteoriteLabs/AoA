@@ -56,8 +56,38 @@ For horizontally scaled deployments, local-file run logs require sticky routing 
 | `AOA_EXECUTION_OWNERSHIP` | From install profile | Advanced topology override: `user_hosted`, `tenant_hosted`, or `aoa_hosted`. It must agree with `AOA_INSTALL_PROFILE`. |
 | `AOA_CODEX_DEVICE_AUTH` | `false` on remote installs | Enables Codex device-code subscription sign-in on a dedicated `remote_single_tenant` installation. It never enables sign-in on `hosted_multi_tenant`. |
 | `AOA_CLAUDE_PASTE_AUTH` | `false` on remote installs | Enables Claude paste-code subscription sign-in on a dedicated `remote_single_tenant` installation. It never enables sign-in on `hosted_multi_tenant`. |
-| `AOA_EXECUTION_TARGET_ID` | `control-plane` | Stable identity of the execution target that owns the provider-native credential files. Login, verification, binding, and agent execution must use the same value. |
+| `AOA_EXECUTION_TARGET_ID` | `control-plane` | Stable identity of the execution target that owns the provider-native credential files. Login, verification, binding, and agent execution must use the same value. Since Phase 5 (multi-tenant cloud, `execution_targets` registry) this string is an `execution_targets.slug` — the default `control-plane` is the row `ensureControlPlaneExecutionTarget` seeds idempotently at boot (`organization_id = NULL`, `kind = local_host`, `trust_class = local_trusted`). A dedicated worker for a personal subscription is registered with its own slug (`POST /organizations/:orgId/execution-targets`) and that slug is what `AOA_EXECUTION_TARGET_ID` must be set to on that worker. |
 | `AOA_SCOPED_CLI_AUTH` | `false` | When true, subscription-backed agent runs require a verified company/user/provider credential binding and fail closed if it is absent. Verified bindings are preferred even when this flag is false; the flag controls whether an entirely missing binding may fall back to the legacy global CLI home. |
+
+### Execution targets & gVisor pool egress (multi-tenant cloud, Phase 5)
+
+Phase 5 adds a tenant-scoped `execution_targets` registry (fleet inventory) on
+top of the `AOA_EXECUTION_TARGET_ID` identity above. Runs route to a target by
+credential kind — `execution-target-resolver.ts`: a business (company) API key
+routes to the shared `pooled_gvisor` target, a personal subscription routes to
+the dedicated target whose slug matches its bound `AOA_EXECUTION_TARGET_ID`. No
+new environment variable governs this routing; it reads the `execution_targets`
+table and the P4 credential-kind seam. Self-hosted single-tenant installs are
+unaffected — they never populate `execution_targets` beyond the seeded
+`control-plane` row, and `resolveExecutionTargetForRun` falls back to the local
+driver when no pool target exists.
+
+**Pool egress allowlist policy.** A pooled gVisor run's Docker hardening
+(`--runtime=runsc`, dropped capabilities, read-only rootfs, etc.) is applied by
+the app layer via opt-in `buildDockerRunArgs` isolation flags — see
+[`docs/aoa/guides/gvisor-worker-image.md`](../aoa/guides/gvisor-worker-image.md)
+for the exact flag set. **Network egress filtering is NOT an app-layer
+concern**: `--network none` is the safe default (no egress at all), and a
+pooled run that needs the provider API must run on a **filtered** `bridge`
+network — filtering is a worker-image deliverable (a `DOCKER-USER` iptables/
+nftables policy or an egress proxy) that denies RFC1918, `169.254.0.0/16`
+(cloud metadata, incl. `169.254.169.254`), and the control-plane CIDR, while
+allowing only the provider API hosts and package registries. There is no
+environment variable for this allowlist yet — it is configured on the worker
+image/host, not via AoA server env vars. **As of this writing that firewall has
+not been validated on real hardware** (Task 0's spike is a pending Gate-B step,
+not yet run) — see the guide's status banner before deploying a pool on
+`bridge`.
 
 ## Agent JWT (signing for `AOA_API_KEY`)
 
