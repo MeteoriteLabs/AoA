@@ -88,8 +88,12 @@ const EXPECTED: Array<{ file: string; adapterTypeArgs: string[] }> = [
   { file: "routes/providers.ts", adapterTypeArgs: ["descriptor.adapterType"] },
   { file: "services/company-skills.ts", adapterTypeArgs: ["adapterType"] },
   {
+    // Two sites since Phase 4: (1) the primary runtime base-config resolution,
+    // and (2) the `legacyResolveConfig` strangler-fallback closure bound into the
+    // unified provider resolver — where crew FINALLY honors a personal_subscription
+    // binding. Both thread `agent.adapterType` second.
     file: "services/internal-agent/aoa-agents/runner.ts",
-    adapterTypeArgs: ["agent.adapterType"],
+    adapterTypeArgs: ["agent.adapterType", "agent.adapterType"],
   },
 ];
 
@@ -128,7 +132,10 @@ describe("repo-wide inventory of runtime config resolution", () => {
       "routes/providers.ts": 1,
       "services/commander-verify.ts": 1,
       "services/company-skills.ts": 1,
-      "services/internal-agent/aoa-agents/runner.ts": 1,
+      // Phase 4: (1) primary runtime base-config resolution + (2) the
+      // legacyResolveConfig strangler-fallback closure inside the unified
+      // provider resolver.
+      "services/internal-agent/aoa-agents/runner.ts": 2,
       // The declaration itself, not a call — a call from here would recurse.
       "services/secrets.ts": 1,
     });
