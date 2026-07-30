@@ -69,7 +69,7 @@ describe("validateRegistry (Stage B / B5 + RC-P2)", () => {
   it("passes a well-formed registry", () => {
     const reg = [
       step({ id: "a", order: 1, state: "PROFILE_SET", dependsOn: ["AUTHENTICATED"] }),
-      step({ id: "b", order: 2, state: "ORGANIZATION_CREATED", dependsOn: ["PROFILE_SET"] }),
+      step({ id: "b", order: 2, state: "COMPANY_CREATED", dependsOn: ["PROFILE_SET"] }),
     ];
     expect(validateRegistry(reg)).toEqual([]);
   });
@@ -90,7 +90,7 @@ describe("validateRegistry (Stage B / B5 + RC-P2)", () => {
   });
 
   it("flags a dependency that does not precede the step's state", () => {
-    const reg = [step({ id: "a", order: 1, state: "PROFILE_SET", dependsOn: ["ORGANIZATION_CREATED"] })];
+    const reg = [step({ id: "a", order: 1, state: "PROFILE_SET", dependsOn: ["COMPANY_CREATED"] })];
     expect(validateRegistry(reg).some((e) => e.code === "dep_not_before_state")).toBe(true);
   });
 });

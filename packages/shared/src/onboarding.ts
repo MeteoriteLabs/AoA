@@ -17,7 +17,14 @@ export const ONBOARDING_STATES = [
   "AUTHENTICATED",
   "PROFILE_SET",
   "JOIN_REQUESTED",
+  // "ORGANIZATION_CREATED" is the pre-rename name for what is now
+  // "COMPANY_CREATED" (Phase 2 Task 2 — the naming-collision fix: the wizard
+  // historically said "organization" but meant COMPANY). Kept in this union
+  // ONLY so legacy `onboarding_progress` rows written before the rename still
+  // typecheck/parse; `normalizeLegacyOnboardingState` maps it forward on read.
+  // No code should write this value going forward — write "COMPANY_CREATED".
   "ORGANIZATION_CREATED",
+  "COMPANY_CREATED",
   "ENVIRONMENT_READY",
   "COMMANDER_SELECTED",
   "COMMANDER_VERIFIED",
@@ -51,7 +58,7 @@ export type OnboardingState = (typeof ONBOARDING_STATES)[number];
 export const FOUNDER_PHASE1_STATES: OnboardingState[] = [
   "AUTHENTICATED",
   "PROFILE_SET",
-  "ORGANIZATION_CREATED",
+  "COMPANY_CREATED",
   "ENVIRONMENT_READY",
   "COMMANDER_SELECTED",
   "COMMANDER_VERIFIED",
@@ -123,3 +130,16 @@ export type PostAuthJourneyResult = {
    */
   resumeFirstRunCompanyId?: string | null;
 };
+
+/**
+ * Phase 2 Task 2 (naming-collision fix): maps the retired "ORGANIZATION_CREATED"
+ * state name onto its replacement "COMPANY_CREATED" so legacy
+ * `onboarding_progress` rows (written before the rename) still resolve to a
+ * valid, current state. Every other state passes through unchanged. Server
+ * reads should run every persisted `currentState`/`completedStates` entry
+ * through this before comparing/returning it (see
+ * `server/src/services/onboarding.ts` `normalizeProgressRow`).
+ */
+export function normalizeLegacyOnboardingState(state: OnboardingState): OnboardingState {
+  return state === "ORGANIZATION_CREATED" ? "COMPANY_CREATED" : state;
+}

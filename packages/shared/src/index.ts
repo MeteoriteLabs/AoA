@@ -1396,6 +1396,7 @@ export {
   INVITED_PHASE1_STATES,
   orderedStatesFor,
   FIRST_RUN_PERSONAS,
+  normalizeLegacyOnboardingState,
   type OnboardingJourney,
   type OnboardingState,
   type PendingInvitation,

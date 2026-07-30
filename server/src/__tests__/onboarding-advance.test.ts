@@ -48,7 +48,7 @@ describe("computeAdvance (Stage B / B3 + revC RC1)", () => {
       [
         "AUTHENTICATED",
         "PROFILE_SET",
-        "ORGANIZATION_CREATED",
+        "COMPANY_CREATED",
         "ENVIRONMENT_READY",
         "COMMANDER_SELECTED",
         "COMMANDER_VERIFIED",
@@ -61,7 +61,7 @@ describe("computeAdvance (Stage B / B3 + revC RC1)", () => {
       newCompleted: [
         "AUTHENTICATED",
         "PROFILE_SET",
-        "ORGANIZATION_CREATED",
+        "COMPANY_CREATED",
         "ENVIRONMENT_READY",
         "COMMANDER_SELECTED",
         "COMMANDER_VERIFIED",
@@ -74,7 +74,7 @@ describe("computeAdvance (Stage B / B3 + revC RC1)", () => {
     const completed: typeof ORDER = [
       "AUTHENTICATED",
       "PROFILE_SET",
-      "ORGANIZATION_CREATED",
+      "COMPANY_CREATED",
       "ENVIRONMENT_READY",
       "COMMANDER_SELECTED",
       "COMMANDER_VERIFIED",
