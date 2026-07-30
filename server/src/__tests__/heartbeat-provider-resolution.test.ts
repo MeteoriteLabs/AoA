@@ -3,6 +3,25 @@ import { readFile } from "node:fs/promises";
 import { resolveRunScopedModel } from "../services/heartbeat-provider-resolution.js";
 import { applyModelResolutionToConfig } from "../services/internal-agent/aoa-agents/runner-model-resolution.js";
 import { DEFAULT_CODEX_CHAT_MODEL } from "../services/internal-agent/codex-model.js";
+import { applyResolvedCredential } from "../services/provider-resolution.js";
+
+// Phase 4 (Task 12) helper contract: the org heartbeat merges the resolved
+// credential onto the 3-scope resolvedEnv via applyResolvedCredential. A legacy
+// company-key patch must merge WITHOUT dropping model/cwd or the other scopes.
+describe("heartbeat resolver merge preserves 3-scope env", () => {
+  it("legacy company-key patch merges without dropping model/cwd", () => {
+    const cfg = { env: { PROJECT_KEY: "p" }, model: "opus", cwd: "/w" };
+    const out = applyResolvedCredential(cfg, {
+      source: "legacy",
+      envPatch: { ANTHROPIC_API_KEY: "sk-co" },
+    });
+    expect(out).toEqual({
+      env: { PROJECT_KEY: "p", ANTHROPIC_API_KEY: "sk-co" },
+      model: "opus",
+      cwd: "/w",
+    });
+  });
+});
 
 const chatgpt = { adapterType: "codex_local", installed: true, authenticated: true, authMode: "chatgpt" as const, defaultModelResolved: "gpt-5.5" };
 

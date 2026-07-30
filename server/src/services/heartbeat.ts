@@ -3037,15 +3037,118 @@ export function heartbeatService(db: Db) {
     // Everything in `resolvedEnv` — project and environment scopes included, not
     // just the agent's own binding — outranks the company default, which is what
     // "the company key is the LAST stop before the host CLI's own login" means.
-    const resolvedConfig = (await secretsSvc.applyCompanyKeyFallbackForRuntime(
-      agent.companyId,
-      agent.adapterType,
+    // Unified provider-credential resolution (Phase 4). The org heartbeat keeps its
+    // bespoke 3-scope `resolvedEnv` assembly above (project → environment → agent),
+    // then routes the company-key fallback THROUGH the resolver so the new
+    // provider_connections model wins when an assignment exists and the legacy
+    // ladder (company-key + subscription-home) stays byte-identical otherwise.
+    // Plan's stale local names (`heartbeatDeploymentMode`/`heartbeatDeploymentExposure`)
+    // do NOT exist here; deployment mode/exposure come from loadConfig() (the same
+    // source providers.ts uses to build the CLI-auth topology).
+    const { resolveProviderCredential, applyResolvedCredential, toExecutionTargetHint } =
+      await import("./provider-resolution.js");
+    const { buildResolveDeps } = await import("./provider-resolution-deps.js");
+    const { resolveCliAuthTopology } = await import("./cli-auth-topology.js");
+    const { loadConfig: loadHeartbeatDeployConfig } = await import("../config.js");
+    const heartbeatDeployConfig = loadHeartbeatDeployConfig();
+    const hbTopology = resolveCliAuthTopology({
+      deploymentMode: heartbeatDeployConfig.deploymentMode,
+      deploymentExposure: heartbeatDeployConfig.deploymentExposure,
+    });
+    const hbProviderId =
+      agent.adapterType === "codex_local"
+        ? "openai"
+        : agent.adapterType === "claude_local"
+          ? "anthropic"
+          : agent.adapterType;
+    const hbDeps = {
+      ...buildResolveDeps(db, hbTopology),
+      legacyResolveConfig: async (cfg: Record<string, unknown>) =>
+        secretsSvc.applyCompanyKeyFallbackForRuntime(
+          agent.companyId,
+          agent.adapterType,
+          cfg,
+          { consumerType: "agent", consumerId: agent.id, ...secretActorContext },
+        ),
+      // The former standalone subscription block (was heartbeat.ts :3991-4035)
+      // becomes the legacy subscription fallback, preserving the
+      // mayUseLegacySubscriptionHome semantics for unmigrated companies.
+      legacySubscriptionEnv: async () => {
+        if (hbProviderId !== "openai" && hbProviderId !== "anthropic") return null;
+        const cfgEnv = resolvedEnv as Record<string, string>;
+        const apiKeyName = hbProviderId === "openai" ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY";
+        if (typeof cfgEnv[apiKeyName] === "string" && cfgEnv[apiKeyName].trim().length > 0) {
+          return null;
+        }
+        const scopedRequired = /^(1|true|yes)$/i.test(
+          process.env.AOA_SCOPED_CLI_AUTH?.trim() ?? "",
+        );
+        // ── P5 REBASE TARGET ──────────────────────────────────────────────────
+        // The dedicated-target throw relocated here from the deleted standalone
+        // subscription block. Phase 5 must rebase its "dedicated-target throw
+        // replacement" onto THIS local-target branch (and/or the resolver's
+        // execution-target seam) — NOT the deleted :3991-4035 block, which is gone.
+        const targetConfig = parseObject(
+          (mergedConfigWithEnvironmentTarget as Record<string, unknown>).executionTarget,
+        );
+        const targetType = typeof targetConfig.type === "string" ? targetConfig.type : "local";
+        if (targetType !== "local" && scopedRequired) {
+          throw new Error(
+            "Governed subscription credentials currently require the dedicated local execution target.",
+          );
+        }
+        if (targetType !== "local") return null;
+        try {
+          const boundEnv = await resolveAgentSubscriptionEnvironment(db, {
+            companyId: agent.companyId,
+            agentId: agent.id,
+            provider: hbProviderId,
+            executionTargetId: process.env.AOA_EXECUTION_TARGET_ID?.trim() || "control-plane",
+          });
+          const out: Record<string, string> = {};
+          for (const [k, v] of Object.entries(boundEnv)) if (typeof v === "string") out[k] = v;
+          return out;
+        } catch (error) {
+          if (!mayUseLegacySubscriptionHome(error, scopedRequired)) throw error;
+          return null;
+        }
+      },
+    };
+    const hbResolved = await resolveProviderCredential(
+      db,
       {
-        ...mergedConfigWithEnvironmentTarget,
-        env: resolvedEnv,
-      } as Record<string, unknown>,
-      { consumerType: "agent", consumerId: agent.id, ...secretActorContext },
-    )) as Record<string, unknown>;
+        // organizationId null keeps org_default rows INERT (candidateMatchesScope
+        // fails closed on a null org id — M1). Threading the company's real
+        // organization_id here to activate org_default resolution is a follow-up;
+        // company_default + agent_override already work with null.
+        organizationId: null,
+        companyId: agent.companyId,
+        agentId: agent.id,
+        actorKind: "org",
+        adapterType: agent.adapterType,
+        provider: hbProviderId,
+        executionTargetId: process.env.AOA_EXECUTION_TARGET_ID?.trim() || "control-plane",
+        currentEnv: resolvedEnv as Record<string, string>,
+        context: { consumerType: "agent", consumerId: agent.id, ...secretActorContext },
+      },
+      hbDeps,
+    );
+    const resolvedConfig = applyResolvedCredential(
+      { ...mergedConfigWithEnvironmentTarget, env: resolvedEnv } as Record<string, unknown>,
+      hbResolved,
+    ) as Record<string, unknown>;
+
+    // P4→P5 SEAM (wired). Normalize the resolution for Phase 5's execution-target
+    // selector. P5 Task 9 will read `p4CredentialHint.credentialKind` +
+    // `p4CredentialHint.executionTargetSlug` instead of querying provider_credentials
+    // directly. There is no P5 run-context object on this branch yet, so it is a
+    // run-scoped LOCAL here (logged for observability) — a follow-up attaches it to
+    // the run context P5 threads. No field is fabricated on an unrelated object.
+    const p4CredentialHint = toExecutionTargetHint(hbResolved);
+    logger.debug(
+      { companyId: agent.companyId, agentId: agent.id, runId: run.id, p4CredentialHint },
+      "heartbeat: P4→P5 credential hint resolved (run-scope local; attach to P5 run context as a follow-up)",
+    );
 
     // ── Issue ref for execution workspace ───────────────────────────
     const issueRef = issueContext
@@ -3989,50 +4092,14 @@ export function heartbeatService(db: Db) {
 
       // ── Auto-enable skills mentioned in the issue body/comments ──────
       let runScopedConfig: Record<string, unknown> = resolvedConfigWithEnvironmentAcquisition;
-      const subscriptionProvider =
-        agent.adapterType === "codex_local"
-          ? "openai"
-          : agent.adapterType === "claude_local"
-            ? "anthropic"
-            : null;
-      const scopedCliAuthEnabled = /^(1|true|yes)$/i.test(
-        process.env.AOA_SCOPED_CLI_AUTH?.trim() ?? "",
-      );
-      if (subscriptionProvider) {
-        const configuredEnv = parseObject(runScopedConfig.env);
-        const apiKeyName =
-          subscriptionProvider === "openai" ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY";
-        const hasApiKey =
-          typeof configuredEnv[apiKeyName] === "string" &&
-          String(configuredEnv[apiKeyName]).trim().length > 0;
-        if (!hasApiKey) {
-          const targetConfig = parseObject(runScopedConfig.executionTarget);
-          const targetType =
-            typeof targetConfig.type === "string" ? targetConfig.type : "local";
-          if (targetType !== "local" && scopedCliAuthEnabled) {
-            throw new Error(
-              "Governed subscription credentials currently require the dedicated local execution target.",
-            );
-          }
-          if (targetType === "local") {
-            try {
-              const boundEnv = await resolveAgentSubscriptionEnvironment(db, {
-                companyId: agent.companyId,
-                agentId: agent.id,
-                provider: subscriptionProvider,
-                executionTargetId:
-                  process.env.AOA_EXECUTION_TARGET_ID?.trim() || "control-plane",
-              });
-              runScopedConfig = {
-                ...runScopedConfig,
-                env: { ...configuredEnv, ...boundEnv },
-              };
-            } catch (error) {
-              if (!mayUseLegacySubscriptionHome(error, scopedCliAuthEnabled)) throw error;
-            }
-          }
-        }
-      }
+      // Phase 4: the standalone subscription-home block that used to live here
+      // (company-key-present check → dedicated-target throw → resolveAgentSubscription
+      // Environment → mayUseLegacySubscriptionHome) has been folded into the unified
+      // resolver above — specifically the `legacySubscriptionEnv` closure of `hbDeps`,
+      // which the resolver's legacy fallback invokes. `resolvedConfig` (and therefore
+      // `runScopedConfig`) already carries any subscription-home env. The
+      // dedicated-target throw is preserved in that closure (marked "P5 REBASE
+      // TARGET"). Nothing else in this section changed.
       try {
         const mentionedSkillKeys = await resolveRunScopedMentionedSkillKeys(
           db,
