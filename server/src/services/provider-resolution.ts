@@ -85,3 +85,64 @@ export function orderCandidates<T extends Candidate>(candidates: readonly T[]): 
     return b.connectionUpdatedAt - a.connectionUpdatedAt;
   });
 }
+
+// `SharingPolicy` is already imported at the top of this file (Task 4); the plan's
+// Task-6 block re-imports it, which would be a duplicate identifier — only the new
+// value `isShareableAuthMethod` is imported here.
+import { isShareableAuthMethod } from "@armyofagents/shared";
+
+export type ProviderResolutionActor = "crew" | "org" | "commander";
+
+export interface GateInput {
+  authMethod: AuthMethod;
+  scopeType: AssignmentScopeType;
+  state: string;
+  termsAttestedAt: Date | null;
+  sharingPolicy: SharingPolicy;
+  actorKind: ProviderResolutionActor;
+  connectionCompanyId: string | null;
+  requestCompanyId: string;
+  connectionOwnerUserId: string | null;
+  /** The acting/owner user for this run (Commander user, or the target owner). */
+  requestOwnerUserId: string | null;
+}
+
+export interface GateResult {
+  ok: boolean;
+  reason?: string;
+}
+
+/**
+ * Static (non-subscription) fail-closed gates. The personal_subscription
+ * candidate ALSO runs chooseGovernedSubscriptionBinding downstream (owner-active,
+ * target match, exactly-one) — this gate only enforces the rules that need no DB
+ * join. A failing candidate is SKIPPED, not fatal (the caller tries the next).
+ */
+export function candidatePassesStaticGates(input: GateInput): GateResult {
+  if (input.state !== "verified") return { ok: false, reason: "state_not_verified" };
+  if (!input.termsAttestedAt) return { ok: false, reason: "terms_not_attested" };
+  // org/company defaults may only route shareable methods (locked decision).
+  if (
+    (input.scopeType === "org_default" || input.scopeType === "company_default") &&
+    !isShareableAuthMethod(input.authMethod)
+  ) {
+    return { ok: false, reason: "non_shareable_default" };
+  }
+  // Sharing policy.
+  switch (input.sharingPolicy) {
+    case "owner_only":
+      if (!input.requestOwnerUserId || input.requestOwnerUserId !== input.connectionOwnerUserId) {
+        return { ok: false, reason: "owner_only_mismatch" };
+      }
+      break;
+    case "company_agents":
+      if (input.connectionCompanyId && input.connectionCompanyId !== input.requestCompanyId) {
+        return { ok: false, reason: "company_scope_mismatch" };
+      }
+      break;
+    case "org_agents":
+      // org-scope enforced by the assignment query (organization_id filter); allow here.
+      break;
+  }
+  return { ok: true };
+}
