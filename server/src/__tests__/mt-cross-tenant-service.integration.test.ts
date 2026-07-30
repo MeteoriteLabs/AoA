@@ -13,13 +13,13 @@ import { sql } from "drizzle-orm";
 import { applyPendingMigrations, createDb, type Db } from "@armyofagents/db";
 import { assertCompanyAccess } from "../routes/authz.js";
 import { setDeploymentMode } from "../config/deployment-mode.js";
+import { allocateEmbeddedPgPort } from "./helpers/embedded-pg-port.js";
 
 type PG = { initialise(): Promise<void>; start(): Promise<void>; stop(): Promise<void> };
 let pg: PG | null = null;
 let dataDir = "";
 let db: Db;
 let setupError: unknown = null;
-const PORT = 55000 + Math.floor(Math.random() * 1000);
 const rows = (r: unknown) => (Array.isArray(r) ? r : (r as any).rows) as any[];
 let ORG1 = "", ORG2 = "", CO1 = "", CO2 = "", U1 = "", U2 = "";
 
@@ -27,10 +27,11 @@ beforeAll(async () => {
   try {
     dataDir = await mkdtemp(join(tmpdir(), "aoa-mt-xtenant-"));
     const { default: EmbeddedPostgres } = (await import("embedded-postgres")) as { default: any };
-    pg = new EmbeddedPostgres({ databaseDir: join(dataDir, "db"), user: "test", password: "test", port: PORT, persistent: false });
+    const port = await allocateEmbeddedPgPort();
+    pg = new EmbeddedPostgres({ databaseDir: join(dataDir, "db"), user: "test", password: "test", port, persistent: false });
     await pg.initialise();
     await pg.start();
-    const conn = `postgres://test:test@localhost:${PORT}/postgres`;
+    const conn = `postgres://test:test@localhost:${port}/postgres`;
     await applyPendingMigrations(conn);
     db = createDb(conn);
     setDeploymentMode("cloud_auth"); // strict tenant path

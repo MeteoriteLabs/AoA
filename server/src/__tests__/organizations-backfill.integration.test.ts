@@ -52,8 +52,27 @@ describe.skipIf(process.platform !== "linux")("0187 backfill — real DB", () =>
     const arr = Array.isArray(rows) ? rows : (rows as any).rows;
     expect(arr[0].organization_id).toBe(DEFAULT_ORGANIZATION_ID);
 
-    await expect(
-      db.execute(sql`INSERT INTO companies (name, issue_prefix) VALUES ('NoOrg', 'NUL')`),
-    ).rejects.toThrow(); // organization_id is NOT NULL
+    // The DB-level DEFAULT (sentinel org, migration 0187) makes an OMITTED
+    // organization_id succeed, so to genuinely exercise the NOT NULL constraint
+    // we must insert an EXPLICIT NULL — that bypasses the default and raises a
+    // 23502 not-null violation. (Drizzle wraps the driver error, so we assert on
+    // the pg error CODE reachable through the cause chain, not the message.)
+    const err = await db
+      .execute(
+        sql`INSERT INTO companies (name, issue_prefix, organization_id) VALUES ('NoOrg', 'NUL', NULL)`,
+      )
+      .then(
+        () => null,
+        (e: unknown) => e,
+      );
+    expect(err).not.toBeNull();
+    let pgCode: string | undefined;
+    for (let cur: any = err; cur; cur = cur.cause) {
+      if (cur.code) {
+        pgCode = cur.code;
+        break;
+      }
+    }
+    expect(pgCode).toBe("23502"); // not-null violation on organization_id
   });
 });
