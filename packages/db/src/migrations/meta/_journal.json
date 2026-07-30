@@ -1317,6 +1317,13 @@
       "when": 1785396268546,
       "tag": "0187_daily_liz_osborn",
       "breakpoints": true
+    },
+    {
+      "idx": 188,
+      "version": "7",
+      "when": 1785427867129,
+      "tag": "0188_wandering_klaw",
+      "breakpoints": true
     }
   ]
 }

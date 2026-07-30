@@ -58,6 +58,7 @@ import { llmRoutes } from "./routes/llms.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { memoryRoutes } from "./routes/memory.js";
+import { memorySettingsRoutes } from "./routes/memory-settings.js";
 import { searchRoutes } from "./routes/search.js";
 import { debriefRoutes } from "./routes/debriefs.js";
 import { briefRoutes } from "./routes/briefs.js";
@@ -332,6 +333,7 @@ export async function createApp(
   api.use(memoryAssetsUploadRoutes({ db, storageService: opts.storageService }));
   api.use(memoryAssetRenderRoutes({ db, storageService: opts.storageService }));
   api.use(memoryRoutes(db));
+  api.use(memorySettingsRoutes(db));
   api.use(searchRoutes(db));
   api.use(debriefRoutes(db));
   api.use(briefRoutes(db));
