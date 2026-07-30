@@ -210,6 +210,8 @@ export interface ResolveDeps {
   /** LEGACY subscription home (heartbeat block), or null when N/A. */
   legacySubscriptionEnv: () => Promise<Record<string, string> | null>;
   selfHostedSingleTenant: boolean;
+  /** AOA_PROVIDER_RESOLVER=legacy → skip the new-model read (Steps 1-3). */
+  bypassNewModel: boolean;
 }
 
 export type ResolvedProviderCredential =
@@ -297,8 +299,11 @@ export async function resolveProviderCredential(
     return { source: "agent_env_override" };
   }
 
-  // Step 1 — assignment lookup (new model).
-  const rows = await deps.loadCandidateRows(db, args);
+  // Step 1 — assignment lookup (new model), UNLESS the kill-switch is set. When
+  // AOA_PROVIDER_RESOLVER=legacy, the new-model read (Steps 1-3) is skipped
+  // entirely and resolution falls straight through to the legacy ladder (Step 4),
+  // reproducing today's behavior with no redeploy. Step 0 still runs first.
+  const rows = deps.bypassNewModel ? [] : await deps.loadCandidateRows(db, args);
   const ordered = orderCandidates(rows);
 
   // Step 2 — first candidate that passes all gates wins. Track the last rejection

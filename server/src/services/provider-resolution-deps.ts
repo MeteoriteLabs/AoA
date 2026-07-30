@@ -127,5 +127,10 @@ export function buildResolveDeps(db: Db, topology: CliAuthTopology): ResolveDeps
     },
 
     selfHostedSingleTenant: topology.trustBoundary !== "multi_tenant",
+
+    // Dark-launch kill-switch: AOA_PROVIDER_RESOLVER=legacy skips the new-model
+    // candidate read so every run resolves exactly as it does today (legacy
+    // ladder only) with no redeploy.
+    bypassNewModel: (process.env.AOA_PROVIDER_RESOLVER?.trim().toLowerCase() ?? "") === "legacy",
   };
 }
