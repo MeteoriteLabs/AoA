@@ -1331,6 +1331,13 @@
       "when": 1785415824435,
       "tag": "0189_charming_lady_deathstrike",
       "breakpoints": true
+    },
+    {
+      "idx": 190,
+      "version": "7",
+      "when": 1785424440206,
+      "tag": "0190_hot_punisher",
+      "breakpoints": true
     }
   ]
 }

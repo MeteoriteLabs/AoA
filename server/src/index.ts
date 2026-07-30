@@ -647,6 +647,8 @@ const workQuestionSnapshotBackfill = await backfillWorkQuestionSnapshots(db as a
 if (workQuestionSnapshotBackfill.updated > 0) {
   logger.info(workQuestionSnapshotBackfill, "work-question identity snapshot backfill complete");
 }
+const { ensureControlPlaneExecutionTarget } = await import("./services/execution-targets.js");
+await ensureControlPlaneExecutionTarget(db as any);
 const app = await createApp(db as any, {
   uiMode,
   storageService,

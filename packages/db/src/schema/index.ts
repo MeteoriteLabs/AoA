@@ -137,6 +137,7 @@ export {
 export { providerConnections, providerAssignments } from "./provider_connections.js";
 export { providerReadinessStatus } from "./provider_readiness_status.js";
 export { executionWorkspaces } from "./execution_workspaces.js";
+export { executionTargets } from "./execution_targets.js";
 export { environments } from "./environments.js";
 export { onboardingProgress } from "./onboarding_progress.js";
 export { userProfiles, type UserProfileSocialLink } from "./user_profiles.js";
