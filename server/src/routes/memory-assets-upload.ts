@@ -22,6 +22,7 @@ interface RoutesOptions {
 
 export function memoryAssetsUploadRoutes(opts: RoutesOptions) {
   const router = Router();
+  const db = opts.db!;
   const assets = opts.assetsService ?? memoryAssetsService(opts.db!);
   const storage = opts.storage ?? opts.storageService;
 
@@ -44,7 +45,7 @@ export function memoryAssetsUploadRoutes(opts: RoutesOptions) {
     async (req, res, next) => {
       try {
         const companyId = req.params.companyId as string;
-        assertCompanyAccess(req, companyId);
+        await assertCompanyAccess(db, req, companyId);
         if (opts.db) await assertRole(opts.db, req, companyId, "team_lead");
 
         try {

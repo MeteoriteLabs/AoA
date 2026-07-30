@@ -65,7 +65,7 @@ async function resolveWorkspaceGit(
     return null;
   }
 
-  assertCompanyAccess(req, workspace.companyId);
+  await assertCompanyAccess(db, req, workspace.companyId);
 
   if (opts?.requireControl) {
     await assertCanControlWorkspace(db, req, {
@@ -244,7 +244,7 @@ export function workspaceGitRoutes(db: Db) {
       return;
     }
 
-    assertCompanyAccess(req, workspace.companyId);
+    await assertCompanyAccess(db, req, workspace.companyId);
 
     const safety = await getWorkspaceMutationSafety(db, workspace.id);
     res.json(safety);

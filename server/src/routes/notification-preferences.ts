@@ -35,7 +35,7 @@ export function notificationPreferenceRoutes(db: Db) {
 
   router.get("/companies/:companyId/notifications/preferences/me", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const userId = requireBoardUserId(req);
     res.json(await preferences.get(userId, companyId));
   });
@@ -45,7 +45,7 @@ export function notificationPreferenceRoutes(db: Db) {
     validate(updateNotificationPreferencesSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const userId = requireBoardUserId(req);
       const result = await preferences.upsert(userId, companyId, req.body);
       await logActivity(db, {
@@ -62,7 +62,7 @@ export function notificationPreferenceRoutes(db: Db) {
 
   router.post("/companies/:companyId/notifications/preferences/me/reset", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const userId = requireBoardUserId(req);
     const result = await preferences.reset(userId, companyId);
     await logActivity(db, {
@@ -78,7 +78,7 @@ export function notificationPreferenceRoutes(db: Db) {
 
   router.get("/companies/:companyId/notifications/digest/me", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const userId = requireBoardUserId(req);
     const role = await resolveRole(req, companyId, userId);
     res.json(await digest.listForUser({ companyId, userId, role }));
@@ -86,7 +86,7 @@ export function notificationPreferenceRoutes(db: Db) {
 
   router.post("/companies/:companyId/notifications/digest/me/ack", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const userId = requireBoardUserId(req);
     const result = await digest.ackForUser({ companyId, userId });
     await logActivity(db, {

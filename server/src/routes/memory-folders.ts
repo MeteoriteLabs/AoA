@@ -16,6 +16,7 @@ interface RoutesOptions {
 
 export function memoryFoldersRoutes(opts: RoutesOptions) {
   const router = Router();
+  const db = opts.db!;
   const svc = opts.svc ?? memoryFoldersService(opts.db!);
 
   // GET list
@@ -24,7 +25,7 @@ export function memoryFoldersRoutes(opts: RoutesOptions) {
     async (req: Request, res: Response, next) => {
       try {
         const companyId = req.params.companyId as string;
-        assertCompanyAccess(req, companyId);
+        await assertCompanyAccess(db, req, companyId);
         const departmentId =
           typeof req.query.departmentId === "string" ? req.query.departmentId : undefined;
         const list = await svc.list({ companyId, departmentId });
@@ -41,7 +42,7 @@ export function memoryFoldersRoutes(opts: RoutesOptions) {
     async (req: Request, res: Response, next) => {
       try {
         const companyId = req.params.companyId as string;
-        assertCompanyAccess(req, companyId);
+        await assertCompanyAccess(db, req, companyId);
         if (opts.db) await assertRole(opts.db, req, companyId, "team_lead");
         const parsed = memoryFolderCreateSchema.safeParse(req.body);
         if (!parsed.success) {
@@ -63,7 +64,7 @@ export function memoryFoldersRoutes(opts: RoutesOptions) {
       try {
         const companyId = req.params.companyId as string;
         const id = req.params.id as string;
-        assertCompanyAccess(req, companyId);
+        await assertCompanyAccess(db, req, companyId);
         if (opts.db) await assertRole(opts.db, req, companyId, "team_lead");
         const parsed = memoryFolderUpdateSchema.safeParse(req.body);
         if (!parsed.success) {
@@ -89,7 +90,7 @@ export function memoryFoldersRoutes(opts: RoutesOptions) {
       try {
         const companyId = req.params.companyId as string;
         const id = req.params.id as string;
-        assertCompanyAccess(req, companyId);
+        await assertCompanyAccess(db, req, companyId);
         if (opts.db) await assertRole(opts.db, req, companyId, "team_lead");
         await svc.remove(id, companyId);
         res.status(204).end();

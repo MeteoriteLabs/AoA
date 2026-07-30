@@ -70,7 +70,7 @@ export function projectGitRoutes(db: Db) {
 
   router.get("/companies/:companyId/projects/:projectId/git/graph", async (req, res) => {
     const { companyId, projectId } = req.params as { companyId: string; projectId: string };
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     const cacheKey = projectGitCacheKey(companyId, projectId);
     const cached = graphCache.get(cacheKey);
@@ -262,7 +262,7 @@ export function projectGitRoutes(db: Db) {
 
   router.get("/companies/:companyId/projects/:projectId/git/enrich", async (req, res) => {
     const { companyId, projectId } = req.params as { companyId: string; projectId: string };
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     const cacheKey = projectGitCacheKey(companyId, projectId);
     const cached = enrichCache.get(cacheKey);

@@ -17,7 +17,7 @@ export function goalRoutes(db: Db) {
 
   router.get("/companies/:companyId/goals", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const projectId = req.query.projectId as string | undefined;
     const result = await svc.list(companyId, projectId);
     res.json(result);
@@ -26,7 +26,7 @@ export function goalRoutes(db: Db) {
   // Goals enriched with parentIds + rolled-up progress (Objectives tree).
   router.get("/companies/:companyId/goals/tree", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const result = await svc.listForTree(companyId);
     res.json(result);
   });
@@ -38,13 +38,13 @@ export function goalRoutes(db: Db) {
       res.status(404).json({ error: "Goal not found" });
       return;
     }
-    assertCompanyAccess(req, goal.companyId);
+    await assertCompanyAccess(db, req, goal.companyId);
     res.json(goal);
   });
 
   router.post("/companies/:companyId/goals", validate(createGoalSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     await assertRole(db, req, companyId, "founder", "team_lead");
 
     // Company-wide goals have no projects; scoped goals carry projectIds. The
@@ -81,7 +81,7 @@ export function goalRoutes(db: Db) {
       res.status(404).json({ error: "Goal not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(db, req, existing.companyId);
     await assertRole(db, req, existing.companyId, "founder", "team_lead");
     let goal;
     try {
@@ -140,7 +140,7 @@ export function goalRoutes(db: Db) {
       res.status(404).json({ error: "Goal not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(db, req, existing.companyId);
     await assertRole(db, req, existing.companyId, "founder", "team_lead");
     const parentIds = Array.isArray(req.body?.parentIds)
       ? (req.body.parentIds as string[])
@@ -176,7 +176,7 @@ export function goalRoutes(db: Db) {
       res.status(404).json({ error: "Goal not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(db, req, existing.companyId);
     await assertRole(db, req, existing.companyId, "founder", "team_lead");
     const goal = await svc.remove(id);
     if (!goal) {

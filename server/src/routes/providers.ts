@@ -417,7 +417,7 @@ export function providerRoutes(db: Db): Router {
       res.status(401).json({ error: "authentication required" });
       return null;
     }
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     await assertRole(db, req, companyId, "founder");
     return actor.userId;
   }
@@ -428,7 +428,7 @@ export function providerRoutes(db: Db): Router {
    * Providers tab and the agent page cannot disagree about who sees a badge.
    */
   async function assertCanReadConfigurations(req: Request, companyId: string): Promise<void> {
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     if (req.actor.type === "board") {
       if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
       if (await access.canUser(companyId, req.actor.userId, "agents:create")) return;

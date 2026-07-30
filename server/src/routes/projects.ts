@@ -61,7 +61,7 @@ export function projectRoutes(db: Db) {
         ? companyIdQuery.trim()
         : null;
     if (requestedCompanyId) {
-      assertCompanyAccess(req, requestedCompanyId);
+      await assertCompanyAccess(db, req, requestedCompanyId);
       return requestedCompanyId;
     }
     if (req.actor.type === "agent" && req.actor.companyId) {
@@ -92,7 +92,7 @@ export function projectRoutes(db: Db) {
 
   router.get("/companies/:companyId/projects", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const type = typeof req.query.type === "string" ? req.query.type : undefined;
     const result = await svc.list(companyId, { type });
     res.json(result);
@@ -105,7 +105,7 @@ export function projectRoutes(db: Db) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
-    assertCompanyAccess(req, project.companyId);
+    await assertCompanyAccess(db, req, project.companyId);
     res.json({
       ...project,
       executionWorkspacePolicy: gateProjectExecutionWorkspacePolicy(
@@ -117,7 +117,7 @@ export function projectRoutes(db: Db) {
 
   router.post("/companies/:companyId/projects", validate(createProjectSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     if (
       "agentCompletionPolicyDefault" in req.body ||
       "humanQuestionSlaHours" in req.body
@@ -201,7 +201,7 @@ export function projectRoutes(db: Db) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(db, req, existing.companyId);
     if (
       "agentCompletionPolicyDefault" in req.body ||
       "humanQuestionSlaHours" in req.body
@@ -258,7 +258,7 @@ export function projectRoutes(db: Db) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(db, req, existing.companyId);
     const workspaces = await svc.listWorkspaces(id);
     res.json(workspaces);
   });
@@ -270,7 +270,7 @@ export function projectRoutes(db: Db) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(db, req, existing.companyId);
     const workspace = await svc.createWorkspace(id, req.body);
     if (!workspace) {
       res.status(422).json({ error: "Invalid project workspace payload" });
@@ -309,7 +309,7 @@ export function projectRoutes(db: Db) {
         res.status(404).json({ error: "Project not found" });
         return;
       }
-      assertCompanyAccess(req, existing.companyId);
+      await assertCompanyAccess(db, req, existing.companyId);
       const workspaceExists = (await svc.listWorkspaces(id)).some((workspace) => workspace.id === workspaceId);
       if (!workspaceExists) {
         res.status(404).json({ error: "Project workspace not found" });
@@ -349,7 +349,7 @@ export function projectRoutes(db: Db) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(db, req, existing.companyId);
     const workspace = await svc.removeWorkspace(id, workspaceId);
     if (!workspace) {
       res.status(404).json({ error: "Project workspace not found" });
@@ -384,7 +384,7 @@ export function projectRoutes(db: Db) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
-    assertCompanyAccess(req, project.companyId);
+    await assertCompanyAccess(db, req, project.companyId);
     res.json({ env: project.env ?? null });
   });
 
@@ -395,7 +395,7 @@ export function projectRoutes(db: Db) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
-    assertCompanyAccess(req, project.companyId);
+    await assertCompanyAccess(db, req, project.companyId);
     const bodyEnv = req.body?.env ?? null;
     if (bodyEnv !== null) {
       const parsed = envConfigSchema.safeParse(bodyEnv);
@@ -424,7 +424,7 @@ export function projectRoutes(db: Db) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(db, req, existing.companyId);
 
     let project;
     try {
@@ -465,7 +465,7 @@ export function projectRoutes(db: Db) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
-    assertCompanyAccess(req, project.companyId);
+    await assertCompanyAccess(db, req, project.companyId);
 
     const rows = await db
       .select({
@@ -497,7 +497,7 @@ export function projectRoutes(db: Db) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
-    assertCompanyAccess(req, project.companyId);
+    await assertCompanyAccess(db, req, project.companyId);
 
     // Verify agent exists and belongs to same company
     const agent = await db
@@ -542,7 +542,7 @@ export function projectRoutes(db: Db) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
-    assertCompanyAccess(req, project.companyId);
+    await assertCompanyAccess(db, req, project.companyId);
 
     const deleted = await db
       .delete(agentProjects)
@@ -579,7 +579,7 @@ export function projectRoutes(db: Db) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
-    assertCompanyAccess(req, project.companyId);
+    await assertCompanyAccess(db, req, project.companyId);
 
     // Current month boundaries
     const now = new Date();

@@ -100,7 +100,7 @@ export function approvalRoutes(db: Db) {
 
   router.get("/companies/:companyId/approvals", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const status = req.query.status as string | undefined;
     const result = await svc.list(companyId, status);
     res.json(result.map((approval) => redactApprovalPayload(approval)));
@@ -113,13 +113,13 @@ export function approvalRoutes(db: Db) {
       res.status(404).json({ error: "Approval not found" });
       return;
     }
-    assertCompanyAccess(req, approval.companyId);
+    await assertCompanyAccess(db, req, approval.companyId);
     res.json(redactApprovalPayload(approval));
   });
 
   router.post("/companies/:companyId/approvals", validate(createApprovalSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const rawIssueIds = req.body.issueIds;
     const issueIds = Array.isArray(rawIssueIds)
       ? rawIssueIds.filter((value: unknown): value is string => typeof value === "string")
@@ -183,7 +183,7 @@ export function approvalRoutes(db: Db) {
       res.status(404).json({ error: "Approval not found" });
       return;
     }
-    assertCompanyAccess(req, approval.companyId);
+    await assertCompanyAccess(db, req, approval.companyId);
     const issues = await issueApprovalsSvc.listIssuesForApproval(id);
     res.json(issues);
   });
@@ -196,7 +196,7 @@ export function approvalRoutes(db: Db) {
       res.status(404).json({ error: "Approval not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(db, req, existing.companyId);
     // FU-17 — connector installs are founder/team_lead only. Type-scoped.
     await assertMayResolveApproval(db, req, existing);
 
@@ -326,7 +326,7 @@ export function approvalRoutes(db: Db) {
       res.status(404).json({ error: "Approval not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(db, req, existing.companyId);
     // FU-17 — a member who cannot approve but CAN reject still controls the
     // outcome, so the same gate applies here.
     await assertMayResolveApproval(db, req, existing);
@@ -377,7 +377,7 @@ export function approvalRoutes(db: Db) {
         res.status(404).json({ error: "Approval not found" });
         return;
       }
-      assertCompanyAccess(req, existing.companyId);
+      await assertCompanyAccess(db, req, existing.companyId);
       // FU-17 — for install_mcp_connector this is IRREVERSIBLE (the type is on
       // SYSTEM_INTERNAL_APPROVAL_TYPES, so it can never be resubmitted), which
       // makes it a stronger veto than reject. Same gate.
@@ -431,7 +431,7 @@ export function approvalRoutes(db: Db) {
       res.status(404).json({ error: "Approval not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(db, req, existing.companyId);
 
     // FU-18 — resubmit must be gated to "board OR the requesting agent".
     // `assertCompanyAccess` above only rejects `none` (401) and cross-company
@@ -492,7 +492,7 @@ export function approvalRoutes(db: Db) {
       res.status(404).json({ error: "Approval not found" });
       return;
     }
-    assertCompanyAccess(req, approval.companyId);
+    await assertCompanyAccess(db, req, approval.companyId);
     const comments = await svc.listComments(id);
     res.json(comments);
   });
@@ -504,7 +504,7 @@ export function approvalRoutes(db: Db) {
       res.status(404).json({ error: "Approval not found" });
       return;
     }
-    assertCompanyAccess(req, approval.companyId);
+    await assertCompanyAccess(db, req, approval.companyId);
     const actor = getActorInfo(req);
     const comment = await svc.addComment(id, req.body.body, {
       agentId: actor.agentId ?? undefined,

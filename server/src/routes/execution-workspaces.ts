@@ -52,7 +52,7 @@ export function executionWorkspaceRoutes(db: Db) {
   router.get("/companies/:companyId/execution-workspaces", async (req, res) => {
     if (!(await assertIsolatedWorkspacesEnabled(res))) return;
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const filters = {
       projectId: req.query.projectId as string | undefined,
       projectWorkspaceId: req.query.projectWorkspaceId as string | undefined,
@@ -77,7 +77,7 @@ export function executionWorkspaceRoutes(db: Db) {
       res.status(404).json({ error: "Execution workspace not found" });
       return;
     }
-    assertCompanyAccess(req, workspace.companyId);
+    await assertCompanyAccess(db, req, workspace.companyId);
     res.json(workspace);
   });
 
@@ -89,7 +89,7 @@ export function executionWorkspaceRoutes(db: Db) {
       res.status(404).json({ error: "Execution workspace not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(db, req, existing.companyId);
     await assertCanControlWorkspace(db, req, {
       companyId: existing.companyId,
       projectId: existing.projectId ?? null,
@@ -259,7 +259,7 @@ export function executionWorkspaceRoutes(db: Db) {
       res.status(404).json({ error: "Execution workspace not found" });
       return;
     }
-    assertCompanyAccess(req, workspace.companyId);
+    await assertCompanyAccess(db, req, workspace.companyId);
     const services = await db
       .select()
       .from(workspaceRuntimeServices)
@@ -284,7 +284,7 @@ export function executionWorkspaceRoutes(db: Db) {
       res.status(404).json({ error: "Execution workspace not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(db, req, existing.companyId);
     const readiness = await svc.getCloseReadiness(id);
     if (!readiness) {
       res.status(404).json({ error: "Execution workspace not found" });
@@ -301,7 +301,7 @@ export function executionWorkspaceRoutes(db: Db) {
       res.status(404).json({ error: "Execution workspace not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(db, req, existing.companyId);
 
     const rawLimit = Number(req.query.limit);
     const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 500) : 100;
@@ -323,7 +323,7 @@ export function executionWorkspaceRoutes(db: Db) {
       res.status(404).json({ error: "Execution workspace not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(db, req, existing.companyId);
     await assertCanControlWorkspace(db, req, {
       companyId: existing.companyId,
       projectId: existing.projectId ?? null,

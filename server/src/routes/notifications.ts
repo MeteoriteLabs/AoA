@@ -11,7 +11,7 @@ export function notificationRoutes(db: Db) {
   // List notifications for current user
   router.get("/companies/:companyId/notifications", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     const actor = getActorInfo(req);
     const unreadOnly = req.query.unreadOnly === "true";
@@ -25,7 +25,7 @@ export function notificationRoutes(db: Db) {
     "/companies/:companyId/notifications/unread-count",
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
 
       const actor = getActorInfo(req);
       const count = await svc.getUnreadCount(companyId, actor.actorId);
@@ -39,7 +39,7 @@ export function notificationRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const id = req.params.id as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
 
       const actor = getActorInfo(req);
       try {
@@ -61,7 +61,7 @@ export function notificationRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const id = req.params.id as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
 
       const actor = getActorInfo(req);
       try {

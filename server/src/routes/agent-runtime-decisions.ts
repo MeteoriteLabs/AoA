@@ -74,7 +74,7 @@ export function agentRuntimeDecisionRoutes(db: Db) {
 
   router.get("/companies/:companyId/agent-runtime-decisions/trust-rules", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const userId = requireBoardUserId(req);
     await requireFounderAuthority(req, companyId, userId);
 
@@ -88,7 +88,7 @@ export function agentRuntimeDecisionRoutes(db: Db) {
   router.delete("/companies/:companyId/agent-runtime-decisions/trust-rules/:ruleId", async (req, res) => {
     const companyId = req.params.companyId as string;
     const ruleId = req.params.ruleId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const userId = requireBoardUserId(req);
     await requireFounderAuthority(req, companyId, userId);
 
@@ -103,7 +103,7 @@ export function agentRuntimeDecisionRoutes(db: Db) {
   router.get("/companies/:companyId/agent-runtime-decisions/:id", async (req, res) => {
     const companyId = req.params.companyId as string;
     const decisionId = req.params.id as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const userId = requireBoardUserId(req);
     await assertFounderOrVisibleRuntimeDecision(req, companyId, decisionId, userId);
 
@@ -117,7 +117,7 @@ export function agentRuntimeDecisionRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const decisionId = req.params.id as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const userId = requireBoardUserId(req);
       await requireFounderAuthority(req, companyId, userId);
 

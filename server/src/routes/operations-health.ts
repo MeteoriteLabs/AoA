@@ -19,7 +19,7 @@ export function operationsHealthRoutes(db: Db, opts: OperationsHealthRouteOption
 
   router.get("/companies/:companyId/health", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     res.json(await buildCompanyHealthReport(db, companyId, opts));
   });
 

@@ -9,7 +9,7 @@ export function quotaRoutes(db: Db) {
 
   router.get("/companies/:companyId/quotas", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const rows = await quotas.list(companyId);
     res.json(rows);
   });
@@ -18,7 +18,7 @@ export function quotaRoutes(db: Db) {
   // that expose getQuotaWindows(); with it, refresh that single adapter only.
   router.post("/companies/:companyId/quotas/refresh", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const adapterType =
       typeof req.body?.adapterType === "string" ? req.body.adapterType.trim() : "";
     const rows = adapterType

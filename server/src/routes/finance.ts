@@ -30,7 +30,7 @@ export function financeRoutes(db: Db) {
     validate(createFinanceEventSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       // rbac: instance-admin-not-required — assertCompanyAccess on the line above already enforces scope; assertBoard rejects non-board (agent/mcp) actors from posting finance events.
       assertBoard(req);
 
@@ -63,7 +63,7 @@ export function financeRoutes(db: Db) {
 
   router.get("/companies/:companyId/finance/summary", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const range = parseDateRange(req.query);
     const summary = await finance.summary(companyId, range);
     res.json(summary);
@@ -71,7 +71,7 @@ export function financeRoutes(db: Db) {
 
   router.get("/companies/:companyId/finance/by-biller", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const range = parseDateRange(req.query);
     const rows = await finance.byBiller(companyId, range);
     res.json(rows);
@@ -79,7 +79,7 @@ export function financeRoutes(db: Db) {
 
   router.get("/companies/:companyId/finance/by-kind", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const range = parseDateRange(req.query);
     const rows = await finance.byKind(companyId, range);
     res.json(rows);
@@ -87,7 +87,7 @@ export function financeRoutes(db: Db) {
 
   router.get("/companies/:companyId/finance/list", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const range = parseDateRange(req.query);
     const options = parseListOptions(req.query);
     const rows = await finance.list(companyId, range, options);

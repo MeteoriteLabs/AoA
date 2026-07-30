@@ -188,7 +188,7 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
   router.get("/settings", async (req, res) => {
     assertBoard(req);
     const companyId = (req.params as Record<string, string>).companyId;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     const settings = await svc.get(companyId);
     res.json(settings);
@@ -197,7 +197,7 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
   router.patch("/settings", async (req, res) => {
     assertBoard(req);
     const companyId = (req.params as Record<string, string>).companyId;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     const parsed = MarketplaceSettingsPatchSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -214,7 +214,7 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
   router.get("/updates", async (req, res) => {
     assertBoard(req);
     const companyId = (req.params as Record<string, string>).companyId;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     const typeFilter = req.query.type as string | undefined;
     const conditions = [
@@ -234,7 +234,7 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
   router.post("/updates/:id/dismiss", async (req, res) => {
     assertBoard(req);
     const companyId = (req.params as Record<string, string>).companyId;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     const { id } = req.params as { id: string };
     await db
@@ -253,7 +253,7 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
   router.post("/updates/:id/apply", async (req, res) => {
     assertBoard(req);
     const companyId = (req.params as Record<string, string>).companyId;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     const { id } = req.params as { id: string };
     const [update] = await db
@@ -455,7 +455,7 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
   router.get("/updates/:id/diff", async (req, res) => {
     assertBoard(req);
     const companyId = (req.params as Record<string, string>).companyId;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     const { id } = req.params as { id: string };
     const [update] = await db
@@ -564,7 +564,7 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
   router.post("/updates/:id/merge", async (req, res) => {
     assertBoard(req);
     const companyId = (req.params as Record<string, string>).companyId;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     const { id } = req.params as { id: string };
     const { decisions, snapshotToken } = req.body as {
@@ -743,7 +743,7 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
   router.post("/crew/repair", async (req, res) => {
     assertBoard(req);
     const companyId = (req.params as Record<string, string>).companyId;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     await assertRole(db, req, companyId, "founder");
 
     const catalog = await deps.catalogService.readCache();
@@ -780,7 +780,7 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
   router.post("/request-install", async (req, res) => {
     assertBoard(req);
     const companyId = (req.params as Record<string, string>).companyId;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     const { catalogItemId } = req.body as { catalogItemId?: string };
     if (!catalogItemId) {

@@ -35,7 +35,7 @@ export function taskOutputRoutes(db: Db) {
     const issueId = req.params.issueId as string;
     const issue = await getIssueCompanyId(db, issueId);
     if (!issue) throw notFound("Task not found");
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(db, req, issue.companyId);
 
     await backfillSvc.backfillIssueIfEmpty(issue.companyId, issueId);
     const result = await svc.listForIssue(issue.companyId, issueId);
@@ -49,7 +49,7 @@ export function taskOutputRoutes(db: Db) {
       const issueId = req.params.issueId as string;
       const issue = await getIssueCompanyId(db, issueId);
       if (!issue) throw notFound("Task not found");
-      assertCompanyAccess(req, issue.companyId);
+      await assertCompanyAccess(db, req, issue.companyId);
 
       const output = await svc.upsertForIssue(issue.companyId, issueId, req.body);
       const actor = getActorInfo(req);
@@ -78,7 +78,7 @@ export function taskOutputRoutes(db: Db) {
     const id = req.params.id as string;
     const row = await getTaskOutputCompanyId(db, id);
     if (!row) throw notFound("Task output not found");
-    assertCompanyAccess(req, row.companyId);
+    await assertCompanyAccess(db, req, row.companyId);
 
     const output = await svc.getById(row.companyId, id);
     if (!output) throw notFound("Task output not found");
@@ -92,7 +92,7 @@ export function taskOutputRoutes(db: Db) {
       const id = req.params.id as string;
       const row = await getTaskOutputCompanyId(db, id);
       if (!row) throw notFound("Task output not found");
-      assertCompanyAccess(req, row.companyId);
+      await assertCompanyAccess(db, req, row.companyId);
 
       const output = await svc.updateMutable(row.companyId, id, req.body);
       if (!output) throw notFound("Task output not found");

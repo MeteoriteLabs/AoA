@@ -66,7 +66,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
 
   router.post("/companies/:companyId/assets/images", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     try {
       await runSingleFileUpload(req, res);
@@ -175,7 +175,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
 
   router.post("/companies/:companyId/assets/files", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     try {
       await runSingleFileUploadLarge(req, res);
@@ -297,7 +297,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
   // ── Logo upload ─────────────────────────────────────────────────────
   router.post("/companies/:companyId/logo", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     try {
       await runSingleFileUpload(req, res);
@@ -371,7 +371,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
 
   router.delete("/companies/:companyId/logo", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     await db.update(companies).set({ logoAssetId: null }).where(eq(companies.id, companyId));
 
@@ -388,7 +388,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
       res.status(404).json({ error: "Asset not found" });
       return;
     }
-    assertCompanyAccess(req, asset.companyId);
+    await assertCompanyAccess(db, req, asset.companyId);
 
     res.json({
       id: asset.id,
@@ -406,7 +406,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
       res.status(404).json({ error: "Asset not found" });
       return;
     }
-    assertCompanyAccess(req, asset.companyId);
+    await assertCompanyAccess(db, req, asset.companyId);
 
     const object = await storage.getObject(asset.companyId, asset.objectKey);
     const safe = getSafeServingHeaders(
@@ -443,7 +443,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
         res.status(404).json({ error: "Asset not found" });
         return;
       }
-      assertCompanyAccess(req, asset.companyId);
+      await assertCompanyAccess(db, req, asset.companyId);
 
       const contentType = (asset.contentType || "").toLowerCase();
       if (contentType !== DOCX_MIME && contentType !== XLSX_MIME) {

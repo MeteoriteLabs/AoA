@@ -99,7 +99,7 @@ export async function resolvePreviewRuntimeService(
 ) {
   const resolved = await resolvePreviewRuntimeServiceRow(db, serviceId);
   if (!resolved.ok) return resolved;
-  assertCompanyAccess(req, resolved.row.companyId);
+  await assertCompanyAccess(db, req, resolved.row.companyId);
   return resolved;
 }
 

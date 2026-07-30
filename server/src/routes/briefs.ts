@@ -13,7 +13,7 @@ export function briefRoutes(db: Db) {
   router.get("/companies/:companyId/briefs", async (req, res) => {
     res.set("X-Deprecated", "Use /discussions instead");
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const { status, departmentId } = req.query as Record<string, string | undefined>;
     const result = await svc.list(companyId, { status, departmentId });
     res.json(result);
@@ -23,7 +23,7 @@ export function briefRoutes(db: Db) {
     res.set("X-Deprecated", "Use /discussions instead");
     const companyId = req.params.companyId as string;
     const id = req.params.id as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const brief = await svc.getById(companyId, id);
     if (!brief) {
       res.status(404).json({ error: "Brief not found" });
@@ -39,7 +39,7 @@ export function briefRoutes(db: Db) {
       res.set("X-Deprecated", "Use /discussions instead");
       const companyId = req.params.companyId as string;
       const id = req.params.id as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
 
       const brief = await svc.updateBrief(companyId, id, req.body);
       if (!brief) {
@@ -72,7 +72,7 @@ export function briefRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       const briefId = req.params.briefId as string;
       const itemId = req.params.itemId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
 
       const originalItem = await svc.getItemById(briefId, itemId);
       const item = await svc.updateItemStatus(companyId, briefId, itemId, req.body);
@@ -109,7 +109,7 @@ export function briefRoutes(db: Db) {
     res.set("X-Deprecated", "Use /discussions instead");
     const companyId = req.params.companyId as string;
     const briefId = req.params.id as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     await assertRole(db, req, companyId, "founder");
     const actor = getActorInfo(req);
 

@@ -1643,7 +1643,7 @@ export function accessRoutes(
     companyId: string,
     permissionKey: any
   ) {
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     if (req.actor.type === "agent") {
       if (!req.actor.agentId) throw forbidden();
       const allowed = await access.hasPermission(

@@ -21,6 +21,7 @@ interface RoutesOptions {
 
 export function memoryAssetsRoutes(opts: RoutesOptions) {
   const router = Router();
+  const db = opts.db!;
   const svc = opts.svc ?? memoryAssetsService(opts.db!);
   const storage: StorageSeam | undefined = opts.storage ?? opts.storageService;
 
@@ -30,7 +31,7 @@ export function memoryAssetsRoutes(opts: RoutesOptions) {
     async (req: Request, res: Response, next) => {
       try {
         const companyId = req.params.companyId as string;
-        assertCompanyAccess(req, companyId);
+        await assertCompanyAccess(db, req, companyId);
         const departmentId =
           typeof req.query.departmentId === "string" ? req.query.departmentId : undefined;
         const folderPath =
@@ -52,7 +53,7 @@ export function memoryAssetsRoutes(opts: RoutesOptions) {
       try {
         const companyId = req.params.companyId as string;
         const id = req.params.id as string;
-        assertCompanyAccess(req, companyId);
+        await assertCompanyAccess(db, req, companyId);
         const asset = await svc.get(id, companyId);
         if (!asset) {
           res.status(404).json({ error: "Asset not found" });
@@ -72,7 +73,7 @@ export function memoryAssetsRoutes(opts: RoutesOptions) {
       try {
         const companyId = req.params.companyId as string;
         const id = req.params.id as string;
-        assertCompanyAccess(req, companyId);
+        await assertCompanyAccess(db, req, companyId);
         const asset = await svc.get(id, companyId);
         if (!asset) {
           res.status(404).json({ error: "Asset not found" });
@@ -104,7 +105,7 @@ export function memoryAssetsRoutes(opts: RoutesOptions) {
       try {
         const companyId = req.params.companyId as string;
         const id = req.params.id as string;
-        assertCompanyAccess(req, companyId);
+        await assertCompanyAccess(db, req, companyId);
         if (opts.db) await assertRole(opts.db, req, companyId, "team_lead");
         const parsed = memoryAssetUpdateSchema.safeParse(req.body);
         if (!parsed.success) {
@@ -130,7 +131,7 @@ export function memoryAssetsRoutes(opts: RoutesOptions) {
       try {
         const companyId = req.params.companyId as string;
         const id = req.params.id as string;
-        assertCompanyAccess(req, companyId);
+        await assertCompanyAccess(db, req, companyId);
         if (opts.db) await assertRole(opts.db, req, companyId, "team_lead");
         await svc.remove(id, companyId);
         res.status(204).end();

@@ -392,6 +392,7 @@ export async function createApp(
   api.use(filesystemRoutes());
   api.use(
     companyWorkspaceFsRoutes({
+      db,
       deploymentMode: opts.deploymentMode,
       companyWorkspaceBaseDir: opts.companyWorkspaceBaseDir,
     }),

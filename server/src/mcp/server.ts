@@ -215,6 +215,7 @@ function parseResourceUri(uri: string) {
 }
 
 async function ensureProtocolAccess(
+  db: Db,
   req: Request,
   companyId: string,
   companiesSvc: ReturnType<typeof companyService>,
@@ -226,7 +227,7 @@ async function ensureProtocolAccess(
   if (actor.companyId && actor.companyId !== companyId) {
     throw forbidden("MCP key cannot access another company");
   }
-  assertCompanyAccess(req, companyId);
+  await assertCompanyAccess(db, req, companyId);
   const company = await companiesSvc.getById(companyId);
   if (!company) {
     throw forbidden("Company not found");
@@ -289,7 +290,7 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
   router.get("/companies/:companyId/mcp/status", async (req, res) => {
     assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const [company, status] = await Promise.all([
       companiesSvc.getById(companyId),
       mcpSvc.getStatus(companyId),
@@ -307,7 +308,7 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
   router.patch("/companies/:companyId/mcp/settings", async (req, res) => {
     assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const parsed = updateMcpSettingsSchema.parse(req.body);
     const company = await companiesSvc.update(companyId, { mcpEnabled: parsed.enabled });
     if (!company) {
@@ -332,14 +333,14 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
   router.get("/companies/:companyId/mcp/keys", async (req, res) => {
     assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     res.json(await mcpSvc.listKeys(companyId));
   });
 
   router.post("/companies/:companyId/mcp/keys", async (req, res) => {
     assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const parsed = createMcpApiKeySchema.parse(req.body);
     const created = await mcpSvc.createKey(companyId, req.actor.userId ?? "local-board", parsed.name);
     const actor = getActorInfo(req);
@@ -361,7 +362,7 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
     assertBoard(req);
     const companyId = req.params.companyId as string;
     const keyId = req.params.keyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     await mcpSvc.requireOwnedKey(companyId, keyId);
     const revoked = await mcpSvc.revokeKey(companyId, keyId);
     if (!revoked) {
@@ -386,7 +387,7 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
   router.get("/companies/:companyId/mcp/clients", async (req, res) => {
     assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     res.json(await mcpSvc.listClients(companyId));
   });
 
@@ -408,7 +409,7 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
     }
 
     try {
-      const { actor: protocolActor, company } = await ensureProtocolAccess(req, companyId, companiesSvc);
+      const { actor: protocolActor, company } = await ensureProtocolAccess(db, req, companyId, companiesSvc);
       const scopeActor = { source: protocolActor.source, userId: protocolActor.userId };
       const scope = await (deps.resolveScope
         ? deps.resolveScope(companyId, scopeActor)

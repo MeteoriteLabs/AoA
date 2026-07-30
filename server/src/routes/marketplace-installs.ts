@@ -147,7 +147,7 @@ export function createMarketplaceInstallRouter(deps: MarketplaceInstallRoutesDep
       res.status(400).json({ error: "Company context required" });
       return;
     }
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     const catalog = await catalogService.readCache();
     if (!catalog) {
@@ -182,7 +182,7 @@ export function createMarketplaceInstallRouter(deps: MarketplaceInstallRoutesDep
       res.status(400).json({ error: "Company + user context required" });
       return;
     }
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     const parseResult = InstallRequestSchema.safeParse(req.body);
     if (!parseResult.success) {
@@ -400,7 +400,7 @@ export function createMarketplaceInstallRouter(deps: MarketplaceInstallRoutesDep
       res.status(400).json({ error: "Company context required" });
       return;
     }
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     const op = await findOperationById(db, req.params.operationId, companyId);
     if (!op) {
@@ -418,7 +418,7 @@ export function createMarketplaceInstallRouter(deps: MarketplaceInstallRoutesDep
       res.status(400).json({ error: "Company context required" });
       return;
     }
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     // Uninstalling a team permanently deletes all its agents — founder-only,
     // same as DELETE /agents/:id. assertRole throws 403 for team_lead / team_member.
     await assertRole(db, req, companyId, "founder");

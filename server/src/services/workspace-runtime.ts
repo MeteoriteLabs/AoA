@@ -2326,7 +2326,11 @@ export function resolveShell(): string {
   if (!shell) return fallback;
   if (path.isAbsolute(shell)) {
     try {
-      fs.access(shell);
+      // NOTE (pre-existing, flagged separately): fs.access here is the
+      // node:fs/promises version, so this try/catch never actually gates the
+      // fallback — the rejection is async. `void` marks the non-await for
+      // no-floating-promises without changing the (latent-buggy) behavior.
+      void fs.access(shell);
     } catch {
       return fallback;
     }

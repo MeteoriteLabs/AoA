@@ -28,6 +28,7 @@ interface RoutesOptions {
 
 export function environmentRoutes(opts: RoutesOptions) {
   const router = Router();
+  const db = opts.db!;
   const svc = opts.svc ?? environmentService(opts.db!);
   const secretsSvc = opts.db ? secretService(opts.db) : null;
   const runtimeKeysSvc = opts.db ? runtimeProviderKeyService(opts.db) : null;
@@ -108,7 +109,7 @@ export function environmentRoutes(opts: RoutesOptions) {
       try {
         const companyId = req.params.companyId as string;
         assertBoard(req);
-        assertCompanyAccess(req, companyId);
+        await assertCompanyAccess(db, req, companyId);
         const parsed = probeEnvironmentSchema.safeParse(req.body);
         if (!parsed.success) {
           res.status(400).json({ error: parsed.error.flatten() });
@@ -141,7 +142,7 @@ export function environmentRoutes(opts: RoutesOptions) {
       try {
         const companyId = req.params.companyId as string;
         assertBoard(req);
-        assertCompanyAccess(req, companyId);
+        await assertCompanyAccess(db, req, companyId);
         const list = await svc.list(companyId);
         res.json(list);
       } catch (err) {
@@ -158,7 +159,7 @@ export function environmentRoutes(opts: RoutesOptions) {
         const companyId = req.params.companyId as string;
         const id = req.params.id as string;
         assertBoard(req);
-        assertCompanyAccess(req, companyId);
+        await assertCompanyAccess(db, req, companyId);
         const env = await svc.get(companyId, id);
         if (!env) {
           res.status(404).json({ error: "Environment not found" });
@@ -178,7 +179,7 @@ export function environmentRoutes(opts: RoutesOptions) {
       try {
         const companyId = req.params.companyId as string;
         assertBoard(req);
-        assertCompanyAccess(req, companyId);
+        await assertCompanyAccess(db, req, companyId);
         const parsed = createEnvironmentSchema.safeParse(req.body);
         if (!parsed.success) {
           res.status(400).json({ error: parsed.error.flatten() });
@@ -222,7 +223,7 @@ export function environmentRoutes(opts: RoutesOptions) {
         const companyId = req.params.companyId as string;
         const id = req.params.id as string;
         assertBoard(req);
-        assertCompanyAccess(req, companyId);
+        await assertCompanyAccess(db, req, companyId);
         const parsed = updateEnvironmentSchema.safeParse(req.body);
         if (!parsed.success) {
           res.status(400).json({ error: parsed.error.flatten() });
@@ -273,7 +274,7 @@ export function environmentRoutes(opts: RoutesOptions) {
         const companyId = req.params.companyId as string;
         const id = req.params.id as string;
         assertBoard(req);
-        assertCompanyAccess(req, companyId);
+        await assertCompanyAccess(db, req, companyId);
         const deleted = await runEnvironmentMutation(async ({ envSvc, secretsSvc: txSecretsSvc }) => {
           const env = await envSvc.delete(companyId, id);
           if (env && txSecretsSvc) {

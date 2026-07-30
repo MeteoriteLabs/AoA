@@ -70,7 +70,7 @@ export function hubItemRoutes(db: Db) {
 
   router.get("/companies/:companyId/hub-items/preferences/me", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const userId = requireBoardUserId(req);
     const result = await preferences.get(userId, companyId);
     res.json(result);
@@ -81,7 +81,7 @@ export function hubItemRoutes(db: Db) {
     validate(updateHubPreferencesSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const userId = requireBoardUserId(req);
       const result = await preferences.upsert(userId, companyId, req.body);
       res.json(result);
@@ -90,7 +90,7 @@ export function hubItemRoutes(db: Db) {
 
   router.post("/companies/:companyId/hub-items/preferences/me/reset", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const userId = requireBoardUserId(req);
     const result = await preferences.reset(userId, companyId);
     res.json(result);
@@ -102,7 +102,7 @@ export function hubItemRoutes(db: Db) {
   // → 400 via the global error handler. Matches access.ts query-param parsing.
   router.get("/companies/:companyId/hub-items", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const userId = requireBoardUserId(req);
     const role = await resolveRole(req, companyId, userId);
     const query: ListHubItemsQuery = listHubItemsQuery.parse(req.query);
@@ -139,7 +139,7 @@ export function hubItemRoutes(db: Db) {
   // GET counts — RBAC-scoped { open, unread } badge counters (live count).
   router.get("/companies/:companyId/hub-items/counts", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const userId = requireBoardUserId(req);
     const role = await resolveRole(req, companyId, userId);
     await emitOpenApprovalHubItems(db, companyId);
@@ -156,7 +156,7 @@ export function hubItemRoutes(db: Db) {
   // cache. Defaults to the waiting lane (the only lane that surfaces the chip).
   router.get("/companies/:companyId/hub-items/hidden-count", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const userId = requireBoardUserId(req);
     const role = await resolveRole(req, companyId, userId);
     const laneParam = typeof req.query.lane === "string" ? req.query.lane : undefined;
@@ -173,7 +173,7 @@ export function hubItemRoutes(db: Db) {
   router.get("/companies/:companyId/hub-items/:id", async (req, res) => {
     const companyId = req.params.companyId as string;
     const hubItemId = req.params.id as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const userId = requireBoardUserId(req);
     const role = await resolveRole(req, companyId, userId);
     const item = await svc.getVisible(companyId, {
@@ -194,7 +194,7 @@ export function hubItemRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const hubItemId = req.params.id as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const userId = requireBoardUserId(req);
       // Board/local_implicit/instance-admin actors carry founder-authority;
       // otherwise resolve the real founder role from user_roles.
@@ -242,7 +242,7 @@ export function hubItemRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const hubItemId = req.params.id as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const userId = requireBoardUserId(req);
       const { auditId, expectedVersion } = req.body as {
         auditId: string;
@@ -267,7 +267,7 @@ export function hubItemRoutes(db: Db) {
   router.get("/companies/:companyId/hub-items/:id/audit", async (req, res) => {
     const companyId = req.params.companyId as string;
     const hubItemId = req.params.id as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const userId = requireBoardUserId(req);
     const role = await resolveRole(req, companyId, userId);
     const rows = await svc.getAudit({
@@ -285,7 +285,7 @@ export function hubItemRoutes(db: Db) {
     validate(hubBulkActionSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const userId = requireBoardUserId(req);
       const role = await resolveRole(req, companyId, userId);
       const actorIsFounder = hasImplicitFounderAuthority(req)
@@ -323,7 +323,7 @@ export function hubItemRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const hubItemId = req.params.id as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const userId = requireBoardUserId(req);
       const role = await resolveRole(req, companyId, userId);
       const row = await svc.applyPersonalState({

@@ -444,7 +444,10 @@ export function createPluginWorkerHandle(
     if (isJsonRpcResponse(message)) {
       handleResponse(message);
     } else if (isJsonRpcRequest(message)) {
-      handleWorkerRequest(message as JsonRpcRequest);
+      // Fire-and-forget worker RPC dispatch (mirrors handleWorkerNotification
+      // below); this is an event callback and cannot await. `void` marks the
+      // intentional non-await for @typescript-eslint/no-floating-promises.
+      void handleWorkerRequest(message as JsonRpcRequest);
     } else if (isJsonRpcNotification(message)) {
       handleWorkerNotification(message as JsonRpcNotification);
     } else {

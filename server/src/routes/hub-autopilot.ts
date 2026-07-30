@@ -39,14 +39,14 @@ export function hubAutopilotRoutes(db: Db) {
 
   router.get("/companies/:companyId/hub-autopilot/policy", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     requireBoardUserId(req);
     res.json(await autopilot.get(companyId));
   });
 
   router.get("/companies/:companyId/hub-autopilot/actions", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     requireBoardUserId(req);
     res.json(await autopilot.listRecentActions(companyId, { limit: boundedLimit(req.query.limit) }));
   });
@@ -56,7 +56,7 @@ export function hubAutopilotRoutes(db: Db) {
     validate(updateHubAutopilotPolicySchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const userId = requireBoardUserId(req);
       await requireFounder(req, companyId, userId);
       const result = await autopilot.upsert(companyId, req.body);
@@ -75,7 +75,7 @@ export function hubAutopilotRoutes(db: Db) {
 
   router.post("/companies/:companyId/hub-autopilot/policy/reset", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const userId = requireBoardUserId(req);
     await requireFounder(req, companyId, userId);
     const result = await autopilot.reset(companyId);

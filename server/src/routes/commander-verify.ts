@@ -34,7 +34,7 @@ export function commanderVerifyRoutes(db: Db): Router {
       return;
     }
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     await assertRole(db, req, companyId, "founder");
     const adapterType = await resolveCommanderAdapterType(db, companyId);
     const adapter = findServerAdapter(adapterType);

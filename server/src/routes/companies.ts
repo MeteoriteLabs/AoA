@@ -100,7 +100,7 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
   router.get("/:companyId", async (req, res) => {
     assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const company = await svc.getById(companyId);
     if (!company) {
       res.status(404).json({ error: "Company not found" });
@@ -111,21 +111,21 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
 
   router.post("/:companyId/export", validate(companyPortabilityExportSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const result = await portability.exportBundle(companyId, req.body);
     res.json(result);
   });
 
   router.post("/:companyId/export/preview", validate(companyPortabilityExportSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const result = await portability.previewExport(companyId, req.body);
     res.json(result);
   });
 
   router.post("/import/preview", validate(companyPortabilityPreviewSchema), async (req, res) => {
     if (req.body.target.mode === "existing_company") {
-      assertCompanyAccess(req, req.body.target.companyId);
+      await assertCompanyAccess(db, req, req.body.target.companyId);
     } else {
       assertBoard(req);
     }
@@ -138,7 +138,7 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
     const existingCompanyId =
       req.body.target.mode === "existing_company" ? req.body.target.companyId : null;
     if (req.body.target.mode === "existing_company") {
-      assertCompanyAccess(req, req.body.target.companyId);
+      await assertCompanyAccess(db, req, req.body.target.companyId);
     }
     const actor = getActorInfo(req);
     const result = await portability.importBundle(
@@ -247,7 +247,7 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
   router.patch("/:companyId", validate(updateCompanySchema), async (req, res) => {
     assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     if (
       "agentCompletionPolicyDefault" in req.body ||
       "agentCompletionReviewGuardrail" in req.body ||
@@ -286,7 +286,7 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
     async (req, res) => {
       const companyId = req.params.companyId as string;
       assertBoard(req);
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       await assertRole(db, req, companyId, "founder");
       await db
         .update(companies)
@@ -307,7 +307,7 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
   router.post("/:companyId/archive", async (req, res) => {
     assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     await assertRole(db, req, companyId, "founder");
     const company = await svc.archive(companyId);
     if (!company) {
@@ -328,7 +328,7 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
   router.delete("/:companyId", async (req, res) => {
     assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     await assertRole(db, req, companyId, "founder");
     const company = await svc.remove(companyId);
     if (!company) {

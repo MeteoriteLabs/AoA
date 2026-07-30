@@ -29,7 +29,7 @@ const log = logger.child({ route: "team-imports" });
  *  - Factory exports `teamImportsRoutes(db)` returning an Express Router.
  *  - No try/catch in handlers — `HttpError` propagates to the global
  *    error middleware.
- *  - Auth: `assertCompanyAccess(req, companyId)` for tenant scope plus
+ *  - Auth: `await assertCompanyAccess(db, req, companyId)` for tenant scope plus
  *    `assertRole(db, req, companyId, "team_lead")` for company-level write
  *    permission, plus `assertDepartmentAccess(db, req, companyId,
  *    parentProjectId)` so a team_lead can only import into their own
@@ -82,7 +82,7 @@ export function teamImportsRoutes(db: Db) {
     },
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       await assertRole(db, req, companyId, "team_lead");
 
       // Task 4 (P1-A): preview is read-only but still discloses
@@ -133,7 +133,7 @@ export function teamImportsRoutes(db: Db) {
     validate(importInstallSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       await assertRole(db, req, companyId, "team_lead");
       await assertDepartmentAccess(db, req, companyId, req.body.parentProjectId);
 

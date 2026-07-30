@@ -24,7 +24,7 @@ export function braindumpRoutes(db: Db) {
     validate(submitBraindumpSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const actor = getActorInfo(req);
 
       const row = await svc.submit(companyId, req.body, actor.actorId ?? null);
@@ -47,7 +47,7 @@ export function braindumpRoutes(db: Db) {
 
   router.get("/companies/:companyId/braindumps", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     // Phase 5e: `departmentId` is now OPTIONAL. Omitting it returns every
     // capture for the company across both scopes — which is what LibrarianStep
     // polls, since a per-department sweep would never see the company-wide
@@ -61,7 +61,7 @@ export function braindumpRoutes(db: Db) {
 
   router.get("/companies/:companyId/braindumps/:id", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const row = await svc.getById(companyId, req.params.id as string);
     if (!row) {
       throw notFound("Braindump capture not found");
@@ -72,7 +72,7 @@ export function braindumpRoutes(db: Db) {
   // Retry a failed (or stuck-pending) capture. Idempotent — see braindump.ts.
   router.post("/companies/:companyId/braindumps/:id/retry", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const actor = getActorInfo(req);
 
     const row = await svc.retry(companyId, req.params.id as string);

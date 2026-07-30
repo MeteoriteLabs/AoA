@@ -43,14 +43,14 @@ export function teamRoutes(db: Db) {
 
   router.get("/companies/:companyId/team", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const summary = await team.listTeam(companyId, req.actor.type === "board" ? req.actor.userId ?? null : null);
     res.json(summary);
   });
 
   router.get("/companies/:companyId/team/humans/search", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board authentication required" });
       return;
@@ -65,7 +65,7 @@ export function teamRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const userId = req.params.userId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       if (req.actor.type !== "board" || !req.actor.userId) {
         res.status(403).json({ error: "Board authentication required" });
         return;
@@ -103,7 +103,7 @@ export function teamRoutes(db: Db) {
   router.delete("/companies/:companyId/team/users/:userId", async (req, res) => {
     const companyId = req.params.companyId as string;
     const userId = req.params.userId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     if (req.actor.type !== "board" || !req.actor.userId) {
       res.status(403).json({ error: "Board authentication required" });
       return;
@@ -130,7 +130,7 @@ export function teamRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const userId = req.params.userId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       if (req.actor.type !== "board" || !req.actor.userId) {
         res.status(403).json({ error: "Board authentication required" });
         return;
@@ -168,7 +168,7 @@ export function teamRoutes(db: Db) {
   router.get("/companies/:companyId/team/users/:userId/agent-context", async (req, res) => {
     const companyId = req.params.companyId as string;
     const userId = req.params.userId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board authentication required" });
       return;
@@ -181,7 +181,7 @@ export function teamRoutes(db: Db) {
   router.get("/companies/:companyId/team/users/:userId/capabilities", async (req, res) => {
     const companyId = req.params.companyId as string;
     const userId = req.params.userId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board authentication required" });
       return;
@@ -196,7 +196,7 @@ export function teamRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const userId = req.params.userId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const actorUserId = await assertCanEditHumanCapabilities(req, companyId, userId);
       const document = await humanCapabilities.createDocument(companyId, userId, req.body, actorUserId);
 
@@ -225,7 +225,7 @@ export function teamRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       const userId = req.params.userId as string;
       const documentId = req.params.documentId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const actorUserId = await assertCanEditHumanCapabilities(req, companyId, userId);
       const document = await humanCapabilities.updateDocument(companyId, userId, documentId, req.body, actorUserId);
 
@@ -251,7 +251,7 @@ export function teamRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     const userId = req.params.userId as string;
     const documentId = req.params.documentId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const actorUserId = await assertCanEditHumanCapabilities(req, companyId, userId);
     await humanCapabilities.deleteDocument(companyId, userId, documentId);
 
@@ -273,7 +273,7 @@ export function teamRoutes(db: Db) {
     validate(addMemberSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       if (req.actor.type !== "board" || !req.actor.userId) {
         res.status(403).json({ error: "Board authentication required" });
         return;
@@ -300,7 +300,7 @@ export function teamRoutes(db: Db) {
     validate(transferAdminSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       if (req.actor.type !== "board" || !req.actor.userId) {
         res.status(403).json({ error: "Board authentication required" });
         return;
@@ -325,7 +325,7 @@ export function teamRoutes(db: Db) {
   router.get("/companies/:companyId/team/users/:userId/workload", async (req, res) => {
     const companyId = req.params.companyId as string;
     const userId = req.params.userId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board authentication required" });
       return;
@@ -336,7 +336,7 @@ export function teamRoutes(db: Db) {
   router.get("/companies/:companyId/team/users/:userId", async (req, res) => {
     const companyId = req.params.companyId as string;
     const userId = req.params.userId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const summary = await team.listTeam(companyId, req.actor.type === "board" ? req.actor.userId ?? null : null);
     const member = summary.members.find((m) => m.userId === userId);
     if (!member) {
@@ -351,7 +351,7 @@ export function teamRoutes(db: Db) {
   router.get("/companies/:companyId/team/users/:userId/dependencies", async (req, res) => {
     const companyId = req.params.companyId as string;
     const userId = req.params.userId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const deps = await team.getDependencies(companyId, userId);
     res.json(deps);
   });
@@ -363,7 +363,7 @@ export function teamRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const userId = req.params.userId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       if (req.actor.type !== "board" || !req.actor.userId) {
         res.status(403).json({ error: "Board authentication required" });
         return;
@@ -392,7 +392,7 @@ export function teamRoutes(db: Db) {
   router.patch("/companies/:companyId/invites/:inviteId/revoke", async (req, res) => {
     const companyId = req.params.companyId as string;
     const inviteId = req.params.inviteId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     if (req.actor.type !== "board" || !req.actor.userId) {
       res.status(403).json({ error: "Board authentication required" });
       return;
@@ -417,7 +417,7 @@ export function teamRoutes(db: Db) {
   router.post("/companies/:companyId/invites/:inviteId/resend", async (req, res) => {
     const companyId = req.params.companyId as string;
     const inviteId = req.params.inviteId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     if (req.actor.type !== "board" || !req.actor.userId) {
       res.status(403).json({ error: "Board authentication required" });
       return;

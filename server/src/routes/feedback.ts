@@ -58,7 +58,7 @@ export function feedbackRoutes(db: Db) {
         res.status(404).json({ error: "Issue not found" });
         return;
       }
-      assertCompanyAccess(req, issue.companyId);
+      await assertCompanyAccess(db, req, issue.companyId);
       if (req.actor.type !== "board") {
         res.status(403).json({ error: "Only board users can vote on AI feedback" });
         return;
@@ -106,7 +106,7 @@ export function feedbackRoutes(db: Db) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(db, req, issue.companyId);
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Only board users can view feedback votes" });
       return;
@@ -128,7 +128,7 @@ export function feedbackRoutes(db: Db) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(db, req, issue.companyId);
 
     const targetTypeRaw = typeof req.query.targetType === "string" ? req.query.targetType : null;
     const targetId = typeof req.query.targetId === "string" ? req.query.targetId : null;
@@ -177,7 +177,7 @@ export function feedbackRoutes(db: Db) {
       res.status(404).json({ error: "Feedback vote not found" });
       return;
     }
-    assertCompanyAccess(req, vote.companyId);
+    await assertCompanyAccess(db, req, vote.companyId);
 
     const authorUserId = req.actor.userId ?? "local-board";
     await votes.dismissVote(voteId, authorUserId);

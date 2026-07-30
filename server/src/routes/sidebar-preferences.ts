@@ -21,7 +21,7 @@ export function sidebarPreferencesRoutes(db: Db) {
 
   router.get("/companies/:companyId/sidebar-preferences/me", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const userId = requireBoardUserId(req, res);
     res.json(await svc.get(userId, companyId));
   });
@@ -31,7 +31,7 @@ export function sidebarPreferencesRoutes(db: Db) {
     validate(updateSidebarPreferencesSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const userId = requireBoardUserId(req, res);
       res.json(await svc.upsert(userId, companyId, req.body));
     },
@@ -39,7 +39,7 @@ export function sidebarPreferencesRoutes(db: Db) {
 
   router.post("/companies/:companyId/sidebar-preferences/me/reset", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const userId = requireBoardUserId(req, res);
     res.json(await svc.reset(userId, companyId));
   });

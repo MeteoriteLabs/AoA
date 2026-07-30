@@ -584,7 +584,7 @@ export function pluginRoutes(
       return;
     }
 
-    assertCompanyAccess(req, runContext.companyId);
+    await assertCompanyAccess(db, req, runContext.companyId);
 
     // Verify the tool exists
     const registeredTool = toolDeps.toolDispatcher.getTool(tool);
@@ -871,7 +871,7 @@ export function pluginRoutes(
     }
 
     if (body.companyId) {
-      assertCompanyAccess(req, body.companyId);
+      await assertCompanyAccess(db, req, body.companyId);
     }
 
     try {
@@ -954,7 +954,7 @@ export function pluginRoutes(
     }
 
     if (body.companyId) {
-      assertCompanyAccess(req, body.companyId);
+      await assertCompanyAccess(db, req, body.companyId);
     }
 
     try {
@@ -1037,7 +1037,7 @@ export function pluginRoutes(
     } | undefined;
 
     if (body?.companyId) {
-      assertCompanyAccess(req, body.companyId);
+      await assertCompanyAccess(db, req, body.companyId);
     }
 
     try {
@@ -1116,7 +1116,7 @@ export function pluginRoutes(
     } | undefined;
 
     if (body?.companyId) {
-      assertCompanyAccess(req, body.companyId);
+      await assertCompanyAccess(db, req, body.companyId);
     }
 
     try {
@@ -1185,7 +1185,7 @@ export function pluginRoutes(
       return;
     }
 
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     // Set SSE headers
     res.writeHead(200, {
@@ -2404,7 +2404,7 @@ export function pluginCompanySettingsRoutes(db: Db) {
   router.get("/companies/:companyId/plugin-settings", async (req, res) => {
     assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     // Get all ready plugins (only ready plugins are relevant for company-level toggling)
     const installedPlugins = await db
@@ -2460,7 +2460,7 @@ export function pluginCompanySettingsRoutes(db: Db) {
     assertCanManageInstanceSettings(req);
     const companyId = req.params.companyId as string;
     const pluginId = req.params.pluginId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     const { enabled, settingsJson } = req.body as {
       enabled?: boolean;

@@ -36,7 +36,7 @@ export function fileImportRoutes(db: Db, storageService: StorageService) {
     async (req, res, next) => {
       try {
         const companyId = req.params.companyId as string;
-        assertCompanyAccess(req, companyId);
+        await assertCompanyAccess(db, req, companyId);
         await assertRole(db, req, companyId, "founder");
 
         try {
@@ -111,7 +111,7 @@ export function fileImportRoutes(db: Db, storageService: StorageService) {
       try {
         const companyId = req.params.companyId as string;
         const jobId = req.params.jobId as string;
-        assertCompanyAccess(req, companyId);
+        await assertCompanyAccess(db, req, companyId);
 
         const job = await svc.getJob(companyId, jobId);
         if (!job) {
