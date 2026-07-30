@@ -83,6 +83,9 @@ describe("resolveEnvironmentExecutionTarget", () => {
       remove: true,
       env: { NODE_ENV: "test" },
       installCommand: null,
+      runtime: null,
+      isolation: null,
+      allowHostGateway: false,
     });
   });
 
@@ -127,6 +130,9 @@ describe("resolveEnvironmentExecutionTarget", () => {
       remove: true,
       env: { NODE_ENV: "test" },
       installCommand: "npm install -g @openai/codex",
+      runtime: null,
+      isolation: null,
+      allowHostGateway: false,
     });
   });
 

@@ -132,6 +132,9 @@ describe("environmentRunOrchestrator", () => {
         remove: true,
         env: {},
         installCommand: null,
+        runtime: null,
+        isolation: null,
+        allowHostGateway: false,
       },
     });
   });

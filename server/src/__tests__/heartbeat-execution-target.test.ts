@@ -114,6 +114,9 @@ describe("heartbeat adapter execution target context", () => {
         remove: true,
         env: { NODE_ENV: "test" },
         installCommand: null,
+        runtime: null,
+        isolation: null,
+        allowHostGateway: false,
       },
       runtimeCommandSpec: {
         command: "codex",
