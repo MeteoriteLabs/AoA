@@ -429,6 +429,29 @@ export type JoinRequestApprovalSource = (typeof JOIN_REQUEST_APPROVAL_SOURCES)[n
 export const ENVIRONMENT_DRIVERS = ["local", "ssh", "sandbox", "plugin"] as const;
 export type EnvironmentDriver = (typeof ENVIRONMENT_DRIVERS)[number];
 
+export const EXECUTION_TARGET_KINDS = [
+  "pooled_gvisor",
+  "dedicated_worker",
+  "e2b",
+  "local_host",
+  "desktop",
+] as const;
+export type ExecutionTargetKind = (typeof EXECUTION_TARGET_KINDS)[number];
+
+export const EXECUTION_TARGET_TRUST_CLASSES = [
+  "shared_multitenant",
+  "dedicated_tenant",
+  "local_trusted",
+] as const;
+export type ExecutionTargetTrustClass = (typeof EXECUTION_TARGET_TRUST_CLASSES)[number];
+
+export const EXECUTION_TARGET_STATUSES = ["active", "draining", "offline", "disabled"] as const;
+export type ExecutionTargetStatus = (typeof EXECUTION_TARGET_STATUSES)[number];
+
+// Per-Organization concurrency clamp — mirrors HEARTBEAT_MAX_CONCURRENT_RUNS_*.
+export const ORG_MAX_CONCURRENT_RUNS_DEFAULT = 8;
+export const ORG_MAX_CONCURRENT_RUNS_MAX = 200;
+
 export const ENVIRONMENT_STATUSES = ["active", "archived"] as const;
 export type EnvironmentStatus = (typeof ENVIRONMENT_STATUSES)[number];
 
