@@ -316,9 +316,17 @@ export function normalizeMaxConcurrentRuns(value: unknown) {
 export function resolveAdapterExecutionContext(
   config: unknown,
   adapter: Pick<ServerAdapterModule, "getRuntimeCommandSpec">,
+  // Whether this run executes on SHARED multi-tenant infra. Threaded to the
+  // execution-target SINK so a tenant-authored adapterConfig.executionTarget
+  // (free-form z.record) cannot weaken the docker sandbox on shared infra
+  // (P5 sink-level hardening — closes the --add-host SSRF route + sandbox escape).
+  // Fail-closed DEFAULT `true`: a caller that forgets to resolve the boundary
+  // hardens rather than exposes. The two production callers (heartbeat run loop +
+  // crew runner) pass the resolved trust boundary explicitly.
+  multiTenant = true,
 ) {
   const adapterConfigObject = parseObject(config);
-  const executionTarget = resolveAdapterExecutionTarget(adapterConfigObject.executionTarget);
+  const executionTarget = resolveAdapterExecutionTarget(adapterConfigObject.executionTarget, multiTenant);
   const runtimeCommandSpec = adapter.getRuntimeCommandSpec?.(adapterConfigObject) ?? null;
   return { executionTarget, runtimeCommandSpec };
 }
@@ -4504,6 +4512,10 @@ export function heartbeatService(db: Db) {
       const { executionTarget, runtimeCommandSpec } = resolveAdapterExecutionContext(
         runScopedConfig,
         adapter,
+        // Sink-level multi_tenant hardening: neutralize a tenant-authored
+        // adapterConfig.executionTarget on shared infra; honor it on the
+        // founder's own box. hbTopology is already resolved above (:3081).
+        hbTopology.trustBoundary === "multi_tenant",
       );
 
       // Audit follow-up #27: persist the redacted+capped assembled prompt on

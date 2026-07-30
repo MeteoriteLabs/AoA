@@ -74,6 +74,7 @@ describe("resolveEnvironmentExecutionTarget", () => {
       }),
       lease: makeLease(),
       adapterType: "codex_local",
+      multiTenant: false, // self-hosted: environments.target honored as authored
     })).toEqual({
       type: "sandbox-docker",
       image: "node:22-bookworm",
@@ -121,6 +122,7 @@ describe("resolveEnvironmentExecutionTarget", () => {
       }),
       lease: makeLease({ provider: "sandbox-docker" }),
       adapterType: "codex_local",
+      multiTenant: false, // self-hosted: non-gvisor sandbox config honored as authored
     })).toEqual({
       type: "sandbox-docker",
       image: "node:22-bookworm",
@@ -134,6 +136,53 @@ describe("resolveEnvironmentExecutionTarget", () => {
       isolation: null,
       allowHostGateway: false,
     });
+  });
+
+  it("MULTI_TENANT: neutralizes a weakened environments.target on shared infra", () => {
+    const target = resolveEnvironmentExecutionTarget({
+      environment: makeEnvironment({
+        target: {
+          type: "sandbox-docker",
+          image: "node:22-bookworm",
+          network: "host",
+          allowHostGateway: true,
+          isolation: { capDropAll: false, readOnlyRootfs: false, noNewPrivileges: false, user: "0:0" },
+        },
+      }),
+      lease: makeLease(),
+      adapterType: "codex_local",
+      multiTenant: true,
+    });
+    if (!target || target.type !== "sandbox-docker") throw new Error("expected sandbox-docker");
+    expect(target.network).toBe("none"); // host clamped
+    expect(target.allowHostGateway).toBe(false); // SSRF route closed
+    expect(target.isolation?.capDropAll).toBe(true);
+    expect(target.isolation?.readOnlyRootfs).toBe(true);
+    expect(target.isolation?.noNewPrivileges).toBe(true);
+    expect(target.isolation?.user).toBe("1000:1000");
+  });
+
+  it("MULTI_TENANT: neutralizes a weakened non-gvisor environments.config on shared infra", () => {
+    const target = resolveEnvironmentExecutionTarget({
+      environment: makeEnvironment({
+        driver: "sandbox",
+        config: {
+          provider: "sandbox-docker",
+          image: "node:22-bookworm",
+          network: "host",
+          allowHostGateway: true,
+          isolation: { capDropAll: false, readOnlyRootfs: false, noNewPrivileges: false, user: "0:0" },
+        },
+      }),
+      lease: makeLease({ provider: "sandbox-docker" }),
+      adapterType: "codex_local",
+      multiTenant: true,
+    });
+    if (!target || target.type !== "sandbox-docker") throw new Error("expected sandbox-docker");
+    expect(target.network).toBe("none");
+    expect(target.allowHostGateway).toBe(false);
+    expect(target.isolation?.capDropAll).toBe(true);
+    expect(target.isolation?.user).toBe("1000:1000");
   });
 
   it("maps provider-backed sandbox leases to provider-sandbox execution targets", () => {

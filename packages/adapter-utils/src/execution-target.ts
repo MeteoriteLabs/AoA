@@ -25,7 +25,34 @@ import type {
   AdapterRuntimeCommandSpec,
 } from "./types.js";
 
-export function resolveAdapterExecutionTarget(raw: unknown): AdapterExecutionTarget {
+// Hardened tmpfs baseline forced on shared multi-tenant infra. Mirrors the
+// HARDENED_ISOLATION set in server/src/services/execution-target-resolver.ts — a
+// tenant-supplied tmpfs could drop `noexec,nosuid`, so we never honor it when
+// hardening; we substitute this safe set instead.
+const MULTI_TENANT_HARDENED_TMPFS = [
+  "/tmp:rw,noexec,nosuid,size=64m",
+  "/home/agent:rw,nosuid,size=256m",
+] as const;
+
+/**
+ * Resolve a raw (tenant-authorable) execution-target config into a typed
+ * AdapterExecutionTarget.
+ *
+ * @param hardenForMultiTenant When `true` AND the resolved target is a
+ *   docker/sandbox target, FORCE the hardened security baseline regardless of the
+ *   input config (allowHostGateway off, host-network clamped to none,
+ *   cap-drop/read-only/no-new-privileges/ipc-private on, uid 1000:1000, seccomp
+ *   default, safe tmpfs). This is the SINK-level guard so EVERY tenant-authored
+ *   producer (agents.adapterConfig.executionTarget, environments.target,
+ *   environments.config) is neutralized on shared infra. adapter-utils stays
+ *   deployment-agnostic — the CALLER decides. Default `false`: honor config
+ *   exactly (self-hosted single-tenant, where the founder owns the box and the
+ *   local MCP callback bridge / custom network / custom isolation are legitimate).
+ */
+export function resolveAdapterExecutionTarget(
+  raw: unknown,
+  hardenForMultiTenant = false,
+): AdapterExecutionTarget {
   const config = parseObject(raw);
   const type = asString(config.type, "local");
   if (type === "local") return { type: "local" };
@@ -99,12 +126,59 @@ export function resolveAdapterExecutionTarget(raw: unknown): AdapterExecutionTar
       }
     : null;
 
+  const resolvedNetwork: "bridge" | "host" | "none" =
+    network === "host" || network === "none" ? network : "bridge";
+
+  if (hardenForMultiTenant) {
+    // SECURITY (P5 sink-level multi_tenant hardening): every tenant-authored
+    // producer of a docker/sandbox target funnels through here before reaching
+    // buildDockerRunArgs, so a config that WEAKENS the sandbox must be neutralized
+    // at this single choke point regardless of which producer supplied it. Mirrors
+    // the HARDENED baseline in server/src/services/execution-target-resolver.ts.
+    return {
+      type: "sandbox-docker",
+      image,
+      workdir: asString(config.workdir, "/workspace"),
+      shell: shell === "bash" ? "bash" : "sh",
+      // Host networking = full host access, never safe on shared infra: clamp
+      // host -> none. bridge/none pass through — bridge egress is governed by the
+      // Gate-B worker-image egress firewall (out of scope for the app layer).
+      network: resolvedNetwork === "host" ? "none" : resolvedNetwork,
+      remove: asBoolean(config.remove, true),
+      env,
+      installCommand: asString(config.installCommand, "") || null,
+      runtime,
+      isolation: {
+        // Forced security flags — a tenant config cannot turn any of these off.
+        user: "1000:1000",
+        capDropAll: true,
+        noNewPrivileges: true,
+        readOnlyRootfs: true,
+        ipcPrivate: true,
+        // seccomp=unconfined would disable syscall filtering; never honor a
+        // tenant-supplied profile on shared infra (Docker's default profile applies).
+        seccompProfile: null,
+        // A tenant tmpfs could drop noexec,nosuid — force the safe baseline set.
+        tmpfs: [...MULTI_TENANT_HARDENED_TMPFS],
+        // Benign resource limits (DoS mitigation, not sandbox escape) may still
+        // come from config; fall back to the hardened defaults when unset.
+        memory: isolation?.memory ?? "2g",
+        cpus: isolation?.cpus ?? "2",
+        pidsLimit: isolation?.pidsLimit ?? 512,
+        ulimitNofile: isolation?.ulimitNofile ?? null,
+      },
+      // Closes the SSRF host-gateway route to the control-plane host — never
+      // legitimate on shared infra, even when the callback bridge is active.
+      allowHostGateway: false,
+    };
+  }
+
   return {
     type: "sandbox-docker",
     image,
     workdir: asString(config.workdir, "/workspace"),
     shell: shell === "bash" ? "bash" : "sh",
-    network: network === "host" || network === "none" ? network : "bridge",
+    network: resolvedNetwork,
     remove: asBoolean(config.remove, true),
     env,
     installCommand: asString(config.installCommand, "") || null,

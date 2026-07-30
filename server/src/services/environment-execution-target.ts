@@ -52,6 +52,8 @@ function resolveDockerSandboxTarget(
   // byte-identical below.
   if (readString(config.provider) === "gvisor") {
     const gvisor = resolveGvisorSandboxTarget(config, { multiTenant });
+    // Belt-and-suspenders: resolveGvisorSandboxTarget already hardened for shared
+    // infra, but thread multiTenant to the sink too so the choke point is uniform.
     return resolveAdapterExecutionTarget({
       type: "sandbox-docker",
       image: gvisor.image,
@@ -64,12 +66,14 @@ function resolveDockerSandboxTarget(
       runtime: gvisor.runtime,
       isolation: gvisor.isolation,
       allowHostGateway: gvisor.allowHostGateway,
-    });
+    }, multiTenant);
   }
 
   const image = readString(config.image);
   if (!image) return null;
 
+  // Non-gvisor docker sandbox: a tenant-authored environments.config could set
+  // network:"host" / weak isolation, so harden at the sink on shared infra.
   return resolveAdapterExecutionTarget({
     type: "sandbox-docker",
     image,
@@ -79,7 +83,7 @@ function resolveDockerSandboxTarget(
     remove: typeof config.remove === "boolean" ? config.remove : undefined,
     env: readObject(config.env),
     installCommand: readString(config.installCommand),
-  });
+  }, multiTenant);
 }
 
 function resolveProviderSandboxTarget(
@@ -111,7 +115,10 @@ export function resolveEnvironmentExecutionTarget(
   input: EnvironmentExecutionTargetInput,
 ): AdapterExecutionTarget | null {
   if (input.environment.target) {
-    return resolveAdapterExecutionTarget(input.environment.target);
+    // environments.target is a raw, tenant-authorable AdapterExecutionTarget shape
+    // and reaches buildDockerRunArgs unforced — harden at the sink on shared infra.
+    // Fail-closed default: harden when the caller did not resolve the boundary.
+    return resolveAdapterExecutionTarget(input.environment.target, input.multiTenant ?? true);
   }
 
   if (input.environment.driver === "local") {

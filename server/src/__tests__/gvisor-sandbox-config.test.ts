@@ -153,10 +153,11 @@ describe("gvisor end-to-end config resolution", () => {
     expect(args).not.toContain("--add-host");
   });
 
-  it("default-off: a plain sandbox-docker environment emits NO runtime/isolation flags (byte-identical legacy args)", () => {
+  it("default-off (self-hosted): a plain sandbox-docker environment emits NO runtime/isolation flags (byte-identical legacy args)", () => {
     const target = resolveEnvironmentExecutionTarget({
       environment: { driver: "sandbox", target: null, config: { provider: "sandbox-docker", image: "node:22" } },
       adapterType: "claude_local",
+      multiTenant: false, // self-hosted single-tenant: legacy args preserved
     });
     if (!target || target.type !== "sandbox-docker") throw new Error("expected sandbox-docker target");
     expect(target.runtime ?? null).toBeNull();
@@ -166,6 +167,23 @@ describe("gvisor end-to-end config resolution", () => {
     expect(joined).not.toContain("--runtime");
     expect(joined).not.toContain("--cap-drop");
     expect(joined).not.toContain("--read-only");
+    expect(args).not.toContain("--add-host");
+  });
+
+  it("MULTI_TENANT: a plain non-gvisor sandbox-docker environment IS sink-hardened (residual closed)", () => {
+    const target = resolveEnvironmentExecutionTarget({
+      environment: { driver: "sandbox", target: null, config: { provider: "sandbox-docker", image: "node:22" } },
+      adapterType: "claude_local",
+      multiTenant: true, // shared infra: an unhardened docker target is a sandbox escape
+    });
+    if (!target || target.type !== "sandbox-docker") throw new Error("expected sandbox-docker target");
+    expect(target.allowHostGateway).toBe(false);
+    const args = buildDockerRunArgs({ target, localCwd: "/repo", command: "node", args: [], env: {} });
+    const joined = args.join(" ");
+    expect(joined).toContain("--cap-drop ALL");
+    expect(joined).toContain("--read-only");
+    expect(joined).toContain("no-new-privileges");
+    expect(joined).toContain("--user 1000:1000");
     expect(args).not.toContain("--add-host");
   });
 });

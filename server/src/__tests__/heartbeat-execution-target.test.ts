@@ -102,6 +102,8 @@ describe("heartbeat adapter execution target context", () => {
         },
       },
       { getRuntimeCommandSpec },
+      // self-hosted single-tenant: config honored exactly (pass-through)
+      false,
     );
 
     expect(result).toEqual({
@@ -140,6 +142,62 @@ describe("heartbeat adapter execution target context", () => {
       ),
     ).toThrow('executionTarget.image is required for target "sandbox-docker"');
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("neutralizes a weakened tenant adapterConfig.executionTarget on multi_tenant", () => {
+    // agents.adapterConfig.executionTarget is a free-form z.record producer that
+    // reaches buildDockerRunArgs. On shared infra it must be sink-hardened.
+    const weakened = {
+      executionTarget: {
+        type: "sandbox-docker",
+        image: "node:22",
+        network: "host",
+        allowHostGateway: true,
+        isolation: { capDropAll: false, readOnlyRootfs: false, noNewPrivileges: false, user: "0:0" },
+      },
+    };
+
+    const hardened = resolveAdapterExecutionContext(
+      weakened,
+      { getRuntimeCommandSpec: vi.fn(() => null) },
+      true, // multi_tenant
+    ).executionTarget;
+    if (hardened.type !== "sandbox-docker") throw new Error("expected sandbox-docker");
+    expect(hardened.allowHostGateway).toBe(false); // SSRF host-gateway route closed
+    expect(hardened.network).toBe("none"); // host clamped
+    expect(hardened.isolation?.capDropAll).toBe(true);
+    expect(hardened.isolation?.readOnlyRootfs).toBe(true);
+    expect(hardened.isolation?.noNewPrivileges).toBe(true);
+    expect(hardened.isolation?.user).toBe("1000:1000");
+
+    const honored = resolveAdapterExecutionContext(
+      weakened,
+      { getRuntimeCommandSpec: vi.fn(() => null) },
+      false, // self-hosted single-tenant
+    ).executionTarget;
+    if (honored.type !== "sandbox-docker") throw new Error("expected sandbox-docker");
+    expect(honored.allowHostGateway).toBe(true);
+    expect(honored.network).toBe("host");
+    expect(honored.isolation?.capDropAll).toBe(false);
+    expect(honored.isolation?.user).toBe("0:0");
+  });
+
+  it("defaults to hardened (fail-closed) when the multiTenant flag is omitted", () => {
+    const target = resolveAdapterExecutionContext(
+      {
+        executionTarget: {
+          type: "sandbox-docker",
+          image: "node:22",
+          network: "host",
+          allowHostGateway: true,
+        },
+      },
+      { getRuntimeCommandSpec: vi.fn(() => null) },
+    ).executionTarget;
+    if (target.type !== "sandbox-docker") throw new Error("expected sandbox-docker");
+    expect(target.allowHostGateway).toBe(false);
+    expect(target.network).toBe("none");
+    expect(target.isolation?.capDropAll).toBe(true);
   });
 
   it("applies an environment target over adapter config target", () => {

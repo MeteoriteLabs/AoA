@@ -661,7 +661,14 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     const config = isClaudeFamily
       ? { ...resolvedBaseConfig, promptTemplate: triggerPrompt, ...connectorEnvMerge, [argKey]: ["--mcp-config", cfgPath, "--strict-mcp-config", ...stripUserMcpArgs(userTail)] }
       : { ...resolvedBaseConfig, promptTemplate: triggerPrompt, ...connectorEnvMerge };
-    const { executionTarget, runtimeCommandSpec } = resolveAdapterExecutionContext(config, adapter);
+    // Sink-level multi_tenant hardening: neutralize a tenant-authored
+    // adapterConfig.executionTarget on shared infra; honor it on the founder's own
+    // box. `topology` is already resolved above (:544) for P4 provider resolution.
+    const { executionTarget, runtimeCommandSpec } = resolveAdapterExecutionContext(
+      config,
+      adapter,
+      topology.trustBoundary === "multi_tenant",
+    );
 
     // Audit follow-up #27: capture the redacted+capped prompt snapshot now so
     // it is available to fold into the next existing run-row write (either the
