@@ -71,6 +71,34 @@ export function resolveAdapterExecutionTarget(raw: unknown): AdapterExecutionTar
 
   const shell = asString(config.shell, "sh");
   const network = asString(config.network, "bridge");
+
+  // NOTE (plan deviation): the plan defaults `runtime` to "runc"; its own
+  // back-compat test asserts the default is null ("no runtime"). Default to null
+  // so an unset runtime stays unset — behavior is identical because
+  // buildDockerRunArgs only acts on runtime === "runsc".
+  const runtimeRaw = asString(config.runtime, "runc");
+  const runtime = runtimeRaw === "runsc" ? "runsc" : null;
+  const isolationRaw = config.isolation && typeof config.isolation === "object" && !Array.isArray(config.isolation)
+    ? (config.isolation as Record<string, unknown>)
+    : null;
+  const isolation = isolationRaw
+    ? {
+        user: asString(isolationRaw.user, "") || null,
+        capDropAll: asBoolean(isolationRaw.capDropAll, false),
+        noNewPrivileges: asBoolean(isolationRaw.noNewPrivileges, false),
+        seccompProfile: asString(isolationRaw.seccompProfile, "") || null,
+        readOnlyRootfs: asBoolean(isolationRaw.readOnlyRootfs, false),
+        tmpfs: Array.isArray(isolationRaw.tmpfs)
+          ? isolationRaw.tmpfs.filter((v): v is string => typeof v === "string")
+          : [],
+        memory: asString(isolationRaw.memory, "") || null,
+        cpus: asString(isolationRaw.cpus, "") || null,
+        pidsLimit: typeof isolationRaw.pidsLimit === "number" ? isolationRaw.pidsLimit : null,
+        ulimitNofile: typeof isolationRaw.ulimitNofile === "number" ? isolationRaw.ulimitNofile : null,
+        ipcPrivate: asBoolean(isolationRaw.ipcPrivate, false),
+      }
+    : null;
+
   return {
     type: "sandbox-docker",
     image,
@@ -80,6 +108,9 @@ export function resolveAdapterExecutionTarget(raw: unknown): AdapterExecutionTar
     remove: asBoolean(config.remove, true),
     env,
     installCommand: asString(config.installCommand, "") || null,
+    runtime,
+    isolation,
+    allowHostGateway: asBoolean(config.allowHostGateway, false),
   };
 }
 
