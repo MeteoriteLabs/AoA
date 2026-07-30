@@ -24,6 +24,8 @@ import { commanderVerifyRoutes } from "./routes/commander-verify.js";
 import { commanderKeyRoutes } from "./routes/commander-key.js";
 import { commanderLoginRoutes } from "./routes/commander-login.js";
 import { providerCredentialRoutes } from "./routes/provider-credentials.js";
+import { providerConnectionRoutes } from "./routes/provider-connections.js";
+import { resolveCliAuthTopology } from "./services/cli-auth-topology.js";
 import { userProfileRoutes } from "./routes/user-profiles.js";
 import { operationsHealthRoutes } from "./routes/operations-health.js";
 import { companyRoutes } from "./routes/companies.js";
@@ -284,6 +286,15 @@ export async function createApp(
   app.use("/api", commanderKeyRoutes(db));
   app.use("/api", commanderLoginRoutes(db));
   app.use("/api", providerCredentialRoutes(db));
+  // Phase 4: founder REST for provider_connections. No CliAuthTopology instance is
+  // in scope at this mount, so resolve it once from the same deployment axes the
+  // rest of app.ts threads (mirrors how other routes consume opts.deploymentMode /
+  // deploymentExposure). Reused by the connection service's cloud_auth gate.
+  const cliAuthTopology = resolveCliAuthTopology({
+    deploymentMode: opts.deploymentMode,
+    deploymentExposure: opts.deploymentExposure,
+  });
+  app.use("/api", providerConnectionRoutes(db, cliAuthTopology));
   app.use("/api", userProfileRoutes(db));
   // Email/password auth is removed — Google is the only provider (see
   // buildBetterAuthConfig). The dedicated /sign-in/email, /sign-up/email and
