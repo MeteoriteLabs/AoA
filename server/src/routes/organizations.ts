@@ -15,6 +15,7 @@ export function organizationRoutes(db: Db): Router {
 
   // Self-serve org creation: any signed-in board user may create an org and
   // becomes its owner. NO instance_admin gate — this is the multi-tenant thesis.
+  // rbac: instance-admin-not-required — org-level endpoint with no companyId in path; there is no existing company/org scope to check against (the org is being CREATED by this call), so "authenticated board user" is the entire authorization surface by design.
   router.post("/", validate(createOrgSchema), async (req, res) => {
     assertBoard(req);
     if (!req.actor.userId) throw forbidden("Sign in to create an organization");
@@ -23,6 +24,7 @@ export function organizationRoutes(db: Db): Router {
   });
 
   // Caller's own org memberships (for the Lobby org switcher).
+  // rbac: instance-admin-not-required — no companyId in path; result is scope-filtered inline against req.actor.userId (listOrgMemberships), mirroring companies.ts:67's list-endpoint idiom.
   router.get("/", async (req, res) => {
     assertBoard(req);
     if (!req.actor.userId) {
