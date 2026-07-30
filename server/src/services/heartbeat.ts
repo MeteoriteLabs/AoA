@@ -13,6 +13,7 @@ import {
   costEvents,
   environments,
   issues,
+  goals,
   memoryItems,
   companies,
   taskDependencies,
@@ -61,6 +62,7 @@ import { recordMemoryRetrievals } from "./memory-retrieval-audit.js";
 import { actorForAgentRun, memoryAccessConditions } from "./memory-access-sql.js";
 import { filterMemoryForActor } from "./memory-access.js";
 import { resolveRunMemoryScope } from "./memory-run-scope.js";
+import { buildAlwaysOnCore } from "./memory-core-block.js";
 import { issueService as createIssueService } from "./issues.js";
 import { quotaWindowsService } from "./quota-windows.js";
 import { extractSkillMentionIds } from "@armyofagents/shared";
@@ -1413,6 +1415,10 @@ export function heartbeatService(db: Db) {
       projectType: string | null;
       goalId: string | null;
     } | null = null;
+    // Current goal title for the always-on core (P1-T6). Joined here (the select
+    // already leftJoins projects) so the core can name the goal without an extra
+    // query. Left join ⇒ null when the task has no goal — the core omits the line.
+    let goalTitle: string | null = null;
     if (issueId) {
       const issueRow = await db
         .select({
@@ -1421,9 +1427,11 @@ export function heartbeatService(db: Db) {
           projectId: issues.projectId,
           goalId: issues.goalId,
           projectType: projects.type,
+          goalTitle: goals.title,
         })
         .from(issues)
         .leftJoin(projects, eq(projects.id, issues.projectId))
+        .leftJoin(goals, eq(goals.id, issues.goalId))
         .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
         .then((rows) => rows[0] ?? null);
       if (issueRow) {
@@ -1433,6 +1441,7 @@ export function heartbeatService(db: Db) {
           projectType: issueRow.projectType ?? null,
           goalId: issueRow.goalId,
         };
+        goalTitle = issueRow.goalTitle ?? null;
       }
     }
 
@@ -1506,6 +1515,9 @@ export function heartbeatService(db: Db) {
         category: item.category,
         tags: item.tags ?? [],
       })),
+      // Current goal title for the always-on core (P1-T6); null when the task has
+      // no goal or there is no task on this wake.
+      goalTitle,
     };
   }
 
@@ -3607,6 +3619,16 @@ export function heartbeatService(db: Db) {
         if (memoryContext.memory.length > 0) {
           context.memory = memoryContext.memory;
         }
+        // Always-on core (P1-T6, scenario O5): a tiny deterministic block —
+        // role + current goal + a "call memory.search" pointer — set on EVERY
+        // run independent of retrieval ranking/limit, so an agent never starts
+        // without knowing its role and that a searchable company brain exists.
+        // Set unconditionally (not gated on memory results); mirrors the sibling
+        // context.memory contract.
+        context.memory_core = buildAlwaysOnCore({
+          agentRole: agent.role ?? agent.name ?? null,
+          goalTitle: memoryContext.goalTitle,
+        });
       } catch (err) {
         logger.warn(
           { companyId: agent.companyId, agentId: agent.id, runId: run.id, err },

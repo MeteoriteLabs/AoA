@@ -40,6 +40,7 @@ import { memoryService } from "../../memory.js";
 import { filterMemoryForActor, type MemoryActor } from "../../memory-access.js";
 import { actorForAgentRun, memoryAccessConditions } from "../../memory-access-sql.js";
 import { recordMemoryRetrievals } from "../../memory-retrieval-audit.js";
+import { buildAlwaysOnCore } from "../../memory-core-block.js";
 import { isContextBundleItemIncluded } from "../../issue-context-bundles.js";
 import { logger } from "../../../middleware/logger.js";
 
@@ -72,6 +73,19 @@ export interface BuildCrewContextBundleArgs {
    * linkage (companyId + agentId still identify the retrieval).
    */
   runId?: string | null;
+  /**
+   * Agent role label for the always-on core (P1-T6). Caller-supplied (the runner
+   * already holds the agent record) so the bundle needs no extra query. Falls back
+   * to "agent" inside buildAlwaysOnCore when null/empty.
+   */
+  agentRole?: string | null;
+  /**
+   * Current goal title for the always-on core (P1-T6). Optional — omitted today on
+   * the crew path (the bundle does not load the goal), so the crew core is role +
+   * memory pointer. Wired as an arg so a future caller can supply it without a
+   * signature change.
+   */
+  goalTitle?: string | null;
   /** Token budget (ceil(len/4)). Default ~2500. */
   tokenBudget?: number;
 }
@@ -591,5 +605,18 @@ export async function buildCrewContextBundle(
   }
 
   if (sections.length === 0) return "";
-  return sections.join("\n\n");
+
+  // Always-on core (P1-T6, scenario O5): a tiny deterministic block — role + (when
+  // supplied) current goal + a "call memory.search" pointer — PREPENDED as the first
+  // thing the agent reads, independent of retrieval ranking. It is added AFTER token
+  // budgeting on purpose: the plan requires it "never dropped by the token budget",
+  // and it is exempt from (not merely first in) the budget so trimming a tight run
+  // can never evict it. A genuinely-empty or cross-tenant-denied bundle still returns
+  // "" above (no legitimate context ⇒ no `## Context` section, and no core manufactured
+  // for a denied read).
+  const core = buildAlwaysOnCore({
+    agentRole: args.agentRole ?? null,
+    goalTitle: args.goalTitle ?? null,
+  });
+  return [core, ...sections].join("\n\n");
 }
