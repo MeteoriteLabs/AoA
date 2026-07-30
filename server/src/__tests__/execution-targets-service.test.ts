@@ -2,7 +2,30 @@ import { describe, expect, it, vi } from "vitest";
 import { makeTableProxy, drizzleOperatorStubs } from "./helpers/drizzle-mock.js";
 vi.mock("@armyofagents/db", async () => ({ executionTargets: makeTableProxy("execution_targets") }));
 vi.mock("drizzle-orm", () => drizzleOperatorStubs());
-import { registerWorkerHeartbeat } from "../services/execution-targets.js";
+import { registerWorkerHeartbeat, listExecutionTargets } from "../services/execution-targets.js";
+
+describe("listExecutionTargets (P5 review finding #1 — no system-row leak to tenants)", () => {
+  const rows = [
+    { id: "sys-cp", organizationId: null, slug: "control-plane", kind: "local_host" },
+    { id: "sys-pool", organizationId: null, slug: "pool-1", kind: "pooled_gvisor" },
+    { id: "a-ded", organizationId: "org-A", slug: "a-box", kind: "dedicated_worker" },
+    { id: "b-ded", organizationId: "org-B", slug: "b-box", kind: "dedicated_worker" },
+  ];
+  function dbWith(r: unknown[]) {
+    return { select: vi.fn().mockReturnValue({ from: vi.fn().mockResolvedValue(r) }) } as unknown as Parameters<
+      typeof listExecutionTargets
+    >[0];
+  }
+  it("returns ONLY the org's own targets — never organizationId=null system rows (whose id is the worker token)", async () => {
+    const out = (await listExecutionTargets(dbWith(rows), "org-A")) as Array<{ id: string; organizationId: string | null }>;
+    expect(out.map((t) => t.id)).toEqual(["a-ded"]);
+    expect(out.some((t) => t.organizationId == null)).toBe(false); // no system-row disclosure
+    expect(out.some((t) => t.organizationId === "org-B")).toBe(false); // no cross-org disclosure
+  });
+  it("returns nothing for a null org (no ambient system-row disclosure)", async () => {
+    expect(await listExecutionTargets(dbWith(rows), null)).toEqual([]);
+  });
+});
 
 describe("registerWorkerHeartbeat", () => {
   it("scopes the update to the target ID (never the slug) and reports rows updated", async () => {

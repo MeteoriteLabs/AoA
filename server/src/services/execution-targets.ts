@@ -44,12 +44,20 @@ export async function registerWorkerHeartbeat(
 }
 
 /**
- * List execution targets visible to an org: system/shared rows
- * (organizationId null) plus the org's own dedicated/pooled rows. Mirrors the
- * same select-all-then-filter-in-JS shape execution-target-resolver.ts already
- * uses for the run-routing read path (small table; no pagination yet).
+ * List execution targets an org ADMIN may see/manage: ONLY the org's own rows.
+ *
+ * SECURITY (P5 review, finding #1): this list must NOT include system/shared rows
+ * (organizationId = NULL — the seeded control-plane target + operator-registered
+ * pool targets). Their primary-key UUID doubles as the worker bearer token
+ * (routes/execution-targets.ts:16-27), so returning a system row to a tenant admin
+ * hands them a credential to mutate/offline an operator-owned target they do not
+ * own (cross-tenant DoS). The run-routing read path (execution-target-resolver.ts
+ * resolveExecutionTargetForRun) reads system rows SEPARATELY and never exposes
+ * their ids to a caller, so routing to the shared pool is unaffected.
  */
 export async function listExecutionTargets(db: Db, organizationId: string | null) {
   const rows = await db.select().from(executionTargets);
-  return rows.filter((r) => r.organizationId == null || r.organizationId === organizationId);
+  // organizationId is required to see any target; a null org sees nothing here.
+  if (organizationId == null) return [];
+  return rows.filter((r) => r.organizationId === organizationId);
 }

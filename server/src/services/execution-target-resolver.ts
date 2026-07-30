@@ -71,18 +71,46 @@ export async function resolveExecutionTargetForRun(
   });
 }
 
+const HARDENED_ISOLATION = {
+  user: "1000:1000",
+  capDropAll: true,
+  noNewPrivileges: true,
+  readOnlyRootfs: true,
+  tmpfs: ["/tmp:rw,noexec,nosuid,size=64m", "/home/agent:rw,nosuid,size=256m"],
+  memory: "2g",
+  cpus: "2",
+  pidsLimit: 512,
+  ipcPrivate: true,
+} as const;
+
 export function executionTargetToAdapterConfig(target: ExecutionTargetRow): Record<string, unknown> | null {
   const cfg = target.config ?? {};
   if (target.kind === "local_host") return null; // local driver, no override
   if (target.kind === "pooled_gvisor" || target.kind === "dedicated_worker") {
-    // Single-box beta: emit a hardened sandbox-docker config the local docker path runs.
+    // SECURITY (P5 review, critic gap #1): execution_targets.config is
+    // z.record(z.unknown()) and CRUD is org-admin-scoped, so a lower-privileged
+    // tenant admin could otherwise author a target whose config WEAKENS the sandbox
+    // on shared infra — re-opening the exact SSRF (`--add-host host-gateway` route to
+    // the control-plane host) the P5 hardening closed, and turning off cap-drop /
+    // read-only. Two invariants enforced here:
+    //   (1) allowHostGateway is FORCED false on the sandbox path. The host-gateway
+    //       route exists only for the self-hosted LOCAL driver's callback bridge
+    //       (kind:"local_host" above, which returns null and never reaches here); a
+    //       pooled/dedicated sandbox must never route to the control-plane host.
+    //   (2) A TENANT-authored target (organizationId != null) always gets the full
+    //       hardened isolation baseline — its config cannot turn off any security
+    //       flag. Only OPERATOR-owned system rows (organizationId == null, trusted)
+    //       may supply a custom isolation profile.
+    // (network egress on `bridge` is governed by the worker-image egress firewall —
+    // a documented Gate-B deliverable, not an app-layer control.)
+    const operatorOwned = target.organizationId == null;
     return {
       type: "sandbox-docker",
       image: (cfg.image as string) ?? "aoa/agent-base:latest",
       runtime: "runsc",
-      network: (cfg.network as string) ?? "none",
-      allowHostGateway: cfg.allowHostGateway === true,
-      isolation: cfg.isolation ?? { user: "1000:1000", capDropAll: true, noNewPrivileges: true, readOnlyRootfs: true, tmpfs: ["/tmp:rw,noexec,nosuid,size=64m", "/home/agent:rw,nosuid,size=256m"], memory: "2g", cpus: "2", pidsLimit: 512, ipcPrivate: true },
+      network: operatorOwned ? ((cfg.network as string) ?? "none") : "none",
+      allowHostGateway: false,
+      isolation: operatorOwned ? (cfg.isolation ?? HARDENED_ISOLATION) : HARDENED_ISOLATION,
     };
   }
   return null;
