@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 import { makeTableProxy, drizzleOperatorStubs } from "./helpers/drizzle-mock.js";
 
 vi.mock("@armyofagents/db", () => ({
@@ -7,12 +7,21 @@ vi.mock("@armyofagents/db", () => ({
 }));
 vi.mock("drizzle-orm", () => drizzleOperatorStubs());
 
-// enqueueMemoryEmbedding is a best-effort side effect (Decision #104). Stub the
-// whole memory-write module so the backfill's insert path is exercised without
-// dragging in the embedding-queue table. vi.hoisted keeps the spy accessible to
-// the hoisted vi.mock factory.
-const { enqueueMemoryEmbedding } = vi.hoisted(() => ({
+// Since the T9 pgvector-safety fix the backfill writes through `buildMemoryInsert`
+// (one row per call, omitting the `embedding` column when the DB has no pgvector)
+// rather than a raw `db.insert(...).values(...)`. Stub that helper — its own SQL is
+// covered by memory-insert-no-pgvector.test.ts — so this suite stays a unit test of
+// the backfill's LOGIC (which fields, idempotency, embedding enqueue), and report no
+// pgvector so the helper's callers take the embedding-less branch. enqueueMemoryEmbedding
+// is a best-effort side effect (Decision #104); stub it too. vi.hoisted keeps the spies
+// reachable from the hoisted vi.mock factories.
+const { buildMemoryInsert, enqueueMemoryEmbedding } = vi.hoisted(() => ({
+  buildMemoryInsert: vi.fn(),
   enqueueMemoryEmbedding: vi.fn(async () => {}),
+}));
+vi.mock("../services/memory-projection.js", () => ({ buildMemoryInsert }));
+vi.mock("../services/db-capabilities.js", () => ({
+  getDbCapabilities: () => ({ hasVectorSupport: false }),
 }));
 vi.mock("../services/memory-write.js", () => ({ enqueueMemoryEmbedding }));
 
@@ -28,6 +37,20 @@ import {
 } from "../services/identity-backfill.js";
 
 const MARK = IDENTITY_BACKFILL_MARK;
+
+// One buildMemoryInsert call == one inserted item. Echo the projected values back as
+// a single row so applyIdentityBackfill can collect id/title/content.
+beforeEach(() => {
+  buildMemoryInsert.mockReset();
+  buildMemoryInsert.mockImplementation(async (_db: unknown, values: Record<string, unknown>) => [
+    { id: `mem-${String(values.title)}`, title: values.title, content: values.content },
+  ]);
+  enqueueMemoryEmbedding.mockClear();
+});
+
+// The projected values objects passed to buildMemoryInsert (one per inserted item).
+const insertedValues = (): Array<Record<string, unknown>> =>
+  buildMemoryInsert.mock.calls.map((c) => c[1] as Record<string, unknown>);
 
 // ── Pure planner (field → item mapping + idempotency) ──────────────────────
 
@@ -77,11 +100,10 @@ type Row = Record<string, unknown>;
 
 /**
  * Sequence-mock db: select #0 → company fields, select #1 → existing identity
- * items. insert().values().returning() captures the inserted rows and echoes
- * them back with synthetic ids.
+ * items. The write path is the mocked buildMemoryInsert (asserted via
+ * insertedValues()), so this mock only needs to satisfy the two reads.
  */
 function makeMockDb(opts: { company: Row | null; existing?: Row[] }) {
-  const inserts: Row[][] = [];
   let selectCall = 0;
   const thenable = (rows: () => Row[]) => {
     const c: Record<string, unknown> = {};
@@ -99,40 +121,28 @@ function makeMockDb(opts: { company: Row | null; existing?: Row[] }) {
         idx === 0 ? (opts.company ? [opts.company] : []) : (opts.existing ?? []),
       );
     },
-    insert: () => ({
-      values: (vals: Row[]) => {
-        inserts.push(vals);
-        return {
-          returning: () =>
-            Promise.resolve(
-              vals.map((v, i) => ({ id: `mem-${i}`, title: v.title, content: v.content })),
-            ),
-        };
-      },
-    }),
   };
-  return { db: db as unknown as Parameters<typeof backfillIdentityMemory>[0], inserts };
+  return { db: db as unknown as Parameters<typeof backfillIdentityMemory>[0] };
 }
 
 describe("backfillIdentityMemory", () => {
   it("first run inserts one identity item per non-empty field and enqueues embeddings", async () => {
-    enqueueMemoryEmbedding.mockClear();
-    const { db, inserts } = makeMockDb({
+    const { db } = makeMockDb({
       company: { vision: "V", mission: "M", values: "Val" },
       existing: [],
     });
     const n = await backfillIdentityMemory(db, "co-1");
     expect(n).toBe(3);
-    expect(inserts).toHaveLength(1);
-    const rows = inserts[0];
-    expect(rows.map((r) => r.title).sort()).toEqual([
+    const vals = insertedValues();
+    expect(vals).toHaveLength(3);
+    expect(vals.map((r) => r.title).sort()).toEqual([
       "Company Mission",
       "Company Values",
       "Company Vision",
     ]);
     // Every inserted row is an approved, company-scoped identity item with the marker.
     expect(
-      rows.every(
+      vals.every(
         (r) =>
           r.layer === "identity" &&
           r.status === "approved" &&
@@ -145,7 +155,7 @@ describe("backfillIdentityMemory", () => {
   });
 
   it("second run inserts nothing (all fields already backfilled)", async () => {
-    const { db, inserts } = makeMockDb({
+    const { db } = makeMockDb({
       company: { vision: "V", mission: "M", values: "Val" },
       existing: [
         { title: "Company Vision", sourceContext: MARK },
@@ -155,33 +165,33 @@ describe("backfillIdentityMemory", () => {
     });
     const n = await backfillIdentityMemory(db, "co-1");
     expect(n).toBe(0);
-    expect(inserts).toHaveLength(0);
+    expect(insertedValues()).toHaveLength(0);
   });
 
   it("inserts only the missing field on a partial re-run", async () => {
-    const { db, inserts } = makeMockDb({
+    const { db } = makeMockDb({
       company: { vision: "V", mission: "M", values: null },
       existing: [{ title: "Company Vision", sourceContext: MARK }],
     });
     const n = await backfillIdentityMemory(db, "co-1");
     expect(n).toBe(1);
-    expect(inserts[0].map((r) => r.title)).toEqual(["Company Mission"]);
+    expect(insertedValues().map((r) => r.title)).toEqual(["Company Mission"]);
   });
 
   it("empty fields insert nothing (never touches memory_items)", async () => {
-    const { db, inserts } = makeMockDb({
+    const { db } = makeMockDb({
       company: { vision: null, mission: "   ", values: "" },
     });
     const n = await backfillIdentityMemory(db, "co-1");
     expect(n).toBe(0);
-    expect(inserts).toHaveLength(0);
+    expect(insertedValues()).toHaveLength(0);
   });
 
   it("returns 0 for a missing company", async () => {
-    const { db, inserts } = makeMockDb({ company: null });
+    const { db } = makeMockDb({ company: null });
     const n = await backfillIdentityMemory(db, "nope");
     expect(n).toBe(0);
-    expect(inserts).toHaveLength(0);
+    expect(insertedValues()).toHaveLength(0);
   });
 });
 
@@ -189,14 +199,12 @@ describe("backfillIdentityMemory", () => {
 
 describe("backfillAllCompaniesIdentityMemory", () => {
   it("aggregates inserts across companies and skips empty ones", async () => {
-    enqueueMemoryEmbedding.mockClear();
-    // select #0 = all companies; then per company with content: select existing, insert.
+    // select #0 = all companies; then per company with content: select existing.
     const companyRows: Row[] = [
       { id: "co-1", vision: "V1", mission: null, values: null },
       { id: "co-2", vision: null, mission: null, values: null }, // no content → skipped
     ];
     let selectCall = 0;
-    const inserts: Row[][] = [];
     const thenable = (rows: () => Row[]) => {
       const c: Record<string, unknown> = {};
       for (const m of ["from", "where", "orderBy", "limit"]) {
@@ -212,20 +220,12 @@ describe("backfillAllCompaniesIdentityMemory", () => {
         // idx 0 = companies list; idx 1 = existing identity items for co-1 (only company with content).
         return thenable(() => (idx === 0 ? companyRows : []));
       },
-      insert: () => ({
-        values: (vals: Row[]) => {
-          inserts.push(vals);
-          return {
-            returning: () =>
-              Promise.resolve(vals.map((v, i) => ({ id: `m-${i}`, title: v.title, content: v.content }))),
-          };
-        },
-      }),
     } as unknown as Parameters<typeof backfillAllCompaniesIdentityMemory>[0];
 
     const res = await backfillAllCompaniesIdentityMemory(db);
     expect(res).toEqual({ companies: 1, items: 1 });
-    expect(inserts).toHaveLength(1);
-    expect(inserts[0].map((r) => r.title)).toEqual(["Company Vision"]);
+    const vals = insertedValues();
+    expect(vals).toHaveLength(1);
+    expect(vals[0].title).toBe("Company Vision");
   });
 });
