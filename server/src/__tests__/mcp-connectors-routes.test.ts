@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // The route imports only mocked service factories + loadConfig at runtime; it
 // touches neither drizzle-orm nor @armyofagents/db directly (Db is a type-only
@@ -108,6 +108,40 @@ const goodStdio = {
 function postConnector(app: express.Express, body: unknown) {
   return request(app).post(`/api/companies/${COMPANY}/mcp-connectors`).send(body as object);
 }
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
+describe("mcp-connectors routes — emergency creation barrier", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    deploymentMode = "authenticated";
+    mockGetEffectiveRole.mockResolvedValue("founder");
+    mockConnectorSvc.getByName.mockResolvedValue(null);
+  });
+
+  it("returns 403 and performs no write when connectors are globally disabled", async () => {
+    vi.stubEnv("AOA_MCP_CONNECTORS_ENABLED", "false");
+
+    const res = await postConnector(makeApp(founderActor), goodHttp);
+
+    expect(res.status).toBe(403);
+    expect(mockConnectorSvc.getByName).not.toHaveBeenCalled();
+    expect(mockConnectorSvc.create).not.toHaveBeenCalled();
+    expect(mockApprovalSvc.create).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 and performs no write for a denylisted server name", async () => {
+    vi.stubEnv("AOA_MCP_CONNECTOR_DENYLIST", "notion");
+
+    const res = await postConnector(makeApp(founderActor), goodHttp);
+
+    expect(res.status).toBe(403);
+    expect(mockConnectorSvc.getByName).not.toHaveBeenCalled();
+    expect(mockConnectorSvc.create).not.toHaveBeenCalled();
+  });
+});
 
 describe("mcp-connectors routes — validation (load-bearing)", () => {
   beforeEach(() => {

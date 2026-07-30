@@ -9,6 +9,7 @@ import { CatalogCard } from "../CatalogCard";
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({
     selectedCompanyId: "c1",
+    selectedCompany: { id: "c1", name: "Acme", issuePrefix: "TC", status: "active" },
     companies: [{ id: "c1", name: "Acme", status: "active" }],
   }),
 }));
@@ -146,5 +147,20 @@ describe("CatalogCard (v3 chrome)", () => {
   it("uses StackedIcon for type='team'", () => {
     const { container } = renderCard(makeItem({ id: "team:x", type: "team", name: "team-x" }));
     expect(container.querySelectorAll('[data-stacked-layer]').length).toBe(3);
+  });
+
+  it("routes Default Crew through the company-resolving redirect and does not offer installation", () => {
+    renderCard(makeItem({
+      id: "team:aoa-curated/default-crew",
+      type: "team",
+      name: "AoA Default Crew",
+    }));
+
+    expect(screen.getByRole("link")).toHaveAttribute(
+      "href",
+      "/marketplace/team/aoa-curated/default-crew",
+    );
+    expect(screen.getByText("View crew")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /install/i })).not.toBeInTheDocument();
   });
 });

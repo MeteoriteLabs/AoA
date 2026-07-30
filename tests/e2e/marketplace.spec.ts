@@ -221,11 +221,11 @@ test.describe("Marketplace UI", () => {
 
     // Wait for catalog to settle (either data or empty-state — not error)
     await expect(
-      page.getByText("Could not load the marketplace"),
+      page.getByText("Failed to load marketplace."),
     ).not.toBeVisible({ timeout: 15_000 });
   });
 
-  test("/marketplace/plugin type-filter page shows the cross-sell empty state (all plugins are AoA first-party)", async ({
+  test("/marketplace/plugin type-filter page surfaces the first-party plugins in the Plugins shelf", async ({
     page,
   }) => {
     // /marketplace/plugin redirects → /marketplace?type=plugin (MarketplaceTypeRedirect).
@@ -241,29 +241,43 @@ test.describe("Marketplace UI", () => {
     const pluginsPill = page.getByRole("button", { name: /^plugins/i });
     await expect(pluginsPill).toHaveAttribute("data-active", "true");
 
-    // The bundled fixture's plugins are all AoA first-party (MeteoriteLabs-owned),
-    // so the main Plugins view is empty and shows the cross-sell empty state
-    // (which stays visible + points to AoA rather than hiding the section).
-    await expect(page.getByTestId("marketplace-empty-plugin")).toBeVisible();
-    await expect(
-      page.getByRole("heading", { name: /no third-party plugins yet/i }),
-    ).toBeVisible();
-  });
-
-  test("AoA view surfaces the segregated first-party plugins", async ({
-    page,
-  }) => {
-    // AoA-owned items are excluded from the main sections and live under the
-    // AoA view (?view=aoa). Slack (aoa-curated) appears only here.
-    await page.goto("/marketplace?view=aoa");
-
-    await expect(
-      page.getByRole("heading", { level: 1, name: /marketplace/i }),
-    ).toBeVisible({ timeout: 15_000 });
-
+    // Post supply-chain recovery, first-party (aoa-curated) plugins are placed in
+    // the Plugins shelf — not segregated to the AoA view — so the fixture's plugin
+    // cards render here (name = h3) and the cross-sell empty state is gone.
     await expect(
       page.getByRole("heading", { name: "Slack", level: 3 }),
     ).toBeVisible();
+    await expect(page.getByTestId("marketplace-empty-plugin")).not.toBeVisible();
+  });
+
+  test("first-party plugins live in the Plugins shelf, not the AoA view", async ({
+    page,
+  }) => {
+    // Supply-chain recovery inverted the old behavior: first-party plugins are no
+    // longer segregated into the AoA view. Slack (aoa-curated) is a Plugins-shelf
+    // card, and the AoA view (which promotes the AoA package + Default Crew + crew
+    // agents — none of which exist in the bundled fixture) does not list it.
+    await page.goto("/marketplace?type=plugin");
+    await expect(
+      page.getByRole("heading", { level: 1, name: /marketplace/i }),
+    ).toBeVisible({ timeout: 15_000 });
+    await expect(
+      page.getByRole("heading", { name: "Slack", level: 3 }),
+    ).toBeVisible();
+
+    await page.goto("/marketplace?view=aoa");
+    await expect(
+      page.getByRole("heading", { level: 1, name: /marketplace/i }),
+    ).toBeVisible({ timeout: 15_000 });
+    // Wait for the AoA view to SETTLE before the negative check — page.goto reloads
+    // cold, so asserting "Slack not visible" against the still-loading skeleton would
+    // pass vacuously. The fixture has no AoA package/crew/agents, so the AoA shelf
+    // resolves to the empty state; wait for it, then confirm first-party plugins are
+    // not surfaced here (and that the empty state, not an error, is what rendered).
+    await expect(page.getByText("No matches.")).toBeVisible({ timeout: 15_000 });
+    await expect(
+      page.getByRole("heading", { name: "Slack", level: 3 }),
+    ).not.toBeVisible();
   });
 
   test("/marketplace/skill type-filter page activates Skills and renders installable cards", async ({

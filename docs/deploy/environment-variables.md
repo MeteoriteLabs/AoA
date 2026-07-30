@@ -292,6 +292,18 @@ membership link has been checked.
 | `AOA_WORKTREES_DIR` | `<AOA_HOME>/instances/<id>/workspaces` | Where the worktree provisioner places per-task git worktrees |
 | `AOA_ENABLE_COMPANY_DELETION` | `true` (dev), `false` (prod) | Feature flag for the destructive "delete company" action |
 
+## Marketplace emergency controls
+
+These are operator-controlled environment variables on the AoA server process.
+They are not injected into agent processes. When changing them through a
+deployment platform or container configuration, restart or redeploy the server
+so the process receives the new environment.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AOA_MCP_CONNECTORS_ENABLED` | enabled | Emergency runtime kill switch for external MCP connectors. Unset/`true` keeps connectors enabled. Any other explicit value fails closed: the curated shelf is empty, catalog installation cannot resolve an entry, runtime delivery stops, and connector-tool auto-approval is denied. Existing rows remain visible to operators for recovery. |
+| `AOA_MCP_CONNECTOR_DENYLIST` | (empty) | Comma-separated, lowercase connector `serverName` values to revoke without disabling every connector. Denied entries are hidden from the curated shelf, cannot be installed from it, are not delivered to runs, and do not receive connector-tool auto-approval. |
+
 ## Agent Runtime (injected into agent processes — not user-configurable)
 
 The server sets these automatically when invoking adapters. They appear in the spawned agent's environment but are **not configured by operators**.

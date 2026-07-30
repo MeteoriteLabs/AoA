@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   composeEvidenceFromDocker,
   evaluatePreflight,
+  MARKETPLACE_RECOVERY_PREFLIGHT_REQUESTS,
   sanitizePreflightError,
 } from "../../../scripts/lib/marketplace-recovery-preflight.mjs";
 
@@ -29,6 +30,26 @@ function run(args: string[]) {
 }
 
 describe("marketplace recovery preflight input boundary", () => {
+  it("authenticates every protected preflight endpoint while keeping health public", () => {
+    expect(MARKETPLACE_RECOVERY_PREFLIGHT_REQUESTS).toEqual([
+      {
+        key: "health",
+        endpoint: "/api/health",
+        authenticated: false,
+      },
+      {
+        key: "catalog",
+        endpoint: "/api/marketplace/catalog/status",
+        authenticated: true,
+      },
+      {
+        key: "identity",
+        endpoint: "/api/cli-auth/me",
+        authenticated: true,
+      },
+    ]);
+  });
+
   it.each([
     [
       [

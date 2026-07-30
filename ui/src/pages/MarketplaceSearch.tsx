@@ -3,11 +3,15 @@ import { useSearchParams, Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useCatalog } from "@/hooks/useCatalog";
+import { usePackages } from "@/hooks/usePackages";
 import { CatalogCard } from "@/components/marketplace/CatalogCard";
 import { LobbyShellMobileMenuButton } from "@/components/LobbyShell";
 import { useMarketplaceSidebar } from "@/components/marketplace/useMarketplaceSidebar";
 import { searchItems, filterByCategory, groupByType } from "@/api/marketplace";
-import { TYPE_LABELS_PLURAL, isAoaItem } from "@/lib/marketplace-constants";
+import {
+  TYPE_LABELS_PLURAL,
+  deriveMarketplacePlacement,
+} from "@/lib/marketplace-constants";
 import { pluginsApi } from "@/api/plugins";
 import { queryKeys } from "@/lib/queryKeys";
 import type { MarketplaceItemType, PluginRecord } from "@armyofagents/shared";
@@ -19,7 +23,8 @@ export default function MarketplaceSearch() {
   const q = searchParams.get("q") ?? "";
   const category = searchParams.get("category") ?? "";
 
-  const { data: catalog, isLoading, error } = useCatalog();
+  const { data: catalog, error: catalogError } = useCatalog();
+  const { data: packages, error: packagesError } = usePackages();
   useMarketplaceSidebar("home");
 
   const { data: installedPlugins } = useQuery({
@@ -33,13 +38,16 @@ export default function MarketplaceSearch() {
   );
 
   const grouped = useMemo(() => {
-    if (!catalog) return null;
-    // AoA first-party items are only discoverable under the AoA view, not search.
-    let items = catalog.items.filter((i) => !isAoaItem(i));
+    if (!catalog || packages === undefined) return null;
+    let items = deriveMarketplacePlacement(catalog.items, packages).mainItems;
     if (category) items = filterByCategory(items, category);
     if (q.trim()) items = searchItems(items, q);
     return groupByType(items);
-  }, [catalog, q, category]);
+  }, [catalog, packages, q, category]);
+  const placementError =
+    (catalog === undefined ? catalogError : null) ??
+    (packages === undefined ? packagesError : null);
+  const placementLoading = grouped === null && placementError == null;
 
   const totalCount = grouped
     ? Object.values(grouped).reduce((sum, arr) => sum + arr.length, 0)
@@ -50,7 +58,7 @@ export default function MarketplaceSearch() {
       <div className="mx-auto w-full max-w-[1080px] px-4 py-6 sm:px-6 sm:py-7 md:px-10 md:py-9">
         <LobbyShellMobileMenuButton className="mb-4" />
 
-        {isLoading ? (
+        {placementLoading ? (
           <div className="space-y-6">
             <Skeleton className="h-8 w-64" />
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -59,11 +67,11 @@ export default function MarketplaceSearch() {
               ))}
             </div>
           </div>
-        ) : error ? (
+        ) : placementError ? (
           <div className="text-center py-12">
             <p className="text-lg font-medium">Could not load search results</p>
             <p className="text-sm text-muted-foreground mt-2">
-              {error.message || "Unknown error"}
+              {placementError.message || "Unknown error"}
             </p>
           </div>
         ) : (

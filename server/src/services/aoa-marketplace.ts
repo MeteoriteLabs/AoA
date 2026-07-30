@@ -138,6 +138,7 @@ export class MarketplaceCatalogService {
   private readonly bundledSnapshotProvider: () => Promise<MarketplaceCatalogFile | null>;
   private syncTimer: NodeJS.Timeout | null = null;
   private inFlightSync: Promise<MarketplaceCatalogRefreshResult> | null = null;
+  private initialRefresh: Promise<MarketplaceCatalogRefreshResult> | null = null;
   /** Epoch ms of the last sync attempt that produced no catalog (R4 backoff). */
   private lastSyncFailureAt: number | null = null;
 
@@ -150,10 +151,21 @@ export class MarketplaceCatalogService {
   /** Start the periodic sync loop. */
   startSyncLoop(): void {
     if (this.syncTimer) return;
-    void this.refreshAndCheckForUpdates();
+    this.initialRefresh ??= this.refreshAndCheckForUpdates();
     this.syncTimer = setInterval(() => {
       void this.refreshAndCheckForUpdates();
     }, SYNC_INTERVAL_MS);
+  }
+
+  /**
+   * Join the exact refresh attempt started by `startSyncLoop()`. Startup
+   * maintenance uses this instead of racing a cache-only read. If a caller uses
+   * the service before the loop starts, this method starts and retains the same
+   * single initial attempt.
+   */
+  waitForInitialRefresh(): Promise<MarketplaceCatalogRefreshResult> {
+    this.initialRefresh ??= this.refreshAndCheckForUpdates();
+    return this.initialRefresh;
   }
 
   stopSyncLoop(): void {
