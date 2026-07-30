@@ -89,14 +89,37 @@ describe("MyTasksWidget", () => {
     expect(screen.queryByRole("link", { name: /Draft launch post/i })).not.toBeInTheDocument();
   });
 
-  it("caps the list at 5 tasks", async () => {
+  it("caps the list at 2 rows + a '+N more' tail for a short (h=1) tile", async () => {
     issuesApiMock.list.mockResolvedValue(
       Array.from({ length: 8 }, (_, i) => ({ id: `t${i}`, title: `Task ${i}`, status: "todo", priority: "medium" })),
     );
     renderWithProviders(<MyTasksWidget companyId="co-1" role="team_member" size={{ w: 2, h: 1 }} />);
     expect(await screen.findByText("Task 0")).toBeInTheDocument();
-    expect(screen.getByText("Task 4")).toBeInTheDocument();
-    expect(screen.queryByText("Task 5")).not.toBeInTheDocument();
+    expect(screen.getByText("Task 1")).toBeInTheDocument();
+    expect(screen.queryByText("Task 2")).not.toBeInTheDocument();
     expect(screen.queryByText("Task 7")).not.toBeInTheDocument();
+    expect(screen.getByText("+6 more")).toBeInTheDocument();
+  });
+
+  it("caps the list at 6 rows + a '+N more' tail for a tall (h=2) tile", async () => {
+    issuesApiMock.list.mockResolvedValue(
+      Array.from({ length: 8 }, (_, i) => ({ id: `t${i}`, title: `Task ${i}`, status: "todo", priority: "medium" })),
+    );
+    renderWithProviders(<MyTasksWidget companyId="co-1" role="team_member" size={{ w: 2, h: 2 }} />);
+    expect(await screen.findByText("Task 0")).toBeInTheDocument();
+    expect(screen.getByText("Task 5")).toBeInTheDocument();
+    expect(screen.queryByText("Task 6")).not.toBeInTheDocument();
+    expect(screen.queryByText("Task 7")).not.toBeInTheDocument();
+    expect(screen.getByText("+2 more")).toBeInTheDocument();
+  });
+
+  it("shows no '+N more' tail when every task fits inside the current row cap", async () => {
+    issuesApiMock.list.mockResolvedValue(
+      Array.from({ length: 2 }, (_, i) => ({ id: `t${i}`, title: `Task ${i}`, status: "todo", priority: "medium" })),
+    );
+    renderWithProviders(<MyTasksWidget companyId="co-1" role="team_member" size={{ w: 2, h: 1 }} />);
+    expect(await screen.findByText("Task 0")).toBeInTheDocument();
+    expect(screen.getByText("Task 1")).toBeInTheDocument();
+    expect(screen.queryByText(/more$/)).not.toBeInTheDocument();
   });
 });

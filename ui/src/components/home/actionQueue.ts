@@ -67,3 +67,42 @@ export function buildActionGroups(data: HomeSummary): ActionGroup[] {
 
   return groups;
 }
+
+export interface AllocatedActionGroup {
+  group: ActionGroup;
+  /** How many of this group's items to render — always <= group.items.length. */
+  maxItems: number;
+}
+
+/**
+ * Distributes a flattened row budget (from `rowsForSize`) across groups in
+ * order, filling each group's own items until the budget runs out. A group
+ * that would get 0 (the budget was already exhausted before reaching it) is
+ * dropped from the result entirely rather than kept as an empty section —
+ * its full item count still folds into `overflow` so the caller can render
+ * one aggregate "+N more" line.
+ *
+ * Deliberately flat rather than per-group-proportional: `buildActionGroups`
+ * produces "Needs Review"/"Blocked" as near-always 1-2 aggregate-count items
+ * and "Due Today" as the only group whose size can really grow, so there's
+ * no single "fair" way to split a fixed budget across such differently-
+ * shaped groups — simplicity (fill in order, spill the rest into one
+ * overflow count) wins over a cleverer per-group split.
+ */
+export function allocateActionGroups(
+  groups: ActionGroup[],
+  maxTotalItems: number,
+): { allocated: AllocatedActionGroup[]; overflow: number } {
+  let remaining = maxTotalItems;
+  let overflow = 0;
+  const allocated: AllocatedActionGroup[] = [];
+  for (const group of groups) {
+    const take = Math.max(0, Math.min(group.items.length, remaining));
+    if (take > 0) {
+      allocated.push({ group, maxItems: take });
+    }
+    overflow += group.items.length - take;
+    remaining -= take;
+  }
+  return { allocated, overflow };
+}

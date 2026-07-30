@@ -25,3 +25,15 @@ export function WidgetEmpty({ icon: Icon, message, ctaLabel, onCta }: {
 export function WidgetLoading() {
   return <div className="flex h-full items-center justify-center"><span className="text-xs text-muted-foreground">Loading…</span></div>;
 }
+
+/**
+ * "+N more" tail row for a truncated list — lets the user know there's more
+ * beyond what the tile's current size can show (see widgetSizing.ts's
+ * `rowsForSize`). Renders nothing when there's no overflow, so call sites can
+ * render it unconditionally (`<WidgetOverflow count={overflow} />`) instead
+ * of each re-deriving their own `overflow > 0 &&` guard.
+ */
+export function WidgetOverflow({ count }: { count: number }) {
+  if (count <= 0) return null;
+  return <div className="px-4 py-2 text-xs text-muted-foreground">+{count} more</div>;
+}

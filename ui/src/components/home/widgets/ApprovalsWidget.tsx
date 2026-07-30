@@ -6,11 +6,10 @@ import { workQuestionsApi } from "../../../api/work-questions";
 import { queryKeys } from "../../../lib/queryKeys";
 import { typeLabel } from "../../ApprovalPayload";
 import { WidgetShell } from "./WidgetShell";
-import { WidgetEmpty, WidgetLoading } from "./WidgetStates";
+import { WidgetEmpty, WidgetLoading, WidgetOverflow } from "./WidgetStates";
 import { WidgetRowLink } from "./WidgetRowLink";
+import { rowsForSize } from "./widgetSizing";
 import type { WidgetProps } from "./types";
-
-const MAX_ROWS = 5;
 
 interface WaitingRow {
   key: string;
@@ -32,7 +31,7 @@ function questionRow(q: WorkQuestion): WaitingRow {
   };
 }
 
-export function ApprovalsWidget({ companyId, editing }: WidgetProps) {
+export function ApprovalsWidget({ companyId, editing, size }: WidgetProps) {
   const { data: approvals, isLoading: aLoading, isError: aIsError } = useQuery({
     queryKey: queryKeys.approvals.list(companyId, "pending"),
     queryFn: () => approvalsApi.list(companyId, "pending"),
@@ -52,7 +51,8 @@ export function ApprovalsWidget({ companyId, editing }: WidgetProps) {
 
   const rows: WaitingRow[] =
     !approvals || !questions ? [] : [...approvals.map(approvalRow), ...questions.map(questionRow)];
-  const visible = rows.slice(0, MAX_ROWS);
+  const maxRows = rowsForSize(size);
+  const visible = rows.slice(0, maxRows);
   const overflow = rows.length - visible.length;
 
   return (
@@ -76,9 +76,7 @@ export function ApprovalsWidget({ companyId, editing }: WidgetProps) {
               <span className="min-w-0 flex-1 truncate">{row.label}</span>
             </WidgetRowLink>
           ))}
-          {overflow > 0 && (
-            <div className="px-4 py-2 text-xs text-muted-foreground">+{overflow} more</div>
-          )}
+          <WidgetOverflow count={overflow} />
         </div>
       )}
     </WidgetShell>

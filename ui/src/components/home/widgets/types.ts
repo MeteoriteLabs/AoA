@@ -15,7 +15,19 @@ export interface WidgetSize {
 export interface WidgetProps {
   companyId: string;
   role: UserRole | null;
-  /** Current grid footprint (columns × rows) the tile is rendered at. */
+  /**
+   * Current grid footprint (columns × rows) the tile is rendered at.
+   *
+   * Row/list widgets (My tasks, Objectives, Discussions, Waiting on you,
+   * Today's activity, Memory review, Action queue, Suggestions) read this
+   * via `rowsForSize` (widgetSizing.ts) to decide how many rows/items to
+   * render — a taller tile shows more, a shorter one fewer, with a "+N more"
+   * affordance (WidgetOverflow in WidgetStates.tsx) when truncated. Width is
+   * not a factor — see rowsForSize's own doc comment for why.
+   *
+   * Single-value "stat" widgets (Agents working now, Budget) legitimately
+   * ignore it — they only ever show one number, regardless of tile size.
+   */
   size: WidgetSize;
   /** True while the Home board is in edit mode (suppresses header navigation). */
   editing?: boolean;

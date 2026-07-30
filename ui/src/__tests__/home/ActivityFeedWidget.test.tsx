@@ -156,4 +156,48 @@ describe("ActivityFeedWidget", () => {
       expect(screen.queryByText(/×/)).not.toBeInTheDocument();
     });
   });
+
+  describe("size-responsive row cap", () => {
+    beforeEach(() => {
+      useHomeSummaryMock.mockReturnValue({
+        data: {
+          recentActivity: Array.from({ length: 8 }, (_, i) => ({
+            id: `a${i}`,
+            action: "issue.completed",
+            entityType: "issue",
+            entityId: `i${i}`,
+            details: { title: `Task ${i}` },
+            createdAt: "x",
+            actorType: "agent",
+            actorId: "z",
+          })),
+        },
+        isLoading: false,
+        isError: false,
+        error: null,
+      });
+    });
+
+    it("caps at 2 rows + a '+N more' tail for a short (h=1) tile", () => {
+      renderWithProviders(<ActivityFeedWidget companyId="co-1" role="founder" size={{ w: 2, h: 1 }} />);
+      expect(screen.getByText("Task 0")).toBeInTheDocument();
+      expect(screen.getByText("Task 1")).toBeInTheDocument();
+      expect(screen.queryByText("Task 2")).not.toBeInTheDocument();
+      expect(screen.getByText("+6 more")).toBeInTheDocument();
+    });
+
+    it("caps at 6 rows + a '+N more' tail for a tall (h=2) tile", () => {
+      renderWithProviders(<ActivityFeedWidget companyId="co-1" role="founder" size={{ w: 2, h: 2 }} />);
+      expect(screen.getByText("Task 0")).toBeInTheDocument();
+      expect(screen.getByText("Task 5")).toBeInTheDocument();
+      expect(screen.queryByText("Task 6")).not.toBeInTheDocument();
+      expect(screen.getByText("+2 more")).toBeInTheDocument();
+    });
+  });
+
+  it("shows no '+N more' tail when every activity row fits inside the current row cap", () => {
+    renderWithProviders(<ActivityFeedWidget companyId="co-1" role="founder" size={{ w: 2, h: 2 }} />);
+    expect(screen.getByText("Draft spec")).toBeInTheDocument();
+    expect(screen.queryByText(/more$/)).not.toBeInTheDocument();
+  });
 });

@@ -5,11 +5,10 @@ import { discussionsApi } from "../../../api/discussions";
 import { queryKeys } from "../../../lib/queryKeys";
 import { useDialog } from "../../../context/DialogContext";
 import { WidgetShell } from "./WidgetShell";
-import { WidgetEmpty, WidgetLoading } from "./WidgetStates";
+import { WidgetEmpty, WidgetLoading, WidgetOverflow } from "./WidgetStates";
 import { WidgetRowLink } from "./WidgetRowLink";
+import { rowsForSize } from "./widgetSizing";
 import type { WidgetProps } from "./types";
-
-const MAX_ROWS = 5;
 
 /**
  * Recency for sorting: lastEntryAt when the thread has entries, else
@@ -20,7 +19,7 @@ function recencyMs(d: DiscussionListItem): number {
   return new Date(d.lastEntryAt ?? d.createdAt).getTime();
 }
 
-export function DiscussionsWidget({ companyId, editing }: WidgetProps) {
+export function DiscussionsWidget({ companyId, editing, size }: WidgetProps) {
   const { data, isLoading, isError } = useQuery({
     // Distinct from queryKeys.discussions.list(companyId) alone (used by the
     // full Discussions page with its own filter set) so this widget's
@@ -34,8 +33,12 @@ export function DiscussionsWidget({ companyId, editing }: WidgetProps) {
 
   // The server ignores sortBy/sortOrder/limit on this list route today (it
   // hardcodes limit:50/offset:0 — verified in server/src/routes/discussions.ts),
-  // so recency ordering and the top-5 cap are both done here client-side.
-  const discussions = [...(data?.discussions ?? [])].sort((a, b) => recencyMs(b) - recencyMs(a)).slice(0, MAX_ROWS);
+  // so recency ordering and the size-driven row cap are both done here
+  // client-side.
+  const allDiscussions = [...(data?.discussions ?? [])].sort((a, b) => recencyMs(b) - recencyMs(a));
+  const maxRows = rowsForSize(size);
+  const discussions = allDiscussions.slice(0, maxRows);
+  const overflow = allDiscussions.length - discussions.length;
 
   return (
     <WidgetShell title="Discussions" icon={MessagesSquare} to="/discussions" editing={editing}>
@@ -69,6 +72,7 @@ export function DiscussionsWidget({ companyId, editing }: WidgetProps) {
               </div>
             </WidgetRowLink>
           ))}
+          <WidgetOverflow count={overflow} />
         </div>
       )}
     </WidgetShell>

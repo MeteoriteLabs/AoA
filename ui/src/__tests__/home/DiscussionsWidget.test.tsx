@@ -80,7 +80,7 @@ describe("DiscussionsWidget", () => {
     expect(screen.queryByText(/pending/)).not.toBeInTheDocument();
   });
 
-  it("sorts by lastEntryAt (falling back to createdAt) descending, and caps at 5", async () => {
+  it("sorts by lastEntryAt (falling back to createdAt) descending, and caps at 6 rows + a '+N more' tail for a tall (h=2) tile", async () => {
     const now = Date.now();
     discussionsApiMock.list.mockResolvedValue({
       discussions: [
@@ -107,14 +107,55 @@ describe("DiscussionsWidget", () => {
     const links = screen.getAllByRole("link", { name: /activity|entries|Extra/i });
     // Newest (lastEntryAt = now) first, then No-entries (createdAt = now-10s,
     // falls back since lastEntryAt is null), then Oldest activity (now-30s).
+    // h=2 -> rowsForSize = 6, so all but the last (oldest) extra fit.
     expect(links.map((l) => l.textContent)).toEqual([
       expect.stringContaining("Newest activity"),
       expect.stringContaining("No entries yet"),
       expect.stringContaining("Oldest activity"),
       expect.stringContaining("Extra 0"),
       expect.stringContaining("Extra 1"),
+      expect.stringContaining("Extra 2"),
     ]);
-    expect(screen.queryByText("Extra 2")).not.toBeInTheDocument();
+    expect(screen.queryByText("Extra 3")).not.toBeInTheDocument();
+    expect(screen.getByText("+1 more")).toBeInTheDocument();
+  });
+
+  it("caps at 2 rows + a '+N more' tail for a short (h=1) tile", async () => {
+    discussionsApiMock.list.mockResolvedValue({
+      discussions: Array.from({ length: 5 }, (_, i) => ({
+        id: `d${i}`,
+        title: `Thread ${i}`,
+        status: "active" as const,
+        entryCount: 1,
+        pendingItemCount: 0,
+        lastEntryAt: new Date(Date.now() - i * 1_000).toISOString(),
+        createdAt: new Date(Date.now() - i * 1_000).toISOString(),
+      })),
+      total: 5,
+      limit: 50,
+      offset: 0,
+    });
+    renderWithProviders(<DiscussionsWidget companyId="co-1" role="founder" size={{ w: 2, h: 1 }} />);
+
+    expect(await screen.findByText("Thread 0")).toBeInTheDocument();
+    expect(screen.getByText("Thread 1")).toBeInTheDocument();
+    expect(screen.queryByText("Thread 2")).not.toBeInTheDocument();
+    expect(screen.getByText("+3 more")).toBeInTheDocument();
+  });
+
+  it("shows no '+N more' tail when every discussion fits inside the current row cap", async () => {
+    discussionsApiMock.list.mockResolvedValue({
+      discussions: [
+        { id: "d1", title: "Only thread", status: "active", entryCount: 1, pendingItemCount: 0, lastEntryAt: null, createdAt: new Date().toISOString() },
+      ],
+      total: 1,
+      limit: 50,
+      offset: 0,
+    });
+    renderWithProviders(<DiscussionsWidget companyId="co-1" role="founder" size={{ w: 2, h: 1 }} />);
+
+    expect(await screen.findByText("Only thread")).toBeInTheDocument();
+    expect(screen.queryByText(/more$/)).not.toBeInTheDocument();
   });
 
   it("does not render rows as links while editing", async () => {

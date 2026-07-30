@@ -3,14 +3,18 @@ import { Target } from "lucide-react";
 import { useHomeSummary } from "../../../hooks/useHomeSummary";
 import { useDialog } from "../../../context/DialogContext";
 import { WidgetShell } from "./WidgetShell";
-import { WidgetEmpty, WidgetLoading } from "./WidgetStates";
+import { WidgetEmpty, WidgetLoading, WidgetOverflow } from "./WidgetStates";
 import { WidgetRowLink } from "./WidgetRowLink";
+import { rowsForSize } from "./widgetSizing";
 import type { WidgetProps } from "./types";
 
-export function ObjectivesWidget({ companyId, editing }: WidgetProps) {
+export function ObjectivesWidget({ companyId, editing, size }: WidgetProps) {
   const { data, isLoading, isError } = useHomeSummary(companyId);
   const { openNewGoal } = useDialog();
-  const goals = data?.goalProgress ?? [];
+  const allGoals = data?.goalProgress ?? [];
+  const maxRows = rowsForSize(size);
+  const goals = allGoals.slice(0, maxRows);
+  const overflow = allGoals.length - goals.length;
   return (
     <WidgetShell title="Objectives" icon={Target} to="/objectives" editing={editing}>
       {isLoading ? (
@@ -57,6 +61,7 @@ export function ObjectivesWidget({ companyId, editing }: WidgetProps) {
               </div>
             </WidgetRowLink>
           ))}
+          <WidgetOverflow count={overflow} />
         </div>
       )}
     </WidgetShell>

@@ -101,7 +101,7 @@ describe("ApprovalsWidget", () => {
     expect(screen.queryByRole("link", { name: /Hire Agent/i })).not.toBeInTheDocument();
   });
 
-  it("caps the merged list at 5 rows with a '+N more' tail", async () => {
+  it("caps the merged list at 6 rows with a '+N more' tail for a tall (h=2) tile", async () => {
     approvalsApiMock.list.mockResolvedValue(
       Array.from({ length: 4 }, (_, i) => ({ id: `a${i}`, companyId: "co-1", type: "hire_agent", status: "pending", payload: {}, createdAt: new Date().toISOString() })),
     );
@@ -110,10 +110,30 @@ describe("ApprovalsWidget", () => {
     );
     renderWithProviders(<ApprovalsWidget companyId="co-1" role="founder" size={{ w: 2, h: 2 }} />);
 
-    // 4 approvals + first 1 question visible (5 total), "+2 more" tail for the remaining questions.
+    // 4 approvals + first 2 questions visible (6 total), "+1 more" tail for the remaining question.
     expect(await screen.findByText("Question 0")).toBeInTheDocument();
-    expect(screen.queryByText("Question 1")).not.toBeInTheDocument();
+    expect(await screen.findByText("Question 1")).toBeInTheDocument();
     expect(screen.queryByText("Question 2")).not.toBeInTheDocument();
+    expect(screen.getByText("+1 more")).toBeInTheDocument();
+  });
+
+  it("caps the merged list at 2 rows with a '+N more' tail for a short (h=1) tile", async () => {
+    approvalsApiMock.list.mockResolvedValue(
+      Array.from({ length: 4 }, (_, i) => ({ id: `a${i}`, companyId: "co-1", type: "hire_agent", status: "pending", payload: {}, createdAt: new Date().toISOString() })),
+    );
+    renderWithProviders(<ApprovalsWidget companyId="co-1" role="founder" size={{ w: 2, h: 1 }} />);
+
+    expect(await screen.findAllByText("Hire Agent")).toHaveLength(2);
     expect(screen.getByText("+2 more")).toBeInTheDocument();
+  });
+
+  it("shows no '+N more' tail when the merged list fits inside the current row cap", async () => {
+    approvalsApiMock.list.mockResolvedValue([
+      { id: "a1", companyId: "co-1", type: "hire_agent", status: "pending", payload: {}, createdAt: new Date().toISOString() },
+    ]);
+    renderWithProviders(<ApprovalsWidget companyId="co-1" role="founder" size={{ w: 2, h: 1 }} />);
+
+    expect(await screen.findByText("Hire Agent")).toBeInTheDocument();
+    expect(screen.queryByText(/more$/)).not.toBeInTheDocument();
   });
 });

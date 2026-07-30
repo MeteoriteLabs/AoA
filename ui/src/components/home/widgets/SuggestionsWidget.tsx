@@ -37,6 +37,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { WidgetShell } from "./WidgetShell";
+import { rowsForSize } from "./widgetSizing";
 import type { WidgetProps } from "./types";
 
 interface SuggestedMemoryDraft {
@@ -375,8 +376,9 @@ function SuggestedMemoryDialog({
   );
 }
 
-export function SuggestionsWidget({ companyId, role, editing }: WidgetProps) {
+export function SuggestionsWidget({ companyId, role, editing, size }: WidgetProps) {
   const canAct = role === "founder";
+  const maxVisible = rowsForSize(size);
   const { openNewIssue } = useDialog();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
@@ -422,8 +424,8 @@ export function SuggestionsWidget({ companyId, role, editing }: WidgetProps) {
   });
 
   const visibleSuggestions = useMemo(
-    () => (showAllSuggestions ? suggestions : suggestions.slice(0, 10)),
-    [showAllSuggestions, suggestions],
+    () => (showAllSuggestions ? suggestions : suggestions.slice(0, maxVisible)),
+    [showAllSuggestions, suggestions, maxVisible],
   );
 
   function markSuggestionBusy(suggestionId: string, busy: boolean) {
@@ -524,7 +526,7 @@ export function SuggestionsWidget({ companyId, role, editing }: WidgetProps) {
     <>
       <WidgetShell title="Suggestions" icon={Lightbulb} to="/inbox" editing={editing}>
         <div className="space-y-3">
-          {suggestions.length > 10 && (
+          {suggestions.length > maxVisible && (
             <div className="flex items-center justify-end">
               <Button variant="link" size="sm" onClick={() => setShowAllSuggestions((current) => !current)}>
                 {showAllSuggestions ? "Show less" : "View all"}

@@ -56,4 +56,46 @@ describe("SuggestionsWidget", () => {
     // shell rather than throwing or hanging on the loading placeholder.
     expect(await screen.findByText("All caught up")).toBeInTheDocument();
   });
+
+  it("hides the View all toggle when every suggestion fits inside the current row cap", async () => {
+    renderWithProviders(<SuggestionsWidget companyId="co-1" role="founder" size={{ w: 2, h: 1 }} />);
+    expect(await screen.findByText("Flag launch risk")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "View all" })).not.toBeInTheDocument();
+  });
+
+  describe("size-responsive default visible count", () => {
+    beforeEach(() => {
+      suggestionsApiMock.pending.mockResolvedValue(
+        Array.from({ length: 8 }, (_, i) => s({ id: `s${i}`, title: `Suggestion ${i}` })),
+      );
+    });
+
+    it("shows only 2 suggestions by default at h=1, with a View all toggle for the rest", async () => {
+      renderWithProviders(<SuggestionsWidget companyId="co-1" role="founder" size={{ w: 2, h: 1 }} />);
+      expect(await screen.findByText("Suggestion 0")).toBeInTheDocument();
+      expect(screen.getByText("Suggestion 1")).toBeInTheDocument();
+      expect(screen.queryByText("Suggestion 2")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "View all" })).toBeInTheDocument();
+    });
+
+    it("shows 6 suggestions by default at h=2, with a View all toggle for the rest", async () => {
+      renderWithProviders(<SuggestionsWidget companyId="co-1" role="founder" size={{ w: 2, h: 2 }} />);
+      expect(await screen.findByText("Suggestion 0")).toBeInTheDocument();
+      expect(screen.getByText("Suggestion 5")).toBeInTheDocument();
+      expect(screen.queryByText("Suggestion 6")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "View all" })).toBeInTheDocument();
+    });
+
+    it("View all reveals every suggestion regardless of tile size, and Show less re-collapses it", async () => {
+      const user = userEvent.setup();
+      renderWithProviders(<SuggestionsWidget companyId="co-1" role="founder" size={{ w: 2, h: 1 }} />);
+      await screen.findByText("Suggestion 0");
+
+      await user.click(screen.getByRole("button", { name: "View all" }));
+      expect(screen.getByText("Suggestion 7")).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "Show less" }));
+      expect(screen.queryByText("Suggestion 7")).not.toBeInTheDocument();
+    });
+  });
 });

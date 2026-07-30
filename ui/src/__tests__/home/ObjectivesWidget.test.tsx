@@ -80,4 +80,48 @@ describe("ObjectivesWidget", () => {
     expect(screen.getByText("Launch v1.1")).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /Launch v1\.1/i })).not.toBeInTheDocument();
   });
+
+  describe("size-responsive row cap", () => {
+    beforeEach(() => {
+      useHomeSummaryMock.mockReturnValue({
+        data: {
+          goalProgress: Array.from({ length: 8 }, (_, i) => ({
+            id: `g${i}`,
+            title: `Goal ${i}`,
+            status: "active",
+            totalTasks: 4,
+            doneTasks: 1,
+            inProgressTasks: 1,
+            blockedTasks: 0,
+            progressPercent: 25,
+          })),
+        },
+        isLoading: false,
+        isError: false,
+        error: null,
+      });
+    });
+
+    it("caps at 2 rows + a '+N more' tail for a short (h=1) tile", () => {
+      renderWithProviders(<ObjectivesWidget companyId="co-1" role="founder" size={{ w: 2, h: 1 }} />);
+      expect(screen.getByText("Goal 0")).toBeInTheDocument();
+      expect(screen.getByText("Goal 1")).toBeInTheDocument();
+      expect(screen.queryByText("Goal 2")).not.toBeInTheDocument();
+      expect(screen.getByText("+6 more")).toBeInTheDocument();
+    });
+
+    it("caps at 6 rows + a '+N more' tail for a tall (h=2) tile", () => {
+      renderWithProviders(<ObjectivesWidget companyId="co-1" role="founder" size={{ w: 2, h: 2 }} />);
+      expect(screen.getByText("Goal 0")).toBeInTheDocument();
+      expect(screen.getByText("Goal 5")).toBeInTheDocument();
+      expect(screen.queryByText("Goal 6")).not.toBeInTheDocument();
+      expect(screen.getByText("+2 more")).toBeInTheDocument();
+    });
+  });
+
+  it("shows no '+N more' tail when every goal fits inside the current row cap", () => {
+    renderWithProviders(<ObjectivesWidget companyId="co-1" role="founder" size={{ w: 2, h: 1 }} />);
+    expect(screen.getByText("Launch v1.1")).toBeInTheDocument();
+    expect(screen.queryByText(/more$/)).not.toBeInTheDocument();
+  });
 });

@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Target } from "lucide-react";
-import { WidgetEmpty, WidgetLoading } from "../../components/home/widgets/WidgetStates";
+import { WidgetEmpty, WidgetLoading, WidgetOverflow } from "../../components/home/widgets/WidgetStates";
 
 describe("WidgetEmpty", () => {
   it("renders the icon and message", () => {
@@ -35,5 +35,22 @@ describe("WidgetLoading", () => {
   it("renders a loading indicator", () => {
     render(<WidgetLoading />);
     expect(screen.getByText(/Loading/)).toBeInTheDocument();
+  });
+});
+
+describe("WidgetOverflow", () => {
+  it("renders a '+N more' line when count is positive", () => {
+    render(<WidgetOverflow count={3} />);
+    expect(screen.getByText("+3 more")).toBeInTheDocument();
+  });
+
+  it("renders nothing when count is zero", () => {
+    const { container } = render(<WidgetOverflow count={0} />);
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("renders nothing when count is negative (defensive — callers should never pass one)", () => {
+    const { container } = render(<WidgetOverflow count={-1} />);
+    expect(container).toBeEmptyDOMElement();
   });
 });

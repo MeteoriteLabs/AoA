@@ -69,7 +69,7 @@ describe("MemoryReviewWidget", () => {
     expect(screen.queryByText("Working")).not.toBeInTheDocument();
   });
 
-  it("caps the list at 5 items", async () => {
+  it("caps the list at 6 rows + a '+N more' tail for a tall (h=2) tile", async () => {
     memoryApiMock.listPending.mockResolvedValue({
       items: Array.from({ length: 8 }, (_, i) => ({ id: `m${i}`, title: `Item ${i}`, content: "", layer: "working", status: "pending" })),
       versions: [],
@@ -79,8 +79,37 @@ describe("MemoryReviewWidget", () => {
     renderWithProviders(<MemoryReviewWidget companyId="co-1" role="founder" size={{ w: 2, h: 2 }} />);
 
     expect(await screen.findByText("Item 0")).toBeInTheDocument();
-    expect(screen.getByText("Item 4")).toBeInTheDocument();
-    expect(screen.queryByText("Item 5")).not.toBeInTheDocument();
+    expect(screen.getByText("Item 5")).toBeInTheDocument();
+    expect(screen.queryByText("Item 6")).not.toBeInTheDocument();
+    expect(screen.getByText("+2 more")).toBeInTheDocument();
+  });
+
+  it("caps the list at 2 rows + a '+N more' tail for a short (h=1) tile", async () => {
+    memoryApiMock.listPending.mockResolvedValue({
+      items: Array.from({ length: 8 }, (_, i) => ({ id: `m${i}`, title: `Item ${i}`, content: "", layer: "working", status: "pending" })),
+      versions: [],
+      archives: [],
+      totalCount: 8,
+    });
+    renderWithProviders(<MemoryReviewWidget companyId="co-1" role="founder" size={{ w: 2, h: 1 }} />);
+
+    expect(await screen.findByText("Item 0")).toBeInTheDocument();
+    expect(screen.getByText("Item 1")).toBeInTheDocument();
+    expect(screen.queryByText("Item 2")).not.toBeInTheDocument();
+    expect(screen.getByText("+6 more")).toBeInTheDocument();
+  });
+
+  it("shows no '+N more' tail when every item fits inside the current row cap", async () => {
+    memoryApiMock.listPending.mockResolvedValue({
+      items: [{ id: "m1", title: "Prefer async standups", content: "...", layer: "domain", status: "pending" }],
+      versions: [],
+      archives: [],
+      totalCount: 1,
+    });
+    renderWithProviders(<MemoryReviewWidget companyId="co-1" role="founder" size={{ w: 2, h: 1 }} />);
+
+    expect(await screen.findByText("Prefer async standups")).toBeInTheDocument();
+    expect(screen.queryByText(/more$/)).not.toBeInTheDocument();
   });
 
   it("does not render rows as links while editing", async () => {

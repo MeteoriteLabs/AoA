@@ -6,19 +6,21 @@ import { queryKeys } from "../../../lib/queryKeys";
 import { LAYER_LABELS, LAYER_TONE } from "../../../lib/memoryItemView";
 import { MemoryChip } from "../../memory/MemoryChip";
 import { WidgetShell } from "./WidgetShell";
-import { WidgetEmpty, WidgetLoading } from "./WidgetStates";
+import { WidgetEmpty, WidgetLoading, WidgetOverflow } from "./WidgetStates";
 import { WidgetRowLink } from "./WidgetRowLink";
+import { rowsForSize } from "./widgetSizing";
 import type { WidgetProps } from "./types";
 
-const MAX_ROWS = 5;
-
-export function MemoryReviewWidget({ companyId, editing }: WidgetProps) {
+export function MemoryReviewWidget({ companyId, editing, size }: WidgetProps) {
   const { data, isLoading, isError } = useQuery({
     queryKey: queryKeys.memory.pending(companyId),
     queryFn: () => memoryApi.listPending(companyId),
     enabled: !!companyId,
   });
-  const items = (data?.items ?? []).slice(0, MAX_ROWS);
+  const allItems = data?.items ?? [];
+  const maxRows = rowsForSize(size);
+  const items = allItems.slice(0, maxRows);
+  const overflow = allItems.length - items.length;
 
   return (
     <WidgetShell title="Memory review" icon={Brain} to="/memory" editing={editing}>
@@ -49,6 +51,7 @@ export function MemoryReviewWidget({ companyId, editing }: WidgetProps) {
               )}
             </WidgetRowLink>
           ))}
+          <WidgetOverflow count={overflow} />
         </div>
       )}
     </WidgetShell>

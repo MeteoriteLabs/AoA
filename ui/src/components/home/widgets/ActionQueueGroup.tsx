@@ -3,9 +3,25 @@ import { ChevronDown } from "lucide-react";
 import type { ActionGroup } from "../actionQueue";
 import { WidgetRowLink } from "./WidgetRowLink";
 
-export function ActionQueueGroup({ group, editing }: { group: ActionGroup; editing?: boolean }) {
+export function ActionQueueGroup({
+  group,
+  editing,
+  maxItems,
+}: {
+  group: ActionGroup;
+  editing?: boolean;
+  /**
+   * Caps how many of this group's items render (size-responsive truncation,
+   * allocated across groups by ActionQueueWidget's `allocateActionGroups`).
+   * The header's count badge always shows `group.items.length` — the TRUE
+   * total — regardless of this cap, so a truncated group never understates
+   * how many items it actually has.
+   */
+  maxItems?: number;
+}) {
   const [expanded, setExpanded] = useState(true);
   const Icon = group.icon;
+  const visibleItems = typeof maxItems === "number" ? group.items.slice(0, maxItems) : group.items;
 
   return (
     <div className="border border-border rounded-md overflow-hidden">
@@ -26,7 +42,7 @@ export function ActionQueueGroup({ group, editing }: { group: ActionGroup; editi
       </button>
       {expanded && (
         <div className="border-t border-border divide-y divide-border">
-          {group.items.map((item) => (
+          {visibleItems.map((item) => (
             <WidgetRowLink
               key={item.key}
               to={item.to}

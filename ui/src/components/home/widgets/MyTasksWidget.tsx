@@ -5,20 +5,24 @@ import { issuesApi } from "../../../api/issues";
 import { queryKeys } from "../../../lib/queryKeys";
 import { useDialog } from "../../../context/DialogContext";
 import { WidgetShell } from "./WidgetShell";
-import { WidgetEmpty, WidgetLoading } from "./WidgetStates";
+import { WidgetEmpty, WidgetLoading, WidgetOverflow } from "./WidgetStates";
 import { WidgetRowLink } from "./WidgetRowLink";
+import { rowsForSize } from "./widgetSizing";
 import type { WidgetProps } from "./types";
 
 const TERMINAL = new Set(["done", "cancelled"]);
 
-export function MyTasksWidget({ companyId, editing }: WidgetProps) {
+export function MyTasksWidget({ companyId, editing, size }: WidgetProps) {
   const { data, isLoading, isError } = useQuery({
     queryKey: queryKeys.issues.listAssignedToMe(companyId),
     queryFn: () => issuesApi.list(companyId, { assigneeUserId: "me" }),
     enabled: !!companyId,
   });
   const { openNewIssue } = useDialog();
-  const tasks = (data ?? []).filter((t: Issue) => !TERMINAL.has(t.status)).slice(0, 5);
+  const allTasks = (data ?? []).filter((t: Issue) => !TERMINAL.has(t.status));
+  const maxRows = rowsForSize(size);
+  const tasks = allTasks.slice(0, maxRows);
+  const overflow = allTasks.length - tasks.length;
   return (
     <WidgetShell title="My tasks" icon={ListChecks} to="/issues" editing={editing}>
       {isLoading ? (
@@ -47,6 +51,7 @@ export function MyTasksWidget({ companyId, editing }: WidgetProps) {
               <span className="shrink-0 text-xs capitalize text-muted-foreground">{t.status.replace(/_/g, " ")}</span>
             </WidgetRowLink>
           ))}
+          <WidgetOverflow count={overflow} />
         </div>
       )}
     </WidgetShell>
