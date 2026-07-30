@@ -15,6 +15,7 @@ import {
 import type { PermissionKey, PrincipalType } from "@armyofagents/shared";
 import { conflict, notFound } from "../errors.js";
 import { companyInviteExpiresAt } from "../routes/access-helpers.js";
+import { tenantIsolationEnforced } from "../config/deployment-mode.js";
 import { orgHierarchyService } from "./org-hierarchy.js";
 
 const INVITE_TOKEN_PREFIX = "aoa_invite_";
@@ -46,6 +47,10 @@ export function accessService(db: Db) {
 
   async function isInstanceAdmin(userId: string | null | undefined): Promise<boolean> {
     if (!userId) return false;
+    // B1: there is NO data-plane instance_admin in cloud_auth. Returning false
+    // here kills the canUser() short-circuit and (via team.effectiveRoleFromRows)
+    // any cross-tenant role grant, even if an actor-clamp were somehow bypassed.
+    if (tenantIsolationEnforced()) return false;
     const row = await db
       .select({ id: instanceUserRoles.id })
       .from(instanceUserRoles)

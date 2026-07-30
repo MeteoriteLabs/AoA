@@ -4,6 +4,7 @@ import type { UserRole } from "@armyofagents/shared";
 import { forbidden, unauthorized } from "../errors.js";
 import { permissionService } from "../services/permissions.js";
 import type { EntityType, PermissionAction } from "../services/permissions.js";
+import { tenantIsolationEnforced } from "../config/deployment-mode.js";
 
 /**
  * RBAC helper that extracts the userId from the request actor.
@@ -36,7 +37,10 @@ export async function assertRole(
   if (req.actor.source === "local_implicit") return;
 
   // Instance admin: full access
-  if (req.actor.isInstanceAdmin) return;
+  // B1 defense-in-depth: no data-plane instance_admin bypass in cloud_auth
+  // (belt against any future path that sets isInstanceAdmin true; the actor
+  // clamp already forces it false there). local_implicit bypasses stay.
+  if (req.actor.isInstanceAdmin && !tenantIsolationEnforced()) return;
 
   const userId = getUserIdFromRequest(req);
   if (!userId) throw unauthorized();
@@ -75,7 +79,10 @@ export async function assertDepartmentAccess(
   if (req.actor.type === "agent") return;
   if (req.actor.type === "none") throw unauthorized();
   if (req.actor.source === "local_implicit") return;
-  if (req.actor.isInstanceAdmin) return;
+  // B1 defense-in-depth: no data-plane instance_admin bypass in cloud_auth
+  // (belt against any future path that sets isInstanceAdmin true; the actor
+  // clamp already forces it false there). local_implicit bypasses stay.
+  if (req.actor.isInstanceAdmin && !tenantIsolationEnforced()) return;
 
   const userId = getUserIdFromRequest(req);
   if (!userId) throw unauthorized();
@@ -118,7 +125,10 @@ export async function assertMemoryAccess(
 
   if (req.actor.type === "none") throw unauthorized();
   if (req.actor.source === "local_implicit") return;
-  if (req.actor.isInstanceAdmin) return;
+  // B1 defense-in-depth: no data-plane instance_admin bypass in cloud_auth
+  // (belt against any future path that sets isInstanceAdmin true; the actor
+  // clamp already forces it false there). local_implicit bypasses stay.
+  if (req.actor.isInstanceAdmin && !tenantIsolationEnforced()) return;
 
   const userId = getUserIdFromRequest(req);
   if (!userId) throw unauthorized();
@@ -148,7 +158,10 @@ export async function assertMemoryApproval(
 
   if (req.actor.type === "none") throw unauthorized();
   if (req.actor.source === "local_implicit") return;
-  if (req.actor.isInstanceAdmin) return;
+  // B1 defense-in-depth: no data-plane instance_admin bypass in cloud_auth
+  // (belt against any future path that sets isInstanceAdmin true; the actor
+  // clamp already forces it false there). local_implicit bypasses stay.
+  if (req.actor.isInstanceAdmin && !tenantIsolationEnforced()) return;
 
   const userId = getUserIdFromRequest(req);
   if (!userId) throw unauthorized();
@@ -180,7 +193,10 @@ export async function assertEntityAccess(
   if (req.actor.type === "agent") return; // Agents use separate permission paths
   if (req.actor.type === "none") throw unauthorized();
   if (req.actor.source === "local_implicit") return;
-  if (req.actor.isInstanceAdmin) return;
+  // B1 defense-in-depth: no data-plane instance_admin bypass in cloud_auth
+  // (belt against any future path that sets isInstanceAdmin true; the actor
+  // clamp already forces it false there). local_implicit bypasses stay.
+  if (req.actor.isInstanceAdmin && !tenantIsolationEnforced()) return;
 
   const userId = getUserIdFromRequest(req);
   if (!userId) throw unauthorized();

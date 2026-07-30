@@ -33,6 +33,7 @@ import type {
 } from "@armyofagents/shared";
 import { PERMISSION_KEYS, humanSocialLinkSchema } from "@armyofagents/shared";
 import { conflict, notFound } from "../errors.js";
+import { tenantIsolationEnforced } from "../config/deployment-mode.js";
 import { accessService } from "./access.js";
 import { humanCapabilitiesService } from "./human-capabilities.js";
 import { orgHierarchyService } from "./org-hierarchy.js";
@@ -138,6 +139,9 @@ export function teamService(db: Db) {
 
   async function isInstanceAdmin(userId: string | null | undefined) {
     if (!userId) return false;
+    // B1 defense-in-depth: no data-plane instance_admin in cloud_auth, so
+    // effectiveRoleFromRows() cannot promote an operator to founder across tenants.
+    if (tenantIsolationEnforced()) return false;
     const row = await db
       .select({ id: instanceUserRoles.id })
       .from(instanceUserRoles)
