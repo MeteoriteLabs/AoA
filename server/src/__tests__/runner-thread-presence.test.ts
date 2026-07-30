@@ -72,6 +72,18 @@ vi.mock("../services/internal-agent/aoa-agents/bridge-path.js", () => ({ resolve
 // filesystem I/O, writing .ndjson files keyed on fixture ids that repeat across
 // test files. vitest runs files in parallel workers and begin() TRUNCATES, so
 // that is a latent cross-file flake, not just litter.
+// Phase 4: the crew runner routes through the unified provider resolver before
+// provider-status detection. A self-hosted miss returns host_login_fallback in
+// production (never throws); the proxy-table mock db here can't serve the
+// resolver's provider_connections/provider_assignments query, so stub it to a
+// passthrough (agent_env_override ⇒ applyResolvedCredential is a no-op). Masks
+// no real bug — it only replaces a query the mock DB cannot answer.
+vi.mock("../services/provider-resolution.js", () => ({
+  resolveProviderCredential: vi.fn(async () => ({ source: "agent_env_override" })),
+  applyResolvedCredential: (config: unknown) => config,
+  toExecutionTargetHint: () => ({ credentialKind: null, executionTargetSlug: null }),
+}));
+
 vi.mock("../services/run-log-store.js", () => ({
   getRunLogStore: () => ({
     begin: async () => ({ store: "local_file", logRef: "test-run.ndjson" }),
