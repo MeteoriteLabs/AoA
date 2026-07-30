@@ -22,6 +22,7 @@ import { derivePackages } from "./derivePackages.js";
 import { runUpdateCheck } from "./marketplace-update-checker.js";
 import { withMarketplaceUpdateLock } from "./marketplace-update-coordinator.js";
 import { logger } from "../middleware/logger.js";
+import { serializeSafeError } from "./safe-error.js";
 
 const DEFAULT_CDN_URL =
   "https://meteoritelabs.github.io/aoa-marketplace-cdn/catalog.json";
@@ -177,7 +178,10 @@ export class MarketplaceCatalogService {
         status: await this.getStatus(),
       }))
       .catch((err) => {
-        logger.error({ err }, "marketplace: catalog sync failed");
+        logger.error(
+          { error: serializeSafeError(err) },
+          "marketplace: catalog sync failed",
+        );
         return {
           catalog: null,
           status: null,
@@ -222,7 +226,10 @@ export class MarketplaceCatalogService {
       void withMarketplaceUpdateLock(() =>
         runUpdateCheck(this.db, catalog.items),
       ).catch((err) =>
-        logger.error({ err }, "marketplace: update check failed after sync"),
+        logger.error(
+          { error: serializeSafeError(err) },
+          "marketplace: update check failed after sync",
+        ),
       );
     }
     return result;
@@ -514,7 +521,10 @@ export async function resolveCatalogForBootstrap(
     try {
       return await service.ensureCatalogAvailable(timeoutMs);
     } catch (err) {
-      logger.warn({ err }, "marketplace: catalog availability wait failed during crew bootstrap");
+      logger.warn(
+        { error: serializeSafeError(err) },
+        "marketplace: catalog availability wait failed during crew bootstrap",
+      );
       return { status: "unavailable", reason: "sync-unavailable" };
     }
   }
@@ -523,7 +533,10 @@ export async function resolveCatalogForBootstrap(
     const cached = await loadCachedCatalog(db);
     if (cached) return { status: "ok", catalog: cached, source: "cache" };
   } catch (err) {
-    logger.warn({ err }, "marketplace: cached catalog read failed during crew bootstrap");
+    logger.warn(
+      { error: serializeSafeError(err) },
+      "marketplace: cached catalog read failed during crew bootstrap",
+    );
     return { status: "unavailable", reason: "cache-read-error" };
   }
   return { status: "unavailable", reason: "no-service-registered" };

@@ -11,6 +11,7 @@ import { compareVersions } from "../marketplace-update-checker.js";
 import { isWithinUpdateWindow } from "./skill-auto-updater.js";
 import { protectedAgentRole } from "../protected-agents.js";
 import { logger } from "../../middleware/logger.js";
+import { serializeSafeError } from "../safe-error.js";
 
 export interface CrewAgentRow {
   id: string;
@@ -393,7 +394,7 @@ export async function checkCrewUpdates(opts: {
         continue;
       } catch (err) {
         logger.error(
-          { err, agentId: agent.id },
+          { error: serializeSafeError(err), agentId: agent.id },
           "marketplace: crew auto-update failed — notifying",
         );
       }
@@ -534,7 +535,10 @@ export async function checkCrewUpdates(opts: {
         }
       }
     } catch (err) {
-      logger.error({ err }, "marketplace: failed to record pending update");
+      logger.error(
+        { error: serializeSafeError(err) },
+        "marketplace: failed to record pending update",
+      );
       onFailure?.({
         companyId,
         agentId: agent.id,
@@ -555,7 +559,10 @@ export async function checkCrewUpdates(opts: {
           { reopenWhenArchived: shouldReopenNotification },
         );
       } catch (err) {
-        logger.error({ err }, "marketplace: updateAvailable notification failed");
+        logger.error(
+          { error: serializeSafeError(err) },
+          "marketplace: updateAvailable notification failed",
+        );
         onFailure?.({
           companyId,
           agentId: agent.id,

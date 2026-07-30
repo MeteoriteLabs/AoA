@@ -1,4 +1,8 @@
 import type { Request, RequestHandler } from "express";
+import {
+  isMarketplaceAdminPath,
+  marketplaceErrorResponse,
+} from "../services/marketplace-http-contract.js";
 
 function isLoopbackHostname(hostname: string): boolean {
   const normalized = hostname.trim().toLowerCase();
@@ -70,7 +74,13 @@ export function privateHostnameGuard(opts: {
     if (!hostname) {
       const error = "Missing Host header. If you want to allow a hostname, run pnpm aoa allowed-hostname <host>.";
       if (wantsJson) {
-        res.status(403).json({ error });
+        res
+          .status(403)
+          .json(
+            isMarketplaceAdminPath(req.originalUrl)
+              ? marketplaceErrorResponse("invalid_request", null)
+              : { error },
+          );
       } else {
         res.status(403).type("text/plain").send(error);
       }
@@ -84,7 +94,13 @@ export function privateHostnameGuard(opts: {
 
     const error = blockedHostnameMessage(hostname);
     if (wantsJson) {
-      res.status(403).json({ error });
+      res
+        .status(403)
+        .json(
+          isMarketplaceAdminPath(req.originalUrl)
+            ? marketplaceErrorResponse("invalid_request", null)
+            : { error },
+        );
     } else {
       res.status(403).type("text/plain").send(error);
     }

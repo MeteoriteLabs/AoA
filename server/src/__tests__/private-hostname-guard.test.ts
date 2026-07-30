@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import express from "express";
 import request from "supertest";
 import { privateHostnameGuard } from "../middleware/private-hostname-guard.js";
+import { MarketplaceReconcileErrorResponseSchema } from "@armyofagents/shared";
 
 function createApp(opts: { enabled: boolean; allowedHostnames?: string[]; bindHost?: string }) {
   const app = express();
@@ -52,5 +53,23 @@ describe("privateHostnameGuard", () => {
     const res = await request(app).get("/dashboard").set("Host", "dotta-macbook-pro:3100");
     expect(res.status).toBe(403);
     expect(res.text).toContain("please run pnpm aoa allowed-hostname dotta-macbook-pro");
+  });
+
+  it("uses the strict marketplace error envelope before the admin router", async () => {
+    const app = createApp({ enabled: true, allowedHostnames: ["some-other-host"] });
+    const res = await request(app)
+      .post("/api/admin/marketplace/reconcile")
+      .set("Host", "dotta-macbook-pro:3100")
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(() =>
+      MarketplaceReconcileErrorResponseSchema.parse(res.body),
+    ).not.toThrow();
+    expect(res.body).toMatchObject({
+      ok: false,
+      error: { code: "invalid_request" },
+      operationId: null,
+    });
   });
 });
