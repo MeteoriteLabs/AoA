@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { createGvisorSandboxRuntimeProvider } from "./gvisor-sandbox-provider.js";
 
 export interface SandboxProviderAcquireInput {
   companyId: string;
@@ -537,6 +538,7 @@ export function sandboxProviderRuntime(
   for (const provider of options.providers ?? [
     createFakeSandboxRuntimeProvider(),
     createE2bSandboxRuntimeProvider(),
+    createGvisorSandboxRuntimeProvider(),
   ]) {
     providers.set(provider.provider, provider);
   }
