@@ -23,7 +23,7 @@
  * useful signal for "what is being discussed right now"), then trim memory.
  */
 
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, type SQL } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   discussionEntries,
@@ -37,6 +37,9 @@ import {
   issueContextBundles,
 } from "@armyofagents/db";
 import { memoryService } from "../../memory.js";
+import { filterMemoryForActor, type MemoryActor } from "../../memory-access.js";
+import { actorForAgentRun, memoryAccessConditions } from "../../memory-access-sql.js";
+import { recordMemoryRetrievals } from "../../memory-retrieval-audit.js";
 import { isContextBundleItemIncluded } from "../../issue-context-bundles.js";
 import { logger } from "../../../middleware/logger.js";
 
@@ -61,8 +64,14 @@ export interface BuildCrewContextBundleArgs {
   threadId?: string;
   /** Issue id — drives the TASK branch. */
   issueId?: string;
-  /** The agent receiving the context (reserved for future per-agent scoping). */
+  /** The agent receiving the context — drives per-agent RBAC + retrieval audit (P1-T4). */
   agentId: string;
+  /**
+   * Run id for retrieval auditing (P1-T4, scenario O4). The runner already holds it
+   * for the loopback/summary comments. Null/undefined ⇒ the audit row carries no run
+   * linkage (companyId + agentId still identify the retrieval).
+   */
+  runId?: string | null;
   /** Token budget (ceil(len/4)). Default ~2500. */
   tokenBudget?: number;
 }
@@ -399,29 +408,66 @@ async function loadTaskContext(db: Db, companyId: string, issueId: string): Prom
 }
 
 /**
- * MEMORY (both branches) — relevant items via multi-path search. BEST-EFFORT:
- * returns [] (never throws) when the search fails (embeddings/pgvector absent)
- * or finds nothing, so the caller simply omits the section.
+ * MEMORY (both branches) — relevant items via multi-path search, now RBAC-gated
+ * and AUDITED (enterprise memory model, P1-T4).
+ *
+ *   - `accessConditions` (from `memoryAccessConditions(db, actor)`) gate the fetch
+ *     INSIDE searchMultiPath, so an unreadable row is never returned — nor ranked.
+ *   - `filterMemoryForActor` is the post-fetch safety net mirroring that SQL gate;
+ *     even if the gate is bypassed (no actor), a null actor simply leaves the fetch
+ *     unfiltered, exactly as before this task.
+ *   - every SERVED row is written to `memory_retrievals` (CREW was UNAUDITED before
+ *     P1-T4 — scenario O4), mirroring the ORG heartbeat: one row per served item,
+ *     `triggeredBy: "auto"`, `shownToAgent: true`. Fire-and-forget.
+ *
+ * Auditing (and filtering) are gated on a resolved `actor`: with no agent the fetch
+ * stays unfiltered AND unaudited — the "no actor ⇒ retain today's behavior" guard.
+ *
+ * BEST-EFFORT: returns [] (never throws) when the search fails (embeddings/pgvector
+ * absent) or finds nothing, so the caller simply omits the section.
  */
-async function loadMemoryLines(
+export async function loadScopedMemoryLines(
   db: Db,
   companyId: string,
   queryText: string,
-  filters: MemoryScopeFilters = {},
+  filters: MemoryScopeFilters,
+  actor: MemoryActor | null,
+  accessConditions: SQL[],
+  audit: { agentId?: string | null; runId?: string | null; taskId?: string | null },
 ): Promise<string[]> {
   const q = queryText.trim();
   if (q.length === 0) return [];
   try {
-    const items = await memoryService(db).searchMultiPath(companyId, q, {
+    const raw = await memoryService(db).searchMultiPath(companyId, q, {
       limit: MEMORY_LIMIT,
       ...filters,
+      ...(accessConditions.length > 0 ? { accessConditions } : {}),
     });
-    if (!Array.isArray(items) || items.length === 0) return [];
-    return items.map((m) => {
-      const title = (m as { title?: unknown }).title;
-      const content = (m as { content?: unknown }).content;
-      const t = typeof title === "string" && title.length > 0 ? title : "Memory";
-      const c = typeof content === "string" ? content : "";
+    if (!Array.isArray(raw) || raw.length === 0) return [];
+    // Post-fetch safety net (P0): never render — nor audit as shown — a row the
+    // actor can't see. A null actor keeps today's unfiltered behavior.
+    const served = actor ? filterMemoryForActor(raw, actor) : raw;
+    // Audit the served rows (O4) — mirror the ORG heartbeat. Skipped when no actor
+    // resolved (retain today's unaudited behavior) or nothing was served.
+    if (actor && served.length > 0) {
+      recordMemoryRetrievals(db, {
+        companyId,
+        agentId: audit.agentId ?? null,
+        runId: audit.runId ?? null,
+        taskId: audit.taskId ?? null,
+        triggeredBy: "auto",
+        query: q,
+        items: served.map((m, i) => ({
+          id: m.id,
+          rank: i + 1,
+          similarityScore: m.similarity,
+          shownToAgent: true,
+        })),
+      }).catch(() => {});
+    }
+    return served.map((m) => {
+      const t = typeof m.title === "string" && m.title.length > 0 ? m.title : "Memory";
+      const c = typeof m.content === "string" ? m.content : "";
       return `- ${t}: ${truncate(c.trim(), 400)}`;
     });
   } catch (err) {
@@ -470,7 +516,24 @@ export async function buildCrewContextBundle(
   const memoryFilters = thread?.queryText && thread.queryText.length > 0
     ? thread.memoryFilters
     : (task?.memoryFilters ?? {});
-  const memoryLines = await loadMemoryLines(db, args.companyId, queryText, memoryFilters);
+
+  // RBAC + audit (enterprise memory model, P1-T4): resolve the crew agent's actor
+  // so the fetch is gated INSIDE searchMultiPath and the served rows are audited.
+  // `.catch(() => null)` (and the empty-agentId branch) degrade to today's
+  // unfiltered, unaudited behavior — the "no actor ⇒ retain prior behavior" guard.
+  const actor = args.agentId
+    ? await actorForAgentRun(db, args.companyId, args.agentId).catch(() => null)
+    : null;
+  const accessConditions = actor ? memoryAccessConditions(db, actor) : [];
+  const memoryLines = await loadScopedMemoryLines(
+    db,
+    args.companyId,
+    queryText,
+    memoryFilters,
+    actor,
+    accessConditions,
+    { agentId: args.agentId, runId: args.runId ?? null, taskId: args.issueId ?? null },
+  );
 
   // ── Assemble with the token budget ──────────────────────────────────────
   // Build the fixed (non-droppable) sections first: summary + task. Then add
