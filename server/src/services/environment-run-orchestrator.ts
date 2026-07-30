@@ -88,6 +88,30 @@ export function environmentRunOrchestrator(
   const environmentsSvc = options.environments ?? environmentService(db);
   const runtime = options.environmentRuntime ?? environmentRuntimeService(db);
 
+  // Deployment-mode-aware gVisor hardening (P5 SSRF residual). Resolve the trust
+  // boundary ONCE per env run and thread it to BOTH the lease-metadata path
+  // (resolveDockerSandboxConfig) and the exec-target path
+  // (resolveEnvironmentExecutionTargetConfigPatch -> resolveGvisorSandboxTarget ->
+  // buildDockerRunArgs). Self-resolved via the established dynamic-import pattern
+  // (config.js + cli-auth-topology); fail-closed to hardened if it cannot be read.
+  async function resolveMultiTenantBoundary(): Promise<boolean> {
+    try {
+      const [{ loadConfig }, { resolveCliAuthTopology }] = await Promise.all([
+        import("../config.js"),
+        import("./cli-auth-topology.js"),
+      ]);
+      const cfg = loadConfig();
+      return (
+        resolveCliAuthTopology({
+          deploymentMode: cfg.deploymentMode,
+          deploymentExposure: cfg.deploymentExposure,
+        }).trustBoundary === "multi_tenant"
+      );
+    } catch {
+      return true; // fail closed: harden if the topology cannot be resolved
+    }
+  }
+
   async function resolveEnvironment(input: {
     companyId: string;
     environmentId: string | null;
@@ -158,6 +182,7 @@ export function environmentRunOrchestrator(
         companyId: input.companyId,
         environmentId: input.environmentId,
       });
+      const multiTenant = await resolveMultiTenantBoundary();
 
       try {
         const leaseRecord = await runtime.acquireRunLease({
@@ -166,6 +191,7 @@ export function environmentRunOrchestrator(
           issueId: input.issueId,
           heartbeatRunId: input.heartbeatRunId,
           persistedExecutionWorkspace: input.persistedExecutionWorkspace,
+          multiTenant,
         });
         return {
           ...leaseRecord,
@@ -175,6 +201,7 @@ export function environmentRunOrchestrator(
             lease: leaseRecord.lease,
             adapterType: input.adapterType,
             providerRunner: buildProviderRunner(leaseRecord),
+            multiTenant,
           }),
         };
       } catch (err) {

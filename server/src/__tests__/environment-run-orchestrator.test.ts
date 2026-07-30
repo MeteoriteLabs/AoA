@@ -91,6 +91,9 @@ describe("environmentRunOrchestrator", () => {
       issueId: "issue-1",
       heartbeatRunId: RUN_ID,
       persistedExecutionWorkspace: { id: "workspace-1", mode: "per_task" },
+      // Deployment-mode-aware sandbox hardening resolved once per env run (P5 residual).
+      // Value depends on the resolved trust boundary; irrelevant here (non-gvisor).
+      multiTenant: expect.any(Boolean),
     });
   });
 

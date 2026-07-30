@@ -5,33 +5,60 @@ import {
   executionTargetToAdapterConfig,
 } from "../services/execution-target-resolver.js";
 
-describe("executionTargetToAdapterConfig hardening (P5 review gap #1)", () => {
-  it("FORCES allowHostGateway false + hardened isolation + network none for a TENANT-authored target, ignoring weakened config", () => {
-    const cfg = executionTargetToAdapterConfig({
-      id: "t", slug: "s", kind: "dedicated_worker", trustClass: "dedicated_tenant", status: "active",
-      organizationId: "org-1",
-      config: { image: "x", network: "bridge", allowHostGateway: true, isolation: { capDropAll: false, readOnlyRootfs: false, noNewPrivileges: false } },
-    }) as Record<string, unknown>;
+describe("executionTargetToAdapterConfig hardening (P5 review gap #1, deployment-mode-aware)", () => {
+  const weakenedTenant = {
+    id: "t", slug: "s", kind: "dedicated_worker", trustClass: "dedicated_tenant", status: "active",
+    organizationId: "org-1",
+    config: { image: "x", network: "bridge", allowHostGateway: true, isolation: { capDropAll: false, readOnlyRootfs: false, noNewPrivileges: false } },
+  };
+
+  it("MULTI_TENANT + TENANT target: forces allowHostGateway false + network none + hardened isolation, ignoring weakened config", () => {
+    const cfg = executionTargetToAdapterConfig(weakenedTenant, /* multiTenant */ true) as Record<string, unknown>;
     expect(cfg.allowHostGateway).toBe(false); // SSRF host-gateway route stays closed
-    expect(cfg.network).toBe("none"); // a tenant cannot choose bridge egress
+    expect(cfg.network).toBe("none"); // a tenant cannot choose bridge egress on shared infra
     const iso = cfg.isolation as Record<string, unknown>;
     expect(iso.capDropAll).toBe(true); // hardened flags cannot be turned off by tenant config
     expect(iso.readOnlyRootfs).toBe(true);
     expect(iso.noNewPrivileges).toBe(true);
     expect(cfg.image).toBe("x"); // benign field still honored
   });
-  it("FORCES allowHostGateway false for an OPERATOR (system) target even when its config sets it true, but honors operator network", () => {
+
+  it("MULTI_TENANT + OPERATOR (system) target: forces allowHostGateway false but honors operator network (bridge egress)", () => {
     const cfg = executionTargetToAdapterConfig({
       id: "t", slug: "pool", kind: "pooled_gvisor", trustClass: "shared_multitenant", status: "active",
       organizationId: null,
       config: { network: "bridge", allowHostGateway: true },
-    }) as Record<string, unknown>;
-    expect(cfg.allowHostGateway).toBe(false); // never routed to the control-plane host
+    }, /* multiTenant */ true) as Record<string, unknown>;
+    expect(cfg.allowHostGateway).toBe(false); // a shared pool never routes to the control-plane host
     expect(cfg.network).toBe("bridge"); // operator may set bridge (Gate-B egress firewall governs it)
   });
-  it("local_host target yields no override (local driver)", () => {
+
+  it("SELF-HOSTED: honors allowHostGateway:true + custom network + custom (weaker) isolation from the trusted config", () => {
+    const cfg = executionTargetToAdapterConfig(weakenedTenant, /* multiTenant */ false) as Record<string, unknown>;
+    expect(cfg.allowHostGateway).toBe(true); // founder owns the box: local MCP bridge honored
+    expect(cfg.network).toBe("bridge"); // custom network honored (no egress regression)
+    const iso = cfg.isolation as Record<string, unknown>;
+    expect(iso.capDropAll).toBe(false); // config honored exactly on self-hosted
+    expect(iso.readOnlyRootfs).toBe(false);
+    expect(iso.noNewPrivileges).toBe(false);
+  });
+
+  it("SELF-HOSTED: falls back to the hardened isolation baseline + network none when the trusted config omits them", () => {
+    const cfg = executionTargetToAdapterConfig({
+      id: "t", slug: "cp-worker", kind: "dedicated_worker", trustClass: "dedicated_tenant", status: "active",
+      organizationId: "org-1", config: { image: "y" },
+    }, /* multiTenant */ false) as Record<string, unknown>;
+    expect(cfg.allowHostGateway).toBe(false); // not requested -> stays off
+    expect(cfg.network).toBe("none"); // default egress
+    expect((cfg.isolation as Record<string, unknown>).capDropAll).toBe(true); // default hardened baseline
+  });
+
+  it("local_host target yields no override (local driver) regardless of deployment mode", () => {
     expect(
-      executionTargetToAdapterConfig({ id: "t", slug: "cp", kind: "local_host", trustClass: "local_trusted", status: "active", organizationId: null }),
+      executionTargetToAdapterConfig({ id: "t", slug: "cp", kind: "local_host", trustClass: "local_trusted", status: "active", organizationId: null }, true),
+    ).toBeNull();
+    expect(
+      executionTargetToAdapterConfig({ id: "t", slug: "cp", kind: "local_host", trustClass: "local_trusted", status: "active", organizationId: null }, false),
     ).toBeNull();
   });
 });

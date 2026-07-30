@@ -11,6 +11,12 @@ export interface EnvironmentExecutionTargetInput {
   lease?: Pick<EnvironmentLease, "id" | "metadata" | "provider" | "providerLeaseId"> | null;
   adapterType: string;
   providerRunner?: AdapterProviderSandboxRunner | null;
+  // Deployment-mode-aware gVisor hardening (P5 SSRF residual). True when the run
+  // executes on SHARED multi-tenant infra: a tenant-authored gVisor environment config
+  // must not weaken the sandbox on the path environments.config -> resolveGvisorSandboxTarget
+  // -> resolveAdapterExecutionTarget -> buildDockerRunArgs. On self-hosted the config is
+  // honored. Resolved by the orchestrator; fail-closed hardening when absent.
+  multiTenant?: boolean;
 }
 
 function readObject(value: unknown): Record<string, unknown> {
@@ -30,6 +36,7 @@ function isDockerSandboxProvider(value: unknown): boolean {
 
 function resolveDockerSandboxTarget(
   environment: Pick<Environment, "config">,
+  multiTenant: boolean,
 ): AdapterExecutionTarget | null {
   const config = readObject(environment.config);
   if (!isDockerSandboxProvider(config.provider)) return null;
@@ -40,9 +47,11 @@ function resolveDockerSandboxTarget(
   // the shared resolver so a founder who set only { provider:"gvisor", image }
   // still gets the full hardened default profile, and pass runtime/isolation/
   // allowHostGateway through to resolveAdapterExecutionTarget (and thence
-  // buildDockerRunArgs). Non-gvisor docker providers stay byte-identical below.
+  // buildDockerRunArgs). On shared infra multiTenant forces the hardened profile so a
+  // tenant config cannot weaken it (SSRF residual). Non-gvisor docker providers stay
+  // byte-identical below.
   if (readString(config.provider) === "gvisor") {
-    const gvisor = resolveGvisorSandboxTarget(config);
+    const gvisor = resolveGvisorSandboxTarget(config, { multiTenant });
     return resolveAdapterExecutionTarget({
       type: "sandbox-docker",
       image: gvisor.image,
@@ -110,7 +119,8 @@ export function resolveEnvironmentExecutionTarget(
   }
 
   if (input.environment.driver === "sandbox") {
-    return resolveDockerSandboxTarget(input.environment) ?? resolveProviderSandboxTarget(input);
+    // Fail-closed default: harden when the caller did not resolve the trust boundary.
+    return resolveDockerSandboxTarget(input.environment, input.multiTenant ?? true) ?? resolveProviderSandboxTarget(input);
   }
 
   return null;

@@ -3225,7 +3225,16 @@ export function heartbeatService(db: Db) {
     });
     resolvedConfig = mergeResolvedExecutionTarget(
       resolvedConfig,
-      routedExecutionTarget ? executionTargetToAdapterConfig(routedExecutionTarget) : null,
+      routedExecutionTarget
+        ? executionTargetToAdapterConfig(
+            routedExecutionTarget,
+            // Deployment-mode-aware hardening: only weaken-proof the sandbox on SHARED
+            // infra. On the founder's own box (self-hosted single_user/single_tenant)
+            // the target config is trusted and honored (local MCP bridge + custom
+            // network/isolation). hbTopology is already resolved above (:3081).
+            hbTopology.trustBoundary === "multi_tenant",
+          )
+        : null,
     );
 
     // ── Issue ref for execution workspace ───────────────────────────
