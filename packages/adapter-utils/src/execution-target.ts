@@ -146,18 +146,45 @@ export function formatDockerBindSource(localCwd: string): string {
   return localCwd.replaceAll("\\", "/");
 }
 
-export function buildDockerRunArgs(input: {
-  target: AdapterDockerExecutionTarget;
-  localCwd: string;
-  command: string;
-  args: string[];
-  env: Record<string, string>;
-  stdin?: string;
-}): string[] {
+export function buildDockerRunArgs(
+  input: {
+    target: AdapterDockerExecutionTarget;
+    localCwd: string;
+    command: string;
+    args: string[];
+    env: Record<string, string>;
+    stdin?: string;
+  },
+  opts: { hostGatewayActive?: boolean } = {},
+): string[] {
   const workdir = input.target.workdir ?? "/workspace";
+  const iso = input.target.isolation ?? null;
   const dockerArgs = ["run"];
   if (input.target.remove !== false) dockerArgs.push("--rm");
   if (input.stdin != null) dockerArgs.push("--interactive");
+
+  // gVisor runtime (opt-in).
+  if (input.target.runtime === "runsc") dockerArgs.push("--runtime", "runsc");
+
+  // Isolation profile (opt-in; default undefined = legacy args unchanged).
+  if (iso) {
+    if (iso.user) dockerArgs.push("--user", iso.user);
+    if (iso.capDropAll) dockerArgs.push("--cap-drop", "ALL");
+    if (iso.noNewPrivileges) dockerArgs.push("--security-opt", "no-new-privileges");
+    if (iso.seccompProfile) dockerArgs.push("--security-opt", `seccomp=${iso.seccompProfile}`);
+    if (iso.readOnlyRootfs) dockerArgs.push("--read-only");
+    for (const t of iso.tmpfs ?? []) dockerArgs.push("--tmpfs", t);
+    if (iso.memory) {
+      dockerArgs.push("--memory", iso.memory, "--memory-swap", iso.memory);
+    }
+    if (iso.cpus) dockerArgs.push("--cpus", iso.cpus);
+    if (typeof iso.pidsLimit === "number") dockerArgs.push("--pids-limit", String(iso.pidsLimit));
+    if (typeof iso.ulimitNofile === "number") {
+      dockerArgs.push("--ulimit", `nofile=${iso.ulimitNofile}:${iso.ulimitNofile}`);
+    }
+    if (iso.ipcPrivate) dockerArgs.push("--ipc", "private");
+  }
+
   dockerArgs.push(
     "--workdir",
     workdir,
@@ -165,9 +192,13 @@ export function buildDockerRunArgs(input: {
     `type=bind,source=${formatDockerBindSource(input.localCwd)},target=${workdir}`,
     "--network",
     input.target.network ?? "bridge",
-    "--add-host",
-    "host.docker.internal:host-gateway",
   );
+
+  // SSRF fix: host-gateway is a route to the control-plane host. Only emit it
+  // when the callback bridge is actually running AND the target opts in.
+  if (opts.hostGatewayActive && input.target.allowHostGateway) {
+    dockerArgs.push("--add-host", "host.docker.internal:host-gateway");
+  }
 
   for (const [key, value] of Object.entries(input.env)) {
     dockerArgs.push("--env", `${key}=${value}`);
@@ -589,14 +620,17 @@ export async function runAdapterExecutionTargetProcess(
     return await run(
       opts.runId,
       "docker",
-      buildDockerRunArgs({
-        target,
-        localCwd: workspace.localCwd,
-        command: commandSpec.command,
-        args: commandSpec.args,
-        env,
-        stdin: opts.stdin,
-      }),
+      buildDockerRunArgs(
+        {
+          target,
+          localCwd: workspace.localCwd,
+          command: commandSpec.command,
+          args: commandSpec.args,
+          env,
+          stdin: opts.stdin,
+        },
+        { hostGatewayActive: bridge != null },
+      ),
       {
         cwd: workspace.localCwd,
         env: {},
