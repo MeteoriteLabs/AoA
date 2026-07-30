@@ -1,4 +1,4 @@
-import { and, eq, ilike, or, sql, desc, isNull, gt, inArray } from "drizzle-orm";
+import { and, eq, ilike, or, sql, desc, isNull, gt, inArray, type SQL } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { agents, embeddingQueue, memoryItems, memoryItemVersions, memoryRetrievals, suggestions } from "@armyofagents/db";
 import { MEMORY_ITEM_LAYERS, normalizeMemoryFolderPath } from "@armyofagents/shared";
@@ -84,6 +84,12 @@ export interface MultiPathSearchFilters {
   enableSemantic?: boolean;
   enableKeyword?: boolean;
   enableTemporal?: boolean;
+  /**
+   * RBAC WHERE conditions (from `memoryAccessConditions`) AND-ed into every
+   * pathway so a scoped actor can never rank — nor leak — memory it isn't
+   * entitled to. Empty/undefined leaves the search unfiltered (founder board).
+   */
+  accessConditions?: SQL[];
 }
 
 export interface SearchAuditCandidatesFilters {
@@ -112,6 +118,9 @@ export interface MultiPathSearchResult {
   priority: number;
   validationCount: number;
   agentId: string | null;
+  ownerType: string | null;
+  ownerId: string | null;
+  invalidatedAt: Date | null;
   pinnedToSkill: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -596,6 +605,8 @@ export function memoryService(db: Db) {
         if (filters.departmentId) conds.push(eq(memoryItems.departmentId, filters.departmentId));
         if (filters.projectId) conds.push(eq(memoryItems.projectId, filters.projectId));
         if (filters.goalId) conds.push(eq(memoryItems.goalId, filters.goalId));
+        // RBAC gate (P1-T2): AND the actor's access conditions into every pathway.
+        if (filters.accessConditions?.length) conds.push(...filters.accessConditions);
         return conds;
       };
 
@@ -620,6 +631,11 @@ export function memoryService(db: Db) {
         priority: memoryItems.priority,
         validationCount: memoryItems.validationCount,
         agentId: memoryItems.agentId,
+        // Ownership + invalidation columns feed the post-fetch RBAC safety net
+        // (filterMemoryForActor) that guards the searchMultiPath results.
+        ownerType: memoryItems.ownerType,
+        ownerId: memoryItems.ownerId,
+        invalidatedAt: memoryItems.invalidatedAt,
         pinnedToSkill: memoryItems.pinnedToSkill,
         accessedAt: memoryItems.accessedAt,
         lastValidatedAt: memoryItems.lastValidatedAt,
@@ -805,6 +821,9 @@ export function memoryService(db: Db) {
           priority: typeof item.priority === "number" ? item.priority : 0,
           validationCount,
           agentId: (item.agentId as string | null) ?? null,
+          ownerType: (item.ownerType as string | null) ?? null,
+          ownerId: (item.ownerId as string | null) ?? null,
+          invalidatedAt: (item.invalidatedAt as Date | null) ?? null,
           pinnedToSkill: Boolean(item.pinnedToSkill),
           createdAt: item.createdAt as Date,
           updatedAt: item.updatedAt as Date,

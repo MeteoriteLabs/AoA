@@ -6,8 +6,15 @@
  * the actor resolvers and the `memoryAccessConditions` WHERE-builder (P1-T2). It
  * type-imports MemoryActor from the pure module so both stay in sync.
  */
-import { and, eq } from "drizzle-orm";
-import { agentProjects, userRoles, type Db } from "@armyofagents/db";
+import { and, eq, inArray, isNull, notInArray, or, sql, type SQL } from "drizzle-orm";
+import {
+  agentProjects,
+  issues,
+  memoryItems,
+  projectGoals,
+  userRoles,
+  type Db,
+} from "@armyofagents/db";
 import type { MemoryActor } from "./memory-access.js";
 
 /**
@@ -62,4 +69,81 @@ export async function actorForMcp(
     return actorForAgentRun(db, companyId, actor.agentId);
   }
   return actorForUser(db, companyId, actor.userId);
+}
+
+/**
+ * In-SQL RBAC gate. Returns a list of Drizzle conditions the caller spreads into
+ * its WHERE (they are AND-ed together) so an actor can never rank — nor leak —
+ * memory it isn't entitled to. Admits EXACTLY the rows `canActorSee` in
+ * memory-access.ts admits; that pure filter is the reference and stays a
+ * post-fetch safety net over these conditions.
+ *
+ * `db` is needed to build the scope subqueries:
+ *   - goal→project resolves through the `project_goals` junction (the `goals`
+ *     table has NO projectId column; see `goalProjectMap` in mcp/tools/scope.ts).
+ *   - task→project reads `issues.projectId` directly (see `memoryTaskProjectMap`).
+ */
+export function memoryAccessConditions(db: Db, actor: MemoryActor): SQL[] {
+  // Correction/forgetting: invalidated rows never surface (all actors).
+  const conds: SQL[] = [isNull(memoryItems.invalidatedAt)];
+
+  // A row is PRIVATE when it is agent-personal (agentId set) OR typed-owned by a
+  // user/agent. Non-private is the negation; a null ownerType counts as non-private.
+  const nonPrivate = and(
+    isNull(memoryItems.agentId),
+    or(isNull(memoryItems.ownerType), notInArray(memoryItems.ownerType, ["user", "agent"])),
+  )!;
+
+  // Founder sees every non-private, non-invalidated row — never others' private
+  // (break-glass is a separate path). Matches canActorSee option (b).
+  if (actor.kind === "founder") {
+    conds.push(nonPrivate);
+    return conds;
+  }
+
+  // Scoped actor (team_lead / team_member / commander / agent). `departmentIds`
+  // carries every projects.id (dept- OR project-type) the actor can access, so a
+  // row matches on its departmentId, projectId, its goal's project(s), or its task's project.
+  const ids = actor.departmentIds;
+  const scopeMatch: SQL = ids.length
+    ? or(
+        inArray(memoryItems.departmentId, ids),
+        inArray(memoryItems.projectId, ids),
+        inArray(
+          memoryItems.goalId,
+          db
+            .select({ goalId: projectGoals.goalId })
+            .from(projectGoals)
+            .where(inArray(projectGoals.projectId, ids)),
+        ),
+        inArray(
+          memoryItems.taskId,
+          db.select({ id: issues.id }).from(issues).where(inArray(issues.projectId, ids)),
+        ),
+      )!
+    : sql`false`;
+
+  const visibleNonPrivate = and(
+    nonPrivate,
+    or(
+      eq(memoryItems.layer, "identity"),
+      eq(memoryItems.visibility, "company"),
+      scopeMatch,
+    ),
+  )!;
+
+  if (actor.kind === "agent") {
+    // Non-private-visible rows PLUS the agent's own personal memory.
+    conds.push(or(visibleNonPrivate, eq(memoryItems.agentId, actor.agentId))!);
+  } else {
+    // Human/commander: non-private-visible rows PLUS their own user-owned private memory.
+    conds.push(
+      or(
+        visibleNonPrivate,
+        and(eq(memoryItems.ownerType, "user"), eq(memoryItems.ownerId, actor.userId))!,
+      )!,
+    );
+  }
+
+  return conds;
 }
