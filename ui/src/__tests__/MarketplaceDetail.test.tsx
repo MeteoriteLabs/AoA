@@ -253,6 +253,36 @@ describe("MarketplaceDetail", () => {
     expect(crumb?.textContent).toMatch(/skills/i);
   });
 
+  it("surfaces a package-placement failure instead of silently mislabeling navigation", async () => {
+    // The item itself loads from the catalog, but the packages query — which drives
+    // AoA classification (back-link + sidebar + "Part of X") — fails. The page must
+    // treat that as an error rather than deriving navigation from empty packages.
+    vi.mocked(marketplaceApi.getCatalog).mockResolvedValueOnce({
+      ...FULL_CATALOG,
+      items: FULL_CATALOG.items.map((item) =>
+        item.id === "skill:aoa-curated/code-review"
+          ? { ...item, source: { ...item.source, url: "https://github.com/aoa-curated/skills" } }
+          : item,
+      ),
+    });
+    vi.mocked(marketplaceApi.getPackages).mockRejectedValueOnce(
+      new Error("Package placement unavailable"),
+    );
+
+    wrap("/marketplace/skill/aoa-curated/code-review");
+
+    await waitFor(() =>
+      expect(screen.getByText(/could not load this item/i)).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByText(/package placement unavailable/i),
+    ).toBeInTheDocument();
+    // The item hero must NOT render against a wrongly-derived navigation state.
+    expect(
+      screen.queryByTestId("marketplace-detail-hero-card"),
+    ).not.toBeInTheDocument();
+  });
+
   it("renders 404 for unknown item id", async () => {
     vi.mocked(marketplaceApi.getCatalog).mockResolvedValueOnce(FULL_CATALOG);
     wrap("/marketplace/skill/nonexistent/item");

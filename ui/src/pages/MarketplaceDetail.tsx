@@ -51,7 +51,7 @@ export default function MarketplaceDetail({ fixedType }: MarketplaceDetailProps 
   const catalogItemId = itemType ? `${itemType}:${fullSlug}` : null;
 
   const { data: catalog, isLoading, error } = useCatalog();
-  const { data: packages } = usePackages();
+  const { data: packages, error: packagesError } = usePackages();
   const [readmeText, setReadmeText] = useState<string | null>(null);
   const [readmeError, setReadmeError] = useState<string | null>(null);
   const [installModalOpen, setInstallModalOpen] = useState(false);
@@ -71,9 +71,18 @@ export default function MarketplaceDetail({ fixedType }: MarketplaceDetailProps 
     () => deriveMarketplacePlacement(catalog?.items ?? [], packages ?? []),
     [catalog, packages],
   );
-  const isAoa = item
-    ? placement.aoaRepresentedItemIds.has(item.id)
-    : false;
+  // Placement (AoA classification → back-link, sidebar, "Part of X") depends on the
+  // packages query. Treat packages as part of load/error resolution so navigation is
+  // never derived from an empty `packages ?? []` fallback while the query is still in
+  // flight or has failed — otherwise an AoA-packaged item is mislabeled (permanently
+  // and silently on failure). See AGENTS.md §10 "do not silently ignore API errors".
+  const packagesResolved = packages !== undefined;
+  const detailLoading = isLoading || (!packagesResolved && packagesError == null);
+  const detailError = error ?? packagesError ?? null;
+  const isAoa =
+    item && packagesResolved
+      ? placement.aoaRepresentedItemIds.has(item.id)
+      : false;
   useMarketplaceSidebar(isAoa ? "aoa" : itemType ?? "home");
   const backTo = isAoa
     ? "/marketplace?view=aoa"
@@ -159,7 +168,7 @@ export default function MarketplaceDetail({ fixedType }: MarketplaceDetailProps 
           </div>
         )}
 
-        {itemType && isLoading && (
+        {itemType && detailLoading && (
           <div className="space-y-6 max-w-4xl mx-auto">
             <Skeleton className="h-10 w-64" />
             <Skeleton className="h-4 w-96" />
@@ -169,11 +178,11 @@ export default function MarketplaceDetail({ fixedType }: MarketplaceDetailProps 
           </div>
         )}
 
-        {itemType && !isLoading && (error || !catalog) && (
+        {itemType && !detailLoading && (detailError || !catalog) && (
           <div className="text-center py-12">
             <p className="text-lg font-medium">Could not load this item</p>
             <p className="text-sm text-muted-foreground mt-2">
-              {error?.message ?? "Catalog unavailable"}
+              {detailError?.message ?? "Catalog unavailable"}
             </p>
             <Link
               to={backTo}
@@ -184,7 +193,7 @@ export default function MarketplaceDetail({ fixedType }: MarketplaceDetailProps 
           </div>
         )}
 
-        {itemType && !isLoading && catalog && !item && (
+        {itemType && !detailLoading && !detailError && catalog && !item && (
           <div className="text-center py-12">
             <p className="text-lg font-medium">Item not found: {catalogItemId}</p>
             <Link
@@ -196,7 +205,7 @@ export default function MarketplaceDetail({ fixedType }: MarketplaceDetailProps 
           </div>
         )}
 
-        {itemType && !isLoading && item && Icon && (
+        {itemType && !detailLoading && !detailError && item && Icon && (
         <div className="max-w-4xl mx-auto space-y-8">
 
         {/* ── Hero ───────────────────────────────────────────────────────────── */}

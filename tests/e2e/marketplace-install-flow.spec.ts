@@ -201,9 +201,13 @@ test.describe("Marketplace install flow", () => {
     // Verify no error state
     await expect(page.getByText("Could not load the marketplace")).not.toBeVisible();
 
-    // The bundled fixture's plugins are all AoA first-party (MeteoriteLabs-owned),
-    // so the Plugins view shows the cross-sell empty state rather than plugin cards.
-    await expect(page.getByTestId("marketplace-empty-plugin")).toBeVisible();
+    // Post supply-chain recovery, the fixture's aoa-curated plugins render as cards
+    // in the Plugins shelf (previously they were hidden behind a cross-sell empty
+    // state), so the empty state is gone and installable plugin cards are shown.
+    await expect(page.getByTestId("marketplace-empty-plugin")).not.toBeVisible();
+    await expect(
+      page.getByRole("button", { name: /^install$/i }).first(),
+    ).toBeVisible();
   });
 
   test("install modal has Cancel button that closes without installing", async ({
