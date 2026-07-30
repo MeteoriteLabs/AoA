@@ -134,6 +134,7 @@ export {
   providerCredentials,
   agentProviderCredentialBindings,
 } from "./provider_credentials.js";
+export { providerConnections, providerAssignments } from "./provider_connections.js";
 export { providerReadinessStatus } from "./provider_readiness_status.js";
 export { executionWorkspaces } from "./execution_workspaces.js";
 export { environments } from "./environments.js";
