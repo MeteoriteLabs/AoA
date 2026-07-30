@@ -212,6 +212,16 @@ vi.mock("../services/issues.js", () => ({
   }),
 }));
 
+// P4: the runner resolves provider credentials (dynamic import). Production
+// self-hosted misses return host_login_fallback (no throw); this mock db doesn't
+// stub the provider_connections query, so the unmocked resolver would throw and
+// fail the run. Mock to the no-op override (mirrors aoa-runner.test.ts:68).
+vi.mock("../services/provider-resolution.js", () => ({
+  resolveProviderCredential: vi.fn(async () => ({ source: "agent_env_override" })),
+  applyResolvedCredential: (config: unknown) => config,
+  toExecutionTargetHint: () => ({ credentialKind: null, executionTargetSlug: null }),
+}));
+
 vi.mock("../middleware/logger.js", () => {
   function makeLogger(): any {
     const l: any = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
