@@ -61,6 +61,15 @@ vi.mock("node:fs/promises", () => {
   };
   return { ...api, default: api };
 });
+// Phase 4: the runner now routes through the unified provider resolver before
+// provider-status detection. These specs assert the exact delivered config.env,
+// so mock the resolver to a passthrough (agent_env_override ⇒ applyResolvedCredential
+// is a no-op) — keeps env byte-identical and never touches the mock DB.
+vi.mock("../services/provider-resolution.js", () => ({
+  resolveProviderCredential: vi.fn(async () => ({ source: "agent_env_override" })),
+  applyResolvedCredential: (config: unknown) => config,
+  toExecutionTargetHint: () => ({ credentialKind: null, executionTargetSlug: null }),
+}));
 vi.mock("../services/mcp-connectors-loader.js", () => ({ resolveAgentConnectors: resolveConnectorsMock }));
 vi.mock("../services/run-log-store.js", () => ({ getRunLogStore: () => runLogStoreMock }));
 vi.mock("../middleware/logger.js", () => ({ logger:{ child:()=>({info:vi.fn(),warn:vi.fn(),error:vi.fn()}) } }));

@@ -526,11 +526,72 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       { consumerType: "agent", consumerId: agent.id, actorType: "agent", actorId: agent.id },
     );
 
+    // Unified provider-credential resolution (Phase 4). Reads the new
+    // provider_connections model FIRST; falls back to the legacy company-key /
+    // subscription ladder when no assignment exists (STRANGLER). This is also where
+    // crew FINALLY honors a personal_subscription binding — the old runner path never
+    // called resolveAgentSubscriptionEnvironment. Plan's stale local names
+    // (`adapterDeploymentMode`/`adapterDeploymentExposure`) do not exist in this
+    // runner; deployment mode/exposure come from loadConfig() (same source
+    // providers.ts uses to build the topology).
+    const { resolveProviderCredential, applyResolvedCredential } = await import(
+      "../../provider-resolution.js"
+    );
+    const { buildResolveDeps } = await import("../../provider-resolution-deps.js");
+    const { resolveCliAuthTopology } = await import("../../cli-auth-topology.js");
+    const { loadConfig } = await import("../../../config.js");
+    const runnerDeployConfig = loadConfig();
+    const topology = resolveCliAuthTopology({
+      deploymentMode: runnerDeployConfig.deploymentMode,
+      deploymentExposure: runnerDeployConfig.deploymentExposure,
+    });
+    const providerId =
+      agent.adapterType === "codex_local"
+        ? "openai"
+        : agent.adapterType === "claude_local"
+          ? "anthropic"
+          : agent.adapterType;
+    const resolveDeps = {
+      ...buildResolveDeps(db, topology),
+      // Bind the legacy fallback to THIS adapter (deps default is identity).
+      legacyResolveConfig: async (cfg: Record<string, unknown>) =>
+        secretService(db).resolveAdapterConfigForRuntime(agent.companyId, agent.adapterType, cfg, {
+          consumerType: "agent",
+          consumerId: agent.id,
+          actorType: "agent",
+          actorId: agent.id,
+        }),
+    };
+    const resolvedCredential = await resolveProviderCredential(
+      db,
+      {
+        organizationId: null,
+        companyId: agent.companyId,
+        agentId: agent.id,
+        actorKind: "crew",
+        adapterType: agent.adapterType,
+        provider: providerId,
+        executionTargetId: process.env.AOA_EXECUTION_TARGET_ID?.trim() || "control-plane",
+        currentEnv: (runtimeBaseConfig.env as Record<string, string>) ?? {},
+        context: {
+          consumerType: "agent",
+          consumerId: agent.id,
+          actorType: "agent",
+          actorId: agent.id,
+        },
+      },
+      resolveDeps,
+    );
+    const runtimeBaseConfigResolved = applyResolvedCredential(
+      runtimeBaseConfig as Record<string, unknown>,
+      resolvedCredential,
+    );
+
     let providerStatus: ProviderStatus;
     try {
       providerStatus = await getProviderStatus(
         agent.adapterType,
-        { companyId: agent.companyId, adapterConfig: runtimeBaseConfig },
+        { companyId: agent.companyId, adapterConfig: runtimeBaseConfigResolved },
         realProviderStatusDeps,
       );
     } catch (statusErr) {
@@ -545,7 +606,7 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     }
     const resolvedBaseConfig = applyModelResolutionToConfig(
       agent.adapterType,
-      runtimeBaseConfig,
+      runtimeBaseConfigResolved,
       providerStatus,
       { inheritedEnvOpenAiKey: process.env.OPENAI_API_KEY ?? null },
     );
