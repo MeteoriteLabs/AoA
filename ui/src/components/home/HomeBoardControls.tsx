@@ -50,7 +50,8 @@ export interface HomeBoardControlsProps {
  * edit session/draft, never two independently-owned ones.
  */
 export function HomeBoardControls({ boardEdit, role }: HomeBoardControlsProps) {
-  const { lg, editing, isSaving, isResetting, activeBreakpoint, startEdit, addWidgetAndEdit, resetBoard } = boardEdit;
+  const { lg, editing, isSaving, isResetting, resetError, activeBreakpoint, startEdit, addWidgetAndEdit, resetBoard } =
+    boardEdit;
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
 
   // Task D1: editing is enforced lg-only — the customize trigger (like every
@@ -60,6 +61,22 @@ export function HomeBoardControls({ boardEdit, role }: HomeBoardControlsProps) {
 
   return (
     <div className="flex items-center gap-2">
+      {/* Codex P2: the view-mode "Reset to default" (customize dropdown -> confirm
+          -> resetBoard) fires a DELETE with no optimistic snap; if it fails, the
+          old layout stays and — since ArrangeToolbar (which shows resetError
+          inline while editing) is unmounted in view mode — the founder got NO
+          feedback or retry. Surface it here, in view mode only (editing is
+          ArrangeToolbar's job). Only renders on failure (rare), so the header's
+          no-reflow-on-the-common-path guarantee (Plan 7) is preserved. Mirrors
+          ArrangeToolbar's copy/Retry exactly. */}
+      {!editing && resetError != null && (
+        <span className="text-sm text-destructive">
+          Couldn't reset your board.{" "}
+          <button type="button" onClick={resetBoard} className="underline">
+            Retry
+          </button>
+        </span>
+      )}
       {editing ? (
         // Arrange mode: still rendered (never unmounted) so the header never
         // reflows — but fully inert, since every arrange-mode action now

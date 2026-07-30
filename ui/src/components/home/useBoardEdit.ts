@@ -343,7 +343,8 @@ export function useBoardEdit(
   // to avoid that trap: it mirrors `startEdit` FULLY (identical five
   // setters, identical order) and inlines `addWidget`'s own bottomEdge/
   // append shape for the new item, all in one body that never depends on
-  // `editing` at all. Deps are `[isSaving, sourceLg]` — NOT `[editing]` —
+  // `editing` at all. Deps are `[isSaving, isResetting, sourceLg]` — NOT
+  // `[editing]` —
   // precisely because depending on `editing` here would reintroduce the same
   // staleness this action exists to avoid (the whole point is to be callable
   // while `editing` is false). Baseline is set to `sourceLg` (the PRE-add
@@ -352,7 +353,14 @@ export function useBoardEdit(
   // edit-session change.
   const addWidgetAndEdit = useCallback(
     (key: WidgetKey) => {
-      if (isSaving) return; // rule 7, mirrored — no entry while a save is in flight
+      // No entry while a save OR a reset is in flight. The isResetting guard
+      // (Codex P2) matters for the view-mode path: without it, adding a widget
+      // during a slow reset DELETE reads the PRE-reset `sourceLg` (the query
+      // hasn't refetched yet) into a dirty draft; when the reset then resolves
+      // and the user hits Done, attemptSave re-upserts that stale layout + the
+      // new widget, silently undoing the reset they just confirmed. Mirrors
+      // resetBoard/attemptSave, which already bail on isResetting.
+      if (isSaving || isResetting) return;
       const def = getWidget(key);
       if (!def) return; // unknown key — defensive no-op, mirrors addWidget's own guard
       const next: HomeBoardLayoutItem[] = [
@@ -366,7 +374,7 @@ export function useBoardEdit(
       setAnnouncement("");
       setEditing(true);
     },
-    [isSaving, sourceLg],
+    [isSaving, isResetting, sourceLg],
   );
 
   const resetBoard = useCallback(() => {

@@ -457,6 +457,19 @@ describe("useBoardEdit", () => {
       expect(result.current.editing).toBe(false);
     });
 
+    it("is a no-op while a reset is in flight (Codex P2 — isResetting guard stops a stale draft undoing the reset)", () => {
+      mocks.layout = [{ i: "budget", x: 0, y: 0, w: 1, h: 1 }];
+      const { result, rerender } = renderHook(() => useBoardEdit(COMPANY_A, "founder"));
+      const before = result.current.lg;
+      mocks.isResetting = true;
+      rerender();
+
+      act(() => result.current.addWidgetAndEdit("agents-now"));
+
+      expect(result.current.editing).toBe(false);
+      expect(result.current.lg).toEqual(before);
+    });
+
     it("is a no-op for an unrecognized widget key (defensive, mirrors addWidget's own guard)", () => {
       const { result } = renderHook(() => useBoardEdit(COMPANY_A, "founder"));
       const before = result.current.lg;

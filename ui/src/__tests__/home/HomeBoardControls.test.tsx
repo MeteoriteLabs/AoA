@@ -162,5 +162,22 @@ describe("HomeBoardControls (Plan 7 Task 3: customize dropdown, no header morph)
       expect(boardEdit.resetBoard).not.toHaveBeenCalled();
       expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
     });
+
+    it("surfaces a failed view-mode reset inline with a Retry that re-fires resetBoard (Codex P2)", async () => {
+      const user = userEvent.setup();
+      const boardEdit = makeBoardEdit({ resetError: new Error("network down") });
+      render(<HomeBoardControls boardEdit={boardEdit} role="founder" />);
+
+      expect(screen.getByText(/Couldn't reset your board/)).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Retry" }));
+      expect(boardEdit.resetBoard).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not show the reset error inline while editing (ArrangeToolbar owns it there)", () => {
+      render(
+        <HomeBoardControls boardEdit={makeBoardEdit({ editing: true, resetError: new Error("x") })} role="founder" />,
+      );
+      expect(screen.queryByText(/Couldn't reset your board/)).not.toBeInTheDocument();
+    });
   });
 });
