@@ -82,6 +82,7 @@ import { normalizeLegacyOnboardingState } from "./migrations/normalize-legacy-on
 import { backfillCrewTemplateOrigin } from "./services/internal-agent/aoa-agents/backfill-template-origin.js";
 import { backfillCrewOriginKind } from "./services/internal-agent/aoa-agents/backfill-crew-origin-kind.js";
 import { reconcileAutonomyScale } from "./services/internal-agent/aoa-agents/reconcile-autonomy-scale.js";
+import { runProviderConnectionsBackfill } from "./services/provider-connections-backfill.js";
 import { loadCachedCatalog } from "./services/aoa-marketplace.js";
 import { runMarketplaceCrewMaintenance } from "./services/marketplace-reconcile.js";
 import { serializeSafeError } from "./services/safe-error.js";
@@ -955,6 +956,24 @@ void reconcileAutonomyScale(db as any)
   })
   .catch((err: unknown) =>
     logger.warn({ err }, "autonomy scale reconciliation failed"),
+  );
+
+// Phase 4 STRANGLER dual-write: idempotent backfill of provider_connections +
+// provider_assignments from the two legacy credential systems (company
+// `provider:*` secrets → api_key connections; verified personal_subscription
+// bindings → personal_subscription connections). Best-effort — a failure must
+// NEVER block boot. Inserts with ON CONFLICT DO NOTHING behind the identity/scope
+// uniques, so every re-run is a no-op. See provider-connections-backfill.ts.
+void runProviderConnectionsBackfill(db as any, (level, msg, meta) =>
+  level === "warn" ? logger.warn(meta ?? {}, msg) : logger.info(meta ?? {}, msg),
+)
+  .then((res) => {
+    if (res.inserted > 0 || res.errors > 0) {
+      logger.info(res, "provider-connections backfill complete");
+    }
+  })
+  .catch((err: unknown) =>
+    logger.warn({ err }, "provider-connections backfill failed"),
   );
 
 // T3.5 / T3.x: Check all marketplace-installed crew agents for catalog updates.
