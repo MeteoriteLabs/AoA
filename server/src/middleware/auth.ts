@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { Request, RequestHandler } from "express";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { agentApiKeys, agents, boardApiKeys, companyMemberships, heartbeatRuns, instanceUserRoles, mcpApiKeys } from "@armyofagents/db";
+import { agentApiKeys, agents, boardApiKeys, companyMemberships, heartbeatRuns, instanceUserRoles, mcpApiKeys, organizationMemberships } from "@armyofagents/db";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import type { DeploymentMode } from "@armyofagents/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
@@ -58,7 +58,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         }
         if (session?.user?.id) {
           const userId = session.user.id;
-          const [roleRow, memberships] = await Promise.all([
+          const [roleRow, memberships, orgMemberships] = await Promise.all([
             db
               .select({ id: instanceUserRoles.id })
               .from(instanceUserRoles)
@@ -74,19 +74,31 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
                   eq(companyMemberships.status, "active"),
                 ),
               ),
+            db
+              .select({ organizationId: organizationMemberships.organizationId })
+              .from(organizationMemberships)
+              .where(
+                and(
+                  eq(organizationMemberships.userId, userId),
+                  eq(organizationMemberships.status, "active"),
+                ),
+              ),
           ]);
+          const isOperator = Boolean(roleRow);
+          const cloud = opts.deploymentMode === "cloud_auth";
           req.actor = {
             type: "board",
             userId,
             companyIds: memberships.map((row) => row.companyId),
-            // Phase 2 Task 10 note: `opts.deploymentMode` is in scope here
-            // (closure param, referenced elsewhere in this function) so a
-            // future change can force this false for cloud_auth. P2 does
-            // NOT do that clamp — P2 only mints zero instance_admin rows in
-            // cloud_auth (Tasks 4/7/8/10); that is a sufficient lockout fix
-            // on its own. The clamp itself (`opts.deploymentMode ===
-            // "cloud_auth" ? false : Boolean(roleRow)`) is Phase 3's.
-            isInstanceAdmin: Boolean(roleRow),
+            organizationIds: orgMemberships.map((row) => row.organizationId),
+            // Operator-plane authority (instance settings). NOT clamped in cloud.
+            operator: isOperator,
+            // B1: the DATA-plane instance_admin bypass is clamped to false in
+            // cloud_auth so every req.actor.isInstanceAdmin reader (rbac, authz,
+            // canUser, team, route helpers) fails closed. Self-hosted
+            // (local_trusted/authenticated) is preserved byte-for-byte. The
+            // operator plane above stays live for instance-settings management.
+            isInstanceAdmin: cloud ? false : isOperator,
             runId: runIdHeader ?? undefined,
             source: "session",
           };
@@ -136,7 +148,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       .then((rows) => rows.find((row) => !row.expiresAt || row.expiresAt.getTime() > Date.now()) ?? null);
 
     if (boardKeyRow) {
-      const [roleRow, memberships] = await Promise.all([
+      const [roleRow, memberships, orgMemberships] = await Promise.all([
         db
           .select({ id: instanceUserRoles.id })
           .from(instanceUserRoles)
@@ -152,15 +164,29 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
               eq(companyMemberships.status, "active"),
             ),
           ),
+        db
+          .select({ organizationId: organizationMemberships.organizationId })
+          .from(organizationMemberships)
+          .where(
+            and(
+              eq(organizationMemberships.userId, boardKeyRow.userId),
+              eq(organizationMemberships.status, "active"),
+            ),
+          ),
       ]);
       await db.update(boardApiKeys).set({ lastUsedAt: new Date() }).where(eq(boardApiKeys.id, boardKeyRow.id));
+      const isOperator = Boolean(roleRow);
+      const cloud = opts.deploymentMode === "cloud_auth";
       req.actor = {
         type: "board",
         userId: boardKeyRow.userId,
         companyIds: memberships.map((row) => row.companyId),
-        // Phase 2 Task 10 note: see the matching comment at the session-path
-        // derivation above — same P2/P3 boundary applies to this board-key path.
-        isInstanceAdmin: Boolean(roleRow),
+        organizationIds: orgMemberships.map((row) => row.organizationId),
+        // Operator-plane authority (instance settings). NOT clamped in cloud.
+        operator: isOperator,
+        // B1: DATA-plane instance_admin bypass clamped to false in cloud_auth
+        // (same boundary as the session path above). Self-hosted preserved.
+        isInstanceAdmin: cloud ? false : isOperator,
         keyId: boardKeyRow.id,
         runId: runIdHeader || undefined,
         source: "board_key",
