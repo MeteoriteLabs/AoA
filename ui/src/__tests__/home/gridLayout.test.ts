@@ -252,10 +252,66 @@ describe("moveTileKeyboard (Task D2)", () => {
     expect(result.find((item) => item.i === "agents-now")).toEqual({ i: "agents-now", x: 3, y: 0, w: 1, h: 1 });
   });
 
-  it("moves down (increasing y) without being reverted — no global compaction is applied", () => {
+  it("a downward nudge that vertical compaction fully reverts is a no-op (same array reference)", () => {
+    // A lone tile nudged down has nothing to rest on, so the SAME vertical
+    // compaction the grid applies (HomeBoard passes compactor={verticalCompactor})
+    // pulls it straight back to the top. Reflecting that here — rather than
+    // returning the raw moveElement result at y:2 the way the old code did — is
+    // the a11y fix: the old draft claimed y:2, the grid then silently reverted
+    // it to y:0, and useBoardEdit's aria-live text announced a row the tile
+    // never occupied. A net no-op returns the INPUT reference so useBoardEdit
+    // stays silent instead of announcing a phantom move.
     const lg: HomeBoardLayoutItem[] = [{ i: "budget", x: 0, y: 0, w: 1, h: 1 }];
-    const result = moveTileKeyboard(lg, "budget", 0, 2, 4);
-    expect(result.find((item) => item.i === "budget")).toEqual({ i: "budget", x: 0, y: 2, w: 1, h: 1 });
+    expect(moveTileKeyboard(lg, "budget", 0, 2, 4)).toBe(lg);
+  });
+
+  it("a downward nudge lands the tile at its COMPACTED position, not the raw moveElement target", () => {
+    // agents-now (w:1) sits directly above the wider action-queue (w:2).
+    // Nudging agents-now down two rows can't stay at the raw target row (y:2):
+    // vertical compaction re-sorts by (row, col), so action-queue rises into
+    // the vacated top row and agents-now settles just below it at y:1 —
+    // exactly what the grid renders. Under the OLD (no-compaction) behavior
+    // this returned agents-now at y:2 while the grid showed it at y:1, so the
+    // announcement lied. Now the returned position IS the landing position.
+    const lg: HomeBoardLayoutItem[] = [
+      { i: "agents-now", x: 0, y: 0, w: 1, h: 1 },
+      { i: "action-queue", x: 0, y: 1, w: 2, h: 1 },
+    ];
+    const result = moveTileKeyboard(lg, "agents-now", 0, 2, 4);
+
+    const moved = result.find((item) => item.i === "agents-now")!;
+    // Lands at the compacted row (y:1), NOT the raw moveElement target (y:2)…
+    expect(moved).toEqual({ i: "agents-now", x: 0, y: 1, w: 1, h: 1 });
+    // …and NOT reverted to its origin row (y:0) either — the move genuinely stuck.
+    expect(moved.y).not.toBe(0);
+    // The wider tile compacted up into the vacated top row.
+    expect(result.find((item) => item.i === "action-queue")).toEqual({
+      i: "action-queue",
+      x: 0,
+      y: 0,
+      w: 2,
+      h: 1,
+    });
+    assertNoOverlap(result);
+    assertInBounds(result, 4);
+  });
+
+  it("a downward nudge in a multi-row column compacts the whole column tight (announce == land)", () => {
+    // Three stacked tiles across three rows; nudge the top one down two rows.
+    // The grid's vertical compaction pulls the column tight again, so the moved
+    // tile lands at y:1 (the real landing / announced row), never the raw y:2.
+    const lg: HomeBoardLayoutItem[] = [
+      { i: "agents-now", x: 0, y: 0, w: 1, h: 1 },
+      { i: "budget", x: 0, y: 1, w: 1, h: 1 },
+      { i: "action-queue", x: 0, y: 2, w: 2, h: 1 },
+    ];
+    const result = moveTileKeyboard(lg, "agents-now", 0, 2, 4);
+
+    expect(result.find((item) => item.i === "agents-now")).toEqual({ i: "agents-now", x: 0, y: 1, w: 1, h: 1 });
+    expect(result.find((item) => item.i === "budget")).toEqual({ i: "budget", x: 0, y: 0, w: 1, h: 1 });
+    expect(result.find((item) => item.i === "action-queue")).toEqual({ i: "action-queue", x: 0, y: 2, w: 2, h: 1 });
+    assertNoOverlap(result);
+    assertInBounds(result, 4);
   });
 
   it("is blocked (same array reference, no-op) at the left bound", () => {

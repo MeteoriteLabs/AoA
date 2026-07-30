@@ -1,5 +1,5 @@
-import { collides, moveElement } from "react-grid-layout";
-import type { LayoutItem } from "react-grid-layout";
+import { collides, moveElement, verticalCompactor } from "react-grid-layout";
+import type { Layout, LayoutItem } from "react-grid-layout";
 import type { HomeBoardLayoutItem, UserRole } from "@armyofagents/shared";
 import { HOME_BOARD_LG_COLS, HOME_BOARD_MAX_ROWS } from "@armyofagents/shared";
 import { getDefaultLayout } from "./defaultLayout";
@@ -175,15 +175,61 @@ function toHomeBoardLayoutItems(items: readonly LayoutItem[]): HomeBoardLayoutIt
 }
 
 /**
- * Safety net shared by moveTileKeyboard/cycleTileSize: if RGL's moveElement
- * cascade ever left something invalid (shouldn't happen per its documented
- * collision handling, but a keyboard-driven mutation must never hand back a
- * broken draft), fall back to the same deterministic row-major packer used
- * everywhere else in this file rather than surfacing an inconsistent layout.
+ * Safety net shared by moveTileKeyboard/cycleTileSize (via settleVertical): if
+ * RGL's moveElement + verticalCompactor pass ever left something invalid
+ * (shouldn't happen per their documented behavior, but a keyboard-driven
+ * mutation must never hand back a broken draft), fall back to the same
+ * deterministic row-major packer used everywhere else in this file rather than
+ * surfacing an inconsistent layout.
  */
 function ensureValid(items: readonly HomeBoardLayoutItem[], cols: number): HomeBoardLayoutItem[] {
   if (isWithinBounds(items, cols) && !hasOverlap(items)) return items as HomeBoardLayoutItem[];
   return packRowMajorNextFit(items, cols);
+}
+
+/**
+ * Order-independent {i,x,y,w,h} value-equality — verticalCompactor.compact
+ * re-sorts items by (row, col), so a settled layout that's positionally
+ * identical to the input can still arrive in a different array order.
+ */
+function sameLayoutItems(a: readonly HomeBoardLayoutItem[], b: readonly HomeBoardLayoutItem[]): boolean {
+  if (a.length !== b.length) return false;
+  const byKey = new Map(b.map((item) => [item.i, item]));
+  for (const item of a) {
+    const other = byKey.get(item.i);
+    if (!other || other.x !== item.x || other.y !== item.y || other.w !== item.w || other.h !== item.h) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Reconcile a post-moveElement layout with the grid's own compaction so the
+ * committed draft equals what react-grid-layout will actually render.
+ *
+ * HomeBoard renders the board with `compactor={verticalCompactor}`, and RGL
+ * re-compacts every incoming `layouts` prop and re-emits onLayoutChange with
+ * the compacted result. So a keyboard nudge that hands back a NON-compacted
+ * layout (which moveElement alone produces for any downward / most cross-row
+ * moves) gets silently reverted by that re-emit — while useBoardEdit's
+ * aria-live announcement, computed from the pre-compaction draft, names a row
+ * the tile never lands on. Applying the SAME verticalCompactor here closes that
+ * gap: the draft already IS the settled layout, RGL's re-emit is a value-
+ * identical no-op, and the announced position matches where the tile renders.
+ *
+ * Returns the ORIGINAL `original` reference when the net layout is unchanged
+ * (e.g. a lone tile nudged "down" that compaction pulls straight back up), so
+ * callers keep their cheap `next === current` no-op / skip-announcement check
+ * instead of announcing a phantom move.
+ */
+function settleVertical(
+  moved: readonly LayoutItem[],
+  original: readonly HomeBoardLayoutItem[],
+  cols: number,
+): HomeBoardLayoutItem[] {
+  const compacted = ensureValid(toHomeBoardLayoutItems(verticalCompactor.compact(moved as Layout, cols)), cols);
+  return sameLayoutItems(compacted, original) ? (original as HomeBoardLayoutItem[]) : compacted;
 }
 
 /**
@@ -193,13 +239,19 @@ function ensureValid(items: readonly HomeBoardLayoutItem[], cols: number): HomeB
  * sanity ceiling the server validator also enforces).
  *
  * On a valid move, a newly-colliding neighbor is cascaded out of the way via
- * react-grid-layout's own moveElement — collision-aware repositioning
- * WITHOUT a full-board vertical compact. This distinction matters: compact()
- * would silently undo a "move down" by pulling the tile straight back up to
- * fill the gap it just vacated, defeating the whole point of an explicit
- * keyboard nudge. moveElement mutates its inputs in place, so every item is
- * cloned first — the caller's arrays (which may be the SAME object
- * references as useBoardEdit's baseline snapshot) must never be mutated.
+ * react-grid-layout's own moveElement, then the result is run through the SAME
+ * vertical compaction the grid applies at render time (settleVertical) so the
+ * returned layout equals what RGL will actually settle to. This is the a11y
+ * fix (2026-07-30): an earlier version deliberately skipped compaction to keep
+ * a "move down" from being pulled back up — but the board renders with
+ * `compactor={verticalCompactor}` and re-compacts every `layouts` prop it
+ * receives, so that uncompacted draft was silently reverted on the very next
+ * onLayoutChange while the aria-live announcement (computed from the
+ * pre-compaction draft) named a row the tile never occupied. Honestly
+ * reflecting the grid's gravity here means the announced landing position and
+ * the rendered position always agree. moveElement mutates its inputs in place,
+ * so every item is cloned first — the caller's arrays (which may be the SAME
+ * object references as useBoardEdit's baseline snapshot) must never be mutated.
  */
 export function moveTileKeyboard(
   lg: readonly HomeBoardLayoutItem[],
@@ -219,17 +271,21 @@ export function moveTileKeyboard(
   const cloned: LayoutItem[] = lg.map((item) => ({ ...item }));
   const target = cloned.find((item) => item.i === key)!;
   const result = moveElement(cloned, target, nextX, nextY, true, false, "vertical", cols);
-  return ensureValid(toHomeBoardLayoutItems(result), cols);
+  return settleVertical(result, lg, cols);
 }
 
 /**
  * Keyboard-driven resize (Task D2): step `key`'s tile forward through its
  * `allowedSizes` (wrapping past the end back to the first), clamping x so
  * the new footprint stays in bounds, then cascading away any neighbor the
- * resize now overlaps (same moveElement approach as moveTileKeyboard, for
- * the same reason — no global compaction). Returns the SAME array reference
- * for a no-op (unknown key, or a single-entry allowedSizes with nothing to
- * cycle to).
+ * resize now overlaps (same moveElement approach as moveTileKeyboard) and
+ * finally settling with the grid's vertical compaction (settleVertical) so the
+ * committed draft matches what RGL renders — otherwise the resize's positional
+ * fallout (the resized tile and any cascaded neighbors) would diverge from the
+ * grid's re-compacted layout, the same silent-revert class the move path hit.
+ * The size announcement itself is compaction-invariant (w/h never change under
+ * compaction). Returns the SAME array reference for a no-op (unknown key, or a
+ * single-entry allowedSizes with nothing to cycle to).
  */
 export function cycleTileSize(
   lg: readonly HomeBoardLayoutItem[],
@@ -251,5 +307,5 @@ export function cycleTileSize(
   target.h = nextSize.h;
   target.x = Math.max(0, Math.min(target.x, cols - nextSize.w));
   const result = moveElement(cloned, target, target.x, target.y, true, false, "vertical", cols);
-  return ensureValid(toHomeBoardLayoutItems(result), cols);
+  return settleVertical(result, lg, cols);
 }

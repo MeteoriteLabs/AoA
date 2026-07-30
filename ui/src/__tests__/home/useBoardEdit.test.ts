@@ -872,6 +872,33 @@ describe("useBoardEdit", () => {
       expect(result.current.announcement).toMatch(/Budget/);
     });
 
+    it("announces the tile's position in the resulting draft (announce == land) for a vertical/cross-row move", () => {
+      // Regression guard for the a11y bug: agents-now (w:1) above the wider
+      // action-queue (w:2). A downward nudge cannot stay at the raw target row
+      // — the grid's vertical compaction (compactor={verticalCompactor}) swaps
+      // the two — so the announcement must name where agents-now ACTUALLY lands
+      // in the committed draft, not the pre-compaction row it never occupies.
+      mocks.layout = [
+        { i: "agents-now", x: 0, y: 0, w: 1, h: 1 },
+        { i: "action-queue", x: 0, y: 1, w: 2, h: 1 },
+      ];
+      const { result } = renderHook(() => useBoardEdit(COMPANY_A, "founder"));
+      act(() => result.current.startEdit());
+
+      act(() => result.current.moveWidget("agents-now", 0, 2));
+
+      const moved = result.current.lg.find((item) => item.i === "agents-now")!;
+      // The move genuinely stuck at the compacted row (compaction did not
+      // revert it to its origin y:0), so this isn't a vacuous "announce matches
+      // because nothing moved" assertion.
+      expect(moved.y).toBe(1);
+      // announce == land: the column/row named in the announcement equals the
+      // tile's real position in the committed lg draft.
+      expect(result.current.announcement).toBe(
+        `Agents working now moved to column ${moved.x + 1}, row ${moved.y + 1}`,
+      );
+    });
+
     it("is a no-op (including no announcement) when blocked at bounds", () => {
       const { result } = renderHook(() => useBoardEdit(COMPANY_A, "founder"));
       act(() => result.current.startEdit());
