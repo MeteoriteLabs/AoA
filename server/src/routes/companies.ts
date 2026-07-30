@@ -308,6 +308,7 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
     assertBoard(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    await assertRole(db, req, companyId, "founder");
     const company = await svc.archive(companyId);
     if (!company) {
       res.status(404).json({ error: "Company not found" });
@@ -328,6 +329,7 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
     assertBoard(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    await assertRole(db, req, companyId, "founder");
     const company = await svc.remove(companyId);
     if (!company) {
       res.status(404).json({ error: "Company not found" });
