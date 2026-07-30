@@ -204,7 +204,7 @@ describe("MarketplaceDetail", () => {
     await waitFor(() => expect(screen.getByText("Install Slack")).toBeInTheDocument());
   });
 
-  it("primary breadcrumb links back to the AoA view for an AoA item", async () => {
+  it("primary breadcrumb links back to the AoA view for an AoA package member", async () => {
     // isAoaItem() keys off the github owner in source.url (not the id), so give
     // code-review an aoa-curated source → AoA first-party. Opened from ?view=aoa,
     // the breadcrumb must return to the AoA view, not Home (where it's hidden).
@@ -216,6 +216,17 @@ describe("MarketplaceDetail", () => {
           : item,
       ),
     });
+    vi.mocked(marketplaceApi.getPackages).mockResolvedValueOnce([
+      {
+        id: "MeteoriteLabs/aoa-marketplace",
+        name: "AoA skills",
+        sourceUrl: "https://github.com/MeteoriteLabs/aoa-marketplace",
+        memberItemIds: ["skill:aoa-curated/code-review"],
+        count: 1,
+        verified: true,
+        explicit: false,
+      },
+    ]);
     const { container } = wrap("/marketplace/skill/aoa-curated/code-review");
     await waitFor(() =>
       expect(
@@ -240,6 +251,42 @@ describe("MarketplaceDetail", () => {
     expect(crumb).toBeInTheDocument();
     expect(crumb?.textContent).toMatch(/marketplace/i);
     expect(crumb?.textContent).toMatch(/skills/i);
+  });
+
+  it("surfaces a package-placement failure instead of silently mislabeling navigation", async () => {
+    // The item itself loads from the catalog, but the packages query — which drives
+    // AoA classification (back-link + sidebar + "Part of X") — fails. The page must
+    // treat that as an error rather than deriving navigation from empty packages.
+    vi.mocked(marketplaceApi.getCatalog).mockResolvedValueOnce({
+      ...FULL_CATALOG,
+      items: FULL_CATALOG.items.map((item) =>
+        item.id === "skill:aoa-curated/code-review"
+          ? { ...item, source: { ...item.source, url: "https://github.com/aoa-curated/skills" } }
+          : item,
+      ),
+    });
+    vi.mocked(marketplaceApi.getPackages).mockRejectedValueOnce(
+      new Error("Package placement unavailable"),
+    );
+
+    wrap("/marketplace/skill/aoa-curated/code-review");
+
+    await waitFor(() =>
+      expect(screen.getByText(/could not load this item/i)).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByText(/package placement unavailable/i),
+    ).toBeInTheDocument();
+    // The item hero must NOT render against a wrongly-derived navigation state.
+    expect(
+      screen.queryByTestId("marketplace-detail-hero-card"),
+    ).not.toBeInTheDocument();
+    // P3: with placement unresolved (packages failed), the back-link is neutralized
+    // to the generic marketplace target — not a wrong "Skills"/"AoA" target derived
+    // from the empty packages fallback.
+    expect(
+      screen.getByRole("link", { name: /back to marketplace/i }),
+    ).toHaveAttribute("href", "/marketplace");
   });
 
   it("renders 404 for unknown item id", async () => {

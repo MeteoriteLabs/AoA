@@ -3,11 +3,11 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const SQL = readFileSync(
-  resolve(__dirname, "../../../packages/db/src/migrations/0187_organizations.sql"),
+  resolve(__dirname, "../../../packages/db/src/migrations/0188_organizations.sql"),
   "utf8",
 );
 
-describe("Migration 0187 — organizations + safe companies backfill", () => {
+describe("Migration 0188 — organizations + safe companies backfill", () => {
   it("creates the three tenant tables", () => {
     expect(SQL).toMatch(/CREATE TABLE IF NOT EXISTS "organizations"/);
     expect(SQL).toMatch(/CREATE TABLE IF NOT EXISTS "organization_memberships"/);

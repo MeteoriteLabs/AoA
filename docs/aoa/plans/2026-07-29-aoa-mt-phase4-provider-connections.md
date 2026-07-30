@@ -268,17 +268,17 @@ git commit -m "feat(db): add provider_connections + provider_assignments schema"
 ## Task 2: Generate the DDL migration
 
 **Files:**
-- Create: `packages/db/src/migrations/0189_provider_connections.sql` (CONFIRMED number — branch latest is `0186`; P1 consumes `0187`, P2 + P3 (P3 collapsed to a single migration) consume `0188`, P4 = `0189`. If `pnpm db:generate` assigns a different prefix because phase ordering shifted, take the number drizzle-kit assigns and update this reference — never hand-edit the prefix.)
+- Create: `packages/db/src/migrations/0190_provider_connections.sql` (CONFIRMED number — branch latest is `0186`; P1 consumes `0188`, P2 + P3 (P3 collapsed to a single migration) consume `0189`, P4 = `0190`. If `pnpm db:generate` assigns a different prefix because phase ordering shifted, take the number drizzle-kit assigns and update this reference — never hand-edit the prefix.)
 
 - [ ] **Step 1: Build schema + generate**
 
 Run: `pnpm --filter @armyofagents/db build && pnpm db:generate`
-Expected: a new `packages/db/src/migrations/0189_*.sql` containing `CREATE TABLE "provider_connections"` and `CREATE TABLE "provider_assignments"` plus the two `unique(...) NULLS NOT DISTINCT` constraints and the CHECK constraints.
+Expected: a new `packages/db/src/migrations/0190_*.sql` containing `CREATE TABLE "provider_connections"` and `CREATE TABLE "provider_assignments"` plus the two `unique(...) NULLS NOT DISTINCT` constraints and the CHECK constraints.
 
 - [ ] **Step 2: Verify the migration contents**
 
-Run: `git status --porcelain packages/db/src/migrations && grep -c "NULLS NOT DISTINCT" packages/db/src/migrations/0189_*.sql`
-Expected: one new `.sql` file (prefix `0189`); grep count `>= 2` (both partial-uniques). If the CHECK constraints are absent, STOP — the schema `check(...)` did not serialize; re-run after `pnpm --filter @armyofagents/db build`.
+Run: `git status --porcelain packages/db/src/migrations && grep -c "NULLS NOT DISTINCT" packages/db/src/migrations/0190_*.sql`
+Expected: one new `.sql` file (prefix `0190`); grep count `>= 2` (both partial-uniques). If the CHECK constraints are absent, STOP — the schema `check(...)` did not serialize; re-run after `pnpm --filter @armyofagents/db build`.
 
 - [ ] **Step 3: Commit**
 

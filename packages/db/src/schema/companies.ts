@@ -7,11 +7,11 @@ export const companies = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     // Phase 1 tenant FK. RESTRICT: an Organization cannot be deleted while it
     // still owns companies (org teardown is out of Phase 1 scope). Injected on
-    // every existing row by migration 0187.
+    // every existing row by migration 0188.
     // DB-level DEFAULT = the sentinel org: belt-and-suspenders so ANY missed
     // writer (raw e2e seeds, portability edge paths, future migrations) lands
     // in the default org instead of hitting a NOT NULL violation. SET DEFAULT
-    // does NOT rewrite existing rows, so 0187's explicit backfill still runs.
+    // does NOT rewrite existing rows, so 0188's explicit backfill still runs.
     organizationId: uuid("organization_id").notNull().default("00000000-0000-0000-0000-000000000001").references(() => organizations.id, { onDelete: "restrict" }),
     name: text("name").notNull(),
     description: text("description"),

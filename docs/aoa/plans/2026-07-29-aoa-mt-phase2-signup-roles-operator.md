@@ -15,12 +15,12 @@
 Phase 1 **owns** and must be present on this branch before Phase 2 tasks run. **Phase 2 generates NO migration and creates NONE of these — it CONSUMES them:**
 
 - `organizations` table (`packages/db/src/schema/organizations.ts`) + its `packages/db/src/schema/index.ts` export.
-- **`organization_memberships` table** — created by P1's `0187` migration, which ALSO backfills `owner` memberships. Phase 2 imports `organizationMemberships` from `@armyofagents/db`; it does **not** define the schema file, does **not** add the `index.ts` export, and does **not** run `pnpm db:generate` (items 1).
+- **`organization_memberships` table** — created by P1's `0188` migration, which ALSO backfills `owner` memberships. Phase 2 imports `organizationMemberships` from `@armyofagents/db`; it does **not** define the schema file, does **not** add the `index.ts` export, and does **not** run `pnpm db:generate` (items 1).
 - `companies.organizationId` column (`organization_id uuid → organizations.id`) — the tenant pointer on every company.
 - `DEPLOYMENT_MODES` including `"cloud_auth"` (`packages/shared/src/constants.ts`) — the CONSTANT is P1's (item 4). Phase 2 owns only the `config-schema.ts` `cloud_auth` validation.
 - `ORGANIZATION_ROLES` (`owner|admin|member|billing`) constant + `OrganizationRole` type in `@armyofagents/shared` — P1's (item 15). Phase 2 imports it, does not redefine it.
 - `services/organizations.ts` — P1 creates this file with the factory (`organizationService`), `ensureDefaultOrganization`, `DEFAULT_ORGANIZATION_ID`, and slug helpers. Phase 2 EXTENDS it (adds `createSelfServeOrganization`), does not create a second file (item 6).
-- The **default-Organization creation + membership backfill migration** for existing single-tenant installs (P1's `0187`). **Phase 2 adds NO backfill.**
+- The **default-Organization creation + membership backfill migration** for existing single-tenant installs (P1's `0188`). **Phase 2 adds NO backfill.**
 
 If any of the above (esp. `companies.organizationId`, `organizations`, `organization_memberships`, `cloud_auth` in `DEPLOYMENT_MODES`, `ORGANIZATION_ROLES`, `services/organizations.ts`) is absent, Tasks 0, 5, 6, 9, 10 will not compile — stop and rebase Phase 1 in first.
 
@@ -51,7 +51,7 @@ grep -R "DEFAULT_ORGANIZATION_ID\|ensureDefaultOrganization" server/src/services
 - Server tests: `pnpm --filter @armyofagents/server test -- <path>`
 - Shared tests: `pnpm --filter @armyofagents/shared test -- <path>`
 - UI tests: `pnpm --filter @armyofagents/ui test -- <path>`
-- Migrations: **Phase 2 generates NO migration** — the `organizations` + `organization_memberships` DDL is Phase 1's (its `0187`). Do NOT run `pnpm db:generate` in any Phase 2 task.
+- Migrations: **Phase 2 generates NO migration** — the `organizations` + `organization_memberships` DDL is Phase 1's (its `0188`). Do NOT run `pnpm db:generate` in any Phase 2 task.
 - Windows CI skips `*.integration.test.ts` + e2e — keep lockout/isolation assertions in plain `*.test.ts` where possible.
 
 ---
@@ -145,7 +145,7 @@ git commit -m "feat(mt): cloud_auth config-schema validation (consumes P1 consta
 
 ## Task 1: CONSUME Phase 1's `organization_memberships` table + `ORGANIZATION_ROLES` (no schema, no migration)
 
-> **Cross-phase (items 1 + 15):** Phase 1's `0187` migration OWNS the `organization_memberships` table AND the `owner`-membership backfill; Phase 1 also owns the `ORGANIZATION_ROLES` constant. **Phase 2 creates NO schema file, adds NO `schema/index.ts` export, runs NO `pnpm db:generate`, and defines NO role constant.** This task is a *consumption guard* — a compile-time smoke test proving the P1 table + constant are importable, so downstream tasks (5, 6, 9, 10, 11) fail loudly here rather than mid-implementation if P1 is not yet rebased in.
+> **Cross-phase (items 1 + 15):** Phase 1's `0188` migration OWNS the `organization_memberships` table AND the `owner`-membership backfill; Phase 1 also owns the `ORGANIZATION_ROLES` constant. **Phase 2 creates NO schema file, adds NO `schema/index.ts` export, runs NO `pnpm db:generate`, and defines NO role constant.** This task is a *consumption guard* — a compile-time smoke test proving the P1 table + constant are importable, so downstream tasks (5, 6, 9, 10, 11) fail loudly here rather than mid-implementation if P1 is not yet rebased in.
 
 **Files:**
 - Test only: `server/src/__tests__/p1-org-contract-present.test.ts`
@@ -593,7 +593,7 @@ export function organizationAccessService(db: Db) {
   async function ensureOrgMembership(
     organizationId: string, userId: string, role: OrganizationRole = "member", status = "active",
   ) {
-    // Race-safe + idempotent: P1's 0187 backfill and access.ensureRealOperator
+    // Race-safe + idempotent: P1's 0188 backfill and access.ensureRealOperator
     // (Task 10) may also insert the SAME (organizationId,userId) owner row, so the
     // insert uses onConflictDoNothing on the P1 unique index and re-reads. Never
     // downgrades an existing owner to a weaker role on conflict.
@@ -1619,7 +1619,7 @@ git commit -m "chore(mt): regenerate contracts + green full suite for phase 2"
 1. **Spec coverage:** org-first resolver (Task 9), org role×capability matrix (Task 5), `POST /organizations` (Task 6), all four promotion sites gated (Tasks 7,8,10 + aggregate Task 11), atomic gate-swap (Task 10), security tests — first cloud_auth user NOT admin (Task 10), invited joins correct org (Task 11), self-hosted still auto-provisions (Tasks 10/11), tenant-hop rejected (Task 10), all four inert (Task 11). ✓
 2. **Placeholder scan:** every code step shows real code; no TBD/TODO. ✓
 3. **Type consistency:** `instanceAdminBootstrapEnabled` (Task 4) reused in Tasks 7/8/10/11; `organizationAccessService.canOrg/ensureOrgMembership/ensureOrgOwner/listOrgMemberships` names consistent across Tasks 5/6/9/10/11; `COMPANY_CREATED` used in Tasks 2/3/12; `organizationId` used in company create Tasks 10/12 and validator. ✓
-4. **Cross-phase boundaries (reconciled):** Phase 2 CONSUMES (never creates) — `organization_memberships` table + `0187` backfill (P1), `ORGANIZATION_ROLES` constant (P1), `DEPLOYMENT_MODES` `cloud_auth` constant (P1), `services/organizations.ts` factory + `DEFAULT_ORGANIZATION_ID` (P1, extended not replaced). Phase 2 OWNS — `config-schema.ts` cloud_auth validation, the atomic hook-gating, `POST /organizations`, `organizationAccessService`. Phase 3 is LAST-WRITER on the `companies.ts` create/list handler gate (Phase 2's gate is lockout-scoped only). `organizationId` on `createCompanySchema` is OPTIONAL; route derives `DEFAULT_ORGANIZATION_ID`. Company step rename (COMPANY_CREATED + CreateOrganizationStep + copy) is Phase 2's (item 7). ✓
+4. **Cross-phase boundaries (reconciled):** Phase 2 CONSUMES (never creates) — `organization_memberships` table + `0188` backfill (P1), `ORGANIZATION_ROLES` constant (P1), `DEPLOYMENT_MODES` `cloud_auth` constant (P1), `services/organizations.ts` factory + `DEFAULT_ORGANIZATION_ID` (P1, extended not replaced). Phase 2 OWNS — `config-schema.ts` cloud_auth validation, the atomic hook-gating, `POST /organizations`, `organizationAccessService`. Phase 3 is LAST-WRITER on the `companies.ts` create/list handler gate (Phase 2's gate is lockout-scoped only). `organizationId` on `createCompanySchema` is OPTIONAL; route derives `DEFAULT_ORGANIZATION_ID`. Company step rename (COMPANY_CREATED + CreateOrganizationStep + copy) is Phase 2's (item 7). ✓
 5. **Eng-review coordination (B1 + defense-in-depth):** the actor-middleware `isInstanceAdmin` force-false in `cloud_auth` is P3's (`server/src/middleware/auth.ts:~82,~154`); P2 only guarantees `config.deploymentMode` is in scope there (Task 10, noted, NO behavior change). P2's belt is `cloud-auth-no-instance-admin-minted.test.ts` (Task 11 Step 2b) — boot invariant + a per-path no-write assertion proving cloud_auth mints ZERO `instance_user_roles` rows via any request-driven path. ✓
 6. **cloud_auth e2e boot (Task 10b, unblocks P6 §4.0b):** `cloud_auth` boots WITHOUT real Google creds ONLY under `AOA_E2E_TEST_SUPPORT === "1"` (stub provider; sessions from the P6 test-mint seam). Prod cloud_auth still hard-requires Google creds (test: refuses to boot when the flag is unset). The Google-creds gate lives in `assertAuthProviderConfigured`/`buildBetterAuthConfig` (`better-auth.ts`), NOT the `config-schema.ts` superRefine (which holds no Google creds) — reconciled. Cross-phase dep: must NOT merge ahead of P6 §4.0's fail-closed guard that refuses `AOA_E2E_TEST_SUPPORT` on a real public deployment. ✓
 

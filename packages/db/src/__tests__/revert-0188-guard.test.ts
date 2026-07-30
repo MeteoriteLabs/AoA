@@ -4,9 +4,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const SRC = readFileSync(join(__dirname, "..", "revert-0187.ts"), "utf8");
+const SRC = readFileSync(join(__dirname, "..", "revert-0188.ts"), "utf8");
 
-describe("revert-0187 is single-org-guarded and restores global invariants", () => {
+describe("revert-0188 is single-org-guarded and restores global invariants", () => {
   it("asserts exactly one organization before doing anything", () => {
     expect(SRC).toMatch(/count\(\*\)/i);
     expect(SRC).toMatch(/organizations/);

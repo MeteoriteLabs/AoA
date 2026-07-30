@@ -37,7 +37,7 @@ afterAll(async () => {
   try { if (dataDir) await rm(dataDir, { recursive: true, force: true }); } catch { /* ignore */ }
 }, 60_000);
 
-describe.skipIf(process.platform !== "linux")("0187 backfill — real DB", () => {
+describe.skipIf(process.platform !== "linux")("0188 backfill — real DB", () => {
   it("creates exactly one sentinel default organization", async () => {
     if (setupError) throw new Error(String(setupError));
     const rows = await db.execute(sql`SELECT id, slug FROM organizations WHERE id = ${DEFAULT_ORGANIZATION_ID}`);
@@ -52,7 +52,7 @@ describe.skipIf(process.platform !== "linux")("0187 backfill — real DB", () =>
     const arr = Array.isArray(rows) ? rows : (rows as any).rows;
     expect(arr[0].organization_id).toBe(DEFAULT_ORGANIZATION_ID);
 
-    // The DB-level DEFAULT (sentinel org, migration 0187) makes an OMITTED
+    // The DB-level DEFAULT (sentinel org, migration 0188) makes an OMITTED
     // organization_id succeed, so to genuinely exercise the NOT NULL constraint
     // we must insert an EXPLICIT NULL — that bypasses the default and raises a
     // 23502 not-null violation. (Drizzle wraps the driver error, so we assert on

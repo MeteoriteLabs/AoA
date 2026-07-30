@@ -9,12 +9,12 @@ const journal = JSON.parse(
   readFileSync(join(__dirname, "..", "migrations", "meta", "_journal.json"), "utf8"),
 ) as { entries: Array<{ idx: number; version: string; tag: string; breakpoints: boolean }> };
 
-const entry = journal.entries.find((e) => e.tag === "0187_organizations");
+const entry = journal.entries.find((e) => e.tag === "0188_organizations");
 
-describe("0187 journal registration", () => {
-  it("is registered at idx 187", () => {
+describe("0188 journal registration", () => {
+  it("is registered at idx 188", () => {
     expect(entry).toBeDefined();
-    expect(entry?.idx).toBe(187);
+    expect(entry?.idx).toBe(188);
   });
   it("matches the journal version 7 with breakpoints", () => {
     expect(entry?.version).toBe("7");

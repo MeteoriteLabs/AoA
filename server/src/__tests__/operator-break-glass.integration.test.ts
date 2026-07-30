@@ -1,6 +1,6 @@
 // Real-Postgres integration test for the operator break-glass service (Phase 3, B3).
 //
-// Boots embedded-postgres, applies all migrations (incl. 0188), and proves the
+// Boots embedded-postgres, applies all migrations (incl. 0189), and proves the
 // end-to-end tenant behavior against real SQL:
 //   - grant() materializes a real organization_membership (so the operator would
 //     pass assertTenantMembership on re-derive);

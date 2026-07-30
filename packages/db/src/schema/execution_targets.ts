@@ -1,6 +1,6 @@
 import { pgTable, uuid, text, jsonb, timestamp, index, unique } from "drizzle-orm/pg-core";
 import { authUsers } from "./auth.js";
-import { organizations } from "./organizations.js"; // P1 (0187) — merged before P5
+import { organizations } from "./organizations.js"; // P1 (0188) — merged before P5
 
 /**
  * Tenant-scoped execution-target registry (fleet inventory).

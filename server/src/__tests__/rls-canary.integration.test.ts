@@ -1,6 +1,6 @@
 // Real-Postgres RLS canary proof (Phase 3, Task 11 / M3). DEFENSE-IN-DEPTH ONLY.
 //
-// Boots embedded-postgres, applies all migrations (incl. 0188's
+// Boots embedded-postgres, applies all migrations (incl. 0189's
 // company_secrets.organization_id), bootstraps the non-owner `aoa_app` role +
 // tenant-isolation policy, and proves:
 //   - the table OWNER (superuser — stands in for the real runtime app) is NOT

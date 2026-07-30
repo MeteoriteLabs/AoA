@@ -83,8 +83,12 @@ import { backfillCrewTemplateOrigin } from "./services/internal-agent/aoa-agents
 import { backfillCrewOriginKind } from "./services/internal-agent/aoa-agents/backfill-crew-origin-kind.js";
 import { reconcileAutonomyScale } from "./services/internal-agent/aoa-agents/reconcile-autonomy-scale.js";
 import { runProviderConnectionsBackfill } from "./services/provider-connections-backfill.js";
-import { loadCachedCatalog } from "./services/aoa-marketplace.js";
+import {
+  getMarketplaceCatalogService,
+  loadCachedCatalog,
+} from "./services/aoa-marketplace.js";
 import { runMarketplaceCrewMaintenance } from "./services/marketplace-reconcile.js";
+import { runStartupMarketplaceMaintenance } from "./services/marketplace-startup-maintenance.js";
 import { serializeSafeError } from "./services/safe-error.js";
 
 type BetterAuthSessionUser = {
@@ -167,7 +171,7 @@ type EnsureMigrationsOptions = {
   autoApply?: boolean;
 };
 
-// Phase 1 (multi-tenant cloud) reversibility follow-up: refuse to apply 0187
+// Phase 1 (multi-tenant cloud) reversibility follow-up: refuse to apply 0188
 // on a cloud_auth deployment with real company data and no recorded snapshot
 // marker. No-ops entirely outside cloud_auth (self-hosted local_trusted /
 // authenticated never gate). Opens its OWN short-lived connection because this
@@ -523,7 +527,7 @@ await probeDbCapabilities(db as any);
 // Phase 1 (multi-tenant cloud): guarantee the sentinel default Organization
 // exists before any company-scoped work runs. Idempotent (ON CONFLICT DO
 // NOTHING) — safe on every boot. Must run after migrations (the organizations
-// table only exists post-0187) and before any company create/list flow below.
+// table only exists post-0188) and before any company create/list flow below.
 await organizationService(db as any).ensureDefaultOrganization();
 
 if (config.deploymentMode === "local_trusted" && !isLoopbackHost(config.host)) {
@@ -983,6 +987,23 @@ void runProviderConnectionsBackfill(db as any, (level, msg, meta) =>
 // notify policy → record pending_update + send updateAvailable notification.
 const CREW_UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
+function reportMarketplaceMaintenanceResult(
+  result: Awaited<ReturnType<typeof runMarketplaceCrewMaintenance>>,
+): void {
+  if (result.failures.length > 0) {
+    logger.warn(
+      { failures: result.failures },
+      "marketplace crew maintenance completed with company failures",
+    );
+  }
+  if (result.teamReconcile.membersAdded > 0) {
+    logger.info(
+      result.teamReconcile,
+      "marketplace: team roster reconciliation added missing members",
+    );
+  }
+}
+
 async function runCrewUpdateCheck(): Promise<void> {
   try {
     const catalog = await loadCachedCatalog(db as any);
@@ -996,18 +1017,7 @@ async function runCrewUpdateCheck(): Promise<void> {
       catalogItems: catalog.items,
       mode: "scheduled",
     });
-    if (result.failures.length > 0) {
-      logger.warn(
-        { failures: result.failures },
-        "marketplace crew maintenance completed with company failures",
-      );
-    }
-    if (result.teamReconcile.membersAdded > 0) {
-      logger.info(
-        result.teamReconcile,
-        "marketplace: team roster reconciliation added missing members",
-      );
-    }
+    reportMarketplaceMaintenanceResult(result);
   } catch (err) {
     logger.warn(
       { error: serializeSafeError(err) },
@@ -1016,7 +1026,35 @@ async function runCrewUpdateCheck(): Promise<void> {
   }
 }
 
-void runCrewUpdateCheck();
+async function runInitialCrewUpdateCheck(): Promise<void> {
+  try {
+    const catalogService = getMarketplaceCatalogService();
+    if (!catalogService) {
+      logger.warn(
+        "marketplace catalog service unavailable during startup maintenance",
+      );
+      return;
+    }
+    const result = await runStartupMarketplaceMaintenance({
+      db: db as any,
+      catalogService,
+    });
+    if (!result) {
+      logger.warn(
+        "marketplace startup maintenance skipped because the initial catalog refresh produced no catalog",
+      );
+      return;
+    }
+    reportMarketplaceMaintenanceResult(result);
+  } catch (err) {
+    logger.warn(
+      { error: serializeSafeError(err) },
+      "initial marketplace crew maintenance failed",
+    );
+  }
+}
+
+void runInitialCrewUpdateCheck();
 setInterval(
   () =>
     void runCrewUpdateCheck().catch((err) =>

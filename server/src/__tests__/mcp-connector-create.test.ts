@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEPLOYMENT_MODES } from "@armyofagents/shared";
 
 // This suite deliberately imports the create service DIRECTLY — no express, no
@@ -78,6 +78,37 @@ beforeEach(() => {
   }));
   approvalsSvc.create.mockResolvedValue({ id: "approval-1" });
   logActivity.mockResolvedValue(undefined);
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
+describe("createConnector — emergency write barrier", () => {
+  it("blocks every new connector while the global switch is disabled", async () => {
+    vi.stubEnv("AOA_MCP_CONNECTORS_ENABLED", "false");
+
+    await expect(createConnector(deps as any, httpInput)).rejects.toMatchObject({
+      status: 403,
+    });
+    expect(svc.getByName).not.toHaveBeenCalled();
+    expect(svc.create).not.toHaveBeenCalled();
+    expect(approvalsSvc.create).not.toHaveBeenCalled();
+    expect(logActivity).not.toHaveBeenCalled();
+  });
+
+  it("blocks a denylisted server name for both BYO and catalog callers", async () => {
+    vi.stubEnv("AOA_MCP_CONNECTOR_DENYLIST", "notion");
+
+    for (const source of ["byo", "catalog"] as const) {
+      await expect(
+        createConnector(deps as any, { ...httpInput, source }),
+      ).rejects.toMatchObject({ status: 403 });
+    }
+    expect(svc.getByName).not.toHaveBeenCalled();
+    expect(svc.create).not.toHaveBeenCalled();
+    expect(approvalsSvc.create).not.toHaveBeenCalled();
+  });
 });
 
 describe("createConnector — uniqueness", () => {

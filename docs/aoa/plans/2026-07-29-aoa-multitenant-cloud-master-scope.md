@@ -31,7 +31,7 @@
 | D15 | Provider auth methods first-class = **`api_key` + `personal_subscription` + `enterprise_gateway`**; **defer bedrock/vertex** to ambient passthrough | Beta needs the first three; bedrock/vertex work as ambient env, fold in post-beta |
 
 ### Eng-review structural fixes (applied 2026-07-29)
-`/plan-eng-review` (4-lens: architecture/migration/security/tests) found 6 blockers + ~10 majors — the plan's bones were sound but it did not fail closed as written. Applied: force `isInstanceAdmin=false` in `cloud_auth` at one auth-middleware chokepoint (collapses ~20 bypass sites); derive gate `enforced` from static `deploymentMode` (fail-closed when middleware absent); break-glass resolved via `hasActiveGrant` at check-time + sweeper; codemod widened to `server/src` (incl. `mcp/server.ts`) + `no-floating-promises` gate; P3 collapsed to a single `0188` (+ contiguous-journal CI gate); P4→P5 credential hint wired; `org_default` org-id predicate; P5 control-plane seed idempotent + worker-heartbeat org-scoped + egress firewall as a hard worker-image deliverable; bedrock/vertex cut.
+`/plan-eng-review` (4-lens: architecture/migration/security/tests) found 6 blockers + ~10 majors — the plan's bones were sound but it did not fail closed as written. Applied: force `isInstanceAdmin=false` in `cloud_auth` at one auth-middleware chokepoint (collapses ~20 bypass sites); derive gate `enforced` from static `deploymentMode` (fail-closed when middleware absent); break-glass resolved via `hasActiveGrant` at check-time + sweeper; codemod widened to `server/src` (incl. `mcp/server.ts`) + `no-floating-promises` gate; P3 collapsed to a single `0189` (+ contiguous-journal CI gate); P4→P5 credential hint wired; `org_default` org-id predicate; P5 control-plane seed idempotent + worker-heartbeat org-scoped + egress firewall as a hard worker-image deliverable; bedrock/vertex cut.
 
 ### Reversibility follow-ups (tracked)
 Forward-compensating migration (guarded `assert count(organizations)=1`); automated pre-migration snapshot gate; resolver kill-switch `AOA_PROVIDER_RESOLVER=legacy`; per-table `organization_id` FKs on `provider_connections`/`execution_targets`; full-fleet RLS; threading the dispatching user into agent-run owner-only; legacy credential-path cleanup.
@@ -40,17 +40,17 @@ Forward-compensating migration (guarded `assert count(organizations)=1`); automa
 
 | Phase | Deliverable | Plan doc | Migration |
 |---|---|---|---|
-| **P1** | `organizations` + memberships + invitations; `organization_id` on companies; backfill; coupled index re-scopes | [phase1-tenant-schema](2026-07-29-aoa-mt-phase1-tenant-schema.md) | **0187** |
+| **P1** | `organizations` + memberships + invitations; `organization_id` on companies; backfill; coupled index re-scopes | [phase1-tenant-schema](2026-07-29-aoa-mt-phase1-tenant-schema.md) | **0188** |
 | **P2** | Signup→Org journey; Org roles; operator/first-user separation; `cloud_auth`; company-step rename | [phase2-signup-roles-operator](2026-07-29-aoa-mt-phase2-signup-roles-operator.md) | none |
-| **P3** | Tenant context; 531-site tenant gate; instance_admin bypass removal; break-glass; RLS canary; **delete/archive founder-gate (commit #1)** | [phase3-authz-isolation](2026-07-29-aoa-mt-phase3-authz-isolation.md) | **0188** |
-| **P4** | `provider_connections` + `provider_assignments` + unified strangler resolver | [phase4-provider-connections](2026-07-29-aoa-mt-phase4-provider-connections.md) | **0189** |
-| **P5** | `execution_targets` + gVisor provider (+ SSRF `--add-host` fix) + route-by-credential + per-Org cap | [phase5-execution-gvisor](2026-07-29-aoa-mt-phase5-execution-gvisor.md) | **0190/0191** |
+| **P3** | Tenant context; 531-site tenant gate; instance_admin bypass removal; break-glass; RLS canary; **delete/archive founder-gate (commit #1)** | [phase3-authz-isolation](2026-07-29-aoa-mt-phase3-authz-isolation.md) | **0189** |
+| **P4** | `provider_connections` + `provider_assignments` + unified strangler resolver | [phase4-provider-connections](2026-07-29-aoa-mt-phase4-provider-connections.md) | **0190** |
+| **P5** | `execution_targets` + gVisor provider (+ SSRF `--add-host` fix) + route-by-credential + per-Org cap | [phase5-execution-gvisor](2026-07-29-aoa-mt-phase5-execution-gvisor.md) | **0191/0192** |
 | **T&V** | **Test & Verification** — Gate A (local, inside-out) + Gate B (post-deploy QA on `testing.armyofagents.org`) | [phase6-test-and-verification](2026-07-29-aoa-mt-phase6-test-and-verification.md) | cross-cutting |
 | Pre-fix | S1 topology-gated host-login fallback (delete/archive fix moved to P3 Task 1) | — | (rides #310 merge) |
 | P6 | Plugin trust model | — | **deferred (post-beta)** |
 | P7 | Tauri desktop connector | — | **dropped** |
 
-**Migration order is load-bearing:** generate strictly P1→P3→P4→P5 (drizzle-kit auto-numbers; out-of-order generation would collide on `0187`). P2 generates none (consumes P1's schema).
+**Migration order is load-bearing:** generate strictly P1→P3→P4→P5 (drizzle-kit auto-numbers; out-of-order generation would collide on `0188`). P2 generates none (consumes P1's schema).
 
 ## Relationship to PR #310
 PR #310 stays focused and unmerged (CI billing-blocked, not failing). This program branches off `origin/main` (no #310). When #310 lands on main, merge main in, reconcile the provider layer, and apply the S1 fix (a fix to code #310 introduces). P4 flags the `subscription_commander_only`→resolver `owner_only` merge seam.

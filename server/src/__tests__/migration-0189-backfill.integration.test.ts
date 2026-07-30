@@ -1,9 +1,9 @@
-// Real-Postgres backfill proof for migration 0188 (Phase 3, Task 12 / M8).
+// Real-Postgres backfill proof for migration 0189 (Phase 3, Task 12 / M8).
 //
-// The static shape of 0188 (nullable add + backfill UPDATE + break-glass table)
-// is covered cross-platform by migration-0188-contract.test.ts. This test proves
+// The static shape of 0189 (nullable add + backfill UPDATE + break-glass table)
+// is covered cross-platform by migration-0189-contract.test.ts. This test proves
 // the BEHAVIOR of the backfill against real SQL: a company_secrets row whose
-// organization_id is explicitly NULL (the pre-0188 shape) is populated from its
+// organization_id is explicitly NULL (the pre-0189 shape) is populated from its
 // owning company's organization_id by the (idempotent) backfill UPDATE.
 //
 // Linux-only (skipIf): embedded-postgres Windows initdb encoding issue + macOS
@@ -39,7 +39,7 @@ let setupError: unknown = null;
 
 beforeAll(async () => {
   try {
-    dataDir = await mkdtemp(join(tmpdir(), "aoa-0188-backfill-"));
+    dataDir = await mkdtemp(join(tmpdir(), "aoa-0189-backfill-"));
     const { default: EmbeddedPostgres } = (await import("embedded-postgres")) as {
       default: EmbeddedPostgresCtor;
     };
@@ -59,7 +59,7 @@ beforeAll(async () => {
   } catch (e) {
     setupError = e;
     // eslint-disable-next-line no-console
-    console.error("[migration-0188-backfill] embedded-postgres setup failed:", e);
+    console.error("[migration-0189-backfill] embedded-postgres setup failed:", e);
   }
 }, 180_000);
 
@@ -76,7 +76,7 @@ afterAll(async () => {
   }
 }, 60_000);
 
-describe.skipIf(process.platform !== "linux")("0188 backfill populates company_secrets.organization_id from companies", () => {
+describe.skipIf(process.platform !== "linux")("0189 backfill populates company_secrets.organization_id from companies", () => {
   it("a company_secrets row with NULL organization_id is populated by the backfill UPDATE", async () => {
     if (setupError) throw new Error(String(setupError));
 
@@ -84,7 +84,7 @@ describe.skipIf(process.platform !== "linux")("0188 backfill populates company_s
     await db.execute(
       sql`INSERT INTO companies (id, name, issue_prefix, organization_id) VALUES (${CO}, 'Co A', 'PPA', ${ORG})`,
     );
-    // Pre-0188 shape: organization_id explicitly NULL (NOT pre-populated).
+    // Pre-0189 shape: organization_id explicitly NULL (NOT pre-populated).
     await db.execute(
       sql`INSERT INTO company_secrets (id, company_id, organization_id, name) VALUES (gen_random_uuid(), ${CO}, NULL, 'sec')`,
     );

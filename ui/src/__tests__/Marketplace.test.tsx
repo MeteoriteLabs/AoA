@@ -44,11 +44,21 @@ const mockCatalog: MarketplaceCatalogFile = {
     } as CatalogItem,
     {
       // AoA first-party (aoa-curated owner) — must be segregated into the AoA view.
-      id: "skill:aoa-crew", type: "skill", name: "aoa-default-crew",
-      description: "AoA's own crew", version: "1.0.0",
-      source: { adapter: "github", url: "https://github.com/aoa-curated/crew", locator: "crew" },
-      trust: { tier: "verified", source: "x" }, status: "active", addedAt: "2026-05-01T00:00:00Z",
-      category: "engineering", tags: [],
+      id: "skill:aoa-thread-extract",
+      type: "skill",
+      name: "aoa-thread-extract",
+      description: "AoA's own packaged skill",
+      version: "1.0.0",
+      source: {
+        adapter: "github",
+        url: "https://github.com/aoa-curated/crew",
+        locator: "crew",
+      },
+      trust: { tier: "verified", source: "x" },
+      status: "active",
+      addedAt: "2026-05-01T00:00:00Z",
+      category: "engineering",
+      tags: [],
     } as CatalogItem,
   ],
 };
@@ -114,6 +124,15 @@ describe("Marketplace (hub)", () => {
           memberItemIds: ["skill:office-hours", "skill:qa"],
           count: 2, verified: true, explicit: false,
         },
+        {
+          id: "MeteoriteLabs/aoa-marketplace",
+          name: "aoa-marketplace",
+          sourceUrl: "https://github.com/MeteoriteLabs/aoa-marketplace",
+          memberItemIds: ["skill:aoa-thread-extract"],
+          count: 1,
+          verified: true,
+          explicit: false,
+        },
       ],
       isLoading: false, error: null,
     } as any);
@@ -135,29 +154,66 @@ describe("Marketplace (hub)", () => {
     expect(screen.queryByText("github-issues")).not.toBeInTheDocument();
   });
 
-  it("Home excludes AoA items", () => {
+  it("Home excludes raw AoA package members", () => {
     renderMarketplace("/marketplace");
     expect(screen.getByText("/office-hours")).toBeInTheDocument();
-    expect(screen.queryByText("aoa-default-crew")).not.toBeInTheDocument();
+    expect(screen.queryByText("aoa-thread-extract")).not.toBeInTheDocument();
   });
 
-  it("?type=skill excludes AoA items", () => {
+  it("?type=skill excludes raw AoA package members", () => {
     renderMarketplace("/marketplace?type=skill");
     expect(screen.getByText("/office-hours")).toBeInTheDocument();
-    expect(screen.queryByText("aoa-default-crew")).not.toBeInTheDocument();
+    expect(screen.queryByText("aoa-thread-extract")).not.toBeInTheDocument();
   });
 
-  it("?view=aoa shows only AoA items", () => {
+  it("?view=aoa shows the AoA package instead of its raw skill members", () => {
     renderMarketplace("/marketplace?view=aoa");
-    expect(screen.getByText("aoa-default-crew")).toBeInTheDocument();
+    expect(screen.getByText("aoa-marketplace")).toBeInTheDocument();
+    expect(screen.queryByText("aoa-thread-extract")).not.toBeInTheDocument();
     expect(screen.queryByText("/office-hours")).not.toBeInTheDocument();
     expect(screen.queryByText("github-issues")).not.toBeInTheDocument();
   });
 
+  it("waits for package placement instead of leaking AoA package members", () => {
+    vi.mocked(usePackages).mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      error: null,
+    } as any);
+
+    renderMarketplace();
+
+    expect(screen.queryByText("aoa-thread-extract")).not.toBeInTheDocument();
+    expect(screen.queryByText("/office-hours")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Failed to load marketplace.")
+    ).not.toBeInTheDocument();
+  });
+
+  it("surfaces an initial package-query failure without rendering catalog cards", () => {
+    vi.mocked(usePackages).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      error: new Error("Package placement unavailable"),
+    } as any);
+
+    renderMarketplace();
+
+    expect(screen.getByText("Failed to load marketplace.")).toBeInTheDocument();
+    expect(
+      screen.getByText("Package placement unavailable")
+    ).toBeInTheDocument();
+    expect(screen.queryByText("aoa-thread-extract")).not.toBeInTheDocument();
+  });
+
   it("renders the sub-filter chip row with sort modes", () => {
     renderMarketplace();
-    expect(screen.getByRole("button", { name: /featured$/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /recently added/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /featured$/i })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /recently added/i })
+    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /a–z/i })).toBeInTheDocument();
   });
 
@@ -301,7 +357,7 @@ describe("Marketplace (hub) — sections", () => {
     expect(screen.queryByRole("button", { name: /see all/i })).not.toBeInTheDocument();
   });
 
-  it("shows the cross-sell empty state (not 'No matches.') when a type has only AoA items", () => {
+  it("keeps first-party plugins in the Plugins shelf", () => {
     vi.mocked(useCatalog).mockReturnValue({
       data: {
         schemaVersion: "1.0.0",
@@ -321,14 +377,154 @@ describe("Marketplace (hub) — sections", () => {
       error: null,
     } as any);
     renderMarketplace("/marketplace?type=plugin");
-    expect(screen.getByTestId("marketplace-empty-plugin")).toBeInTheDocument();
+    expect(screen.getByText("aoa-plugin")).toBeInTheDocument();
     expect(
-      screen.getByRole("heading", { name: /no third-party plugins yet/i }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: /browse aoa plugins/i }),
-    ).toBeInTheDocument();
+      screen.queryByTestId("marketplace-empty-plugin")
+    ).not.toBeInTheDocument();
     expect(screen.queryByText("No matches.")).not.toBeInTheDocument();
+  });
+
+  it("places the exact AoA catalog matrix without duplication", () => {
+    const crewSlugs = [
+      "adjutant",
+      "scout",
+      "engineer",
+      "navigator",
+      "planner",
+      "memory-keeper",
+      "chronicler",
+      "reviewer",
+      "librarian",
+      "steward",
+    ];
+    const crewAgents = crewSlugs.map((slug) =>
+      makeFixtureItem({
+        id: `agent:aoa-curated/aoa-${slug}`,
+        type: "agent",
+        name: `crew-${slug}`,
+        source: {
+          adapter: "github",
+          url: "https://github.com/aoa-curated/agents",
+          locator: slug,
+        },
+      })
+    );
+    const items = [
+      makeFixtureItem({
+        id: "skill:community/x",
+        type: "skill",
+        name: "community-skill",
+      }),
+      ...crewAgents,
+      makeFixtureItem({
+        id: "team:aoa-curated/default-crew",
+        type: "team",
+        name: "AoA Default Crew",
+        source: {
+          adapter: "github",
+          url: "https://github.com/aoa-curated/teams",
+          locator: "default-crew",
+        },
+        requires: crewAgents.map((agent) => ({
+          type: "agent" as const,
+          id: agent.id,
+        })),
+      }),
+      ...["senior-engineer", "github-issue-triager"].map((slug) =>
+        makeFixtureItem({
+          id: `agent:aoa-curated/${slug}`,
+          type: "agent",
+          name: `standalone-${slug}`,
+          source: {
+            adapter: "github",
+            url: "https://github.com/aoa-curated/agents",
+            locator: slug,
+          },
+        })
+      ),
+      ...["discord", "github-issues", "slack", "telegram"].map((slug) =>
+        makeFixtureItem({
+          id: `plugin:aoa-curated/${slug}`,
+          type: "plugin",
+          name: `plugin-${slug}`,
+          source: {
+            adapter: "github",
+            url: "https://github.com/aoa-curated/plugins",
+            locator: slug,
+          },
+        })
+      ),
+      ...["design-shotgun", "thread-extract"].map((slug) =>
+        makeFixtureItem({
+          id: `skill:aoa-curated/${slug}`,
+          type: "skill",
+          name: `raw-${slug}`,
+          source: {
+            adapter: "github",
+            url: "https://github.com/MeteoriteLabs/aoa-marketplace",
+            locator: slug,
+          },
+        })
+      ),
+    ];
+    vi.mocked(useCatalog).mockReturnValue({
+      data: {
+        schemaVersion: "1.0.0",
+        generatedAt: "2026-07-29T00:00:00Z",
+        itemCount: items.length,
+        items,
+      },
+      isLoading: false,
+      error: null,
+    } as any);
+    vi.mocked(usePackages).mockReturnValue({
+      data: [
+        {
+          id: "MeteoriteLabs/aoa-marketplace",
+          name: "AoA skills package",
+          sourceUrl: "https://github.com/MeteoriteLabs/aoa-marketplace",
+          memberItemIds: [
+            "skill:aoa-curated/design-shotgun",
+            "skill:aoa-curated/thread-extract",
+          ],
+          count: 2,
+          verified: true,
+          explicit: false,
+        },
+      ],
+      isLoading: false,
+      error: null,
+    } as any);
+
+    const aoa = renderMarketplace("/marketplace?view=aoa");
+    expect(screen.getByText("AoA skills package")).toBeInTheDocument();
+    expect(screen.getByText("AoA Default Crew")).toBeInTheDocument();
+    for (const slug of crewSlugs) {
+      expect(screen.getByText(`crew-${slug}`)).toBeInTheDocument();
+    }
+    expect(
+      screen.queryByText("standalone-senior-engineer")
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("plugin-slack")).not.toBeInTheDocument();
+    expect(screen.queryByText("raw-thread-extract")).not.toBeInTheDocument();
+    aoa.unmount();
+
+    const agents = renderMarketplace("/marketplace?type=agent");
+    expect(screen.getByText("standalone-senior-engineer")).toBeInTheDocument();
+    expect(
+      screen.getByText("standalone-github-issue-triager")
+    ).toBeInTheDocument();
+    expect(screen.queryByText("crew-reviewer")).not.toBeInTheDocument();
+    agents.unmount();
+
+    const plugins = renderMarketplace("/marketplace?type=plugin");
+    for (const slug of ["discord", "github-issues", "slack", "telegram"]) {
+      expect(screen.getByText(`plugin-${slug}`)).toBeInTheDocument();
+    }
+    plugins.unmount();
+
+    renderMarketplace("/marketplace?type=team");
+    expect(screen.queryByText("AoA Default Crew")).not.toBeInTheDocument();
   });
 
   it("keeps the generic 'No matches.' state for a search that returns nothing", async () => {

@@ -50,10 +50,15 @@ import MarketplaceSearch from "./pages/MarketplaceSearch";
 import MarketplaceUpdates from "./pages/MarketplaceUpdates";
 import MarketplacePackageDetail from "./pages/MarketplacePackageDetail";
 import MarketplaceConnectors from "./pages/MarketplaceConnectors";
+import { DefaultCrewRosterRedirect } from "./components/marketplace/DefaultCrewRosterRedirect";
 import { queryKeys } from "./lib/queryKeys";
 import { useCompany } from "./context/CompanyContext";
 import { useDialog } from "./context/DialogContext";
 import { requiresBoardSession } from "./lib/authGate";
+import {
+  AOA_DEFAULT_CREW_MARKETPLACE_ROUTE,
+  MARKETPLACE_TEAM_DETAIL_ROUTE,
+} from "./lib/marketplace-constants";
 
 const AgentDetail = lazy(() => import("./pages/AgentDetail").then((m) => ({ default: m.AgentDetail })));
 const AoaAgentDetail = lazy(() => import("./pages/AoaAgentDetail").then((m) => ({ default: m.AoaAgentDetail })));
@@ -341,6 +346,14 @@ export function App() {
               <Route path="marketplace/connectors" element={<MarketplaceConnectors />} />
               <Route path="marketplace/package/:id/*" element={<MarketplacePackageDetail />} />
               <Route path="marketplace/:type" element={<MarketplaceTypeRedirect />} />
+              <Route
+                path={AOA_DEFAULT_CREW_MARKETPLACE_ROUTE}
+                element={<DefaultCrewRosterRedirect />}
+              />
+              <Route
+                path={MARKETPLACE_TEAM_DETAIL_ROUTE}
+                element={<MarketplaceDetail fixedType="team" />}
+              />
               <Route path="marketplace/:type/:slug/*" element={<MarketplaceDetail />} />
             </Route>
             <Route path="me" element={<Me />} />

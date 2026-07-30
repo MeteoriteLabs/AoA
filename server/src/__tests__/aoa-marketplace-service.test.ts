@@ -381,4 +381,48 @@ describe("MarketplaceCatalogService", () => {
       itemCount: 1,
     });
   });
+
+  it("lets startup maintenance join the sync loop's exact first refresh", async () => {
+    let resolveFetch!: (value: unknown) => void;
+    global.fetch = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          resolveFetch = resolve;
+        }),
+    ) as any;
+    const statusRow = {
+      schemaVersion: "1.0.0",
+      generatedAt: new Date("2026-04-30T00:00:00.000Z"),
+      itemCount: 1,
+      catalogJson: VALID_CATALOG,
+      lastSyncedAt: new Date("2026-07-29T00:00:00.000Z"),
+      lastSyncStatus: "success",
+      lastSyncError: null,
+      source: "cdn",
+    };
+    const { db } = makeDb([[statusRow]]);
+    const service = new MarketplaceCatalogService({
+      db,
+      cdnUrl: "https://example.com/catalog.json",
+      bundledSnapshotProvider: async () => null,
+    });
+
+    service.startSyncLoop();
+    const maintenanceJoin = service.waitForInitialRefresh();
+    const secondJoin = service.waitForInitialRefresh();
+
+    expect(maintenanceJoin).toBe(secondJoin);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+
+    resolveFetch({
+      ok: true,
+      json: () => Promise.resolve(VALID_CATALOG),
+    });
+    const result = await maintenanceJoin;
+    service.stopSyncLoop();
+    await withMarketplaceUpdateLock(async () => undefined);
+
+    expect(result.catalog).toEqual(VALID_CATALOG);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
 });

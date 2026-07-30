@@ -314,7 +314,7 @@ export function accessService(db: Db) {
     // creates their first company keep passing the org:* capability checks
     // for that org afterward (e.g. inviting teammates), without relying on
     // any instance_admin role -- cloud_auth mints none. Idempotent: does
-    // nothing if a membership row already exists (P1's 0187 backfill or
+    // nothing if a membership row already exists (P1's 0188 backfill or
     // organizationAccessService.ensureOrgOwner may already have written one
     // for this (organizationId, operatorId) pair -- never downgrades it).
     const companyRow = await db.select({ organizationId: companiesTable.organizationId })

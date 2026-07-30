@@ -4,7 +4,7 @@
 
 **Goal:** Introduce an `Organization` tenant parent above `Company` (new `organizations`, `organization_memberships`, `organization_invitations` tables + an `organization_id` FK on `companies`), backfill every existing company into one default Organization, and re-scope the two globally-unique company identifiers (`issue_prefix`, issue `identifier`) so a second tenant can never collide — all on one branch, preserving self-hosted single-tenant behavior byte-for-byte.
 
-**Architecture:** A single hand-finalized, atomic migration (`0187_organizations.sql`) creates the three tables, adds `companies.organization_id` **nullable**, inserts one sentinel default Organization (`00000000-0000-0000-0000-000000000001`), backfills all companies + owner memberships from instance admins, then flips the column `NOT NULL`, adds the FK, and swaps `companies_issue_prefix_idx`→`(organization_id, issue_prefix)` and `issues_identifier_idx`→`(company_id, identifier)`. Because all existing companies land in one Organization, per-Org uniqueness degenerates to the old global uniqueness — the backfill cannot violate the new indexes. RLS readiness (Decision 3): `companies.organization_id` is the only tenant column added now; every other tenant-scoped row already carries `company_id`, so `row → company → organization` is always derivable and a later RLS phase needs **no** data backfill.
+**Architecture:** A single hand-finalized, atomic migration (`0188_organizations.sql`) creates the three tables, adds `companies.organization_id` **nullable**, inserts one sentinel default Organization (`00000000-0000-0000-0000-000000000001`), backfills all companies + owner memberships from instance admins, then flips the column `NOT NULL`, adds the FK, and swaps `companies_issue_prefix_idx`→`(organization_id, issue_prefix)` and `issues_identifier_idx`→`(company_id, identifier)`. Because all existing companies land in one Organization, per-Org uniqueness degenerates to the old global uniqueness — the backfill cannot violate the new indexes. RLS readiness (Decision 3): `companies.organization_id` is the only tenant column added now; every other tenant-scoped row already carries `company_id`, so `row → company → organization` is always derivable and a later RLS phase needs **no** data backfill.
 
 **Tech Stack:** Drizzle ORM (schema in `packages/db/src/schema/`, migrations in `packages/db/src/migrations/`), PostgreSQL, Zod validators + TS types in `packages/shared/src/`, Express services/routes in `server/src/`, Vitest (contract tests cross-platform; `*.integration.test.ts` on embedded-postgres, **Linux-only** via `describe.skipIf(process.platform !== "linux")` — Windows CI skips them).
 
@@ -12,11 +12,11 @@
 
 ## Pre-flight (READ BEFORE TASK 1)
 
-- **DB BACKUP GATE / ONE-WAY DOOR.** `0187` is a forward-only migration — this repo has **no down-migrations and no down-runner** (`packages/db/src/client.ts` only ever rolls *forward*). Once a **second** Organization exists, the change is a one-way door: the old *global* `issue_prefix`/`identifier` unique indexes can no longer be recreated (a second tenant may legitimately share prefix `PAP`). **Before deploying `0187` to any instance with data, take a full DB snapshot.** Rollback == restore snapshot, OR (only while a single Organization still exists) a forward compensating migration that drops the FK + org-scoped indexes and restores the global indexes.
-- **Atomicity.** Each migration file runs inside ONE transaction (`runInTransaction`, `client.ts:118-131`; drizzle's native `migratePg` is also per-migration transactional). So `0187`'s DDL + backfill + `SET NOT NULL` + index swap are all-or-nothing. Never split them across files.
-- **Idempotency.** The manual reconcile path has auto-detection only for `CREATE TABLE`/`ADD COLUMN`/`CREATE INDEX`/`ADD CONSTRAINT` (`client.ts:365-410`) — **not** for `INSERT`/`UPDATE`. Every data statement in `0187` therefore carries its own `ON CONFLICT DO NOTHING` / `WHERE … IS NULL` guard.
-- **Migration head is `0186`** (`_journal.json` tail = `0186_cold_psylocke`, idx 186). This phase adds exactly one migration: **`0187`**. Downstream ordinals are reserved: **P3 = 0188, P4 = 0189, P5 = 0190/0191** (P3 collapsed its two migrations into a single 0188). Task 16 adds a contiguity/uniqueness gate that enforces this globally.
-- **RUNBOOK — lock window (item 4).** `0187`'s `issues_identifier_idx` swap is a **non-concurrent** `CREATE UNIQUE INDEX` executed inside the migration transaction, so it takes an **`ACCESS EXCLUSIVE` lock on `issues`** for the full index-build duration (and likewise a brief `ACCESS EXCLUSIVE` on `companies` for its FK add + prefix-index swap). On a fresh/beta instance this is sub-second and negligible. On a **large existing self-hosted `issues` table** it is a multi-minute stall that blocks all reads/writes to `issues` until the build completes — expect roughly the time of a full `issues` scan + index write. `CREATE INDEX CONCURRENTLY` is intentionally NOT used (it cannot run inside a transaction, which would break the file's all-or-nothing guarantee). Operators with a large `issues` table should schedule `0187` in a maintenance window.
+- **DB BACKUP GATE / ONE-WAY DOOR.** `0188` is a forward-only migration — this repo has **no down-migrations and no down-runner** (`packages/db/src/client.ts` only ever rolls *forward*). Once a **second** Organization exists, the change is a one-way door: the old *global* `issue_prefix`/`identifier` unique indexes can no longer be recreated (a second tenant may legitimately share prefix `PAP`). **Before deploying `0188` to any instance with data, take a full DB snapshot.** Rollback == restore snapshot, OR (only while a single Organization still exists) a forward compensating migration that drops the FK + org-scoped indexes and restores the global indexes.
+- **Atomicity.** Each migration file runs inside ONE transaction (`runInTransaction`, `client.ts:118-131`; drizzle's native `migratePg` is also per-migration transactional). So `0188`'s DDL + backfill + `SET NOT NULL` + index swap are all-or-nothing. Never split them across files.
+- **Idempotency.** The manual reconcile path has auto-detection only for `CREATE TABLE`/`ADD COLUMN`/`CREATE INDEX`/`ADD CONSTRAINT` (`client.ts:365-410`) — **not** for `INSERT`/`UPDATE`. Every data statement in `0188` therefore carries its own `ON CONFLICT DO NOTHING` / `WHERE … IS NULL` guard.
+- **Migration head is `0186`** (`_journal.json` tail = `0186_cold_psylocke`, idx 186). This phase adds exactly one migration: **`0188`**. Downstream ordinals are reserved: **P3 = 0189, P4 = 0190, P5 = 0191/0192** (P3 collapsed its two migrations into a single 0189). Task 16 adds a contiguity/uniqueness gate that enforces this globally.
+- **RUNBOOK — lock window (item 4).** `0188`'s `issues_identifier_idx` swap is a **non-concurrent** `CREATE UNIQUE INDEX` executed inside the migration transaction, so it takes an **`ACCESS EXCLUSIVE` lock on `issues`** for the full index-build duration (and likewise a brief `ACCESS EXCLUSIVE` on `companies` for its FK add + prefix-index swap). On a fresh/beta instance this is sub-second and negligible. On a **large existing self-hosted `issues` table** it is a multi-minute stall that blocks all reads/writes to `issues` until the build completes — expect roughly the time of a full `issues` scan + index write. `CREATE INDEX CONCURRENTLY` is intentionally NOT used (it cannot run inside a transaction, which would break the file's all-or-nothing guarantee). Operators with a large `issues` table should schedule `0188` in a maintenance window.
 
 ---
 
@@ -673,11 +673,11 @@ Add the column immediately after `id:` (line 6):
     id: uuid("id").primaryKey().defaultRandom(),
     // Phase 1 tenant FK. RESTRICT: an Organization cannot be deleted while it
     // still owns companies (org teardown is out of Phase 1 scope). Injected on
-    // every existing row by migration 0187.
+    // every existing row by migration 0188.
     // DB-level DEFAULT = the sentinel org: belt-and-suspenders so ANY missed
     // writer (raw e2e seeds, portability edge paths, future migrations) lands
     // in the default org instead of hitting a NOT NULL violation. SET DEFAULT
-    // does NOT rewrite existing rows, so 0187's explicit backfill still runs.
+    // does NOT rewrite existing rows, so 0188's explicit backfill still runs.
     organizationId: uuid("organization_id")
       .notNull()
       .default("00000000-0000-0000-0000-000000000001")
@@ -778,30 +778,30 @@ git commit -m "feat(mt): scope issues_identifier_idx to (company_id, identifier)
 
 ---
 
-## Task 8: Migration `0187_organizations.sql` (DDL + safe backfill) + journal + contract test
+## Task 8: Migration `0188_organizations.sql` (DDL + safe backfill) + journal + contract test
 
 **Files:**
-- Create: `packages/db/src/migrations/0187_organizations.sql`
+- Create: `packages/db/src/migrations/0188_organizations.sql`
 - Modify: `packages/db/src/migrations/meta/_journal.json` (append idx-187 entry)
-- Test: `server/src/__tests__/migration-0187-organizations-contract.test.ts`
+- Test: `server/src/__tests__/migration-0188-organizations-contract.test.ts`
 - Test: `packages/db/src/__tests__/organizations-migration-journal.test.ts`
 
-Authoring workflow (mirrors how `0069` was generated-then-hand-edited): run `pnpm --filter @armyofagents/db build && pnpm db:generate` to let drizzle-kit emit a **draft** for the schema diff, then **replace** the draft body with the verbatim SQL below (drizzle would emit an unsafe `ADD COLUMN … NOT NULL` on the populated `companies` table — that must become nullable→backfill→`SET NOT NULL`). Rename the emitted file to `0187_organizations.sql` and fix the journal `tag`.
+Authoring workflow (mirrors how `0069` was generated-then-hand-edited): run `pnpm --filter @armyofagents/db build && pnpm db:generate` to let drizzle-kit emit a **draft** for the schema diff, then **replace** the draft body with the verbatim SQL below (drizzle would emit an unsafe `ADD COLUMN … NOT NULL` on the populated `companies` table — that must become nullable→backfill→`SET NOT NULL`). Rename the emitted file to `0188_organizations.sql` and fix the journal `tag`.
 
 - [ ] **Step 1: Write the failing test** (static contract, cross-platform — the pattern of `migration-0069-contract.test.ts`)
 
 ```ts
-// server/src/__tests__/migration-0187-organizations-contract.test.ts
+// server/src/__tests__/migration-0188-organizations-contract.test.ts
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const SQL = readFileSync(
-  resolve(__dirname, "../../../packages/db/src/migrations/0187_organizations.sql"),
+  resolve(__dirname, "../../../packages/db/src/migrations/0188_organizations.sql"),
   "utf8",
 );
 
-describe("Migration 0187 — organizations + safe companies backfill", () => {
+describe("Migration 0188 — organizations + safe companies backfill", () => {
   it("creates the three tenant tables", () => {
     expect(SQL).toMatch(/CREATE TABLE IF NOT EXISTS "organizations"/);
     expect(SQL).toMatch(/CREATE TABLE IF NOT EXISTS "organization_memberships"/);
@@ -883,13 +883,13 @@ describe("Migration 0187 — organizations + safe companies backfill", () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pnpm exec vitest run server/src/__tests__/migration-0187-organizations-contract.test.ts`
-Expected: FAIL — `0187_organizations.sql` does not exist (readFileSync throws).
+Run: `pnpm exec vitest run server/src/__tests__/migration-0188-organizations-contract.test.ts`
+Expected: FAIL — `0188_organizations.sql` does not exist (readFileSync throws).
 
 - [ ] **Step 3: Write minimal implementation** — create the migration VERBATIM
 
 ```sql
--- packages/db/src/migrations/0187_organizations.sql
+-- packages/db/src/migrations/0188_organizations.sql
 -- Phase 1 (multi-tenant cloud): introduce the Organization tenant parent,
 -- backfill every existing company into ONE default Organization, and re-scope
 -- the two globally-unique company identifiers so a second tenant can never
@@ -1026,21 +1026,21 @@ Append to `packages/db/src/migrations/meta/_journal.json` `entries` array (after
       "idx": 187,
       "version": "7",
       "when": 1785312000000,
-      "tag": "0187_organizations",
+      "tag": "0188_organizations",
       "breakpoints": true
     }
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pnpm exec vitest run server/src/__tests__/migration-0187-organizations-contract.test.ts`
+Run: `pnpm exec vitest run server/src/__tests__/migration-0188-organizations-contract.test.ts`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/db/src/migrations/0187_organizations.sql packages/db/src/migrations/meta/_journal.json server/src/__tests__/migration-0187-organizations-contract.test.ts
-git commit -m "feat(mt): 0187 organizations migration + safe companies backfill"
+git add packages/db/src/migrations/0188_organizations.sql packages/db/src/migrations/meta/_journal.json server/src/__tests__/migration-0188-organizations-contract.test.ts
+git commit -m "feat(mt): 0188 organizations migration + safe companies backfill"
 ```
 
 ---
@@ -1066,9 +1066,9 @@ const journal = JSON.parse(
   readFileSync(join(__dirname, "..", "migrations", "meta", "_journal.json"), "utf8"),
 ) as { entries: Array<{ idx: number; version: string; tag: string; breakpoints: boolean }> };
 
-const entry = journal.entries.find((e) => e.tag === "0187_organizations");
+const entry = journal.entries.find((e) => e.tag === "0188_organizations");
 
-describe("0187 journal registration", () => {
+describe("0188 journal registration", () => {
   it("is registered at idx 187", () => {
     expect(entry).toBeDefined();
     expect(entry?.idx).toBe(187);
@@ -1099,7 +1099,7 @@ Expected: PASS
 
 ```bash
 git add packages/db/src/__tests__/organizations-migration-journal.test.ts
-git commit -m "test(mt): pin 0187 journal registration at idx 187"
+git commit -m "test(mt): pin 0188 journal registration at idx 187"
 ```
 
 ---
@@ -1507,7 +1507,7 @@ afterAll(async () => {
   try { if (dataDir) await rm(dataDir, { recursive: true, force: true }); } catch { /* ignore */ }
 }, 60_000);
 
-describe.skipIf(process.platform !== "linux")("0187 backfill — real DB", () => {
+describe.skipIf(process.platform !== "linux")("0188 backfill — real DB", () => {
   it("creates exactly one sentinel default organization", async () => {
     if (setupError) throw new Error(String(setupError));
     const rows = await db.execute(sql`SELECT id, slug FROM organizations WHERE id = ${DEFAULT_ORGANIZATION_ID}`);
@@ -1536,7 +1536,7 @@ Expected: FAIL first if run before Tasks 8/11 land (migration/service missing); 
 
 - [ ] **Step 3: Write minimal implementation**
 
-No production code — this test exercises Tasks 8/11/12. If it fails on Linux, the failure is a real backfill defect to fix in `0187`/`companies.ts`.
+No production code — this test exercises Tasks 8/11/12. If it fails on Linux, the failure is a real backfill defect to fix in `0188`/`companies.ts`.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -1547,7 +1547,7 @@ Expected: PASS (Linux) / SKIPPED (Windows/macOS-advisory).
 
 ```bash
 git add server/src/__tests__/organizations-backfill.integration.test.ts
-git commit -m "test(mt): embedded-pg backfill correctness for 0187 (linux-only)"
+git commit -m "test(mt): embedded-pg backfill correctness for 0188 (linux-only)"
 ```
 
 ---
@@ -1600,7 +1600,7 @@ afterAll(async () => {
   try { if (dataDir) await rm(dataDir, { recursive: true, force: true }); } catch { /* ignore */ }
 }, 60_000);
 
-describe.skipIf(process.platform !== "linux")("0187 uniqueness matrix — real DB", () => {
+describe.skipIf(process.platform !== "linux")("0188 uniqueness matrix — real DB", () => {
   it("allows the SAME issue_prefix in DIFFERENT organizations", async () => {
     if (setupError) throw new Error(String(setupError));
     const orgs = organizationService(db);
@@ -1666,7 +1666,7 @@ Expected: PASS (Linux) / SKIPPED (Windows).
 
 ```bash
 git add server/src/__tests__/organizations-uniqueness.integration.test.ts
-git commit -m "test(mt): embedded-pg uniqueness matrix for 0187 (linux-only)"
+git commit -m "test(mt): embedded-pg uniqueness matrix for 0188 (linux-only)"
 ```
 
 ---
@@ -1679,7 +1679,7 @@ git commit -m "test(mt): embedded-pg uniqueness matrix for 0187 (linux-only)"
 - [ ] **Step 1: Build the db package + regenerate to confirm zero drift**
 
 Run: `pnpm --filter @armyofagents/db build && pnpm db:generate`
-Expected: drizzle-kit reports **no** new migration to write (the schema now exactly matches `0187`). If it wants to emit a migration, the schema and `0187` disagree — reconcile before proceeding (do NOT accept a second generated migration; fold the diff into `0187`).
+Expected: drizzle-kit reports **no** new migration to write (the schema now exactly matches `0188`). If it wants to emit a migration, the schema and `0188` disagree — reconcile before proceeding (do NOT accept a second generated migration; fold the diff into `0188`).
 
 - [ ] **Step 2: Whole-repo typecheck**
 
@@ -1688,7 +1688,7 @@ Expected: PASS — in particular `companies.$inferInsert` now requires `organiza
 
 - [ ] **Step 3: Run the full Phase-1 test set (cross-platform subset)**
 
-Run: `pnpm exec vitest run organization issues-identifier-scope companies-org-scope migration-0187 company-service-org-scope companies-create-org-default journal-contiguity snapshot-gate revert-0187`
+Run: `pnpm exec vitest run organization issues-identifier-scope companies-org-scope migration-0188 company-service-org-scope companies-create-org-default journal-contiguity snapshot-gate revert-0188`
 Expected: PASS (integration suites are skipped off Linux; all contract/unit suites pass).
 
 - [ ] **Step 4: Commit (if any reconciliation edits were needed)**
@@ -1705,7 +1705,7 @@ git commit -m "chore(mt): contract-sync + no-drift verification for phase 1 tena
 **Files:**
 - Test: `packages/db/src/__tests__/migration-journal-contiguity.test.ts`
 
-The "generate strictly in order across 5 branches" guidance is otherwise unenforceable. With P3=0188, P4=0189, P5=0190/0191 all landing on separate branches, a duplicate or skipped ordinal would silently corrupt apply order. This gate fails CI the moment ordinals collide, gap, or drift from filenames. Cross-platform (pure fs read — runs on Windows too).
+The "generate strictly in order across 5 branches" guidance is otherwise unenforceable. With P3=0189, P4=0190, P5=0191/0192 all landing on separate branches, a duplicate or skipped ordinal would silently corrupt apply order. This gate fails CI the moment ordinals collide, gap, or drift from filenames. Cross-platform (pure fs read — runs on Windows too).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1761,7 +1761,7 @@ describe("migration journal is contiguous, unique, and file-aligned", () => {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `pnpm exec vitest run packages/db/src/__tests__/migration-journal-contiguity.test.ts`
-Expected: PASS immediately if the tree is already clean at 0187 — to see it catch a regression, temporarily duplicate the 0187 entry's `idx` and confirm the "no duplicate ordinals" case FAILS, then revert. (This is a guard test; its value is future enforcement, not a red-to-green transition on a clean tree.)
+Expected: PASS immediately if the tree is already clean at 0188 — to see it catch a regression, temporarily duplicate the 0188 entry's `idx` and confirm the "no duplicate ordinals" case FAILS, then revert. (This is a guard test; its value is future enforcement, not a red-to-green transition on a clean tree.)
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -1784,24 +1784,24 @@ git commit -m "test(mt): enforce migration-journal contiguity + uniqueness (B5 g
 ## Task 17: Reversibility follow-up (a) — guarded compensating revert script
 
 **Files:**
-- Create: `packages/db/src/revert-0187.ts` (standalone script — NOT journaled, never auto-runs)
-- Test: `packages/db/src/__tests__/revert-0187-guard.test.ts`
+- Create: `packages/db/src/revert-0188.ts` (standalone script — NOT journaled, never auto-runs)
+- Test: `packages/db/src/__tests__/revert-0188-guard.test.ts`
 
 > **Reversibility follow-up — may land in a separate PR.** This is the escape hatch WHILE STILL SINGLE-ORG. It is a manually-invoked forward compensating script, deliberately **not** a journaled migration (a journaled reversal would auto-apply on the next deploy and undo P1). It refuses to run unless exactly one Organization exists — once a second tenant exists the door is closed and rollback = restore the pre-migration snapshot.
 
 - [ ] **Step 1: Write the failing test**
 
 ```ts
-// packages/db/src/__tests__/revert-0187-guard.test.ts
+// packages/db/src/__tests__/revert-0188-guard.test.ts
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const SRC = readFileSync(join(__dirname, "..", "revert-0187.ts"), "utf8");
+const SRC = readFileSync(join(__dirname, "..", "revert-0188.ts"), "utf8");
 
-describe("revert-0187 is single-org-guarded and restores global invariants", () => {
+describe("revert-0188 is single-org-guarded and restores global invariants", () => {
   it("asserts exactly one organization before doing anything", () => {
     expect(SRC).toMatch(/count\(\*\)/i);
     expect(SRC).toMatch(/organizations/);
@@ -1821,28 +1821,28 @@ describe("revert-0187 is single-org-guarded and restores global invariants", () 
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pnpm exec vitest run packages/db/src/__tests__/revert-0187-guard.test.ts`
-Expected: FAIL — `revert-0187.ts` does not exist.
+Run: `pnpm exec vitest run packages/db/src/__tests__/revert-0188-guard.test.ts`
+Expected: FAIL — `revert-0188.ts` does not exist.
 
 - [ ] **Step 3: Write minimal implementation**
 
 ```ts
-// packages/db/src/revert-0187.ts
+// packages/db/src/revert-0188.ts
 // REVERSIBILITY ESCAPE HATCH — manual, single-org only. NOT a journaled
-// migration (would auto-apply and undo Phase 1). Run: tsx src/revert-0187.ts
+// migration (would auto-apply and undo Phase 1). Run: tsx src/revert-0188.ts
 // Refuses unless exactly ONE Organization exists.
 import postgres from "postgres";
 
 const url = process.env.DATABASE_URL;
-if (!url) throw new Error("DATABASE_URL is required for revert-0187");
+if (!url) throw new Error("DATABASE_URL is required for revert-0188");
 
 const sql = postgres(url, { max: 1 });
 try {
   const [{ count }] = await sql<{ count: number }[]>`SELECT count(*)::int AS count FROM organizations`;
   if (count !== 1) {
     throw new Error(
-      `revert-0187 refused: expected exactly 1 organization, found ${count}. ` +
-        `Once a second tenant exists this is a one-way door — restore the pre-0187 snapshot instead.`,
+      `revert-0188 refused: expected exactly 1 organization, found ${count}. ` +
+        `Once a second tenant exists this is a one-way door — restore the pre-0188 snapshot instead.`,
     );
   }
   await sql.begin(async (tx) => {
@@ -1859,13 +1859,13 @@ try {
     await tx.unsafe(`DROP TABLE IF EXISTS "organization_invitations"`);
     await tx.unsafe(`DROP TABLE IF EXISTS "organization_memberships"`);
     await tx.unsafe(`DROP TABLE IF EXISTS "organizations"`);
-    // 4. Manually strip the 0187 journal row from __drizzle_migrations so the
+    // 4. Manually strip the 0188 journal row from __drizzle_migrations so the
     //    migrator does not think it is still applied. (Operator must also delete
-    //    the 0187 files + journal entry from source before re-generating.)
-    await tx.unsafe(`DELETE FROM "drizzle"."__drizzle_migrations" WHERE name = '0187_organizations.sql' OR name = '0187_organizations'`);
+    //    the 0188 files + journal entry from source before re-generating.)
+    await tx.unsafe(`DELETE FROM "drizzle"."__drizzle_migrations" WHERE name = '0188_organizations.sql' OR name = '0188_organizations'`);
   });
   // eslint-disable-next-line no-console
-  console.log("revert-0187 complete: Phase 1 tenant schema removed (single-org state restored).");
+  console.log("revert-0188 complete: Phase 1 tenant schema removed (single-org state restored).");
 } finally {
   await sql.end();
 }
@@ -1873,14 +1873,14 @@ try {
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pnpm exec vitest run packages/db/src/__tests__/revert-0187-guard.test.ts`
+Run: `pnpm exec vitest run packages/db/src/__tests__/revert-0188-guard.test.ts`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/db/src/revert-0187.ts packages/db/src/__tests__/revert-0187-guard.test.ts
-git commit -m "feat(mt): guarded single-org revert script for 0187 (reversibility follow-up)"
+git add packages/db/src/revert-0188.ts packages/db/src/__tests__/revert-0188-guard.test.ts
+git commit -m "feat(mt): guarded single-org revert script for 0188 (reversibility follow-up)"
 ```
 
 ---
@@ -1892,7 +1892,7 @@ git commit -m "feat(mt): guarded single-org revert script for 0187 (reversibilit
 - Modify: `server/src/index.ts` (call the gate before `applyPendingMigrations`)
 - Test: `server/src/__tests__/snapshot-gate.test.ts`
 
-> **Reversibility follow-up — may land in a separate PR.** Refuses to apply `0187` when the blast radius is real AND unprotected: `deploymentMode === "cloud_auth"` AND `companies` is populated AND no snapshot marker is recorded. The marker is an operator-set flag in `instance_settings.general.migrationSnapshots` (e.g. `["0187"]`) written after the operator confirms a DB snapshot exists. On self-hosted `local_trusted`/`authenticated` the gate is a no-op.
+> **Reversibility follow-up — may land in a separate PR.** Refuses to apply `0188` when the blast radius is real AND unprotected: `deploymentMode === "cloud_auth"` AND `companies` is populated AND no snapshot marker is recorded. The marker is an operator-set flag in `instance_settings.general.migrationSnapshots` (e.g. `["0188"]`) written after the operator confirms a DB snapshot exists. On self-hosted `local_trusted`/`authenticated` the gate is a no-op.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1904,16 +1904,16 @@ import { shouldBlockForMissingSnapshot } from "../postgres/snapshot-gate.js";
 describe("shouldBlockForMissingSnapshot", () => {
   const base = {
     deploymentMode: "cloud_auth" as const,
-    pendingMigrationTags: ["0187_organizations"],
+    pendingMigrationTags: ["0188_organizations"],
     companyCount: 5,
     recordedSnapshots: [] as string[],
   };
 
-  it("blocks cloud_auth + populated + 0187 pending + no snapshot", () => {
+  it("blocks cloud_auth + populated + 0188 pending + no snapshot", () => {
     expect(shouldBlockForMissingSnapshot(base)).toBe(true);
   });
-  it("allows once the 0187 snapshot marker is recorded", () => {
-    expect(shouldBlockForMissingSnapshot({ ...base, recordedSnapshots: ["0187"] })).toBe(false);
+  it("allows once the 0188 snapshot marker is recorded", () => {
+    expect(shouldBlockForMissingSnapshot({ ...base, recordedSnapshots: ["0188"] })).toBe(false);
   });
   it("allows on empty companies table (nothing to lose)", () => {
     expect(shouldBlockForMissingSnapshot({ ...base, companyCount: 0 })).toBe(false);
@@ -1922,7 +1922,7 @@ describe("shouldBlockForMissingSnapshot", () => {
     expect(shouldBlockForMissingSnapshot({ ...base, deploymentMode: "local_trusted" })).toBe(false);
     expect(shouldBlockForMissingSnapshot({ ...base, deploymentMode: "authenticated" })).toBe(false);
   });
-  it("allows when 0187 is not pending (already applied)", () => {
+  it("allows when 0188 is not pending (already applied)", () => {
     expect(shouldBlockForMissingSnapshot({ ...base, pendingMigrationTags: [] })).toBe(false);
   });
 });
@@ -1946,10 +1946,10 @@ export interface SnapshotGateInput {
   recordedSnapshots: string[];
 }
 
-const GATED_MIGRATION = "0187";
+const GATED_MIGRATION = "0188";
 
 /**
- * Pure predicate: true => refuse to apply 0187 until an operator records a
+ * Pure predicate: true => refuse to apply 0188 until an operator records a
  * snapshot marker. Only bites on cloud_auth with real data at stake.
  */
 export function shouldBlockForMissingSnapshot(input: SnapshotGateInput): boolean {
@@ -1963,9 +1963,9 @@ export function shouldBlockForMissingSnapshot(input: SnapshotGateInput): boolean
 export class SnapshotGateError extends Error {
   constructor() {
     super(
-      "Refusing to apply migration 0187 (multi-tenant tenant schema): deploymentMode is " +
+      "Refusing to apply migration 0188 (multi-tenant tenant schema): deploymentMode is " +
         "cloud_auth with a populated companies table and no snapshot marker. Take a full DB " +
-        "snapshot, then record it via instance_settings.general.migrationSnapshots += \"0187\" " +
+        "snapshot, then record it via instance_settings.general.migrationSnapshots += \"0188\" " +
         "before restarting. (One-way door once a second Organization exists.)",
     );
     this.name = "SnapshotGateError";
@@ -2014,7 +2014,7 @@ Expected: PASS
 
 ```bash
 git add server/src/postgres/snapshot-gate.ts server/src/index.ts server/src/__tests__/snapshot-gate.test.ts
-git commit -m "feat(mt): pre-migration snapshot gate for 0187 on cloud_auth (reversibility follow-up)"
+git commit -m "feat(mt): pre-migration snapshot gate for 0188 on cloud_auth (reversibility follow-up)"
 ```
 
 ---

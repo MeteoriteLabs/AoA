@@ -18,11 +18,11 @@
 - `companies.organizationId` = `organization_id uuid` on `companies`, FK → `organizations.id`, backfilled to a default org. **P1 adds `organization_id` ONLY to `companies`.**
 - `companies_issue_prefix_idx` re-scoped to `(organization_id, issue_prefix)` (P1 owns).
 - `DEPLOYMENT_MODES` includes `cloud_auth` (`packages/shared/src/constants.ts`).
-- **Migration numbering:** P1 ends at `0187`. **Phase 3 owns exactly ONE migration: `0188`.** P4 = `0189`, P5 = `0190/0191`. A contiguous-journal CI gate is added in P1.
+- **Migration numbering:** P1 ends at `0188`. **Phase 3 owns exactly ONE migration: `0189`.** P4 = `0190`, P5 = `0191/0192`. A contiguous-journal CI gate is added in P1.
 
 **Provided by Phase 2:** onboarding org creation, "Company" step rename, `organizationAccessService` (`canOrg(orgId, userId, action)` org role predicate), and `cloud_auth` config-schema validation.
 
-**Owned by THIS plan (Phase 3):** `deployment-mode` chokepoint (`tenantIsolationEnforced`) + `req.actor.operator` split; `req.tenant` reserved hint + middleware; `assertTenantMembership` + `resolveCompanyTenant`; async `assertCompanyAccess` + the full-`server/src` codemod + `no-floating-promises` gate; `instance_admin` data-plane neutralization (chokepoint + defense-in-depth); `operator_break_glass_grants` table + service + sweeper; `company_secrets.organization_id` — **folded with the break-glass table into the single migration `0188`**; RLS canary; storage tenant-scope; create/list authorization (final owner); delete/archive founder-gate (Task 1, no P1 dep).
+**Owned by THIS plan (Phase 3):** `deployment-mode` chokepoint (`tenantIsolationEnforced`) + `req.actor.operator` split; `req.tenant` reserved hint + middleware; `assertTenantMembership` + `resolveCompanyTenant`; async `assertCompanyAccess` + the full-`server/src` codemod + `no-floating-promises` gate; `instance_admin` data-plane neutralization (chokepoint + defense-in-depth); `operator_break_glass_grants` table + service + sweeper; `company_secrets.organization_id` — **folded with the break-glass table into the single migration `0189`**; RLS canary; storage tenant-scope; create/list authorization (final owner); delete/archive founder-gate (Task 1, no P1 dep).
 
 **Task 1 has zero P1 dependency** and MUST be the first commit. Tasks 4+ assume the P1 schema above; if P1 is not merged, stop after Task 3 and coordinate.
 
@@ -38,7 +38,7 @@
 - `packages/db/src/schema/operator_break_glass_grants.ts` — Drizzle table.
 - `server/src/db/with-tenant-tx.ts` — RLS GUC transaction helper.
 - `server/src/db/rls-bootstrap.ts` — idempotent non-owner `aoa_app` role + policy bootstrap (mirrors `ensurePostgresDatabase`, `client.ts:723`).
-- Tests: `companies-destructive-authz.test.ts`, `deployment-mode.test.ts`, `tenant-context-middleware.test.ts`, `authz-tenant.test.ts`, `assert-company-access-tenant.test.ts`, `assert-company-access-failclosed.test.ts`, `instance-admin-neutralized.test.ts`, `operator-break-glass.integration.test.ts`, `mcp-cross-tenant.test.ts`, `storage-tenant-scope.test.ts`, `tenant-isolation-matrix.test.ts`, `migration-0188-contract.test.ts`, `migration-0188-backfill.integration.test.ts`, `rls-canary.integration.test.ts`.
+- Tests: `companies-destructive-authz.test.ts`, `deployment-mode.test.ts`, `tenant-context-middleware.test.ts`, `authz-tenant.test.ts`, `assert-company-access-tenant.test.ts`, `assert-company-access-failclosed.test.ts`, `instance-admin-neutralized.test.ts`, `operator-break-glass.integration.test.ts`, `mcp-cross-tenant.test.ts`, `storage-tenant-scope.test.ts`, `tenant-isolation-matrix.test.ts`, `migration-0189-contract.test.ts`, `migration-0189-backfill.integration.test.ts`, `rls-canary.integration.test.ts`.
 
 **Modified files:**
 - `server/src/types/express.d.ts` — `organizationIds?`, `operator?`, `req.tenant`.
@@ -49,7 +49,7 @@
 - `server/src/routes/companies.ts:23-33,35-60,146-160,284-294` — founder gate, list org-filter, create via `canOrg`, invalidate on delete.
 - `server/src/app.ts` — `setDeploymentMode(...)` at boot + mount tenant-context + start break-glass sweeper.
 - `server/src/storage/service.ts:46-70` — `ensureTenantScope` + tenant write segment.
-- `packages/db/src/schema/company_secrets.ts` — nullable `organization_id` (migration `0188`).
+- `packages/db/src/schema/company_secrets.ts` — nullable `organization_id` (migration `0189`).
 - ~541 non-test `assertCompanyAccess` call sites across **`server/src`** (routes/ + `mcp/server.ts` + `services/{approvals,preview-proxy,thread-deliverables}.ts` + `routes/access.ts`) — codemod (Task 8).
 - ESLint config for `@armyofagents/server` — enable `@typescript-eslint/no-floating-promises` + a required `lint` gate.
 
@@ -880,19 +880,19 @@ team.effectiveRoleFromRows cross-tenant grant). rbac bypasses gated on
 
 ---
 
-## Task 10: Break-glass table + service + sweeper (B3) + `company_secrets.organization_id` — single migration 0188 (B5)
+## Task 10: Break-glass table + service + sweeper (B3) + `company_secrets.organization_id` — single migration 0189 (B5)
 
-Grant materializes an **organization_membership** (the current bug: it never did → operator still failed `assertTenantMembership`). Authorization is decided at **check time** via `hasActiveBreakGlass()` (live TTL). A **sweeper** deletes materialized rows at expiry. Both schema changes (this table + `company_secrets.organization_id`) are generated in ONE `db:generate` pass = the single `0188`.
+Grant materializes an **organization_membership** (the current bug: it never did → operator still failed `assertTenantMembership`). Authorization is decided at **check time** via `hasActiveBreakGlass()` (live TTL). A **sweeper** deletes materialized rows at expiry. Both schema changes (this table + `company_secrets.organization_id`) are generated in ONE `db:generate` pass = the single `0189`.
 
 **Files:**
 - Create: `packages/db/src/schema/operator_break_glass_grants.ts`
 - Modify: `packages/db/src/schema/index.ts` (export) + `packages/db/src/schema/company_secrets.ts` (add `organization_id`)
-- Create: `packages/db/src/migrations/0188_*.sql` (ONE generated migration + appended backfill)
+- Create: `packages/db/src/migrations/0189_*.sql` (ONE generated migration + appended backfill)
 - Create: `server/src/services/operator-break-glass.ts`
 - Modify: `server/src/app.ts` / boot (start sweeper interval)
 - Test: `server/src/__tests__/operator-break-glass.integration.test.ts` (create)
 
-- [ ] **Step 1: Author BOTH schema changes, then generate the single 0188**
+- [ ] **Step 1: Author BOTH schema changes, then generate the single 0189**
 
 `packages/db/src/schema/operator_break_glass_grants.ts`:
 ```ts
@@ -930,9 +930,9 @@ Add the nullable column to `packages/db/src/schema/company_secrets.ts` (after `c
 Generate ONE migration for both:
 
 Run: `pnpm db:generate`
-Expected: a single `packages/db/src/migrations/0188_*.sql` containing `CREATE TABLE "operator_break_glass_grants" ...` AND `ALTER TABLE "company_secrets" ADD COLUMN "organization_id" uuid;` + one `_journal.json` entry `0188`. (P4 stays `0189`.)
+Expected: a single `packages/db/src/migrations/0189_*.sql` containing `CREATE TABLE "operator_break_glass_grants" ...` AND `ALTER TABLE "company_secrets" ADD COLUMN "organization_id" uuid;` + one `_journal.json` entry `0189`. (P4 stays `0190`.)
 
-Append the `company_secrets` backfill to the same 0188 file (drizzle emits only the column add; the data step is appended after the breakpoint that `client.ts:28` splits on):
+Append the `company_secrets` backfill to the same 0189 file (drizzle emits only the column add; the data step is appended after the breakpoint that `client.ts:28` splits on):
 ```sql
 --> statement-breakpoint
 UPDATE "company_secrets" SET "organization_id" = c."organization_id" FROM "companies" c WHERE "company_secrets"."company_id" = c."id" AND "company_secrets"."organization_id" IS NULL;
@@ -1111,7 +1111,7 @@ grant() now writes an organization_membership (was missing -> operator
 still failed assertTenantMembership). Authorization decided at check time
 via hasActiveBreakGlass() (TTL authoritative); sweeper deletes materialized
 rows at expiry; revoke handles org-wide (companyId null) grants. Break-glass
-table + company_secrets.organization_id share the single migration 0188."
+table + company_secrets.organization_id share the single migration 0189."
 ```
 
 ---
@@ -1252,11 +1252,11 @@ for the full-fleet follow-up. Seed includes organizations.slug (NOT NULL)."
 
 ---
 
-## Task 12: Migration 0188 contract + backfill tests (M8)
+## Task 12: Migration 0189 contract + backfill tests (M8)
 
 **Files:**
-- Test: `server/src/__tests__/migration-0188-contract.test.ts` (static, cross-platform)
-- Test: `server/src/__tests__/migration-0188-backfill.integration.test.ts` (Linux)
+- Test: `server/src/__tests__/migration-0189-contract.test.ts` (static, cross-platform)
+- Test: `server/src/__tests__/migration-0189-backfill.integration.test.ts` (Linux)
 
 - [ ] **Step 1: Write the static contract test (runs on Windows)**
 
@@ -1267,9 +1267,9 @@ import { fileURLToPath } from "node:url";
 
 const migDir = fileURLToPath(new URL("../../../packages/db/src/migrations/", import.meta.url));
 
-describe("migration 0188 contract", () => {
-  const file = readdirSync(migDir).find((f) => f.startsWith("0188_") && f.endsWith(".sql"));
-  it("exists as exactly one 0188 migration", () => expect(file).toBeTruthy());
+describe("migration 0189 contract", () => {
+  const file = readdirSync(migDir).find((f) => f.startsWith("0189_") && f.endsWith(".sql"));
+  it("exists as exactly one 0189 migration", () => expect(file).toBeTruthy());
   const sqlText = file ? readFileSync(new URL(`../../../packages/db/src/migrations/${file}`, import.meta.url), "utf8") : "";
   it("adds company_secrets.organization_id as NULLABLE (no NOT NULL)", () => {
     expect(sqlText).toMatch(/ALTER TABLE "company_secrets" ADD COLUMN "organization_id" uuid;/);
@@ -1286,18 +1286,18 @@ describe("migration 0188 contract", () => {
 
 - [ ] **Step 2: Write the Linux backfill test (proves the UPDATE populates a NULL, not a pre-populated seed)**
 
-`migration-0188-backfill.integration.test.ts` — boot embedded-postgres (same harness as other integration tests; `adminUrl` + `db`), then:
+`migration-0189-backfill.integration.test.ts` — boot embedded-postgres (same harness as other integration tests; `adminUrl` + `db`), then:
 ```ts
 import { describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 // ... same EmbeddedPostgres beforeAll/afterAll producing `db` ...
 
-describe.skipIf(process.platform !== "linux")("0188 backfill populates organization_id from companies", () => {
+describe.skipIf(process.platform !== "linux")("0189 backfill populates organization_id from companies", () => {
   it("a company_secrets row with NULL organization_id is populated by the backfill UPDATE", async () => {
     const ORG = "00000000-0000-0000-0000-0000000000a1", CO = "00000000-0000-0000-0000-0000000000c1";
     await db.execute(sql`INSERT INTO organizations (id, name, slug) VALUES (${ORG}, 'A', 'a')`);
     await db.execute(sql`INSERT INTO companies (id, name, issue_prefix, organization_id) VALUES (${CO}, 'A', 'PPA', ${ORG})`);
-    // Pre-0188 shape: organization_id explicitly NULL (NOT pre-populated).
+    // Pre-0189 shape: organization_id explicitly NULL (NOT pre-populated).
     await db.execute(sql`INSERT INTO company_secrets (id, company_id, organization_id, name) VALUES (gen_random_uuid(), ${CO}, NULL, 'sec')`);
     // Re-run the migration's backfill statement (idempotent) and assert population.
     await db.execute(sql`UPDATE company_secrets SET organization_id = c.organization_id FROM companies c WHERE company_secrets.company_id = c.id AND company_secrets.organization_id IS NULL`);
@@ -1310,14 +1310,14 @@ describe.skipIf(process.platform !== "linux")("0188 backfill populates organizat
 
 - [ ] **Step 3: Run both**
 
-Run: `pnpm --filter @armyofagents/server exec vitest run src/__tests__/migration-0188-contract.test.ts` (Windows-visible); on Linux also the backfill test.
-Expected: PASS after Task 10 produced 0188.
+Run: `pnpm --filter @armyofagents/server exec vitest run src/__tests__/migration-0189-contract.test.ts` (Windows-visible); on Linux also the backfill test.
+Expected: PASS after Task 10 produced 0189.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add server/src/__tests__/migration-0188-contract.test.ts server/src/__tests__/migration-0188-backfill.integration.test.ts
-git commit -m "test(db): 0188 static contract (nullable add + backfill) + Linux backfill population"
+git add server/src/__tests__/migration-0189-contract.test.ts server/src/__tests__/migration-0189-backfill.integration.test.ts
+git commit -m "test(db): 0189 static contract (nullable add + backfill) + Linux backfill population"
 ```
 
 ---
@@ -1638,11 +1638,11 @@ Expected: PASS.
 
 ## Self-Review
 
-**Eng-review coverage:** Delete/archive founder-gate — Task 1. **B1** single-chokepoint (auth.ts clamp + access.ts + team + rbac defense-in-depth; operator plane preserved) — Tasks 2/4/9, verified by `instance-admin-neutralized.test.ts`. **B2** fail-closed static enforcement — Tasks 2/7, verified by `assert-company-access-failclosed.test.ts`. **B3** break-glass (org-membership materialization + live-TTL check + sweeper + fixed org-wide revoke) — Task 10. **B4** codemod all `server/src` + manual MCP/service sites + `no-floating-promises` gate + MCP cross-tenant test; false "routes only" claim corrected — Tasks 8/15. **B5** single migration 0188 — Task 10. **M3** RLS scoped to `aoa_app`, owner exempt, INERT-in-prod stated, slug seed — Task 11. **M8** static + backfill migration tests — Task 12. **Minor** invalidate-on-delete — Task 14. Storage — Task 13. Create/list final owner via `canOrg` — Task 14. Negative matrix — Task 15.
+**Eng-review coverage:** Delete/archive founder-gate — Task 1. **B1** single-chokepoint (auth.ts clamp + access.ts + team + rbac defense-in-depth; operator plane preserved) — Tasks 2/4/9, verified by `instance-admin-neutralized.test.ts`. **B2** fail-closed static enforcement — Tasks 2/7, verified by `assert-company-access-failclosed.test.ts`. **B3** break-glass (org-membership materialization + live-TTL check + sweeper + fixed org-wide revoke) — Task 10. **B4** codemod all `server/src` + manual MCP/service sites + `no-floating-promises` gate + MCP cross-tenant test; false "routes only" claim corrected — Tasks 8/15. **B5** single migration 0189 — Task 10. **M3** RLS scoped to `aoa_app`, owner exempt, INERT-in-prod stated, slug seed — Task 11. **M8** static + backfill migration tests — Task 12. **Minor** invalidate-on-delete — Task 14. Storage — Task 13. Create/list final owner via `canOrg` — Task 14. Negative matrix — Task 15.
 
 **Type consistency:** `assertCompanyAccess(db, req, companyId)` async everywhere (Tasks 7/8); enforcement via `tenantIsolationEnforced()` in authz/rbac/access/companies (Tasks 2/7/9/14) — never `req.tenant`; `req.actor.operator` (operator plane) vs `isInstanceAdmin` (clamped data plane) distinct (Tasks 2/3/4); `hasActiveBreakGlass(db, userId, companyId)` signature consistent across the Task 7 hook, Task 10 impl, and Task 15 mock; `resolveCompanyTenant`/`invalidateCompanyTenant`/`__resetTenantCache` consistent (Tasks 6/7/14).
 
-**Ordering:** Task 1 first (no P1 dep). Task 2 (deployment-mode + operator split) precedes Task 4 (clamp) and Task 7 (enforcement). Tasks 7+8 land back-to-back (typecheck red between them). Task 9 depends on Task 2's `tenantIsolationEnforced`. Task 10 must generate 0188 before Tasks 11/12 rely on `company_secrets.organization_id`.
+**Ordering:** Task 1 first (no P1 dep). Task 2 (deployment-mode + operator split) precedes Task 4 (clamp) and Task 7 (enforcement). Tasks 7+8 land back-to-back (typecheck red between them). Task 9 depends on Task 2's `tenantIsolationEnforced`. Task 10 must generate 0189 before Tasks 11/12 rely on `company_secrets.organization_id`.
 
 ---
 

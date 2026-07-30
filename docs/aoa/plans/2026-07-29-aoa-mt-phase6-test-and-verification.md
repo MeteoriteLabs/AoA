@@ -8,9 +8,9 @@
 - **Gate A — LOCAL "inside and out":** everything provable on a dev box. Unit/contract (`pnpm test:run`, cross-platform); embedded-pg integration (`applyPendingMigrations` + `describe.skipIf(process.platform !== "linux")` — real on Linux/WSL, run locally on Windows only via `AOA_E2E_FORCE_WINDOWS=1`); component/UI (Vitest + RTL, mirroring `ui/src/onboarding/steps/__tests__/OrgStep.test.tsx`); e2e browser journeys (`tests/e2e/*.spec.ts` via the local_trusted webServer config + a strict-mode config + the `POST /api/test-support/session` identity mint); a scripted browser UI-verification pass via `.claude/launch.json`; and a local load/concurrency lane. Gate A is green before the branch is pushed for merge.
 - **Gate B — POST-DEPLOY QA on `testing.armyofagents.org`:** the whole system verified ON the deployed Hetzner `cloud_auth` instance — a release-smoke Playwright suite (no `webServer`; points at `AOA_RELEASE_SMOKE_BASE_URL`, exactly like `tests/release-smoke/playwright.config.ts`) plus a manual canary checklist. Gate B is the go/no-go for opening the invite-only beta. CI cannot drive a real Google account (see `tests/release-smoke/docker-auth-onboarding.spec.ts:6-8`), so Gate B is a **documented manual release gate**, not a required CI check.
 
-**Reversibility levers drilled in this plan (all must be fired at least once, not merely shipped):** the P1 pre-migration `snapshot-gate.ts` (`instance_settings.general.migrationSnapshots += "0187"`); the P1 single-org compensating script `packages/db/src/revert-0187.ts`; the P4 resolver kill-switch `AOA_PROVIDER_RESOLVER=legacy`; the `deploymentMode` flags; and the shipped ops scripts `pnpm db:backup` / `pnpm release:rollback`.
+**Reversibility levers drilled in this plan (all must be fired at least once, not merely shipped):** the P1 pre-migration `snapshot-gate.ts` (`instance_settings.general.migrationSnapshots += "0188"`); the P1 single-org compensating script `packages/db/src/revert-0188.ts`; the P4 resolver kill-switch `AOA_PROVIDER_RESOLVER=legacy`; the `deploymentMode` flags; and the shipped ops scripts `pnpm db:backup` / `pnpm release:rollback`.
 
-**Tech Stack:** Vitest 3 (unit + integration), `embedded-postgres` + `@armyofagents/db` `applyPendingMigrations`/`createDb` (integration harness), React Testing Library (component), Playwright (`tests/e2e/*` local + `tests/release-smoke/*` post-deploy), GitHub Actions (`.github/workflows/pr.yml`), Docker/gVisor on Hetzner (P5 worker image). Migration head after the full program = **0191** (P1 0187, P3 0188, P4 0189, P5 0190/0191).
+**Tech Stack:** Vitest 3 (unit + integration), `embedded-postgres` + `@armyofagents/db` `applyPendingMigrations`/`createDb` (integration harness), React Testing Library (component), Playwright (`tests/e2e/*` local + `tests/release-smoke/*` post-deploy), GitHub Actions (`.github/workflows/pr.yml`), Docker/gVisor on Hetzner (P5 worker image). Migration head after the full program = **0192** (P1 0188, P3 0189, P4 0190, P5 0191/0192).
 
 ---
 
@@ -32,10 +32,10 @@
 ## §0 — Scope map + gate wiring (no code; orientation task)
 
 - [ ] **Step 1: Confirm the P1–P5 test inventory this plan builds on.** These already exist per the phase plans and are the regression floor — do NOT re-author them, only ensure they run in the right lane:
-  - P1: `organization-constants`, `organization-validators`, `organizations-schema`, `migration-0187-organizations-contract`, `organizations-migration-journal`, `migration-journal-contiguity`, `revert-0187-guard`, `snapshot-gate.test`; integration `organizations-backfill.integration`, `organizations-uniqueness.integration`.
+  - P1: `organization-constants`, `organization-validators`, `organizations-schema`, `migration-0188-organizations-contract`, `organizations-migration-journal`, `migration-journal-contiguity`, `revert-0188-guard`, `snapshot-gate.test`; integration `organizations-backfill.integration`, `organizations-uniqueness.integration`.
   - P2: `cloud-auth-promotion-paths-inert`, `cloud-auth-no-instance-admin-minted`, `invited-joins-correct-org`, org role×capability matrix, `OrgStep.test.tsx`, `CreateOrganizationStep.test.tsx`.
-  - P3: `tenant-isolation-matrix`, `mcp-cross-tenant`, `assert-company-access-failclosed`, `instance-admin-neutralized`, `migration-0188-contract`; integration `operator-break-glass.integration`, `rls-canary.integration`, `migration-0188-backfill.integration`.
-  - P4: `provider-resolution-matrix`, `provider-resolution-overlay-keys`, `provider-resolution-killswitch`, `migration 0189` contract; integration `provider-connections-backfill.integration`.
+  - P3: `tenant-isolation-matrix`, `mcp-cross-tenant`, `assert-company-access-failclosed`, `instance-admin-neutralized`, `migration-0189-contract`; integration `operator-break-glass.integration`, `rls-canary.integration`, `migration-0189-backfill.integration`.
+  - P4: `provider-resolution-matrix`, `provider-resolution-overlay-keys`, `provider-resolution-killswitch`, `migration 0190` contract; integration `provider-connections-backfill.integration`.
   - P5: `buildDockerRunArgs`, `resolveAdapterExecutionTarget`, `chooseExecutionTargetRow`, `orgAvailableSlots`/`normalizeOrgConcurrencyCap`, `summarizeOrgSpend`, `execution-targets-service`; integration `execution-targets-heartbeat-isolation.integration`; manual `gvisor-worker-image.md` spike.
 - [ ] **Step 2: Record the two gates + lever inventory** in this doc's header (done above). No code. This section is the map; §1–§10 are the work.
 
@@ -66,7 +66,7 @@ Two new suites the phase plans do not have. Both use the exact harness of `serve
 **Files:**
 - Create: `server/src/__tests__/mt-combined-migrations.integration.test.ts`
 
-> Design note (honest): `applyPendingMigrations` applies the WHOLE chain to head 0191 — the repo exposes no "migrate to 0186 then stop" seam. So this AUTOMATED suite proves the chain's backfill statements are **correct and idempotent on populated rows** and that cross-migration invariants (per-org uniqueness, tenant-column population, cross-phase FKs) hold on a populated DB. The TRUE staged "seed a pre-0187 backup → apply → assert → rollback" is the executed drill in **§7** against a real `pnpm db:backup` snapshot (staging is natural there). Together they cover migration-on-populated-DB end to end.
+> Design note (honest): `applyPendingMigrations` applies the WHOLE chain to head 0192 — the repo exposes no "migrate to 0186 then stop" seam. So this AUTOMATED suite proves the chain's backfill statements are **correct and idempotent on populated rows** and that cross-migration invariants (per-org uniqueness, tenant-column population, cross-phase FKs) hold on a populated DB. The TRUE staged "seed a pre-0188 backup → apply → assert → rollback" is the executed drill in **§7** against a real `pnpm db:backup` snapshot (staging is natural there). Together they cover migration-on-populated-DB end to end.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -92,7 +92,7 @@ beforeAll(async () => {
     pg = new EmbeddedPostgres({ databaseDir: join(dataDir, "db"), user: "test", password: "test", port: PORT, persistent: false });
     await pg.initialise(); await pg.start();
     const conn = `postgres://test:test@localhost:${PORT}/postgres`;
-    await applyPendingMigrations(conn); // whole chain -> head 0191
+    await applyPendingMigrations(conn); // whole chain -> head 0192
     db = createDb(conn);
   } catch (err) { setupError = err; console.error("[mt-combined-migrations] setup failed:", err); }
 }, 180_000);
@@ -102,27 +102,27 @@ afterAll(async () => {
   try { if (dataDir) await rm(dataDir, { recursive: true, force: true }); } catch {}
 }, 60_000);
 
-describe.skipIf(process.platform !== "linux")("MT chain 0187->0191 on populated rows", () => {
-  it("0187 seeded exactly one sentinel default organization", async () => {
+describe.skipIf(process.platform !== "linux")("MT chain 0188->0192 on populated rows", () => {
+  it("0188 seeded exactly one sentinel default organization", async () => {
     if (setupError) throw new Error(String(setupError));
     const r = rows(await db.execute(sql`SELECT id, slug FROM organizations WHERE id = ${DEFAULT_ORGANIZATION_ID}`));
     expect(r.length).toBe(1);
     expect(r[0].slug).toBe("default");
   });
 
-  it("re-running 0187's companies backfill on a NULL-tenant row populates it, leaves set rows untouched", async () => {
+  it("re-running 0188's companies backfill on a NULL-tenant row populates it, leaves set rows untouched", async () => {
     // A populated pre-migration company shape: organization_id explicitly NULL.
     await db.execute(sql`ALTER TABLE companies ALTER COLUMN organization_id DROP NOT NULL`);
     const ins = rows(await db.execute(sql`INSERT INTO companies (name, issue_prefix, organization_id) VALUES ('Legacy Co', 'LEG', NULL) RETURNING id`));
     const legacyId = ins[0].id;
-    // 0187's idempotent backfill statement (verbatim WHERE-guarded UPDATE).
+    // 0188's idempotent backfill statement (verbatim WHERE-guarded UPDATE).
     await db.execute(sql`UPDATE companies SET organization_id = ${DEFAULT_ORGANIZATION_ID} WHERE organization_id IS NULL`);
     const after = rows(await db.execute(sql`SELECT organization_id FROM companies WHERE id = ${legacyId}`));
     expect(after[0].organization_id).toBe(DEFAULT_ORGANIZATION_ID);
     await db.execute(sql`ALTER TABLE companies ALTER COLUMN organization_id SET NOT NULL`);
   });
 
-  it("0187 per-org prefix uniqueness holds; same prefix in a DIFFERENT org is allowed", async () => {
+  it("0188 per-org prefix uniqueness holds; same prefix in a DIFFERENT org is allowed", async () => {
     const a = rows(await db.execute(sql`INSERT INTO organizations (name, slug) VALUES ('Org A', 'org-a-chain') RETURNING id`))[0].id;
     const b = rows(await db.execute(sql`INSERT INTO organizations (name, slug) VALUES ('Org B', 'org-b-chain') RETURNING id`))[0].id;
     await db.execute(sql`INSERT INTO companies (name, issue_prefix, organization_id) VALUES ('CA', 'DUP', ${a})`);
@@ -130,7 +130,7 @@ describe.skipIf(process.platform !== "linux")("MT chain 0187->0191 on populated 
     await expect(db.execute(sql`INSERT INTO companies (name, issue_prefix, organization_id) VALUES ('CA2', 'DUP', ${a})`)).rejects.toThrow();
   });
 
-  it("0187 per-company identifier uniqueness: same identifier string in two companies is allowed", async () => {
+  it("0188 per-company identifier uniqueness: same identifier string in two companies is allowed", async () => {
     const org = rows(await db.execute(sql`INSERT INTO organizations (name, slug) VALUES ('Org D', 'org-d-chain') RETURNING id`))[0].id;
     const c1 = rows(await db.execute(sql`INSERT INTO companies (name, issue_prefix, organization_id) VALUES ('D1','DA',${org}) RETURNING id`))[0].id;
     const c2 = rows(await db.execute(sql`INSERT INTO companies (name, issue_prefix, organization_id) VALUES ('D2','DB',${org}) RETURNING id`))[0].id;
@@ -138,7 +138,7 @@ describe.skipIf(process.platform !== "linux")("MT chain 0187->0191 on populated 
     await expect(db.execute(sql`INSERT INTO issues (company_id, title, identifier, status) VALUES (${c2}, 'y', 'DUP-1', 'backlog')`)).resolves.toBeDefined();
   });
 
-  it("0188 company_secrets backfill populates organization_id from companies (idempotent on populated rows)", async () => {
+  it("0189 company_secrets backfill populates organization_id from companies (idempotent on populated rows)", async () => {
     const org = rows(await db.execute(sql`INSERT INTO organizations (name, slug) VALUES ('Org S', 'org-s-chain') RETURNING id`))[0].id;
     const co = rows(await db.execute(sql`INSERT INTO companies (name, issue_prefix, organization_id) VALUES ('S1','SS',${org}) RETURNING id`))[0].id;
     await db.execute(sql`INSERT INTO company_secrets (id, company_id, organization_id, name) VALUES (gen_random_uuid(), ${co}, NULL, 'sec')`);
@@ -147,7 +147,7 @@ describe.skipIf(process.platform !== "linux")("MT chain 0187->0191 on populated 
     expect(sec[0].organization_id).toBe(org);
   });
 
-  it("0190/0191 execution_targets FK to organizations resolves (cross-phase integrity)", async () => {
+  it("0191/0192 execution_targets FK to organizations resolves (cross-phase integrity)", async () => {
     const org = rows(await db.execute(sql`INSERT INTO organizations (name, slug) VALUES ('Org T', 'org-t-chain') RETURNING id`))[0].id;
     await expect(db.execute(sql`INSERT INTO execution_targets (organization_id, slug, kind, trust_class, status) VALUES (${org}, 'pool-chain', 'pooled_gvisor', 'shared_multitenant', 'offline')`)).resolves.toBeDefined();
     await expect(db.execute(sql`INSERT INTO execution_targets (organization_id, slug, kind, trust_class, status) VALUES ('00000000-0000-0000-0000-0000000000ff', 'pool-bad', 'pooled_gvisor', 'shared_multitenant', 'offline')`)).rejects.toThrow();
@@ -173,7 +173,7 @@ Expected: FAIL before P1–P5 land (tables/columns missing); SKIPPED on Windows 
 
 ```bash
 git add server/src/__tests__/mt-combined-migrations.integration.test.ts
-git commit -m "test(mt): combined 0187->0191 chain data-integrity + idempotent backfill on populated rows (linux-only)"
+git commit -m "test(mt): combined 0188->0192 chain data-integrity + idempotent backfill on populated rows (linux-only)"
 ```
 
 ### Task 2.2: `mt-cross-tenant-service.integration.test.ts` — two real orgs, every service path, org-2 never reads org-1
@@ -767,7 +767,7 @@ Scripted human/browser pass on a locally-booted `authenticated`-mode (strict) in
 1. **Boot a strict local instance.** From the repo root, use `.claude/launch.json`'s `server` config (sets `AOA_MIGRATION_AUTO_APPLY=true`) but override the mode:
    `cd server && set AOA_MIGRATION_AUTO_APPLY=true && set AOA_DEPLOYMENT_MODE=authenticated && set AOA_DEV_LOCAL_IDENTITY=1 && set PORT=3100 && pnpm exec tsx src/index.ts`
    PASS: server logs "listening on :3100"; `GET http://127.0.0.1:3100/api/health` returns `{"deploymentMode":"authenticated"}`.
-2. **Migration head.** `GET /api/health` (or logs) shows the applied head = **0191**. PASS: 0191; FAIL: any pending migration or head < 0191.
+2. **Migration head.** `GET /api/health` (or logs) shows the applied head = **0192**. PASS: 0192; FAIL: any pending migration or head < 0192.
 3. **Open the app** at `http://127.0.0.1:3100` via `/browse` (or the browser preview). Complete onboarding: create Org → Company → agent. PASS: each new surface renders without a blank/error state.
 4. **Org switcher renders + works.** Create a 2nd org; open the switcher; switch. PASS: company list + URL prefix change; no console errors (`read_console_messages` shows zero `error`).
 5. **Providers page.** Connect a provider at org scope; assign; open a 2nd company. PASS: 2nd company shows the inherited provider badge; no key re-entry prompt.
@@ -831,14 +831,14 @@ The TRUE staged drill: a real populated DB, migrate the whole chain, then FIRE e
 **Preconditions:** a local Postgres (or embedded) with `DATABASE_URL` set; the branch checked out at a commit BEFORE the chain (or a DB already at head 0186).
 
 1. **Snapshot the pre-chain DB.** `pnpm db:backup` → note the snapshot path. PASS: backup file exists and is non-empty.
-2. **Seed populated pre-0187 data.** Insert ≥3 companies + issues + company_secrets under the (pre-org) schema (or restore a real pre-chain dump). PASS: `SELECT count(*) FROM companies` ≥ 3.
-3. **Apply the full chain.** `pnpm db:migrate`. PASS: exit 0; journal head = **0191**; `SELECT count(*) FROM organizations` ≥ 1 (default org backfilled); `SELECT count(*) FROM companies WHERE organization_id IS NULL` = 0.
+2. **Seed populated pre-0188 data.** Insert ≥3 companies + issues + company_secrets under the (pre-org) schema (or restore a real pre-chain dump). PASS: `SELECT count(*) FROM companies` ≥ 3.
+3. **Apply the full chain.** `pnpm db:migrate`. PASS: exit 0; journal head = **0192**; `SELECT count(*) FROM organizations` ≥ 1 (default org backfilled); `SELECT count(*) FROM companies WHERE organization_id IS NULL` = 0.
 4. **Assert data integrity.** No row lost (company/issue counts unchanged from step 2); `company_secrets.organization_id` populated for every row; per-org prefix + per-company identifier indexes present (`\d companies` shows `companies_org_issue_prefix_idx`). PASS: all hold.
-5. **Snapshot-gate proof (cloud_auth).** With `AOA_DEPLOYMENT_MODE=cloud_auth` and NO `migrationSnapshots` marker on a populated DB, boot the server. PASS: it REFUSES with `SnapshotGateError` (P1 Task 18). Then set `instance_settings.general.migrationSnapshots += "0187"` and reboot → boots. FAIL: it applied 0187 without the marker.
+5. **Snapshot-gate proof (cloud_auth).** With `AOA_DEPLOYMENT_MODE=cloud_auth` and NO `migrationSnapshots` marker on a populated DB, boot the server. PASS: it REFUSES with `SnapshotGateError` (P1 Task 18). Then set `instance_settings.general.migrationSnapshots += "0188"` and reboot → boots. FAIL: it applied 0188 without the marker.
 6. **Fire lever — resolver kill-switch.** Set `AOA_PROVIDER_RESOLVER=legacy`, restart, dispatch a run. PASS: run resolves credentials via the legacy ladder (P4 Task 16); unset → new model resumes. No redeploy needed.
 7. **Fire lever — deploymentMode flip.** Flip `cloud_auth`→`authenticated`→`local_trusted` across reboots. PASS: each mode boots; self-hosted single-tenant behavior intact (companies still reachable).
-8. **Fire lever — single-org compensating revert.** While STILL single-org (exactly one Organization), run `DATABASE_URL=... pnpm exec tsx packages/db/src/revert-0187.ts`. PASS: script completes; global `companies_issue_prefix_idx` + `issues_identifier_idx` restored; org tables dropped; the 0187 journal row removed. Verify `SELECT count(*) FROM organizations` errors (table gone).
-9. **Prove the one-way door.** Re-apply the chain, then insert a SECOND Organization. Re-run `revert-0187.ts`. PASS: it REFUSES (`expected exactly 1 organization, found 2`) — the guard blocks; rollback is now snapshot-restore-only.
+8. **Fire lever — single-org compensating revert.** While STILL single-org (exactly one Organization), run `DATABASE_URL=... pnpm exec tsx packages/db/src/revert-0188.ts`. PASS: script completes; global `companies_issue_prefix_idx` + `issues_identifier_idx` restored; org tables dropped; the 0188 journal row removed. Verify `SELECT count(*) FROM organizations` errors (table gone).
+9. **Prove the one-way door.** Re-apply the chain, then insert a SECOND Organization. Re-run `revert-0188.ts`. PASS: it REFUSES (`expected exactly 1 organization, found 2`) — the guard blocks; rollback is now snapshot-restore-only.
 10. **Fire lever — snapshot restore.** `pnpm release:rollback` (or restore the step-1 backup). PASS: DB returns to the pre-chain state; app boots at head 0186.
 11. **Record the drill.** Write a dated result block into `docs/aoa/guides/mt-rollback-drill.md` (create) listing each lever fired + pass/fail. Commit `docs(mt): executed migration + rollback drill results`.
 
@@ -877,13 +877,13 @@ AOA_RELEASE_SMOKE_BASE_URL=https://testing.armyofagents.org pnpm test:release-sm
 import { expect, test } from "@playwright/test";
 
 test.describe("MT post-deploy smoke (testing.armyofagents.org)", () => {
-  test("health reports cloud_auth and migration head 0191", async ({ request }) => {
+  test("health reports cloud_auth and migration head 0192", async ({ request }) => {
     const res = await request.get("/api/health");
     expect(res.ok()).toBe(true);
     const body = await res.json();
     expect(body.deploymentMode).toBe("cloud_auth");            // Gate B mode
     // Head is surfaced by the health/migrations endpoint post-P1..P5.
-    expect(String(body.migrationHead ?? body.migrations?.head ?? "")).toContain("0191");
+    expect(String(body.migrationHead ?? body.migrations?.head ?? "")).toContain("0192");
   });
 
   test("unauthenticated MCP/company reads are rejected (cloud_auth is not open)", async ({ request }) => {
@@ -902,8 +902,8 @@ test.describe("MT post-deploy smoke (testing.armyofagents.org)", () => {
 
 Against `https://testing.armyofagents.org` in a real browser (real Google account). PASS/FAIL each; ALL must pass to open the beta:
 
-1. **Migration applied cleanly.** `GET /api/health` → `deploymentMode:"cloud_auth"`, head contains `0191`, no pending. PASS/FAIL.
-2. **Snapshot gate honored.** Deploy logs show the snapshot marker was recorded before 0187 applied (no `SnapshotGateError`). PASS/FAIL.
+1. **Migration applied cleanly.** `GET /api/health` → `deploymentMode:"cloud_auth"`, head contains `0192`, no pending. PASS/FAIL.
+2. **Snapshot gate honored.** Deploy logs show the snapshot marker was recorded before 0188 applied (no `SnapshotGateError`). PASS/FAIL.
 3. **Real signup → org → company → agent → run.** Sign in with a real Google account, create an Org, create a Company, create an agent, dispatch a task, run COMPLETES. PASS/FAIL.
 4. **Two-real-org isolation.** With a second real Google account in a second Org, confirm neither account can see/open the other's company (browser + a direct foreign-company URL → access-required). PASS/FAIL.
 5. **Provider inheritance live.** Connect a provider once at Org scope; a real Commander turn AND a real crew run both resolve it with no per-company key. PASS/FAIL.

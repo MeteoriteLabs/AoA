@@ -89,7 +89,7 @@ afterAll(async () => {
 async function reset(): Promise<void> {
   await db.execute(sql`TRUNCATE companies, "user" RESTART IDENTITY CASCADE`);
   // TRUNCATE ... CASCADE on "user" also truncates organizations (it references
-  // "user" via created_by_user_id), which wipes the 0187 sentinel default org.
+  // "user" via created_by_user_id), which wipes the 0188 sentinel default org.
   // seedCompany relies on companies.organization_id defaulting to that sentinel,
   // so re-seed it here — otherwise the next insert hits FK violation 23503.
   await db.execute(sql`

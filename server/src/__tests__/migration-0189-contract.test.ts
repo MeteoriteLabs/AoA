@@ -1,21 +1,21 @@
-// Static (cross-platform, Windows-visible) contract test for migration 0188.
+// Static (cross-platform, Windows-visible) contract test for migration 0189.
 //
-// Phase 3 folds BOTH schema changes into the single 0188 migration:
+// Phase 3 folds BOTH schema changes into the single 0189 migration:
 //   - CREATE TABLE operator_break_glass_grants
 //   - ALTER TABLE company_secrets ADD COLUMN organization_id (NULLABLE) + backfill
-// so Phase 4 stays 0189. This test reads the .sql text directly — no DB needed.
+// so Phase 4 stays 0190. This test reads the .sql text directly — no DB needed.
 import { describe, expect, it } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const migDir = fileURLToPath(new URL("../../../packages/db/src/migrations/", import.meta.url));
 
-describe("migration 0188 contract", () => {
-  const files = readdirSync(migDir).filter((f) => f.startsWith("0188_") && f.endsWith(".sql"));
+describe("migration 0189 contract", () => {
+  const files = readdirSync(migDir).filter((f) => f.startsWith("0189_") && f.endsWith(".sql"));
   const file = files[0];
   const sqlText = file ? readFileSync(new URL(`../../../packages/db/src/migrations/${file}`, import.meta.url), "utf8") : "";
 
-  it("exists as exactly one 0188 migration (Phase 3 owns a single migration)", () => {
+  it("exists as exactly one 0189 migration (Phase 3 owns a single migration)", () => {
     expect(files).toHaveLength(1);
   });
 

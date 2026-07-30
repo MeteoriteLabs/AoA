@@ -22,9 +22,9 @@ import { SnapshotInstallModal } from "@/components/marketplace/install/SnapshotI
 import {
   TYPE_ICONS,
   TYPE_LABELS_PLURAL,
+  deriveMarketplacePlacement,
   pathToItemType,
   shortSource,
-  isAoaItem,
 } from "@/lib/marketplace-constants";
 import { useMarketplaceSidebar } from "@/components/marketplace/useMarketplaceSidebar";
 import type { MarketplaceItemType, PluginRecord } from "@armyofagents/shared";
@@ -38,16 +38,20 @@ const TYPE_AVATAR_BG: Record<MarketplaceItemType, string> = {
   team:   "bg-amber-500/15  text-amber-400",
 };
 
-export default function MarketplaceDetail() {
+export interface MarketplaceDetailProps {
+  fixedType?: MarketplaceItemType;
+}
+
+export default function MarketplaceDetail({ fixedType }: MarketplaceDetailProps = {}) {
   const params = useParams<{ type: string; slug: string; "*": string }>();
-  const itemType = params.type ? pathToItemType(params.type) : null;
+  const itemType = fixedType ?? (params.type ? pathToItemType(params.type) : null);
   const slugSegment = params.slug ?? "";
   const restPath = params["*"] ?? "";
   const fullSlug = restPath ? `${slugSegment}/${restPath}` : slugSegment;
   const catalogItemId = itemType ? `${itemType}:${fullSlug}` : null;
 
   const { data: catalog, isLoading, error } = useCatalog();
-  const { data: packages } = usePackages();
+  const { data: packages, error: packagesError } = usePackages();
   const [readmeText, setReadmeText] = useState<string | null>(null);
   const [readmeError, setReadmeError] = useState<string | null>(null);
   const [installModalOpen, setInstallModalOpen] = useState(false);
@@ -63,20 +67,49 @@ export default function MarketplaceDetail() {
     return catalog.items.find((i) => i.id === catalogItemId) ?? null;
   }, [catalog, catalogItemId]);
 
-  // AoA-first-party items live under the AoA view, not their type section — so the
-  // sidebar highlight + back link point to AoA for them.
-  const isAoa = item ? isAoaItem(item) : false;
-  useMarketplaceSidebar(isAoa ? "aoa" : itemType ?? "home");
-  const backTo = isAoa
-    ? "/marketplace?view=aoa"
-    : itemType
-      ? `/marketplace?type=${itemType}`
-      : "/marketplace";
-  const backLabel = isAoa
-    ? "AoA"
-    : itemType
-      ? TYPE_LABELS_PLURAL[itemType]
-      : "marketplace";
+  const placement = useMemo(
+    () => deriveMarketplacePlacement(catalog?.items ?? [], packages ?? []),
+    [catalog, packages],
+  );
+  // Placement (AoA classification → back-link, sidebar, "Part of X") depends on the
+  // packages query. Treat packages as part of load/error resolution so navigation is
+  // never derived from an empty `packages ?? []` fallback while the query is still in
+  // flight or has failed — otherwise an AoA-packaged item is mislabeled (permanently
+  // and silently on failure). See AGENTS.md §10 "do not silently ignore API errors".
+  const packagesResolved = packages !== undefined;
+  const detailError = error ?? packagesError ?? null;
+  // Show the skeleton until BOTH queries resolve — but never mask an error behind it:
+  // once catalog OR packages has errored, surface the error state immediately rather
+  // than waiting for the other query to settle.
+  const detailLoading = detailError == null && (isLoading || !packagesResolved);
+  const isAoa =
+    item && packagesResolved
+      ? placement.aoaRepresentedItemIds.has(item.id)
+      : false;
+  // Navigation (sidebar, breadcrumb, back-link) must reflect RESOLVED placement.
+  // Until both the item and the packages query resolve, AoA-vs-type membership is
+  // unknown, so neutralize nav to the generic marketplace target instead of
+  // committing to a possibly-wrong type/AoA target while loading or after a
+  // packages-load failure — otherwise an AoA package member flashes (or, on
+  // failure, persistently shows) a wrong "Skills" back-link (Codex P3; AGENTS.md §10).
+  const navResolved = item != null && packagesResolved;
+  useMarketplaceSidebar(
+    navResolved ? (isAoa ? "aoa" : itemType ?? "home") : "home",
+  );
+  const backTo = navResolved
+    ? isAoa
+      ? "/marketplace?view=aoa"
+      : itemType
+        ? `/marketplace?type=${itemType}`
+        : "/marketplace"
+    : "/marketplace";
+  const backLabel = navResolved
+    ? isAoa
+      ? "AoA"
+      : itemType
+        ? TYPE_LABELS_PLURAL[itemType]
+        : "marketplace"
+    : "marketplace";
 
   const parentPackage = useMemo(() => {
     if (!item || !packages) return null;
@@ -151,7 +184,7 @@ export default function MarketplaceDetail() {
           </div>
         )}
 
-        {itemType && isLoading && (
+        {itemType && detailLoading && (
           <div className="space-y-6 max-w-4xl mx-auto">
             <Skeleton className="h-10 w-64" />
             <Skeleton className="h-4 w-96" />
@@ -161,11 +194,11 @@ export default function MarketplaceDetail() {
           </div>
         )}
 
-        {itemType && !isLoading && (error || !catalog) && (
+        {itemType && !detailLoading && (detailError || !catalog) && (
           <div className="text-center py-12">
             <p className="text-lg font-medium">Could not load this item</p>
             <p className="text-sm text-muted-foreground mt-2">
-              {error?.message ?? "Catalog unavailable"}
+              {detailError?.message ?? "Catalog unavailable"}
             </p>
             <Link
               to={backTo}
@@ -176,7 +209,7 @@ export default function MarketplaceDetail() {
           </div>
         )}
 
-        {itemType && !isLoading && catalog && !item && (
+        {itemType && !detailLoading && !detailError && catalog && !item && (
           <div className="text-center py-12">
             <p className="text-lg font-medium">Item not found: {catalogItemId}</p>
             <Link
@@ -188,7 +221,7 @@ export default function MarketplaceDetail() {
           </div>
         )}
 
-        {itemType && !isLoading && item && Icon && (
+        {itemType && !detailLoading && !detailError && item && Icon && (
         <div className="max-w-4xl mx-auto space-y-8">
 
         {/* ── Hero ───────────────────────────────────────────────────────────── */}

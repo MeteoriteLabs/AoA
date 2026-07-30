@@ -54,7 +54,7 @@ export function organizationAccessService(db: Db) {
   async function ensureOrgMembership(
     organizationId: string, userId: string, role: OrganizationRole = "member", status = "active",
   ) {
-    // Race-safe + idempotent: P1's 0187 backfill and access.ensureRealOperator
+    // Race-safe + idempotent: P1's 0188 backfill and access.ensureRealOperator
     // (Task 10) may also insert the SAME (organizationId,userId) owner row, so the
     // insert uses onConflictDoNothing on the P1 unique index and re-reads. Never
     // downgrades an existing owner to a weaker role on conflict.

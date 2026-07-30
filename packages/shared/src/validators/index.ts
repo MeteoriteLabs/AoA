@@ -462,6 +462,17 @@ export {
 } from "./sidebar-preferences.js";
 
 export {
+  homeBoardLayoutItemSchema,
+  homeBoardLayoutArraySchema,
+  updateHomeBoardLayoutSchema,
+  validateHomeBoardLayout,
+  type HomeBoardLayoutItemInput,
+  type HomeBoardLayoutItemLike,
+  type HomeBoardLayoutValidationResult,
+  type UpdateHomeBoardLayout,
+} from "./home-board-layout.js";
+
+export {
   INBOX_DISMISSAL_ITEM_KEY_REGEX,
   inboxDismissalSchema,
   createInboxDismissalSchema,

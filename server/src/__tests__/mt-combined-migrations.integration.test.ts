@@ -1,11 +1,11 @@
 // server/src/__tests__/mt-combined-migrations.integration.test.ts
 //
 // Design note (honest): applyPendingMigrations applies the WHOLE chain to
-// head 0191 — the repo exposes no "migrate to 0186 then stop" seam. So this
+// head 0192 — the repo exposes no "migrate to 0186 then stop" seam. So this
 // AUTOMATED suite proves the chain's backfill statements are correct and
 // idempotent on populated rows and that cross-migration invariants (per-org
 // uniqueness, tenant-column population, cross-phase FKs) hold on a populated
-// DB. The TRUE staged "seed a pre-0187 backup -> apply -> assert -> rollback"
+// DB. The TRUE staged "seed a pre-0188 backup -> apply -> assert -> rollback"
 // is the executed drill in Phase 6 plan Section 7 against a real
 // `pnpm db:backup` snapshot (staging is natural there). Together they cover
 // migration-on-populated-DB end to end.
@@ -34,7 +34,7 @@ beforeAll(async () => {
     await pg.initialise();
     await pg.start();
     const conn = `postgres://test:test@localhost:${port}/postgres`;
-    await applyPendingMigrations(conn); // whole chain -> head 0191
+    await applyPendingMigrations(conn); // whole chain -> head 0192
     db = createDb(conn);
   } catch (err) {
     setupError = err;
@@ -58,27 +58,27 @@ afterAll(async () => {
 
 // Run only on Linux CI (embedded-postgres initdb encoding issue on Windows;
 // this mirrors the companies-delete-integration.test.ts harness).
-describe.skipIf(process.platform !== "linux")("MT chain 0187->0191 on populated rows", () => {
-  it("0187 seeded exactly one sentinel default organization", async () => {
+describe.skipIf(process.platform !== "linux")("MT chain 0188->0192 on populated rows", () => {
+  it("0188 seeded exactly one sentinel default organization", async () => {
     if (setupError) throw new Error(String(setupError));
     const r = rows(await db.execute(sql`SELECT id, slug FROM organizations WHERE id = ${DEFAULT_ORGANIZATION_ID}`));
     expect(r.length).toBe(1);
     expect(r[0].slug).toBe("default");
   });
 
-  it("re-running 0187's companies backfill on a NULL-tenant row populates it, leaves set rows untouched", async () => {
+  it("re-running 0188's companies backfill on a NULL-tenant row populates it, leaves set rows untouched", async () => {
     // A populated pre-migration company shape: organization_id explicitly NULL.
     await db.execute(sql`ALTER TABLE companies ALTER COLUMN organization_id DROP NOT NULL`);
     const ins = rows(await db.execute(sql`INSERT INTO companies (name, issue_prefix, organization_id) VALUES ('Legacy Co', 'LEG', NULL) RETURNING id`));
     const legacyId = ins[0].id;
-    // 0187's idempotent backfill statement (verbatim WHERE-guarded UPDATE).
+    // 0188's idempotent backfill statement (verbatim WHERE-guarded UPDATE).
     await db.execute(sql`UPDATE companies SET organization_id = ${DEFAULT_ORGANIZATION_ID} WHERE organization_id IS NULL`);
     const after = rows(await db.execute(sql`SELECT organization_id FROM companies WHERE id = ${legacyId}`));
     expect(after[0].organization_id).toBe(DEFAULT_ORGANIZATION_ID);
     await db.execute(sql`ALTER TABLE companies ALTER COLUMN organization_id SET NOT NULL`);
   });
 
-  it("0187 per-org prefix uniqueness holds; same prefix in a DIFFERENT org is allowed", async () => {
+  it("0188 per-org prefix uniqueness holds; same prefix in a DIFFERENT org is allowed", async () => {
     const a = rows(await db.execute(sql`INSERT INTO organizations (name, slug) VALUES ('Org A', 'org-a-chain') RETURNING id`))[0].id;
     const b = rows(await db.execute(sql`INSERT INTO organizations (name, slug) VALUES ('Org B', 'org-b-chain') RETURNING id`))[0].id;
     await db.execute(sql`INSERT INTO companies (name, issue_prefix, organization_id) VALUES ('CA', 'DUP', ${a})`);
@@ -86,7 +86,7 @@ describe.skipIf(process.platform !== "linux")("MT chain 0187->0191 on populated 
     await expect(db.execute(sql`INSERT INTO companies (name, issue_prefix, organization_id) VALUES ('CA2', 'DUP', ${a})`)).rejects.toThrow();
   });
 
-  it("0187 per-company identifier uniqueness: same identifier string in two companies is allowed", async () => {
+  it("0188 per-company identifier uniqueness: same identifier string in two companies is allowed", async () => {
     const org = rows(await db.execute(sql`INSERT INTO organizations (name, slug) VALUES ('Org D', 'org-d-chain') RETURNING id`))[0].id;
     const c1 = rows(await db.execute(sql`INSERT INTO companies (name, issue_prefix, organization_id) VALUES ('D1','DA',${org}) RETURNING id`))[0].id;
     const c2 = rows(await db.execute(sql`INSERT INTO companies (name, issue_prefix, organization_id) VALUES ('D2','DB',${org}) RETURNING id`))[0].id;
@@ -94,7 +94,7 @@ describe.skipIf(process.platform !== "linux")("MT chain 0187->0191 on populated 
     await expect(db.execute(sql`INSERT INTO issues (company_id, title, identifier, status) VALUES (${c2}, 'y', 'DUP-1', 'backlog')`)).resolves.toBeDefined();
   });
 
-  it("0188 company_secrets backfill populates organization_id from companies (idempotent on populated rows)", async () => {
+  it("0189 company_secrets backfill populates organization_id from companies (idempotent on populated rows)", async () => {
     const org = rows(await db.execute(sql`INSERT INTO organizations (name, slug) VALUES ('Org S', 'org-s-chain') RETURNING id`))[0].id;
     const co = rows(await db.execute(sql`INSERT INTO companies (name, issue_prefix, organization_id) VALUES ('S1','SS',${org}) RETURNING id`))[0].id;
     await db.execute(sql`INSERT INTO company_secrets (id, company_id, organization_id, name) VALUES (gen_random_uuid(), ${co}, NULL, 'sec')`);
@@ -103,7 +103,7 @@ describe.skipIf(process.platform !== "linux")("MT chain 0187->0191 on populated 
     expect(sec[0].organization_id).toBe(org);
   });
 
-  it("0190/0191 execution_targets FK to organizations resolves (cross-phase integrity)", async () => {
+  it("0191/0192 execution_targets FK to organizations resolves (cross-phase integrity)", async () => {
     const org = rows(await db.execute(sql`INSERT INTO organizations (name, slug) VALUES ('Org T', 'org-t-chain') RETURNING id`))[0].id;
     await expect(db.execute(sql`INSERT INTO execution_targets (organization_id, slug, kind, trust_class, status) VALUES (${org}, 'pool-chain', 'pooled_gvisor', 'shared_multitenant', 'offline')`)).resolves.toBeDefined();
     await expect(db.execute(sql`INSERT INTO execution_targets (organization_id, slug, kind, trust_class, status) VALUES ('00000000-0000-0000-0000-0000000000ff', 'pool-bad', 'pooled_gvisor', 'shared_multitenant', 'offline')`)).rejects.toThrow();

@@ -43,7 +43,7 @@
 - Docs: `docs/architecture/decisions.md`, `docs/deploy/environment-variables.md`, create `docs/aoa/guides/gvisor-worker-image.md`.
 - Generated migrations under `packages/db/src/migrations/` (+ `meta/_journal.json`, `meta/*_snapshot.json`) via `pnpm db:generate`.
 
-**Migration numbering (generate strictly in phase order, AFTER P1/P3/P4):** latest on branch is `0186_cold_psylocke`. P1 = `0187`, P3 = `0188`, P4 = `0189`. **Phase 5 = `0190` (execution_targets) + `0191` (environments.execution_target_id) — or a single bundled `0190` if both schema changes are generated in one `pnpm db:generate` pass.** Do not generate P5 migrations until P1-P4 have taken 0187-0189, or the ordinals will collide.
+**Migration numbering (generate strictly in phase order, AFTER P1/P3/P4):** latest on branch is `0186_cold_psylocke`. P1 = `0188`, P3 = `0189`, P4 = `0190`. **Phase 5 = `0191` (execution_targets) + `0192` (environments.execution_target_id) — or a single bundled `0191` if both schema changes are generated in one `pnpm db:generate` pass.** Do not generate P5 migrations until P1-P4 have taken 0188-0190, or the ordinals will collide.
 
 **Cross-phase ownership (do NOT duplicate):** `heartbeat.ts:2946-4035` is JOINTLY owned with Phase 4 and executed **P4-FIRST**. P4 Task 12(b) DELETES the `:3991-4035` subscription block and folds its subscription-home logic into a `legacySubscriptionEnv` closure (the old dedicated-target throw now lives inside that closure's `local` branch). Phase 5 Task 9 therefore builds on P4's **post-delete** heartbeat — it must NOT assume the `:3991-4035` block still exists, and must NOT re-read `provider_credentials` directly. Phase 5 consumes P4's normalized seam by name: `{ credentialKind: "company_api_key" | "personal_subscription" | null, executionTargetSlug: string | null }`.
 
@@ -643,7 +643,7 @@ Expected: FAIL — module `./execution_targets.js` not found.
 // packages/db/src/schema/execution_targets.ts
 import { pgTable, uuid, text, jsonb, timestamp, index, unique } from "drizzle-orm/pg-core";
 import { authUsers } from "./auth.js";
-import { organizations } from "./organizations.js"; // P1 (0187) — merged before P5
+import { organizations } from "./organizations.js"; // P1 (0188) — merged before P5
 
 /**
  * Tenant-scoped execution-target registry (fleet inventory).
@@ -698,7 +698,7 @@ Expected: PASS
 
 - [ ] **Step 5: Generate migration + seed the control-plane row**
 
-Run: `pnpm db:generate` (produces `packages/db/src/migrations/0190_*.sql` + updated `meta/_journal.json` + `meta/0190_snapshot.json` — assumes P1-P4 already took 0187-0189).
+Run: `pnpm db:generate` (produces `packages/db/src/migrations/0191_*.sql` + updated `meta/_journal.json` + `meta/0191_snapshot.json` — assumes P1-P4 already took 0188-0190).
 
 The **concrete seed site** is the boot sequence in `server/src/index.ts` (~`:568-575`, immediately after `initializeBoardClaimChallenge` / alongside `backfillWorkQuestionSnapshots(db)` — this is exactly where P1's `ensureDefaultOrganization(db)` will be invoked at boot). Create the idempotent helper in `server/src/services/execution-targets.ts` and call it there:
 
@@ -730,7 +730,7 @@ await ensureControlPlaneExecutionTarget(db as any);
 
 ```bash
 git add packages/db/src/schema/execution_targets.ts packages/db/src/schema/index.ts packages/db/src/schema/execution-targets-schema.test.ts packages/db/src/migrations server/src/services/execution-targets.ts server/src/index.ts
-git commit -m "feat(mt-phase5): execution_targets registry schema + migration 0190 + control-plane boot seed"
+git commit -m "feat(mt-phase5): execution_targets registry schema + migration 0191 + control-plane boot seed"
 ```
 
 ---
@@ -861,13 +861,13 @@ And add `executionTargetId: z.string().uuid().optional().nullable(),` to both `c
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pnpm --filter @armyofagents/shared test -- environment-gvisor`
-Expected: PASS. Then `pnpm db:generate` for the `execution_target_id` column migration (`packages/db/src/migrations/0191_*.sql`; or fold into `0190` if generated in the same pass as Task 4).
+Expected: PASS. Then `pnpm db:generate` for the `execution_target_id` column migration (`packages/db/src/migrations/0192_*.sql`; or fold into `0191` if generated in the same pass as Task 4).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add packages/db/src/schema/environments.ts packages/shared/src/validators/environment.ts packages/shared/src/validators/execution-target.ts packages/shared/src/validators/environment-gvisor.test.ts packages/db/src/migrations
-git commit -m "feat(mt-phase5): environments.execution_target_id FK (migration 0191) + gvisor config + executionTarget validators"
+git commit -m "feat(mt-phase5): environments.execution_target_id FK (migration 0192) + gvisor config + executionTarget validators"
 ```
 
 ---

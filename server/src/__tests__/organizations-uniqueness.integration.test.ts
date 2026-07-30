@@ -37,7 +37,7 @@ afterAll(async () => {
   try { if (dataDir) await rm(dataDir, { recursive: true, force: true }); } catch { /* ignore */ }
 }, 60_000);
 
-describe.skipIf(process.platform !== "linux")("0187 uniqueness matrix — real DB", () => {
+describe.skipIf(process.platform !== "linux")("0188 uniqueness matrix — real DB", () => {
   it("allows the SAME issue_prefix in DIFFERENT organizations", async () => {
     if (setupError) throw new Error(String(setupError));
     const orgs = organizationService(db);

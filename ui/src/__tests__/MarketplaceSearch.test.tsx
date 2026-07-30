@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, Outlet } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { MarketplacePackage } from "@armyofagents/shared";
 
 import MarketplaceSearch from "@/pages/MarketplaceSearch";
 import { marketplaceApi } from "@/api/marketplace";
@@ -12,7 +13,10 @@ vi.mock("@/api/marketplace", async () => {
   const actual = await vi.importActual<typeof import("@/api/marketplace")>(
     "@/api/marketplace",
   );
-  return { ...actual, marketplaceApi: { getCatalog: vi.fn() } };
+  return {
+    ...actual,
+    marketplaceApi: { getCatalog: vi.fn(), getPackages: vi.fn() },
+  };
 });
 
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => mockCompanyContext }));
@@ -45,6 +49,7 @@ function wrap(initialPath: string) {
 describe("MarketplaceSearch", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(marketplaceApi.getPackages).mockResolvedValue([]);
   });
 
   it("groups results by type", async () => {
@@ -75,4 +80,56 @@ describe("MarketplaceSearch", () => {
     );
   });
 
+  it("waits for package placement without exposing an AoA package member", async () => {
+    let resolvePackages!: (packages: MarketplacePackage[]) => void;
+    vi.mocked(marketplaceApi.getCatalog).mockResolvedValueOnce(FULL_CATALOG);
+    vi.mocked(marketplaceApi.getPackages).mockReturnValueOnce(
+      new Promise<MarketplacePackage[]>((resolve) => {
+        resolvePackages = resolve;
+      })
+    );
+
+    wrap("/marketplace/search?q=Code");
+
+    await waitFor(() => expect(marketplaceApi.getCatalog).toHaveBeenCalled());
+    expect(screen.queryByText("Code Review")).not.toBeInTheDocument();
+
+    await act(async () => {
+      resolvePackages([
+        {
+          id: "MeteoriteLabs/aoa-marketplace",
+          name: "AoA skills package",
+          sourceUrl: "https://github.com/MeteoriteLabs/aoa-marketplace",
+          memberItemIds: ["skill:aoa-curated/code-review"],
+          count: 1,
+          verified: true,
+          explicit: false,
+        },
+      ]);
+    });
+
+    await waitFor(() =>
+      expect(screen.getByText(/No items match/)).toBeInTheDocument()
+    );
+    expect(screen.queryByText("Code Review")).not.toBeInTheDocument();
+  });
+
+  it("surfaces package placement errors without rendering raw catalog results", async () => {
+    vi.mocked(marketplaceApi.getCatalog).mockResolvedValueOnce(FULL_CATALOG);
+    vi.mocked(marketplaceApi.getPackages).mockRejectedValueOnce(
+      new Error("Package placement unavailable")
+    );
+
+    wrap("/marketplace/search?q=Code");
+
+    await waitFor(() =>
+      expect(
+        screen.getByText("Could not load search results")
+      ).toBeInTheDocument()
+    );
+    expect(
+      screen.getByText("Package placement unavailable")
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Code Review")).not.toBeInTheDocument();
+  });
 });

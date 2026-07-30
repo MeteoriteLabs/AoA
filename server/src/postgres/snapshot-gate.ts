@@ -7,10 +7,10 @@ export interface SnapshotGateInput {
   recordedSnapshots: string[];
 }
 
-const GATED_MIGRATION = "0187";
+const GATED_MIGRATION = "0188";
 
 /**
- * Pure predicate: true => refuse to apply 0187 until an operator records a
+ * Pure predicate: true => refuse to apply 0188 until an operator records a
  * snapshot marker. Only bites on cloud_auth with real data at stake.
  */
 export function shouldBlockForMissingSnapshot(input: SnapshotGateInput): boolean {
@@ -24,9 +24,9 @@ export function shouldBlockForMissingSnapshot(input: SnapshotGateInput): boolean
 export class SnapshotGateError extends Error {
   constructor() {
     super(
-      "Refusing to apply migration 0187 (multi-tenant tenant schema): deploymentMode is " +
+      "Refusing to apply migration 0188 (multi-tenant tenant schema): deploymentMode is " +
         "cloud_auth with a populated companies table and no snapshot marker. Take a full DB " +
-        "snapshot, then record it via instance_settings.general.migrationSnapshots += \"0187\" " +
+        "snapshot, then record it via instance_settings.general.migrationSnapshots += \"0188\" " +
         "before restarting. (One-way door once a second Organization exists.)",
     );
     this.name = "SnapshotGateError";
