@@ -115,9 +115,15 @@ export function reconcileLg(saved: readonly HomeBoardLayoutItem[], role: UserRol
     clamped.push({ i: item.i, x: item.x, y: item.y, w: size.w, h: size.h });
   }
 
-  if (!hasOverlap(clamped)) return clamped;
+  // Both checks matter: a clamp can WIDEN a footprint (e.g. approvals'
+  // legacy {w:1,h:1} no longer exists in its allowedSizes and clamps up to
+  // {w:2,h:1}) past the board's right edge without colliding with any
+  // neighbor — hasOverlap alone misses that, and returning it as-is would
+  // hard-400 the save PATCH forever (see gridLayout.test.ts's approvals
+  // 1x1@x:3 regression case).
+  if (!hasOverlap(clamped) && isWithinBounds(clamped, HOME_BOARD_LG_COLS)) return clamped;
 
-  // A clamp shrank/grew a footprint into a neighbor. Re-pack everything
+  // A clamp shrank/grew a footprint into a neighbor, or out of bounds. Re-pack everything
   // deterministically: sort into reading order (top-to-bottom, left-to-
   // right) to stay as close to the user's saved arrangement as possible,
   // falling back to the role's canonical widget order only to break ties

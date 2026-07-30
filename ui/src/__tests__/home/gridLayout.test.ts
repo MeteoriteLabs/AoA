@@ -134,6 +134,30 @@ describe("reconcileLg", () => {
     const result = reconcileLg(saved, "founder");
     expect(result).toHaveLength(2);
   });
+
+  // Migration regression: approvals dropped {w:1,h:1} from its allowedSizes
+  // when Plan 7 Task 5 turned it from a stat into a list widget (see
+  // HOME_BOARD_ALLOWED_SIZES.approvals) — a legacy saved layout with
+  // approvals at 1x1 now clamps to the nearest allowed size, {w:2,h:1} (a
+  // WIDENING clamp, not a shrink). At x:3, that widens approvals' footprint
+  // past the 4-col board (x+w=5) — an out-of-bounds layout. Nothing else on
+  // this saved layout occupies x:3-5, so hasOverlap alone never catches it:
+  // the old `if (!hasOverlap(clamped)) return clamped;` returned that
+  // out-of-bounds layout as-is, which the server's PATCH validator then
+  // hard-400'd forever (Retry just resends the same bad draft).
+  it("falls through to a re-pack when a clamp widens a footprint out of bounds without colliding with a neighbor (approvals 1x1@x:3 -> 2x1 save-400 regression)", () => {
+    const saved: HomeBoardLayoutItem[] = [
+      { i: "approvals", x: 3, y: 0, w: 1, h: 1 },
+      { i: "agents-now", x: 0, y: 0, w: 1, h: 1 },
+    ];
+    const result = reconcileLg(saved, "founder");
+    const approvals = result.find((item) => item.i === "approvals")!;
+    expect(approvals).toBeDefined();
+    expect(approvals.x + approvals.w).toBeLessThanOrEqual(HOME_BOARD_LG_COLS);
+    assertNoOverlap(result);
+    assertInBounds(result, HOME_BOARD_LG_COLS);
+    expect(result.map((item) => item.i).sort()).toEqual(["agents-now", "approvals"]);
+  });
 });
 
 describe("projectToBreakpoint", () => {
