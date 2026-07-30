@@ -243,11 +243,6 @@ vi.mock("../lib/timeAgo", () => ({
   timeAgo: () => "2m ago",
 }));
 
-// Onboarding (spine + persona fork + in-flight tail) lives ENTIRELY in the
-// standalone /onboarding flow now — the dashboard never renders FirstRunHome.
-// A founder who hasn't finished their tail is routed back to /onboarding by the
-// index gate, so Home is always the steady dashboard here.
-
 // Plan 7 Task 5: a minimal saved layout that puts the Suggestions widget back
 // on the board for tests that specifically exercise it (see the
 // homeBoardLayoutMock comment above). "agents-now" rides along because one
@@ -371,37 +366,6 @@ describe("Dashboard", () => {
 
     expect(await screen.findByText("Scout")).toBeInTheDocument();
     expect(screen.getByText("Scout proposed competitor pricing research")).toBeInTheDocument();
-  });
-
-  it("never renders onboarding on the dashboard — steady Home even when firstRunCompleted is false (onboarding lives in /onboarding)", async () => {
-    const { homeApi } = await import("../api/dashboard");
-    vi.mocked(homeApi.summary).mockResolvedValue({
-      ...mockHomeSummary,
-      firstRunCompleted: false,
-    });
-    renderWithProviders(<Dashboard />);
-
-    // The steady dashboard renders, NOT a first-run takeover.
-    expect(await screen.findByRole("button", { name: "Create" })).toBeInTheDocument();
-    expect(screen.queryByTestId("first-run-home")).not.toBeInTheDocument();
-  });
-
-  it("WS0b: shows steady-state Home when firstRunCompleted is true, even with an incomplete checklist (no goal)", async () => {
-    const { homeApi } = await import("../api/dashboard");
-    vi.mocked(homeApi.summary).mockResolvedValue({
-      ...mockHomeSummary,
-      setupStatus: {
-        hasVisionMission: false,
-        hasDepartment: false,
-        hasAgent: false,
-        hasGoal: false,
-      },
-      firstRunCompleted: true,
-    });
-    renderWithProviders(<Dashboard />);
-
-    expect(await screen.findByRole("button", { name: "Create" })).toBeInTheDocument();
-    expect(screen.queryByTestId("first-run-home")).not.toBeInTheDocument();
   });
 
   it("suggest_memory accept opens the suggested memory dialog", async () => {

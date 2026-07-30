@@ -663,6 +663,37 @@ describe("useBoardEdit", () => {
       expect(mocks.saveAsync).not.toHaveBeenCalled();
       expect(result.current.editing).toBe(false);
     });
+
+    // View-mode Reset (Plan 7 Task 3): HomeBoardControls' "Reset to default"
+    // menu item is reachable from the NOT-editing dropdown — its confirm
+    // dialog calls `resetBoard()` directly, with `startEdit()` never called
+    // first. Every other resetBoard test above enters edit mode first; this
+    // is the one genuinely different call shape.
+    it("called directly in view mode (no prior startEdit) still fires the reset mutation and converges lg to the role default", () => {
+      // A custom single-widget saved layout — clearly not the 8-widget
+      // founder default — so "converges to the default" is a meaningful
+      // assertion, not trivially true from the start.
+      mocks.layout = [{ i: "budget", x: 0, y: 0, w: 1, h: 1 }];
+      const { result, rerender } = renderHook(() => useBoardEdit(COMPANY_A, "founder"));
+      expect(result.current.editing).toBe(false);
+      expect(result.current.lg).toEqual(mocks.layout);
+
+      act(() => result.current.resetBoard());
+
+      expect(mocks.reset).toHaveBeenCalledTimes(1);
+      expect(result.current.editing).toBe(false); // resetBoard doesn't itself enter edit mode
+
+      // While still not editing, `lg` always tracks `sourceLg` (draft is
+      // ignored) — so the board only visibly converges once the DELETE's
+      // success invalidates + refetches the underlying layout query, which
+      // resolves it to null (same mechanism the "background refetch" tests
+      // above simulate via rerender after mutating the mock).
+      mocks.layout = null;
+      act(() => rerender());
+
+      expect(result.current.lg).toEqual(buildDefaultLg("founder"));
+      expect(result.current.editing).toBe(false);
+    });
   });
 
   // [P2] Reset failure was silent: useBoardEdit never threaded
