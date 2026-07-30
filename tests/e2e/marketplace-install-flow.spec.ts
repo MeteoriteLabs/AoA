@@ -173,7 +173,7 @@ test.describe("Marketplace install flow", () => {
     });
 
     // Verify no error state is shown after the install request
-    await expect(page.getByText("Could not load the marketplace")).not.toBeVisible();
+    await expect(page.getByText("Failed to load marketplace.")).not.toBeVisible();
   });
 
   test("full visual snapshot: marketplace page with Plugins type filter active", async ({
@@ -199,7 +199,7 @@ test.describe("Marketplace install flow", () => {
     });
 
     // Verify no error state
-    await expect(page.getByText("Could not load the marketplace")).not.toBeVisible();
+    await expect(page.getByText("Failed to load marketplace.")).not.toBeVisible();
 
     // Post supply-chain recovery, the fixture's aoa-curated plugins render as cards
     // in the Plugins shelf (previously they were hidden behind a cross-sell empty

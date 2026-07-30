@@ -77,8 +77,11 @@ export default function MarketplaceDetail({ fixedType }: MarketplaceDetailProps 
   // flight or has failed — otherwise an AoA-packaged item is mislabeled (permanently
   // and silently on failure). See AGENTS.md §10 "do not silently ignore API errors".
   const packagesResolved = packages !== undefined;
-  const detailLoading = isLoading || (!packagesResolved && packagesError == null);
   const detailError = error ?? packagesError ?? null;
+  // Show the skeleton until BOTH queries resolve — but never mask an error behind it:
+  // once catalog OR packages has errored, surface the error state immediately rather
+  // than waiting for the other query to settle.
+  const detailLoading = detailError == null && (isLoading || !packagesResolved);
   const isAoa =
     item && packagesResolved
       ? placement.aoaRepresentedItemIds.has(item.id)

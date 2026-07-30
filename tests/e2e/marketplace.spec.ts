@@ -221,7 +221,7 @@ test.describe("Marketplace UI", () => {
 
     // Wait for catalog to settle (either data or empty-state — not error)
     await expect(
-      page.getByText("Could not load the marketplace"),
+      page.getByText("Failed to load marketplace."),
     ).not.toBeVisible({ timeout: 15_000 });
   });
 
@@ -269,10 +269,12 @@ test.describe("Marketplace UI", () => {
     await expect(
       page.getByRole("heading", { level: 1, name: /marketplace/i }),
     ).toBeVisible({ timeout: 15_000 });
-    // AoA view renders cleanly (no error) and does not surface first-party plugins.
-    await expect(
-      page.getByText("Could not load the marketplace"),
-    ).not.toBeVisible();
+    // Wait for the AoA view to SETTLE before the negative check — page.goto reloads
+    // cold, so asserting "Slack not visible" against the still-loading skeleton would
+    // pass vacuously. The fixture has no AoA package/crew/agents, so the AoA shelf
+    // resolves to the empty state; wait for it, then confirm first-party plugins are
+    // not surfaced here (and that the empty state, not an error, is what rendered).
+    await expect(page.getByText("No matches.")).toBeVisible({ timeout: 15_000 });
     await expect(
       page.getByRole("heading", { name: "Slack", level: 3 }),
     ).not.toBeVisible();
