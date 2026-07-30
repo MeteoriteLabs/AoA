@@ -27,6 +27,15 @@ interface CompanyContextValue {
   reloadCompanies: () => Promise<void>;
   createCompany: (data: {
     name: string;
+    // Phase 2 Task 12: the founder wizard's org-first sequence always creates
+    // the tenant Organization (CreateOrganizationStep) before OrgStep calls
+    // this, so it's normally supplied. Optional (not required) because
+    // OnboardingFlow.tsx's standalone "create another company" surface
+    // (`/onboarding?new=1`, which renders OrgStep directly, bypassing
+    // CreateOrganizationStep) has no organizationId to pass — omitting it
+    // makes the server derive DEFAULT_ORGANIZATION_ID, matching prior
+    // (pre-Phase-2) behavior. See OrgStep.tsx's submit().
+    organizationId?: string;
     description?: string | null;
     budgetMonthlyCents?: number;
   }) => Promise<Company>;
@@ -122,7 +131,7 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
   }, [queryClient]);
 
   const createMutation = useMutation({
-    mutationFn: (data: { name: string; description?: string | null; budgetMonthlyCents?: number }) =>
+    mutationFn: (data: { name: string; organizationId?: string; description?: string | null; budgetMonthlyCents?: number }) =>
       companiesApi.create(data),
     onSuccess: (company) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
@@ -131,7 +140,7 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
   });
 
   const createCompany = useCallback(
-    async (data: { name: string; description?: string | null; budgetMonthlyCents?: number }) => {
+    async (data: { name: string; organizationId?: string; description?: string | null; budgetMonthlyCents?: number }) => {
       return createMutation.mutateAsync(data);
     },
     [createMutation],

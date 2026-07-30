@@ -92,6 +92,16 @@ export function OnboardingFlowPage({ journey }: { journey: OnboardingJourney }) 
       companyId: null,
       journey,
       completedStates: ["AUTHENTICATED", "PROFILE_SET"] as OnboardingState[],
+      // This standalone surface bypasses CreateOrganizationStep entirely, so
+      // there is no live Organization id to hand OrgStep — it omits
+      // organizationId from the create-company call when null (see
+      // OrgStep.tsx submit()), and the server derives DEFAULT_ORGANIZATION_ID.
+      // KNOWN GAP (flagged, not fixed here — out of Phase 2 Task 2/3/12
+      // scope): in cloud_auth, a returning founder using this "create another
+      // company" surface will land the new company in the default org rather
+      // than their own, until this looks up the founder's real organization
+      // membership (e.g. via organizationsApi.list()).
+      organizationId: null,
     };
     return (
       <DarkShell>

@@ -4,7 +4,10 @@ import { OrgStep } from "../OrgStep";
 import { validateRegistry, type StepContext } from "../../registry";
 import { ONBOARDING_STEPS } from "../index";
 
-const createCompany = vi.fn(async (_data: { name: string }) => ({ id: "c1", name: "Acme" }));
+const createCompany = vi.fn(async (_data: { name: string; organizationId: string }) => ({
+  id: "c1",
+  name: "Acme",
+}));
 vi.mock("../../../context/CompanyContext", () => ({
   useCompany: () => ({ createCompany }),
 }));
@@ -14,17 +17,20 @@ const companiesGet = vi.hoisted(() =>
 vi.mock("../../../api/companies", () => ({ companiesApi: { get: companiesGet } }));
 vi.mock("../../../api/onboarding", () => ({
   advanceOnboarding: vi.fn(async () => ({
-    completedStates: ["AUTHENTICATED", "PROFILE_SET", "ORGANIZATION_CREATED"],
+    completedStates: ["AUTHENTICATED", "PROFILE_SET", "COMPANY_CREATED"],
   })),
 }));
 
 import { advanceOnboarding } from "../../../api/onboarding";
 
+// Phase 2 Task 12: organizationId is populated by the preceding
+// CreateOrganizationStep and forwarded into createCompany.
 const ctx: StepContext = {
   userId: "u1",
   companyId: null,
   journey: "founder",
   completedStates: ["AUTHENTICATED", "PROFILE_SET"],
+  organizationId: "org1",
 };
 
 describe("OrgStep (Stage C / order 2)", () => {
@@ -33,7 +39,7 @@ describe("OrgStep (Stage C / order 2)", () => {
     localStorage.clear();
   });
 
-  it("requires an organization name", async () => {
+  it("requires a company name", async () => {
     const onComplete = vi.fn();
     render(<OrgStep ctx={ctx} onComplete={onComplete} onBack={() => {}} />);
     fireEvent.click(screen.getByText("Continue"));
@@ -42,17 +48,17 @@ describe("OrgStep (Stage C / order 2)", () => {
     expect(onComplete).not.toHaveBeenCalled();
   });
 
-  it("creates the org, advances ORGANIZATION_CREATED on the NEW company, then completes", async () => {
+  it("creates the company, advances COMPANY_CREATED on the NEW company, then completes", async () => {
     const onComplete = vi.fn();
     render(<OrgStep ctx={ctx} onComplete={onComplete} onBack={() => {}} />);
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "Acme" } });
     fireEvent.click(screen.getByText("Continue"));
     await waitFor(() => expect(onComplete).toHaveBeenCalled());
-    expect(createCompany).toHaveBeenCalledWith({ name: "Acme" });
+    expect(createCompany).toHaveBeenCalledWith({ name: "Acme", organizationId: "org1" });
     expect(advanceOnboarding).toHaveBeenCalledWith({
       companyId: "c1",
       journey: "founder",
-      requestedState: "ORGANIZATION_CREATED",
+      requestedState: "COMPANY_CREATED",
     });
     expect(localStorage.getItem("aoa.onboarding.pendingOrganization.u1")).toBeNull();
   });
@@ -63,7 +69,7 @@ describe("OrgStep (Stage C / order 2)", () => {
     (advanceOnboarding as unknown as ReturnType<typeof vi.fn>)
       .mockRejectedValueOnce(new Error("network"))
       .mockResolvedValueOnce({
-        completedStates: ["AUTHENTICATED", "PROFILE_SET", "ORGANIZATION_CREATED"],
+        completedStates: ["AUTHENTICATED", "PROFILE_SET", "COMPANY_CREATED"],
       });
     const onComplete = vi.fn();
     render(<OrgStep ctx={ctx} onComplete={onComplete} onBack={() => {}} />);
@@ -86,7 +92,7 @@ describe("OrgStep (Stage C / order 2)", () => {
     (advanceOnboarding as unknown as ReturnType<typeof vi.fn>)
       .mockRejectedValueOnce(new Error("network"))
       .mockResolvedValueOnce({
-        completedStates: ["AUTHENTICATED", "PROFILE_SET", "ORGANIZATION_CREATED"],
+        completedStates: ["AUTHENTICATED", "PROFILE_SET", "COMPANY_CREATED"],
       });
     const firstComplete = vi.fn();
     const firstRender = render(
@@ -108,7 +114,7 @@ describe("OrgStep (Stage C / order 2)", () => {
     expect(advanceOnboarding).toHaveBeenLastCalledWith({
       companyId: "c1",
       journey: "founder",
-      requestedState: "ORGANIZATION_CREATED",
+      requestedState: "COMPANY_CREATED",
     });
     expect(localStorage.getItem("aoa.onboarding.pendingOrganization.u1")).toBeNull();
   });
@@ -130,11 +136,11 @@ describe("OrgStep (Stage C / order 2)", () => {
     expect(advanceOnboarding).toHaveBeenCalledWith({
       companyId: "existing-company",
       journey: "founder",
-      requestedState: "ORGANIZATION_CREATED",
+      requestedState: "COMPANY_CREATED",
     });
   });
 
-  it("revisited (walk-back) state is read-only: shows the created org's name, no editable field", async () => {
+  it("revisited (walk-back) state is read-only: shows the created company's name, no editable field", async () => {
     const onComplete = vi.fn();
     render(
       <OrgStep
@@ -144,8 +150,8 @@ describe("OrgStep (Stage C / order 2)", () => {
       />,
     );
 
-    // The org already exists — an editable empty field here would silently
-    // discard whatever the founder typed (the input was never read).
+    // The company already exists — an editable empty field here would
+    // silently discard whatever the founder typed (the input was never read).
     expect(screen.queryByRole("textbox")).toBeNull();
     expect(screen.getByText(/already created/i)).toBeTruthy();
     await waitFor(() =>
@@ -159,7 +165,7 @@ describe("OrgStep (Stage C / order 2)", () => {
     expect(advanceOnboarding).toHaveBeenCalledWith({
       companyId: "existing-company",
       journey: "founder",
-      requestedState: "ORGANIZATION_CREATED",
+      requestedState: "COMPANY_CREATED",
     });
   });
 
@@ -184,13 +190,18 @@ describe("OrgStep (Stage C / order 2)", () => {
   });
 });
 
-describe("assembled registry includes the org step", () => {
+describe("assembled registry includes the company step", () => {
   it("ONBOARDING_STEPS still passes the registry guard", () => {
     expect(validateRegistry(ONBOARDING_STEPS)).toEqual([]);
   });
-  it("registers the org step at order 2 for the founder journey", () => {
-    const org = ONBOARDING_STEPS.find((s) => s.state === "ORGANIZATION_CREATED");
+  it("registers the company step (id 'company') at order 2 for the founder journey", () => {
+    // Phase 2 Task 3/12: two steps now nominally target COMPANY_CREATED (the
+    // new "organization"/CreateOrganizationStep placeholder at order 1.5, and
+    // the real "company"/OrgStep at order 2) — look up by id, not by state,
+    // to avoid Array.find grabbing the wrong one.
+    const org = ONBOARDING_STEPS.find((s) => s.id === "company");
     expect(org).toBeTruthy();
+    expect(org?.state).toBe("COMPANY_CREATED");
     expect(org?.order).toBe(2);
     expect(org?.journeys).toEqual(["founder"]);
     expect(org?.dependsOn).toEqual(["PROFILE_SET"]);

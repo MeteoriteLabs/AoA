@@ -10,6 +10,15 @@ export type StepContext = {
   companyId: string | null;
   journey: OnboardingJourney;
   completedStates: OnboardingState[];
+  /**
+   * The id of the Organization (multi-tenant account) created by
+   * `CreateOrganizationStep` (Phase 2 Task 12), forwarded into the following
+   * company step's `createCompany` call. Ephemeral — FlowEngine holds this in
+   * memory (not derived from `onboarding_progress`, since Organizations sit
+   * above the per-company progress row); it does not survive a hard reload.
+   */
+  organizationId: string | null;
+  setOrganizationId?: (id: string) => void;
 };
 
 export type StepProps = {

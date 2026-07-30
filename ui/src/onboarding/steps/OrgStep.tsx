@@ -19,8 +19,8 @@ import { FIELD, GradientText, LABEL, StepCard, StepHeading, StepShell } from "./
  * and copy from ORGANIZATION_CREATED/"organization" to COMPANY_CREATED/
  * "company" — the wizard historically said "organization" but meant COMPANY.
  * The actual multi-tenant Organization is now created a step earlier by
- * `CreateOrganizationStep` (Task 12 forwards its id into `createCompany`).
- * Creates the company via the CompanyContext primitive
+ * `CreateOrganizationStep`, whose id `ctx.organizationId` this step forwards
+ * into `createCompany`. Creates the company via the CompanyContext primitive
  * — which invalidates the companies query AND sets it as the selected company
  * (the RB1 handshake: the selectedCompanyId change reloads the FlowEngine
  * from the user layer to the NEW company's layer). The advance therefore
@@ -72,7 +72,15 @@ export function OrgStep({ ctx, onComplete }: StepProps) {
     setBusy(true);
     setError(null);
     try {
-      const company = resumableCompany ?? (await createCompany({ name: name.trim() }));
+      // organizationId is normally set by the preceding CreateOrganizationStep
+      // (ctx.organizationId truthy). It's absent only on the standalone
+      // "create another company" surface (OnboardingFlow.tsx `?new=1`, which
+      // renders this step directly, bypassing CreateOrganizationStep) — omit
+      // it there rather than send a literal `null` the create-company route
+      // would reject; the server derives DEFAULT_ORGANIZATION_ID instead.
+      const company =
+        resumableCompany ??
+        (await createCompany({ name: name.trim(), organizationId: ctx.organizationId ?? undefined }));
       createdRef.current = company;
       writePendingOrganization(ctx.userId, company);
       await advanceOnboarding({
