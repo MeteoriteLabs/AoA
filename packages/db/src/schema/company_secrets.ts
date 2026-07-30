@@ -9,6 +9,9 @@ export const companySecrets = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    // Tenant (Organization) denormalization for the RLS canary (Phase 3, B5).
+    // Nullable + backfilled from companies.organization_id in migration 0188.
+    organizationId: uuid("organization_id"),
     name: text("name").notNull(),
     key: text("key"),
     status: text("status").notNull().default("active"),

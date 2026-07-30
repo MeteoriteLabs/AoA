@@ -4,6 +4,7 @@ export { organizationMemberships } from "./organization_memberships.js";
 export { organizationInvitations } from "./organization_invitations.js";
 export { authUsers, authSessions, authAccounts, authVerifications } from "./auth.js";
 export { instanceUserRoles } from "./instance_user_roles.js";
+export { operatorBreakGlassGrants } from "./operator_break_glass_grants.js";
 export { agents } from "./agents.js";
 export { companyMemberships } from "./company_memberships.js";
 export { principalPermissionGrants } from "./principal_permission_grants.js";
