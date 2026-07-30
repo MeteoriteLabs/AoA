@@ -1324,6 +1324,13 @@
       "when": 1785410140076,
       "tag": "0188_sticky_logan",
       "breakpoints": true
+    },
+    {
+      "idx": 189,
+      "version": "7",
+      "when": 1785415824435,
+      "tag": "0189_charming_lady_deathstrike",
+      "breakpoints": true
     }
   ]
 }
