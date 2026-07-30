@@ -90,6 +90,22 @@ export const memoryItems = pgTable(
     // Phase 6: drives the virtual "Pinned" folder at the top of the tree.
     // NOT the same as pinnedToSkill (which materializes into agent skill files).
     founderPinnedToTop: boolean("founder_pinned_to_top").notNull().default(false),
+    // --- Enterprise memory model (P0, additive/non-breaking) ---
+    // Typed ownership. Today ownership is inferred from scope; these make it explicit.
+    ownerType: text("owner_type"), // "company" | "department" | "project" | "user" | "agent"
+    ownerId: uuid("owner_id"),
+    // Autonomy tier. Null → derived from `layer` at policy time (see memory-tier-policy.ts).
+    tier: text("tier"), // "protected" | "durable" | "ephemeral" | "consolidation" | "derived"
+    confidence: integer("confidence"), // 0..100 extraction/consolidation confidence (integer pct)
+    // Provenance / evidence pointer.
+    provenanceKind: text("provenance_kind"), // "human" | "discussion" | "braindump" | "run" | "external" | "consolidation"
+    sourceRef: text("source_ref"), // freeform source id (run id, thread id, doc id)
+    trust: text("trust"), // "observed" | "extracted" | "proposed" | "approved" | "verified"
+    // Temporal validity.
+    effectiveFrom: timestamp("effective_from", { withTimezone: true }),
+    effectiveTo: timestamp("effective_to", { withTimezone: true }),
+    // Correction/forgetting: retrieval excludes rows with a non-null value (history preserved).
+    invalidatedAt: timestamp("invalidated_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
