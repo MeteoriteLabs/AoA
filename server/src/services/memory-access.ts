@@ -18,6 +18,8 @@ export interface AccessibleMemoryRow {
   visibility: string;
   departmentId: string | null;
   projectId: string | null;
+  goalId?: string | null;
+  taskId?: string | null;
   ownerType?: string | null;
   ownerId?: string | null;
   agentId: string | null;
@@ -43,8 +45,23 @@ export function canActorSee(item: AccessibleMemoryRow, actor: MemoryActor): bool
   if (item.layer === "identity") return true; // company core, everyone
   if (item.visibility === "company") return true; // explicitly company-wide
   if (actor.kind === "founder") return true; // founder sees all non-private
-  // scoped → department match
-  return item.departmentId != null && actor.departmentIds.includes(item.departmentId);
+  // Scoped: `departmentIds` carries every projects.id (dept- or project-type) the
+  // actor can access, so match a row's departmentId OR projectId against it.
+  const ids = actor.departmentIds;
+  if (item.departmentId != null && ids.includes(item.departmentId)) return true;
+  if (item.projectId != null && ids.includes(item.projectId)) return true;
+  // Goal-/task-only-scoped rows can't be resolved to a project without a DB join.
+  // As a post-fetch safety net over the SQL gate (memoryAccessConditions), which
+  // already admits only accessible goal/task rows, pass them through rather than
+  // strip what the query legitimately returned.
+  if (
+    item.departmentId == null &&
+    item.projectId == null &&
+    (item.goalId != null || item.taskId != null)
+  ) {
+    return true;
+  }
+  return false;
 }
 
 export function filterMemoryForActor<T extends AccessibleMemoryRow>(

@@ -66,4 +66,17 @@ describe("filterMemoryForActor", () => {
     expect(filterMemoryForActor(items, founder)).toHaveLength(0);
     expect(filterMemoryForActor(items, agentA)).toHaveLength(0);
   });
+
+  it("matches on projectId when the actor's set includes it (project-type scope)", () => {
+    const items = [row({ departmentId: null, projectId: "projX" })];
+    const agentX: MemoryActor = { kind: "agent", agentId: "agX", departmentIds: ["projX"] };
+    expect(filterMemoryForActor(items, agentX)).toHaveLength(1);
+    expect(filterMemoryForActor(items, agentB)).toHaveLength(0);
+  });
+
+  it("passes goal-/task-only-scoped rows through the safety net (SQL gate is authoritative)", () => {
+    const goalRow = row({ departmentId: null, projectId: null, goalId: "g1" });
+    const taskRow = row({ departmentId: null, projectId: null, taskId: "t1" });
+    expect(filterMemoryForActor([goalRow, taskRow], agentA)).toHaveLength(2);
+  });
 });
