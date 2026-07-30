@@ -16,6 +16,8 @@ import { validate } from "../middleware/validate.js";
 import { assertRole } from "../middleware/rbac.js";
 import { accessService, companyPortabilityService, companyService, logActivity } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { invalidateCompanyTenant } from "./authz-tenant.js";
+import { tenantIsolationEnforced } from "../config/deployment-mode.js";
 import { seedAoaNativeSkills } from "../services/internal-agent/aoa-skills-seeder.js";
 import { ensureCommanderAgent } from "../services/internal-agent/aoa-agents/ensure-commander.js";
 import { materializeCompanyProfileFromGlobal } from "../services/team.js";
@@ -24,17 +26,34 @@ import { organizationAccessService } from "../services/organization-access.js";
 import type { OrgCapability } from "../services/organization-access.js";
 
 /**
- * Task 10 (Phase 2 lockout cluster, ATOMIC cutover) — anti-tenant-hop:
- * the Organization used to AUTHORIZE the create is the SAME Organization
- * written to the company row. When the client omits organizationId
- * (self-hosted single-tenant), fall back to P1's DEFAULT_ORGANIZATION_ID —
- * never to a client-supplied "target" with no authorization check.
+ * Anti-tenant-hop: the Organization used to AUTHORIZE the create is the SAME
+ * Organization written to the company row. An explicit `body.organizationId`
+ * always wins (it is then authorized via canOrg against that exact id).
  *
- * P2 lockout-scoped gate; P3 is last-writer — final authz moves to
- * req.tenant.enforced calling canOrg.
+ * When the client omits organizationId:
+ *   - self-hosted (isolation NOT enforced): fall back to P1's
+ *     DEFAULT_ORGANIZATION_ID (single-tenant sentinel), as before.
+ *   - cloud_auth (isolation enforced) — P3 last-writer, resolves the P2
+ *     follow-up: "create another company" must land in the founder's OWN org,
+ *     not the shared sentinel. Derive from the actor's org membership when it is
+ *     unambiguous (exactly one org). Zero orgs -> nothing to create under;
+ *     more than one -> require an explicit organizationId.
  */
-export function resolveCompanyOrganizationId(body: { organizationId?: string | null }): string {
-  return body.organizationId ?? DEFAULT_ORGANIZATION_ID;
+export function resolveCompanyOrganizationId(
+  body: { organizationId?: string | null },
+  opts?: { enforced?: boolean; actorOrganizationIds?: string[] },
+): string {
+  if (body.organizationId) return body.organizationId;
+  if (opts?.enforced) {
+    const orgs = opts.actorOrganizationIds ?? [];
+    if (orgs.length === 1) return orgs[0] as string;
+    throw forbidden(
+      orgs.length === 0
+        ? "You are not a member of any organization"
+        : "organizationId is required: you belong to multiple organizations",
+    );
+  }
+  return DEFAULT_ORGANIZATION_ID;
 }
 
 /**
@@ -67,7 +86,14 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
     // rbac: instance-admin-not-required — list endpoint with no companyId in path; result is scope-filtered inline against req.actor.companyIds.
     assertBoard(req);
     const result = await svc.list();
-    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) {
+    // The full-list bypass is a self-hosted-only affordance. In cloud_auth
+    // (isolation enforced) the operator plane must NOT see every tenant's
+    // companies — filter to the actor's own memberships. isInstanceAdmin is
+    // already clamped false in cloud (Task 4); the static gate is defense-in-depth.
+    const legacyAdmin =
+      !tenantIsolationEnforced() &&
+      (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin);
+    if (legacyAdmin) {
       res.json(result);
       return;
     }
@@ -78,9 +104,10 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
   router.get("/stats", async (req, res) => {
     // rbac: instance-admin-not-required — stats endpoint with no companyId in path; result is scope-filtered inline against req.actor.companyIds.
     assertBoard(req);
-    const allowed = req.actor.source === "local_implicit" || req.actor.isInstanceAdmin
-      ? null
-      : new Set(req.actor.companyIds ?? []);
+    const legacyAdmin =
+      !tenantIsolationEnforced() &&
+      (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin);
+    const allowed = legacyAdmin ? null : new Set(req.actor.companyIds ?? []);
     const stats = await svc.stats();
     if (!allowed) {
       res.json(stats);
@@ -186,8 +213,16 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
     // rbac: instance-admin-not-required — the isSelfHostedOperator/canOrg check below is the gate.
     assertBoard(req);
     const orgAccess = organizationAccessService(db);
-    const isSelfHostedOperator = req.actor.source === "local_implicit" || req.actor.isInstanceAdmin;
-    const organizationId = resolveCompanyOrganizationId(req.body); // server-derived; never a raw client "target"
+    // The self-hosted operator bypass is gated on the STATIC deployment mode
+    // (fail-closed): in cloud_auth isInstanceAdmin is already clamped false, but
+    // the static gate guarantees no future path re-opens the bypass in cloud.
+    const enforced = tenantIsolationEnforced();
+    const isSelfHostedOperator =
+      !enforced && (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin);
+    const organizationId = resolveCompanyOrganizationId(req.body, {
+      enforced,
+      actorOrganizationIds: req.actor.organizationIds ?? [],
+    }); // server-derived; never a raw client "target"
     if (!isSelfHostedOperator) {
       if (!req.actor.userId) throw forbidden("Sign in to create a company");
       await assertCompanyCreateAuthorized(orgAccess, organizationId, req.actor.userId);
@@ -335,6 +370,9 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
       res.status(404).json({ error: "Company not found" });
       return;
     }
+    // Drop the cached companyId -> organizationId mapping so a recycled id can
+    // never resolve to the deleted company's tenant.
+    invalidateCompanyTenant(companyId);
     res.json({ ok: true });
   });
 
