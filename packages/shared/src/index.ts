@@ -1415,3 +1415,4 @@ export {
 } from "./adapter-probe.js";
 export * from "./providers/provider-catalog.js";
 export * from "./mcp-connector-catalog.js";
+export * from "./provider-connections.js";
