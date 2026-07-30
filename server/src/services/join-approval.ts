@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { joinRequests } from "@armyofagents/db";
+import { joinRequests, companies } from "@armyofagents/db";
 import {
   PERMISSION_KEYS,
   ROLE_RANK,
@@ -17,6 +17,7 @@ import { humanCapabilitiesService } from "./human-capabilities.js";
 import { hubItemsService } from "./hub-items.js";
 import { logActivity } from "./activity-log.js";
 import { logger } from "../middleware/logger.js";
+import { organizationAccessService } from "./organization-access.js";
 
 /**
  * Extract permission grants from an invite defaultsPayload (moved verbatim from
@@ -110,6 +111,13 @@ export type HumanJoinApprovalServices = {
   access: Pick<ReturnType<typeof accessService>, "ensureMembership" | "setPrincipalGrants">;
   team: Pick<ReturnType<typeof teamService>, "applyInviteRole">;
   capabilities: Pick<ReturnType<typeof humanCapabilitiesService>, "ensureStandardDocuments">;
+  /** Task 11 (Phase 2 security suite) — org-first tenancy: an invited human
+   *  must land in the SAME Organization as the company they were invited
+   *  into, never a different (or no) tenant. */
+  orgAccess: Pick<ReturnType<typeof organizationAccessService>, "ensureOrgMembership">;
+  /** One-line `companies.organizationId` lookup, scoped to the invited
+   *  company only — the anti-tenant-hop guarantee for this seam. */
+  resolveCompanyOrg: (companyId: string) => Promise<string | null>;
 };
 
 export function buildHumanJoinApprovalServices(txDb: Db): HumanJoinApprovalServices {
@@ -117,6 +125,13 @@ export function buildHumanJoinApprovalServices(txDb: Db): HumanJoinApprovalServi
     access: accessService(txDb),
     team: teamService(txDb),
     capabilities: humanCapabilitiesService(txDb),
+    orgAccess: organizationAccessService(txDb),
+    resolveCompanyOrg: (companyId: string) =>
+      txDb
+        .select({ organizationId: companies.organizationId })
+        .from(companies)
+        .where(eq(companies.id, companyId))
+        .then((rows) => rows[0]?.organizationId ?? null),
   };
 }
 
@@ -193,6 +208,17 @@ export async function approveHumanJoinRequestTx(
   if (!row) return null;
 
   await services.access.ensureMembership(args.companyId, "user", args.requestingUserId, "member", "active");
+
+  // Task 11 (Phase 2 security suite) — invited-joins-correct-org: derive the
+  // Organization from the INVITED COMPANY itself (never a caller-supplied or
+  // ambient value), so the invitee always lands in the same tenant as the
+  // company, and only that tenant. A company with no organizationId (should
+  // not happen post-P1-backfill) is a no-op, not a fallback to any default.
+  const organizationId = await services.resolveCompanyOrg(args.companyId);
+  if (organizationId) {
+    await services.orgAccess.ensureOrgMembership(organizationId, args.requestingUserId, "member");
+  }
+
   const grants = grantsFromDefaults(args.invite.defaultsPayload, "human");
   await services.access.setPrincipalGrants(
     args.companyId,
