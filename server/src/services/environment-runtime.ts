@@ -179,9 +179,18 @@ function readString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
-function resolveDockerSandboxConfig(environment: Pick<Environment, "config">): Record<string, unknown> {
+export function resolveDockerSandboxConfig(environment: Pick<Environment, "config">): Record<string, unknown> {
   const config = readObject(environment.config);
   const provider = readString(config.provider) ?? "sandbox-docker";
+  if (provider === "gvisor") {
+    // gVisor runs on the single-box sandbox-docker transport with a hardened,
+    // opt-in isolation profile. Normalize via resolveGvisorSandboxTarget so the
+    // lease metadata carries type/runtime/network/isolation/allowHostGateway for
+    // the downstream exec-target -> buildDockerRunArgs path. Non-gvisor docker
+    // providers below are untouched (byte-identical legacy behavior).
+    const target = resolveGvisorSandboxTarget(config);
+    return { ...config, ...target, provider: "sandbox-docker" };
+  }
   if (provider !== "sandbox-docker" && provider !== "docker" && provider !== "local-docker") {
     throw new Error(`Unsupported sandbox provider "${provider}"`);
   }

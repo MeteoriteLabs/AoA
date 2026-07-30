@@ -4,6 +4,7 @@ import {
   type AdapterExecutionTarget,
   type AdapterProviderSandboxRunner,
 } from "@armyofagents/adapter-utils";
+import { resolveGvisorSandboxTarget } from "./environment-runtime.js";
 
 export interface EnvironmentExecutionTargetInput {
   environment: Pick<Environment, "driver" | "target" | "config">;
@@ -24,7 +25,7 @@ function readString(value: unknown): string | null {
 
 function isDockerSandboxProvider(value: unknown): boolean {
   const provider = readString(value);
-  return !provider || provider === "sandbox-docker" || provider === "docker" || provider === "local-docker";
+  return !provider || provider === "sandbox-docker" || provider === "docker" || provider === "local-docker" || provider === "gvisor";
 }
 
 function resolveDockerSandboxTarget(
@@ -32,6 +33,31 @@ function resolveDockerSandboxTarget(
 ): AdapterExecutionTarget | null {
   const config = readObject(environment.config);
   if (!isDockerSandboxProvider(config.provider)) return null;
+
+  // gVisor uses the same single-box sandbox-docker transport but carries the
+  // hardened, opt-in isolation profile (runsc runtime + cap-drop/read-only/tmpfs
+  // + limits + egress `--network none` + conditional --add-host). Normalize via
+  // the shared resolver so a founder who set only { provider:"gvisor", image }
+  // still gets the full hardened default profile, and pass runtime/isolation/
+  // allowHostGateway through to resolveAdapterExecutionTarget (and thence
+  // buildDockerRunArgs). Non-gvisor docker providers stay byte-identical below.
+  if (readString(config.provider) === "gvisor") {
+    const gvisor = resolveGvisorSandboxTarget(config);
+    return resolveAdapterExecutionTarget({
+      type: "sandbox-docker",
+      image: gvisor.image,
+      workdir: gvisor.workdir,
+      shell: config.shell,
+      network: gvisor.network,
+      remove: typeof config.remove === "boolean" ? config.remove : undefined,
+      env: readObject(config.env),
+      installCommand: readString(config.installCommand),
+      runtime: gvisor.runtime,
+      isolation: gvisor.isolation,
+      allowHostGateway: gvisor.allowHostGateway,
+    });
+  }
+
   const image = readString(config.image);
   if (!image) return null;
 
