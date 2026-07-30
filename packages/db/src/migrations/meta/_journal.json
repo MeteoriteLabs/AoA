@@ -1338,6 +1338,13 @@
       "when": 1785424440206,
       "tag": "0190_hot_punisher",
       "breakpoints": true
+    },
+    {
+      "idx": 191,
+      "version": "7",
+      "when": 1785424586622,
+      "tag": "0191_thin_valkyrie",
+      "breakpoints": true
     }
   ]
 }
