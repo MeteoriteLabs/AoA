@@ -1,4 +1,4 @@
-CREATE TABLE "operator_break_glass_grants" (
+CREATE TABLE IF NOT EXISTS "operator_break_glass_grants" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"operator_user_id" text NOT NULL,
 	"organization_id" uuid NOT NULL,
@@ -13,8 +13,8 @@ CREATE TABLE "operator_break_glass_grants" (
 );
 --> statement-breakpoint
 ALTER TABLE "company_secrets" ADD COLUMN "organization_id" uuid;--> statement-breakpoint
-CREATE INDEX "obg_operator_active_idx" ON "operator_break_glass_grants" USING btree ("operator_user_id","expires_at");--> statement-breakpoint
-CREATE INDEX "obg_org_idx" ON "operator_break_glass_grants" USING btree ("organization_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "obg_operator_active_idx" ON "operator_break_glass_grants" USING btree ("operator_user_id","expires_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "obg_org_idx" ON "operator_break_glass_grants" USING btree ("organization_id");--> statement-breakpoint
 -- Backfill company_secrets.organization_id from the owning company's tenant.
 -- Hand-appended after generation (drizzle-kit emits only the column add).
 -- Idempotent (WHERE organization_id IS NULL) so a re-run is a no-op.

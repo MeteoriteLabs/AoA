@@ -1,4 +1,4 @@
-CREATE TABLE "provider_assignments" (
+CREATE TABLE IF NOT EXISTS "provider_assignments" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"organization_id" uuid,
 	"company_id" uuid,
@@ -14,7 +14,7 @@ CREATE TABLE "provider_assignments" (
 	CONSTRAINT "provider_assignments_scope_shape_check" CHECK ((scope_type IN ('org_default','company_default') AND scope_id IS NULL) OR (scope_type IN ('agent_override','personal_execution_default') AND scope_id IS NOT NULL))
 );
 --> statement-breakpoint
-CREATE TABLE "provider_connections" (
+CREATE TABLE IF NOT EXISTS "provider_connections" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"organization_id" uuid,
 	"company_id" uuid,
@@ -45,8 +45,8 @@ ALTER TABLE "provider_connections" ADD CONSTRAINT "provider_connections_organiza
 ALTER TABLE "provider_connections" ADD CONSTRAINT "provider_connections_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "provider_connections" ADD CONSTRAINT "provider_connections_owner_user_id_user_id_fk" FOREIGN KEY ("owner_user_id") REFERENCES "public"."user"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "provider_connections" ADD CONSTRAINT "provider_connections_secret_ref_company_secrets_id_fk" FOREIGN KEY ("secret_ref") REFERENCES "public"."company_secrets"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-CREATE INDEX "provider_assignments_lookup_idx" ON "provider_assignments" USING btree ("company_id","provider","state");--> statement-breakpoint
-CREATE INDEX "provider_assignments_connection_idx" ON "provider_assignments" USING btree ("connection_id");--> statement-breakpoint
-CREATE INDEX "provider_connections_org_provider_idx" ON "provider_connections" USING btree ("organization_id","provider");--> statement-breakpoint
-CREATE INDEX "provider_connections_company_provider_idx" ON "provider_connections" USING btree ("company_id","provider","state");--> statement-breakpoint
-CREATE INDEX "provider_connections_owner_idx" ON "provider_connections" USING btree ("owner_user_id");
+CREATE INDEX IF NOT EXISTS "provider_assignments_lookup_idx" ON "provider_assignments" USING btree ("company_id","provider","state");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "provider_assignments_connection_idx" ON "provider_assignments" USING btree ("connection_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "provider_connections_org_provider_idx" ON "provider_connections" USING btree ("organization_id","provider");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "provider_connections_company_provider_idx" ON "provider_connections" USING btree ("company_id","provider","state");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "provider_connections_owner_idx" ON "provider_connections" USING btree ("owner_user_id");
