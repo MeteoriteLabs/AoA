@@ -25,8 +25,11 @@ export function MemoryReviewWidget({ companyId, editing }: WidgetProps) {
       {isLoading ? (
         <WidgetLoading />
       ) : isError || !data ? (
-        // Covers a member's 403 (memory review is founder-oriented — see
-        // registry's requiresFounder) as well as any other fetch failure.
+        // Memory is team-readable by design (the memory-pending route's
+        // assertMemoryAccess(...,"read") allows every role, including
+        // team_member — registry's requiresFounder only hides this widget
+        // from the Add-widget tray, it doesn't gate the data), so this arm
+        // is a genuine fetch failure, never a role-based 403.
         <WidgetEmpty icon={Brain} message="Couldn't load memory" />
       ) : items.length === 0 ? (
         <WidgetEmpty icon={Brain} message="No memory to review" />

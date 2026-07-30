@@ -40,7 +40,9 @@ export interface HomeBoardControlsProps {
  *    since Rearrange no longer applies once already arranging, and Add
  *    widget/Reset/the Saving…/Unsaved/Retry status/Done all live in the
  *    floating `ArrangeToolbar` now (mounted by `HomeBoard`, gated on
- *    `editableNow`) instead of this pinned header.
+ *    `editing` alone — not `editableNow` — so Done stays reachable even
+ *    below the lg breakpoint or mid-save; see HomeBoard.tsx's own comment)
+ *    instead of this pinned header.
  *
  * Purely presentational: every piece of state and every callback comes from
  * the single `boardEdit` bundle Dashboard computes via `useBoardEdit` and

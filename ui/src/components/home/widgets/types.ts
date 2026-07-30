@@ -25,7 +25,7 @@ export interface WidgetDef {
   key: WidgetKey;
   title: string;
   icon: LucideIcon;
-  requiresFounder?: boolean; // UX-only (future tray). Real authz is server-side.
+  requiresFounder?: boolean; // UX-only: hides this widget from the Add-widget tray for team_members (enforced today in AddWidgetMenu.tsx's filter) — not a data-access restriction; the underlying data stays team-readable.
   Component: ComponentType<WidgetProps>;
   /** Allowed desktop {w,h} footprints — references HOME_BOARD_ALLOWED_SIZES[key] (never copied). */
   allowedSizes: readonly WidgetSize[];

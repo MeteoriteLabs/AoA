@@ -67,7 +67,3 @@ export function buildActionGroups(data: HomeSummary): ActionGroup[] {
 
   return groups;
 }
-
-export function getTotalActionCount(groups: ActionGroup[], suggestionCount: number): number {
-  return groups.reduce((sum, group) => sum + group.items.length, 0) + suggestionCount;
-}
