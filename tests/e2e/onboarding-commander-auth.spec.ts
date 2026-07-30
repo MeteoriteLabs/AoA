@@ -1,5 +1,9 @@
 import { test, expect, type Page } from "@playwright/test";
-import { freshOnboardingState, fillFounderProfileStep } from "./helpers/onboarding-e2e";
+import {
+  freshOnboardingState,
+  fillFounderProfileStep,
+  fillOrganizationStep,
+} from "./helpers/onboarding-e2e";
 
 /**
  * Track C visual + interaction coverage (Plan 3 / §6, Task 5).
@@ -22,6 +26,9 @@ async function walkToVerify(page: Page, commander: "Claude" | "Codex"): Promise<
   await page.goto("/onboarding");
   await fillFounderProfileStep(page, "Track C Founder");
   await page.getByRole("button", { name: /continue/i }).click();
+
+  // Organization (Phase-2 tenant step) precedes the company step.
+  await fillOrganizationStep(page, `E2E-TrackC-Org-${Date.now()}`);
 
   await expect(page.getByRole("heading", { name: /your company/i })).toBeVisible();
   await page.getByRole("textbox").first().fill(`E2E-TrackC-${Date.now()}`);

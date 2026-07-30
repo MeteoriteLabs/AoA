@@ -1,5 +1,9 @@
 import { test, expect } from "@playwright/test";
-import { freshOnboardingState, fillFounderProfileStep } from "./helpers/onboarding-e2e";
+import {
+  freshOnboardingState,
+  fillFounderProfileStep,
+  fillOrganizationStep,
+} from "./helpers/onboarding-e2e";
 
 // Selectors below were validated against the live app during Plan-1 planning
 // (the full founder flow was driven end-to-end in a browser).
@@ -31,7 +35,12 @@ test("founder completes the spine → Map fork → in-flight tail → lands in t
   await fillFounderProfileStep(page, "E2E Founder");
   await page.getByRole("button", { name: /continue/i }).click();
 
-  // Organization — heading is now "Your company" (redesign).
+  // Organization — the Phase-2 multi-tenant tenant step ("Your organization"),
+  // inserted before the company step. Creates the Organization that owns the
+  // company created next.
+  await fillOrganizationStep(page, `E2E-Test-OrgTenant-${Date.now()}`);
+
+  // Company — heading is now "Your company" (redesign).
   const orgName = `E2E-Test-Org-${Date.now()}`;
   await expect(page.getByRole("heading", { name: /your company/i })).toBeVisible();
   await page.getByRole("textbox").first().fill(orgName);

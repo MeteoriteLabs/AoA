@@ -1,6 +1,10 @@
 import { test, expect, type APIRequestContext, type Page, type Route } from "@playwright/test";
 import { seedCompany, cleanupTestCompanies } from "./helpers/seed-company";
-import { freshOnboardingState, fillFounderProfileStep } from "./helpers/onboarding-e2e";
+import {
+  freshOnboardingState,
+  fillFounderProfileStep,
+  fillOrganizationStep,
+} from "./helpers/onboarding-e2e";
 
 /**
  * E2E: Settings -> Providers readiness (Provider Readiness initiative, Task 15).
@@ -612,7 +616,11 @@ test.describe("Settings -> Providers readiness", () => {
     await fillFounderProfileStep(page, "E2E-Providers Founder");
     await page.getByRole("button", { name: /continue/i }).click();
 
-    // Organization — heading is "Your company" (#295 onboarding redesign).
+    // Organization — the Phase-2 multi-tenant tenant step ("Your organization"),
+    // inserted before the company step.
+    await fillOrganizationStep(page, `E2E-Providers-Org-${Date.now()}`);
+
+    // Company — heading is "Your company" (#295 onboarding redesign).
     await expect(page.getByRole("heading", { name: /your company/i })).toBeVisible();
     await page.getByRole("textbox").first().fill(`E2E-Providers-Onboard-${Date.now()}`);
     await page.getByRole("button", { name: /continue/i }).click();
