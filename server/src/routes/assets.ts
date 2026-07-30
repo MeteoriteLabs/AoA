@@ -22,6 +22,7 @@ import {
 import { officeRenderLimiter } from "../middleware/rate-limit.js";
 import { HttpError } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { resolveStorageTenant } from "./authz-tenant.js";
 
 const MAX_ASSET_IMAGE_BYTES = Number(process.env.AOA_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
 // General asset upload contract (artifacts, API consumers, uploadFileArtifact):
@@ -108,6 +109,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
     const actor = getActorInfo(req);
     const stored = await storage.putFile({
       companyId,
+      organizationId: await resolveStorageTenant(db, companyId),
       namespace: `assets/${namespaceSuffix}`,
       originalFilename: file.originalname || null,
       contentType,
@@ -241,6 +243,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
     const actor = getActorInfo(req);
     const stored = await storage.putFile({
       companyId,
+      organizationId: await resolveStorageTenant(db, companyId),
       namespace: `assets/${namespaceSuffix}`,
       originalFilename: file.originalname || null,
       contentType,
@@ -332,6 +335,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
     const actor = getActorInfo(req);
     const stored = await storage.putFile({
       companyId,
+      organizationId: await resolveStorageTenant(db, companyId),
       namespace: "assets/logos",
       originalFilename: file.originalname || null,
       contentType,
@@ -408,7 +412,11 @@ export function assetRoutes(db: Db, storage: StorageService) {
     }
     await assertCompanyAccess(db, req, asset.companyId);
 
-    const object = await storage.getObject(asset.companyId, asset.objectKey);
+    const object = await storage.getObject(
+      await resolveStorageTenant(db, asset.companyId),
+      asset.companyId,
+      asset.objectKey,
+    );
     const safe = getSafeServingHeaders(
       asset.contentType || object.contentType,
       asset.originalFilename,
@@ -458,7 +466,11 @@ export function assetRoutes(db: Db, storage: StorageService) {
       // buffer length as the authoritative guard (in case byteSize is stale/0).
       assertOfficeRenderSize(asset.byteSize ?? 0);
 
-      const object = await storage.getObject(asset.companyId, asset.objectKey);
+      const object = await storage.getObject(
+      await resolveStorageTenant(db, asset.companyId),
+      asset.companyId,
+      asset.objectKey,
+    );
       const buffer = await streamToBuffer(object.stream);
       const html =
         contentType === XLSX_MIME

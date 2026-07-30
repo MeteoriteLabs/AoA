@@ -5,6 +5,7 @@ import type { Db } from "@armyofagents/db";
 import { memoryAssetsService } from "../services/memory-assets.js";
 import type { StorageService } from "../storage/types.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { resolveStorageTenant } from "./authz-tenant.js";
 import { assertRole } from "../middleware/rbac.js";
 import { SUPPORTED_UPLOAD_MIME_TYPES_SET } from "./memory-asset-upload-types.js";
 
@@ -86,6 +87,7 @@ export function memoryAssetsUploadRoutes(opts: RoutesOptions) {
         const namespace = `imports/${Date.now()}-${safeName}`;
         const stored = await storage.putFile({
           companyId,
+          organizationId: await resolveStorageTenant(db, companyId),
           namespace,
           originalFilename: file.originalname,
           contentType: file.mimetype,

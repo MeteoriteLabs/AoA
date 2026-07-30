@@ -5,6 +5,7 @@ import { memoryAssetsService, type MemoryAssetsService } from "../services/memor
 import { getSafeServingHeaders } from "../services/asset-serving-safety.js";
 import type { StorageService } from "../storage/types.js";
 import { assertCompanyAccess } from "./authz.js";
+import { resolveStorageTenant } from "./authz-tenant.js";
 import { assertRole } from "../middleware/rbac.js";
 
 // Minimal storage interface for the test seam — callers can inject a partial { getObject }
@@ -83,7 +84,11 @@ export function memoryAssetsRoutes(opts: RoutesOptions) {
           res.status(500).json({ error: "Storage not configured" });
           return;
         }
-        const obj = await storage.getObject(companyId, asset.storageKey);
+        const obj = await storage.getObject(
+          await resolveStorageTenant(db, companyId),
+          companyId,
+          asset.storageKey,
+        );
         const safe = getSafeServingHeaders(asset.mimeType, asset.fileName);
         res.setHeader("Content-Type", safe.contentType);
         if (obj.contentLength !== undefined) {

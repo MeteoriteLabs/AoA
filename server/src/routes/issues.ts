@@ -30,6 +30,7 @@ import {
 import { logger } from "../middleware/logger.js";
 import { forbidden, HttpError, unauthorized, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { resolveStorageTenant } from "./authz-tenant.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import { shouldDispatchIssueWakeup } from "./issues-planning-mode-dispatch.js";
 import { enqueueIssueAssigneeWakeup } from "../services/issue-assignee-wakeup.js";
@@ -1678,7 +1679,11 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
     for (const attachment of attachments) {
       try {
-        await storage.deleteObject(attachment.companyId, attachment.objectKey);
+        await storage.deleteObject(
+          await resolveStorageTenant(db, attachment.companyId),
+          attachment.companyId,
+          attachment.objectKey,
+        );
       } catch (err) {
         logger.warn({ err, issueId: id, attachmentId: attachment.id }, "failed to delete attachment object during issue delete");
       }
@@ -2037,9 +2042,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
             buffer: file.buffer,
             originalFilename: file.originalname || null,
           })),
-          store: (file) =>
+          store: async (file) =>
             storage.putFile({
               companyId: issue.companyId,
+              organizationId: await resolveStorageTenant(db, issue.companyId),
               namespace: `issues/${id}`,
               originalFilename: file.originalFilename,
               contentType: file.contentType,
@@ -2203,6 +2209,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       const { file, contentType, attachmentId } = prepared;
       const stored = await storage.putFile({
         companyId: issue.companyId,
+        organizationId: await resolveStorageTenant(db, issue.companyId),
         namespace: `issues/${id}`,
         originalFilename: file.originalname || null,
         contentType,
@@ -2401,6 +2408,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     const actor = getActorInfo(req);
     const stored = await storage.putFile({
       companyId,
+      organizationId: await resolveStorageTenant(db, companyId),
       namespace: `issues/${issueId}`,
       originalFilename: file.originalname || null,
       contentType,
@@ -2449,7 +2457,11 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
     await assertCompanyAccess(db, req, attachment.companyId);
 
-    const object = await storage.getObject(attachment.companyId, attachment.objectKey);
+    const object = await storage.getObject(
+      await resolveStorageTenant(db, attachment.companyId),
+      attachment.companyId,
+      attachment.objectKey,
+    );
     const safe = getSafeServingHeaders(
       attachment.contentType || object.contentType,
       attachment.originalFilename,
@@ -2476,7 +2488,11 @@ export function issueRoutes(db: Db, storage: StorageService) {
     await assertCompanyAccess(db, req, attachment.companyId);
 
     try {
-      await storage.deleteObject(attachment.companyId, attachment.objectKey);
+      await storage.deleteObject(
+        await resolveStorageTenant(db, attachment.companyId),
+        attachment.companyId,
+        attachment.objectKey,
+      );
     } catch (err) {
       logger.warn({ err, attachmentId }, "storage delete failed while removing attachment");
     }

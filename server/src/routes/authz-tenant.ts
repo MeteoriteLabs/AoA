@@ -37,6 +37,22 @@ export async function resolveCompanyTenant(db: Db, companyId: string): Promise<s
 }
 
 /**
+ * Best-effort tenant resolution for storage object-key scoping. The storage
+ * tenant segment (`{organizationId}/{companyId}/…`) is DEFENSE-IN-DEPTH over the
+ * company boundary — companyId is a globally-unique UUID, so the company segment
+ * already isolates. A resolution failure (missing/partial db handle, transient
+ * error) must therefore NEVER break asset serving: we fall back to the legacy
+ * company-scoped key, which the reader guard still authorizes. Never throws.
+ */
+export async function resolveStorageTenant(db: Db, companyId: string): Promise<string | null> {
+  try {
+    return await resolveCompanyTenant(db, companyId);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Assert the request actor is a member of the given organization (tenant).
  * A null tenantId is a no-op: it means the company was not found, and the route
  * should be allowed to return its own 404 rather than a misleading 403.

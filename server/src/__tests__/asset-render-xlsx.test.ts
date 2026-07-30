@@ -126,7 +126,7 @@ describe("GET /assets/:assetId/render (XLSX render + sanitization)", () => {
     const res = await request(app).get(`/api/assets/${assetId}/render`);
 
     expect(res.status).toBe(200);
-    expect(storage.getObject).toHaveBeenCalledWith(companyId, "objects/asset-xlsx-1.xlsx");
+    expect(storage.getObject).toHaveBeenCalledWith(null, companyId, "objects/asset-xlsx-1.xlsx");
   });
 
   it("rejects a non-office asset with 415 and never reads storage", async () => {
