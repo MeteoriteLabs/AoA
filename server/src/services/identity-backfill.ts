@@ -20,6 +20,8 @@
 import { and, eq } from "drizzle-orm";
 import { companies, memoryItems, type Db } from "@armyofagents/db";
 import { enqueueMemoryEmbedding } from "./memory-write.js";
+import { buildMemoryInsert } from "./memory-projection.js";
+import { getDbCapabilities } from "./db-capabilities.js";
 import { logger } from "../middleware/logger.js";
 
 const log = logger.child({ service: "identity-backfill" });
@@ -100,10 +102,17 @@ async function applyIdentityBackfill(
   const plan = planIdentityBackfill(fields, existing);
   if (plan.length === 0) return 0;
 
-  const inserted = await db
-    .insert(memoryItems)
-    .values(
-      plan.map((p) => ({
+  // Use the pgvector-safe insert helper: on installs without the pgvector
+  // extension, memory_items has no `embedding` column, and a plain
+  // `db.insert(memoryItems)` enumerates it and fails. `buildMemoryInsert`
+  // omits `embedding` when hasVector is false (same path the normal
+  // memory-create flow uses). One row per call, so loop the plan.
+  const hasVector = getDbCapabilities().hasVectorSupport;
+  const inserted: Array<{ id: string; title: string; content: string }> = [];
+  for (const p of plan) {
+    const rows = await buildMemoryInsert(
+      db,
+      {
         companyId,
         title: p.title,
         content: p.content,
@@ -114,9 +123,18 @@ async function applyIdentityBackfill(
         visibility: "company",
         createdBy: "system",
         sourceContext: p.sourceContext,
-      })),
-    )
-    .returning({ id: memoryItems.id, title: memoryItems.title, content: memoryItems.content });
+      },
+      hasVector,
+    );
+    const row = rows[0];
+    if (row) {
+      inserted.push({
+        id: row.id as string,
+        title: row.title as string,
+        content: row.content as string,
+      });
+    }
+  }
 
   // Index for semantic retrieval (best-effort; enqueueMemoryEmbedding no-ops
   // without pgvector and never throws).
