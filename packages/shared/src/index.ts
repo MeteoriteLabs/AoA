@@ -61,6 +61,17 @@ export {
   ENVIRONMENT_LEASE_STATUSES,
   ENVIRONMENT_LEASE_POLICIES,
   ENVIRONMENT_LEASE_CLEANUP_STATUSES,
+  // Phase 5 execution-target registry (Task 1) — these were added to
+  // constants.ts by Task 1 but never re-exported through this barrel; fixed
+  // here because Task 10/13 need them via "@armyofagents/shared".
+  EXECUTION_TARGET_KINDS,
+  EXECUTION_TARGET_TRUST_CLASSES,
+  EXECUTION_TARGET_STATUSES,
+  ORG_MAX_CONCURRENT_RUNS_DEFAULT,
+  ORG_MAX_CONCURRENT_RUNS_MAX,
+  type ExecutionTargetKind,
+  type ExecutionTargetTrustClass,
+  type ExecutionTargetStatus,
   MEMORY_ITEM_CATEGORIES,
   MEMORY_ITEM_SOURCES,
   MEMORY_ITEM_STATUSES,

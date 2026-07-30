@@ -35,6 +35,11 @@ import {
   executionTargetToAdapterConfig,
 } from "./execution-target-resolver.js";
 import { mergeResolvedExecutionTarget } from "./heartbeat-execution-target.js";
+import {
+  resolveOrgConcurrencyCap,
+  countRunningRunsForOrg,
+  orgAvailableSlots,
+} from "./org-concurrency.js";
 import { environmentRunOrchestrator, type EnvironmentAcquisitionResult } from "./environment-run-orchestrator.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { conflict, notFound, HttpError } from "../errors.js";
@@ -2505,14 +2510,31 @@ export function heartbeatService(db: Db) {
       const policy = parseHeartbeatPolicy(agent);
       const runningCount = await countRunningRunsForAgent(agentId);
       const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
-      if (availableSlots <= 0) return [];
+
+      // Per-Organization concurrency clamp (Phase 5, Task 10), layered on top of
+      // the per-agent clamp above without altering it (guardrail: preserve the
+      // existing per-agent clamp exactly). `agents` has no organizationId column
+      // yet — same "not yet threaded onto the run scope" placeholder Task 9 used
+      // for execution-target routing (see the P4->P5 seam comment above, ~:3187).
+      // Real org-id threading is a shared follow-up for both seams; until then
+      // organizationId is always null here and this whole block is a no-op, so
+      // effectiveSlots === availableSlots (unchanged behavior).
+      const organizationId = (agent as { organizationId?: string | null }).organizationId ?? null;
+      let orgSlots = Number.POSITIVE_INFINITY;
+      if (organizationId) {
+        const cap = await resolveOrgConcurrencyCap(db, organizationId);
+        const orgRunning = await countRunningRunsForOrg(db, organizationId);
+        orgSlots = orgAvailableSlots({ cap, running: orgRunning });
+      }
+      const effectiveSlots = Math.min(availableSlots, orgSlots);
+      if (effectiveSlots <= 0) return [];
 
       const queuedRuns = await db
         .select()
         .from(heartbeatRuns)
         .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")))
         .orderBy(asc(heartbeatRuns.createdAt))
-        .limit(availableSlots);
+        .limit(effectiveSlots);
       if (queuedRuns.length === 0) return [];
 
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
