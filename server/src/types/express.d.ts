@@ -4,6 +4,8 @@ interface Actor {
   userId?: string;
   companyId?: string;
   companyIds?: string[];
+  /** Operator-plane authority (instance settings). Unclamped. NOT a data-plane bypass. */
+  operator?: boolean;
   agentId?: string;
   keyId?: string;
   runId?: string;

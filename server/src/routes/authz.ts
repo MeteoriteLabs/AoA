@@ -63,14 +63,17 @@ export function getActorInfo(req: Request) {
 
 /**
  * Non-throwing form of {@link assertCanManageInstanceSettings} — the single
- * source of truth for "can this actor manage instance settings". The
- * isInstanceAdmin flag on board actors is computed by the auth middleware from
- * instance_user_roles (middleware/auth.ts); the local_trusted synthetic board
- * user (source local_implicit) is always an instance admin.
+ * source of truth for "can this actor manage instance settings". This reads the
+ * operator-plane field `req.actor.operator` (computed by the auth middleware from
+ * instance_user_roles; middleware/auth.ts) — NOT `isInstanceAdmin`, which is
+ * clamped to false in cloud_auth to neutralize the DATA-plane bypass. Reading
+ * `operator` keeps the OPERATOR plane (instance-settings management) intact after
+ * that clamp. The local_trusted synthetic board user (source local_implicit) is
+ * always allowed.
  */
 export function canManageInstanceSettings(req: Request): boolean {
   if (req.actor.type !== "board") return false;
-  return req.actor.source === "local_implicit" || req.actor.isInstanceAdmin === true;
+  return req.actor.source === "local_implicit" || req.actor.operator === true;
 }
 
 export function assertCanManageInstanceSettings(req: Request): void {

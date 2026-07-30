@@ -8,6 +8,7 @@ import type { DeploymentExposure, DeploymentMode, PaperclipPluginManifestV1 } fr
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
+import { setDeploymentMode } from "./config/deployment-mode.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
 import { buildHelmetOptions } from "./services/helmet-options.js";
@@ -173,6 +174,11 @@ export async function createApp(
     devLocalIdentity?: boolean;
   },
 ) {
+  // Pin the STATIC deployment-mode enforcement source once at boot, before any
+  // router mounts. tenantIsolationEnforced() reads this — never req.tenant —
+  // so authz/rbac/access fail closed even if per-request middleware is skipped.
+  setDeploymentMode(opts.deploymentMode);
+
   const app = express();
   app.set("trust proxy", opts.trustProxy);
 
