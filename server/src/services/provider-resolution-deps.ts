@@ -98,6 +98,11 @@ export function buildResolveDeps(db: Db, topology: CliAuthTopology): ResolveDeps
         agentId: args.agentId ?? "",
         provider,
         executionTargetId: row.executionTargetId ?? args.executionTargetId,
+        // Chokepoint consistency: the resolver's Layer-1 backstop already skips
+        // personal_subscription candidates in multi_tenant before this runs, so this
+        // is never reached there — but pass the real topology so the invariant holds
+        // if that guard is ever bypassed.
+        trustBoundary: topology.trustBoundary,
       });
       // Narrow NodeJS.ProcessEnv → Record<string,string>.
       const out: Record<string, string> = {};

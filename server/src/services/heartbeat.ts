@@ -3074,6 +3074,14 @@ export function heartbeatService(db: Db) {
       // becomes the legacy subscription fallback, preserving the
       // mayUseLegacySubscriptionHome semantics for unmigrated companies.
       legacySubscriptionEnv: async (postLegacyEnv: Record<string, string>) => {
+        // Multi-tenant fail-closed: the legacy subscription-home fallback is a SECOND
+        // resolution path, parallel to the new-model connection backstop. A founder's
+        // legacy personal_subscription credential + binding SURVIVE a self-hosted →
+        // multi_tenant data-dir cutover (the backfill/login gates only stop NEW rows,
+        // they do not delete preserved ones), so this path must ALSO refuse to inject
+        // a host-tied CLI login on a shared host. (resolveAgentSubscriptionEnvironment
+        // also fails closed on trustBoundary === "multi_tenant" as the chokepoint.)
+        if (hbTopology.trustBoundary === "multi_tenant") return null;
         if (hbProviderId !== "openai" && hbProviderId !== "anthropic") return null;
         // Read the POST-company-key env (the resolver passes it in) so the
         // "company key present ⇒ skip subscription home" short-circuit matches the
@@ -3109,6 +3117,7 @@ export function heartbeatService(db: Db) {
             agentId: agent.id,
             provider: hbProviderId,
             executionTargetId: process.env.AOA_EXECUTION_TARGET_ID?.trim() || "control-plane",
+            trustBoundary: hbTopology.trustBoundary,
           });
           const out: Record<string, string> = {};
           for (const [k, v] of Object.entries(boundEnv)) if (typeof v === "string") out[k] = v;
