@@ -30,6 +30,11 @@ import {
   workQuestions,
 } from "@armyofagents/db";
 import { resolveEnvironmentRuntimeConfig } from "./environment-resolver.js";
+import {
+  resolveExecutionTargetForRun,
+  executionTargetToAdapterConfig,
+} from "./execution-target-resolver.js";
+import { mergeResolvedExecutionTarget } from "./heartbeat-execution-target.js";
 import { environmentRunOrchestrator, type EnvironmentAcquisitionResult } from "./environment-run-orchestrator.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { conflict, notFound, HttpError } from "../errors.js";
@@ -3147,7 +3152,7 @@ export function heartbeatService(db: Db) {
       },
       hbDeps,
     );
-    const resolvedConfig = applyResolvedCredential(
+    let resolvedConfig = applyResolvedCredential(
       { ...mergedConfigWithEnvironmentTarget, env: resolvedEnv } as Record<string, unknown>,
       hbResolved,
     ) as Record<string, unknown>;
@@ -3162,6 +3167,43 @@ export function heartbeatService(db: Db) {
     logger.debug(
       { companyId: agent.companyId, agentId: agent.id, runId: run.id, p4CredentialHint },
       "heartbeat: P4→P5 credential hint resolved (run-scope local; attach to P5 run context as a follow-up)",
+    );
+
+    // ── P5 Task 9: route this run to the credential-appropriate execution target ──
+    // Consume P4's normalized seam (p4CredentialHint) directly — do NOT re-read
+    // provider_credentials. Business key ("company_api_key") → shared pool;
+    // "personal_subscription" → its pinned dedicated target (fail-closed on a slug
+    // mismatch). The multi_tenant fail-closed invariant is upheld UPSTREAM by the
+    // resolver (provider-resolution.ts:327 skips personal_subscription candidates
+    // when !selfHostedSingleTenant), so credentialKind is NEVER
+    // "personal_subscription" on a shared host — a null-target local fallback below
+    // can only ever land on a self-hosted trusted box. When no execution target is
+    // configured (DEFAULT-OFF gVisor / self-hosted single tenant) the resolver
+    // returns null → the run keeps its existing (environment or local)
+    // executionTarget untouched (config reference preserved). Routing is best-effort:
+    // a routing error (e.g. an unavailable environment pin) logs and falls back to
+    // local rather than failing the run.
+    const routedExecutionTarget = await resolveExecutionTargetForRun(db, {
+      organizationId: (agent as { organizationId?: string | null }).organizationId ?? null,
+      companyId: agent.companyId,
+      credentialKind: p4CredentialHint.credentialKind,
+      executionTargetSlug: p4CredentialHint.executionTargetSlug,
+      pinnedTargetId: environmentRuntime.executionTargetId ?? null,
+    }).catch((error) => {
+      logger.debug(
+        {
+          companyId: agent.companyId,
+          agentId: agent.id,
+          runId: run.id,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        "heartbeat: execution-target routing fell back to local",
+      );
+      return null;
+    });
+    resolvedConfig = mergeResolvedExecutionTarget(
+      resolvedConfig,
+      routedExecutionTarget ? executionTargetToAdapterConfig(routedExecutionTarget) : null,
     );
 
     // ── Issue ref for execution workspace ───────────────────────────

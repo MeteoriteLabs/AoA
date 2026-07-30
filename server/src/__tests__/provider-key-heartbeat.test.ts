@@ -188,7 +188,10 @@ describe("heartbeat wiring", () => {
     // unified provider resolver (STRANGLER). resolvedConfig is the resolver's
     // applied credential, and the company-key fallback is bound as the resolver's
     // `legacyResolveConfig` — so an unmigrated company's behaviour is byte-identical.
-    expect(heartbeatSrc).toMatch(/const resolvedConfig = applyResolvedCredential\(/);
+    // P5 Task 9 changed `const` -> `let` so the routing step can reassign
+    // resolvedConfig with the credential-appropriate executionTarget; the P4 intent
+    // (resolvedConfig is built FROM applyResolvedCredential) is unchanged.
+    expect(heartbeatSrc).toMatch(/\b(?:const|let) resolvedConfig = applyResolvedCredential\(/);
     expect(heartbeatSrc).toMatch(
       /legacyResolveConfig:[\s\S]*?secretsSvc\.applyCompanyKeyFallbackForRuntime\(/,
     );
