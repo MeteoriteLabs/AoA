@@ -46,4 +46,20 @@ describe("resolveExecutionTargetForRun scopes execution_targets in SQL (M2 — n
     // Behavior preserved: a business key still routes to the pooled target.
     expect(chosen?.id).toBe("t-pool");
   });
+
+  it("a null org scopes via isNull() alone (no eq(col, null)) — the null branch", async () => {
+    const { db, where, from } = dbCapturingWhere([pooled]);
+    const chosen = await resolveExecutionTargetForRun(db, {
+      organizationId: null,
+      companyId: "co-1",
+      credentialKind: "company_api_key",
+      pinnedTargetId: null,
+      executionTargetSlug: null,
+    });
+    expect(from).toHaveBeenCalled();
+    // isNull(organizationId) alone (never eq(col, null)) -> stub returns "isNull"
+    expect(where).toHaveBeenCalledWith("isNull");
+    // Behavior preserved: system rows still route a business key to the pool.
+    expect(chosen?.id).toBe("t-pool");
+  });
 });
