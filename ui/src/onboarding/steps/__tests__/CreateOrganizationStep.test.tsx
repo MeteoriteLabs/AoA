@@ -30,6 +30,12 @@ describe("CreateOrganizationStep", () => {
     expect(onComplete).not.toHaveBeenCalled();
   });
 
+  it("does not promise renaming the organization later (no rename route/UI exists)", () => {
+    render(<CreateOrganizationStep ctx={ctx} onComplete={() => {}} onBack={() => {}} />);
+    // Using body text (not queryByText) avoids throwing on partial multi-node matches.
+    expect(document.body.textContent).not.toMatch(/rename it later/i);
+  });
+
   it("creates an organization, stores its id on ctx, and advances", async () => {
     const onComplete = vi.fn();
     const setOrganizationId = vi.fn();

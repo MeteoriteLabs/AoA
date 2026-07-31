@@ -90,7 +90,7 @@ export function CreateOrganizationStep({ ctx, onComplete }: StepProps) {
               Your <GradientText>organization</GradientText>
             </>
           }
-          subtitle="Your organization is the account that owns your companies and billing. You can rename it later."
+          subtitle="Your organization is the account that owns your companies and billing."
         />
       </Reveal>
       <Reveal delay={0.09}>
