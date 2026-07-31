@@ -76,6 +76,11 @@ async function rebuildActor(userId: string) {
         eq(companyMemberships.status, "active"),
       ),
     );
+  // TEST-LOCAL map: the real auth middleware (middleware/auth.ts) populates only
+  // organizationIds/companyIds on req.actor, NOT a per-org role map. This exists
+  // solely so the test can mirror Fix 2's UI-side create-capable filter (orgRoleCan).
+  // assertCompanyAccess / assertCompanyCreateAuthorized do NOT read it — the latter
+  // is DB-authoritative via organizationAccessService.canOrg.
   const organizationRoles: Record<string, string> = {};
   for (const r of orgRows) organizationRoles[r.organizationId] = r.role as string;
   return {
