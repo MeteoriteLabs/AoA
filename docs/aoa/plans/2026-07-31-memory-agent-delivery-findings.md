@@ -1,0 +1,92 @@
+# Memory → Agent Delivery: Findings & Fix Plan (2026-07-31)
+
+Real-usability testing of the enterprise-memory build — driving **live CLI agent
+runs** to verify memory actually reaches Commander / Crew / Org agents (not just
+that it's stored + RBAC-gated). This is the "does a real agent USE memory" layer
+the prior verification did not cover.
+
+## ✅ Proven
+
+- **Memory plumbing + RBAC + retrieval** — live on the running instance + 10 RBAC
+  leakage integration tests on real Postgres (see the as-built topic note).
+- **Real CLI agent runs authenticate + execute in-sandbox.** Multiple `claude_local`
+  ORG runs completed (exit 0). The claude adapter's **verify PROBE** reports
+  `needs_auth`, but that is a **false-negative specific to the probe** — it runs
+  from default `~/.claude` (with the user's `superpowers` SessionStart hook) under a
+  staging Claude Code env. Real runs use **D9-isolated config** (only the copied
+  `.credentials.json`, no hooks) and authenticate fine.
+- **Env cause identified.** Launching AoA from a *staging* Claude Code session
+  injects **18** `CLAUDE_CODE_*` / staging-OAuth / `ANTHROPIC_BASE_URL` vars that
+  route default-config CLI spawns to staging, where a production `claude login`
+  reads as "revoked." **Fix shipped:** opt-in `AOA_STRIP_CC_ENV=1` startup scrub
+  (`server/src/index.ts`) — no-op in a normal terminal; strips the CC session vars
+  when AoA is launched from Claude Code. (D9-isolated runs are unaffected — they use
+  the copied creds, not the ambient env.)
+
+## ⚠️ The ORG memory-delivery gap — 3 stacked issues
+
+An ORG heartbeat agent, out of the box, **cannot retrieve memory**. Root-caused to
+three concrete, independent gaps (agent's own words: *"memory.search … is not
+available in my environment"*, *"you haven't granted it yet"*):
+
+1. **Allowlist omission.** Memory tools were absent from
+   `ORG_HEARTBEAT_TOOL_ALLOWLIST` (`server/src/services/heartbeat-mcp.ts`).
+   **FIXED** — added `memory.search` + `memory.get` (+ test assertion). Necessary
+   but **not sufficient** on its own (see #2).
+2. **Dotted tool names are dropped by Claude.** `memory.search` / `memory.get` /
+   `memory.write` / `memory.retain` are the *only* dotted tool names in the registry
+   (`server/src/mcp/tools/index.ts`). Claude's tool-name schema is
+   `^[a-zA-Z0-9_-]+$` — no dots — so `mcp__aoa__memory.search` never survives
+   exposure. **Confirmed empirically:** the agent's `system/init` loaded exactly 7
+   tools, all underscore-named; `memory.search` absent; the agent fell back to
+   `ToolSearch` and failed to find it. **Fix needed:** alias/sanitize dotted MCP tool
+   names for Claude at the bridge (`memory.search` → `memory_search` on the wire;
+   keep server-side dispatch keyed by the canonical name), and use the sanitized name
+   in the allowlist. (Renaming the tools registry-wide is the bigger-blast-radius
+   alternative.)
+3. **No permission auto-grant.** Even the exposed tools are blocked —
+   `permissionMode: "default"`, *"Claude requested permissions to use
+   mcp__aoa__get_task, but you haven't granted it yet."* The org heartbeat run is not
+   bridged to auto-approve read tools. **Fix needed:** for org/crew runs, enable the
+   W5b PreToolUse bridge to auto-approve allowlisted **read-only** tools (or pass a
+   permission mode / `allowedTools` that permits the allowlisted MCP tools). Writes
+   stay gated.
+
+## Crew status — untested, should work
+
+CREW renders scoped memory **directly into the prompt's `## Context`**
+(`server/src/services/internal-agent/aoa-agents/crew-context-bundle.ts:591`) — no
+MCP, no tool names, no permissions. Unaffected by #2/#3. **Not yet run** — trigger
+via braindump→Librarian or a crew-task dispatch, then inspect the trigger prompt for
+the memory bundle.
+
+## Commander status — untested, likely same MCP gaps
+
+Commander uses the same dotted MCP memory tools → likely hits #2 (dotted names) and
+#3 (permission). It also uses default-config `cli-mode` (not D9-isolated), so it
+depends on `AOA_STRIP_CC_ENV` for auth in the sandbox. **Not yet run.**
+
+## Fix plan (next focused session)
+
+1. **Alias dotted MCP tool names for Claude** at the bridge — `memory.*` →
+   `memory_*` on the wire, canonical dispatch preserved. Update the org allowlist +
+   Commander toolset to the sanitized names. Bridge unit test for the mapping.
+2. **Auto-grant read-only MCP tools** for org/crew runs (bridge auto-approve for
+   allowlisted reads, or read-only permission mode). Test.
+3. **Prove all three live:** Org (`memory.search` recall of the seeded vision),
+   Crew (`## Context` bundle rendered in the prompt), Commander (recall).
+4. Keep `AOA_STRIP_CC_ENV` for the launched-from-Claude-Code dev/sandbox case.
+
+## Reproduction
+
+```
+AOA_STRIP_CC_ENV=1 AOA_HOME=C:\Users\TK\.aoa\mem-inst PORT=3130 \
+  AOA_EMBEDDED_POSTGRES_PORT=54340 AOA_DEV_LOCAL_IDENTITY=1 \
+  pnpm -C C:/Users/TK/.aoa/wt/mem --filter @armyofagents/server dev
+```
+- Company **AcmeMem** `febba560-8625-4aa1-b61b-2207f76faef5`; seeded identity memory
+  (vision = "Be the memory layer every founder trusts").
+- Org agent **MemProbe** `fe83831b-d050-46b5-9355-e8f1fa204628` (`claude_local`).
+- Create a todo task assigned to it → `POST /api/agents/:id/wakeup {"source":"assignment"}`
+  → `GET /api/heartbeat-runs/:runId/log`. The `system/init` line lists the exact
+  tools the agent loaded (the exposure canary).
