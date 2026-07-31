@@ -7,6 +7,7 @@ import {
   type OAuthStatePayload,
   discoverOAuthServer,
   registerOAuthClient,
+  buildAuthorizeUrl,
 } from "../mcp-connector-oauth.js";
 
 beforeAll(() => {
@@ -104,5 +105,31 @@ describe("registerOAuthClient", () => {
   it("throws on non-2xx", async () => {
     const f = (async () => new Response("no", { status: 400 })) as typeof fetch;
     await expect(registerOAuthClient("https://as/register", "https://app/cb", f)).rejects.toThrow(/registration/i);
+  });
+});
+
+describe("buildAuthorizeUrl", () => {
+  it("assembles a spec-correct authorize URL", () => {
+    const url = new URL(buildAuthorizeUrl({
+      authorizationEndpoint: "https://as/authorize", clientId: "cid", redirectUri: "https://app/cb",
+      scopes: ["default"], resource: "https://mcp/x", state: "STATE", codeChallenge: "CHAL",
+    }));
+    expect(url.origin + url.pathname).toBe("https://as/authorize");
+    const q = url.searchParams;
+    expect(q.get("response_type")).toBe("code");
+    expect(q.get("client_id")).toBe("cid");
+    expect(q.get("redirect_uri")).toBe("https://app/cb");
+    expect(q.get("scope")).toBe("default");
+    expect(q.get("resource")).toBe("https://mcp/x");
+    expect(q.get("state")).toBe("STATE");
+    expect(q.get("code_challenge")).toBe("CHAL");
+    expect(q.get("code_challenge_method")).toBe("S256");
+  });
+  it("omits scope when empty", () => {
+    const url = new URL(buildAuthorizeUrl({
+      authorizationEndpoint: "https://as/a", clientId: "c", redirectUri: "https://app/cb",
+      scopes: [], resource: "https://mcp/x", state: "s", codeChallenge: "c",
+    }));
+    expect(url.searchParams.has("scope")).toBe(false);
   });
 });

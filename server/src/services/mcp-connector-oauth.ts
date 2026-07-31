@@ -113,3 +113,26 @@ export async function registerOAuthClient(
   if (typeof clientId !== "string") throw new Error("OAuth client registration: no client_id in response");
   return { clientId };
 }
+
+export interface AuthorizeUrlParams {
+  authorizationEndpoint: string;
+  clientId: string;
+  redirectUri: string;
+  scopes: string[];
+  resource: string;
+  state: string;
+  codeChallenge: string;
+}
+
+export function buildAuthorizeUrl(p: AuthorizeUrlParams): string {
+  const url = new URL(p.authorizationEndpoint);
+  url.searchParams.set("response_type", "code");
+  url.searchParams.set("client_id", p.clientId);
+  url.searchParams.set("redirect_uri", p.redirectUri);
+  if (p.scopes.length > 0) url.searchParams.set("scope", p.scopes.join(" "));
+  url.searchParams.set("resource", p.resource);
+  url.searchParams.set("state", p.state);
+  url.searchParams.set("code_challenge", p.codeChallenge);
+  url.searchParams.set("code_challenge_method", "S256");
+  return url.toString();
+}
