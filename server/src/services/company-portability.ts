@@ -166,6 +166,10 @@ type ImportAuthorizationContext = {
   changesCompletionPolicy: boolean;
   requiresTaskAssignmentPermission: boolean;
   importsWorkflowTemplates: boolean;
+  // D2/H2: an existing-company agent import is a company-structure mutation and
+  // must require founder/team_lead. Surfaced so the route can gate it; the
+  // service no longer re-owns the caller via ensureRealOperator.
+  importsAgents: boolean;
 };
 
 function getImportAuthorizationContext(plan: ImportPlanInternal): ImportAuthorizationContext {
@@ -222,6 +226,7 @@ function getImportAuthorizationContext(plan: ImportPlanInternal): ImportAuthoriz
       changesCompletionPolicy || mutableRoutines.length > 0 || importsAssignedIssues,
     importsWorkflowTemplates:
       plan.include.workflowTemplates === true && (manifest.workflowTemplates?.length ?? 0) > 0,
+    importsAgents: plan.include.agents === true && plan.selectedAgents.length > 0,
   };
 }
 
@@ -2118,6 +2123,7 @@ export function companyPortabilityService(db: Db) {
     input: CompanyPortabilityImport,
     actorUserId: string | null | undefined,
     authorize?: (context: ImportAuthorizationContext) => Promise<void>,
+    opts?: { organizationId?: string | null },
   ): Promise<CompanyPortabilityImportResult> {
     const plan = await buildPreview(input);
     if (plan.preview.errors.length > 0) {
@@ -2170,8 +2176,17 @@ export function companyPortabilityService(db: Db) {
         agentCompletionReviewGuardrail: include.company
           ? (sourceManifest.company?.agentCompletionReviewGuardrail ?? false)
           : false,
+        // D2/H3: the owning Organization is server-resolved + authorized in the
+        // route (mirrors POST /). undefined -> companies.create falls back to the
+        // DEFAULT sentinel (self-hosted single-tenant), unchanged.
+        organizationId: opts?.organizationId ?? undefined,
       }, { requestedByUserId: actorUserId ?? null });
-      await access.ensureMembership(created.id, "user", actorUserId ?? "board", "owner", "active");
+      // D2/H2 + no-self-lockout: seed the IMPORTER as a genuine founder of the
+      // freshly created company — company owner membership + founder role + org
+      // owner membership (ensureRealOperator, access.ts). This also guarantees a
+      // real human founder for the agent-restoration parenting below. Replaces
+      // the old bare "board" company-only membership.
+      await access.ensureRealOperator(created.id, actorUserId);
       targetCompany = created;
       companyAction = "created";
     } else {
@@ -2202,17 +2217,14 @@ export function companyPortabilityService(db: Db) {
 
     if (!targetCompany) throw notFound("Target company not found");
 
-    // W6 human-at-top invariant. Import builds the company via the service layer,
-    // bypassing the company-create route's operator seeding — so a freshly created
-    // company has no real human founder. If we restored agents now, agentService
-    // .create() would either throw ("no human founder exists") or auto-parent them
-    // to a non-user owner principal (e.g. the synthetic "board" actor when
-    // actorUserId is null). Seed a real operator FIRST so agent restoration parents
-    // every org agent to a genuine human. Idempotent: returns the existing founder
-    // when one is already present, so it is safe for the existing-company path too.
-    if (include.agents) {
-      await access.ensureRealOperator(targetCompany.id, actorUserId);
-    }
+    // D2/H2: NO ensureRealOperator here. Operator provisioning is a NEW-company
+    // concern only and now happens in the new_company branch above (seeding the
+    // importer as founder). For an EXISTING company we must never re-own the
+    // caller: agentService.create parents restored org agents to the company's
+    // pre-existing human founder (orgHierarchy.getFounderUserId), and the route
+    // separately requires founder/team_lead to import agents (importsAgents gate).
+    // A company with no human founder correctly hard-fails in agentService.create
+    // ("no human founder exists") rather than silently promoting the caller.
 
     const resultAgents: CompanyPortabilityImportResult["agents"] = [];
     const importedSlugToAgentId = new Map<string, string>();
@@ -3468,8 +3480,9 @@ export function companyPortabilityService(db: Db) {
     ]);
 
     // W6 human-at-top invariant (safety net): re-parent any org agent that still
-    // landed rootless up to the founder. ensureRealOperator already ran above
-    // (before agent restoration), so a founder is guaranteed to exist here.
+    // landed rootless up to the founder. A founder is guaranteed here — either
+    // seeded by the new_company branch (ensureRealOperator) or already present on
+    // the existing company (route-gated founder/team_lead + getFounderUserId).
     if (include.agents) {
       await agents.backfillHumanAtTop(targetCompany.id);
     }
