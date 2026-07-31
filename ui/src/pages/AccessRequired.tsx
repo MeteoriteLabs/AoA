@@ -1,7 +1,9 @@
+import type { ReactNode } from "react";
 import { Lock } from "lucide-react";
 import { useNavigate } from "@/lib/router";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Button } from "@/components/ui/button";
+import { isForbidden } from "@/api/client";
 import { cn } from "@/lib/utils";
 
 export interface AccessRequiredProps {
@@ -46,4 +48,24 @@ export function AccessRequired({ requestedPrefix, className }: AccessRequiredPro
       />
     </div>
   );
+}
+
+/**
+ * Shared render-branch for company-scoped surfaces: when `error` is a 403
+ * (see {@link isForbidden}) render {@link AccessRequired} instead of the page
+ * content; otherwise render `children` unchanged so non-403 errors keep flowing
+ * to a page's existing error handling. Mirrors the InstanceSettingsPage 403
+ * panel in reusable form — deliberately NOT a broad global error boundary.
+ */
+export function AccessRequiredBoundary({
+  error,
+  children,
+}: {
+  error: unknown;
+  children: ReactNode;
+}) {
+  if (isForbidden(error)) {
+    return <AccessRequired />;
+  }
+  return <>{children}</>;
 }

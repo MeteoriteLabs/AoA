@@ -34,6 +34,17 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * True when `err` is an {@link ApiError} carrying HTTP 403 — i.e. the caller
+ * is authenticated but not authorized for the requested resource. Shared so
+ * company-scoped surfaces can render a friendly access-required state instead
+ * of the generic error UI. (Instance-admin 403 handling keeps its own local
+ * check in InstanceSettingsPage.)
+ */
+export function isForbidden(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 403;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers ?? undefined);
   const body = init?.body;
