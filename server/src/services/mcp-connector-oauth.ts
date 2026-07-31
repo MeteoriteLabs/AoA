@@ -1,6 +1,16 @@
 import { createHash, randomBytes, createHmac, timingSafeEqual } from "node:crypto";
 import { resolveConsentSecret } from "./mcp-connector-consent.js";
 
+const FETCH_TIMEOUT_MS = 15_000;
+
+function assertHttps(url: string, label: string): void {
+  let u: URL;
+  try { u = new URL(url); } catch { throw new Error(`OAuth discovery: invalid ${label} URL`); }
+  if (u.protocol !== "https:") {
+    throw new Error(`OAuth discovery: ${label} must use https (got ${u.protocol}) — refusing to send credentials in cleartext`);
+  }
+}
+
 export function generatePkce(): { verifier: string; challenge: string } {
   // 32 random bytes -> 43-char base64url verifier (RFC 7636 §4.1)
   const verifier = randomBytes(32).toString("base64url");
@@ -22,6 +32,10 @@ export function signOAuthState(p: OAuthStatePayload): string {
   return `${encoded}.${sig}`;
 }
 
+/**
+ * Verify a signed state. Proves AUTHENTICITY + FRESHNESS (unexpired) only — NOT single-use.
+ * Replay within the `exp` window is prevented by the caller's atomic flow-claim, not here.
+ */
 export function verifyOAuthState(token: string, nowMs: number): OAuthStatePayload | null {
   const secret = resolveConsentSecret();
   const dot = token.lastIndexOf(".");
@@ -39,7 +53,7 @@ export function verifyOAuthState(token: string, nowMs: number): OAuthStatePayloa
     return null;
   }
   if (typeof payload.exp !== "number" || nowMs >= payload.exp) return null;
-  if (typeof payload.connectorId !== "string" || typeof payload.companyId !== "string") return null;
+  if (typeof payload.connectorId !== "string" || typeof payload.companyId !== "string" || typeof payload.nonce !== "string") return null;
   return payload;
 }
 
@@ -52,7 +66,7 @@ export interface DiscoveredOAuth {
 }
 
 async function fetchJson(url: string, fetchImpl: typeof fetch): Promise<Record<string, unknown>> {
-  const res = await fetchImpl(url, { headers: { accept: "application/json" } });
+  const res = await fetchImpl(url, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
   if (!res.ok) throw new Error(`OAuth discovery failed: ${url} -> HTTP ${res.status}`);
   return (await res.json()) as Record<string, unknown>;
 }
@@ -65,17 +79,22 @@ export async function discoverOAuthServer(
   // RFC 9728: protected-resource-metadata is served with the resource path suffixed.
   const prmUrl = `${u.origin}/.well-known/oauth-protected-resource${u.pathname}`;
   const prm = await fetchJson(prmUrl, fetchImpl);
-  const servers = Array.isArray(prm.authorization_servers) ? (prm.authorization_servers as string[]) : [];
+  const servers = Array.isArray(prm.authorization_servers) ? (prm.authorization_servers as unknown[]) : [];
   const asBase = servers[0];
-  if (!asBase) throw new Error(`OAuth discovery: no authorization_servers at ${prmUrl}`);
+  if (typeof asBase !== "string" || !asBase) throw new Error(`OAuth discovery: no authorization_servers at ${prmUrl}`);
+  assertHttps(asBase, "authorization server");
   // RFC 8414: AS metadata at the issuer origin.
   const asUrl = `${new URL(asBase).origin}/.well-known/oauth-authorization-server`;
   const md = await fetchJson(asUrl, fetchImpl);
-  const authorizationEndpoint = md.authorization_endpoint as string;
-  const tokenEndpoint = md.token_endpoint as string;
-  if (!authorizationEndpoint || !tokenEndpoint) {
+  const authorizationEndpoint = md.authorization_endpoint;
+  const tokenEndpoint = md.token_endpoint;
+  if (typeof authorizationEndpoint !== "string" || typeof tokenEndpoint !== "string") {
     throw new Error(`OAuth discovery: AS metadata missing endpoints at ${asUrl}`);
   }
+  assertHttps(authorizationEndpoint, "authorization_endpoint");
+  assertHttps(tokenEndpoint, "token_endpoint");
+  const registrationEndpoint = typeof md.registration_endpoint === "string" ? md.registration_endpoint : null;
+  if (registrationEndpoint) assertHttps(registrationEndpoint, "registration_endpoint");
   const codeChallengeMethods = Array.isArray(md.code_challenge_methods_supported)
     ? (md.code_challenge_methods_supported as string[])
     : [];
@@ -85,7 +104,7 @@ export async function discoverOAuthServer(
   return {
     authorizationEndpoint,
     tokenEndpoint,
-    registrationEndpoint: (md.registration_endpoint as string) ?? null,
+    registrationEndpoint,
     scopesSupported: Array.isArray(md.scopes_supported) ? (md.scopes_supported as string[]) : [],
     codeChallengeMethods,
   };
@@ -106,6 +125,7 @@ export async function registerOAuthClient(
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],
     }),
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(`OAuth client registration failed: HTTP ${res.status}`);
   const body = (await res.json()) as Record<string, unknown>;
@@ -155,6 +175,7 @@ async function postToken(tokenEndpoint: string, form: URLSearchParams, fetchImpl
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
     body: form.toString(),
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
   const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   if (!res.ok) throw new Error(`OAuth token request failed: HTTP ${res.status} ${String(body.error ?? "")}`.trim());

@@ -48,6 +48,10 @@ describe("oauth state", () => {
     expect(verifyOAuthState("not-a-token", 0)).toBeNull();
     expect(verifyOAuthState("", 0)).toBeNull();
   });
+  it("rejects a state whose payload has a non-string nonce", () => {
+    const token = signOAuthState({ ...base, nonce: 123 as unknown as string, exp: 10_000 });
+    expect(verifyOAuthState(token, 5_000)).toBeNull();
+  });
 });
 
 function stubFetch(routes: Record<string, unknown>): typeof fetch {
@@ -87,6 +91,17 @@ describe("discoverOAuthServer", () => {
       },
     });
     await expect(discoverOAuthServer(CONN, noPkce)).rejects.toThrow(/S256/);
+  });
+
+  it("rejects a non-https token endpoint (no cleartext tokens)", async () => {
+    const f = stubFetch({
+      "https://mcp.notion.com/.well-known/oauth-protected-resource/mcp": { authorization_servers: ["https://mcp.notion.com"] },
+      "https://mcp.notion.com/.well-known/oauth-authorization-server": {
+        authorization_endpoint: "https://mcp.notion.com/authorize", token_endpoint: "http://mcp.notion.com/token",
+        registration_endpoint: "https://mcp.notion.com/register", code_challenge_methods_supported: ["S256"],
+      },
+    });
+    await expect(discoverOAuthServer("https://mcp.notion.com/mcp", f)).rejects.toThrow(/https/i);
   });
 });
 
