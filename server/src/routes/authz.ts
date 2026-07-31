@@ -70,7 +70,12 @@ export async function assertCompanyAccess(db: Db, req: Request, companyId: strin
   const companyIds = req.actor.companyIds ?? [];
   const memberOk = tenantId !== null && orgs.includes(tenantId) && companyIds.includes(companyId);
   if (memberOk) return;
-  if (req.actor.operator && req.actor.userId && (await hasActiveBreakGlass(db, req.actor.userId, companyId))) {
+  if (
+    req.actor.operator &&
+    req.actor.userId &&
+    tenantId !== null &&
+    (await hasActiveBreakGlass(db, req.actor.userId, companyId, tenantId))
+  ) {
     return;
   }
   // Surface the org-mismatch error when the tenant boundary is what failed; else company-scope error.

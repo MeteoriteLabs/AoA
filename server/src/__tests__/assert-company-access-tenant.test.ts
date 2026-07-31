@@ -26,7 +26,7 @@ describe("assertCompanyAccess — cloud_auth", () => {
     hasActiveBreakGlass.mockResolvedValue(true);
     const req = { actor: { type: "board", source: "session", userId: "op", companyIds: [], organizationIds: [], operator: true, isInstanceAdmin: false } } as any;
     await expect(assertCompanyAccess(db("org-1"), req, "c1")).resolves.toBeUndefined();
-    expect(hasActiveBreakGlass).toHaveBeenCalledWith(expect.anything(), "op", "c1");
+    expect(hasActiveBreakGlass).toHaveBeenCalledWith(expect.anything(), "op", "c1", "org-1");
   });
   it("403s a member of a DIFFERENT org (IDOR)", async () => {
     const req = { actor: { type: "board", source: "session", userId: "u", companyIds: ["c1"], organizationIds: ["org-2"] } } as any;

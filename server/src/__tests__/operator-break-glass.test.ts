@@ -178,12 +178,12 @@ describe("operator break-glass service", () => {
       ttlMinutes: 60,
     });
 
-    expect(await hasActiveBreakGlass(db, "op", CO)).toBe(true);
+    expect(await hasActiveBreakGlass(db, "op", CO, ORG)).toBe(true);
 
     // Move expiry into the past — the live TTL (gt(expires_at, now())) must now deny,
     // BEFORE any sweep runs.
     db._grants[0].expiresAt = new Date(Date.now() - 60_000);
-    expect(await hasActiveBreakGlass(db, "op", CO)).toBe(false);
+    expect(await hasActiveBreakGlass(db, "op", CO, ORG)).toBe(false);
   });
 
   it("hasActiveBreakGlass() denies a revoked grant and a different company", async () => {
@@ -202,30 +202,34 @@ describe("operator break-glass service", () => {
     });
 
     // Same company => allowed; a different company => denied (company-scoped).
-    expect(await hasActiveBreakGlass(db, "op", CO)).toBe(true);
-    expect(await hasActiveBreakGlass(db, "op", "co-other")).toBe(false);
+    expect(await hasActiveBreakGlass(db, "op", CO, ORG)).toBe(true);
+    expect(await hasActiveBreakGlass(db, "op", "co-other", ORG)).toBe(false);
 
     db._grants[0].revokedAt = new Date();
-    expect(await hasActiveBreakGlass(db, "op", CO)).toBe(false);
+    expect(await hasActiveBreakGlass(db, "op", CO, ORG)).toBe(false);
   });
 
-  it("org-wide grant (companyId null) matches ANY company", async () => {
+  it("org-wide grant (companyId null) matches any company IN ITS ORG — never another org", async () => {
     const db = makeFakeDb();
     const { deps } = makeDeps();
     const svc = operatorBreakGlassService(db, deps);
 
     await svc.grant({
       operatorUserId: "op2",
-      organizationId: ORG,
-      companyId: null, // org-wide
+      organizationId: ORG, // org A
+      companyId: null, // org-wide within org A
       role: "founder",
       reason: "x",
       grantedByUserId: "op2",
       ttlMinutes: 60,
     });
 
-    expect(await hasActiveBreakGlass(db, "op2", CO)).toBe(true);
-    expect(await hasActiveBreakGlass(db, "op2", "any-other-company")).toBe(true);
+    // Any company whose owning org is ORG (org A) is authorized...
+    expect(await hasActiveBreakGlass(db, "op2", CO, ORG)).toBe(true);
+    expect(await hasActiveBreakGlass(db, "op2", "any-company-in-org-a", ORG)).toBe(true);
+    // ...but a company in a DIFFERENT org must NOT be (Finding #1: a NULL-company
+    // grant for org A used to authorize every company in every org).
+    expect(await hasActiveBreakGlass(db, "op2", "co-in-org-b", "org-b")).toBe(false);
   });
 
   it("sweepExpired() removes the materialized membership and marks the grant swept", async () => {
@@ -273,12 +277,12 @@ describe("operator break-glass service", () => {
       grantedByUserId: "op2",
       ttlMinutes: 60,
     });
-    expect(await hasActiveBreakGlass(db, "op2", CO)).toBe(true);
+    expect(await hasActiveBreakGlass(db, "op2", CO, ORG)).toBe(true);
 
     await svc.revoke("op2", ORG);
 
     // The org-wide grant is now revoked (revokedAt set) => denied.
-    expect(await hasActiveBreakGlass(db, "op2", CO)).toBe(false);
+    expect(await hasActiveBreakGlass(db, "op2", CO, ORG)).toBe(false);
     // revokeMembership called with the real org id (not "").
     expect(revoke).toHaveBeenCalledWith({ organizationId: ORG, userId: "op2" });
     // No audit row carries an empty organizationId.

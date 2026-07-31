@@ -129,12 +129,12 @@ describe.skipIf(process.platform !== "linux")("operator break-glass (real DB)", 
     );
     expect(count(mem)).toBe(1); // operator now passes assertTenantMembership on re-derive
 
-    expect(await hasActiveBreakGlass(db, "op", CO)).toBe(true);
+    expect(await hasActiveBreakGlass(db, "op", CO, ORG)).toBe(true);
 
     await db.execute(
       sql`UPDATE operator_break_glass_grants SET expires_at = now() - interval '1 minute' WHERE operator_user_id = 'op'`,
     );
-    expect(await hasActiveBreakGlass(db, "op", CO)).toBe(false); // TTL authoritative BEFORE any sweep
+    expect(await hasActiveBreakGlass(db, "op", CO, ORG)).toBe(false); // TTL authoritative BEFORE any sweep
 
     const swept = await svc.sweepExpired();
     expect(swept).toBeGreaterThanOrEqual(1);
@@ -156,8 +156,8 @@ describe.skipIf(process.platform !== "linux")("operator break-glass (real DB)", 
       grantedByUserId: "op2",
       ttlMinutes: 60,
     });
-    expect(await hasActiveBreakGlass(db, "op2", CO)).toBe(true); // null companyId => org-wide
+    expect(await hasActiveBreakGlass(db, "op2", CO, ORG)).toBe(true); // null companyId => org-wide
     await svc.revoke("op2", ORG);
-    expect(await hasActiveBreakGlass(db, "op2", CO)).toBe(false);
+    expect(await hasActiveBreakGlass(db, "op2", CO, ORG)).toBe(false);
   }, 90_000);
 });

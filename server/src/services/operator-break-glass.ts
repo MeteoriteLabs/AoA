@@ -63,19 +63,24 @@ const BREAK_GLASS_ORG_ROLE = "owner";
  * Live-TTL read used at the authorization decision point. Authoritative and
  * independent of the sweeper: a grant is active iff it is not revoked and its
  * expires_at is still in the future. An org-wide grant (company_id NULL) matches
- * any company in the organization.
+ * any company in that same organization only (org is scoped in the WHERE).
  */
 export async function hasActiveBreakGlass(
   db: Db,
   operatorUserId: string,
   companyId: string,
+  organizationId: string,
 ): Promise<boolean> {
+  // Org-scope in SQL (Finding #1): an org-wide grant (company_id NULL)
+  // authorizes ONLY the organization it was granted for — never every org.
+  // Company-scoped grants still match by exact companyId within that org.
   const rows = await db
     .select({ companyId: operatorBreakGlassGrants.companyId })
     .from(operatorBreakGlassGrants)
     .where(
       and(
         eq(operatorBreakGlassGrants.operatorUserId, operatorUserId),
+        eq(operatorBreakGlassGrants.organizationId, organizationId),
         isNull(operatorBreakGlassGrants.revokedAt),
         gt(operatorBreakGlassGrants.expiresAt, new Date()),
       ),
