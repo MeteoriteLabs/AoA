@@ -249,13 +249,22 @@ export function companyService(db: Db) {
       opts: CreateCompanyOptions = {},
     ) => createCompanyWithUniquePrefix(data, opts),
 
-    update: (id: string, data: Partial<typeof companies.$inferInsert>) =>
-      db
+    update: (id: string, data: Partial<typeof companies.$inferInsert>) => {
+      // Tenant-key immutability (Codex ①): organizationId is assigned once at
+      // create and must NEVER be rewritten by an update — a cross-tenant reparent
+      // is a tenant-isolation breach. The update validator already omits it
+      // (validators/company.ts); this strip is the defense-in-depth at the service
+      // seam for any direct/non-route caller. No legitimate caller passes
+      // organizationId here (company-portability import update passes only
+      // name/description/brandColor/requireBoardApprovalForNewAgents).
+      const { organizationId: _omitOrganizationId, ...mutable } = data;
+      return db
         .update(companies)
-        .set({ ...data, updatedAt: new Date() })
+        .set({ ...mutable, updatedAt: new Date() })
         .where(eq(companies.id, id))
         .returning()
-        .then((rows) => rows[0] ?? null),
+        .then((rows) => rows[0] ?? null);
+    },
 
     archive: (id: string) =>
       db
