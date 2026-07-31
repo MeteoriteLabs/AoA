@@ -28,6 +28,11 @@ export const createCompanySchema = z.object({
 export type CreateCompany = z.infer<typeof createCompanySchema>;
 
 export const updateCompanySchema = createCompanySchema
+  // organizationId is the tenant key: set once at create, immutable thereafter.
+  // Omit it BEFORE .partial() so PATCH /companies/:id can never accept it and
+  // reparent a company across organizations (Codex ①). createCompanySchema is
+  // untouched — create-time tenant pick in cloud_auth is unchanged.
+  .omit({ organizationId: true })
   .partial()
   .extend({
     status: z.enum(COMPANY_STATUSES).optional(),
