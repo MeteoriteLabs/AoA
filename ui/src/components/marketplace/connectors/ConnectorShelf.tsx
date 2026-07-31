@@ -42,12 +42,15 @@ interface ShelfCardProps {
   installed: boolean;
   busy: boolean;
   onInstall: () => void;
+  /** Install (if needed) then start the OAuth broker round trip and navigate to
+   *  the provider's consent page. Only called for `entry.oauthRequired` cards. */
+  onAuthorize: () => void;
 }
 
 /** Marketplace card chrome (design-system §9.13), minus the bits that only make
  *  sense for catalog items: no TypeChip (every card here is a connector) and no
  *  detail-page link (connectors have no detail route). */
-function ShelfCard({ entry, installed, busy, onInstall }: ShelfCardProps) {
+function ShelfCard({ entry, installed, busy, onInstall, onAuthorize }: ShelfCardProps) {
   const verified = entry.trust?.tier === "verified";
   const unavailable = !entry.installable;
 
@@ -134,6 +137,22 @@ function ShelfCard({ entry, installed, busy, onInstall }: ShelfCardProps) {
           <Badge variant="active" className="h-7 px-2.5 shrink-0">
             Installed
           </Badge>
+        ) : entry.oauthRequired ? (
+          // The broker (Plan 4) handles OAuth entries: install-then-authorize,
+          // not install-then-done. `unavailable` still applies (D7 can refuse an
+          // OAuth entry's transport too), so a D7-refused OAuth card falls through
+          // to the unavailable branch below rather than offering a dead button.
+          unavailable ? null : (
+            <Button
+              size="sm"
+              className="text-[11.5px] h-7 px-3 shrink-0"
+              onClick={onAuthorize}
+              disabled={busy}
+              aria-label={`Authorize ${entry.displayName}`}
+            >
+              {busy ? "…" : "Authorize"}
+            </Button>
+          )
         ) : unavailable ? null : (
           <Button
             size="sm"
@@ -246,6 +265,37 @@ export function ConnectorShelf({
     },
   });
 
+  const authorizeMutation = useMutation({
+    mutationFn: async (entry: McpConnectorShelfEntry) => {
+      // Install first if this entry isn't registered yet (same serverName-keyed
+      // lookup the shelf already uses to badge a card "Installed"), then start
+      // the OAuth broker round trip and hand the browser off to the provider's
+      // consent page. A re-authorize (already installed, dead token) skips
+      // straight to oauth/start — no duplicate install POST.
+      const existing = installed.find((c) => c.serverName === entry.serverName);
+      const connectorId =
+        existing?.id ?? (await mcpConnectorsApi.install(companyId, { entryId: entry.id })).id;
+      const { authorizeUrl } = await mcpConnectorsApi.oauthStart(companyId, connectorId);
+      window.location.assign(authorizeUrl);
+    },
+    onSuccess: () => {
+      setPendingId(null);
+      // Mirrors installMutation: a fresh install needs the list re-fetched so a
+      // second click on this shelf (before the redirect lands) sees it installed.
+      queryClient.invalidateQueries({ queryKey: queryKeys.mcpConnectors.list(companyId) });
+    },
+    onError: (err) => {
+      setPendingId(null);
+      setError(err instanceof ApiError ? err.message : "Failed to start authorization");
+    },
+  });
+
+  const handleAuthorize = (entry: McpConnectorShelfEntry) => {
+    setError(null);
+    setPendingId(entry.id);
+    authorizeMutation.mutate(entry);
+  };
+
   const handleInstall = async (entry: McpConnectorShelfEntry) => {
     setError(null);
 
@@ -320,6 +370,7 @@ export function ConnectorShelf({
             installed={installedNames.has(entry.serverName)}
             busy={pendingId === entry.id}
             onInstall={() => void handleInstall(entry)}
+            onAuthorize={() => handleAuthorize(entry)}
           />
         ))}
       </div>

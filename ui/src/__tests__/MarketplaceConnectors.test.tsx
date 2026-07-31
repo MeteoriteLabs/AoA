@@ -31,6 +31,7 @@ import MarketplaceConnectors from "../pages/MarketplaceConnectors";
 const listMock = vi.fn();
 const catalogMock = vi.fn();
 const installMock = vi.fn();
+const oauthStartMock = vi.fn();
 
 vi.mock("@/api/mcpConnectors", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/api/mcpConnectors")>();
@@ -40,6 +41,7 @@ vi.mock("@/api/mcpConnectors", async (importOriginal) => {
       list: (...a: unknown[]) => listMock(...a),
       catalog: (...a: unknown[]) => catalogMock(...a),
       install: (...a: unknown[]) => installMock(...a),
+      oauthStart: (...a: unknown[]) => oauthStartMock(...a),
       bindCredentials: vi.fn(),
       create: vi.fn(),
       update: vi.fn(),
@@ -157,6 +159,7 @@ beforeEach(() => {
   listMock.mockResolvedValue([]);
   catalogMock.mockResolvedValue({ entries: [], stale: false });
   installMock.mockResolvedValue(connector());
+  oauthStartMock.mockResolvedValue({ authorizeUrl: "https://as/authorize" });
   roleMock.mockResolvedValue({ currentUser: { role: "founder", permissions: {} } });
   companiesMock.mockReturnValue([
     { id: COMPANY_ID, name: "Acme", status: "active", issuePrefix: "ACME" },
@@ -352,6 +355,78 @@ describe("Marketplace → Connectors", () => {
     await waitFor(() =>
       expect(installMock).toHaveBeenCalledWith(COMPANY_ID, { entryId: "notion" }),
     );
+  });
+
+  describe("OAuth broker (Authorize)", () => {
+    const originalLocation = window.location;
+
+    beforeEach(() => {
+      // Same pattern as pages/__tests__/Auth.test.tsx: replace window.location
+      // wholesale so `.assign` is a spy, then restore it after each test.
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        writable: true,
+        value: { href: "http://localhost/marketplace/connectors", assign: vi.fn() },
+      });
+    });
+
+    afterEach(() => {
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        writable: true,
+        value: originalLocation,
+      });
+    });
+
+    function oauthEntry(over: Partial<McpConnectorShelfEntry> = {}) {
+      return shelfEntry({
+        id: "notion-hosted",
+        displayName: "Notion (hosted)",
+        serverName: "notion-hosted",
+        requiresOAuth: true,
+        oauthRequired: true,
+        installable: true,
+        ...over,
+      });
+    }
+
+    it("renders Authorize (not Install) for a live oauthRequired entry", async () => {
+      catalogMock.mockResolvedValue({ entries: [oauthEntry()], stale: false });
+      renderPage();
+
+      const card = await screen.findByTestId("connector-shelf-card-notion-hosted");
+      expect(
+        within(card).getByRole("button", { name: /authorize notion \(hosted\)/i }),
+      ).toBeInTheDocument();
+      expect(within(card).queryByRole("button", { name: /^install/i })).not.toBeInTheDocument();
+    });
+
+    it("installs, starts OAuth, and navigates to the authorize URL on click", async () => {
+      catalogMock.mockResolvedValue({ entries: [oauthEntry()], stale: false });
+      installMock.mockResolvedValue(
+        connector({
+          id: "conn-oauth",
+          serverName: "notion-hosted",
+          displayName: "Notion (hosted)",
+          status: "needs_credentials",
+          requiresSecret: true,
+        }),
+      );
+      oauthStartMock.mockResolvedValue({ authorizeUrl: "https://mcp.notion.com/authorize?x=1" });
+      renderPage();
+
+      fireEvent.click(await screen.findByRole("button", { name: /authorize notion \(hosted\)/i }));
+
+      await waitFor(() =>
+        expect(installMock).toHaveBeenCalledWith(COMPANY_ID, { entryId: "notion-hosted" }),
+      );
+      await waitFor(() => expect(oauthStartMock).toHaveBeenCalledWith(COMPANY_ID, "conn-oauth"));
+      await waitFor(() =>
+        expect(window.location.assign).toHaveBeenCalledWith(
+          "https://mcp.notion.com/authorize?x=1",
+        ),
+      );
+    });
   });
 
   it("falls back to generic copy when the server sends no reason", async () => {
