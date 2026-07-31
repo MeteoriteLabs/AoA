@@ -14,7 +14,7 @@ export function buildAlwaysOnCore(input: {
     lines.push(`Current goal: ${input.goalTitle.trim()}.`);
   }
   lines.push(
-    "Company identity and policies exist in memory — call memory.search before assuming or inventing context.",
+    "Company identity and policies exist in memory — call the query_memory tool before assuming or inventing context.",
   );
   return lines.join("\n");
 }
