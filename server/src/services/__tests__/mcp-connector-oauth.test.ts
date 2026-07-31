@@ -1,6 +1,12 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { createHash } from "node:crypto";
-import { generatePkce, signOAuthState, verifyOAuthState, type OAuthStatePayload } from "../mcp-connector-oauth.js";
+import {
+  generatePkce,
+  signOAuthState,
+  verifyOAuthState,
+  type OAuthStatePayload,
+  discoverOAuthServer,
+} from "../mcp-connector-oauth.js";
 
 beforeAll(() => {
   process.env.BETTER_AUTH_SECRET ||= "test-secret";
@@ -37,5 +43,45 @@ describe("oauth state", () => {
   it("rejects garbage", () => {
     expect(verifyOAuthState("not-a-token", 0)).toBeNull();
     expect(verifyOAuthState("", 0)).toBeNull();
+  });
+});
+
+function stubFetch(routes: Record<string, unknown>): typeof fetch {
+  return (async (input: RequestInfo | URL) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (url in routes) return new Response(JSON.stringify(routes[url]), { status: 200 });
+    return new Response("nf", { status: 404 });
+  }) as typeof fetch;
+}
+
+describe("discoverOAuthServer", () => {
+  const CONN = "https://mcp.notion.com/mcp";
+  const f = stubFetch({
+    "https://mcp.notion.com/.well-known/oauth-protected-resource/mcp": {
+      resource: CONN, authorization_servers: ["https://mcp.notion.com"], scopes_supported: ["default"],
+    },
+    "https://mcp.notion.com/.well-known/oauth-authorization-server": {
+      issuer: "https://mcp.notion.com", authorization_endpoint: "https://mcp.notion.com/authorize",
+      token_endpoint: "https://mcp.notion.com/token", registration_endpoint: "https://mcp.notion.com/register",
+      code_challenge_methods_supported: ["S256"], scopes_supported: ["default"],
+    },
+  });
+
+  it("resolves endpoints via PRM then AS metadata", async () => {
+    const d = await discoverOAuthServer(CONN, f);
+    expect(d.authorizationEndpoint).toBe("https://mcp.notion.com/authorize");
+    expect(d.tokenEndpoint).toBe("https://mcp.notion.com/token");
+    expect(d.registrationEndpoint).toBe("https://mcp.notion.com/register");
+    expect(d.codeChallengeMethods).toContain("S256");
+  });
+
+  it("throws a clear error when the AS omits S256", async () => {
+    const noPkce = stubFetch({
+      "https://mcp.notion.com/.well-known/oauth-protected-resource/mcp": { authorization_servers: ["https://as"] },
+      "https://as/.well-known/oauth-authorization-server": {
+        authorization_endpoint: "https://as/a", token_endpoint: "https://as/t", code_challenge_methods_supported: ["plain"],
+      },
+    });
+    await expect(discoverOAuthServer(CONN, noPkce)).rejects.toThrow(/S256/);
   });
 });

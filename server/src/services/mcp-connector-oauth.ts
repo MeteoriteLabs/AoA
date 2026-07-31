@@ -42,3 +42,51 @@ export function verifyOAuthState(token: string, nowMs: number): OAuthStatePayloa
   if (typeof payload.connectorId !== "string" || typeof payload.companyId !== "string") return null;
   return payload;
 }
+
+export interface DiscoveredOAuth {
+  authorizationEndpoint: string;
+  tokenEndpoint: string;
+  registrationEndpoint: string | null;
+  scopesSupported: string[];
+  codeChallengeMethods: string[];
+}
+
+async function fetchJson(url: string, fetchImpl: typeof fetch): Promise<Record<string, unknown>> {
+  const res = await fetchImpl(url, { headers: { accept: "application/json" } });
+  if (!res.ok) throw new Error(`OAuth discovery failed: ${url} -> HTTP ${res.status}`);
+  return (await res.json()) as Record<string, unknown>;
+}
+
+export async function discoverOAuthServer(
+  connectorUrl: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<DiscoveredOAuth> {
+  const u = new URL(connectorUrl);
+  // RFC 9728: protected-resource-metadata is served with the resource path suffixed.
+  const prmUrl = `${u.origin}/.well-known/oauth-protected-resource${u.pathname}`;
+  const prm = await fetchJson(prmUrl, fetchImpl);
+  const servers = Array.isArray(prm.authorization_servers) ? (prm.authorization_servers as string[]) : [];
+  const asBase = servers[0];
+  if (!asBase) throw new Error(`OAuth discovery: no authorization_servers at ${prmUrl}`);
+  // RFC 8414: AS metadata at the issuer origin.
+  const asUrl = `${new URL(asBase).origin}/.well-known/oauth-authorization-server`;
+  const md = await fetchJson(asUrl, fetchImpl);
+  const authorizationEndpoint = md.authorization_endpoint as string;
+  const tokenEndpoint = md.token_endpoint as string;
+  if (!authorizationEndpoint || !tokenEndpoint) {
+    throw new Error(`OAuth discovery: AS metadata missing endpoints at ${asUrl}`);
+  }
+  const codeChallengeMethods = Array.isArray(md.code_challenge_methods_supported)
+    ? (md.code_challenge_methods_supported as string[])
+    : [];
+  if (!codeChallengeMethods.includes("S256")) {
+    throw new Error(`OAuth discovery: authorization server does not support PKCE S256 (${asUrl})`);
+  }
+  return {
+    authorizationEndpoint,
+    tokenEndpoint,
+    registrationEndpoint: (md.registration_endpoint as string) ?? null,
+    scopesSupported: Array.isArray(md.scopes_supported) ? (md.scopes_supported as string[]) : [],
+    codeChallengeMethods,
+  };
+}
