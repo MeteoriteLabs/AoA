@@ -95,3 +95,38 @@ it.each(["team_lead", "team_member"])("%s is forbidden", async (role) => {
   const res = await request(makeApp(founderActor)).post(`/api/companies/${COMPANY}/mcp-connectors/conn1/oauth/start`).send({});
   expect(res.status).toBe(403);
 });
+
+it("callback exchanges the code, stores the secret, binds the connector, redirects", async () => {
+  mockOauth.verifyOAuthState.mockReturnValue({ connectorId: "conn1", companyId: "company-A", nonce: "n", exp: Date.now() + 60_000 });
+  mockFlowSelect.mockResolvedValue([{ id: "flow1", connectorId: "conn1", companyId: "company-A", status: "pending",
+    pkceVerifier: "ver", clientId: "cid", redirectUri: "https://app/cb", tokenEndpoint: "https://as/token",
+    resource: "https://mcp.notion.com/mcp", scopes: ["default"], expiresAt: new Date(Date.now() + 60_000) }]);
+  mockConnectorSvc.getById.mockResolvedValue({ id: "conn1", companyId: "company-A", serverName: "notion", status: "needs_credentials" });
+  mockOauth.exchangeAuthorizationCode.mockResolvedValue({ accessToken: "at", refreshToken: "rt", expiresIn: 3600 });
+  mockSecretSvc.getByName.mockResolvedValue(null);
+  mockSecretSvc.create.mockResolvedValue({ id: "sec1", name: "mcp:notion" });
+  mockConnectorSvc.updateIfStatus.mockResolvedValue({ id: "conn1", status: "active" });
+
+  const res = await request(makeApp(null)) // no actor — browser redirect
+    .get(`/api/mcp-connectors/oauth/callback?code=CODE&state=STATE`);
+  expect(res.status).toBe(302);
+  expect(mockSecretSvc.create).toHaveBeenCalledWith("company-A",
+    expect.objectContaining({ name: "mcp:notion", provider: "local_encrypted", managedMode: "aoa_managed" }), expect.anything());
+  expect(mockConnectorSvc.updateIfStatus).toHaveBeenCalledWith("conn1", "needs_credentials",
+    expect.objectContaining({ secretRef: "mcp:notion", status: "active" }));
+});
+
+it("callback rejects an invalid state", async () => {
+  mockOauth.verifyOAuthState.mockReturnValue(null);
+  const res = await request(makeApp(null)).get(`/api/mcp-connectors/oauth/callback?code=c&state=bad`);
+  expect(res.status).toBe(400);
+});
+
+it("callback is single-use: a lost atomic claim -> 400, no exchange (Fix 6)", async () => {
+  mockOauth.verifyOAuthState.mockReturnValue({ connectorId: "conn1", companyId: "company-A", nonce: "n", exp: Date.now() + 60_000 });
+  mockFlowSelect.mockResolvedValue([{ id: "flow1", connectorId: "conn1", companyId: "company-A", status: "pending", expiresAt: new Date(Date.now() + 60_000) }]);
+  mockFlowClaim.mockResolvedValue([]); // another concurrent callback already claimed it
+  const res = await request(makeApp(null)).get(`/api/mcp-connectors/oauth/callback?code=CODE&state=STATE`);
+  expect(res.status).toBe(400);
+  expect(mockOauth.exchangeAuthorizationCode).not.toHaveBeenCalled();
+});

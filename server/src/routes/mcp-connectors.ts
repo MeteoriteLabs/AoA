@@ -359,6 +359,11 @@ const replaceAgentsSchema = z
 // `.strict()` still rejects an unexpected payload rather than silently ignoring it.
 export const oauthStartSchema = z.object({}).strict();
 
+// The callback is a browser redirect target, not a caller of `validate()` (the
+// route is company-agnostic and unauthenticated by the usual actor helpers), so
+// this is parsed inline with `.safeParse` rather than the `validate` middleware.
+const oauthCallbackQuerySchema = z.object({ code: z.string().min(1), state: z.string().min(1) }).strict();
+
 // LOAD-BEARING (Fix 3): a board actor's id may be a non-UUID sentinel (e.g. the
 // `local_trusted` synthetic "local-board" actor). `startedByUserId` has no FK
 // (see mcp_connector_oauth_flows.ts), but persisting a sentinel string into it
@@ -1257,6 +1262,86 @@ export function mcpConnectorRoutes(db: Db, opts: McpConnectorRouteOptions = {}) 
       res.json({ authorizeUrl });
     },
   );
+
+  // OAuth authorization callback — company-agnostic (the browser redirect target
+  // has no board session in `authenticated` mode). Authenticated by the signed
+  // `state` + flow-row lookup, NOT the actor helpers.
+  router.get("/mcp-connectors/oauth/callback", async (req, res) => {
+    const parsed = oauthCallbackQuerySchema.safeParse(req.query);
+    if (!parsed.success) { res.status(400).send("Invalid OAuth callback"); return; }
+    const { code, state } = parsed.data;
+
+    const payload = verifyOAuthState(state, Date.now());
+    if (!payload) { res.status(400).send("Invalid or expired OAuth state"); return; }
+
+    const flows = await db.select().from(mcpConnectorOauthFlows).where(eq(mcpConnectorOauthFlows.state, state)).limit(1);
+    const flow = flows[0];
+    if (!flow || flow.connectorId !== payload.connectorId) { res.status(400).send("OAuth flow not found"); return; }
+    if (new Date() > new Date(flow.expiresAt)) { res.status(400).send("OAuth flow expired"); return; }
+
+    // Fix 6: atomically CLAIM the flow BEFORE touching the code. Only one concurrent callback can
+    // move pending -> claimed, so the state/code is single-use (no replay within the 10-min TTL).
+    const claimed = await db
+      .update(mcpConnectorOauthFlows)
+      .set({ status: "claimed", updatedAt: new Date() })
+      .where(and(eq(mcpConnectorOauthFlows.id, flow.id), eq(mcpConnectorOauthFlows.status, "pending")))
+      .returning();
+    if (claimed.length === 0) { res.status(400).send("OAuth flow already used"); return; }
+
+    const connector = await mcpConnectorService(db).getById(flow.connectorId);
+    if (!connector || connector.companyId !== flow.companyId) { res.status(400).send("Connector not found"); return; }
+
+    try {
+      const token = await exchangeAuthorizationCode({
+        tokenEndpoint: flow.tokenEndpoint, code, codeVerifier: flow.pkceVerifier,
+        clientId: flow.clientId, redirectUri: flow.redirectUri, resource: flow.resource,
+      });
+      const bundle: OAuthTokenBundle = {
+        v: OAUTH_BUNDLE_VERSION, accessToken: token.accessToken, refreshToken: token.refreshToken,
+        expiresAt: Date.now() + token.expiresIn * 1000, tokenEndpoint: flow.tokenEndpoint,
+        clientId: flow.clientId, scopes: flow.scopes, resource: flow.resource,
+      };
+      const secretName = `mcp:${connector.serverName}`;
+      const secrets = secretService(db);
+      const existing = await secrets.getByName(flow.companyId, secretName);
+      if (existing) {
+        await secrets.rotate(existing.id, { value: encodeOAuthBundle(bundle) });
+      } else {
+        await secrets.create(flow.companyId, {
+          name: secretName, provider: "local_encrypted", managedMode: "aoa_managed",
+          value: encodeOAuthBundle(bundle),
+        }, { userId: flow.startedByUserId ?? null });
+      }
+      await mcpConnectorService(db).updateIfStatus(connector.id, connector.status, {
+        secretRef: secretName,
+        status: resolveConnectorStatus({
+          deploymentMode: loadConfig().deploymentMode,
+          approved: connector.status !== "pending_approval" && connector.status !== "disabled",
+          requiresSecret: true, hasSecret: true,
+        }),
+      });
+      await db.update(mcpConnectorOauthFlows)
+        .set({ status: "completed", completedAt: new Date(), updatedAt: new Date() })
+        .where(eq(mcpConnectorOauthFlows.id, flow.id));
+      await logActivity(db, {
+        companyId: flow.companyId, actorType: "system", actorId: "oauth-broker", agentId: null, // Fix 2: required non-null string
+        action: "mcp_connector.oauth_authorized", entityType: "mcp_connector", entityId: connector.id,
+        details: { serverName: connector.serverName, secretRef: secretName },
+      });
+    } catch (err) {
+      // Fix 6: a failed exchange/store must not leave the flow replayable — revert to failed.
+      await db.update(mcpConnectorOauthFlows)
+        .set({ status: "failed", updatedAt: new Date() })
+        .where(eq(mcpConnectorOauthFlows.id, flow.id))
+        .catch(() => {});
+      logger.warn({ err, connectorId: connector.id }, "OAuth callback failed");
+      res.status(400).send("OAuth authorization failed");
+      return;
+    }
+
+    const base = resolveInviteBaseUrl(req) || "";
+    res.redirect(302, `${base}/marketplace/connectors?authorized=${encodeURIComponent(connector.serverName)}`);
+  });
 
   return router;
 }
