@@ -90,3 +90,26 @@ export async function discoverOAuthServer(
     codeChallengeMethods,
   };
 }
+
+export async function registerOAuthClient(
+  registrationEndpoint: string,
+  redirectUri: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ clientId: string }> {
+  const res = await fetchImpl(registrationEndpoint, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({
+      client_name: "Army of Agents",
+      redirect_uris: [redirectUri],
+      token_endpoint_auth_method: "none", // public client (PKCE)
+      grant_types: ["authorization_code", "refresh_token"],
+      response_types: ["code"],
+    }),
+  });
+  if (!res.ok) throw new Error(`OAuth client registration failed: HTTP ${res.status}`);
+  const body = (await res.json()) as Record<string, unknown>;
+  const clientId = body.client_id;
+  if (typeof clientId !== "string") throw new Error("OAuth client registration: no client_id in response");
+  return { clientId };
+}

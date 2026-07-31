@@ -6,6 +6,7 @@ import {
   verifyOAuthState,
   type OAuthStatePayload,
   discoverOAuthServer,
+  registerOAuthClient,
 } from "../mcp-connector-oauth.js";
 
 beforeAll(() => {
@@ -83,5 +84,25 @@ describe("discoverOAuthServer", () => {
       },
     });
     await expect(discoverOAuthServer(CONN, noPkce)).rejects.toThrow(/S256/);
+  });
+});
+
+describe("registerOAuthClient", () => {
+  it("POSTs a public-client registration and returns the client_id", async () => {
+    let captured: { url: string; body: unknown } | null = null;
+    const f = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      captured = { url: input.toString(), body: JSON.parse(String(init?.body)) };
+      return new Response(JSON.stringify({ client_id: "dcr-123" }), { status: 201 });
+    }) as typeof fetch;
+    const out = await registerOAuthClient("https://as/register", "https://app/cb", f);
+    expect(out.clientId).toBe("dcr-123");
+    expect(captured!.body).toMatchObject({
+      redirect_uris: ["https://app/cb"], token_endpoint_auth_method: "none",
+      grant_types: ["authorization_code", "refresh_token"], response_types: ["code"],
+    });
+  });
+  it("throws on non-2xx", async () => {
+    const f = (async () => new Response("no", { status: 400 })) as typeof fetch;
+    await expect(registerOAuthClient("https://as/register", "https://app/cb", f)).rejects.toThrow(/registration/i);
   });
 });
