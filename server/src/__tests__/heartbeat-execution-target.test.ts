@@ -356,3 +356,32 @@ describe("resolveGuardedAdapterExecutionContext — org-agent sink (D1)", () => 
     expect(result.executionTarget.network).toBe("none");
   });
 });
+
+describe("resolveGuardedAdapterExecutionContext — crew-agent sink (D1)", () => {
+  // The crew runner (aoa-agents/runner.ts) dispatches through this SAME guarded
+  // helper, passing sink:"crew agent". This is that call site's contract.
+  const OPT_IN = "AOA_ALLOW_UNSANDBOXED_MULTITENANT";
+  let saved: string | undefined;
+  beforeEach(() => { saved = process.env[OPT_IN]; delete process.env[OPT_IN]; });
+  afterEach(() => { if (saved === undefined) delete process.env[OPT_IN]; else process.env[OPT_IN] = saved; });
+
+  it("refuses a local crew run on cloud_auth without the opt-in and names the crew sink", () => {
+    expect(() =>
+      resolveGuardedAdapterExecutionContext({}, { getRuntimeCommandSpec: vi.fn(() => null) }, {
+        trustBoundary: "multi_tenant",
+        tenantIsolationEnforced: true,
+        sink: "crew agent",
+      }),
+    ).toThrow(/crew agent/);
+  });
+
+  it("allows a local crew run on cloud_auth when opted in", () => {
+    process.env[OPT_IN] = "1";
+    const result = resolveGuardedAdapterExecutionContext({}, { getRuntimeCommandSpec: vi.fn(() => null) }, {
+      trustBoundary: "multi_tenant",
+      tenantIsolationEnforced: true,
+      sink: "crew agent",
+    });
+    expect(result.executionTarget).toEqual({ type: "local" });
+  });
+});

@@ -11,7 +11,8 @@ import { stripUserMcpArgs } from "../../mcp-arg-sanitize.js";
 import { resolveAgentConnectors } from "../../mcp-connectors-loader.js";
 import { adapterSupportsConnectors } from "../../mcp-connectors.js";
 import type { McpServerSpec } from "@armyofagents/adapter-utils";
-import { resolveAdapterExecutionContext } from "../../heartbeat.js";
+import { resolveGuardedAdapterExecutionContext } from "../../heartbeat.js";
+import { tenantIsolationEnforced } from "../../../config/deployment-mode.js";
 import { resolveBridgeEntrypoint } from "./bridge-path.js";
 import { publishLiveEvent, publishIssueStatusChanged, threadWorkingAgents, broadcastThreadPresence } from "../../live-events.js";
 import { logger } from "../../../middleware/logger.js";
@@ -661,13 +662,17 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     const config = isClaudeFamily
       ? { ...resolvedBaseConfig, promptTemplate: triggerPrompt, ...connectorEnvMerge, [argKey]: ["--mcp-config", cfgPath, "--strict-mcp-config", ...stripUserMcpArgs(userTail)] }
       : { ...resolvedBaseConfig, promptTemplate: triggerPrompt, ...connectorEnvMerge };
-    // Sink-level multi_tenant hardening: neutralize a tenant-authored
-    // adapterConfig.executionTarget on shared infra; honor it on the founder's own
-    // box. `topology` is already resolved above (:544) for P4 provider resolution.
-    const { executionTarget, runtimeCommandSpec } = resolveAdapterExecutionContext(
+    // Sink-level multi_tenant hardening (trustBoundary) + D1 unsandboxed gate
+    // (cloud_auth) for CREW runs. `topology` is already resolved above (:544);
+    // tenantIsolationEnforced() is the cloud_auth signal.
+    const { executionTarget, runtimeCommandSpec } = resolveGuardedAdapterExecutionContext(
       config,
       adapter,
-      topology.trustBoundary === "multi_tenant",
+      {
+        trustBoundary: topology.trustBoundary,
+        tenantIsolationEnforced: tenantIsolationEnforced(),
+        sink: "crew agent",
+      },
     );
 
     // Audit follow-up #27: capture the redacted+capped prompt snapshot now so

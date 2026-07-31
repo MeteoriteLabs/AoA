@@ -95,12 +95,15 @@ describe("heartbeat wiring — edge #5 source-order guard", () => {
     const iResolve = src.indexOf("runScopedConfig = resolveRunScopedModel(");
     // Anchor 3: adapter execution-context build (must come AFTER resolution)
     // Use the destructure form to target the CALL SITE, not the exported function definition.
-    const iContext = src.indexOf("const { executionTarget, runtimeCommandSpec } = resolveAdapterExecutionContext(");
+    // D1: the org-agent dispatch now routes through the guarded combinator
+    // (resolveGuardedAdapterExecutionContext) which internally calls
+    // resolveAdapterExecutionContext + the unsandboxed multi-tenant gate.
+    const iContext = src.indexOf("const { executionTarget, runtimeCommandSpec } = resolveGuardedAdapterExecutionContext(");
 
     // Each anchor must exist verbatim — fail loudly if any moved (wiring was refactored)
     expect(iCheapSwap, "anchor 'cheap-model swap' not found in heartbeat.ts — wiring may have changed; update this guard").toBeGreaterThan(-1);
     expect(iResolve, "anchor 'resolveRunScopedModel call' not found in heartbeat.ts — wiring may have changed; update this guard").toBeGreaterThan(-1);
-    expect(iContext, "anchor 'resolveAdapterExecutionContext destructure call' not found in heartbeat.ts — wiring may have changed; update this guard").toBeGreaterThan(-1);
+    expect(iContext, "anchor 'resolveGuardedAdapterExecutionContext destructure call' not found in heartbeat.ts — wiring may have changed; update this guard").toBeGreaterThan(-1);
 
     // Edge #5 ordering: cheap-swap < resolve < context-build
     expect(iResolve).toBeGreaterThan(iCheapSwap);

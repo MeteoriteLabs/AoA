@@ -133,6 +133,10 @@ vi.mock("../services/heartbeat.js", () => ({
     executionTarget: {},
     runtimeCommandSpec: {},
   })),
+  resolveGuardedAdapterExecutionContext: vi.fn(() => ({
+    executionTarget: {},
+    runtimeCommandSpec: {},
+  })),
 }));
 
 vi.mock("../services/internal-agent/aoa-agents/bridge-path.js", () => ({
