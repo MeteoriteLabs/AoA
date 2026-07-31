@@ -701,6 +701,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         // Unbridged: honor config.dangerouslySkipPermissions as before.
         args.push("--dangerously-skip-permissions");
       }
+      // MCP tools are NOT governed by the PreToolUse hook (its matcher covers only
+      // built-in tools — Bash/Write/Edit/MultiEdit/NotebookEdit/WebFetch), so a headless
+      // agent run would otherwise be denied every `mcp__aoa__*` call (e.g. query_memory)
+      // with no human to grant it. The MCP bridge already restricts EXPOSURE to the run's
+      // curated allowlist (ORG_HEARTBEAT_TOOL_ALLOWLIST / Commander surface), so permitting
+      // the whole `mcp__aoa` server here is bounded by that allowlist. Skip when
+      // skip-permissions already allows everything.
+      if (!dangerouslySkipPermissions) {
+        args.push("--allowedTools", "mcp__aoa");
+      }
       if (chrome) args.push("--chrome");
       if (model && !isBedrockAuth(env)) args.push("--model", model);
       if (effort) args.push("--effort", effort);
