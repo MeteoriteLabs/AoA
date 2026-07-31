@@ -366,7 +366,21 @@ export async function resolveProviderCredential(
         continue;
       }
     } else if (row.secretRef) {
-      secretValue = await deps.resolveSecretValueForConnection(db, row, args);
+      // A throw here (deleted / inactive / rotated-away secret) is NOT fatal to
+      // resolution — mirror the personal_subscription branch above: record the
+      // rejection and try the NEXT candidate. Without this, one dead higher-
+      // priority secretRef aborts the whole resolver, skipping the valid
+      // company_default fallback + legacy ladder + guided ProviderUnavailableError
+      // — a dead-key lockout (Codex ②).
+      try {
+        secretValue = await deps.resolveSecretValueForConnection(db, row, args);
+      } catch (err) {
+        lastRejection = {
+          connectionId: row.connectionId,
+          reason: err instanceof Error ? err.message : "secret_unavailable",
+        };
+        continue;
+      }
     }
 
     const envPatch = materializeEnvPatch({

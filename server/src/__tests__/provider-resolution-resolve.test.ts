@@ -78,4 +78,55 @@ describe("resolveProviderCredential", () => {
     expect(r.source).toBe("connection");
     if (r.source === "connection") expect(r.envPatch).toEqual({ ANTHROPIC_API_KEY: "sk-company" });
   });
+
+  it("higher-priority secretRef throws (deleted secret) → skips + resolves via valid company_default (dead-key lockout fix — Codex ②)", async () => {
+    const deps = makeDeps({
+      loadCandidateRows: vi.fn(async () => [
+        {
+          connectionId: "conn-dead", authMethod: "api_key", scopeType: "agent_override",
+          priority: 0, connectionUpdatedAt: 2, state: "verified", termsAttestedAt: new Date(),
+          sharingPolicy: "company_agents", connectionCompanyId: "co1", connectionOwnerUserId: null,
+          executionTargetId: null, config: {}, secretRef: "deleted-sec",
+        },
+        {
+          connectionId: "conn-ok", authMethod: "api_key", scopeType: "company_default",
+          priority: 0, connectionUpdatedAt: 1, state: "verified", termsAttestedAt: new Date(),
+          sharingPolicy: "company_agents", connectionCompanyId: "co1", connectionOwnerUserId: null,
+          executionTargetId: null, config: {}, secretRef: "sec-ok",
+        },
+      ]),
+      resolveSecretValueForConnection: vi.fn(
+        async (_db: unknown, row: { secretRef: string | null }) => {
+          if (row.secretRef === "deleted-sec") throw new Error("secret_not_found");
+          return "sk-company";
+        },
+      ),
+    });
+    const r = await resolveProviderCredential({} as never, args, deps as never);
+    expect(r.source).toBe("connection");
+    if (r.source === "connection") {
+      expect(r.connectionId).toBe("conn-ok");
+      expect(r.envPatch).toEqual({ ANTHROPIC_API_KEY: "sk-company" });
+    }
+  });
+
+  it("sole secretRef candidate throws → continues to legacy fallback, never aborts (Codex ②)", async () => {
+    const deps = makeDeps({
+      loadCandidateRows: vi.fn(async () => [
+        {
+          connectionId: "conn-dead", authMethod: "api_key", scopeType: "company_default",
+          priority: 0, connectionUpdatedAt: 1, state: "verified", termsAttestedAt: new Date(),
+          sharingPolicy: "company_agents", connectionCompanyId: "co1", connectionOwnerUserId: null,
+          executionTargetId: null, config: {}, secretRef: "deleted-sec",
+        },
+      ]),
+      resolveSecretValueForConnection: vi.fn(async () => {
+        throw new Error("secret_not_found");
+      }),
+    });
+    const r = await resolveProviderCredential({} as never, args, deps as never);
+    // makeDeps default selfHostedSingleTenant:true → a dead key falls through to
+    // the legacy ladder instead of aborting the resolver.
+    expect(r.source).toBe("legacy");
+  });
 });
