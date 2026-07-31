@@ -8,17 +8,23 @@ import { agentsApi } from "@/api/agents";
 import {
   mcpConnectorsApi,
   type ConnectorDeliverabilityReason,
-  type CreateConnectorInput,
   type McpConnector,
 } from "@/api/mcpConnectors";
 import { ApiError } from "@/api/client";
 import { queryKeys } from "@/lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
 import { EmptyState } from "@/components/EmptyState";
 import { Link } from "@/lib/router";
-
-const SERVER_NAME_RE = /^[a-z0-9-]+$/;
+import { NewConnectorDialog } from "../NewConnectorDialog";
 
 const inputCls =
   "w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none focus:border-brand/50";
@@ -187,56 +193,14 @@ export function MCPConnectorsSection() {
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: queryKeys.mcpConnectors.list(companyId!) });
 
-  // ── Add form state ────────────────────────────────────────────────────────
-  const [displayName, setDisplayName] = useState("");
-  const [serverName, setServerName] = useState("");
-  const [transport, setTransport] = useState<"http" | "stdio">("http");
-  const [url, setUrl] = useState("");
-  const [command, setCommand] = useState("");
-  const [argsText, setArgsText] = useState("");
-  const [secretRef, setSecretRef] = useState("");
-  const [headersText, setHeadersText] = useState("");
-  const [formError, setFormError] = useState<string | null>(null);
-  const [approvalNotice, setApprovalNotice] = useState<string | null>(null);
-  // (The post-install follow-through notice moved with the shelf to
-  // Marketplace → Connectors — that is where an install now happens.)
-  // Inline surface for disable/remove failures (previously swallowed silently).
-  const [actionError, setActionError] = useState<string | null>(null);
-
-  const serverNameValid = serverName === "" || SERVER_NAME_RE.test(serverName);
   // stdio is host-executing → only offered on a local_trusted host (D7).
+  // Passed down to NewConnectorDialog, which needs it for the same guard.
   const stdioAllowed = isLocalTrusted;
 
-  const resetForm = () => {
-    setDisplayName("");
-    setServerName("");
-    setTransport("http");
-    setUrl("");
-    setCommand("");
-    setArgsText("");
-    setSecretRef("");
-    setHeadersText("");
-  };
-
-  const createMutation = useMutation({
-    mutationFn: (body: CreateConnectorInput) => mcpConnectorsApi.create(companyId!, body),
-    onSuccess: (created) => {
-      setFormError(null);
-      resetForm();
-      if (created.approvalId) {
-        setApprovalNotice(
-          `"${created.displayName}" was created and is pending board approval before agents can use it.`,
-        );
-      } else {
-        setApprovalNotice(null);
-      }
-      invalidate();
-    },
-    onError: (err) => {
-      setApprovalNotice(null);
-      setFormError(err instanceof ApiError ? err.message : "Failed to create connector");
-    },
-  });
+  // Inline surface for disable/enable/remove failures (previously swallowed
+  // silently for disable/remove; enable follows the same pattern).
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [showAddConnector, setShowAddConnector] = useState(false);
 
   const disableMutation = useMutation({
     mutationFn: (id: string) => mcpConnectorsApi.update(companyId!, id, { status: "disabled" }),
@@ -248,6 +212,18 @@ export function MCPConnectorsSection() {
       setActionError(err instanceof ApiError ? err.message : "Failed to disable connector"),
   });
 
+  // Mirrors disableMutation — the re-activation counterpart. A disabled
+  // connector previously had no way back to active from this UI at all.
+  const enableMutation = useMutation({
+    mutationFn: (id: string) => mcpConnectorsApi.update(companyId!, id, { status: "active" }),
+    onSuccess: () => {
+      setActionError(null);
+      invalidate();
+    },
+    onError: (err) =>
+      setActionError(err instanceof ApiError ? err.message : "Failed to enable connector"),
+  });
+
   const removeMutation = useMutation({
     mutationFn: (id: string) => mcpConnectorsApi.remove(companyId!, id),
     onSuccess: () => {
@@ -257,54 +233,6 @@ export function MCPConnectorsSection() {
     onError: (err) =>
       setActionError(err instanceof ApiError ? err.message : "Failed to remove connector"),
   });
-
-  const handleSubmit = () => {
-    setFormError(null);
-    setApprovalNotice(null);
-    if (!displayName.trim()) return setFormError("Display name is required.");
-    if (!serverName.trim()) return setFormError("Server name is required.");
-    if (!SERVER_NAME_RE.test(serverName))
-      return setFormError("Server name must match /^[a-z0-9-]+$/ (lowercase letters, digits, hyphen).");
-    // Early guard: a stdio connector in a non-local deployment is a guaranteed
-    // 403 at the server (D7). Surface it inline instead of round-tripping.
-    if (transport === "stdio" && !stdioAllowed)
-      return setFormError(
-        "Local (stdio) connectors run a command on the host and are only available in local deployments.",
-      );
-    if (transport === "http" && !url.trim())
-      return setFormError("HTTP transport requires a URL.");
-    if (transport === "stdio" && !command.trim())
-      return setFormError("stdio transport requires a command.");
-
-    const args = argsText
-      .split(/\s*\n\s*|\s+/)
-      .map((a) => a.trim())
-      .filter(Boolean);
-
-    let headerTemplate: Record<string, string> | undefined;
-    if (headersText.trim()) {
-      const parsed: Record<string, string> = {};
-      for (const line of headersText.split("\n")) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        const idx = trimmed.indexOf(":");
-        if (idx === -1) return setFormError(`Header line "${trimmed}" must be "Name: value".`);
-        parsed[trimmed.slice(0, idx).trim()] = trimmed.slice(idx + 1).trim();
-      }
-      headerTemplate = parsed;
-    }
-
-    const body: CreateConnectorInput = {
-      displayName: displayName.trim(),
-      serverName: serverName.trim(),
-      transport,
-      ...(transport === "http" ? { url: url.trim() } : { command: command.trim() }),
-      ...(transport === "stdio" && args.length ? { args } : {}),
-      ...(headerTemplate && transport === "http" ? { headerTemplate } : {}),
-      ...(secretRef.trim() ? { secretRef: secretRef.trim() } : {}),
-    };
-    createMutation.mutate(body);
-  };
 
   return (
     <div>
@@ -338,15 +266,35 @@ export function MCPConnectorsSection() {
                 <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
                   Registered connectors
                 </div>
-                {isFounder && (
-                  <Link
-                    to="/marketplace/connectors"
-                    className="text-xs font-medium text-brand hover:underline"
-                  >
-                    Browse connectors →
-                  </Link>
-                )}
+                <div className="flex items-center gap-3">
+                  {isFounder && (
+                    <Button size="sm" onClick={() => setShowAddConnector(true)}>
+                      Add connector
+                    </Button>
+                  )}
+                  {isFounder && (
+                    <Link
+                      to="/marketplace/connectors"
+                      className="text-xs font-medium text-brand hover:underline"
+                    >
+                      Browse connectors →
+                    </Link>
+                  )}
+                </div>
               </div>
+
+              {/* Access-model note: Commander gets every active connector for
+                  free — no assignment needed. Crew/org agents need explicit
+                  per-connector assignment via "Agents" below. This is the
+                  answer to "I added a connector, why can't my agent see it?" */}
+              <div className="rounded-md border border-border px-4 py-3 text-sm text-muted-foreground">
+                <span className="font-medium text-foreground">Commander</span> can use every
+                active connector automatically. To let a specific{" "}
+                <span className="font-medium text-foreground">crew or org agent</span> use one,
+                assign it with <span className="font-medium text-foreground">Agents</span> on
+                that connector.
+              </div>
+
               <div className="rounded-md border border-border px-4 py-4 space-y-3">
                 {actionError && <div className="text-sm text-destructive">{actionError}</div>}
                 {(connectors ?? []).length === 0 ? (
@@ -378,8 +326,10 @@ export function MCPConnectorsSection() {
                         isFounder={isFounder}
                         isOAuth={oauthServerNames.has(c.serverName)}
                         onDisable={() => disableMutation.mutate(c.id)}
+                        onEnable={() => enableMutation.mutate(c.id)}
                         onRemove={() => removeMutation.mutate(c.id)}
                         disableBusy={disableMutation.isPending}
+                        enableBusy={enableMutation.isPending}
                         removeBusy={removeMutation.isPending}
                         companyId={companyId}
                       />
@@ -389,155 +339,14 @@ export function MCPConnectorsSection() {
               </div>
             </div>
 
-            {/* Add connector — founder only */}
             {isFounder ? (
-              <div className="space-y-4">
-                <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                  Add a connector
-                </div>
-                <div className="rounded-md border border-border px-4 py-4 space-y-4">
-                  <div className="grid gap-3 md:grid-cols-2">
-                    <label className="space-y-1">
-                      <div className="text-xs text-muted-foreground">Display name</div>
-                      <input
-                        className={inputCls}
-                        value={displayName}
-                        onChange={(e) => setDisplayName(e.target.value)}
-                        placeholder="Notion Docs"
-                      />
-                    </label>
-                    <label className="space-y-1">
-                      <div className="text-xs text-muted-foreground">Server name</div>
-                      <input
-                        className={inputCls}
-                        value={serverName}
-                        onChange={(e) => setServerName(e.target.value.trim())}
-                        placeholder="notion-docs"
-                        aria-invalid={!serverNameValid}
-                      />
-                      <div
-                        className={
-                          serverNameValid
-                            ? "text-[11px] text-muted-foreground"
-                            : "text-[11px] text-destructive"
-                        }
-                      >
-                        Lowercase letters, digits, and hyphens only (/^[a-z0-9-]+$/).
-                      </div>
-                    </label>
-                  </div>
-
-                  <div className="grid gap-3 md:grid-cols-2">
-                    <label className="space-y-1">
-                      <div className="text-xs text-muted-foreground">Transport</div>
-                      <select
-                        className={inputCls}
-                        value={transport}
-                        onChange={(e) => setTransport(e.target.value as "http" | "stdio")}
-                      >
-                        <option value="http">HTTP (remote server)</option>
-                        <option value="stdio" disabled={!stdioAllowed}>
-                          stdio (local command){stdioAllowed ? "" : " — local deployments only"}
-                        </option>
-                      </select>
-                      {!stdioAllowed && (
-                        <div className="text-[11px] text-muted-foreground">
-                          Local (stdio) connectors run a command on the host and are only
-                          available in local deployments.
-                        </div>
-                      )}
-                    </label>
-
-                    {transport === "http" ? (
-                      <label className="space-y-1">
-                        <div className="text-xs text-muted-foreground">URL</div>
-                        <input
-                          className={inputCls}
-                          value={url}
-                          onChange={(e) => setUrl(e.target.value)}
-                          placeholder="https://mcp.example.com/sse"
-                        />
-                      </label>
-                    ) : (
-                      <label className="space-y-1">
-                        <div className="text-xs text-muted-foreground">Command</div>
-                        <input
-                          className={inputCls}
-                          value={command}
-                          onChange={(e) => setCommand(e.target.value)}
-                          placeholder="npx @example/mcp-server"
-                        />
-                      </label>
-                    )}
-                  </div>
-
-                  {transport === "stdio" && (
-                    <label className="space-y-1 block">
-                      <div className="text-xs text-muted-foreground">
-                        Arguments (whitespace or newline separated, optional)
-                      </div>
-                      <input
-                        className={inputCls}
-                        value={argsText}
-                        onChange={(e) => setArgsText(e.target.value)}
-                        placeholder="--port 8080 --verbose"
-                      />
-                    </label>
-                  )}
-
-                  {transport === "http" && (
-                    <label className="space-y-1 block">
-                      <div className="text-xs text-muted-foreground">
-                        Headers (one per line, "Name: value", optional)
-                      </div>
-                      <textarea
-                        className={`${inputCls} min-h-[64px] font-mono`}
-                        value={headersText}
-                        onChange={(e) => setHeadersText(e.target.value)}
-                        // ${TOKEN} is the ONLY placeholder buildConnectorSpecs
-                        // substitutes (services/mcp-connectors.ts). Naming any
-                        // other variable here ships that literal to the MCP
-                        // server, which then authenticates as no-one — and the
-                        // obvious founder workaround is pasting a real token.
-                        placeholder={"Authorization: Bearer ${TOKEN}"}
-                      />
-                    </label>
-                  )}
-
-                  <label className="space-y-1 block">
-                    <div className="text-xs text-muted-foreground">
-                      Secret reference (company secret name, optional)
-                    </div>
-                    <input
-                      className={inputCls}
-                      value={secretRef}
-                      onChange={(e) => setSecretRef(e.target.value)}
-                      placeholder="mcp:notion"
-                    />
-                    <div className="text-[11px] text-muted-foreground">
-                      Must reference an existing company secret. Header/arg values use the{" "}
-                      <code>{"${TOKEN}"}</code> placeholder, which resolves to it.
-                    </div>
-                  </label>
-
-                  {formError && <div className="text-sm text-destructive">{formError}</div>}
-                  {approvalNotice && (
-                    <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm text-foreground">
-                      {approvalNotice}
-                    </div>
-                  )}
-
-                  <div className="flex justify-end">
-                    <Button
-                      size="sm"
-                      onClick={handleSubmit}
-                      disabled={createMutation.isPending || !serverNameValid}
-                    >
-                      {createMutation.isPending ? "Adding..." : "Add connector"}
-                    </Button>
-                  </div>
-                </div>
-              </div>
+              <NewConnectorDialog
+                open={showAddConnector}
+                onOpenChange={setShowAddConnector}
+                companyId={companyId}
+                stdioAllowed={stdioAllowed}
+                onSuccess={invalidate}
+              />
             ) : (
               <div className="rounded-md border border-border px-4 py-3 text-sm text-muted-foreground">
                 Only founders can add or change connectors.
@@ -559,8 +368,10 @@ interface ConnectorRowProps {
    *  `oauthServerNames` above. Drives Re-authorize vs Add credential below. */
   isOAuth: boolean;
   onDisable: () => void;
+  onEnable: () => void;
   onRemove: () => void;
   disableBusy: boolean;
+  enableBusy: boolean;
   removeBusy: boolean;
   companyId: string;
 }
@@ -571,8 +382,10 @@ function ConnectorRow({
   isFounder,
   isOAuth,
   onDisable,
+  onEnable,
   onRemove,
   disableBusy,
+  enableBusy,
   removeBusy,
   companyId,
 }: ConnectorRowProps) {
@@ -582,6 +395,7 @@ function ConnectorRow({
   const [credentialRef, setCredentialRef] = useState("");
   const [credentialError, setCredentialError] = useState<string | null>(null);
   const [reauthorizeError, setReauthorizeError] = useState<string | null>(null);
+  const [confirmRemove, setConfirmRemove] = useState(false);
 
   // "Installed but unusable": the catalog entry declared a credential and none
   // is bound. This is the state every `requiresSecret` catalog install lands in,
@@ -716,7 +530,11 @@ function ConnectorRow({
             >
               Agents
             </Button>
-            {connector.status !== "disabled" && (
+            {connector.status === "disabled" ? (
+              <Button size="sm" onClick={onEnable} disabled={enableBusy}>
+                {enableBusy ? "Enabling..." : "Enable"}
+              </Button>
+            ) : (
               <Button size="sm" variant="ghost" onClick={onDisable} disabled={disableBusy}>
                 Disable
               </Button>
@@ -725,14 +543,50 @@ function ConnectorRow({
               size="sm"
               variant="ghost"
               className="text-destructive"
-              onClick={onRemove}
+              onClick={() => setConfirmRemove(true)}
               disabled={removeBusy}
             >
-              Delete
+              Remove
             </Button>
           </div>
         )}
       </div>
+
+      {/* Remove is destructive (deletes the connector + unbinds its credential,
+          and every agent assigned to it loses access) and used to fire
+          immediately on click — this confirmation closes that gap. */}
+      <Dialog open={confirmRemove} onOpenChange={setConfirmRemove}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Remove connector?</DialogTitle>
+            <DialogDescription>
+              This permanently removes <strong>{connector.displayName}</strong> and unbinds its
+              credential. Agents will lose access. This can&rsquo;t be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setConfirmRemove(false)}
+              disabled={removeBusy}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => {
+                setConfirmRemove(false);
+                onRemove();
+              }}
+              disabled={removeBusy}
+            >
+              {removeBusy ? "Removing..." : "Remove"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Delivery health (FU-1) — an active connector that would be silently
           dropped at run time. Shown to every board member, not just founders:
@@ -830,7 +684,11 @@ function ConnectorRow({
             set; Save replaces this connector's enabled-agent set with your selection.
           </div>
           {sortedAgents.length === 0 ? (
-            <div className="text-sm text-muted-foreground">No agents in this company yet.</div>
+            <div className="text-sm text-muted-foreground">
+              No agents in this company yet. Create one on the{" "}
+              <span className="font-medium text-foreground">Agents</span> page, then assign it
+              here. Commander already has access to active connectors.
+            </div>
           ) : (
             <div className="grid gap-1.5 sm:grid-cols-2">
               {sortedAgents.map((a) => (

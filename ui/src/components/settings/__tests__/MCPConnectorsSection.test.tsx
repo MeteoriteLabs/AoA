@@ -24,6 +24,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { ToastProvider } from "@/context/ToastContext";
+import { ApiError } from "@/api/client";
 import type { McpConnector } from "@/api/mcpConnectors";
 import { MCPConnectorsSection, StatusBadge } from "../sections/MCPConnectorsSection";
 
@@ -34,6 +36,10 @@ const catalogMock = vi.fn();
 const installMock = vi.fn();
 const bindCredentialsMock = vi.fn();
 const oauthStartMock = vi.fn();
+const createMock = vi.fn();
+const updateMock = vi.fn();
+const removeMock = vi.fn();
+const setAgentsMock = vi.fn();
 
 vi.mock("@/api/mcpConnectors", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/api/mcpConnectors")>();
@@ -45,10 +51,10 @@ vi.mock("@/api/mcpConnectors", async (importOriginal) => {
       install: (...a: unknown[]) => installMock(...a),
       bindCredentials: (...a: unknown[]) => bindCredentialsMock(...a),
       oauthStart: (...a: unknown[]) => oauthStartMock(...a),
-      create: vi.fn(),
-      update: vi.fn(),
-      remove: vi.fn(),
-      setAgents: vi.fn(),
+      create: (...a: unknown[]) => createMock(...a),
+      update: (...a: unknown[]) => updateMock(...a),
+      remove: (...a: unknown[]) => removeMock(...a),
+      setAgents: (...a: unknown[]) => setAgentsMock(...a),
     },
   };
 });
@@ -108,9 +114,15 @@ function renderSection() {
   });
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={["/ACME/settings?tab=connectors"]}>
-        <MCPConnectorsSection />
-      </MemoryRouter>
+      {/* NewConnectorDialog (mounted whenever the founder can add a connector,
+          regardless of whether it's open) calls useToast() for its
+          success/pending-approval notice, so it needs a real ToastProvider —
+          not just in production (main.tsx), but here too. */}
+      <ToastProvider>
+        <MemoryRouter initialEntries={["/ACME/settings?tab=connectors"]}>
+          <MCPConnectorsSection />
+        </MemoryRouter>
+      </ToastProvider>
     </QueryClientProvider>,
   );
 }
@@ -125,6 +137,10 @@ beforeEach(() => {
   catalogMock.mockResolvedValue({ entries: [], stale: false });
   bindCredentialsMock.mockResolvedValue(connector({ secretRef: "mcp:notion", status: "active" }));
   healthMock.mockResolvedValue({ status: "ok", deploymentMode: "local_trusted" });
+  createMock.mockResolvedValue(connector());
+  updateMock.mockResolvedValue(connector());
+  removeMock.mockResolvedValue(connector());
+  setAgentsMock.mockResolvedValue({ connectorId: "conn-1", agentIds: [] });
 });
 
 /* ── 1. StatusBadge ─────────────────────────────────────────────────────── */
@@ -444,5 +460,178 @@ describe("Settings no longer browses the catalog", () => {
       "href",
       "/marketplace/connectors",
     );
+  });
+});
+
+/* ── 7. Enable (re-activating a disabled connector) ─────────────────────── */
+
+describe("Enable (re-activating a disabled connector)", () => {
+  it("shows an Enable button for a disabled connector and calls update with status active", async () => {
+    listMock.mockResolvedValue([connector({ status: "disabled" })]);
+    updateMock.mockResolvedValue(connector({ status: "active" }));
+    renderSection();
+
+    const row = await screen.findByTestId("connector-row-conn-1");
+    const enableBtn = within(row).getByRole("button", { name: /^enable$/i });
+    fireEvent.click(enableBtn);
+
+    await waitFor(() =>
+      expect(updateMock).toHaveBeenCalledWith(COMPANY_ID, "conn-1", { status: "active" }),
+    );
+  });
+
+  it("shows Disable (not Enable) for an active connector — Enable is disabled-only", async () => {
+    listMock.mockResolvedValue([connector({ status: "active" })]);
+    renderSection();
+
+    const row = await screen.findByTestId("connector-row-conn-1");
+    expect(within(row).queryByRole("button", { name: /^enable$/i })).not.toBeInTheDocument();
+    expect(within(row).getByRole("button", { name: /^disable$/i })).toBeInTheDocument();
+  });
+
+  it("surfaces a failed enable via actionError (e.g. a credential precondition)", async () => {
+    listMock.mockResolvedValue([connector({ status: "disabled" })]);
+    updateMock.mockRejectedValue(
+      new ApiError("Bind a credential before re-enabling this connector", 422, {}),
+    );
+    renderSection();
+
+    const row = await screen.findByTestId("connector-row-conn-1");
+    fireEvent.click(within(row).getByRole("button", { name: /^enable$/i }));
+
+    expect(
+      await screen.findByText(/bind a credential before re-enabling this connector/i),
+    ).toBeInTheDocument();
+  });
+});
+
+/* ── 8. Remove now requires confirmation ────────────────────────────────── */
+
+describe("Remove (destructive — now gated behind a confirm dialog)", () => {
+  it("does not remove immediately: Remove opens a confirm dialog first", async () => {
+    listMock.mockResolvedValue([connector()]);
+    renderSection();
+
+    const row = await screen.findByTestId("connector-row-conn-1");
+    fireEvent.click(within(row).getByRole("button", { name: /^remove$/i }));
+
+    expect(removeMock).not.toHaveBeenCalled();
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(/remove connector\?/i)).toBeInTheDocument();
+    expect(within(dialog).getByText(new RegExp(connector().displayName))).toBeInTheDocument();
+  });
+
+  it("calls remove only after confirming", async () => {
+    listMock.mockResolvedValue([connector()]);
+    renderSection();
+
+    const row = await screen.findByTestId("connector-row-conn-1");
+    fireEvent.click(within(row).getByRole("button", { name: /^remove$/i }));
+
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: /^remove$/i }));
+
+    await waitFor(() => expect(removeMock).toHaveBeenCalledWith(COMPANY_ID, "conn-1"));
+  });
+
+  it("does not call remove when the confirm dialog is cancelled", async () => {
+    listMock.mockResolvedValue([connector()]);
+    renderSection();
+
+    const row = await screen.findByTestId("connector-row-conn-1");
+    fireEvent.click(within(row).getByRole("button", { name: /^remove$/i }));
+
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: /cancel/i }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(removeMock).not.toHaveBeenCalled();
+  });
+});
+
+/* ── 9. Add connector — now a modal, mirroring NewAoaAgentDialog ────────── */
+
+describe("Add connector (modal)", () => {
+  it("opens the Add-connector dialog from the header button without fetching the catalog", async () => {
+    listMock.mockResolvedValue([connector()]);
+    renderSection();
+
+    await screen.findByTestId("connector-row-conn-1");
+    fireEvent.click(screen.getByRole("button", { name: /^add connector$/i }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(/add a custom connector/i)).toBeInTheDocument();
+    expect(within(dialog).getByText(/display name/i)).toBeInTheDocument();
+    // Regression guard shared with "never fetches the connector catalog": the
+    // modal must not pull in the browsable shelf either.
+    expect(catalogMock).not.toHaveBeenCalled();
+  });
+
+  it("submits the form and creates a connector, then closes the dialog", async () => {
+    listMock.mockResolvedValue([]);
+    createMock.mockResolvedValue(connector({ id: "new-conn" }));
+    renderSection();
+
+    fireEvent.click(await screen.findByRole("button", { name: /^add connector$/i }));
+    const dialog = await screen.findByRole("dialog");
+
+    fireEvent.change(within(dialog).getByPlaceholderText("Notion Docs"), {
+      target: { value: "My Connector" },
+    });
+    fireEvent.change(within(dialog).getByPlaceholderText("notion-docs"), {
+      target: { value: "my-connector" },
+    });
+    fireEvent.change(within(dialog).getByPlaceholderText("https://mcp.example.com/sse"), {
+      target: { value: "https://example.com/mcp" },
+    });
+
+    fireEvent.click(within(dialog).getByRole("button", { name: /^add connector$/i }));
+
+    await waitFor(() =>
+      expect(createMock).toHaveBeenCalledWith(
+        COMPANY_ID,
+        expect.objectContaining({
+          displayName: "My Connector",
+          serverName: "my-connector",
+          transport: "http",
+          url: "https://example.com/mcp",
+        }),
+      ),
+    );
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+});
+
+/* ── 10. Access-model clarity (Commander vs. crew/org agents) ───────────── */
+
+describe("Access-model clarity", () => {
+  it("explains that Commander gets every active connector automatically and agents need explicit assignment", async () => {
+    listMock.mockResolvedValue([connector()]);
+    renderSection();
+
+    await screen.findByTestId("connector-row-conn-1");
+    // The sentence is split across inline <span> emphasis elements ("Commander",
+    // "crew or org agent", "Agents"), so assert on the "Commander" emphasis and
+    // the surrounding plain-text run separately rather than one regex spanning
+    // the element boundary (RTL's default text matcher only looks at an
+    // element's own direct text-node children, not descendants').
+    expect(screen.getByText("Commander")).toBeInTheDocument();
+    expect(
+      screen.getByText(/can use every active connector automatically/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/assign it with/i)).toBeInTheDocument();
+  });
+
+  it("points a founder with no agents yet at the Agents page from the agent-assignment panel", async () => {
+    listMock.mockResolvedValue([connector()]);
+    renderSection();
+
+    const row = await screen.findByTestId("connector-row-conn-1");
+    fireEvent.click(within(row).getByRole("button", { name: /^agents$/i }));
+
+    expect(
+      await screen.findByText(/no agents in this company yet/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/commander already has access to active connectors/i)).toBeInTheDocument();
   });
 });
