@@ -1,4 +1,4 @@
-import { eq, count, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, count, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { DEFAULT_ORGANIZATION_ID } from "@armyofagents/shared";
 import { memoryFoldersService, seedCompanyRootFolder } from "./memory-folders.js";
@@ -55,6 +55,13 @@ import {
   workspaceRuntimeServices,
 } from "@armyofagents/db";
 import { notCrewAssigned } from "./issue-crew-scope.js";
+
+type CompanyStatsEntry = {
+  agentCount: number;
+  issueCount: number;
+  pendingApprovalCount: number;
+  unreadNotificationCount: number;
+};
 
 export interface CreateCompanyOptions {
   /**
@@ -329,13 +336,29 @@ export function companyService(db: Db) {
         return rows[0] ?? null;
       }),
 
-    stats: () =>
-      Promise.all([
+    stats: (allowedCompanyIds?: string[]) => {
+      // Fix 4: empty allow-set → return none WITHOUT four instance-wide GROUP BY
+      // scans (explicit degrade-to-none; mirrors the list() guard).
+      if (allowedCompanyIds?.length === 0) {
+        return Promise.resolve<Record<string, CompanyStatsEntry>>({});
+      }
+      // undefined allow-set → unscoped (self-hosted operator view, unchanged).
+      // A non-empty allow-set is AND-ed into each aggregation as an inArray on
+      // the table's company_id, pushing the tenant filter into SQL. The
+      // `=== undefined` ternary (not a derived boolean) narrows allowedCompanyIds
+      // to string[] in the scoped branch so inArray typechecks; the base branch
+      // returns the predicate UNCHANGED so the correlated-crew SQL stays byte-
+      // identical to today (crew-scope-counts.test.ts).
+      return Promise.all([
         db
           .select({ companyId: agents.companyId, count: count() })
           .from(agents)
           // Per-company agent counts exclude platform (Commander-team) agents.
-          .where(eq(agents.kind, "org"))
+          .where(
+            allowedCompanyIds === undefined
+              ? eq(agents.kind, "org")
+              : and(eq(agents.kind, "org"), inArray(agents.companyId, allowedCompanyIds)),
+          )
           .groupBy(agents.companyId),
         db
           .select({ companyId: issues.companyId, count: count() })
@@ -345,28 +368,32 @@ export function companyService(db: Db) {
           // CROSS-COMPANY batch (groupBy company_id, no fixed company), so the
           // crew predicate is the CORRELATED form (no arg → agents.company_id =
           // issues.company_id). Crew tasks live only on the Crew Board.
-          .where(notCrewAssigned())
+          .where(
+            allowedCompanyIds === undefined
+              ? notCrewAssigned()
+              : and(notCrewAssigned(), inArray(issues.companyId, allowedCompanyIds)),
+          )
           .groupBy(issues.companyId),
         db
           .select({ companyId: approvals.companyId, count: count() })
           .from(approvals)
-          .where(eq(approvals.status, "pending"))
+          .where(
+            allowedCompanyIds === undefined
+              ? eq(approvals.status, "pending")
+              : and(eq(approvals.status, "pending"), inArray(approvals.companyId, allowedCompanyIds)),
+          )
           .groupBy(approvals.companyId),
         db
           .select({ companyId: notifications.companyId, count: count() })
           .from(notifications)
-          .where(isNull(notifications.readAt))
+          .where(
+            allowedCompanyIds === undefined
+              ? isNull(notifications.readAt)
+              : and(isNull(notifications.readAt), inArray(notifications.companyId, allowedCompanyIds)),
+          )
           .groupBy(notifications.companyId),
       ]).then(([agentRows, issueRows, approvalRows, notificationRows]) => {
-        const result: Record<
-          string,
-          {
-            agentCount: number;
-            issueCount: number;
-            pendingApprovalCount: number;
-            unreadNotificationCount: number;
-          }
-        > = {};
+        const result: Record<string, CompanyStatsEntry> = {};
         function ensure(companyId: string) {
           if (!result[companyId]) {
             result[companyId] = {
@@ -391,6 +418,7 @@ export function companyService(db: Db) {
           ensure(row.companyId).unreadNotificationCount = row.count;
         }
         return result;
-      }),
+      });
+    },
   };
 }

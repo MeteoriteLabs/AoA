@@ -77,3 +77,32 @@ describe("companyService.list() tenant push-down (Fix 4)", () => {
     expect(whereFor(captured, companies)).toContain('"companies"."id" in (');
   });
 });
+
+describe("companyService.stats() tenant push-down (Fix 4)", () => {
+  it("non-empty allow-set → inArray on company_id pushed into all four aggregations", async () => {
+    const { db, captured } = capturingDb([]);
+    await companyService(db).stats(IDS);
+    expect(whereFor(captured, agents)).toContain('"agents"."company_id" in (');
+    expect(whereFor(captured, issues)).toContain('"issues"."company_id" in (');
+    expect(whereFor(captured, approvals)).toContain('"approvals"."company_id" in (');
+    expect(whereFor(captured, notifications)).toContain('"notifications"."company_id" in (');
+  });
+
+  it("empty allow-set → short-circuits to {} with NO database query (degrade-to-none)", async () => {
+    const { db, captured } = capturingDb([]);
+    const result = await companyService(db).stats([]);
+    expect(result).toEqual({});
+    expect(captured).toHaveLength(0);
+  });
+
+  it("undefined allow-set → base predicates only, NO company_id inArray [operator view]", async () => {
+    const { db, captured } = capturingDb([]);
+    await companyService(db).stats();
+    expect(whereFor(captured, agents)).not.toContain('"agents"."company_id" in (');
+    expect(whereFor(captured, issues)).not.toContain('"issues"."company_id" in (');
+    expect(whereFor(captured, approvals)).not.toContain('"approvals"."company_id" in (');
+    expect(whereFor(captured, notifications)).not.toContain('"notifications"."company_id" in (');
+    // base predicate is still present (unchanged from today).
+    expect(whereFor(captured, agents)).toContain('"agents"."kind" =');
+  });
+});
