@@ -90,3 +90,54 @@ AOA_STRIP_CC_ENV=1 AOA_HOME=C:\Users\TK\.aoa\mem-inst PORT=3130 \
 - Create a todo task assigned to it → `POST /api/agents/:id/wakeup {"source":"assignment"}`
   → `GET /api/heartbeat-runs/:runId/log`. The `system/init` line lists the exact
   tools the agent loaded (the exposure canary).
+
+---
+
+## CORRECTION & complete diagnosis (2026-07-31, cont.)
+
+The "dotted tool names" theory above was **WRONG**. Agents do **not** use the
+external MCP-server registry (`mcp/tools/index.ts`, where `memory.search` is dotted).
+They use the **internal-agent** registry (`createToolRegistry` in
+`services/internal-agent/tool-registry.ts`), whose memory-read tool is
+**`query_memory`** — underscore-named, `requiredRole: team_member`,
+`requiresConfirmation: false`. No dot problem exists for agents at all.
+
+**Gap #1 (exposure) — FIXED + VERIFIED** (commit `5264729b3`, supersedes `ff1d17646`):
+the org allowlist now lists `query_memory` (not `memory.search`), and the always-on
+core hint names `query_memory`. **Live-verified:** `mcp__aoa__query_memory` now
+appears in the org agent's `system/init` tool list (it never did before).
+
+**Gap #2 (permission) — the remaining blocker, two sub-issues:**
+- **(a) The runtime-decision bridge is NOT activating** for the org run. Despite
+  `AOA_RUNTIME_DECISION_ROUTING=1` + the agent's `runtimeConfig.runtimeDecisionRoutingEnabled=true`,
+  the server log shows **zero** PreToolUse-hook / runtime-decision activity, and the
+  agent hits Claude's *default*-mode `"you haven't granted it yet"`. So
+  `resolveRuntimeDecisionRoutingEnabled` is returning **false**. Prime suspect:
+  `agent.runtimeConfig` reaches the heartbeat as a JSON **string**, so the
+  `typeof agentRuntimeConfig === "object"` guard fails and the per-agent opt-in reads
+  false. **Next:** log the 4 conditions in `resolveRuntimeDecisionRoutingEnabled`
+  (`runtime-decision-routing-flag.ts`) for a real run and fix whichever is false
+  (parse `runtimeConfig` if it's a string).
+- **(b) Even once bridged, the broker prompts for founder approval on EVERY tool
+  call**, including the read-only `query_memory` — headless runs have no founder, so
+  they stall. **Designed fix (implemented, then reverted as unverified because (a)
+  blocks live testing):** auto-allow a fixed read-only set
+  (`query_memory`, `find_similar_memory`, `get_task`, `get_heartbeat_context`) in the
+  PreToolUse hook (`routes/runtime-hooks.ts`) *before* the broker call — reads have no
+  side effects and are already RBAC-gated; writes still route to the broker. Match on
+  the bare (unprefixed) tool name (`mcp__aoa__query_memory` → `query_memory`).
+
+**Net ORG status:** memory is now REACHABLE (tool exposed); delivery is blocked by the
+permission bridge — first make bridging activate (a), then auto-approve safe reads (b).
+The governed path (founder approves in the Inbox) would already work once (a) is fixed.
+
+**Crew / Commander:** still untested. Crew renders memory into the prompt (no MCP →
+unaffected by #2). Commander uses the same `query_memory` tool → will need (b) too.
+
+## Fix plan (superwedes the earlier one)
+
+1. Fix bridge activation (a): instrument `resolveRuntimeDecisionRoutingEnabled`,
+   ensure `agent.runtimeConfig` is an object (parse if string) so the opt-in reads true.
+2. Re-apply the read-only auto-approve (b) in `runtime-hooks.ts` + a route unit test.
+3. Prove all three live: Org (`query_memory` recall), Crew (`## Context` bundle),
+   Commander (`query_memory` recall).
