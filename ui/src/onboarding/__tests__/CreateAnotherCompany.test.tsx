@@ -109,9 +109,18 @@ describe("CreateAnotherCompany", () => {
         onBack={onBack}
       />,
     );
-    expect(await screen.findByText(/pick an organization/i)).toBeTruthy();
+    // Exact title match (not a /more than one organization/i substring regex):
+    // the new title AND description both contain that phrase, so the substring
+    // form throws on multiple matches. The exact string hits only the title.
+    expect(await screen.findByText("More than one organization")).toBeTruthy();
+    // The honest copy must NOT point at a nonexistent "open the organization …
+    // create it from there" flow (the removed misleading copy) — the assertion
+    // that actually distinguishes the fix from the old copy.
+    expect(screen.queryByText(/open the organization/i)).toBeNull();
     expect(screen.queryByText("org-step")).toBeNull();
-    fireEvent.click(screen.getByText(/back to your workspace/i));
+    // Scope to the button by role: the new honest description also ends with
+    // "…go back to your workspace", so a bare getByText would match two nodes.
+    fireEvent.click(screen.getByRole("button", { name: /back to your workspace/i }));
     expect(onBack).toHaveBeenCalled();
   });
 

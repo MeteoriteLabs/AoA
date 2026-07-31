@@ -122,11 +122,13 @@ export function CreateAnotherCompany({
     return <CreateOrganizationStep ctx={buildCtx(null)} onComplete={() => {}} onBack={onBack} />;
   }
   // resolution.kind === "ambiguous" (>=2 create-capable orgs). A picker is a
-  // deferred follow-up; a friendly message is sufficient for the beta.
+  // deferred follow-up; an honest message is sufficient for the beta. Do NOT
+  // reference an "open the organization … create it from there" flow — no such UI
+  // exists yet.
   return (
     <EmptyState
-      title="Pick an organization first"
-      description="You can create companies in more than one organization. Open the organization you want this company under, then create it from there."
+      title="More than one organization"
+      description="You belong to more than one organization, so we can't tell which one to create this company under. Choosing an organization here is coming soon — for now, go back to your workspace."
       action={
         <Button variant="secondary" onClick={onBack}>
           Back to your workspace
