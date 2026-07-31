@@ -149,6 +149,46 @@ describe("getJourneyForUser (A5 + RB7/RB9 wiring)", () => {
     expect(r.resumeCompanyCreationOrgId).toBe("org1");
   });
 
+  it("multiple create-capable zero-company orgs → deterministic pick by earliest createdAt", async () => {
+    // Array order is deliberately NOT createdAt order: a naive `.find()` would
+    // return "org-a" (first row); the deterministic tiebreak must pick the org
+    // whose membership was created EARLIEST ("org-b", 2026-07-01) regardless of
+    // array position. createdAt disagrees with id-lexicographic here (id order
+    // would pick "org-a"), so this pins createdAt as the PRIMARY key.
+    const db = seqDb([
+      [{ email: "u@x.com", emailVerified: true }], // user
+      [], // company memberships — none
+      [
+        { organizationId: "org-a", role: "owner", createdAt: new Date("2026-07-20T00:00:00Z") },
+        { organizationId: "org-b", role: "owner", createdAt: new Date("2026-07-01T00:00:00Z") },
+      ],
+      [], // pending requests
+      [], // open invites
+    ]);
+    const r = await getJourneyForUser(db, { userId: "u1" });
+    expect(r.journey).toBe("returning");
+    expect(r.resumeCompanyCreationOrgId).toBe("org-b");
+  });
+
+  it("multiple create-capable orgs with equal/absent createdAt → deterministic pick by smallest organizationId", async () => {
+    // No createdAt (mirrors the seqDb mocks elsewhere): the createdAt tier ties,
+    // so the final tiebreak is the lexicographically smallest organizationId
+    // ("org-a") — again independent of array order ("org-z" is first).
+    const db = seqDb([
+      [{ email: "u@x.com", emailVerified: true }], // user
+      [], // company memberships — none
+      [
+        { organizationId: "org-z", role: "owner" },
+        { organizationId: "org-a", role: "admin" },
+      ],
+      [], // pending requests
+      [], // open invites
+    ]);
+    const r = await getJourneyForUser(db, { userId: "u1" });
+    expect(r.journey).toBe("returning");
+    expect(r.resumeCompanyCreationOrgId).toBe("org-a");
+  });
+
   it("returning MEMBER (not create-capable) with zero companies → no company-creation resume", async () => {
     const db = seqDb([
       [{ email: "u@x.com", emailVerified: true }], // user

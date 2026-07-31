@@ -1,3 +1,6 @@
+// "tenant" = the multi-tenant Organization (the account that owns companies +
+// billing). Named to avoid the misleading `pendingOrganization`, which — despite
+// its name — actually stores the pending *Company* created in OrgStep.
 export type PendingTenant = { id: string; name: string };
 
 export function pendingTenantKey(userId: string): string {

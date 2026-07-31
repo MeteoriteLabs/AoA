@@ -228,9 +228,20 @@ export async function getJourneyForUser(
   // the resumeFirstRunCompanyId branch above (that requires returningCompanyIds
   // non-empty), so the query sequence is unchanged.
   if (result.journey === "returning" && returningCompanyIds.length === 0) {
-    const creatable = orgMembershipRows.find((row) =>
-      orgRoleCan(row.role as OrganizationRole, "company:create"),
-    );
+    // Deterministic pick: `listOrgMemberships` has no ORDER BY, so when the user
+    // owns MORE THAN ONE create-capable zero-company org, choose by a stable key
+    // rather than array order — earliest membership `createdAt` first (a fresh
+    // owner org's membership createdAt is effectively its org-creation time), then
+    // the lexicographically smallest `organizationId` as the final tiebreak (robust
+    // when createdAt ties or is absent). `.filter` returns a fresh array, so the
+    // `.sort` never mutates `orgMembershipRows`.
+    const creatable = orgMembershipRows
+      .filter((row) => orgRoleCan(row.role as OrganizationRole, "company:create"))
+      .sort((a, b) => {
+        const at = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const bt = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return at - bt || a.organizationId.localeCompare(b.organizationId);
+      })[0];
     result.resumeCompanyCreationOrgId = creatable?.organizationId ?? null;
   }
 
