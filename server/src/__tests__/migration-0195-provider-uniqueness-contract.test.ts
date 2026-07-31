@@ -33,4 +33,13 @@ describe("migration 0195 contract", () => {
       /ADD CONSTRAINT "provider_connections_identity_uq" UNIQUE NULLS NOT DISTINCT\("organization_id","company_id","provider","auth_method","owner_user_id","execution_target_id"\)/,
     );
   });
+
+  it("includes the cutover member-backfill INSERT into organization_memberships", () => {
+    expect(sqlText).toMatch(/INSERT INTO "organization_memberships"[\s\S]*FROM "company_memberships" cm/);
+    expect(sqlText).toMatch(/ON CONFLICT \("organization_id", "user_id"\) DO NOTHING/);
+  });
+
+  it("includes the defensive company_secrets.organization_id re-backfill", () => {
+    expect(sqlText).toMatch(/UPDATE "company_secrets" SET "organization_id" = c\."organization_id" FROM "companies" c/);
+  });
 });
