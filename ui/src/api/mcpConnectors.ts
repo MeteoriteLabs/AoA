@@ -137,6 +137,14 @@ export interface McpConnectorShelfEntry extends McpConnectorCatalogEntry {
   consentRequired: boolean;
   consentToken?: string;
   consentExpiresAt?: number;
+  /**
+   * The OAuth broker path is available for this entry (mirrors the server's
+   * `entry.requiresOAuth` projection, reset to `false` if D7 refuses the entry
+   * outright). `true` + not-yet-installed is exactly the "Authorize" affordance;
+   * once installed the connector still needs the sign-in round trip before it is
+   * `active`, so this is orthogonal to `installable`.
+   */
+  oauthRequired?: boolean;
 }
 
 export interface McpConnectorShelf {
@@ -153,6 +161,14 @@ export const mcpConnectorsApi = {
     api.post<McpConnector & { approvalId?: string | null }>(
       `/companies/${companyId}/mcp-connectors/install`,
       body,
+    ),
+  /** Starts (or restarts) the OAuth broker round trip for an installed connector.
+   *  The returned `authorizeUrl` is where the caller should navigate the browser
+   *  next; nothing is bound until the provider redirects back to the callback. */
+  oauthStart: (companyId: string, id: string) =>
+    api.post<{ authorizeUrl: string }>(
+      `/companies/${companyId}/mcp-connectors/${id}/oauth/start`,
+      {},
     ),
   bindCredentials: (companyId: string, id: string, secretRef: string) =>
     api.post<McpConnector>(`/companies/${companyId}/mcp-connectors/${id}/credentials`, {
