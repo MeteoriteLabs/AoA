@@ -1222,6 +1222,17 @@ export function mcpConnectorRoutes(db: Db, opts: McpConnectorRouteOptions = {}) 
         throw badRequest("This connector does not use OAuth sign-in");
       }
 
+      // Fail fast + clearly rather than 500 deep in signOAuthState when no signing
+      // secret is configured (mirrors the shelf's graceful handling).
+      try {
+        resolveConsentSecret();
+      } catch {
+        throw badRequest(
+          "OAuth connectors need a signing secret to secure the sign-in flow, and none is configured " +
+            "(BETTER_AUTH_SECRET or AOA_AGENT_JWT_SECRET). Run `aoa onboard` or set one before authorizing OAuth connectors.",
+        );
+      }
+
       const actor = getActorInfo(req);
       const startedByUserId = OAUTH_UUID_RE.test(actor.actorId) ? actor.actorId : null; // Fix 3: no board sentinel into the id column
 

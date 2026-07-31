@@ -78,6 +78,12 @@ beforeEach(() => {
   mockFlowSelect.mockResolvedValue([]);
   mockFlowClaim.mockResolvedValue([{ id: "flow1" }]);
   mockFlowUpdate.mockReset();
+  // `resolveConsentSecret()` (../services/mcp-connector-consent.js) is NOT part of
+  // the mocked `mcp-connector-oauth.js` module, so /oauth/start's fail-fast guard
+  // calls the REAL implementation, which reads env at call time. Keep a secret
+  // present by default so the existing start tests exercise the happy path; the
+  // "no signing secret" test below deletes both vars itself and restores them.
+  process.env.BETTER_AUTH_SECRET ||= "test-secret";
 });
 
 it("founder start returns an authorizeUrl and inserts a flow row", async () => {
@@ -128,6 +134,31 @@ it("rejects oauth/start on a disabled connector (#3)", async () => {
   const res = await request(makeApp(founderActor)).post(`/api/companies/${COMPANY}/mcp-connectors/conn1/oauth/start`).send({});
   expect(res.status).toBe(400);
   expect(mockFlowInsert).not.toHaveBeenCalled();
+});
+
+it("returns a clear 400 (not a 500) when no signing secret is configured", async () => {
+  // Delete BOTH env vars `resolveConsentSecret()` checks — the route calls the
+  // REAL function (it's outside the mocked `mcp-connector-oauth.js` module), so
+  // this reproduces the actual "no signing secret configured" deployment state
+  // instead of asserting against a mock.
+  const savedBetter = process.env.BETTER_AUTH_SECRET;
+  const savedAgent = process.env.AOA_AGENT_JWT_SECRET;
+  delete process.env.BETTER_AUTH_SECRET;
+  delete process.env.AOA_AGENT_JWT_SECRET;
+  try {
+    // OAuth + catalog connector, same shape as the happy-path start test above —
+    // this must reach the new guard, not get rejected by an earlier gate.
+    mockConnectorSvc.getById.mockResolvedValue({ id: "conn1", companyId: COMPANY, serverName: "notion",
+      transport: "http", url: "https://mcp.notion.com/mcp", requiresSecret: true, secretRef: null, status: "needs_credentials", source: "catalog" });
+    const res = await request(makeApp(founderActor)).post(`/api/companies/${COMPANY}/mcp-connectors/conn1/oauth/start`).send({});
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/signing secret/i);
+    expect(mockFlowInsert).not.toHaveBeenCalled();
+    expect(mockOauth.discoverOAuthServer).not.toHaveBeenCalled();
+  } finally {
+    if (savedBetter === undefined) delete process.env.BETTER_AUTH_SECRET; else process.env.BETTER_AUTH_SECRET = savedBetter;
+    if (savedAgent === undefined) delete process.env.AOA_AGENT_JWT_SECRET; else process.env.AOA_AGENT_JWT_SECRET = savedAgent;
+  }
 });
 
 it("callback exchanges the code, stores the secret, binds the connector, redirects", async () => {
