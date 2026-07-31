@@ -123,6 +123,26 @@ type EmbeddedPostgresCtor = new (opts: {
 }) => EmbeddedPostgresInstance;
 
 const config = loadConfig();
+
+// Dev/sandbox affordance (opt-in via AOA_STRIP_CC_ENV=1): when AoA is launched
+// from inside a Claude Code session — especially a staging session — the inherited
+// CLAUDE_CODE_* / OAuth-routing vars + ANTHROPIC_BASE_URL point every spawned CLI
+// (Commander, extraction, crew/org runs, the auth probe) at the HOST session's
+// endpoint. A normal `claude login` (production) then reads as "revoked" there, so
+// the CLI reports needs_auth even though the machine is signed in. Stripping these
+// here — after loadConfig()'s .env load, before any adapter spawns — lets the child
+// CLIs fall back to the machine's own login. No-op in a normal terminal (vars absent).
+if (process.env.AOA_STRIP_CC_ENV === "1") {
+  const stripped = Object.keys(process.env).filter((k) =>
+    /^(CLAUDE_CODE_|CLAUDECODE$|USE_STAGING_OAUTH$|USE_LOCAL_OAUTH$|ANTHROPIC_BASE_URL$|AI_AGENT$)/i.test(k),
+  );
+  for (const k of stripped) delete process.env[k];
+  console.log(
+    `[aoa] AOA_STRIP_CC_ENV: removed ${stripped.length} Claude Code session var(s)` +
+      (stripped.length ? `: ${stripped.join(", ")}` : ""),
+  );
+}
+
 if (process.env.AOA_SECRETS_PROVIDER === undefined) {
   process.env.AOA_SECRETS_PROVIDER = config.secretsProvider;
 }
