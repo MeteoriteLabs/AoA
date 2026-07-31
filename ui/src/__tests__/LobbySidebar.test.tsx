@@ -86,21 +86,21 @@ describe("LobbySidebar", () => {
     expect(screen.getByText("AoA")).toBeInTheDocument();
   });
 
-  it("renders the + New organization button at the top", () => {
+  it("renders the + New company button at the top", () => {
     renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
-    expect(screen.getByRole("button", { name: /new organization/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /new company/i })).toBeInTheDocument();
   });
 
-  it("clicking + New organization calls the onCreateCompany handler", async () => {
+  it("clicking + New company calls the onCreateCompany handler", async () => {
     const user = userEvent.setup();
     renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
-    await user.click(screen.getByRole("button", { name: /new organization/i }));
+    await user.click(screen.getByRole("button", { name: /new company/i }));
     expect(onCreateCompany).toHaveBeenCalledTimes(1);
   });
 
-  it("renders Organizations (active), Marketplace, Learn, Documentation, Settings", async () => {
+  it("renders Companies (active), Marketplace, Learn, Documentation, Settings", async () => {
     renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
-    expect(screen.getByRole("button", { name: /organizations/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /companies/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /marketplace/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /learn/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /documentation/i })).toBeInTheDocument();
@@ -108,10 +108,18 @@ describe("LobbySidebar", () => {
     expect(await screen.findByRole("button", { name: /settings/i })).toBeInTheDocument();
   });
 
-  it("Organizations row is the active item (data-active=true)", () => {
+  it("Companies row is the active item (data-active=true)", () => {
     renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
-    const orgs = screen.getByRole("button", { name: /organizations/i });
-    expect(orgs.getAttribute("data-active")).toBe("true");
+    const companies = screen.getByRole("button", { name: /companies/i });
+    expect(companies.getAttribute("data-active")).toBe("true");
+  });
+
+  it("labels the company list 'Companies' / 'New company', never 'Organizations'", () => {
+    renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
+    expect(screen.getByRole("button", { name: /^companies$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^new company$/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /organizations/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /new organization/i })).toBeNull();
   });
 
   it("renders the UserMenu at the bottom", () => {
@@ -294,28 +302,28 @@ describe("LobbySidebar", () => {
 
   it("expanded: renders the create button and the More-options trigger", () => {
     renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
-    expect(screen.getByRole("button", { name: /^new organization$/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /more organization options/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^new company$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /more company options/i })).toBeInTheDocument();
   });
 
-  it("Import organization menuitem navigates to /import", async () => {
+  it("Import company menuitem navigates to /import", async () => {
     const user = userEvent.setup();
     renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
-    await user.click(screen.getByRole("menuitem", { name: /import organization/i }));
+    await user.click(screen.getByRole("menuitem", { name: /import company/i }));
     expect(mockNavigate).toHaveBeenCalledWith("/import", undefined);
   });
 
-  it("primary + New organization still creates in one click (no regression)", async () => {
+  it("primary + New company still creates in one click (no regression)", async () => {
     const user = userEvent.setup();
     renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
-    await user.click(screen.getByRole("button", { name: /^new organization$/i }));
+    await user.click(screen.getByRole("button", { name: /^new company$/i }));
     expect(onCreateCompany).toHaveBeenCalledTimes(1);
   });
 
   it("collapsed: no More-options trigger and no import menuitem (create-only)", () => {
     localStorage.setItem("aoa.lobby.sidebar-collapsed", "true");
     renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
-    expect(screen.queryByRole("button", { name: /more organization options/i })).toBeNull();
-    expect(screen.queryByRole("menuitem", { name: /import organization/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /more company options/i })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: /import company/i })).toBeNull();
   });
 });
