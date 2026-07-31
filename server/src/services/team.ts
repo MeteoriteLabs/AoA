@@ -32,7 +32,7 @@ import type {
   UserRole,
 } from "@armyofagents/shared";
 import { PERMISSION_KEYS, humanSocialLinkSchema } from "@armyofagents/shared";
-import { conflict, notFound } from "../errors.js";
+import { badRequest, conflict, notFound } from "../errors.js";
 import { tenantIsolationEnforced } from "../config/deployment-mode.js";
 import { accessService } from "./access.js";
 import { humanCapabilitiesService } from "./human-capabilities.js";
@@ -685,6 +685,20 @@ export function teamService(db: Db) {
     input: { name: string; email: string; role: UserRole; projectId?: string | null; parentType?: "user" | null; parentId?: string | null },
     addedByUserId: string,
   ): Promise<{ userId: string }> {
+    // Fix 1 (P2): in cloud_auth, humans are admitted ONLY through the invite
+    // chokepoint (approveHumanJoinRequestTx), which writes BOTH the org and the
+    // company membership. Direct-add writes only the company membership, so
+    // assertCompanyAccess (authz.ts:71 — org AND company required) would 403 the
+    // added user on every request — a full lockout. Reject the path instead of
+    // patching it; this also collapses cloud admission onto the single audited
+    // seam that future seat-quota / SSO / SCIM enforcement hooks into.
+    // Self-hosted has no tenant boundary and is unchanged.
+    if (tenantIsolationEnforced()) {
+      throw badRequest(
+        "Direct add is not available in cloud mode. Send an email invite instead — it grants organization and company access together.",
+      );
+    }
+
     await assertFounder(companyId, addedByUserId);
 
     if (input.role === "founder") {
