@@ -2,13 +2,13 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
-import type { OnboardingJourney, OnboardingState } from "@armyofagents/shared";
+import type { OnboardingJourney } from "@armyofagents/shared";
 import { authApi } from "../api/auth";
 import { queryKeys } from "../lib/queryKeys";
 import { advanceOnboarding, getOnboardingProgress, onboardingApi } from "../api/onboarding";
 import { DarkShell, FlowEngine } from "../onboarding/FlowEngine";
 import { ONBOARDING_STEPS } from "../onboarding/steps";
-import { OrgStep } from "../onboarding/steps/OrgStep";
+import { CreateAnotherCompany } from "../onboarding/CreateAnotherCompany";
 import { InvitedJoinTerminal } from "../onboarding/InvitedJoinTerminal";
 import { FirstRunHome } from "../onboarding/FirstRunHome";
 
@@ -87,28 +87,19 @@ export function OnboardingFlowPage({ journey }: { journey: OnboardingJourney }) 
   // engine with a pinned-null companyId would instead loop: OrgStep advances on
   // the NEW company while the engine re-reads the still-empty user layer.
   if (isNewFounderOrganization) {
-    const orgCtx = {
-      userId,
-      companyId: null,
-      journey,
-      completedStates: ["AUTHENTICATED", "PROFILE_SET"] as OnboardingState[],
-      // This standalone surface bypasses CreateOrganizationStep entirely, so
-      // there is no live Organization id to hand OrgStep — it omits
-      // organizationId from the create-company call when null (see
-      // OrgStep.tsx submit()), and the server derives DEFAULT_ORGANIZATION_ID.
-      // KNOWN GAP (flagged, not fixed here — out of Phase 2 Task 2/3/12
-      // scope): in cloud_auth, a returning founder using this "create another
-      // company" surface will land the new company in the default org rather
-      // than their own, until this looks up the founder's real organization
-      // membership (e.g. via organizationsApi.list()).
-      organizationId: null,
-    };
+    // Fix 2 (design P1): resolve the founder's own create-capable Organization
+    // before the company step. In cloud_auth an explicit org id is mandatory —
+    // the server 403s a >=2-org founder who omits it and never guesses
+    // (companies.ts:50-54); a single-org founder is auto-picked silently. Only
+    // self-hosted omits the id (server derives DEFAULT_ORGANIZATION_ID,
+    // companies.ts:56). CreateAnotherCompany owns that whole resolution.
     return (
       <DarkShell>
         <div className="relative z-10 flex min-h-screen items-center justify-center px-6 py-8">
-          <OrgStep
-            ctx={orgCtx}
-            onComplete={() => navigate("/onboarding", { replace: true })}
+          <CreateAnotherCompany
+            userId={userId}
+            journey={journey}
+            onCompleteCompany={() => navigate("/onboarding", { replace: true })}
             onBack={() => navigate("/", { replace: true })}
           />
         </div>

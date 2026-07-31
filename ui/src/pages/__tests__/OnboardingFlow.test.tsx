@@ -8,7 +8,12 @@ const state = vi.hoisted(() => ({
   selectedCompanyId: null as string | null,
   session: { user: { id: "u1" } } as unknown,
   flowProps: null as unknown as { companyId: string | null; onFinished?: () => void },
-  orgProps: null as unknown as { ctx: { companyId: string | null }; onComplete: () => void },
+  newCompanyProps: null as unknown as {
+    userId: string;
+    journey: string;
+    onCompleteCompany: () => void;
+    onBack: () => void;
+  },
   firstRunProps: null as unknown as { companyId: string; onComplete: () => void },
 }));
 const mockNavigate = vi.hoisted(() => vi.fn());
@@ -53,10 +58,15 @@ vi.mock("../../onboarding/FlowEngine", () => ({
   // ConstellationBg wrapper — a passthrough stand-in is enough for this suite.
   DarkShell: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
-vi.mock("../../onboarding/steps/OrgStep", () => ({
-  OrgStep: (props: { ctx: { companyId: string | null }; onComplete: () => void }) => {
-    state.orgProps = props;
-    return <div>org-step-direct</div>;
+vi.mock("../../onboarding/CreateAnotherCompany", () => ({
+  CreateAnotherCompany: (props: {
+    userId: string;
+    journey: string;
+    onCompleteCompany: () => void;
+    onBack: () => void;
+  }) => {
+    state.newCompanyProps = props;
+    return <div>create-another-company</div>;
   },
 }));
 vi.mock("../../onboarding/InvitedJoinTerminal", () => ({
@@ -84,7 +94,7 @@ describe("OnboardingFlowPage", () => {
     state.selectedCompanyId = null;
     state.session = { user: { id: "u1" } };
     state.flowProps = null as never;
-    state.orgProps = null as never;
+    state.newCompanyProps = null as never;
     mockGetOnboardingProgress.mockResolvedValue({
       completedStates: ["AUTHENTICATED", "PROFILE_SET"],
     });
@@ -98,7 +108,7 @@ describe("OnboardingFlowPage", () => {
     renderWithProviders(<OnboardingFlowPage journey="founder" />);
     await screen.findByText("finish-flow");
     expect(state.flowProps.companyId).toBe("existing-co");
-    expect(state.orgProps).toBeNull();
+    expect(state.newCompanyProps).toBeNull();
   });
 
   it("founder: after the spine, runs the inline tail, then evicts the journey cache and hands off to the Lobby", async () => {
@@ -125,24 +135,25 @@ describe("OnboardingFlowPage", () => {
     expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true });
   });
 
-  it("founder + ?new=1: drives org-create directly on the user layer, then resumes clean", async () => {
+  it("founder + ?new=1: renders the create-another-company resolver on the user layer, then resumes clean", async () => {
     state.selectedCompanyId = "existing-co"; // already-complete company must be ignored
     state.searchParams = new URLSearchParams("new=1");
     renderWithProviders(<OnboardingFlowPage journey="founder" />);
-    await screen.findByText("org-step-direct");
-    expect(state.orgProps.ctx.companyId).toBeNull(); // user layer, not existing-co
-    // finishing the org step resumes the NEW company via a clean /onboarding
-    state.orgProps.onComplete();
+    await screen.findByText("create-another-company");
+    expect(state.newCompanyProps.userId).toBe("u1");
+    expect(state.newCompanyProps.journey).toBe("founder");
+    // finishing the company step resumes the NEW company via a clean /onboarding
+    state.newCompanyProps.onCompleteCompany();
     expect(mockNavigate).toHaveBeenCalledWith("/onboarding", { replace: true });
   });
 
-  it("founder + ?new=1: persists PROFILE_SET before rendering OrgStep for a legacy user", async () => {
+  it("founder + ?new=1: persists PROFILE_SET before rendering the resolver for a legacy user", async () => {
     state.searchParams = new URLSearchParams("new=1");
     mockGetOnboardingProgress.mockResolvedValue(null);
 
     renderWithProviders(<OnboardingFlowPage journey="founder" />);
 
-    await screen.findByText("org-step-direct");
+    await screen.findByText("create-another-company");
     expect(mockGetOnboardingProgress).toHaveBeenCalledWith(null);
     expect(mockAdvanceOnboarding).toHaveBeenCalledWith({
       companyId: null,
