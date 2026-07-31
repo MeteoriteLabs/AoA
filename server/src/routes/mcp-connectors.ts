@@ -1,6 +1,10 @@
+import { randomUUID } from "node:crypto";
 import { Router } from "express";
+import type { Request } from "express";
+import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "@armyofagents/db";
+import { mcpConnectorOauthFlows } from "@armyofagents/db";
 import type { McpConnectorCatalogEntry } from "@armyofagents/shared";
 import { RESERVED_MCP_SERVER_NAMES } from "@armyofagents/adapter-utils";
 import { validate } from "../middleware/validate.js";
@@ -33,7 +37,23 @@ import {
   ConnectorCommandUnsafeError,
   assertStdioCommandSafe,
 } from "../services/mcp-connector-command-safety.js";
+import {
+  buildAuthorizeUrl,
+  discoverOAuthServer,
+  exchangeAuthorizationCode,
+  generatePkce,
+  registerOAuthClient,
+  signOAuthState,
+  verifyOAuthState,
+} from "../services/mcp-connector-oauth.js";
+import {
+  decodeOAuthBundle,
+  encodeOAuthBundle,
+  OAUTH_BUNDLE_VERSION,
+  type OAuthTokenBundle,
+} from "../services/mcp-connector-oauth-bundle.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { resolveInviteBaseUrl } from "./access-helpers.js";
 import { assertRole } from "../middleware/rbac.js";
 import { loadConfig } from "../config.js";
 
@@ -335,6 +355,17 @@ const replaceAgentsSchema = z
   })
   .strict();
 
+// Empty body — the connector id in the path fully determines what is started.
+// `.strict()` still rejects an unexpected payload rather than silently ignoring it.
+export const oauthStartSchema = z.object({}).strict();
+
+// LOAD-BEARING (Fix 3): a board actor's id may be a non-UUID sentinel (e.g. the
+// `local_trusted` synthetic "local-board" actor). `startedByUserId` has no FK
+// (see mcp_connector_oauth_flows.ts), but persisting a sentinel string into it
+// would still be a lie about who started the flow, so it is stored ONLY when the
+// actor id is a real UUID — otherwise null.
+const OAUTH_UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
 /**
  * Catalog install body. `entryId` selects one of the server-fetched curated
  * entries; NOTHING else about the connector is client-controlled.
@@ -379,6 +410,25 @@ function requiresInstallConsent(entry: McpConnectorCatalogEntry): boolean {
  */
 function consentSpecFor(entry: McpConnectorCatalogEntry) {
   return { command: entry.command ?? "", args: entry.args };
+}
+
+/**
+ * The `redirect_uri` registered with the OAuth authorization server and echoed
+ * back on callback. MUST be the operator-configured public origin, never a
+ * spoofable `Host`/`X-Forwarded-Host` header, in any multi-human deployment —
+ * a client-controlled redirect_uri would let an attacker steal the auth code.
+ *
+ * Fix 13: fail CLOSED. `local_trusted` is a loopback trust boundary (no header
+ * spoofing threat model) and may fall back to a loopback origin; every other
+ * deployment mode must have `authPublicBaseUrl` configured or this throws.
+ */
+function oauthRedirectUri(req: Request): string {
+  const cfg = loadConfig();
+  if (cfg.deploymentMode !== "local_trusted" && !cfg.authPublicBaseUrl) {
+    throw badRequest("Set AOA_AUTH_PUBLIC_BASE_URL before using OAuth connectors in this deployment mode");
+  }
+  const origin = resolveInviteBaseUrl(req) || `http://127.0.0.1:${cfg.port}`; // local_trusted loopback fallback
+  return `${origin.replace(/\/$/, "")}/api/mcp-connectors/oauth/callback`;
 }
 
 /**
@@ -1123,6 +1173,88 @@ export function mcpConnectorRoutes(db: Db, opts: McpConnectorRouteOptions = {}) 
       });
 
       res.json({ connectorId: id, agentIds: [...new Set(agentIds)] });
+    },
+  );
+
+  // Start an OAuth authorization flow for a connector — founder only.
+  router.post(
+    "/companies/:companyId/mcp-connectors/:id/oauth/start",
+    validate(oauthStartSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const id = req.params.id as string;
+      assertBoard(req);
+      assertCompanyAccess(req, companyId);
+      await assertRole(db, req, companyId, "founder");
+
+      const connector = await mcpConnectorService(db).getById(id);
+      if (!connector || connector.companyId !== companyId) {
+        res.status(404).json({ error: "Connector not found" });
+        return;
+      }
+      if (connector.transport !== "http" || !connector.url) {
+        throw badRequest("OAuth is only available for HTTP connectors");
+      }
+      // Fix 11: only OAuth connectors may run this flow — otherwise the callback would rotate
+      // (overwrite) a static-bearer connector's secret. Resolve the catalog entry by serverName.
+      // NB: the in-scope service is `connectorCatalog` (mcp-connectors.ts:477) and its `load`
+      // takes the current time (`load(nowMs: number)`) — matches the install POST at :685.
+      const { entries: catalogEntries } = await connectorCatalog.load(Date.now());
+      const entry = catalogEntries.find((e) => e.serverName === connector.serverName);
+      if (!entry?.requiresOAuth) {
+        throw badRequest("This connector does not use OAuth sign-in");
+      }
+
+      const actor = getActorInfo(req);
+      const startedByUserId = OAUTH_UUID_RE.test(actor.actorId) ? actor.actorId : null; // Fix 3: no board sentinel into the id column
+
+      const discovered = await discoverOAuthServer(connector.url);
+      if (!discovered.registrationEndpoint) {
+        throw badRequest("This connector's authorization server does not support dynamic client registration");
+      }
+      const redirectUri = oauthRedirectUri(req);
+
+      // Fix 12: on re-authorize the connector already has a stored bundle carrying a DCR clientId —
+      // reuse it instead of orphaning a fresh client on the provider. First-auth registers a client.
+      const priorBundle = connector.secretRef
+        ? decodeOAuthBundle(
+            await secretService(db)
+              .resolveByName(companyId, connector.secretRef, {
+                consumerType: "system", consumerId: "oauth-broker", actorType: "system",
+                configPath: `mcp.connector.${connector.serverName}`,
+              })
+              .catch(() => ""),
+          )
+        : null;
+      const clientId =
+        priorBundle?.clientId ??
+        (await registerOAuthClient(discovered.registrationEndpoint, redirectUri)).clientId;
+
+      const { verifier, challenge } = generatePkce();
+      const nowMs = Date.now();
+      const nonce = randomUUID();
+      const state = signOAuthState({ connectorId: id, companyId, nonce, exp: nowMs + 10 * 60_000 });
+      const resource = connector.url;
+      const scopes = discovered.scopesSupported;
+
+      await db.insert(mcpConnectorOauthFlows).values({
+        companyId, connectorId: id, state, pkceVerifier: verifier, clientId, redirectUri,
+        authorizationEndpoint: discovered.authorizationEndpoint, tokenEndpoint: discovered.tokenEndpoint,
+        resource, scopes, status: "pending", startedByUserId,
+        expiresAt: new Date(nowMs + 10 * 60_000),
+      });
+
+      const authorizeUrl = buildAuthorizeUrl({
+        authorizationEndpoint: discovered.authorizationEndpoint, clientId, redirectUri,
+        scopes, resource, state, codeChallenge: challenge,
+      });
+
+      await logActivity(db, {
+        companyId, actorType: actor.actorType, actorId: actor.actorId, agentId: actor.agentId, // Fix 2: explicit fields, no runId spread / no null
+        action: "mcp_connector.oauth_started", entityType: "mcp_connector", entityId: id,
+        details: { serverName: connector.serverName },
+      });
+      res.json({ authorizeUrl });
     },
   );
 
