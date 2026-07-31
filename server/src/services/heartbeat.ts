@@ -3232,11 +3232,14 @@ export function heartbeatService(db: Db) {
     // Consume P4's normalized seam (p4CredentialHint) directly — do NOT re-read
     // provider_credentials. Business key ("company_api_key") → shared pool;
     // "personal_subscription" → its pinned dedicated target (fail-closed on a slug
-    // mismatch). The multi_tenant fail-closed invariant is upheld UPSTREAM by the
-    // resolver (provider-resolution.ts:327 skips personal_subscription candidates
-    // when !selfHostedSingleTenant), so credentialKind is NEVER
-    // "personal_subscription" on a shared host — a null-target local fallback below
-    // can only ever land on a self-hosted trusted box. When no execution target is
+    // mismatch). The resolver gate at provider-resolution.ts:327 skips
+    // personal_subscription candidates when !selfHostedSingleTenant, so
+    // credentialKind is NEVER "personal_subscription" on a shared host. That gate
+    // does NOT, however, make the null-target local fallback below self-hosted-only:
+    // a company_api_key run on SHARED infra whose org has no pooled_gvisor target
+    // configured (DEFAULT-OFF gVisor) also resolves to null and falls back to the
+    // local driver — on shared infra. Closing that shared-infra-no-pool fallback is
+    // a separate guard (tracked as D1), NOT added here. When no execution target is
     // configured (DEFAULT-OFF gVisor / self-hosted single tenant) the resolver
     // returns null → the run keeps its existing (environment or local)
     // executionTarget untouched (config reference preserved). Routing is best-effort:
