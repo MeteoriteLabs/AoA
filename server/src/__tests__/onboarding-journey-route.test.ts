@@ -134,6 +134,34 @@ describe("getJourneyForUser (A5 + RB7/RB9 wiring)", () => {
     expect(r.targetCompanyId).toBeNull();
   });
 
+  it("returning ORG-OWNER with ZERO companies → resumeCompanyCreationOrgId set (strand resume)", async () => {
+    const db = seqDb([
+      [{ email: "u@x.com", emailVerified: true }], // user
+      [], // company memberships — none yet
+      [{ organizationId: "org1", role: "owner" }], // org memberships — owns a fresh tenant
+      [], // pending requests
+      [], // open invites
+      // NOTE: no resume-first-run query runs (returningCompanyIds is empty).
+    ]);
+    const r = await getJourneyForUser(db, { userId: "u1" });
+    expect(r.journey).toBe("returning");
+    expect(r.targetCompanyId).toBeNull();
+    expect(r.resumeCompanyCreationOrgId).toBe("org1");
+  });
+
+  it("returning MEMBER (not create-capable) with zero companies → no company-creation resume", async () => {
+    const db = seqDb([
+      [{ email: "u@x.com", emailVerified: true }], // user
+      [], // company memberships — none
+      [{ organizationId: "org1", role: "member" }], // cross-invited member, not owner/admin
+      [], // pending requests
+      [], // open invites
+    ]);
+    const r = await getJourneyForUser(db, { userId: "u1" });
+    expect(r.journey).toBe("returning");
+    expect(r.resumeCompanyCreationOrgId ?? null).toBeNull();
+  });
+
   it("returning founder with an UNFINISHED first-run tail → resumeFirstRunCompanyId set (resume into /onboarding)", async () => {
     const db = seqDb([
       [{ email: "u@x.com", emailVerified: true }], // user

@@ -9,9 +9,9 @@ import {
   onboardingProgress,
 } from "@armyofagents/db";
 import { and, desc, eq, gt, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
-import type { PostAuthJourneyResult, PendingInvitation } from "@armyofagents/shared";
+import type { PostAuthJourneyResult, PendingInvitation, OrganizationRole } from "@armyofagents/shared";
 import { resolvePostAuthJourney } from "../services/post-auth-journey.js";
-import { organizationAccessService } from "../services/organization-access.js";
+import { organizationAccessService, orgRoleCan } from "../services/organization-access.js";
 
 const TEAM_INVITE_KEY = "teamInvite";
 
@@ -213,6 +213,25 @@ export async function getJourneyForUser(
       )
       .limit(1);
     result.resumeFirstRunCompanyId = resume?.companyId ?? null;
+  }
+
+  // Empty-Lobby strand resume (Fix 3b): a `returning` founder who is an
+  // OWNER/ADMIN of an org but holds ZERO company memberships created the org
+  // step then never made a company (e.g. a reload minted/kept the org, then they
+  // landed on an empty Lobby). Route them back into company creation UNDER that
+  // org. Computed purely from rows already fetched above — NO extra query, NO
+  // write (the ghost-org fix is client durability; no owner-dedup on
+  // POST /organizations). Scoped to create-capable roles so a cross-invited
+  // `member` (P5) — who anyway always holds a company membership, making
+  // returningCompanyIds non-empty for them — never triggers it, and so we never
+  // send a user to a create-company screen they'd 403 on. Mutually exclusive with
+  // the resumeFirstRunCompanyId branch above (that requires returningCompanyIds
+  // non-empty), so the query sequence is unchanged.
+  if (result.journey === "returning" && returningCompanyIds.length === 0) {
+    const creatable = orgMembershipRows.find((row) =>
+      orgRoleCan(row.role as OrganizationRole, "company:create"),
+    );
+    result.resumeCompanyCreationOrgId = creatable?.organizationId ?? null;
   }
 
   return result;

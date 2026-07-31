@@ -129,6 +129,18 @@ export type PostAuthJourneyResult = {
    * instance-admin company-visibility bypass.
    */
   resumeFirstRunCompanyId?: string | null;
+  /**
+   * A `returning` founder who OWNS (owner/admin) an org but has created ZERO
+   * companies — the empty-Lobby strand: the org was created (e.g. a reload
+   * minted/kept it) but the company step was never reached. The index gate seeds
+   * a pending-tenant recovery hint for this org and resumes them into
+   * `/onboarding` at the company step, rather than stranding them on an empty
+   * Lobby. Only ever set for `journey === "returning"` with no company
+   * membership; null otherwise. Scoped to create-capable roles so a cross-invited
+   * `member` never triggers it (and never lands on a create-company screen they'd
+   * 403 on).
+   */
+  resumeCompanyCreationOrgId?: string | null;
 };
 
 /**

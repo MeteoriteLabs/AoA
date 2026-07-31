@@ -6,6 +6,7 @@ import { Layout } from "./components/Layout";
 import { authApi } from "./api/auth";
 import { healthApi } from "./api/health";
 import { fetchJourney } from "./api/onboarding";
+import { writePendingTenant } from "./onboarding/pendingTenant";
 import { Dashboard } from "./pages/Dashboard";
 import { Lobby } from "./pages/Lobby";
 import { LobbyLayout } from "./components/LobbyLayout";
@@ -300,6 +301,14 @@ function LobbyOrOnboardingRedirect() {
     queryFn: () => fetchJourney(),
     retry: false,
   });
+  // Only needed to key the pending-tenant recovery hint for the strand-resume
+  // branch below; deduped against CloudAccessGate's own session query, so this is
+  // effectively free (returns the warm cache).
+  const { data: session } = useQuery({
+    queryKey: queryKeys.auth.session,
+    queryFn: () => authApi.getSession(),
+    retry: false,
+  });
   useEffect(() => {
     if (!data) return;
     if (data.journey === "founder") {
@@ -313,12 +322,28 @@ function LobbyOrOnboardingRedirect() {
       // straight to the inline tail — onboarding never appears on the dashboard.
       setSelectedCompanyId(data.resumeFirstRunCompanyId);
       navigate("/onboarding", { replace: true });
+    } else if (data.resumeCompanyCreationOrgId) {
+      // Empty-Lobby strand (Fix 3b): a founder who created their org but never a
+      // company. Wait for the session so we can key the hint (the effect re-runs
+      // when it loads); seed the tenant recovery hint (mirrors the org step's own
+      // localStorage durability) so CreateOrganizationStep ADOPTS this org instead
+      // of minting a ghost, then resume into /onboarding at the company step.
+      if (!session?.user?.id) return;
+      writePendingTenant(session.user.id, { id: data.resumeCompanyCreationOrgId, name: "" });
+      navigate("/onboarding", { replace: true });
     }
-  }, [data, navigate, setSelectedCompanyId]);
+  }, [data, navigate, setSelectedCompanyId, session]);
   if (isLoading) return <RouteFallback />;
-  // Redirecting (founder / invited) OR resuming an unfinished founder tail —
-  // render nothing so the Lobby doesn't flash underneath before the redirect.
-  if (data && (data.journey !== "returning" || data.resumeFirstRunCompanyId)) return null;
+  // Redirecting (founder / invited) OR resuming an unfinished founder tail OR the
+  // empty-Lobby strand — render nothing so the Lobby doesn't flash underneath
+  // before the redirect.
+  if (
+    data &&
+    (data.journey !== "returning" ||
+      data.resumeFirstRunCompanyId ||
+      data.resumeCompanyCreationOrgId)
+  )
+    return null;
   return <Lobby pendingInvitations={data?.pendingInvitations ?? []} />;
 }
 
