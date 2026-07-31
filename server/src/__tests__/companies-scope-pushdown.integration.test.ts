@@ -21,6 +21,7 @@ import { join } from "node:path";
 import { sql } from "drizzle-orm";
 import { applyPendingMigrations, createDb, type Db } from "@armyofagents/db";
 import { companyService } from "../services/companies.js";
+import { allocateEmbeddedPgPort } from "./helpers/embedded-pg-port.js";
 
 type EmbeddedPostgresInstance = {
   initialise(): Promise<void>;
@@ -42,25 +43,27 @@ function firstId(result: unknown): string {
   return (result as any).rows?.[0]?.id;
 }
 
-const PORT = 58000 + Math.floor(Math.random() * 1000);
-
 beforeAll(async () => {
   try {
     dataDir = await mkdtemp(join(tmpdir(), "aoa-companies-scope-test-"));
     const { default: EmbeddedPostgres } = (await import("embedded-postgres")) as {
       default: EmbeddedPostgresCtor;
     };
+    // Collision-safe port allocation (house helper) — the fixed-random ranges the
+    // other integration suites used to hold overlap, causing EADDRINUSE flakes
+    // under vitest's parallel file pool.
+    const port = await allocateEmbeddedPgPort();
     pg = new EmbeddedPostgres({
       databaseDir: join(dataDir, "db"),
       user: "test",
       password: "test",
-      port: PORT,
+      port,
       persistent: false,
       initdbFlags: ["--encoding=UTF8", "--locale=C"],
     });
     await pg.initialise();
     await pg.start();
-    const connectionString = `postgres://test:test@localhost:${PORT}/postgres`;
+    const connectionString = `postgres://test:test@localhost:${port}/postgres`;
     await applyPendingMigrations(connectionString);
     db = createDb(connectionString);
     svc = companyService(db);
@@ -118,9 +121,9 @@ describe.skipIf(process.platform !== "linux")(
       expect(rows.map((c: any) => c.id)).toEqual([companyAId]);
     });
 
-    it("list() returns ALL companies (invariant ii: operator sees all)", async () => {
+    it('list("unscoped") returns ALL companies (invariant ii: operator sees all)', async () => {
       if (setupError) throw new Error(String(setupError));
-      const ids = (await svc.list()).map((c: any) => c.id);
+      const ids = (await svc.list("unscoped")).map((c: any) => c.id);
       expect(ids).toContain(companyAId);
       expect(ids).toContain(companyBId);
     });
@@ -151,9 +154,9 @@ describe.skipIf(process.platform !== "linux")(
       expect(stats[companyBId].issueCount).toBe(3);
     });
 
-    it("stats() counts ALL companies (invariant ii: operator sees all)", async () => {
+    it('stats("unscoped") counts ALL companies (invariant ii: operator sees all)', async () => {
       if (setupError) throw new Error(String(setupError));
-      const stats = await svc.stats();
+      const stats = await svc.stats("unscoped");
       expect(stats[companyAId]).toBeDefined();
       expect(stats[companyBId]).toBeDefined();
     });

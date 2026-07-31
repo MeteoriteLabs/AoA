@@ -59,9 +59,9 @@ const IDS = [
 ];
 
 describe("companyService.list() tenant push-down (Fix 4)", () => {
-  it("undefined allow-set → unfiltered (no WHERE on companies) [operator/self-hosted view]", async () => {
+  it('"unscoped" allow-set → unfiltered (no WHERE on companies) [operator/self-hosted view]', async () => {
     const { db, captured } = capturingDb([]);
-    await companyService(db).list();
+    await companyService(db).list("unscoped");
     expect(whereFor(captured, companies)).toBeNull();
   });
 
@@ -95,9 +95,9 @@ describe("companyService.stats() tenant push-down (Fix 4)", () => {
     expect(captured).toHaveLength(0);
   });
 
-  it("undefined allow-set → base predicates only, NO company_id inArray [operator view]", async () => {
+  it('"unscoped" allow-set → base predicates only, NO company_id inArray [operator view]', async () => {
     const { db, captured } = capturingDb([]);
-    await companyService(db).stats();
+    await companyService(db).stats("unscoped");
     expect(whereFor(captured, agents)).not.toContain('"agents"."company_id" in (');
     expect(whereFor(captured, issues)).not.toContain('"issues"."company_id" in (');
     expect(whereFor(captured, approvals)).not.toContain('"approvals"."company_id" in (');

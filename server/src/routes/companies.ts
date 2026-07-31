@@ -94,7 +94,7 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
       !tenantIsolationEnforced() &&
       (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin);
     const result = legacyAdmin
-      ? await svc.list()
+      ? await svc.list("unscoped")
       : await svc.list(req.actor.companyIds ?? []);
     res.json(result);
   });
@@ -109,7 +109,7 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
       !tenantIsolationEnforced() &&
       (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin);
     const stats = legacyAdmin
-      ? await svc.stats()
+      ? await svc.stats("unscoped")
       : await svc.stats(req.actor.companyIds ?? []);
     res.json(stats);
   });

@@ -215,13 +215,16 @@ export function companyService(db: Db) {
   }
 
   return {
-    list: (allowedCompanyIds?: string[]) => {
+    list: (allowedCompanyIds: string[] | "unscoped") => {
       // Fix 4: push the actor's allowed-company set into SQL instead of scanning
-      // every tenant's companies and filtering in JS. undefined → unfiltered
-      // (self-hosted operator view, unchanged); empty → a `false` predicate
-      // (explicit degrade-to-none, never return-all). drizzle also lowers
-      // inArray(id, []) to `false`, but this keeps it version-independent.
-      if (allowedCompanyIds === undefined) {
+      // every tenant's companies and filtering in JS. The param is REQUIRED and
+      // discriminated so "unscoped" (all tenants) can only ever be reached by an
+      // explicit, visible choice — a caller can no longer leak every tenant by
+      // omitting the argument (that is now a TypeScript error). "unscoped" →
+      // unfiltered (self-hosted operator view, unchanged); empty → a `false`
+      // predicate (explicit degrade-to-none, never return-all). drizzle also
+      // lowers inArray(id, []) to `false`, but this keeps it version-independent.
+      if (allowedCompanyIds === "unscoped") {
         return db.select().from(companies);
       }
       return db
@@ -336,16 +339,18 @@ export function companyService(db: Db) {
         return rows[0] ?? null;
       }),
 
-    stats: (allowedCompanyIds?: string[]) => {
+    stats: (allowedCompanyIds: string[] | "unscoped") => {
       // Fix 4: empty allow-set → return none WITHOUT four instance-wide GROUP BY
-      // scans (explicit degrade-to-none; mirrors the list() guard).
-      if (allowedCompanyIds?.length === 0) {
+      // scans (explicit degrade-to-none; mirrors the list() guard). The param is
+      // REQUIRED and discriminated so "unscoped" (all tenants) can only be reached
+      // by an explicit choice, never by omission (now a TypeScript error).
+      if (allowedCompanyIds !== "unscoped" && allowedCompanyIds.length === 0) {
         return Promise.resolve<Record<string, CompanyStatsEntry>>({});
       }
-      // undefined allow-set → unscoped (self-hosted operator view, unchanged).
+      // "unscoped" allow-set → unscoped (self-hosted operator view, unchanged).
       // A non-empty allow-set is AND-ed into each aggregation as an inArray on
       // the table's company_id, pushing the tenant filter into SQL. The
-      // `=== undefined` ternary (not a derived boolean) narrows allowedCompanyIds
+      // `=== "unscoped"` ternary (not a derived boolean) narrows allowedCompanyIds
       // to string[] in the scoped branch so inArray typechecks; the base branch
       // returns the predicate UNCHANGED so the correlated-crew SQL stays byte-
       // identical to today (crew-scope-counts.test.ts).
@@ -355,7 +360,7 @@ export function companyService(db: Db) {
           .from(agents)
           // Per-company agent counts exclude platform (Commander-team) agents.
           .where(
-            allowedCompanyIds === undefined
+            allowedCompanyIds === "unscoped"
               ? eq(agents.kind, "org")
               : and(eq(agents.kind, "org"), inArray(agents.companyId, allowedCompanyIds)),
           )
@@ -369,7 +374,7 @@ export function companyService(db: Db) {
           // crew predicate is the CORRELATED form (no arg → agents.company_id =
           // issues.company_id). Crew tasks live only on the Crew Board.
           .where(
-            allowedCompanyIds === undefined
+            allowedCompanyIds === "unscoped"
               ? notCrewAssigned()
               : and(notCrewAssigned(), inArray(issues.companyId, allowedCompanyIds)),
           )
@@ -378,7 +383,7 @@ export function companyService(db: Db) {
           .select({ companyId: approvals.companyId, count: count() })
           .from(approvals)
           .where(
-            allowedCompanyIds === undefined
+            allowedCompanyIds === "unscoped"
               ? eq(approvals.status, "pending")
               : and(eq(approvals.status, "pending"), inArray(approvals.companyId, allowedCompanyIds)),
           )
@@ -387,7 +392,7 @@ export function companyService(db: Db) {
           .select({ companyId: notifications.companyId, count: count() })
           .from(notifications)
           .where(
-            allowedCompanyIds === undefined
+            allowedCompanyIds === "unscoped"
               ? isNull(notifications.readAt)
               : and(isNull(notifications.readAt), inArray(notifications.companyId, allowedCompanyIds)),
           )

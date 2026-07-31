@@ -206,7 +206,7 @@ describe("companies org scope (self-hosted unchanged)", () => {
     };
     const res = await request(makeApp(actor, "authenticated")).get("/api/companies");
     expect(res.status).toBe(200);
-    expect(list).toHaveBeenCalledWith(); // no allow-set → unscoped
+    expect(list).toHaveBeenCalledWith("unscoped"); // explicit unscoped operator view
     expect(res.body.map((c: any) => c.id)).toEqual(["c1", "c2"]);
   });
 
@@ -222,7 +222,7 @@ describe("companies org scope (self-hosted unchanged)", () => {
     };
     const res = await request(makeApp(actor, "authenticated")).get("/api/companies/stats");
     expect(res.status).toBe(200);
-    expect(stats).toHaveBeenCalledWith(); // no allow-set → unscoped
+    expect(stats).toHaveBeenCalledWith("unscoped"); // explicit unscoped operator view
     expect(Object.keys(res.body)).toEqual(["c1", "c2"]);
   });
 });

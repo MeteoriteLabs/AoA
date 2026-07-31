@@ -539,7 +539,7 @@ export function buildHostServices(
 
     companies: {
       async list(params) {
-        return applyWindow((await companies.list()) as Company[], params);
+        return applyWindow((await companies.list("unscoped")) as Company[], params);
       },
       async get(params) {
         await ensurePluginAvailableForCompany(params.companyId);
