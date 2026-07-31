@@ -602,6 +602,44 @@ describe("Add connector (modal)", () => {
   });
 });
 
+/* ── 11. Per-connector access indicator (b2) ────────────────────────────── */
+
+describe("Per-connector access indicator", () => {
+  it("shows Commander + N agents for an active connector with assigned agents", async () => {
+    listMock.mockResolvedValue([
+      connector({ status: "active", enabledAgentIds: ["a1", "a2"] }),
+    ]);
+    renderSection();
+
+    const row = await screen.findByTestId("connector-row-conn-1");
+    expect(within(row).getByTestId("connector-access-conn-1")).toHaveTextContent(
+      "Commander + 2 agents",
+    );
+  });
+
+  it("uses singular 'agent' for exactly one assigned agent", async () => {
+    listMock.mockResolvedValue([
+      connector({ status: "active", enabledAgentIds: ["a1"] }),
+    ]);
+    renderSection();
+
+    const row = await screen.findByTestId("connector-row-conn-1");
+    expect(within(row).getByTestId("connector-access-conn-1")).toHaveTextContent(
+      "Commander + 1 agent",
+    );
+  });
+
+  it("shows Commander only for an active connector with no assigned agents", async () => {
+    listMock.mockResolvedValue([connector({ status: "active", enabledAgentIds: [] })]);
+    renderSection();
+
+    const row = await screen.findByTestId("connector-row-conn-1");
+    expect(within(row).getByTestId("connector-access-conn-1")).toHaveTextContent(
+      "Commander only",
+    );
+  });
+});
+
 /* ── 10. Access-model clarity (Commander vs. crew/org agents) ───────────── */
 
 describe("Access-model clarity", () => {

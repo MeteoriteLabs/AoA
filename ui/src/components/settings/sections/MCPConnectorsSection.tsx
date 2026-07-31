@@ -515,6 +515,24 @@ function ConnectorRow({
               ? ` · ${connector.command}`
               : ""}
           </div>
+          {/* Who-can-use-this at a glance (b2): Commander always has access to
+              every active connector for free (see the access-model note below);
+              assigned crew/org agents come from `enabledAgentIds`. Scoped to
+              `active` — a disabled/needs_credentials connector isn't reaching
+              anyone regardless of assignment, and the status badge + Enable /
+              Re-authorize / Add-credential affordances already own that story. */}
+          {connector.status === "active" && (
+            <div
+              data-testid={`connector-access-${connector.id}`}
+              className="text-xs text-muted-foreground mt-0.5"
+            >
+              {connector.enabledAgentIds.length > 0
+                ? `Used by Commander + ${connector.enabledAgentIds.length} agent${
+                    connector.enabledAgentIds.length === 1 ? "" : "s"
+                  }`
+                : "Used by Commander only"}
+            </div>
+          )}
         </div>
         {isFounder && (
           <div className="flex items-center gap-1 shrink-0">
