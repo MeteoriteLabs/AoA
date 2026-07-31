@@ -70,6 +70,42 @@ export async function assertCompanyCreateAuthorized(
   if (!ok) throw forbidden("You are not an owner/admin of this organization");
 }
 
+/**
+ * Shared create-authorization for company-minting routes (`POST /` and the
+ * `new_company` branch of `POST /import`). Resolves the server-side owning org
+ * and authorizes the actor against that exact org, mirroring `POST /` exactly:
+ *
+ *   - The self-hosted operator bypass is gated on the STATIC deployment mode
+ *     (fail-closed): in cloud_auth isInstanceAdmin is already clamped false, but
+ *     the static gate guarantees no future path re-opens the bypass in cloud.
+ *   - `resolveCompanyOrganizationId` derives the org (explicit input org, else
+ *     the actor's single org, else 403) — server-derived, never a raw client
+ *     "target". Self-hosted (!enforced) resolves the DEFAULT sentinel.
+ *   - Non-operators must be signed in (`unauthMessage`) and pass canOrg.
+ *
+ * Returns the resolved organizationId (a concrete string in every path — the
+ * DEFAULT sentinel for the self-hosted-operator case).
+ */
+async function resolveAndAuthorizeCompanyCreate(
+  db: Db,
+  req: Request,
+  input: { organizationId?: string | null },
+  opts?: { unauthMessage?: string },
+): Promise<string> {
+  const enforced = tenantIsolationEnforced();
+  const isSelfHostedOperator =
+    !enforced && (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin);
+  const organizationId = resolveCompanyOrganizationId(input, {
+    enforced,
+    actorOrganizationIds: req.actor.organizationIds ?? [],
+  }); // server-derived; never a raw client "target"
+  if (!isSelfHostedOperator) {
+    if (!req.actor.userId) throw forbidden(opts?.unauthMessage ?? "Sign in to create a company");
+    await assertCompanyCreateAuthorized(organizationAccessService(db), organizationId, req.actor.userId);
+  }
+  return organizationId;
+}
+
 export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) {
   const router = Router();
   const svc = companyService(db);
@@ -167,28 +203,18 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
 
     // D2/H3: a new_company import creates a company and MUST be placed + authorized
     // exactly like POST / — never the shared DEFAULT sentinel under cloud_auth.
-    // resolveCompanyOrganizationId derives a server-side org (explicit
-    // target.organizationId, else the actor's single org, else 403);
-    // assertCompanyCreateAuthorized gates canOrg against that exact org. The
-    // self-hosted operator bypass + DEFAULT-sentinel fallback are preserved.
+    // resolveAndAuthorizeCompanyCreate (shared with POST /) derives the server-side
+    // org (explicit target.organizationId, else the actor's single org, else 403)
+    // and gates canOrg against that exact org. The self-hosted operator bypass +
+    // DEFAULT-sentinel fallback are preserved inside the helper.
     let newCompanyOrganizationId: string | undefined;
     if (req.body.target.mode === "new_company") {
-      const enforced = tenantIsolationEnforced();
-      const isSelfHostedOperator =
-        !enforced && (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin);
-      const organizationId = resolveCompanyOrganizationId(
+      newCompanyOrganizationId = await resolveAndAuthorizeCompanyCreate(
+        db,
+        req,
         { organizationId: req.body.target.organizationId },
-        { enforced, actorOrganizationIds: req.actor.organizationIds ?? [] },
+        { unauthMessage: "Sign in to import a company" },
       );
-      if (!isSelfHostedOperator) {
-        if (!req.actor.userId) throw forbidden("Sign in to import a company");
-        await assertCompanyCreateAuthorized(
-          organizationAccessService(db),
-          organizationId,
-          req.actor.userId,
-        );
-      }
-      newCompanyOrganizationId = organizationId;
     }
 
     const actor = getActorInfo(req);
@@ -243,21 +269,10 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
     // calling canOrg.
     // rbac: instance-admin-not-required — the isSelfHostedOperator/canOrg check below is the gate.
     assertBoard(req);
-    const orgAccess = organizationAccessService(db);
-    // The self-hosted operator bypass is gated on the STATIC deployment mode
-    // (fail-closed): in cloud_auth isInstanceAdmin is already clamped false, but
-    // the static gate guarantees no future path re-opens the bypass in cloud.
-    const enforced = tenantIsolationEnforced();
-    const isSelfHostedOperator =
-      !enforced && (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin);
-    const organizationId = resolveCompanyOrganizationId(req.body, {
-      enforced,
-      actorOrganizationIds: req.actor.organizationIds ?? [],
-    }); // server-derived; never a raw client "target"
-    if (!isSelfHostedOperator) {
-      if (!req.actor.userId) throw forbidden("Sign in to create a company");
-      await assertCompanyCreateAuthorized(orgAccess, organizationId, req.actor.userId);
-    }
+    // Shared with POST /import (new_company): resolve the server-derived owning
+    // org + authorize the actor against it. Self-hosted operator bypass +
+    // DEFAULT-sentinel fallback live inside the helper.
+    const organizationId = await resolveAndAuthorizeCompanyCreate(db, req, req.body);
     // D6: local_trusted = single trust boundary (loopback); one-click approve is friction.
     // authenticated = real multi-human board; approval is multi-person accountability.
     const requireBoardApprovalForNewAgents = opts.deploymentMode !== "local_trusted";
