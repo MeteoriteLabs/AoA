@@ -753,6 +753,32 @@ export function cliModeService(db: Db) {
         model?: string | null;
       },
     ): AsyncGenerator<AgentStreamChunk> {
+      // ── D1: multi-tenant unsandboxed execution gate ──────────────────────
+      // Commander always spawns its CLI directly on the control-plane host —
+      // there is no execution-target sandbox for a Commander turn. When tenant
+      // isolation is enforced (cloud_auth) that is an unsandboxed shared-host run,
+      // which must be an explicit operator opt-in. Read the module-level
+      // tenantIsolationEnforced() (cheap; no per-turn loadConfig/topology) and
+      // REFUSE the turn (loud error chunk) unless AOA_ALLOW_UNSANDBOXED_MULTITENANT
+      // is set. No-op on every self-hosted deployment (local_trusted / authenticated
+      // single-tenant) → byte-identical for local/self-hosted installs.
+      try {
+        const { tenantIsolationEnforced } = await import("../../config/deployment-mode.js");
+        const { assertUnsandboxedMultitenantAllowed } = await import(
+          "../unsandboxed-multitenant-guard.js"
+        );
+        assertUnsandboxedMultitenantAllowed(
+          { type: "local" },
+          { tenantIsolationEnforced: tenantIsolationEnforced(), sink: "Commander" },
+        );
+      } catch (guardErr) {
+        yield {
+          type: "error",
+          message: guardErr instanceof Error ? guardErr.message : String(guardErr),
+        };
+        return;
+      }
+
       // 1. Validate CLI tool config
       if (!config.cliTool) {
         yield {
