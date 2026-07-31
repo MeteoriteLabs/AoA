@@ -249,10 +249,11 @@ describe("oauth bundle codec", () => {
   it("decode returns null for JSON without our version tag", () => {
     expect(decodeOAuthBundle(JSON.stringify({ accessToken: "x" }))).toBeNull();
   });
-  it("isBundleExpired respects the margin", () => {
-    expect(isBundleExpired(bundle, 900_000)).toBe(false);          // 100s before expiry, default 120s margin -> expired
-    expect(isBundleExpired(bundle, 900_000, 60_000)).toBe(false);  // 100s before, 60s margin -> not expired
-    expect(isBundleExpired(bundle, 999_000)).toBe(true);           // 1s before expiry -> expired
+  it("isBundleExpired respects the margin (expiresAt=1_000_000; expired iff now >= expiresAt - margin)", () => {
+    expect(isBundleExpired(bundle, 800_000)).toBe(false);          // 200s before expiry, 120s margin -> fresh
+    expect(isBundleExpired(bundle, 900_000)).toBe(true);           // 100s before expiry, within 120s margin -> refresh
+    expect(isBundleExpired(bundle, 900_000, 60_000)).toBe(false);  // 100s before, 60s margin -> fresh
+    expect(isBundleExpired(bundle, 999_000)).toBe(true);           // 1s before expiry -> refresh
     expect(isBundleExpired(bundle, 1_200_000)).toBe(true);         // past expiry -> expired
   });
 });
@@ -360,10 +361,11 @@ describe("generatePkce", () => {
 Run: `pnpm vitest run server/src/services/__tests__/mcp-connector-oauth.test.ts -t generatePkce`
 Expected: FAIL — module/function missing.
 
-- [ ] **Step 3: Implement (create the file with the header + this fn)**
+- [ ] **Step 3: Implement (create the file; import ONLY what this fn uses)**
+
+Import-as-you-go: create the file importing only `createHash`/`randomBytes`. Later tasks ADD their own imports (Task 5 adds `createHmac`, `timingSafeEqual` to the `node:crypto` import and `import { resolveConsentSecret } from "./mcp-connector-consent.js";`; Task 6/9 add nothing new). This keeps each commit free of dead imports.
 ```ts
-import { createHash, randomBytes, createHmac, timingSafeEqual } from "node:crypto";
-import { resolveConsentSecret } from "./mcp-connector-consent.js";
+import { createHash, randomBytes } from "node:crypto";
 
 export function generatePkce(): { verifier: string; challenge: string } {
   // 32 random bytes -> 43-char base64url verifier (RFC 7636 §4.1)
@@ -419,6 +421,8 @@ Run: `pnpm vitest run server/src/services/__tests__/mcp-connector-oauth.test.ts 
 Expected: FAIL.
 
 - [ ] **Step 3: Implement (append to the service; mirrors github-app.ts:53-102)**
+
+First extend the imports at the top of `mcp-connector-oauth.ts`: change the crypto import to `import { createHash, randomBytes, createHmac, timingSafeEqual } from "node:crypto";` and add `import { resolveConsentSecret } from "./mcp-connector-consent.js";`. Then append:
 ```ts
 export interface OAuthStatePayload {
   connectorId: string;
