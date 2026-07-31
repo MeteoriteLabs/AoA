@@ -90,6 +90,12 @@ not been validated on real hardware** (Task 0's spike is a pending Gate-B step,
 not yet run) — see the guide's status banner before deploying a pool on
 `bridge`.
 
+### Unsandboxed multi-tenant execution gate
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `AOA_ALLOW_UNSANDBOXED_MULTITENANT` | unset (runs refused) | **Multi-tenant safety gate (D1).** When tenant isolation is enforced (`cloud_auth`), any agent, crew, or Commander run that would execute on the **local, unsandboxed control-plane host** is REFUSED unless this is set to `1`/`true`/`yes`. Real per-tenant execution isolation is a deferred initiative; until it lands, unsandboxed local execution on shared infra must be an explicit operator choice. When set, the process logs one loud SECURITY warning. Self-hosted deployments (`local_trusted` and `authenticated` single-tenant) ignore this — their local runs are always allowed. **A cloud/QA deployment that runs agents/crew/Commander on the host must set this deliberately, or every dispatch fails closed.** Note: because the crew sink has no gVisor-pool pre-routing, enabling crew on cloud requires this env even if a pool is configured. |
+
 ## Agent JWT (signing for `AOA_API_KEY`)
 
 | Variable | Default | Description |
