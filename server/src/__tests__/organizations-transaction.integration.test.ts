@@ -92,6 +92,10 @@ describe.skipIf(process.platform !== "linux")(
       const after = await db.select().from(organizations);
       // Atomicity: the org row inserted inside the tx is rolled back together with
       // the failed membership write — no orphan tenant remains.
+      // NOTE: this proves the org insert rolls back when the membership write throws,
+      // but because the injected fault IS the membership write, it does not by itself
+      // prove ensureOrgOwner is bound to `tx` rather than the outer `db` — that binding
+      // is asserted structurally by the happy-path test + the slug-retry test below.
       expect(after.length).toBe(before.length);
       expect(after.find((o) => o.name === "Rollback Co")).toBeUndefined();
     });
@@ -116,6 +120,56 @@ describe.skipIf(process.platform !== "linux")(
       expect(membership).toHaveLength(1);
       expect(membership[0].role).toBe("owner");
       expect(membership[0].status).toBe("active");
+    });
+
+    it("retries with a fresh slug in a NEW transaction on a 23505 slug conflict (same name → acme, acme-2)", async () => {
+      // Seed two real users so each attempt's owner-membership write satisfies the
+      // organization_memberships.user_id -> "user"(id) FK.
+      const now = new Date();
+      const ownerA = `org-tx-slug-a-${randomUUID()}`;
+      const ownerB = `org-tx-slug-b-${randomUUID()}`;
+      await db.insert(authUsers).values([
+        { id: ownerA, name: "Slug Owner A", email: `${ownerA}@example.test`, createdAt: now, updatedAt: now },
+        { id: ownerB, name: "Slug Owner B", email: `${ownerB}@example.test`, createdAt: now, updatedAt: now },
+      ]);
+
+      // Same name twice: the first call takes slug "acme"; the second hits the
+      // organizations_slug_uq 23505 INSIDE its transaction, which aborts+rolls back
+      // ONLY that attempt's tx. The conflict is caught OUTSIDE the tx (isOrgSlugConflict)
+      // and retried with "acme-2" in a brand-new transaction. Regression-guards the
+      // slug-retry path now that the 23505 surfaces from inside db.transaction — a
+      // future refactor of isOrgSlugConflict or the catch could silently break it.
+      const orgA = await createSelfServeOrganization(
+        db,
+        { name: "Acme", ownerUserId: ownerA },
+        organizationAccessService,
+      );
+      const orgB = await createSelfServeOrganization(
+        db,
+        { name: "Acme", ownerUserId: ownerB },
+        organizationAccessService,
+      );
+
+      // (a) two distinct org rows with distinct slugs.
+      expect(orgA.id).not.toBe(orgB.id);
+      expect(orgA.slug).toBe("acme");
+      expect(orgB.slug).toBe("acme-2");
+
+      // (b) each org has its OWN owner membership for the correct user.
+      for (const [org, owner] of [[orgA, ownerA], [orgB, ownerB]] as const) {
+        const membership = await db
+          .select()
+          .from(organizationMemberships)
+          .where(
+            and(
+              eq(organizationMemberships.organizationId, org.id),
+              eq(organizationMemberships.userId, owner),
+            ),
+          );
+        expect(membership).toHaveLength(1);
+        expect(membership[0].role).toBe("owner");
+        expect(membership[0].status).toBe("active");
+      }
     });
   },
 );
