@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, index, uniqueIndex, check } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, index, uniqueIndex, check, boolean } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { organizations } from "./organizations.js";
 import { authUsers } from "./auth.js";
@@ -11,6 +11,10 @@ export const organizationMemberships = pgTable(
     userId: text("user_id").notNull().references(() => authUsers.id, { onDelete: "cascade" }),
     role: text("role").notNull().default("member"),
     status: text("status").notNull().default("active"),
+    // Provenance (Finding #2): true only for a row break-glass materialization
+    // created. A pre-existing owner/admin row stays false and must never be
+    // reclaimed by the sweeper.
+    createdByBreakGlass: boolean("created_by_break_glass").notNull().default(false),
     invitedByUserId: text("invited_by_user_id").references(() => authUsers.id, { onDelete: "set null" }),
     joinedAt: timestamp("joined_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

@@ -186,26 +186,45 @@ export function operatorBreakGlassService(db: Db, deps: BreakGlassDeps) {
  * (the tenant-access row that gates assertTenantMembership); audit writes to
  * activity_log.
  *
- * NOTE: revokeMembership deletes the (organization, user) membership outright.
- * Break-glass grants are only ever issued to operators who are NOT standing org
- * members (that is the whole point), so removing the materialized row on expiry
- * is correct for the intended use.
+ * NOTE (Finding #2): revokeMembership reclaims ONLY the membership break-glass
+ * materialized (created_by_break_glass = true) and ONLY when no other still-active
+ * grant for this (organization, operator) needs it. A pre-existing member's real
+ * row (created_by_break_glass = false) is never deleted, and two overlapping
+ * grants share one materialized row — the first to expire leaves it for the
+ * still-active second grant.
  */
 export function realBreakGlassDeps(db: Db): BreakGlassDeps {
   return {
     materializeMembership: async ({ organizationId, userId, role }) => {
       await db
         .insert(organizationMemberships)
-        .values({ organizationId, userId, role, status: "active" })
+        .values({ organizationId, userId, role, status: "active", createdByBreakGlass: true })
         .onConflictDoNothing();
     },
     revokeMembership: async ({ organizationId, userId }) => {
+      // Provenance + ref-count (Finding #2): reclaim ONLY a row break-glass
+      // itself created (created_by_break_glass = true), and ONLY when no other
+      // still-active grant for this (organization, operator) needs it — two
+      // overlapping grants share one materialized row.
+      const active = await db
+        .select({ id: operatorBreakGlassGrants.id })
+        .from(operatorBreakGlassGrants)
+        .where(
+          and(
+            eq(operatorBreakGlassGrants.organizationId, organizationId),
+            eq(operatorBreakGlassGrants.operatorUserId, userId),
+            isNull(operatorBreakGlassGrants.revokedAt),
+            gt(operatorBreakGlassGrants.expiresAt, new Date()),
+          ),
+        );
+      if (active.length > 0) return;
       await db
         .delete(organizationMemberships)
         .where(
           and(
             eq(organizationMemberships.organizationId, organizationId),
             eq(organizationMemberships.userId, userId),
+            eq(organizationMemberships.createdByBreakGlass, true),
           ),
         );
     },

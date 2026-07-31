@@ -1352,6 +1352,13 @@
       "when": 1785424586622,
       "tag": "0192_thin_valkyrie",
       "breakpoints": true
+    },
+    {
+      "idx": 193,
+      "version": "7",
+      "when": 1785525574586,
+      "tag": "0193_sad_dagger",
+      "breakpoints": true
     }
   ]
 }

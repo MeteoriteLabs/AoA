@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sql } from "drizzle-orm";
 import { applyPendingMigrations, createDb, type Db } from "@armyofagents/db";
-import { operatorBreakGlassService, hasActiveBreakGlass } from "../services/operator-break-glass.js";
+import { operatorBreakGlassService, hasActiveBreakGlass, realBreakGlassDeps } from "../services/operator-break-glass.js";
 
 type EmbeddedPostgresInstance = {
   initialise(): Promise<void>;
@@ -35,6 +35,8 @@ type EmbeddedPostgresCtor = new (opts: {
 
 const ORG = "00000000-0000-0000-0000-0000000000a1";
 const CO = "00000000-0000-0000-0000-0000000000c1";
+const ORG_B = "00000000-0000-0000-0000-0000000000a2";
+const CO_B = "00000000-0000-0000-0000-0000000000c2";
 const PORT = 55000 + Math.floor(Math.random() * 1000);
 
 let pg: EmbeddedPostgresInstance | null = null;
@@ -159,5 +161,48 @@ describe.skipIf(process.platform !== "linux")("operator break-glass (real DB)", 
     expect(await hasActiveBreakGlass(db, "op2", CO, ORG)).toBe(true); // null companyId => org-wide
     await svc.revoke("op2", ORG);
     expect(await hasActiveBreakGlass(db, "op2", CO, ORG)).toBe(false);
+  }, 90_000);
+
+  it("an org-wide grant for org A does NOT authorize a company in org B (Finding #1, real DB)", async () => {
+    if (setupError) throw new Error(String(setupError));
+    await db.execute(sql`INSERT INTO "user" (id, name, email, created_at, updated_at) VALUES ('opX','OpX','opx@x.invalid',now(),now()) ON CONFLICT DO NOTHING`);
+    await db.execute(sql`INSERT INTO organizations (id, name, slug) VALUES (${ORG_B}, 'Org B', 'org-b') ON CONFLICT DO NOTHING`);
+    await db.execute(sql`INSERT INTO companies (id, name, issue_prefix, organization_id) VALUES (${CO_B}, 'Co B', 'PPB', ${ORG_B}) ON CONFLICT DO NOTHING`);
+    const svc = operatorBreakGlassService(db, deps());
+    await svc.grant({ operatorUserId: "opX", organizationId: ORG, companyId: null, role: "founder", reason: "x", grantedByUserId: "opX", ttlMinutes: 60 });
+    expect(await hasActiveBreakGlass(db, "opX", CO, ORG)).toBe(true); // company in org A
+    expect(await hasActiveBreakGlass(db, "opX", CO_B, ORG_B)).toBe(false); // company in org B — denied
+  }, 90_000);
+
+  it("a PRE-EXISTING org membership survives break-glass revoke (Finding #2)", async () => {
+    if (setupError) throw new Error(String(setupError));
+    await db.execute(sql`INSERT INTO "user" (id, name, email, created_at, updated_at) VALUES ('op3','Op3','op3@x.invalid',now(),now()) ON CONFLICT DO NOTHING`);
+    // Real standing owner membership — created_by_break_glass defaults false.
+    await db.execute(sql`INSERT INTO organization_memberships (organization_id, user_id, role, status) VALUES (${ORG}, 'op3', 'owner', 'active') ON CONFLICT (organization_id, user_id) DO NOTHING`);
+    const svc = operatorBreakGlassService(db, realBreakGlassDeps(db)); // exercise the REAL deps
+    await svc.grant({ operatorUserId: "op3", organizationId: ORG, companyId: null, role: "founder", reason: "SEV-1", grantedByUserId: "op3", ttlMinutes: 60 });
+    await svc.revoke("op3", ORG);
+    const rows = await db.execute(sql`SELECT role FROM organization_memberships WHERE organization_id = ${ORG} AND user_id = 'op3'`);
+    const arr = Array.isArray(rows) ? rows : (rows as any).rows;
+    expect(arr.length).toBe(1); // pre-existing membership REMAINS
+    expect(arr[0].role).toBe("owner"); // and is untouched
+  }, 90_000);
+
+  it("two overlapping grants: the first to expire keeps the shared row; the second removes it (Finding #2)", async () => {
+    if (setupError) throw new Error(String(setupError));
+    await db.execute(sql`INSERT INTO "user" (id, name, email, created_at, updated_at) VALUES ('op4','Op4','op4@x.invalid',now(),now()) ON CONFLICT DO NOTHING`);
+    const svc = operatorBreakGlassService(db, realBreakGlassDeps(db));
+    const g1 = await svc.grant({ operatorUserId: "op4", organizationId: ORG, companyId: null, role: "founder", reason: "a", grantedByUserId: "op4", ttlMinutes: 60 });
+    await svc.grant({ operatorUserId: "op4", organizationId: ORG, companyId: null, role: "founder", reason: "b", grantedByUserId: "op4", ttlMinutes: 60 });
+    // Expire ONLY grant #1, then sweep — grant #2 still active.
+    await db.execute(sql`UPDATE operator_break_glass_grants SET expires_at = now() - interval '1 minute' WHERE id = ${(g1 as any).id}`);
+    await svc.sweepExpired();
+    let rows = await db.execute(sql`SELECT count(*)::int AS c FROM organization_memberships WHERE organization_id = ${ORG} AND user_id = 'op4'`);
+    expect(count(rows)).toBe(1); // shared row survives while a grant is still active
+    // Expire the rest, sweep again — now nobody needs the row.
+    await db.execute(sql`UPDATE operator_break_glass_grants SET expires_at = now() - interval '1 minute' WHERE operator_user_id = 'op4'`);
+    await svc.sweepExpired();
+    rows = await db.execute(sql`SELECT count(*)::int AS c FROM organization_memberships WHERE organization_id = ${ORG} AND user_id = 'op4'`);
+    expect(count(rows)).toBe(0); // reclaimed once no active grant remains
   }, 90_000);
 });
