@@ -35,6 +35,9 @@ import {
   executionTargetToAdapterConfig,
 } from "./execution-target-resolver.js";
 import { mergeResolvedExecutionTarget } from "./heartbeat-execution-target.js";
+import type { TrustBoundary } from "./cli-auth-topology.js";
+import { assertUnsandboxedMultitenantAllowed } from "./unsandboxed-multitenant-guard.js";
+import { tenantIsolationEnforced } from "../config/deployment-mode.js";
 import {
   resolveOrgConcurrencyCap,
   countRunningRunsForOrg,
@@ -329,6 +332,32 @@ export function resolveAdapterExecutionContext(
   const executionTarget = resolveAdapterExecutionTarget(adapterConfigObject.executionTarget, multiTenant);
   const runtimeCommandSpec = adapter.getRuntimeCommandSpec?.(adapterConfigObject) ?? null;
   return { executionTarget, runtimeCommandSpec };
+}
+
+// D1: resolve the run's execution target AND apply the unsandboxed multi-tenant
+// gate in one call, so every dispatch sink (org-agent heartbeat + crew runner)
+// gets identical refuse/allow behavior. NOTE the two signals are intentionally
+// DECOUPLED (see the ★ signal correction): hardening keys off
+// `trustBoundary === "multi_tenant"` (broad — also neutralizes a tenant-authored
+// docker target on an `authenticated` self-host, a safe no-op on a local target),
+// while the REFUSAL keys off `tenantIsolationEnforced` (cloud_auth only). This
+// keeps `authenticated` self-hosters running (hardening no-ops on their local
+// target; the guard does not fire) while cloud_auth refuses.
+export function resolveGuardedAdapterExecutionContext(
+  config: unknown,
+  adapter: Pick<ServerAdapterModule, "getRuntimeCommandSpec">,
+  opts: { trustBoundary: TrustBoundary; tenantIsolationEnforced: boolean; sink: string },
+) {
+  const resolved = resolveAdapterExecutionContext(
+    config,
+    adapter,
+    opts.trustBoundary === "multi_tenant",
+  );
+  assertUnsandboxedMultitenantAllowed(resolved.executionTarget, {
+    tenantIsolationEnforced: opts.tenantIsolationEnforced,
+    sink: opts.sink,
+  });
+  return resolved;
 }
 
 type HeartbeatRuntimeDecisionEvent = {
@@ -4509,13 +4538,19 @@ export function heartbeatService(db: Db) {
         await originalOnLog(stream, chunk);
       };
 
-      const { executionTarget, runtimeCommandSpec } = resolveAdapterExecutionContext(
+      const { executionTarget, runtimeCommandSpec } = resolveGuardedAdapterExecutionContext(
         runScopedConfig,
         adapter,
-        // Sink-level multi_tenant hardening: neutralize a tenant-authored
-        // adapterConfig.executionTarget on shared infra; honor it on the
-        // founder's own box. hbTopology is already resolved above (:3081).
-        hbTopology.trustBoundary === "multi_tenant",
+        // Sink-level multi_tenant hardening (trustBoundary) + D1 unsandboxed gate
+        // (cloud_auth): neutralize a tenant-authored adapterConfig.executionTarget on
+        // shared infra, and REFUSE an unsandboxed local dispatch on cloud_auth unless
+        // the operator opted in (AOA_ALLOW_UNSANDBOXED_MULTITENANT). hbTopology is
+        // resolved above (:3081); tenantIsolationEnforced() is the cloud_auth signal.
+        {
+          trustBoundary: hbTopology.trustBoundary,
+          tenantIsolationEnforced: tenantIsolationEnforced(),
+          sink: "org agent",
+        },
       );
 
       // Audit follow-up #27: persist the redacted+capped assembled prompt on

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@armyofagents/db", () => {
   const makeTable = () =>
@@ -70,6 +70,7 @@ import {
   mergeAdapterRuntimeServiceReports,
   resolveOutputDetectionCwd,
   resolveAdapterExecutionContext,
+  resolveGuardedAdapterExecutionContext,
   resolveAdapterManagedRuntimeExecutionWorkspaceId,
 } from "../services/heartbeat.js";
 
@@ -302,5 +303,56 @@ describe("heartbeat adapter execution target context", () => {
         effectiveCwd: "C:/aoa/fallback",
       }),
     ).toBe("C:/aoa/fallback");
+  });
+});
+
+describe("resolveGuardedAdapterExecutionContext — org-agent sink (D1)", () => {
+  const OPT_IN = "AOA_ALLOW_UNSANDBOXED_MULTITENANT";
+  let saved: string | undefined;
+  beforeEach(() => { saved = process.env[OPT_IN]; delete process.env[OPT_IN]; });
+  afterEach(() => { if (saved === undefined) delete process.env[OPT_IN]; else process.env[OPT_IN] = saved; });
+
+  it("refuses a local target on cloud_auth (isolation enforced) without the opt-in", () => {
+    expect(() =>
+      resolveGuardedAdapterExecutionContext({}, { getRuntimeCommandSpec: vi.fn(() => null) }, {
+        trustBoundary: "multi_tenant",
+        tenantIsolationEnforced: true,
+        sink: "org agent",
+      }),
+    ).toThrow(/AOA_ALLOW_UNSANDBOXED_MULTITENANT/);
+  });
+
+  it("allows a local target on cloud_auth when the opt-in is set", () => {
+    process.env[OPT_IN] = "1";
+    const result = resolveGuardedAdapterExecutionContext({}, { getRuntimeCommandSpec: vi.fn(() => null) }, {
+      trustBoundary: "multi_tenant",
+      tenantIsolationEnforced: true,
+      sink: "org agent",
+    });
+    expect(result.executionTarget).toEqual({ type: "local" });
+  });
+
+  it("honors a local target on an authenticated self-host (multi_tenant boundary, isolation NOT enforced) without any opt-in", () => {
+    // ★ This is the regression the signal correction fixes: multi_tenant hardening
+    // signal is TRUE but tenant isolation is NOT enforced (cloud_auth false), so the
+    // authenticated self-hoster keeps running a local target with no opt-in.
+    const result = resolveGuardedAdapterExecutionContext({}, { getRuntimeCommandSpec: vi.fn(() => null) }, {
+      trustBoundary: "multi_tenant",
+      tenantIsolationEnforced: false,
+      sink: "org agent",
+    });
+    expect(result.executionTarget).toEqual({ type: "local" });
+  });
+
+  it("no-ops the guard on cloud_auth when the resolved target is a hardened sandbox (hardening still applies)", () => {
+    const result = resolveGuardedAdapterExecutionContext(
+      { executionTarget: { type: "sandbox-docker", image: "node:22", network: "host", allowHostGateway: true } },
+      { getRuntimeCommandSpec: vi.fn(() => null) },
+      { trustBoundary: "multi_tenant", tenantIsolationEnforced: true, sink: "org agent" },
+    );
+    if (result.executionTarget.type !== "sandbox-docker") throw new Error("expected sandbox-docker");
+    // sink hardening still applied (mirrors the existing multi_tenant test above)
+    expect(result.executionTarget.allowHostGateway).toBe(false);
+    expect(result.executionTarget.network).toBe("none");
   });
 });
