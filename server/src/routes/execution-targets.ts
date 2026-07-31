@@ -6,35 +6,45 @@ import { Router, type Request, type Response, type NextFunction } from "express"
 import type { Db } from "@armyofagents/db";
 import { executionTargets } from "@armyofagents/db";
 import { createExecutionTargetSchema } from "@armyofagents/shared";
-import { listExecutionTargets, registerWorkerHeartbeat } from "../services/execution-targets.js";
+import {
+  createWorkerToken,
+  hashWorkerToken,
+  listExecutionTargets,
+  registerWorkerHeartbeat,
+  resolveWorkerTargetId,
+  stripWorkerSecret,
+} from "../services/execution-targets.js";
 import { organizationAccessService } from "../services/organization-access.js";
 import { assertBoard } from "./authz.js";
 import { forbidden, unauthorized } from "../errors.js";
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 /**
- * Worker self-auth (M6, "semi-manual" per the Locked Decisions section: the
- * owner pastes a slug + endpoint, the worker self-registers/heartbeats). No
- * separate worker-token table exists yet — the target's own primary key
- * (a defaultRandom() uuid returned once from the create-target response)
- * IS the bearer credential, presented as `Authorization: Bearer <targetId>`.
- * This keeps Task 13 migration-free; a dedicated rotatable token is a
- * follow-up if/when a real fleet needs credential rotation. The credential
- * only ever resolves to a single target id — `registerWorkerHeartbeat` scopes
- * its UPDATE to that id, and returns updated:0 (404 below) if the id is gone,
- * so a stale/forged id can never touch another row.
+ * Worker self-auth (Finding #3). The bearer credential is a rotatable worker
+ * token minted at registration; only its SHA-256 hash is stored on the target
+ * row. We hash the presented token and resolve it to exactly one target id.
+ * The row id itself is NO LONGER a credential.
  */
-function requireWorkerToken(req: Request, res: Response, next: NextFunction) {
-  const header = req.header("authorization") ?? "";
-  const match = /^Bearer\s+(.+)$/i.exec(header.trim());
-  const token = match?.[1]?.trim();
-  if (!token || !UUID_RE.test(token)) {
-    next(unauthorized());
-    return;
-  }
-  (req as Request & { workerTargetId?: string }).workerTargetId = token;
-  next();
+function requireWorkerToken(db: Db) {
+  return async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const header = req.header("authorization") ?? "";
+      const match = /^Bearer\s+(.+)$/i.exec(header.trim());
+      const token = match?.[1]?.trim();
+      if (!token) {
+        next(unauthorized());
+        return;
+      }
+      const targetId = await resolveWorkerTargetId(db, token);
+      if (!targetId) {
+        next(unauthorized());
+        return;
+      }
+      (req as Request & { workerTargetId?: string }).workerTargetId = targetId;
+      next();
+    } catch (err) {
+      next(err);
+    }
+  };
 }
 
 export function executionTargetRoutes(opts: { db: Db }) {
@@ -64,11 +74,14 @@ export function executionTargetRoutes(opts: { db: Db }) {
         res.status(422).json({ error: parsed.error.issues });
         return;
       }
+      // Mint a rotatable worker credential: persist only its hash, return the
+      // plaintext ONCE. The row id is no longer a credential (Finding #3).
+      const workerToken = createWorkerToken();
       const [row] = await opts.db
         .insert(executionTargets)
-        .values({ organizationId: orgId, ...parsed.data })
+        .values({ organizationId: orgId, ...parsed.data, workerTokenHash: hashWorkerToken(workerToken) })
         .returning();
-      res.status(201).json(row);
+      res.status(201).json({ ...stripWorkerSecret(row!), workerToken });
     } catch (err) {
       next(err);
     }
@@ -88,7 +101,7 @@ export function executionTargetRoutes(opts: { db: Db }) {
   // middleware resolves req.workerTargetId; the URL carries NO slug/org so a
   // caller can never address another tenant's row. Fail closed with 404 when
   // the id no longer exists.
-  router.post("/execution-targets/heartbeat", requireWorkerToken, async (req, res, next) => {
+  router.post("/execution-targets/heartbeat", requireWorkerToken(opts.db), async (req, res, next) => {
     try {
       const targetId = (req as Request & { workerTargetId?: string }).workerTargetId!;
       const { updated } = await registerWorkerHeartbeat(opts.db, {

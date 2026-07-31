@@ -22,4 +22,10 @@ describe("execution_targets schema", () => {
     // NULLS NOT DISTINCT lets (NULL, "control-plane") collide so the boot seed is idempotent.
     expect((uq as { nullsNotDistinct?: boolean }).nullsNotDistinct).toBe(true);
   });
+  it("carries a nullable worker_token_hash (hashed rotatable worker credential — never the row id)", () => {
+    const cfg = getTableConfig(executionTargets);
+    const col = cfg.columns.find((c) => c.name === "worker_token_hash");
+    expect(col).toBeTruthy();
+    expect(col!.notNull).toBe(false); // system/seeded rows have no token
+  });
 });

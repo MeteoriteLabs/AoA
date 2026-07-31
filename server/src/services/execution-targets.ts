@@ -1,6 +1,30 @@
+import { createHash, randomBytes } from "node:crypto";
 import { eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { executionTargets } from "@armyofagents/db";
+
+// Rotatable worker credential (Finding #3). The row id is NOT a credential;
+// this token is. Only its hash is persisted (execution_targets.worker_token_hash);
+// the plaintext is shown once at registration.
+export function createWorkerToken(): string {
+  return `aoa_wtk_${randomBytes(24).toString("hex")}`;
+}
+export function hashWorkerToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
+export async function resolveWorkerTargetId(db: Db, token: string): Promise<string | null> {
+  const trimmed = token.trim();
+  if (!trimmed) return null;
+  const rows = await db
+    .select({ id: executionTargets.id })
+    .from(executionTargets)
+    .where(eq(executionTargets.workerTokenHash, hashWorkerToken(trimmed)));
+  return rows[0]?.id ?? null;
+}
+export function stripWorkerSecret<T extends { workerTokenHash?: unknown }>(row: T): Omit<T, "workerTokenHash"> {
+  const { workerTokenHash: _omit, ...rest } = row;
+  return rest;
+}
 
 /**
  * M5: idempotent only because execution_targets_org_slug_uq is NULLS NOT DISTINCT
@@ -61,5 +85,7 @@ export async function listExecutionTargets(db: Db, organizationId: string | null
   if (organizationId == null) return [];
   // Scope in SQL (index execution_targets_org_idx); the no-system/cross-org
   // guarantee is the WHERE clause, not a JS post-filter.
-  return db.select().from(executionTargets).where(eq(executionTargets.organizationId, organizationId));
+  return (await db.select().from(executionTargets).where(eq(executionTargets.organizationId, organizationId))).map(
+    stripWorkerSecret,
+  );
 }

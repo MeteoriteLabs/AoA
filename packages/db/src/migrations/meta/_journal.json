@@ -1359,6 +1359,13 @@
       "when": 1785525574586,
       "tag": "0193_sad_dagger",
       "breakpoints": true
+    },
+    {
+      "idx": 194,
+      "version": "7",
+      "when": 1785525801615,
+      "tag": "0194_early_krista_starr",
+      "breakpoints": true
     }
   ]
 }

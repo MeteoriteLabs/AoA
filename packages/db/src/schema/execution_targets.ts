@@ -24,6 +24,9 @@ export const executionTargets = pgTable(
     status: text("status").notNull().default("active"), // active | draining | offline | disabled
     capabilities: jsonb("capabilities").$type<Record<string, unknown>>().notNull().default({}),
     config: jsonb("config").$type<Record<string, unknown>>().notNull().default({}),
+    // Finding #3: rotatable worker credential — SHA-256 hash only; the plaintext
+    // is returned once at registration. The row id is no longer a credential.
+    workerTokenHash: text("worker_token_hash"),
     lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
