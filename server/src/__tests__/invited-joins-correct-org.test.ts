@@ -97,6 +97,35 @@ describe("invited user joins the correct Organization (Task 11 anti-tenant-hop)"
     expect(services.orgAccess.ensureOrgMembership).toHaveBeenCalledWith("org-T1", "u9", "member");
   });
 
+  it("grants BOTH company and org membership so an already-registered invitee passes assertCompanyAccess (Fix 1 anti-lockout)", async () => {
+    // This is the positive counterpart to Fix 1's server guard: the invite
+    // chokepoint writes the company membership (the piece direct-add also
+    // writes) AND the org membership (the piece direct-add OMITS). Both are
+    // required by assertCompanyAccess (authz.ts:71), which is why cloud
+    // direct-add locks a user out while an invite does not.
+    const services = makeServices();
+    const db = makeTxDb({ id: "r1", status: "approved" });
+    await approveHumanJoinRequestTx(db, services, {
+      ...baseArgs,
+      requestingUserId: "u9",
+      ...autoAdmitApprovalIdentity(),
+    });
+    // Company membership: (companyId, "user", userId, role, "active").
+    expect(services.access.ensureMembership).toHaveBeenCalledWith(
+      "company-C1",
+      "user",
+      "u9",
+      "member",
+      "active",
+    );
+    // Org membership for the invited company's own tenant.
+    expect(services.orgAccess.ensureOrgMembership).toHaveBeenCalledWith(
+      "org-T1",
+      "u9",
+      "member",
+    );
+  });
+
   it("resolves a DIFFERENT company to its OWN org — never mixes tenants across two approvals", async () => {
     const resolveCompanyOrg = vi.fn(async (companyId: string) =>
       companyId === "company-C1" ? "org-T1" : "org-T2",
