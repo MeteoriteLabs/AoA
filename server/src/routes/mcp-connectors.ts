@@ -1267,7 +1267,12 @@ export function mcpConnectorRoutes(db: Db, opts: McpConnectorRouteOptions = {}) 
       const nonce = randomUUID();
       const state = signOAuthState({ connectorId: id, companyId, nonce, exp: nowMs + 10 * 60_000 });
       const resource = connector.url;
-      const scopes = discovered.scopesSupported;
+      // Least privilege (review I2): request the connector's DECLARED scopes when
+      // the catalog entry names them, and only fall back to the AS-advertised set
+      // for connectors that declare none (discovery-first providers like Notion
+      // advertise a minimal default). Requesting the AS's entire scopes_supported
+      // for a declaring connector would over-grant the broker.
+      const scopes = entry.oauth?.scopes?.length ? entry.oauth.scopes : discovered.scopesSupported;
 
       await db.insert(mcpConnectorOauthFlows).values({
         companyId, connectorId: id, state, pkceVerifier: verifier, clientId, redirectUri,
@@ -1293,6 +1298,18 @@ export function mcpConnectorRoutes(db: Db, opts: McpConnectorRouteOptions = {}) 
   // OAuth authorization callback — company-agnostic (the browser redirect target
   // has no board session in `authenticated` mode). Authenticated by the signed
   // `state` + flow-row lookup, NOT the actor helpers.
+  //
+  // ⚠ MULTI-TENANT GAP (review I1 — tracked for 1.1, do NOT enable untrusted
+  // `cloud_auth` multi-tenant OAuth without closing this): this handler
+  // authenticates the FLOW but not the SESSION completing it. `flow.startedByUserId`
+  // is captured at /oauth/start but is never compared against the browser session
+  // here, so on a shared multi-tenant instance a hostile founder could phish a
+  // victim into completing the ATTACKER's flow, binding the victim's provider
+  // tokens to the attacker's connector. Not reachable in `local_trusted`
+  // (startedByUserId is null / single trusted operator) or a single-org
+  // `authenticated` deployment (no hostile co-tenant) — the v1 target. Before
+  // enabling multi-tenant OAuth: resolve the session actor here and reject unless
+  // it matches `flow.startedByUserId`, and derive company from the session.
   router.get("/mcp-connectors/oauth/callback", async (req, res) => {
     const parsed = oauthCallbackQuerySchema.safeParse(req.query);
     if (!parsed.success) { res.status(400).send("Invalid OAuth callback"); return; }
