@@ -316,7 +316,12 @@ export function normalizeMaxConcurrentRuns(value: unknown) {
   return Math.max(HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT, Math.min(HEARTBEAT_MAX_CONCURRENT_RUNS_MAX, parsed));
 }
 
-export function resolveAdapterExecutionContext(
+// D1: RAW resolver — does NOT apply the D1 unsandboxed-multitenant gate.
+// Production dispatch sinks MUST call `resolveGuardedAdapterExecutionContext`;
+// direct use is only for isolated hardening unit tests. Named `...Unguarded` so a
+// future 4th dispatch sink cannot grab the canonical-looking name and silently
+// bypass the gate.
+export function resolveAdapterExecutionContextUnguarded(
   config: unknown,
   adapter: Pick<ServerAdapterModule, "getRuntimeCommandSpec">,
   // Whether this run executes on SHARED multi-tenant infra. Threaded to the
@@ -348,7 +353,7 @@ export function resolveGuardedAdapterExecutionContext(
   adapter: Pick<ServerAdapterModule, "getRuntimeCommandSpec">,
   opts: { trustBoundary: TrustBoundary; tenantIsolationEnforced: boolean; sink: string },
 ) {
-  const resolved = resolveAdapterExecutionContext(
+  const resolved = resolveAdapterExecutionContextUnguarded(
     config,
     adapter,
     opts.trustBoundary === "multi_tenant",

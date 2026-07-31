@@ -69,14 +69,14 @@ import {
   applyEnvironmentRuntimeTarget,
   mergeAdapterRuntimeServiceReports,
   resolveOutputDetectionCwd,
-  resolveAdapterExecutionContext,
+  resolveAdapterExecutionContextUnguarded,
   resolveGuardedAdapterExecutionContext,
   resolveAdapterManagedRuntimeExecutionWorkspaceId,
 } from "../services/heartbeat.js";
 
 describe("heartbeat adapter execution target context", () => {
   it("defaults missing adapter config target to local context", () => {
-    const result = resolveAdapterExecutionContext({}, { getRuntimeCommandSpec: vi.fn(() => null) });
+    const result = resolveAdapterExecutionContextUnguarded({}, { getRuntimeCommandSpec: vi.fn(() => null) });
 
     expect(result).toEqual({
       executionTarget: { type: "local" },
@@ -91,7 +91,7 @@ describe("heartbeat adapter execution target context", () => {
       installCommand: "npm install -g @openai/codex",
     }));
 
-    const result = resolveAdapterExecutionContext(
+    const result = resolveAdapterExecutionContextUnguarded(
       {
         executionTarget: {
           type: "sandbox-docker",
@@ -137,7 +137,7 @@ describe("heartbeat adapter execution target context", () => {
     const adapter = { execute, getRuntimeCommandSpec: vi.fn() };
 
     expect(() =>
-      resolveAdapterExecutionContext(
+      resolveAdapterExecutionContextUnguarded(
         { executionTarget: { type: "sandbox-docker" } },
         adapter,
       ),
@@ -158,7 +158,7 @@ describe("heartbeat adapter execution target context", () => {
       },
     };
 
-    const hardened = resolveAdapterExecutionContext(
+    const hardened = resolveAdapterExecutionContextUnguarded(
       weakened,
       { getRuntimeCommandSpec: vi.fn(() => null) },
       true, // multi_tenant
@@ -171,7 +171,7 @@ describe("heartbeat adapter execution target context", () => {
     expect(hardened.isolation?.noNewPrivileges).toBe(true);
     expect(hardened.isolation?.user).toBe("1000:1000");
 
-    const honored = resolveAdapterExecutionContext(
+    const honored = resolveAdapterExecutionContextUnguarded(
       weakened,
       { getRuntimeCommandSpec: vi.fn(() => null) },
       false, // self-hosted single-tenant
@@ -184,7 +184,7 @@ describe("heartbeat adapter execution target context", () => {
   });
 
   it("defaults to hardened (fail-closed) when the multiTenant flag is omitted", () => {
-    const target = resolveAdapterExecutionContext(
+    const target = resolveAdapterExecutionContextUnguarded(
       {
         executionTarget: {
           type: "sandbox-docker",

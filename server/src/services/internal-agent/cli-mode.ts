@@ -34,6 +34,8 @@ import { redactSecretsInString } from "../../redaction.js";
 import { resolveAgentConnectors } from "../mcp-connectors-loader.js";
 import { buildScrubbedCliEnv } from "../cli-spawn-safety.js";
 import { mergeConnectorEnv } from "../mcp-connectors-env.js";
+import { tenantIsolationEnforced } from "../../config/deployment-mode.js";
+import { assertUnsandboxedMultitenantAllowed } from "../unsandboxed-multitenant-guard.js";
 
 const require = createRequire(import.meta.url);
 
@@ -761,12 +763,11 @@ export function cliModeService(db: Db) {
       // tenantIsolationEnforced() (cheap; no per-turn loadConfig/topology) and
       // REFUSE the turn (loud error chunk) unless AOA_ALLOW_UNSANDBOXED_MULTITENANT
       // is set. No-op on every self-hosted deployment (local_trusted / authenticated
-      // single-tenant) → byte-identical for local/self-hosted installs.
+      // single-tenant) → byte-identical for local/self-hosted installs. The
+      // try/catch is NARROW — it wraps only the guard's refusal so a real infra
+      // fault does not get reshaped into a refusal-looking error chunk (the guard
+      // + deployment-mode reader are imported statically at the top of the file).
       try {
-        const { tenantIsolationEnforced } = await import("../../config/deployment-mode.js");
-        const { assertUnsandboxedMultitenantAllowed } = await import(
-          "../unsandboxed-multitenant-guard.js"
-        );
         assertUnsandboxedMultitenantAllowed(
           { type: "local" },
           { tenantIsolationEnforced: tenantIsolationEnforced(), sink: "Commander" },

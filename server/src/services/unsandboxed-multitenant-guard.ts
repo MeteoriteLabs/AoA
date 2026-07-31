@@ -95,8 +95,10 @@ export function assertUnsandboxedMultitenantAllowed(
       { sink: opts.sink, optIn: UNSANDBOXED_MULTITENANT_OPT_IN_ENV },
       `SECURITY: ${UNSANDBOXED_MULTITENANT_OPT_IN_ENV} is set — executing ${opts.sink} ` +
         `runs UNSANDBOXED on the shared cloud_auth host. Tenant code runs directly on the ` +
-        `control-plane host with NO per-tenant isolation. This is an explicit operator ` +
-        `override; do not use it in production multi-tenant deployments.`,
+        `control-plane host with NO per-tenant isolation. This override is process-wide: it ` +
+        `permits ALL agent, crew, AND Commander runs to execute unsandboxed on this host — ` +
+        `not only the ${opts.sink} run that first tripped this one-time warning. This is an ` +
+        `explicit operator override; do not use it in production multi-tenant deployments.`,
     );
   }
 }

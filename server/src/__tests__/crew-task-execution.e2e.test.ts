@@ -145,10 +145,10 @@ vi.mock("../services/internal-agent/cli-mode.js", () => ({
 }));
 
 // Chokepoint (seam 1) routes org assignees through heartbeat; runner (seam 2)
-// reaches heartbeat.resolveAdapterExecutionContext. ONE mock serves both.
+// reaches heartbeat.resolveAdapterExecutionContextUnguarded. ONE mock serves both.
 vi.mock("../services/heartbeat.js", () => ({
   heartbeatService: () => ({ wakeup: heartbeatWakeupMock }),
-  resolveAdapterExecutionContext: vi.fn(() => ({
+  resolveAdapterExecutionContextUnguarded: vi.fn(() => ({
     executionTarget: {},
     runtimeCommandSpec: {},
   })),

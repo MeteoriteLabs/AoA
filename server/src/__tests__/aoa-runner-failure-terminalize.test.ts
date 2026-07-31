@@ -96,7 +96,7 @@ vi.mock("../services/internal-agent/cli-mode.js", () => ({
 }));
 
 vi.mock("../services/heartbeat.js", () => ({
-  resolveAdapterExecutionContext: vi.fn(() => ({
+  resolveAdapterExecutionContextUnguarded: vi.fn(() => ({
     executionTarget: {},
     runtimeCommandSpec: {},
   })),

@@ -44,7 +44,7 @@ vi.mock("@armyofagents/db", () => { const t=(n:string)=>new Proxy({},{get:(_x,p)
 vi.mock("../adapters/registry.js", () => ({ getServerAdapter: () => ({ execute: execMock, getRuntimeCommandSpec: () => ({}) }) }));
 vi.mock("../services/costs.js", () => ({ costService: () => ({ createEvent: createEventMock }) }));
 vi.mock("../services/internal-agent/cli-mode.js", () => ({ buildMcpConfig: buildMcpMock, buildMcpBridgeSpec: buildBridgeSpecMock }));
-vi.mock("../services/heartbeat.js", () => ({ resolveAdapterExecutionContext: () => ({ executionTarget:{}, runtimeCommandSpec:{} }), resolveGuardedAdapterExecutionContext: () => ({ executionTarget:{}, runtimeCommandSpec:{} }) }));
+vi.mock("../services/heartbeat.js", () => ({ resolveAdapterExecutionContextUnguarded: () => ({ executionTarget:{}, runtimeCommandSpec:{} }), resolveGuardedAdapterExecutionContext: () => ({ executionTarget:{}, runtimeCommandSpec:{} }) }));
 vi.mock("../services/internal-agent/aoa-agents/bridge-path.js", () => ({ resolveBridgeEntrypoint: () => "/x/mcp-bridge.js" }));
 // T5: the runner now resolves an execution workspace before adapter.execute,
 // which mkdir's the per-agent home and stat's candidate cwds through this same
