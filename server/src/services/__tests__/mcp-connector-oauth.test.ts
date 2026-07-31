@@ -8,6 +8,8 @@ import {
   discoverOAuthServer,
   registerOAuthClient,
   buildAuthorizeUrl,
+  exchangeAuthorizationCode,
+  refreshOAuthToken,
 } from "../mcp-connector-oauth.js";
 
 beforeAll(() => {
@@ -131,5 +133,47 @@ describe("buildAuthorizeUrl", () => {
       scopes: [], resource: "https://mcp/x", state: "s", codeChallenge: "c",
     }));
     expect(url.searchParams.has("scope")).toBe(false);
+  });
+});
+
+function tokenStub(assert: (form: URLSearchParams) => void, resp: unknown): typeof fetch {
+  return (async (input: RequestInfo | URL, init?: RequestInit) => {
+    assert(new URLSearchParams(String(init?.body)));
+    return new Response(JSON.stringify(resp), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+}
+
+describe("token endpoint", () => {
+  it("exchangeAuthorizationCode posts the PKCE verifier + resource and maps the response", async () => {
+    const f = tokenStub((form) => {
+      expect(form.get("grant_type")).toBe("authorization_code");
+      expect(form.get("code")).toBe("CODE");
+      expect(form.get("code_verifier")).toBe("VER");
+      expect(form.get("client_id")).toBe("cid");
+      expect(form.get("redirect_uri")).toBe("https://app/cb");
+      expect(form.get("resource")).toBe("https://mcp/x");
+    }, { access_token: "at", refresh_token: "rt", expires_in: 3600 });
+    const out = await exchangeAuthorizationCode({
+      tokenEndpoint: "https://as/token", code: "CODE", codeVerifier: "VER", clientId: "cid",
+      redirectUri: "https://app/cb", resource: "https://mcp/x",
+    }, f);
+    expect(out).toEqual({ accessToken: "at", refreshToken: "rt", expiresIn: 3600 });
+  });
+
+  it("refreshOAuthToken posts grant_type=refresh_token and keeps the old refresh token if none returned", async () => {
+    const f = tokenStub((form) => {
+      expect(form.get("grant_type")).toBe("refresh_token");
+      expect(form.get("refresh_token")).toBe("OLD");
+    }, { access_token: "at2", expires_in: 3600 });
+    const out = await refreshOAuthToken({
+      tokenEndpoint: "https://as/token", refreshToken: "OLD", clientId: "cid", resource: "https://mcp/x",
+    }, f);
+    expect(out).toEqual({ accessToken: "at2", refreshToken: null, expiresIn: 3600 });
+  });
+
+  it("throws on token error", async () => {
+    const f = (async () => new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 })) as typeof fetch;
+    await expect(refreshOAuthToken({ tokenEndpoint: "https://as/token", refreshToken: "x", clientId: "c", resource: "r" }, f))
+      .rejects.toThrow(/invalid_grant|token/i);
   });
 });

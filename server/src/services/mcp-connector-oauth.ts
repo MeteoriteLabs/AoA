@@ -136,3 +136,51 @@ export function buildAuthorizeUrl(p: AuthorizeUrlParams): string {
   url.searchParams.set("code_challenge_method", "S256");
   return url.toString();
 }
+
+export interface TokenResponse {
+  accessToken: string;
+  refreshToken: string | null;
+  expiresIn: number;
+}
+export interface ExchangeParams {
+  tokenEndpoint: string; code: string; codeVerifier: string;
+  clientId: string; redirectUri: string; resource: string;
+}
+export interface RefreshParams {
+  tokenEndpoint: string; refreshToken: string; clientId: string; resource: string;
+}
+
+async function postToken(tokenEndpoint: string, form: URLSearchParams, fetchImpl: typeof fetch): Promise<TokenResponse> {
+  const res = await fetchImpl(tokenEndpoint, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+    body: form.toString(),
+  });
+  const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!res.ok) throw new Error(`OAuth token request failed: HTTP ${res.status} ${String(body.error ?? "")}`.trim());
+  const accessToken = body.access_token;
+  const expiresIn = body.expires_in;
+  if (typeof accessToken !== "string" || typeof expiresIn !== "number") {
+    throw new Error("OAuth token response missing access_token/expires_in");
+  }
+  return {
+    accessToken,
+    refreshToken: typeof body.refresh_token === "string" ? body.refresh_token : null,
+    expiresIn,
+  };
+}
+
+export function exchangeAuthorizationCode(p: ExchangeParams, fetchImpl: typeof fetch = fetch): Promise<TokenResponse> {
+  const form = new URLSearchParams({
+    grant_type: "authorization_code", code: p.code, code_verifier: p.codeVerifier,
+    client_id: p.clientId, redirect_uri: p.redirectUri, resource: p.resource,
+  });
+  return postToken(p.tokenEndpoint, form, fetchImpl);
+}
+
+export function refreshOAuthToken(p: RefreshParams, fetchImpl: typeof fetch = fetch): Promise<TokenResponse> {
+  const form = new URLSearchParams({
+    grant_type: "refresh_token", refresh_token: p.refreshToken, client_id: p.clientId, resource: p.resource,
+  });
+  return postToken(p.tokenEndpoint, form, fetchImpl);
+}
