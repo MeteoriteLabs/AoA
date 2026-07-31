@@ -23,6 +23,13 @@ export interface CommanderMemoryPolicyInput<T extends CommanderMemoryCandidate> 
   scope: Partial<NormalizedCommanderContextScope>;
   mode: CommanderMemoryMode;
   now?: Date;
+  /**
+   * Protocol actor type of the caller ("commander" | "agent" | …). Crew/org AGENTS
+   * need company-wide identity memory (vision/mission/values) as their grounding
+   * context, so the human-facing "identity is team-lead+ only" restriction below is
+   * lifted for agents. Absent/commander → the existing human policy is unchanged.
+   */
+  actorType?: string | null;
 }
 
 function isFounder(userRole: string | null | undefined): boolean {
@@ -69,7 +76,13 @@ function canSeeDurableMemory<T extends CommanderMemoryCandidate>(
   input: CommanderMemoryPolicyInput<T>,
 ): boolean {
   if (isFounder(input.userRole)) return true;
-  if (item.layer === "identity" && !isTeamLead(input.userRole)) return false;
+  // Identity memory (company vision / mission / values) is the always-on grounding
+  // context. Crew/org AGENTS always get it (an agent that cannot read the company
+  // vision cannot ground its work). For HUMANS the existing policy stands: identity
+  // is team-lead+ only.
+  if (item.layer === "identity") {
+    return input.actorType === "agent" || isTeamLead(input.userRole);
+  }
   if (item.visibility === "shared") return true;
   if (!hasScope(item)) return isTeamLead(input.userRole);
   return matchesScope(item, input.scope);
