@@ -1,6 +1,7 @@
 import { and, desc, eq, isNull, ne, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
+  companies,
   companySecretBindings,
   companySecretProviderConfigs,
   companySecrets,
@@ -653,11 +654,20 @@ export function secretService(db: Db) {
               context: { companyId, secretKey: key, secretName: input.name, version: 1 },
             });
       if (!prepared) throw unprocessable("Provider does not support external references");
+      // Tenant denormalization (multi-tenant cloud, C3): stamp the owning org so a
+      // new secret is never org-NULL. 0189 backfilled existing rows but the create
+      // path never wrote it. Company->org is immutable, so a pre-tx read is safe.
+      const companyOrg = await db
+        .select({ organizationId: companies.organizationId })
+        .from(companies)
+        .where(eq(companies.id, companyId))
+        .then((r) => r[0] ?? null);
       return db.transaction(async (tx) => {
         const secret = await tx
           .insert(companySecrets)
           .values({
             companyId,
+            organizationId: companyOrg?.organizationId ?? null,
             name: input.name,
             key,
             status: "active",
