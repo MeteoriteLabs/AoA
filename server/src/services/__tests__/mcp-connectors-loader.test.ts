@@ -16,6 +16,7 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { drizzleOperatorStubs, makeTableProxy } from "../../__tests__/helpers/drizzle-mock.js";
+import { encodeOAuthBundle, OAUTH_BUNDLE_VERSION } from "../mcp-connector-oauth-bundle.js";
 
 vi.mock("@armyofagents/db", () => ({
   companyMcpConnectors: makeTableProxy("company_mcp_connectors"),
@@ -29,6 +30,7 @@ vi.mock("drizzle-orm", () => drizzleOperatorStubs());
 const resolveByName = vi.fn();
 const warn = vi.fn();
 const logActivityMock = vi.fn();
+const updateIfStatus = vi.fn();
 
 vi.mock("../secrets.js", () => ({
   secretService: () => ({ resolveByName }),
@@ -44,6 +46,14 @@ vi.mock("../../middleware/logger.js", () => ({
 // `warn`-count assertions elsewhere in this file.
 vi.mock("../activity-log.js", () => ({
   logActivity: (...args: unknown[]) => logActivityMock(...args),
+}));
+
+// The CRUD module's `updateIfStatus` is mocked as an observable spy (Task 13):
+// otherwise the real `db.update` runs against the sequence-mock db (which has
+// no `.update`), throws, and is swallowed by the loader's `.catch(() => {})`,
+// making the "flipped to needs_credentials" assertion unobservable.
+vi.mock("../mcp-connectors-crud.js", () => ({
+  mcpConnectorService: () => ({ updateIfStatus }),
 }));
 
 import { loadEnabledConnectorRows, resolveAgentConnectors } from "../mcp-connectors-loader.js";
@@ -113,6 +123,8 @@ beforeEach(() => {
   warn.mockReset();
   logActivityMock.mockReset();
   logActivityMock.mockResolvedValue(undefined);
+  updateIfStatus.mockReset();
+  updateIfStatus.mockResolvedValue(undefined);
 });
 
 describe("loadEnabledConnectorRows", () => {
@@ -382,6 +394,34 @@ describe("loadEnabledConnectorRows", () => {
       trustTier: null,
       secretValue: null,
     });
+  });
+
+  it("flips a connector to needs_credentials and drops it when OAuth refresh fails (Task 13)", async () => {
+    // An expired bundle with no refresh token makes doRefresh throw
+    // OAuthRefreshError immediately — no network call, no `getByName` — so this
+    // drives the failure path deterministically.
+    const { db } = createSequenceDb([
+      [connectorRow({ id: "c-oauth-dead", serverName: "notion", secretRef: "mcp:notion" })],
+      [{ connectorId: "c-oauth-dead" }],
+    ]);
+    resolveByName.mockResolvedValue(
+      encodeOAuthBundle({
+        v: OAUTH_BUNDLE_VERSION,
+        accessToken: "old",
+        refreshToken: null,
+        expiresAt: 1,
+        tokenEndpoint: "https://as/token",
+        clientId: "cid",
+        scopes: [],
+        resource: "https://mcp/x",
+      }),
+    );
+
+    const rows = await loadEnabledConnectorRows(db, { companyId: "co-1", agentId: "agent-1" });
+
+    // The whole load did not abort, and the dead-refresh connector is dropped.
+    expect(rows).toEqual([]);
+    expect(updateIfStatus).toHaveBeenCalledWith("c-oauth-dead", "active", { status: "needs_credentials" });
   });
 
   it("returns an empty array when the company has no connectors", async () => {

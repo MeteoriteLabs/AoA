@@ -24,6 +24,8 @@ import {
 import { secretService, type SecretConsumerContext } from "./secrets.js";
 import { logActivity } from "./activity-log.js";
 import { loadConfig } from "../config.js";
+import { mcpConnectorService } from "./mcp-connectors-crud.js";
+import { resolveConnectorToken, OAuthRefreshError } from "./mcp-connector-token-refresh.js";
 
 export interface LoadEnabledConnectorRowsOptions {
   companyId: string;
@@ -137,14 +139,39 @@ export async function loadEnabledConnectorRows(
     // configuration, not a failure. Do not call the secrets service for it.
     if (connector.secretRef) {
       try {
-        secretValue = await secrets.resolveByName(
+        const raw = await secrets.resolveByName(
           companyId,
           connector.secretRef,
           consumerContextFor(connector.serverName),
         );
+        secretValue = await resolveConnectorToken(
+          { secrets: { getByName: (c, n) => secrets.getByName(c, n), rotate: (id, i) => secrets.rotate(id, i) } },
+          companyId,
+          connector.secretRef,
+          raw,
+        );
       } catch (err) {
         // Never log `secretValue` here — resolution failed, but keep the habit
         // explicit so a future edit does not add it.
+        if (err instanceof OAuthRefreshError) {
+          // Task 13: a dead refresh token (or a refresh request the AS rejects)
+          // must not fail the run — flip the connector to `needs_credentials` so
+          // the founder gets a re-authorize prompt (Task 16), and drop it from
+          // this load like any other unresolvable secret.
+          await mcpConnectorService(db)
+            .updateIfStatus(connector.id, "active", { status: "needs_credentials" })
+            .catch(() => {});
+          logActivity(db, {
+            companyId,
+            actorType: "system",
+            actorId: "oauth-broker",
+            agentId: null,
+            action: "mcp_connector.oauth_refresh_failed",
+            entityType: "mcp_connector",
+            entityId: connector.id,
+            details: { serverName: connector.serverName },
+          }).catch(() => {});
+        }
         logger.warn(
           {
             err,
@@ -153,9 +180,9 @@ export async function loadEnabledConnectorRows(
             serverName: connector.serverName,
             secretRef: connector.secretRef,
           },
-          "MCP connector skipped: secret could not be resolved",
+          "MCP connector skipped: secret could not be resolved/refreshed",
         );
-        continue;
+        continue; // failure isolation: drop THIS connector only
       }
     }
 
