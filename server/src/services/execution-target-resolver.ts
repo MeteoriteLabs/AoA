@@ -1,4 +1,5 @@
 // server/src/services/execution-target-resolver.ts
+import { or, isNull, eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { executionTargets } from "@armyofagents/db";
 
@@ -50,8 +51,11 @@ export async function resolveExecutionTargetForRun(
     executionTargetSlug: string | null;
   },
 ): Promise<ExecutionTargetRow | null> {
-  // System/shared targets (organizationId null) + this org's targets are both eligible.
-  const rows = (await db
+  // System/shared targets (organizationId null) + this org's targets are both
+  // eligible — scoped in SQL (index execution_targets_org_idx) rather than a
+  // full-table scan + JS filter. For a null org, isNull() alone yields the system
+  // rows (eq(col, null) never matches), preserving the prior JS-filter behavior.
+  const scoped = (await db
     .select({
       id: executionTargets.id,
       slug: executionTargets.slug,
@@ -61,8 +65,13 @@ export async function resolveExecutionTargetForRun(
       organizationId: executionTargets.organizationId,
       config: executionTargets.config,
     })
-    .from(executionTargets)) as ExecutionTargetRow[];
-  const scoped = rows.filter((t) => t.organizationId == null || t.organizationId === input.organizationId);
+    .from(executionTargets)
+    .where(
+      or(
+        isNull(executionTargets.organizationId),
+        eq(executionTargets.organizationId, input.organizationId),
+      ),
+    )) as ExecutionTargetRow[];
   return chooseExecutionTargetRow({
     credentialKind: input.credentialKind,
     pinnedTargetId: input.pinnedTargetId,
