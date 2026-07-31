@@ -6,8 +6,7 @@ import { issuesApi } from "../api/issues";
 import { cockpitApi } from "../api/cockpit";
 import { agentsApi } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
-import { isForbidden } from "../api/client";
-import { AccessRequired } from "./AccessRequired";
+import { AccessRequiredBoundary } from "./AccessRequired";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -181,13 +180,11 @@ export function Issues() {
 
   // A 403 on the primary company-scoped query (tasks list, or the cockpit
   // bucket when active) means this workspace is off-limits — e.g. membership
-  // revoked mid-session. Surface the friendly access state instead of the
-  // list's generic error. Non-403 errors keep the list's normal inline error.
-  if (isForbidden(cockpitBucket ? cockpitTasksQuery.error : error)) {
-    return <AccessRequired />;
-  }
-
+  // revoked mid-session. AccessRequiredBoundary surfaces the friendly access
+  // state instead of the list's generic error; non-403 errors flow through to
+  // the list's normal inline error, and loading/empty are unaffected.
   return (
+    <AccessRequiredBoundary error={cockpitBucket ? cockpitTasksQuery.error : error}>
     <div className="space-y-4">
       <div>
         <h1 className="text-[1.6rem] font-bold tracking-tight">
@@ -273,5 +270,6 @@ export function Issues() {
         onClose={handleCloseSlideOver}
       />
     </div>
+    </AccessRequiredBoundary>
   );
 }
