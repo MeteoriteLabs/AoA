@@ -177,3 +177,23 @@ It took a **5-layer** fix — each layer masked the next:
   (`cli-mode.ts`, not the claude_local adapter), so it likely still needs the
   `--allowedTools` equivalent there. `actorType="commander"` already sees identity via
   isFounder/isTeamLead, so the identity fix doesn't regress it.
+
+---
+
+## ✅ ALL THREE agent types PROVEN (2026-07-31)
+
+- **ORG** — live run: an org `claude_local` agent called `query_memory` and reported
+  "Be the memory layer every founder trusts". Required the 5-layer fix above.
+- **COMMANDER** — live chat: asked "what is our company vision?", answered from the
+  live memory record: "Be the memory layer every founder trusts". Works as-is —
+  Commander bypasses tool permissions (`--dangerously-skip-permissions`, default on)
+  and as founder already sees identity.
+- **CREW** — live bundle check: called `loadScopedMemoryLines` + `memoryAccessConditions`
+  + `actorForAgentRun` for the real crew agent against the running DB; the rendered
+  `## Context` lines contained Company Vision/Mission/Values. Crew works as-is — its
+  delivery is prompt-injection through my RBAC gate (identity visible to all actors),
+  never touching the org path's MCP-permission/Commander-policy layers.
+
+**Bottom line:** company memory now reaches Commander, Crew, AND Org agents. The org
+path needed real fixes (registry name, allowlist, `--allowedTools` for MCP tools,
+actor-aware identity visibility); crew + commander worked once the org fixes existed.
