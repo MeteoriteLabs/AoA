@@ -164,12 +164,45 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
     if (req.body.target.mode === "existing_company") {
       await assertCompanyAccess(db, req, req.body.target.companyId);
     }
+
+    // D2/H3: a new_company import creates a company and MUST be placed + authorized
+    // exactly like POST / — never the shared DEFAULT sentinel under cloud_auth.
+    // resolveCompanyOrganizationId derives a server-side org (explicit
+    // target.organizationId, else the actor's single org, else 403);
+    // assertCompanyCreateAuthorized gates canOrg against that exact org. The
+    // self-hosted operator bypass + DEFAULT-sentinel fallback are preserved.
+    let newCompanyOrganizationId: string | undefined;
+    if (req.body.target.mode === "new_company") {
+      const enforced = tenantIsolationEnforced();
+      const isSelfHostedOperator =
+        !enforced && (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin);
+      const organizationId = resolveCompanyOrganizationId(
+        { organizationId: req.body.target.organizationId },
+        { enforced, actorOrganizationIds: req.actor.organizationIds ?? [] },
+      );
+      if (!isSelfHostedOperator) {
+        if (!req.actor.userId) throw forbidden("Sign in to import a company");
+        await assertCompanyCreateAuthorized(
+          organizationAccessService(db),
+          organizationId,
+          req.actor.userId,
+        );
+      }
+      newCompanyOrganizationId = organizationId;
+    }
+
     const actor = getActorInfo(req);
     const result = await portability.importBundle(
       req.body,
       req.actor.type === "board" ? req.actor.userId : null,
       existingCompanyId
-        ? async ({ requiresTaskAssignmentPermission, importsWorkflowTemplates }) => {
+        ? async ({ requiresTaskAssignmentPermission, importsWorkflowTemplates, importsAgents }) => {
+          // D2/H2: importing agents into an existing company is a company-structure
+          // mutation — require founder/team_lead. The service no longer re-owns the
+          // caller, so this gate is the primary defense against escalation.
+          if (importsAgents) {
+            await assertRole(db, req, existingCompanyId, "founder", "team_lead");
+          }
           if (requiresTaskAssignmentPermission) {
             await assertCanAssignTasks(req, existingCompanyId);
           }
@@ -178,6 +211,7 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
           }
         }
         : undefined,
+      { organizationId: newCompanyOrganizationId },
     );
     await logActivity(db, {
       companyId: result.company.id,
