@@ -45,7 +45,17 @@ function connectorEnvMergeFor(
   };
 }
 
-/** Minimum task-work surface exposed to an organization-agent heartbeat run. */
+/**
+ * Minimum task-work surface exposed to an organization-agent heartbeat run.
+ *
+ * Includes the read-only memory tools (`memory.search` / `memory.get`) so a
+ * running org agent can actually RETRIEVE company memory — the enterprise-memory
+ * model's primary ORG delivery path (context.memory is not read by the live CLI
+ * template; agents fetch on demand). Both are `ALL_ACTORS` reads in the tool
+ * registry and carry no write/permission risk, so they belong in the default
+ * surface. Without them the agent's session has no memory tool at all and it
+ * cannot answer a "recall X from memory" task.
+ */
 export const ORG_HEARTBEAT_TOOL_ALLOWLIST = [
   "get_task",
   "get_heartbeat_context",
@@ -54,6 +64,8 @@ export const ORG_HEARTBEAT_TOOL_ALLOWLIST = [
   "set_task_status",
   "ask_human",
   "ask_founder",
+  "memory.search",
+  "memory.get",
 ] as const;
 
 export function resolveHeartbeatEffectiveAutonomy(input: {

@@ -62,6 +62,9 @@ describe("heartbeat MCP delivery", () => {
       "attach_task_artifact",
       "set_task_status",
       "ask_human",
+      // Read-only memory retrieval — the primary ORG memory-delivery path.
+      "memory.search",
+      "memory.get",
     ]));
     expect(ORG_HEARTBEAT_TOOL_ALLOWLIST).not.toEqual(expect.arrayContaining([
       "create_task",
