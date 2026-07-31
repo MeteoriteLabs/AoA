@@ -56,8 +56,10 @@ export async function registerWorkerHeartbeat(
  * their ids to a caller, so routing to the shared pool is unaffected.
  */
 export async function listExecutionTargets(db: Db, organizationId: string | null) {
-  const rows = await db.select().from(executionTargets);
-  // organizationId is required to see any target; a null org sees nothing here.
+  // organizationId is required to see any target; a null org sees nothing — and
+  // must not even scan the table (its id doubles as the worker bearer token).
   if (organizationId == null) return [];
-  return rows.filter((r) => r.organizationId === organizationId);
+  // Scope in SQL (index execution_targets_org_idx); the no-system/cross-org
+  // guarantee is the WHERE clause, not a JS post-filter.
+  return db.select().from(executionTargets).where(eq(executionTargets.organizationId, organizationId));
 }

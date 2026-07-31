@@ -4,26 +4,37 @@ vi.mock("@armyofagents/db", async () => ({ executionTargets: makeTableProxy("exe
 vi.mock("drizzle-orm", () => drizzleOperatorStubs());
 import { registerWorkerHeartbeat, listExecutionTargets } from "../services/execution-targets.js";
 
-describe("listExecutionTargets (P5 review finding #1 — no system-row leak to tenants)", () => {
-  const rows = [
-    { id: "sys-cp", organizationId: null, slug: "control-plane", kind: "local_host" },
-    { id: "sys-pool", organizationId: null, slug: "pool-1", kind: "pooled_gvisor" },
-    { id: "a-ded", organizationId: "org-A", slug: "a-box", kind: "dedicated_worker" },
-    { id: "b-ded", organizationId: "org-B", slug: "b-box", kind: "dedicated_worker" },
-  ];
-  function dbWith(r: unknown[]) {
-    return { select: vi.fn().mockReturnValue({ from: vi.fn().mockResolvedValue(r) }) } as unknown as Parameters<
-      typeof listExecutionTargets
-    >[0];
+describe("listExecutionTargets (P5 finding #1 — no system-row leak; L-c: scoped in SQL)", () => {
+  // Thenable-with-.where: the OLD (`await …from()`) and NEW (`…from().where()`)
+  // paths both resolve rows; the discriminator is whether `.where` ran.
+  function dbWith(scopedRows: unknown[]) {
+    const where = vi.fn().mockResolvedValue(scopedRows);
+    const fromResult: unknown = Object.assign(Promise.resolve(scopedRows), { where });
+    const from = vi.fn().mockReturnValue(fromResult);
+    const select = vi.fn().mockReturnValue({ from });
+    return {
+      db: { select } as unknown as Parameters<typeof listExecutionTargets>[0],
+      where,
+      select,
+    };
   }
-  it("returns ONLY the org's own targets — never organizationId=null system rows (whose id is the worker token)", async () => {
-    const out = (await listExecutionTargets(dbWith(rows), "org-A")) as Array<{ id: string; organizationId: string | null }>;
+
+  it("scopes to the org's own rows via a WHERE clause (eq), not a full scan + JS filter", async () => {
+    const { db, where } = dbWith([
+      { id: "a-ded", organizationId: "org-A", slug: "a-box", kind: "dedicated_worker" },
+    ]);
+    const out = (await listExecutionTargets(db, "org-A")) as Array<{
+      id: string;
+      organizationId: string | null;
+    }>;
+    expect(where).toHaveBeenCalledWith("eq"); // eq(organizationId, orgId) — SQL scope
     expect(out.map((t) => t.id)).toEqual(["a-ded"]);
-    expect(out.some((t) => t.organizationId == null)).toBe(false); // no system-row disclosure
-    expect(out.some((t) => t.organizationId === "org-B")).toBe(false); // no cross-org disclosure
   });
-  it("returns nothing for a null org (no ambient system-row disclosure)", async () => {
-    expect(await listExecutionTargets(dbWith(rows), null)).toEqual([]);
+
+  it("returns nothing for a null org WITHOUT scanning the table (early-return before the query)", async () => {
+    const { db, select } = dbWith([]);
+    expect(await listExecutionTargets(db, null)).toEqual([]);
+    expect(select).not.toHaveBeenCalled(); // no ambient system-row scan for a null org
   });
 });
 
