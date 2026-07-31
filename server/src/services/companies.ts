@@ -1,4 +1,4 @@
-import { eq, count, isNull, sql } from "drizzle-orm";
+import { eq, count, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { DEFAULT_ORGANIZATION_ID } from "@armyofagents/shared";
 import { memoryFoldersService, seedCompanyRootFolder } from "./memory-folders.js";
@@ -208,7 +208,24 @@ export function companyService(db: Db) {
   }
 
   return {
-    list: () => db.select().from(companies),
+    list: (allowedCompanyIds?: string[]) => {
+      // Fix 4: push the actor's allowed-company set into SQL instead of scanning
+      // every tenant's companies and filtering in JS. undefined → unfiltered
+      // (self-hosted operator view, unchanged); empty → a `false` predicate
+      // (explicit degrade-to-none, never return-all). drizzle also lowers
+      // inArray(id, []) to `false`, but this keeps it version-independent.
+      if (allowedCompanyIds === undefined) {
+        return db.select().from(companies);
+      }
+      return db
+        .select()
+        .from(companies)
+        .where(
+          allowedCompanyIds.length === 0
+            ? sql`false`
+            : inArray(companies.id, allowedCompanyIds),
+        );
+    },
 
     getById: (id: string) =>
       db
