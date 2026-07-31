@@ -278,7 +278,8 @@ export class ProviderUnavailableError extends Error {
     super(
       `No usable ${provider} provider credential for this run (${reason}` +
         (connectionId ? `, connection ${connectionId}` : "") +
-        "). Cloud resolution fails closed and never uses a host login.",
+        "). On AoA Cloud, agents and Commander run on a per-company provider key — " +
+        "set one for this company in Settings → Providers, then retry.",
     );
     this.name = "ProviderUnavailableError";
   }
