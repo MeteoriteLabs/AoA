@@ -397,6 +397,18 @@ describe("entryToCreateInput", () => {
     expect(Object.keys(r.envTemplate ?? {})).toEqual([]);
     expect(Object.getPrototypeOf(r.headerTemplate ?? {})).toBe(Object.prototype);
   });
+
+  // Security-critical override (Task 10): `requiresOAuth` and `requiresSecret`
+  // are INDEPENDENT catalog booleans that both default `false`. `oauthHttp`
+  // (declared above) is `requiresOAuth: true` with no `requiresSecret` set, so
+  // this pins that the mapper still forces `requiresSecret: true` — without it
+  // the connector would resolve `status: "active"` with no credential bound and
+  // silently authenticate as no-one.
+  it("forces requiresSecret=true for a requiresOAuth entry even when the catalog omits requiresSecret", () => {
+    const input = entryToCreateInput(oauthHttp, "co1", "local_trusted", ACTOR);
+    expect(input.requiresSecret).toBe(true);
+    expect(input.secretRef).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -828,32 +840,19 @@ describe("catalog shelf route — an OAuth-only entry is shown and installable, 
     expect(byId.notion).not.toHaveProperty("unavailableReason");
   });
 
-  // The OAuth branch still runs the D7 gate; a hypothetical unverified stdio
-  // OAuth entry must degrade THAT card (installable:false, oauthRequired reset
-  // to false, a D7 reason) rather than throwing out of entries.map and 500-ing
-  // the whole shelf.
-  it("a D7-refused OAuth entry (unverified stdio) degrades to installable:false, oauthRequired:false, with the D7 reason", async () => {
-    deploymentMode = "authenticated";
-    const oauthStdio = entry({
-      id: "oauth-stdio",
-      displayName: "Hypothetical OAuth stdio",
-      serverName: "oauth-stdio",
-      transport: "stdio",
-      command: "npx",
-      args: ["-y", "oauth-stdio-tool@1.0.0"],
-      requiresOAuth: true,
-      trust: { tier: "community" },
-    });
-    const res = await getCatalog(makeApp(founderActor, [oauthStdio]));
-    const projected = res.body.entries.find((e: { id: string }) => e.id === "oauth-stdio") as {
-      installable: boolean;
-      oauthRequired: boolean;
-      unavailableReason?: string;
-    };
-    expect(projected.installable).toBe(false);
-    expect(projected.oauthRequired).toBe(false);
-    expect(projected.unavailableReason).toMatch(D7_REFUSAL);
-  });
+  // A hypothetical unverified-stdio OAuth entry would previously have needed a
+  // shelf-side test for the D7-degrade path (installable:false, oauthRequired
+  // reset to false). That scenario is no longer constructible: the shared
+  // catalog schema now rejects `requiresOAuth: true` combined with
+  // `transport: "stdio"` at parse time (packages/shared/src/mcp-connector-catalog.ts,
+  // covered by packages/shared/src/__tests__/mcp-connector-catalog.test.ts
+  // "rejects an OAuth entry declared with stdio transport"), so no valid catalog
+  // entry can ever reach this route with that combination. The try/catch around
+  // `assertTransportAllowed` in the OAuth branch is retained as defense-in-depth
+  // (mirrors the non-OAuth branch) but is not exercised by a producible fixture
+  // here — a hand-rolled literal that skips the real schema would test a shape
+  // the CDN can never actually produce, which this file's fixtures deliberately
+  // avoid (see the `entry()` helper's docstring above).
 });
 
 // ---------------------------------------------------------------------------

@@ -353,4 +353,12 @@ describe("oauth block", () => {
     });
     expect(parsed.oauth?.scopes).toEqual([]);
   });
+
+  it("rejects an OAuth entry declared with stdio transport", () => {
+    const r = McpConnectorCatalogEntrySchema.safeParse({
+      id: "bad", serverName: "bad", displayName: "Bad", transport: "stdio",
+      command: "npx some-pkg@1.0.0", requiresOAuth: true,
+    });
+    expect(r.success).toBe(false);
+  });
 });

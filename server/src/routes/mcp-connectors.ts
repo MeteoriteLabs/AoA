@@ -560,6 +560,8 @@ export function mcpConnectorRoutes(db: Db, opts: McpConnectorRouteOptions = {}) 
       // actually happened.
       let installable = true;
       let unavailableReason: string | undefined;
+      // `entry.requiresOAuth` = declared in catalog; `oauthRequired` = the OAuth
+      // path is actually available on THIS card (reset to false if D7 refuses).
       let oauthRequired = false;
       // OAuth-only entries are installable — the broker (Plan 4) handles the
       // authorize step post-install — so this branch just flags the entry and
@@ -575,7 +577,7 @@ export function mcpConnectorRoutes(db: Db, opts: McpConnectorRouteOptions = {}) 
         } catch (err) {
           oauthRequired = false;
           installable = false;
-          unavailableReason = err instanceof Error ? err.message : "Not allowed";
+          unavailableReason = err instanceof Error && err.message ? err.message : "Not allowed";
         }
       } else {
         try {

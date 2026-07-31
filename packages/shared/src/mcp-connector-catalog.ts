@@ -159,6 +159,19 @@ export const McpConnectorCatalogEntrySchema = z
         });
       }
     }
+    // OAuth is a browser sign-in flow against a hosted HTTP server; a stdio
+    // connector spawns a local process and has no way to run it. Forbidding the
+    // combo here (rather than downstream) eliminates a dead branch where the
+    // shelf would show an OAuth stdio entry as installable but createConnector's
+    // command-safety gate would 400 it.
+    if (val.requiresOAuth && val.transport === "stdio") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["requiresOAuth"],
+        message:
+          "OAuth connectors must use http transport (OAuth is a browser sign-in flow for a hosted server, not stdio)",
+      });
+    }
   });
 
 export type McpConnectorCatalogEntry = z.infer<typeof McpConnectorCatalogEntrySchema>;
