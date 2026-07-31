@@ -34,8 +34,8 @@ interface CompanyContextValue {
     // "create another company" surface (`/onboarding?new=1`) resolves it via
     // CreateAnotherCompany before calling createCompany, since the server 403s
     // an omitted id for a founder in >=2 orgs and never guesses. It is omitted
-    // only on the self-hosted path, where the server derives
-    // DEFAULT_ORGANIZATION_ID (companies.ts:56). See OrgStep.tsx's submit().
+    // only on the self-hosted path, where resolveCompanyOrganizationId derives
+    // DEFAULT_ORGANIZATION_ID. See OrgStep.tsx's submit().
     organizationId?: string;
     description?: string | null;
     budgetMonthlyCents?: number;

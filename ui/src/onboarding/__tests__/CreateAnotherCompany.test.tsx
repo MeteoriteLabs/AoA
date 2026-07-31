@@ -6,6 +6,8 @@ import type { OrganizationMembership } from "../../api/organizations";
 
 const state = vi.hoisted(() => ({
   health: { deploymentMode: "cloud_auth" } as { deploymentMode: string },
+  healthError: false,
+  orgsError: false,
   orgs: [] as OrganizationMembership[],
   orgStepProps: null as unknown as {
     ctx: { organizationId: string | null; companyId: string | null };
@@ -18,10 +20,16 @@ const state = vi.hoisted(() => ({
 }));
 
 vi.mock("../../api/health", () => ({
-  healthApi: { get: () => Promise.resolve(state.health) },
+  healthApi: {
+    get: () =>
+      state.healthError ? Promise.reject(new Error("health down")) : Promise.resolve(state.health),
+  },
 }));
 vi.mock("../../api/organizations", () => ({
-  organizationsApi: { list: () => Promise.resolve(state.orgs) },
+  organizationsApi: {
+    list: () =>
+      state.orgsError ? Promise.reject(new Error("orgs down")) : Promise.resolve(state.orgs),
+  },
 }));
 vi.mock("../steps/OrgStep", () => ({
   OrgStep: (props: {
@@ -59,6 +67,8 @@ describe("CreateAnotherCompany", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     state.health = { deploymentMode: "cloud_auth" };
+    state.healthError = false;
+    state.orgsError = false;
     state.orgs = [];
     state.orgStepProps = null as never;
     state.createOrgProps = null as never;
@@ -118,6 +128,41 @@ describe("CreateAnotherCompany", () => {
     fireEvent.click(await screen.findByText("mint-org"));
     await screen.findByText("org-step");
     expect(state.orgStepProps.ctx.organizationId).toBe("orgNEW");
+  });
+
+  it("cloud_auth + org list fails to load: friendly retry surface, no company step", async () => {
+    state.orgsError = true;
+    const onBack = vi.fn();
+    renderWithProviders(
+      <CreateAnotherCompany
+        userId="u1"
+        journey="founder"
+        onCompleteCompany={() => {}}
+        onBack={onBack}
+      />,
+    );
+    expect(await screen.findByText(/couldn't load your organizations/i)).toBeTruthy();
+    expect(screen.queryByText("org-step")).toBeNull();
+    fireEvent.click(screen.getByText(/back to your workspace/i));
+    expect(onBack).toHaveBeenCalled();
+  });
+
+  it("health fails to load: friendly retry surface, NOT a silent self-hosted fall-through", async () => {
+    state.healthError = true;
+    const onBack = vi.fn();
+    renderWithProviders(
+      <CreateAnotherCompany
+        userId="u1"
+        journey="founder"
+        onCompleteCompany={() => {}}
+        onBack={onBack}
+      />,
+    );
+    expect(await screen.findByText(/couldn't load your workspace/i)).toBeTruthy();
+    // Must NOT drop a cloud founder into OrgStep with a null org id.
+    expect(screen.queryByText("org-step")).toBeNull();
+    fireEvent.click(screen.getByText(/back to your workspace/i));
+    expect(onBack).toHaveBeenCalled();
   });
 
   it("self-hosted (not cloud_auth): omits the org id so the server derives the default sentinel", async () => {

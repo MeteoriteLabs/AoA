@@ -16,12 +16,12 @@ const BASE_COMPLETED: OnboardingState[] = ["AUTHENTICATED", "PROFILE_SET"];
 /**
  * The standalone "create another company" surface (OnboardingFlow `?new=1`).
  * Fix 2 (design P1): in cloud_auth we must hand the company step an EXPLICIT
- * create-capable Organization id — the server 403s a >=2-org founder who omits
- * it and never guesses (companies.ts:50-54). We resolve it from the founder's
- * own org memberships: exactly one create-capable org -> auto-pick; zero ->
- * mint one via CreateOrganizationStep; >=2 -> a friendly message (no picker).
- * Self-hosted preserves the prior behavior: omit the id and let the server
- * derive DEFAULT_ORGANIZATION_ID (companies.ts:56).
+ * create-capable Organization id — the server's resolveCompanyOrganizationId
+ * 403s a >=2-org founder who omits it and never guesses. We resolve it from the
+ * founder's own org memberships: exactly one create-capable org -> auto-pick;
+ * zero -> mint one via CreateOrganizationStep; >=2 -> a friendly message (no
+ * picker). Self-hosted preserves the prior behavior: omit the id and let
+ * resolveCompanyOrganizationId derive DEFAULT_ORGANIZATION_ID.
  */
 export function CreateAnotherCompany({
   userId,
@@ -58,15 +58,37 @@ export function CreateAnotherCompany({
     journey,
     completedStates: BASE_COMPLETED,
     organizationId,
-    setOrganizationId: (id: string) => setChosenOrgId(id),
+    setOrganizationId: setChosenOrgId,
   });
 
   const loading = <p className="text-sm text-dim">Loading…</p>;
+  const loadError = (title: string, description: string) => (
+    <EmptyState
+      title={title}
+      description={description}
+      action={
+        <Button variant="secondary" onClick={onBack}>
+          Back to your workspace
+        </Button>
+      }
+    />
+  );
 
   if (healthQuery.isLoading) return loading;
 
-  // Self-hosted (or health unresolved): preserve prior behavior — omit the org
-  // id (null) so the server derives DEFAULT_ORGANIZATION_ID. No org lookup here.
+  // Health failed to load: do NOT silently treat this as self-hosted. A real
+  // cloud founder would otherwise fall through to OrgStep with a null org id and
+  // hit a later 403. Show the same friendly retry surface (with Back) instead.
+  if (healthQuery.isError) {
+    return loadError(
+      "Couldn't load your workspace",
+      "We couldn't check your deployment just now. Go back and try again.",
+    );
+  }
+
+  // Self-hosted (health resolved, non-cloud mode): preserve prior behavior — omit
+  // the org id (null) so resolveCompanyOrganizationId derives
+  // DEFAULT_ORGANIZATION_ID. No org lookup here.
   if (!isCloud) {
     return <OrgStep ctx={buildCtx(null)} onComplete={onCompleteCompany} onBack={onBack} />;
   }
@@ -78,16 +100,9 @@ export function CreateAnotherCompany({
 
   if (orgsQuery.isLoading) return loading;
   if (!orgsQuery.data) {
-    return (
-      <EmptyState
-        title="Couldn't load your organizations"
-        description="We couldn't reach your organizations just now. Go back and try again."
-        action={
-          <Button variant="secondary" onClick={onBack}>
-            Back to your workspace
-          </Button>
-        }
-      />
+    return loadError(
+      "Couldn't load your organizations",
+      "We couldn't reach your organizations just now. Go back and try again.",
     );
   }
 

@@ -89,10 +89,10 @@ export function OnboardingFlowPage({ journey }: { journey: OnboardingJourney }) 
   if (isNewFounderOrganization) {
     // Fix 2 (design P1): resolve the founder's own create-capable Organization
     // before the company step. In cloud_auth an explicit org id is mandatory —
-    // the server 403s a >=2-org founder who omits it and never guesses
-    // (companies.ts:50-54); a single-org founder is auto-picked silently. Only
-    // self-hosted omits the id (server derives DEFAULT_ORGANIZATION_ID,
-    // companies.ts:56). CreateAnotherCompany owns that whole resolution.
+    // the server's resolveCompanyOrganizationId 403s a >=2-org founder who omits
+    // it and never guesses; a single-org founder is auto-picked silently. Only
+    // self-hosted omits the id (resolveCompanyOrganizationId derives
+    // DEFAULT_ORGANIZATION_ID). CreateAnotherCompany owns that whole resolution.
     return (
       <DarkShell>
         <div className="relative z-10 flex min-h-screen items-center justify-center px-6 py-8">

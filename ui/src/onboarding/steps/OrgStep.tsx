@@ -78,8 +78,8 @@ export function OrgStep({ ctx, onComplete }: StepProps) {
       // another company" surface (OnboardingFlow.tsx `?new=1`). In cloud_auth
       // it is always an explicit create-capable org id (CreateAnotherCompany
       // resolves it — the server 403s an omitted id for a founder in >=2 orgs).
-      // It is null only on the self-hosted path, where omitting it makes the
-      // server derive DEFAULT_ORGANIZATION_ID (companies.ts:56).
+      // It is null only on the self-hosted path, where omitting it makes
+      // resolveCompanyOrganizationId derive DEFAULT_ORGANIZATION_ID.
       const company =
         resumableCompany ??
         (await createCompany({ name: name.trim(), organizationId: ctx.organizationId ?? undefined }));

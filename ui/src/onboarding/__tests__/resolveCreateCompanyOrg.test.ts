@@ -50,6 +50,15 @@ describe("resolveCreateCompanyOrg", () => {
     ).toEqual({ kind: "ambiguous", organizationIds: ["orgA", "orgB"] });
   });
 
+  it("excludes a non-active (suspended) owner, so it is never miscounted as create-capable", () => {
+    expect(
+      resolveCreateCompanyOrg([
+        m({ id: "m1", organizationId: "orgA", role: "owner", status: "suspended" }),
+        m({ id: "m2", organizationId: "orgB", role: "owner", status: "active" }),
+      ]),
+    ).toEqual({ kind: "org", organizationId: "orgB" });
+  });
+
   it("dedupes multiple create-capable memberships in the same org", () => {
     expect(
       resolveCreateCompanyOrg([

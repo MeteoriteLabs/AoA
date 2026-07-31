@@ -30,7 +30,13 @@ export function resolveCreateCompanyOrg(
   const organizationIds = [
     ...new Set(
       memberships
-        .filter((membership) => CREATE_CAPABLE_ROLES.has(membership.role))
+        // Match the server's canOrg gate: only an ACTIVE membership in a
+        // create-capable role can create a company. Filtering status here keeps
+        // the resolver self-contained (a suspended owner must not be miscounted).
+        .filter(
+          (membership) =>
+            membership.status === "active" && CREATE_CAPABLE_ROLES.has(membership.role),
+        )
         .map((membership) => membership.organizationId),
     ),
   ];
