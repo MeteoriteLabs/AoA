@@ -83,38 +83,35 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
   }
 
   router.get("/", async (req, res) => {
-    // rbac: instance-admin-not-required — list endpoint with no companyId in path; result is scope-filtered inline against req.actor.companyIds.
+    // rbac: instance-admin-not-required — list endpoint with no companyId in path; result is scope-filtered in SQL against req.actor.companyIds.
     assertBoard(req);
-    const result = await svc.list();
     // The full-list bypass is a self-hosted-only affordance. In cloud_auth
     // (isolation enforced) the operator plane must NOT see every tenant's
-    // companies — filter to the actor's own memberships. isInstanceAdmin is
+    // companies. Fix 4: push the actor's allowed-company set into SQL rather
+    // than scanning all companies and filtering in JS. isInstanceAdmin is
     // already clamped false in cloud (Task 4); the static gate is defense-in-depth.
     const legacyAdmin =
       !tenantIsolationEnforced() &&
       (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin);
-    if (legacyAdmin) {
-      res.json(result);
-      return;
-    }
-    const allowed = new Set(req.actor.companyIds ?? []);
-    res.json(result.filter((company) => allowed.has(company.id)));
+    const result = legacyAdmin
+      ? await svc.list()
+      : await svc.list(req.actor.companyIds ?? []);
+    res.json(result);
   });
 
   router.get("/stats", async (req, res) => {
-    // rbac: instance-admin-not-required — stats endpoint with no companyId in path; result is scope-filtered inline against req.actor.companyIds.
+    // rbac: instance-admin-not-required — stats endpoint with no companyId in path; result is scope-filtered in SQL against req.actor.companyIds.
     assertBoard(req);
+    // Self-hosted operator view: unscoped (unchanged). Everyone else: push the
+    // actor's allowed-company set into the four aggregations rather than running
+    // instance-wide GROUP BYs and filtering in JS (Fix 4).
     const legacyAdmin =
       !tenantIsolationEnforced() &&
       (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin);
-    const allowed = legacyAdmin ? null : new Set(req.actor.companyIds ?? []);
-    const stats = await svc.stats();
-    if (!allowed) {
-      res.json(stats);
-      return;
-    }
-    const filtered = Object.fromEntries(Object.entries(stats).filter(([companyId]) => allowed.has(companyId)));
-    res.json(filtered);
+    const stats = legacyAdmin
+      ? await svc.stats()
+      : await svc.stats(req.actor.companyIds ?? []);
+    res.json(stats);
   });
 
   // Common malformed path when companyId is empty in "/api/companies/{companyId}/issues".

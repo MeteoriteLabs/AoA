@@ -81,19 +81,30 @@ describe("companies org scope (cloud_auth)", () => {
     setDeploymentMode("cloud_auth");
   });
 
-  it("GET /: excludes companies not in the actor's companyIds (operator gets no full list)", async () => {
-    list.mockResolvedValue([{ id: "c1" }, { id: "c2" }]);
+  it("GET /: pushes the actor's companyIds into the service (SQL scope, no JS post-filter)", async () => {
+    list.mockResolvedValue([{ id: "c1" }]);
     const actor = sessionActor({ companyIds: ["c1"], operator: true });
     const res = await request(makeApp(actor)).get("/api/companies");
     expect(res.status).toBe(200);
+    expect(list).toHaveBeenCalledWith(["c1"]);
     expect(res.body.map((c: any) => c.id)).toEqual(["c1"]);
   });
 
-  it("GET /stats: excludes stats for companies outside the actor's memberships", async () => {
-    stats.mockResolvedValue({ c1: { total: 1 }, c2: { total: 9 } });
+  it("GET /: an actor with zero memberships passes the empty allow-set through (degrade-to-none)", async () => {
+    list.mockResolvedValue([]);
+    const actor = sessionActor({ companyIds: [] });
+    const res = await request(makeApp(actor)).get("/api/companies");
+    expect(res.status).toBe(200);
+    expect(list).toHaveBeenCalledWith([]);
+    expect(res.body).toEqual([]);
+  });
+
+  it("GET /stats: pushes the actor's companyIds into the service (SQL scope, no JS post-filter)", async () => {
+    stats.mockResolvedValue({ c1: { total: 1 } });
     const actor = sessionActor({ companyIds: ["c1"], operator: true });
     const res = await request(makeApp(actor)).get("/api/companies/stats");
     expect(res.status).toBe(200);
+    expect(stats).toHaveBeenCalledWith(["c1"]);
     expect(Object.keys(res.body)).toEqual(["c1"]);
   });
 
@@ -183,7 +194,7 @@ describe("companies org scope (self-hosted unchanged)", () => {
     );
   });
 
-  it("authenticated instance_admin still sees the full company list", async () => {
+  it("authenticated instance_admin still sees the full company list (unscoped service call)", async () => {
     setDeploymentMode("authenticated");
     list.mockResolvedValue([{ id: "c1" }, { id: "c2" }]);
     const actor = {
@@ -195,6 +206,23 @@ describe("companies org scope (self-hosted unchanged)", () => {
     };
     const res = await request(makeApp(actor, "authenticated")).get("/api/companies");
     expect(res.status).toBe(200);
+    expect(list).toHaveBeenCalledWith(); // no allow-set → unscoped
     expect(res.body.map((c: any) => c.id)).toEqual(["c1", "c2"]);
+  });
+
+  it("authenticated instance_admin sees full stats (unscoped service call)", async () => {
+    setDeploymentMode("authenticated");
+    stats.mockResolvedValue({ c1: { total: 1 }, c2: { total: 9 } });
+    const actor = {
+      type: "board",
+      source: "session",
+      userId: "op",
+      companyIds: [],
+      isInstanceAdmin: true,
+    };
+    const res = await request(makeApp(actor, "authenticated")).get("/api/companies/stats");
+    expect(res.status).toBe(200);
+    expect(stats).toHaveBeenCalledWith(); // no allow-set → unscoped
+    expect(Object.keys(res.body)).toEqual(["c1", "c2"]);
   });
 });
