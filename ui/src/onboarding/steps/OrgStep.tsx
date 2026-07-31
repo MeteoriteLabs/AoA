@@ -73,12 +73,13 @@ export function OrgStep({ ctx, onComplete }: StepProps) {
     setBusy(true);
     setError(null);
     try {
-      // organizationId is normally set by the preceding CreateOrganizationStep
-      // (ctx.organizationId truthy). It's absent only on the standalone
-      // "create another company" surface (OnboardingFlow.tsx `?new=1`, which
-      // renders this step directly, bypassing CreateOrganizationStep) — omit
-      // it there rather than send a literal `null` the create-company route
-      // would reject; the server derives DEFAULT_ORGANIZATION_ID instead.
+      // organizationId is set by the preceding CreateOrganizationStep on the
+      // founder spine, and by CreateAnotherCompany on the standalone "create
+      // another company" surface (OnboardingFlow.tsx `?new=1`). In cloud_auth
+      // it is always an explicit create-capable org id (CreateAnotherCompany
+      // resolves it — the server 403s an omitted id for a founder in >=2 orgs).
+      // It is null only on the self-hosted path, where omitting it makes the
+      // server derive DEFAULT_ORGANIZATION_ID (companies.ts:56).
       const company =
         resumableCompany ??
         (await createCompany({ name: name.trim(), organizationId: ctx.organizationId ?? undefined }));

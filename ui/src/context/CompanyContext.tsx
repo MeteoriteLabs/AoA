@@ -27,14 +27,15 @@ interface CompanyContextValue {
   reloadCompanies: () => Promise<void>;
   createCompany: (data: {
     name: string;
-    // Phase 2 Task 12: the founder wizard's org-first sequence always creates
-    // the tenant Organization (CreateOrganizationStep) before OrgStep calls
-    // this, so it's normally supplied. Optional (not required) because
-    // OnboardingFlow.tsx's standalone "create another company" surface
-    // (`/onboarding?new=1`, which renders OrgStep directly, bypassing
-    // CreateOrganizationStep) has no organizationId to pass — omitting it
-    // makes the server derive DEFAULT_ORGANIZATION_ID, matching prior
-    // (pre-Phase-2) behavior. See OrgStep.tsx's submit().
+    // Phase 2 Task 12: the founder wizard's org-first sequence creates the
+    // tenant Organization (CreateOrganizationStep) before OrgStep calls this.
+    // Optional because the value is threaded through from onboarding. In
+    // cloud_auth it is always an explicit create-capable org id — the standalone
+    // "create another company" surface (`/onboarding?new=1`) resolves it via
+    // CreateAnotherCompany before calling createCompany, since the server 403s
+    // an omitted id for a founder in >=2 orgs and never guesses. It is omitted
+    // only on the self-hosted path, where the server derives
+    // DEFAULT_ORGANIZATION_ID (companies.ts:56). See OrgStep.tsx's submit().
     organizationId?: string;
     description?: string | null;
     budgetMonthlyCents?: number;
