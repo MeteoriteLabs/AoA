@@ -141,3 +141,39 @@ unaffected by #2). Commander uses the same `query_memory` tool → will need (b)
 2. Re-apply the read-only auto-approve (b) in `runtime-hooks.ts` + a route unit test.
 3. Prove all three live: Org (`query_memory` recall), Crew (`## Context` bundle),
    Commander (`query_memory` recall).
+
+---
+
+## ✅ RESOLVED — ORG memory delivery PROVEN end-to-end (2026-07-31)
+
+A real org `claude_local` agent retrieved company memory autonomously. Verbatim run
+output: *"Task ACM-13 (vision recall): Queried memory for 'vision' — Retrieved and
+reported: 'Be the memory layer every founder trusts'."*
+
+It took a **5-layer** fix — each layer masked the next:
+1. **Registry/name** — agents use `createToolRegistry` → `query_memory`, not the
+   MCP-server `memory.search` (commit `5264729b3`).
+2. **Allowlist** — `query_memory` added to `ORG_HEARTBEAT_TOOL_ALLOWLIST` (`5264729b3`).
+3. **Bridge activation** — confirmed working (`resolveRuntimeDecisionRoutingEnabled`
+   true with `AOA_RUNTIME_DECISION_ROUTING=1` + agent opt-in); my earlier "not
+   activating" reading was wrong.
+4. **MCP tool permission** — the W5b PreToolUse hook matches only **built-in** tools
+   (`PERMISSION_REQUIRING_TOOLS = Bash/Write/Edit/MultiEdit/NotebookEdit/WebFetch`), so
+   MCP tools were never permitted. Pass `--allowedTools mcp__aoa` for claude_local
+   runs — bounded by the bridge's allowlist-scoped exposure (commit `5f1dc75b9`).
+5. **Identity visibility** — `canSeeDurableMemory` hid identity memory from anyone
+   below team-lead, so an org agent (team_member) couldn't read the company vision.
+   Made it actor-aware: agents get identity, humans unchanged (commit `3eb7635a9`).
+
+**Prereqs for the sandbox:** `AOA_STRIP_CC_ENV=1` (CC-session auth scrub) +
+`AOA_RUNTIME_DECISION_ROUTING=1` + the agent's `runtimeConfig.runtimeDecisionRoutingEnabled=true`.
+
+## Remaining: Crew + Commander
+
+- **Crew** renders scoped memory into the prompt `## Context` (no MCP tool call).
+  Likely works, but its bundle (`crew-context-bundle.ts` → `loadScopedMemoryLines`)
+  uses a different filter path — verify it surfaces identity to crew agents.
+- **Commander** uses the same `query_memory` tool but a DIFFERENT spawn path
+  (`cli-mode.ts`, not the claude_local adapter), so it likely still needs the
+  `--allowedTools` equivalent there. `actorType="commander"` already sees identity via
+  isFounder/isTeamLead, so the identity fix doesn't regress it.
