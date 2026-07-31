@@ -5,6 +5,9 @@ summary: Catalog, installs, company plugin settings, skill imports, plugin jobs,
 
 Marketplace routes install AoA catalog items. Plugin routes manage installed plugin manifests, settings, jobs, UI contributions, bridge calls, and version history.
 
+The guarded fleet endpoint and its read-only inspection contract are documented
+in [Marketplace recovery](/guides/board-operator/marketplace-recovery).
+
 ## Marketplace
 
 ```
@@ -12,6 +15,8 @@ GET /api/marketplace/catalog
 POST /api/marketplace/catalog/sync
 GET /api/marketplace/catalog/status
 GET /api/marketplace/packages
+POST /api/admin/marketplace/reconcile
+GET /api/admin/marketplace/reconciliations/{operationId}
 GET /api/companies/{companyId}/marketplace/settings
 PATCH /api/companies/{companyId}/marketplace/settings
 GET /api/companies/{companyId}/marketplace/updates
@@ -33,8 +38,10 @@ Marketplace catalog data comes from the configured AoA marketplace CDN with a bu
 agent updates. `/diff` returns a section-level diff (a skill's unit is a `## `
 section of its SKILL.md; an agent's is `<file>::<## section>` across its whole
 instruction bundle); `/merge` takes a `decisions` map of section → `"mine"` |
-`"theirs"`. `/apply` is the unreviewed one-click landing and refuses team
-updates.
+`"theirs"`. Skill diffs also return an opaque `snapshotToken`; the client must
+send it with the merge so the server can reject a stale review if the local
+skill, upstream bytes, or catalog version changed. `/apply` is the unreviewed
+one-click landing and refuses team updates.
 
 Both verbs require the update to still be open: like `/apply`, `/merge` answers
 409 when the update is not `pending` or `conflict`, so a merge cannot be
@@ -75,6 +82,61 @@ The same repair runs unattended as part of the boot/24h crew update pass, capped
 per pass; the route exists for an operator who already knows a specific company
 is stuck. Both share a 6-hour per-company cooldown — send `{"force": true}` to
 override it after fixing the underlying cause.
+
+`POST /api/admin/marketplace/reconcile` is an instance-admin recovery operation
+with the mandatory strict body
+`{"scope":"fleet","mode":"repair","operationId":"<uuid>"}`. It first performs a
+fresh, deduplicated CDN catalog sync; a cache or bundled-snapshot fallback never
+authorizes fleet mutation. Only a successful CDN attempt may drive the
+full-fleet crew repair, legacy Steward adoption, crew update, and team-member
+reconciliation sequence.
+
+A 200 response has `status: "success" | "partial"`, the caller-provided
+`operationId`, `executionDisposition: "started" | "joined_in_flight"`, catalog
+identity, aggregate counters, typed `skips[]`, operation `diagnostics[]`, and
+sanitized per-company `failures[]`. The deprecated `replayed` field remains for
+one compatibility release and is true exactly when `executionDisposition` is
+`joined_in_flight`. A matching concurrent request joins the same promise; a
+different ID receives typed `409 operation_in_flight`, and a completed ID is
+never executed again.
+
+Operation identity and state are stored in the instance-scoped
+`marketplace_reconciliation_operations` ledger before the fleet is discovered.
+A database-enforced singleton lease prevents different app replicas from
+running overlapping fleet operations. The ledger remains authoritative across
+restarts and for a zero-company fleet; company `activity_log` rows provide
+per-company audit detail and cannot be created through the generic activity or
+plugin logging APIs under the reserved reconciliation namespace.
+
+Before catalog refresh or fleet mutation, the service records the sorted target
+set with `catalog: null`. A successful completion audit records final catalog
+identity and gives each company only its own skips and failures. A terminal
+pre-mutation catalog failure remains inspectable. If mutation may have committed
+but the completion audit fails, the POST returns
+`outcome_unknown_after_mutation`; operators must inspect before deciding whether
+another operation is safe.
+
+Catalog refresh is side-effect-free with respect to installed marketplace
+items. Reconciliation snapshots its target companies and persists the start
+audit before running the catalog skill/plugin update check, so pending-update
+rows and notifications cannot precede the audit boundary. A shared mutation
+lock queues periodic/manual catalog update checks behind an in-flight audited
+reconciliation, and the reconciliation update check receives the exact audited
+company-ID snapshot owned by the ledger rather than rediscovering the fleet.
+
+Every 400, 401, 403, 404, 409, 500, and 502 response uses the strict envelope
+`{ok:false,error:{code,message},operationId,retry,docUrl}`. Raw catalog or
+exception text is never returned. `GET
+/api/admin/marketplace/reconciliations/{operationId}` returns durable
+`running`, `success`, `partial`, `failed_before_mutation`, or
+`outcome_unknown_after_mutation` state plus `safeToRetry` and a typed recovery
+instruction. Callers should retain the operation ID and follow that instruction;
+do not infer retry safety from an HTTP timeout.
+
+Pending-update persistence and notification errors from the crew-update pass
+are included as sanitized `crew_update` failures rather than being reduced to
+application-log-only warnings. The full operator workflow and code-to-recovery
+table are in [Marketplace recovery](/guides/board-operator/marketplace-recovery).
 
 `DELETE .../marketplace/teams/{teamId}` is founder-only and permanently deletes
 every agent on the team — **except protected AoA agents** (Commander, Steward),
@@ -177,10 +239,16 @@ source-re-read paths refuse rather than replace it:
   `conflicts` (reason names the local edits); they are absent from `updated`. One edited
   skill never aborts the sweep.
 
-Paths where the caller *is* the authoring surface — `POST .../skills`,
-`POST .../skills/import-package`, and company bundle import — overwrite by design and
-**clear** `customized`, because the bytes they just wrote are now the row's truth.
+`POST .../skills` only creates a fresh canonical key. A name/slug collision returns
+**409** with top-level `code = "SKILL_NAME_TAKEN"` and the same value plus `slug` and
+`key` under `details`; the existing row and directory are untouched.
 
-Both also raise a founder hub item. To take the upstream version, delete the skill and
-re-import it. This mirrors the catalog apply path, which answers 409 `SKILL_CUSTOMIZED`
-and routes the founder to the diff/merge review instead.
+`POST .../skills/import-package` remains an authoritative authoring surface and clears
+`customized` after replacing the bytes. Company bundle import is conservative instead:
+an `existing_company` preview surfaces `existingCustomized: true` and skips that skill
+by default. Replacing founder edits requires the exact manifest key in
+`overwriteCustomizedSkillKeys` on both the preview and import requests.
+
+A source-re-read refusal also raises a founder hub item. To take the upstream version,
+delete the skill and re-import it. This mirrors the catalog apply path, which answers
+409 `SKILL_CUSTOMIZED` and routes the founder to the diff/merge review instead.

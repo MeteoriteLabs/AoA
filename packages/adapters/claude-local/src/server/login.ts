@@ -72,14 +72,21 @@ export function runClaudeLoginStreaming(args: {
 }): StreamingLoginResult & { authHome: string } {
   const env = args.env ?? process.env;
   const authHome = resolveClaudeConfigHome(env);
-  const ensureDir = args.ensureDir ?? ((dir: string) => void fs.mkdirSync(dir, { recursive: true }));
+  const ensureDir =
+    args.ensureDir ??
+    ((dir: string) => {
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      fs.chmodSync(dir, 0o700);
+    });
   ensureDir(authHome);
   const result = runStreamingLogin({
     runId: args.runId,
     command: args.command ?? "claude",
-    args: ["auth", "login"],
+    args: ["auth", "login", "--claudeai"],
     cwd: authHome,
-    env: { CLAUDE_CONFIG_DIR: authHome },
+    // Preserve the caller's scoped HOME as well as CLAUDE_CONFIG_DIR. Passing
+    // only the provider variable would re-inherit the server's shared HOME.
+    env: { ...env, CLAUDE_CONFIG_DIR: authHome },
     // Claude blocks on "Paste code here" (see the module header). Codex does
     // not, and deliberately keeps the default "ignore".
     stdin: "pipe",

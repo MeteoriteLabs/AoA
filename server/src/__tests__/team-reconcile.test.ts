@@ -157,16 +157,62 @@ describe("reconcileTeamMembers (WS6)", () => {
         { name: "Archivist", templateOrigin: "aoa-curated/standard-crew/librarian@legacy" },
       ],
     });
+    const onFailure = vi.fn();
 
     const result = await reconcileTeamMembers({
       db: db as any,
       companyId: "co-1",
       catalogItems: [TEAM_CATALOG_ITEM, LIBRARIAN_CATALOG_ITEM],
       instructionsService: { materializeManagedBundle: vi.fn() } as any,
+      onFailure,
     });
 
     expect(createMarketplaceAgent).not.toHaveBeenCalled();
     expect(insertSpy).not.toHaveBeenCalled();
+    expect(onFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        companyId: "co-1",
+        teamId: "team-1",
+        templateOrigin: LIBRARIAN_CATALOG_ITEM.id,
+        stage: "member_install",
+        error: expect.any(Error),
+      }),
+    );
+    expect(result).toEqual({ teamsReconciled: 0, membersAdded: 0 });
+  });
+
+  it("reports a roster member missing from the catalog", async () => {
+    vi.mocked(fetchCatalogResource).mockResolvedValue(
+      JSON.stringify({
+        slug: "standard-crew",
+        agents: [{ templateOrigin: LIBRARIAN_CATALOG_ITEM.id, name: "Librarian" }],
+      }),
+    );
+    const { db, insertSpy } = makeDb({
+      teamRows: [{ id: "team-1", templateOrigin: TEAM_CATALOG_ITEM.id }],
+      existingMemberOrigins: [],
+    });
+    const onFailure = vi.fn();
+
+    const result = await reconcileTeamMembers({
+      db: db as any,
+      companyId: "co-1",
+      catalogItems: [TEAM_CATALOG_ITEM],
+      instructionsService: { materializeManagedBundle: vi.fn() } as any,
+      onFailure,
+    });
+
+    expect(createMarketplaceAgent).not.toHaveBeenCalled();
+    expect(insertSpy).not.toHaveBeenCalled();
+    expect(onFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        companyId: "co-1",
+        teamId: "team-1",
+        templateOrigin: LIBRARIAN_CATALOG_ITEM.id,
+        stage: "member_install",
+        error: expect.any(Error),
+      }),
+    );
     expect(result).toEqual({ teamsReconciled: 0, membersAdded: 0 });
   });
 

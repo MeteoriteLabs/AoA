@@ -55,6 +55,10 @@ vi.mock("../services/marketplace-install/skill-bundle-materializer.js", async ()
   >("../services/marketplace-install/skill-bundle-materializer.js");
   return { ...actual, materializeSkillBundle: materializerMock };
 });
+vi.mock(
+  "../services/outbound-url-guard.js",
+  () => import("./helpers/outbound-url-guard.mock.js"),
+);
 
 import {
   MarketplaceCatalogService,
@@ -114,11 +118,13 @@ const PORT = 57900 + Math.floor(Math.random() * 500);
 
 /** A CDN URL that is never reachable — the fixture fetch always rejects it. */
 const FIXTURE_CDN_URL = "https://cdn.fixture.invalid/catalog.json";
-const FIXTURE_HOST = "https://raw.fixture.invalid";
+const FIXTURE_HOST =
+  `https://raw.githubusercontent.com/MeteoriteLabs/aoa-marketplace/${"f".repeat(40)}`;
 
 const TEAM_ID = "team:aoa-curated/default-crew";
 const SCOUT_ID = "agent:aoa-curated/aoa-scout";
 const REVIEWER_ID = "agent:aoa-curated/aoa-reviewer";
+const STEWARD_ID = "agent:aoa-curated/aoa-steward";
 const SKILL_ID = "skill:aoa-curated/fixture-crew-skill";
 /**
  * The shape every real crew skill has: a `skill.bundle`, a `provider`, a
@@ -149,7 +155,7 @@ function rowsOf<T>(result: unknown): T[] {
 
 // ── Fixture catalog ──────────────────────────────────────────────────────────
 // A miniature of the real `team:aoa-curated/default-crew`: a team item whose
-// requires[] names two agents and one skill. Deliberately hand-built rather
+// requires[] names three agents and two skills. Deliberately hand-built rather
 // than loaded from the gitignored snapshot (see file docstring).
 
 function catalogItemBase(id: string, type: string, name: string) {
@@ -171,7 +177,7 @@ function catalogItemBase(id: string, type: string, name: string) {
 const FIXTURE_CATALOG: MarketplaceCatalogFile = {
   schemaVersion: "1.0.0",
   generatedAt: "2026-07-24T00:00:00.000Z",
-  itemCount: 4,
+  itemCount: 6,
   items: [
     {
       ...catalogItemBase(TEAM_ID, "team", "AoA Default Crew"),
@@ -179,6 +185,7 @@ const FIXTURE_CATALOG: MarketplaceCatalogFile = {
       requires: [
         { type: "agent", id: SCOUT_ID },
         { type: "agent", id: REVIEWER_ID },
+        { type: "agent", id: STEWARD_ID },
         { type: "skill", id: SKILL_ID },
         { type: "skill", id: BUNDLE_SKILL_ID },
       ],
@@ -190,6 +197,10 @@ const FIXTURE_CATALOG: MarketplaceCatalogFile = {
     {
       ...catalogItemBase(REVIEWER_ID, "agent", "Reviewer"),
       resourceUrl: `${FIXTURE_HOST}/agents/aoa-reviewer/agent.json`,
+    },
+    {
+      ...catalogItemBase(STEWARD_ID, "agent", "Steward"),
+      resourceUrl: `${FIXTURE_HOST}/agents/aoa-steward/agent.json`,
     },
     {
       ...catalogItemBase(SKILL_ID, "skill", "Fixture Crew Skill"),
@@ -252,10 +263,11 @@ function agentTemplate(id: string, name: string, triggerRole: string) {
 const TEAM_TEMPLATE = JSON.stringify({
   slug: "aoa-default-crew",
   description: "Fixture crew",
-  manifest: { installOrder: [SCOUT_ID, REVIEWER_ID] },
+  manifest: { installOrder: [SCOUT_ID, REVIEWER_ID, STEWARD_ID] },
   agents: [
     { templateOrigin: SCOUT_ID, name: "Scout" },
     { templateOrigin: REVIEWER_ID, name: "Reviewer" },
+    { templateOrigin: STEWARD_ID, name: "Steward" },
   ],
 });
 
@@ -263,6 +275,7 @@ const FIXTURE_BODIES: Record<string, string> = {
   [`${FIXTURE_HOST}/teams/default-crew/team.json`]: TEAM_TEMPLATE,
   [`${FIXTURE_HOST}/agents/aoa-scout/agent.json`]: agentTemplate("aoa-scout", "Scout", "scout"),
   [`${FIXTURE_HOST}/agents/aoa-reviewer/agent.json`]: agentTemplate("aoa-reviewer", "Reviewer", "reviewer"),
+  [`${FIXTURE_HOST}/agents/aoa-steward/agent.json`]: agentTemplate("aoa-steward", "Steward", "steward"),
   // Deliberately DIFFERENT from BUNDLE_MARKDOWN: the pre-T2.3c installer stored
   // this body, the real installer stores the bundle's, so the two are
   // distinguishable in the parity assertion.
@@ -478,7 +491,7 @@ describe.skipIf(
     const crew = await crewRows(company.id);
 
     const marketplaceCrew = crew.filter((row) => row.template_origin?.startsWith("agent:aoa-curated/"));
-    expect(marketplaceCrew.map((r) => r.name).sort()).toEqual(["Reviewer", "Scout"]);
+    expect(marketplaceCrew.map((r) => r.name).sort()).toEqual(["Reviewer", "Scout", "Steward"]);
 
     for (const row of marketplaceCrew) {
       // The single root cause Phase 2 fixes: `@legacy` origins are skipped by
@@ -525,11 +538,43 @@ describe.skipIf(
     expect(orgAgents.map((a) => a.name)).not.toContain("Reviewer");
     expect(orgAgents).toHaveLength(0);
 
-    // Infrastructure agents are NOT marketplace-owned and must still be seeded
-    // (P8d) — the T2.2 contract, re-proven end to end now that the crew half
-    // takes a different path.
+    // Commander remains application infrastructure; Steward now comes from the
+    // protected marketplace crew relationship asserted above.
     expect(crew.some((r) => r.name === "Commander")).toBe(true);
-    expect(crew.some((r) => r.name === "Steward")).toBe(true);
+    expect(crew.find((r) => r.name === "Steward")?.template_origin).toBe(STEWARD_ID);
+  }, 120_000);
+
+  it("a stale catalog without Steward degrades before dispatch and still seeds a legacy Steward", async () => {
+    assertSetupOk();
+    await clearCatalogCache();
+
+    const staleCatalog = structuredClone(FIXTURE_CATALOG);
+    staleCatalog.items = staleCatalog.items.filter((item) => item.id !== STEWARD_ID);
+    const teamItem = staleCatalog.items.find((item) => item.id === TEAM_ID)!;
+    teamItem.requires = (teamItem.requires ?? []).filter((requirement) => requirement.id !== STEWARD_ID);
+    staleCatalog.itemCount = staleCatalog.items.length;
+
+    const service = makeService({ snapshot: staleCatalog });
+    await service.sync();
+    registerMarketplaceCatalogService(service);
+
+    const company = await companyService(db).create({ name: "Stale Crew Catalog Co" } as never);
+    const crew = await crewRows(company.id);
+    const steward = crew.find((row) => row.name === "Steward");
+
+    expect(steward).toBeDefined();
+    expect(steward?.template_origin).toBeNull();
+    expect(crew.some((row) => row.name === "Adjutant")).toBe(true);
+    expect(crew.some((row) => row.template_origin?.startsWith("agent:aoa-curated/"))).toBe(false);
+
+    const operations = rowsOf<{ n: string }>(
+      await db.execute(sql`
+        SELECT count(*)::text AS n
+        FROM marketplace_install_operations
+        WHERE company_id = ${company.id}
+      `),
+    );
+    expect(Number(operations[0].n)).toBe(0);
   }, 120_000);
 
   // ── T2.3d: the same create path, against the REAL published bodies ────────
@@ -560,7 +605,7 @@ describe.skipIf(
 
     const crew = await crewRows(company.id);
     const marketplaceCrew = crew.filter((r) => r.template_origin?.startsWith("agent:aoa-curated/"));
-    expect(marketplaceCrew.map((r) => r.name).sort()).toEqual(["Reviewer", "Scout"]);
+    expect(marketplaceCrew.map((r) => r.name).sort()).toEqual(["Reviewer", "Scout", "Steward"]);
     for (const row of marketplaceCrew) {
       expect(row.template_origin).not.toMatch(/@legacy$/);
     }
@@ -591,6 +636,7 @@ describe.skipIf(
     expect(triggers).toEqual([
       { name: "Reviewer", kind: "mention", enabled: true, config: { role: "reviewer" } },
       { name: "Scout", kind: "mention", enabled: true, config: { role: "scout" } },
+      { name: "Steward", kind: "mention", enabled: true, config: { role: "steward" } },
     ]);
 
     // ── T2.3e: marketplace-managed AND dispatchable ─────────────────────────
@@ -747,7 +793,7 @@ describe.skipIf(
 
     expect(
       crew.filter((r) => r.template_origin?.startsWith("agent:aoa-curated/")).map((r) => r.name).sort(),
-    ).toEqual(["Reviewer", "Scout"]);
+    ).toEqual(["Reviewer", "Scout", "Steward"]);
   }, 120_000);
 
   // ── Hazard 4: the cold-cache race ─────────────────────────────────────────
@@ -775,7 +821,7 @@ describe.skipIf(
 
       expect(
         crew.filter((r) => r.template_origin?.startsWith("agent:aoa-curated/")).map((r) => r.name).sort(),
-      ).toEqual(["Reviewer", "Scout"]);
+      ).toEqual(["Reviewer", "Scout", "Steward"]);
       expect(await catalogCacheSource()).toBe("bundled");
     } finally {
       service.stopSyncLoop();
@@ -801,6 +847,7 @@ describe.skipIf(
     // Legacy roster present…
     expect(crew.some((r) => r.name === "Scout")).toBe(true);
     expect(crew.some((r) => r.name === "Adjutant")).toBe(true);
+    expect(crew.some((r) => r.name === "Steward")).toBe(true);
     // …and it is legacy: the seeders write no templateOrigin at all.
     expect(crew.find((r) => r.name === "Scout")!.template_origin).toBeNull();
     // No marketplace rows exist: the break is at team-installer phase 1c (the
@@ -833,7 +880,7 @@ describe.skipIf(
   // Seeding on top of it is silent and permanent: `seedCrewAgent` hits
   // ON CONFLICT DO NOTHING on the name-overlapping roles, takes the `!inserted`
   // branch, and overwrites the MARKETPLACE rows' runtimeConfig.aoa.toolAllowlist
-  // (and adapter, and instruction bundle) while leaving templateOrigin and
+  // (and possibly the adapter) while leaving templateOrigin and
   // templateVersion intact — so `crew-updater` sees managed rows at the current
   // catalog version and never repairs them, and no duplicate row is minted to
   // reveal it.
@@ -866,7 +913,7 @@ describe.skipIf(
     // The install DID commit.
     const crew = await crewRows(companyId);
     const marketplaceCrew = crew.filter((r) => r.template_origin?.startsWith("agent:aoa-curated/"));
-    expect(marketplaceCrew.map((r) => r.name).sort()).toEqual(["Reviewer", "Scout"]);
+    expect(marketplaceCrew.map((r) => r.name).sort()).toEqual(["Reviewer", "Scout", "Steward"]);
 
     // …and the legacy seeders did NOT run over it. The DAMAGE is asserted first
     // and the outcome mode last, deliberately: a mode string is a proxy, the
@@ -995,7 +1042,7 @@ describe.skipIf(
     const crew = await crewRows(companyId);
     expect(
       crew.filter((r) => r.template_origin?.startsWith("agent:aoa-curated/")).map((r) => r.name).sort(),
-    ).toEqual(["Reviewer", "Scout"]);
+    ).toEqual(["Reviewer", "Scout", "Steward"]);
     expect(outcome.mode).toBe("marketplace");
 
     // Reclaimed in place — still one row, now terminal and error-free.

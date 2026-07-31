@@ -74,6 +74,8 @@ export interface LoginRunLike {
   urlPromise: Promise<string>;
   exitPromise: Promise<number | null>;
   authHome: string;
+  /** Codex device authorization code. Memory-only; never persisted. */
+  userCodePromise?: Promise<string>;
   /**
    * Deliver a pasted auth code to the LIVE child's stdin.
    *
@@ -105,13 +107,24 @@ export type SubmitCodeResult = "delivered" | "unsupported" | "not-live" | "write
 
 export interface CommanderLoginServiceDeps {
   store: ChallengeStore;
-  resolveAuthHome: (provider: CommanderLoginProvider, env: NodeJS.ProcessEnv) => string;
+  resolveAuthHome: (
+    provider: CommanderLoginProvider,
+    env: NodeJS.ProcessEnv,
+    scope: { companyId: string; userId: string; executionTargetId: string | null },
+  ) => string;
   runLogin: (
     provider: CommanderLoginProvider,
-    args: { runId: string; env: NodeJS.ProcessEnv },
+    args: { runId: string; env: NodeJS.ProcessEnv; authHome: string },
   ) => LoginRunLike;
   /** Provider-specific completion evidence (codex auth.json / claude credential file). */
   credentialPresent: (provider: CommanderLoginProvider, authHome: string) => Promise<boolean>;
+  /** Persist the logical owner/target record after provider-native evidence exists. */
+  onCredentialEvidence?: (args: {
+    companyId: string;
+    provider: CommanderLoginProvider;
+    userId: string;
+    executionTargetId: string;
+  }) => Promise<void>;
   /**
    * Kill a login child by its PERSISTED pid/pgid. `expected.startedAt` is
    * REQUIRED — every caller of this seam kills a pid that came from a DB row,
@@ -156,6 +169,8 @@ export class LoginChallengeConflictError extends Error {
 export interface StartChallengeResult {
   challengeId: string;
   loginUrl: string;
+  userCode: string | null;
+  expiresAt: string;
   /** Resolves once the login has finalized (completed/failed). Route can ignore it; tests await it. */
   completion: Promise<void>;
 }
@@ -165,14 +180,22 @@ export interface CommanderLoginService {
     companyId: string;
     provider: CommanderLoginProvider;
     startedByUserId: string | null;
+    executionTargetId?: string | null;
   }): Promise<StartChallengeResult>;
   /** Company-scoped: a challenge owned by another company is reported absent. */
   getStatus(
     companyId: string,
     id: string,
+    expectedProvider?: CommanderLoginProvider | null,
+    startedByUserId?: string,
   ): Promise<{ status: ChallengeStatus; loginUrl: string | null } | null>;
   /** Company-scoped: a cross-tenant cancel is a silent no-op (as if absent). */
-  cancel(companyId: string, id: string): Promise<void>;
+  cancel(
+    companyId: string,
+    id: string,
+    expectedProvider?: CommanderLoginProvider | null,
+    startedByUserId?: string,
+  ): Promise<void>;
   reapOrphans(): Promise<void>;
   /**
    * Deliver a pasted auth code to the challenge's LIVE child in THIS process.
@@ -189,7 +212,12 @@ export interface CommanderLoginService {
    * the same non-leaking "report as absent" convention `getStatus`/`cancel`
    * already use.
    */
-  submitCode(companyId: string, challengeId: string, code: string): SubmitCodeResult;
+  submitCode(
+    companyId: string,
+    challengeId: string,
+    code: string,
+    startedByUserId?: string,
+  ): SubmitCodeResult;
 }
 
 /**
@@ -243,14 +271,16 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
    *
    * Entries are added once the child has spawned (so `run.submitCode` exists)
    * and removed on every terminal path: pid-backfill failure, superseded
-   * (0-row backfill), URL-discovery failure, loginUrl-write failure, normal
+   * (0-row backfill), URL-discovery failure, normal
    * finalize (completed/failed/timeout, inside `finalize`), and `cancel`.
    */
   const liveRuns = new Map<
     string,
     {
       companyId: string;
+      startedByUserId: string | null;
       provider: CommanderLoginProvider;
+      loginUrl: string | null;
       submitCode: (code: string) => boolean;
     }
   >();
@@ -284,9 +314,14 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
     companyId: string;
     provider: CommanderLoginProvider;
     startedByUserId: string | null;
+    executionTargetId?: string | null;
   }): Promise<StartChallengeResult> {
     const env = deps.env();
-    const authHome = deps.resolveAuthHome(args.provider, env);
+    const authHome = deps.resolveAuthHome(args.provider, env, {
+      companyId: args.companyId,
+      userId: args.startedByUserId ?? "board",
+      executionTargetId: args.executionTargetId ?? null,
+    });
     const id = deps.newId();
 
     // Single-flight per (provider, authHome), decided ATOMICALLY inside the
@@ -370,7 +405,7 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
 
     let run: LoginRunLike;
     try {
-      run = deps.runLogin(args.provider, { runId: id, env });
+      run = deps.runLogin(args.provider, { runId: id, env, authHome });
     } catch (err) {
       // Spawn failed — release the slot (never leave a dangling `pending` row).
       await settleTerminal(id, "failed");
@@ -378,11 +413,13 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
     }
     // Register the live child NOW — `submitCode` needs a real child, and every
     // path below that can end this challenge (backfill failure, superseded,
-    // URL-discovery failure, loginUrl-write failure, normal finalize, cancel)
+    // URL-discovery failure, normal finalize, cancel)
     // removes this entry so a dead/foreign challenge never looks live.
     liveRuns.set(id, {
       companyId: args.companyId,
+      startedByUserId: args.startedByUserId,
       provider: args.provider,
+      loginUrl: null,
       submitCode: run.submitCode,
     });
     // Capture the child's ACTUAL spawn instant (Codex round-8 P2 :202). `startedAt`
@@ -414,7 +451,7 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
       try {
         run.handle.terminate();
       } catch {
-        /* best-effort */
+        // best-effort
       }
       // We throw before wiring the exit finalizer below — keep a rejecting
       // exitPromise from becoming an unhandled rejection.
@@ -446,7 +483,7 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
       try {
         run.handle.terminate();
       } catch {
-        /* best-effort */
+        // best-effort
       }
       run.exitPromise.catch(() => {});
       liveRuns.delete(id); // our own row is already gone; nothing to deliver a code to
@@ -465,7 +502,7 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
       try {
         run.handle.terminate();
       } catch {
-        /* best-effort */
+        // best-effort
       }
       // We throw before wiring the exit finalizer below — keep a rejecting
       // exitPromise from becoming an unhandled rejection.
@@ -483,27 +520,27 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
       await settleTerminal(id, status);
       throw err;
     }
-    try {
-      await deps.store.update(id, { loginUrl });
-    } catch (err) {
-      // Sibling of the URL-discovery path (Codex round-8 audit): the loginUrl write
-      // rejected AFTER the child found its URL. The child is ALIVE — holding the
-      // credential home + codex :1455 port — and we have NOT yet wired the completion
-      // deadline below, so leaving it here would strand a LIVE child plus a `pending`
-      // row until the boot reaper. Kill it now + finalize resiliently, then rethrow
-      // the ORIGINAL error (the route maps it to 502). Neutralize the exitPromise so
-      // a post-kill rejection can't surface as an unhandled rejection.
+    /* Login URLs are short-lived bearer material and intentionally stay in memory. */
+    const liveRun = liveRuns.get(id);
+    if (liveRun) liveRun.loginUrl = loginUrl;
+    let userCode: string | null = null;
+    if (run.userCodePromise) {
       try {
-        run.handle.terminate();
-      } catch {
-        /* best-effort */
+        userCode = await run.userCodePromise;
+      } catch (err) {
+        try {
+          run.handle.terminate();
+        } catch {
+          // best-effort
+        }
+        run.exitPromise.catch(() => {});
+        liveRuns.delete(id);
+        const status: ChallengeStatus =
+          err instanceof Error && err.message === "device-code-timeout" ? "timeout" : "failed";
+        await settleTerminal(id, status);
+        throw err;
       }
-      run.exitPromise.catch(() => {});
-      liveRuns.delete(id); // child killed above — no longer reachable for a pasted code
-      await settleTerminal(id, "failed");
-      throw err;
     }
-
     // Finalize asynchronously from the child's exit + credential evidence, BUT
     // bound the wait with a completion deadline (Codex round-7 P2). After the URL
     // is surfaced the child normally finalizes from its own exit (exit 0 +
@@ -566,6 +603,14 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
         if (result.kind === "exit-error") return "failed";
         const ok =
           result.code === 0 && (await deps.credentialPresent(args.provider, authHome));
+        if (ok && args.startedByUserId) {
+          await deps.onCredentialEvidence?.({
+            companyId: args.companyId,
+            provider: args.provider,
+            userId: args.startedByUserId,
+            executionTargetId: args.executionTargetId ?? "control-plane",
+          });
+        }
         return ok ? "completed" : "failed";
       })().then(
         (status) => ({ kind: "done" as const, status }),
@@ -593,25 +638,50 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
       // rejection.
     });
 
-    return { challengeId: id, loginUrl, completion };
+    return {
+      challengeId: id,
+      loginUrl,
+      userCode,
+      expiresAt: new Date(now().getTime() + LOGIN_COMPLETION_DEADLINE_MS).toISOString(),
+      completion,
+    };
   }
 
   async function getStatus(
     companyId: string,
     id: string,
+    expectedProvider?: CommanderLoginProvider | null,
+    startedByUserId?: string,
   ): Promise<{ status: ChallengeStatus; loginUrl: string | null } | null> {
     const row = await deps.store.get(id);
     // Company-scoped (Codex P1): a row owned by another company is reported
     // NOT FOUND — never leak existence (or the OAuth loginUrl) across tenants.
-    if (!row || row.companyId !== companyId) return null;
-    return { status: row.status, loginUrl: row.loginUrl };
+    if (
+      !row ||
+      row.companyId !== companyId ||
+      (expectedProvider != null && row.provider !== expectedProvider) ||
+      (startedByUserId !== undefined && row.startedByUserId !== startedByUserId)
+    )
+      return null;
+    return { status: row.status, loginUrl: liveRuns.get(id)?.loginUrl ?? null };
   }
 
-  async function cancel(companyId: string, id: string): Promise<void> {
+  async function cancel(
+    companyId: string,
+    id: string,
+    expectedProvider?: CommanderLoginProvider | null,
+    startedByUserId?: string,
+  ): Promise<void> {
     const row = await deps.store.get(id);
     // Cross-tenant cancel is a silent no-op — as if absent (no distinct error
     // that would leak existence), and NEVER terminate another company's child.
-    if (!row || row.companyId !== companyId) return;
+    if (
+      !row ||
+      row.companyId !== companyId ||
+      (expectedProvider != null && row.provider !== expectedProvider) ||
+      (startedByUserId !== undefined && row.startedByUserId !== startedByUserId)
+    )
+      return;
     // Identity-verified cancel (Codex round-7 P1). The UI fires cancel-on-unmount
     // (VerifyStep) with a challengeId the BROWSER retains across a server restart /
     // after the CLI already exited, so this row's persisted pid can belong to an
@@ -647,13 +717,23 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
     }
   }
 
-  function submitCode(companyId: string, challengeId: string, code: string): SubmitCodeResult {
+  function submitCode(
+    companyId: string,
+    challengeId: string,
+    code: string,
+    startedByUserId?: string,
+  ): SubmitCodeResult {
     const live = liveRuns.get(challengeId);
     // Registry miss OR cross-tenant: report as absent, mirroring
     // getStatus/cancel — never distinguish "unknown" from "belongs to
     // another company" (that distinction is itself information a foreign
     // caller should not learn), and never write into another tenant's child.
-    if (!live || live.companyId !== companyId) return "not-live";
+    if (
+      !live ||
+      live.companyId !== companyId ||
+      (startedByUserId !== undefined && live.startedByUserId !== startedByUserId)
+    )
+      return "not-live";
     // Codex never accepts a pasted code: its stdin is not piped by design.
     if (live.provider === "openai") return "unsupported";
     // The write was attempted against a live, same-company child; the child

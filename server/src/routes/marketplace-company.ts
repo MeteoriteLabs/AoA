@@ -59,8 +59,10 @@ import {
   type MergeableAgentRow,
 } from "../services/marketplace-install/agent-update-merge.js";
 import {
+  SkillMergeConflictError,
   SkillMergeUpstreamError,
   mergeSkillUpdate,
+  skillMergeSnapshotToken,
 } from "../services/marketplace-install/skill-update-merge.js";
 import type { AgentInstructionsServiceLike } from "../services/marketplace-install/agent-create.js";
 import { SKILL_CUSTOMIZED_ERROR_CODE, type MarketplaceCatalogFile } from "@armyofagents/shared";
@@ -534,7 +536,6 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
       res.status(503).json({ error: "Catalog item resource URL not available" });
       return;
     }
-
     try {
       const upstreamRes = await fetch(catalogItem.resourceUrl as string, {
         signal: AbortSignal.timeout(15000),
@@ -543,7 +544,16 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
       const upstreamContent = await upstreamRes.text();
 
       const diff = computeSectionDiff(skill.markdown ?? "", upstreamContent);
-      res.json({ diff, currentVersion: update.currentVersion, latestVersion: update.latestVersion });
+      res.json({
+        diff,
+        currentVersion: update.currentVersion,
+        latestVersion: catalogItem.version,
+        snapshotToken: skillMergeSnapshotToken(
+          skill.markdown ?? "",
+          upstreamContent,
+          catalogItem.version,
+        ),
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       res.status(502).json({ error: `Failed to fetch upstream content: ${message}` });
@@ -557,7 +567,10 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
     assertCompanyAccess(req, companyId);
 
     const { id } = req.params as { id: string };
-    const { decisions } = req.body as { decisions?: Record<string, "mine" | "theirs"> };
+    const { decisions, snapshotToken } = req.body as {
+      decisions?: Record<string, "mine" | "theirs">;
+      snapshotToken?: string;
+    };
 
     if (!decisions || typeof decisions !== "object" || Array.isArray(decisions)) {
       res.status(400).json({ error: "decisions must be an object" });
@@ -640,6 +653,10 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
       res.status(400).json({ error: "decisions must not be empty" });
       return;
     }
+    if (typeof snapshotToken !== "string" || snapshotToken.length === 0) {
+      res.status(400).json({ error: "snapshotToken is required; refresh the diff before merging" });
+      return;
+    }
 
     // `metadata` is read (not just written) because the bundle re-materialization
     // patches it rather than replacing it — the row's catalog trust tier and
@@ -649,6 +666,7 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
         id: companySkills.id,
         markdown: companySkills.markdown,
         metadata: companySkills.metadata,
+        customized: companySkills.customized,
       })
       .from(companySkills)
       .where(
@@ -681,7 +699,7 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
         skill,
         catalogItem,
         pendingUpdateId: id,
-        latestVersion: update.latestVersion,
+        expectedSnapshotToken: snapshotToken,
         decisions,
       });
       // `outcome.bundlePath` is deliberately NOT echoed: it is an absolute
@@ -693,7 +711,9 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
         ...(outcome.fileCount !== undefined ? { bundleFileCount: outcome.fileCount } : {}),
       });
     } catch (err) {
-      if (err instanceof SkillMergeUpstreamError) {
+      if (err instanceof SkillMergeConflictError) {
+        res.status(409).json({ error: err.message, code: "SKILL_MERGE_CONFLICT" });
+      } else if (err instanceof SkillMergeUpstreamError) {
         res.status(502).json({ error: err.message });
       } else {
         res.status(500).json({ error: err instanceof Error ? err.message : "Merge failed" });

@@ -21,6 +21,7 @@ import { onboardingEnvironmentRoutes } from "./routes/onboarding-environment.js"
 import { commanderVerifyRoutes } from "./routes/commander-verify.js";
 import { commanderKeyRoutes } from "./routes/commander-key.js";
 import { commanderLoginRoutes } from "./routes/commander-login.js";
+import { providerCredentialRoutes } from "./routes/provider-credentials.js";
 import { userProfileRoutes } from "./routes/user-profiles.js";
 import { operationsHealthRoutes } from "./routes/operations-health.js";
 import { companyRoutes } from "./routes/companies.js";
@@ -47,6 +48,7 @@ import { activityRoutes } from "./routes/activity.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
 import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { sidebarPreferencesRoutes } from "./routes/sidebar-preferences.js";
+import { homeBoardLayoutRoutes } from "./routes/home-board-layout.js";
 import { viewerPreferencesRoutes } from "./routes/viewer-preferences.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
 import { userEntityPinRoutes } from "./routes/user-entity-pins.js";
@@ -102,10 +104,15 @@ import { pluginRoutes, pluginCompanySettingsRoutes } from "./routes/plugins.js";
 import { companyPluginRoutes } from "./routes/company-plugins.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { createMarketplaceRouter } from "./routes/marketplace.js";
+import { createAdminMarketplaceRouter } from "./routes/admin-marketplace.js";
 import { createMarketplaceInstallRouter } from "./routes/marketplace-installs.js";
 import { createMarketplaceCompanyRouter } from "./routes/marketplace-company.js";
 import { providerRoutes } from "./routes/providers.js";
 import { MarketplaceCatalogService, registerMarketplaceCatalogService } from "./services/aoa-marketplace.js";
+import {
+  inspectMarketplaceReconciliation,
+  runMarketplaceReconciliation,
+} from "./services/marketplace-reconcile.js";
 import { pluginLoader } from "./services/plugin-loader.js";
 import { pluginRollbackService } from "./services/plugin-rollback.js";
 import { pluginRegistryService } from "./services/plugin-registry.js";
@@ -265,6 +272,7 @@ export async function createApp(
   app.use("/api", commanderVerifyRoutes(db));
   app.use("/api", commanderKeyRoutes(db));
   app.use("/api", commanderLoginRoutes(db));
+  app.use("/api", providerCredentialRoutes(db));
   app.use("/api", userProfileRoutes(db));
   // Email/password auth is removed — Google is the only provider (see
   // buildBetterAuthConfig). The dedicated /sign-in/email, /sign-up/email and
@@ -382,6 +390,7 @@ export async function createApp(
   api.use(sidebarBadgeRoutes(db));
   api.use(cockpitRoutes(db));
   api.use(sidebarPreferencesRoutes(db));
+  api.use(homeBoardLayoutRoutes(db));
   api.use(viewerPreferencesRoutes(db));
   api.use(inboxDismissalRoutes(db));
   api.use(userEntityPinRoutes(db));
@@ -493,6 +502,21 @@ export async function createApp(
   registerMarketplaceCatalogService(marketplaceCatalogService);
   marketplaceCatalogService.startSyncLoop();
   api.use("/marketplace", createMarketplaceRouter({ service: marketplaceCatalogService }));
+  api.use(
+    "/admin/marketplace",
+    createAdminMarketplaceRouter({
+      reconcile: (actor, operationId, retryOfOperationId) =>
+        runMarketplaceReconciliation({
+          db,
+          catalogService: marketplaceCatalogService,
+          actor,
+          operationId,
+          retryOfOperationId,
+        }),
+      inspect: (operationId, isActive) =>
+        inspectMarketplaceReconciliation({ db, operationId, isActive }),
+    }),
+  );
 
   // Marketplace install routes (per-company, M.2.G).
   // Mounted under /api/companies/:companyId/marketplace, matching the per-company

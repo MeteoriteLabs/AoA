@@ -28,6 +28,7 @@ import {
   deriveCardStatus,
   keyInputState,
   loginUnavailableFrom,
+  type ProviderLoginMode,
   type ProviderLoginStatus,
   type ProviderStatusRow,
   type ReadinessCheck,
@@ -324,7 +325,13 @@ export interface ProviderReadinessCardProps {
    * shared card rather than the page so challenge progress cannot drift between
    * the three surfaces (design D6).
    */
-  login?: { status: ProviderLoginStatus; loginUrl: string | null } | null;
+  login?: {
+    status: ProviderLoginStatus;
+    loginUrl: string | null;
+    mode: ProviderLoginMode;
+    userCode: string | null;
+    expiresAt: string;
+  } | null;
   /**
    * Navigate to another provider's card. Supplied by surfaces that render more
    * than one (the Settings tab); without it a borrower renders plain text rather
@@ -637,6 +644,33 @@ export function ProviderReadinessCard({
                       Finish sign-in in your browser
                     </a>
                   )}
+                  {login.mode === "device_code" && login.userCode && (
+                    <div
+                      className="space-y-2 rounded-md border border-border bg-muted/30 p-3"
+                      data-testid="provider-device-code"
+                    >
+                      <p className="text-xs text-muted-foreground">Codex device code</p>
+                      <code
+                        aria-label="Codex device code"
+                        className="block select-all font-mono text-base font-semibold tracking-wider"
+                      >
+                        {login.userCode}
+                      </code>
+                      <CopyText
+                        text={login.userCode}
+                        className="min-h-11 rounded-md border border-border px-3 text-xs font-medium"
+                        copiedLabel="Code copied"
+                      >
+                        Copy code
+                      </CopyText>
+                    </div>
+                  )}
+                  <p
+                    className="text-xs text-muted-foreground"
+                    data-testid="provider-login-expiry"
+                  >
+                    Expires {new Date(login.expiresAt).toLocaleString()}
+                  </p>
                   {onCancelLogin && (
                     <Button
                       type="button"

@@ -44,15 +44,17 @@
  * non-`SKILL.md` path on a catalog row. The merge preserves that column — it
  * writes `merged` on every branch.
  *
- * **The guarantee is on the row's `sourceType`, not on the path.** The bundle
- * directory itself is not jailed, and a founder can get a differently-typed row
- * to name it — `POST /skills/import` with `source` set to the bundle directory
- * produces a `local_path` row whose `sourceLocator` is that directory, after
- * which `PATCH /skills/:id/files` writes into it; `PATCH
- * /agents/:id/instructions-bundle` with `mode: "external"` accepts any absolute
- * `rootPath` and both writes and removes inside it. Neither happens during a
- * normal merge, but "nothing can ever write there" would be false. Jailing that
- * root is plan task T2.8c(b).
+ * **The guarantee was historically on the row's `sourceType`, not on the
+ * path.** The bundle directory itself was not jailed, and a founder could get a
+ * differently-typed row to name it — `POST /skills/import` with `source` set to
+ * the bundle directory produced a `local_path` row whose `sourceLocator` was
+ * that directory, after which `PATCH /skills/:id/files` wrote into it; `PATCH
+ * /agents/:id/instructions-bundle` with `mode: "external"` accepted any absolute
+ * `rootPath` and both wrote and removed inside it. Neither happens during a
+ * normal merge, but "nothing can ever write there" would have been false. Both
+ * chains now reject a path inside the managed root via
+ * {@link isInsideManagedMarketplaceSkillsRoot} (plan task T2.8c(b)), so the
+ * guarantee no longer rests on `sourceType` alone.
  *
  * The destination is additionally **version-scoped**
  * (`.aoa/marketplace-skills/<company>/<item>/<version>`), so a merge to a new
@@ -100,17 +102,17 @@
  * refuses a non-`pending`/`conflict` update (409), and the materializer stages
  * and renames instead of deleting up front.
  */
-import { eq } from "drizzle-orm";
+import { createHash } from "node:crypto";
+import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { companySkills, marketplacePendingUpdates } from "@armyofagents/db";
-import type { CatalogItem, MarketplaceSkillBundle } from "@armyofagents/shared";
-import { computeSectionDiff, applyMergeDecisions } from "../marketplace-merge.js";
+import type { CatalogItem } from "@armyofagents/shared";
+import { computeSectionDiff, mergeSkillDocument } from "../marketplace-merge.js";
 import {
-  deriveBundleTrustLevel,
   managedCatalogSkillDir,
   materializeSkillBundle,
-  type MaterializeSkillBundleResult,
 } from "./skill-bundle-materializer.js";
+import { resolveBundleColumns } from "./skill-bundle-columns.js";
 
 /**
  * Ceiling on the bundle checkout for ONE reviewed merge.
@@ -136,11 +138,30 @@ export class SkillMergeUpstreamError extends Error {
   }
 }
 
+/** Thrown when the reviewed skill/catalog snapshot is no longer current. */
+export class SkillMergeConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SkillMergeConflictError";
+  }
+}
+
+export function skillMergeSnapshotToken(
+  mineContent: string,
+  upstreamContent: string,
+  catalogVersion: string,
+): string {
+  return createHash("sha256")
+    .update(JSON.stringify([catalogVersion, mineContent, upstreamContent]), "utf8")
+    .digest("hex");
+}
+
 /** The `company_skills` columns the skill merge reads. */
 export interface MergeableSkillRow {
   id: string;
   markdown: string | null;
   metadata: unknown;
+  customized: boolean;
 }
 
 export interface MergeSkillUpdateArgs {
@@ -149,8 +170,8 @@ export interface MergeSkillUpdateArgs {
   skill: MergeableSkillRow;
   catalogItem: CatalogItem;
   pendingUpdateId: string;
-  /** `marketplace_pending_updates.latestVersion` — the version the founder reviewed against. */
-  latestVersion: string;
+  /** Opaque digest returned by GET /updates/:id/diff for this exact review. */
+  expectedSnapshotToken: string;
   decisions: Record<string, "mine" | "theirs">;
 }
 
@@ -173,11 +194,28 @@ export interface MergeSkillUpdateResult {
 export async function mergeSkillUpdate(
   args: MergeSkillUpdateArgs,
 ): Promise<MergeSkillUpdateResult> {
-  const { db, companyId, skill, catalogItem, pendingUpdateId, latestVersion, decisions } = args;
+  const {
+    db,
+    companyId,
+    skill,
+    catalogItem,
+    pendingUpdateId,
+    expectedSnapshotToken,
+    decisions,
+  } = args;
 
   const upstreamContent = await fetchUpstreamSkillMarkdown(catalogItem);
-  const diff = computeSectionDiff(skill.markdown ?? "", upstreamContent);
-  const merged = applyMergeDecisions(diff, decisions);
+  const mineContent = skill.markdown ?? "";
+  if (
+    skillMergeSnapshotToken(mineContent, upstreamContent, catalogItem.version)
+    !== expectedSnapshotToken
+  ) {
+    throw new SkillMergeConflictError(
+      "The skill or upstream catalog content changed after this diff was reviewed.",
+    );
+  }
+  const diff = computeSectionDiff(mineContent, upstreamContent);
+  const merged = mergeSkillDocument(diff, decisions, upstreamContent, mineContent);
 
   // The bundle is keyed by `catalogItem.version`, NOT by the pending row's
   // `latestVersion`: the bytes come from `catalogItem.skill.bundle`, and the
@@ -186,12 +224,8 @@ export async function mergeSkillUpdate(
   // checker next runs). Keying the directory off anything but the item that
   // produced it would make `catalogBundleInstallPath` name a tree that was
   // never written there.
-  //
-  // `sourceRef` keeps stamping `latestVersion`, unchanged from before this fix.
-  // If the two ever disagree the row under-reports its version and the next
-  // checker pass re-raises the update, which converges; the pointer written
-  // below is self-describing either way, so the runtime always reads the tree
-  // that was actually materialized.
+  // `sourceRef` is stamped from that same catalog item below, keeping the row's
+  // version and bundle pointer aligned even if the pending row is stale.
   const bundle = catalogItem.skill?.bundle;
   const bundleDir = bundle
     ? managedCatalogSkillDir(companyId, catalogItem.id, catalogItem.version)
@@ -205,25 +239,52 @@ export async function mergeSkillUpdate(
     : null;
 
   await db.transaction(async (tx) => {
-    await tx
+    const claimed = await tx
+      .update(marketplacePendingUpdates)
+      .set({ status: "applied", updatedAt: new Date() })
+      .where(
+        and(
+          eq(marketplacePendingUpdates.id, pendingUpdateId),
+          eq(marketplacePendingUpdates.companyId, companyId),
+          inArray(marketplacePendingUpdates.status, ["pending", "conflict"]),
+        ),
+      )
+      .returning({ id: marketplacePendingUpdates.id });
+
+    if (claimed.length === 0) {
+      throw new SkillMergeConflictError(
+        "This update was already applied or dismissed by another session.",
+      );
+    }
+
+    const updated = await tx
       .update(companySkills)
       .set({
-        // `merged`, never `materialized.markdown` — see the file docblock.
-        markdown: merged,
+        // `merged.content`, never `materialized.markdown` — see the file docblock.
+        markdown: merged.content,
         // `catalogItem.version`, not the pending row's `latestVersion`: both the
         // merged markdown and the bundle now come from `catalogItem`, so this is
         // the only stamp the row's own contents justify.
         sourceRef: catalogItem.version,
-        customized: true,
+        customized: !merged.pureUpstream,
         ...resolveBundleColumns(skill.metadata, bundle, materialized),
         updatedAt: new Date(),
       })
-      .where(eq(companySkills.id, skill.id));
+      .where(
+        and(
+          eq(companySkills.id, skill.id),
+          eq(companySkills.companyId, companyId),
+          eq(companySkills.markdown, mineContent),
+          eq(companySkills.customized, skill.customized),
+        ),
+      )
+      .returning({ id: companySkills.id });
 
-    await tx
-      .update(marketplacePendingUpdates)
-      .set({ status: "applied", updatedAt: new Date() })
-      .where(eq(marketplacePendingUpdates.id, pendingUpdateId));
+    if (updated.length === 0) {
+      throw new SkillMergeConflictError(
+        "The installed skill changed after this diff was reviewed.",
+      );
+    }
   });
 
   return materialized
@@ -233,63 +294,6 @@ export async function mergeSkillUpdate(
         fileCount: materialized.fileCount,
       }
     : { bundleMaterialized: false };
-}
-
-/**
- * The bundle-derived columns, for all three shapes the upstream item can take.
- *
- * - **Upstream has a bundle** → point at the tree just written and recompute
- *   `fileInventory` / `trustLevel` from it.
- * - **Upstream has no bundle and the row never had one** → contribute nothing.
- *   A markdown-only row must not be stamped with an empty inventory it never had.
- * - **Upstream has no bundle but the row DOES** → clear the pointer. This is the
- *   whole-bundle analogue of a removed file, and without it the row would keep
- *   naming the old version's directory forever: agents would go on receiving
- *   scripts upstream no longer publishes, and `trustLevel` would go on asserting
- *   `scripts_executables` for a bundle that no longer exists. Nothing else
- *   repairs it — `customized` is now `true`, so `applySkillUpdate` never touches
- *   the row again.
- *
- * Not reachable against today's catalog (all 498 published skills in the shipped
- * snapshot carry `skill.bundle`; the 16 bundle-less items are the agents,
- * plugins and team, which never reach this path). It is a latent gap, closed
- * because this function's contract is "the row describes what is on disk".
- *
- * `skill-auto-updater.ts`'s `resolveSkillUpdatePayload` has the identical gap on
- * the auto-apply path and is NOT fixed here — plan task T2.8c(a).
- */
-function resolveBundleColumns(
-  currentMetadata: unknown,
-  bundle: MarketplaceSkillBundle | undefined,
-  materialized: MaterializeSkillBundleResult | null,
-) {
-  const metadata = asRecord(currentMetadata);
-  if (materialized) {
-    return {
-      trustLevel: deriveBundleTrustLevel(materialized.fileInventory),
-      fileInventory: materialized.fileInventory as unknown as Record<string, unknown>[],
-      metadata: {
-        ...metadata,
-        catalogSkillBundle: bundle,
-        catalogBundleInstallPath: materialized.destination,
-      },
-    };
-  }
-
-  const hadBundle =
-    typeof metadata.catalogBundleInstallPath === "string" || metadata.catalogSkillBundle != null;
-  if (!hadBundle) return {};
-
-  const {
-    catalogSkillBundle: _bundle,
-    catalogBundleInstallPath: _installPath,
-    ...rest
-  } = metadata;
-  return {
-    trustLevel: "markdown_only" as const,
-    fileInventory: [] as unknown as Record<string, unknown>[],
-    metadata: rest,
-  };
 }
 
 /**
@@ -316,10 +320,4 @@ async function fetchUpstreamSkillMarkdown(catalogItem: CatalogItem): Promise<str
     throw new SkillMergeUpstreamError("Failed to fetch upstream content");
   }
   return response.text();
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
 }

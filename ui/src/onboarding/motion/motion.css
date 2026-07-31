@@ -33,7 +33,17 @@
   --robot: #1a1a2e;
   --robot-stroke: #333;
   --visor: #0a0a18;
-  --mono: 'Geist Mono', ui-monospace, monospace;
+  --mono: "SFMono-Regular", Consolas, "Liberation Mono", ui-monospace, monospace;
+  /* Keep onboarding self-contained even when ThemeProvider toggles html.dark
+     in response to a stored/system preference or DevTools emulation. */
+  --background: var(--bg);
+  --foreground: var(--text);
+  --card-foreground: var(--text);
+  --muted-foreground: var(--dim);
+  --input: var(--field);
+  background: var(--bg);
+  color: var(--text);
+  color-scheme: dark;
 }
 
 /* ---------- Logo (rotating "o" ring + breathing dot) — real brand SVG,
@@ -348,4 +358,12 @@
    they don't depend on this rule. */
 @media (prefers-reduced-motion: reduce) {
   .onboarding-dark * { animation: none !important; transition: none !important; }
+}
+
+/* On short phone/DevTools viewports, decoration yields space to recovery
+   controls. The page still scrolls, but the robot must not dominate the first
+   screen when diagnostics and auth actions are present. */
+@media (max-height: 700px) {
+  .onboarding-dark .agent:not(.sm) { --sc: .76; }
+  .onboarding-dark .dots { height: 14px; }
 }

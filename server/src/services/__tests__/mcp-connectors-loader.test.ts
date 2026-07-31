@@ -14,7 +14,7 @@
  * injected resolver would bypass.
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { drizzleOperatorStubs, makeTableProxy } from "../../__tests__/helpers/drizzle-mock.js";
 import { encodeOAuthBundle, OAUTH_BUNDLE_VERSION } from "../mcp-connector-oauth-bundle.js";
 
@@ -56,7 +56,11 @@ vi.mock("../mcp-connectors-crud.js", () => ({
   mcpConnectorService: () => ({ updateIfStatus }),
 }));
 
-import { loadEnabledConnectorRows, resolveAgentConnectors } from "../mcp-connectors-loader.js";
+import {
+  isConnectorToolAutoAllowed,
+  loadEnabledConnectorRows,
+  resolveAgentConnectors,
+} from "../mcp-connectors-loader.js";
 
 // ---------------------------------------------------------------------------
 // Sequence-based mock DB. Each `.select()` consumes the next preset row set and
@@ -119,12 +123,17 @@ function connectorRow(overrides: MockRow = {}): MockRow {
 }
 
 beforeEach(() => {
+  vi.unstubAllEnvs();
   resolveByName.mockReset();
   warn.mockReset();
   logActivityMock.mockReset();
   logActivityMock.mockResolvedValue(undefined);
   updateIfStatus.mockReset();
   updateIfStatus.mockResolvedValue(undefined);
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 describe("loadEnabledConnectorRows", () => {
@@ -163,6 +172,49 @@ describe("loadEnabledConnectorRows", () => {
     // Exactly one read, and it was the connectors table — the opt-in join is
     // meaningless for Commander (D3) and must not be issued.
     expect(selectedTables).toEqual(["company_mcp_connectors"]);
+  });
+
+  it("drops a denylisted connector before resolving secrets and keeps healthy connectors", async () => {
+    vi.stubEnv("AOA_MCP_CONNECTOR_DENYLIST", "notion");
+    const { db } = createSequenceDb([
+      [
+        connectorRow({ id: "c-denied", serverName: "notion" }),
+        connectorRow({ id: "c-healthy", serverName: "healthy", secretRef: null }),
+      ],
+      [{ connectorId: "c-denied" }, { connectorId: "c-healthy" }],
+    ]);
+
+    const rows = await loadEnabledConnectorRows(db, {
+      companyId: "co-1",
+      agentId: "agent-1",
+    });
+
+    expect(rows.map((row) => row.serverName)).toEqual(["healthy"]);
+    expect(resolveByName).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connectorId: "c-denied",
+        serverName: "notion",
+        policyEnabled: true,
+      }),
+      "MCP connector skipped at delivery by emergency policy",
+    );
+  });
+
+  it("drops every connector when the global emergency switch is disabled", async () => {
+    vi.stubEnv("AOA_MCP_CONNECTORS_ENABLED", "0");
+    const { db } = createSequenceDb([
+      [connectorRow({ id: "c1", serverName: "notion" })],
+      [{ connectorId: "c1" }],
+    ]);
+
+    const rows = await loadEnabledConnectorRows(db, {
+      companyId: "co-1",
+      agentId: "agent-1",
+    });
+
+    expect(rows).toEqual([]);
+    expect(resolveByName).not.toHaveBeenCalled();
   });
 
   it("skips a connector whose secret THROWS and still returns the healthy one (A19)", async () => {
@@ -511,5 +563,22 @@ describe("resolveAgentConnectors", () => {
     expect(Object.keys(result.extraMcpServers).sort()).toEqual(["linear", "notion"]);
     expect(selectedTables).toEqual(["company_mcp_connectors"]);
     expect(seamWarn).not.toHaveBeenCalled();
+  });
+});
+
+describe("isConnectorToolAutoAllowed emergency policy", () => {
+  it("rejects a denylisted connector tool before querying connector state", async () => {
+    vi.stubEnv("AOA_MCP_CONNECTOR_DENYLIST", "notion");
+    const { db, selectedTables } = createSequenceDb([]);
+
+    const allowed = await isConnectorToolAutoAllowed(db, {
+      companyId: "co-1",
+      agentId: "agent-1",
+      adapterType: "claude_local",
+      toolName: "mcp__notion__search",
+    });
+
+    expect(allowed).toBe(false);
+    expect(selectedTables).toEqual([]);
   });
 });

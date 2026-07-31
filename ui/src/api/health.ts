@@ -3,6 +3,7 @@ import { api } from "./client";
 
 export type HealthStatus = {
   status: "ok";
+  revision?: string | null;
   deploymentMode?: "local_trusted" | "authenticated";
   deploymentExposure?: "private" | "public";
   authReady?: boolean;

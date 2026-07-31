@@ -9,6 +9,9 @@ import {
   getCommanderLoginStatus,
   cancelCommanderLogin,
   submitCommanderLoginCode,
+  getCommanderAuthCapabilities,
+  type CommanderAuthCapability,
+  type CommanderSubscriptionMode,
   type CommanderLoginStatus,
 } from "../../api/commander-auth";
 import { cliToolToProvider, type CommanderProvider } from "@armyofagents/shared";
@@ -78,6 +81,19 @@ function expiredAuthMessage(checks: VerifyCheck[]): string | null {
   return checks.find((c) => c.code?.includes("auth_expired"))?.message ?? null;
 }
 
+/**
+ * Older probes sometimes returned an entire stream-json event as `detail`.
+ * Keep those dumps out of the DOM entirely: collapsing them is not enough for
+ * screenshots, accessibility trees, or copy-all diagnostics. Current adapters
+ * return a short, redacted human-readable detail instead.
+ */
+function technicalDetailFor(check: VerifyCheck): string | null {
+  const detail = check.detail?.trim();
+  if (!detail) return null;
+  if (/^[{\[]/.test(detail) || /"(?:session_id|type|subtype)"\s*:/.test(detail)) return null;
+  return detail;
+}
+
 const PROVIDER_LABEL: Record<CommanderProvider, string> = { anthropic: "Claude", openai: "Codex" };
 
 /** The literal terminal command for each provider's own sign-in, shown verbatim
@@ -85,18 +101,26 @@ const PROVIDER_LABEL: Record<CommanderProvider, string> = { anthropic: "Claude",
  *  what to type instead of staring at a bare spinner. */
 const PROVIDER_CLI_LOGIN_COMMAND: Record<CommanderProvider, string> = {
   anthropic: "claude auth login",
-  openai: "codex login",
+  openai: "codex login --device-auth",
 };
 
 /** Interval (ms) between CLI-auto-detect poll ticks, once past the immediate first check. */
 const CLI_AUTO_DETECT_POLL_MS = 3000;
 
-/** OS-appropriate install hint (generic — the CLI name is shown in the copy). */
-function installHint(): string {
-  const p = typeof navigator !== "undefined" ? navigator.platform.toLowerCase() : "";
+/** OS-appropriate install hint based on the server where the CLI must run. */
+function installHint(platform: string | null): string {
+  const p = platform?.toLowerCase() ?? "";
   if (p.includes("mac")) return "Install the CLI (e.g. `brew install …`) or download it from the vendor docs.";
   if (p.includes("win")) return "Install the CLI (e.g. `winget install …`) or run the vendor installer.";
   return "Install the CLI (e.g. `npm i -g …`) or follow the vendor install docs.";
+}
+
+function loginHost(loginUrl: string): string {
+  try {
+    return new URL(loginUrl).hostname;
+  } catch {
+    return "provider sign-in page";
+  }
 }
 
 /**
@@ -125,10 +149,19 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
   const [apiKey, setApiKey] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
-  const [login, setLogin] = useState<{ challengeId: string; loginUrl: string; status: CommanderLoginStatus } | null>(
-    null,
-  );
+  const [capability, setCapability] = useState<CommanderAuthCapability | null>(null);
+  const [topologyLabel, setTopologyLabel] = useState<string | null>(null);
+  const [topologyPlatform, setTopologyPlatform] = useState<string | null>(null);
+  const [login, setLogin] = useState<{
+    challengeId: string;
+    loginUrl: string;
+    status: CommanderLoginStatus;
+    mode: CommanderSubscriptionMode;
+    userCode: string | null;
+    expiresAt: string;
+  } | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const loginPollInFlightRef = useRef(false);
 
   // Paste-code bridge (Tasks 1-4): Claude's `claude auth login` has no in-app
   // callback like Codex's device flow, so the founder pastes the code shown on
@@ -168,6 +201,29 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
       alive = false;
     };
   }, [ctx.companyId]);
+
+  useEffect(() => {
+    if (!ctx.companyId || !provider) {
+      setCapability(null);
+      return;
+    }
+    let alive = true;
+    void getCommanderAuthCapabilities({ companyId: ctx.companyId })
+      .then((result) => {
+        if (!alive) return;
+        setCapability(result.providers[provider]);
+        setTopologyPlatform(result.topology.platform);
+        setTopologyLabel(
+          `${result.topology.platform} · ${result.topology.installProfile.replaceAll("_", " ")}`,
+        );
+      })
+      .catch(() => {
+        if (alive) setCapability(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [ctx.companyId, provider]);
 
   const clearPoll = () => {
     if (pollRef.current) {
@@ -301,7 +357,17 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
       setApiKey("");
       await check();
     } catch (e) {
-      setAuthError(e instanceof Error ? e.message : "Could not save the key.");
+      const body =
+        e instanceof ApiError
+          ? (e.body as { error?: string; remediation?: string; supportId?: string } | null)
+          : null;
+      setAuthError(
+        body?.error
+          ? `${body.error}${body.remediation ? ` ${body.remediation}` : ""}${body.supportId ? ` Support ID: ${body.supportId}` : ""}`
+          : e instanceof Error
+            ? e.message
+            : "Could not save the key.",
+      );
     } finally {
       setAuthBusy(false);
     }
@@ -312,8 +378,11 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
     setAuthBusy(true);
     setAuthError(null);
     try {
-      const { challengeId, loginUrl } = await startCommanderLogin({ companyId: ctx.companyId, provider });
-      setLogin({ challengeId, loginUrl, status: "pending" });
+      const { challengeId, loginUrl, mode, userCode, expiresAt } = await startCommanderLogin({
+        companyId: ctx.companyId,
+        provider,
+      });
+      setLogin({ challengeId, loginUrl, status: "pending", mode, userCode, expiresAt });
       clearPoll();
       pollRef.current = setInterval(() => void pollLogin(challengeId), 2500);
       void pollLogin(challengeId); // poll once immediately, don't wait a full interval
@@ -325,7 +394,8 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
   };
 
   const pollLogin = async (challengeId: string) => {
-    if (!ctx.companyId) return;
+    if (!ctx.companyId || loginPollInFlightRef.current) return;
+    loginPollInFlightRef.current = true;
     try {
       const { status } = await getCommanderLoginStatus({ companyId: ctx.companyId, challengeId });
       setLogin((prev) => (prev ? { ...prev, status } : prev));
@@ -348,8 +418,34 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
         setAuthError(`Sign-in ${status}. Try again.`);
         setLogin(null);
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof ApiError && (error.status === 404 || error.status === 410)) {
+        clearPoll();
+        setLogin(null);
+        setAuthError("This sign-in session expired or the server restarted. Start sign-in again.");
+      }
       // transient — keep polling
+    } finally {
+      loginPollInFlightRef.current = false;
+    }
+  };
+
+  const cancelLogin = async () => {
+    if (!ctx.companyId || !login) return;
+    setAuthBusy(true);
+    try {
+      await cancelCommanderLogin({
+        companyId: ctx.companyId,
+        challengeId: login.challengeId,
+      });
+      clearPoll();
+      setLogin(null);
+      setLoginCode("");
+      setCodeError(null);
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : "Could not cancel sign-in.");
+    } finally {
+      setAuthBusy(false);
     }
   };
 
@@ -431,10 +527,14 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
           reading one line and guessing whether the step passed. */}
       {checks.length > 0 && outcome !== "verified" && (
         <Reveal delay={0.14}>
-          <ul className="space-y-1 rounded-xl border border-border-strong bg-surface/40 p-3 text-left text-[11px]">
+          <ul
+            aria-label="Verification checks"
+            className="space-y-1 rounded-xl border border-border-strong bg-surface/40 p-3 text-left text-[11px]"
+          >
             {checks.map((c, i) => {
               const passed = isPassedCheck(c);
               const failed = isFailedCheck(c);
+              const technicalDetail = technicalDetailFor(c);
               // Three states, not two: info passes, error fails, and warn is a
               // real problem the founder must act on (that is how a recoverable
               // auth failure arrives) — so it must never render as a tick.
@@ -448,9 +548,19 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
                   >
                     {icon}
                   </span>
-                  <span className={passed ? "text-dim" : "text-destructive"}>
+                  <span className={passed ? "min-w-0 text-dim" : "min-w-0 text-destructive"}>
                     {c.message ?? c.code}
                     {!passed && c.hint && <span className="mt-0.5 block text-dim">{c.hint}</span>}
+                    {!passed && technicalDetail && (
+                      <details className="mt-1 text-dim">
+                        <summary className="cursor-pointer select-none text-[11px] font-medium text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand">
+                          Technical details
+                        </summary>
+                        <pre className="mt-1 whitespace-pre-wrap break-words rounded-md border border-border bg-field p-2 font-mono text-[10px] leading-relaxed [overflow-wrap:anywhere]">
+                          {technicalDetail}
+                        </pre>
+                      </details>
+                    )}
                   </span>
                 </li>
               );
@@ -463,7 +573,7 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
         <Reveal delay={0.18}>
           <div className="space-y-2 rounded-xl border border-amber-500/30 bg-amber-950/20 p-3 text-left text-xs text-dim">
             <p className="text-text">The CLI isn't installed or isn't on your PATH.</p>
-            <p>{installHint()}</p>
+            <p>{installHint(topologyPlatform)}</p>
             <p className="text-text">Install it, then choose "Check again".</p>
           </div>
         </Reveal>
@@ -477,6 +587,11 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
                 `The ${providerLabel} CLI is installed but needs sign-in.`}{" "}
               Choose one:
             </p>
+            {topologyLabel && (
+              <p className="rounded-md border border-border bg-field px-2 py-1 text-[11px] text-dim">
+                Detected installation: {topologyLabel}
+              </p>
+            )}
 
             <div className="space-y-2">
               <label className="block font-medium text-text" htmlFor="commander-api-key">
@@ -503,11 +618,8 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
               </Button>
             </div>
 
-            {/* Interactive in-app sign-in. Codex's `codex login` self-completes
-                via a local callback. Claude's `claude auth login` has no
-                callback, so once the challenge exists we additionally show a
-                paste-code input below the link (Tasks 1-4's stdin bridge). */}
-            {(provider === "openai" || provider === "anthropic") && (
+            {/* Capability-gated remote-safe subscription sign-in. */}
+            {(provider === "openai" || provider === "anthropic") && capability?.enabled && (
               <>
                 <div className="flex items-center gap-2 text-very-dim">
                   <span className="h-px flex-1 bg-border" />
@@ -528,9 +640,34 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
                       rel="noreferrer"
                       className="block break-all font-mono text-[11px] text-brand-hover underline"
                     >
-                      {login.loginUrl}
+                      Continue securely at {loginHost(login.loginUrl)}
                     </a>
                     <p>Waiting for sign-in… ({login.status})</p>
+                    {login.expiresAt && (
+                      <p className="text-[11px] text-dim">
+                        This sign-in expires at {new Date(login.expiresAt).toLocaleTimeString()}.
+                      </p>
+                    )}
+
+                    {login.mode === "device_code" && login.userCode && (
+                      <div className="rounded-md border border-border bg-field p-3">
+                        <p className="mb-1 text-dim">Enter this one-time code on that page:</p>
+                        <code
+                          aria-label="Codex device code"
+                          className="block select-all text-center font-mono text-lg font-semibold tracking-widest text-text"
+                        >
+                          {login.userCode}
+                        </code>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          className="mt-2 w-full"
+                          onClick={() => void navigator.clipboard?.writeText(login.userCode ?? "")}
+                        >
+                          Copy code
+                        </Button>
+                      </div>
+                    )}
 
                     {provider === "anthropic" && (
                       <div className="space-y-2 pt-1">
@@ -559,6 +696,15 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
                         {codeError && <p className="text-destructive">{codeError}</p>}
                       </div>
                     )}
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      className="w-full"
+                      onClick={() => void cancelLogin()}
+                      disabled={authBusy}
+                    >
+                      Cancel sign-in
+                    </Button>
                   </div>
                 ) : (
                   <Button
@@ -572,6 +718,12 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
                   </Button>
                 )}
               </>
+            )}
+            {capability && !capability.enabled && (
+              <div className="rounded-md border border-amber-500/30 bg-amber-950/20 p-2">
+                <p className="font-medium text-text">Subscription sign-in is unavailable here.</p>
+                <p>{capability.reason}</p>
+              </div>
             )}
 
             {/* WS3 — CLI auto-detect: the fallback for BOTH providers when the

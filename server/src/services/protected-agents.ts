@@ -41,10 +41,11 @@
  * This is a **guardrail against destructive operations, not an authorization
  * boundary.** A founder who first renames a NULL-origin Steward through
  * `PATCH /agents/:id` erases its last identifying signal, and the guard will no
- * longer recognise the row. That gap closes for Steward the moment T2.4
- * publishes it (the origin then carries the slug through any rename), and it
- * never applied to Commander, which `backfillCrewTemplateOrigin` stamps at
- * first boot. Do not describe this module as tamper-proof.
+ * longer recognise the row. Phase 4A closes that gap for existing rows by
+ * adopting the catalog origin in place, and new default-crew installs carry
+ * that origin from birth. It never applied to Commander, which
+ * `backfillCrewTemplateOrigin` stamps at first boot. Do not describe this
+ * module as tamper-proof.
  *
  * Deliberately broad in the other direction too: a third-party agent that a
  * founder names `Commander`, or that ships under an id ending `…/aoa-steward`,

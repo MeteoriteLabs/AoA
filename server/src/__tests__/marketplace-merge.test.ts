@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { splitSections, computeSectionDiff, applyMergeDecisions } from "../services/marketplace-merge.js";
+import {
+  splitSections,
+  computeSectionDiff,
+  applyMergeDecisions,
+  mergeSkillDocument,
+} from "../services/marketplace-merge.js";
 
 describe("splitSections", () => {
   it("returns a preamble section for content before first ##", () => {
@@ -23,6 +28,62 @@ describe("splitSections", () => {
     const sections = splitSections(md);
     expect(sections).toHaveLength(1);
     expect(sections[0].header).toBe("__preamble__");
+  });
+
+  it("keeps headings inside fenced code blocks in their parent section", () => {
+    const md = [
+      "## Instructions",
+      "before",
+      "```md",
+      "## Example",
+      "inside",
+      "```",
+      "## Next",
+      "after",
+    ].join("\n");
+
+    const sections = splitSections(md);
+
+    expect(sections.map((section) => section.header)).toEqual([
+      "__preamble__",
+      "Instructions",
+      "Next",
+    ]);
+    expect(sections[1].content).toContain("## Example");
+    expect(sections[1].content.match(/```/g)).toHaveLength(2);
+  });
+
+  it("requires a same-marker closing fence at least as long as the opener", () => {
+    const md = [
+      "## Instructions",
+      "~~~~",
+      "~~~",
+      "```",
+      "## Still code",
+      "~~~~",
+      "## Next",
+      "after",
+    ].join("\n");
+
+    expect(splitSections(md).map((section) => section.header)).toEqual([
+      "__preamble__",
+      "Instructions",
+      "Next",
+    ]);
+  });
+
+  it("does not treat a four-space-indented delimiter as a fence", () => {
+    const md = [
+      "    ```",
+      "indented code",
+      "## Real section",
+      "body",
+    ].join("\n");
+
+    expect(splitSections(md).map((section) => section.header)).toEqual([
+      "__preamble__",
+      "Real section",
+    ]);
   });
 });
 
@@ -113,6 +174,194 @@ describe("applyMergeDecisions", () => {
     const result = applyMergeDecisions(diff, { Overview: "theirs" });
     expect(result).toContain("their content");
     expect(result).not.toContain("my content");
+  });
+
+  it("honors an explicit theirs decision for a trim-equal unchanged section", () => {
+    const mine = "## Overview\nSame words.  \n";
+    const theirs = "## Overview\nSame words.\n";
+    const diff = computeSectionDiff(mine, theirs);
+    expect(diff.find((section) => section.header === "Overview")?.state).toBe("unchanged");
+
+    expect(applyMergeDecisions(diff, { Overview: "theirs" })).toBe(theirs);
+  });
+
+  it("keeps a mixed merge's fenced block balanced", () => {
+    const mine = [
+      "## Instructions",
+      "```md",
+      "plain code",
+      "```",
+      "## Tail",
+      "mine tail",
+    ].join("\n");
+    const theirs = [
+      "## Instructions",
+      "```md",
+      "## Example",
+      "upstream code",
+      "```",
+      "## Tail",
+      "upstream tail",
+    ].join("\n");
+    const diff = computeSectionDiff(mine, theirs);
+
+    const result = applyMergeDecisions(diff, {
+      Instructions: "theirs",
+      Example: "mine",
+      Tail: "mine",
+    });
+
+    expect(result).toContain("## Example");
+    expect(result.match(/```/g)).toHaveLength(2);
+    expect(result).toContain("mine tail");
+  });
+
+  it("preserves CRLF throughout a mixed merge", () => {
+    const mine = "# Skill\r\n\r\n## Overview\r\nold\r\n\r\n## Notes\r\nmine\r\n";
+    const theirs = "# Skill\r\n\r\n## Overview\r\nnew\r\n\r\n## Notes\r\ntheirs\r\n";
+    const diff = computeSectionDiff(mine, theirs);
+
+    const result = applyMergeDecisions(diff, { Overview: "theirs", Notes: "mine" });
+
+    expect(result).toContain("new");
+    expect(result).toContain("mine");
+    expect(result).not.toMatch(/(?<!\r)\n/);
+    expect(result.endsWith("\r\n")).toBe(true);
+  });
+
+  it("preserves CRLF when merge decisions drop every section", () => {
+    const mine = "## Only\r\nfounder\r\n";
+    const diff = computeSectionDiff(mine, "");
+
+    expect(applyMergeDecisions(diff, { Only: "theirs" })).toBe("\r\n");
+  });
+
+  it("keeps the existing LF mixed-merge bytes unchanged", () => {
+    const mine = "# Skill\n\n## Overview\nold\n\n## Notes\nmine\n";
+    const theirs = "# Skill\n\n## Overview\nnew\n\n## Notes\ntheirs\n";
+    const diff = computeSectionDiff(mine, theirs);
+
+    expect(applyMergeDecisions(diff, { Overview: "theirs", Notes: "mine" })).toBe(
+      "# Skill\n\n\n## Overview\nnew\n\n\n## Notes\nmine\n",
+    );
+  });
+});
+
+describe("mergeSkillDocument", () => {
+  it("writes the upstream document verbatim when every section resolves upstream", () => {
+    const mine = "# Skill\r\n\r\n## Overview\r\n\r\nFounder copy.\r\n";
+    const upstream = "# Skill\r\n\r\n## Overview\r\n\r\nUpstream copy.\r\n";
+    const diff = computeSectionDiff(mine, upstream);
+    const decisions = Object.fromEntries(
+      diff.map((section) => [section.header, "theirs" as const]),
+    );
+
+    expect(mergeSkillDocument(diff, decisions, upstream, mine)).toEqual({
+      content: upstream,
+      pureUpstream: true,
+    });
+  });
+
+  it("keeps customized true when any changed section resolves to mine", () => {
+    const mine = "# Skill\n\n## Overview\n\nFounder copy.\n";
+    const upstream = "# Skill\n\n## Overview\n\nUpstream copy.\n";
+    const diff = computeSectionDiff(mine, upstream);
+
+    const result = mergeSkillDocument(diff, { Overview: "mine" }, upstream, mine);
+
+    expect(result.pureUpstream).toBe(false);
+    expect(result.content).toContain("Founder copy.");
+  });
+
+  it("does not call trim-equal unchanged bytes pure upstream", () => {
+    const mine = "# Skill\n\n## Overview\n\nSame words.  \n";
+    const upstream = "# Skill\n\n## Overview\n\nSame words.\n";
+    const diff = computeSectionDiff(mine, upstream);
+    expect(diff.every((section) => section.state === "unchanged")).toBe(true);
+
+    const result = mergeSkillDocument(diff, {}, upstream, mine);
+
+    expect(result.pureUpstream).toBe(false);
+    expect(result.content).not.toBe(upstream);
+  });
+
+  it("returns trim-equal upstream bytes verbatim when all sections choose theirs", () => {
+    const mine = "# Skill\n\n## Overview\n\nSame words.  \n";
+    const upstream = "# Skill\n\n## Overview\n\nSame words.\n";
+    const diff = computeSectionDiff(mine, upstream);
+    expect(diff.every((section) => section.state === "unchanged")).toBe(true);
+    const decisions = Object.fromEntries(
+      diff.map((section) => [section.header, "theirs" as const]),
+    );
+
+    expect(mergeSkillDocument(diff, decisions, upstream, mine)).toEqual({
+      content: upstream,
+      pureUpstream: true,
+    });
+  });
+
+  it("is pure upstream only when added sections are accepted and removed sections are dropped", () => {
+    const mine = "## Local\nfounder-only\n";
+    const upstream = "## Added\nupstream-only\n";
+    const diff = computeSectionDiff(mine, upstream);
+
+    expect(mergeSkillDocument(diff, {}, upstream, mine).pureUpstream).toBe(false);
+    expect(
+      mergeSkillDocument(diff, { Local: "theirs", Added: "theirs" }, upstream, mine),
+    ).toEqual({
+      content: upstream,
+      pureUpstream: true,
+    });
+  });
+
+  it("does not overwrite a founder-reordered document whose sections are individually unchanged", () => {
+    const mine = "## Second\nsame second\n## First\nsame first\n";
+    const upstream = "## First\nsame first\n## Second\nsame second\n";
+    const diff = computeSectionDiff(mine, upstream);
+    expect(diff.every((section) => section.state === "unchanged")).toBe(true);
+
+    const result = mergeSkillDocument(diff, {}, upstream, mine);
+
+    expect(result.pureUpstream).toBe(false);
+    expect(result.content.indexOf("## Second")).toBeLessThan(result.content.indexOf("## First"));
+  });
+
+  it("returns reordered upstream bytes verbatim when all sections choose theirs", () => {
+    const mine = "## Second\nsame second\n## First\nsame first\n";
+    const upstream = "## First\nsame first\n## Second\nsame second\n";
+    const diff = computeSectionDiff(mine, upstream);
+    expect(diff.every((section) => section.state === "unchanged")).toBe(true);
+    const decisions = Object.fromEntries(
+      diff.map((section) => [section.header, "theirs" as const]),
+    );
+
+    expect(mergeSkillDocument(diff, decisions, upstream, mine)).toEqual({
+      content: upstream,
+      pureUpstream: true,
+    });
+  });
+
+  it("does not erase an LF/CRLF-only difference at a section boundary", () => {
+    const mine = "## First\r\n## Second";
+    const upstream = "## First\n## Second";
+    const diff = computeSectionDiff(mine, upstream);
+    expect(diff.every((section) => section.state === "unchanged")).toBe(true);
+
+    const result = mergeSkillDocument(diff, {}, upstream, mine);
+
+    expect(result.pureUpstream).toBe(false);
+  });
+
+  it("derives upstream parity from the bytes emitted by the merge", () => {
+    const mine = "## A\nx";
+    const upstream = "## A\nx\n";
+    const diff = computeSectionDiff(mine, upstream);
+    expect(diff.every((section) => section.state === "unchanged")).toBe(true);
+
+    expect(mergeSkillDocument(diff, {}, upstream, mine)).toEqual({
+      content: upstream,
+      pureUpstream: true,
+    });
   });
 });
 

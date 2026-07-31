@@ -26,18 +26,22 @@ const STATUS_ICON = {
 export async function doctor(opts: {
   config?: string;
   lint?: boolean;
+  json?: boolean;
+  offline?: boolean;
   repair?: boolean;
   yes?: boolean;
 }): Promise<{ passed: number; warned: number; failed: number }> {
-  printAoaCliBanner();
-  p.intro(pc.bgCyan(pc.black(" aoa doctor ")));
+  if (!opts.json) {
+    printAoaCliBanner();
+    p.intro(pc.bgCyan(pc.black(" aoa doctor ")));
+  }
 
   if (opts.lint) {
     const { results, report } = await runDoctorLint(opts);
     for (const result of results) {
-      printResult(result);
+      if (!opts.json) printResult(result);
     }
-    const summary = printSummary(results);
+    const summary = finishDoctor(results, opts);
     if (report.summary.errorCount > 0) {
       process.exitCode = 1;
     }
@@ -50,10 +54,10 @@ export async function doctor(opts: {
   // 1. Config check (must pass before others)
   const cfgResult = configCheck(opts.config);
   results.push(cfgResult);
-  printResult(cfgResult);
+  if (!opts.json) printResult(cfgResult);
 
   if (cfgResult.status === "fail") {
-    return printSummary(results);
+    return finishDoctor(results, opts);
   }
 
   let config: AoaConfig;
@@ -68,57 +72,106 @@ export async function doctor(opts: {
       repairHint: "Run `aoa configure --section database` or `aoa onboard`",
     };
     results.push(readResult);
-    printResult(readResult);
-    return printSummary(results);
+    if (!opts.json) printResult(readResult);
+    return finishDoctor(results, opts);
   }
 
   // 2. Deployment/auth mode check
   const deploymentAuthResult = deploymentAuthCheck(config);
   results.push(deploymentAuthResult);
-  printResult(deploymentAuthResult);
+  if (!opts.json) printResult(deploymentAuthResult);
 
   // 3. Agent JWT check
   const jwtResult = agentJwtSecretCheck(opts.config);
   results.push(jwtResult);
-  printResult(jwtResult);
+  if (!opts.json) printResult(jwtResult);
   await maybeRepair(jwtResult, opts);
 
   // 4. Secrets adapter check
   const secretsResult = secretsCheck(config, configPath);
   results.push(secretsResult);
-  printResult(secretsResult);
+  if (!opts.json) printResult(secretsResult);
   await maybeRepair(secretsResult, opts);
 
   // 5. Storage check
   const storageResult = storageCheck(config, configPath);
   results.push(storageResult);
-  printResult(storageResult);
+  if (!opts.json) printResult(storageResult);
   await maybeRepair(storageResult, opts);
 
   // 6. Database check
-  const dbResult = await databaseCheck(config, configPath);
+  const dbResult = opts.offline
+    ? offlineSkipped("Database")
+    : await databaseCheck(config, configPath);
   results.push(dbResult);
-  printResult(dbResult);
+  if (!opts.json) printResult(dbResult);
   await maybeRepair(dbResult, opts);
 
   // 7. LLM check
-  const llmResult = await llmCheck(config);
+  const llmResult = opts.offline ? offlineSkipped("LLM provider") : await llmCheck(config);
   results.push(llmResult);
-  printResult(llmResult);
+  if (!opts.json) printResult(llmResult);
 
   // 8. Log directory check
   const logResult = logCheck(config, configPath);
   results.push(logResult);
-  printResult(logResult);
+  if (!opts.json) printResult(logResult);
   await maybeRepair(logResult, opts);
 
   // 9. Port check
-  const portResult = await portCheck(config);
+  const portResult = opts.offline ? offlineSkipped("Server port") : await portCheck(config);
   results.push(portResult);
-  printResult(portResult);
+  if (!opts.json) printResult(portResult);
 
   // Summary
-  return printSummary(results);
+  return finishDoctor(results, opts);
+}
+
+function offlineSkipped(name: string): CheckResult {
+  return {
+    name,
+    status: "warn",
+    message: "Skipped because --offline was requested.",
+    canRepair: false,
+  };
+}
+
+export function formatDoctorJson(results: CheckResult[], offline = false) {
+  const summary = summarize(results);
+  return {
+    schemaVersion: 1,
+    command: "aoa doctor",
+    offline,
+    status: summary.failed > 0 ? "failed" : summary.warned > 0 ? "needs_attention" : "healthy",
+    summary,
+    checks: results.map(({ name, status, message, repairHint }) => ({
+      name,
+      status,
+      message,
+      ...(repairHint ? { repairHint } : {}),
+    })),
+  };
+}
+
+function finishDoctor(
+  results: CheckResult[],
+  opts: { json?: boolean; offline?: boolean },
+): { passed: number; warned: number; failed: number } {
+  const summary = summarize(results);
+  if (opts.json) {
+    console.log(JSON.stringify(formatDoctorJson(results, Boolean(opts.offline)), null, 2));
+  } else {
+    printSummary(results);
+  }
+  return summary;
+}
+
+function summarize(results: CheckResult[]): { passed: number; warned: number; failed: number } {
+  return {
+    passed: results.filter((r) => r.status === "pass").length,
+    warned: results.filter((r) => r.status === "warn").length,
+    failed: results.filter((r) => r.status === "fail").length,
+  };
 }
 
 function printResult(result: CheckResult): void {
@@ -131,10 +184,10 @@ function printResult(result: CheckResult): void {
 
 async function maybeRepair(
   result: CheckResult,
-  opts: { repair?: boolean; yes?: boolean },
+  opts: { repair?: boolean; yes?: boolean; json?: boolean },
 ): Promise<void> {
   if (result.status === "pass" || !result.canRepair || !result.repair) return;
-  if (!opts.repair) return;
+  if (!opts.repair || opts.json) return;
 
   let shouldRepair = opts.yes;
   if (!shouldRepair) {
@@ -157,9 +210,7 @@ async function maybeRepair(
 }
 
 function printSummary(results: CheckResult[]): { passed: number; warned: number; failed: number } {
-  const passed = results.filter((r) => r.status === "pass").length;
-  const warned = results.filter((r) => r.status === "warn").length;
-  const failed = results.filter((r) => r.status === "fail").length;
+  const { passed, warned, failed } = summarize(results);
 
   const parts: string[] = [];
   parts.push(pc.green(`${passed} passed`));

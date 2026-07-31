@@ -32,6 +32,7 @@ import { buildCommanderSkillTriggeringSuite } from "./commander-skill-triggering
 import type { EvalSuite, EvalSuiteResult } from "./types.js";
 
 const PASS_THRESHOLD = 0.8;
+const MAX_FAILURE_REASON_LENGTH = 500;
 
 export interface SuiteSummary {
   name: string;
@@ -40,10 +41,22 @@ export interface SuiteSummary {
   passRate: number;
   belowThreshold: boolean;
   failingCaseIds: string[];
+  firstFailure: { caseId: string; reason: string } | null;
+}
+
+function sanitizeFailureReason(reason: string): string {
+  const redacted = reason
+    .replace(/\b(?:sk|rk|pk)-[A-Za-z0-9_-]{8,}\b/g, "[redacted API key]")
+    .replace(/\bBearer\s+\S+/gi, "Bearer [redacted]")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (redacted.length <= MAX_FAILURE_REASON_LENGTH) return redacted;
+  return `${redacted.slice(0, MAX_FAILURE_REASON_LENGTH - 3)}...`;
 }
 
 export function summarize(result: EvalSuiteResult<unknown>): SuiteSummary {
   const passRate = result.total === 0 ? 1 : result.pass / result.total;
+  const firstFailure = result.results.find((entry) => !entry.pass);
   return {
     name: result.name,
     total: result.total,
@@ -51,6 +64,12 @@ export function summarize(result: EvalSuiteResult<unknown>): SuiteSummary {
     passRate,
     belowThreshold: passRate < PASS_THRESHOLD,
     failingCaseIds: result.results.filter((r) => !r.pass).map((r) => r.caseId),
+    firstFailure: firstFailure
+      ? {
+          caseId: firstFailure.caseId,
+          reason: sanitizeFailureReason(firstFailure.reason),
+        }
+      : null,
   };
 }
 
@@ -63,6 +82,11 @@ function printSummary(summaries: SuiteSummary[]): void {
     console.log(`  ${status}  ${s.name}: ${s.pass}/${s.total} (${pct}%)`);
     if (s.failingCaseIds.length > 0) {
       console.log(`        failing: ${s.failingCaseIds.join(", ")}`);
+    }
+    if (s.firstFailure) {
+      console.log(
+        `        first failure (${s.firstFailure.caseId}): ${s.firstFailure.reason}`,
+      );
     }
   }
   console.log("");

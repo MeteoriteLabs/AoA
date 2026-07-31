@@ -1,4 +1,5 @@
 import type { AgentCompletionPolicy, AgentCompletionPolicySource } from "../constants.js";
+import type { CompanySkillSourceType } from "./company-skill.js";
 
 export interface CompanyPortabilityCostEventsDateRange {
   from?: string;
@@ -74,7 +75,7 @@ export interface CompanyPortabilitySkillManifestEntry {
   path: string;
   description?: string | null;
   markdown?: string;
-  sourceType: string;
+  sourceType: CompanySkillSourceType;
   sourceLocator?: string | null;
   sourceRef?: string | null;
   trustLevel?: string | null;
@@ -391,6 +392,11 @@ export interface CompanyPortabilityPreviewRequest {
   target: CompanyPortabilityImportTarget;
   agents?: CompanyPortabilityAgentSelection;
   collisionStrategy?: CompanyPortabilityCollisionStrategy;
+  /**
+   * Exact manifest skill keys the founder has explicitly allowed this import
+   * to overwrite even when the target row carries local edits.
+   */
+  overwriteCustomizedSkillKeys?: string[];
 }
 
 export interface CompanyPortabilityPreviewAgentPlan {
@@ -431,6 +437,8 @@ export interface CompanyPortabilityPreviewSkillPlan {
   plannedName: string;
   plannedKey: string;
   existingSkillId: string | null;
+  existingCustomized: boolean;
+  overwriteCustomized: boolean;
   reason: string | null;
 }
 

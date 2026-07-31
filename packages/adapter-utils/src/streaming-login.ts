@@ -81,7 +81,11 @@ export function runStreamingLogin(opts: RunStreamingLoginOptions): StreamingLogi
   });
 
   const child = handle.child;
-  const detector = createLoginUrlDetector();
+  // stdout and stderr are independent byte streams. Combining them lets a
+  // delimiter from one stream terminate a partial URL still being written on
+  // the other, so keep parser state isolated and settle on the first real URL.
+  const stdoutDetector = createLoginUrlDetector();
+  const stderrDetector = createLoginUrlDetector();
 
   // A-H11 precedent (server-utils.ts spawnTrackedChild): an unhandled 'error'
   // on a writable throws as an UNCAUGHT exception, and this server has no
@@ -107,17 +111,18 @@ export function runStreamingLogin(opts: RunStreamingLoginOptions): StreamingLogi
     }
   };
 
-  const onData = (chunk: Buffer | string): void => {
-    if (settled) return;
-    const url = detector.push(typeof chunk === "string" ? chunk : chunk.toString("utf8"));
-    if (url !== null) {
-      settled = true;
-      clearDiscoveryTimer();
-      resolveUrl(url);
-    }
-  };
-  child.stdout?.on("data", onData);
-  child.stderr?.on("data", onData);
+  const onData = (detector: ReturnType<typeof createLoginUrlDetector>) =>
+    (chunk: Buffer | string): void => {
+      if (settled) return;
+      const url = detector.push(typeof chunk === "string" ? chunk : chunk.toString("utf8"));
+      if (url !== null) {
+        settled = true;
+        clearDiscoveryTimer();
+        resolveUrl(url);
+      }
+    };
+  child.stdout?.on("data", onData(stdoutDetector));
+  child.stderr?.on("data", onData(stderrDetector));
 
   discoveryTimer = setTimeout(() => {
     if (!settled) {

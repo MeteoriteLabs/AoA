@@ -200,7 +200,14 @@ describe("marketplace catalog/sync — non-admin board gets 403", () => {
       next();
     });
     const mockService = {
-      sync: vi.fn().mockResolvedValue({ itemCount: 0 }),
+      refresh: vi.fn().mockResolvedValue({
+        catalog: { itemCount: 0 },
+        status: { lastSyncStatus: "success" },
+      }),
+      refreshAndCheckForUpdates: vi.fn().mockResolvedValue({
+        catalog: { itemCount: 0 },
+        status: { lastSyncStatus: "success" },
+      }),
       readCache: vi.fn().mockResolvedValue(null),
       getStatus: vi.fn().mockResolvedValue(null),
     };

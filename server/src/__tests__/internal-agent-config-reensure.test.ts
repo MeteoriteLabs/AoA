@@ -50,7 +50,7 @@ describe("maybeReensureAgentsOnConfigChange", () => {
     expect(ensureInfra).not.toHaveBeenCalled();
     expect(ensureCrew).not.toHaveBeenCalled();
   });
-  it("skips ONLY the crew half when marketplace-managed (P8d)", async () => {
+  it("refreshes Commander but skips the full legacy crew, including Steward, when marketplace-managed", async () => {
     isManaged.mockResolvedValue(true);
     await maybeReensureAgentsOnConfigChange({} as any, "co-1", base, { ...base, provider: "anthropic" });
     // Commander's adapter must still follow a provider/cliTool switch.

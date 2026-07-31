@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { writeContext } from "../client/context.js";
+import { setStoredBoardCredential } from "../client/board-auth.js";
 import { resolveCommandContext } from "../commands/client/common.js";
 
 const ORIGINAL_ENV = { ...process.env };
@@ -18,6 +19,7 @@ describe("resolveCommandContext", () => {
     delete process.env.AOA_API_URL;
     delete process.env.AOA_API_KEY;
     delete process.env.AOA_COMPANY_ID;
+    process.env.AOA_AUTH_STORE = createTempPath("auth.json");
   });
 
   afterEach(() => {
@@ -94,5 +96,44 @@ describe("resolveCommandContext", () => {
     expect(() =>
       resolveCommandContext({ context: contextPath, apiBase: "http://localhost:3100" }, { requireCompany: true }),
     ).toThrow(/Company ID is required/);
+  });
+
+  it("uses the stored board credential only after explicit and environment keys", () => {
+    const contextPath = createTempPath("context.json");
+    writeContext(
+      {
+        version: 1,
+        currentProfile: "default",
+        profiles: {
+          default: {
+            apiBase: "https://testing.armyofagents.org",
+            apiKeyEnvVarName: "PROFILE_KEY",
+          },
+        },
+      },
+      contextPath,
+    );
+    setStoredBoardCredential({
+      apiBase: "https://testing.armyofagents.org",
+      token: "stored-board-key",
+    });
+
+    expect(resolveCommandContext({ context: contextPath }).api.apiKey).toBe(
+      "stored-board-key",
+    );
+    process.env.PROFILE_KEY = "profile-key";
+    expect(resolveCommandContext({ context: contextPath }).api.apiKey).toBe(
+      "profile-key",
+    );
+    process.env.AOA_API_KEY = "environment-key";
+    expect(resolveCommandContext({ context: contextPath }).api.apiKey).toBe(
+      "environment-key",
+    );
+    expect(
+      resolveCommandContext({
+        context: contextPath,
+        apiKey: "explicit-key",
+      }).api.apiKey,
+    ).toBe("explicit-key");
   });
 });

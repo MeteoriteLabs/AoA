@@ -13,6 +13,9 @@ const mockProbeConfig = vi.hoisted(() => vi.fn(async () => ({})));
 const mockFindAdapter = vi.hoisted(() => vi.fn());
 const mockTestEnvironment = vi.hoisted(() => vi.fn());
 const mockAssertRole = vi.hoisted(() => vi.fn());
+const mockVerifyAndBindSubscription = vi.hoisted(() =>
+  vi.fn(async () => ({ credentialIds: [], bindingIds: [] })),
+);
 
 vi.mock("../services/commander-verify.js", async (importActual) => {
   const actual = (await importActual()) as Record<string, unknown>;
@@ -21,6 +24,9 @@ vi.mock("../services/commander-verify.js", async (importActual) => {
 });
 vi.mock("../adapters/registry.js", () => ({ findServerAdapter: mockFindAdapter }));
 vi.mock("../middleware/rbac.js", () => ({ assertRole: mockAssertRole }));
+vi.mock("../services/provider-credentials.js", () => ({
+  verifyAndBindCommanderSubscriptionCredential: mockVerifyAndBindSubscription,
+}));
 
 import { commanderVerifyRoutes } from "../routes/commander-verify.js";
 
@@ -66,7 +72,9 @@ describe("POST /companies/:companyId/internal-agent/verify", () => {
     mockTestEnvironment.mockReset();
     mockAssertRole.mockResolvedValue(undefined);
     mockResolveType.mockResolvedValue("claude_local");
+    mockProbeConfig.mockResolvedValue({});
     mockFindAdapter.mockReturnValue({ testEnvironment: mockTestEnvironment });
+    mockVerifyAndBindSubscription.mockResolvedValue({ credentialIds: [], bindingIds: [] });
   });
 
   it("401 for a non-board actor", async () => {
@@ -140,6 +148,48 @@ describe("POST /companies/:companyId/internal-agent/verify", () => {
       COMPANY_ID,
       "founder",
     );
+    expect(mockVerifyAndBindSubscription).toHaveBeenCalledWith(
+      expect.anything(),
+      {
+        companyId: COMPANY_ID,
+        userId: "u1",
+        actorUserId: "u1",
+        provider: "anthropic",
+        executionTargetId: "control-plane",
+      },
+    );
+  });
+
+  it("atomically verifies and binds the subscription transition", async () => {
+    mockTestEnvironment.mockResolvedValue(probe("pass", ["claude_hello_probe_passed"]));
+    mockVerifyAndBindSubscription.mockResolvedValueOnce({
+      credentialIds: ["credential-1"],
+      bindingIds: ["binding-1"],
+    });
+
+    const res = await request(makeApp(dbWithMembership([{ id: COMPANY_ID }]))).post(
+      `/api/companies/${COMPANY_ID}/internal-agent/verify`,
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockVerifyAndBindSubscription).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not verify a subscription record when the passing probe used an API key", async () => {
+    mockProbeConfig.mockResolvedValueOnce({
+      env: {
+        ANTHROPIC_API_KEY: "company-key",
+        CLAUDE_CONFIG_DIR: "/scoped/anthropic",
+      },
+    });
+    mockTestEnvironment.mockResolvedValue(probe("pass", ["claude_hello_probe_passed"]));
+
+    const res = await request(makeApp(dbWithMembership([{ id: COMPANY_ID }]))).post(
+      `/api/companies/${COMPANY_ID}/internal-agent/verify`,
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockVerifyAndBindSubscription).not.toHaveBeenCalled();
   });
 
   it("returns 429 while a Commander probe is already running for the company", async () => {
@@ -248,6 +298,31 @@ describe("POST /companies/:companyId/internal-agent/verify", () => {
       .send({});
     expect(res.status).toBe(422);
     expect(res.body.outcome).toBe("needs_auth");
+    expect(mockVerifyAndBindSubscription).not.toHaveBeenCalled();
+  });
+
+  it("redacts secret-looking probe detail before returning it to onboarding", async () => {
+    mockTestEnvironment.mockResolvedValue({
+      adapterType: "claude_local",
+      status: "fail",
+      checks: [{
+        code: "claude_hello_probe_failed",
+        level: "error",
+        message: "Claude hello probe failed.",
+        detail: "provider rejected sk-ant-api03-super-secret-value",
+        hint: "Inspect sk-ant-api03-super-secret-value",
+      }],
+      testedAt: "",
+    });
+
+    const res = await request(makeApp(dbWithMembership([{ id: COMPANY_ID }])))
+      .post(`/api/companies/${COMPANY_ID}/internal-agent/verify`)
+      .send({});
+
+    expect(res.status).toBe(422);
+    expect(JSON.stringify(res.body)).not.toContain("sk-ant-api03-super-secret-value");
+    expect(res.body.result.checks[0].detail).toContain("REDACTED");
+    expect(res.body.result.checks[0].hint).toContain("REDACTED");
   });
 
   it("404 when the resolved adapter has no probe", async () => {

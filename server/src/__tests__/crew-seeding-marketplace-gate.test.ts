@@ -38,7 +38,7 @@ vi.mock("../services/internal-agent/aoa-agents/crew-seeding.js", async (importOr
 import { maybeReensureAgentsOnConfigChange } from "../routes/internal-agent.js";
 
 const base = { provider: "openai", crewModel: null, cliTool: "claude_cli", model: null } as const;
-const CREW = ["adjutant", "chronicler", "engineer", "librarian", "scout", "staff"];
+const CREW = ["adjutant", "chronicler", "engineer", "librarian", "scout", "staff", "steward"];
 
 describe("marketplace gate covers the crew half only (P8d)", () => {
   beforeEach(() => {
@@ -53,18 +53,18 @@ describe("marketplace gate covers the crew half only (P8d)", () => {
 
     // Infrastructure ran…
     expect(calls).toContain("commander");
-    expect(calls).toContain("steward");
+    expect(calls).not.toContain("steward");
     // …and the marketplace-owned roster did not. Scout is the discriminator:
     // it exists in the published catalog (agent:aoa-curated/aoa-scout), so the
     // install owns it and the legacy seeder must stay off.
     expect(calls).not.toContain("scout");
     for (const crew of CREW) expect(calls).not.toContain(crew);
-    expect(calls.slice().sort()).toEqual(["commander", "steward"]);
+    expect(calls.slice().sort()).toEqual(["commander"]);
   });
 
   it("NOT marketplace-managed: the full legacy roster still runs (regression)", async () => {
     await maybeReensureAgentsOnConfigChange({} as any, "co-1", base, { ...base, cliTool: "codex" });
-    expect(calls.slice().sort()).toEqual([...CREW, "commander", "steward"].sort());
+    expect(calls.slice().sort()).toEqual([...CREW, "commander"].sort());
     expect(calls.length).toBe(8);
   });
 

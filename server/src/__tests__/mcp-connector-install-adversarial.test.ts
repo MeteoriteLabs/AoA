@@ -1539,9 +1539,13 @@ describe("[inv-5] catalog installs never carry a secret value", () => {
     // founder following the app's own example built a connector that
     // authenticates as no-one, and the obvious workaround is pasting the real
     // token (see [ESC-4]).
+    // The Add-connector form (and its header hint) was extracted into
+    // NewConnectorDialog.tsx; the hint text moved with it. The security
+    // invariant is unchanged: the founder-facing example names ${TOKEN}, the
+    // only placeholder buildConnectorSpecs substitutes.
     const here = dirname(fileURLToPath(import.meta.url));
     const src = readFileSync(
-      resolvePath(here, "../../../ui/src/components/settings/sections/MCPConnectorsSection.tsx"),
+      resolvePath(here, "../../../ui/src/components/settings/NewConnectorDialog.tsx"),
       "utf8",
     );
     expect(src).toMatch(/Authorization: Bearer \$\{TOKEN\}/);

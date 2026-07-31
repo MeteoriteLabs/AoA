@@ -11,9 +11,50 @@
  */
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { userRoles } from "@armyofagents/db";
+import { hubItems, userRoles } from "@armyofagents/db";
 import { hubItemsService } from "./hub-items.js";
 import { logger } from "../middleware/logger.js";
+
+async function archiveSupersededUpdateNotifications(
+  db: Db,
+  hub: ReturnType<typeof hubItemsService>,
+  companyId: string,
+  ownerUserId: string,
+  legacySourcePrefix: string
+): Promise<void> {
+  const openUpdateItems = await db
+    .select({
+      id: hubItems.id,
+      version: hubItems.version,
+      sourceId: hubItems.sourceId,
+    })
+    .from(hubItems)
+    .where(
+      and(
+        eq(hubItems.companyId, companyId),
+        eq(hubItems.ownerUserId, ownerUserId),
+        eq(hubItems.semanticType, "marketplace_op"),
+        eq(hubItems.sourceType, "marketplace_update"),
+        eq(hubItems.status, "open")
+      )
+    );
+
+  for (const item of openUpdateItems) {
+    if (!item.sourceId?.startsWith(legacySourcePrefix)) continue;
+    await hub.recordLifecycleAction({
+      companyId,
+      hubItemId: item.id,
+      action: "archive",
+      expectedVersion: item.version,
+      actorType: "system",
+      actorId: "marketplace-notifications",
+      actorIsFounder: true,
+      authorityBasis: "marketplace_update_superseded",
+      reason: "Superseded by the catalog item's stable update notification.",
+      idempotencyKey: `marketplace-update-supersede:${item.id}:${item.version}`,
+    });
+  }
+}
 
 async function notifyFounders(
   db: Db,
@@ -27,7 +68,9 @@ async function notifyFounders(
     // `marketplace_op`, so the source id MUST encode the event type (so distinct
     // events don't collide on one open hub row), plus the operation/catalog ref.
     sourceId: string;
-  },
+    legacySourcePrefix?: string;
+    reopenWhenArchived?: boolean;
+  }
 ): Promise<void> {
   try {
     // Query founders for the company (role = 'founder', no project scope = company-level role)
@@ -38,15 +81,24 @@ async function notifyFounders(
         and(
           eq(userRoles.companyId, companyId),
           eq(userRoles.role, "founder"),
-          isNull(userRoles.projectId),
-        ),
+          isNull(userRoles.projectId)
+        )
       );
 
     const hub = hubItemsService(db);
     // Each founder is the natural owner of their own hub row; the source id folds
     // in the recipient so per-founder rows stay distinct (and dedupe per founder).
-    const emitFor = (ownerUserId: string) =>
-      hub.emit({
+    const emitFor = async (ownerUserId: string) => {
+      if (notification.legacySourcePrefix) {
+        await archiveSupersededUpdateNotifications(
+          db,
+          hub,
+          companyId,
+          ownerUserId,
+          notification.legacySourcePrefix
+        );
+      }
+      return hub.emit({
         companyId,
         semanticType: "marketplace_op",
         sourceType: notification.relatedEntityType ?? "marketplace_operation",
@@ -54,7 +106,9 @@ async function notifyFounders(
         title: notification.title,
         summary: notification.message ?? null,
         ownerUserId,
+        reopenWhenArchived: notification.reopenWhenArchived,
       });
+    };
 
     if (founders.length === 0) {
       // Fallback: notify local-board user
@@ -63,15 +117,28 @@ async function notifyFounders(
     }
 
     await Promise.all(
-      founders.filter((r) => r.userId).map((r) => emitFor(r.userId!)),
+      founders.filter((r) => r.userId).map((r) => emitFor(r.userId!))
     );
   } catch (err) {
-    logger.error({ err, companyId }, "marketplace-notifications: failed to notify founders");
+    logger.error(
+      { err, companyId },
+      "marketplace-notifications: failed to notify founders"
+    );
+    // Callers decide whether a marketplace mutation is allowed to continue
+    // without its founder notification. Reconciliation must observe this
+    // failure so the pass is partial and a later update check can retry the
+    // idempotent hub emit.
+    throw err;
   }
 }
 
 export const marketplaceNotifications = {
-  installCompleted: (db: Db, companyId: string, catalogItemName: string, operationId: string) =>
+  installCompleted: (
+    db: Db,
+    companyId: string,
+    catalogItemName: string,
+    operationId: string
+  ) =>
     notifyFounders(db, companyId, {
       type: "marketplace.install_completed",
       title: `${catalogItemName} installed`,
@@ -80,7 +147,13 @@ export const marketplaceNotifications = {
       sourceId: `install_completed:${operationId}`,
     }),
 
-  installRequested: (db: Db, companyId: string, catalogItemName: string, requestingUserId: string, operationId?: string) =>
+  installRequested: (
+    db: Db,
+    companyId: string,
+    catalogItemName: string,
+    requestingUserId: string,
+    operationId?: string
+  ) =>
     notifyFounders(db, companyId, {
       type: "marketplace.install_requested",
       title: `Install requested: ${catalogItemName}`,
@@ -89,7 +162,12 @@ export const marketplaceNotifications = {
       sourceId: `install_requested:${operationId ?? catalogItemName}`,
     }),
 
-  installFailed: (db: Db, companyId: string, catalogItemName: string, error: string) =>
+  installFailed: (
+    db: Db,
+    companyId: string,
+    catalogItemName: string,
+    error: string
+  ) =>
     notifyFounders(db, companyId, {
       type: "marketplace.install_failed",
       title: `${catalogItemName} install failed`,
@@ -98,13 +176,26 @@ export const marketplaceNotifications = {
       sourceId: `install_failed:${catalogItemName}`,
     }),
 
-  updateAvailable: (db: Db, companyId: string, catalogItemName: string, fromVersion: string, toVersion: string) =>
+  updateAvailable: (
+    db: Db,
+    companyId: string,
+    catalogItemId: string,
+    catalogItemName: string,
+    fromVersion: string,
+    toVersion: string,
+    options: { reopenWhenArchived?: boolean } = {}
+  ) =>
     notifyFounders(db, companyId, {
       type: "marketplace.update_available",
       title: `Update available: ${catalogItemName}`,
       message: `${fromVersion} → ${toVersion} is available.`,
       relatedEntityType: "marketplace_update",
-      sourceId: `update_available:${catalogItemName}:${toVersion}`,
+      // One hub row mirrors one durable pending-update identity. Its content is
+      // refreshed (and, for a newer release, reopened) rather than accumulating
+      // one row per version.
+      sourceId: `update_available:${catalogItemId}`,
+      legacySourcePrefix: `update_available:${catalogItemName}:`,
+      reopenWhenArchived: options.reopenWhenArchived,
     }),
 
   updateCompleted: (db: Db, companyId: string, catalogItemName: string) =>
@@ -147,7 +238,12 @@ export const marketplaceNotifications = {
    * synthetic row would surface an Updates entry that 422s on every action. The
    * founder hub item is the honest durable record for this event.
    */
-  skillUpdateRefusedCustomized: (db: Db, companyId: string, skillName: string, skillId: string) =>
+  skillUpdateRefusedCustomized: (
+    db: Db,
+    companyId: string,
+    skillName: string,
+    skillId: string
+  ) =>
     notifyFounders(db, companyId, {
       type: "marketplace.skill_update_refused_customized",
       title: `Kept your edits to ${skillName}`,
@@ -158,7 +254,12 @@ export const marketplaceNotifications = {
       sourceId: `skill_update_refused_customized:${skillId}`,
     }),
 
-  updateFailed: (db: Db, companyId: string, catalogItemName: string, error: string) =>
+  updateFailed: (
+    db: Db,
+    companyId: string,
+    catalogItemName: string,
+    error: string
+  ) =>
     notifyFounders(db, companyId, {
       type: "marketplace.update_failed",
       title: `${catalogItemName} update failed`,

@@ -2,6 +2,10 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { notFound, unprocessable } from "../errors.js";
 import { resolveHomeAwarePath, resolveAoaInstanceRoot } from "../home-paths.js";
+import {
+  isInsideManagedMarketplaceSkillsRoot,
+  overlapsManagedMarketplaceSkillsRoot,
+} from "./marketplace-install/managed-skills-root.js";
 
 const ENTRY_FILE_DEFAULT = "AGENTS.md";
 const MODE_KEY = "instructionsBundleMode";
@@ -139,6 +143,23 @@ function resolveManagedInstructionsRoot(agent: AgentLike): string {
     agent.id,
     "instructions",
   );
+}
+
+/**
+ * T2.8c(b): the managed instructions root must never overlap the managed
+ * marketplace-skills tree. A pathological AOA_HOME could resolve it inside — or
+ * as an ancestor of — that tree, and the managed-bundle write paths
+ * (`materializeManagedBundle`, `ensureWritableBundle`, the managed branch of
+ * `updateBundle`) `mkdir` + write (and `fs.rm`) DIRECTLY, before any
+ * write-target jail, so they would add/delete catalog-owned bytes. Call this at
+ * every such path before the first `mkdir`/write. (Codex #302)
+ */
+function assertManagedInstructionsRootWritable(rootPath: string): void {
+  if (overlapsManagedMarketplaceSkillsRoot(rootPath)) {
+    throw unprocessable(
+      "The managed instructions root overlaps the managed marketplace-skills directory; refusing to write.",
+    );
+  }
 }
 
 function resolveLegacyInstructionsPath(candidatePath: string, config: Record<string, unknown>): string {
@@ -422,6 +443,17 @@ async function writeBundleFiles(
   for (const [relativePath, content] of Object.entries(files)) {
     const normalizedPath = normalizeRelativeFilePath(relativePath);
     const absolutePath = resolvePathWithinRoot(rootPath, normalizedPath);
+    // T2.8c(b) writable-sink jail (Codex #302): an ancestor external root + a
+    // `marketplace-skills/...` entryFile resolves a write into the catalog-owned
+    // tree. Check the resolved TARGET, not the root. (Note: `materializeManagedBundle`
+    // does NOT route through this helper — it writes + `fs.rm`s directly and is
+    // guarded there against a managed-instructions root that overlaps the
+    // marketplace-skills tree.)
+    if (isInsideManagedMarketplaceSkillsRoot(absolutePath)) {
+      throw unprocessable(
+        "Cannot write instructions files inside the managed marketplace-skills directory.",
+      );
+    }
     const existingStat = await statIfExists(absolutePath);
     if (existingStat?.isFile() && !options?.overwriteExisting) continue;
     await fs.mkdir(path.dirname(absolutePath), { recursive: true });
@@ -519,6 +551,7 @@ export function agentInstructionsService() {
     }
 
     const managedRoot = resolveManagedInstructionsRoot(agent);
+    assertManagedInstructionsRootWritable(managedRoot); // before mkdir + legacy write below
     const entryFile = current.entryFile || ENTRY_FILE_DEFAULT;
     const nextConfig = applyBundleConfig(current.config, {
       mode: "managed",
@@ -560,6 +593,7 @@ export function agentInstructionsService() {
 
     if (nextMode === "managed") {
       nextRootPath = resolveManagedInstructionsRoot(agent);
+      assertManagedInstructionsRootWritable(nextRootPath); // before the mkdir below
     } else {
       const rootPath = asString(input.rootPath) ?? state.rootPath;
       if (!rootPath) {
@@ -568,6 +602,17 @@ export function agentInstructionsService() {
       const resolvedRoot = resolveHomeAwarePath(rootPath);
       if (!path.isAbsolute(resolvedRoot)) {
         throw unprocessable("External instructions bundles require an absolute rootPath");
+      }
+      // T2.8c(b): an external bundle root must not OVERLAP the managed
+      // marketplace-skills tree in either direction. Rejecting an ancestor root
+      // (e.g. `.aoa`) as well as an inside root closes the "root = ancestor,
+      // entryFile = marketplace-skills/…" bypass at set time; the resolved-target
+      // sink guards (writeBundleFiles/writeFile/deleteFile) still cover any
+      // pre-existing root. (Codex #302)
+      if (overlapsManagedMarketplaceSkillsRoot(resolvedRoot)) {
+        throw unprocessable(
+          "External instructions bundles cannot overlap the managed marketplace-skills directory.",
+        );
       }
       nextRootPath = resolvedRoot;
     }
@@ -621,6 +666,14 @@ export function agentInstructionsService() {
 
     const prepared = await ensureWritableBundle(agent, options);
     const absolutePath = resolvePathWithinRoot(prepared.state.rootPath!, relativePath);
+    // T2.8c(b) writable-sink jail: an external root that is an ANCESTOR of the
+    // managed tree passes the updateBundle check, but a relative path can still
+    // resolve inside it — reject at the resolved target (Codex #302).
+    if (isInsideManagedMarketplaceSkillsRoot(absolutePath)) {
+      throw unprocessable(
+        "Cannot write instructions files inside the managed marketplace-skills directory.",
+      );
+    }
     await fs.mkdir(path.dirname(absolutePath), { recursive: true });
     await fs.writeFile(absolutePath, content, "utf8");
     const nextAgent = { ...agent, adapterConfig: prepared.adapterConfig };
@@ -646,6 +699,13 @@ export function agentInstructionsService() {
       throw unprocessable("Cannot delete the bundle entry file");
     }
     const absolutePath = resolvePathWithinRoot(state.rootPath, normalizedPath);
+    // T2.8c(b) writable-sink jail — mirrors writeFile (Codex #302): an ancestor
+    // external root must not be able to `fs.rm` catalog-owned bundle files.
+    if (isInsideManagedMarketplaceSkillsRoot(absolutePath)) {
+      throw unprocessable(
+        "Cannot delete instructions files inside the managed marketplace-skills directory.",
+      );
+    }
     await fs.rm(absolutePath, { force: true });
     const adapterConfig = buildPersistedBundleConfig(derived, state);
     const bundle = await getBundle({ ...agent, adapterConfig });
@@ -691,6 +751,7 @@ export function agentInstructionsService() {
     },
   ): Promise<{ bundle: AgentInstructionsBundle; adapterConfig: Record<string, unknown> }> {
     const rootPath = resolveManagedInstructionsRoot(agent);
+    assertManagedInstructionsRootWritable(rootPath); // before the replaceExisting fs.rm below
     const entryFile = options?.entryFile ? normalizeRelativeFilePath(options.entryFile) : ENTRY_FILE_DEFAULT;
 
     if (options?.replaceExisting) {

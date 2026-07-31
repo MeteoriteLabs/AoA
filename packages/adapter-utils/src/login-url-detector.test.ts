@@ -64,6 +64,19 @@ describe("createLoginUrlDetector (Plan 3 T3)", () => {
     const d = createLoginUrlDetector();
     expect(d.push("Go to https://claude.ai/oauth?a=b.\n")).toBe("https://claude.ai/oauth?a=b");
   });
+
+  it("strips ANSI controls around a Codex device URL, including a split escape sequence", () => {
+    const afterEsc = createLoginUrlDetector();
+    expect(afterEsc.push("Open \u001b[4mhttps://auth.openai.com/codex/dev\u001b")).toBeNull();
+    expect(afterEsc.push("[0mice")).toBeNull();
+    expect(afterEsc.push("\u001b[0m in your browser.\n")).toBe(
+      "https://auth.openai.com/codex/device",
+    );
+
+    const afterCsi = createLoginUrlDetector();
+    expect(afterCsi.push("Open https://auth.openai.com/codex/dev\u001b[")).toBeNull();
+    expect(afterCsi.push("0mice\n")).toBe("https://auth.openai.com/codex/device");
+  });
 });
 
 describe("isLoopbackUrl", () => {

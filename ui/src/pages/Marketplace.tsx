@@ -18,7 +18,7 @@ import {
 import { useNavigate } from "@/lib/router";
 import { pluginsApi } from "@/api/plugins";
 import { queryKeys } from "@/lib/queryKeys";
-import { isAoaItem, isAoaPackage } from "@/lib/marketplace-constants";
+import { deriveMarketplacePlacement } from "@/lib/marketplace-constants";
 import { cn } from "@/lib/utils";
 import type {
   MarketplaceItemType,
@@ -294,8 +294,8 @@ function OverviewShelf({
 }
 
 export default function Marketplace() {
-  const { data: catalog, isLoading, error } = useCatalog();
-  const { data: packages } = usePackages();
+  const { data: catalog, error: catalogError } = useCatalog();
+  const { data: packages, error: packagesError } = usePackages();
   useCompany();
 
   const { data: installedPlugins } = useQuery({
@@ -344,15 +344,24 @@ export default function Marketplace() {
   }, []);
 
   const items = useMemo(() => catalog?.items ?? [], [catalog]);
-  // AoA first-party items are segregated: only under the AoA view, never in the
-  // main type/Home views, search, or packages.
-  const aoaItems = useMemo(() => items.filter(isAoaItem), [items]);
+  const placement = useMemo(
+    () =>
+      catalog && packages !== undefined
+        ? deriveMarketplacePlacement(catalog.items, packages)
+        : null,
+    [catalog, packages]
+  );
+  const placementError =
+    (catalog === undefined ? catalogError : null) ??
+    (packages === undefined ? packagesError : null);
+  const placementLoading = placement === null && placementError == null;
+  const aoaItems = placement?.aoaItems ?? [];
   const aoaByType = useMemo(() => {
     const out: Record<MarketplaceItemType, number> = { skill: 0, plugin: 0, agent: 0, team: 0 };
     for (const it of aoaItems) out[it.type] += 1;
     return out;
   }, [aoaItems]);
-  const mainItems = useMemo(() => items.filter((i) => !isAoaItem(i)), [items]);
+  const mainItems = placement?.mainItems ?? [];
   // Third-party count for the active type BEFORE search/sort filters. Distinguishes
   // "no third-party items of this type exist" (show the AoA cross-sell) from "a
   // search/sub-filter matched nothing" (show the generic "No matches.").
@@ -361,10 +370,10 @@ export default function Marketplace() {
     [mainItems, selectedType],
   );
   const base = isAoaView ? aoaItems : mainItems;
-  const mainPackages = useMemo(
-    () => (packages ?? []).filter((p) => !isAoaPackage(p)),
-    [packages],
-  );
+  const mainPackages = placement?.mainPackages ?? [];
+  const overviewPackages = isAoaView
+    ? placement?.aoaPackages ?? []
+    : mainPackages;
 
   const packageInstallMembers = useMemo<MarketplaceCatalogItem[]>(() => {
     if (!packageToInstall) return [];
@@ -395,16 +404,19 @@ export default function Marketplace() {
   }, [visible]);
 
   function renderPackageOverview() {
-    if (!mainPackages.length) return null;
+    if (!overviewPackages.length) return null;
     return (
       <section className="mb-7">
-        <PackagesHeader total={mainPackages.length} onSeeAll={() => goType("skill")} />
+        <PackagesHeader
+          total={overviewPackages.length}
+          onSeeAll={isAoaView ? undefined : () => goType("skill")}
+        />
         <OverviewShelf
           label="packages"
           testId="marketplace-packages-overview"
           scrollTestId="marketplace-packages-overview-scroll"
         >
-          {mainPackages.map((pkg) => (
+          {overviewPackages.map((pkg) => (
             <PackageCard key={pkg.id} pkg={pkg} onInstallAll={setPackageToInstall} />
           ))}
         </OverviewShelf>
@@ -550,17 +562,18 @@ export default function Marketplace() {
         </div>
 
         {/* Body */}
-        {isLoading ? (
+        {placementLoading ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
             {Array.from({ length: 4 }).map((_, i) => (
               <Skeleton key={i} className="h-40 rounded-xl" />
             ))}
           </div>
-        ) : error ? (
+        ) : placementError ? (
           <div className="rounded-xl border border-border bg-card p-6 text-sm text-dim">
-            Failed to load catalog.
+            <p>Failed to load marketplace.</p>
+            <p className="mt-1 text-very-dim">{placementError.message}</p>
           </div>
-        ) : visible.length === 0 ? (
+        ) : visible.length === 0 && (selectedType !== null || overviewPackages.length === 0) ? (
           selectedType !== null && !isAoaView && mainTypeCount === 0 ? (
             <TypeEmptyState
               type={selectedType}
@@ -583,10 +596,10 @@ export default function Marketplace() {
             renderSection(selectedType, grouped[selectedType], grouped[selectedType].length)
           )
         ) : (
-          // All-view (Home) or AoA view: overview shelves. Home promotes packages
-          // first; the AoA view shows only AoA items (no packages) uncapped.
+          // All-view (Home) or AoA view: overview shelves. AoA promotes its
+          // first-party skill package, then Default Crew and its required agents.
           <>
-            {!isAoaView && renderPackageOverview()}
+            {renderPackageOverview()}
             {SECTION_ORDER.map((type) => {
               const groupedItems = grouped[type];
               const cap = isAoaView ? groupedItems.length : SECTION_CAP;

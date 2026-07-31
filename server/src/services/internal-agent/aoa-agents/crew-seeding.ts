@@ -90,56 +90,30 @@ async function runEnsureSteps(companyId: string, scope: string, steps: EnsureSte
  *   → `mergeCrewAdapterConfig` inside `ensure-commander.ts`), so a
  *   marketplace-managed company must still reach this on a config change or
  *   Commander is stranded on the old provider.
- * - **Steward** — Inbox Hub curation.
  *
- * ⚠️ **Steward's placement here is TEMPORARY.** It sits on the infrastructure
- * side only because it is not published in the marketplace catalog (verified
- * against the live CDN on 2026-07-24: 11 published agents, none of them
- * Steward; the bundled `ui/src/aoa-marketplace-snapshot.json` agrees). T2.4 of
- * `docs/aoa/plans/2026-07-24-phase2-marketplace-provisioning.md` authors and
- * publishes `agent:aoa-curated/aoa-steward` and adds it to
- * `team:aoa-curated/default-crew`.
- *
- * **Moving `ensureSteward` into {@link ensureCrewAgents} is NOT sufficient on
- * its own — it must be paired with a reconciliation of the pre-existing legacy
- * Steward rows.** Companies created between T2.3 and T2.4 own a Steward row
- * with `templateOrigin` NULL: `seed-crew-agent.ts` stamps no origin on insert,
- * and "Steward" is absent from `CREW_NAMES` in `backfill-template-origin.ts`,
- * so the boot backfill never stamps it either. `team-reconcile.ts:96-107`
- * computes its `missing` set from the non-null `templateOrigin`s of the
- * installed team's *members* — a legacy Steward is neither a team member nor
- * origin-stamped, so it fails that lookup twice over and reconcile installs a
- * SECOND Steward. That does not crash —
- * `resolveAgentNameConflict` renames the newcomer — so the company silently
- * ends up with two Steward agents, both carrying the
- * `{kind:"sweep", config:{role:"steward"}}` trigger, i.e. duplicated hub
- * curation runs. T2.4 must stamp or remove the legacy row as part of the move.
- *
- * **Chronicler has the identical NULL-origin gap** (also absent from
- * `CREW_NAMES`), so it needs the same reconciliation whenever its catalog
- * status is acted on. Do NOT "fix" the gap by stamping these rows with a
- * non-`@legacy` origin — see the plan's T2.5 section: that NULL is load-bearing
- * for {@link isCrewMarketplaceManaged}, and a non-`@legacy` stamp would
- * suppress every company's crew seeding.
+ * Steward is intentionally absent here. It is published as
+ * `agent:aoa-curated/aoa-steward`, required by the default crew, and therefore
+ * belongs to the marketplace-owned roster below. Phase 4A adopts pre-existing
+ * NULL-origin Steward rows in place before marketplace updates run.
  */
 export async function ensureInfrastructureAgents(db: Db, companyId: string): Promise<void> {
   await runEnsureSteps(companyId, "ensureInfrastructureAgents", [
     ["commander", () => ensureCommanderAgent(db, companyId)],
-    // See the Steward note above — moving this line is a two-part change.
-    ["steward", () => ensureSteward(db, companyId)],
   ]);
 }
 
 /**
  * Seed the marketplace-owned crew roster: Command Staff (Navigator, Planner,
- * Memory Keeper), Adjutant, Scout, Engineer, Chronicler, Librarian. Every one
- * of these is published in the catalog, so once a company is marketplace-managed
- * the install owns them and these legacy seeders must not overwrite them.
+ * Memory Keeper), Adjutant, Scout, Engineer, Chronicler, Librarian, Steward.
+ * Every one of these is published in the catalog, so once a company is
+ * marketplace-managed the install owns them and these legacy seeders must not
+ * overwrite them. Bootstrap also fails closed unless the default-crew package
+ * contains Steward, preventing this gate from creating a crewless company.
  *
  * **Callers are responsible for the gate:** skip this when
  * {@link isCrewMarketplaceManaged} is true. This is also the call for a
- * deliberate degrade-to-legacy fallback (T2.3) — infrastructure will already
- * have been seeded unconditionally by then.
+ * deliberate degrade-to-legacy fallback (T2.3) — Commander will already have
+ * been seeded unconditionally by then.
  *
  * Re-running this after a provider/crewModel change migrates existing rows to
  * the newly-resolved adapter via shouldRewriteCrewAdapter + mergeCrewAdapterConfig
@@ -153,5 +127,6 @@ export async function ensureCrewAgents(db: Db, companyId: string): Promise<void>
     ["engineer", () => ensureEngineer(db, companyId)],
     ["chronicler", () => ensureChronicler(db, companyId)],
     ["librarian", () => ensureLibrarian(db, companyId)],
+    ["steward", () => ensureSteward(db, companyId)],
   ]);
 }

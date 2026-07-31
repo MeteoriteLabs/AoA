@@ -26,6 +26,10 @@ import { logActivity } from "./activity-log.js";
 import { loadConfig } from "../config.js";
 import { mcpConnectorService } from "./mcp-connectors-crud.js";
 import { resolveConnectorToken, OAuthRefreshError } from "./mcp-connector-token-refresh.js";
+import {
+  isMcpConnectorBlocked,
+  readMcpConnectorEmergencyPolicy,
+} from "./mcp-connector-emergency-policy.js";
 
 export interface LoadEnabledConnectorRowsOptions {
   companyId: string;
@@ -127,12 +131,28 @@ export async function loadEnabledConnectorRows(
       );
     },
   });
-  if (selected.length === 0) return [];
+  const emergencyPolicy = readMcpConnectorEmergencyPolicy();
+  const allowed = selected.filter((connector) => {
+    if (!isMcpConnectorBlocked(connector.serverName, emergencyPolicy)) {
+      return true;
+    }
+    logger.warn(
+      {
+        companyId,
+        connectorId: connector.id,
+        serverName: connector.serverName,
+        policyEnabled: emergencyPolicy.enabled,
+      },
+      "MCP connector skipped at delivery by emergency policy",
+    );
+    return false;
+  });
+  if (allowed.length === 0) return [];
 
   const secrets = secretService(db);
   const resolved: LoadedConnectorRow[] = [];
 
-  for (const connector of selected) {
+  for (const connector of allowed) {
     let secretValue: string | null = null;
 
     // A connector with no secretRef is an unauthenticated server — a legitimate
@@ -253,6 +273,7 @@ export async function isConnectorToolAutoAllowed(
   const serverName = parseConnectorServerName(input.toolName);
   if (serverName === null) return false;
   if (!adapterSupportsConnectors(input.adapterType)) return false;
+  if (isMcpConnectorBlocked(serverName)) return false;
 
   const isCommander = input.agentId === null;
 

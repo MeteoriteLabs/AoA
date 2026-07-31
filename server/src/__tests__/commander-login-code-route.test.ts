@@ -43,7 +43,7 @@ describe("commander-login code route (Plan 3 T4)", () => {
     const res = await request(makeApp()).post(codeUrl).send({ code: "ABC-123" });
     expect(res.status).toBe(202);
     expect(res.body).toEqual({ ok: true });
-    expect(mockService.submitCode).toHaveBeenCalledWith("c1", "ch-1", "ABC-123");
+    expect(mockService.submitCode).toHaveBeenCalledWith("c1", "ch-1", "ABC-123", "u1");
   });
 
   it("not-live -> 404, body mentions starting again", async () => {

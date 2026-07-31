@@ -30,16 +30,24 @@ describe("runClaudeLoginStreaming (Plan 3 T3)", () => {
     const f = fakeSpawn();
     const res = runClaudeLoginStreaming({
       runId: "l1",
-      env: { CLAUDE_CONFIG_DIR: "/x/.claude" },
+      env: { HOME: "/scoped/home", CLAUDE_CONFIG_DIR: "/x/.claude" },
       spawn: f.spawn,
       ensureDir: vi.fn(),
     });
     expect(f.calls[0].command).toBe("claude");
-    expect(f.calls[0].argv).toEqual(["auth", "login"]);
+    expect(f.calls[0].argv).toEqual(["auth", "login", "--claudeai"]);
     expect(f.calls[0].opts.env.CLAUDE_CONFIG_DIR).toBe("/x/.claude");
+    expect(f.calls[0].opts.env.HOME).toBe("/scoped/home");
     expect(res.authHome).toBe("/x/.claude");
-    f.child.stderr.emit("data", "Sign in: https://claude.ai/oauth?code=z9\n");
-    await expect(res.urlPromise).resolves.toBe("https://claude.ai/oauth?code=z9");
+    f.child.stderr.emit(
+      "data",
+      "Opening browser to sign in...\n" +
+        "\u001b[4mhttps://claude.com/cai/oauth/authorize?code=z9\u001b[0m\n" +
+        "Paste code here if prompted:\n",
+    );
+    await expect(res.urlPromise).resolves.toBe(
+      "https://claude.com/cai/oauth/authorize?code=z9",
+    );
   });
 
   it("respects a config-provided command override", () => {

@@ -14,7 +14,7 @@
  */
 import os from "node:os";
 import path from "node:path";
-import { promises as fs } from "node:fs";
+import { existsSync, promises as fs } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // ── Mocks (hoisted before the service import) ────────────────────────────────
@@ -84,6 +84,8 @@ interface FakeDb {
   /** Every `update(...).set(values)` issued, matched or not. */
   attemptedUpdates: Array<{ values: Row; ids: string[] }>;
   inserted: Row[];
+  afterNextSelect?: () => void;
+  beforeInsertCommit?: (row: Row) => void;
 }
 
 function makeFakeDb(rows: Row[]): FakeDb {
@@ -97,7 +99,13 @@ function makeFakeDb(rows: Row[]): FakeDb {
   let seq = 0;
 
   const selectChain = (cond?: any) => {
-    const run = () => state.rows.filter((r) => evalCond(cond, r)).map((r) => ({ ...r }));
+    const run = () => {
+      const snapshot = state.rows.filter((r) => evalCond(cond, r)).map((r) => ({ ...r }));
+      const afterSelect = state.afterNextSelect;
+      state.afterNextSelect = undefined;
+      afterSelect?.();
+      return snapshot;
+    };
     return {
       orderBy: () => Promise.resolve(run()),
       limit: () => Promise.resolve(run()),
@@ -142,6 +150,15 @@ function makeFakeDb(rows: Row[]): FakeDb {
           ...values,
         };
         const commit = () => {
+          state.beforeInsertCommit?.(row);
+          if (state.rows.some((existing) =>
+            existing.companyId === row.companyId && existing.key === row.key
+          )) {
+            throw Object.assign(new Error("duplicate company skill key"), {
+              code: "23505",
+              constraint_name: "company_skills_company_key_idx",
+            });
+          }
           state.rows.push(row);
           state.inserted.push(row);
           return [{ ...row }];
@@ -152,6 +169,7 @@ function makeFakeDb(rows: Row[]): FakeDb {
         };
       },
     }),
+    transaction: async (action: (tx: any) => Promise<any>) => action(state.db),
     delete: () => ({
       where: (cond: any) => {
         const keep = state.rows.filter((r) => !evalCond(cond, r));
@@ -448,6 +466,354 @@ describe("caller_is_authoritative clears `customized` (F1)", () => {
 });
 
 // ── 4. F2 — the project scan is a third source-re-read path ──────────────────
+
+describe("createLocalSkill — collision guard (T2.9b)", () => {
+  let previousAoaHome: string | undefined;
+
+  beforeEach(async () => {
+    previousAoaHome = process.env.AOA_HOME;
+    process.env.AOA_HOME = await makeTempDir("aoa-t29b-home-");
+  });
+
+  afterEach(() => {
+    if (previousAoaHome === undefined) delete process.env.AOA_HOME;
+    else process.env.AOA_HOME = previousAoaHome;
+  });
+
+  it("returns a distinct 409 and preserves a customized row plus its bytes", async () => {
+    const skillDir = path.join(
+      path.resolve(process.env.AOA_HOME!),
+      "instances",
+      "default",
+      "skills",
+      "co-1",
+      "brainstorming",
+    );
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), FOUNDER_MARKDOWN, "utf8");
+    const fake = makeFakeDb([
+      urlSkillRow({
+        key: "company/co-1/brainstorming",
+        slug: "brainstorming",
+        sourceType: "local_path",
+        sourceLocator: skillDir,
+        customized: true,
+      }),
+    ]);
+    const svc = companySkillService(fake.db);
+
+    await expect(svc.createLocalSkill("co-1", {
+      name: "Brainstorming",
+      slug: "brainstorming",
+      markdown: UPSTREAM_MARKDOWN,
+    })).rejects.toMatchObject({
+      status: 409,
+      details: { code: "SKILL_NAME_TAKEN" },
+    });
+
+    expect(fake.rows).toHaveLength(1);
+    expect(fake.rows[0]!.markdown).toBe(FOUNDER_MARKDOWN);
+    expect(fake.rows[0]!.customized).toBe(true);
+    expect(await fs.readFile(path.join(skillDir, "SKILL.md"), "utf8")).toBe(FOUNDER_MARKDOWN);
+  });
+
+  it("rejects an existing normalized slug even when another source owns a different key", async () => {
+    const fake = makeFakeDb([
+      urlSkillRow({
+        key: "github/example/skills/brainstorming",
+        slug: "brainstorming",
+        sourceType: "github",
+        sourceLocator: "https://github.com/example/skills",
+      }),
+    ]);
+    const svc = companySkillService(fake.db);
+
+    await expect(svc.createLocalSkill("co-1", {
+      name: "Brainstorming",
+      slug: "BRAINSTORMING",
+      markdown: UPSTREAM_MARKDOWN,
+    })).rejects.toMatchObject({
+      status: 409,
+      details: {
+        code: "SKILL_NAME_TAKEN",
+        key: "github/example/skills/brainstorming",
+      },
+    });
+
+    expect(fake.rows).toHaveLength(1);
+    expect(fake.inserted).toHaveLength(0);
+  });
+
+  it("lets exactly one of two concurrent creates claim a fresh key", async () => {
+    const fake = makeFakeDb([]);
+    const svc = companySkillService(fake.db);
+    const input = {
+      name: "Brainstorming",
+      slug: "brainstorming",
+      markdown: UPSTREAM_MARKDOWN,
+    };
+
+    const outcomes = await Promise.allSettled([
+      svc.createLocalSkill("co-1", input),
+      svc.createLocalSkill("co-1", input),
+    ]);
+
+    expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+    const rejected = outcomes.find(
+      (outcome): outcome is PromiseRejectedResult => outcome.status === "rejected",
+    );
+    expect(rejected?.reason).toMatchObject({
+      status: 409,
+      details: { code: "SKILL_NAME_TAKEN" },
+    });
+    expect(fake.rows.filter((candidate) =>
+      candidate.key === "company/co-1/brainstorming"
+    )).toHaveLength(1);
+  });
+
+  it("does not insert a row when an orphan final directory blocks publication", async () => {
+    const managedRoot = path.join(
+      path.resolve(process.env.AOA_HOME!),
+      "instances",
+      "default",
+      "skills",
+      "co-1",
+    );
+    const skillDir = path.join(managedRoot, "brainstorming");
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), FOUNDER_MARKDOWN, "utf8");
+    const fake = makeFakeDb([]);
+    const svc = companySkillService(fake.db);
+
+    await expect(svc.createLocalSkill("co-1", {
+      name: "Brainstorming",
+      slug: "brainstorming",
+      markdown: UPSTREAM_MARKDOWN,
+    })).rejects.toMatchObject({
+      status: 409,
+      details: { code: "SKILL_NAME_TAKEN" },
+    });
+
+    expect(fake.rows).toHaveLength(0);
+    expect(await fs.readFile(path.join(skillDir, "SKILL.md"), "utf8")).toBe(
+      FOUNDER_MARKDOWN,
+    );
+    expect((await fs.readdir(managedRoot)).filter(
+      (entry) => entry.startsWith(".brainstorming-create-"),
+    )).toEqual([]);
+  });
+
+  it("publishes SKILL.md before making the database row visible", async () => {
+    const fake = makeFakeDb([]);
+    fake.beforeInsertCommit = (row) => {
+      expect(existsSync(path.join(row.sourceLocator, "SKILL.md"))).toBe(true);
+    };
+    const svc = companySkillService(fake.db);
+
+    const created = await svc.createLocalSkill("co-1", {
+      name: "Published First",
+      slug: "published-first",
+      markdown: "# Published first\n",
+    });
+
+    expect(created.id).toBe("inserted-1");
+    expect(fake.rows).toHaveLength(1);
+  });
+
+  it("removes an owned managed directory so a deleted slug can be recreated", async () => {
+    const fake = makeFakeDb([]);
+    const svc = companySkillService(fake.db);
+    const first = await svc.createLocalSkill("co-1", {
+      name: "Reusable",
+      slug: "reusable",
+      markdown: "# First\n",
+    });
+    const firstDirectory = first.sourceLocator!;
+
+    await expect(svc.deleteSkill("co-1", first.id)).resolves.toMatchObject({
+      id: first.id,
+    });
+    expect(existsSync(firstDirectory)).toBe(false);
+
+    const recreated = await svc.createLocalSkill("co-1", {
+      name: "Reusable",
+      slug: "reusable",
+      markdown: "# Second\n",
+    });
+    expect(recreated.id).not.toBe(first.id);
+    expect(await fs.readFile(path.join(recreated.sourceLocator!, "SKILL.md"), "utf8")).toBe(
+      "# Second\n",
+    );
+  });
+
+  it("does not delete an imported local_path directory with the database row", async () => {
+    const importedDirectory = await makeTempDir("aoa-imported-local-delete-");
+    await fs.writeFile(path.join(importedDirectory, "SKILL.md"), FOUNDER_MARKDOWN, "utf8");
+    const fake = makeFakeDb([
+      urlSkillRow({
+        sourceType: "local_path",
+        sourceLocator: importedDirectory,
+        metadata: { sourceKind: "local" },
+      }),
+    ]);
+    const svc = companySkillService(fake.db);
+
+    await svc.deleteSkill("co-1", "skill-1");
+
+    expect(fake.rows).toHaveLength(0);
+    expect(await fs.readFile(path.join(importedDirectory, "SKILL.md"), "utf8")).toBe(
+      FOUNDER_MARKDOWN,
+    );
+  });
+
+  it("still creates a fresh slug", async () => {
+    const fake = makeFakeDb([]);
+    const svc = companySkillService(fake.db);
+
+    const created = await svc.createLocalSkill("co-1", {
+      name: "Fresh Skill",
+      slug: "fresh-skill",
+      markdown: "# Fresh\n",
+    });
+
+    expect(created.key).toBe("company/co-1/fresh-skill");
+    expect(fake.rows).toHaveLength(1);
+    expect(await fs.readFile(
+      path.join(created.sourceLocator!, "SKILL.md"),
+      "utf8",
+    )).toBe("# Fresh\n");
+  });
+
+  it("preserves founder-authored Unicode bytes in the managed SKILL.md", async () => {
+    const fake = makeFakeDb([]);
+    const svc = companySkillService(fake.db);
+    const markdown = "---\nname: 研究 🚀\n---\n\n# 研究 🚀\n";
+
+    const created = await svc.createLocalSkill("co-1", {
+      name: "研究 🚀",
+      slug: "research",
+      markdown,
+    });
+
+    expect(await fs.readFile(
+      path.join(created.sourceLocator!, "SKILL.md"),
+      "utf8",
+    )).toBe(markdown);
+  });
+});
+
+describe("updateFile — byte-derived customized companion", () => {
+  it("keeps an uncustomized SKILL.md uncustomized on a byte-identical save", async () => {
+    const skillDir = await makeTempDir("aoa-t29-edit-");
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), UPSTREAM_MARKDOWN, "utf8");
+    const fake = makeFakeDb([
+      urlSkillRow({
+        sourceType: "local_path",
+        sourceLocator: skillDir,
+        markdown: UPSTREAM_MARKDOWN,
+        customized: false,
+      }),
+    ]);
+    const svc = companySkillService(fake.db);
+
+    await svc.updateFile("co-1", "skill-1", "SKILL.md", UPSTREAM_MARKDOWN);
+
+    expect(fake.rows[0]!.customized).toBe(false);
+  });
+
+  it("does not rewrite the filesystem on a byte-identical DB save", async () => {
+    const skillDir = await makeTempDir("aoa-t29-edit-disk-race-");
+    const concurrentDiskBytes = "# newer filesystem bytes\n";
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), concurrentDiskBytes, "utf8");
+    const fake = makeFakeDb([
+      urlSkillRow({
+        sourceType: "local_path",
+        sourceLocator: skillDir,
+        markdown: UPSTREAM_MARKDOWN,
+        customized: false,
+      }),
+    ]);
+    const svc = companySkillService(fake.db);
+
+    await svc.updateFile("co-1", "skill-1", "SKILL.md", UPSTREAM_MARKDOWN);
+
+    expect(await fs.readFile(path.join(skillDir, "SKILL.md"), "utf8")).toBe(
+      concurrentDiskBytes,
+    );
+    expect(fake.attemptedUpdates).toHaveLength(0);
+  });
+
+  it("keeps an already-customized SKILL.md sticky on a byte-identical re-save", async () => {
+    const skillDir = await makeTempDir("aoa-t29-edit-sticky-");
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), FOUNDER_MARKDOWN, "utf8");
+    const fake = makeFakeDb([
+      urlSkillRow({
+        sourceType: "local_path",
+        sourceLocator: skillDir,
+        markdown: FOUNDER_MARKDOWN,
+        customized: true,
+      }),
+    ]);
+    const svc = companySkillService(fake.db);
+
+    await svc.updateFile("co-1", "skill-1", "SKILL.md", FOUNDER_MARKDOWN);
+
+    expect(fake.rows[0]!.customized).toBe(true);
+  });
+
+  it("preserves a concurrent ancillary-file customization on a byte-identical save", async () => {
+    const skillDir = await makeTempDir("aoa-t29-edit-concurrent-");
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), UPSTREAM_MARKDOWN, "utf8");
+    const row = urlSkillRow({
+      sourceType: "local_path",
+      sourceLocator: skillDir,
+      markdown: UPSTREAM_MARKDOWN,
+      customized: false,
+    });
+    const fake = makeFakeDb([row]);
+    const svc = companySkillService(fake.db);
+
+    // updateFile has already captured its pristine row snapshot when this hook
+    // runs. Model an ancillary-file request committing customized=true before
+    // the byte-identical SKILL.md path decides whether to write.
+    fake.afterNextSelect = () => {
+      row.customized = true;
+    };
+
+    await svc.updateFile("co-1", "skill-1", "SKILL.md", UPSTREAM_MARKDOWN);
+
+    expect(row.customized).toBe(true);
+    expect(fake.attemptedUpdates).toHaveLength(0);
+  });
+
+  it("does not restore a stale snapshot over a concurrent upstream update", async () => {
+    const skillDir = await makeTempDir("aoa-t29-edit-upstream-race-");
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), UPSTREAM_MARKDOWN, "utf8");
+    const row = urlSkillRow({
+      sourceType: "local_path",
+      sourceLocator: skillDir,
+      markdown: UPSTREAM_MARKDOWN,
+      sourceRef: "v1",
+      customized: false,
+    });
+    const fake = makeFakeDb([row]);
+    const svc = companySkillService(fake.db);
+    fake.afterNextSelect = () => {
+      row.markdown = "# upstream v2\n";
+      row.sourceRef = "v2";
+      row.customized = false;
+    };
+
+    await svc.updateFile("co-1", "skill-1", "SKILL.md", UPSTREAM_MARKDOWN);
+
+    expect(row).toMatchObject({
+      markdown: "# upstream v2\n",
+      sourceRef: "v2",
+      customized: false,
+    });
+    expect(fake.attemptedUpdates).toHaveLength(0);
+  });
+});
 
 describe("scanProjectWorkspaces — customized guard (F2)", () => {
   const ON_DISK = "---\nname: Scanned\n---\n\n# from the repo\n";

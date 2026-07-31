@@ -1,10 +1,17 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link } from "@/lib/router";
 import { BadgeCheck, Bot, Github } from "lucide-react";
 import type { CatalogItem, PluginRecord } from "@armyofagents/shared";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { TYPE_ICONS, SINGLE_ICON_TONES, shortSource, authorFromSource } from "@/lib/marketplace-constants";
+import {
+  AOA_DEFAULT_CREW_ITEM_ID,
+  AOA_DEFAULT_CREW_MARKETPLACE_PATH,
+  TYPE_ICONS,
+  SINGLE_ICON_TONES,
+  shortSource,
+  authorFromSource,
+} from "@/lib/marketplace-constants";
 import { PluginInstallModal } from "@/components/marketplace/install/PluginInstallModal";
 import { SnapshotInstallModal } from "@/components/marketplace/install/SnapshotInstallModal";
 import { TypeChip } from "./TypeChip";
@@ -18,6 +25,9 @@ export interface CatalogCardProps {
 }
 
 export function detailUrl(item: CatalogItem): string {
+  if (item.id === AOA_DEFAULT_CREW_ITEM_ID) {
+    return AOA_DEFAULT_CREW_MARKETPLACE_PATH;
+  }
   const colonIdx = item.id.indexOf(":");
   const slug = item.id.slice(colonIdx + 1);
   return `/marketplace/${item.type}/${slug}`;
@@ -25,6 +35,7 @@ export function detailUrl(item: CatalogItem): string {
 
 export function CatalogCard({ item, installedByPackageName }: CatalogCardProps) {
   const [installOpen, setInstallOpen] = useState(false);
+  const isDefaultCrew = item.id === AOA_DEFAULT_CREW_ITEM_ID;
   const installedPlugin = item.npm?.packageName
     ? installedByPackageName?.get(item.npm.packageName)
     : undefined;
@@ -86,7 +97,11 @@ export function CatalogCard({ item, installedByPackageName }: CatalogCardProps) 
               <Github className="size-3 shrink-0" />
               <span className="truncate">{repoShort}</span>
             </div>
-            {installedPlugin ? (
+            {isDefaultCrew ? (
+              <span className="inline-flex h-7 shrink-0 items-center rounded-md bg-primary px-3 text-[11.5px] font-medium text-primary-foreground">
+                View crew
+              </span>
+            ) : installedPlugin ? (
               installedPlugin.status === "ready" ? (
                 <Badge className="text-[11px] h-7 px-2.5 shrink-0 bg-green-600 hover:bg-green-600 cursor-default">
                   Installed
@@ -113,10 +128,10 @@ export function CatalogCard({ item, installedByPackageName }: CatalogCardProps) 
         </div>
       </Link>
 
-      {item.type === "plugin" && (
+      {!isDefaultCrew && item.type === "plugin" && (
         <PluginInstallModal item={item} open={installOpen} onOpenChange={setInstallOpen} />
       )}
-      {item.type !== "plugin" && (
+      {!isDefaultCrew && item.type !== "plugin" && (
         <SnapshotInstallModal item={item} open={installOpen} onOpenChange={setInstallOpen} />
       )}
     </div>

@@ -120,6 +120,22 @@ describe("summarize", () => {
     ]);
     const summary = summarize(result);
     expect(summary.failingCaseIds).toEqual([]);
+    expect(summary.firstFailure).toBeNull();
     expect(summary.belowThreshold).toBe(false);
+  });
+
+  it("reports one sanitized failure reason for actionable CI diagnostics", () => {
+    const result = makeSuiteResult("auth-failure", [
+      { caseId: "first", pass: false },
+      { caseId: "second", pass: false },
+    ]);
+    result.results[0].reason =
+      "threw: 401 Authorization: Bearer secret-token sk-test_1234567890";
+
+    expect(summarize(result).firstFailure).toEqual({
+      caseId: "first",
+      reason:
+        "threw: 401 Authorization: Bearer [redacted] [redacted API key]",
+    });
   });
 });

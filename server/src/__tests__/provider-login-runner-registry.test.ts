@@ -24,7 +24,10 @@
  *      half-finished Stage B edit the gate exists to catch, and `hasOwnProperty`
  *      would wave it through.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { drizzleOperatorStubs, makeTableProxy } from "./helpers/drizzle-mock.js";
 
 vi.mock("drizzle-orm", () => drizzleOperatorStubs());
@@ -50,7 +53,11 @@ import {
 } from "../services/commander-login-runtime.js";
 
 type Deps = {
-  resolveAuthHome: (provider: string, env: NodeJS.ProcessEnv) => string;
+  resolveAuthHome: (
+    provider: string,
+    env: NodeJS.ProcessEnv,
+    scope: { companyId: string; userId: string; executionTargetId: string | null },
+  ) => string;
   runLogin: (provider: string, args: { runId: string; env: NodeJS.ProcessEnv }) => unknown;
   credentialPresent: (provider: string, authHome: string) => Promise<boolean>;
 };
@@ -62,8 +69,15 @@ function deps(): Deps {
 }
 
 describe("login runner registry", () => {
+  let aoaHome: string;
+
   beforeEach(() => {
     capturedDeps.current = null;
+    aoaHome = fs.mkdtempSync(path.join(os.tmpdir(), "aoa-login-registry-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(aoaHome, { recursive: true, force: true });
   });
 
   /* ── hasLoginRunner ─────────────────────────────────────────────────── */
@@ -96,7 +110,6 @@ describe("login runner registry", () => {
     expect(claude.credentialFileName).toBe(".credentials.json");
     expect(codex.credentialFileName).not.toBe(claude.credentialFileName);
     for (const runner of [codex, claude]) {
-      expect(typeof runner.resolveAuthHome).toBe("function");
       expect(typeof runner.runLogin).toBe("function");
     }
   });
@@ -112,19 +125,30 @@ describe("login runner registry", () => {
   /* ── the dispatch seams the lifecycle actually calls ────────────────── */
 
   it("resolves a REAL authHome for a wired provider", () => {
-    const home = deps().resolveAuthHome("openai", { CODEX_HOME: "/tmp/codex-home" });
-    expect(home).toBe("/tmp/codex-home");
+    const home = deps().resolveAuthHome(
+      "openai",
+      { AOA_HOME: aoaHome },
+      { companyId: "c1", userId: "u1", executionTargetId: "target-1" },
+    );
+    expect(home).toMatch(/[\\/]openai$/);
   });
 
   it("routes each provider to its OWN authHome", () => {
     const d = deps();
-    const env = { CODEX_HOME: "/tmp/codex-home", CLAUDE_CONFIG_DIR: "/tmp/claude-home" };
-    expect(d.resolveAuthHome("openai", env)).toBe("/tmp/codex-home");
-    expect(d.resolveAuthHome("anthropic", env)).toBe("/tmp/claude-home");
+    const env = { AOA_HOME: aoaHome };
+    const scope = { companyId: "c1", userId: "u1", executionTargetId: "target-1" };
+    expect(d.resolveAuthHome("openai", env, scope)).toMatch(/[\\/]openai$/);
+    expect(d.resolveAuthHome("anthropic", env, scope)).toMatch(/[\\/]anthropic$/);
   });
 
   it("THROWS from resolveAuthHome for an unregistered provider", () => {
-    expect(() => deps().resolveAuthHome("google", {})).toThrow(/no interactive login runner/i);
+    expect(() =>
+      deps().resolveAuthHome(
+        "google",
+        {},
+        { companyId: "c1", userId: "u1", executionTargetId: "target-1" },
+      ),
+    ).toThrow(/no interactive login runner/i);
   });
 
   it("THROWS from runLogin for an unregistered provider — never spawns a CLI", () => {

@@ -18,10 +18,16 @@ vi.mock("drizzle-orm", () => ({
   like: () => Symbol("op:like"),
   inArray: () => Symbol("op:inArray"),
 }));
+vi.mock(
+  "../services/outbound-url-guard.js",
+  () => import("./helpers/outbound-url-guard.mock.js"),
+);
 
 import { installTeam } from "../services/marketplace-install/team-installer.js";
 import type { CatalogItem, MarketplaceCatalogFile } from "@armyofagents/shared";
 
+const PINNED_RESOURCE_BASE =
+  `https://raw.githubusercontent.com/MeteoriteLabs/aoa-marketplace/${"f".repeat(40)}`;
 const PLUGIN: CatalogItem = {
   id: "plugin:aoa-curated/aoa-plugin-github-issues",
   type: "plugin", name: "GitHub Issues", description: "...", version: "1.0.0",
@@ -33,7 +39,7 @@ const PLUGIN: CatalogItem = {
 const SKILL: CatalogItem = {
   id: "skill:aoa-curated/code-review", type: "skill", name: "Code Review", description: "...", version: "1.0.0",
   source: { adapter: "aoa-curated", url: "...", locator: "...", commitSha: "abc" },
-  resourceUrl: "https://.../SKILL.md",
+  resourceUrl: `${PINNED_RESOURCE_BASE}/content/skills/code-review/SKILL.md`,
   content: { inline: "# Code Review" },
   trust: { tier: "verified", source: "aoa-curated" }, status: "active",
   addedAt: "2026-04-30T00:00:00Z", category: "engineering", tags: [],
@@ -41,7 +47,7 @@ const SKILL: CatalogItem = {
 const AGENT: CatalogItem = {
   id: "agent:aoa-curated/engineer", type: "agent", name: "Engineer", description: "...", version: "1.0.0",
   source: { adapter: "aoa-curated", url: "...", locator: "...", commitSha: "abc" },
-  resourceUrl: "https://.../agent.json",
+  resourceUrl: `${PINNED_RESOURCE_BASE}/content/agents/engineer/agent.json`,
   trust: { tier: "verified", source: "aoa-curated" }, status: "active",
   addedAt: "2026-04-30T00:00:00Z", category: "engineering", tags: [],
   requires: [{ type: "skill", id: "skill:aoa-curated/code-review" }],
@@ -49,13 +55,29 @@ const AGENT: CatalogItem = {
 const TEAM: CatalogItem = {
   id: "team:aoa-curated/engineering", type: "team", name: "Engineering Team", description: "...", version: "1.0.0",
   source: { adapter: "aoa-curated", url: "...", locator: "...", commitSha: "abc" },
-  resourceUrl: "https://.../team.json",
+  resourceUrl: `${PINNED_RESOURCE_BASE}/content/teams/engineering/team.json`,
   trust: { tier: "verified", source: "aoa-curated" }, status: "active",
   addedAt: "2026-04-30T00:00:00Z", category: "engineering", tags: [],
   requires: [
     { type: "plugin", id: PLUGIN.id },
     { type: "skill", id: SKILL.id },
     { type: "agent", id: AGENT.id },
+  ],
+};
+const STEWARD: CatalogItem = {
+  ...AGENT,
+  id: "agent:aoa-curated/aoa-steward",
+  name: "Steward",
+  resourceUrl: `${PINNED_RESOURCE_BASE}/content/agents/aoa-steward/agent.json`,
+  requires: [],
+};
+const DEFAULT_CREW_WITH_STEWARD: CatalogItem = {
+  ...TEAM,
+  id: "team:aoa-curated/default-crew",
+  name: "AoA Default Crew",
+  requires: [
+    { type: "agent", id: AGENT.id },
+    { type: "agent", id: STEWARD.id },
   ],
 };
 
@@ -208,6 +230,28 @@ describe("installTeam — Saga cascade", () => {
         targetDepartmentId: "missing-dept", db: dbNoDept as any, installPlugin: mockPluginInstaller,
       }),
     ).rejects.toThrow(/department.*not found/i);
+  });
+
+  it("rejects a default-crew body that omits Steward before any install writes", async () => {
+    await expect(
+      installTeam({
+        catalogItem: DEFAULT_CREW_WITH_STEWARD,
+        catalog: {
+          ...CATALOG,
+          itemCount: 3,
+          items: [AGENT, STEWARD, DEFAULT_CREW_WITH_STEWARD],
+        },
+        companyId: "c1",
+        targetDepartmentId: null,
+        db: dbNoSelectAllowed as any,
+        installPlugin: mockPluginInstaller,
+      }),
+    ).rejects.toThrow(/default crew.*Steward/i);
+
+    expect(pluginInstalls).toHaveLength(0);
+    expect(skillInserts).toHaveLength(0);
+    expect(agentInserts).toHaveLength(0);
+    expect(teamInserts).toHaveLength(0);
   });
 
   // ── D21: company-wide teams (no parent department) ────────────────────────
@@ -436,7 +480,7 @@ describe("installTeam — Saga cascade", () => {
       id: "skill:aoa-curated/web-search",
       name: "Web Search",
       content: undefined, // forces installSkill down the HTTP path
-      resourceUrl: "https://.../web-search/SKILL.md",
+      resourceUrl: `${PINNED_RESOURCE_BASE}/content/skills/web-search/SKILL.md`,
     };
     // The fetched skill is FIRST, so the abort lands while the loop is running.
     const TEAM_TWO_SKILLS: CatalogItem = {

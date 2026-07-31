@@ -21,6 +21,7 @@ export * from "./team_coordinations.js";
 export * from "./company_user_profiles.js";
 export * from "./company_user_capability_documents.js";
 export { sidebarPreferences } from "./sidebar_preferences.js";
+export { homeBoardLayouts, type HomeBoardLayoutItem } from "./home_board_layouts.js";
 export { viewerPreferences } from "./viewer_preferences.js";
 export { hubPreferences } from "./hub_preferences.js";
 export { hubAutopilotPolicies } from "./hub_autopilot_policies.js";
@@ -126,6 +127,10 @@ export { instanceSettings } from "./instance_settings.js";
 export { boardApiKeys } from "./board_api_keys.js";
 export { cliAuthChallenges } from "./cli_auth_challenges.js";
 export { commanderLoginChallenges } from "./commander_login_challenges.js";
+export {
+  providerCredentials,
+  agentProviderCredentialBindings,
+} from "./provider_credentials.js";
 export { providerReadinessStatus } from "./provider_readiness_status.js";
 export { executionWorkspaces } from "./execution_workspaces.js";
 export { environments } from "./environments.js";
@@ -159,6 +164,10 @@ export { commentWakeupOutbox } from "./comment_wakeup_outbox.js";
 // Marketplace
 export { marketplaceCatalogCache } from "./marketplace_catalog_cache.js";
 export { marketplaceInstallOperations, type CascadeStepResult } from "./marketplace_install_operations.js";
+export {
+  marketplaceReconciliationOperations,
+  type MarketplaceReconciliationOperationState,
+} from "./marketplace_reconciliation_operations.js";
 export { marketplaceCompanySettings } from "./marketplace_company_settings.js";
 export { marketplacePendingUpdates } from "./marketplace_pending_updates.js";
 export { pluginVersionSnapshots } from "./plugin_version_snapshots.js";

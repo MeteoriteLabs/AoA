@@ -40,11 +40,15 @@ function db(results: unknown[][]) {
   handle.transaction = async (fn: (tx: unknown) => Promise<unknown>) => fn(handle);
   return handle as never;
 }
-function makeApp(dbInst: unknown, actor: Record<string, unknown> = { type: "board", userId: "u1" }) {
+function makeApp(
+  dbInst: unknown,
+  actor: Record<string, unknown> = { type: "board", userId: "u1" },
+  opts: Parameters<typeof commanderKeyRoutes>[1] = {},
+) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => { (req as { actor: unknown }).actor = actor as never; next(); });
-  app.use("/api", commanderKeyRoutes(dbInst as never));
+  app.use("/api", commanderKeyRoutes(dbInst as never, opts));
   app.use(errorHandler);
   return app;
 }
@@ -91,12 +95,63 @@ describe("POST commander-key (Plan 3 T2)", () => {
   it("200 persists the key and returns the secretId (not the raw key)", async () => {
     const res = await request(makeApp(okDb())).post(url).send({ provider: "anthropic", value: "sk-ant-SECRET" });
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ ok: true, secretId: "sec-1" });
+    expect(res.body).toEqual({ ok: true, secretId: "sec-1", verification: "verified" });
     expect(JSON.stringify(res.body)).not.toContain("sk-ant-SECRET");
     expect(mockPersist).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ companyId: "c1", agentId: "cmd", provider: "anthropic", apiKey: "sk-ant-SECRET" }),
     );
+  });
+
+  it("does not replace the active key when the candidate is confirmed invalid", async () => {
+    const res = await request(
+      makeApp(okDb(), { type: "board", userId: "u1" }, {
+        probeKey: async () => ({
+          ok: false,
+          code: "invalid_key",
+          summary: "The provider rejected this API key.",
+          remediation: "Check the key.",
+          transient: false,
+          retryAfter: null,
+          supportId: "support-1",
+        }),
+      }),
+    )
+      .post(url)
+      .send({ provider: "openai", value: "bad-secret" });
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({ code: "invalid_key", supportId: "support-1" });
+    expect(JSON.stringify(res.body)).not.toContain("bad-secret");
+    expect(mockPersist).not.toHaveBeenCalled();
+  });
+
+  it("never replaces the active key with a transiently unverified candidate", async () => {
+    const probeKey = async () =>
+      ({
+        ok: false,
+        code: "network",
+        summary: "Provider unreachable.",
+        remediation: "Check egress.",
+        transient: true,
+        retryAfter: null,
+        supportId: "support-2",
+      }) as const;
+    const blocked = await request(
+      makeApp(okDb(), { type: "board", userId: "u1" }, { probeKey }),
+    )
+      .post(url)
+      .send({ provider: "openai", value: "candidate" });
+    expect(blocked.status).toBe(503);
+    expect(blocked.body.canSaveUnverified).toBe(false);
+    expect(mockPersist).not.toHaveBeenCalled();
+
+    const stillBlocked = await request(
+      makeApp(okDb(), { type: "board", userId: "u1" }, { probeKey }),
+    )
+      .post(url)
+      .send({ provider: "openai", value: "candidate", saveUnverified: true });
+    expect(stillBlocked.status).toBe(503);
+    expect(mockPersist).not.toHaveBeenCalled();
   });
 
   it("audit-logs the credential save once, redacted (no raw key in details)", async () => {

@@ -53,13 +53,14 @@
  *    `default-crew-2` sharing one `templateOrigin` while leaving the ORIGINAL
  *    rows — the ones tasks, runs and assignments point at by id — still frozen.
  * 2. **No roster row matches, and every remaining crew row is accounted for**
- *    (i.e. only infrastructure is left) → genuinely crewless. This is the
+ *    (i.e. only Commander or a protected historical Steward is left) →
+ *    genuinely crewless. This is the
  *    residual state T2.3's `unknown` witness leaves behind. Nothing can collide,
  *    so {@link provisionCompanyCrew} is re-run verbatim.
  * 3. **No roster row matches, but crew rows remain unaccounted for** → REFUSE.
  *    Those rows own real work; installing the roster beside them creates a
  *    second, parallel crew and the company then reads `healthy` forever. See
- *    {@link isInfrastructureRow} for why its exemption list is safe stale in
+ *    {@link isInfrastructureRow} for why its residual exemption list is safe stale in
  *    both directions, unlike the classification list it replaced.
  * 4. **Installed, but the operation row still reads claimable** → seal it. The
  *    T2.3 averted-clobber repair writes that row on the connection that just
@@ -74,7 +75,7 @@
  * pass sees the origin already present and skips it).
  */
 
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   agents,
@@ -87,7 +88,10 @@ import type { CatalogItem } from "@armyofagents/shared";
 import { logger } from "../middleware/logger.js";
 import { marketplaceNotifications } from "./marketplace-notifications.js";
 import { resolveTeamSlugConflict } from "./marketplace-install/conflict-resolver.js";
-import { fetchCatalogResource } from "./marketplace-install/fetch-resource.js";
+import {
+  fetchCatalogResource,
+  MarketplaceResourceFetchError,
+} from "./marketplace-install/fetch-resource.js";
 import { installSkill } from "./marketplace-install/skill-installer.js";
 import {
   createBundleCheckoutCache,
@@ -103,11 +107,23 @@ import {
 } from "./marketplace-install/crew-bootstrap.js";
 import { provisionCompanyCrew, type CrewProvisioningOutcome } from "./crew-provisioning.js";
 import {
+  sanitizeErrorText,
+  serializeSafeError,
+} from "./safe-error.js";
+import {
   ADOPTED_TEMPLATE_VERSION,
+  CREW_REPAIR_MAX_PER_PASS,
   crewLegacySlugCandidates,
 } from "./marketplace-install/crew-constants.js";
+import {
+  acquireCrewRepairAdvisoryLock,
+  adoptLegacyCrewAgentPointer,
+} from "./marketplace-install/crew-adoption.js";
 
-export { ADOPTED_TEMPLATE_VERSION } from "./marketplace-install/crew-constants.js";
+export {
+  ADOPTED_TEMPLATE_VERSION,
+  CREW_REPAIR_MAX_PER_PASS,
+} from "./marketplace-install/crew-constants.js";
 
 /**
  * Budget for the `team.json` fetch — the one resource repair fetches directly.
@@ -277,6 +293,22 @@ export type CrewRepairSkipReason =
   | "unaccounted-crew-rows"
   | "skill-install-failed";
 
+export type CrewRepairSkillFailureCode =
+  | "resource-temporarily-unavailable"
+  | "resource-fetch-failed"
+  | "resource-invalid"
+  | "bundle-materialization-failed"
+  | "bundle-missing"
+  | "filesystem-permission-denied";
+
+export interface CrewRepairSkillFailure {
+  code: CrewRepairSkillFailureCode;
+  catalogItemId: string;
+  httpStatus?: number;
+  filesystemOperation?: "read" | "write" | "rename" | "mkdir";
+  notBefore?: string;
+}
+
 export type CrewRepairResult =
   | { action: "none"; verdict: CrewRepairVerdict }
   | { action: "operation-repaired"; operationId: string; teamId: string }
@@ -296,7 +328,14 @@ export type CrewRepairResult =
       installedSkillIds: string[];
     }
   /** Diagnosed as repairable, but deliberately not repaired. Always logged. */
-  | { action: "skipped"; verdict: CrewRepairVerdict; reason: CrewRepairSkipReason; detail: string };
+  | {
+      action: "skipped";
+      verdict: CrewRepairVerdict;
+      reason: CrewRepairSkipReason;
+      detail: string;
+      skillFailure?: CrewRepairSkillFailure;
+      notBefore?: string;
+    };
 
 export interface CrewRepairDeps {
   /** Catalog items — the same array the boot update pass already loaded. */
@@ -484,17 +523,16 @@ async function repairDegradedCrew(
     }
 
     // ── The refusal that guards the crewless branch ─────────────────────────
-    // Every crew row that is NOT infrastructure and did NOT map to a roster
-    // entry is unaccounted for. Provisioning on top of those installs a second,
+    // Every crew row that is NOT a residual exemption and did NOT map to a
+    // roster entry is unaccounted for. Provisioning on top installs a second,
     // parallel crew beside rows that own every task, run and assignment — and
     // the company then reads `healthy`, so nothing ever revisits it. Refuse.
     //
-    // The infrastructure exemption is safe in BOTH stale directions, unlike the
-    // classification list it replaces: an entry that should have been removed
-    // (post-T2.4 Steward) only means we do not refuse over a row the roster has
-    // already claimed above; an entry that is missing means we refuse — which is
-    // the fail-closed direction. It is keyed on the legacy slug first so a
-    // renamed Commander is still recognised.
+    // The residual exemption is safe in BOTH stale directions, unlike the
+    // classification list it replaces: Steward remains here only for historical
+    // NULL-origin companies. When the roster carries Steward it is claimed
+    // above first; a missing exemption makes us refuse, which is fail-closed.
+    // It is keyed on the legacy slug first so a renamed Commander is recognised.
     const rosterSlugs = new Set<string>();
     for (const entry of roster) {
       for (const slug of legacySlugsForRosterEntry(entry)) rosterSlugs.add(slug);
@@ -555,7 +593,27 @@ async function repairDegradedCrew(
         catalogById,
       });
     } catch (err) {
-      return skip(diagnosis, "skill-install-failed", errText(err));
+      const skillFailure =
+        err instanceof CrewSkillInstallError
+          ? classifyCrewSkillFailure(err.catalogItemId, err.cause)
+          : classifyCrewSkillFailure("unknown", err);
+      logger.warn(
+        {
+          companyId,
+          catalogItemId: skillFailure.catalogItemId,
+          failureCode: skillFailure.code,
+          error: serializeSafeError(
+            err instanceof CrewSkillInstallError ? err.cause : err,
+          ),
+        },
+        "crew repair skill installation failed",
+      );
+      return skip(
+        diagnosis,
+        "skill-install-failed",
+        errText(err),
+        skillFailure,
+      );
     }
 
     const rosterOrigins = roster.map((entry) => entry.templateOrigin);
@@ -576,7 +634,7 @@ async function repairDegradedCrew(
       // A partial unique index on (companyId, templateOrigin) would cover both,
       // but it changes `installTeam` semantics for every caller — filed, not
       // done here.
-      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`crew-repair:${companyId}`}))`);
+      await acquireCrewRepairAdvisoryLock(tx as unknown as Db, companyId);
 
       // Re-read inside the lock: a racing repair may have finished since the
       // diagnosis, in which case there is nothing left to create.
@@ -591,14 +649,18 @@ async function repairDegradedCrew(
       for (const { row, entry } of adoptable) {
         // POINTER ONLY. No instructions, no skillKeys, no runtimeConfig, no
         // triggers, no adapter — see this module's docblock.
-        await tx
-          .update(agents)
-          .set({
-            templateOrigin: entry.templateOrigin,
-            templateVersion: ADOPTED_TEMPLATE_VERSION,
-            updatedAt: new Date(),
-          })
-          .where(eq(agents.id, row.id));
+        const adopted = await adoptLegacyCrewAgentPointer(tx as unknown as Db, {
+          companyId,
+          agentId: row.id,
+          expectedName: row.name,
+          expectedTemplateOrigin: row.templateOrigin,
+          templateOrigin: entry.templateOrigin,
+        });
+        if (!adopted) {
+          throw new Error(
+            `crew repair: legacy agent ${row.id} changed before pointer adoption; rolling back`,
+          );
+        }
       }
 
       let teamId = existingTeam?.id ?? null;
@@ -664,7 +726,10 @@ async function repairDegradedCrew(
     await marketplaceNotifications
       .crewRepaired(db, companyId, adoptedItemIds.length)
       .catch((err: unknown) =>
-        logger.warn({ err, companyId }, "crew repair: founder notification failed"),
+        logger.warn(
+          { error: serializeSafeError(err), companyId },
+          "crew repair: founder notification failed",
+        ),
       );
 
     return {
@@ -731,7 +796,11 @@ async function installMissingRosterSkills(
   const checkoutCache = createBundleCheckoutCache();
   try {
     await mapWithConcurrency(missing, CREW_REPAIR_FETCH_CONCURRENCY, async (item) => {
-      await installSkill({ catalogItem: item, companyId, db, checkoutCache });
+      try {
+        await installSkill({ catalogItem: item, companyId, db, checkoutCache });
+      } catch (cause) {
+        throw new CrewSkillInstallError(item.id, cause);
+      }
     });
   } finally {
     await disposeBundleCheckoutCache(checkoutCache);
@@ -761,15 +830,15 @@ function matchesLegacySlug(origin: string | null, slugs: ReadonlySet<string>): b
  *
  * ⚠️ This is NOT a classification input — it never decides whether a company has
  * a crew. It only suppresses a refusal, and it is consulted AFTER roster
- * matching, which makes both stale directions safe: a stale entry (Steward,
- * once T2.4 publishes it) can only fail to refuse over a row the roster already
- * claimed; a missing entry refuses, which is the fail-closed direction. An
+ * matching, which makes both stale directions safe: Steward is retained as a
+ * historical NULL-origin exemption, but a published roster claims it first; a
+ * missing entry refuses, which is the fail-closed direction. An
  * earlier revision used a list like this to decide classification, and a stale
  * entry there minted a duplicate — do not move it back.
  *
  * Matched on the legacy origin slug first so a RENAMED Commander is still
- * recognised; a renamed Steward (which has no origin — it is absent from
- * `CREW_NAMES`) falls through to the refusal, which is correct.
+ * recognised. A pre-adoption, renamed NULL-origin Steward falls through to the
+ * refusal, which is correct because its identity can no longer be proven.
  *
  * ⚠️ **This membership is deliberately LOCAL, not shared with D23's
  * `PROTECTED_AGENT_ROLES`, even though the two sets are currently identical.**
@@ -807,7 +876,8 @@ function isInfrastructureRow(row: CrewAgentSnapshot): boolean {
  * the roster beside it?
  *
  * Two ways to be sure, and one ambiguous case that must fail closed:
- * - **Infrastructure** — AoA seeds it, the catalog does not.
+ * - **Residual exemption** — Commander is app infrastructure; a historical
+ *   NULL-origin Steward may still exist before Phase 4A adoption.
  * - **A `…@legacy` origin naming a role the roster does NOT carry** (a retired
  *   Dispatcher, say). `backfillCrewTemplateOrigin` stamped that slug from the
  *   name at boot and nothing rewrites it, so the row provably is not a renamed
@@ -840,7 +910,10 @@ async function mapWithConcurrency<T>(
   if (items.length === 0) return;
   const width = Math.max(1, Math.min(limit, items.length));
   let cursor = 0;
-  await Promise.all(
+  // Drain every started worker before reporting a failure. `Promise.all` would
+  // reject immediately and let siblings keep writing after repair returned
+  // (and, for skill installs, after their shared checkout cache was disposed).
+  const workers = await Promise.allSettled(
     Array.from({ length: width }, async () => {
       for (;;) {
         const index = cursor++;
@@ -849,29 +922,191 @@ async function mapWithConcurrency<T>(
       }
     }),
   );
+  const failed = workers.find(
+    (result): result is PromiseRejectedResult => result.status === "rejected",
+  );
+  if (failed) throw failed.reason;
 }
 
 function skip(
   diagnosis: CrewRepairDiagnosis,
   reason: CrewRepairSkipReason,
   detail: string,
+  skillFailure?: CrewRepairSkillFailure,
 ): CrewRepairResult {
+  const safeDetail = sanitizeErrorText(detail);
   if (reason === "cooldown") {
     logger.debug(
-      { companyId: diagnosis.companyId, verdict: diagnosis.verdict, reason, detail },
+      {
+        companyId: diagnosis.companyId,
+        verdict: diagnosis.verdict,
+        reason,
+        detail: safeDetail,
+      },
       "crew repair: not attempted (cooldown)",
     );
   } else {
     logger.warn(
-      { companyId: diagnosis.companyId, verdict: diagnosis.verdict, reason, detail },
+      {
+        companyId: diagnosis.companyId,
+        verdict: diagnosis.verdict,
+        reason,
+        detail: safeDetail,
+      },
       "crew repair: SKIPPED — the company stays degraded and excluded from crew updates",
     );
   }
-  return { action: "skipped", verdict: diagnosis.verdict, reason, detail };
+  return {
+    action: "skipped",
+    verdict: diagnosis.verdict,
+    reason,
+    detail: safeDetail,
+    ...(skillFailure ? { skillFailure } : {}),
+    ...(reason === "install-in-flight"
+      ? {
+          notBefore: new Date(
+            Date.now() + OPERATION_CLAIM_STALE_AFTER_MS,
+          ).toISOString(),
+        }
+      : {}),
+  };
 }
 
 function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+class CrewSkillInstallError extends Error {
+  constructor(
+    readonly catalogItemId: string,
+    override readonly cause: unknown,
+  ) {
+    super(`crew skill installation failed for ${catalogItemId}`, { cause });
+  }
+}
+
+function isTransientMarketplaceTransportCause(cause: unknown): boolean {
+  let current = cause;
+  const seen = new Set<object>();
+
+  for (let depth = 0; depth < 4; depth += 1) {
+    if (current === null || typeof current !== "object" || seen.has(current)) {
+      return false;
+    }
+    seen.add(current);
+
+    const error = current as {
+      cause?: unknown;
+      message?: unknown;
+      name?: unknown;
+      status?: unknown;
+    };
+    const message =
+      typeof error.message === "string" ? error.message.toLowerCase() : "";
+    const status =
+      typeof error.status === "number"
+        ? error.status
+        : Number(/\bHTTP\s+(\d{3})\b/i.exec(message)?.[1] ?? NaN);
+    if (
+      status === 408 ||
+      status === 425 ||
+      status === 429 ||
+      (Number.isInteger(status) && status >= 500 && status <= 599) ||
+      error.name === "AbortError" ||
+      error.name === "TimeoutError" ||
+      message.includes("timed out") ||
+      message.includes("timeout")
+    ) {
+      return true;
+    }
+    current = error.cause;
+  }
+
+  return false;
+}
+
+export function classifyCrewSkillFailure(
+  catalogItemId: string,
+  cause: unknown,
+): CrewRepairSkillFailure {
+  const error = cause as {
+    message?: unknown;
+    code?: unknown;
+    status?: unknown;
+    syscall?: unknown;
+    name?: unknown;
+  };
+  const message =
+    typeof error?.message === "string" ? error.message.toLowerCase() : "";
+  const code = typeof error?.code === "string" ? error.code.toUpperCase() : "";
+  const status =
+    typeof error?.status === "number"
+      ? error.status
+      : Number(/\bHTTP\s+(\d{3})\b/i.exec(message)?.[1] ?? NaN);
+  const httpStatus =
+    Number.isInteger(status) && status >= 100 && status <= 599
+      ? status
+      : undefined;
+  const filesystemOperation =
+    typeof error?.syscall === "string" &&
+    ["read", "write", "rename", "mkdir"].includes(error.syscall)
+      ? (error.syscall as "read" | "write" | "rename" | "mkdir")
+      : undefined;
+  const wrappedTransportIsTransient =
+    cause instanceof MarketplaceResourceFetchError &&
+    cause.code === "transport_error" &&
+    isTransientMarketplaceTransportCause(cause.cause);
+
+  let failureCode: CrewRepairSkillFailureCode;
+  if (
+    code === "EACCES" ||
+    code === "EPERM" ||
+    message.includes("permission denied")
+  ) {
+    failureCode = "filesystem-permission-denied";
+  } else if (code === "ENOENT" || message.includes("skill.md") && message.includes("missing")) {
+    failureCode = "bundle-missing";
+  } else if (
+    httpStatus === 408 ||
+    httpStatus === 425 ||
+    httpStatus === 429 ||
+    (httpStatus !== undefined && httpStatus >= 500) ||
+    error?.name === "AbortError" ||
+    error?.name === "TimeoutError" ||
+    message.includes("timed out") ||
+    message.includes("timeout") ||
+    wrappedTransportIsTransient
+  ) {
+    failureCode = "resource-temporarily-unavailable";
+  } else if (
+    httpStatus !== undefined ||
+    message.includes("failed to fetch") ||
+    message.includes("dns ") ||
+    message.includes("socket")
+  ) {
+    failureCode = "resource-fetch-failed";
+  } else if (
+    error?.name === "SyntaxError" ||
+    message.includes("invalid") ||
+    message.includes("parse")
+  ) {
+    failureCode = "resource-invalid";
+  } else {
+    failureCode = "bundle-materialization-failed";
+  }
+
+  return {
+    code: failureCode,
+    catalogItemId:
+      catalogItemId.length > 0 && catalogItemId.length <= 160
+        ? catalogItemId
+        : "unknown",
+    ...(httpStatus !== undefined ? { httpStatus } : {}),
+    ...(filesystemOperation ? { filesystemOperation } : {}),
+    ...(failureCode === "resource-temporarily-unavailable"
+      ? { notBefore: new Date(Date.now() + 60_000).toISOString() }
+      : {}),
+  };
 }
 
 /**
@@ -1041,20 +1276,9 @@ export function setCrewRepairClock(clock: () => number): void {
 
 // ── Boot-time reconcile ──────────────────────────────────────────────────────
 
-/**
- * How many companies one pass may actually repair. Repair is network-bearing
- * per company (team.json + any missing skill bodies), so an instance hosting
- * many degraded companies must not turn a boot into a CDN stampede. The
- * remainder are taken by later passes — repair is permanent, so the backlog
- * strictly shrinks.
- *
- * Only *productive* work consumes budget: a company that skips fail-closed must
- * not burn a slot, or a handful of unrepairable companies would starve every
- * company behind them, forever.
- */
-export const CREW_REPAIR_MAX_PER_PASS = 5;
-
 export interface CrewRepairPassResult {
+  /** The catalog contained the default crew team required to diagnose repairs. */
+  catalogReady: boolean;
   inspected: number;
   /** Companies that were degraded and were changed by this pass. */
   repaired: number;
@@ -1066,6 +1290,21 @@ export interface CrewRepairPassResult {
   skippedOverBudget: number;
   /** Diagnosis or repair threw. */
   failed: number;
+  /** One safe, structured entry for every skip counter increment. */
+  skips: CrewRepairPassSkip[];
+}
+
+export interface CrewRepairPassSkip {
+  companyId: string;
+  category: "fail_closed" | "cooldown" | "over_budget";
+  reason: CrewRepairSkipReason | "repair-budget-exhausted";
+  notBefore?: string;
+  skillFailure?: CrewRepairSkillFailure;
+}
+
+export interface CrewRepairPassFailure {
+  companyId: string;
+  error: unknown;
 }
 
 /**
@@ -1084,16 +1323,20 @@ export async function runCrewRepairPass(opts: {
   companyIds: readonly string[];
   catalogItems: readonly CatalogItem[];
   maxPerPass?: number;
+  force?: boolean;
+  onFailure?: (failure: CrewRepairPassFailure) => void;
 }): Promise<CrewRepairPassResult> {
   const { db, companyIds, catalogItems } = opts;
   const maxPerPass = opts.maxPerPass ?? CREW_REPAIR_MAX_PER_PASS;
   const result: CrewRepairPassResult = {
+    catalogReady: true,
     inspected: 0,
     repaired: 0,
     skippedFailClosed: 0,
     skippedCooldown: 0,
     skippedOverBudget: 0,
     failed: 0,
+    skips: [],
   };
 
   // A cache row can exist whose `items` array lacks the crew team (an empty or
@@ -1104,6 +1347,7 @@ export async function runCrewRepairPass(opts: {
     (item) => item.id === DEFAULT_CREW_TEAM_ITEM_ID && item.type === "team",
   );
   if (!teamItem) {
+    result.catalogReady = false;
     logger.debug(
       { teamItemId: DEFAULT_CREW_TEAM_ITEM_ID },
       "crew repair pass: crew team item absent from the catalog — nothing to repair towards",
@@ -1124,16 +1368,50 @@ export async function runCrewRepairPass(opts: {
 
       if (budget <= 0) {
         result.skippedOverBudget += 1;
+        result.skips.push({
+          companyId,
+          category: "over_budget",
+          reason: "repair-budget-exhausted",
+        });
         continue;
       }
 
       const repair = await repairCompanyCrew(db, companyId, {
         catalogItems,
         requestedByUserId: "system:crew-repair",
+        force: opts.force,
       });
       if (repair.action === "skipped") {
-        if (repair.reason === "cooldown") result.skippedCooldown += 1;
-        else result.skippedFailClosed += 1;
+        if (repair.reason === "cooldown") {
+          result.skippedCooldown += 1;
+          const minGapMs = opts.force
+            ? CREW_REPAIR_FORCE_FLOOR_MS
+            : CREW_REPAIR_COOLDOWN_MS;
+          result.skips.push({
+            companyId,
+            category: "cooldown",
+            reason: repair.reason,
+            notBefore: new Date(
+              (recentAttempts.get(companyId) ?? repairClock()) + minGapMs,
+            ).toISOString(),
+          });
+        } else {
+          result.skippedFailClosed += 1;
+          result.skips.push({
+            companyId,
+            category: "fail_closed",
+            reason: repair.reason,
+            ...(repair.skillFailure
+              ? { skillFailure: repair.skillFailure }
+              : {}),
+            ...(repair.notBefore || repair.skillFailure?.notBefore
+              ? {
+                  notBefore:
+                    repair.notBefore ?? repair.skillFailure?.notBefore,
+                }
+              : {}),
+          });
+        }
         // Neither consumes budget: a skip did no productive work, and charging
         // for it lets a few unrepairable companies starve the rest forever.
       } else if (repair.action === "none") {
@@ -1145,12 +1423,45 @@ export async function runCrewRepairPass(opts: {
       }
     } catch (err) {
       result.failed += 1;
-      logger.warn({ err, companyId }, "crew repair pass failed for company");
+      opts.onFailure?.({ companyId, error: err });
+      logger.warn(
+        { error: serializeSafeError(err), companyId },
+        "crew repair pass failed for company",
+      );
     }
   }
 
   if (result.repaired > 0 || result.failed > 0 || result.skippedFailClosed > 0) {
-    logger.info(result, "crew provisioning repair pass complete");
+    logger.info(
+      {
+        catalogReady: result.catalogReady,
+        inspected: result.inspected,
+        repaired: result.repaired,
+        skippedFailClosed: result.skippedFailClosed,
+        skippedCooldown: result.skippedCooldown,
+        skippedOverBudget: result.skippedOverBudget,
+        failed: result.failed,
+        skips: result.skips.map((entry) => ({
+          companyId: entry.companyId,
+          category: entry.category,
+          reason: entry.reason,
+          notBefore: entry.notBefore,
+          ...(entry.skillFailure
+            ? {
+                skillFailure: {
+                  code: entry.skillFailure.code,
+                  catalogItemId: entry.skillFailure.catalogItemId,
+                  httpStatus: entry.skillFailure.httpStatus,
+                  filesystemOperation:
+                    entry.skillFailure.filesystemOperation,
+                  notBefore: entry.skillFailure.notBefore,
+                },
+              }
+            : {}),
+        })),
+      },
+      "crew provisioning repair pass complete",
+    );
   }
   return result;
 }

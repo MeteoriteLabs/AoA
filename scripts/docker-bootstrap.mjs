@@ -110,7 +110,7 @@ function hostFromUrl(url) {
   }
 }
 
-const aoaHome = env("AOA_HOME", "/paperclip");
+const aoaHome = env("AOA_HOME", "/aoa");
 const instanceId = env("AOA_INSTANCE_ID", "default");
 const configPath = env(
   "AOA_CONFIG",

@@ -1,7 +1,7 @@
 // server/src/__tests__/crew-seeding.test.ts
 //
-// P8d split: `ensureInfrastructureAgents` (Commander + Steward — always seeded)
-// vs `ensureCrewAgents` (the marketplace-owned roster — gated by the caller on
+// P8d split: `ensureInfrastructureAgents` (Commander — always seeded) vs
+// `ensureCrewAgents` (the marketplace-owned roster, including Steward — gated by the caller on
 // isCrewMarketplaceManaged). There is deliberately no "seed everything" union
 // export; each half is exercised on its own here, and the caller-seam gate is
 // covered by crew-seeding-marketplace-gate.test.ts.
@@ -24,18 +24,18 @@ import {
   ensureInfrastructureAgents,
 } from "../services/internal-agent/aoa-agents/crew-seeding.js";
 
-const INFRA = ["commander", "steward"];
-const CREW = ["adjutant", "chronicler", "engineer", "librarian", "scout", "staff"];
+const INFRA = ["commander"];
+const CREW = ["adjutant", "chronicler", "engineer", "librarian", "scout", "staff", "steward"];
 
 describe("crew seeding split (P8d)", () => {
   beforeEach(() => { calls.length = 0; });
 
-  it("ensureInfrastructureAgents runs ONLY Commander + Steward", async () => {
+  it("ensureInfrastructureAgents runs ONLY Commander", async () => {
     await ensureInfrastructureAgents({} as any, "co-1");
     expect(calls.slice().sort()).toEqual(INFRA);
   });
 
-  it("ensureCrewAgents runs ONLY the marketplace-owned roster (no Commander, no Steward)", async () => {
+  it("ensureCrewAgents runs the marketplace-owned roster, including Steward (no Commander)", async () => {
     await ensureCrewAgents({} as any, "co-1");
     expect(calls.slice().sort()).toEqual(CREW);
   });
@@ -57,14 +57,14 @@ describe("crew seeding split (P8d)", () => {
     (mod.ensureScout as any).mockRejectedValueOnce(new Error("boom"));
     await ensureCrewAgents({} as any, "co-1");
     expect(calls.slice().sort()).toEqual(CREW.filter((c) => c !== "scout"));
-    expect(calls.length).toBe(5);
+    expect(calls.length).toBe(6);
   });
 
-  it("a failing infrastructure ensure does not abort the other infrastructure ensure", async () => {
+  it("a failing infrastructure ensure is contained", async () => {
     const mod = await import("../services/internal-agent/aoa-agents/ensure-commander.js");
     (mod.ensureCommanderAgent as any).mockRejectedValueOnce(new Error("boom"));
     await ensureInfrastructureAgents({} as any, "co-1");
-    expect(calls).toEqual(["steward"]);
+    expect(calls).toEqual([]);
   });
 
   it("a failing infrastructure ensure does not prevent a subsequent crew seed", async () => {
@@ -72,7 +72,7 @@ describe("crew seeding split (P8d)", () => {
     (mod.ensureCommanderAgent as any).mockRejectedValueOnce(new Error("boom"));
     await ensureInfrastructureAgents({} as any, "co-1");
     await ensureCrewAgents({} as any, "co-1");
-    expect(calls.slice().sort()).toEqual([...CREW, "steward"].sort());
+    expect(calls.slice().sort()).toEqual(CREW);
     expect(calls.length).toBe(7);
   });
 });

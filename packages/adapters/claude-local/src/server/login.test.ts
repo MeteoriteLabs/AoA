@@ -33,7 +33,7 @@ describe("runClaudeLoginStreaming", () => {
       ensureDir: () => {},
       spawn: (_r, _c, a, _o) => { argv = a; return makeFakeHandle() as never; },
     });
-    expect(argv).toEqual(["auth", "login"]);
+    expect(argv).toEqual(["auth", "login", "--claudeai"]);
   });
 
   it("exposes submitCode so the paste-code bridge can deliver the code", () => {

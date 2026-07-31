@@ -8,6 +8,35 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="AoA" />
     <title>AoA</title>
+    <style>
+      /* A route-aware pre-React safety net. If the application bundle or a
+         provider fails before React mounts, onboarding remains dark and shows
+         a useful recovery message instead of the browser's white canvas. */
+      html[data-aoa-onboarding-boot="dark"],
+      html[data-aoa-onboarding-boot="dark"] body,
+      html[data-aoa-onboarding-boot="dark"] #root {
+        min-height: 100%;
+        margin: 0;
+        background: #0a0a0a;
+        color: #eeeeee;
+        color-scheme: dark;
+      }
+      #aoa-boot-fallback {
+        box-sizing: border-box;
+        display: none;
+        min-height: 100vh;
+        min-height: 100dvh;
+        place-items: center;
+        padding: 24px;
+        background: #0a0a0a;
+        color: #eeeeee;
+        font: 14px/1.5 system-ui, sans-serif;
+        text-align: center;
+      }
+      html[data-aoa-onboarding-boot="dark"] #aoa-boot-fallback {
+        display: grid;
+      }
+    </style>
     <link rel="icon" href="/favicon.ico" sizes="48x48" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
@@ -16,6 +45,9 @@
     <link rel="manifest" href="/site.webmanifest" />
     <script>
       (() => {
+        if (window.location.pathname.startsWith("/onboarding")) {
+          document.documentElement.dataset.aoaOnboardingBoot = "dark";
+        }
         // Inline FOUC-prevention. Reads aoa.theme first, falls back to the
         // legacy paperclip.theme key for users who haven't yet hit the
         // boot-time migration in src/lib/storage-migrations.ts. This dual
@@ -45,7 +77,14 @@
     </script>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div id="aoa-boot-fallback" role="status">
+        <div>
+          <strong>Loading AOA onboarding…</strong>
+          <div>If this message remains, reload the page. Your setup progress is saved.</div>
+        </div>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

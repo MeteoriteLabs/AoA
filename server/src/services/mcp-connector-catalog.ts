@@ -48,6 +48,10 @@ import {
   type McpConnectorCatalogEntry,
 } from "@armyofagents/shared";
 import { logger } from "../middleware/logger.js";
+import {
+  isMcpConnectorBlocked,
+  readMcpConnectorEmergencyPolicy,
+} from "./mcp-connector-emergency-policy.js";
 
 /**
  * A SECOND CDN artifact alongside `catalog.json`, never inside it — see the
@@ -80,6 +84,23 @@ export interface ConnectorCatalogLoadResult {
 
 export interface ConnectorCatalogService {
   load(nowMs: number): Promise<ConnectorCatalogLoadResult>;
+}
+
+export function applyConnectorEmergencyPolicy(
+  service: ConnectorCatalogService,
+): ConnectorCatalogService {
+  return {
+    async load(nowMs: number): Promise<ConnectorCatalogLoadResult> {
+      const result = await service.load(nowMs);
+      const policy = readMcpConnectorEmergencyPolicy();
+      return {
+        ...result,
+        entries: result.entries.filter(
+          (entry) => !isMcpConnectorBlocked(entry.serverName, policy),
+        ),
+      };
+    },
+  };
 }
 
 export function createConnectorCatalogService(opts: {
@@ -230,7 +251,7 @@ export function resolveConnectorCatalogService(): ConnectorCatalogService {
   const fixturePath = process.env.AOA_E2E_CONNECTOR_CATALOG_PATH?.trim();
   if (fixturePath && process.env.NODE_ENV !== "production") {
     logger.warn({ fixturePath }, "connector catalog: serving E2E fixture instead of the CDN");
-    return createConnectorCatalogService({
+    return applyConnectorEmergencyPolicy(createConnectorCatalogService({
       url: fixturePath,
       fetchFn: async (input) => {
         const { readFile } = await import("node:fs/promises");
@@ -240,10 +261,10 @@ export function resolveConnectorCatalogService(): ConnectorCatalogService {
           headers: { "content-type": "application/json" },
         });
       },
-    });
+    }));
   }
-  return createConnectorCatalogService({
+  return applyConnectorEmergencyPolicy(createConnectorCatalogService({
     url: DEFAULT_CONNECTOR_CATALOG_URL,
     snapshot: loadBundledConnectorSnapshot(),
-  });
+  }));
 }

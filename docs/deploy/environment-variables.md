@@ -19,6 +19,8 @@ All environment variables that AoA reads. Grouped by concern. The list is verifi
 | `AOA_DEPLOYMENT_MODE` | `local_trusted` | `local_trusted` or `authenticated` |
 | `AOA_DEPLOYMENT_EXPOSURE` | `private` | `private` or `public`. Only meaningful when `AOA_DEPLOYMENT_MODE=authenticated` |
 | `AOA_PUBLIC_URL` | (derived) | Public-facing URL for deployment. Used in invite links and webhook URLs |
+| `AOA_DEPLOY_SHA` | (unset) | Exact lowercase 40-character Git commit injected by the trusted deployment workflow. The server exposes it from `/api/health` so deployment health checks can prove the running container matches the requested revision. Leave unset for ordinary local development. |
+| `AOA_IMAGE_REVISION` | `unknown` | Build-time revision written to the container's `org.opencontainers.image.revision` label. When supplied to the server as an exact lowercase 40-character Git SHA, marketplace reconciliation also accepts it as a fallback if `AOA_DEPLOY_SHA` is absent. The trusted remote deployment passes the same reviewed SHA to both values. |
 | `AOA_ALLOWED_HOSTNAMES` | (empty) | Comma-separated allowlist of hostnames the server will accept (Tailscale, Docker host alias, etc.) |
 | `AOA_TRUST_PROXY` | `false` | Express trust-proxy setting. Set to `true` (trust any proxy), a hop count like `1` (recommended for cloud), or a comma-separated CIDR list. Required when running behind Cloudflare/ALB/nginx — without it, `req.ip` reads the proxy IP and rate limits collapse. **Never set to `true` on a directly-exposed deployment** (allows X-Forwarded-For spoofing). |
 | `AOA_OPEN_ON_LISTEN` | `true` (CLI), `false` (server-only) | Auto-open default browser on first listen |
@@ -43,6 +45,19 @@ For horizontally scaled deployments, local-file run logs require sticky routing 
 | `AOA_DEV_LOCAL_IDENTITY` | auto-enabled by `pnpm dev` when local Google credentials are absent | Development-only synthetic board identity for loopback `local_trusted` mode. It is ignored outside `local_trusted`; do not use it for an authenticated or exposed deployment. |
 | `AOA_DEV_LOCAL_IDENTITY_FORCE` | `false` | Allows `AOA_DEV_LOCAL_IDENTITY` on an instance that already contains real users. Development/recovery only: this bypasses the populated-instance safety check. |
 | `AOA_HEADLESS_BOOTSTRAP` | `false` | Enables the legacy board-ownership claim path for a headless/self-hosted server migrating from `local_trusted` when `local-board` is still the only instance admin. The claim is completed by a real Google user in a browser that can reach the server. Leave disabled for normal onboarding. |
+
+### CLI subscription authentication
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AOA_INSTALL_PROFILE` | Derived from deployment mode/exposure | High-level CLI-auth topology: `local_single_user`, `remote_single_tenant`, or `hosted_multi_tenant`. Shared hosted installations disable subscription sign-in. |
+| `AOA_NETWORK_LOCATION` | From install profile | Advanced topology override: `local` or `remote`. It must agree with `AOA_INSTALL_PROFILE`. |
+| `AOA_TRUST_BOUNDARY` | From install profile | Advanced topology override: `single_user`, `single_tenant`, or `multi_tenant`. It must agree with `AOA_INSTALL_PROFILE`. |
+| `AOA_EXECUTION_OWNERSHIP` | From install profile | Advanced topology override: `user_hosted`, `tenant_hosted`, or `aoa_hosted`. It must agree with `AOA_INSTALL_PROFILE`. |
+| `AOA_CODEX_DEVICE_AUTH` | `false` on remote installs | Enables Codex device-code subscription sign-in on a dedicated `remote_single_tenant` installation. It never enables sign-in on `hosted_multi_tenant`. |
+| `AOA_CLAUDE_PASTE_AUTH` | `false` on remote installs | Enables Claude paste-code subscription sign-in on a dedicated `remote_single_tenant` installation. It never enables sign-in on `hosted_multi_tenant`. |
+| `AOA_EXECUTION_TARGET_ID` | `control-plane` | Stable identity of the execution target that owns the provider-native credential files. Login, verification, binding, and agent execution must use the same value. |
+| `AOA_SCOPED_CLI_AUTH` | `false` | When true, subscription-backed agent runs require a verified company/user/provider credential binding and fail closed if it is absent. Verified bindings are preferred even when this flag is false; the flag controls whether an entirely missing binding may fall back to the legacy global CLI home. |
 
 ## Agent JWT (signing for `AOA_API_KEY`)
 
@@ -99,6 +114,163 @@ For horizontally scaled deployments, local-file run logs require sticky routing 
 | `AOA_EMBEDDED_POSTGRES_PORT` | (auto) | Override the embedded PostgreSQL port. Intended for isolated local/e2e instances that must avoid port collisions |
 | `AOA_EMBEDDED_POSTGRES_STRICT_PORT` | `false` | When truthy, fail startup instead of falling back to a random embedded PostgreSQL port if `AOA_EMBEDDED_POSTGRES_PORT` is unavailable |
 | `AOA_EMBEDDED_POSTGRES_VERBOSE` | `false` | Verbose logging from `embedded-postgres` (helpful for debugging boot issues) |
+| `AOA_STEWARD_RECONCILE_ENABLED` | `true` | Set to `false` to disable only the boot/24-hour pass that adopts a legacy NULL-origin Steward into an already-installed marketplace crew. Ordinary crew repair and marketplace update checks continue. |
+
+### Legacy Steward reconciliation backout
+
+Disable `AOA_STEWARD_RECONCILE_ENABLED` before investigating or running a
+backout so the next 24-hour pass cannot reapply the change.
+
+`template_version = '0.0.0-legacy'` is shared by every pointer-only crew
+adoption, so it is not a safe rollback selector by itself. Every successful
+background reconciliation writes an `activity_log` row with action
+`marketplace.legacy_steward_adopted` in the same transaction as the adoption.
+The application log named `legacy Steward adopted in place` includes that
+row's `auditId` for lookup, but the durable database row is the source of truth.
+
+After taking a database backup, inspect the audit rows, choose the exact audit
+IDs from the affected deployment window, and create a transaction-local target
+table from only those IDs. Never select the whole fleet by version:
+
+```sql
+SELECT id AS audit_id, company_id, entity_id AS agent_id, details, created_at
+FROM activity_log
+WHERE action = 'marketplace.legacy_steward_adopted'
+ORDER BY created_at DESC;
+
+BEGIN;
+CREATE TEMP TABLE steward_reconcile_backout_targets ON COMMIT DROP AS
+SELECT
+  company_id,
+  entity_id::uuid AS agent_id,
+  (details->>'teamId')::uuid AS team_id,
+  COALESCE((details->>'memberInserted')::boolean, false) AS member_inserted,
+  details->>'previousTemplateVersion' AS previous_template_version
+FROM activity_log
+WHERE action = 'marketplace.legacy_steward_adopted'
+  AND id IN (
+    '00000000-0000-0000-0000-000000000000'::uuid
+  );
+
+-- Preview every target and predicate before changing anything.
+SELECT targets.*, steward.template_origin, steward.template_version
+FROM steward_reconcile_backout_targets AS targets
+JOIN agents AS steward
+  ON steward.company_id = targets.company_id
+ AND steward.id = targets.agent_id;
+
+CREATE TEMP TABLE steward_reconcile_reverted_targets (
+  company_id uuid NOT NULL,
+  agent_id uuid NOT NULL,
+  team_id uuid NOT NULL,
+  member_inserted boolean NOT NULL
+) ON COMMIT DROP;
+
+WITH reverted AS (
+  UPDATE agents AS steward
+  SET template_origin = NULL,
+      template_version = targets.previous_template_version,
+      updated_at = now()
+  FROM steward_reconcile_backout_targets AS targets
+  WHERE steward.company_id = targets.company_id
+    AND steward.id = targets.agent_id
+    AND steward.kind = 'aoa'
+    AND steward.name = 'Steward'
+    AND steward.template_origin = 'agent:aoa-curated/aoa-steward'
+    AND steward.template_version = '0.0.0-legacy'
+  RETURNING
+    targets.company_id,
+    targets.agent_id,
+    targets.team_id,
+    targets.member_inserted
+)
+INSERT INTO steward_reconcile_reverted_targets
+SELECT * FROM reverted
+RETURNING agent_id, company_id;
+
+-- Abort the whole transaction instead of performing a partial backout if any
+-- selected row no longer has the exact post-reconciliation pointer state.
+DO $$
+BEGIN
+  IF (
+    SELECT count(*) FROM steward_reconcile_reverted_targets
+  ) <> (
+    SELECT count(*) FROM steward_reconcile_backout_targets
+  ) THEN
+    RAISE EXCEPTION
+      'Steward backout aborted: selected and reverted target counts differ';
+  END IF;
+END
+$$;
+```
+
+If an audit row says `memberInserted=true`, the pass also created the exact
+`team_members(teamId, agentId)` link in that transaction. Delete that link only
+after confirming no later team operation now relies on it; a `false` value
+means the link predated reconciliation and must be kept. The delete uses only
+rows that the guarded pointer update above actually reverted, so a Steward that
+has since advanced cannot be detached:
+
+```sql
+DELETE FROM team_members AS member
+USING steward_reconcile_reverted_targets AS targets
+WHERE targets.member_inserted
+  AND member.team_id = targets.team_id
+  AND member.agent_id = targets.agent_id
+RETURNING member.id, member.team_id, member.agent_id;
+```
+
+The updater may already have created a Steward pending-update row and its open
+Hub alert after reconciliation. Remove only the pending row tied to the audited
+companies that were actually reverted and the legacy current version. Capture
+its exact advertised version before deletion. Keep the matching Hub entry as
+history, but archive the now-non-actionable open alert:
+
+```sql
+CREATE TEMP TABLE steward_reconcile_reverted_updates ON COMMIT DROP AS
+SELECT
+  pending.id,
+  pending.company_id,
+  pending.latest_version
+FROM marketplace_pending_updates AS pending
+JOIN steward_reconcile_reverted_targets AS targets
+  ON targets.company_id = pending.company_id
+WHERE pending.catalog_item_id = 'agent:aoa-curated/aoa-steward'
+  AND pending.current_version = '0.0.0-legacy';
+
+DELETE FROM marketplace_pending_updates AS pending
+USING steward_reconcile_reverted_updates AS reverted
+WHERE pending.id = reverted.id
+RETURNING pending.id, pending.company_id;
+
+UPDATE notifications AS hub
+SET status = 'archived',
+    archived_at = now()
+FROM steward_reconcile_reverted_updates AS reverted
+WHERE hub.company_id = reverted.company_id
+  AND hub.status = 'open'
+  AND hub.semantic_type = 'marketplace_op'
+  AND hub.source_type = 'marketplace_update'
+  AND (
+    hub.source_id = 'update_available:Steward:' || reverted.latest_version
+    OR left(
+         hub.source_id,
+         length('update_available:Steward:' || reverted.latest_version || ':')
+       ) = 'update_available:Steward:' || reverted.latest_version || ':'
+  )
+RETURNING hub.id, hub.company_id, hub.source_id;
+
+COMMIT;
+```
+
+Do not use the absence of a default-crew team as a damage or rollback selector.
+A normal team uninstall intentionally deletes that team while retaining the
+protected Steward agent, producing the same pointer state. Investigate any
+suspected out-of-band stamp from its exact activity/install history; there is no
+safe fleet-wide substitute for selecting the transactional audit IDs above.
+
+Leave the switch disabled until every audited company and any inserted
+membership link has been checked.
 
 ## Telemetry / feedback
 
@@ -113,11 +285,24 @@ For horizontally scaled deployments, local-file run logs require sticky routing 
 |----------|---------|-------------|
 | `AOA_PLUGIN_DIR` | `<AOA_HOME>/plugins` | Plugin discovery directory |
 | `AOA_MARKETPLACE_CDN_URL` | AoA marketplace CDN | Override the marketplace catalog URL. Developer/e2e harnesses can point this at an unreachable local URL to force the bundled catalog snapshot fallback |
+| `AOA_MARKETPLACE_SKILLS_WRITE_ROOT` | `legacy` | Select the fixed root for new managed marketplace skill bundles: `legacy` writes under `<cwd>/.aoa/marketplace-skills`; `persistent` writes under the active AoA instance root. Both fixed roots remain protected and readable. Arbitrary paths are rejected. |
 | `AOA_UI_DEV_MIDDLEWARE` | `false` | Set to `true` to mount the Vite UI as Express middleware (used by `pnpm dev`) |
 | `AOA_VITE_HMR_PORT` | (Vite default) | Override the Vite hot-module-reload websocket port when the UI is mounted as Express middleware. Useful for parallel local/e2e AoA instances |
 | `AOA_OPENCODE_COMMAND` | `opencode` | Override path to the `opencode` CLI binary for the OpenCode Local adapter |
 | `AOA_WORKTREES_DIR` | `<AOA_HOME>/instances/<id>/workspaces` | Where the worktree provisioner places per-task git worktrees |
 | `AOA_ENABLE_COMPANY_DELETION` | `true` (dev), `false` (prod) | Feature flag for the destructive "delete company" action |
+
+## Marketplace emergency controls
+
+These are operator-controlled environment variables on the AoA server process.
+They are not injected into agent processes. When changing them through a
+deployment platform or container configuration, restart or redeploy the server
+so the process receives the new environment.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AOA_MCP_CONNECTORS_ENABLED` | enabled | Emergency runtime kill switch for external MCP connectors. Unset/`true` keeps connectors enabled. Any other explicit value fails closed: the curated shelf is empty, catalog installation cannot resolve an entry, runtime delivery stops, and connector-tool auto-approval is denied. Existing rows remain visible to operators for recovery. |
+| `AOA_MCP_CONNECTOR_DENYLIST` | (empty) | Comma-separated, lowercase connector `serverName` values to revoke without disabling every connector. Denied entries are hidden from the curated shelf, cannot be installed from it, are not delivered to runs, and do not receive connector-tool auto-approval. |
 
 ## Agent Runtime (injected into agent processes — not user-configurable)
 

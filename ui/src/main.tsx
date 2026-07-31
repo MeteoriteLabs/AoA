@@ -19,6 +19,8 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { initPluginBridge } from "./plugins/bridge-init";
 import { runStorageMigrations } from "./lib/storage-migrations";
 import "@mdxeditor/editor/style.css";
+import "react-grid-layout/css/styles.css";
+import "react-resizable/css/styles.css";
 import "./index.css";
 
 // Migrate legacy Paperclip localStorage keys to AoA names before any
@@ -55,9 +57,7 @@ function RouterShell() {
           <DialogProvider>
             <InstallToastProvider>
               <UnsavedChangesProvider>
-                <ErrorBoundary>
-                  <App />
-                </ErrorBoundary>
+                <App />
                 <ToastViewport />
               </UnsavedChangesProvider>
             </InstallToastProvider>
@@ -77,16 +77,18 @@ const router = createBrowserRouter([{ path: "*", element: <RouterShell /> }]);
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <ThemeProvider>
-        <CompanyProvider>
-          <ToastProvider>
-            <LiveUpdatesProvider>
-              <RouterProvider router={router} />
-            </LiveUpdatesProvider>
-          </ToastProvider>
-        </CompanyProvider>
-      </ThemeProvider>
-    </QueryClientProvider>
+    <ErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <ThemeProvider>
+          <CompanyProvider>
+            <ToastProvider>
+              <LiveUpdatesProvider>
+                <RouterProvider router={router} />
+              </LiveUpdatesProvider>
+            </ToastProvider>
+          </CompanyProvider>
+        </ThemeProvider>
+      </QueryClientProvider>
+    </ErrorBoundary>
   </StrictMode>
 );

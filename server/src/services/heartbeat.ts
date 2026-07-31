@@ -113,6 +113,10 @@ import {
 } from "./workspace-resolution.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import { outputDetectionService } from "./output-detection.js";
+import {
+  mayUseLegacySubscriptionHome,
+  resolveAgentSubscriptionEnvironment,
+} from "./provider-credential-bindings.js";
 import { postRunSummaryComment } from "./run-summary-comment.js";
 import {
   buildWorkspaceReadyComment,
@@ -3985,13 +3989,60 @@ export function heartbeatService(db: Db) {
 
       // ── Auto-enable skills mentioned in the issue body/comments ──────
       let runScopedConfig: Record<string, unknown> = resolvedConfigWithEnvironmentAcquisition;
+      const subscriptionProvider =
+        agent.adapterType === "codex_local"
+          ? "openai"
+          : agent.adapterType === "claude_local"
+            ? "anthropic"
+            : null;
+      const scopedCliAuthEnabled = /^(1|true|yes)$/i.test(
+        process.env.AOA_SCOPED_CLI_AUTH?.trim() ?? "",
+      );
+      if (subscriptionProvider) {
+        const configuredEnv = parseObject(runScopedConfig.env);
+        const apiKeyName =
+          subscriptionProvider === "openai" ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY";
+        const hasApiKey =
+          typeof configuredEnv[apiKeyName] === "string" &&
+          String(configuredEnv[apiKeyName]).trim().length > 0;
+        if (!hasApiKey) {
+          const targetConfig = parseObject(runScopedConfig.executionTarget);
+          const targetType =
+            typeof targetConfig.type === "string" ? targetConfig.type : "local";
+          if (targetType !== "local" && scopedCliAuthEnabled) {
+            throw new Error(
+              "Governed subscription credentials currently require the dedicated local execution target.",
+            );
+          }
+          if (targetType === "local") {
+            try {
+              const boundEnv = await resolveAgentSubscriptionEnvironment(db, {
+                companyId: agent.companyId,
+                agentId: agent.id,
+                provider: subscriptionProvider,
+                executionTargetId:
+                  process.env.AOA_EXECUTION_TARGET_ID?.trim() || "control-plane",
+              });
+              runScopedConfig = {
+                ...runScopedConfig,
+                env: { ...configuredEnv, ...boundEnv },
+              };
+            } catch (error) {
+              if (!mayUseLegacySubscriptionHome(error, scopedCliAuthEnabled)) throw error;
+            }
+          }
+        }
+      }
       try {
         const mentionedSkillKeys = await resolveRunScopedMentionedSkillKeys(
           db,
           agent.companyId,
           issueId,
         );
-        runScopedConfig = applyRunScopedMentionedSkillKeys(resolvedConfigWithEnvironmentAcquisition, mentionedSkillKeys);
+        // Preserve any run-local credential environment resolved immediately
+        // above. Re-starting from the pre-binding config silently discarded the
+        // governed CODEX_HOME/CLAUDE_CONFIG_DIR before adapter execution.
+        runScopedConfig = applyRunScopedMentionedSkillKeys(runScopedConfig, mentionedSkillKeys);
         if (mentionedSkillKeys.length > 0) {
           logger.info(
             {

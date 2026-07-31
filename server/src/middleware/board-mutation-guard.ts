@@ -1,4 +1,8 @@
 import type { Request, RequestHandler } from "express";
+import {
+  isMarketplaceAdminPath,
+  marketplaceErrorResponse,
+} from "../services/marketplace-http-contract.js";
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 const DEFAULT_DEV_ORIGINS = [
@@ -52,13 +56,24 @@ export function boardMutationGuard(): RequestHandler {
     // Local-trusted mode uses an implicit board actor for localhost-only development.
     // In this mode, origin/referer headers can be omitted by some clients for multipart
     // uploads; do not block those mutations.
-    if (req.actor.source === "local_implicit") {
+    if (
+      req.actor.source === "local_implicit" ||
+      req.actor.source === "board_key"
+    ) {
       next();
       return;
     }
 
     if (!isTrustedBoardMutationRequest(req)) {
-      res.status(403).json({ error: "Board mutation requires trusted browser origin" });
+      if (isMarketplaceAdminPath(req.originalUrl)) {
+        res
+          .status(403)
+          .json(marketplaceErrorResponse("invalid_request", null));
+        return;
+      }
+      res.status(403).json({
+        error: "Board mutation requires trusted browser origin",
+      });
       return;
     }
 

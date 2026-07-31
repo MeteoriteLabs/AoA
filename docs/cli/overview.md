@@ -5,6 +5,9 @@ summary: CLI installation and setup
 
 The AoA CLI handles instance setup, diagnostics, and control-plane operations.
 
+For instance-admin reconciliation and durable inspection commands, see
+[Marketplace recovery](/guides/board-operator/marketplace-recovery).
+
 ## Usage
 
 ```sh
@@ -19,7 +22,7 @@ All commands support:
 |------|-------------|
 | `--data-dir <path>` | Local AoA data root (isolates from `~/.aoa`; legacy `~/.paperclip` is used as a one-release fallback if `~/.aoa` does not yet exist — see `cli/src/config/home.ts`) |
 | `--api-base <url>` | API base URL |
-| `--api-key <token>` | API authentication token |
+| `--api-key <token>` | Bearer token override; stored board login is the final fallback |
 | `--context <path>` | Context file path |
 | `--profile <name>` | Context profile name |
 | `--json` | Output as JSON |

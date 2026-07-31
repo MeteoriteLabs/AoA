@@ -28,7 +28,8 @@ describe("marketplace routes", () => {
   it("GET /catalog returns 503 when not synced", async () => {
     const service = {
       readCache: async () => null,
-      sync: async () => null,
+      refresh: async () => ({ catalog: null, status: null }),
+      refreshAndCheckForUpdates: async () => ({ catalog: null, status: null }),
       getStatus: async () => null,
     } as any;
 
@@ -46,7 +47,11 @@ describe("marketplace routes", () => {
   it("GET /catalog returns cached catalog", async () => {
     const service = {
       readCache: async () => VALID_CATALOG,
-      sync: async () => VALID_CATALOG,
+      refresh: async () => ({ catalog: VALID_CATALOG, status: null }),
+      refreshAndCheckForUpdates: async () => ({
+        catalog: VALID_CATALOG,
+        status: null,
+      }),
       getStatus: async () => null,
     } as any;
 
@@ -63,16 +68,22 @@ describe("marketplace routes", () => {
   });
 
   it("POST /catalog/sync triggers sync and returns status", async () => {
+    const status = {
+      lastSyncedAt: "2026-04-30T00:00:00.000Z",
+      lastSyncStatus: "success",
+      source: "cdn",
+      schemaVersion: "1.0.0",
+      itemCount: 0,
+    };
+    const refreshAndCheckForUpdates = vi.fn().mockResolvedValue({
+      catalog: VALID_CATALOG,
+      status,
+    });
     const service = {
       readCache: async () => VALID_CATALOG,
-      sync: async () => VALID_CATALOG,
-      getStatus: async () => ({
-        lastSyncedAt: "2026-04-30T00:00:00.000Z",
-        lastSyncStatus: "success",
-        source: "cdn",
-        schemaVersion: "1.0.0",
-        itemCount: 0,
-      }),
+      refresh: async () => ({ catalog: VALID_CATALOG, status }),
+      refreshAndCheckForUpdates,
+      getStatus: async () => status,
     } as any;
 
     const app = express();
@@ -89,12 +100,14 @@ describe("marketplace routes", () => {
     const res = await request(app).post("/api/marketplace/catalog/sync");
     expect(res.status).toBe(200);
     expect(res.body.itemCount).toBe(0);
+    expect(refreshAndCheckForUpdates).toHaveBeenCalledTimes(1);
   });
 
   it("POST /catalog/sync returns 403 for non-board actor", async () => {
     const service = {
       readCache: async () => null,
-      sync: async () => null,
+      refresh: async () => ({ catalog: null, status: null }),
+      refreshAndCheckForUpdates: async () => ({ catalog: null, status: null }),
       getStatus: async () => null,
     } as any;
 
@@ -116,7 +129,11 @@ describe("marketplace routes", () => {
   it("GET /catalog/status returns sync metadata", async () => {
     const service = {
       readCache: async () => VALID_CATALOG,
-      sync: async () => VALID_CATALOG,
+      refresh: async () => ({ catalog: VALID_CATALOG, status: null }),
+      refreshAndCheckForUpdates: async () => ({
+        catalog: VALID_CATALOG,
+        status: null,
+      }),
       getStatus: async () => ({
         lastSyncedAt: "2026-04-30T00:00:00.000Z",
         lastSyncStatus: "success",

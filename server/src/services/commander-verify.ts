@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import type { AdapterEnvironmentTestResult } from "@armyofagents/shared";
 import { detectAuthFailure } from "@armyofagents/adapter-utils";
 import { secretService } from "./secrets.js";
+import { resolveScopedCliAuthHome } from "./cli-auth-topology.js";
 
 /**
  * Matches the `<adapter>_hello_probe_auth_expired` / `<adapter>_hello_probe_auth_required`
@@ -14,6 +15,23 @@ import { secretService } from "./secrets.js";
 const HELLO_PROBE_AUTH_CODE_RE = /_hello_probe_auth_(?:expired|required)$/;
 
 export type CommanderVerifyOutcome = "verified" | "needs_auth" | "not_installed" | "failed";
+
+export function commanderProbeUsesApiKey(
+  config: Record<string, unknown>,
+  adapterType: string,
+): boolean {
+  const env =
+    config.env != null && typeof config.env === "object" && !Array.isArray(config.env)
+      ? (config.env as Record<string, unknown>)
+      : {};
+  const value =
+    adapterType === "codex_local"
+      ? env.OPENAI_API_KEY
+      : adapterType === "claude_local"
+        ? env.ANTHROPIC_API_KEY
+        : null;
+  return typeof value === "string" && value.trim().length > 0;
+}
 
 /**
  * Resolve the config Commander verify should probe with (Plan 3 / §6.1, Codex
@@ -38,21 +56,43 @@ export async function resolveCommanderProbeConfig(
     .from(internalAgentConfig)
     .where(eq(internalAgentConfig.companyId, companyId))
     .limit(1);
-  if (!cfg?.agentId) return {};
+  let resolved: Record<string, unknown> = {};
+  if (cfg?.agentId) {
+    const [agent] = await db
+      .select({ adapterConfig: agents.adapterConfig })
+      .from(agents)
+      .where(eq(agents.id, cfg.agentId))
+      .limit(1);
+    const adapterConfig = (agent?.adapterConfig as Record<string, unknown> | null) ?? {};
+    resolved = await secretService(db).resolveAdapterConfigForRuntime(
+      companyId,
+      adapterType,
+      adapterConfig,
+      {
+        consumerType: "agent",
+        consumerId: cfg.agentId,
+        actorType: "user",
+        actorId: actorId ?? "board",
+      },
+    );
+  }
 
-  const [agent] = await db
-    .select({ adapterConfig: agents.adapterConfig })
-    .from(agents)
-    .where(eq(agents.id, cfg.agentId))
-    .limit(1);
-  const adapterConfig = (agent?.adapterConfig as Record<string, unknown> | null) ?? {};
-
-  return secretService(db).resolveAdapterConfigForRuntime(companyId, adapterType, adapterConfig, {
-    consumerType: "agent",
-    consumerId: cfg.agentId,
-    actorType: "user",
-    actorId: actorId ?? "board",
+  const provider =
+    adapterType === "codex_local" ? "openai" : adapterType === "claude_local" ? "anthropic" : null;
+  if (!provider) return resolved;
+  const authHome = resolveScopedCliAuthHome({
+    executionTargetId: process.env.AOA_EXECUTION_TARGET_ID ?? "control-plane",
+    companyId,
+    userId: actorId ?? "board",
+    provider,
   });
+  const env = {
+    ...((resolved.env as Record<string, unknown> | undefined) ?? {}),
+    ...(provider === "openai"
+      ? { CODEX_HOME: authHome }
+      : { CLAUDE_CONFIG_DIR: authHome }),
+  };
+  return { ...resolved, env };
 }
 
 /** Commander cliTool → agent adapter type (mirror UI AgentStep). */

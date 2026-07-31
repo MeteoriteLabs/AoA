@@ -100,7 +100,7 @@ docker run -d --rm \
   -e AOA_DEPLOYMENT_EXPOSURE="$AOA_DEPLOYMENT_EXPOSURE" \
   -e AOA_PUBLIC_URL="$AOA_PUBLIC_URL" \
   -e AOA_DEV_LOCAL_IDENTITY="$AOA_DEV_LOCAL_IDENTITY" \
-  -v "$DATA_DIR:/paperclip" \
+  -v "$DATA_DIR:/aoa" \
   "$IMAGE_NAME" >/dev/null
 
 if [[ "$SMOKE_DETACH" != "true" ]]; then

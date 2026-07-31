@@ -31,12 +31,12 @@ export function createMarketplaceRouter(deps: MarketplaceRoutesDeps): Router {
   router.post("/catalog/sync", async (req, res) => {
     assertBoard(req);
     assertCanManageInstanceSettings(req);
-    const catalog = await service.sync();
-    if (!catalog) {
-      res.status(502).json({ error: "Sync failed", status: await service.getStatus() });
+    const { catalog, status } = await service.refreshAndCheckForUpdates();
+    if (!catalog || status?.lastSyncStatus !== "success") {
+      res.status(502).json({ error: "Sync failed", status });
       return;
     }
-    res.json({ status: await service.getStatus(), itemCount: catalog.itemCount });
+    res.json({ status, itemCount: catalog.itemCount });
   });
 
   router.get("/catalog/status", async (req, res) => {

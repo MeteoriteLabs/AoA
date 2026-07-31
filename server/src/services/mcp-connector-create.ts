@@ -28,13 +28,14 @@
  */
 
 import { RESERVED_MCP_SERVER_NAMES } from "@armyofagents/adapter-utils";
-import { badRequest, conflict } from "../errors.js";
+import { badRequest, conflict, forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import {
   ConnectorCommandUnsafeError,
   assertStdioCommandSafe,
 } from "./mcp-connector-command-safety.js";
 import { resolveConnectorStatus } from "./mcp-connector-status.js";
+import { isMcpConnectorBlocked } from "./mcp-connector-emergency-policy.js";
 import type { LogActivityInput } from "./activity-log.js";
 import type { ConnectorInsert } from "./mcp-connectors-crud.js";
 // TYPE-ONLY, and it must stay that way: these imports are erased at build time,
@@ -137,6 +138,15 @@ export async function createConnector(
 ): Promise<{ connector: any; approvalId: string | null }> {
   const { svc, secretsSvc, withInsertTransaction, logActivity } = deps;
   const { companyId, actor } = input;
+
+  // The emergency policy is a write barrier as well as a delivery filter.
+  // Otherwise a founder could stage a connector while it is revoked and have
+  // it spring live when an operator later lifts the incident control.
+  if (isMcpConnectorBlocked(input.serverName)) {
+    throw forbidden(
+      `Connector "${input.serverName}" is disabled by the operator's MCP connector policy`,
+    );
+  }
 
   // Uniqueness (companyId, serverName) — friendly early 409 for the common case.
   // NOT the sole guard: two concurrent creates can both pass this and race to the

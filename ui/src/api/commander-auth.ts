@@ -13,12 +13,38 @@ import type { CommanderProvider } from "@armyofagents/shared";
  */
 
 export type CommanderLoginStatus = "pending" | "completed" | "failed" | "timeout";
+export type CommanderSubscriptionMode = "device_code" | "paste_code" | "none";
+export type CommanderAuthCapability = {
+  provider: CommanderProvider;
+  mode: CommanderSubscriptionMode;
+  enabled: boolean;
+  browserSafeRemotely: boolean;
+  reason: string | null;
+  cliInstalled?: boolean;
+  cliVersion?: string | null;
+  cliVersionSupported?: boolean;
+};
+
+export function getCommanderAuthCapabilities(args: {
+  companyId: string;
+}): Promise<{
+  topology: {
+    platform: string;
+    installProfile: string;
+    networkLocation: "local" | "remote";
+    trustBoundary: string;
+    executionOwnership: string;
+  };
+  providers: Record<CommanderProvider, CommanderAuthCapability>;
+}> {
+  return api.get(`/companies/${args.companyId}/internal-agent/commander-login/capabilities`);
+}
 
 export function saveCommanderKey(args: {
   companyId: string;
   provider: CommanderProvider;
   value: string;
-}): Promise<{ ok: boolean; secretId: string }> {
+}): Promise<{ ok: boolean; secretId: string; verification: "verified" }> {
   return api.post(`/companies/${args.companyId}/internal-agent/commander-key`, {
     provider: args.provider,
     value: args.value,
@@ -28,7 +54,13 @@ export function saveCommanderKey(args: {
 export function startCommanderLogin(args: {
   companyId: string;
   provider: CommanderProvider;
-}): Promise<{ challengeId: string; loginUrl: string }> {
+}): Promise<{
+  challengeId: string;
+  loginUrl: string;
+  mode: CommanderSubscriptionMode;
+  userCode: string | null;
+  expiresAt: string;
+}> {
   return api.post(`/companies/${args.companyId}/internal-agent/commander-login/start`, {
     provider: args.provider,
   });

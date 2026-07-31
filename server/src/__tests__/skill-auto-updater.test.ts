@@ -219,6 +219,67 @@ describe("applySkillUpdate", () => {
     });
   });
 
+  it("clears stale bundle columns when the upstream item stops carrying a bundle (T2.8c(a))", async () => {
+    // Row was previously a bundled skill; the new catalog item (SKILL_ITEM) has
+    // no `skill.bundle`. The pointer, inventory and trust level must not keep
+    // naming the old version's tree.
+    const tx = buildTx({
+      skillRows: [
+        {
+          id: "skill-1",
+          customized: false,
+          metadata: {
+            catalogBundleInstallPath:
+              "C:\\repo\\.aoa\\marketplace-skills\\c1\\skill_aoa-curated_code-review\\1.0.0",
+            catalogSkillBundle: {
+              type: "github-directory",
+              repo: "example/repo",
+              commitSha: "oldsha",
+              path: "skills/code-review",
+            },
+            catalogTrustTier: "verified",
+          },
+        },
+      ],
+    });
+    const db = buildDb(tx);
+    vi.mocked(loadSkillContent).mockResolvedValue("# Code Review v1.1.0 (markdown-only)");
+
+    await applySkillUpdate({ db: db as any, ...APPLY_ARGS });
+
+    const set = tx._updatedSkillValues[0];
+    expect(set).toMatchObject({
+      markdown: "# Code Review v1.1.0 (markdown-only)",
+      sourceRef: "1.1.0",
+      trustLevel: "markdown_only",
+      fileInventory: [],
+    });
+    // Bundle pointers stripped, unrelated metadata preserved (this is a patch).
+    expect(set.metadata).not.toHaveProperty("catalogBundleInstallPath");
+    expect(set.metadata).not.toHaveProperty("catalogSkillBundle");
+    expect(set.metadata.catalogTrustTier).toBe("verified");
+    // No bundle was materialized, so no git checkout was attempted.
+    expect(materializerMock).not.toHaveBeenCalled();
+  });
+
+  it("leaves bundle columns untouched for a markdown-only row that never had a bundle", async () => {
+    const tx = buildTx({
+      skillRows: [{ id: "skill-1", customized: false, metadata: { catalogTrustTier: "verified" } }],
+    });
+    const db = buildDb(tx);
+    vi.mocked(loadSkillContent).mockResolvedValue("# Still markdown-only");
+
+    await applySkillUpdate({ db: db as any, ...APPLY_ARGS });
+
+    const set = tx._updatedSkillValues[0];
+    expect(set).toMatchObject({ markdown: "# Still markdown-only", sourceRef: "1.1.0" });
+    // A row that never carried a bundle must not be stamped with an empty
+    // inventory / markdown_only trust / rewritten metadata it never had.
+    expect(set).not.toHaveProperty("trustLevel");
+    expect(set).not.toHaveProperty("fileInventory");
+    expect(set).not.toHaveProperty("metadata");
+  });
+
   it("throws SkillCustomizedError and makes no DB writes when customized=true inside tx", async () => {
     const tx = buildTx({ skillRow: { id: "skill-1", customized: true } });
     const db = buildDb(tx);

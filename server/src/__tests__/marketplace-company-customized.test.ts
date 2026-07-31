@@ -34,6 +34,10 @@ vi.mock("../services/marketplace-settings.js", () => ({
 vi.mock("../services/marketplace-merge.js", () => ({
   computeSectionDiff: vi.fn(() => [{ heading: "## Overview", mine: "old", theirs: "new" }]),
   applyMergeDecisions: vi.fn(() => "# Merged Content"),
+  mergeSkillDocument: vi.fn(() => ({
+    content: "# New upstream content",
+    pureUpstream: true,
+  })),
 }));
 vi.mock("../routes/authz.js", () => ({
   assertBoard: authzMocks.assertBoard,
@@ -43,6 +47,7 @@ vi.mock("../routes/authz.js", () => ({
 
 import { createMarketplaceCompanyRouter } from "../routes/marketplace-company.js";
 import { assertCanManageInstanceSettings } from "../routes/authz.js";
+import { skillMergeSnapshotToken } from "../services/marketplace-install/skill-update-merge.js";
 
 beforeEach(() => {
   authzMocks.assertBoard.mockReset();
@@ -68,7 +73,12 @@ function buildApp(dbOverrides: any = {}) {
     latestVersion: "1.1.0",
     status: "pending",
   };
-  const SKILL_ROW = { id: "skill-1", markdown: "# Old Content" };
+  const SKILL_ROW = {
+    id: "skill-1",
+    markdown: "# Old Content",
+    metadata: {},
+    customized: true,
+  };
 
   const db = {
     select: () => ({
@@ -108,11 +118,13 @@ function buildApp(dbOverrides: any = {}) {
       const tx = {
         update: () => ({
           set: (values: any) => ({
-            where: () => {
-              txSets.push(values);
-              dbOverrides.capturedSets?.push(values);
-              return Promise.resolve();
-            },
+            where: () => ({
+              returning: async () => {
+                txSets.push(values);
+                dbOverrides.capturedSets?.push(values);
+                return [{ id: "updated" }];
+              },
+            }),
           }),
         }),
       };
@@ -152,8 +164,8 @@ function buildApp(dbOverrides: any = {}) {
   return { app, smartDb };
 }
 
-describe("POST /updates/:id/merge — sets customized = true", () => {
-  it("includes customized: true in the skill update SET clause", async () => {
+describe("POST /updates/:id/merge — derives customized from result bytes", () => {
+  it("sets customized: false for a pure-upstream merge", async () => {
     global.fetch = vi.fn(async () => ({
       ok: true,
       text: async () => "# New upstream content",
@@ -164,11 +176,17 @@ describe("POST /updates/:id/merge — sets customized = true", () => {
 
     const res = await request(app)
       .post("/api/companies/c1/marketplace/updates/upd-1/merge")
-      .send({ decisions: { "## Overview": "theirs" } });
+      .send({
+        decisions: { "## Overview": "theirs" },
+        snapshotToken: skillMergeSnapshotToken(
+          "# Old Content",
+          "# New upstream content",
+          "1.1.0",
+        ),
+      });
 
     expect(res.status).toBe(200);
-    // Fails before the fix — current code omits customized from the SET clause
-    expect(capturedSets.some((s) => s.customized === true)).toBe(true);
+    expect(capturedSets.some((s) => s.customized === false)).toBe(true);
   });
 
   it("executes both the skill update and the pending-update status change inside a single transaction", async () => {
@@ -182,7 +200,14 @@ describe("POST /updates/:id/merge — sets customized = true", () => {
 
     const res = await request(app)
       .post("/api/companies/c1/marketplace/updates/upd-1/merge")
-      .send({ decisions: { "## Overview": "theirs" } });
+      .send({
+        decisions: { "## Overview": "theirs" },
+        snapshotToken: skillMergeSnapshotToken(
+          "# Old Content",
+          "# New upstream content",
+          "1.1.0",
+        ),
+      });
 
     expect(res.status).toBe(200);
 
@@ -193,6 +218,25 @@ describe("POST /updates/:id/merge — sets customized = true", () => {
     // Transaction must contain both writes: the skill update and the pending-update status
     expect(txSets.some((s: any) => "markdown" in s)).toBe(true);   // skill update
     expect(txSets.some((s: any) => s.status === "applied")).toBe(true); // pending update
+  });
+});
+
+describe("GET /updates/:id/diff — binds the reviewed skill snapshot", () => {
+  it("returns a token for the exact local, upstream, and catalog version bytes", async () => {
+    global.fetch = vi.fn(async () => ({
+      ok: true,
+      text: async () => "# New upstream content",
+    })) as any;
+
+    const { app } = buildApp();
+    const res = await request(app).get(
+      "/api/companies/c1/marketplace/updates/upd-1/diff",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.snapshotToken).toBe(
+      skillMergeSnapshotToken("# Old Content", "# New upstream content", "1.1.0"),
+    );
   });
 });
 
