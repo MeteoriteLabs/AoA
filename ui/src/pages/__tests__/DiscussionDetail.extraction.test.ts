@@ -102,4 +102,44 @@ describe("extractionFailureMessage", () => {
       expect(result.showSettings).toBe(false);
     });
   });
+
+  describe("cloud (multiTenant) credential-shaped failures", () => {
+    it("not_authed in cloud points at Settings -> Providers, not a CLI login", () => {
+      const result = extractionFailureMessage(
+        "not_authed",
+        "claude CLI is not authenticated. Run the CLI's login flow, then retry.",
+        { multiTenant: true },
+      );
+      expect(result.primary).toMatch(/Settings\s*→\s*Providers/);
+      expect(result.primary).not.toMatch(/login flow|Run the CLI|not logged in/i);
+      expect(result.showSettings).toBe(true);
+    });
+
+    it("not_installed in cloud points at Settings -> Providers", () => {
+      const result = extractionFailureMessage(
+        "not_installed",
+        "claude CLI not found on PATH. Install the Claude Code CLI and ensure it is on your PATH.",
+        { multiTenant: true },
+      );
+      expect(result.primary).toMatch(/Settings\s*→\s*Providers/);
+      expect(result.primary).not.toMatch(/PATH|Install the/i);
+      expect(result.showSettings).toBe(true);
+    });
+
+    it("does NOT rewrite non-credential kinds in cloud (timeout/nonzero_exit)", () => {
+      expect(extractionFailureMessage("timeout", null, { multiTenant: true }).showSettings).toBe(false);
+      const nz = extractionFailureMessage("nonzero_exit", "exit code 1", { multiTenant: true });
+      expect(nz.primary).toContain("try Reprocess");
+      expect(nz.showSettings).toBe(false);
+    });
+
+    it("self-hosted (default / multiTenant:false) keeps the CLI copy verbatim", () => {
+      const dflt = extractionFailureMessage("not_authed", null);
+      expect(dflt.primary).toContain("not logged in");
+      expect(dflt.showSettings).toBe(false);
+      const explicit = extractionFailureMessage("not_authed", null, { multiTenant: false });
+      expect(explicit.primary).toContain("not logged in");
+      expect(explicit.showSettings).toBe(false);
+    });
+  });
 });
