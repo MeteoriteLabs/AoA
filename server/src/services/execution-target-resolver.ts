@@ -54,7 +54,15 @@ export async function resolveExecutionTargetForRun(
   // System/shared targets (organizationId null) + this org's targets are both
   // eligible — scoped in SQL (index execution_targets_org_idx) rather than a
   // full-table scan + JS filter. For a null org, isNull() alone yields the system
-  // rows (eq(col, null) never matches), preserving the prior JS-filter behavior.
+  // rows (preserving the prior JS-filter behavior; eq() cannot take a null value,
+  // and `col = NULL` would never match anyway).
+  const orgScope =
+    input.organizationId == null
+      ? isNull(executionTargets.organizationId)
+      : or(
+          isNull(executionTargets.organizationId),
+          eq(executionTargets.organizationId, input.organizationId),
+        );
   const scoped = (await db
     .select({
       id: executionTargets.id,
@@ -66,12 +74,7 @@ export async function resolveExecutionTargetForRun(
       config: executionTargets.config,
     })
     .from(executionTargets)
-    .where(
-      or(
-        isNull(executionTargets.organizationId),
-        eq(executionTargets.organizationId, input.organizationId),
-      ),
-    )) as ExecutionTargetRow[];
+    .where(orgScope)) as ExecutionTargetRow[];
   return chooseExecutionTargetRow({
     credentialKind: input.credentialKind,
     pinnedTargetId: input.pinnedTargetId,
