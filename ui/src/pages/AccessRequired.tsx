@@ -60,12 +60,15 @@ export function AccessRequired({ requestedPrefix, className }: AccessRequiredPro
 export function AccessRequiredBoundary({
   error,
   children,
+  className,
 }: {
   error: unknown;
   children: ReactNode;
+  /** Forwarded to {@link AccessRequired} when a 403 is rendered in place. */
+  className?: string;
 }) {
   if (isForbidden(error)) {
-    return <AccessRequired />;
+    return <AccessRequired className={className} />;
   }
   return <>{children}</>;
 }

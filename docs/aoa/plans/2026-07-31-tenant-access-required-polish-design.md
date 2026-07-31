@@ -68,6 +68,18 @@ Copy-only edits (no behaviour change):
 
 ## Out of scope (explicit)
 
+- **Broad per-page 403 adoption is intentionally incremental.** Piece 3 ships a
+  shared, tested `isForbidden` helper + `AccessRequiredBoundary` render-branch,
+  wired live at ONE representative company-scoped page — the Tasks page
+  (`ui/src/pages/Issues.tsx`), whose primary `issuesApi.list` 403 unambiguously
+  means "no access to this workspace" (mirrors the `InstanceSettingsPage`
+  inline-403 panel). There is no shared company-level query below `Layout` to
+  wrap once (each page owns its queries), and a QueryClient-wide `throwOnError`
+  or a global boundary is explicitly rejected (it would regress the existing
+  instance-admin + lobby inline 403 panels). Remaining company pages adopt the
+  ready helper page-by-page as needed — a 403 should only render AccessRequired
+  where it means "no access to this company," never for a single forbidden
+  action on a page you otherwise can access.
 - Org member management, org invitations UI, org settings UI.
 - The org-scoped `provider_connections` connect/assign UI (and its missing backend routes).
 - The operator console (separate repo).

@@ -73,4 +73,13 @@ describe("AccessRequiredBoundary", () => {
     expect(screen.getByTestId("page-content")).toBeInTheDocument();
     expect(screen.queryByText("You don't have access to this")).toBeNull();
   });
+
+  it("forwards className to the AccessRequired surface on a 403", () => {
+    const { container } = renderWithProviders(
+      <AccessRequiredBoundary error={forbidden()} className="embedded-access">
+        <div data-testid="page-content">Company-scoped content</div>
+      </AccessRequiredBoundary>,
+    );
+    expect(container.querySelector(".embedded-access")).toBeTruthy();
+  });
 });

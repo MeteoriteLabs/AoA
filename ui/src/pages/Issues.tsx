@@ -6,6 +6,8 @@ import { issuesApi } from "../api/issues";
 import { cockpitApi } from "../api/cockpit";
 import { agentsApi } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
+import { isForbidden } from "../api/client";
+import { AccessRequired } from "./AccessRequired";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -175,6 +177,14 @@ export function Issues() {
 
   if (!selectedCompanyId) {
     return <EmptyState icon={CircleDot} message="Select a company to view tasks" description="Tasks are the primary unit of work that agents execute on your behalf." entityColor="var(--entity-task)" />;
+  }
+
+  // A 403 on the primary company-scoped query (tasks list, or the cockpit
+  // bucket when active) means this workspace is off-limits — e.g. membership
+  // revoked mid-session. Surface the friendly access state instead of the
+  // list's generic error. Non-403 errors keep the list's normal inline error.
+  if (isForbidden(cockpitBucket ? cockpitTasksQuery.error : error)) {
+    return <AccessRequired />;
   }
 
   return (
