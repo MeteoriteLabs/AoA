@@ -1,6 +1,11 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { StepProps } from "../registry";
 import { organizationsApi } from "../../api/organizations";
+import {
+  readPendingTenant,
+  writePendingTenant,
+  type PendingTenant,
+} from "../pendingTenant";
 import { Button } from "@/components/ui/button";
 import { Reveal } from "../motion";
 import { FIELD, GradientText, LABEL, StepCard, StepHeading, StepShell } from "./shared";
@@ -26,11 +31,35 @@ import { FIELD, GradientText, LABEL, StepCard, StepHeading, StepShell } from "./
  * of this UI-cluster task.
  */
 export function CreateOrganizationStep({ ctx, onComplete }: StepProps) {
-  const [name, setName] = useState("");
+  // Reload durability (Fix 3a): a tenant persisted on a prior mount means the
+  // org was already created — a hard reload between this step and the company
+  // step must NOT POST a second (ghost) organization. Mirror OrgStep's
+  // pendingOrganization pattern: read once at mount into a ref, then adopt it
+  // instead of re-creating.
+  const [pendingAtMount] = useState(() => readPendingTenant(ctx.userId));
+  const [name, setName] = useState(pendingAtMount?.name ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const createdRef = useRef<PendingTenant | null>(pendingAtMount);
+
+  // Auto-resolve on mount when a persisted tenant exists (post-reload / strand
+  // resume): adopt its id and advance to the company step without re-creating.
+  useEffect(() => {
+    if (!pendingAtMount) return;
+    ctx.setOrganizationId?.(pendingAtMount.id);
+    onComplete();
+    // Mount-only: pendingAtMount is frozen for this mount; re-running on
+    // ctx/onComplete identity changes would double-advance.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const submit = async () => {
+    // Same-mount retry after a downstream failure: reuse the already-created org.
+    if (createdRef.current) {
+      ctx.setOrganizationId?.(createdRef.current.id);
+      onComplete();
+      return;
+    }
     if (!name.trim()) {
       setError("Please enter a name for your organization.");
       return;
@@ -39,6 +68,11 @@ export function CreateOrganizationStep({ ctx, onComplete }: StepProps) {
     setError(null);
     try {
       const org = await organizationsApi.create({ name: name.trim() });
+      const pending: PendingTenant = { id: org.id, name: org.name };
+      createdRef.current = pending;
+      // Persist BEFORE onComplete so a reload during the engine's re-read still
+      // finds the recovery hint (OrgStep clears it once the company consumes it).
+      writePendingTenant(ctx.userId, pending);
       ctx.setOrganizationId?.(org.id);
       onComplete();
     } catch (e) {

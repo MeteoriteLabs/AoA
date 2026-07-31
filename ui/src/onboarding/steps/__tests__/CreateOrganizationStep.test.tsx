@@ -1,5 +1,5 @@
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { CreateOrganizationStep } from "../CreateOrganizationStep";
 import { validateRegistry, type StepContext } from "../../registry";
 import { ONBOARDING_STEPS } from "../index";
@@ -16,6 +16,11 @@ const ctx: StepContext = {
 };
 
 describe("CreateOrganizationStep", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+  });
+
   it("requires an organization name", async () => {
     const onComplete = vi.fn();
     render(<CreateOrganizationStep ctx={ctx} onComplete={onComplete} onBack={() => {}} />);
@@ -53,6 +58,60 @@ describe("CreateOrganizationStep", () => {
     expect(
       (screen.getByRole("button", { name: /continue/i }) as HTMLButtonElement).disabled,
     ).toBe(false);
+  });
+
+  it("persists a pending tenant on create (before completing)", async () => {
+    const onComplete = vi.fn();
+    const setOrganizationId = vi.fn();
+    render(
+      <CreateOrganizationStep
+        ctx={{ ...ctx, setOrganizationId }}
+        onComplete={onComplete}
+        onBack={() => {}}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText(/organization name/i), { target: { value: "Acme" } });
+    fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+    await waitFor(() => expect(onComplete).toHaveBeenCalled());
+    expect(createOrg).toHaveBeenCalledTimes(1);
+    expect(setOrganizationId).toHaveBeenCalledWith("org1");
+    expect(localStorage.getItem("aoa.onboarding.pendingTenant.u1")).toContain('"id":"org1"');
+  });
+
+  it("does NOT create a second org after a reload (remount) — adopts the persisted tenant", async () => {
+    const setOrganizationId = vi.fn();
+
+    // First mount: create the org.
+    const firstComplete = vi.fn();
+    const first = render(
+      <CreateOrganizationStep
+        ctx={{ ...ctx, setOrganizationId }}
+        onComplete={firstComplete}
+        onBack={() => {}}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText(/organization name/i), { target: { value: "Acme" } });
+    fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+    await waitFor(() => expect(firstComplete).toHaveBeenCalled());
+    expect(createOrg).toHaveBeenCalledTimes(1);
+
+    // Simulate a hard reload between the org step and the company step: the
+    // component unmounts and remounts, but localStorage survives.
+    first.unmount();
+    setOrganizationId.mockClear();
+
+    const secondComplete = vi.fn();
+    render(
+      <CreateOrganizationStep
+        ctx={{ ...ctx, setOrganizationId }}
+        onComplete={secondComplete}
+        onBack={() => {}}
+      />,
+    );
+    // Adopts the persisted org id and advances WITHOUT a second POST.
+    await waitFor(() => expect(secondComplete).toHaveBeenCalled());
+    expect(setOrganizationId).toHaveBeenCalledWith("org1");
+    expect(createOrg).toHaveBeenCalledTimes(1);
   });
 });
 
