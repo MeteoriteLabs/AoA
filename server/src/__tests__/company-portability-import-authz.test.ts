@@ -10,7 +10,7 @@
  *  - getImportAuthorizationContext surfaces importsAgents so the route can gate
  *    agent imports on founder/team_lead.
  */
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const createMock = vi.hoisted(() =>
   vi.fn(async (input: { name: string; organizationId?: string | null }) => ({
@@ -103,11 +103,11 @@ const files = {
 const ORG = "00000000-0000-0000-0000-0000000000a1";
 
 describe("importBundle authorization + operator scoping (D2)", () => {
-  it("new_company threads organizationId into create and provisions the importer via ensureRealOperator", async () => {
-    createMock.mockClear();
-    ensureRealOperatorMock.mockClear();
-    ensureMembershipMock.mockClear();
+  // vi.clearAllMocks() clears call history only; the vi.hoisted async
+  // implementations survive, so the mocked services keep behaving between tests.
+  beforeEach(() => vi.clearAllMocks());
 
+  it("new_company threads organizationId into create and provisions the importer via ensureRealOperator", async () => {
     await svc.importBundle(
       {
         source: { type: "inline" as const, manifest: manifestWithAgent(), files },
@@ -130,9 +130,6 @@ describe("importBundle authorization + operator scoping (D2)", () => {
   });
 
   it("existing_company + include.agents does NOT promote the caller (no ensureRealOperator)", async () => {
-    ensureRealOperatorMock.mockClear();
-    agentCreateMock.mockClear();
-
     await svc.importBundle(
       {
         source: { type: "inline" as const, manifest: manifestWithAgent(), files },

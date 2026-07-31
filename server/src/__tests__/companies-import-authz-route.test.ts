@@ -7,7 +7,6 @@ import { setDeploymentMode } from "../config/deployment-mode.js";
 const importBundle = vi.hoisted(() => vi.fn());
 const canOrg = vi.hoisted(() => vi.fn());
 const getEffectiveRole = vi.hoisted(() => vi.fn());
-const canUser = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/index.js", () => ({
   companyService: () => ({
@@ -20,7 +19,7 @@ vi.mock("../services/index.js", () => ({
     remove: vi.fn(),
   }),
   companyPortabilityService: () => ({ importBundle }),
-  accessService: () => ({ canUser, ensureMembership: vi.fn(), ensureRealOperator: vi.fn() }),
+  accessService: () => ({ ensureMembership: vi.fn(), ensureRealOperator: vi.fn() }),
   logActivity: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("../services/organization-access.js", () => ({
