@@ -139,11 +139,11 @@ function connector(over: Partial<McpConnector> = {}): McpConnector {
   };
 }
 
-function renderPage() {
+function renderPage(initialPath = "/marketplace/connectors") {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={["/marketplace/connectors"]}>
+      <MemoryRouter initialEntries={[initialPath]}>
         <Routes>
           <Route element={<Outlet context={{ setSecondarySidebar: () => {} }} />}>
             <Route path="/marketplace/connectors" element={<MarketplaceConnectors />} />
@@ -472,5 +472,39 @@ describe("Marketplace → Connectors", () => {
 
     expect(await screen.findByText(/only founders can browse and install/i)).toBeInTheDocument();
     expect(catalogMock).not.toHaveBeenCalled();
+  });
+
+  describe("post-OAuth success notice (?authorized=)", () => {
+    it("shows a success notice naming the connector after the OAuth redirect", async () => {
+      catalogMock.mockResolvedValue({ entries: [shelfEntry()], stale: false });
+      renderPage("/marketplace/connectors?authorized=notion-hosted");
+
+      const notice = await screen.findByTestId("connector-oauth-success-notice");
+      expect(notice).toHaveTextContent(/authorized and active/i);
+      expect(notice).toHaveTextContent("notion-hosted");
+      expect(within(notice).getByRole("link", { name: /settings/i })).toHaveAttribute(
+        "href",
+        expect.stringContaining("settings?tab=connectors"),
+      );
+    });
+
+    it("prefers the connector's own display name once it's in the installed list", async () => {
+      catalogMock.mockResolvedValue({ entries: [shelfEntry()], stale: false });
+      listMock.mockResolvedValue([
+        connector({ serverName: "notion-hosted", displayName: "Notion (hosted)" }),
+      ]);
+      renderPage("/marketplace/connectors?authorized=notion-hosted");
+
+      const notice = await screen.findByTestId("connector-oauth-success-notice");
+      expect(within(notice).getByText("Notion (hosted)")).toBeInTheDocument();
+    });
+
+    it("does not show the notice when there is no ?authorized= param", async () => {
+      catalogMock.mockResolvedValue({ entries: [shelfEntry()], stale: false });
+      renderPage();
+
+      await screen.findByTestId("connector-shelf-card-notion");
+      expect(screen.queryByTestId("connector-oauth-success-notice")).not.toBeInTheDocument();
+    });
   });
 });

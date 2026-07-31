@@ -5,7 +5,7 @@ import { useCompany } from "@/context/CompanyContext";
 import { useTeamAccess } from "@/hooks/useTeamAccess";
 import { mcpConnectorsApi, type McpConnector } from "@/api/mcpConnectors";
 import { queryKeys } from "@/lib/queryKeys";
-import { Link } from "@/lib/router";
+import { Link, useSearchParams } from "@/lib/router";
 import { LobbyShellMobileMenuButton } from "@/components/LobbyShell";
 import { CompanyPicker } from "@/components/marketplace/install/CompanyPicker";
 import { ConnectorShelf } from "@/components/marketplace/connectors/ConnectorShelf";
@@ -64,6 +64,25 @@ export default function MarketplaceConnectors() {
   // A notice about company A must not survive a switch to company B.
   useEffect(() => setInstalled(null), [companyId]);
 
+  // The OAuth callback (server-side) redirects here as `?authorized=<serverName>`
+  // once the connector is bound and active — surface a success notice rather than
+  // silently dropping the founder back on the shelf with no feedback.
+  const [searchParams] = useSearchParams();
+  const [authorizedServerName, setAuthorizedServerName] = useState(
+    () => searchParams.get("authorized"),
+  );
+  // Same rule as the install notice above: a notice minted for company A must not
+  // survive an explicit switch to company B. Keyed to `pickedCompanyId` (only ever
+  // set by an explicit CompanyPicker choice) rather than `companyId`, which also
+  // moves on its own as `CompanyContext` resolves the default company async.
+  useEffect(() => {
+    if (pickedCompanyId !== null) setAuthorizedServerName(null);
+  }, [pickedCompanyId]);
+  const authorizedConnector = authorizedServerName
+    ? connectors?.find((c) => c.serverName === authorizedServerName)
+    : undefined;
+  const authorizedDisplayName = authorizedConnector?.displayName ?? authorizedServerName;
+
   const settingsLink = (
     <Link to="/settings?tab=connectors" className="text-brand hover:underline">
       Settings → Connectors
@@ -105,6 +124,16 @@ export default function MarketplaceConnectors() {
         </EmptyPanel>
       ) : (
         <>
+          {authorizedServerName && (
+            <div
+              data-testid="connector-oauth-success-notice"
+              className="mb-5 rounded-md border border-success/30 bg-success/[0.06] px-3 py-2.5 text-sm"
+            >
+              ✓ Connected. <strong>{authorizedDisplayName}</strong> is authorized and active.
+              Manage access — disable it, or assign it to specific agents — in {settingsLink}.
+            </div>
+          )}
+
           <div className="mb-5 relative">
             <Search className="size-4 absolute left-3 top-1/2 -translate-y-1/2 text-very-dim pointer-events-none" />
             <input
