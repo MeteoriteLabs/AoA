@@ -44,15 +44,24 @@ const CATALOG = [{ id: "notion-hosted", serverName: "notion", displayName: "Noti
 const mockFlowInsert = vi.fn();
 const mockFlowSelect = vi.fn().mockResolvedValue([]);          // select().from().where().limit()
 const mockFlowClaim = vi.fn().mockResolvedValue([{ id: "flow1" }]); // update().set().where().returning()
+const mockFlowUpdate = vi.fn();                                // captures every update().set(...) payload
 function fakeDb() {
   // `where()` is awaited for fire-and-forget status flips AND chained to `.returning()` for the
-  // atomic claim, so make it BOTH a thenable and expose `.returning()`.
-  const whereResult: any = { returning: () => mockFlowClaim(), then: (r: any) => Promise.resolve().then(r), catch: () => Promise.resolve() };
+  // atomic claim, so make it BOTH a thenable and expose `.returning()`. `set()` now returns this
+  // object directly (so the payload can be captured via mockFlowUpdate first), so it also exposes
+  // a self-returning `.where()` — the route always chains `.set(...).where(...)`, with or without
+  // a trailing `.returning()`.
+  const whereResult: any = {
+    where: () => whereResult,
+    returning: () => mockFlowClaim(),
+    then: (r: any) => Promise.resolve().then(r),
+    catch: () => Promise.resolve(),
+  };
   return {
     transaction: (fn: any) => fn({}),
     insert: () => ({ values: (v: any) => { mockFlowInsert(v); return Promise.resolve(); } }),
     select: () => ({ from: () => ({ where: () => ({ limit: () => mockFlowSelect() }) }) }),
-    update: () => ({ set: () => ({ where: () => whereResult }) }),
+    update: () => ({ set: (v: any) => { mockFlowUpdate(v); return whereResult; } }),
   } as never;
 }
 function makeApp(actor: unknown) {
@@ -63,7 +72,13 @@ function makeApp(actor: unknown) {
   app.use(errorHandler);
   return app;
 }
-beforeEach(() => { vi.clearAllMocks(); mockGetEffectiveRole.mockResolvedValue("founder"); mockFlowSelect.mockResolvedValue([]); mockFlowClaim.mockResolvedValue([{ id: "flow1" }]); });
+beforeEach(() => {
+  vi.clearAllMocks();
+  mockGetEffectiveRole.mockResolvedValue("founder");
+  mockFlowSelect.mockResolvedValue([]);
+  mockFlowClaim.mockResolvedValue([{ id: "flow1" }]);
+  mockFlowUpdate.mockReset();
+});
 
 it("founder start returns an authorizeUrl and inserts a flow row", async () => {
   mockConnectorSvc.getById.mockResolvedValue({ id: "conn1", companyId: COMPANY, serverName: "notion",
@@ -94,6 +109,14 @@ it.each(["team_lead", "team_member"])("%s is forbidden", async (role) => {
   mockConnectorSvc.getById.mockResolvedValue({ id: "conn1", companyId: COMPANY, serverName: "notion", transport: "http", url: "https://mcp.notion.com/mcp" });
   const res = await request(makeApp(founderActor)).post(`/api/companies/${COMPANY}/mcp-connectors/conn1/oauth/start`).send({});
   expect(res.status).toBe(403);
+});
+
+it("rejects oauth/start on a disabled connector (#3)", async () => {
+  mockConnectorSvc.getById.mockResolvedValue({ id: "conn1", companyId: COMPANY, serverName: "notion",
+    transport: "http", url: "https://mcp.notion.com/mcp", requiresSecret: true, secretRef: null, status: "disabled" });
+  const res = await request(makeApp(founderActor)).post(`/api/companies/${COMPANY}/mcp-connectors/conn1/oauth/start`).send({});
+  expect(res.status).toBe(400);
+  expect(mockFlowInsert).not.toHaveBeenCalled();
 });
 
 it("callback exchanges the code, stores the secret, binds the connector, redirects", async () => {
@@ -129,4 +152,43 @@ it("callback is single-use: a lost atomic claim -> 400, no exchange (Fix 6)", as
   const res = await request(makeApp(null)).get(`/api/mcp-connectors/oauth/callback?code=CODE&state=STATE`);
   expect(res.status).toBe(400);
   expect(mockOauth.exchangeAuthorizationCode).not.toHaveBeenCalled();
+});
+
+it("reverts the flow to failed and 400s when the exchange throws (Fix 6)", async () => {
+  mockOauth.verifyOAuthState.mockReturnValue({ connectorId: "conn1", companyId: "company-A", nonce: "n", exp: Date.now() + 60_000 });
+  mockFlowSelect.mockResolvedValue([{ id: "flow1", connectorId: "conn1", companyId: "company-A", status: "pending", pkceVerifier: "ver", clientId: "cid", redirectUri: "https://app/cb", tokenEndpoint: "https://as/token", resource: "https://mcp.notion.com/mcp", scopes: ["default"], expiresAt: new Date(Date.now() + 60_000) }]);
+  mockConnectorSvc.getById.mockResolvedValue({ id: "conn1", companyId: "company-A", serverName: "notion", status: "needs_credentials" });
+  mockOauth.exchangeAuthorizationCode.mockRejectedValue(new Error("invalid_grant"));
+  const res = await request(makeApp(null)).get(`/api/mcp-connectors/oauth/callback?code=CODE&state=STATE`);
+  expect(res.status).toBe(400);
+  expect(mockSecretSvc.create).not.toHaveBeenCalled();
+  expect(mockFlowUpdate.mock.calls.some(([v]) => v?.status === "failed")).toBe(true);
+});
+
+it("rejects an expired flow", async () => {
+  mockOauth.verifyOAuthState.mockReturnValue({ connectorId: "conn1", companyId: "company-A", nonce: "n", exp: Date.now() + 60_000 });
+  mockFlowSelect.mockResolvedValue([{ id: "flow1", connectorId: "conn1", companyId: "company-A", status: "pending", expiresAt: new Date(Date.now() - 1000) }]);
+  const res = await request(makeApp(null)).get(`/api/mcp-connectors/oauth/callback?code=CODE&state=STATE`);
+  expect(res.status).toBe(400);
+  expect(mockOauth.exchangeAuthorizationCode).not.toHaveBeenCalled();
+});
+
+it("rejects when the state's connectorId doesn't match the flow row", async () => {
+  mockOauth.verifyOAuthState.mockReturnValue({ connectorId: "OTHER", companyId: "company-A", nonce: "n", exp: Date.now() + 60_000 });
+  mockFlowSelect.mockResolvedValue([{ id: "flow1", connectorId: "conn1", companyId: "company-A", status: "pending", expiresAt: new Date(Date.now() + 60_000) }]);
+  const res = await request(makeApp(null)).get(`/api/mcp-connectors/oauth/callback?code=CODE&state=STATE`);
+  expect(res.status).toBe(400);
+});
+
+it("rotates the existing secret on re-authorization (Fix 12 path)", async () => {
+  mockOauth.verifyOAuthState.mockReturnValue({ connectorId: "conn1", companyId: "company-A", nonce: "n", exp: Date.now() + 60_000 });
+  mockFlowSelect.mockResolvedValue([{ id: "flow1", connectorId: "conn1", companyId: "company-A", status: "pending", pkceVerifier: "ver", clientId: "cid", redirectUri: "https://app/cb", tokenEndpoint: "https://as/token", resource: "https://mcp.notion.com/mcp", scopes: ["default"], expiresAt: new Date(Date.now() + 60_000) }]);
+  mockConnectorSvc.getById.mockResolvedValue({ id: "conn1", companyId: "company-A", serverName: "notion", status: "needs_credentials" });
+  mockOauth.exchangeAuthorizationCode.mockResolvedValue({ accessToken: "at", refreshToken: "rt", expiresIn: 3600 });
+  mockSecretSvc.getByName.mockResolvedValue({ id: "sec1", name: "mcp:notion" });   // secret already exists
+  mockConnectorSvc.updateIfStatus.mockResolvedValue({ id: "conn1", status: "active" });
+  const res = await request(makeApp(null)).get(`/api/mcp-connectors/oauth/callback?code=CODE&state=STATE`);
+  expect(res.status).toBe(302);
+  expect(mockSecretSvc.rotate).toHaveBeenCalled();
+  expect(mockSecretSvc.create).not.toHaveBeenCalled();
 });

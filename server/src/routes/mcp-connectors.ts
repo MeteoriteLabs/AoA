@@ -1200,6 +1200,11 @@ export function mcpConnectorRoutes(db: Db, opts: McpConnectorRouteOptions = {}) 
       if (connector.transport !== "http" || !connector.url) {
         throw badRequest("OAuth is only available for HTTP connectors");
       }
+      // A disabled connector must not be re-authorized back to life through this
+      // side door — re-enabling flows through create/approve, never oauth/start.
+      if (connector.status === "disabled") {
+        throw badRequest("This connector is disabled");
+      }
       // Fix 11: only OAuth connectors may run this flow — otherwise the callback would rotate
       // (overwrite) a static-bearer connector's secret. Resolve the catalog entry by serverName.
       // NB: the in-scope service is `connectorCatalog` (mcp-connectors.ts:477) and its `load`
@@ -1213,11 +1218,15 @@ export function mcpConnectorRoutes(db: Db, opts: McpConnectorRouteOptions = {}) 
       const actor = getActorInfo(req);
       const startedByUserId = OAUTH_UUID_RE.test(actor.actorId) ? actor.actorId : null; // Fix 3: no board sentinel into the id column
 
+      // Fix 4: hoisted ahead of the discovery network call so a misconfigured
+      // deployment (no AOA_AUTH_PUBLIC_BASE_URL outside local_trusted) fails
+      // closed before any outbound request is made, not after.
+      const redirectUri = oauthRedirectUri(req);
+
       const discovered = await discoverOAuthServer(connector.url);
       if (!discovered.registrationEndpoint) {
         throw badRequest("This connector's authorization server does not support dynamic client registration");
       }
-      const redirectUri = oauthRedirectUri(req);
 
       // Fix 12: on re-authorize the connector already has a stored bundle carrying a DCR clientId —
       // reuse it instead of orphaning a fresh client on the provider. First-auth registers a client.
@@ -1289,7 +1298,15 @@ export function mcpConnectorRoutes(db: Db, opts: McpConnectorRouteOptions = {}) 
     if (claimed.length === 0) { res.status(400).send("OAuth flow already used"); return; }
 
     const connector = await mcpConnectorService(db).getById(flow.connectorId);
-    if (!connector || connector.companyId !== flow.companyId) { res.status(400).send("Connector not found"); return; }
+    if (!connector || connector.companyId !== flow.companyId) {
+      // The flow was already claimed above — a connector-not-found reject must
+      // still revert it to failed, or the row is stuck "claimed" forever (not
+      // replayable, but not honestly reporting what happened either).
+      await db.update(mcpConnectorOauthFlows).set({ status: "failed", updatedAt: new Date() })
+        .where(eq(mcpConnectorOauthFlows.id, flow.id)).catch(() => {});
+      res.status(400).send("Connector not found");
+      return;
+    }
 
     try {
       const token = await exchangeAuthorizationCode({
@@ -1339,8 +1356,7 @@ export function mcpConnectorRoutes(db: Db, opts: McpConnectorRouteOptions = {}) 
       return;
     }
 
-    const base = resolveInviteBaseUrl(req) || "";
-    res.redirect(302, `${base}/marketplace/connectors?authorized=${encodeURIComponent(connector.serverName)}`);
+    res.redirect(302, `/marketplace/connectors?authorized=${encodeURIComponent(connector.serverName)}`);
   });
 
   return router;
