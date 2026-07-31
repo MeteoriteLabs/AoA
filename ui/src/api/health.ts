@@ -4,7 +4,7 @@ import { api } from "./client";
 export type HealthStatus = {
   status: "ok";
   revision?: string | null;
-  deploymentMode?: "local_trusted" | "authenticated";
+  deploymentMode?: "local_trusted" | "authenticated" | "cloud_auth";
   deploymentExposure?: "private" | "public";
   authReady?: boolean;
   bootstrapStatus?: "ready" | "bootstrap_pending";

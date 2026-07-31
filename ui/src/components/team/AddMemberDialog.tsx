@@ -33,6 +33,12 @@ interface AddMemberDialogProps {
   departments: Project[];
   members: TeamMemberSummary[];
   isSystemAdmin: boolean;
+  /**
+   * cloud_auth (Fix 1): humans are admitted only via invite, which writes both
+   * org + company membership. Hide the direct-add mode so the surface can only
+   * mint invites. Self-hosted leaves this false and keeps both modes.
+   */
+  inviteOnly?: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
@@ -42,6 +48,7 @@ export function AddMemberDialog({
   departments,
   members,
   isSystemAdmin,
+  inviteOnly = false,
   open,
   onOpenChange,
 }: AddMemberDialogProps) {
@@ -180,7 +187,9 @@ export function AddMemberDialog({
         <DialogHeader>
           <DialogTitle>Invite teammate</DialogTitle>
           <DialogDescription>
-            Invite by email, or add someone manually.
+            {inviteOnly
+              ? "Invite a teammate by email."
+              : "Invite by email, or add someone manually."}
           </DialogDescription>
         </DialogHeader>
 
@@ -202,7 +211,10 @@ export function AddMemberDialog({
             </div>
           ) : (
           <>
-          {/* Mode toggle — invite is primary, manual add is demoted. */}
+          {/* Mode toggle — invite is primary, manual add is demoted. Hidden
+              entirely in cloud (inviteOnly): direct-add is server-rejected there,
+              so `mode` stays "invite" and can never switch to "direct". */}
+          {!inviteOnly && (
           <div className="space-y-2">
             <button
               type="button"
@@ -239,6 +251,7 @@ export function AddMemberDialog({
               </span>
             </button>
           </div>
+          )}
 
           {mode === "direct" && (
             <div className="space-y-1.5">
