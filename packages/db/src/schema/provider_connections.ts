@@ -80,8 +80,12 @@ export const providerConnections = pgTable(
     ownerIdx: index("provider_connections_owner_idx").on(table.ownerUserId),
     // Identity — mirrors provider_credentials_identity_uq. nullsNotDistinct so a
     // second company-scoped api_key (owner NULL / target NULL) cannot duplicate.
+    // organization_id LEADS the key (0195): org-level connections carry company_id
+    // NULL, so without it two tenants' org-level api_keys collapse to one row per
+    // provider per install under NULLS NOT DISTINCT.
     identityUq: unique("provider_connections_identity_uq")
       .on(
+        table.organizationId,
         table.companyId,
         table.provider,
         table.authMethod,
@@ -140,9 +144,11 @@ export const providerAssignments = pgTable(
     ),
     connectionIdx: index("provider_assignments_connection_idx").on(table.connectionId),
     // nullsNotDistinct REQUIRED so a second company_default (scope_id NULL) cannot
-    // be minted (same reason as provider_readiness_scope_uq, PG15+).
+    // be minted (same reason as provider_readiness_scope_uq, PG15+). organization_id
+    // LEADS the key (0195): org_default rows carry company_id NULL, so without it
+    // two tenants' org_default assignments collapse to one row per provider.
     scopeUq: unique("provider_assignments_scope_uq")
-      .on(table.companyId, table.provider, table.scopeType, table.scopeId)
+      .on(table.organizationId, table.companyId, table.provider, table.scopeType, table.scopeId)
       .nullsNotDistinct(),
     scopeShape: check(
       "provider_assignments_scope_shape_check",
