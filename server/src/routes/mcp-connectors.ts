@@ -359,16 +359,6 @@ export const installFromCatalogSchema = z
   .strict();
 
 /**
- * The single refusal message for an OAuth-only catalog entry, shared by the shelf
- * projection (as `unavailableReason`) and the install route (as its 400 body), so
- * the reason the founder reads on the shelf is the reason the install would give.
- * OAuth-brokered installs are Plan 4; until the broker ships these entries are
- * shown-but-not-installable.
- */
-const OAUTH_UNAVAILABLE_REASON =
-  "This connector uses OAuth sign-in, which isn't available yet (coming with the OAuth broker).";
-
-/**
  * Only an UNVERIFIED `stdio` entry needs command-bound consent.
  *
  * `stdio` because that is the transport that spawns a process on the AoA host;
@@ -450,7 +440,15 @@ export function entryToCreateInput(
     headerTemplate,
     envTemplate,
     secretRef: null,
-    requiresSecret: entry.requiresSecret,
+    // OAuth entries ALWAYS need a credential (the broker-issued access token),
+    // even when the catalog's independent `requiresSecret` flag is unset — the
+    // two booleans both default `false` and are not mutually implied. Without
+    // this override a `requiresOAuth` entry with `requiresSecret:false` would
+    // resolve `status: "active"` with no secret bound, and buildConnectorSpecs
+    // only sets `authTokenEnvVar` when a secret value is present — so the
+    // connector would go live and authenticate as no-one (silent 401 against the
+    // provider). Do not rely on the producer publishing `requiresSecret:true`.
+    requiresSecret: entry.requiresOAuth || entry.requiresSecret,
     source: "catalog",
     // Persist the entry's trust tier so the FU-19 delivery-time D7 re-check can
     // honor the `catalog + verified` exemption after a mode conversion, exactly
@@ -562,15 +560,23 @@ export function mcpConnectorRoutes(db: Db, opts: McpConnectorRouteOptions = {}) 
       // actually happened.
       let installable = true;
       let unavailableReason: string | undefined;
-      // OAuth-only entries are unavailable REGARDLESS of transport/consent, so this
-      // gate runs FIRST — before D7 and before any consent-token minting. An
-      // OAuth-brokered install is Plan 4; until the broker lands, such an entry
-      // can only be SHOWN, never installed. Skipping the D7 branch here also keeps
-      // the reason honest: the founder reads "needs OAuth", not a transport refusal
-      // that isn't the real blocker.
+      let oauthRequired = false;
+      // OAuth-only entries are installable — the broker (Plan 4) handles the
+      // authorize step post-install — so this branch just flags the entry and
+      // still runs the D7 transport gate (same call, same arguments the install
+      // handler will pass). The try/catch mirrors the non-OAuth branch below so a
+      // D7 refusal degrades THIS card (installable:false, oauthRequired reset to
+      // false) instead of throwing out of `entries.map` and 500-ing the whole
+      // shelf.
       if (entry.requiresOAuth) {
-        installable = false;
-        unavailableReason = OAUTH_UNAVAILABLE_REASON;
+        oauthRequired = true;
+        try {
+          assertTransportAllowed(entry.transport, deploymentMode, "catalog", entry.trust?.tier);
+        } catch (err) {
+          oauthRequired = false;
+          installable = false;
+          unavailableReason = err instanceof Error ? err.message : "Not allowed";
+        }
       } else {
         try {
           assertTransportAllowed(entry.transport, deploymentMode, "catalog", entry.trust?.tier);
@@ -626,6 +632,7 @@ export function mcpConnectorRoutes(db: Db, opts: McpConnectorRouteOptions = {}) 
         ...entry,
         installable,
         consentRequired,
+        oauthRequired,
         ...(unavailableReason ? { unavailableReason } : {}),
       };
 
@@ -687,16 +694,6 @@ export function mcpConnectorRoutes(db: Db, opts: McpConnectorRouteOptions = {}) 
       if (!entry) {
         res.status(404).json({ error: "Connector not found in catalog" });
         return;
-      }
-
-      // (0) OAuth — DEFENSE IN DEPTH. The shelf already marks a `requiresOAuth`
-      // entry `installable: false`, but a direct API call bypasses the UI, so this
-      // must never reach `createConnector`. It runs first, before D7 and consent,
-      // because OAuth is unsupported regardless of transport or deployment mode —
-      // there is no token model that makes an OAuth-only server work headlessly
-      // today (Plan 4 broker).
-      if (entry.requiresOAuth) {
-        throw badRequest(OAUTH_UNAVAILABLE_REASON);
       }
 
       const deploymentMode = loadConfig().deploymentMode;

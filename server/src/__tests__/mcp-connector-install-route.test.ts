@@ -742,31 +742,54 @@ describe("install route — D7 authorization is independent of consent", () => {
 });
 
 // ---------------------------------------------------------------------------
-// requiresOAuth — shown-but-not-installable until the Plan 4 OAuth broker
+// requiresOAuth — Task 10: installable to needs_credentials, D7 still runs
 // ---------------------------------------------------------------------------
 
-describe("install route — an OAuth-only entry is refused before any write", () => {
-  it("installing an OAuth entry -> 400 naming OAuth, no connector created", async () => {
+describe("install route — an OAuth-only entry installs to needs_credentials", () => {
+  it("installs an OAuth entry to needs_credentials (not a 400)", async () => {
     deploymentMode = "local_trusted";
     const res = await install(makeApp(founderActor, [oauthHttp]), { entryId: "notion-hosted" });
-    expect(res.status).toBe(400);
-    expect(mockConnectorSvc.create).not.toHaveBeenCalled();
-    expect(JSON.stringify(res.body)).toMatch(/OAuth/i);
+    expect(res.status).toBe(201);
+    expect(mockConnectorSvc.create).toHaveBeenCalledWith(
+      COMPANY,
+      expect.objectContaining({
+        requiresSecret: true,
+        secretRef: null,
+        status: "needs_credentials",
+        transport: "http",
+      }),
+    );
   });
 
-  it("the OAuth refusal runs BEFORE D7 — the transport gate is never consulted", async () => {
-    // OAuth is unsupported regardless of transport/mode, so the OAuth branch must
-    // short-circuit ahead of D7. (This entry is http+verified, which D7 would
-    // otherwise wave through — so a create would happen if the OAuth guard were
-    // absent, which is exactly what the ablation proves.)
+  // OAuth is no longer refused outright, but it must not bypass authorization:
+  // D7 still runs for an OAuth entry exactly like any other catalog install.
+  it("D7 still runs for an OAuth entry (it is not exempted from the transport gate)", async () => {
+    deploymentMode = "local_trusted";
+    const res = await install(makeApp(founderActor, [oauthHttp]), { entryId: "notion-hosted" });
+    expect(res.status).toBe(201);
+    expect(assertTransportAllowed).toHaveBeenCalledWith(
+      "http",
+      "local_trusted",
+      "catalog",
+      "verified",
+    );
+  });
+
+  it("authenticated mode: an OAuth entry with requiresSecret goes pending_approval, same governance as any other credentialed install", async () => {
     deploymentMode = "authenticated";
     const res = await install(makeApp(founderActor, [oauthHttp]), { entryId: "notion-hosted" });
-    expect(res.status).toBe(400);
-    expect(assertTransportAllowed).not.toHaveBeenCalled();
-    expect(mockConnectorSvc.create).not.toHaveBeenCalled();
+    expect(res.status).toBe(201);
+    expect(mockConnectorSvc.create).toHaveBeenCalledWith(
+      COMPANY,
+      expect.objectContaining({ status: "pending_approval", requiresSecret: true }),
+    );
+    expect(mockApprovalSvc.create).toHaveBeenCalledWith(
+      COMPANY,
+      expect.objectContaining({ type: "install_mcp_connector" }),
+    );
   });
 
-  it("a normal verified entry still installs (the guard is scoped to requiresOAuth)", async () => {
+  it("a normal verified entry beside it still installs (unaffected)", async () => {
     deploymentMode = "authenticated";
     const res = await install(makeApp(founderActor, [oauthHttp, verifiedHttp]), {
       entryId: "notion",
@@ -776,29 +799,60 @@ describe("install route — an OAuth-only entry is refused before any write", ()
   });
 });
 
-describe("catalog shelf route — an OAuth-only entry is shown, not installable", () => {
-  it("projects installable:false + an OAuth reason + no consent token", async () => {
+describe("catalog shelf route — an OAuth-only entry is shown and installable, with oauthRequired", () => {
+  it("projects installable:true + oauthRequired:true + no unavailableReason + no consent token", async () => {
     deploymentMode = "local_trusted";
     const res = await getCatalog(makeApp(founderActor, [oauthHttp]));
     const oauth = res.body.entries.find((e: { id: string }) => e.id === "notion-hosted") as {
       installable: boolean;
+      oauthRequired: boolean;
       unavailableReason?: string;
       consentToken?: string;
     };
-    expect(oauth.installable).toBe(false);
-    expect(oauth.unavailableReason).toMatch(/OAuth/i);
+    expect(oauth.installable).toBe(true);
+    expect(oauth.oauthRequired).toBe(true);
+    expect(oauth.unavailableReason).toBeUndefined();
     expect(oauth.consentToken).toBeUndefined();
   });
 
-  it("a normal verified entry beside it is unchanged (installable, no reason)", async () => {
+  it("a normal verified entry beside it is unchanged (installable, oauthRequired:false)", async () => {
     deploymentMode = "authenticated";
     const res = await getCatalog(makeApp(founderActor, [oauthHttp, verifiedHttp]));
     const byId = Object.fromEntries(
       res.body.entries.map((e: { id: string }) => [e.id, e]),
-    ) as Record<string, { installable: boolean; unavailableReason?: string }>;
-    expect(byId["notion-hosted"].installable).toBe(false);
+    ) as Record<string, { installable: boolean; oauthRequired?: boolean; unavailableReason?: string }>;
+    expect(byId["notion-hosted"].installable).toBe(true);
+    expect(byId["notion-hosted"].oauthRequired).toBe(true);
     expect(byId.notion.installable).toBe(true);
+    expect(byId.notion.oauthRequired).toBe(false);
     expect(byId.notion).not.toHaveProperty("unavailableReason");
+  });
+
+  // The OAuth branch still runs the D7 gate; a hypothetical unverified stdio
+  // OAuth entry must degrade THAT card (installable:false, oauthRequired reset
+  // to false, a D7 reason) rather than throwing out of entries.map and 500-ing
+  // the whole shelf.
+  it("a D7-refused OAuth entry (unverified stdio) degrades to installable:false, oauthRequired:false, with the D7 reason", async () => {
+    deploymentMode = "authenticated";
+    const oauthStdio = entry({
+      id: "oauth-stdio",
+      displayName: "Hypothetical OAuth stdio",
+      serverName: "oauth-stdio",
+      transport: "stdio",
+      command: "npx",
+      args: ["-y", "oauth-stdio-tool@1.0.0"],
+      requiresOAuth: true,
+      trust: { tier: "community" },
+    });
+    const res = await getCatalog(makeApp(founderActor, [oauthStdio]));
+    const projected = res.body.entries.find((e: { id: string }) => e.id === "oauth-stdio") as {
+      installable: boolean;
+      oauthRequired: boolean;
+      unavailableReason?: string;
+    };
+    expect(projected.installable).toBe(false);
+    expect(projected.oauthRequired).toBe(false);
+    expect(projected.unavailableReason).toMatch(D7_REFUSAL);
   });
 });
 
