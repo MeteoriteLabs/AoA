@@ -134,6 +134,50 @@ export function MCPConnectorsSection() {
     enabled: !!companyId,
   });
 
+  // Does any registered connector actually need this? `needs_credentials` is the
+  // only state where "OAuth or plain secret?" is ambiguous from the connector row
+  // alone — company_mcp_connectors has no persisted OAuth flag (only the catalog
+  // entry knows `requiresOAuth`), so telling "Re-authorize" (Task 16) apart from
+  // "Add credential" requires cross-referencing the catalog.
+  const hasNeedsCredentialsConnector = (connectors ?? []).some(
+    (c) => c.status === "needs_credentials",
+  );
+
+  /**
+   * OAuth-detection approach (Task 16, explicit choice): cross-reference the
+   * catalog — the plan's PREFERRED option over the sanctioned fallback (gate
+   * Re-authorize on `requiresSecret && !secretRef` and always show it beside Add
+   * credential, OAuth or not). The fallback was rejected here because
+   * `MCPConnectorsSection.test.tsx` already pins "never fetches the connector
+   * catalog" as a deliberate regression guard against the shelf-in-Settings
+   * anti-pattern (browsing/installing moved to Marketplace → Connectors), and
+   * because the fallback would render a "Re-authorize" button on every
+   * needs_credentials connector — including plain BYO ones — that always 400s
+   * server-side ("This connector does not use OAuth sign-in").
+   *
+   * The catalog fetch is therefore scoped to `enabled: isFounder &&
+   * hasNeedsCredentialsConnector`: it never fires for the common case (no
+   * needs_credentials row present — the exact scenario the pinned test
+   * exercises), and only fires when there is actually a row whose affordance
+   * needs disambiguating. This is a read-only cross-reference for a boolean
+   * derivation — no shelf, no install affordance is rendered from it.
+   */
+  const { data: catalogShelf } = useQuery({
+    queryKey: companyId
+      ? queryKeys.mcpConnectors.catalog(companyId)
+      : ["mcp-connectors", "none", "catalog"],
+    queryFn: () => mcpConnectorsApi.catalog(companyId!),
+    enabled: !!companyId && isFounder && hasNeedsCredentialsConnector,
+  });
+
+  const oauthServerNames = useMemo(
+    () =>
+      new Set(
+        (catalogShelf?.entries ?? []).filter((e) => e.oauthRequired).map((e) => e.serverName),
+      ),
+    [catalogShelf],
+  );
+
   const { data: agents } = useQuery({
     queryKey: companyId ? queryKeys.agents.list(companyId) : ["agents", "none"],
     queryFn: () => agentsApi.list(companyId!),
@@ -332,6 +376,7 @@ export function MCPConnectorsSection() {
                         connector={c}
                         agents={agents ?? []}
                         isFounder={isFounder}
+                        isOAuth={oauthServerNames.has(c.serverName)}
                         onDisable={() => disableMutation.mutate(c.id)}
                         onRemove={() => removeMutation.mutate(c.id)}
                         disableBusy={disableMutation.isPending}
@@ -509,6 +554,10 @@ interface ConnectorRowProps {
   connector: McpConnector;
   agents: { id: string; name: string; status?: string }[];
   isFounder: boolean;
+  /** True when the catalog cross-reference found this connector's serverName
+   *  under an `oauthRequired` entry — see the derivation + rationale comment on
+   *  `oauthServerNames` above. Drives Re-authorize vs Add credential below. */
+  isOAuth: boolean;
   onDisable: () => void;
   onRemove: () => void;
   disableBusy: boolean;
@@ -520,6 +569,7 @@ function ConnectorRow({
   connector,
   agents,
   isFounder,
+  isOAuth,
   onDisable,
   onRemove,
   disableBusy,
@@ -531,6 +581,7 @@ function ConnectorRow({
   const [showCredential, setShowCredential] = useState(false);
   const [credentialRef, setCredentialRef] = useState("");
   const [credentialError, setCredentialError] = useState<string | null>(null);
+  const [reauthorizeError, setReauthorizeError] = useState<string | null>(null);
 
   // "Installed but unusable": the catalog entry declared a credential and none
   // is bound. This is the state every `requiresSecret` catalog install lands in,
@@ -553,6 +604,22 @@ function ConnectorRow({
     },
     onError: (err) =>
       setCredentialError(err instanceof ApiError ? err.message : "Failed to bind credential"),
+  });
+
+  // Re-authorize (Task 16): a needs_credentials connector whose catalog entry is
+  // OAuth-type never got (or lost) its token bundle — the fix is redoing the
+  // sign-in round trip, not pasting a secretRef, so this replaces "Add
+  // credential" for that connector rather than sitting beside it.
+  const oauthStartMutation = useMutation({
+    mutationFn: () => mcpConnectorsApi.oauthStart(companyId, connector.id),
+    onSuccess: ({ authorizeUrl }) => {
+      setReauthorizeError(null);
+      window.location.assign(authorizeUrl);
+    },
+    onError: (err) =>
+      setReauthorizeError(
+        err instanceof ApiError ? err.message : "Failed to start re-authorization",
+      ),
   });
   // Seeded from the connector's CURRENT enabled-agent set (A34). PUT …/agents
   // REPLACES the whole set, so starting empty would silently wipe agents the
@@ -637,7 +704,7 @@ function ConnectorRow({
         </div>
         {isFounder && (
           <div className="flex items-center gap-1 shrink-0">
-            {needsCredential && (
+            {needsCredential && !isOAuth && (
               <Button size="sm" onClick={() => setShowCredential((v) => !v)}>
                 Add credential
               </Button>
@@ -673,7 +740,33 @@ function ConnectorRow({
           deployment-mode block a non-founder still needs to understand. */}
       <DeliverabilityWarning connector={connector} />
 
-      {isFounder && needsCredential && !showCredential && (
+      {/* Re-authorize (Task 16) — the OAuth counterpart of the credential
+          affordance below. A needs_credentials OAuth connector never got (or
+          lost) its token bundle; the fix is re-running the sign-in round trip,
+          so this replaces "Add credential" for that connector instead of
+          sitting beside it. */}
+      {isFounder && needsCredential && isOAuth && (
+        <div
+          data-testid={`connector-reauthorize-${connector.id}`}
+          className="rounded-md border border-warning/30 bg-warning/5 px-3 py-2 flex items-center justify-between gap-3"
+        >
+          <div className="text-xs text-muted-foreground">
+            This connector uses OAuth sign-in and needs authorization before agents can use it.
+          </div>
+          <Button
+            size="sm"
+            onClick={() => oauthStartMutation.mutate()}
+            disabled={oauthStartMutation.isPending}
+          >
+            {oauthStartMutation.isPending ? "Starting..." : "Re-authorize"}
+          </Button>
+        </div>
+      )}
+      {isFounder && reauthorizeError && (
+        <div className="text-sm text-destructive">{reauthorizeError}</div>
+      )}
+
+      {isFounder && needsCredential && !isOAuth && !showCredential && (
         <div className="text-xs text-muted-foreground">
           This connector needs a credential before agents can use it.
         </div>

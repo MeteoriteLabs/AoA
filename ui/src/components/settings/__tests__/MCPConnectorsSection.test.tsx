@@ -33,6 +33,7 @@ const listMock = vi.fn();
 const catalogMock = vi.fn();
 const installMock = vi.fn();
 const bindCredentialsMock = vi.fn();
+const oauthStartMock = vi.fn();
 
 vi.mock("@/api/mcpConnectors", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/api/mcpConnectors")>();
@@ -43,6 +44,7 @@ vi.mock("@/api/mcpConnectors", async (importOriginal) => {
       catalog: (...a: unknown[]) => catalogMock(...a),
       install: (...a: unknown[]) => installMock(...a),
       bindCredentials: (...a: unknown[]) => bindCredentialsMock(...a),
+      oauthStart: (...a: unknown[]) => oauthStartMock(...a),
       create: vi.fn(),
       update: vi.fn(),
       remove: vi.fn(),
@@ -116,6 +118,11 @@ function renderSection() {
 beforeEach(() => {
   vi.clearAllMocks();
   listMock.mockResolvedValue([]);
+  // Default catalog response for the conditional cross-reference query (Task 16)
+  // — only actually FETCHED when a needs_credentials row is present (see
+  // "never fetches the connector catalog" below), but a defined default keeps
+  // React Query quiet on tests that do trigger it without asserting on it.
+  catalogMock.mockResolvedValue({ entries: [], stale: false });
   bindCredentialsMock.mockResolvedValue(connector({ secretRef: "mcp:notion", status: "active" }));
   healthMock.mockResolvedValue({ status: "ok", deploymentMode: "local_trusted" });
 });
@@ -171,6 +178,106 @@ describe("needs_credentials follow-through", () => {
     await waitFor(() =>
       expect(bindCredentialsMock).toHaveBeenCalledWith(COMPANY_ID, "conn-1", "mcp:notion"),
     );
+  });
+});
+
+/* ── 6. Re-authorize (Task 16) ──────────────────────────────────────────── */
+
+describe("re-authorize (needs_credentials OAuth connector)", () => {
+  const originalLocation = window.location;
+
+  beforeEach(() => {
+    // Same convention as pages/__tests__/Auth.test.tsx: replace window.location
+    // wholesale so `.assign` is a spy, then restore it after each test.
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      writable: true,
+      value: { href: "http://localhost/settings?tab=connectors", assign: vi.fn() },
+    });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      writable: true,
+      value: originalLocation,
+    });
+  });
+
+  it("shows Re-authorize (not Add credential) for a needs_credentials connector whose catalog entry is OAuth, and navigates on click", async () => {
+    listMock.mockResolvedValue([
+      connector({
+        status: "needs_credentials",
+        requiresSecret: true,
+        secretRef: null,
+        serverName: "notion-hosted",
+        displayName: "Notion (hosted)",
+      }),
+    ]);
+    catalogMock.mockResolvedValue({
+      entries: [
+        {
+          id: "notion-hosted",
+          serverName: "notion-hosted",
+          displayName: "Notion (hosted)",
+          transport: "http",
+          url: "https://mcp.notion.com/mcp",
+          requiresOAuth: true,
+          oauthRequired: true,
+          installable: true,
+          consentRequired: false,
+        },
+      ],
+      stale: false,
+    });
+    oauthStartMock.mockResolvedValue({ authorizeUrl: "https://mcp.notion.com/authorize?x=1" });
+    renderSection();
+
+    const row = await screen.findByTestId("connector-row-conn-1");
+    // The catalog cross-reference must actually run for this connector.
+    await waitFor(() => expect(catalogMock).toHaveBeenCalledWith(COMPANY_ID));
+
+    const reauthBtn = await within(row).findByRole("button", { name: /re-authorize/i });
+    expect(within(row).queryByRole("button", { name: /add credential/i })).not.toBeInTheDocument();
+
+    fireEvent.click(reauthBtn);
+
+    await waitFor(() => expect(oauthStartMock).toHaveBeenCalledWith(COMPANY_ID, "conn-1"));
+    await waitFor(() =>
+      expect(window.location.assign).toHaveBeenCalledWith(
+        "https://mcp.notion.com/authorize?x=1",
+      ),
+    );
+  });
+
+  it("keeps Add credential (not Re-authorize) for a needs_credentials connector whose catalog entry is not OAuth", async () => {
+    listMock.mockResolvedValue([
+      connector({
+        status: "needs_credentials",
+        requiresSecret: true,
+        secretRef: null,
+        headerTemplate: { Authorization: "" },
+      }),
+    ]);
+    catalogMock.mockResolvedValue({
+      entries: [
+        {
+          id: "notion",
+          serverName: "notion",
+          displayName: "Notion",
+          transport: "http",
+          url: "https://mcp.notion.com/sse",
+          installable: true,
+          consentRequired: false,
+        },
+      ],
+      stale: false,
+    });
+    renderSection();
+
+    const row = await screen.findByTestId("connector-row-conn-1");
+    expect(await within(row).findByRole("button", { name: /add credential/i })).toBeInTheDocument();
+    expect(within(row).queryByRole("button", { name: /re-authorize/i })).not.toBeInTheDocument();
   });
 });
 
