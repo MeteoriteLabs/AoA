@@ -75,6 +75,12 @@ export async function discoverOAuthServer(
   connectorUrl: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<DiscoveredOAuth> {
+  // Fix 4 (final-review follow-up): the AS base and every endpoint DISCOVERED
+  // from it were already https-asserted below, but the initial PRM fetch derived
+  // straight from `connectorUrl` was not — an http connector URL would still
+  // send the well-known PRM request in cleartext before this function ever
+  // reaches an https check. Assert first, before any network call.
+  assertHttps(connectorUrl, "connector URL");
   const u = new URL(connectorUrl);
   // RFC 9728: protected-resource-metadata is served with the resource path suffixed.
   const prmUrl = `${u.origin}/.well-known/oauth-protected-resource${u.pathname}`;

@@ -103,6 +103,16 @@ describe("discoverOAuthServer", () => {
     });
     await expect(discoverOAuthServer("https://mcp.notion.com/mcp", f)).rejects.toThrow(/https/i);
   });
+
+  it("rejects a non-https connector URL before making any request (Fix 4)", async () => {
+    // The connector URL itself was never https-asserted — only the AS base and
+    // the endpoints discovered FROM it. A stub that throws on any call proves
+    // the rejection happens before the PRM fetch, not just eventually.
+    const noFetch: typeof fetch = (async () => {
+      throw new Error("must not fetch — connector URL should be rejected first");
+    }) as typeof fetch;
+    await expect(discoverOAuthServer("http://mcp.notion.com/mcp", noFetch)).rejects.toThrow(/https/i);
+  });
 });
 
 describe("registerOAuthClient", () => {

@@ -1209,9 +1209,16 @@ export function mcpConnectorRoutes(db: Db, opts: McpConnectorRouteOptions = {}) 
       // (overwrite) a static-bearer connector's secret. Resolve the catalog entry by serverName.
       // NB: the in-scope service is `connectorCatalog` (mcp-connectors.ts:477) and its `load`
       // takes the current time (`load(nowMs: number)`) — matches the install POST at :685.
+      //
+      // Final-review Fix 2: matching the catalog entry by serverName ALONE is not enough — a
+      // BYO connector (source:"byo") can freely pick any serverName, including one that collides
+      // with a catalog OAuth entry (e.g. "notion"). Without also requiring `connector.source ===
+      // "catalog"`, that BYO row would pass this gate and have its bound secret silently rotated
+      // by the callback even though it was never installed through the catalog flow. Both
+      // conditions must hold.
       const { entries: catalogEntries } = await connectorCatalog.load(Date.now());
       const entry = catalogEntries.find((e) => e.serverName === connector.serverName);
-      if (!entry?.requiresOAuth) {
+      if (connector.source !== "catalog" || !entry?.requiresOAuth) {
         throw badRequest("This connector does not use OAuth sign-in");
       }
 
@@ -1329,7 +1336,16 @@ export function mcpConnectorRoutes(db: Db, opts: McpConnectorRouteOptions = {}) 
           value: encodeOAuthBundle(bundle),
         }, { userId: flow.startedByUserId ?? null });
       }
-      await mcpConnectorService(db).updateIfStatus(connector.id, connector.status, {
+      // Final-review Fix 3: capture whether the guarded bind actually matched a
+      // row. `updateIfStatus` is guarded on the `connector.status` snapshot read
+      // above — if a concurrent write (board approval/rejection, disable) moved
+      // the row between that read and here, this matches 0 rows. The secret was
+      // already created/rotated at that point, but it was never bound to the
+      // connector — completing the flow and logging an "authorized" activity
+      // regardless would be a lying audit trail (the log says success, the
+      // connector row disagrees). Revert the flow to failed and 409 instead of
+      // falling through to "completed" + success logging + redirect.
+      const bound = await mcpConnectorService(db).updateIfStatus(connector.id, connector.status, {
         secretRef: secretName,
         status: resolveConnectorStatus({
           deploymentMode: loadConfig().deploymentMode,
@@ -1337,6 +1353,14 @@ export function mcpConnectorRoutes(db: Db, opts: McpConnectorRouteOptions = {}) 
           requiresSecret: true, hasSecret: true,
         }),
       });
+      if (!bound) {
+        await db.update(mcpConnectorOauthFlows)
+          .set({ status: "failed", updatedAt: new Date() })
+          .where(eq(mcpConnectorOauthFlows.id, flow.id))
+          .catch(() => {});
+        res.status(409).send("Connector changed during authorization; please retry");
+        return;
+      }
       await db.update(mcpConnectorOauthFlows)
         .set({ status: "completed", completedAt: new Date(), updatedAt: new Date() })
         .where(eq(mcpConnectorOauthFlows.id, flow.id));

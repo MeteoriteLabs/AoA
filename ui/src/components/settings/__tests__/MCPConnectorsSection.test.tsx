@@ -250,6 +250,52 @@ describe("re-authorize (needs_credentials OAuth connector)", () => {
     );
   });
 
+  it("shows Re-authorize for a needs_credentials OAuth connector even when secretRef is still bound (post-refresh-failure shape)", async () => {
+    // The runtime refresh-failure path sets status: "needs_credentials" while
+    // KEEPING secretRef bound (JIT token refresh failed, but the old — now
+    // stale/expired — secretRef is left in place). The old render condition
+    // gated Re-authorize on `needsCredential && isOAuth`, where
+    // `needsCredential = requiresSecret && !secretRef` — with secretRef still
+    // set, needsCredential is false, so the button never rendered in exactly the
+    // refresh-death case it exists for. The fix gates on `status ===
+    // "needs_credentials"` instead, regardless of secretRef.
+    listMock.mockResolvedValue([
+      connector({
+        status: "needs_credentials",
+        requiresSecret: true,
+        secretRef: "mcp:notion",
+        serverName: "notion-hosted",
+        displayName: "Notion (hosted)",
+      }),
+    ]);
+    catalogMock.mockResolvedValue({
+      entries: [
+        {
+          id: "notion-hosted",
+          serverName: "notion-hosted",
+          displayName: "Notion (hosted)",
+          transport: "http",
+          url: "https://mcp.notion.com/mcp",
+          requiresOAuth: true,
+          oauthRequired: true,
+          installable: true,
+          consentRequired: false,
+        },
+      ],
+      stale: false,
+    });
+    oauthStartMock.mockResolvedValue({ authorizeUrl: "https://mcp.notion.com/authorize?x=1" });
+    renderSection();
+
+    const row = await screen.findByTestId("connector-row-conn-1");
+    await waitFor(() => expect(catalogMock).toHaveBeenCalledWith(COMPANY_ID));
+
+    const reauthBtn = await within(row).findByRole("button", { name: /re-authorize/i });
+    fireEvent.click(reauthBtn);
+
+    await waitFor(() => expect(oauthStartMock).toHaveBeenCalledWith(COMPANY_ID, "conn-1"));
+  });
+
   it("keeps Add credential (not Re-authorize) for a needs_credentials connector whose catalog entry is not OAuth", async () => {
     listMock.mockResolvedValue([
       connector({

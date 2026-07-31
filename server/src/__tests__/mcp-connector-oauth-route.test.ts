@@ -82,7 +82,7 @@ beforeEach(() => {
 
 it("founder start returns an authorizeUrl and inserts a flow row", async () => {
   mockConnectorSvc.getById.mockResolvedValue({ id: "conn1", companyId: COMPANY, serverName: "notion",
-    transport: "http", url: "https://mcp.notion.com/mcp", requiresSecret: true, secretRef: null, status: "needs_credentials" });
+    transport: "http", url: "https://mcp.notion.com/mcp", requiresSecret: true, secretRef: null, status: "needs_credentials", source: "catalog" });
   mockOauth.discoverOAuthServer.mockResolvedValue({ authorizationEndpoint: "https://as/authorize",
     tokenEndpoint: "https://as/token", registrationEndpoint: "https://as/register", scopesSupported: ["default"], codeChallengeMethods: ["S256"] });
   mockOauth.registerOAuthClient.mockResolvedValue({ clientId: "cid" });
@@ -98,8 +98,19 @@ it("founder start returns an authorizeUrl and inserts a flow row", async () => {
 
 it("rejects oauth/start on a non-OAuth connector (Fix 11)", async () => {
   mockConnectorSvc.getById.mockResolvedValue({ id: "conn2", companyId: COMPANY, serverName: "linear",
-    transport: "http", url: "https://x/mcp", requiresSecret: true, secretRef: "mcp:linear", status: "active" });
+    transport: "http", url: "https://x/mcp", requiresSecret: true, secretRef: "mcp:linear", status: "active", source: "catalog" });
   const res = await request(makeApp(founderActor)).post(`/api/companies/${COMPANY}/mcp-connectors/conn2/oauth/start`).send({});
+  expect(res.status).toBe(400);
+  expect(mockFlowInsert).not.toHaveBeenCalled();
+});
+
+it("rejects oauth/start on a BYO connector even when its serverName collides with a catalog OAuth entry (final-review Fix 2)", async () => {
+  // A BYO connector named "notion" would otherwise pass the OLD gate — which only
+  // checked the catalog entry matched by serverName — and get its secret rotated
+  // by the callback even though it was never installed from the catalog.
+  mockConnectorSvc.getById.mockResolvedValue({ id: "conn3", companyId: COMPANY, serverName: "notion",
+    transport: "http", url: "https://mcp.notion.com/mcp", requiresSecret: true, secretRef: "mcp:notion", status: "active", source: "byo" });
+  const res = await request(makeApp(founderActor)).post(`/api/companies/${COMPANY}/mcp-connectors/conn3/oauth/start`).send({});
   expect(res.status).toBe(400);
   expect(mockFlowInsert).not.toHaveBeenCalled();
 });
@@ -191,4 +202,31 @@ it("rotates the existing secret on re-authorization (Fix 12 path)", async () => 
   expect(res.status).toBe(302);
   expect(mockSecretSvc.rotate).toHaveBeenCalled();
   expect(mockSecretSvc.create).not.toHaveBeenCalled();
+});
+
+it("409s and does not mark the flow completed or log success when the connector bind matches 0 rows (final-review Fix 3)", async () => {
+  // A concurrent status change (e.g. board approval/rejection racing the callback)
+  // can make updateIfStatus's guarded WHERE match nothing. The secret was already
+  // created/rotated at that point — but binding it to the connector never happened,
+  // so completing the flow and logging a success activity would be a lying audit
+  // trail: the record says "authorized", the connector row disagrees.
+  mockOauth.verifyOAuthState.mockReturnValue({ connectorId: "conn1", companyId: "company-A", nonce: "n", exp: Date.now() + 60_000 });
+  mockFlowSelect.mockResolvedValue([{ id: "flow1", connectorId: "conn1", companyId: "company-A", status: "pending",
+    pkceVerifier: "ver", clientId: "cid", redirectUri: "https://app/cb", tokenEndpoint: "https://as/token",
+    resource: "https://mcp.notion.com/mcp", scopes: ["default"], expiresAt: new Date(Date.now() + 60_000) }]);
+  mockConnectorSvc.getById.mockResolvedValue({ id: "conn1", companyId: "company-A", serverName: "notion", status: "needs_credentials" });
+  mockOauth.exchangeAuthorizationCode.mockResolvedValue({ accessToken: "at", refreshToken: "rt", expiresIn: 3600 });
+  mockSecretSvc.getByName.mockResolvedValue(null);
+  mockSecretSvc.create.mockResolvedValue({ id: "sec1", name: "mcp:notion" });
+  mockConnectorSvc.updateIfStatus.mockResolvedValue(null); // guarded WHERE matched 0 rows
+
+  const res = await request(makeApp(null)).get(`/api/mcp-connectors/oauth/callback?code=CODE&state=STATE`);
+
+  expect(res.status).toBe(409);
+  expect(mockFlowUpdate.mock.calls.some(([v]) => v?.status === "failed")).toBe(true);
+  expect(mockFlowUpdate.mock.calls.some(([v]) => v?.status === "completed")).toBe(false);
+  expect(mockLogActivity).not.toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({ action: "mcp_connector.oauth_authorized" }),
+  );
 });

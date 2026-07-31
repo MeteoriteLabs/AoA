@@ -744,8 +744,18 @@ function ConnectorRow({
           affordance below. A needs_credentials OAuth connector never got (or
           lost) its token bundle; the fix is re-running the sign-in round trip,
           so this replaces "Add credential" for that connector instead of
-          sitting beside it. */}
-      {isFounder && needsCredential && isOAuth && (
+          sitting beside it.
+
+          Final-review Fix 1: gated on `connector.status === "needs_credentials"`
+          rather than `needsCredential` (`requiresSecret && !secretRef`). The
+          runtime JIT-refresh-failure path sets status: "needs_credentials" while
+          KEEPING the (now stale/expired) secretRef bound — the exact case this
+          button exists for — so `needsCredential` is false there and the old
+          condition never rendered it. Status is the correct signal: it is the
+          server's own answer to "does this connector need attention right now?",
+          independent of whether a (possibly stale) secretRef happens to still be
+          set. */}
+      {isFounder && connector.status === "needs_credentials" && isOAuth && (
         <div
           data-testid={`connector-reauthorize-${connector.id}`}
           className="rounded-md border border-warning/30 bg-warning/5 px-3 py-2 flex items-center justify-between gap-3"
