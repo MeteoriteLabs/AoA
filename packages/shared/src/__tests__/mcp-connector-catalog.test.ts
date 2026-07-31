@@ -319,3 +319,38 @@ describe("parseMcpConnectorCatalog — Finding 7: duplicate id dedup (first-wins
     expect(result.dropped).toEqual([]);
   });
 });
+
+describe("oauth block", () => {
+  it("accepts an entry with an oauth object of non-secret metadata", () => {
+    const parsed = McpConnectorCatalogEntrySchema.parse({
+      id: "notion-hosted", serverName: "notion", displayName: "Notion (hosted)", transport: "http",
+      url: "https://mcp.notion.com/mcp", requiresOAuth: true,
+      oauth: { scopes: ["default"] },
+    });
+    expect(parsed.oauth?.scopes).toEqual(["default"]);
+    expect(parsed.requiresOAuth).toBe(true);
+  });
+
+  it("defaults oauth scopes to [] and leaves oauth undefined when absent", () => {
+    const parsed = McpConnectorCatalogEntrySchema.parse({
+      id: "linear", serverName: "linear", displayName: "Linear", transport: "http", url: "https://x/mcp",
+    });
+    expect(parsed.oauth).toBeUndefined();
+  });
+
+  it("strips unknown keys inside oauth (forward-compat)", () => {
+    const parsed = McpConnectorCatalogEntrySchema.parse({
+      id: "x", serverName: "x", displayName: "X", transport: "http", url: "https://x/mcp",
+      oauth: { scopes: [], somethingNew: 1 },
+    });
+    expect((parsed.oauth as Record<string, unknown>).somethingNew).toBeUndefined();
+  });
+
+  it("defaults oauth.scopes to [] when an oauth block omits scopes", () => {
+    const parsed = McpConnectorCatalogEntrySchema.parse({
+      id: "declared", serverName: "declared", displayName: "Declared", transport: "http", url: "https://x/mcp",
+      oauth: { authorizationUrl: "https://as/authorize", tokenUrl: "https://as/token" },
+    });
+    expect(parsed.oauth?.scopes).toEqual([]);
+  });
+});

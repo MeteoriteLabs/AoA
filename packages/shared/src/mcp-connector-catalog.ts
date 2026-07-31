@@ -91,6 +91,21 @@ export const McpConnectorCatalogEntrySchema = z
      * `docs/aoa/plans/mcp-connectors-followups.md`.)
      */
     requiresOAuth: z.boolean().default(false),
+    /**
+     * OAuth metadata for requiresOAuth entries. NON-SECRET only (D5: the catalog never
+     * carries a credential). Discovery-first providers (Notion) need nothing here; the
+     * declared-endpoint fields are reserved for later non-DCR providers (Google/M365).
+     * Nested .strip() keeps additive forward-compat; `oauth` is NOT a VALUE_BEARING_ALIAS key.
+     */
+    oauth: z
+      .object({
+        scopes: z.array(z.string()).default([]),
+        authorizationUrl: z.string().url().optional(),
+        tokenUrl: z.string().url().optional(),
+        registrationUrl: z.string().url().optional(),
+      })
+      .strip()
+      .optional(),
     secretLabel: z.string().max(200).optional(),
     docsUrl: z.string().url().optional(),
     trust: McpConnectorTrustSchema,
