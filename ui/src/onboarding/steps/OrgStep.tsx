@@ -9,6 +9,7 @@ import {
   writePendingOrganization,
   type PendingOrganization,
 } from "../pendingOrganization";
+import { clearPendingTenant } from "../pendingTenant";
 import { Button } from "@/components/ui/button";
 import { Reveal } from "../motion";
 import { FIELD, GradientText, LABEL, StepCard, StepHeading, StepShell } from "./shared";
@@ -89,6 +90,7 @@ export function OrgStep({ ctx, onComplete }: StepProps) {
         requestedState: "COMPANY_CREATED",
       });
       clearPendingOrganization(ctx.userId);
+      clearPendingTenant(ctx.userId);
       onComplete();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to create your company.");
@@ -108,6 +110,7 @@ export function OrgStep({ ctx, onComplete }: StepProps) {
         requestedState: "COMPANY_CREATED",
       });
       clearPendingOrganization(ctx.userId);
+      clearPendingTenant(ctx.userId);
       onComplete();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to continue.");

@@ -63,6 +63,19 @@ describe("OrgStep (Stage C / order 2)", () => {
     expect(localStorage.getItem("aoa.onboarding.pendingOrganization.u1")).toBeNull();
   });
 
+  it("clears the pending tenant once the company consumes the org", async () => {
+    localStorage.setItem(
+      "aoa.onboarding.pendingTenant.u1",
+      JSON.stringify({ id: "org1", name: "Acme Org" }),
+    );
+    const onComplete = vi.fn();
+    render(<OrgStep ctx={ctx} onComplete={onComplete} onBack={() => {}} />);
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Acme" } });
+    fireEvent.click(screen.getByText("Continue"));
+    await waitFor(() => expect(onComplete).toHaveBeenCalled());
+    expect(localStorage.getItem("aoa.onboarding.pendingTenant.u1")).toBeNull();
+  });
+
   it("does NOT create a second company when the advance fails and the user retries", async () => {
     // First advance throws (e.g. transient network) — the company is already
     // created + selected; a retry must reuse it, not mint a duplicate.
