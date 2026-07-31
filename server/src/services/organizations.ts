@@ -97,19 +97,49 @@ export function organizationService(db: Db) {
 
 /**
  * Self-serve Organization creation (Phase 2, Task 6): any signed-in board user
- * creates a fresh tenant and becomes its owner. Reuses this file's own
- * `organizationService(db).create` for the row insert + slug de-dup — NOT
- * passing `createdByUserId` here, since the owner-membership write goes
- * through the injected `orgAccess.ensureOrgOwner` instead (idempotent /
- * onConflictDoNothing-safe — see organization-access.ts — because P1's
- * ensureRealOperator/backfill may also touch the same membership row).
+ * creates a fresh tenant and becomes its owner.
+ *
+ * ATOMICITY (Fix 5): the org-row insert and the owner-membership write run in ONE
+ * `db.transaction`, so a transient fault between them can never leave an orphan
+ * org (a row with no owner membership that the user can neither reach nor adopt).
+ *
+ * SLUG RETRY: the slug de-dup loop lives OUTSIDE the transaction — each attempt is
+ * a fresh transaction with exactly ONE org insert + membership write. A 23505 slug
+ * conflict aborts (and rolls back) only that attempt's transaction and is caught
+ * outside it; the next attempt retries with a new candidate slug in a brand-new
+ * transaction. Retrying INSIDE a single transaction is impossible: a 23505 aborts
+ * the whole PG tx. The low-level `organizationService.create` is intentionally left
+ * untouched (still always-insert).
+ *
+ * Owner membership is written via `buildOrgAccess(tx).ensureOrgOwner` (bound to the
+ * TRANSACTION handle) rather than `organizationService.create`'s built-in
+ * createdByUserId path, because ensureOrgOwner additionally PROMOTES a pre-existing
+ * weaker membership row to owner (idempotent / onConflictDoNothing-safe — P1's
+ * ensureRealOperator/backfill may also touch the same (org,user) row).
  */
 export async function createSelfServeOrganization(
   db: Db,
   input: { name: string; ownerUserId: string },
-  orgAccess: Pick<ReturnType<typeof organizationAccessService>, "ensureOrgOwner">,
+  buildOrgAccess: (handle: Db) => Pick<ReturnType<typeof organizationAccessService>, "ensureOrgOwner">,
 ) {
-  const org = await organizationService(db).create({ name: input.name });
-  await orgAccess.ensureOrgOwner(org.id, input.ownerUserId);
-  return org;
+  const base = slugifyOrganizationName(input.name);
+  let attempt = 0;
+  while (attempt < 10000) {
+    const candidate = attempt === 0 ? base : `${base}-${attempt + 1}`;
+    try {
+      return await db.transaction(async (tx) => {
+        const rows = await tx
+          .insert(organizations)
+          .values({ name: input.name, slug: candidate, plan: "beta", createdByUserId: null })
+          .returning();
+        const org = rows[0];
+        await buildOrgAccess(tx as unknown as Db).ensureOrgOwner(org.id, input.ownerUserId);
+        return org;
+      });
+    } catch (error) {
+      if (!isOrgSlugConflict(error)) throw error;
+    }
+    attempt += 1;
+  }
+  throw new Error("Unable to allocate unique organization slug");
 }

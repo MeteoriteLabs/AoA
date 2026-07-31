@@ -19,7 +19,7 @@ export function organizationRoutes(db: Db): Router {
   router.post("/", validate(createOrgSchema), async (req, res) => {
     assertBoard(req);
     if (!req.actor.userId) throw forbidden("Sign in to create an organization");
-    const org = await createSelfServeOrganization(db, { name: req.body.name, ownerUserId: req.actor.userId }, orgAccess);
+    const org = await createSelfServeOrganization(db, { name: req.body.name, ownerUserId: req.actor.userId }, organizationAccessService);
     res.status(201).json(org);
   });
 
