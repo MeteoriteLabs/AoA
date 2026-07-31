@@ -140,6 +140,7 @@ export { githubInstallations, type GitHubInstallation, type NewGitHubInstallatio
 export { braindumpCaptures } from "./braindump_captures.js";
 export { companyMcpConnectors } from "./company_mcp_connectors.js";
 export { companyMcpConnectorAgents } from "./company_mcp_connector_agents.js";
+export { mcpConnectorOauthFlows } from "./mcp_connector_oauth_flows.js";
 
 // Plugin system
 export { plugins } from "./plugins.js";

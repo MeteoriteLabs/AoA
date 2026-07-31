@@ -1296,6 +1296,13 @@
       "when": 1785002871625,
       "tag": "0184_connectors",
       "breakpoints": true
+    },
+    {
+      "idx": 185,
+      "version": "7",
+      "when": 1785479065146,
+      "tag": "0185_mcp_connector_oauth_flows",
+      "breakpoints": true
     }
   ]
 }
