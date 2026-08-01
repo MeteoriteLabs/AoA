@@ -55,6 +55,7 @@ let dataDir = "";
 let client: ReturnType<typeof postgres>;
 let setupError: unknown = null;
 let hash0188 = "";
+let connectionString = "";
 
 async function allocatePort(): Promise<number> {
   return await new Promise<number>((resolve, reject) => {
@@ -117,6 +118,24 @@ async function journalRowsForHash(hash: string): Promise<number> {
     SELECT count(*)::int AS count FROM drizzle.__drizzle_migrations WHERE hash = ${hash}`;
   return rows[0]!.count;
 }
+// The only concurrent work in the race test is revert connection A (blocked) and
+// insert connection B (holding), so ANY ungranted lock in the cluster is A
+// waiting — for the ACCESS EXCLUSIVE lock (with the fix) or for the DROP later in
+// the txn (without it). Either way this is the signal that A has reached its
+// blocking point and it is safe to commit B.
+async function anyWaitingLock(): Promise<boolean> {
+  const rows = await client<{ count: number }[]>`
+    SELECT count(*)::int AS count FROM pg_locks WHERE NOT granted`;
+  return rows[0]!.count > 0;
+}
+async function waitForBlockedRevert(deadlineMs = 5000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < deadlineMs) {
+    if (await anyWaitingLock()) return;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  throw new Error("timed out waiting for revert connection A to block on a lock");
+}
 
 beforeAll(async () => {
   try {
@@ -137,7 +156,7 @@ beforeAll(async () => {
     });
     await pg.initialise();
     await pg.start();
-    const connectionString = `postgres://test:test@localhost:${port}/postgres`;
+    connectionString = `postgres://test:test@localhost:${port}/postgres`;
     // Apply the WHOLE chain (0000..latest) — this covers 0188 (organizations),
     // 0190 (provider_connections org FK) and 0191 (execution_targets org FK),
     // which is what actually exercises FIX A's dependent-FK path. 0188's own
@@ -216,6 +235,85 @@ describe.skipIf(process.platform === "win32")("revert0188 against a real applied
     } finally {
       await client`DELETE FROM organizations WHERE id = ${secondOrgId}`;
     }
+  });
+
+  // CONCURRENCY / TOCTOU: the destructive rollback must NOT proceed when a second
+  // org commits AFTER the cheap pre-check. With the fix, revert connection A takes
+  // an ACCESS EXCLUSIVE lock on organizations as its first in-txn statement and
+  // blocks (B holds RowExclusive from an uncommitted insert); once B commits and
+  // releases, A's post-lock RECHECK sees 2 orgs and REFUSES with the single-org
+  // message — before any destructive statement runs. This test is non-vacuous by
+  // construction: it asserts that EXACT refusal message, which ONLY the post-lock
+  // recheck produces. Remove the LOCK+recheck and A instead runs the drops to
+  // completion against the now-two-org table and RESOLVES (destroying both
+  // tenants), so the /expected exactly 1 organization/ assertion fails — i.e. RED
+  // without the lock, GREEN with it. Runs BEFORE the positive case (which drops
+  // the schema); non-destructive on the happy path (cleans up its 2nd org).
+  it("refuses under a concurrent org-insert race (ACCESS EXCLUSIVE lock closes the TOCTOU window)", async () => {
+    if (setupError) throw new Error(`embedded-postgres setup failed: ${String(setupError)}`);
+    expect(await orgCount()).toBe(1);
+
+    // B: a separate reserved connection that inserts a 2nd org and leaves it
+    // UNCOMMITTED, so B holds RowExclusive on organizations and the pre-check
+    // above still sees exactly 1.
+    const sqlB = postgres(connectionString, { max: 1 });
+    // A: the revert connection. lock_timeout is a generous safety net so a stuck
+    // test fails fast instead of hanging forever; on the happy path B commits and
+    // releases A well before it fires.
+    const sqlA = postgres(connectionString, { max: 1, connection: { lock_timeout: 10000 } });
+    const rb = await sqlB.reserve();
+    let revertPromise: Promise<void> | undefined;
+    let bSettled = false;
+    try {
+      await rb.unsafe("BEGIN");
+      await rb.unsafe(
+        "INSERT INTO organizations (id, name, slug, status, plan) " +
+          "VALUES (gen_random_uuid(), 'Concurrent Tenant', 'concurrent-tenant', 'active', 'beta')",
+      );
+      // Start the revert; it will block (on the ACCESS EXCLUSIVE lock with the
+      // fix, or on a later DROP without it). Do NOT await yet.
+      revertPromise = revert0188(sqlA);
+      // Wait until A is actually blocked, THEN release B by committing — this is
+      // exactly "a second tenant commits after the pre-check".
+      await waitForBlockedRevert();
+      await rb.unsafe("COMMIT");
+      bSettled = true;
+
+      // With the fix: A acquires the lock, rechecks, sees 2, refuses with the
+      // single-org message BEFORE any destructive work. Without it: A resolves.
+      await expect(revertPromise).rejects.toThrow(/expected exactly 1 organization/i);
+
+      // No destructive work happened: the tenant schema + journal row are intact.
+      expect(await tableExists("organizations")).toBe(true);
+      expect(await columnExists("companies", "organization_id")).toBe(true);
+      expect(await constraintExists("companies_organization_id_organizations_id_fk")).toBe(true);
+      expect(await tableExists("organization_memberships")).toBe(true);
+      expect(await journalRowsForHash(hash0188)).toBe(1);
+    } finally {
+      if (!bSettled) {
+        try {
+          await rb.unsafe("ROLLBACK");
+        } catch {
+          /* ignore */
+        }
+      }
+      // Settle A on failure paths so no rejection goes unhandled.
+      if (revertPromise) await revertPromise.catch(() => undefined);
+      try {
+        await rb.release();
+      } catch {
+        /* ignore */
+      }
+      await sqlB.end();
+      await sqlA.end();
+      // Restore the single-org precondition for the positive destructive test.
+      try {
+        await client`DELETE FROM organizations WHERE slug = 'concurrent-tenant'`;
+      } catch {
+        /* ignore (a proof run with the lock removed may have dropped the table) */
+      }
+    }
+    expect(await orgCount()).toBe(1);
   });
 
   it("removes tenant schema, restores global uniques, and strips exactly the 0188 journal row", async () => {

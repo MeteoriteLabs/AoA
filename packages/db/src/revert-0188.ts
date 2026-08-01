@@ -23,16 +23,40 @@ async function compute0188JournalHash(): Promise<string> {
   return createHash("sha256").update(content).digest("hex");
 }
 
+// Same refusal used by BOTH the cheap pre-check and the authoritative
+// in-transaction recheck, so callers (and the guard test) see one stable
+// message regardless of which gate fires.
+function singleOrgRefusal(count: number): Error {
+  return new Error(
+    `revert-0188 refused: expected exactly 1 organization, found ${count}. ` +
+      `Once a second tenant exists this is a one-way door — restore the pre-0188 snapshot instead.`,
+  );
+}
+
 export async function revert0188(sql: Sql): Promise<void> {
+  // Cheap fast-fail (no lock): give a friendly early error when a second tenant
+  // already exists, without paying for a table lock. This is NOT the real gate —
+  // it is racy on its own (a concurrent org could commit between here and the
+  // drops below). The authoritative gate is the post-lock recheck inside the
+  // transaction.
   const [{ count }] = await sql<{ count: number }[]>`SELECT count(*)::int AS count FROM organizations`;
-  if (count !== 1) {
-    throw new Error(
-      `revert-0188 refused: expected exactly 1 organization, found ${count}. ` +
-        `Once a second tenant exists this is a one-way door — restore the pre-0188 snapshot instead.`,
-    );
-  }
+  if (count !== 1) throw singleOrgRefusal(count);
   const journalHash = await compute0188JournalHash();
   await sql.begin(async (tx) => {
+    // 0. Close the TOCTOU window on the destructive single-org rollback. Take an
+    //    ACCESS EXCLUSIVE lock on organizations as the FIRST statement in the
+    //    transaction, THEN re-run the single-org count check. ACCESS EXCLUSIVE
+    //    conflicts with the RowExclusive lock a concurrent INSERT holds, so no
+    //    org can be created between this recheck and the drops below — a second
+    //    tenant committing after the pre-check above can no longer sneak in and
+    //    have BOTH tenants' data dropped. This recheck (not the pre-check) is the
+    //    authoritative one-way-door guard.
+    await tx.unsafe(`LOCK TABLE "organizations" IN ACCESS EXCLUSIVE MODE`);
+    const lockedRows = (await tx.unsafe(
+      `SELECT count(*)::int AS count FROM organizations`,
+    )) as unknown as { count: number }[];
+    const lockedCount = lockedRows[0]!.count;
+    if (lockedCount !== 1) throw singleOrgRefusal(lockedCount);
     // 1. Drop the tenant FK on companies.
     await tx.unsafe(`ALTER TABLE "companies" DROP CONSTRAINT IF EXISTS "companies_organization_id_organizations_id_fk"`);
     await tx.unsafe(`ALTER TABLE "companies" ALTER COLUMN "organization_id" DROP DEFAULT`);
