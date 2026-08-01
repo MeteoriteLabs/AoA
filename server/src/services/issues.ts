@@ -1202,22 +1202,37 @@ export function issueService(db: Db) {
      *
      * Retained ONLY for the bare `/issues/:id…` routes that carry NO company in
      * the URL (feedback, output-detection, task-outputs, artifacts, activity,
-     * agents live/active-run, and issues.ts `:id` routes). Those are the
-     * deferred URL-namespace ambiguity — safe today because every such caller
+     * agents live/active-run, and issues.ts `:id` routes). Every such caller
      * re-checks authz against the RESOLVED issue's company
      * (`assertCompanyAccess(db, req, issue.companyId)`), so it can never leak
-     * another tenant's data (worst case: a spurious 403/404 or the wrong task
-     * among the caller's OWN memberships).
+     * another tenant's data. To also close the wrong-task-mutation risk for a
+     * dual-org member (who passes `assertCompanyAccess` for EITHER owning
+     * company), this resolver now REJECTS an ambiguous identifier with a 409
+     * (`LIMIT 2` → throw when two rows come back) instead of silently returning
+     * an arbitrary `rows[0]`. The fix is here, not deferred to the eventual
+     * URL-namespace redesign.
      *
      * PREFER `getByIdentifierInCompany` wherever a request companyId is in
      * scope — it matches the unique index and returns the correct tenant's row.
      */
     getByIdentifier: async (identifier: string) => {
-      const row = await db
+      const rows = await db
         .select()
         .from(issues)
         .where(eq(issues.identifier, identifier.toUpperCase()))
-        .then((rows) => rows[0] ?? null);
+        .limit(2);
+      if (rows.length > 1) {
+        // Reject-ambiguous: the bare routes carry no company in the URL, so a
+        // cross-org identifier collision (two companies both own "ACM-1") would
+        // otherwise resolve to an arbitrary rows[0] and let a dual-org member
+        // mutate the WRONG same-named task among their own companies. A
+        // deterministic 409 is the safe resolution; company-scoped routes and
+        // the task UUID are unaffected (unique (company_id, identifier) index).
+        throw conflict(
+          "Ambiguous task identifier — it exists in more than one company. Use a company-scoped route or the task UUID.",
+        );
+      }
+      const row = rows[0] ?? null;
       if (!row) return null;
       const [enriched] = await withIssueLabels(db, [row]);
       return enriched;

@@ -8,10 +8,11 @@
  *
  * `issueService.getByIdentifierInCompany(companyId, id)` must return THIS
  * company's `ACM-1` — never the other org's. The old/global
- * `getByIdentifier(id)` filters on identifier alone and returns an arbitrary
- * row; we assert it still returns *some* row (documenting the retained,
- * deferred global behavior for the bare `/issues/:id…` routes) without
- * asserting WHICH — that ambiguity is the URL-namespace issue left for later.
+ * `getByIdentifier(id)` filters on identifier alone; rather than resolve an
+ * arbitrary row, it now REJECTS an ambiguous identifier with a 409 (LIMIT 2 →
+ * throw when two rows come back). This closes the wrong-task-mutation risk for
+ * a dual-org member on the bare `/issues/:id…` routes (which carry no company
+ * in the URL); we assert the global call throws `{ status: 409 }`.
  *
  * Skipped off Linux (embedded-postgres / migration-chain, Issue #114); Linux CI
  * is the authoritative gate. `initdbFlags` are baked into the EmbeddedPostgres
@@ -159,12 +160,9 @@ describe.skipIf(process.platform !== "linux")(
       expect(issue).toBeNull();
     });
 
-    it("global getByIdentifier('ACM-1') still returns SOME row (deferred ambiguity; not asserting which)", async () => {
+    it("global getByIdentifier('ACM-1') throws 409 when the identifier collides across companies (reject-ambiguous)", async () => {
       if (setupError) throw new Error(String(setupError));
-      const issue = await svc.getByIdentifier("ACM-1");
-      expect(issue).not.toBeNull();
-      // Whichever tenant it resolves to, it is one of the two seeded issues.
-      expect([issueAId, issueBId]).toContain(issue?.id);
+      await expect(svc.getByIdentifier("ACM-1")).rejects.toMatchObject({ status: 409 });
     });
   },
 );
