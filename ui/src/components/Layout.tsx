@@ -84,15 +84,24 @@ export function Layout() {
   useEffect(() => {
     if (companiesLoading || onboardingTriggered.current) return;
     if (health?.deploymentMode === "authenticated") return;
-    if (companies.length === 0) {
+    // Only the first-time-founder path (no specific company requested) routes to
+    // onboarding. A user who requested a specific /PREFIX/... URL but has zero
+    // accessible companies (e.g. a revoked LAST membership) must fall through to
+    // the no-match effect below → AccessRequired, not the founder flow.
+    if (companies.length === 0 && !companyPrefix) {
       onboardingTriggered.current = true;
       // Onboarding is the FlowEngine at /onboarding (C13), not a modal.
       navigate("/onboarding");
     }
-  }, [companies, companiesLoading, navigate, health?.deploymentMode]);
+  }, [companies, companiesLoading, navigate, health?.deploymentMode, companyPrefix]);
 
   useEffect(() => {
-    if (!companyPrefix || companiesLoading || companies.length === 0) return;
+    // Do NOT early-return on companies.length === 0: a zero-company user who
+    // requested a specific prefix must reach the `matched === undefined` branch
+    // below so AccessRequired renders (the revoked-last-membership case). The
+    // matched/wrong-case/route-sync branches only run when a company matches, so
+    // they are unaffected by an empty list.
+    if (!companyPrefix || companiesLoading) return;
 
     const requestedPrefix = companyPrefix.toUpperCase();
     const matched = companies.find((company) => company.issuePrefix.toUpperCase() === requestedPrefix);

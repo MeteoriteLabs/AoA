@@ -11,6 +11,12 @@ import { Layout } from "../components/Layout";
 
 const mockNavigate = vi.fn();
 
+// Deployment mode is read per-test: the zero-company → /onboarding redirect only
+// fires in non-`authenticated` modes, so the cloud (revoked-last-membership) case
+// sets this to "cloud_auth". Default "authenticated" preserves the pre-existing
+// tests (which all mount with companies present, so the mode is irrelevant to them).
+const healthState = vi.hoisted(() => ({ deploymentMode: "authenticated" as string }));
+
 vi.mock("react-router-dom", async () => {
   const actual = await vi.importActual<typeof import("react-router-dom")>("react-router-dom");
   return {
@@ -58,12 +64,18 @@ vi.mock("../context/SidebarContext", () => ({
 vi.mock("../hooks/useKeyboardShortcuts", () => ({ useKeyboardShortcuts: vi.fn() }));
 vi.mock("../hooks/useCompanyPageMemory", () => ({ useCompanyPageMemory: vi.fn() }));
 vi.mock("../api/health", () => ({
-  healthApi: { get: vi.fn().mockResolvedValue({ status: "ok", deploymentMode: "authenticated" }) },
+  healthApi: {
+    get: vi.fn(() => Promise.resolve({ status: "ok", deploymentMode: healthState.deploymentMode })),
+  },
 }));
 
 function renderLayout(initialPath: string) {
   return renderWithProviders(
     <Routes>
+      {/* Root (no :companyPrefix) — exercises the first-time-founder redirect. */}
+      <Route path="/" element={<Layout />}>
+        <Route index element={<div data-testid="root-home">Root Home</div>} />
+      </Route>
       <Route path=":companyPrefix" element={<Layout />}>
         <Route index element={<div data-testid="company-home">Company Home</div>} />
         <Route path="home" element={<div data-testid="company-home">Company Home</div>} />
@@ -76,6 +88,7 @@ function renderLayout(initialPath: string) {
 describe("Layout membership-aware routing", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    healthState.deploymentMode = "authenticated";
     mockCompanyContext.companies = [
       makeCompany({ id: "a", name: "Alpha", issuePrefix: "AAA" }),
       makeCompany({ id: "b", name: "Beta", issuePrefix: "BBB" }),
@@ -105,6 +118,39 @@ describe("Layout membership-aware routing", () => {
       expect(mockNavigate).toHaveBeenCalledWith("/AAA/home", { replace: true }),
     );
     // The access-required surface must NOT appear for a resolvable company.
+    expect(screen.queryByText("You don't have access to this")).toBeNull();
+  });
+
+  it("renders AccessRequired for an inaccessible prefix at ZERO companies (revoked last membership, cloud)", async () => {
+    // A cloud user who lost their LAST membership then opens a /PREFIX/... URL
+    // must get the honest AccessRequired surface — NOT be dropped into the
+    // first-time founder onboarding flow. (Two effects previously conflicted:
+    // the zero-company effect redirected to /onboarding, and the no-match effect
+    // bailed on companies.length === 0, so noAccessPrefix was never set.)
+    healthState.deploymentMode = "cloud_auth";
+    mockCompanyContext.companies = [];
+    renderLayout("/ACME/home");
+
+    expect(await screen.findByText("You don't have access to this")).toBeInTheDocument();
+    // Names the requested prefix as context.
+    expect(screen.getByText(/ACME/)).toBeInTheDocument();
+    // The company page content did NOT render.
+    expect(screen.queryByTestId("company-home")).toBeNull();
+    // Crucially: NOT a silent redirect into onboarding.
+    expect(mockNavigate).not.toHaveBeenCalledWith("/onboarding");
+  });
+
+  it("still routes a zero-company user with NO requested prefix into onboarding (first-time founder, cloud)", async () => {
+    // The first-time-founder path (root URL, no prefix) must be preserved: the
+    // `!companyPrefix` guard on the zero-company redirect is what keeps this alive.
+    healthState.deploymentMode = "cloud_auth";
+    mockCompanyContext.companies = [];
+    renderLayout("/");
+
+    // Robust to the trailing options arg react-router threads through navigate().
+    await vi.waitFor(() =>
+      expect(mockNavigate.mock.calls.some((call) => call[0] === "/onboarding")).toBe(true),
+    );
     expect(screen.queryByText("You don't have access to this")).toBeNull();
   });
 
