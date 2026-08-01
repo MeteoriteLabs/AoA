@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { agentApiKeys, agents, companyMemberships, instanceUserRoles } from "@armyofagents/db";
+import {
+  agentApiKeys,
+  agents,
+  companies,
+  companyMemberships,
+  instanceUserRoles,
+  organizationMemberships,
+} from "@armyofagents/db";
 import { authorizeCompanyUpgrade } from "../services/upgrade-auth.js";
 
 function makeUpgradeAuthDb(input: {
@@ -7,6 +14,8 @@ function makeUpgradeAuthDb(input: {
   agent?: Record<string, unknown> | null;
   instanceRole?: Record<string, unknown> | null;
   memberships?: Array<Record<string, unknown>>;
+  orgMemberships?: Array<Record<string, unknown>>;
+  company?: Record<string, unknown> | null;
 }) {
   return {
     select: vi.fn(() => {
@@ -31,6 +40,12 @@ function makeUpgradeAuthDb(input: {
                   ? [input.instanceRole]
                   : table === companyMemberships
                     ? input.memberships ?? []
+                    : table === organizationMemberships
+                      ? input.orgMemberships ?? []
+                      : table === companies
+                        ? input.company
+                          ? [input.company]
+                          : []
                 : [];
           return Promise.resolve(resolve(rows));
         },
@@ -132,5 +147,117 @@ describe("authorizeCompanyUpgrade", () => {
       actorId: "user-1",
     });
     expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it("authenticated: session user with a company membership gets a board actor", async () => {
+    const db = makeUpgradeAuthDb({
+      memberships: [{ companyId: "company-1" }],
+    });
+
+    const actor = await authorizeCompanyUpgrade(
+      db as any,
+      { headers: { cookie: "aoa_session=session" } } as any,
+      "company-1",
+      new URL("ws://aoa.local/preview/services/svc-1/ws"),
+      {
+        deploymentMode: "authenticated",
+        resolveSessionFromHeaders: async () => ({ user: { id: "user-1" } }) as any,
+      },
+    );
+
+    expect(actor).toEqual({
+      companyId: "company-1",
+      actorType: "board",
+      actorId: "user-1",
+    });
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it("cloud_auth: session user with org + company membership gets a board actor", async () => {
+    const db = makeUpgradeAuthDb({
+      company: { organizationId: "org-1" },
+      orgMemberships: [{ id: "om-1" }],
+      memberships: [{ id: "cm-1" }],
+    });
+
+    const actor = await authorizeCompanyUpgrade(
+      db as any,
+      { headers: { cookie: "aoa_session=session" } } as any,
+      "company-1",
+      new URL("ws://aoa.local/preview/services/svc-1/ws"),
+      {
+        deploymentMode: "cloud_auth",
+        resolveSessionFromHeaders: async () => ({ user: { id: "user-1" } }) as any,
+      },
+    );
+
+    expect(actor).toEqual({
+      companyId: "company-1",
+      actorType: "board",
+      actorId: "user-1",
+    });
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it("cloud_auth: company membership WITHOUT org membership is denied (tenant isolation)", async () => {
+    const db = makeUpgradeAuthDb({
+      company: { organizationId: "org-1" },
+      orgMemberships: [],
+      memberships: [{ id: "cm-1" }],
+    });
+
+    const actor = await authorizeCompanyUpgrade(
+      db as any,
+      { headers: { cookie: "aoa_session=session" } } as any,
+      "company-1",
+      new URL("ws://aoa.local/preview/services/svc-1/ws"),
+      {
+        deploymentMode: "cloud_auth",
+        resolveSessionFromHeaders: async () => ({ user: { id: "user-1" } }) as any,
+      },
+    );
+
+    expect(actor).toBeNull();
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it("cloud_auth: session user with neither membership is denied", async () => {
+    const db = makeUpgradeAuthDb({
+      company: { organizationId: "org-1" },
+      orgMemberships: [],
+      memberships: [],
+    });
+
+    const actor = await authorizeCompanyUpgrade(
+      db as any,
+      { headers: { cookie: "aoa_session=session" } } as any,
+      "company-1",
+      new URL("ws://aoa.local/preview/services/svc-1/ws"),
+      {
+        deploymentMode: "cloud_auth",
+        resolveSessionFromHeaders: async () => ({ user: { id: "user-1" } }) as any,
+      },
+    );
+
+    expect(actor).toBeNull();
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it("local_trusted: a no-token session is trusted board context (unchanged)", async () => {
+    const db = makeUpgradeAuthDb({});
+
+    const actor = await authorizeCompanyUpgrade(
+      db as any,
+      { headers: {} } as any,
+      "company-1",
+      new URL("ws://aoa.local/preview/services/svc-1/ws"),
+      { deploymentMode: "local_trusted" },
+    );
+
+    expect(actor).toEqual({
+      companyId: "company-1",
+      actorType: "board",
+      actorId: "board",
+    });
   });
 });

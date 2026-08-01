@@ -1,6 +1,14 @@
 import { createHash } from "node:crypto";
 import type { IncomingMessage } from "node:http";
-import { agentApiKeys, agents, companyMemberships, instanceUserRoles, type Db } from "@armyofagents/db";
+import {
+  agentApiKeys,
+  agents,
+  companies,
+  companyMemberships,
+  instanceUserRoles,
+  organizationMemberships,
+  type Db,
+} from "@armyofagents/db";
 import type { DeploymentMode } from "@armyofagents/shared";
 import { and, eq, isNull } from "drizzle-orm";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
@@ -56,7 +64,14 @@ export async function authorizeCompanyUpgrade(
       return { companyId, actorType: "board", actorId: "board" };
     }
 
-    if (opts.deploymentMode !== "authenticated" || !opts.resolveSessionFromHeaders) {
+    // Cookie/session (board) path for the two multi-user modes. `cloud_auth`
+    // was previously excluded here (only `authenticated` was allowed through),
+    // so a legitimate cloud board user opening a preview WebSocket with a session
+    // cookie fell through to `return null` → 403.
+    if (
+      (opts.deploymentMode !== "authenticated" && opts.deploymentMode !== "cloud_auth") ||
+      !opts.resolveSessionFromHeaders
+    ) {
       return null;
     }
 
@@ -64,6 +79,52 @@ export async function authorizeCompanyUpgrade(
     const userId = session?.user?.id;
     if (!userId) return null;
 
+    if (opts.deploymentMode === "cloud_auth") {
+      // Mirror assertCompanyAccess (routes/authz.ts) tenant-isolation semantics:
+      // allow iff the actor holds BOTH an active organization membership for the
+      // company's owning organization AND an active company membership. A company
+      // membership WITHOUT an org membership is DENIED (the deliberate tenant
+      // invariant). No instance_admin/operator bypass here — assertCompanyAccess
+      // reaches operators only via a live break-glass check, which this WS path
+      // does not implement, so operators fall back to their real memberships.
+      const companyRow = await db
+        .select({ organizationId: companies.organizationId })
+        .from(companies)
+        .where(eq(companies.id, companyId))
+        .then((rows) => rows[0] ?? null);
+      const organizationId = companyRow?.organizationId ?? null;
+      if (!organizationId) return null;
+
+      const [orgMembership, companyMembership] = await Promise.all([
+        db
+          .select({ id: organizationMemberships.id })
+          .from(organizationMemberships)
+          .where(
+            and(
+              eq(organizationMemberships.userId, userId),
+              eq(organizationMemberships.organizationId, organizationId),
+              eq(organizationMemberships.status, "active"),
+            ),
+          )
+          .then((rows) => rows[0] ?? null),
+        db
+          .select({ id: companyMemberships.id })
+          .from(companyMemberships)
+          .where(
+            and(
+              eq(companyMemberships.principalType, "user"),
+              eq(companyMemberships.principalId, userId),
+              eq(companyMemberships.companyId, companyId),
+              eq(companyMemberships.status, "active"),
+            ),
+          )
+          .then((rows) => rows[0] ?? null),
+      ]);
+      if (!orgMembership || !companyMembership) return null;
+      return { companyId, actorType: "board", actorId: userId };
+    }
+
+    // authenticated: instance_admin OR an active company membership (unchanged).
     const [roleRow, memberships] = await Promise.all([
       db
         .select({ id: instanceUserRoles.id })
