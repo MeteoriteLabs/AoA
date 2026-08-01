@@ -91,6 +91,7 @@ describe.skipIf(process.platform !== "linux")(
     let companyBId: string;
     let issueAId: string;
     let issueBId: string;
+    let issueA2Id: string;
 
     it("setup: two orgs, each with a company using prefix ACM and an issue ACM-1", async () => {
       if (setupError) {
@@ -127,10 +128,18 @@ describe.skipIf(process.platform !== "linux")(
         VALUES (gen_random_uuid(), ${companyBId}, 'Company B task', 'ACM-1') RETURNING id
       `));
 
+      // ACM-2 lives in company A ONLY — single-tenant identifier: the global
+      // (undefined = all-access) resolve must still return it (no collision).
+      issueA2Id = firstId(await db.execute<{ id: string }>(sql`
+        INSERT INTO issues (id, company_id, title, identifier)
+        VALUES (gen_random_uuid(), ${companyAId}, 'Company A task 2', 'ACM-2') RETURNING id
+      `));
+
       expect(companyAId).toBeTruthy();
       expect(companyBId).toBeTruthy();
       expect(issueAId).toBeTruthy();
       expect(issueBId).toBeTruthy();
+      expect(issueA2Id).toBeTruthy();
       expect(issueAId).not.toBe(issueBId);
     });
 
@@ -160,9 +169,43 @@ describe.skipIf(process.platform !== "linux")(
       expect(issue).toBeNull();
     });
 
-    it("global getByIdentifier('ACM-1') throws 409 when the identifier collides across companies (reject-ambiguous)", async () => {
+    it("global getByIdentifier('ACM-1') (undefined = all-access sentinel) throws 409 when the identifier collides across companies (reject-ambiguous)", async () => {
       if (setupError) throw new Error(String(setupError));
       await expect(svc.getByIdentifier("ACM-1")).rejects.toMatchObject({ status: 409 });
+    });
+
+    it("scoped getByIdentifier('ACM-1', [A]) resolves company A's issue (no 409, no cross-tenant leak)", async () => {
+      if (setupError) throw new Error(String(setupError));
+      const issue = await svc.getByIdentifier("ACM-1", [companyAId]);
+      expect(issue?.id).toBe(issueAId);
+      expect(issue?.companyId).toBe(companyAId);
+    });
+
+    it("scoped getByIdentifier('ACM-1', [B]) resolves company B's issue", async () => {
+      if (setupError) throw new Error(String(setupError));
+      const issue = await svc.getByIdentifier("ACM-1", [companyBId]);
+      expect(issue?.id).toBe(issueBId);
+      expect(issue?.companyId).toBe(companyBId);
+    });
+
+    it("scoped getByIdentifier('ACM-1', [A, B]) still throws 409 (ambiguous within the accessible set)", async () => {
+      if (setupError) throw new Error(String(setupError));
+      await expect(svc.getByIdentifier("ACM-1", [companyAId, companyBId])).rejects.toMatchObject({
+        status: 409,
+      });
+    });
+
+    it("scoped getByIdentifier('ACM-1', []) returns null (actor can access nothing)", async () => {
+      if (setupError) throw new Error(String(setupError));
+      const issue = await svc.getByIdentifier("ACM-1", []);
+      expect(issue).toBeNull();
+    });
+
+    it("single-tenant preservation: global getByIdentifier('ACM-2') resolves the only company that owns it", async () => {
+      if (setupError) throw new Error(String(setupError));
+      const issue = await svc.getByIdentifier("ACM-2");
+      expect(issue?.id).toBe(issueA2Id);
+      expect(issue?.companyId).toBe(companyAId);
     });
   },
 );

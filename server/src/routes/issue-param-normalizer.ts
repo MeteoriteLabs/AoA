@@ -1,6 +1,7 @@
 import type { Request, Router } from "express";
 import type { Db } from "@armyofagents/db";
 import { issueService } from "../services/issues.js";
+import { accessibleCompanyIdsForActor } from "./authz.js";
 
 const ISSUE_IDENTIFIER_RE = /^[A-Z]+-\d+$/i;
 
@@ -13,18 +14,20 @@ export function createIssueParamNormalizer(db: Db) {
    * an identifier that two orgs' companies both own resolves to THIS company's
    * task — never another org's. When `companyId` is absent (bare
    * `/issues/:id…` routes with no company in the URL), it falls back to the
-   * UNSCOPED global resolve; those callers re-check authz on the resolved
-   * issue's company, so the global resolve cannot leak across tenants (see
-   * `issueService.getByIdentifier` doc).
+   * bare-route resolve scoped to `accessibleCompanyIds` (the actor's reachable
+   * companies) so a cross-tenant collision can't 409/leak to a legitimate
+   * single-org user; those callers still re-check authz on the resolved issue's
+   * company (see `issueService.getByIdentifier` doc).
    */
   return async function normalizeIssueParam(
     rawId: string,
     companyId?: string,
+    accessibleCompanyIds?: string[],
   ): Promise<string> {
     if (ISSUE_IDENTIFIER_RE.test(rawId)) {
       const issue = companyId
         ? await issues.getByIdentifierInCompany(companyId, rawId)
-        : await issues.getByIdentifier(rawId);
+        : await issues.getByIdentifier(rawId, accessibleCompanyIds);
       if (issue) return issue.id;
     }
     return rawId;
@@ -55,7 +58,13 @@ export function registerIssueParamNormalizer(
         const companyId = companyParamName
           ? (req.params[companyParamName] as string | undefined)
           : undefined;
-        req.params[paramName] = await normalizeIssueParam(rawId, companyId);
+        // Bare route (no company in URL): scope the global resolve to the
+        // actor's accessible companies. Company-scoped routes ignore this.
+        req.params[paramName] = await normalizeIssueParam(
+          rawId,
+          companyId,
+          companyId ? undefined : accessibleCompanyIdsForActor(req.actor),
+        );
         next();
       } catch (err) {
         next(err);

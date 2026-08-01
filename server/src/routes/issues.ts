@@ -29,7 +29,7 @@ import {
 
 import { logger } from "../middleware/logger.js";
 import { forbidden, HttpError, unauthorized, unprocessable } from "../errors.js";
-import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { accessibleCompanyIdsForActor, assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { resolveStorageTenant } from "./authz-tenant.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import { shouldDispatchIssueWakeup } from "./issues-planning-mode-dispatch.js";
@@ -753,16 +753,18 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
   // When `companyId` is provided the resolve is company-scoped (matches the
   // (company_id, identifier) unique index → the correct tenant's task); the
-  // bare `/issues/:id…` routes pass no companyId and use the unscoped global
-  // resolve, re-checking authz on the resolved issue's company downstream.
+  // bare `/issues/:id…` routes pass no companyId and use the bare-route resolve
+  // scoped to the actor's accessible companies, re-checking authz on the
+  // resolved issue's company downstream.
   async function normalizeIssueIdentifier(
     rawId: string,
     companyId?: string,
+    accessibleCompanyIds?: string[],
   ): Promise<string> {
     if (/^[A-Z]+-\d+$/i.test(rawId)) {
       const issue = companyId
         ? await svc.getByIdentifierInCompany(companyId, rawId)
-        : await svc.getByIdentifier(rawId);
+        : await svc.getByIdentifier(rawId, accessibleCompanyIds);
       if (issue) {
         return issue.id;
       }
@@ -771,10 +773,14 @@ export function issueRoutes(db: Db, storage: StorageService) {
   }
 
   // Resolve issue identifiers (e.g. "PAP-39") to UUIDs for all /issues/:id routes
-  // (bare — no company in the URL → unscoped global resolve).
+  // (bare — no company in the URL → resolve scoped to the actor's companies).
   router.param("id", async (req, res, next, rawId) => {
     try {
-      req.params.id = await normalizeIssueIdentifier(rawId);
+      req.params.id = await normalizeIssueIdentifier(
+        rawId,
+        undefined,
+        accessibleCompanyIdsForActor(req.actor),
+      );
       next();
     } catch (err) {
       next(err);
@@ -784,12 +790,15 @@ export function issueRoutes(db: Db, storage: StorageService) {
   // Resolve issue identifiers (e.g. "PAP-39") to UUIDs for company-scoped
   // attachment routes (`/companies/:companyId/issues/:issueId/attachments`).
   // `:companyId` precedes `:issueId` in the route path, so it is populated here
-  // — scope the resolve to it so an identifier never crosses orgs.
+  // — scope the resolve to it so an identifier never crosses orgs. When the
+  // route carries no company (bare), fall back to the actor-scoped resolve.
   router.param("issueId", async (req, res, next, rawId) => {
     try {
+      const companyId = req.params.companyId as string | undefined;
       req.params.issueId = await normalizeIssueIdentifier(
         rawId,
-        req.params.companyId as string | undefined,
+        companyId,
+        companyId ? undefined : accessibleCompanyIdsForActor(req.actor),
       );
       next();
     } catch (err) {

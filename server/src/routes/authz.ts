@@ -83,6 +83,32 @@ export async function assertCompanyAccess(db: Db, req: Request, companyId: strin
   throw forbidden("User does not have access to this company");
 }
 
+/**
+ * Derive the set of company ids an actor may access, for scoping bare-identifier
+ * (no-company-in-URL) resolution.
+ *
+ * `undefined` = all-access (self-hosted loopback / self-hosted instance-admin):
+ * the caller keeps the global unfiltered reject-ambiguous resolve.
+ * `[]` = access nothing. Mirrors {@link assertCompanyAccess}'s allow rules so
+ * bare-route identifier resolution is scoped to what the actor can reach.
+ *
+ * NOTE: intentionally does NOT mirror assertCompanyAccess's cloud break-glass
+ * branch (~:73-80). A cloud operator with an active break-glass grant hitting a
+ * BARE identifier route for a non-member company resolves to []→null→404
+ * (fail-closed) rather than the task. Acceptable + unreachable today (break-glass
+ * grant/revoke are inert); revisit if governed break-glass endpoints ever ship.
+ */
+export function accessibleCompanyIdsForActor(actor: Actor | undefined): string[] | undefined {
+  if (!actor) return [];
+  if (actor.type === "agent" || actor.type === "mcp") return actor.companyId ? [actor.companyId] : [];
+  if (actor.type === "board") {
+    if (actor.source === "local_implicit") return undefined;
+    if (!tenantIsolationEnforced() && actor.isInstanceAdmin) return undefined;
+    return actor.companyIds ?? [];
+  }
+  return [];
+}
+
 export function getActorInfo(req: Request) {
   if (req.actor.type === "none") {
     throw unauthorized();

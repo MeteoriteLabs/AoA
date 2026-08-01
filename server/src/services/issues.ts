@@ -1194,44 +1194,51 @@ export function issueService(db: Db) {
     },
 
     /**
-     * UNSCOPED / GLOBAL identifier resolve. Filters on `identifier` ALONE, so
-     * with the Phase-1 multi-tenancy design (org-scoped issue prefixes +
+     * BARE-ROUTE identifier resolve — used by the `/issues/:id…` routes that
+     * carry NO company in the URL (feedback, output-detection, task-outputs,
+     * artifacts, activity, agents live/active-run, and issues.ts `:id` routes).
+     * With the Phase-1 multi-tenancy design (org-scoped issue prefixes +
      * per-company identifiers, `issues_identifier_idx` on
      * `(company_id, identifier)`) two companies in DIFFERENT orgs can both own
-     * `ACM-1` — this now REJECTS that ambiguous cross-company identifier with a
-     * 409 rather than returning an arbitrary `rows[0]` (see the reject-ambiguous
-     * note below).
+     * `ACM-1`, so the resolve is scoped to the ACTOR's accessible company set to
+     * avoid a cross-tenant collision throwing 409 (or leaking its existence) to
+     * a legitimate single-org user.
      *
-     * Retained ONLY for the bare `/issues/:id…` routes that carry NO company in
-     * the URL (feedback, output-detection, task-outputs, artifacts, activity,
-     * agents live/active-run, and issues.ts `:id` routes). Every such caller
-     * re-checks authz against the RESOLVED issue's company
-     * (`assertCompanyAccess(db, req, issue.companyId)`), so it can never leak
-     * another tenant's data. To also close the wrong-task-mutation risk for a
-     * dual-org member (who passes `assertCompanyAccess` for EITHER owning
-     * company), this resolver now REJECTS an ambiguous identifier with a 409
-     * (`LIMIT 2` → throw when two rows come back) instead of silently returning
-     * an arbitrary `rows[0]`. The fix is here, not deferred to the eventual
-     * URL-namespace redesign.
+     * `accessibleCompanyIds` semantics (derive with
+     * `accessibleCompanyIdsForActor(req.actor)` in routes/authz.ts):
+     *   - `undefined` = ALL-ACCESS sentinel (self-hosted loopback /
+     *     self-hosted instance-admin): resolve globally on `identifier` alone,
+     *     rejecting an ambiguous cross-company match with a 409.
+     *   - `[]`        = the actor can access nothing → return null (404). NEVER
+     *     pass `[]` to `inArray` (an empty-array footgun).
+     *   - `[…ids]`    = scope the resolve to those companies; still reject an
+     *     ambiguous match WITHIN the accessible set with a 409.
+     *
+     * Rejecting an ambiguous identifier (rather than returning an arbitrary
+     * `rows[0]`) closes the wrong-task-mutation risk for a dual-org member who
+     * passes `assertCompanyAccess` for EITHER owning company. Every caller still
+     * re-checks authz against the RESOLVED issue's company downstream.
      *
      * PREFER `getByIdentifierInCompany` wherever a request companyId is in
      * scope — it matches the unique index and returns the correct tenant's row.
      */
-    getByIdentifier: async (identifier: string) => {
-      const rows = await db
-        .select()
-        .from(issues)
-        .where(eq(issues.identifier, identifier.toUpperCase()))
-        .limit(2);
+    getByIdentifier: async (identifier: string, accessibleCompanyIds?: string[]) => {
+      // undefined = all-access sentinel (self-hosted loopback / instance-admin):
+      //   keep the global unfiltered reject-ambiguous resolve.
+      // [] = actor can access nothing → null (404). Never pass [] to inArray.
+      if (accessibleCompanyIds && accessibleCompanyIds.length === 0) return null;
+      const upper = identifier.toUpperCase();
+      const where = accessibleCompanyIds
+        ? and(eq(issues.identifier, upper), inArray(issues.companyId, accessibleCompanyIds))
+        : eq(issues.identifier, upper);
+      const rows = await db.select().from(issues).where(where).limit(2);
       if (rows.length > 1) {
-        // Reject-ambiguous: the bare routes carry no company in the URL, so a
-        // cross-org identifier collision (two companies both own "ACM-1") would
-        // otherwise resolve to an arbitrary rows[0] and let a dual-org member
-        // mutate the WRONG same-named task among their own companies. A
-        // deterministic 409 is the safe resolution; company-scoped routes and
-        // the task UUID are unaffected (unique (company_id, identifier) index).
+        // Reject-ambiguous: the identifier exists in more than one company the
+        // actor can reach. A deterministic 409 is the safe resolution;
+        // company-scoped routes and the task UUID are unaffected (unique
+        // (company_id, identifier) index).
         throw conflict(
-          "Ambiguous task identifier — it exists in more than one company. Use a company-scoped route or the task UUID.",
+          "Ambiguous task identifier — it exists in more than one company you can access. Use a company-scoped route or the task UUID.",
         );
       }
       const row = rows[0] ?? null;
