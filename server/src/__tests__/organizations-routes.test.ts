@@ -32,4 +32,16 @@ describe("createSelfServeOrganization", () => {
     expect(ensureOrgOwner).toHaveBeenCalledWith(org.id, "u1");
     expect(inserts.some((i) => i.v.name === "Acme")).toBe(true);
   });
+
+  it("records the authenticated actor as createdByUserId on the org insert (Fix A)", async () => {
+    const { db, inserts } = fakeDb();
+    const ensureOrgOwner = vi.fn(async () => "m1");
+    await createSelfServeOrganization(
+      db,
+      { name: "Acme", ownerUserId: "u1" },
+      (() => ({ ensureOrgOwner })) as any,
+    );
+    const orgInsert = inserts.find((i) => i.v.name === "Acme");
+    expect(orgInsert?.v.createdByUserId).toBe("u1");
+  });
 });

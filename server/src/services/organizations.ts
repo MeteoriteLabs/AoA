@@ -130,7 +130,7 @@ export async function createSelfServeOrganization(
       return await db.transaction(async (tx) => {
         const rows = await tx
           .insert(organizations)
-          .values({ name: input.name, slug: candidate, plan: "beta", createdByUserId: null })
+          .values({ name: input.name, slug: candidate, plan: "beta", createdByUserId: input.ownerUserId })
           .returning();
         const org = rows[0];
         await buildOrgAccess(tx as unknown as Db).ensureOrgOwner(org.id, input.ownerUserId);
