@@ -28,7 +28,7 @@ import {
   workQuestionContinuationRequests,
   workQuestions,
 } from "@armyofagents/db";
-import { extractProjectMentionIds } from "@armyofagents/shared";
+import { extractProjectMentionIds, isUuidLike } from "@armyofagents/shared";
 import type { AgentCompletionPolicy, AgentCompletionPolicySource } from "@armyofagents/shared";
 import type { ResolvedAgentCompletionPolicy } from "./agent-completion-policy.js";
 import type {
@@ -1183,6 +1183,12 @@ export function issueService(db: Db) {
     },
 
     getById: async (id: string) => {
+      // A non-UUID id is always an unresolved identifier (the bare `/issues/:id…`
+      // param normalizer passes the raw string through when getByIdentifier
+      // scopes to zero accessible rows). Return null → the route's not-found path
+      // (404) rather than letting eq(issues.id, <non-uuid>) throw Postgres 22P02
+      // (invalid uuid syntax) — an error with no `.status` → a spurious 500.
+      if (!isUuidLike(id)) return null;
       const row = await db
         .select()
         .from(issues)

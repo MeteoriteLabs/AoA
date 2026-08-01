@@ -207,5 +207,17 @@ describe.skipIf(process.platform !== "linux")(
       expect(issue?.id).toBe(issueA2Id);
       expect(issue?.companyId).toBe(companyAId);
     });
+
+    it("getById returns null (not a 22P02 throw) for a non-UUID id", async () => {
+      // The bare `/issues/:id…` param-normalizer passes the RAW identifier
+      // through to getById when getByIdentifier scopes to zero accessible rows
+      // (a member of company A hitting `ACM-1` that lives only in company B, or a
+      // nonexistent `ACM-999`). A non-UUID id must resolve to null → the route's
+      // not-found (404) path, never letting eq(issues.id, <non-uuid>) throw
+      // Postgres 22P02 (invalid uuid syntax) → an un-statused 500.
+      if (setupError) throw new Error(String(setupError));
+      await expect(svc.getById("ACM-1")).resolves.toBeNull();
+      await expect(svc.getById("not-a-uuid")).resolves.toBeNull();
+    });
   },
 );
