@@ -1198,7 +1198,9 @@ export function issueService(db: Db) {
      * with the Phase-1 multi-tenancy design (org-scoped issue prefixes +
      * per-company identifiers, `issues_identifier_idx` on
      * `(company_id, identifier)`) two companies in DIFFERENT orgs can both own
-     * `ACM-1` — this returns an arbitrary one (`rows[0]`, no ordering).
+     * `ACM-1` — this now REJECTS that ambiguous cross-company identifier with a
+     * 409 rather than returning an arbitrary `rows[0]` (see the reject-ambiguous
+     * note below).
      *
      * Retained ONLY for the bare `/issues/:id…` routes that carry NO company in
      * the URL (feedback, output-detection, task-outputs, artifacts, activity,
