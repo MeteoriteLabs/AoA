@@ -40,7 +40,7 @@ Decisions made during product design and development. Do not relitigate unless e
 | 17 | Tasks don't care who does them | Same task model for humans and agents. Experience adapts. |
 | 18 | Agents can only self-transition: todo → in_progress → in_review | Only humans mark done/cancelled. Deliberate control point. |
 | 18A | Decision #18 is superseded by Decision #109 (2026-07-11) | Review-required remains the safe default; explicitly governed tasks may allow agent completion under policy, autonomy, and structured acceptance criteria. |
-| 19 | Drizzle only, no raw SQL | Matches Paperclip patterns. `pnpm db:generate` for all migrations. |
+| 19 | Drizzle only, no raw SQL | Matches Paperclip patterns. `pnpm db:generate` for all schema DDL. Narrow C14 exception: idempotency guards + data-only backfills may be hand-appended post-generation (e.g. 0189/0195), always idempotent; schema DDL is never hand-authored. |
 | 20 | ~~Sub-goals limited to one level deep~~ **(SUPERSEDED 2026-05-25)** | Superseded by the multi-parent goals model — goals form a freely-nested, multi-parent DAG; integrity (cycles + child⊆parent scope) enforced on write. See `docs/superpowers/plans/2026-05-25-threads-goals-followup.md` B0. |
 | 21 | Task dependencies use a separate `task_dependencies` table, not parentId | parentId = subtasks (hierarchy). Dependencies = blocking relationships (different concept). Separate table, separate logic. |
 | 22 | Cancelled dependency notifies but does NOT auto-cancel dependents | Too aggressive. Founder decides what to do with orphaned tasks. |
