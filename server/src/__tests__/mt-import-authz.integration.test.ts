@@ -14,6 +14,8 @@
  * over the hand-rolled SQL here (see the reviewer note above).
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import express from "express";
+import request from "supertest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,6 +24,10 @@ import { applyPendingMigrations, createDb, type Db } from "@armyofagents/db";
 import { DEFAULT_ORGANIZATION_ID, type CompanyPortabilityManifest } from "@armyofagents/shared";
 import { orgHierarchyService } from "../services/org-hierarchy.js";
 import { companyPortabilityService } from "../services/company-portability.js";
+import { companyRoutes } from "../routes/companies.js";
+import { errorHandler } from "../middleware/error-handler.js";
+import { getDeploymentMode, setDeploymentMode } from "../config/deployment-mode.js";
+import { __resetTenantCache } from "../routes/authz-tenant.js";
 
 type Pg = { initialise(): Promise<void>; start(): Promise<void>; stop(): Promise<void> };
 let pg: Pg | null = null;
@@ -51,6 +57,9 @@ beforeAll(async () => {
       password: "test",
       port: PORT,
       persistent: false,
+      // Baked in so the suite runs locally on Windows by flipping the
+      // describe.skipIf below to `false`. Harmless on Linux CI.
+      initdbFlags: ["--encoding=UTF8", "--locale=C"],
     });
     await pg.initialise();
     await pg.start();
@@ -154,6 +163,108 @@ function agentBundleSource(companyName: string) {
       "COMPANY.md": `---\nkind: company\nname: ${companyName}\n---\n`,
       "agents/atlas/AGENTS.md": "---\nname: Atlas\nslug: atlas\n---\nDo the thing.\n",
     },
+  };
+}
+
+/** Seed an additional company user carrying a single company-scoped role. */
+async function seedActorWithRole(
+  companyId: string,
+  role: "founder" | "team_lead" | "team_member",
+): Promise<string> {
+  const userId = await seedUser(
+    `${role}-${companyId.slice(0, 8)}-${Math.random().toString(36).slice(2, 6)}@d2.test`,
+  );
+  await db.execute(
+    sql`INSERT INTO user_roles (id, company_id, user_id, role) VALUES (gen_random_uuid(), ${companyId}, ${userId}, ${role})`,
+  );
+  return userId;
+}
+
+/** Mount POST /import against the REAL db as a cloud_auth board actor. The actor's
+ *  org/company membership is asserted from req.actor (mirrors middleware/auth.ts),
+ *  while the ROLE the gate reads is resolved from the seeded user_roles rows — so
+ *  the role gate is the only variable under test. Company lives in the DEFAULT org
+ *  (seedCompanyWithFounder omits organization_id → column default sentinel). */
+function makeImportApp(actorUserId: string, companyId: string) {
+  const app = express();
+  app.use(express.json());
+  app.use((req, _res, next) => {
+    (req as { actor: unknown }).actor = {
+      type: "board",
+      source: "session",
+      userId: actorUserId,
+      organizationIds: [DEFAULT_ORGANIZATION_ID],
+      companyIds: [companyId],
+      isInstanceAdmin: false,
+    };
+    (req as { tenant: unknown }).tenant = { organizationId: null };
+    next();
+  });
+  app.use("/api/companies", companyRoutes(db, { deploymentMode: "cloud_auth" }));
+  app.use(errorHandler);
+  return app;
+}
+
+/** Company-only existing-company import. requireBoardApprovalForNewAgents=false is
+ *  the concrete escalation payload a plain member must not be able to apply. */
+function companyOnlyImportBody(companyId: string) {
+  return {
+    source: {
+      type: "inline" as const,
+      manifest: {
+        schemaVersion: 2,
+        generatedAt: "2026-07-31T00:00:00.000Z",
+        source: null,
+        includes: { company: true, agents: false },
+        company: {
+          path: "COMPANY.md",
+          name: "Imported",
+          description: null,
+          brandColor: null,
+          requireBoardApprovalForNewAgents: false,
+        },
+        agents: [],
+        requiredSecrets: [],
+      },
+      files: {},
+    },
+    include: { company: true, agents: false },
+    target: { mode: "existing_company" as const, companyId },
+  };
+}
+
+/** internal_agent_config existing-company import — a FOUNDER-only section. */
+function internalAgentConfigImportBody(companyId: string) {
+  return {
+    source: {
+      type: "inline" as const,
+      manifest: {
+        schemaVersion: 2,
+        generatedAt: "2026-07-31T00:00:00.000Z",
+        source: null,
+        includes: { company: false, agents: false, internalAgentConfig: true },
+        company: null,
+        agents: [],
+        internalAgentConfig: {
+          executionMode: "cli",
+          provider: null,
+          model: null,
+          cliTool: null,
+          autonomyLevel: 1,
+          crewAutonomyLevel: 1,
+          enabledCapabilities: [],
+          notificationPreference: "all",
+          contextTokenBudget: 8000,
+          budgetMonthlyCents: null,
+          proactiveIntervalMinutes: 30,
+          metadata: {},
+        },
+        requiredSecrets: [],
+      },
+      files: {},
+    },
+    include: { company: false, agents: false, internalAgentConfig: true },
+    target: { mode: "existing_company" as const, companyId },
   };
 }
 
@@ -284,5 +395,70 @@ describe.skipIf(process.platform === "win32")("D2 import authz — real DB", () 
       await db.execute(sql`SELECT organization_id FROM companies WHERE id = ${result.company.id}`),
     )[0]?.organization_id;
     expect(orgOnCompany).toBe(DEFAULT_ORGANIZATION_ID);
+  });
+
+  // D2 (privilege-escalation hardening) — route-level proof through the REAL
+  // POST /import handler (assertBoard → assertCompanyAccess → assertRole →
+  // importBundle) against embedded PG. Proves the now-reachable escalation is
+  // closed: a plain team_member can no longer overwrite company governance by
+  // importing a bundle into a company they merely belong to.
+  describe("POST /import — existing-company role gate (cloud_auth)", () => {
+    let prevMode = getDeploymentMode();
+    beforeAll(() => {
+      prevMode = getDeploymentMode();
+      setDeploymentMode("cloud_auth");
+    });
+    afterAll(() => {
+      setDeploymentMode(prevMode);
+      __resetTenantCache();
+    });
+
+    it("team_member is 403 importing company settings (blanket founder/team_lead gate)", async () => {
+      if (setupError) throw new Error(String(setupError));
+      const { companyId } = await seedCompanyWithFounder();
+      const member = await seedActorWithRole(companyId, "team_member");
+      const res = await request(makeImportApp(member, companyId))
+        .post("/api/companies/import")
+        .send(companyOnlyImportBody(companyId));
+      expect(res.status).toBe(403);
+    });
+
+    it("founder may import company settings into an existing company", async () => {
+      if (setupError) throw new Error(String(setupError));
+      const { companyId, founderId } = await seedCompanyWithFounder();
+      const res = await request(makeImportApp(founderId, companyId))
+        .post("/api/companies/import")
+        .send(companyOnlyImportBody(companyId));
+      expect(res.status).toBe(200);
+    });
+
+    it("team_lead may import company settings into an existing company", async () => {
+      if (setupError) throw new Error(String(setupError));
+      const { companyId } = await seedCompanyWithFounder();
+      const lead = await seedActorWithRole(companyId, "team_lead");
+      const res = await request(makeImportApp(lead, companyId))
+        .post("/api/companies/import")
+        .send(companyOnlyImportBody(companyId));
+      expect(res.status).toBe(200);
+    });
+
+    it("team_lead is 403 importing internal_agent_config (founder-only section)", async () => {
+      if (setupError) throw new Error(String(setupError));
+      const { companyId } = await seedCompanyWithFounder();
+      const lead = await seedActorWithRole(companyId, "team_lead");
+      const res = await request(makeImportApp(lead, companyId))
+        .post("/api/companies/import")
+        .send(internalAgentConfigImportBody(companyId));
+      expect(res.status).toBe(403);
+    });
+
+    it("founder may import internal_agent_config into an existing company", async () => {
+      if (setupError) throw new Error(String(setupError));
+      const { companyId, founderId } = await seedCompanyWithFounder();
+      const res = await request(makeImportApp(founderId, companyId))
+        .post("/api/companies/import")
+        .send(internalAgentConfigImportBody(companyId));
+      expect(res.status).toBe(200);
+    });
   });
 });

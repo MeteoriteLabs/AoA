@@ -90,12 +90,17 @@ function makeApp(actor: Record<string, unknown>, deploymentMode: DeploymentMode 
 function wireImportBundle(action: "created" | "updated") {
   importBundle.mockImplementation(async (body: any, _actorUserId, authorize) => {
     const include = { company: true, agents: false, ...body.include };
-    const agentCount = body.source.manifest.agents?.length ?? 0;
+    const manifest = body.source.manifest;
+    const agentCount = manifest.agents?.length ?? 0;
     await authorize?.({
       changesCompletionPolicy: false,
       requiresTaskAssignmentPermission: false,
       importsWorkflowTemplates: false,
       importsAgents: include.agents === true && agentCount > 0,
+      importsInternalAgentConfig:
+        include.internalAgentConfig === true && !!manifest.internalAgentConfig,
+      importsBudgetPolicies:
+        include.budgetPolicies === true && (manifest.budgetPolicies?.length ?? 0) > 0,
     });
     return {
       company: { id: action === "created" ? "c-new" : COMPANY, name: "Imported", action },
@@ -185,14 +190,26 @@ describe("POST /import — agent-import authz (H2)", () => {
     expect(importBundle).toHaveBeenCalledOnce();
   });
 
-  it("200: an existing-company import with no agents does not require founder/team_lead", async () => {
+  it("403: a team_member cannot import into an existing company even with no agents (blanket founder/team_lead gate)", async () => {
+    // D2 hardening: the WHOLE existing-company import is now gated on
+    // founder/team_lead — a plain member could otherwise overwrite company
+    // settings (e.g. requireBoardApprovalForNewAgents), skills, etc. via a bundle.
     getEffectiveRole.mockResolvedValue("team_member");
     const res = await request(makeApp({}))
       .post("/api/companies/import")
       .send(bundle({ mode: "existing_company", companyId: COMPANY }, { company: true, agents: false }));
+    expect(res.status).toBe(403);
+    expect(getEffectiveRole).toHaveBeenCalledWith(COMPANY, USER);
+    expect(importBundle).not.toHaveBeenCalled();
+  });
+
+  it("200: a founder may import company settings (no agents) into an existing company", async () => {
+    getEffectiveRole.mockResolvedValue("founder");
+    const res = await request(makeApp({}))
+      .post("/api/companies/import")
+      .send(bundle({ mode: "existing_company", companyId: COMPANY }, { company: true, agents: false }));
     expect(res.status).toBe(200);
-    // company-only import: importsAgents=false -> the founder/team_lead gate is not triggered.
-    expect(getEffectiveRole).not.toHaveBeenCalled();
+    expect(importBundle).toHaveBeenCalledOnce();
   });
 });
 

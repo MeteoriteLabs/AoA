@@ -170,6 +170,15 @@ type ImportAuthorizationContext = {
   // must require founder/team_lead. Surfaced so the route can gate it; the
   // service no longer re-owns the caller via ensureRealOperator.
   importsAgents: boolean;
+  // D2 (privilege-escalation hardening): the two founder-PLANE sections. Surfaced
+  // so POST /import can require FOUNDER (not merely founder/team_lead) for them.
+  // internal_agent_config carries crewAutonomyLevel / budgetMonthlyCents /
+  // enabledCapabilities; budget_policies carries hardStopEnabled. Both are
+  // company-governance controls a team_lead has no business overwriting via a
+  // bundle. These fire exactly when the corresponding writes fire (same
+  // normalized `plan.include` object + manifest section presence).
+  importsInternalAgentConfig: boolean;
+  importsBudgetPolicies: boolean;
 };
 
 function getImportAuthorizationContext(plan: ImportPlanInternal): ImportAuthorizationContext {
@@ -227,6 +236,10 @@ function getImportAuthorizationContext(plan: ImportPlanInternal): ImportAuthoriz
     importsWorkflowTemplates:
       plan.include.workflowTemplates === true && (manifest.workflowTemplates?.length ?? 0) > 0,
     importsAgents: plan.include.agents === true && plan.selectedAgents.length > 0,
+    importsInternalAgentConfig:
+      plan.include.internalAgentConfig === true && !!manifest.internalAgentConfig,
+    importsBudgetPolicies:
+      plan.include.budgetPolicies === true && (manifest.budgetPolicies?.length ?? 0) > 0,
   };
 }
 

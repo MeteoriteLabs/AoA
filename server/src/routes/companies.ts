@@ -199,6 +199,18 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
       req.body.target.mode === "existing_company" ? req.body.target.companyId : null;
     if (req.body.target.mode === "existing_company") {
       await assertCompanyAccess(db, req, req.body.target.companyId);
+      // D2 (privilege-escalation hardening): an existing-company import is a
+      // whole-company mutation spanning EVERY section — company settings (incl.
+      // requireBoardApprovalForNewAgents), skills (agents execute skills →
+      // behaviour injection), internal_agent_config, budget_policies, projects,
+      // issues, routines, financials, etc. Membership (assertCompanyAccess) is NOT
+      // enough: a plain team_member could silently overwrite company governance.
+      // Gate the WHOLE existing-company import on founder/team_lead. This is
+      // DELIBERATELY stricter than the membership-only PATCH /:companyId route —
+      // do NOT reconcile it back down to match that route. PATCH mutates a few
+      // named fields under their own per-field guards; import applies an entire
+      // bundle at once, so the coarse role gate is the right altitude here.
+      await assertRole(db, req, req.body.target.companyId, "founder", "team_lead");
     }
 
     // D2/H3: a new_company import creates a company and MUST be placed + authorized
@@ -222,10 +234,18 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
       req.body,
       req.actor.type === "board" ? req.actor.userId : null,
       existingCompanyId
-        ? async ({ requiresTaskAssignmentPermission, importsWorkflowTemplates, importsAgents }) => {
+        ? async ({
+            requiresTaskAssignmentPermission,
+            importsWorkflowTemplates,
+            importsAgents,
+            importsInternalAgentConfig,
+            importsBudgetPolicies,
+          }) => {
           // D2/H2: importing agents into an existing company is a company-structure
-          // mutation — require founder/team_lead. The service no longer re-owns the
-          // caller, so this gate is the primary defense against escalation.
+          // mutation — require founder/team_lead. The handler-level blanket gate
+          // above already enforces founder/team_lead for the whole existing-company
+          // import; these section gates are kept as defense-in-depth (and cover any
+          // future call site that reaches importBundle without the route's gate).
           if (importsAgents) {
             await assertRole(db, req, existingCompanyId, "founder", "team_lead");
           }
@@ -234,6 +254,14 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
           }
           if (importsWorkflowTemplates) {
             await assertRole(db, req, existingCompanyId, "founder", "team_lead");
+          }
+          // D2 (privilege-escalation hardening): the two founder-PLANE sections are
+          // stricter still — FOUNDER only. internal_agent_config governs crew
+          // autonomy / budget / capabilities; budget_policies governs hard-stop
+          // enforcement. Neither is a team_lead concern (memory candidates stay
+          // founder-gated elsewhere, D12).
+          if (importsInternalAgentConfig || importsBudgetPolicies) {
+            await assertRole(db, req, existingCompanyId, "founder");
           }
         }
         : undefined,
