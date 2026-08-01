@@ -270,7 +270,7 @@ describe("feedback routes — GET /issues/:id/feedback-votes", () => {
     const res = await request(app).get("/api/issues/VQA-3/feedback-votes");
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("VQA-3");
+    expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("VQA-3", [COMPANY_A]);
     expect(mockVotesService.listVotes).toHaveBeenCalledWith({
       companyId: COMPANY_A,
       issueId: ISSUE_ID,
