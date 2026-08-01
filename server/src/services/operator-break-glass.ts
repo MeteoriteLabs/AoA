@@ -90,6 +90,32 @@ export async function hasActiveBreakGlass(
 }
 
 export function operatorBreakGlassService(db: Db, deps: BreakGlassDeps) {
+  // ⚠ INERT TODAY — NO production trigger reaches grant()/revoke(). Only
+  // sweepExpired() is wired at runtime (from index.ts boot + 60s tick), and REST
+  // authorization honors hasActiveBreakGlass() (authz.ts) as a live-TTL read.
+  // There is NO route / CLI / MCP tool that calls grant() or revoke(), so the
+  // grant-row creation path is UNREACHABLE through a running server — operator
+  // break-glass is a library + sweeper + read, not an end-to-end feature yet.
+  //
+  // grant() is INTENTIONALLY non-transactional and safe ONLY because nothing
+  // reaches it. If a grant/revoke endpoint (operator console) is ever added, it
+  // MUST also address these latent gaps:
+  //   (1) Atomicity — wrap the grant INSERT + materializeMembership() + audit()
+  //       in a single db.transaction(...). Today a failure after the insert
+  //       leaves an active grant row with no materialized membership (or an
+  //       un-audited grant), i.e. partial/active access.
+  //   (2) One access decision — REST (assertCompanyAccess) and BOTH cookie-auth
+  //       WS upgrade paths (realtime/live-events-ws.ts, services/upgrade-auth.ts)
+  //       must share ONE authorization decision. Today those WS paths require
+  //       ordinary org + company memberships and never consult the grant, so an
+  //       operator with an active break-glass grant would still be refused the
+  //       WS upgrade.
+  //   (3) Company membership — materializeMembership() currently creates ONLY an
+  //       ORGANIZATION membership (never a COMPANY one), so even a materialized
+  //       break-glass grant cannot satisfy the WS company-membership check.
+  //       An operator console must therefore also materialize the COMPANY
+  //       membership those WS branches require (or have those branches call
+  //       hasActiveBreakGlass() directly).
   async function grant(input: BreakGlassGrantInput) {
     const expiresAt = new Date(Date.now() + input.ttlMinutes * 60_000);
     const [row] = await db

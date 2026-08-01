@@ -2,7 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add tenant (Organization) authorization + isolation over every company-scoped access path, remove the `instance_admin` **data-plane** bypass in `cloud_auth` (preserving the operator plane and self-hosted single-tenant), fix the pre-existing destructive-route (delete/archive) founder gate, add an audited time-boxed operator break-glass, and stand up a flag-gated Postgres RLS canary as (production-inert) defense-in-depth.
+**Goal:** Add tenant (Organization) authorization + isolation over every company-scoped access path, remove the `instance_admin` **data-plane** bypass in `cloud_auth` (preserving the operator plane and self-hosted single-tenant), fix the pre-existing destructive-route (delete/archive) founder gate, add an audited time-boxed operator break-glass (**partial — see note**), and stand up a flag-gated Postgres RLS canary as (production-inert) defense-in-depth.
+
+> **Break-glass status note:** Only `sweepExpired` (boot + interval sweeper) and `hasActiveBreakGlass` (REST-only, live-TTL authorization read) are on a LIVE runtime path. `grant`/`revoke` are **library-only** — no route/CLI/MCP tool calls them, so no grant row can be created through a running server. Operator-console wiring (grant/revoke trigger) is **deferred**; the WS upgrade paths do not yet consult the grant. See the defensive comment in `operator-break-glass.ts`.
 
 **Architecture:** Enforcement is driven by a **single static source of truth** — `tenantIsolationEnforced()` (true iff `deploymentMode === "cloud_auth"`), set once at boot, read by authz/rbac/access. It is NOT derived from the mutable per-request `req.tenant` (which would fail OPEN if middleware were skipped). The `instance_admin` **data** bypass is neutralized at **one chokepoint** — the actor is derived with `isInstanceAdmin=false` in `cloud_auth`, and `access.ts isInstanceAdmin()` returns false in `cloud_auth` — so every one of the ~20 data-plane readers (rbac, authz, `canUser`, team, and route helpers) fails closed without per-site edits; the per-site rbac/authz changes stay as defense-in-depth. Operator authority (instance settings) is preserved via a separate, unclamped `req.actor.operator` field. `assertCompanyAccess` becomes async, resolves the target company's `organization_id`, and asserts org membership; operators reach tenant data only through a live-TTL `operator_break_glass_grants` check at decision time, with a sweeper deleting materialized rows at expiry.
 
@@ -34,7 +36,7 @@
 - `server/src/config/deployment-mode.ts` — `setDeploymentMode`/`getDeploymentMode`/`tenantIsolationEnforced` (single static enforcement source).
 - `server/src/middleware/tenant-context.ts` — sets `req.tenant` (reserved org-id hint; NOT the enforcement source).
 - `server/src/routes/authz-tenant.ts` — `assertTenantMembership`, `resolveCompanyTenant` (cached), `invalidateCompanyTenant`, `__resetTenantCache`.
-- `server/src/services/operator-break-glass.ts` — `operatorBreakGlassService` (grant/revoke/sweep) + `hasActiveBreakGlass` (check-time read).
+- `server/src/services/operator-break-glass.ts` — `operatorBreakGlassService` (grant/revoke/sweep) + `hasActiveBreakGlass` (check-time read). **Live path today = `sweepExpired` + `hasActiveBreakGlass` only; `grant`/`revoke` are library-only (no route/CLI/MCP trigger) — deferred.**
 - `packages/db/src/schema/operator_break_glass_grants.ts` — Drizzle table.
 - `server/src/db/with-tenant-tx.ts` — RLS GUC transaction helper.
 - `server/src/db/rls-bootstrap.ts` — idempotent non-owner `aoa_app` role + policy bootstrap (mirrors `ensurePostgresDatabase`, `client.ts:723`).

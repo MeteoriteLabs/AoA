@@ -21,7 +21,7 @@
 | D5 | Business key/gateway shareable (already inherits); **personal sub owner-only + dedicated target**; human-sharing deferred | Vendor ToS |
 | D6 | Billing: **BYO for beta**, AoA-managed pass-through later | Zero financial exposure |
 | D7 | Execution: **self-hosted gVisor on Hetzner**, pluggable (E2B now, desktop later — Tauri **dropped**) | Free, semi-trusted-adequate; gVisor needs no nested-virt |
-| D8 | Operator/support = **break-glass, time-boxed, audited** | No standing cross-tenant access |
+| D8 | Operator/support = **break-glass, time-boxed, audited** | No standing cross-tenant access. ⚠ Partial: library + live-TTL check (`hasActiveBreakGlass`, REST-only) + sweeper wired; `grant`/`revoke` have no runtime trigger yet (no route/CLI/MCP tool) and can't be invoked through a running server — operator-console wiring deferred |
 | D9 | Quotas = **light: per-Org concurrency cap + existing controls + spend visibility** | Noisy-neighbor + platform-cost protection |
 | D10 | **S1 fix** (topology-gated host-login fallback) rides with #310's merge | Preserves solo UX + hosted fail-closed |
 | D11 | RLS: app-layer + `organization_id` columns + one canary for beta; **full-fleet RLS = later follow-up** | Ship fast; no backfill later |
