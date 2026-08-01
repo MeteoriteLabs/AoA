@@ -17,6 +17,7 @@ import {
 import { organizationAccessService } from "../services/organization-access.js";
 import { assertBoard } from "./authz.js";
 import { forbidden, unauthorized } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 
 /**
  * Worker self-auth (Finding #3). The bearer credential is a rotatable worker
@@ -81,6 +82,23 @@ export function executionTargetRoutes(opts: { db: Db }) {
         .insert(executionTargets)
         .values({ organizationId: orgId, ...parsed.data, workerTokenHash: hashWorkerToken(workerToken) })
         .returning();
+      // Audit trail: registering an execution destination is security-sensitive
+      // and must be visible to incident review. activity_log is company-scoped
+      // (company_id NOT NULL) and has no organization column, so this org-scoped
+      // mutation cannot be a row there; emit a structured log line instead (same
+      // pattern as the operator break-glass org-wide audit fix). A durable
+      // org-scoped audit feed is tracked for the M6 org-scoped audit feed.
+      const operatorUserId = req.actor.type === "board" ? (req.actor.userId ?? null) : null;
+      logger.info(
+        {
+          action: "execution_target.register",
+          organizationId: orgId,
+          executionTargetId: row!.id,
+          operatorUserId,
+          scope: "org_scoped",
+        },
+        "execution target registered",
+      );
       res.status(201).json({ ...stripWorkerSecret(row!), workerToken });
     } catch (err) {
       next(err);
