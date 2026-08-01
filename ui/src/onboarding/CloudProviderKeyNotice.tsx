@@ -1,10 +1,14 @@
 /**
  * Non-blocking cloud onboarding guidance. On AoA Cloud (`cloud_auth`) the shared
  * host has no per-company keyless-CLI login to borrow, so agents / Commander /
- * extraction fail closed until the founder sets a per-company provider key. This
+ * embeddings fail closed until the founder sets a per-company provider key. This
  * callout routes them to Settings → Providers. Renders nothing on self-hosted
  * (keyless-CLI still works there). Pure/presentational — the mount site supplies
  * `deploymentMode`.
+ *
+ * NOTE: Extraction is deliberately NOT in that list. Extraction is CLI-only
+ * (Decision #104 / CLAUDE.md Rule #11) and never reads a provider key, so a
+ * provider key does not enable it. Do not re-add "extraction" here.
  */
 export function CloudProviderKeyNotice({
   deploymentMode,
@@ -19,7 +23,7 @@ export function CloudProviderKeyNotice({
     >
       <p className="text-text">You're on AoA Cloud.</p>
       <p>
-        Agents, Commander, and extraction run on a per-company provider key. Set one in
+        Agents, Commander, and embeddings run on a per-company provider key. Set one in
         Settings → Providers so your agents can run — you can finish setup first, this
         isn't required to continue.
       </p>

@@ -104,26 +104,35 @@ describe("extractionFailureMessage", () => {
   });
 
   describe("cloud (multiTenant) credential-shaped failures", () => {
-    it("not_authed in cloud points at Settings -> Providers, not a CLI login", () => {
+    // NOTE: This INVERTS the earlier D3/#27 "point cloud founders at
+    // Settings → Providers" copy. That copy was built on the wrong premise that
+    // a per-company provider key enables extraction. It does not: extraction is
+    // CLI-only (Decision #104 / CLAUDE.md Rule #11) and never reads a provider
+    // key. On the shared cloud host there is no CLI login to run and a provider
+    // key would not help, so a credential-shaped extraction failure means
+    // extraction is simply unavailable there — no actionable Settings path.
+    it("not_authed in cloud says extraction is unavailable, NOT set a provider key", () => {
       const result = extractionFailureMessage(
         "not_authed",
         "claude CLI is not authenticated. Run the CLI's login flow, then retry.",
         { multiTenant: true },
       );
-      expect(result.primary).toMatch(/Settings\s*→\s*Providers/);
+      expect(result.primary).not.toMatch(/Settings\s*→\s*Providers/);
+      expect(result.primary).toMatch(/AoA Cloud/);
       expect(result.primary).not.toMatch(/login flow|Run the CLI|not logged in/i);
-      expect(result.showSettings).toBe(true);
+      expect(result.showSettings).toBe(false);
     });
 
-    it("not_installed in cloud points at Settings -> Providers", () => {
+    it("not_installed in cloud says extraction is unavailable, NOT set a provider key", () => {
       const result = extractionFailureMessage(
         "not_installed",
         "claude CLI not found on PATH. Install the Claude Code CLI and ensure it is on your PATH.",
         { multiTenant: true },
       );
-      expect(result.primary).toMatch(/Settings\s*→\s*Providers/);
+      expect(result.primary).not.toMatch(/Settings\s*→\s*Providers/);
+      expect(result.primary).toMatch(/AoA Cloud/);
       expect(result.primary).not.toMatch(/PATH|Install the/i);
-      expect(result.showSettings).toBe(true);
+      expect(result.showSettings).toBe(false);
     });
 
     it("does NOT rewrite non-credential kinds in cloud (timeout/nonzero_exit)", () => {

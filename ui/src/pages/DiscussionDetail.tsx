@@ -148,15 +148,24 @@ export function extractionFailureMessage(
   opts: { multiTenant?: boolean } = {},
 ): { primary: string; showSettings: boolean } {
   // On AoA Cloud (multi-tenant) the shared host has no per-company keyless CLI
-  // login to borrow, so a credential-shaped failure is fixed by setting a
-  // per-company provider key — NOT by a CLI login the founder can't perform.
-  // The server's CLI-flavored `message` is intentionally dropped here.
+  // login to borrow, and extraction is CLI-only (Decision #104 / CLAUDE.md Rule
+  // #11): a per-company provider key powers agents / Commander / embeddings but
+  // NEVER extraction. So a credential-shaped extraction failure is NOT actionable
+  // on cloud — there is no CLI login the founder can run, and setting a provider
+  // key would not help. Extraction is simply unavailable there, pending the
+  // deferred org-provider extraction sink.
+  //
+  // NOTE: This INTENTIONALLY REVERSES the earlier D3/#27 copy that pointed cloud
+  // founders at Settings → Providers. That copy was built on the wrong premise
+  // that a provider key enables extraction; it does not. The server's
+  // CLI-flavored `message` is intentionally dropped here.
   if (opts.multiTenant && (kind === "not_authed" || kind === "not_installed")) {
     return {
       primary:
-        "This company has no usable provider key, so extraction can't run. " +
-        "Set one in Settings → Providers, then Reprocess.",
-      showSettings: true,
+        "Extraction isn't available on AoA Cloud yet. It needs a local CLI login " +
+        "the shared host can't provide, and a provider key doesn't enable extraction. " +
+        "Support is planned.",
+      showSettings: false,
     };
   }
   switch (kind) {
