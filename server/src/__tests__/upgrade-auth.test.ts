@@ -424,6 +424,7 @@ describe("live-events authorizeUpgrade", () => {
   it("agent bearer branch ignores an untrusted Origin", async () => {
     const db = makeUpgradeAuthDb({
       key: { id: "key-1", companyId: "company-1", agentId: "agent-1" },
+      agent: { id: "agent-1", companyId: "company-1", status: "idle" },
     });
 
     const context = await authorizeUpgrade(
@@ -440,6 +441,95 @@ describe("live-events authorizeUpgrade", () => {
       actorId: "agent-1",
     });
     expect(db.update).toHaveBeenCalledTimes(1);
+  });
+
+  it("agent branch rejects a TERMINATED agent even with a valid key", async () => {
+    const db = makeUpgradeAuthDb({
+      key: { id: "key-1", companyId: "company-1", agentId: "agent-1" },
+      agent: { id: "agent-1", companyId: "company-1", status: "terminated" },
+    });
+
+    const context = await authorizeUpgrade(
+      db as any,
+      { headers: { authorization: "Bearer secret" } } as any,
+      "company-1",
+      new URL("ws://aoa.local/api/companies/company-1/events/ws"),
+      { deploymentMode: "authenticated", trustedOrigins: TRUSTED },
+    );
+
+    expect(context).toBeNull();
+  });
+
+  it("agent branch rejects a PENDING_APPROVAL agent even with a valid key", async () => {
+    const db = makeUpgradeAuthDb({
+      key: { id: "key-1", companyId: "company-1", agentId: "agent-1" },
+      agent: { id: "agent-1", companyId: "company-1", status: "pending_approval" },
+    });
+
+    const context = await authorizeUpgrade(
+      db as any,
+      { headers: { authorization: "Bearer secret" } } as any,
+      "company-1",
+      new URL("ws://aoa.local/api/companies/company-1/events/ws"),
+      { deploymentMode: "authenticated", trustedOrigins: TRUSTED },
+    );
+
+    expect(context).toBeNull();
+  });
+
+  it("agent branch rejects a MISSING agent row even with a valid key", async () => {
+    const db = makeUpgradeAuthDb({
+      key: { id: "key-1", companyId: "company-1", agentId: "agent-1" },
+      agent: null,
+    });
+
+    const context = await authorizeUpgrade(
+      db as any,
+      { headers: { authorization: "Bearer secret" } } as any,
+      "company-1",
+      new URL("ws://aoa.local/api/companies/company-1/events/ws"),
+      { deploymentMode: "authenticated", trustedOrigins: TRUSTED },
+    );
+
+    expect(context).toBeNull();
+  });
+
+  it("agent branch rejects a company-mismatched agent row", async () => {
+    const db = makeUpgradeAuthDb({
+      key: { id: "key-1", companyId: "company-1", agentId: "agent-1" },
+      agent: { id: "agent-1", companyId: "company-2", status: "idle" },
+    });
+
+    const context = await authorizeUpgrade(
+      db as any,
+      { headers: { authorization: "Bearer secret" } } as any,
+      "company-1",
+      new URL("ws://aoa.local/api/companies/company-1/events/ws"),
+      { deploymentMode: "authenticated", trustedOrigins: TRUSTED },
+    );
+
+    expect(context).toBeNull();
+  });
+
+  it("agent branch admits an ACTIVE agent with a valid key", async () => {
+    const db = makeUpgradeAuthDb({
+      key: { id: "key-1", companyId: "company-1", agentId: "agent-1" },
+      agent: { id: "agent-1", companyId: "company-1", status: "idle" },
+    });
+
+    const context = await authorizeUpgrade(
+      db as any,
+      { headers: { authorization: "Bearer secret" } } as any,
+      "company-1",
+      new URL("ws://aoa.local/api/companies/company-1/events/ws"),
+      { deploymentMode: "authenticated", trustedOrigins: TRUSTED },
+    );
+
+    expect(context).toEqual({
+      companyId: "company-1",
+      actorType: "agent",
+      actorId: "agent-1",
+    });
   });
 
   it("authenticated: session user with a company membership gets a board actor (trusted Origin)", async () => {

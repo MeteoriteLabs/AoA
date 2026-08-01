@@ -6,6 +6,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   agentApiKeys,
+  agents,
   companies,
   companyMemberships,
   instanceUserRoles,
@@ -264,6 +265,24 @@ export async function authorizeUpgrade(
     .then((rows) => rows[0] ?? null);
 
   if (!key || key.companyId !== companyId) {
+    return null;
+  }
+
+  // Mirror services/upgrade-auth.ts:182-195: a valid key is not enough — a
+  // terminated (key-revocation desync) or pending_approval (D6 board-approval
+  // gate) agent must not open the realtime bus.
+  const agent = await db
+    .select()
+    .from(agents)
+    .where(eq(agents.id, key.agentId))
+    .then((rows) => rows[0] ?? null);
+
+  if (
+    !agent ||
+    agent.companyId !== key.companyId ||
+    agent.status === "terminated" ||
+    agent.status === "pending_approval"
+  ) {
     return null;
   }
 
