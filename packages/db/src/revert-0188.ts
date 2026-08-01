@@ -1,13 +1,29 @@
 // REVERSIBILITY ESCAPE HATCH — manual, single-org only. NOT a journaled
 // migration (would auto-apply and undo Phase 1). Run: tsx src/revert-0188.ts
 // Refuses unless exactly ONE Organization exists.
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { resolve as resolvePath } from "node:path";
 import postgres from "postgres";
 
-const url = process.env.DATABASE_URL;
-if (!url) throw new Error("DATABASE_URL is required for revert-0188");
+type Sql = ReturnType<typeof postgres>;
 
-const sql = postgres(url, { max: 1 });
-try {
+// Read the 0188 migration file EXACTLY the way the migrator does
+// (client.ts readMigrationFileContent — no line-ending normalization) so the
+// sha256 matches the journal row the migrator inserted. The
+// drizzle.__drizzle_migrations table is keyed by `hash`, NOT `name` (it has no
+// `name` column — see client.ts), so this is how we locate the 0188 row.
+async function compute0188JournalHash(): Promise<string> {
+  const content = await readFile(
+    new URL("./migrations/0188_organizations.sql", import.meta.url),
+    "utf8",
+  );
+  return createHash("sha256").update(content).digest("hex");
+}
+
+export async function revert0188(sql: Sql): Promise<void> {
   const [{ count }] = await sql<{ count: number }[]>`SELECT count(*)::int AS count FROM organizations`;
   if (count !== 1) {
     throw new Error(
@@ -15,6 +31,7 @@ try {
         `Once a second tenant exists this is a one-way door — restore the pre-0188 snapshot instead.`,
     );
   }
+  const journalHash = await compute0188JournalHash();
   await sql.begin(async (tx) => {
     // 1. Drop the tenant FK on companies.
     await tx.unsafe(`ALTER TABLE "companies" DROP CONSTRAINT IF EXISTS "companies_organization_id_organizations_id_fk"`);
@@ -26,16 +43,63 @@ try {
     await tx.unsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "issues_identifier_idx" ON "issues" USING btree ("identifier")`);
     // 3. Drop the org column + tenant tables.
     await tx.unsafe(`ALTER TABLE "companies" DROP COLUMN IF EXISTS "organization_id"`);
+    // Later phases add org FKs from OTHER tables (provider_connections in 0190,
+    // execution_targets in 0191, and any future org-referencing table). DROP
+    // TABLE below has no CASCADE, so those inbound FKs would abort the whole
+    // (transactional) revert with a dependent-object error. Dynamically drop
+    // EVERY foreign key that references organizations first — robust and
+    // future-proof, no hardcoded table list. (organizations still exists here;
+    // the single-org guard above guarantees the ::regclass cast resolves.)
+    await tx.unsafe(`
+      DO $$
+      DECLARE
+        r record;
+      BEGIN
+        FOR r IN
+          SELECT conrelid::regclass AS tbl, conname
+          FROM pg_constraint
+          WHERE contype = 'f'
+            AND confrelid = 'organizations'::regclass
+            AND conrelid <> 'organizations'::regclass
+        LOOP
+          EXECUTE format('ALTER TABLE %s DROP CONSTRAINT IF EXISTS %I', r.tbl, r.conname);
+        END LOOP;
+      END $$;
+    `);
     await tx.unsafe(`DROP TABLE IF EXISTS "organization_invitations"`);
     await tx.unsafe(`DROP TABLE IF EXISTS "organization_memberships"`);
     await tx.unsafe(`DROP TABLE IF EXISTS "organizations"`);
     // 4. Manually strip the 0188 journal row from __drizzle_migrations so the
-    //    migrator does not think it is still applied. (Operator must also delete
-    //    the 0188 files + journal entry from source before re-generating.)
-    await tx.unsafe(`DELETE FROM "drizzle"."__drizzle_migrations" WHERE name = '0188_organizations.sql' OR name = '0188_organizations'`);
+    //    migrator does not think it is still applied. The table has no `name`
+    //    column — rows are keyed by the sha256 of the migration file content
+    //    (see client.ts), so delete by hash. (Operator must also delete the
+    //    0188 files + journal entry from source before re-generating.)
+    await tx.unsafe(`DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = $1`, [journalHash]);
   });
   // eslint-disable-next-line no-console
   console.log("revert-0188 complete: Phase 1 tenant schema removed (single-org state restored).");
-} finally {
-  await sql.end();
+}
+
+// Only run the destructive script when executed directly (tsx src/revert-0188.ts),
+// never when imported (e.g. by the integration test).
+function invokedAsScript(): boolean {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  const here = fileURLToPath(import.meta.url);
+  try {
+    return realpathSync(entry) === realpathSync(here);
+  } catch {
+    return resolvePath(entry) === resolvePath(here);
+  }
+}
+
+if (invokedAsScript()) {
+  const url = process.env.DATABASE_URL;
+  if (!url) throw new Error("DATABASE_URL is required for revert-0188");
+  const sql = postgres(url, { max: 1 });
+  try {
+    await revert0188(sql);
+  } finally {
+    await sql.end();
+  }
 }
