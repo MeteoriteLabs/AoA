@@ -92,5 +92,10 @@ describe("execution-target registration — audit trail (finding ②)", () => {
       }),
       "execution target registered",
     );
+
+    // The audit line must NOT leak the worker credential (plaintext or hash).
+    const payload = infoSpy.mock.calls[0]![0];
+    expect(payload).not.toHaveProperty("workerToken");
+    expect(payload).not.toHaveProperty("workerTokenHash");
   });
 });

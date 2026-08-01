@@ -43,8 +43,17 @@ export async function revert0188(sql: Sql): Promise<void> {
   if (count !== 1) throw singleOrgRefusal(count);
   const journalHash = await compute0188JournalHash();
   await sql.begin(async (tx) => {
-    // 0. Close the TOCTOU window on the destructive single-org rollback. Take an
-    //    ACCESS EXCLUSIVE lock on organizations as the FIRST statement in the
+    // 0. Pin READ COMMITTED as the VERY FIRST statement (before the LOCK below).
+    //    The post-lock recheck's correctness depends on READ COMMITTED: each
+    //    statement takes a fresh snapshot, so the SELECT after the lock sees a
+    //    2nd org that committed while A was waiting for the lock. Under REPEATABLE
+    //    READ the recheck would read the transaction's original pre-lock snapshot
+    //    (taken before that commit) and be defeated → both tenants dropped. The
+    //    server default is READ COMMITTED, so this is behaviourally a no-op today;
+    //    pinning it makes the guarantee explicit and immune to a changed default.
+    await tx.unsafe(`SET TRANSACTION ISOLATION LEVEL READ COMMITTED`);
+    // 0b. Close the TOCTOU window on the destructive single-org rollback. Take an
+    //    ACCESS EXCLUSIVE lock on organizations as the first data statement in the
     //    transaction, THEN re-run the single-org count check. ACCESS EXCLUSIVE
     //    conflicts with the RowExclusive lock a concurrent INSERT holds, so no
     //    org can be created between this recheck and the drops below — a second
