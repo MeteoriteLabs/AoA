@@ -51,6 +51,9 @@ import {
   companyMemberships,
   mcpApiKeys,
   mcpClientConnections,
+  providerAssignments,
+  providerConnections,
+  runtimeProviderKeys,
   workspaceOperations,
   workspaceRuntimeServices,
 } from "@armyofagents/db";
@@ -310,6 +313,19 @@ export function companyService(db: Db) {
         await tx.delete(approvalComments).where(eq(approvalComments.companyId, id));
         await tx.delete(approvals).where(eq(approvals.companyId, id));
         // === Memberships, secrets, invites ===
+        // Two tables hold ON DELETE restrict FKs into company_secrets:
+        // provider_connections.secret_ref (migration 0190) and
+        // runtime_provider_keys.secret_id. A connection minted from a backfilled
+        // legacy key, or a stored runtime provider key, therefore PINS its secret.
+        // Unlike the belt-and-suspenders cascade deletes above, these are
+        // load-bearing: without them the companySecrets delete below hits the
+        // RESTRICT FK and aborts the whole transaction. Clear both referrers
+        // BEFORE companySecrets — provider_assignments first (its connection_id →
+        // provider_connections cascades, but explicit-and-ordered mirrors this
+        // teardown), then the connections and the runtime keys.
+        await tx.delete(providerAssignments).where(eq(providerAssignments.companyId, id));
+        await tx.delete(providerConnections).where(eq(providerConnections.companyId, id));
+        await tx.delete(runtimeProviderKeys).where(eq(runtimeProviderKeys.companyId, id));
         await tx.delete(companySecrets).where(eq(companySecrets.companyId, id));
         await tx.delete(joinRequests).where(eq(joinRequests.companyId, id));
         await tx.delete(invites).where(eq(invites.companyId, id));
