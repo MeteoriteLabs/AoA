@@ -17,7 +17,12 @@ describe("assertUnsandboxedMultitenantAllowed (D1)", () => {
   beforeEach(() => resetUnsandboxedMultitenantWarning());
 
   const local = { type: "local" as const };
+  // Runtime-less docker resolves to runc (shared host kernel + default bridge
+  // egress) — NOT genuine per-tenant isolation on cloud_auth without a gVisor pool.
   const dockerSandbox = { type: "sandbox-docker" as const, image: "node:22" };
+  const dockerSandboxRunc = { type: "sandbox-docker" as const, image: "node:22", runtime: "runc" as const };
+  // Only a gVisor (runsc) docker target is a genuinely-isolated boundary.
+  const dockerSandboxRunsc = { type: "sandbox-docker" as const, image: "node:22", runtime: "runsc" as const };
   const providerSandbox = {
     type: "provider-sandbox" as const,
     provider: "modal",
@@ -59,6 +64,26 @@ describe("assertUnsandboxedMultitenantAllowed (D1)", () => {
     expect(log.warn.mock.calls[0][1]).toContain(UNSANDBOXED_MULTITENANT_OPT_IN_ENV);
   });
 
+  it("throws on cloud_auth + non-gVisor docker target (runc / runtime-less) + no opt-in", () => {
+    // A tenant-authored sandbox-docker that resolves to runc (or unset runtime)
+    // shares the host kernel + default bridge egress → reachable weaker-than-promised
+    // isolation on cloud_auth without a gVisor pool. Fail closed exactly like `local`.
+    expect(() =>
+      assertUnsandboxedMultitenantAllowed(dockerSandbox, { tenantIsolationEnforced: true, sink: "org agent", env: noEnv }),
+    ).toThrow(/AOA_ALLOW_UNSANDBOXED_MULTITENANT/);
+    expect(() =>
+      assertUnsandboxedMultitenantAllowed(dockerSandboxRunc, { tenantIsolationEnforced: true, sink: "crew agent", env: noEnv }),
+    ).toThrow(/crew agent/);
+  });
+
+  it("allows a non-gVisor docker target on cloud_auth when opted in (warns once)", () => {
+    const log = { warn: vi.fn() };
+    expect(() =>
+      assertUnsandboxedMultitenantAllowed(dockerSandbox, { tenantIsolationEnforced: true, sink: "org agent", env: optedIn, log }),
+    ).not.toThrow();
+    expect(log.warn).toHaveBeenCalledTimes(1);
+  });
+
   it("is a no-op when tenant isolation is NOT enforced (self-hosted local_trusted / authenticated)", () => {
     const log = { warn: vi.fn() };
     // A plain self-hosted install...
@@ -70,13 +95,17 @@ describe("assertUnsandboxedMultitenantAllowed (D1)", () => {
     expect(() =>
       assertUnsandboxedMultitenantAllowed(null, { tenantIsolationEnforced: false, sink: "org agent", env: noEnv, log }),
     ).not.toThrow();
+    // ...and a runc docker target on a self-host is likewise never refused.
+    expect(() =>
+      assertUnsandboxedMultitenantAllowed(dockerSandbox, { tenantIsolationEnforced: false, sink: "crew agent", env: noEnv, log }),
+    ).not.toThrow();
     expect(log.warn).not.toHaveBeenCalled();
   });
 
-  it("is a no-op on cloud_auth when the target is already sandboxed", () => {
+  it("is a no-op on cloud_auth when the target is genuinely isolated (gVisor docker / provider-sandbox)", () => {
     const log = { warn: vi.fn() };
     expect(() =>
-      assertUnsandboxedMultitenantAllowed(dockerSandbox, { tenantIsolationEnforced: true, sink: "org agent", env: noEnv, log }),
+      assertUnsandboxedMultitenantAllowed(dockerSandboxRunsc, { tenantIsolationEnforced: true, sink: "org agent", env: noEnv, log }),
     ).not.toThrow();
     expect(() =>
       assertUnsandboxedMultitenantAllowed(providerSandbox, { tenantIsolationEnforced: true, sink: "org agent", env: noEnv, log }),

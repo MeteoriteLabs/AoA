@@ -12,8 +12,16 @@
 // is set, and when it is set it logs one loud SECURITY warning per process. It is
 // a no-op on every self-hosted deployment (tenantIsolationEnforced() === false —
 // local_trusted AND authenticated single-tenant) and a no-op when the resolved
-// target is already isolated (sandbox-docker / provider-sandbox). It does NOT
-// implement isolation — it makes the current unsafe fallback conscious.
+// target is GENUINELY isolated (a gVisor/runsc docker target or a provider-sandbox).
+// It does NOT implement isolation — it makes the current unsafe fallback conscious.
+//
+// A runc / runtime-less docker target is NOT genuine isolation on shared infra: it
+// shares the host kernel and, via default bridge networking, can reach the
+// control-plane host / cloud metadata endpoint. On cloud_auth WITHOUT a configured
+// gVisor (runsc) pool — the default — such a target is a reachable weaker-than-
+// promised boundary, so the guard fails closed on it exactly like `local`. Full
+// runsc + network:none enforcement is the deferred per-tenant-isolation initiative;
+// this guard only refuses the unsafe fallback until it lands.
 //
 // SIGNAL: gate on tenantIsolationEnforced() (cloud_auth), NOT trustBoundary ===
 // "multi_tenant". The latter is TRUE for `authenticated` self-hosts too and would
@@ -29,6 +37,35 @@ export function isUnsandboxedLocalTarget(
   target: AdapterExecutionTarget | null | undefined,
 ): boolean {
   return !target || target.type === "local";
+}
+
+/**
+ * Docker-family target types. Only `sandbox-docker` is in the current union; the
+ * others are matched defensively so a future rename/alias cannot silently reopen
+ * the hole. A docker-family target counts as genuine per-tenant isolation on
+ * shared infra ONLY when it runs under gVisor (`runtime === "runsc"`).
+ */
+const DOCKER_FAMILY_TARGET_TYPES: ReadonlySet<string> = new Set([
+  "sandbox-docker",
+  "docker",
+  "local-docker",
+]);
+
+/**
+ * True when the resolved target must be REFUSED on an enforced-isolation
+ * (cloud_auth) deployment absent the opt-in: the unsandboxed local host, OR a
+ * docker-family target that is NOT running under gVisor (runc / runtime-less).
+ * A `provider-sandbox` (and any future genuinely-isolated target) is not refused.
+ */
+function requiresSandboxRefusal(
+  target: AdapterExecutionTarget | null | undefined,
+): boolean {
+  if (isUnsandboxedLocalTarget(target)) return true;
+  if (target && DOCKER_FAMILY_TARGET_TYPES.has(target.type)) {
+    // runc / undefined runtime => shared host kernel + default bridge egress.
+    return (target as { runtime?: unknown }).runtime !== "runsc";
+  }
+  return false;
 }
 
 function optInEnabled(env: NodeJS.ProcessEnv): boolean {
@@ -60,13 +97,16 @@ export interface UnsandboxedMultitenantGuardOptions {
 }
 
 /**
- * Refuse an unsandboxed local run on an enforced-isolation (cloud_auth) deployment
- * unless the operator has explicitly opted in via AOA_ALLOW_UNSANDBOXED_MULTITENANT.
- * No-op on every self-hosted deployment and on already-isolated (sandbox) targets.
- * When opted in, logs one loud warning per process.
+ * Refuse an unsandboxed run on an enforced-isolation (cloud_auth) deployment unless
+ * the operator has explicitly opted in via AOA_ALLOW_UNSANDBOXED_MULTITENANT. No-op
+ * on every self-hosted deployment and on genuinely-isolated targets (a gVisor/runsc
+ * docker target or a provider-sandbox). A runc / runtime-less docker target is
+ * treated as unsandboxed and refused like `local`. When opted in, logs one loud
+ * warning per process.
  *
- * @throws Error when tenant isolation is enforced (cloud_auth), the target is
- *   local/unsandboxed, and the opt-in env is not set.
+ * @throws Error when tenant isolation is enforced (cloud_auth), the target requires
+ *   sandbox refusal (local/unsandboxed host, or a non-gVisor docker target), and
+ *   the opt-in env is not set.
  */
 export function assertUnsandboxedMultitenantAllowed(
   target: AdapterExecutionTarget | null | undefined,
@@ -75,17 +115,19 @@ export function assertUnsandboxedMultitenantAllowed(
   // Only cloud_auth (tenant isolation enforced) gates. Every self-hosted
   // deployment — local_trusted AND authenticated single-tenant — is exempt.
   if (!opts.tenantIsolationEnforced) return;
-  // Already isolated (sandbox-docker / provider-sandbox): safe on shared infra.
-  if (!isUnsandboxedLocalTarget(target)) return;
+  // Genuinely isolated (gVisor/runsc docker OR provider-sandbox): safe on shared
+  // infra. A runc / runtime-less docker target falls through to refusal below.
+  if (!requiresSandboxRefusal(target)) return;
 
   const env = opts.env ?? process.env;
   if (!optInEnabled(env)) {
     throw new Error(
-      `Refusing to dispatch a ${opts.sink} run on the unsandboxed control-plane host ` +
-        `under enforced tenant isolation (cloud_auth). Per-tenant execution isolation is ` +
-        `not yet implemented; set ${UNSANDBOXED_MULTITENANT_OPT_IN_ENV}=1 to explicitly ` +
-        `allow unsandboxed local runs on this shared deployment, or configure a sandboxed ` +
-        `execution target.`,
+      `Refusing to dispatch a ${opts.sink} run without genuine per-tenant isolation ` +
+        `(the unsandboxed control-plane host, or a non-gVisor docker target) under ` +
+        `enforced tenant isolation (cloud_auth). Per-tenant execution isolation is not ` +
+        `yet implemented; set ${UNSANDBOXED_MULTITENANT_OPT_IN_ENV}=1 to explicitly allow ` +
+        `unsandboxed runs on this shared deployment, or configure a gVisor (runsc) or ` +
+        `provider-sandbox execution target.`,
     );
   }
 

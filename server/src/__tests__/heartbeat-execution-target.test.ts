@@ -344,13 +344,17 @@ describe("resolveGuardedAdapterExecutionContext — org-agent sink (D1)", () => 
     expect(result.executionTarget).toEqual({ type: "local" });
   });
 
-  it("no-ops the guard on cloud_auth when the resolved target is a hardened sandbox (hardening still applies)", () => {
+  it("no-ops the guard on cloud_auth when the resolved target is a hardened gVisor sandbox (hardening still applies)", () => {
+    // runtime:"runsc" makes this a GENUINELY-isolated docker target — the only
+    // docker shape the D1 guard allows on cloud_auth. A runtime-less/runc docker
+    // target would now be REFUSED (shared host kernel + bridge egress).
     const result = resolveGuardedAdapterExecutionContext(
-      { executionTarget: { type: "sandbox-docker", image: "node:22", network: "host", allowHostGateway: true } },
+      { executionTarget: { type: "sandbox-docker", image: "node:22", runtime: "runsc", network: "host", allowHostGateway: true } },
       { getRuntimeCommandSpec: vi.fn(() => null) },
       { trustBoundary: "multi_tenant", tenantIsolationEnforced: true, sink: "org agent" },
     );
     if (result.executionTarget.type !== "sandbox-docker") throw new Error("expected sandbox-docker");
+    expect(result.executionTarget.runtime).toBe("runsc");
     // sink hardening still applied (mirrors the existing multi_tenant test above)
     expect(result.executionTarget.allowHostGateway).toBe(false);
     expect(result.executionTarget.network).toBe("none");
