@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { executionTargets } from "@armyofagents/db";
 
@@ -50,6 +50,12 @@ export async function ensureControlPlaneExecutionTarget(db: Db): Promise<void> {
 // slug. slug is unique only per (organization_id, slug), so a slug-scoped update
 // would let org-1's worker token flip org-2's identically-slugged pool row. The
 // worker token resolves to exactly one target id; update by that id only.
+//
+// A `disabled` target is out of rotation by operator decision. The status guard
+// (ne status 'disabled') keeps disabling DURABLE: a disabled worker's own
+// heartbeat matches nothing → updated === 0, so the row is never resurrected to
+// 'active'. The route returns 404 on updated === 0, telling the worker it was
+// deactivated. (The resolver already excludes disabled rows from routing.)
 export async function registerWorkerHeartbeat(
   db: Db,
   input: { targetId: string; status?: "active" | "draining" | "offline"; capabilities?: Record<string, unknown> },
@@ -62,7 +68,7 @@ export async function registerWorkerHeartbeat(
       ...(input.capabilities ? { capabilities: input.capabilities } : {}),
       updatedAt: new Date(),
     })
-    .where(eq(executionTargets.id, input.targetId))
+    .where(and(eq(executionTargets.id, input.targetId), ne(executionTargets.status, "disabled")))
     .returning({ id: executionTargets.id });
   return { updated: rows.length };
 }

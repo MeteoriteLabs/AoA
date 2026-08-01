@@ -9,7 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { applyPendingMigrations, createDb, executionTargets, type Db } from "@armyofagents/db";
 import {
   createWorkerToken,
@@ -26,6 +26,7 @@ type EmbeddedPostgresCtor = new (opts: {
   password: string;
   port: number;
   persistent: boolean;
+  initdbFlags?: string[];
 }) => EmbeddedPostgresInstance;
 
 const ORG = "00000000-0000-0000-0000-0000000000d1";
@@ -41,7 +42,7 @@ beforeAll(async () => {
   try {
     dataDir = await mkdtemp(join(tmpdir(), "aoa-wtk-"));
     const { default: EmbeddedPostgres } = (await import("embedded-postgres")) as { default: EmbeddedPostgresCtor };
-    pg = new EmbeddedPostgres({ databaseDir: join(dataDir, "db"), user: "test", password: "test", port: PORT, persistent: false });
+    pg = new EmbeddedPostgres({ databaseDir: join(dataDir, "db"), user: "test", password: "test", port: PORT, persistent: false, initdbFlags: ["--encoding=UTF8", "--locale=C"] });
     await pg.initialise();
     await pg.start();
     const url = `postgres://test:test@localhost:${PORT}/postgres`;
@@ -71,6 +72,42 @@ describe.skipIf(process.platform === "win32")("worker token round-trip (real DB,
     expect(await resolveWorkerTargetId(db, row!.id)).toBeNull(); // raw PK → nothing
     const { updated } = await registerWorkerHeartbeat(db, { targetId: row!.id, status: "active" });
     expect(updated).toBe(1);
+  }, 90_000);
+
+  it("a DISABLED target is NOT resurrected by its own heartbeat", async () => {
+    if (setupError) throw new Error(String(setupError));
+    // Operator took this worker out of rotation (status: disabled). Its heartbeat
+    // must NOT flip it back to active — disabling has to be durable.
+    const token = createWorkerToken();
+    const [row] = await db
+      .insert(executionTargets)
+      .values({ organizationId: ORG, slug: "wkr-disabled", kind: "dedicated_worker", trustClass: "dedicated_tenant", status: "disabled", workerTokenHash: hashWorkerToken(token) })
+      .returning();
+    const { updated } = await registerWorkerHeartbeat(db, { targetId: row!.id, status: "active" });
+    expect(updated).toBe(0); // guard: WHERE excludes the disabled row → nothing updated
+    const after = await db
+      .select({ status: executionTargets.status })
+      .from(executionTargets)
+      .where(eq(executionTargets.id, row!.id));
+    expect(after[0]!.status).toBe("disabled"); // still out of rotation, not resurrected
+  }, 90_000);
+
+  it("an active target heartbeats normally (status + lastSeenAt bumped)", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const token = createWorkerToken();
+    const [row] = await db
+      .insert(executionTargets)
+      .values({ organizationId: ORG, slug: "wkr-active", kind: "dedicated_worker", trustClass: "dedicated_tenant", status: "active", workerTokenHash: hashWorkerToken(token) })
+      .returning();
+    expect(row!.lastSeenAt).toBeNull(); // never heartbeated yet
+    const { updated } = await registerWorkerHeartbeat(db, { targetId: row!.id, status: "draining" });
+    expect(updated).toBe(1);
+    const after = await db
+      .select({ status: executionTargets.status, lastSeenAt: executionTargets.lastSeenAt })
+      .from(executionTargets)
+      .where(eq(executionTargets.id, row!.id));
+    expect(after[0]!.status).toBe("draining"); // status accepted from a non-disabled row
+    expect(after[0]!.lastSeenAt).not.toBeNull(); // lastSeenAt bumped
   }, 90_000);
 
   it("rotating the token invalidates the old one", async () => {

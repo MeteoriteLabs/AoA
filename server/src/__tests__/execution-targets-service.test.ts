@@ -46,8 +46,11 @@ describe("registerWorkerHeartbeat", () => {
     const res = await registerWorkerHeartbeat(db, { targetId: "t-1", status: "active", capabilities: { runtimes: ["runsc"] } });
     expect(db.update).toHaveBeenCalled();
     expect(set).toHaveBeenCalledWith(expect.objectContaining({ status: "active" }));
-    // "eq" is the stubbed operator return; proves .where was given the id predicate.
-    expect(where).toHaveBeenCalledWith("eq");
+    // "and" is the stubbed operator return; proves .where was given a COMPOSED
+    // predicate — and(eq(id), ne(status, 'disabled')) — not a bare id equality.
+    // The status guard keeps a disabled target from being resurrected by its
+    // own heartbeat (real-DB proof in execution-targets-worker-token.integration).
+    expect(where).toHaveBeenCalledWith("and");
     expect(res.updated).toBe(1);
   });
   it("reports zero updated when the target id is gone (fail-closed 404 at the route)", async () => {
