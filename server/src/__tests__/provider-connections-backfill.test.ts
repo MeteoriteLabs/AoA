@@ -5,11 +5,14 @@ import { planBackfill } from "../services/provider-connections-backfill.js";
 describe("planBackfill", () => {
   it("maps a provider:<id> company secret to an api_key connection + company_default assignment", () => {
     const plan = planBackfill({
-      companyKeySecrets: [{ companyId: "co1", secretId: "sec1", providerId: "anthropic" }],
+      companyKeySecrets: [
+        { organizationId: "org1", companyId: "co1", secretId: "sec1", providerId: "anthropic" },
+      ],
       subscriptionBindings: [],
     });
     expect(plan.connections).toContainEqual(
       expect.objectContaining({
+        organizationId: "org1",
         companyId: "co1",
         provider: "anthropic",
         authMethod: "api_key",
@@ -19,6 +22,7 @@ describe("planBackfill", () => {
     );
     expect(plan.assignments).toContainEqual(
       expect.objectContaining({
+        organizationId: "org1",
         companyId: "co1",
         provider: "anthropic",
         scopeType: "company_default",
@@ -32,6 +36,7 @@ describe("planBackfill", () => {
       companyKeySecrets: [],
       subscriptionBindings: [
         {
+          organizationId: "org1",
           companyId: "co1",
           provider: "anthropic",
           ownerUserId: "u1",
@@ -42,6 +47,7 @@ describe("planBackfill", () => {
     });
     expect(plan.connections).toContainEqual(
       expect.objectContaining({
+        organizationId: "org1",
         authMethod: "personal_subscription",
         secretRef: null,
         ownerUserId: "u1",
@@ -51,6 +57,7 @@ describe("planBackfill", () => {
     );
     expect(plan.assignments).toContainEqual(
       expect.objectContaining({
+        organizationId: "org1",
         scopeType: "agent_override",
         scopeId: "ag1",
       }),

@@ -2,6 +2,7 @@
 import type { Db } from "@armyofagents/db";
 import {
   agentProviderCredentialBindings,
+  companies,
   companySecrets,
   providerAssignments,
   providerConnections,
@@ -10,11 +11,13 @@ import {
 import { and, eq, isNotNull, isNull, like } from "drizzle-orm";
 
 export interface CompanyKeySecret {
+  organizationId: string;
   companyId: string;
   secretId: string;
   providerId: string;
 }
 export interface SubscriptionBindingRow {
+  organizationId: string;
   companyId: string;
   provider: string;
   ownerUserId: string;
@@ -24,6 +27,7 @@ export interface SubscriptionBindingRow {
 
 export interface BackfillPlan {
   connections: Array<{
+    organizationId: string;
     companyId: string;
     provider: string;
     authMethod: "api_key" | "personal_subscription";
@@ -34,6 +38,7 @@ export interface BackfillPlan {
     state: "verified";
   }>;
   assignments: Array<{
+    organizationId: string;
     companyId: string;
     provider: string;
     scopeType: "company_default" | "agent_override";
@@ -50,6 +55,7 @@ export function planBackfill(input: {
   const plan: BackfillPlan = { connections: [], assignments: [] };
   for (const s of input.companyKeySecrets) {
     plan.connections.push({
+      organizationId: s.organizationId,
       companyId: s.companyId,
       provider: s.providerId,
       authMethod: "api_key",
@@ -60,6 +66,7 @@ export function planBackfill(input: {
       state: "verified",
     });
     plan.assignments.push({
+      organizationId: s.organizationId,
       companyId: s.companyId,
       provider: s.providerId,
       scopeType: "company_default",
@@ -68,6 +75,7 @@ export function planBackfill(input: {
   }
   for (const b of input.subscriptionBindings) {
     plan.connections.push({
+      organizationId: b.organizationId,
       companyId: b.companyId,
       provider: b.provider,
       authMethod: "personal_subscription",
@@ -78,6 +86,7 @@ export function planBackfill(input: {
       state: "verified",
     });
     plan.assignments.push({
+      organizationId: b.organizationId,
       companyId: b.companyId,
       provider: b.provider,
       scopeType: "agent_override",
@@ -132,14 +141,20 @@ export async function runProviderConnectionsBackfill(
     }
   }
 
-  // (1) Company provider API keys → api_key connections.
+  // (1) Company provider API keys → api_key connections. Derive organization_id
+  // from the OWNING COMPANY (companies.organization_id is NOT NULL) rather than
+  // company_secrets.organization_id — a pre-0189 secret's own column can be NULL,
+  // and the identity unique (0195) leads with organization_id, so a NULL org here
+  // would break ON CONFLICT arbiter inference / mis-scope the row.
   const keyRows = await db
     .select({
+      organizationId: companies.organizationId,
       companyId: companySecrets.companyId,
       secretId: companySecrets.id,
       name: companySecrets.name,
     })
     .from(companySecrets)
+    .innerJoin(companies, eq(companies.id, companySecrets.companyId))
     .where(
       and(
         like(companySecrets.name, "provider:%"),
@@ -148,6 +163,7 @@ export async function runProviderConnectionsBackfill(
       ),
     );
   const companyKeySecrets: CompanyKeySecret[] = keyRows.map((r) => ({
+    organizationId: r.organizationId,
     companyId: r.companyId,
     secretId: r.secretId,
     // `provider:<ownerId>` → catalog owner id (the same key the resolver reads).
@@ -167,6 +183,10 @@ export async function runProviderConnectionsBackfill(
     ? []
     : await db
         .select({
+          // provider_credentials has NO organization_id column → derive it from the
+          // owning company (companies.organization_id is NOT NULL). Required for the
+          // org-scoped identity unique (0195) ON CONFLICT arbiter.
+          organizationId: companies.organizationId,
           companyId: providerCredentials.companyId,
           provider: providerCredentials.provider,
           ownerUserId: providerCredentials.ownerUserId,
@@ -174,6 +194,7 @@ export async function runProviderConnectionsBackfill(
           agentId: agentProviderCredentialBindings.agentId,
         })
         .from(providerCredentials)
+        .innerJoin(companies, eq(companies.id, providerCredentials.companyId))
         .innerJoin(
           agentProviderCredentialBindings,
           eq(agentProviderCredentialBindings.credentialId, providerCredentials.id),
@@ -192,6 +213,7 @@ export async function runProviderConnectionsBackfill(
           ),
         );
   const subscriptionBindings: SubscriptionBindingRow[] = subRows.map((r) => ({
+    organizationId: r.organizationId,
     companyId: r.companyId,
     provider: r.provider,
     ownerUserId: r.ownerUserId,
@@ -223,6 +245,7 @@ export async function runProviderConnectionsBackfill(
         const insertedConn = await txDb
           .insert(providerConnections)
           .values({
+            organizationId: conn.organizationId,
             companyId: conn.companyId,
             provider: conn.provider,
             authMethod: conn.authMethod,
@@ -237,6 +260,7 @@ export async function runProviderConnectionsBackfill(
           })
           .onConflictDoNothing({
             target: [
+              providerConnections.organizationId,
               providerConnections.companyId,
               providerConnections.provider,
               providerConnections.authMethod,
@@ -253,6 +277,8 @@ export async function runProviderConnectionsBackfill(
             .from(providerConnections)
             .where(
               and(
+                // organization_id is non-null here (derived from companies.organization_id).
+                eq(providerConnections.organizationId, conn.organizationId),
                 conn.companyId
                   ? eq(providerConnections.companyId, conn.companyId)
                   : isNull(providerConnections.companyId),
@@ -276,6 +302,7 @@ export async function runProviderConnectionsBackfill(
         await txDb
           .insert(providerAssignments)
           .values({
+            organizationId: asn.organizationId,
             companyId: asn.companyId,
             provider: asn.provider,
             connectionId,
@@ -286,6 +313,7 @@ export async function runProviderConnectionsBackfill(
           })
           .onConflictDoNothing({
             target: [
+              providerAssignments.organizationId,
               providerAssignments.companyId,
               providerAssignments.provider,
               providerAssignments.scopeType,
