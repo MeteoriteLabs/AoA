@@ -360,7 +360,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: changes
     if: ${{ needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
-    timeout-minutes: 35
+    # Full server + ui + embedded-PG integration suites run ~31-35 min; 35 left
+    # no margin and tipped over the timeout on slower runners. 45 adds headroom.
+    timeout-minutes: 45
 
     steps:
       - name: Checkout repository
