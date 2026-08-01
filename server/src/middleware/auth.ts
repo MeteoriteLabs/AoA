@@ -1,15 +1,61 @@
 import { createHash } from "node:crypto";
 import type { Request, RequestHandler } from "express";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { agentApiKeys, agents, boardApiKeys, companyMemberships, heartbeatRuns, instanceUserRoles, mcpApiKeys, organizationMemberships } from "@armyofagents/db";
+import { agentApiKeys, agents, boardApiKeys, companies, companyMemberships, heartbeatRuns, instanceUserRoles, mcpApiKeys, organizationMemberships } from "@armyofagents/db";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
+import { tenantIsolationEnforced } from "../config/deployment-mode.js";
 import type { DeploymentMode } from "@armyofagents/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
+}
+
+/**
+ * Build a board user's allowed-company set.
+ *
+ * In cloud_auth (tenant isolation enforced) this INTERSECTS active company
+ * membership with active ORG ownership: a company is included only when the user
+ * holds an active `company_memberships` row AND is an active member of that
+ * company's owning organization. This gives `req.actor.companyIds` parity with
+ * `assertCompanyAccess` (routes/authz.ts), which requires BOTH memberships — so
+ * every `companyIds` reader (GET /companies, /companies/stats, …) enforces the
+ * full tenant invariant, not the company-membership half. Closing it here means
+ * an org-membership revocation (or an imperfect org backfill) can no longer leak
+ * company metadata/stats the per-company detail endpoint already 403s.
+ *
+ * Empty active-org set → fail-closed to `[]` (short-circuit; never call
+ * `inArray(col, [])`, which is an easy footgun to get backwards).
+ *
+ * Self-hosted (local_trusted / authenticated) keeps the pre-existing
+ * company-membership-only derivation UNCHANGED — no org intersection.
+ */
+async function resolveActorCompanyIds(
+  db: Db,
+  userId: string,
+  membershipCompanyIds: string[],
+  activeOrganizationIds: string[],
+): Promise<string[]> {
+  if (!tenantIsolationEnforced()) {
+    // Self-hosted: byte-for-byte the legacy set (company membership only).
+    return membershipCompanyIds;
+  }
+  if (activeOrganizationIds.length === 0) return [];
+  const rows = await db
+    .select({ companyId: companyMemberships.companyId })
+    .from(companyMemberships)
+    .innerJoin(companies, eq(companies.id, companyMemberships.companyId))
+    .where(
+      and(
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, userId),
+        eq(companyMemberships.status, "active"),
+        inArray(companies.organizationId, activeOrganizationIds),
+      ),
+    );
+  return rows.map((row) => row.companyId);
 }
 
 interface ActorMiddlewareOptions {
@@ -86,11 +132,20 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           ]);
           const isOperator = Boolean(roleRow);
           const cloud = opts.deploymentMode === "cloud_auth";
+          const organizationIds = orgMemberships.map((row) => row.organizationId);
+          // cloud_auth: intersect company membership with active-org ownership
+          // (parity with assertCompanyAccess); self-hosted keeps the raw set.
+          const companyIds = await resolveActorCompanyIds(
+            db,
+            userId,
+            memberships.map((row) => row.companyId),
+            organizationIds,
+          );
           req.actor = {
             type: "board",
             userId,
-            companyIds: memberships.map((row) => row.companyId),
-            organizationIds: orgMemberships.map((row) => row.organizationId),
+            companyIds,
+            organizationIds,
             // Operator-plane authority (instance settings). NOT clamped in cloud.
             operator: isOperator,
             // B1: the DATA-plane instance_admin bypass is clamped to false in
@@ -177,11 +232,20 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       await db.update(boardApiKeys).set({ lastUsedAt: new Date() }).where(eq(boardApiKeys.id, boardKeyRow.id));
       const isOperator = Boolean(roleRow);
       const cloud = opts.deploymentMode === "cloud_auth";
+      const organizationIds = orgMemberships.map((row) => row.organizationId);
+      // cloud_auth: intersect company membership with active-org ownership
+      // (parity with assertCompanyAccess); self-hosted keeps the raw set.
+      const companyIds = await resolveActorCompanyIds(
+        db,
+        boardKeyRow.userId,
+        memberships.map((row) => row.companyId),
+        organizationIds,
+      );
       req.actor = {
         type: "board",
         userId: boardKeyRow.userId,
-        companyIds: memberships.map((row) => row.companyId),
-        organizationIds: orgMemberships.map((row) => row.organizationId),
+        companyIds,
+        organizationIds,
         // Operator-plane authority (instance settings). NOT clamped in cloud.
         operator: isOperator,
         // B1: DATA-plane instance_admin bypass clamped to false in cloud_auth

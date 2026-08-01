@@ -21,6 +21,8 @@ import { join } from "node:path";
 import { sql } from "drizzle-orm";
 import { applyPendingMigrations, createDb, type Db } from "@armyofagents/db";
 import { companyService } from "../services/companies.js";
+import { actorMiddleware } from "../middleware/auth.js";
+import { setDeploymentMode } from "../config/deployment-mode.js";
 import { allocateEmbeddedPgPort } from "./helpers/embedded-pg-port.js";
 
 type EmbeddedPostgresInstance = {
@@ -41,6 +43,25 @@ let setupError: unknown = null;
 function firstId(result: unknown): string {
   if (Array.isArray(result)) return (result[0] as any)?.id;
   return (result as any).rows?.[0]?.id;
+}
+
+/** Drive the REAL auth middleware (no bearer → session path) to build req.actor
+ *  the same way production does, then hand back the resolved actor. Used to
+ *  prove the companyIds builder intersects company membership with active-org
+ *  ownership in cloud_auth. */
+function buildActorViaMiddleware(userId: string): Promise<any> {
+  const mw = actorMiddleware(db, {
+    deploymentMode: "cloud_auth",
+    resolveSession: async () => ({ user: { id: userId } }) as any,
+  });
+  return new Promise((resolve, reject) => {
+    const req: any = { header: () => undefined, method: "GET", originalUrl: "/api/companies" };
+    const ret = mw(req, {} as any, (err?: unknown) => {
+      if (err) reject(err instanceof Error ? err : new Error(String(err)));
+      else resolve(req.actor);
+    });
+    Promise.resolve(ret).catch(reject);
+  });
 }
 
 beforeAll(async () => {
@@ -165,6 +186,85 @@ describe.skipIf(process.platform !== "linux")(
       if (setupError) throw new Error(String(setupError));
       const stats = await svc.stats([]);
       expect(stats).toEqual({});
+    });
+  },
+);
+
+// Bug: /companies (GET) + /companies/stats scope by req.actor.companyIds, which
+// the auth middleware built from company_memberships ALONE — unlike
+// assertCompanyAccess (routes/authz.ts), which in cloud_auth requires BOTH org
+// AND company membership. An org-membership revocation (or imperfect backfill)
+// would therefore leak company metadata + stats the detail endpoint correctly
+// 403s. This suite drives the REAL middleware to prove companyIds is scoped to
+// active-org ownership, closing that half-invariant at the source.
+describe.skipIf(process.platform !== "linux")(
+  "auth middleware companyIds builder — active-org intersection (cloud_auth)",
+  () => {
+    let orgOId = "";
+    let companyCId = "";
+    let userCompanyOnly = ""; // active company membership, NO active org membership
+    let userBoth = ""; // active company membership AND active org membership
+
+    beforeAll(() => {
+      if (!setupError) setDeploymentMode("cloud_auth");
+    });
+    afterAll(() => {
+      // Restore the module default so nothing downstream inherits cloud_auth.
+      setDeploymentMode("local_trusted");
+    });
+
+    it("setup: seeds an org-owned company with a company-member who is NOT an org member", async () => {
+      if (setupError) throw new Error(String(setupError));
+      orgOId = firstId(await db.execute(sql`
+        INSERT INTO organizations (id, name, slug)
+        VALUES (gen_random_uuid(), 'Iso Org', 'iso-org') RETURNING id`));
+      companyCId = firstId(await db.execute(sql`
+        INSERT INTO companies (id, name, issue_prefix, organization_id)
+        VALUES (gen_random_uuid(), 'Iso Co C', 'ISC', ${orgOId}) RETURNING id`));
+
+      // User with an ACTIVE company membership for C but NO org membership.
+      userCompanyOnly = firstId(await db.execute(sql`
+        INSERT INTO "user" (id, email, name, created_at, updated_at)
+        VALUES (gen_random_uuid()::text, 'iso-company-only@x.io', 'Iso CompanyOnly', now(), now()) RETURNING id`));
+      await db.execute(sql`
+        INSERT INTO company_memberships (id, company_id, principal_type, principal_id, status)
+        VALUES (gen_random_uuid(), ${companyCId}, 'user', ${userCompanyOnly}, 'active')`);
+
+      // User with BOTH an active company membership for C AND active org membership for O.
+      userBoth = firstId(await db.execute(sql`
+        INSERT INTO "user" (id, email, name, created_at, updated_at)
+        VALUES (gen_random_uuid()::text, 'iso-both@x.io', 'Iso Both', now(), now()) RETURNING id`));
+      await db.execute(sql`
+        INSERT INTO company_memberships (id, company_id, principal_type, principal_id, status)
+        VALUES (gen_random_uuid(), ${companyCId}, 'user', ${userBoth}, 'active')`);
+      await db.execute(sql`
+        INSERT INTO organization_memberships (id, organization_id, user_id, role, status)
+        VALUES (gen_random_uuid(), ${orgOId}, ${userBoth}, 'member', 'active')`);
+
+      expect([orgOId, companyCId, userCompanyOnly, userBoth].every(Boolean)).toBe(true);
+    });
+
+    it("company member WITHOUT active org membership is excluded from companyIds + list + stats (RED before fix)", async () => {
+      if (setupError) throw new Error(String(setupError));
+      const actor = await buildActorViaMiddleware(userCompanyOnly);
+      // Not an active member of C's owning org.
+      expect(actor.organizationIds ?? []).not.toContain(orgOId);
+      // The bug leaks C here (companyIds built from company_memberships alone).
+      expect(actor.companyIds ?? []).not.toContain(companyCId);
+      // list()/stats() scope by companyIds — so C must not surface via either.
+      const listed = (await svc.list(actor.companyIds ?? [])).map((c: any) => c.id);
+      expect(listed).not.toContain(companyCId);
+      const stats = await svc.stats(actor.companyIds ?? []);
+      expect(stats[companyCId]).toBeUndefined();
+    });
+
+    it("company member WITH active org membership keeps the company in companyIds + list (positive)", async () => {
+      if (setupError) throw new Error(String(setupError));
+      const actor = await buildActorViaMiddleware(userBoth);
+      expect(actor.organizationIds ?? []).toContain(orgOId);
+      expect(actor.companyIds ?? []).toContain(companyCId);
+      const listed = (await svc.list(actor.companyIds ?? [])).map((c: any) => c.id);
+      expect(listed).toContain(companyCId);
     });
   },
 );
