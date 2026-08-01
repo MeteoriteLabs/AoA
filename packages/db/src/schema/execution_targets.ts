@@ -7,16 +7,21 @@ import { organizations } from "./organizations.js"; // P1 (0188) — merged befo
  *
  * P1 is merged first, so organizationId is a real FK now (M6-FK). It stays
  * NULLABLE: NULL organizationId = a system/shared target (the pooled gVisor row
- * and the seeded control-plane). ON DELETE SET NULL — a deleted org's dedicated
- * targets survive as orphaned/system rows rather than cascading away mid-run
- * (an operator reclaims or disables them). `slug` matches the
+ * and the seeded control-plane). ON DELETE CASCADE — deleting an org removes its
+ * dedicated tenant targets outright. NULL == the security-defining "system/shared,
+ * operator-trusted" signal (cross-tenant visible, custom isolation profile
+ * allowed), so SET NULL would silently PROMOTE a deleted tenant's dedicated
+ * targets into trusted shared infra; cascading them away is the only safe
+ * behaviour. System rows (organization_id IS NULL) are never children of any org,
+ * so an org delete never touches them — they never survive as tenant rows and
+ * tenant rows never survive as system rows. `slug` matches the
  * AOA_EXECUTION_TARGET_ID string that provider_credentials rows bind to.
  */
 export const executionTargets = pgTable(
   "execution_targets",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    organizationId: uuid("organization_id").references(() => organizations.id, { onDelete: "set null" }), // nullable = system/shared
+    organizationId: uuid("organization_id").references(() => organizations.id, { onDelete: "cascade" }), // nullable = system/shared; org delete cascades tenant targets (they never survive as system rows)
     ownerUserId: text("owner_user_id").references(() => authUsers.id, { onDelete: "set null" }),
     slug: text("slug").notNull(),
     kind: text("kind").notNull(), // pooled_gvisor | dedicated_worker | e2b | local_host | desktop
