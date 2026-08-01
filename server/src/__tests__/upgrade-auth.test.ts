@@ -221,6 +221,52 @@ describe("authorizeCompanyUpgrade", () => {
     expect(db.update).not.toHaveBeenCalled();
   });
 
+  it("cloud_auth: fails closed when the company (org) cannot be resolved", async () => {
+    // No companies row → organizationId null → the `if (!organizationId)` branch
+    // returns null WITHOUT consulting memberships (even though both exist).
+    const db = makeUpgradeAuthDb({
+      company: null,
+      orgMemberships: [{ id: "om-1" }],
+      memberships: [{ id: "cm-1" }],
+    });
+
+    const actor = await authorizeCompanyUpgrade(
+      db as any,
+      { headers: { cookie: "aoa_session=session" } } as any,
+      "company-1",
+      new URL("ws://aoa.local/preview/services/svc-1/ws"),
+      {
+        deploymentMode: "cloud_auth",
+        resolveSessionFromHeaders: async () => ({ user: { id: "user-1" } }) as any,
+      },
+    );
+
+    expect(actor).toBeNull();
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it("cloud_auth: org membership WITHOUT company membership is denied (both required)", async () => {
+    const db = makeUpgradeAuthDb({
+      company: { organizationId: "org-1" },
+      orgMemberships: [{ id: "om-1" }],
+      memberships: [],
+    });
+
+    const actor = await authorizeCompanyUpgrade(
+      db as any,
+      { headers: { cookie: "aoa_session=session" } } as any,
+      "company-1",
+      new URL("ws://aoa.local/preview/services/svc-1/ws"),
+      {
+        deploymentMode: "cloud_auth",
+        resolveSessionFromHeaders: async () => ({ user: { id: "user-1" } }) as any,
+      },
+    );
+
+    expect(actor).toBeNull();
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
   it("cloud_auth: session user with neither membership is denied", async () => {
     const db = makeUpgradeAuthDb({
       company: { organizationId: "org-1" },
