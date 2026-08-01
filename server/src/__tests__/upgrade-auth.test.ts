@@ -529,4 +529,126 @@ describe("live-events authorizeUpgrade", () => {
       actorId: "board",
     });
   });
+
+  it("cloud_auth: session user with org + company membership gets a board actor", async () => {
+    const db = makeUpgradeAuthDb({
+      company: { organizationId: "org-1" },
+      orgMemberships: [{ id: "om-1" }],
+      memberships: [{ id: "cm-1" }],
+    });
+    const resolveSessionFromHeaders = vi.fn(async () => ({ user: { id: "user-1" } }) as any);
+
+    const context = await authorizeUpgrade(
+      db as any,
+      { headers: { cookie: "aoa_session=session", origin: BOARD_ORIGIN } } as any,
+      "company-1",
+      new URL("ws://aoa.local/api/companies/company-1/events/ws"),
+      {
+        deploymentMode: "cloud_auth",
+        trustedOrigins: TRUSTED,
+        resolveSessionFromHeaders,
+      },
+    );
+
+    expect(context).toEqual({
+      companyId: "company-1",
+      actorType: "board",
+      actorId: "user-1",
+    });
+    expect(resolveSessionFromHeaders).toHaveBeenCalledTimes(1);
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it("cloud_auth: company membership WITHOUT org membership is denied (tenant isolation)", async () => {
+    const db = makeUpgradeAuthDb({
+      company: { organizationId: "org-1" },
+      orgMemberships: [],
+      memberships: [{ id: "cm-1" }],
+    });
+
+    const context = await authorizeUpgrade(
+      db as any,
+      { headers: { cookie: "aoa_session=session", origin: BOARD_ORIGIN } } as any,
+      "company-1",
+      new URL("ws://aoa.local/api/companies/company-1/events/ws"),
+      {
+        deploymentMode: "cloud_auth",
+        trustedOrigins: TRUSTED,
+        resolveSessionFromHeaders: async () => ({ user: { id: "user-1" } }) as any,
+      },
+    );
+
+    expect(context).toBeNull();
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it("cloud_auth: session user with neither membership is denied", async () => {
+    const db = makeUpgradeAuthDb({
+      company: { organizationId: "org-1" },
+      orgMemberships: [],
+      memberships: [],
+    });
+
+    const context = await authorizeUpgrade(
+      db as any,
+      { headers: { cookie: "aoa_session=session", origin: BOARD_ORIGIN } } as any,
+      "company-1",
+      new URL("ws://aoa.local/api/companies/company-1/events/ws"),
+      {
+        deploymentMode: "cloud_auth",
+        trustedOrigins: TRUSTED,
+        resolveSessionFromHeaders: async () => ({ user: { id: "user-1" } }) as any,
+      },
+    );
+
+    expect(context).toBeNull();
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it("cloud_auth: fails closed when the company (org) cannot be resolved", async () => {
+    const db = makeUpgradeAuthDb({
+      company: null,
+      orgMemberships: [{ id: "om-1" }],
+      memberships: [{ id: "cm-1" }],
+    });
+
+    const context = await authorizeUpgrade(
+      db as any,
+      { headers: { cookie: "aoa_session=session", origin: BOARD_ORIGIN } } as any,
+      "company-1",
+      new URL("ws://aoa.local/api/companies/company-1/events/ws"),
+      {
+        deploymentMode: "cloud_auth",
+        trustedOrigins: TRUSTED,
+        resolveSessionFromHeaders: async () => ({ user: { id: "user-1" } }) as any,
+      },
+    );
+
+    expect(context).toBeNull();
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it("cloud_auth: cookie branch rejects an untrusted Origin BEFORE resolving the session", async () => {
+    const db = makeUpgradeAuthDb({
+      company: { organizationId: "org-1" },
+      orgMemberships: [{ id: "om-1" }],
+      memberships: [{ id: "cm-1" }],
+    });
+    const resolveSessionFromHeaders = vi.fn(async () => ({ user: { id: "user-1" } }) as any);
+
+    const context = await authorizeUpgrade(
+      db as any,
+      { headers: { cookie: "aoa_session=session", origin: "https://evil.example" } } as any,
+      "company-1",
+      new URL("ws://aoa.local/api/companies/company-1/events/ws"),
+      {
+        deploymentMode: "cloud_auth",
+        trustedOrigins: TRUSTED,
+        resolveSessionFromHeaders,
+      },
+    );
+
+    expect(context).toBeNull();
+    expect(resolveSessionFromHeaders).not.toHaveBeenCalled();
+  });
 });

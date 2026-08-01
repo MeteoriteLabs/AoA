@@ -4,7 +4,13 @@ import { createRequire } from "node:module";
 import type { Duplex } from "node:stream";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { agentApiKeys, companyMemberships, instanceUserRoles } from "@armyofagents/db";
+import {
+  agentApiKeys,
+  companies,
+  companyMemberships,
+  instanceUserRoles,
+  organizationMemberships,
+} from "@armyofagents/db";
 import type { DeploymentMode, LiveEvent } from "@armyofagents/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "../middleware/logger.js";
@@ -145,7 +151,15 @@ export async function authorizeUpgrade(
       };
     }
 
-    if (opts.deploymentMode !== "authenticated" || !opts.resolveSessionFromHeaders) {
+    // Cookie/session (board) path for the two multi-user modes. `cloud_auth`
+    // was previously excluded here (only `authenticated` was allowed through),
+    // so a legitimate cloud board user opening the live-events WebSocket with a
+    // session cookie fell through to `return null` → 403 and lost all
+    // realtime/presence/run updates.
+    if (
+      (opts.deploymentMode !== "authenticated" && opts.deploymentMode !== "cloud_auth") ||
+      !opts.resolveSessionFromHeaders
+    ) {
       return null;
     }
 
@@ -164,6 +178,56 @@ export async function authorizeUpgrade(
     const userId = session?.user?.id;
     if (!userId) return null;
 
+    if (opts.deploymentMode === "cloud_auth") {
+      // Mirror authorizeCompanyUpgrade (services/upgrade-auth.ts) tenant-isolation
+      // semantics: allow iff the actor holds BOTH an active organization
+      // membership for the company's owning organization AND an active company
+      // membership. A company membership WITHOUT an org membership is DENIED (the
+      // deliberate tenant invariant). No instance_admin bypass here — the
+      // authenticated branch below keeps its own instance_admin rule.
+      const companyRow = await db
+        .select({ organizationId: companies.organizationId })
+        .from(companies)
+        .where(eq(companies.id, companyId))
+        .then((rows) => rows[0] ?? null);
+      const organizationId = companyRow?.organizationId ?? null;
+      if (!organizationId) return null;
+
+      const [orgMembership, companyMembership] = await Promise.all([
+        db
+          .select({ id: organizationMemberships.id })
+          .from(organizationMemberships)
+          .where(
+            and(
+              eq(organizationMemberships.userId, userId),
+              eq(organizationMemberships.organizationId, organizationId),
+              eq(organizationMemberships.status, "active"),
+            ),
+          )
+          .then((rows) => rows[0] ?? null),
+        db
+          .select({ id: companyMemberships.id })
+          .from(companyMemberships)
+          .where(
+            and(
+              eq(companyMemberships.principalType, "user"),
+              eq(companyMemberships.principalId, userId),
+              eq(companyMemberships.companyId, companyId),
+              eq(companyMemberships.status, "active"),
+            ),
+          )
+          .then((rows) => rows[0] ?? null),
+      ]);
+      if (!orgMembership || !companyMembership) return null;
+
+      return {
+        companyId,
+        actorType: "board",
+        actorId: userId,
+      };
+    }
+
+    // authenticated: instance_admin OR an active company membership (unchanged).
     const [roleRow, memberships] = await Promise.all([
       db
         .select({ id: instanceUserRoles.id })
