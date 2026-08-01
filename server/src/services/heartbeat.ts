@@ -34,7 +34,10 @@ import {
   resolveExecutionTargetForRun,
   executionTargetToAdapterConfig,
 } from "./execution-target-resolver.js";
-import { mergeResolvedExecutionTarget } from "./heartbeat-execution-target.js";
+import {
+  mergeResolvedExecutionTarget,
+  handleExecutionTargetRoutingError,
+} from "./heartbeat-execution-target.js";
 import type { TrustBoundary } from "./cli-auth-topology.js";
 import { assertUnsandboxedMultitenantAllowed } from "./unsandboxed-multitenant-guard.js";
 import { tenantIsolationEnforced } from "../config/deployment-mode.js";
@@ -3257,16 +3260,33 @@ export function heartbeatService(db: Db) {
       executionTargetSlug: p4CredentialHint.executionTargetSlug,
       pinnedTargetId: environmentRuntime.executionTargetId ?? null,
     }).catch((error) => {
-      logger.debug(
-        {
-          companyId: agent.companyId,
-          agentId: agent.id,
-          runId: run.id,
-          error: error instanceof Error ? error.message : String(error),
-        },
-        "heartbeat: execution-target routing fell back to local",
-      );
-      return null;
+      const hasExplicitPin = environmentRuntime.executionTargetId != null;
+      if (hasExplicitPin) {
+        // Decision #117 §4: an explicit pin must fail closed. Re-raise below
+        // (via handleExecutionTargetRoutingError) into the run crash-path —
+        // never silently fall back to the local host.
+        logger.error(
+          {
+            companyId: agent.companyId,
+            agentId: agent.id,
+            runId: run.id,
+            pinnedTargetId: environmentRuntime.executionTargetId ?? null,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          "heartbeat: explicit execution-target pin unavailable — failing closed",
+        );
+      } else {
+        logger.debug(
+          {
+            companyId: agent.companyId,
+            agentId: agent.id,
+            runId: run.id,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          "heartbeat: execution-target routing fell back to local",
+        );
+      }
+      return handleExecutionTargetRoutingError(error, { hasExplicitPin });
     });
     resolvedConfig = mergeResolvedExecutionTarget(
       resolvedConfig,

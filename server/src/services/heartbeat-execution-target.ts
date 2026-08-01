@@ -13,3 +13,16 @@ export function mergeResolvedExecutionTarget(
   if (!adapterConfig) return config;
   return { ...config, executionTarget: adapterConfig };
 }
+
+// Decide how a resolveExecutionTargetForRun failure is handled. An EXPLICIT pin
+// (environmentRuntime.executionTargetId != null) must fail closed rather than
+// silently falling back to the local host (Decision #117 §4). An unpinned
+// route-by-credential run keeps the local fallback so a transient DB/routing
+// error does not fail an otherwise-runnable run.
+export function handleExecutionTargetRoutingError(
+  error: unknown,
+  ctx: { hasExplicitPin: boolean },
+): null {
+  if (ctx.hasExplicitPin) throw error; // Decision #117 §4 — explicit pin fails closed
+  return null; // unpinned route-by-credential → local fallback
+}
