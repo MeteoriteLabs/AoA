@@ -39,6 +39,36 @@ import { assertUnsandboxedMultitenantAllowed } from "../unsandboxed-multitenant-
 
 const require = createRequire(import.meta.url);
 
+/**
+ * Decide what to do when Commander's per-session provider-credential resolution
+ * throws. Pure (matches the repo's pure-function test pattern) so the fail-closed
+ * decision can be unit-tested directly.
+ *
+ * Returns `{}` (degrade to the operator's ambient host login) ONLY on a
+ * self-hosted single-tenant install. Throws (fail closed) when:
+ *   - tenant isolation is enforced (cloud_auth / multi_tenant) — EVERY error
+ *     rethrows so Commander NEVER borrows the operator's `~/.claude` / `~/.codex`
+ *     login on a shared host; or
+ *   - the error is `provider_unavailable` — self-hosted still surfaces an explicit
+ *     provider-unavailable failure rather than silently borrowing the host login.
+ *
+ * The caller logs the "using host login" warning only on the return-`{}` path
+ * (this helper rethrows before that point on the fail-closed path).
+ */
+export function handleCommanderResolveError(
+  err: unknown,
+  opts: { tenantIsolationEnforced: boolean },
+): Record<string, string> {
+  const isProviderUnavailable =
+    !!err &&
+    typeof err === "object" &&
+    (err as { code?: string }).code === "provider_unavailable";
+  if (opts.tenantIsolationEnforced || isProviderUnavailable) {
+    throw err;
+  }
+  return {};
+}
+
 /** claude CLI: pass --model only for a shell-safe non-empty model; else nothing,
  *  so the default path's argv stays byte-identical. */
 export function claudeModelArgs(model: string | null | undefined): string[] {
@@ -735,12 +765,16 @@ export function cliModeService(db: Db) {
       };
       return patched.env ?? {};
     } catch (err) {
-      // Cloud (multi_tenant) resolution fails closed — never borrow a host login.
-      if (err && typeof err === "object" && (err as { code?: string }).code === "provider_unavailable") {
-        throw err;
-      }
+      // Fail closed on cloud (multi_tenant / cloud_auth): the helper rethrows
+      // EVERY error when tenant isolation is enforced, so Commander never borrows
+      // the operator's ambient host login on a shared host. It also rethrows
+      // provider_unavailable everywhere. Only the self-hosted degrade path falls
+      // through to the warning + host-login ({}) below.
+      const patch = handleCommanderResolveError(err, {
+        tenantIsolationEnforced: tenantIsolationEnforced(),
+      });
       logger.warn({ err, companyId }, "Commander provider resolution failed; using host login");
-      return {};
+      return patch;
     }
   }
 
