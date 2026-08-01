@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq, sql } from "drizzle-orm";
 import { applyPendingMigrations, createDb, type Db } from "@armyofagents/db";
-import { providerAssignments, providerConnections } from "@armyofagents/db";
+import { companies, providerAssignments, providerConnections } from "@armyofagents/db";
 import { runProviderConnectionsBackfill } from "../services/provider-connections-backfill.js";
 import { allocateEmbeddedPgPort } from "./helpers/embedded-pg-port.js";
 
@@ -196,6 +196,30 @@ describe.skipIf(process.platform === "win32")("runProviderConnectionsBackfill (D
     const first = await runProviderConnectionsBackfill(db);
     expect(first.inserted).toBe(2); // one api_key + one personal_subscription (NOT the unapproved openai sub)
     expect(first.errors).toBe(0);
+
+    // Org-scoping proof (NOT just idempotency): provider_connections_identity_uq
+    // is NULLS NOT DISTINCT, so an all-NULL organization_id would ALSO look
+    // idempotent — a re-run would still insert 0. Assert the backfill stamped the
+    // SAME org the seeded company carries (companies.organization_id), proving the
+    // derive-from-owning-company contract rather than a NULL. Derive the expected
+    // id from the seeded company row (do not hardcode the sentinel literal).
+    const [companyRow] = await db
+      .select({ organizationId: companies.organizationId })
+      .from(companies)
+      .where(eq(companies.id, companyId));
+    const expectedOrgId = companyRow!.organizationId;
+    const firstConns = await db
+      .select()
+      .from(providerConnections)
+      .where(eq(providerConnections.companyId, companyId));
+    expect(firstConns).toHaveLength(2);
+    for (const c of firstConns) expect(c.organizationId).toBe(expectedOrgId);
+    const firstAsns = await db
+      .select()
+      .from(providerAssignments)
+      .where(eq(providerAssignments.companyId, companyId));
+    expect(firstAsns.length).toBeGreaterThan(0);
+    for (const a of firstAsns) expect(a.organizationId).toBe(expectedOrgId);
 
     const second = await runProviderConnectionsBackfill(db);
     expect(second.inserted).toBe(0);
