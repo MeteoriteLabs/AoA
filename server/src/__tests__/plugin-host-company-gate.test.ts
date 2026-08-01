@@ -52,8 +52,20 @@ vi.mock("@armyofagents/db", () => ({
 // ---------------------------------------------------------------------------
 const issuesList = vi.fn(async () => [] as unknown[]);
 
+// Round-7 finding: host.companies.list used to call companyService.list("unscoped"),
+// enumerating EVERY tenant's companies. The scoped fix must call
+// companyService.list([owningCompanyId]) instead. This argument-aware spy returns
+// all companies on "unscoped" (the leaky path) and filters on an array (the scoped
+// path), so a leak is observable as CO_B appearing in the result.
+const CO_A = "co-A";
+const CO_B = "co-B";
+const companiesList = vi.fn(async (arg: string[] | "unscoped") => {
+  const all = [{ id: CO_A }, { id: CO_B }];
+  return arg === "unscoped" ? all : all.filter((c) => arg.includes(c.id));
+});
+
 vi.mock("../services/companies.js", () => ({
-  companyService: () => ({ list: vi.fn(async () => []), getById: vi.fn(async () => null) }),
+  companyService: () => ({ list: companiesList, getById: vi.fn(async () => null) }),
 }));
 vi.mock("../services/agents.js", () => ({
   agentService: () => ({ list: vi.fn(async () => []), getById: vi.fn(async () => null) }),
@@ -142,6 +154,23 @@ function makeBus() {
 describe("plugin host services — per-company enable gate (B-M5)", () => {
   beforeEach(() => {
     issuesList.mockClear();
+    companiesList.mockClear();
+  });
+
+  it("scopes companies.list to the plugin's owning company (no cross-tenant enumeration)", async () => {
+    // resolveOwningCompanyId reads the plugins row → owning company = CO_A.
+    const { db } = makeDb({
+      pluginCompanyRows: [{ id: PLUGIN_ID, companyId: PLUGIN_COMPANY }],
+      settingsRows: [],
+    });
+    const host = buildHostServices(db, PLUGIN_ID, PLUGIN_KEY, makeBus());
+
+    const result = await host.companies.list({} as any);
+
+    // Only the owning company — CO_B must NOT leak through.
+    expect(result).toEqual([{ id: CO_A }]);
+    expect(companiesList).toHaveBeenCalledWith([PLUGIN_COMPANY]);
+    host.dispose();
   });
 
   it("THROWS when a settings row explicitly disables the plugin (enabled=false)", async () => {

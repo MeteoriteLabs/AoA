@@ -313,6 +313,21 @@ export function buildHostServices(
    *    fail-closed on a missing row, or every plugin without a settings row
    *    would be wrongly blocked.
    */
+  /**
+   * Resolve the plugin's OWNING company id from the `plugins` row (per-company,
+   * `companyId` NOT NULL). Derived server-side from `pluginId` — never trust a
+   * worker-supplied companyId. Used to scope `companies.list` so a single plugin
+   * worker can no longer enumerate every tenant's companies.
+   */
+  const resolveOwningCompanyId = async (): Promise<string | null> => {
+    const row = await db
+      .select({ companyId: pluginsTable.companyId })
+      .from(pluginsTable)
+      .where(eq(pluginsTable.id, pluginId))
+      .then((r) => r[0] ?? null);
+    return row?.companyId ?? null;
+  };
+
   const ensurePluginAvailableForCompany = async (companyId: string) => {
     // 1. Ownership / existence (plugins is per-company).
     const pluginRow = await db
@@ -539,7 +554,13 @@ export function buildHostServices(
 
     companies: {
       async list(params) {
-        return applyWindow((await companies.list("unscoped")) as Company[], params);
+        // Scope to the plugin's owning company (derived server-side from pluginId).
+        // companyService.list([id]) filters via inArray; [] degrades to none (safe).
+        const owningCompanyId = await resolveOwningCompanyId();
+        return applyWindow(
+          (await companies.list(owningCompanyId ? [owningCompanyId] : [])) as Company[],
+          params,
+        );
       },
       async get(params) {
         await ensurePluginAvailableForCompany(params.companyId);
