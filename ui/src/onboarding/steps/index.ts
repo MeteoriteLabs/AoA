@@ -31,7 +31,9 @@ import { SpineCompleteStep } from "./SpineCompleteStep";
  * `onboarding_progress` state machine (Organizations sit above the
  * per-company progress row — see Task 9's org-first journey resolver); its
  * `isComplete` instead reads the ephemeral `ctx.organizationId` FlowEngine
- * sets after the step completes. `state: "COMPANY_CREATED"` here is a
+ * sets after the step completes, OR treats the step done once COMPANY_CREATED
+ * is durable (a persisted company necessarily has an org — no ghost tenant on
+ * reload; see the step's own comment). `state: "COMPANY_CREATED"` here is a
  * structural placeholder only (validateRegistry requires a real, in-sequence
  * `OnboardingState`) — this step never advances or reads completedStates for
  * that value; the "company" step below owns COMPANY_CREATED for real.
@@ -59,7 +61,17 @@ export const ONBOARDING_STEPS: StepDefinition[] = [
     dependsOn: ["PROFILE_SET"],
     canSkip: false,
     shouldInclude: () => true,
-    isComplete: (ctx) => Boolean(ctx.organizationId),
+    // Complete once the ephemeral org id is set (in-session) OR a company
+    // already exists. `ctx.organizationId` is ephemeral FlowEngine state
+    // (`useState(null)`, never re-seeded from memberships) and the company step
+    // clears the persisted pending tenant on success, so after a founder
+    // creates org → company then hard-reloads, `organizationId` is null. Without
+    // the COMPANY_CREATED clause `resolveNextStep` (first incomplete step by
+    // order) would re-offer this order-1.5 step over the complete order-2
+    // company step and mint a DUPLICATE empty org. A persisted company
+    // necessarily has an org (companies.organization_id is NOT NULL), so
+    // COMPANY_CREATED implies this step is done.
+    isComplete: (ctx) => Boolean(ctx.organizationId) || ctx.completedStates.includes("COMPANY_CREATED"),
     Component: CreateOrganizationStep,
     title: "Create your organization",
   },
