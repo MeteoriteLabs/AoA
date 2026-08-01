@@ -298,6 +298,24 @@ export async function authorizeUpgrade(
   };
 }
 
+/**
+ * WS board-role decision. Mirrors the REST data-plane clamp in
+ * middleware/auth.ts (`isInstanceAdmin: cloud ? false : isOperator`): an
+ * `instance_admin` is a founder for tenant fan-out ONLY in local_trusted and
+ * authenticated — in cloud_auth the real per-company role is used, so an
+ * operator who is only a team_member does not receive private/unclaimed threads
+ * or non-owned hub items over the event bus.
+ */
+export function resolveBoardRoleForMode(
+  mode: DeploymentMode,
+  hasInstanceAdminRow: boolean,
+  effectiveRole: "founder" | "team_lead" | "team_member",
+): "founder" | "team_lead" | "team_member" {
+  if (mode === "local_trusted") return "founder";
+  if (mode !== "cloud_auth" && hasInstanceAdminRow) return "founder";
+  return effectiveRole;
+}
+
 export function setupLiveEventsWebSocketServer(
   server: HttpServer,
   db: Db,
@@ -335,20 +353,25 @@ export function setupLiveEventsWebSocketServer(
    * Resolve a board connection's effective role for envelope-RBAC checks.
    * In local_trusted mode the synthetic "board" actor is implicitly trusted
    * (loopback boundary) → treat as founder, matching buildActor's
-   * local_implicit → founder rule. Instance admins are also founders.
+   * local_implicit → founder rule. Instance admins are also founders EXCEPT in
+   * cloud_auth, where the real per-company role is used (see
+   * resolveBoardRoleForMode for the data-plane parity rationale).
    */
   async function resolveBoardRole(
     actorId: string,
     companyId: string,
   ): Promise<"founder" | "team_lead" | "team_member"> {
     if (opts.deploymentMode === "local_trusted") return "founder";
-    const adminRow = await db
-      .select({ id: instanceUserRoles.id })
-      .from(instanceUserRoles)
-      .where(and(eq(instanceUserRoles.userId, actorId), eq(instanceUserRoles.role, "instance_admin")))
-      .then((rows) => rows[0] ?? null);
-    if (adminRow) return "founder";
-    return perms.getEffectiveRole(companyId, actorId);
+    if (opts.deploymentMode !== "cloud_auth") {
+      const adminRow = await db
+        .select({ id: instanceUserRoles.id })
+        .from(instanceUserRoles)
+        .where(and(eq(instanceUserRoles.userId, actorId), eq(instanceUserRoles.role, "instance_admin")))
+        .then((rows) => rows[0] ?? null);
+      if (adminRow) return resolveBoardRoleForMode(opts.deploymentMode, true, "team_member");
+    }
+    const effectiveRole = await perms.getEffectiveRole(companyId, actorId);
+    return resolveBoardRoleForMode(opts.deploymentMode, false, effectiveRole);
   }
 
   /**
