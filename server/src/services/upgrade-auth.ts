@@ -53,6 +53,13 @@ export async function authorizeCompanyUpgrade(
   opts: {
     deploymentMode: DeploymentMode;
     resolveSessionFromHeaders?: (headers: Headers) => Promise<BetterAuthSessionResult | null>;
+    /**
+     * Exact trusted origins (scheme://host[:port], no wildcards) — the same
+     * allowlist better-auth uses. Consulted ONLY on the cookie/session branch
+     * to defend against Cross-Site WebSocket Hijacking. See the Origin check
+     * below.
+     */
+    trustedOrigins?: string[];
   },
 ): Promise<UpgradeActorContext | null> {
   const queryToken = getPreviewQueryAuthToken(url);
@@ -72,6 +79,19 @@ export async function authorizeCompanyUpgrade(
       (opts.deploymentMode !== "authenticated" && opts.deploymentMode !== "cloud_auth") ||
       !opts.resolveSessionFromHeaders
     ) {
+      return null;
+    }
+
+    // CSWSH defense-in-depth: cookie-authenticated WebSocket upgrades must carry
+    // a trusted Origin. Browsers always send Origin on WS handshakes, so a
+    // missing/empty Origin on this path is untrusted (agents authenticate with a
+    // bearer/query token, which skips this branch entirely). SameSite=Lax only
+    // mitigates a random third-party origin; same-site sibling subdomains remain
+    // exploitable, and the protection regresses fully if cookies ever become
+    // SameSite=None. `trustedOrigins` is the exact allowlist better-auth uses,
+    // so any deploy where sign-in works already trusts the board origin.
+    const origin = req.headers.origin;
+    if (!origin || !(opts.trustedOrigins ?? []).includes(origin)) {
       return null;
     }
 

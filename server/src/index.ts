@@ -569,6 +569,9 @@ let resolveSession:
 let resolveSessionFromHeaders:
   | ((headers: Headers) => Promise<BetterAuthSessionResult | null>)
   | undefined;
+// Hoisted out of the auth-init block (mirrors resolveSessionFromHeaders/authReady)
+// so the WebSocket upgrade wiring below can pass it into the CSWSH Origin check.
+let effectiveTrustedOrigins: string[] = [];
 
 // revA R6 — Google is the only sign-in provider. Refuse to boot a would-be
 // locked-out deployment: `authenticated` without Google creds, or
@@ -614,7 +617,7 @@ if (config.devLocalIdentity) {
     .split(",")
     .map((value) => value.trim())
     .filter((value) => value.length > 0);
-  const effectiveTrustedOrigins = Array.from(new Set([...derivedTrustedOrigins, ...envTrustedOrigins]));
+  effectiveTrustedOrigins = Array.from(new Set([...derivedTrustedOrigins, ...envTrustedOrigins]));
   logger.info(
     {
       deploymentMode: config.deploymentMode,
@@ -683,6 +686,7 @@ server.on("upgrade", (req, socket, head) => {
   void handlePreviewProxyUpgrade(db as any, req, socket, head, {
     deploymentMode: config.deploymentMode,
     resolveSessionFromHeaders,
+    trustedOrigins: effectiveTrustedOrigins,
   }).catch((err) => {
     logger.warn({ err, path: req.url }, "preview websocket upgrade failed");
     socket.destroy();
@@ -692,6 +696,7 @@ server.on("upgrade", (req, socket, head) => {
 setupLiveEventsWebSocketServer(server, db as any, {
   deploymentMode: config.deploymentMode,
   resolveSessionFromHeaders,
+  trustedOrigins: effectiveTrustedOrigins,
 });
 
 // Work-question continuation and SLA processing are durable workflow workers,

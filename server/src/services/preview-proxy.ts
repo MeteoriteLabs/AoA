@@ -175,6 +175,10 @@ export async function handlePreviewProxyUpgrade(
   opts: {
     deploymentMode: DeploymentMode;
     resolveSessionFromHeaders?: (headers: Headers) => Promise<BetterAuthSessionResult | null>;
+    // Forwarded verbatim into authorizeCompanyUpgrade for the CSWSH Origin check
+    // on the cookie/session branch. Must stay on this type or the field is
+    // silently dropped when `opts` is passed through below.
+    trustedOrigins?: string[];
   },
 ): Promise<boolean> {
   if (!req.url?.startsWith("/preview/services/")) return false;

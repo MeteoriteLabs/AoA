@@ -8,6 +8,13 @@ import {
   organizationMemberships,
 } from "@armyofagents/db";
 import { authorizeCompanyUpgrade } from "../services/upgrade-auth.js";
+import { authorizeUpgrade } from "../realtime/live-events-ws.js";
+
+// Any exact origin string in the trusted allowlist. The board origin that
+// better-auth already trusts is threaded through as `trustedOrigins` on the
+// cookie branch, so a legit board user always presents a trusted Origin.
+const BOARD_ORIGIN = "https://board.example";
+const TRUSTED = [BOARD_ORIGIN];
 
 function makeUpgradeAuthDb(input: {
   key?: Record<string, unknown> | null;
@@ -125,6 +132,30 @@ describe("authorizeCompanyUpgrade", () => {
     expect(db.update).toHaveBeenCalledTimes(1);
   });
 
+  // The agent (bearer / query token) branch must be UNAFFECTED by Origin —
+  // agents authenticate with a token and browsers don't drive that path.
+  it("agent bearer branch ignores an untrusted (or missing) Origin", async () => {
+    const db = makeUpgradeAuthDb({
+      key: { id: "key-1", companyId: "company-1", agentId: "agent-1" },
+      agent: { id: "agent-1", companyId: "company-1", status: "idle" },
+    });
+
+    const actor = await authorizeCompanyUpgrade(
+      db as any,
+      { headers: { authorization: "Bearer secret", origin: "https://evil.example" } } as any,
+      "company-1",
+      new URL("ws://aoa.local/preview/services/svc-1/ws"),
+      { deploymentMode: "authenticated", trustedOrigins: TRUSTED },
+    );
+
+    expect(actor).toEqual({
+      companyId: "company-1",
+      actorType: "agent",
+      actorId: "agent-1",
+    });
+    expect(db.update).toHaveBeenCalledTimes(1);
+  });
+
   it("does not treat app token query parameters as AoA auth", async () => {
     const db = makeUpgradeAuthDb({
       memberships: [{ companyId: "company-1" }],
@@ -132,11 +163,12 @@ describe("authorizeCompanyUpgrade", () => {
 
     const actor = await authorizeCompanyUpgrade(
       db as any,
-      { headers: { cookie: "aoa_session=session" } } as any,
+      { headers: { cookie: "aoa_session=session", origin: BOARD_ORIGIN } } as any,
       "company-1",
       new URL("ws://aoa.local/preview/services/svc-1/ws?token=app-token"),
       {
         deploymentMode: "authenticated",
+        trustedOrigins: TRUSTED,
         resolveSessionFromHeaders: async () => ({ user: { id: "user-1" } }) as any,
       },
     );
@@ -153,6 +185,58 @@ describe("authorizeCompanyUpgrade", () => {
     const db = makeUpgradeAuthDb({
       memberships: [{ companyId: "company-1" }],
     });
+    const resolveSessionFromHeaders = vi.fn(async () => ({ user: { id: "user-1" } }) as any);
+
+    const actor = await authorizeCompanyUpgrade(
+      db as any,
+      { headers: { cookie: "aoa_session=session", origin: BOARD_ORIGIN } } as any,
+      "company-1",
+      new URL("ws://aoa.local/preview/services/svc-1/ws"),
+      {
+        deploymentMode: "authenticated",
+        trustedOrigins: TRUSTED,
+        resolveSessionFromHeaders,
+      },
+    );
+
+    expect(actor).toEqual({
+      companyId: "company-1",
+      actorType: "board",
+      actorId: "user-1",
+    });
+    // Trusted Origin → we proceeded past the Origin gate to session resolution.
+    expect(resolveSessionFromHeaders).toHaveBeenCalledTimes(1);
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it("authenticated: cookie branch rejects an untrusted Origin BEFORE resolving the session", async () => {
+    const db = makeUpgradeAuthDb({
+      memberships: [{ companyId: "company-1" }],
+    });
+    const resolveSessionFromHeaders = vi.fn(async () => ({ user: { id: "user-1" } }) as any);
+
+    const actor = await authorizeCompanyUpgrade(
+      db as any,
+      { headers: { cookie: "aoa_session=session", origin: "https://evil.example" } } as any,
+      "company-1",
+      new URL("ws://aoa.local/preview/services/svc-1/ws"),
+      {
+        deploymentMode: "authenticated",
+        trustedOrigins: TRUSTED,
+        resolveSessionFromHeaders,
+      },
+    );
+
+    expect(actor).toBeNull();
+    // The session must never be resolved when the Origin is untrusted.
+    expect(resolveSessionFromHeaders).not.toHaveBeenCalled();
+  });
+
+  it("authenticated: cookie branch rejects a MISSING Origin BEFORE resolving the session", async () => {
+    const db = makeUpgradeAuthDb({
+      memberships: [{ companyId: "company-1" }],
+    });
+    const resolveSessionFromHeaders = vi.fn(async () => ({ user: { id: "user-1" } }) as any);
 
     const actor = await authorizeCompanyUpgrade(
       db as any,
@@ -161,16 +245,37 @@ describe("authorizeCompanyUpgrade", () => {
       new URL("ws://aoa.local/preview/services/svc-1/ws"),
       {
         deploymentMode: "authenticated",
-        resolveSessionFromHeaders: async () => ({ user: { id: "user-1" } }) as any,
+        trustedOrigins: TRUSTED,
+        resolveSessionFromHeaders,
       },
     );
 
-    expect(actor).toEqual({
-      companyId: "company-1",
-      actorType: "board",
-      actorId: "user-1",
+    expect(actor).toBeNull();
+    expect(resolveSessionFromHeaders).not.toHaveBeenCalled();
+  });
+
+  it("cloud_auth: cookie branch rejects an untrusted Origin BEFORE resolving the session", async () => {
+    const db = makeUpgradeAuthDb({
+      company: { organizationId: "org-1" },
+      orgMemberships: [{ id: "om-1" }],
+      memberships: [{ id: "cm-1" }],
     });
-    expect(db.update).not.toHaveBeenCalled();
+    const resolveSessionFromHeaders = vi.fn(async () => ({ user: { id: "user-1" } }) as any);
+
+    const actor = await authorizeCompanyUpgrade(
+      db as any,
+      { headers: { cookie: "aoa_session=session", origin: "https://evil.example" } } as any,
+      "company-1",
+      new URL("ws://aoa.local/preview/services/svc-1/ws"),
+      {
+        deploymentMode: "cloud_auth",
+        trustedOrigins: TRUSTED,
+        resolveSessionFromHeaders,
+      },
+    );
+
+    expect(actor).toBeNull();
+    expect(resolveSessionFromHeaders).not.toHaveBeenCalled();
   });
 
   it("cloud_auth: session user with org + company membership gets a board actor", async () => {
@@ -179,15 +284,17 @@ describe("authorizeCompanyUpgrade", () => {
       orgMemberships: [{ id: "om-1" }],
       memberships: [{ id: "cm-1" }],
     });
+    const resolveSessionFromHeaders = vi.fn(async () => ({ user: { id: "user-1" } }) as any);
 
     const actor = await authorizeCompanyUpgrade(
       db as any,
-      { headers: { cookie: "aoa_session=session" } } as any,
+      { headers: { cookie: "aoa_session=session", origin: BOARD_ORIGIN } } as any,
       "company-1",
       new URL("ws://aoa.local/preview/services/svc-1/ws"),
       {
         deploymentMode: "cloud_auth",
-        resolveSessionFromHeaders: async () => ({ user: { id: "user-1" } }) as any,
+        trustedOrigins: TRUSTED,
+        resolveSessionFromHeaders,
       },
     );
 
@@ -196,6 +303,7 @@ describe("authorizeCompanyUpgrade", () => {
       actorType: "board",
       actorId: "user-1",
     });
+    expect(resolveSessionFromHeaders).toHaveBeenCalledTimes(1);
     expect(db.update).not.toHaveBeenCalled();
   });
 
@@ -208,11 +316,12 @@ describe("authorizeCompanyUpgrade", () => {
 
     const actor = await authorizeCompanyUpgrade(
       db as any,
-      { headers: { cookie: "aoa_session=session" } } as any,
+      { headers: { cookie: "aoa_session=session", origin: BOARD_ORIGIN } } as any,
       "company-1",
       new URL("ws://aoa.local/preview/services/svc-1/ws"),
       {
         deploymentMode: "cloud_auth",
+        trustedOrigins: TRUSTED,
         resolveSessionFromHeaders: async () => ({ user: { id: "user-1" } }) as any,
       },
     );
@@ -232,11 +341,12 @@ describe("authorizeCompanyUpgrade", () => {
 
     const actor = await authorizeCompanyUpgrade(
       db as any,
-      { headers: { cookie: "aoa_session=session" } } as any,
+      { headers: { cookie: "aoa_session=session", origin: BOARD_ORIGIN } } as any,
       "company-1",
       new URL("ws://aoa.local/preview/services/svc-1/ws"),
       {
         deploymentMode: "cloud_auth",
+        trustedOrigins: TRUSTED,
         resolveSessionFromHeaders: async () => ({ user: { id: "user-1" } }) as any,
       },
     );
@@ -254,11 +364,12 @@ describe("authorizeCompanyUpgrade", () => {
 
     const actor = await authorizeCompanyUpgrade(
       db as any,
-      { headers: { cookie: "aoa_session=session" } } as any,
+      { headers: { cookie: "aoa_session=session", origin: BOARD_ORIGIN } } as any,
       "company-1",
       new URL("ws://aoa.local/preview/services/svc-1/ws"),
       {
         deploymentMode: "cloud_auth",
+        trustedOrigins: TRUSTED,
         resolveSessionFromHeaders: async () => ({ user: { id: "user-1" } }) as any,
       },
     );
@@ -276,11 +387,12 @@ describe("authorizeCompanyUpgrade", () => {
 
     const actor = await authorizeCompanyUpgrade(
       db as any,
-      { headers: { cookie: "aoa_session=session" } } as any,
+      { headers: { cookie: "aoa_session=session", origin: BOARD_ORIGIN } } as any,
       "company-1",
       new URL("ws://aoa.local/preview/services/svc-1/ws"),
       {
         deploymentMode: "cloud_auth",
+        trustedOrigins: TRUSTED,
         resolveSessionFromHeaders: async () => ({ user: { id: "user-1" } }) as any,
       },
     );
@@ -289,7 +401,7 @@ describe("authorizeCompanyUpgrade", () => {
     expect(db.update).not.toHaveBeenCalled();
   });
 
-  it("local_trusted: a no-token session is trusted board context (unchanged)", async () => {
+  it("local_trusted: a no-token session is trusted board context (Origin check does not apply)", async () => {
     const db = makeUpgradeAuthDb({});
 
     const actor = await authorizeCompanyUpgrade(
@@ -301,6 +413,117 @@ describe("authorizeCompanyUpgrade", () => {
     );
 
     expect(actor).toEqual({
+      companyId: "company-1",
+      actorType: "board",
+      actorId: "board",
+    });
+  });
+});
+
+describe("live-events authorizeUpgrade", () => {
+  it("agent bearer branch ignores an untrusted Origin", async () => {
+    const db = makeUpgradeAuthDb({
+      key: { id: "key-1", companyId: "company-1", agentId: "agent-1" },
+    });
+
+    const context = await authorizeUpgrade(
+      db as any,
+      { headers: { authorization: "Bearer secret", origin: "https://evil.example" } } as any,
+      "company-1",
+      new URL("ws://aoa.local/api/companies/company-1/events/ws"),
+      { deploymentMode: "authenticated", trustedOrigins: TRUSTED },
+    );
+
+    expect(context).toEqual({
+      companyId: "company-1",
+      actorType: "agent",
+      actorId: "agent-1",
+    });
+    expect(db.update).toHaveBeenCalledTimes(1);
+  });
+
+  it("authenticated: session user with a company membership gets a board actor (trusted Origin)", async () => {
+    const db = makeUpgradeAuthDb({
+      memberships: [{ companyId: "company-1" }],
+    });
+    const resolveSessionFromHeaders = vi.fn(async () => ({ user: { id: "user-1" } }) as any);
+
+    const context = await authorizeUpgrade(
+      db as any,
+      { headers: { cookie: "aoa_session=session", origin: BOARD_ORIGIN } } as any,
+      "company-1",
+      new URL("ws://aoa.local/api/companies/company-1/events/ws"),
+      {
+        deploymentMode: "authenticated",
+        trustedOrigins: TRUSTED,
+        resolveSessionFromHeaders,
+      },
+    );
+
+    expect(context).toEqual({
+      companyId: "company-1",
+      actorType: "board",
+      actorId: "user-1",
+    });
+    expect(resolveSessionFromHeaders).toHaveBeenCalledTimes(1);
+  });
+
+  it("authenticated: cookie branch rejects an untrusted Origin BEFORE resolving the session", async () => {
+    const db = makeUpgradeAuthDb({
+      memberships: [{ companyId: "company-1" }],
+    });
+    const resolveSessionFromHeaders = vi.fn(async () => ({ user: { id: "user-1" } }) as any);
+
+    const context = await authorizeUpgrade(
+      db as any,
+      { headers: { cookie: "aoa_session=session", origin: "https://evil.example" } } as any,
+      "company-1",
+      new URL("ws://aoa.local/api/companies/company-1/events/ws"),
+      {
+        deploymentMode: "authenticated",
+        trustedOrigins: TRUSTED,
+        resolveSessionFromHeaders,
+      },
+    );
+
+    expect(context).toBeNull();
+    expect(resolveSessionFromHeaders).not.toHaveBeenCalled();
+  });
+
+  it("authenticated: cookie branch rejects a MISSING Origin BEFORE resolving the session", async () => {
+    const db = makeUpgradeAuthDb({
+      memberships: [{ companyId: "company-1" }],
+    });
+    const resolveSessionFromHeaders = vi.fn(async () => ({ user: { id: "user-1" } }) as any);
+
+    const context = await authorizeUpgrade(
+      db as any,
+      { headers: { cookie: "aoa_session=session" } } as any,
+      "company-1",
+      new URL("ws://aoa.local/api/companies/company-1/events/ws"),
+      {
+        deploymentMode: "authenticated",
+        trustedOrigins: TRUSTED,
+        resolveSessionFromHeaders,
+      },
+    );
+
+    expect(context).toBeNull();
+    expect(resolveSessionFromHeaders).not.toHaveBeenCalled();
+  });
+
+  it("local_trusted: a no-token session is trusted board context (Origin check does not apply)", async () => {
+    const db = makeUpgradeAuthDb({});
+
+    const context = await authorizeUpgrade(
+      db as any,
+      { headers: {} } as any,
+      "company-1",
+      new URL("ws://aoa.local/api/companies/company-1/events/ws"),
+      { deploymentMode: "local_trusted" },
+    );
+
+    expect(context).toEqual({
       companyId: "company-1",
       actorType: "board",
       actorId: "board",
