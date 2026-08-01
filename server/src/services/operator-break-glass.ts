@@ -5,6 +5,7 @@ import {
   organizationMemberships,
   type Db,
 } from "@armyofagents/db";
+import { logger } from "../middleware/logger.js";
 
 /**
  * Operator break-glass (Phase 3, B3).
@@ -229,10 +230,20 @@ export function realBreakGlassDeps(db: Db): BreakGlassDeps {
         );
     },
     audit: async ({ action, operatorUserId, organizationId, companyId }) => {
-      // activity_log.company_id is NOT NULL; an org-wide grant (companyId null)
-      // has no single company to attribute the row to, so skip it. Audit is
-      // best-effort and must never fail the grant/sweep.
-      if (!companyId) return;
+      // activity_log.company_id is NOT NULL and the table has no organization
+      // column, so an org-wide grant (companyId null) has no company row to
+      // attribute the mutation to. Rather than drop it silently, emit a
+      // structured log line so org-wide break-glass grant/revoke/sweep
+      // mutations are at least visible in the server log. A full org-scoped
+      // audit feed is deferred to M6. Audit is best-effort and must never fail
+      // the grant/sweep.
+      if (!companyId) {
+        logger.warn(
+          { action, operatorUserId, organizationId, scope: "org_wide" },
+          "operator break-glass org-wide mutation (no company-scoped activity_log row)",
+        );
+        return;
+      }
       await db.insert(activityLog).values({
         companyId,
         actorType: "operator",
