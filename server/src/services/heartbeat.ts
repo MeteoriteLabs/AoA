@@ -3261,19 +3261,21 @@ export function heartbeatService(db: Db) {
       pinnedTargetId: environmentRuntime.executionTargetId ?? null,
     }).catch((error) => {
       const hasExplicitPin = environmentRuntime.executionTargetId != null;
-      if (hasExplicitPin) {
-        // Decision #117 §4: an explicit pin must fail closed. Re-raise below
-        // (via handleExecutionTargetRoutingError) into the run crash-path —
-        // never silently fall back to the local host.
+      // Decision #117 §4: an explicit pin OR a personal_subscription run must fail
+      // closed. Both re-raise below (via handleExecutionTargetRoutingError) into the
+      // run crash-path — never silently fall back to the local host.
+      const failsClosed = hasExplicitPin || p4CredentialHint.credentialKind === "personal_subscription";
+      if (failsClosed) {
         logger.error(
           {
             companyId: agent.companyId,
             agentId: agent.id,
             runId: run.id,
             pinnedTargetId: environmentRuntime.executionTargetId ?? null,
+            credentialKind: p4CredentialHint.credentialKind,
             error: error instanceof Error ? error.message : String(error),
           },
-          "heartbeat: explicit execution-target pin unavailable — failing closed",
+          "heartbeat: execution target unavailable — failing closed",
         );
       } else {
         logger.debug(
@@ -3286,7 +3288,10 @@ export function heartbeatService(db: Db) {
           "heartbeat: execution-target routing fell back to local",
         );
       }
-      return handleExecutionTargetRoutingError(error, { hasExplicitPin });
+      return handleExecutionTargetRoutingError(error, {
+        hasExplicitPin,
+        credentialKind: p4CredentialHint.credentialKind,
+      });
     });
     resolvedConfig = mergeResolvedExecutionTarget(
       resolvedConfig,

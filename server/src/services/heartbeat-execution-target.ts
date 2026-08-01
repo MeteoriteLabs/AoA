@@ -15,14 +15,21 @@ export function mergeResolvedExecutionTarget(
 }
 
 // Decide how a resolveExecutionTargetForRun failure is handled. An EXPLICIT pin
-// (environmentRuntime.executionTargetId != null) must fail closed rather than
-// silently falling back to the local host (Decision #117 §4). An unpinned
-// route-by-credential run keeps the local fallback so a transient DB/routing
-// error does not fail an otherwise-runnable run.
+// (environmentRuntime.executionTargetId != null) OR a personal_subscription run
+// must fail closed rather than silently falling back to the local host (which on
+// shared infra would be a different trust domain than the credential's bound
+// target). An unpinned company_api_key / null-credential run keeps the local
+// fallback so a transient DB/routing error does not fail an otherwise-runnable run.
+// Decision #117 §4.
 export function handleExecutionTargetRoutingError(
   error: unknown,
-  ctx: { hasExplicitPin: boolean },
+  ctx: { hasExplicitPin: boolean; credentialKind: "company_api_key" | "personal_subscription" | null },
 ): null {
-  if (ctx.hasExplicitPin) throw error; // Decision #117 §4 — explicit pin fails closed
-  return null; // unpinned route-by-credential → local fallback
+  // Decision #117 §4: an explicit pin OR a personal_subscription run must fail
+  // closed — never silently fall back to the local host (which on shared infra
+  // would be a different trust domain than the credential's bound target). An
+  // unpinned company_api_key / null-credential run keeps the local fallback so a
+  // transient DB/routing error does not fail an otherwise-runnable run.
+  if (ctx.hasExplicitPin || ctx.credentialKind === "personal_subscription") throw error;
+  return null;
 }
