@@ -1193,11 +1193,54 @@ export function issueService(db: Db) {
       return enriched;
     },
 
+    /**
+     * UNSCOPED / GLOBAL identifier resolve. Filters on `identifier` ALONE, so
+     * with the Phase-1 multi-tenancy design (org-scoped issue prefixes +
+     * per-company identifiers, `issues_identifier_idx` on
+     * `(company_id, identifier)`) two companies in DIFFERENT orgs can both own
+     * `ACM-1` — this returns an arbitrary one (`rows[0]`, no ordering).
+     *
+     * Retained ONLY for the bare `/issues/:id…` routes that carry NO company in
+     * the URL (feedback, output-detection, task-outputs, artifacts, activity,
+     * agents live/active-run, and issues.ts `:id` routes). Those are the
+     * deferred URL-namespace ambiguity — safe today because every such caller
+     * re-checks authz against the RESOLVED issue's company
+     * (`assertCompanyAccess(db, req, issue.companyId)`), so it can never leak
+     * another tenant's data (worst case: a spurious 403/404 or the wrong task
+     * among the caller's OWN memberships).
+     *
+     * PREFER `getByIdentifierInCompany` wherever a request companyId is in
+     * scope — it matches the unique index and returns the correct tenant's row.
+     */
     getByIdentifier: async (identifier: string) => {
       const row = await db
         .select()
         .from(issues)
         .where(eq(issues.identifier, identifier.toUpperCase()))
+        .then((rows) => rows[0] ?? null);
+      if (!row) return null;
+      const [enriched] = await withIssueLabels(db, [row]);
+      return enriched;
+    },
+
+    /**
+     * Company-scoped identifier resolve. Filters on
+     * `(company_id, identifier)` — exactly the `issues_identifier_idx` unique
+     * index — so it returns at most one row, always belonging to `companyId`.
+     * Use this from any route/handler that has the request's company id in
+     * scope (e.g. `/companies/:companyId/issues/:issueId/…`) so an identifier
+     * like `ACM-1` resolves to THIS company's task, never another org's.
+     */
+    getByIdentifierInCompany: async (companyId: string, identifier: string) => {
+      const row = await db
+        .select()
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            eq(issues.identifier, identifier.toUpperCase()),
+          ),
+        )
         .then((rows) => rows[0] ?? null);
       if (!row) return null;
       const [enriched] = await withIssueLabels(db, [row]);

@@ -751,9 +751,18 @@ export function issueRoutes(db: Db, storage: StorageService) {
     return { ok: true };
   }
 
-  async function normalizeIssueIdentifier(rawId: string): Promise<string> {
+  // When `companyId` is provided the resolve is company-scoped (matches the
+  // (company_id, identifier) unique index → the correct tenant's task); the
+  // bare `/issues/:id…` routes pass no companyId and use the unscoped global
+  // resolve, re-checking authz on the resolved issue's company downstream.
+  async function normalizeIssueIdentifier(
+    rawId: string,
+    companyId?: string,
+  ): Promise<string> {
     if (/^[A-Z]+-\d+$/i.test(rawId)) {
-      const issue = await svc.getByIdentifier(rawId);
+      const issue = companyId
+        ? await svc.getByIdentifierInCompany(companyId, rawId)
+        : await svc.getByIdentifier(rawId);
       if (issue) {
         return issue.id;
       }
@@ -762,6 +771,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
   }
 
   // Resolve issue identifiers (e.g. "PAP-39") to UUIDs for all /issues/:id routes
+  // (bare — no company in the URL → unscoped global resolve).
   router.param("id", async (req, res, next, rawId) => {
     try {
       req.params.id = await normalizeIssueIdentifier(rawId);
@@ -771,10 +781,16 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
   });
 
-  // Resolve issue identifiers (e.g. "PAP-39") to UUIDs for company-scoped attachment routes.
+  // Resolve issue identifiers (e.g. "PAP-39") to UUIDs for company-scoped
+  // attachment routes (`/companies/:companyId/issues/:issueId/attachments`).
+  // `:companyId` precedes `:issueId` in the route path, so it is populated here
+  // — scope the resolve to it so an identifier never crosses orgs.
   router.param("issueId", async (req, res, next, rawId) => {
     try {
-      req.params.issueId = await normalizeIssueIdentifier(rawId);
+      req.params.issueId = await normalizeIssueIdentifier(
+        rawId,
+        req.params.companyId as string | undefined,
+      );
       next();
     } catch (err) {
       next(err);

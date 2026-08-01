@@ -13,7 +13,10 @@ const addDependencySchema = z.object({
 export function dependencyRoutes(db: Db) {
   const router = Router();
   const deps = dependencyService(db);
-  registerIssueParamNormalizer(router, db, ["issueId"]);
+  // Company-scoped route (`/companies/:companyId/issues/:issueId/…`): resolve
+  // the identifier within :companyId so `ACM-1` never crosses to another org's
+  // same-prefix task.
+  registerIssueParamNormalizer(router, db, ["issueId"], "companyId");
 
   // GET /companies/:companyId/issues/:issueId/dependencies
   router.get("/companies/:companyId/issues/:issueId/dependencies", async (req, res) => {
