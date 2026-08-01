@@ -1,7 +1,7 @@
 // Mirrors accessService shape (server/src/services/access.ts:42).
-import { and, eq } from "drizzle-orm";
+import { and, eq, gt, isNull } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { organizationMemberships } from "@armyofagents/db";
+import { operatorBreakGlassGrants, organizationMemberships } from "@armyofagents/db";
 import type { OrganizationRole } from "@armyofagents/shared";
 
 export type OrgCapability =
@@ -48,6 +48,31 @@ export function organizationAccessService(db: Db) {
     if (!userId) return false;
     const m = await getMembership(organizationId, userId);
     if (!m || m.status !== "active") return false;
+    // Break-glass provenance gate: a break-glass materialized membership writes a
+    // plain org `owner` row (createdByBreakGlass=true) purely so the operator
+    // passes assertTenantMembership. The org CAPABILITY plane must NOT confer
+    // owner caps straight from that row — authorization is decided at CHECK TIME
+    // against the live grant, mirroring hasActiveBreakGlass on the data plane.
+    if (m.createdByBreakGlass === true) {
+      // Bound by the materialized role too, so a future non-owner materialization
+      // can never over-grant beyond what its org role allows.
+      if (!orgRoleCan(m.role as OrganizationRole, cap)) return false;
+      // Confer org-wide capabilities ONLY when a LIVE, ORG-WIDE grant exists
+      // (companyId IS NULL, not revoked, not expired). A company-scoped grant
+      // (companyId set) confers ZERO org-wide caps — that access is enforced
+      // separately by assertCompanyAccess + hasActiveBreakGlass on the data plane.
+      const liveOrgWide = await db
+        .select({ id: operatorBreakGlassGrants.id })
+        .from(operatorBreakGlassGrants)
+        .where(and(
+          eq(operatorBreakGlassGrants.organizationId, organizationId),
+          eq(operatorBreakGlassGrants.operatorUserId, userId),
+          isNull(operatorBreakGlassGrants.companyId),
+          isNull(operatorBreakGlassGrants.revokedAt),
+          gt(operatorBreakGlassGrants.expiresAt, new Date()),
+        ));
+      return liveOrgWide.length > 0;
+    }
     return orgRoleCan(m.role as OrganizationRole, cap);
   }
 
