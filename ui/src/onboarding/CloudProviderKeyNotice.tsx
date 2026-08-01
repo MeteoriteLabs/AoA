@@ -1,7 +1,7 @@
 /**
  * Non-blocking cloud onboarding guidance. On AoA Cloud (`cloud_auth`) the shared
- * host has no per-company keyless-CLI login to borrow, so agents / Commander /
- * embeddings fail closed until the founder sets a per-company provider key. This
+ * host has no per-company keyless-CLI login to borrow, so agents / Commander
+ * fail closed until the founder sets a per-company provider key. This
  * callout routes them to Settings → Providers. Renders nothing on self-hosted
  * (keyless-CLI still works there). Pure/presentational — the mount site supplies
  * `deploymentMode`.
@@ -23,7 +23,7 @@ export function CloudProviderKeyNotice({
     >
       <p className="text-text">You're on AoA Cloud.</p>
       <p>
-        Agents, Commander, and embeddings run on a per-company provider key. Set one in
+        Agents and Commander run on a per-company provider key. Set one in
         Settings → Providers so your agents can run — you can finish setup first, this
         isn't required to continue.
       </p>
