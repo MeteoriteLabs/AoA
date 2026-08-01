@@ -21,4 +21,11 @@ describe("revert-0188 is single-org-guarded and restores global invariants", () 
   it("runs inside a transaction", () => {
     expect(SRC).toMatch(/BEGIN|transaction/i);
   });
+  it("refuses when migrations after 0188 are still applied (forward-consistency guard)", () => {
+    // The guard membership-checks the later-phase hashes against the journal
+    // and throws a dedicated refusal before any destructive statement.
+    expect(SRC).toMatch(/migrations after 0188 are applied/);
+    expect(SRC).toContain("computeLaterMigrationHashes");
+    expect(SRC).toMatch(/hash = ANY\(/);
+  });
 });

@@ -118,6 +118,39 @@ async function journalRowsForHash(hash: string): Promise<number> {
     SELECT count(*)::int AS count FROM drizzle.__drizzle_migrations WHERE hash = ${hash}`;
   return rows[0]!.count;
 }
+// The sha256 of every migration ordered AFTER 0188 in the journal (0189..latest),
+// computed the same way the migrator (and revert-0188's own helper) does — read
+// the file, no normalization. Used by the positive test to DELETE those journal
+// rows (simulating a "0188 is the newest applied migration" DB) so the revert's
+// later-migration guard sees nothing applied after 0188 and proceeds.
+async function laterMigrationHashes(): Promise<string[]> {
+  const journalRaw = await readFile(
+    new URL("../migrations/meta/_journal.json", import.meta.url),
+    "utf8",
+  );
+  const journal = JSON.parse(journalRaw) as {
+    entries?: Array<{ idx?: number; tag?: string }>;
+  };
+  const entries = Array.isArray(journal.entries) ? journal.entries : [];
+  const baseIdx = entries.find((entry) => entry.tag === "0188_organizations")?.idx ?? -1;
+  const laterTags = entries
+    .filter(
+      (entry): entry is { idx: number; tag: string } =>
+        typeof entry.idx === "number" &&
+        entry.idx > baseIdx &&
+        typeof entry.tag === "string",
+    )
+    .map((entry) => entry.tag);
+  return Promise.all(
+    laterTags.map(async (tag) => {
+      const content = await readFile(
+        new URL(`../migrations/${tag}.sql`, import.meta.url),
+        "utf8",
+      );
+      return createHash("sha256").update(content).digest("hex");
+    }),
+  );
+}
 // The only concurrent work in the race test is revert connection A (blocked) and
 // insert connection B (holding), so ANY ungranted lock in the cluster is A
 // waiting — for the ACCESS EXCLUSIVE lock (with the fix) or for the DROP later in
@@ -316,6 +349,34 @@ describe.skipIf(process.platform === "win32")("revert0188 against a real applied
     expect(await orgCount()).toBe(1);
   });
 
+  // FORWARD-CONSISTENCY guard: the beforeAll applied the FULL chain, so 0189..0196
+  // are recorded as applied. Even with a single org, reverting now would delete
+  // ONLY the 0188 journal row while the later phases stay applied — a forward
+  // redeploy would then re-run 0188 alone and never restore the org FKs/indexes
+  // those later phases added (which the revert's FK sweep drops), leaving a
+  // permanently inconsistent schema. So revert0188 must REFUSE with the
+  // later-migration message. RED before the guard (the old code proceeds and
+  // corrupts migration state); GREEN with it. Non-destructive (rejects before any
+  // destructive statement), so it runs BEFORE the positive case that drops the
+  // schema, and it needs the later rows still present — i.e. before the positive
+  // test deletes them.
+  it("refuses when migrations after 0188 are still applied (forward-consistency guard)", async () => {
+    if (setupError) throw new Error(`embedded-postgres setup failed: ${String(setupError)}`);
+    expect(await orgCount()).toBe(1);
+    // Sanity: at least one later phase (0190 provider_connections org FK) is applied.
+    expect(await journalRowsForHash(hash0188)).toBe(1);
+    expect(await constraintExists("provider_connections_organization_id_organizations_id_fk")).toBe(true);
+
+    await expect(revert0188(client)).rejects.toThrow(/migrations after 0188 are applied/i);
+
+    // Nothing was touched: the guard fires before any destructive statement.
+    expect(await tableExists("organizations")).toBe(true);
+    expect(await columnExists("companies", "organization_id")).toBe(true);
+    expect(await constraintExists("companies_organization_id_organizations_id_fk")).toBe(true);
+    expect(await constraintExists("provider_connections_organization_id_organizations_id_fk")).toBe(true);
+    expect(await journalRowsForHash(hash0188)).toBe(1);
+  });
+
   it("removes tenant schema, restores global uniques, and strips exactly the 0188 journal row", async () => {
     if (setupError) throw new Error(`embedded-postgres setup failed: ${String(setupError)}`);
 
@@ -325,6 +386,19 @@ describe.skipIf(process.platform === "win32")("revert0188 against a real applied
     expect(await indexExists("companies_org_issue_prefix_idx")).toBe(true);
     expect(await constraintExists("provider_connections_organization_id_organizations_id_fk")).toBe(true);
     expect(await constraintExists("execution_targets_organization_id_organizations_id_fk")).toBe(true);
+
+    // Simulate a DB whose newest APPLIED migration is 0188: delete the 0189..latest
+    // journal rows. Only the JOURNAL rows are removed — the SCHEMA + FKs those
+    // phases created stay intact, so FIX-A's dependent-FK sweep is still exercised.
+    // With no later hashes recorded, the forward-consistency guard sees nothing
+    // applied after 0188 and allows the revert to run its FIX-A/FIX-B work.
+    const later = await laterMigrationHashes();
+    expect(later.length).toBeGreaterThan(0);
+    await client`DELETE FROM drizzle.__drizzle_migrations WHERE hash = ANY(${later})`;
+    // The later-phase FKs must still exist (we only deleted journal rows).
+    expect(await constraintExists("provider_connections_organization_id_organizations_id_fk")).toBe(true);
+    expect(await constraintExists("execution_targets_organization_id_organizations_id_fk")).toBe(true);
+
     const journalBefore = await journalCount();
 
     // FIX A + FIX B: this must RESOLVE (old code threw on DROP TABLE, then on the

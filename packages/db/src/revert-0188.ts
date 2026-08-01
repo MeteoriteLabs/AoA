@@ -23,6 +23,53 @@ async function compute0188JournalHash(): Promise<string> {
   return createHash("sha256").update(content).digest("hex");
 }
 
+// Compute the sha256 of EVERY migration file ordered AFTER 0188_organizations in
+// the journal (idx > 188: 0189…0196 today, plus any future phase), read/hashed
+// the same way compute0188JournalHash does — these are the exact hashes the
+// migrator recorded for the later phases. revert0188 only undoes 0188's own
+// schema; the later phases add org-referencing FKs/indexes that the dynamic FK
+// sweep below DROPS but this script never restores. Because AoA's migrator is
+// hash-set-membership (client.ts re-applies any file whose hash is absent),
+// deleting only the 0188 row while 0189+ stay applied would let a forward
+// redeploy re-run 0188 ALONE — restoring the base org tables but never the
+// dependent FKs/indexes those later phases owned — leaving a permanently
+// inconsistent schema. The in-transaction guard below uses these hashes to
+// refuse in that state. A full 0196->0188 reverse is out of scope.
+async function computeLaterMigrationHashes(): Promise<string[]> {
+  const journalRaw = await readFile(
+    new URL("./migrations/meta/_journal.json", import.meta.url),
+    "utf8",
+  );
+  const journal = JSON.parse(journalRaw) as {
+    entries?: Array<{ idx?: number; tag?: string }>;
+  };
+  const entries = Array.isArray(journal.entries) ? journal.entries : [];
+  const base = entries.find((entry) => entry.tag === "0188_organizations");
+  if (!base || typeof base.idx !== "number") {
+    throw new Error(
+      "revert-0188: could not locate 0188_organizations in the migration journal",
+    );
+  }
+  const baseIdx = base.idx;
+  const laterTags = entries
+    .filter(
+      (entry): entry is { idx: number; tag: string } =>
+        typeof entry.idx === "number" &&
+        entry.idx > baseIdx &&
+        typeof entry.tag === "string",
+    )
+    .map((entry) => entry.tag);
+  return Promise.all(
+    laterTags.map(async (tag) => {
+      const content = await readFile(
+        new URL(`./migrations/${tag}.sql`, import.meta.url),
+        "utf8",
+      );
+      return createHash("sha256").update(content).digest("hex");
+    }),
+  );
+}
+
 // Same refusal used by BOTH the cheap pre-check and the authoritative
 // in-transaction recheck, so callers (and the guard test) see one stable
 // message regardless of which gate fires.
@@ -30,6 +77,18 @@ function singleOrgRefusal(count: number): Error {
   return new Error(
     `revert-0188 refused: expected exactly 1 organization, found ${count}. ` +
       `Once a second tenant exists this is a one-way door — restore the pre-0188 snapshot instead.`,
+  );
+}
+
+// A sibling to singleOrgRefusal for the OTHER one-way-door condition: even with a
+// single org, refuse once any migration ordered after 0188 is still applied.
+// Reverting then would delete only the 0188 journal row while 0189+ stay applied,
+// so a forward redeploy re-runs 0188 alone and never restores the FKs/indexes the
+// later phases added (which the FK sweep here drops) — a permanently inconsistent
+// schema. Restore the pre-0188 snapshot instead. See computeLaterMigrationHashes.
+function laterMigrationsRefusal(): Error {
+  return new Error(
+    "revert-0188 refused: migrations after 0188 are applied — restore the pre-0188 snapshot instead",
   );
 }
 
@@ -42,6 +101,11 @@ export async function revert0188(sql: Sql): Promise<void> {
   const [{ count }] = await sql<{ count: number }[]>`SELECT count(*)::int AS count FROM organizations`;
   if (count !== 1) throw singleOrgRefusal(count);
   const journalHash = await compute0188JournalHash();
+  // Hashes of every migration ordered after 0188 (file I/O only — no DB). The
+  // later-migration guard below runs the actual membership check INSIDE the
+  // transaction (after the authoritative single-org recheck) so the single-org
+  // refusal still fires first for the 2-org and TOCTOU-race paths.
+  const laterHashes = await computeLaterMigrationHashes();
   await sql.begin(async (tx) => {
     // 0. Pin READ COMMITTED as the VERY FIRST statement (before the LOCK below).
     //    The post-lock recheck's correctness depends on READ COMMITTED: each
@@ -66,6 +130,20 @@ export async function revert0188(sql: Sql): Promise<void> {
     )) as unknown as { count: number }[];
     const lockedCount = lockedRows[0]!.count;
     if (lockedCount !== 1) throw singleOrgRefusal(lockedCount);
+    // 0c. Forward-consistency guard. Now that the single-org gate has passed,
+    //    refuse if any migration ordered after 0188 is still recorded as applied.
+    //    This runs AFTER the single-org recheck (so the 2-org and race paths keep
+    //    failing with the single-org message) and BEFORE any destructive
+    //    statement, so it is non-destructive: a refused revert leaves the schema
+    //    and journal untouched. Placed here (not in the pre-`begin` fast-fail) on
+    //    purpose. See laterMigrationsRefusal / computeLaterMigrationHashes.
+    if (laterHashes.length > 0) {
+      const appliedLater = (await tx.unsafe(
+        `SELECT 1 AS one FROM "drizzle"."__drizzle_migrations" WHERE hash = ANY($1::text[]) LIMIT 1`,
+        [laterHashes],
+      )) as unknown as { one: number }[];
+      if (appliedLater.length > 0) throw laterMigrationsRefusal();
+    }
     // 1. Drop the tenant FK on companies.
     await tx.unsafe(`ALTER TABLE "companies" DROP CONSTRAINT IF EXISTS "companies_organization_id_organizations_id_fk"`);
     await tx.unsafe(`ALTER TABLE "companies" ALTER COLUMN "organization_id" DROP DEFAULT`);
