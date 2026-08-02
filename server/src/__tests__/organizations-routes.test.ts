@@ -44,4 +44,26 @@ describe("createSelfServeOrganization", () => {
     const orgInsert = inserts.find((i) => i.v.name === "Acme");
     expect(orgInsert?.v.createdByUserId).toBe("u1");
   });
+
+  it("normalizes at the service seam and rejects invisible names without a write", async () => {
+    const normalized = fakeDb();
+    const ensureOrgOwner = vi.fn(async () => "m1");
+    const org = await createSelfServeOrganization(
+      normalized.db,
+      { name: "  Cafe\u0301  ", ownerUserId: "u1" },
+      (() => ({ ensureOrgOwner })) as any,
+    );
+    expect(org.name).toBe("Caf\u00e9");
+    expect(normalized.inserts.some((entry) => entry.v.name === "Caf\u00e9")).toBe(true);
+
+    const rejected = fakeDb();
+    await expect(
+      createSelfServeOrganization(
+        rejected.db,
+        { name: "Acme\u202eCorp", ownerUserId: "u1" },
+        (() => ({ ensureOrgOwner })) as any,
+      ),
+    ).rejects.toThrow(/invalid or invisible characters/i);
+    expect(rejected.inserts).toHaveLength(0);
+  });
 });

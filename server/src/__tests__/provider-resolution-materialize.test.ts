@@ -1,6 +1,10 @@
 // server/src/__tests__/provider-resolution-materialize.test.ts
 import { describe, it, expect } from "vitest";
-import { materializeEnvPatch } from "../services/provider-resolution.js";
+import {
+  materializeEnvPatch,
+  toExecutionTargetHint,
+  type ResolvedProviderCredential,
+} from "../services/provider-resolution.js";
 
 describe("materializeEnvPatch", () => {
   it("api_key → provider env var carries the resolved secret value", () => {
@@ -68,5 +72,39 @@ describe("materializeEnvPatch", () => {
       subscriptionEnv: null,
     });
     expect(patch).toEqual({});
+  });
+});
+
+describe("toExecutionTargetHint", () => {
+  function connection(authMethod: "api_key" | "personal_subscription" | "enterprise_gateway"):
+    ResolvedProviderCredential {
+    return {
+      source: "connection",
+      connectionId: "connection-1",
+      authMethod,
+      sharingScope: "owner_only",
+      envPatch: {},
+      provenance: {
+        scopeType: "company_default",
+        ownerUserId: null,
+        executionTargetId: "target-1",
+      },
+    };
+  }
+
+  it.each([
+    ["api_key", "company_api_key"],
+    ["enterprise_gateway", "company_api_key"],
+    ["personal_subscription", "personal_subscription"],
+  ] as const)("maps %s to %s", (authMethod, credentialKind) => {
+    expect(toExecutionTargetHint(connection(authMethod))).toEqual({
+      credentialKind,
+      executionTargetSlug: "target-1",
+    });
+  });
+
+  it("fails closed for an auth method outside the shared union", () => {
+    const invalid = { ...connection("api_key"), authMethod: "future_method" } as never;
+    expect(() => toExecutionTargetHint(invalid)).toThrow(/unsupported provider auth method/i);
   });
 });

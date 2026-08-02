@@ -9,11 +9,26 @@ describe("organization validators", () => {
     const parsed = createOrganizationSchema.parse({ name: "  Acme  " });
     expect(parsed.name).toBe("Acme");
   });
-  it("rejects empty, database-invalid, and oversized names", () => {
+  it("normalizes organization names to NFC", () => {
+    const parsed = createOrganizationSchema.parse({ name: "  Cafe\u0301  " });
+    expect(parsed.name).toBe("Caf\u00e9");
+  });
+  it("rejects empty, control/bidi/invisible, and oversized names", () => {
     expect(() => createOrganizationSchema.parse({ name: "" })).toThrow();
     expect(() => createOrganizationSchema.parse({ name: "   " })).toThrow();
-    expect(() => createOrganizationSchema.parse({ name: "Acme\0Corp" })).toThrow();
+    for (const name of [
+      "Acme\0Corp",
+      "Acme\nCorp",
+      "Acme\u001bCorp",
+      "Acme\u202eCorp",
+      "Acme\u200bCorp",
+    ]) {
+      expect(() => createOrganizationSchema.parse({ name })).toThrow();
+    }
     expect(() => createOrganizationSchema.parse({ name: "a".repeat(101) })).toThrow();
+  });
+  it("preserves ZWNJ and ZWJ used by international scripts", () => {
+    expect(createOrganizationSchema.parse({ name: "A\u200cB\u200dC" }).name).toBe("A\u200cB\u200dC");
   });
   it("rejects caller-controlled slug and plan fields", () => {
     expect(() => createOrganizationSchema.parse({ name: "Acme", slug: "acme" })).toThrow();

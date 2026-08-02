@@ -240,7 +240,7 @@ export type ResolvedProviderCredential =
 /**
  * P4→P5 SEAM. The NORMALIZED result Phase 5 consumes instead of reading
  * provider_credentials directly (P5 Task 9 references THIS, by name). Maps the
- * five auth methods onto P5's two-value credential kind + the execution-target
+ * three auth methods onto P5's two-value credential kind + the execution-target
  * slug the connection is pinned to.
  *   api_key | enterprise_gateway     → "company_api_key"
  *   personal_subscription            → "personal_subscription"
@@ -257,10 +257,20 @@ export function toExecutionTargetHint(
   if (resolved.source !== "connection") {
     return { credentialKind: null, executionTargetSlug: null };
   }
-  const credentialKind =
-    resolved.authMethod === "personal_subscription"
-      ? "personal_subscription"
-      : "company_api_key";
+  let credentialKind: Exclude<ExecutionTargetCredentialHint["credentialKind"], null>;
+  switch (resolved.authMethod) {
+    case "api_key":
+    case "enterprise_gateway":
+      credentialKind = "company_api_key";
+      break;
+    case "personal_subscription":
+      credentialKind = "personal_subscription";
+      break;
+    default: {
+      const unsupported: never = resolved.authMethod;
+      throw new Error(`Unsupported provider auth method: ${String(unsupported)}`);
+    }
+  }
   return { credentialKind, executionTargetSlug: resolved.provenance.executionTargetId };
 }
 

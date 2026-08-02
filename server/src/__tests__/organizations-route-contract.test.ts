@@ -104,6 +104,10 @@ describe("organization routes", () => {
   it.each([
     ["blank", "   "],
     ["NUL-containing", "Acme\0Corp"],
+    ["newline-containing", "Acme\nCorp"],
+    ["escape-containing", "Acme\u001bCorp"],
+    ["bidi-override-containing", "Acme\u202eCorp"],
+    ["zero-width-space-containing", "Acme\u200bCorp"],
     ["oversized", "a".repeat(101)],
   ])("rejects a %s organization name before persistence", async (_label, name) => {
     const { app } = makeApp(boardActor);

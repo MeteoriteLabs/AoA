@@ -7,6 +7,7 @@ vi.mock("../services/provider-credentials.js", () => ({
 }));
 
 import { logActivity } from "../services/activity-log.js";
+import { removeScopedSubscriptionCredentialHome } from "../services/provider-credentials.js";
 import {
   assertSubscriptionAllowed,
   providerConnectionService,
@@ -159,5 +160,33 @@ describe("provider connection lifecycle transitions", () => {
     expect(result).toMatchObject({ id: "connection-1", state: "revoked" });
     expect(updates.map((entry) => entry.patch.state)).toEqual(["disabled"]);
     expect(logActivity).not.toHaveBeenCalled();
+  });
+
+  it("propagates subscription-home cleanup failure after the logical revoke commits", async () => {
+    const connection = {
+      ...baseConnection,
+      authMethod: "personal_subscription",
+      ownerUserId: "owner-1",
+      executionTargetId: "target-1",
+    };
+    const revoked = { ...connection, state: "revoked", revokedAt: new Date() };
+    const { db, tx, updates } = makeDb({ connection, transitionRows: [revoked] });
+    vi.mocked(removeScopedSubscriptionCredentialHome).mockRejectedValueOnce(
+      new Error("filesystem unavailable"),
+    );
+
+    await expect(
+      providerConnectionService(db, topology).revoke("company-1", "connection-1", "user-1"),
+    ).rejects.toThrow("filesystem unavailable");
+
+    expect(updates.map((entry) => entry.patch.state)).toEqual(["revoked", "disabled"]);
+    expect(logActivity).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(logActivity).mock.calls[0]?.[0]).toBe(tx);
+    expect(removeScopedSubscriptionCredentialHome).toHaveBeenCalledWith({
+      companyId: "company-1",
+      userId: "owner-1",
+      provider: "anthropic",
+      executionTargetId: "target-1",
+    });
   });
 });

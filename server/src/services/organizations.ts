@@ -1,7 +1,11 @@
 import { eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { organizations, organizationMemberships } from "@armyofagents/db";
-import { DEFAULT_ORGANIZATION_ID, DEFAULT_ORGANIZATION_SLUG } from "@armyofagents/shared";
+import {
+  createOrganizationSchema,
+  DEFAULT_ORGANIZATION_ID,
+  DEFAULT_ORGANIZATION_SLUG,
+} from "@armyofagents/shared";
 import type { organizationAccessService } from "./organization-access.js";
 
 /** Lowercase kebab-case slug base; falls back to "org" when name has no [a-z0-9]. */
@@ -122,7 +126,10 @@ export async function createSelfServeOrganization(
   input: { name: string; ownerUserId: string },
   buildOrgAccess: (handle: Db) => Pick<ReturnType<typeof organizationAccessService>, "ensureOrgOwner">,
 ) {
-  const base = slugifyOrganizationName(input.name);
+  // The route validates this too. Keep the public service seam defensive so a
+  // future caller cannot persist control/bidi characters by bypassing Express.
+  const { name } = createOrganizationSchema.parse({ name: input.name });
+  const base = slugifyOrganizationName(name);
   let attempt = 0;
   while (attempt < 10000) {
     const candidate = attempt === 0 ? base : `${base}-${attempt + 1}`;
@@ -130,7 +137,7 @@ export async function createSelfServeOrganization(
       return await db.transaction(async (tx) => {
         const rows = await tx
           .insert(organizations)
-          .values({ name: input.name, slug: candidate, plan: "beta", createdByUserId: input.ownerUserId })
+          .values({ name, slug: candidate, plan: "beta", createdByUserId: input.ownerUserId })
           .returning();
         const org = rows[0];
         await buildOrgAccess(tx as unknown as Db).ensureOrgOwner(org.id, input.ownerUserId);
