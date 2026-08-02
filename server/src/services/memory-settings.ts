@@ -6,8 +6,8 @@
  * pure resolver (dept override > company default > 'supervised' fallback) consumed
  * by `resolveWriteDisposition` wiring in P5. Follows the `goals.ts` service shape.
  */
-import { and, eq, isNull } from "drizzle-orm";
-import { memorySettings, type Db } from "@armyofagents/db";
+import { and, eq, sql } from "drizzle-orm";
+import { memorySettings, projects, type Db } from "@armyofagents/db";
 import type { AutonomyLevel } from "./memory-tier-policy.js";
 
 const VALID_AUTONOMY: readonly AutonomyLevel[] = ["manual", "supervised", "trusted", "policy"];
@@ -39,6 +39,20 @@ export function memorySettingsService(db: Db) {
     list: (companyId: string) =>
       db.select().from(memorySettings).where(eq(memorySettings.companyId, companyId)),
 
+    /** Resolve only a real department belonging to this company. */
+    getDepartment: (companyId: string, departmentId: string) =>
+      db
+        .select({ id: projects.id })
+        .from(projects)
+        .where(
+          and(
+            eq(projects.id, departmentId),
+            eq(projects.companyId, companyId),
+            eq(projects.type, "department"),
+          ),
+        )
+        .then((rows) => rows[0] ?? null),
+
     /**
      * Upsert the company-default (departmentId null) or a department override.
      * Guarded on the null-dept default: matches with `isNull` so a second
@@ -51,28 +65,21 @@ export function memorySettingsService(db: Db) {
       departmentId: string | null,
       patch: MemorySettingsPatch,
     ) => {
-      const where = departmentId
-        ? and(
-            eq(memorySettings.companyId, companyId),
-            eq(memorySettings.departmentId, departmentId),
-          )
-        : and(eq(memorySettings.companyId, companyId), isNull(memorySettings.departmentId));
-      const existing = await db
-        .select()
-        .from(memorySettings)
-        .where(where)
-        .then((r) => r[0] ?? null);
-      if (existing) {
-        return db
-          .update(memorySettings)
-          .set({ ...patch, updatedAt: new Date() })
-          .where(eq(memorySettings.id, existing.id))
-          .returning()
-          .then((r) => r[0]);
-      }
       return db
         .insert(memorySettings)
         .values({ companyId, departmentId, ...patch })
+        .onConflictDoUpdate(
+          departmentId
+            ? {
+                target: [memorySettings.companyId, memorySettings.departmentId],
+                set: { ...patch, updatedAt: new Date() },
+              }
+            : {
+                target: memorySettings.companyId,
+                targetWhere: sql`${memorySettings.departmentId} IS NULL`,
+                set: { ...patch, updatedAt: new Date() },
+              },
+        )
         .returning()
         .then((r) => r[0]);
     },

@@ -1,5 +1,18 @@
 # Session Handoff — Enterprise Memory + Agent-Delivery (2026-07-31)
 
+> **2026-08-02 status update (supersedes stale branch/blocker details below):**
+> The branch is rebased onto current `origin/main`; the migration collision was
+> resolved by regenerating replay-safe `0188_clammy_lightspeed`. Full monorepo
+> typecheck and production build pass, as do the targeted regression suites and
+> 10/10 embedded-Postgres memory RBAC gates. Formal review fixes are applied for
+> Memory Settings authorization/auditing, atomic upsert and department deletion,
+> identity edit/clear reconciliation, MCP founder-escalation prevention, Crew
+> fail-closed retrieval, and managed-only Claude MCP permission. The monolithic
+> Windows test command remains non-authoritative: parallel execution hit resource
+> contention and a serial run exceeded 15 minutes in optional/live suites. Linux
+> PR CI is the remaining merge gate. The pre-rebase tip is preserved locally as
+> `backup/memory-enterprise-build-pre-rebase-20260802`.
+
 Hand-off for a fresh agent picking up the enterprise "company brain" memory work.
 
 ## 0. TL;DR

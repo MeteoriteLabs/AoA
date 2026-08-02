@@ -515,7 +515,7 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
             source: protocolActor.source,
             userId: protocolActor.userId,
             agentId: protocolActor.agentId,
-          });
+          }, scope);
           const memoryAccess = memoryAccessConditions(db, memoryActor);
           if (!resource.id) {
             const rows = filterMemoryForActor(

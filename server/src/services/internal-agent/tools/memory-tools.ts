@@ -142,6 +142,7 @@ export function createMemoryTools(): AgentTool[] {
           requestedLayer: layer as string | undefined,
           userId: ctx.userId,
           userRole: ctx.userRole,
+          actorType: ctx.actorType,
           scope: ctx.contextScope ?? {},
         });
         const limited = split.shown.slice(0, maxResults);

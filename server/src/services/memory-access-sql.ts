@@ -59,16 +59,26 @@ export async function actorForUser(
   return { kind, userId, departmentIds };
 }
 
-/** MCP dispatch helper: agent callers resolve via agent_projects, everyone else via user_roles. */
+/**
+ * MCP dispatch helper. Agent/Commander runs resolve from agent_projects. Human
+ * callers use the already board-gated MCP scope so an external key can never
+ * regain founder visibility merely because its owner has a founder role.
+ */
 export async function actorForMcp(
   db: Db,
   companyId: string,
   actor: { source: string; userId: string; agentId?: string | null },
+  scope: { kind: "founder"; userId: string } | { kind: "scoped"; userId: string; projectIds: Set<string> },
 ): Promise<MemoryActor> {
-  if (actor.source === "agent" && actor.agentId) {
+  if ((actor.source === "agent" || actor.source === "commander") && actor.agentId) {
     return actorForAgentRun(db, companyId, actor.agentId);
   }
-  return actorForUser(db, companyId, actor.userId);
+  if (scope.kind === "founder") return { kind: "founder" };
+  return {
+    kind: "team_member",
+    userId: actor.userId,
+    departmentIds: [...scope.projectIds],
+  };
 }
 
 /**

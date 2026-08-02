@@ -105,6 +105,8 @@ type Row = Record<string, unknown>;
  */
 function makeMockDb(opts: { company: Row | null; existing?: Row[] }) {
   let selectCall = 0;
+  const updates: Array<Record<string, unknown>> = [];
+  const deletes: string[] = [];
   const thenable = (rows: () => Row[]) => {
     const c: Record<string, unknown> = {};
     for (const m of ["from", "where", "orderBy", "limit"]) {
@@ -121,8 +123,32 @@ function makeMockDb(opts: { company: Row | null; existing?: Row[] }) {
         idx === 0 ? (opts.company ? [opts.company] : []) : (opts.existing ?? []),
       );
     },
+    update: () => {
+      const c: Record<string, unknown> = {};
+      c.set = (values: Record<string, unknown>) => {
+        updates.push(values);
+        return c;
+      };
+      c.where = () => c;
+      c.returning = () => c;
+      (c as { then: (r: (rows: Row[]) => unknown) => Promise<unknown> }).then = (resolve) =>
+        Promise.resolve(
+          resolve([{ id: "mem-updated", title: "Company Vision", content: updates.at(-1)?.content }]),
+        );
+      return c;
+    },
+    delete: () => {
+      const c: Record<string, unknown> = {};
+      c.where = () => {
+        deletes.push("deleted");
+        return c;
+      };
+      (c as { then: (r: (rows: Row[]) => unknown) => Promise<unknown> }).then = (resolve) =>
+        Promise.resolve(resolve([]));
+      return c;
+    },
   };
-  return { db: db as unknown as Parameters<typeof backfillIdentityMemory>[0] };
+  return { db: db as unknown as Parameters<typeof backfillIdentityMemory>[0], updates, deletes };
 }
 
 describe("backfillIdentityMemory", () => {
@@ -158,9 +184,9 @@ describe("backfillIdentityMemory", () => {
     const { db } = makeMockDb({
       company: { vision: "V", mission: "M", values: "Val" },
       existing: [
-        { title: "Company Vision", sourceContext: MARK },
-        { title: "Company Mission", sourceContext: MARK },
-        { title: "Company Values", sourceContext: MARK },
+        { id: "v", title: "Company Vision", content: "V", sourceContext: MARK },
+        { id: "m", title: "Company Mission", content: "M", sourceContext: MARK },
+        { id: "val", title: "Company Values", content: "Val", sourceContext: MARK },
       ],
     });
     const n = await backfillIdentityMemory(db, "co-1");
@@ -171,7 +197,7 @@ describe("backfillIdentityMemory", () => {
   it("inserts only the missing field on a partial re-run", async () => {
     const { db } = makeMockDb({
       company: { vision: "V", mission: "M", values: null },
-      existing: [{ title: "Company Vision", sourceContext: MARK }],
+      existing: [{ id: "v", title: "Company Vision", content: "V", sourceContext: MARK }],
     });
     const n = await backfillIdentityMemory(db, "co-1");
     expect(n).toBe(1);
@@ -191,6 +217,30 @@ describe("backfillIdentityMemory", () => {
     const { db } = makeMockDb({ company: null });
     const n = await backfillIdentityMemory(db, "nope");
     expect(n).toBe(0);
+    expect(insertedValues()).toHaveLength(0);
+  });
+
+  it("updates a marked identity item when the company field changes", async () => {
+    const { db, updates } = makeMockDb({
+      company: { vision: "New vision", mission: null, values: null },
+      existing: [{ id: "v", title: "Company Vision", content: "Old vision", sourceContext: MARK }],
+    });
+    expect(await backfillIdentityMemory(db, "co-1")).toBe(1);
+    expect(updates).toEqual([expect.objectContaining({ content: "New vision" })]);
+    expect(enqueueMemoryEmbedding).toHaveBeenCalledWith(
+      db,
+      "co-1",
+      expect.objectContaining({ content: "New vision" }),
+    );
+  });
+
+  it("deletes the marked identity item when its company field is cleared", async () => {
+    const { db, deletes } = makeMockDb({
+      company: { vision: null, mission: null, values: null },
+      existing: [{ id: "v", title: "Company Vision", content: "Old vision", sourceContext: MARK }],
+    });
+    expect(await backfillIdentityMemory(db, "co-1")).toBe(1);
+    expect(deletes).toHaveLength(1);
     expect(insertedValues()).toHaveLength(0);
   });
 });

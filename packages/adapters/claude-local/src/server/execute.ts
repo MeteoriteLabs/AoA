@@ -708,7 +708,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       // curated allowlist (ORG_HEARTBEAT_TOOL_ALLOWLIST / Commander surface), so permitting
       // the whole `mcp__aoa` server here is bounded by that allowlist. Skip when
       // skip-permissions already allows everything.
-      if (!dangerouslySkipPermissions) {
+      const hasManagedMcpConfig =
+        extraArgs.includes("--mcp-config") && extraArgs.includes("--strict-mcp-config");
+      if (!dangerouslySkipPermissions && hasManagedMcpConfig) {
         args.push("--allowedTools", "mcp__aoa");
       }
       if (chrome) args.push("--chrome");

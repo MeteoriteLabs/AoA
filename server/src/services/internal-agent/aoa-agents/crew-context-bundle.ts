@@ -449,6 +449,9 @@ export async function loadScopedMemoryLines(
   accessConditions: SQL[],
   audit: { agentId?: string | null; runId?: string | null; taskId?: string | null },
 ): Promise<string[]> {
+  // A missing actor means we cannot prove which durable rows this run may see.
+  // Keep the non-memory crew context, but fail closed for memory retrieval.
+  if (!actor) return [];
   const q = queryText.trim();
   if (q.length === 0) return [];
   try {
@@ -460,10 +463,10 @@ export async function loadScopedMemoryLines(
     if (!Array.isArray(raw) || raw.length === 0) return [];
     // Post-fetch safety net (P0): never render — nor audit as shown — a row the
     // actor can't see. A null actor keeps today's unfiltered behavior.
-    const served = actor ? filterMemoryForActor(raw, actor) : raw;
+    const served = filterMemoryForActor(raw, actor);
     // Audit the served rows (O4) — mirror the ORG heartbeat. Skipped when no actor
     // resolved (retain today's unaudited behavior) or nothing was served.
-    if (actor && served.length > 0) {
+    if (served.length > 0) {
       recordMemoryRetrievals(db, {
         companyId,
         agentId: audit.agentId ?? null,

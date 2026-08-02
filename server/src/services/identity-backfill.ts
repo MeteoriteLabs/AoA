@@ -85,22 +85,53 @@ async function applyIdentityBackfill(
   companyId: string,
   fields: CompanyIdentityFields,
 ): Promise<number> {
-  // Cheap short-circuit before touching memory_items at all.
-  if (
-    !(fields.vision && fields.vision.trim()) &&
-    !(fields.mission && fields.mission.trim()) &&
-    !(fields.values && fields.values.trim())
-  ) {
-    return 0;
-  }
-
   const existing = await db
-    .select({ title: memoryItems.title, sourceContext: memoryItems.sourceContext })
+    .select({
+      id: memoryItems.id,
+      title: memoryItems.title,
+      content: memoryItems.content,
+      sourceContext: memoryItems.sourceContext,
+    })
     .from(memoryItems)
     .where(and(eq(memoryItems.companyId, companyId), eq(memoryItems.layer, "identity")));
 
   const plan = planIdentityBackfill(fields, existing);
-  if (plan.length === 0) return 0;
+  const markedByTitle = new Map(
+    existing
+      .filter((row) => row.sourceContext === IDENTITY_BACKFILL_MARK)
+      .map((row) => [row.title, row] as const),
+  );
+  const desired = new Map<string, string | null>([
+    ["Company Vision", fields.vision?.trim() || null],
+    ["Company Mission", fields.mission?.trim() || null],
+    ["Company Values", fields.values?.trim() || null],
+  ]);
+  let changed = 0;
+
+  // Keep existing mirror rows synchronized with edits and removals.
+  for (const [title, content] of desired) {
+    const current = markedByTitle.get(title);
+    if (!current) continue;
+    if (content === null) {
+      await db.delete(memoryItems).where(eq(memoryItems.id, current.id));
+      changed += 1;
+      continue;
+    }
+    if (current.content !== content) {
+      const row = await db
+        .update(memoryItems)
+        .set({ content, updatedAt: new Date() })
+        .where(eq(memoryItems.id, current.id))
+        .returning({ id: memoryItems.id, title: memoryItems.title, content: memoryItems.content })
+        .then((rows) => rows[0] ?? null);
+      if (row) {
+        changed += 1;
+        await enqueueMemoryEmbedding(db, companyId, row).catch(() => {});
+      }
+    }
+  }
+
+  if (plan.length === 0) return changed;
 
   // Use the pgvector-safe insert helper: on installs without the pgvector
   // extension, memory_items has no `embedding` column, and a plain
@@ -142,7 +173,7 @@ async function applyIdentityBackfill(
     await enqueueMemoryEmbedding(db, companyId, row).catch(() => {});
   }
 
-  return inserted.length;
+  return changed + inserted.length;
 }
 
 /**

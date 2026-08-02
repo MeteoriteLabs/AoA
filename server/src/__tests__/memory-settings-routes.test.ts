@@ -6,9 +6,13 @@ import { memorySettingsRoutes } from "../routes/memory-settings.js";
 
 const mockService = vi.hoisted(() => ({
   list: vi.fn(),
+  getDepartment: vi.fn(),
   upsert: vi.fn(),
   deleteOverride: vi.fn(),
 }));
+
+const logActivity = vi.hoisted(() => vi.fn());
+vi.mock("../services/index.js", () => ({ logActivity }));
 
 vi.mock("../services/memory-settings.js", () => ({
   memorySettingsService: () => mockService,
@@ -16,8 +20,10 @@ vi.mock("../services/memory-settings.js", () => ({
 
 // assertRole → permissionService(db).getEffectiveRole for non-local actors.
 const getEffectiveRole = vi.hoisted(() => vi.fn());
+const isFounder = vi.hoisted(() => vi.fn());
+const isTeamLeadForDepartment = vi.hoisted(() => vi.fn());
 vi.mock("../services/permissions.js", () => ({
-  permissionService: () => ({ getEffectiveRole }),
+  permissionService: () => ({ getEffectiveRole, isFounder, isTeamLeadForDepartment }),
 }));
 
 const COMPANY_A = "11111111-1111-1111-1111-111111111111";
@@ -60,6 +66,9 @@ function sessionActor() {
 describe("memory-settings routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockService.getDepartment.mockResolvedValue({ id: DEPT_A });
+    isFounder.mockResolvedValue(false);
+    isTeamLeadForDepartment.mockResolvedValue(false);
   });
 
   it("GET returns the company's memory settings", async () => {
@@ -125,14 +134,47 @@ describe("memory-settings routes", () => {
     expect(mockService.upsert).not.toHaveBeenCalled();
   });
 
-  it("PUT allows a team_lead", async () => {
+  it("PUT forbids a team_lead from changing the company default", async () => {
     getEffectiveRole.mockResolvedValue("team_lead");
     mockService.upsert.mockResolvedValue({ id: "row-3" });
     const res = await request(createApp(sessionActor()))
       .put(`/api/companies/${COMPANY_A}/memory-settings`)
       .send({ autonomyLevel: "trusted" });
+    expect(res.status).toBe(403);
+    expect(mockService.upsert).not.toHaveBeenCalled();
+  });
+
+  it("PUT allows a team_lead to change their own department override", async () => {
+    getEffectiveRole.mockResolvedValue("team_lead");
+    isTeamLeadForDepartment.mockResolvedValue(true);
+    mockService.upsert.mockResolvedValue({ id: "row-3", departmentId: DEPT_A });
+    const res = await request(createApp(sessionActor()))
+      .put(`/api/companies/${COMPANY_A}/memory-settings`)
+      .send({ departmentId: DEPT_A, autonomyLevel: "trusted" });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockService.upsert).toHaveBeenCalled();
+    expect(logActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "memory.settings_updated", entityId: "row-3" }),
+    );
+  });
+
+  it("PUT rejects agent actors even within their company", async () => {
+    const agent = { type: "agent", source: "agent", companyId: COMPANY_A, agentId: "agent-1" };
+    const res = await request(createApp(agent))
+      .put(`/api/companies/${COMPANY_A}/memory-settings`)
+      .send({ autonomyLevel: "trusted" });
+    expect(res.status).toBe(403);
+    expect(mockService.upsert).not.toHaveBeenCalled();
+  });
+
+  it("PUT rejects a department outside the company", async () => {
+    mockService.getDepartment.mockResolvedValue(null);
+    const res = await request(createApp(localBoardActor()))
+      .put(`/api/companies/${COMPANY_A}/memory-settings`)
+      .send({ departmentId: DEPT_A, autonomyLevel: "trusted" });
+    expect(res.status).toBe(404);
+    expect(mockService.upsert).not.toHaveBeenCalled();
   });
 
   it("DELETE removes a department override (204)", async () => {
@@ -142,5 +184,17 @@ describe("memory-settings routes", () => {
     );
     expect(res.status).toBe(204);
     expect(mockService.deleteOverride).toHaveBeenCalledWith(COMPANY_A, DEPT_A);
+    expect(logActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "memory.settings_override_deleted", entityId: DEPT_A }),
+    );
+  });
+
+  it("DELETE rejects a malformed department id", async () => {
+    const res = await request(createApp(localBoardActor())).delete(
+      `/api/companies/${COMPANY_A}/memory-settings/departments/not-a-uuid`,
+    );
+    expect(res.status).toBe(400);
+    expect(mockService.deleteOverride).not.toHaveBeenCalled();
   });
 });

@@ -9,7 +9,9 @@ import {
   jsonb,
   boolean,
   index,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { companies } from "./companies.js";
 import { projects } from "./projects.js";
 import { goals } from "./goals.js";
@@ -114,6 +116,9 @@ export const memoryItems = pgTable(
     companyCategoryIdx: index("memory_items_company_category_idx").on(table.companyId, table.category),
     companyStatusIdx: index("memory_items_company_status_idx").on(table.companyId, table.status),
     companyLayerStatusIdx: index("memory_items_company_layer_status_idx").on(table.companyId, table.layer, table.status),
+    identityMirrorUq: uniqueIndex("memory_items_identity_mirror_uq")
+      .on(table.companyId, table.title)
+      .where(sql`${table.layer} = 'identity' AND ${table.sourceContext} = 'company:identity'`),
     goalActiveContextIdx: index("memory_items_goal_active_context_idx").on(table.goalId, table.expiresAt),
     taskWorkingIdx: index("memory_items_task_working_idx").on(table.taskId),
     conversationWorkingIdx: index("memory_items_conversation_working_idx").on(

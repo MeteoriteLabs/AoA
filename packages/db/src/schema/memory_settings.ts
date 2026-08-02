@@ -30,10 +30,10 @@ export const memorySettings = pgTable(
     companyId: uuid("company_id")
       .notNull()
       .references(() => companies.id, { onDelete: "cascade" }),
-    // null = company default. set null (not cascade): dropping a department falls
-    // its override back to the company default rather than deleting the row.
+    // null = company default. Deleting a department deletes its override, so
+    // effective resolution naturally falls back to the company default.
     departmentId: uuid("department_id").references(() => projects.id, {
-      onDelete: "set null",
+      onDelete: "cascade",
     }),
     autonomyLevel: text("autonomy_level").notNull().default("supervised"),
     activeContextTier: text("active_context_tier").notNull().default("durable"),

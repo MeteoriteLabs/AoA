@@ -7,7 +7,7 @@ vi.mock("@armyofagents/db", () => ({
 }));
 vi.mock("drizzle-orm", () => drizzleOperatorStubs());
 
-import { actorForAgentRun, actorForUser } from "../services/memory-access-sql.js";
+import { actorForAgentRun, actorForMcp, actorForUser } from "../services/memory-access-sql.js";
 
 type Row = Record<string, unknown>;
 
@@ -64,5 +64,31 @@ describe("actorForUser", () => {
       userId: "u1",
       departmentIds: [],
     });
+  });
+});
+
+describe("actorForMcp", () => {
+  it("does not inherit a founder role for an external MCP key", async () => {
+    const db = makeMockDb([[{ role: "founder", projectId: null }]]);
+    expect(
+      await actorForMcp(
+        db,
+        "co-1",
+        { source: "mcp", userId: "founder-owner" },
+        { kind: "scoped", userId: "founder-owner", projectIds: new Set() },
+      ),
+    ).toEqual({ kind: "team_member", userId: "founder-owner", departmentIds: [] });
+  });
+
+  it("preserves founder scope for a board caller", async () => {
+    const db = makeMockDb([]);
+    expect(
+      await actorForMcp(
+        db,
+        "co-1",
+        { source: "board", userId: "board-user" },
+        { kind: "founder", userId: "board-user" },
+      ),
+    ).toEqual({ kind: "founder" });
   });
 });

@@ -3,6 +3,7 @@ import { makeTableProxy, drizzleOperatorStubs } from "./helpers/drizzle-mock.js"
 
 vi.mock("@armyofagents/db", () => ({
   memorySettings: makeTableProxy("memory_settings"),
+  projects: makeTableProxy("projects"),
 }));
 vi.mock("drizzle-orm", () => drizzleOperatorStubs());
 
@@ -40,7 +41,7 @@ describe("pickAutonomyLevel", () => {
  */
 function makeChain(result: unknown, capture?: (method: string, args: unknown[]) => void) {
   const chain: Record<string, unknown> = {};
-  for (const m of ["from", "where", "set", "values", "returning", "orderBy", "limit"]) {
+  for (const m of ["from", "where", "set", "values", "onConflictDoUpdate", "returning", "orderBy", "limit"]) {
     chain[m] = (...args: unknown[]) => {
       capture?.(m, args);
       return chain;
@@ -55,6 +56,7 @@ type Captured = {
   insertValues?: Record<string, unknown>;
   updateSet?: Record<string, unknown>;
   deleteCalled?: boolean;
+  conflictArgs?: Record<string, unknown>;
   ops: string[];
 };
 
@@ -74,6 +76,7 @@ function makeDb(selectResult: unknown[], writeResult: unknown[], captured: Captu
       captured.ops.push("insert");
       return makeChain(writeResult, (m, args) => {
         if (m === "values") captured.insertValues = args[0] as Record<string, unknown>;
+        if (m === "onConflictDoUpdate") captured.conflictArgs = args[0] as Record<string, unknown>;
       });
     },
     delete: () => {
@@ -85,15 +88,17 @@ function makeDb(selectResult: unknown[], writeResult: unknown[], captured: Captu
 }
 
 describe("memorySettingsService.upsert", () => {
-  it("updates the existing company-default row instead of inserting a duplicate", async () => {
+  it("atomically upserts the company-default row through its partial unique index", async () => {
     const captured: Captured = { ops: [] };
     const existing = { id: "row-1", companyId: "co-1", departmentId: null };
-    const db = makeDb([existing], [{ ...existing, autonomyLevel: "trusted" }], captured);
+    const db = makeDb([], [{ ...existing, autonomyLevel: "trusted" }], captured);
     const out = await memorySettingsService(db).upsert("co-1", null, { autonomyLevel: "trusted" });
-    expect(captured.ops).toContain("update");
-    expect(captured.ops).not.toContain("insert");
-    expect(captured.updateSet).toMatchObject({ autonomyLevel: "trusted" });
-    expect(captured.updateSet?.updatedAt).toBeInstanceOf(Date);
+    expect(captured.ops).toContain("insert");
+    expect(captured.ops).not.toContain("select");
+    expect(captured.conflictArgs).toMatchObject({
+      set: expect.objectContaining({ autonomyLevel: "trusted", updatedAt: expect.any(Date) }),
+    });
+    expect(captured.conflictArgs?.targetWhere).toBeDefined();
     expect(out).toMatchObject({ id: "row-1", autonomyLevel: "trusted" });
   });
 
@@ -102,7 +107,7 @@ describe("memorySettingsService.upsert", () => {
     const db = makeDb([], [{ id: "new-1" }], captured);
     await memorySettingsService(db).upsert("co-1", null, { activeContextTier: "protected" });
     expect(captured.ops).toContain("insert");
-    expect(captured.ops).not.toContain("update");
+    expect(captured.conflictArgs).toBeDefined();
     expect(captured.insertValues).toMatchObject({
       companyId: "co-1",
       departmentId: null,
@@ -118,6 +123,10 @@ describe("memorySettingsService.upsert", () => {
       companyId: "co-1",
       departmentId: "deptA",
       autonomyLevel: "manual",
+    });
+    expect(captured.conflictArgs).toMatchObject({
+      target: expect.any(Array),
+      set: expect.objectContaining({ autonomyLevel: "manual", updatedAt: expect.any(Date) }),
     });
   });
 });

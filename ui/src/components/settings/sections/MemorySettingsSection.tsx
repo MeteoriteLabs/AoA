@@ -32,16 +32,18 @@ export function MemorySettingsSection() {
   const qc = useQueryClient();
   const companyId = selectedCompanyId ?? "";
 
-  const { data: rows } = useQuery({
+  const settingsQuery = useQuery({
     queryKey: ["memory-settings", companyId],
     queryFn: () => memorySettingsApi.list(companyId),
     enabled: Boolean(companyId),
   });
-  const { data: projects } = useQuery({
+  const projectsQuery = useQuery({
     queryKey: ["projects", companyId],
     queryFn: () => projectsApi.list(companyId),
     enabled: Boolean(companyId),
   });
+  const rows = settingsQuery.data;
+  const projects = projectsQuery.data;
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ["memory-settings", companyId] });
   const save = useMutation({
@@ -55,7 +57,13 @@ export function MemorySettingsSection() {
 
   const companyDefault = rows?.find((r) => r.departmentId === null);
   const departments = (projects ?? []).filter((p) => p.type === "department");
-  const busy = save.isPending || clearOverride.isPending || !companyId;
+  const busy =
+    save.isPending ||
+    clearOverride.isPending ||
+    settingsQuery.isPending ||
+    projectsQuery.isPending ||
+    !companyId;
+  const error = settingsQuery.error ?? projectsQuery.error ?? save.error ?? clearOverride.error;
 
   return (
     <section data-testid="memory-settings-section">
@@ -74,6 +82,15 @@ export function MemorySettingsSection() {
       </div>
 
       <div className="p-8 space-y-8">
+        <div className="max-w-xl rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-xs text-muted-foreground">
+          These governance preferences are saved for the upcoming P5 write-policy runtime. They do
+          not change memory-write behavior in the current release.
+        </div>
+        {error && (
+          <div role="alert" className="max-w-xl rounded-md border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+            {error instanceof Error ? error.message : "Memory settings could not be loaded or saved."}
+          </div>
+        )}
         {/* Governance dials */}
         <div className="space-y-4">
           <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">

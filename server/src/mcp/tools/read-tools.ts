@@ -205,7 +205,7 @@ async function handleMemorySearch(
     source: ctx.actor.source,
     userId: ctx.actor.userId,
     agentId: ctx.actor.agentId,
-  });
+  }, ctx.scope);
   const accessConditions = memoryAccessConditions(ctx.db, actor);
 
   const results = await ctx.services.memorySvc.searchMultiPath(ctx.companyId, parsed.query, {
@@ -282,7 +282,7 @@ async function handleMemoryGet(
     source: ctx.actor.source,
     userId: ctx.actor.userId,
     agentId: ctx.actor.agentId,
-  });
+  }, ctx.scope);
   const accessConditions = memoryAccessConditions(ctx.db, actor);
 
   const item = await ctx.services.memorySvc.getById(ctx.companyId, parsed.id, accessConditions);

@@ -91,16 +91,15 @@ describe("loadScopedMemoryLines", () => {
     expect(arg.items[0]).toMatchObject({ id: "in", rank: 1, shownToAgent: true });
   });
 
-  it("does not filter nor audit when no actor is resolved (retain today's behavior)", async () => {
+  it("does not fetch or audit memory when no actor is resolved", async () => {
     searchMultiPath.mockResolvedValueOnce([
       memRow({ id: "in", title: "In scope", departmentId: "deptA" }),
       memRow({ id: "out", title: "Out of scope", departmentId: "deptB" }),
     ]);
     const lines = await loadScopedMemoryLines({} as never, "co-1", "query", {}, null, [], {});
     // No actor ⇒ unfiltered: both rows rendered.
-    const rendered = lines.join("\n");
-    expect(rendered).toContain("In scope");
-    expect(rendered).toContain("Out of scope");
+    expect(lines).toEqual([]);
+    expect(searchMultiPath).not.toHaveBeenCalled();
     // No actor ⇒ unaudited.
     expect(recordMemoryRetrievals).not.toHaveBeenCalled();
   });
