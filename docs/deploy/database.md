@@ -77,6 +77,23 @@ For production, use a hosted provider like [Supabase](https://supabase.com/).
 
 Use the **direct connection** (port 5432) for migrations and the **pooled connection** (port 6543) for the application.
 
+### Migrations in multi-replica cloud deployments
+
+On boot the server auto-applies any pending migrations
+(`applyPendingMigrations` in `packages/db/src/client.ts`). In a horizontally
+scaled cloud deployment, **run migrations as a single init-job / one-shot
+container that finishes before the application replicas start**, rather than
+relying on every replica's boot-time auto-apply. Two replicas booting at once
+can otherwise observe the same pending set and race non-idempotent DDL (an
+`ADD COLUMN` / `ADD CONSTRAINT` without `IF NOT EXISTS`).
+
+As defense-in-depth, `applyPendingMigrations` holds a **session-level
+PostgreSQL advisory lock** (`pg_advisory_lock(hashtext('aoa:migrations'))`)
+across the whole inspect-and-apply, so if two replicas do auto-apply
+concurrently only one runs the migrator; the other waits, re-inspects under the
+lock, and finds the schema already up to date. This is a safety net, **not** a
+substitute for a single migration job.
+
 If using connection pooling, disable prepared statements:
 
 ```ts
