@@ -17,7 +17,22 @@ export interface LogActivityInput {
   details?: Record<string, unknown> | null;
 }
 
-export async function logActivity(db: Db, input: LogActivityInput) {
+export interface PreparedActivityEvent {
+  companyId: string;
+  payload: {
+    actorType: ActivityActorType;
+    actorId: string;
+    action: string;
+    entityType: string;
+    entityId: string;
+    agentId: string | null;
+    runId: string | null;
+    details: Record<string, unknown> | null;
+  };
+}
+
+/** Persist an activity row without publishing. Use this inside larger transactions. */
+export async function insertActivity(db: Db, input: LogActivityInput): Promise<PreparedActivityEvent> {
   assertUnreservedActivityNamespace(input);
   const sanitizedDetails = input.details ? sanitizeRecord(input.details) : null;
   await db.insert(activityLog).values({
@@ -32,9 +47,8 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     details: sanitizedDetails,
   });
 
-  publishLiveEvent({
+  return {
     companyId: input.companyId,
-    type: "activity.logged",
     payload: {
       actorType: input.actorType,
       actorId: input.actorId,
@@ -45,5 +59,18 @@ export async function logActivity(db: Db, input: LogActivityInput) {
       runId: input.runId ?? null,
       details: sanitizedDetails,
     },
+  };
+}
+
+/** Publish only after the transaction containing insertActivity has committed. */
+export function publishActivity(event: PreparedActivityEvent) {
+  publishLiveEvent({
+    companyId: event.companyId,
+    type: "activity.logged",
+    payload: event.payload,
   });
+}
+
+export async function logActivity(db: Db, input: LogActivityInput) {
+  publishActivity(await insertActivity(db, input));
 }

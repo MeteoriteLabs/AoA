@@ -26,7 +26,7 @@ import {
 import { getProviderByAdapterType } from "@armyofagents/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { getSecretProvider, listSecretProviders } from "../secrets/provider-registry.js";
-import type { SecretProviderVaultRuntimeConfig } from "../secrets/types.js";
+import type { PreparedSecretVersion, SecretProviderVaultRuntimeConfig } from "../secrets/types.js";
 // Task 7's owner-hop resolver. Reused deliberately rather than re-derived: some
 // providers READ a credential another OWNS (pi -> anthropic, cursor_cloud ->
 // cursor), and a lookup on the borrower's own name would find nothing right
@@ -58,13 +58,105 @@ export type SecretConsumerContext = {
   issueId?: string | null;
   heartbeatRunId?: string | null;
   pluginId?: string | null;
+  /** Internal capability for the OAuth broker/loader; never accepted from API input. */
+  mcpOAuthOwner?: McpOAuthSecretOwner;
 };
 
 type Actor = { userId?: string | null; agentId?: string | null };
 
+export type McpOAuthSecretOwner = {
+  connectorId: string;
+  catalogEntryId: string;
+  oauthPolicyVersion: number;
+};
+
+export type PreparedMcpOAuthSecretVersion = {
+  owner: McpOAuthSecretOwner;
+  companyId: string;
+  name: string;
+  key: string;
+  expectedLatestVersion: number;
+  prepared: PreparedSecretVersion;
+};
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
+}
+
+function mcpOAuthOwnerFromMetadata(value: unknown): McpOAuthSecretOwner | null {
+  const metadata = asRecord(value);
+  if (
+    metadata?.purpose !== "mcp_oauth" ||
+    typeof metadata.ownerConnectorId !== "string" ||
+    typeof metadata.catalogEntryId !== "string" ||
+    typeof metadata.oauthPolicyVersion !== "number"
+  ) {
+    return null;
+  }
+  return {
+    connectorId: metadata.ownerConnectorId,
+    catalogEntryId: metadata.catalogEntryId,
+    oauthPolicyVersion: metadata.oauthPolicyVersion,
+  };
+}
+
+export function isMcpOAuthManagedMetadata(value: unknown): boolean {
+  return asRecord(value)?.purpose === "mcp_oauth";
+}
+
+function assertMcpOAuthOwner(metadata: unknown, expected: McpOAuthSecretOwner) {
+  const actual = mcpOAuthOwnerFromMetadata(metadata);
+  if (
+    !actual ||
+    actual.connectorId !== expected.connectorId ||
+    actual.catalogEntryId !== expected.catalogEntryId ||
+    actual.oauthPolicyVersion !== expected.oauthPolicyVersion
+  ) {
+    throw conflict("OAuth credential name is already owned by another resource");
+  }
+}
+
+export function assertNotMcpOAuthManaged(metadata: unknown) {
+  if (isMcpOAuthManagedMetadata(metadata)) {
+    throw conflict("OAuth connector credentials are broker-managed and cannot be changed directly");
+  }
+}
+
+function assertMcpOAuthResolutionAllowed(
+  secret: typeof companySecrets.$inferSelect,
+  context: SecretConsumerContext,
+) {
+  if (!isMcpOAuthManagedMetadata(secret.providerMetadata)) return;
+  const allowedConsumer =
+    context.consumerType === "system" &&
+    (context.consumerId === "mcp-connectors" || context.consumerId === "oauth-broker");
+  if (!allowedConsumer || !context.mcpOAuthOwner) {
+    throw unprocessable("OAuth connector credentials cannot be used by generic secret consumers");
+  }
+  assertMcpOAuthOwner(secret.providerMetadata, context.mcpOAuthOwner);
+}
+
+export async function prepareMcpOAuthSecretVersion(input: {
+  companyId: string;
+  value: string;
+  owner: McpOAuthSecretOwner;
+  expectedLatestVersion: number;
+}): Promise<PreparedMcpOAuthSecretVersion> {
+  const name = `mcp:oauth:${input.owner.connectorId}`;
+  const key = keyForSecret({ name });
+  const prepared = await getSecretProvider("local_encrypted").createVersion({
+    value: input.value,
+    externalRef: null,
+    providerConfig: null,
+    context: {
+      companyId: input.companyId,
+      secretKey: key,
+      secretName: name,
+      version: input.expectedLatestVersion + 1,
+    },
+  });
+  return { ...input, name, key, prepared };
 }
 
 function isSensitiveEnvKey(key: string) {
@@ -358,6 +450,7 @@ export function secretService(db: Db) {
     try {
       secret = await assertSecretInCompany(companyId, secretId);
       if (secret.status !== "active") throw unprocessable("Secret is not active");
+      assertMcpOAuthResolutionAllowed(secret, context);
       await assertBinding(secret, context);
       resolvedVersion = version === "latest" ? secret.latestVersion : version;
       const versionRow = await getSecretVersion(secret.id, resolvedVersion);
@@ -398,7 +491,8 @@ export function secretService(db: Db) {
         if (binding.value === REDACTED_SENTINEL) throw unprocessable(`Refusing to persist redacted placeholder for key: ${key}`);
         normalized[key] = binding;
       } else {
-        await assertSecretInCompany(companyId, binding.secretId);
+        const secret = await assertSecretInCompany(companyId, binding.secretId);
+        assertNotMcpOAuthManaged(secret.providerMetadata);
         normalized[key] = { type: "secret_ref", secretId: binding.secretId, version: binding.version };
       }
     }
@@ -695,6 +789,7 @@ export function secretService(db: Db) {
     ) => {
       const secret = await getById(secretId);
       if (!secret || secret.deletedAt) throw notFound("Secret not found");
+      assertNotMcpOAuthManaged(secret.providerMetadata);
       if (normalizeManagedMode(secret.managedMode) !== "aoa_managed") throw unprocessable("External reference secrets cannot be rotated by AoA");
       const providerConfigId = input.providerConfigId ?? secret.providerConfigId;
       const providerConfig = await assertProviderConfig(secret.companyId, secret.provider as SecretProvider, providerConfigId);
@@ -747,6 +842,7 @@ export function secretService(db: Db) {
     ) => {
       const secret = await getById(secretId);
       if (!secret || secret.deletedAt) throw notFound("Secret not found");
+      assertNotMcpOAuthManaged(secret.providerMetadata);
       if (patch.name && patch.name !== secret.name) {
         const duplicate = await getByName(secret.companyId, patch.name);
         if (duplicate && duplicate.id !== secret.id) throw conflict(`Secret already exists: ${patch.name}`);
@@ -772,6 +868,7 @@ export function secretService(db: Db) {
     remove: async (secretId: string) => {
       const secret = await getById(secretId);
       if (!secret) return null;
+      assertNotMcpOAuthManaged(secret.providerMetadata);
       await assertSecretNotUsedByActiveProviderKey(secret.id);
       const provider = getSecretProvider(secret.provider as SecretProvider);
       const latestVersion = await getSecretVersion(secret.id, secret.latestVersion);
@@ -794,9 +891,109 @@ export function secretService(db: Db) {
     delete: async (companyId: string, name: string): Promise<boolean> => {
       const existing = await getByName(companyId, name);
       if (!existing) return false;
+      assertNotMcpOAuthManaged(existing.providerMetadata);
       await assertSecretNotUsedByActiveProviderKey(existing.id);
       await db.update(companySecrets).set({ status: "deleted", deletedAt: new Date(), updatedAt: new Date() }).where(eq(companySecrets.id, existing.id));
       return true;
+    },
+
+    /**
+     * Commit a provider-prepared OAuth credential using this service's DB handle.
+     * This deliberately does not start a transaction: callers bind the flow claim,
+     * connector update, secret write and activity row in one outer transaction.
+     */
+    commitPreparedMcpOAuthSecret: async (
+      input: PreparedMcpOAuthSecretVersion,
+      actor?: Actor,
+    ) => {
+      const existing = await getByName(input.companyId, input.name);
+      const now = new Date();
+      const providerMetadata = {
+        ...(input.prepared.providerMetadata ?? {}),
+        purpose: "mcp_oauth",
+        ownerConnectorId: input.owner.connectorId,
+        catalogEntryId: input.owner.catalogEntryId,
+        oauthPolicyVersion: input.owner.oauthPolicyVersion,
+      };
+
+      if (!existing) {
+        if (input.expectedLatestVersion !== 0) {
+          throw conflict("OAuth credential changed while authorization was completing");
+        }
+        const secret = await db
+          .insert(companySecrets)
+          .values({
+            companyId: input.companyId,
+            name: input.name,
+            key: input.key,
+            status: "active",
+            managedMode: "aoa_managed",
+            provider: "local_encrypted",
+            providerConfigId: null,
+            providerMetadata,
+            externalRef: input.prepared.externalRef,
+            latestVersion: 1,
+            description: "Broker-managed MCP OAuth credential",
+            createdByAgentId: actor?.agentId ?? null,
+            createdByUserId: actor?.userId ?? null,
+          })
+          .returning()
+          .then((rows) => rows[0]);
+        await db.insert(companySecretVersions).values({
+          secretId: secret.id,
+          version: 1,
+          material: input.prepared.material,
+          providerVersionRef: input.prepared.providerVersionRef ?? null,
+          status: "current",
+          valueSha256: input.prepared.valueSha256,
+          fingerprintSha256: input.prepared.fingerprintSha256 ?? input.prepared.valueSha256,
+          createdByAgentId: actor?.agentId ?? null,
+          createdByUserId: actor?.userId ?? null,
+        });
+        return secret;
+      }
+
+      assertMcpOAuthOwner(existing.providerMetadata, input.owner);
+      if (existing.provider !== "local_encrypted" || existing.managedMode !== "aoa_managed") {
+        throw conflict("OAuth credential has an invalid storage provider");
+      }
+      const nextVersion = input.expectedLatestVersion + 1;
+      const updated = await db
+        .update(companySecrets)
+        .set({
+          latestVersion: nextVersion,
+          providerMetadata,
+          externalRef: input.prepared.externalRef,
+          lastRotatedAt: now,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(companySecrets.id, existing.id),
+            eq(companySecrets.latestVersion, input.expectedLatestVersion),
+          ),
+        )
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!updated) {
+        throw conflict("OAuth credential changed while authorization was completing");
+      }
+      await db
+        .update(companySecretVersions)
+        .set({ status: "previous" })
+        .where(eq(companySecretVersions.secretId, existing.id));
+      await db.insert(companySecretVersions).values({
+        secretId: existing.id,
+        version: nextVersion,
+        material: input.prepared.material,
+        providerVersionRef: input.prepared.providerVersionRef ?? null,
+        status: "current",
+        valueSha256: input.prepared.valueSha256,
+        fingerprintSha256: input.prepared.fingerprintSha256 ?? input.prepared.valueSha256,
+        createdByAgentId: actor?.agentId ?? null,
+        createdByUserId: actor?.userId ?? null,
+      });
+      return updated;
     },
 
     async createBinding(input: {
@@ -809,7 +1006,8 @@ export function secretService(db: Db) {
       required?: boolean;
       label?: string | null;
     }) {
-      await assertSecretInCompany(input.companyId, input.secretId);
+      const secret = await assertSecretInCompany(input.companyId, input.secretId);
+      assertNotMcpOAuthManaged(secret.providerMetadata);
       return db
         .insert(companySecretBindings)
         .values({

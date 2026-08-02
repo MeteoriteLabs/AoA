@@ -153,6 +153,16 @@ describe("migration idempotency", () => {
     expect(sql).toMatch(/EXCEPTION WHEN duplicate_object THEN NULL;\s+END\s+\$\$/i);
   });
 
+  it("migration 0188 guards both OAuth flow foreign keys for partial replay", () => {
+    const sql = readFileSync(
+      join(MIGRATIONS_DIR, "0188_narrow_blonde_phantom.sql"),
+      "utf8",
+    );
+    expect(sql).toMatch(/DO\s+\$\$\s+BEGIN\s+ALTER TABLE "mcp_connector_oauth_flows" ADD CONSTRAINT "mcp_connector_oauth_flows_company_id_companies_id_fk"/i);
+    expect(sql).toMatch(/DO\s+\$\$\s+BEGIN\s+ALTER TABLE "mcp_connector_oauth_flows" ADD CONSTRAINT "mcp_connector_oauth_flows_connector_id_company_mcp_connectors_id_fk"/i);
+    expect(sql.match(/EXCEPTION WHEN duplicate_object THEN NULL;\s+END\s+\$\$/gi)).toHaveLength(2);
+  });
+
   it("grandfather list does not retroactively grow", () => {
     // If a grandfathered migration ever gets an IF NOT EXISTS sweep, it
     // should be REMOVED from the list (not stay there silently). This

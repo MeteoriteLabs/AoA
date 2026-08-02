@@ -8,7 +8,12 @@ export { goalService } from "./goals.js";
 export { braindumpService } from "./braindump.js";
 export { activityService, type ActivityFilters } from "./activity.js";
 export { approvalService } from "./approvals.js";
-export { secretService } from "./secrets.js";
+export {
+  prepareMcpOAuthSecretVersion,
+  secretService,
+  type McpOAuthSecretOwner,
+  type PreparedMcpOAuthSecretVersion,
+} from "./secrets.js";
 export { mcpConnectorService } from "./mcp-connectors-crud.js";
 export { costService } from "./costs.js";
 export { financeService } from "./finance.js";
@@ -55,7 +60,13 @@ export { trustScoreService } from "./trust-scores.js";
 export { memoryFeedbackService, type MemoryFeedbackFilters } from "./memory-feedback.js";
 export { memoryLifecycleService } from "./memory-lifecycle.js";
 export { suggestionService } from "./suggestions.js";
-export { logActivity, type LogActivityInput } from "./activity-log.js";
+export {
+  insertActivity,
+  logActivity,
+  publishActivity,
+  type LogActivityInput,
+  type PreparedActivityEvent,
+} from "./activity-log.js";
 export { notifyHireApproved, type NotifyHireApprovedInput } from "./hire-hook.js";
 export { publishLiveEvent, subscribeCompanyLiveEvents } from "./live-events.js";
 export { permissionService } from "./permissions.js";

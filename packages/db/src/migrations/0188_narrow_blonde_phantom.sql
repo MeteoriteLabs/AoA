@@ -18,8 +18,14 @@ CREATE TABLE IF NOT EXISTS "mcp_connector_oauth_flows" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-ALTER TABLE "mcp_connector_oauth_flows" ADD CONSTRAINT "mcp_connector_oauth_flows_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "mcp_connector_oauth_flows" ADD CONSTRAINT "mcp_connector_oauth_flows_connector_id_company_mcp_connectors_id_fk" FOREIGN KEY ("connector_id") REFERENCES "public"."company_mcp_connectors"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+DO $$ BEGIN
+	ALTER TABLE "mcp_connector_oauth_flows" ADD CONSTRAINT "mcp_connector_oauth_flows_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;--> statement-breakpoint
+DO $$ BEGIN
+	ALTER TABLE "mcp_connector_oauth_flows" ADD CONSTRAINT "mcp_connector_oauth_flows_connector_id_company_mcp_connectors_id_fk" FOREIGN KEY ("connector_id") REFERENCES "public"."company_mcp_connectors"("id") ON DELETE cascade ON UPDATE no action;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "mcp_connector_oauth_flows_state_idx" ON "mcp_connector_oauth_flows" USING btree ("state");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "mcp_connector_oauth_flows_connector_idx" ON "mcp_connector_oauth_flows" USING btree ("connector_id");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "mcp_connector_oauth_flows_company_idx" ON "mcp_connector_oauth_flows" USING btree ("company_id");

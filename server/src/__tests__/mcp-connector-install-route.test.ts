@@ -86,6 +86,7 @@ const FOUNDER_UUID = "44444444-4444-4444-8444-444444444444";
 const SECRET = "install-route-test-secret";
 const priorAuthSecret = process.env.BETTER_AUTH_SECRET;
 const priorJwtSecret = process.env.AOA_AGENT_JWT_SECRET;
+const priorConnectorDenylist = process.env.AOA_MCP_CONNECTOR_DENYLIST;
 process.env.BETTER_AUTH_SECRET = SECRET;
 
 afterAll(() => {
@@ -93,6 +94,8 @@ afterAll(() => {
   else process.env.BETTER_AUTH_SECRET = priorAuthSecret;
   if (priorJwtSecret === undefined) delete process.env.AOA_AGENT_JWT_SECRET;
   else process.env.AOA_AGENT_JWT_SECRET = priorJwtSecret;
+  if (priorConnectorDenylist === undefined) delete process.env.AOA_MCP_CONNECTOR_DENYLIST;
+  else process.env.AOA_MCP_CONNECTOR_DENYLIST = priorConnectorDenylist;
 });
 
 const founderActor = {
@@ -150,9 +153,19 @@ const unverifiedStdio = entry({
 const oauthHttp = entry({
   id: "notion-hosted",
   displayName: "Notion (hosted)",
-  serverName: "notion-hosted",
+  serverName: "notion",
   transport: "http",
   url: "https://mcp.notion.com/mcp",
+  requiresOAuth: true,
+  trust: { tier: "verified" },
+});
+
+const unsupportedOauthHttp = entry({
+  id: "sentry-hosted",
+  displayName: "Sentry (hosted)",
+  serverName: "sentry",
+  transport: "http",
+  url: "https://mcp.sentry.dev/mcp",
   requiresOAuth: true,
   trust: { tier: "verified" },
 });
@@ -202,6 +215,7 @@ const D7_REFUSAL = /Only remote HTTP connectors/;
 beforeEach(() => {
   vi.clearAllMocks();
   deploymentMode = "local_trusted";
+  delete process.env.AOA_MCP_CONNECTOR_DENYLIST;
   mockGetEffectiveRole.mockResolvedValue("founder");
   mockConnectorSvc.getByName.mockResolvedValue(null);
   mockConnectorSvc.create.mockImplementation(async (_c: string, input: Record<string, unknown>) => ({
@@ -758,6 +772,31 @@ describe("install route — D7 authorization is independent of consent", () => {
 // ---------------------------------------------------------------------------
 
 describe("install route — an OAuth-only entry installs to needs_credentials", () => {
+  it("refuses an unsupported OAuth entry before any connector or activity write", async () => {
+    const res = await install(makeApp(founderActor, [unsupportedOauthHttp]), {
+      entryId: "sentry-hosted",
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/not supported by this server version/i);
+    expect(mockConnectorSvc.create).not.toHaveBeenCalled();
+    expect(mockApprovalSvc.create).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("refuses an emergency-denied OAuth entry before any connector or activity write", async () => {
+    process.env.AOA_MCP_CONNECTOR_DENYLIST = "notion";
+    const res = await install(makeApp(founderActor, [oauthHttp]), {
+      entryId: "notion-hosted",
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/disabled by the operator policy/i);
+    expect(mockConnectorSvc.create).not.toHaveBeenCalled();
+    expect(mockApprovalSvc.create).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
   it("installs an OAuth entry to needs_credentials (not a 400)", async () => {
     deploymentMode = "local_trusted";
     const res = await install(makeApp(founderActor, [oauthHttp]), { entryId: "notion-hosted" });
@@ -812,6 +851,18 @@ describe("install route — an OAuth-only entry installs to needs_credentials", 
 });
 
 describe("catalog shelf route — an OAuth-only entry is shown and installable, with oauthRequired", () => {
+  it("shows an emergency-denied OAuth entry as unavailable", async () => {
+    process.env.AOA_MCP_CONNECTOR_DENYLIST = "notion";
+    const res = await getCatalog(makeApp(founderActor, [oauthHttp]));
+    const oauth = res.body.entries.find((e: { id: string }) => e.id === "notion-hosted");
+
+    expect(oauth).toMatchObject({
+      installable: false,
+      oauthRequired: false,
+      unavailableReason: expect.stringMatching(/disabled by the operator policy/i),
+    });
+  });
+
   it("projects installable:true + oauthRequired:true + no unavailableReason + no consent token", async () => {
     deploymentMode = "local_trusted";
     const res = await getCatalog(makeApp(founderActor, [oauthHttp]));

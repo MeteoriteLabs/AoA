@@ -152,6 +152,28 @@ describe("createConnector — secretRef existence", () => {
     expect(out.connector.id).toBe(CONNECTOR_ID);
   });
 
+  it("refuses to bind a broker-managed OAuth secret to a generic connector", async () => {
+    secretsSvc.getByName.mockResolvedValue({
+      id: "oauth-secret",
+      name: "mcp:oauth:owner-connector",
+      providerMetadata: {
+        purpose: "mcp_oauth",
+        ownerConnectorId: "owner-connector",
+        catalogEntryId: "notion-hosted",
+        oauthPolicyVersion: 1,
+      },
+    });
+
+    await expect(
+      createConnector(deps as any, {
+        ...httpInput,
+        secretRef: "mcp:oauth:owner-connector",
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(svc.create).not.toHaveBeenCalled();
+    expect(approvalsSvc.create).not.toHaveBeenCalled();
+  });
+
   it("does not look up a secret when no secretRef is supplied", async () => {
     await createConnector(deps as any, httpInput);
     expect(secretsSvc.getByName).not.toHaveBeenCalled();

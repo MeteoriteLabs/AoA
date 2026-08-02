@@ -174,7 +174,9 @@ export const McpConnectorCatalogEntrySchema = z
     }
   });
 
-export type McpConnectorCatalogEntry = z.infer<typeof McpConnectorCatalogEntrySchema>;
+export type McpConnectorCatalogEntry = z.infer<
+  typeof McpConnectorCatalogEntrySchema
+>;
 
 /**
  * KNOWN-DANGEROUS value-bearing alias keys (Codex Finding 5).
@@ -197,18 +199,28 @@ export type McpConnectorCatalogEntry = z.infer<typeof McpConnectorCatalogEntrySc
  * `.strip()`ed schema removes these keys before a `.superRefine` could ever see
  * them, so this must be a pre-check here in `parseMcpConnectorCatalog`.
  */
-const VALUE_BEARING_ALIAS_KEYS = ["headerTemplate", "envTemplate", "headers", "env"] as const;
+const VALUE_BEARING_ALIAS_KEYS = [
+  "headerTemplate",
+  "envTemplate",
+  "headers",
+  "env",
+] as const;
 
 /** The label recorded in `dropped` for an item — its `id`, or `<unidentified>`. */
 function droppedIdOf(item: unknown): string {
-  const id = typeof item === "object" && item !== null ? (item as { id?: unknown }).id : undefined;
+  const id =
+    typeof item === "object" && item !== null
+      ? (item as { id?: unknown }).id
+      : undefined;
   return typeof id === "string" ? id : "<unidentified>";
 }
 
 /** True when the raw item carries a known-dangerous value-bearing alias key. */
 function hasValueBearingAlias(item: unknown): boolean {
   if (typeof item !== "object" || item === null) return false;
-  return VALUE_BEARING_ALIAS_KEYS.some((k) => Object.prototype.hasOwnProperty.call(item, k));
+  return VALUE_BEARING_ALIAS_KEYS.some((k) =>
+    Object.prototype.hasOwnProperty.call(item, k)
+  );
 }
 
 /**
@@ -248,7 +260,9 @@ function hasValueBearingAlias(item: unknown): boolean {
  *   parse and install agree on exactly one entry per id; it defeats the
  *   append-a-duplicate attack (a trailing malicious clone loses to the original),
  *   and — unlike drop-ALL — it preserves availability of the presumably-intended
- *   primary entry when a publish mistake duplicates an id.
+ *   primary entry when a publish mistake duplicates an id. The same first-wins
+ *   rule applies to `serverName`: runtime connector configuration is keyed by
+ *   that name, so two different catalog ids must never compete for it.
  */
 export function parseMcpConnectorCatalog(input: unknown): {
   entries: McpConnectorCatalogEntry[];
@@ -267,6 +281,7 @@ export function parseMcpConnectorCatalog(input: unknown): {
   }
 
   const seenIds = new Set<string>();
+  const seenServerNames = new Set<string>();
   for (const item of raw) {
     // Finding 5: a known-dangerous value-bearing alias drops the whole entry,
     // BEFORE parsing (a `.strip()`ed schema would silently discard the key and
@@ -285,7 +300,11 @@ export function parseMcpConnectorCatalog(input: unknown): {
     // surfaces on the shelf. NOT the security boundary (createConnector + the
     // delivery-time reserved guard remain that): the adapter merge would strip
     // it anyway, but showing it as installable is a dead-install trap.
-    if ((RESERVED_MCP_SERVER_NAMES as readonly string[]).includes(parsed.data.serverName)) {
+    if (
+      (RESERVED_MCP_SERVER_NAMES as readonly string[]).includes(
+        parsed.data.serverName
+      )
+    ) {
       dropped.push(parsed.data.id);
       continue;
     }
@@ -295,7 +314,15 @@ export function parseMcpConnectorCatalog(input: unknown): {
       dropped.push(parsed.data.id);
       continue;
     }
+    // Runtime delivery keys MCP servers by name. Keeping two catalog identities
+    // for one name would make install/retry behavior depend on client-side
+    // inference, so reject the later publisher entry at the trust boundary.
+    if (seenServerNames.has(parsed.data.serverName)) {
+      dropped.push(parsed.data.id);
+      continue;
+    }
     seenIds.add(parsed.data.id);
+    seenServerNames.add(parsed.data.serverName);
     entries.push(parsed.data);
   }
   return { entries, dropped, malformed: false };

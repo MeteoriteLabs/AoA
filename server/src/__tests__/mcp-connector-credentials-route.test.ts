@@ -246,6 +246,29 @@ describe("POST …/credentials — validation + tenancy", () => {
     expect(mockConnectorSvc.updateIfStatus).not.toHaveBeenCalled();
   });
 
+  it("a broker-managed OAuth secret cannot be rebound to another connector", async () => {
+    mockConnectorSvc.getById.mockResolvedValue(connectorRow("needs_credentials"));
+    mockSecretSvc.getByName.mockResolvedValue({
+      id: "oauth-secret",
+      name: "mcp:oauth:owner-connector",
+      providerMetadata: {
+        purpose: "mcp_oauth",
+        ownerConnectorId: "owner-connector",
+        catalogEntryId: "notion-hosted",
+        oauthPolicyVersion: 1,
+      },
+    });
+
+    const res = await bind(makeApp(founderActor), {
+      secretRef: "mcp:oauth:owner-connector",
+    });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/broker-managed/i);
+    expect(mockConnectorSvc.updateIfStatus).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
   it("a connector belonging to another company -> 404, no secret lookup, no write", async () => {
     mockConnectorSvc.getById.mockResolvedValue({
       ...connectorRow("needs_credentials"),

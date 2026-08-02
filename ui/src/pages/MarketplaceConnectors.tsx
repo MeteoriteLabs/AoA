@@ -1,12 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Cable, Search } from "lucide-react";
+import { Cable, RefreshCw, Search } from "lucide-react";
 import { useCompany } from "@/context/CompanyContext";
 import { useTeamAccess } from "@/hooks/useTeamAccess";
-import { mcpConnectorsApi, type McpConnector } from "@/api/mcpConnectors";
+import {
+  mcpConnectorsApi,
+  type McpConnector,
+  type McpConnectorOAuthCallbackReason,
+  type McpConnectorOAuthCallbackResult,
+} from "@/api/mcpConnectors";
 import { queryKeys } from "@/lib/queryKeys";
 import { Link, useSearchParams } from "@/lib/router";
 import { LobbyShellMobileMenuButton } from "@/components/LobbyShell";
+import { Button } from "@/components/ui/button";
 import { CompanyPicker } from "@/components/marketplace/install/CompanyPicker";
 import { ConnectorShelf } from "@/components/marketplace/connectors/ConnectorShelf";
 import { useMarketplaceSidebar } from "@/components/marketplace/useMarketplaceSidebar";
@@ -38,13 +44,17 @@ import { cn } from "@/lib/utils";
 export default function MarketplaceConnectors() {
   useMarketplaceSidebar("connector");
 
-  const { selectedCompanyId, companies, loading: companiesLoading } = useCompany();
+  const {
+    selectedCompanyId,
+    companies,
+    loading: companiesLoading,
+  } = useCompany();
   const [pickedCompanyId, setPickedCompanyId] = useState<string | null>(null);
   const companyId = pickedCompanyId ?? selectedCompanyId ?? null;
 
   const activeCompanies = useMemo(
     () => companies.filter((c) => c.status !== "archived"),
-    [companies],
+    [companies]
   );
 
   const { role, isLoading: roleLoading } = useTeamAccess(companyId);
@@ -53,8 +63,15 @@ export default function MarketplaceConnectors() {
   // the shelf at someone who may turn out not to be a founder.
   const isFounder = role === "founder";
 
-  const { data: connectors } = useQuery({
-    queryKey: companyId ? queryKeys.mcpConnectors.list(companyId) : ["mcp-connectors", "none"],
+  const {
+    data: connectors,
+    isFetching: connectorsFetching,
+    isError: connectorsError,
+    refetch: refetchConnectors,
+  } = useQuery({
+    queryKey: companyId
+      ? queryKeys.mcpConnectors.list(companyId)
+      : ["mcp-connectors", "none"],
     queryFn: () => mcpConnectorsApi.list(companyId!),
     enabled: !!companyId && isFounder,
   });
@@ -64,24 +81,42 @@ export default function MarketplaceConnectors() {
   // A notice about company A must not survive a switch to company B.
   useEffect(() => setInstalled(null), [companyId]);
 
-  // The OAuth callback (server-side) redirects here as `?authorized=<serverName>`
-  // once the connector is bound and active — surface a success notice rather than
-  // silently dropping the founder back on the shelf with no feedback.
-  const [searchParams] = useSearchParams();
-  const [authorizedServerName, setAuthorizedServerName] = useState(
-    () => searchParams.get("authorized"),
-  );
-  // Same rule as the install notice above: a notice minted for company A must not
-  // survive an explicit switch to company B. Keyed to `pickedCompanyId` (only ever
-  // set by an explicit CompanyPicker choice) rather than `companyId`, which also
-  // moves on its own as `CompanyContext` resolves the default company async.
+  // OAuth callback results use immutable connector IDs. The selected company's
+  // persisted row, not query-string display data, owns the status and copy.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [oauthCallback] = useState(() => {
+    const result = readOAuthResult(searchParams.get("oauthResult"));
+    const connectorId = searchParams.get("connectorId")?.trim() || null;
+    if (!result || !connectorId) return null;
+    return {
+      result,
+      connectorId,
+      reason: searchParams.get("reason")?.trim() || null,
+    };
+  });
+  const hasOAuthCallback = oauthCallback !== null;
   useEffect(() => {
-    if (pickedCompanyId !== null) setAuthorizedServerName(null);
-  }, [pickedCompanyId]);
-  const authorizedConnector = authorizedServerName
-    ? connectors?.find((c) => c.serverName === authorizedServerName)
+    if (!oauthCallback) return;
+    setSearchParams(
+      (previous) => {
+        const next = new URLSearchParams(previous);
+        next.delete("oauthResult");
+        next.delete("connectorId");
+        next.delete("reason");
+        return next;
+      },
+      { replace: true }
+    );
+  }, [oauthCallback, setSearchParams]);
+  // Re-fetch on every selected-company change. If the immutable ID is absent,
+  // render neutral cross-company copy without leaking connector details.
+  useEffect(() => {
+    if (!companyId || !isFounder || !hasOAuthCallback) return;
+    void refetchConnectors();
+  }, [companyId, hasOAuthCallback, isFounder, refetchConnectors]);
+  const oauthConnector = oauthCallback
+    ? connectors?.find((connector) => connector.id === oauthCallback.connectorId)
     : undefined;
-  const authorizedDisplayName = authorizedConnector?.displayName ?? authorizedServerName;
 
   const settingsLink = (
     <Link to="/settings?tab=connectors" className="text-brand hover:underline">
@@ -98,8 +133,9 @@ export default function MarketplaceConnectors() {
           Connectors<span className="text-brand">.</span>
         </h1>
         <p className="mt-1 text-[0.86rem] text-dim">
-          External tools and data sources your agents can reach — Notion, Linear, Sentry,
-          and more. Install here; manage credentials and per-agent access in {settingsLink}.
+          External tools and data sources your agents can reach — Notion,
+          Linear, Sentry, and more. Install here; manage credentials and
+          per-agent access in {settingsLink}.
         </p>
       </div>
 
@@ -119,19 +155,24 @@ export default function MarketplaceConnectors() {
         <EmptyPanel>Loading…</EmptyPanel>
       ) : !isFounder ? (
         <EmptyPanel>
-          Only founders can browse and install connectors. Ask a founder on your team to
-          add the connector you need.
+          Only founders can browse and install connectors. Ask a founder on your
+          team to add the connector you need.
         </EmptyPanel>
       ) : (
         <>
-          {authorizedServerName && (
-            <div
-              data-testid="connector-oauth-success-notice"
-              className="mb-5 rounded-md border border-success/30 bg-success/[0.06] px-3 py-2.5 text-sm"
-            >
-              ✓ Connected. <strong>{authorizedDisplayName}</strong> is authorized and active.
-              Manage access — disable it, or assign it to specific agents — in {settingsLink}.
-            </div>
+          {oauthCallback && (
+            <OAuthResultNotice
+              result={oauthCallback.result}
+              reason={oauthCallback.reason}
+              connector={oauthConnector}
+              loading={
+                !connectorsError &&
+                (connectorsFetching || connectors === undefined)
+              }
+              verificationError={connectorsError}
+              onRetry={() => void refetchConnectors()}
+              settingsLink={settingsLink}
+            />
           )}
 
           <div className="mb-5 relative">
@@ -148,22 +189,38 @@ export default function MarketplaceConnectors() {
           {installed && (
             <div
               data-testid="connector-install-notice"
+              role="status"
+              aria-live="polite"
               className="mb-5 rounded-md border border-info/30 bg-info/[0.06] px-3 py-2.5 text-sm"
             >
-              {installed.status === "needs_credentials" ? (
+              {installed.oauthEligibility === "policy_blocked" ? (
                 <>
-                  <strong>{installed.displayName}</strong> is installed but needs a
-                  credential before agents can use it — finish setup in {settingsLink}.
+                  <strong>{installed.displayName}</strong> is installed but is
+                  unavailable to agents under the current server policy. View
+                  details in {settingsLink}.
+                </>
+              ) : installed.status === "needs_credentials" &&
+                installed.oauthEligibility === "supported" ? (
+                <>
+                  <strong>{installed.displayName}</strong> is installed, but
+                  authorization did not finish. Retry authorization here or in{" "}
+                  {settingsLink}.
+                </>
+              ) : installed.status === "needs_credentials" ? (
+                <>
+                  <strong>{installed.displayName}</strong> is installed but
+                  needs a credential before agents can use it — finish setup in{" "}
+                  {settingsLink}.
                 </>
               ) : installed.status === "pending_approval" ? (
                 <>
-                  <strong>{installed.displayName}</strong> is installed and waiting for
-                  board approval. Track it in {settingsLink}.
+                  <strong>{installed.displayName}</strong> is installed and
+                  waiting for board approval. Track it in {settingsLink}.
                 </>
               ) : (
                 <>
-                  <strong>{installed.displayName}</strong> is installed and active. Choose
-                  which agents may use it in {settingsLink}.
+                  <strong>{installed.displayName}</strong> is installed and
+                  active. Choose which agents may use it in {settingsLink}.
                 </>
               )}
             </div>
@@ -181,13 +238,166 @@ export default function MarketplaceConnectors() {
   );
 }
 
-function EmptyPanel({ children, className }: { children: React.ReactNode; className?: string }) {
+function readOAuthResult(
+  value: string | null
+): McpConnectorOAuthCallbackResult | null {
+  return value === "completed" || value === "failed" ? value : null;
+}
+
+const OAUTH_FAILURE_COPY: Record<McpConnectorOAuthCallbackReason, string> = {
+  access_denied: "Authorization was cancelled at the provider.",
+  provider_error: "The provider could not complete authorization.",
+  token_exchange_failed:
+    "The provider sign-in completed, but the token exchange failed.",
+  secret_collision:
+    "Authorization could not be saved because the connector secret name is in use.",
+  connector_changed:
+    "The connector changed during authorization. Start authorization again.",
+  policy_blocked: "Authorization is blocked by the current server policy.",
+};
+
+function oauthFailureCopy(reason: string | null): string {
+  if (
+    reason &&
+    Object.prototype.hasOwnProperty.call(OAUTH_FAILURE_COPY, reason)
+  ) {
+    return OAUTH_FAILURE_COPY[reason as McpConnectorOAuthCallbackReason];
+  }
+  return "Authorization did not complete. Try again from Settings → Connectors.";
+}
+
+function OAuthResultNotice({
+  result,
+  reason,
+  connector,
+  loading,
+  verificationError,
+  onRetry,
+  settingsLink,
+}: {
+  result: McpConnectorOAuthCallbackResult;
+  reason: string | null;
+  connector: McpConnector | undefined;
+  loading: boolean;
+  verificationError: boolean;
+  onRetry: () => void;
+  settingsLink: React.ReactNode;
+}) {
+  if (loading) {
+    return (
+      <div
+        data-testid="connector-oauth-result-notice"
+        role="status"
+        aria-live="polite"
+        className="mb-5 rounded-md border border-info/30 bg-info/[0.06] px-3 py-2.5 text-sm"
+      >
+        Checking the connector&rsquo;s authorization status…
+      </div>
+    );
+  }
+
+  if (verificationError) {
+    return (
+      <div
+        data-testid="connector-oauth-verification-error"
+        role="alert"
+        className="mb-5 rounded-md border border-destructive/30 bg-destructive/[0.06] px-3 py-2.5 text-sm"
+      >
+        <div>
+          {result === "failed" ? `${oauthFailureCopy(reason)} ` : ""}
+          We couldn&rsquo;t verify the connector in the selected company.
+        </div>
+        <Button size="sm" variant="outline" className="mt-2" onClick={onRetry}>
+          <RefreshCw className="mr-1.5 size-3.5" /> Retry status check
+        </Button>
+      </div>
+    );
+  }
+
+  if (result === "failed") {
+    const failureSettingsLink =
+      reason === "secret_collision" ? (
+        <Link to="/settings?tab=secrets" className="font-medium text-brand hover:underline">
+          Settings &rarr; Secrets
+        </Link>
+      ) : (
+        settingsLink
+      );
+    return (
+      <div
+        data-testid="connector-oauth-failure-notice"
+        role="alert"
+        className="mb-5 rounded-md border border-destructive/30 bg-destructive/[0.06] px-3 py-2.5 text-sm"
+      >
+        {connector && <><strong>{connector.displayName}</strong>: </>}
+        {oauthFailureCopy(reason)}{" "}
+        {reason === "secret_collision" ? (
+          <>Resolve the collision in {failureSettingsLink}, then retry authorization.</>
+        ) : connector ? (
+          <>Manage or retry the connector in {settingsLink}.</>
+        ) : (
+          <>The connector is not in the selected company. Switch companies if needed, then retry from Settings &rarr; Connectors.</>
+        )}
+      </div>
+    );
+  }
+
+  if (!connector) {
+    return (
+      <div
+        data-testid="connector-oauth-other-company-notice"
+        role="status"
+        aria-live="polite"
+        className="mb-5 rounded-md border border-info/30 bg-info/[0.06] px-3 py-2.5 text-sm"
+      >
+        Authorization completed for a connector in another company. Switch
+        companies to view it.
+      </div>
+    );
+  }
+
+  const statusCopy =
+    connector.status === "active" ? (
+      <>is authorized and active. Manage access in {settingsLink}.</>
+    ) : connector.status === "pending_approval" ? (
+      <>
+        is authorized and waiting for board approval. Track it in {settingsLink}
+        .
+      </>
+    ) : connector.status === "needs_credentials" ? (
+      <>
+        returned from authorization, but setup did not complete. Retry it in{" "}
+        {settingsLink}.
+      </>
+    ) : (
+      <>is authorized but currently disabled. Manage it in {settingsLink}.</>
+    );
+
+  return (
+    <div
+      data-testid="connector-oauth-success-notice"
+      role="status"
+      aria-live="polite"
+      className="mb-5 rounded-md border border-success/30 bg-success/[0.06] px-3 py-2.5 text-sm"
+    >
+      <strong>{connector.displayName}</strong> {statusCopy}
+    </div>
+  );
+}
+
+function EmptyPanel({
+  children,
+  className,
+}: {
+  children: React.ReactNode;
+  className?: string;
+}) {
   return (
     <div
       data-testid="marketplace-connectors-empty"
       className={cn(
         "rounded-xl border border-border bg-card px-6 py-12 text-center text-sm text-dim",
-        className,
+        className
       )}
     >
       <Cable className="mx-auto mb-3 size-6 text-very-dim" />

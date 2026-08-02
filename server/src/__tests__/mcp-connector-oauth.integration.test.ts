@@ -57,14 +57,27 @@ import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
-import { applyPendingMigrations, createDb, mcpConnectorOauthFlows, type Db } from "@armyofagents/db";
+import {
+  applyPendingMigrations,
+  createDb,
+  mcpConnectorOauthFlows,
+  type Db,
+} from "@armyofagents/db";
 import type { McpConnectorCatalogEntry } from "@armyofagents/shared";
 import { allocateEmbeddedPgPort } from "./helpers/embedded-pg-port.js";
 import { mcpConnectorRoutes } from "../routes/mcp-connectors.js";
 import { errorHandler } from "../middleware/index.js";
 import { loadEnabledConnectorRows } from "../services/mcp-connectors-loader.js";
-import { secretService } from "../services/secrets.js";
-import { decodeOAuthBundle, encodeOAuthBundle } from "../services/mcp-connector-oauth-bundle.js";
+import {
+  prepareMcpOAuthSecretVersion,
+  secretService,
+} from "../services/secrets.js";
+import {
+  decodeOAuthBundle,
+  deriveOAuthBundleKey,
+  encodeOAuthBundle,
+} from "../services/mcp-connector-oauth-bundle.js";
+import { resolveConsentSecret } from "../services/mcp-connector-consent.js";
 
 type EmbeddedPostgresInstance = {
   initialise(): Promise<void>;
@@ -95,7 +108,12 @@ let realFetch: typeof globalThis.fetch;
  * 5) with different access tokens, exactly like a real AS issuing a fresh
  * token each time it is called.
  */
-let tokenResponse: { access_token: string; refresh_token?: string; token_type: string; expires_in: number } = {
+let tokenResponse: {
+  access_token: string;
+  refresh_token?: string;
+  token_type: string;
+  expires_in: number;
+} = {
   access_token: "at-1",
   refresh_token: "rt-1",
   token_type: "Bearer",
@@ -103,7 +121,10 @@ let tokenResponse: { access_token: string; refresh_token?: string; token_type: s
 };
 
 function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
 }
 
 /**
@@ -115,30 +136,41 @@ function jsonResponse(body: unknown, status = 200): Response {
 function installMockAuthorizationServer() {
   realFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : String(input);
+    const url =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+        ? input.toString()
+        : String(input);
     const method = (init?.method ?? "GET").toUpperCase();
 
-    if (method === "GET" && url === "https://as.example/.well-known/oauth-protected-resource/mcp") {
+    if (
+      method === "GET" &&
+      url === "https://mcp.notion.com/.well-known/oauth-protected-resource/mcp"
+    ) {
       return jsonResponse({
-        resource: "https://as.example/mcp",
-        authorization_servers: ["https://as.example"],
+        resource: "https://mcp.notion.com/mcp",
+        authorization_servers: ["https://mcp.notion.com"],
         scopes_supported: ["default"],
       });
     }
-    if (method === "GET" && url === "https://as.example/.well-known/oauth-authorization-server") {
+    if (
+      method === "GET" &&
+      url === "https://mcp.notion.com/.well-known/oauth-authorization-server"
+    ) {
       return jsonResponse({
-        issuer: "https://as.example",
-        authorization_endpoint: "https://as.example/authorize",
-        token_endpoint: "https://as.example/token",
-        registration_endpoint: "https://as.example/register",
+        issuer: "https://mcp.notion.com",
+        authorization_endpoint: "https://mcp.notion.com/authorize",
+        token_endpoint: "https://mcp.notion.com/token",
+        registration_endpoint: "https://mcp.notion.com/register",
         code_challenge_methods_supported: ["S256"],
         scopes_supported: ["default"],
       });
     }
-    if (method === "POST" && url === "https://as.example/register") {
+    if (method === "POST" && url === "https://mcp.notion.com/register") {
       return jsonResponse({ client_id: "dcr-client-1" }, 201);
     }
-    if (method === "POST" && url === "https://as.example/token") {
+    if (method === "POST" && url === "https://mcp.notion.com/token") {
       return jsonResponse(tokenResponse);
     }
     return new Response(`no fixture for ${method} ${url}`, { status: 404 });
@@ -156,7 +188,7 @@ const CATALOG_ENTRY: McpConnectorCatalogEntry = {
   serverName: "notion",
   displayName: "Notion (hosted)",
   transport: "http",
-  url: "https://as.example/mcp",
+  url: "https://mcp.notion.com/mcp",
   args: [],
   headerTemplateKeys: [],
   envTemplateKeys: [],
@@ -188,7 +220,9 @@ beforeAll(async () => {
 
     dataDir = await mkdtemp(join(tmpdir(), "aoa-conn-oauth-"));
     const port = await allocateEmbeddedPgPort();
-    const { default: EmbeddedPostgres } = (await import("embedded-postgres")) as {
+    const { default: EmbeddedPostgres } = (await import(
+      "embedded-postgres"
+    )) as {
       default: EmbeddedPostgresCtor;
     };
     pg = new EmbeddedPostgres({
@@ -213,9 +247,11 @@ beforeAll(async () => {
 }, 180_000);
 
 afterAll(async () => {
-  if (originalDeploymentMode === undefined) delete process.env.AOA_DEPLOYMENT_MODE;
+  if (originalDeploymentMode === undefined)
+    delete process.env.AOA_DEPLOYMENT_MODE;
   else process.env.AOA_DEPLOYMENT_MODE = originalDeploymentMode;
-  if (originalMasterKey === undefined) delete process.env.AOA_SECRETS_MASTER_KEY;
+  if (originalMasterKey === undefined)
+    delete process.env.AOA_SECRETS_MASTER_KEY;
   else process.env.AOA_SECRETS_MASTER_KEY = originalMasterKey;
   if (originalAuthSecret === undefined) delete process.env.BETTER_AUTH_SECRET;
   else process.env.BETTER_AUTH_SECRET = originalAuthSecret;
@@ -232,9 +268,11 @@ afterAll(async () => {
   }
 });
 
-async function firstRow<T = Record<string, unknown>>(query: unknown): Promise<T> {
+async function firstRow<T = Record<string, unknown>>(
+  query: unknown
+): Promise<T> {
   const res = (await query) as { rows?: T[] } | T[];
-  const rows = Array.isArray(res) ? res : (res.rows ?? []);
+  const rows = Array.isArray(res) ? res : res.rows ?? [];
   return rows[0] as T;
 }
 
@@ -261,7 +299,13 @@ function app(actor: unknown) {
     (req as unknown as { actor: unknown }).actor = actor;
     next();
   });
-  server.use("/api", mcpConnectorRoutes(db, { catalog: fakeCatalog }));
+  server.use(
+    "/api",
+    mcpConnectorRoutes(db, {
+      catalog: fakeCatalog,
+      oauthFetch: globalThis.fetch,
+    })
+  );
   server.use(errorHandler);
   // `request(...)` and not the bare app: an express app also has `.post`,
   // which REGISTERS a route instead of issuing one.
@@ -275,7 +319,9 @@ async function seedCompany(name: string) {
   companySeq += 1;
   const prefix = `OA${String(companySeq).padStart(2, "0")}`;
   const company = await firstRow<{ id: string }>(
-    db.execute(sql`INSERT INTO companies (name, issue_prefix) VALUES (${name}, ${prefix}) RETURNING id`),
+    db.execute(
+      sql`INSERT INTO companies (name, issue_prefix) VALUES (${name}, ${prefix}) RETURNING id`
+    )
   );
   const founderId = crypto.randomUUID();
   await db.execute(sql`
@@ -290,7 +336,7 @@ async function seedCompany(name: string) {
       INSERT INTO agents (company_id, name, adapter_type, status, kind)
       VALUES (${company.id}, 'Scout', 'claude_local', 'active', 'org')
       RETURNING id
-    `),
+    `)
   );
   return { companyId: company.id, founderId, agentId: agent.id };
 }
@@ -309,131 +355,362 @@ async function connectorRow(id: string) {
 describe.skipIf(process.platform === "win32")(
   "OAuth connector broker — end-to-end (real routes, real DB, mock authorization server)",
   () => {
-    it(
-      "install -> oauth/start -> callback -> delivers a live access token -> refreshes on expiry",
-      async () => {
-        if (setupError) throw setupError;
+    it("install -> oauth/start -> callback -> delivers a live access token -> refreshes on expiry", async () => {
+      if (setupError) throw setupError;
 
-        const { companyId, founderId, agentId } = await seedCompany("OAuth Broker Co");
-        const founder = app(boardActor(founderId, [companyId]));
+      const { companyId, founderId, agentId } = await seedCompany(
+        "OAuth Broker Co"
+      );
+      const founder = app(boardActor(founderId, [companyId]));
 
-        // ── (1) Catalog install of the requiresOAuth entry. ─────────────────────
-        const installed = await founder
-          .post(`/api/companies/${companyId}/mcp-connectors/install`)
-          .send({ entryId: CATALOG_ENTRY.id });
-        expect(installed.status).toBe(201);
-        const connectorId = installed.body.id as string;
+      // ── (1) Catalog install of the requiresOAuth entry. ─────────────────────
+      const installed = await founder
+        .post(`/api/companies/${companyId}/mcp-connectors/install`)
+        .send({ entryId: CATALOG_ENTRY.id });
+      expect(installed.status).toBe(201);
+      const connectorId = installed.body.id as string;
 
-        const afterInstall = await connectorRow(connectorId);
-        expect({
-          status: afterInstall.status,
-          requiresSecret: afterInstall.requires_secret,
-          secretRef: afterInstall.secret_ref,
-        }).toEqual({
-          // OAuth entries ALWAYS need a credential (Task 10 override), even
-          // though this catalog entry's OWN `requiresSecret` is false.
-          status: "needs_credentials",
-          requiresSecret: true,
-          secretRef: null,
-        });
+      const afterInstall = await connectorRow(connectorId);
+      expect({
+        status: afterInstall.status,
+        requiresSecret: afterInstall.requires_secret,
+        secretRef: afterInstall.secret_ref,
+      }).toEqual({
+        // OAuth entries ALWAYS need a credential (Task 10 override), even
+        // though this catalog entry's OWN `requiresSecret` is false.
+        status: "needs_credentials",
+        requiresSecret: true,
+        secretRef: null,
+      });
 
-        // ── (2) Start the OAuth flow: discovery + DCR + PKCE + signed state ──────
-        //    against the mock authorization server. ─────────────────────────────
-        const started = await founder
-          .post(`/api/companies/${companyId}/mcp-connectors/${connectorId}/oauth/start`)
-          .send({});
-        expect(started.status).toBe(200);
-        expect(typeof started.body.authorizeUrl).toBe("string");
-        const authorizeUrl = new URL(started.body.authorizeUrl as string);
-        expect(authorizeUrl.origin + authorizeUrl.pathname).toBe("https://as.example/authorize");
-        expect(authorizeUrl.searchParams.get("client_id")).toBe("dcr-client-1");
-        expect(authorizeUrl.searchParams.get("code_challenge_method")).toBe("S256");
+      // ── (2) Start the OAuth flow: discovery + DCR + PKCE + signed state ──────
+      //    against the mock authorization server. ─────────────────────────────
+      const started = await founder
+        .post(
+          `/api/companies/${companyId}/mcp-connectors/${connectorId}/oauth/start`
+        )
+        .send({});
+      expect(started.status).toBe(200);
+      expect(typeof started.body.authorizeUrl).toBe("string");
+      const authorizeUrl = new URL(started.body.authorizeUrl as string);
+      expect(authorizeUrl.origin + authorizeUrl.pathname).toBe(
+        "https://mcp.notion.com/authorize"
+      );
+      expect(authorizeUrl.searchParams.get("client_id")).toBe("dcr-client-1");
+      expect(authorizeUrl.searchParams.get("code_challenge_method")).toBe(
+        "S256"
+      );
 
-        const flowRows = await db
-          .select()
-          .from(mcpConnectorOauthFlows)
-          .where(eq(mcpConnectorOauthFlows.connectorId, connectorId));
-        expect(flowRows).toHaveLength(1);
-        expect(flowRows[0].status).toBe("pending");
-        const state = flowRows[0].state;
-        const flowId = flowRows[0].id;
+      const flowRows = await db
+        .select()
+        .from(mcpConnectorOauthFlows)
+        .where(eq(mcpConnectorOauthFlows.connectorId, connectorId));
+      expect(flowRows).toHaveLength(1);
+      expect(flowRows[0].status).toBe("pending");
+      const state = flowRows[0].state;
+      const flowId = flowRows[0].id;
 
-        // ── (3) The browser round-trip: the AS calls back with a code. ──────────
+      // ── (3) The browser round-trip: the AS calls back with a code. ──────────
+      const callback = await founder
+        .get(`/api/mcp-connectors/oauth/callback`)
+        .query({ code: "CODE", state });
+      expect(callback.status).toBe(302);
+
+      const secretName = `mcp:oauth:${connectorId}`;
+      const bundleKey = deriveOAuthBundleKey(resolveConsentSecret());
+      const bundleContext = {
+        companyId,
+        connectorId,
+        catalogEntryId: CATALOG_ENTRY.id,
+        oauthPolicyVersion: 1,
+        secretName,
+      };
+      const secretRow = await secretService(db).getByName(
+        companyId,
+        secretName
+      );
+      expect(secretRow).toBeTruthy();
+      expect(secretRow!.provider).toBe("local_encrypted");
+
+      const afterCallback = await connectorRow(connectorId);
+      expect(afterCallback.status).toBe("active");
+      expect(afterCallback.secret_ref).toBe(secretName);
+
+      const flowAfterRows = await db
+        .select()
+        .from(mcpConnectorOauthFlows)
+        .where(eq(mcpConnectorOauthFlows.id, flowId));
+      expect(flowAfterRows[0].status).toBe("completed");
+      expect(flowAfterRows[0].completedAt).toBeTruthy();
+
+      // A replay of the same code/state must not be honored a second time
+      // (the atomic flow-claim proven at the unit level, now over a real row).
+      const replay = await founder
+        .get(`/api/mcp-connectors/oauth/callback`)
+        .query({ code: "CODE", state });
+      expect(replay.status).toBe(400);
+
+      // ── (4) Opt the connector into the agent, then prove the loader hands ────
+      //    back the DECRYPTED, LIVE ACCESS TOKEN — not the encoded bundle. ─────
+      const enabled = await founder
+        .put(`/api/companies/${companyId}/mcp-connectors/${connectorId}/agents`)
+        .send({ agentIds: [agentId] });
+      expect(enabled.status).toBe(200);
+
+      const delivered = await loadEnabledConnectorRows(db, {
+        companyId,
+        agentId,
+        oauthFetch: globalThis.fetch,
+      });
+      expect(delivered).toHaveLength(1);
+      expect(delivered[0].serverName).toBe("notion");
+      expect(delivered[0].secretValue).toBe("at-1");
+
+      // ── (5) Refresh path: age the bundle past expiry, point the mock AS at a ─
+      //    new access token, and prove the SAME loader call refreshes silently ─
+      //    and rotates the stored secret. ──────────────────────────────────────
+      const consumerCtx = {
+        consumerType: "system" as const,
+        consumerId: "oauth-broker",
+        actorType: "system" as const,
+        configPath: "mcp.connector.notion",
+        mcpOAuthOwner: {
+          connectorId,
+          catalogEntryId: CATALOG_ENTRY.id,
+          oauthPolicyVersion: 1,
+        },
+      };
+      const rawBefore = await secretService(db).resolveByName(
+        companyId,
+        secretName,
+        consumerCtx
+      );
+      const bundleBefore = decodeOAuthBundle(
+        rawBefore,
+        bundleKey,
+        bundleContext
+      );
+      expect(bundleBefore).toBeTruthy();
+      expect(bundleBefore!.accessToken).toBe("at-1");
+      expect(bundleBefore!.refreshToken).toBe("rt-1");
+
+      const expiredBundle = { ...bundleBefore!, expiresAt: Date.now() - 1_000 };
+      const preparedExpired = await prepareMcpOAuthSecretVersion({
+        companyId,
+        value: encodeOAuthBundle(expiredBundle, bundleKey),
+        owner: {
+          connectorId,
+          catalogEntryId: CATALOG_ENTRY.id,
+          oauthPolicyVersion: 1,
+        },
+        expectedLatestVersion: secretRow!.latestVersion,
+      });
+      await db.transaction((tx) =>
+        secretService(tx as unknown as Db).commitPreparedMcpOAuthSecret(
+          preparedExpired
+        )
+      );
+      const versionBeforeRefresh = (await secretService(db).getByName(
+        companyId,
+        secretName
+      ))!.latestVersion;
+
+      tokenResponse = {
+        access_token: "at-2",
+        token_type: "Bearer",
+        expires_in: 3600,
+      };
+
+      const refreshed = await loadEnabledConnectorRows(db, {
+        companyId,
+        agentId,
+        oauthFetch: globalThis.fetch,
+      });
+      expect(refreshed).toHaveLength(1);
+      expect(refreshed[0].secretValue).toBe("at-2");
+
+      const secretAfterRefresh = await secretService(db).getByName(
+        companyId,
+        secretName
+      );
+      expect(secretAfterRefresh!.latestVersion).toBeGreaterThan(
+        versionBeforeRefresh
+      );
+
+      const rawAfterRefresh = await secretService(db).resolveByName(
+        companyId,
+        secretName,
+        consumerCtx
+      );
+      const bundleAfterRefresh = decodeOAuthBundle(
+        rawAfterRefresh,
+        bundleKey,
+        bundleContext
+      );
+      expect(bundleAfterRefresh!.accessToken).toBe("at-2");
+      // No new refresh_token in the mock response -> the old one is kept
+      // (`doRefresh`'s `refreshToken: token.refreshToken ?? bundle.refreshToken`).
+      expect(bundleAfterRefresh!.refreshToken).toBe("rt-1");
+    }, 120_000);
+
+    it("rolls back secret, connector, flow completion, and activity when the durable activity insert fails", async () => {
+      if (setupError) throw setupError;
+
+      const { companyId, founderId } = await seedCompany(
+        "OAuth Callback Rollback Co"
+      );
+      const founder = app(boardActor(founderId, [companyId]));
+      const installed = await founder
+        .post(`/api/companies/${companyId}/mcp-connectors/install`)
+        .send({ entryId: CATALOG_ENTRY.id });
+      expect(installed.status).toBe(201);
+      const connectorId = installed.body.id as string;
+      const started = await founder
+        .post(
+          `/api/companies/${companyId}/mcp-connectors/${connectorId}/oauth/start`
+        )
+        .send({});
+      expect(started.status).toBe(200);
+      const flow = await db
+        .select()
+        .from(mcpConnectorOauthFlows)
+        .where(eq(mcpConnectorOauthFlows.connectorId, connectorId))
+        .then((rows) => rows[0]);
+
+      await db.execute(
+        sql.raw(`
+          CREATE OR REPLACE FUNCTION fail_oauth_authorized_activity()
+          RETURNS trigger LANGUAGE plpgsql AS $$
+          BEGIN
+            IF NEW.action = 'mcp_connector.oauth_authorized' THEN
+              RAISE EXCEPTION 'forced oauth activity failure';
+            END IF;
+            RETURN NEW;
+          END;
+          $$;
+        `)
+      );
+      await db.execute(
+        sql.raw(`
+          CREATE TRIGGER fail_oauth_authorized_activity_trigger
+          BEFORE INSERT ON activity_log
+          FOR EACH ROW EXECUTE FUNCTION fail_oauth_authorized_activity();
+        `)
+      );
+
+      try {
         const callback = await founder
           .get(`/api/mcp-connectors/oauth/callback`)
-          .query({ code: "CODE", state });
+          .query({ code: "CODE-ROLLBACK", state: flow.state });
         expect(callback.status).toBe(302);
+        expect(callback.headers.location).toContain("oauthResult=failed");
 
-        const secretRow = await secretService(db).getByName(companyId, "mcp:notion");
-        expect(secretRow).toBeTruthy();
-        expect(secretRow!.provider).toBe("local_encrypted");
+        const connector = await connectorRow(connectorId);
+        expect(connector.status).toBe("needs_credentials");
+        expect(connector.secret_ref).toBeNull();
+        await expect(
+          secretService(db).getByName(companyId, `mcp:oauth:${connectorId}`)
+        ).resolves.toBeNull();
 
-        const afterCallback = await connectorRow(connectorId);
-        expect(afterCallback.status).toBe("active");
-        expect(afterCallback.secret_ref).toBe("mcp:notion");
-
-        const flowAfterRows = await db
+        const failedFlow = await db
           .select()
           .from(mcpConnectorOauthFlows)
-          .where(eq(mcpConnectorOauthFlows.id, flowId));
-        expect(flowAfterRows[0].status).toBe("completed");
-        expect(flowAfterRows[0].completedAt).toBeTruthy();
+          .where(eq(mcpConnectorOauthFlows.id, flow.id))
+          .then((rows) => rows[0]);
+        expect(failedFlow.status).toBe("failed");
+        expect(failedFlow.completedAt).toBeNull();
 
-        // A replay of the same code/state must not be honored a second time
-        // (the atomic flow-claim proven at the unit level, now over a real row).
-        const replay = await founder
-          .get(`/api/mcp-connectors/oauth/callback`)
-          .query({ code: "CODE", state });
-        expect(replay.status).toBe(400);
+        const activityCount = await firstRow<{ count: string }>(
+          db.execute(sql`
+            SELECT count(*)::text AS count
+            FROM activity_log
+            WHERE company_id = ${companyId}
+              AND action = 'mcp_connector.oauth_authorized'
+          `)
+        );
+        expect(activityCount.count).toBe("0");
+      } finally {
+        await db.execute(
+          sql.raw(
+            "DROP TRIGGER IF EXISTS fail_oauth_authorized_activity_trigger ON activity_log;"
+          )
+        );
+        await db.execute(
+          sql.raw("DROP FUNCTION IF EXISTS fail_oauth_authorized_activity();")
+        );
+      }
+    }, 120_000);
 
-        // ── (4) Opt the connector into the agent, then prove the loader hands ────
-        //    back the DECRYPTED, LIVE ACCESS TOKEN — not the encoded bundle. ─────
-        const enabled = await founder
-          .put(`/api/companies/${companyId}/mcp-connectors/${connectorId}/agents`)
-          .send({ agentIds: [agentId] });
-        expect(enabled.status).toBe(200);
+    it("rolls back OAuth start flow creation when its durable activity insert fails", async () => {
+      if (setupError) throw setupError;
 
-        const delivered = await loadEnabledConnectorRows(db, { companyId, agentId });
-        expect(delivered).toHaveLength(1);
-        expect(delivered[0].serverName).toBe("notion");
-        expect(delivered[0].secretValue).toBe("at-1");
+      const { companyId, founderId } = await seedCompany(
+        "OAuth Start Rollback Co"
+      );
+      const founder = app(boardActor(founderId, [companyId]));
+      const installed = await founder
+        .post(`/api/companies/${companyId}/mcp-connectors/install`)
+        .send({ entryId: CATALOG_ENTRY.id });
+      expect(installed.status).toBe(201);
+      const connectorId = installed.body.id as string;
 
-        // ── (5) Refresh path: age the bundle past expiry, point the mock AS at a ─
-        //    new access token, and prove the SAME loader call refreshes silently ─
-        //    and rotates the stored secret. ──────────────────────────────────────
-        const consumerCtx = {
-          consumerType: "system" as const,
-          consumerId: "oauth-integration-test",
-          actorType: "system" as const,
-          configPath: "mcp.connector.notion",
-        };
-        const rawBefore = await secretService(db).resolveByName(companyId, "mcp:notion", consumerCtx);
-        const bundleBefore = decodeOAuthBundle(rawBefore);
-        expect(bundleBefore).toBeTruthy();
-        expect(bundleBefore!.accessToken).toBe("at-1");
-        expect(bundleBefore!.refreshToken).toBe("rt-1");
+      await db.execute(
+        sql.raw(`
+          CREATE OR REPLACE FUNCTION fail_oauth_started_activity()
+          RETURNS trigger LANGUAGE plpgsql AS $$
+          BEGIN
+            IF NEW.action = 'mcp_connector.oauth_started' THEN
+              RAISE EXCEPTION 'forced oauth start activity failure';
+            END IF;
+            RETURN NEW;
+          END;
+          $$;
+        `)
+      );
+      await db.execute(
+        sql.raw(`
+          CREATE TRIGGER fail_oauth_started_activity_trigger
+          BEFORE INSERT ON activity_log
+          FOR EACH ROW EXECUTE FUNCTION fail_oauth_started_activity();
+        `)
+      );
 
-        const expiredBundle = { ...bundleBefore!, expiresAt: Date.now() - 1_000 };
-        await secretService(db).rotate(secretRow!.id, { value: encodeOAuthBundle(expiredBundle) });
-        const versionBeforeRefresh = (await secretService(db).getByName(companyId, "mcp:notion"))!.latestVersion;
+      try {
+        const started = await founder
+          .post(
+            `/api/companies/${companyId}/mcp-connectors/${connectorId}/oauth/start`
+          )
+          .send({});
+        expect(started.status).toBe(500);
 
-        tokenResponse = { access_token: "at-2", token_type: "Bearer", expires_in: 3600 };
+        const flowCount = await firstRow<{ count: string }>(
+          db.execute(sql`
+            SELECT count(*)::text AS count
+            FROM mcp_connector_oauth_flows
+            WHERE connector_id = ${connectorId}
+          `)
+        );
+        expect(flowCount.count).toBe("0");
 
-        const refreshed = await loadEnabledConnectorRows(db, { companyId, agentId });
-        expect(refreshed).toHaveLength(1);
-        expect(refreshed[0].secretValue).toBe("at-2");
-
-        const secretAfterRefresh = await secretService(db).getByName(companyId, "mcp:notion");
-        expect(secretAfterRefresh!.latestVersion).toBeGreaterThan(versionBeforeRefresh);
-
-        const rawAfterRefresh = await secretService(db).resolveByName(companyId, "mcp:notion", consumerCtx);
-        const bundleAfterRefresh = decodeOAuthBundle(rawAfterRefresh);
-        expect(bundleAfterRefresh!.accessToken).toBe("at-2");
-        // No new refresh_token in the mock response -> the old one is kept
-        // (`doRefresh`'s `refreshToken: token.refreshToken ?? bundle.refreshToken`).
-        expect(bundleAfterRefresh!.refreshToken).toBe("rt-1");
-      },
-      120_000,
-    );
-  },
+        const activityCount = await firstRow<{ count: string }>(
+          db.execute(sql`
+            SELECT count(*)::text AS count
+            FROM activity_log
+            WHERE company_id = ${companyId}
+              AND action = 'mcp_connector.oauth_started'
+          `)
+        );
+        expect(activityCount.count).toBe("0");
+      } finally {
+        await db.execute(
+          sql.raw(
+            "DROP TRIGGER IF EXISTS fail_oauth_started_activity_trigger ON activity_log;"
+          )
+        );
+        await db.execute(
+          sql.raw("DROP FUNCTION IF EXISTS fail_oauth_started_activity();")
+        );
+      }
+    }, 120_000);
+  }
 );

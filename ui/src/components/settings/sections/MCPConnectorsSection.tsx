@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Cable, PlugZap } from "lucide-react";
 import { useCompany } from "@/context/CompanyContext";
@@ -29,7 +29,11 @@ import { NewConnectorDialog } from "../NewConnectorDialog";
 const inputCls =
   "w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none focus:border-brand/50";
 
-function TransportBadge({ transport }: { transport: McpConnector["transport"] }) {
+function TransportBadge({
+  transport,
+}: {
+  transport: McpConnector["transport"];
+}) {
   return (
     <Badge variant={transport === "http" ? "draft" : "idle"}>
       {transport === "http" ? "HTTP" : "stdio"}
@@ -53,8 +57,10 @@ function TransportBadge({ transport }: { transport: McpConnector["transport"] })
  */
 export function StatusBadge({ status }: { status: McpConnector["status"] }) {
   if (status === "active") return <Badge variant="active">Active</Badge>;
-  if (status === "pending_approval") return <Badge variant="pending">Pending approval</Badge>;
-  if (status === "needs_credentials") return <Badge variant="draft">Needs setup</Badge>;
+  if (status === "pending_approval")
+    return <Badge variant="pending">Pending approval</Badge>;
+  if (status === "needs_credentials")
+    return <Badge variant="draft">Needs setup</Badge>;
   if (status === "disabled") return <Badge variant="archived">Disabled</Badge>;
   return <Badge variant="idle">{status}</Badge>;
 }
@@ -65,15 +71,20 @@ export function StatusBadge({ status }: { status: McpConnector["status"] }) {
  * working?" answer the founder reads is the one the delivery pipeline actually
  * computed — no client-side re-derivation that could drift.
  */
-const DELIVERABILITY_REASON_COPY: Record<ConnectorDeliverabilityReason, string> = {
+const DELIVERABILITY_REASON_COPY: Record<
+  ConnectorDeliverabilityReason,
+  string
+> = {
   d7_blocked:
     "Local (stdio) connectors run a command on the host and aren't allowed in this deployment, so this connector reaches no agents.",
   unsafe_command:
     "This local connector's command isn't an allowed, version-pinned launcher (npx/uvx), so it's blocked from running and reaches no agents. Re-create it with a pinned package (e.g. name@1.2.3).",
   missing_url: "This HTTP connector has no URL, so it can't be reached.",
   missing_command: "This local connector has no command, so it can't start.",
-  unknown_transport: "This connector's transport isn't recognized, so it can't be delivered.",
-  malformed_row: "This connector's configuration is malformed, so it can't be delivered.",
+  unknown_transport:
+    "This connector's transport isn't recognized, so it can't be delivered.",
+  malformed_row:
+    "This connector's configuration is malformed, so it can't be delivered.",
   secret_unreachable:
     "the Codex CLI can't pass a local (stdio) connector's secret to the server, so it would authenticate as no-one",
   adapter_incapable: "this agent's runtime can't host MCP connectors",
@@ -103,13 +114,16 @@ function DeliverabilityWarning({ connector }: { connector: McpConnector }) {
         <Badge variant="pending">Not reaching agents</Badge>
       </div>
       {d.reason ? (
-        <div className="text-xs text-muted-foreground">{DELIVERABILITY_REASON_COPY[d.reason]}</div>
+        <div className="text-xs text-muted-foreground">
+          {DELIVERABILITY_REASON_COPY[d.reason]}
+        </div>
       ) : (
         <ul className="text-xs text-muted-foreground space-y-0.5">
           {d.blockedAgents.map((b) => (
             <li key={b.agentId}>
-              Not delivered to <span className="font-medium text-foreground">{b.agentName}</span>:{" "}
-              {DELIVERABILITY_REASON_COPY[b.reason]}
+              Not delivered to{" "}
+              <span className="font-medium text-foreground">{b.agentName}</span>
+              : {DELIVERABILITY_REASON_COPY[b.reason]}
             </li>
           ))}
         </ul>
@@ -134,55 +148,22 @@ export function MCPConnectorsSection() {
   // shared deployment so we never briefly offer stdio in an authenticated host.
   const isLocalTrusted = health?.deploymentMode === "local_trusted";
 
-  const { data: connectors } = useQuery({
-    queryKey: companyId ? queryKeys.mcpConnectors.list(companyId) : ["mcp-connectors", "none"],
+  const {
+    data: connectors,
+    isLoading: connectorsLoading,
+    isError: connectorsError,
+    refetch: refetchConnectors,
+  } = useQuery({
+    queryKey: companyId
+      ? queryKeys.mcpConnectors.list(companyId)
+      : ["mcp-connectors", "none"],
     queryFn: () => mcpConnectorsApi.list(companyId!),
     enabled: !!companyId,
   });
 
-  // Does any registered connector actually need this? `needs_credentials` is the
-  // only state where "OAuth or plain secret?" is ambiguous from the connector row
-  // alone — company_mcp_connectors has no persisted OAuth flag (only the catalog
-  // entry knows `requiresOAuth`), so telling "Re-authorize" (Task 16) apart from
-  // "Add credential" requires cross-referencing the catalog.
-  const hasNeedsCredentialsConnector = (connectors ?? []).some(
-    (c) => c.status === "needs_credentials",
-  );
-
-  /**
-   * OAuth-detection approach (Task 16, explicit choice): cross-reference the
-   * catalog — the plan's PREFERRED option over the sanctioned fallback (gate
-   * Re-authorize on `requiresSecret && !secretRef` and always show it beside Add
-   * credential, OAuth or not). The fallback was rejected here because
-   * `MCPConnectorsSection.test.tsx` already pins "never fetches the connector
-   * catalog" as a deliberate regression guard against the shelf-in-Settings
-   * anti-pattern (browsing/installing moved to Marketplace → Connectors), and
-   * because the fallback would render a "Re-authorize" button on every
-   * needs_credentials connector — including plain BYO ones — that always 400s
-   * server-side ("This connector does not use OAuth sign-in").
-   *
-   * The catalog fetch is therefore scoped to `enabled: isFounder &&
-   * hasNeedsCredentialsConnector`: it never fires for the common case (no
-   * needs_credentials row present — the exact scenario the pinned test
-   * exercises), and only fires when there is actually a row whose affordance
-   * needs disambiguating. This is a read-only cross-reference for a boolean
-   * derivation — no shelf, no install affordance is rendered from it.
-   */
-  const { data: catalogShelf } = useQuery({
-    queryKey: companyId
-      ? queryKeys.mcpConnectors.catalog(companyId)
-      : ["mcp-connectors", "none", "catalog"],
-    queryFn: () => mcpConnectorsApi.catalog(companyId!),
-    enabled: !!companyId && isFounder && hasNeedsCredentialsConnector,
-  });
-
-  const oauthServerNames = useMemo(
-    () =>
-      new Set(
-        (catalogShelf?.entries ?? []).filter((e) => e.oauthRequired).map((e) => e.serverName),
-      ),
-    [catalogShelf],
-  );
+  // OAuth capability is part of the server-returned connector projection. This
+  // manage-only surface never re-fetches the mutable catalog or infers identity
+  // from serverName.
 
   const { data: agents } = useQuery({
     queryKey: companyId ? queryKeys.agents.list(companyId) : ["agents", "none"],
@@ -190,8 +171,11 @@ export function MCPConnectorsSection() {
     enabled: !!companyId,
   });
 
-  const invalidate = () =>
-    queryClient.invalidateQueries({ queryKey: queryKeys.mcpConnectors.list(companyId!) });
+  const invalidateCompany = (scopeCompanyId: string) =>
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.mcpConnectors.list(scopeCompanyId),
+    });
+  const invalidate = () => companyId && invalidateCompany(companyId);
 
   // stdio is host-executing → only offered on a local_trusted host (D7).
   // Passed down to NewConnectorDialog, which needs it for the same guard.
@@ -201,37 +185,60 @@ export function MCPConnectorsSection() {
   // silently for disable/remove; enable follows the same pattern).
   const [actionError, setActionError] = useState<string | null>(null);
   const [showAddConnector, setShowAddConnector] = useState(false);
+  const companyIdRef = useRef(companyId);
+  companyIdRef.current = companyId;
+
+  useEffect(() => {
+    setActionError(null);
+  }, [companyId]);
+
+  type ConnectorAction = { companyId: string; connectorId: string };
 
   const disableMutation = useMutation({
-    mutationFn: (id: string) => mcpConnectorsApi.update(companyId!, id, { status: "disabled" }),
-    onSuccess: () => {
-      setActionError(null);
-      invalidate();
+    mutationFn: ({ companyId: scopeCompanyId, connectorId }: ConnectorAction) =>
+      mcpConnectorsApi.update(scopeCompanyId, connectorId, { status: "disabled" }),
+    onSuccess: (_result, variables) => {
+      if (companyIdRef.current === variables.companyId) setActionError(null);
+      invalidateCompany(variables.companyId);
     },
-    onError: (err) =>
-      setActionError(err instanceof ApiError ? err.message : "Failed to disable connector"),
+    onError: (err, variables) => {
+      if (companyIdRef.current === variables.companyId)
+        setActionError(
+          err instanceof ApiError ? err.message : "Failed to disable connector"
+        );
+    },
   });
 
   // Mirrors disableMutation — the re-activation counterpart. A disabled
   // connector previously had no way back to active from this UI at all.
   const enableMutation = useMutation({
-    mutationFn: (id: string) => mcpConnectorsApi.update(companyId!, id, { status: "active" }),
-    onSuccess: () => {
-      setActionError(null);
-      invalidate();
+    mutationFn: ({ companyId: scopeCompanyId, connectorId }: ConnectorAction) =>
+      mcpConnectorsApi.update(scopeCompanyId, connectorId, { status: "active" }),
+    onSuccess: (_result, variables) => {
+      if (companyIdRef.current === variables.companyId) setActionError(null);
+      invalidateCompany(variables.companyId);
     },
-    onError: (err) =>
-      setActionError(err instanceof ApiError ? err.message : "Failed to enable connector"),
+    onError: (err, variables) => {
+      if (companyIdRef.current === variables.companyId)
+        setActionError(
+          err instanceof ApiError ? err.message : "Failed to enable connector"
+        );
+    },
   });
 
   const removeMutation = useMutation({
-    mutationFn: (id: string) => mcpConnectorsApi.remove(companyId!, id),
-    onSuccess: () => {
-      setActionError(null);
-      invalidate();
+    mutationFn: ({ companyId: scopeCompanyId, connectorId }: ConnectorAction) =>
+      mcpConnectorsApi.remove(scopeCompanyId, connectorId),
+    onSuccess: (_result, variables) => {
+      if (companyIdRef.current === variables.companyId) setActionError(null);
+      invalidateCompany(variables.companyId);
     },
-    onError: (err) =>
-      setActionError(err instanceof ApiError ? err.message : "Failed to remove connector"),
+    onError: (err, variables) => {
+      if (companyIdRef.current === variables.companyId)
+        setActionError(
+          err instanceof ApiError ? err.message : "Failed to remove connector"
+        );
+    },
   });
 
   return (
@@ -245,16 +252,20 @@ export function MCPConnectorsSection() {
           Connectors<span className="text-brand">.</span>
         </h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Manage the external tools and data sources your agents can use: bind credentials,
-          choose which agents get access, disable or remove. Browse and install new ones in
-          Marketplace → Connectors. These are outbound — your agents reach out to remote MCP
-          servers. Inbound API keys live under MCP API keys.
+          Manage the external tools and data sources your agents can use: bind
+          credentials, choose which agents get access, disable or remove. Browse
+          and install new ones in Marketplace → Connectors. These are outbound —
+          your agents reach out to remote MCP servers. Inbound API keys live
+          under MCP API keys.
         </p>
       </div>
 
       <div className="p-8">
         {!companyId ? (
-          <EmptyState icon={Cable} message="Select a company to manage connectors." />
+          <EmptyState
+            icon={Cable}
+            message="Select a company to manage connectors."
+          />
         ) : (
           <div className="space-y-6">
             {/* Registered connectors — this section is the MANAGE half of the
@@ -288,16 +299,32 @@ export function MCPConnectorsSection() {
                   per-connector assignment via "Agents" below. This is the
                   answer to "I added a connector, why can't my agent see it?" */}
               <div className="rounded-md border border-border px-4 py-3 text-sm text-muted-foreground">
-                <span className="font-medium text-foreground">Commander</span> can use every
-                active connector automatically. To let a specific{" "}
-                <span className="font-medium text-foreground">crew or org agent</span> use one,
-                assign it with <span className="font-medium text-foreground">Agents</span> on
+                <span className="font-medium text-foreground">Commander</span>{" "}
+                can use every active connector automatically. To let a specific{" "}
+                <span className="font-medium text-foreground">
+                  crew or org agent
+                </span>{" "}
+                use one, assign it with{" "}
+                <span className="font-medium text-foreground">Agents</span> on
                 that connector.
               </div>
 
               <div className="rounded-md border border-border px-4 py-4 space-y-3">
-                {actionError && <div className="text-sm text-destructive">{actionError}</div>}
-                {(connectors ?? []).length === 0 ? (
+                {actionError && (
+                  <div role="alert" className="text-sm text-destructive">{actionError}</div>
+                )}
+                {connectorsLoading ? (
+                  <div role="status" aria-live="polite" className="py-8 text-center text-sm text-muted-foreground">
+                    Loading registered connectors&hellip;
+                  </div>
+                ) : connectorsError ? (
+                  <div role="alert" className="py-8 text-center text-sm text-muted-foreground">
+                    <div>Could not load registered connectors.</div>
+                    <Button size="sm" variant="outline" className="mt-3" onClick={() => void refetchConnectors()}>
+                      Retry
+                    </Button>
+                  </div>
+                ) : (connectors ?? []).length === 0 ? (
                   // Not a dead end: the one thing a founder with zero connectors
                   // needs is the way to get one, and that way is now a different
                   // route. Naming it (and linking it) is the whole reason this
@@ -311,7 +338,9 @@ export function MCPConnectorsSection() {
                     {isFounder && (
                       <div className="-mt-8 flex justify-center pb-4">
                         <Link to="/marketplace/connectors">
-                          <Button size="sm">Browse connectors in Marketplace</Button>
+                          <Button size="sm">
+                            Browse connectors in Marketplace
+                          </Button>
                         </Link>
                       </div>
                     )}
@@ -320,17 +349,16 @@ export function MCPConnectorsSection() {
                   <div className="space-y-2">
                     {(connectors ?? []).map((c) => (
                       <ConnectorRow
-                        key={c.id}
+                        key={`${companyId}:${c.id}`}
                         connector={c}
                         agents={agents ?? []}
                         isFounder={isFounder}
-                        isOAuth={oauthServerNames.has(c.serverName)}
-                        onDisable={() => disableMutation.mutate(c.id)}
-                        onEnable={() => enableMutation.mutate(c.id)}
-                        onRemove={() => removeMutation.mutate(c.id)}
-                        disableBusy={disableMutation.isPending}
-                        enableBusy={enableMutation.isPending}
-                        removeBusy={removeMutation.isPending}
+                        onDisable={() => disableMutation.mutate({ companyId, connectorId: c.id })}
+                        onEnable={() => enableMutation.mutate({ companyId, connectorId: c.id })}
+                        onRemove={() => removeMutation.mutate({ companyId, connectorId: c.id })}
+                        disableBusy={disableMutation.isPending && disableMutation.variables?.companyId === companyId && disableMutation.variables.connectorId === c.id}
+                        enableBusy={enableMutation.isPending && enableMutation.variables?.companyId === companyId && enableMutation.variables.connectorId === c.id}
+                        removeBusy={removeMutation.isPending && removeMutation.variables?.companyId === companyId && removeMutation.variables.connectorId === c.id}
                         companyId={companyId}
                       />
                     ))}
@@ -363,10 +391,6 @@ interface ConnectorRowProps {
   connector: McpConnector;
   agents: { id: string; name: string; status?: string }[];
   isFounder: boolean;
-  /** True when the catalog cross-reference found this connector's serverName
-   *  under an `oauthRequired` entry — see the derivation + rationale comment on
-   *  `oauthServerNames` above. Drives Re-authorize vs Add credential below. */
-  isOAuth: boolean;
   onDisable: () => void;
   onEnable: () => void;
   onRemove: () => void;
@@ -380,7 +404,6 @@ function ConnectorRow({
   connector,
   agents,
   isFounder,
-  isOAuth,
   onDisable,
   onEnable,
   onRemove,
@@ -396,12 +419,18 @@ function ConnectorRow({
   const [credentialError, setCredentialError] = useState<string | null>(null);
   const [reauthorizeError, setReauthorizeError] = useState<string | null>(null);
   const [confirmRemove, setConfirmRemove] = useState(false);
+  const companyIdRef = useRef(companyId);
+  companyIdRef.current = companyId;
+  const redirectStartedRef = useRef(false);
 
   // "Installed but unusable": the catalog entry declared a credential and none
   // is bound. This is the state every `requiresSecret` catalog install lands in,
   // so it must carry its own next step rather than relying on the founder
   // guessing that a secret goes somewhere.
   const needsCredential = connector.requiresSecret && !connector.secretRef;
+  const isOAuthConnector = connector.oauthEligibility !== "not_oauth";
+  const canAuthorizeOAuth = connector.oauthEligibility === "supported";
+  const isOAuthPolicyBlocked = connector.oauthEligibility === "policy_blocked";
   const expectedKeys = [
     ...Object.keys(connector.headerTemplate ?? {}),
     ...Object.keys(connector.envTemplate ?? {}),
@@ -414,10 +443,14 @@ function ConnectorRow({
       setCredentialError(null);
       setShowCredential(false);
       setCredentialRef("");
-      queryClient.invalidateQueries({ queryKey: queryKeys.mcpConnectors.list(companyId) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.mcpConnectors.list(companyId),
+      });
     },
     onError: (err) =>
-      setCredentialError(err instanceof ApiError ? err.message : "Failed to bind credential"),
+      setCredentialError(
+        err instanceof ApiError ? err.message : "Failed to bind credential"
+      ),
   });
 
   // Re-authorize (Task 16): a needs_credentials connector whose catalog entry is
@@ -425,22 +458,29 @@ function ConnectorRow({
   // sign-in round trip, not pasting a secretRef, so this replaces "Add
   // credential" for that connector rather than sitting beside it.
   const oauthStartMutation = useMutation({
-    mutationFn: () => mcpConnectorsApi.oauthStart(companyId, connector.id),
-    onSuccess: ({ authorizeUrl }) => {
+    mutationFn: ({ companyId: scopeCompanyId, connectorId }: { companyId: string; connectorId: string }) =>
+      mcpConnectorsApi.oauthStart(scopeCompanyId, connectorId),
+    onSuccess: ({ authorizeUrl }, variables) => {
+      if (companyIdRef.current !== variables.companyId || redirectStartedRef.current) return;
+      redirectStartedRef.current = true;
       setReauthorizeError(null);
       window.location.assign(authorizeUrl);
     },
-    onError: (err) =>
-      setReauthorizeError(
-        err instanceof ApiError ? err.message : "Failed to start re-authorization",
-      ),
+    onError: (err, variables) => {
+      if (companyIdRef.current === variables.companyId)
+        setReauthorizeError(
+          err instanceof ApiError
+            ? err.message
+            : "Failed to start re-authorization"
+        );
+    },
   });
   // Seeded from the connector's CURRENT enabled-agent set (A34). PUT …/agents
   // REPLACES the whole set, so starting empty would silently wipe agents the
   // founder didn't touch. Re-seeding on open (and after a save-driven refetch)
   // keeps the checkboxes an accurate mirror of server state.
   const [selected, setSelected] = useState<Set<string>>(
-    () => new Set(connector.enabledAgentIds),
+    () => new Set(connector.enabledAgentIds)
   );
   const [agentError, setAgentError] = useState<string | null>(null);
   const [agentSaved, setAgentSaved] = useState(false);
@@ -465,11 +505,15 @@ function ConnectorRow({
       setAgentSaved(true);
       // Refetch so connector.enabledAgentIds reflects the just-saved set — the
       // seed-on-open effect then mirrors server state on the next open (A34).
-      queryClient.invalidateQueries({ queryKey: queryKeys.mcpConnectors.list(companyId) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.mcpConnectors.list(companyId),
+      });
     },
     onError: (err) => {
       setAgentSaved(false);
-      setAgentError(err instanceof ApiError ? err.message : "Failed to update agent access");
+      setAgentError(
+        err instanceof ApiError ? err.message : "Failed to update agent access"
+      );
     },
   });
 
@@ -493,7 +537,7 @@ function ConnectorRow({
       [...agents]
         .filter((a) => a.status !== "terminated")
         .sort((a, b) => a.name.localeCompare(b.name)),
-    [agents],
+    [agents]
   );
 
   return (
@@ -504,13 +548,21 @@ function ConnectorRow({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-sm font-medium truncate">{connector.displayName}</span>
+            <span className="text-sm font-medium truncate">
+              {connector.displayName}
+            </span>
             <TransportBadge transport={connector.transport} />
-            <StatusBadge status={connector.status} />
+            {isOAuthPolicyBlocked ? (
+              <Badge variant="pending">Unavailable</Badge>
+            ) : (
+              <StatusBadge status={connector.status} />
+            )}
           </div>
           <div className="text-xs text-muted-foreground mt-0.5 font-mono break-all">
             {connector.serverName}
-            {connector.transport === "http" && connector.url ? ` · ${connector.url}` : ""}
+            {connector.transport === "http" && connector.url
+              ? ` · ${connector.url}`
+              : ""}
             {connector.transport === "stdio" && connector.command
               ? ` · ${connector.command}`
               : ""}
@@ -521,22 +573,22 @@ function ConnectorRow({
               `active` — a disabled/needs_credentials connector isn't reaching
               anyone regardless of assignment, and the status badge + Enable /
               Re-authorize / Add-credential affordances already own that story. */}
-          {connector.status === "active" && (
+          {connector.status === "active" && !isOAuthPolicyBlocked && (
             <div
               data-testid={`connector-access-${connector.id}`}
               className="text-xs text-muted-foreground mt-0.5"
             >
               {connector.enabledAgentIds.length > 0
-                ? `Used by Commander + ${connector.enabledAgentIds.length} agent${
-                    connector.enabledAgentIds.length === 1 ? "" : "s"
-                  }`
+                ? `Used by Commander + ${
+                    connector.enabledAgentIds.length
+                  } agent${connector.enabledAgentIds.length === 1 ? "" : "s"}`
                 : "Used by Commander only"}
             </div>
           )}
         </div>
         {isFounder && (
           <div className="flex items-center gap-1 shrink-0">
-            {needsCredential && !isOAuth && (
+            {needsCredential && !isOAuthConnector && (
               <Button size="sm" onClick={() => setShowCredential((v) => !v)}>
                 Add credential
               </Button>
@@ -549,11 +601,16 @@ function ConnectorRow({
               Agents
             </Button>
             {connector.status === "disabled" ? (
-              <Button size="sm" onClick={onEnable} disabled={enableBusy}>
-                {enableBusy ? "Enabling..." : "Enable"}
+              <Button size="sm" onClick={onEnable} disabled={enableBusy || isOAuthPolicyBlocked}>
+                {isOAuthPolicyBlocked ? "Unavailable" : enableBusy ? "Enabling..." : "Enable"}
               </Button>
             ) : (
-              <Button size="sm" variant="ghost" onClick={onDisable} disabled={disableBusy}>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={onDisable}
+                disabled={disableBusy}
+              >
                 Disable
               </Button>
             )}
@@ -578,8 +635,9 @@ function ConnectorRow({
           <DialogHeader>
             <DialogTitle>Remove connector?</DialogTitle>
             <DialogDescription>
-              This permanently removes <strong>{connector.displayName}</strong> and unbinds its
-              credential. Agents will lose access. This can&rsquo;t be undone.
+              This permanently removes <strong>{connector.displayName}</strong>{" "}
+              and unbinds its credential. Agents will lose access. This
+              can&rsquo;t be undone.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -627,28 +685,47 @@ function ConnectorRow({
           server's own answer to "does this connector need attention right now?",
           independent of whether a (possibly stale) secretRef happens to still be
           set. */}
-      {isFounder && connector.status === "needs_credentials" && isOAuth && (
-        <div
-          data-testid={`connector-reauthorize-${connector.id}`}
-          className="rounded-md border border-warning/30 bg-warning/5 px-3 py-2 flex items-center justify-between gap-3"
-        >
-          <div className="text-xs text-muted-foreground">
-            This connector uses OAuth sign-in and needs authorization before agents can use it.
-          </div>
-          <Button
-            size="sm"
-            onClick={() => oauthStartMutation.mutate()}
-            disabled={oauthStartMutation.isPending}
+      {connector.status === "needs_credentials" && canAuthorizeOAuth && (
+          <div
+            data-testid={`connector-reauthorize-${connector.id}`}
+            role="status"
+            className="rounded-md border border-warning/30 bg-warning/5 px-3 py-2 flex items-center justify-between gap-3"
           >
-            {oauthStartMutation.isPending ? "Starting..." : "Re-authorize"}
-          </Button>
-        </div>
-      )}
+            <div className="text-xs text-muted-foreground">
+              This connector uses OAuth sign-in and needs authorization before
+              agents can use it.
+            </div>
+            {isFounder && (
+              <Button
+                size="sm"
+                onClick={() => {
+                  if (oauthStartMutation.isPending || redirectStartedRef.current) return;
+                  oauthStartMutation.mutate({ companyId, connectorId: connector.id });
+                }}
+                disabled={oauthStartMutation.isPending || redirectStartedRef.current}
+              >
+                {oauthStartMutation.isPending ? "Starting..." : "Re-authorize"}
+              </Button>
+            )}
+          </div>
+        )}
       {isFounder && reauthorizeError && (
-        <div className="text-sm text-destructive">{reauthorizeError}</div>
+        <div role="alert" className="text-sm text-destructive">{reauthorizeError}</div>
       )}
 
-      {isFounder && needsCredential && !isOAuth && !showCredential && (
+      {isOAuthPolicyBlocked && (
+        <div
+          data-testid={`connector-oauth-policy-blocked-${connector.id}`}
+          role="status"
+          className="rounded-md border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-muted-foreground"
+        >
+          This connector is unavailable to agents.{" "}
+          {connector.oauthUnavailableReason ??
+            "OAuth is unavailable for this connector under the current server policy."}
+        </div>
+      )}
+
+      {isFounder && needsCredential && !isOAuthConnector && !showCredential && (
         <div className="text-xs text-muted-foreground">
           This connector needs a credential before agents can use it.
         </div>
@@ -657,12 +734,13 @@ function ConnectorRow({
       {isFounder && showCredential && (
         <div className="rounded-md border border-border-soft bg-muted/20 px-3 py-3 space-y-2">
           <div className="text-xs text-muted-foreground">
-            Point this connector at an existing company secret (Settings → Secrets). The{" "}
-            <code>{"${TOKEN}"}</code> placeholder in its
+            Point this connector at an existing company secret (Settings →
+            Secrets). The <code>{"${TOKEN}"}</code> placeholder in its
             {expectedKeys.length > 0 ? (
               <>
                 {" "}
-                template keys (<span className="font-mono">{expectedKeys.join(", ")}</span>)
+                template keys (
+                <span className="font-mono">{expectedKeys.join(", ")}</span>)
               </>
             ) : (
               " templates"
@@ -670,7 +748,9 @@ function ConnectorRow({
             resolves to the secret's value.
           </div>
           <label className="space-y-1 block">
-            <div className="text-xs text-muted-foreground">Secret reference</div>
+            <div className="text-xs text-muted-foreground">
+              Secret reference
+            </div>
             <input
               className={inputCls}
               aria-label="Secret reference"
@@ -679,17 +759,29 @@ function ConnectorRow({
               placeholder="mcp:notion"
             />
           </label>
-          {credentialError && <div className="text-sm text-destructive">{credentialError}</div>}
+          {credentialError && (
+            <div role="alert" className="text-sm text-destructive">{credentialError}</div>
+          )}
           <div className="flex justify-end gap-1">
-            <Button size="sm" variant="ghost" onClick={() => setShowCredential(false)}>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setShowCredential(false)}
+            >
               Cancel
             </Button>
             <Button
               size="sm"
-              onClick={() => bindCredentialMutation.mutate(credentialRef.trim())}
-              disabled={bindCredentialMutation.isPending || !credentialRef.trim()}
+              onClick={() =>
+                bindCredentialMutation.mutate(credentialRef.trim())
+              }
+              disabled={
+                bindCredentialMutation.isPending || !credentialRef.trim()
+              }
             >
-              {bindCredentialMutation.isPending ? "Saving..." : "Save credential"}
+              {bindCredentialMutation.isPending
+                ? "Saving..."
+                : "Save credential"}
             </Button>
           </div>
         </div>
@@ -698,14 +790,16 @@ function ConnectorRow({
       {isFounder && showAgents && (
         <div className="rounded-md border border-border-soft bg-muted/20 px-3 py-3 space-y-2">
           <div className="text-xs text-muted-foreground">
-            Choose which agents may use this connector. Checkboxes reflect the current
-            set; Save replaces this connector's enabled-agent set with your selection.
+            Choose which agents may use this connector. Checkboxes reflect the
+            current set; Save replaces this connector's enabled-agent set with
+            your selection.
           </div>
           {sortedAgents.length === 0 ? (
             <div className="text-sm text-muted-foreground">
               No agents in this company yet. Create one on the{" "}
-              <span className="font-medium text-foreground">Agents</span> page, then assign it
-              here. Commander already has access to active connectors.
+              <span className="font-medium text-foreground">Agents</span> page,
+              then assign it here. Commander already has access to active
+              connectors.
             </div>
           ) : (
             <div className="grid gap-1.5 sm:grid-cols-2">
@@ -721,9 +815,13 @@ function ConnectorRow({
               ))}
             </div>
           )}
-          {agentError && <div className="text-sm text-destructive">{agentError}</div>}
+          {agentError && (
+            <div role="alert" className="text-sm text-destructive">{agentError}</div>
+          )}
           {agentSaved && !agentError && (
-            <div className="text-xs text-emerald-500">Agent access updated.</div>
+            <div role="status" aria-live="polite" className="text-xs text-emerald-500">
+              Agent access updated.
+            </div>
           )}
           <div className="flex justify-end">
             <Button

@@ -36,6 +36,7 @@ import {
 } from "./mcp-connector-command-safety.js";
 import { resolveConnectorStatus } from "./mcp-connector-status.js";
 import { isMcpConnectorBlocked } from "./mcp-connector-emergency-policy.js";
+import { assertNotMcpOAuthManaged } from "./secrets.js";
 import type { LogActivityInput } from "./activity-log.js";
 import type { ConnectorInsert } from "./mcp-connectors-crud.js";
 // TYPE-ONLY, and it must stay that way: these imports are erased at build time,
@@ -56,6 +57,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // 23505 that could belong to the approval insert) turns that race into the same
 // clean 409.
 const CONNECTOR_NAME_CONSTRAINT = "company_mcp_connectors_company_name_uq";
+const CONNECTOR_CATALOG_CONSTRAINT = "company_mcp_connectors_company_catalog_entry_uq";
 function isConnectorNameUniqueViolation(err: unknown): boolean {
   if (typeof err !== "object" || err === null) return false;
   const e = err as { code?: unknown; constraint?: unknown; message?: unknown };
@@ -64,6 +66,14 @@ function isConnectorNameUniqueViolation(err: unknown): boolean {
   // wrappers that carry only the text.
   return [e.constraint, e.message].some(
     (field) => typeof field === "string" && field.includes(CONNECTOR_NAME_CONSTRAINT),
+  );
+}
+
+function isConnectorCatalogUniqueViolation(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  const e = err as { code?: unknown; constraint?: unknown; message?: unknown };
+  return e.code === "23505" && [e.constraint, e.message].some(
+    (field) => typeof field === "string" && field.includes(CONNECTOR_CATALOG_CONSTRAINT),
   );
 }
 
@@ -122,6 +132,10 @@ export type CreateConnectorInput = {
   requiresSecret: boolean;
   /** Forced by the caller, never taken from a client body. */
   source: "byo" | "catalog";
+  /** Immutable server-owned catalog identity; null for BYO connectors. */
+  catalogEntryId?: string | null;
+  /** Pinned server OAuth policy version; null for non-OAuth/BYO connectors. */
+  oauthPolicyVersion?: number | null;
   /**
    * Catalog trust tier at install ("verified" | "community" | "unverified"), or
    * null for BYO (no catalog provenance). Persisted so the FU-19 delivery-time D7
@@ -194,6 +208,9 @@ export async function createConnector(
     if (!secret) {
       throw badRequest(`secretRef "${input.secretRef}" does not reference an existing secret`);
     }
+    assertNotMcpOAuthManaged(
+      (secret as { providerMetadata?: unknown }).providerMetadata,
+    );
   }
 
   // Governance and credential axes are orthogonal; one resolver owns both.
@@ -228,6 +245,8 @@ export async function createConnector(
         secretRef: input.secretRef ?? null,
         requiresSecret: input.requiresSecret,
         source: input.source,
+        catalogEntryId: input.catalogEntryId ?? null,
+        oauthPolicyVersion: input.oauthPolicyVersion ?? null,
         trustTier: input.trustTier ?? null,
         status,
         createdByUserId,
@@ -251,6 +270,9 @@ export async function createConnector(
     // on the connector-name constraint so an unrelated 23505 still surfaces as 500.
     if (isConnectorNameUniqueViolation(err)) {
       throw conflict(`A connector named "${input.serverName}" already exists`);
+    }
+    if (isConnectorCatalogUniqueViolation(err)) {
+      throw conflict("This catalog connector is already installed for the company");
     }
     throw err;
   }

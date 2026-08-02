@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, vi } from "vitest";
 import { createHash } from "node:crypto";
 import {
   generatePkce,
@@ -10,6 +10,10 @@ import {
   buildAuthorizeUrl,
   exchangeAuthorizationCode,
   refreshOAuthToken,
+  OAuthRequestError,
+  assertSafeOAuthUrl,
+  OAUTH_FETCH_TIMEOUT_MS,
+  resolvePublicOAuthHost,
 } from "../mcp-connector-oauth.js";
 
 beforeAll(() => {
@@ -87,7 +91,7 @@ describe("discoverOAuthServer", () => {
     const noPkce = stubFetch({
       "https://mcp.notion.com/.well-known/oauth-protected-resource/mcp": { authorization_servers: ["https://as"] },
       "https://as/.well-known/oauth-authorization-server": {
-        authorization_endpoint: "https://as/a", token_endpoint: "https://as/t", code_challenge_methods_supported: ["plain"],
+        issuer: "https://as", authorization_endpoint: "https://as/a", token_endpoint: "https://as/t", code_challenge_methods_supported: ["plain"],
       },
     });
     await expect(discoverOAuthServer(CONN, noPkce)).rejects.toThrow(/S256/);
@@ -97,6 +101,7 @@ describe("discoverOAuthServer", () => {
     const f = stubFetch({
       "https://mcp.notion.com/.well-known/oauth-protected-resource/mcp": { authorization_servers: ["https://mcp.notion.com"] },
       "https://mcp.notion.com/.well-known/oauth-authorization-server": {
+        issuer: "https://mcp.notion.com",
         authorization_endpoint: "https://mcp.notion.com/authorize", token_endpoint: "http://mcp.notion.com/token",
         registration_endpoint: "https://mcp.notion.com/register", code_challenge_methods_supported: ["S256"],
       },
@@ -113,9 +118,66 @@ describe("discoverOAuthServer", () => {
     }) as typeof fetch;
     await expect(discoverOAuthServer("http://mcp.notion.com/mcp", noFetch)).rejects.toThrow(/https/i);
   });
+
+  it.each(["https://127.0.0.1/x", "https://[::1]/x", "https://169.254.169.254/x", "https://user:pass@example.com/x"])(
+    "rejects a blocked literal or credential-bearing URL: %s",
+    (url) => expect(() => assertSafeOAuthUrl(url)).toThrow(OAuthRequestError),
+  );
+
+  it("rejects a DNS answer set containing any private address and never selects it", async () => {
+    const resolver = vi.fn(async () => [
+      { address: "93.184.216.34", family: 4 },
+      { address: "127.0.0.1", family: 4 },
+    ]);
+
+    await expect(resolvePublicOAuthHost("oauth.example", resolver)).rejects.toThrow(
+      /blocked address/i,
+    );
+    expect(resolver).toHaveBeenCalledWith("oauth.example", { all: true, verbatim: true });
+  });
+
+  it("returns the exact validated public DNS answer used by the TLS socket", async () => {
+    const resolver = vi.fn(async () => [
+      { address: "93.184.216.34", family: 4 },
+      { address: "1.1.1.1", family: 4 },
+    ]);
+
+    await expect(resolvePublicOAuthHost("oauth.example", resolver)).resolves.toEqual({
+      address: "93.184.216.34",
+      family: 4,
+    });
+  });
+
+  it("allows at most same-origin redirects for metadata GETs", async () => {
+    const f = (async (input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (url.endsWith("/.well-known/oauth-protected-resource/mcp")) {
+        return new Response(null, { status: 302, headers: { location: "https://attacker.example/prm" } });
+      }
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+    await expect(discoverOAuthServer(CONN, f)).rejects.toThrow(/cross-origin|redirect/i);
+  });
 });
 
 describe("registerOAuthClient", () => {
+  it("applies the fixed ten-second abort timeout to outbound requests", async () => {
+    const signal = new AbortController().signal;
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(signal);
+    const f = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(JSON.stringify({ client_id: "dcr-timeout" }), { status: 201 }),
+    );
+
+    try {
+      await registerOAuthClient("https://as/register", "https://app/cb", f as unknown as typeof fetch);
+      expect(timeout).toHaveBeenCalledWith(OAUTH_FETCH_TIMEOUT_MS);
+      expect(OAUTH_FETCH_TIMEOUT_MS).toBe(10_000);
+      expect(f.mock.calls[0]?.[1]).toMatchObject({ signal });
+    } finally {
+      timeout.mockRestore();
+    }
+  });
+
   it("POSTs a public-client registration and returns the client_id", async () => {
     let captured: { url: string; body: unknown } | null = null;
     const f = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -132,6 +194,16 @@ describe("registerOAuthClient", () => {
   it("throws on non-2xx", async () => {
     const f = (async () => new Response("no", { status: 400 })) as typeof fetch;
     await expect(registerOAuthClient("https://as/register", "https://app/cb", f)).rejects.toThrow(/registration/i);
+  });
+
+  it("rejects every redirect without following it", async () => {
+    let calls = 0;
+    const f = (async () => {
+      calls += 1;
+      return new Response(null, { status: 307, headers: { location: "https://attacker.example/register" } });
+    }) as typeof fetch;
+    await expect(registerOAuthClient("https://as/register", "https://app/cb", f)).rejects.toThrow(/redirect/i);
+    expect(calls).toBe(1);
   });
 });
 
@@ -200,5 +272,22 @@ describe("token endpoint", () => {
     const f = (async () => new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 })) as typeof fetch;
     await expect(refreshOAuthToken({ tokenEndpoint: "https://as/token", refreshToken: "x", clientId: "c", resource: "r" }, f))
       .rejects.toThrow(/invalid_grant|token/i);
+  });
+
+  it("does not follow a token redirect or replay the refresh token", async () => {
+    let calls = 0;
+    const f = (async () => {
+      calls += 1;
+      return new Response(null, { status: 307, headers: { location: "https://attacker.example/token" } });
+    }) as typeof fetch;
+    await expect(refreshOAuthToken({ tokenEndpoint: "https://as/token", refreshToken: "SECRET", clientId: "c", resource: "https://mcp/x" }, f))
+      .rejects.toThrow(/redirect/i);
+    expect(calls).toBe(1);
+  });
+
+  it("aborts responses larger than 1 MiB before JSON parsing", async () => {
+    const f = (async () => new Response(`{"padding":"${"x".repeat(1024 * 1024)}"}`, { status: 200 })) as typeof fetch;
+    await expect(refreshOAuthToken({ tokenEndpoint: "https://as/token", refreshToken: "x", clientId: "c", resource: "https://mcp/x" }, f))
+      .rejects.toThrow(/size limit/i);
   });
 });

@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, jsonb, index } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, jsonb, index, integer } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { companyMcpConnectors } from "./company_mcp_connectors.js";
 
@@ -15,6 +15,8 @@ export const mcpConnectorOauthFlows = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     connectorId: uuid("connector_id").notNull().references(() => companyMcpConnectors.id, { onDelete: "cascade" }),
+    catalogEntryId: text("catalog_entry_id"),
+    oauthPolicyVersion: integer("oauth_policy_version"),
     state: text("state").notNull(),
     pkceVerifier: text("pkce_verifier").notNull(),
     clientId: text("client_id").notNull(),
@@ -37,5 +39,13 @@ export const mcpConnectorOauthFlows = pgTable(
     stateIdx: index("mcp_connector_oauth_flows_state_idx").on(table.state),
     connectorIdx: index("mcp_connector_oauth_flows_connector_idx").on(table.connectorId),
     companyIdx: index("mcp_connector_oauth_flows_company_idx").on(table.companyId),
+    statusExpiresIdx: index("mcp_connector_oauth_flows_status_expires_idx").on(
+      table.status,
+      table.expiresAt,
+    ),
+    statusUpdatedIdx: index("mcp_connector_oauth_flows_status_updated_idx").on(
+      table.status,
+      table.updatedAt,
+    ),
   }),
 );
