@@ -2,6 +2,7 @@ import type { Request, Router } from "express";
 import type { Db } from "@armyofagents/db";
 import { issueService } from "../services/issues.js";
 import { accessibleCompanyIdsForActor } from "./authz.js";
+import { notFound } from "../errors.js";
 
 const ISSUE_IDENTIFIER_RE = /^[A-Z]+-\d+$/i;
 
@@ -29,6 +30,13 @@ export function createIssueParamNormalizer(db: Db) {
         ? await issues.getByIdentifierInCompany(companyId, rawId)
         : await issues.getByIdentifier(rawId, accessibleCompanyIds);
       if (issue) return issue.id;
+      // Identifier-shaped but nothing resolved: DON'T return the raw
+      // `ACM-999` — the UUID-column callers (artifacts/output-detection/
+      // task-outputs/dependencies) would feed it into a uuid comparison and
+      // hit Postgres 22P02 → un-statused → 500. Emit a proper 404 instead. A
+      // real UUID cannot match ISSUE_IDENTIFIER_RE, so a genuine-but-absent
+      // UUID still falls through to the handler's own 404 below.
+      throw notFound(`Task ${rawId} not found`);
     }
     return rawId;
   };
