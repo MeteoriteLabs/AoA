@@ -67,7 +67,7 @@ describe("extractInlineScriptHashes", () => {
     expect(hashes).toEqual([]);
   });
 
-  it("preserves whitespace and newlines verbatim when computing hash", async () => {
+  it("preserves whitespace and LF newlines verbatim when computing hash", async () => {
     const inlineBody = `\n      (() => {\n        const x = 1;\n      })();\n    `;
     const html = `<html><head><script>${inlineBody}</script></head></html>`;
     const file = path.join(tmpDir, "index.html");
@@ -75,9 +75,21 @@ describe("extractInlineScriptHashes", () => {
 
     const hashes = await extractInlineScriptHashes(file);
     expect(hashes).toHaveLength(1);
-    // Hash matches the raw inner text including leading/trailing whitespace —
-    // browsers compute the hash over the exact bytes between <script> and </script>.
+    // Hash matches the inner text including leading/trailing whitespace.
     expect(hashes[0]).toBe(sha256Base64(inlineBody));
+  });
+
+  it("normalizes Windows and legacy Mac line endings like the HTML parser", async () => {
+    const inlineBody = "\r\n  const first = 1;\r  const second = 2;\r\n";
+    const browserScriptText = "\n  const first = 1;\n  const second = 2;\n";
+    const html = `<html><head><script>${inlineBody}</script></head></html>`;
+    const file = path.join(tmpDir, "index.html");
+    await fs.writeFile(file, html, "utf8");
+
+    const hashes = await extractInlineScriptHashes(file);
+
+    expect(hashes).toEqual([sha256Base64(browserScriptText)]);
+    expect(hashes[0]).not.toBe(sha256Base64(inlineBody));
   });
 
   it("handles multi-line inline scripts that span many lines", async () => {
