@@ -54,6 +54,8 @@ import {
 } from "../services/default-agent-instructions.js";
 import { environmentRunOrchestrator } from "../services/environment-run-orchestrator.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
+import { assertUnsandboxedMultitenantAllowed } from "../services/unsandboxed-multitenant-guard.js";
+import { tenantIsolationEnforced } from "../config/deployment-mode.js";
 import { buildApprovalHubEmit, emitHubItem } from "../services/hub-source-producers.js";
 import { logger } from "../middleware/logger.js";
 import { liveRunsForCompany, liveRunsForIssue } from "./agents-live-runs.js";
@@ -677,6 +679,33 @@ export function agentRoutes(db: Db) {
           : null;
 
         try {
+          // D1 (cloud isolation): the probe spawns a REAL `claude --print` /
+          // `codex exec` generation. For a local/null target on `cloud_auth` it
+          // would run under the OPERATOR's login on the shared control-plane host.
+          // Refuse (no-op self-hosted AND on genuinely-isolated targets). Placed
+          // INSIDE the inner try so the refusal still hits the lease-release
+          // finally below AND the outer releaseProbeSlot finally.
+          try {
+            assertUnsandboxedMultitenantAllowed(
+              acquiredEnvironment?.configPatch.executionTarget ?? null,
+              { tenantIsolationEnforced: tenantIsolationEnforced(), sink: "adapter readiness probe" },
+            );
+          } catch {
+            res.json({
+              adapterType: type,
+              status: "fail" as const,
+              checks: [
+                {
+                  code: "readiness_unavailable_on_cloud",
+                  level: "error" as const,
+                  message:
+                    "Adapter readiness testing is unavailable on AoA Cloud (a local probe would run on the shared host). Configure a sandboxed execution environment or test self-hosted.",
+                },
+              ],
+              testedAt: new Date().toISOString(),
+            });
+            return;
+          }
           const result = await adapter.testEnvironment({
             companyId,
             adapterType: type,
