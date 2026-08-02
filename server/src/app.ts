@@ -677,6 +677,9 @@ export async function createApp(
           load: async (pluginId) => {
             await lifecycleMgr.load(pluginId);
           },
+          blockActivationInCloud: async (pluginId, source) => {
+            await lifecycleMgr.blockActivationInCloud(pluginId, source);
+          },
         },
       },
     })

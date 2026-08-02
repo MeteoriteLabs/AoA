@@ -49,13 +49,16 @@ interface WsSocket {
 
 interface WsServer {
   clients: Set<WsSocket>;
-  on(event: "connection", listener: (socket: WsSocket, req: IncomingMessage) => void): void;
+  on(
+    event: "connection",
+    listener: (socket: WsSocket, req: IncomingMessage) => void
+  ): void;
   on(event: "close", listener: () => void): void;
   handleUpgrade(
     req: IncomingMessage,
     socket: Duplex,
     head: Buffer,
-    callback: (ws: WsSocket) => void,
+    callback: (ws: WsSocket) => void
   ): void;
   emit(event: "connection", ws: WsSocket, req: IncomingMessage): boolean;
 }
@@ -87,7 +90,9 @@ function hashToken(token: string) {
 
 function rejectUpgrade(socket: Duplex, statusLine: string, message: string) {
   const safe = message.replace(/[\r\n]+/g, " ").trim();
-  socket.write(`HTTP/1.1 ${statusLine}\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\n${safe}`);
+  socket.write(
+    `HTTP/1.1 ${statusLine}\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\n${safe}`
+  );
   socket.destroy();
 }
 
@@ -141,12 +146,13 @@ export async function enforceLiveEventSocketAuthorization(
   socket: Pick<WsSocket, "readyState" | "close">,
   context: UpgradeContext,
   deploymentMode: DeploymentMode,
-  onError?: (error: unknown) => void,
+  onError?: (error: unknown) => void
 ): Promise<boolean> {
   try {
-    const authorized = context.actorType === "agent"
-      ? await hasActiveAgentSocketAuthorization(db, context)
-      : deploymentMode === "cloud_auth"
+    const authorized =
+      context.actorType === "agent"
+        ? await hasActiveAgentSocketAuthorization(db, context)
+        : deploymentMode === "cloud_auth"
         ? await hasActiveCloudMembership(db, context.companyId, context.actorId)
         : true;
     if (!authorized && socket.readyState === WebSocket.OPEN) {
@@ -166,6 +172,67 @@ export async function enforceLiveEventSocketAuthorization(
   }
 }
 
+/** Start at most one authorization recheck per socket until it settles. */
+export function startSocketAuthorizationCheck<Socket>(
+  socket: Socket,
+  inFlight: Set<Socket>,
+  check: () => Promise<unknown>
+): boolean {
+  if (inFlight.has(socket)) return false;
+  inFlight.add(socket);
+  void check().finally(() => {
+    inFlight.delete(socket);
+  });
+  return true;
+}
+
+export async function subscribeToAuthorizedThread<Conn>(input: {
+  registry: ThreadSubscriptionRegistry<Conn>;
+  connection: Conn;
+  threadId: string;
+  authorize: () => Promise<boolean>;
+  canCommit?: () => boolean;
+}): Promise<boolean> {
+  if (!(await input.authorize())) return false;
+  if (input.canCommit && !input.canCommit()) return false;
+  input.registry.subscribe(input.threadId, input.connection);
+  return true;
+}
+
+export async function touchAuthorizedThreadPresence<Conn>(input: {
+  registry: ThreadSubscriptionRegistry<Conn>;
+  connection: Conn;
+  threadId: string;
+  actorId: string;
+  companyId: string;
+  typing: boolean;
+  now: number;
+  authorize: () => Promise<boolean>;
+  canCommit?: () => boolean;
+  threadCompany: Map<string, string>;
+  touch: (
+    threadId: string,
+    actorId: string,
+    now: number,
+    typing: boolean
+  ) => void;
+  broadcast: (companyId: string, threadId: string, now: number) => void;
+}): Promise<boolean> {
+  if (!input.registry.isSubscribed(input.threadId, input.connection))
+    return false;
+  if (!(await input.authorize())) return false;
+  if (input.canCommit && !input.canCommit()) return false;
+  if (!input.registry.isSubscribed(input.threadId, input.connection))
+    return false;
+  const knownCompanyId = input.threadCompany.get(input.threadId);
+  if (knownCompanyId && knownCompanyId !== input.companyId) return false;
+
+  input.threadCompany.set(input.threadId, input.companyId);
+  input.touch(input.threadId, input.actorId, input.now, input.typing);
+  input.broadcast(input.companyId, input.threadId, input.now);
+  return true;
+}
+
 export async function authorizeUpgrade(
   db: Db,
   req: IncomingMessage,
@@ -173,14 +240,16 @@ export async function authorizeUpgrade(
   url: URL,
   opts: {
     deploymentMode: DeploymentMode;
-    resolveSessionFromHeaders?: (headers: Headers) => Promise<BetterAuthSessionResult | null>;
+    resolveSessionFromHeaders?: (
+      headers: Headers
+    ) => Promise<BetterAuthSessionResult | null>;
     /**
      * Exact trusted origins (scheme://host[:port], no wildcards) — the same
      * allowlist better-auth uses. Consulted ONLY on the cookie/session branch
      * for the CSWSH Origin check below.
      */
     trustedOrigins?: string[];
-  },
+  }
 ): Promise<UpgradeContext | null> {
   const queryToken = url.searchParams.get("token")?.trim() ?? "";
   const authToken = parseBearerToken(req.headers.authorization);
@@ -202,7 +271,8 @@ export async function authorizeUpgrade(
     // session cookie fell through to `return null` → 403 and lost all
     // realtime/presence/run updates.
     if (
-      (opts.deploymentMode !== "authenticated" && opts.deploymentMode !== "cloud_auth") ||
+      (opts.deploymentMode !== "authenticated" &&
+        opts.deploymentMode !== "cloud_auth") ||
       !opts.resolveSessionFromHeaders
     ) {
       return null;
@@ -219,7 +289,9 @@ export async function authorizeUpgrade(
       return null;
     }
 
-    const session = await opts.resolveSessionFromHeaders(headersFromIncomingMessage(req));
+    const session = await opts.resolveSessionFromHeaders(
+      headersFromIncomingMessage(req)
+    );
     const userId = session?.user?.id;
     if (!userId) return null;
 
@@ -246,7 +318,12 @@ export async function authorizeUpgrade(
       db
         .select({ id: instanceUserRoles.id })
         .from(instanceUserRoles)
-        .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")))
+        .where(
+          and(
+            eq(instanceUserRoles.userId, userId),
+            eq(instanceUserRoles.role, "instance_admin")
+          )
+        )
         .then((rows) => rows[0] ?? null),
       db
         .select({ companyId: companyMemberships.companyId })
@@ -255,12 +332,14 @@ export async function authorizeUpgrade(
           and(
             eq(companyMemberships.principalType, "user"),
             eq(companyMemberships.principalId, userId),
-            eq(companyMemberships.status, "active"),
-          ),
+            eq(companyMemberships.status, "active")
+          )
         ),
     ]);
 
-    const hasCompanyMembership = memberships.some((row) => row.companyId === companyId);
+    const hasCompanyMembership = memberships.some(
+      (row) => row.companyId === companyId
+    );
     if (!roleRow && !hasCompanyMembership) return null;
 
     return {
@@ -274,7 +353,9 @@ export async function authorizeUpgrade(
   const key = await db
     .select()
     .from(agentApiKeys)
-    .where(and(eq(agentApiKeys.keyHash, tokenHash), isNull(agentApiKeys.revokedAt)))
+    .where(
+      and(eq(agentApiKeys.keyHash, tokenHash), isNull(agentApiKeys.revokedAt))
+    )
     .then((rows) => rows[0] ?? null);
 
   if (!key || key.companyId !== companyId) {
@@ -323,7 +404,7 @@ export async function authorizeUpgrade(
 export function resolveBoardRoleForMode(
   mode: DeploymentMode,
   hasInstanceAdminRow: boolean,
-  effectiveRole: "founder" | "team_lead" | "team_member",
+  effectiveRole: "founder" | "team_lead" | "team_member"
 ): "founder" | "team_lead" | "team_member" {
   if (mode === "local_trusted") return "founder";
   if (mode !== "cloud_auth" && hasInstanceAdminRow) return "founder";
@@ -335,9 +416,11 @@ export function setupLiveEventsWebSocketServer(
   db: Db,
   opts: {
     deploymentMode: DeploymentMode;
-    resolveSessionFromHeaders?: (headers: Headers) => Promise<BetterAuthSessionResult | null>;
+    resolveSessionFromHeaders?: (
+      headers: Headers
+    ) => Promise<BetterAuthSessionResult | null>;
     trustedOrigins?: string[];
-  },
+  }
 ) {
   const wss = new WebSocketServer({ noServer: true });
   const cleanupByClient = new Map<WsSocket, () => void>();
@@ -345,6 +428,7 @@ export function setupLiveEventsWebSocketServer(
   // Per-open-socket upgrade context, so the cloud_auth membership sweep can
   // re-validate each board socket's tenant membership after the handshake.
   const contextByClient = new Map<WsSocket, UpgradeContext>();
+  const authorizationCheckInFlight = new Set<WsSocket>();
 
   // Plan 7: per-thread subscription registry. A connection only receives
   // thread.* events for threads it has explicitly subscribed to (via a
@@ -359,7 +443,7 @@ export function setupLiveEventsWebSocketServer(
   // right company bus. Also track which (thread,user) each connection owns so we
   // can clear presence on disconnect.
   const threadCompany = new Map<string, string>();
-  const presenceByConn = new Map<WsSocket, Set<string>>(); // socket -> "threadId userId"
+  const presenceByConn = new Map<WsSocket, Set<string>>(); // socket -> "threadId userId"
 
   /** Broadcast a thread's current presence roster (humans + working agents). */
   function broadcastPresence(companyId: string, threadId: string, now: number) {
@@ -376,56 +460,95 @@ export function setupLiveEventsWebSocketServer(
    */
   async function resolveBoardRole(
     actorId: string,
-    companyId: string,
+    companyId: string
   ): Promise<"founder" | "team_lead" | "team_member"> {
     if (opts.deploymentMode === "local_trusted") return "founder";
     if (opts.deploymentMode !== "cloud_auth") {
       const adminRow = await db
         .select({ id: instanceUserRoles.id })
         .from(instanceUserRoles)
-        .where(and(eq(instanceUserRoles.userId, actorId), eq(instanceUserRoles.role, "instance_admin")))
+        .where(
+          and(
+            eq(instanceUserRoles.userId, actorId),
+            eq(instanceUserRoles.role, "instance_admin")
+          )
+        )
         .then((rows) => rows[0] ?? null);
-      if (adminRow) return resolveBoardRoleForMode(opts.deploymentMode, true, "team_member");
+      if (adminRow)
+        return resolveBoardRoleForMode(
+          opts.deploymentMode,
+          true,
+          "team_member"
+        );
     }
     const effectiveRole = await perms.getEffectiveRole(companyId, actorId);
     return resolveBoardRoleForMode(opts.deploymentMode, false, effectiveRole);
   }
 
   /**
-   * Decide whether a thread.* event may be delivered to a single connection.
-   * Recomputed PER EVENT — never cached (see ThreadSubscriptionRegistry doc).
-   * - Connection must be subscribed to the event's thread.
-   * - Agent connections: subscription is the gate (agents subscribe only to
-   *   threads they are working on).
-   * - Board connections: additionally must pass canViewThread, recomputed live.
+   * Canonical live thread visibility decision, recomputed at subscription and
+   * again per event. Agent visibility uses agent participant rows, matching the
+   * REST contract, so a stale subscription cannot outlive participation.
    */
+  async function mayContextAccessThread(
+    context: UpgradeContext,
+    threadId: string
+  ): Promise<boolean> {
+    const role =
+      context.actorType === "agent"
+        ? "team_member"
+        : await resolveBoardRole(context.actorId, context.companyId);
+    const resolved = await tSvc.resolveViewerForThread(
+      context.companyId,
+      threadId,
+      {
+        userId: context.actorId,
+        role,
+        principalType: context.actorType === "agent" ? "agent" : "user",
+      }
+    );
+    if (!resolved) return false;
+    return (
+      filterThreadEventRecipients(resolved.thread, [resolved.viewer]).length > 0
+    );
+  }
+
   async function mayReceiveThreadEvent(
     socket: WsSocket,
     context: UpgradeContext,
-    event: LiveEvent,
+    event: LiveEvent
   ): Promise<boolean> {
     const threadId = threadIdOf(event);
     if (!threadId) return false; // malformed thread event — fail closed
     if (!threadRegistry.isSubscribed(threadId, socket)) return false;
-    if (context.actorType === "agent") return true;
-
-    const role = await resolveBoardRole(context.actorId, context.companyId);
-    const resolved = await tSvc.resolveViewerForThread(context.companyId, threadId, {
-      userId: context.actorId,
-      role,
-    });
-    if (!resolved) return false; // thread gone — fail closed
-    // Reuse the same pure envelope-RBAC filter the tests exercise, so fan-out
-    // and unit tests share one source of truth.
-    return filterThreadEventRecipients(resolved.thread, [resolved.viewer]).length > 0;
+    return mayContextAccessThread(context, threadId);
   }
 
-  async function mayReceiveHubEvent(context: UpgradeContext, event: LiveEvent): Promise<boolean> {
+  /**
+   * Validate client-supplied subscription/presence thread ids before they can
+   * enter any process-global registry. Board viewers must pass the same live
+   * envelope RBAC as event fan-out. Agents resolve participation using
+   * principalType=agent, matching the canonical REST thread decision.
+   */
+  async function maySubscribeToThread(
+    context: UpgradeContext,
+    threadId: string
+  ): Promise<boolean> {
+    return mayContextAccessThread(context, threadId);
+  }
+
+  async function mayReceiveHubEvent(
+    context: UpgradeContext,
+    event: LiveEvent
+  ): Promise<boolean> {
     if (context.actorType !== "board") return false;
 
     const itemId = hubItemIdOf(event);
     if (!itemId) {
-      return event.type === "hub.counts.changed" || event.type === "hub.digest.changed";
+      return (
+        event.type === "hub.counts.changed" ||
+        event.type === "hub.digest.changed"
+      );
     }
 
     const role = await resolveBoardRole(context.actorId, context.companyId);
@@ -479,17 +602,19 @@ export function setupLiveEventsWebSocketServer(
   // own close handler owns subscription and map teardown.
   const membershipSweepInterval = setInterval(() => {
     for (const [socket, ctx] of contextByClient) {
-      void enforceLiveEventSocketAuthorization(
-        db,
-        socket,
-        ctx,
-        opts.deploymentMode,
-        (err) => {
-          logger.warn(
-            { err, companyId: ctx.companyId },
-            "live-events authorization re-validation failed for a socket",
-          );
-        },
+      startSocketAuthorizationCheck(socket, authorizationCheckInFlight, () =>
+        enforceLiveEventSocketAuthorization(
+          db,
+          socket,
+          ctx,
+          opts.deploymentMode,
+          (err) => {
+            logger.warn(
+              { err, companyId: ctx.companyId },
+              "live-events authorization re-validation failed for a socket"
+            );
+          }
+        )
       );
     }
   }, 30000);
@@ -501,36 +626,45 @@ export function setupLiveEventsWebSocketServer(
       return;
     }
 
-    const unsubscribe = subscribeCompanyLiveEvents(context.companyId, (event) => {
-      if (socket.readyState !== WebSocket.OPEN) return;
-      if (isHubEvent(event)) {
-        void mayReceiveHubEvent(context, event)
+    const unsubscribe = subscribeCompanyLiveEvents(
+      context.companyId,
+      (event) => {
+        if (socket.readyState !== WebSocket.OPEN) return;
+        if (isHubEvent(event)) {
+          void mayReceiveHubEvent(context, event)
+            .then((ok) => {
+              if (ok && socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify(event));
+              }
+            })
+            .catch((err) => {
+              logger.warn(
+                { err, companyId: context.companyId },
+                "hub event fan-out failed"
+              );
+            });
+          return;
+        }
+        // Non-thread, non-hub events stay company-wide (unchanged behavior).
+        if (!isThreadEvent(event)) {
+          socket.send(JSON.stringify(event));
+          return;
+        }
+        // Thread events: envelope-RBAC scoped to per-thread subscribers.
+        void mayReceiveThreadEvent(socket, context, event)
           .then((ok) => {
             if (ok && socket.readyState === WebSocket.OPEN) {
               socket.send(JSON.stringify(event));
             }
           })
           .catch((err) => {
-            logger.warn({ err, companyId: context.companyId }, "hub event fan-out failed");
+            logger.warn(
+              { err, companyId: context.companyId },
+              "thread event fan-out failed"
+            );
           });
-        return;
       }
-      // Non-thread, non-hub events stay company-wide (unchanged behavior).
-      if (!isThreadEvent(event)) {
-        socket.send(JSON.stringify(event));
-        return;
-      }
-      // Thread events: envelope-RBAC scoped to per-thread subscribers.
-      void mayReceiveThreadEvent(socket, context, event)
-        .then((ok) => {
-          if (ok && socket.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify(event));
-          }
-        })
-        .catch((err) => {
-          logger.warn({ err, companyId: context.companyId }, "thread event fan-out failed");
-        });
-    });
+    );
 
     cleanupByClient.set(socket, unsubscribe);
     aliveByClient.set(socket, true);
@@ -540,46 +674,80 @@ export function setupLiveEventsWebSocketServer(
       aliveByClient.set(socket, true);
     });
 
+    let messageQueue = Promise.resolve();
     socket.on("message", (data: unknown) => {
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(typeof data === "string" ? data : String(data));
-      } catch {
-        return; // ignore non-JSON client frames
-      }
-      if (typeof parsed !== "object" || parsed === null) return;
-      const msg = parsed as Record<string, unknown>;
+      messageQueue = messageQueue
+        .then(async () => {
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(typeof data === "string" ? data : String(data));
+          } catch {
+            return; // ignore non-JSON client frames
+          }
+          if (typeof parsed !== "object" || parsed === null) return;
+          const msg = parsed as Record<string, unknown>;
 
-      if (typeof msg.subscribe === "string" && msg.subscribe.length > 0) {
-        threadRegistry.subscribe(msg.subscribe, socket);
-        return;
-      }
-      if (typeof msg.unsubscribe === "string" && msg.unsubscribe.length > 0) {
-        threadRegistry.unsubscribe(msg.unsubscribe, socket);
-        return;
-      }
+          if (typeof msg.subscribe === "string" && msg.subscribe.length > 0) {
+            const subscribed = await subscribeToAuthorizedThread({
+              registry: threadRegistry,
+              connection: socket,
+              threadId: msg.subscribe,
+              authorize: () =>
+                maySubscribeToThread(context, msg.subscribe as string),
+              canCommit: () => socket.readyState === WebSocket.OPEN,
+            });
+            if (!subscribed) return;
+            if (socket.readyState !== WebSocket.OPEN) return;
+            return;
+          }
+          if (
+            typeof msg.unsubscribe === "string" &&
+            msg.unsubscribe.length > 0
+          ) {
+            threadRegistry.unsubscribe(msg.unsubscribe, socket);
+            return;
+          }
 
-      // Plan 7 presence/typing heartbeat. Only humans (board) appear in the
-      // presence roster — agents have their own "working" indicator
-      // (agent.status). We require an active subscription so a client can't poke
-      // presence for a thread it isn't viewing (the broadcast itself is also
-      // envelope-RBAC filtered at fan-out).
-      if (typeof msg.presence === "string" && msg.presence.length > 0) {
-        const threadId = msg.presence;
-        if (context.actorType !== "board") return;
-        if (!threadRegistry.isSubscribed(threadId, socket)) return;
-        const now = Date.now();
-        threadCompany.set(threadId, context.companyId);
-        threadPresence.touch(threadId, context.actorId, now, msg.typing === true);
-        let owned = presenceByConn.get(socket);
-        if (!owned) {
-          owned = new Set();
-          presenceByConn.set(socket, owned);
-        }
-        owned.add(`${threadId} ${context.actorId}`);
-        broadcastPresence(context.companyId, threadId, now);
-        return;
-      }
+          // Plan 7 presence/typing heartbeat. Only humans (board) appear in the
+          // presence roster — agents have their own "working" indicator
+          // (agent.status). We require an active subscription so a client can't poke
+          // presence for a thread it isn't viewing (the broadcast itself is also
+          // envelope-RBAC filtered at fan-out).
+          if (typeof msg.presence === "string" && msg.presence.length > 0) {
+            const threadId = msg.presence;
+            if (context.actorType !== "board") return;
+            const now = Date.now();
+            const touched = await touchAuthorizedThreadPresence({
+              registry: threadRegistry,
+              connection: socket,
+              threadId,
+              actorId: context.actorId,
+              companyId: context.companyId,
+              typing: msg.typing === true,
+              now,
+              authorize: () => maySubscribeToThread(context, threadId),
+              canCommit: () => socket.readyState === WebSocket.OPEN,
+              threadCompany,
+              touch: (id, actorId, touchedAt, typing) =>
+                threadPresence.touch(id, actorId, touchedAt, typing),
+              broadcast: broadcastPresence,
+            });
+            if (!touched || socket.readyState !== WebSocket.OPEN) return;
+            let owned = presenceByConn.get(socket);
+            if (!owned) {
+              owned = new Set();
+              presenceByConn.set(socket, owned);
+            }
+            owned.add(`${threadId} ${context.actorId}`);
+            return;
+          }
+        })
+        .catch((err) => {
+          logger.warn(
+            { err, companyId: context.companyId },
+            "live websocket client message authorization failed"
+          );
+        });
     });
 
     socket.on("close", () => {
@@ -588,6 +756,7 @@ export function setupLiveEventsWebSocketServer(
       cleanupByClient.delete(socket);
       aliveByClient.delete(socket);
       contextByClient.delete(socket);
+      authorizationCheckInFlight.delete(socket);
       threadRegistry.removeConnection(socket);
 
       // Plan 7: drop this connection's presence and notify the affected threads
@@ -608,7 +777,10 @@ export function setupLiveEventsWebSocketServer(
     });
 
     socket.on("error", (err: Error) => {
-      logger.warn({ err, companyId: context.companyId }, "live websocket client error");
+      logger.warn(
+        { err, companyId: context.companyId },
+        "live websocket client error"
+      );
     });
   });
 
@@ -650,7 +822,10 @@ export function setupLiveEventsWebSocketServer(
         });
       })
       .catch((err) => {
-        logger.error({ err, path: req.url }, "failed websocket upgrade authorization");
+        logger.error(
+          { err, path: req.url },
+          "failed websocket upgrade authorization"
+        );
         rejectUpgrade(socket, "500 Internal Server Error", "upgrade failed");
       });
   });

@@ -5,6 +5,7 @@ import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { CatalogItem, PluginRecord } from "@armyofagents/shared";
 import { CatalogCard } from "../CatalogCard";
+import { queryKeys } from "@/lib/queryKeys";
 
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({
@@ -57,9 +58,20 @@ function makeItem(overrides: Partial<CatalogItem> = {}): CatalogItem {
 function renderCard(
   item: CatalogItem,
   installed?: Map<string, PluginRecord>,
-  state?: { ready?: boolean; error?: boolean; retry?: () => void }
+  state?: {
+    ready?: boolean;
+    error?: boolean;
+    retry?: () => void;
+    deploymentMode?: "local_trusted" | "cloud_auth";
+  }
 ) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const qc = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+  });
+  qc.setQueryData(queryKeys.health, {
+    status: "ok",
+    deploymentMode: state?.deploymentMode ?? "local_trusted",
+  });
   return render(
     <QueryClientProvider client={qc}>
       <MemoryRouter>
@@ -154,6 +166,21 @@ describe("CatalogCard (v3 chrome)", () => {
     ).toBeInTheDocument();
   });
 
+  it("does not offer plugin installation in cloud mode", () => {
+    renderCard(
+      makeItem({
+        type: "plugin",
+        npm: { packageName: "@a/b", version: "1.0.0" },
+      }),
+      undefined,
+      { deploymentMode: "cloud_auth" }
+    );
+    expect(screen.getByText("Unavailable on AoA Cloud")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /^install$/i })
+    ).not.toBeInTheDocument();
+  });
+
   it("blocks plugin installation while company install state is unresolved", () => {
     renderCard(
       makeItem({
@@ -223,6 +250,27 @@ describe("CatalogCard (v3 chrome)", () => {
     ]);
     renderCard(item, installed);
     expect(screen.getByText("Pending")).toBeInTheDocument();
+  });
+
+  it("renders the accessible cloud-blocked badge instead of Pending", () => {
+    const item = makeItem({
+      type: "plugin",
+      npm: { packageName: "@a/b", version: "1.0.0" },
+    });
+    const installed = new Map<string, PluginRecord>([
+      [
+        "@a/b",
+        {
+          id: "p1",
+          packageName: "@a/b",
+          status: "error",
+          statusReasonCode: "PLUGIN_WORKER_BLOCKED_IN_CLOUD",
+        } as unknown as PluginRecord,
+      ],
+    ]);
+    renderCard(item, installed);
+    expect(screen.getByText("Blocked on AoA Cloud")).toBeInTheDocument();
+    expect(screen.queryByText("Pending")).not.toBeInTheDocument();
   });
 
   it("preserves slashes in the detail-page link (splat route)", () => {

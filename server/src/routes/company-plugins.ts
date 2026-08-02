@@ -27,6 +27,13 @@ import {
 } from "./authz.js";
 import type { PluginLifecycleManager } from "../services/plugin-lifecycle.js";
 import type { PluginLoader } from "../services/plugin-loader.js";
+import {
+  CloudPluginExecutionBlockedError,
+  cloudPluginExecutionBlockedEnvelope,
+  isCloudPluginExecutionBlocked,
+  projectCloudPluginPolicyState,
+  recordCloudPluginBlock,
+} from "../services/cloud-plugin-execution.js";
 
 export function companyPluginRoutes(
   db: Db,
@@ -57,21 +64,24 @@ export function companyPluginRoutes(
 
     const settingsMap = new Map(settings.map((s) => [s.pluginId, s]));
 
-    const result = installed.map((plugin) => ({
-      id: plugin.id,
-      companyId: plugin.companyId,
-      catalogItemId: plugin.catalogItemId,
-      pluginKey: plugin.pluginKey,
-      packageName: plugin.packageName,
-      version: plugin.version,
-      status: plugin.status,
-      categories: plugin.categories,
-      manifest: plugin.manifestJson,
-      lastError: plugin.lastError,
-      installedAt: plugin.installedAt,
-      updatedAt: plugin.updatedAt,
-      enabled: settingsMap.get(plugin.id)?.enabled ?? true,
-    }));
+    const result = installed.map((plugin) =>
+      projectCloudPluginPolicyState({
+        id: plugin.id,
+        companyId: plugin.companyId,
+        catalogItemId: plugin.catalogItemId,
+        pluginKey: plugin.pluginKey,
+        packageName: plugin.packageName,
+        version: plugin.version,
+        status: plugin.status,
+        statusReasonCode: plugin.statusReasonCode,
+        categories: plugin.categories,
+        manifest: plugin.manifestJson,
+        lastError: plugin.lastError,
+        installedAt: plugin.installedAt,
+        updatedAt: plugin.updatedAt,
+        enabled: settingsMap.get(plugin.id)?.enabled ?? true,
+      })
+    );
 
     res.json(result);
   });
@@ -201,9 +211,16 @@ export function companyPluginRoutes(
     }
 
     try {
+      // Reconcile the durable cloud denial before status validation or any
+      // auto-rollback path can perform package work.
+      await lifecycle.blockActivationInCloud(plugin.id, "direct");
       const result = await lifecycle.upgrade(plugin.id, version);
       res.json(result);
     } catch (err) {
+      if (err instanceof CloudPluginExecutionBlockedError) {
+        res.status(503).json(cloudPluginExecutionBlockedEnvelope());
+        return;
+      }
       // Auto-rollback: find the most recent snapshot and reinstall
       const [snapshot] = await db
         .select()
@@ -261,6 +278,19 @@ export function companyPluginRoutes(
       res.status(404).json({ error: "Plugin not found for this company" });
       return;
     }
+
+    try {
+      // Cloud policy must win over lifecycle-state validation so callers get
+      // the canonical typed denial even after boot reconciles the row to error.
+      await lifecycle.blockActivationInCloud(plugin.id, "direct");
+    } catch (err) {
+      if (err instanceof CloudPluginExecutionBlockedError) {
+        res.status(503).json(cloudPluginExecutionBlockedEnvelope());
+        return;
+      }
+      throw err;
+    }
+
     if (plugin.status !== "upgrade_pending") {
       res.status(400).json({
         error: `Plugin is not in upgrade_pending state (current: ${plugin.status})`,
@@ -268,8 +298,16 @@ export function companyPluginRoutes(
       return;
     }
 
-    await lifecycle.load(plugin.id); // transitions upgrade_pending → ready, starts worker
-    res.json({ status: "ready" });
+    try {
+      await lifecycle.load(plugin.id);
+      res.json({ status: "ready" });
+    } catch (err) {
+      if (err instanceof CloudPluginExecutionBlockedError) {
+        res.status(503).json(cloudPluginExecutionBlockedEnvelope());
+        return;
+      }
+      throw err;
+    }
   });
 
   // ── POST /api/companies/:companyId/plugins/:pluginId/upgrade/rollback ────
@@ -280,6 +318,18 @@ export function companyPluginRoutes(
       companyId: string;
       pluginId: string;
     };
+
+    if (isCloudPluginExecutionBlocked()) {
+      recordCloudPluginBlock({
+        pluginId,
+        companyId,
+        source: "direct",
+        sink: "loader",
+      });
+      res.status(503).json(cloudPluginExecutionBlockedEnvelope());
+      return;
+    }
+
     await assertCompanyAccess(db, req, companyId);
     // H9: rolls the plugin back to a prior version (host-side) — instance-admin only.
     assertCanManageInstanceSettings(req);
@@ -328,6 +378,10 @@ export function companyPluginRoutes(
 
       res.json({ status: "ready", version: snapshot.version });
     } catch (err) {
+      if (err instanceof CloudPluginExecutionBlockedError) {
+        res.status(503).json(cloudPluginExecutionBlockedEnvelope());
+        return;
+      }
       const message = err instanceof Error ? err.message : String(err);
       res.status(400).json({ error: message });
     }
@@ -361,6 +415,18 @@ export function companyPluginRoutes(
       return;
     }
 
+    if (enabled) {
+      try {
+        await lifecycle.blockActivationInCloud(ownedPlugin.id, "direct");
+      } catch (err) {
+        if (err instanceof CloudPluginExecutionBlockedError) {
+          res.status(503).json(cloudPluginExecutionBlockedEnvelope());
+          return;
+        }
+        throw err;
+      }
+    }
+
     const [existing] = await db
       .select()
       .from(pluginCompanySettings)
@@ -390,10 +456,18 @@ export function companyPluginRoutes(
     // Revocation is persisted before touching the in-memory runtime. On disable,
     // route/host gates are therefore closed even if teardown fails. On enable,
     // a failed activation leaves the lifecycle non-ready and still blocked.
-    if (!enabled && ownedPlugin.status === "ready") {
-      await lifecycle.disable(pluginId, "Disabled for company");
-    } else if (enabled && ownedPlugin.status === "disabled") {
-      await lifecycle.enable(pluginId);
+    try {
+      if (!enabled && ownedPlugin.status === "ready") {
+        await lifecycle.disable(pluginId, "Disabled for company");
+      } else if (enabled && ownedPlugin.status === "disabled") {
+        await lifecycle.enable(pluginId);
+      }
+    } catch (err) {
+      if (err instanceof CloudPluginExecutionBlockedError) {
+        res.status(503).json(cloudPluginExecutionBlockedEnvelope());
+        return;
+      }
+      throw err;
     }
     res.json({ enabled: savedEnabled });
   });

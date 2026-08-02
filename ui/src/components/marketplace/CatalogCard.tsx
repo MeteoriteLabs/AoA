@@ -1,7 +1,10 @@
 import { useState } from "react";
 import { Link } from "@/lib/router";
-import { BadgeCheck, Bot, Github } from "lucide-react";
-import type { CatalogItem } from "@armyofagents/shared";
+import { AlertTriangle, BadgeCheck, Bot, Github } from "lucide-react";
+import {
+  PLUGIN_WORKER_BLOCKED_IN_CLOUD_REASON,
+  type CatalogItem,
+} from "@armyofagents/shared";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -18,10 +21,18 @@ import { TypeChip } from "./TypeChip";
 import { StackedIcon } from "./StackedIcon";
 import { ProviderLogo } from "./ProviderLogo";
 import { cn } from "@/lib/utils";
+import { useCloudPluginExecutionPolicy } from "@/hooks/useCloudPluginExecutionPolicy";
 
 export interface CatalogCardProps {
   item: CatalogItem;
-  installedByPackageName?: Map<string, { packageName: string; status: string }>;
+  installedByPackageName?: Map<
+    string,
+    {
+      packageName: string;
+      status: string;
+      statusReasonCode?: string | null;
+    }
+  >;
   installedStateReady?: boolean;
   installedStateError?: boolean;
   onRetryInstalledState?: () => void;
@@ -44,10 +55,14 @@ export function CatalogCard({
   onRetryInstalledState,
 }: CatalogCardProps) {
   const [installOpen, setInstallOpen] = useState(false);
+  const cloudPolicy = useCloudPluginExecutionPolicy();
   const isDefaultCrew = item.id === AOA_DEFAULT_CREW_ITEM_ID;
   const installedPlugin = item.npm?.packageName
     ? installedByPackageName?.get(item.npm.packageName)
     : undefined;
+  const cloudBlocked =
+    cloudPolicy.isCloud ||
+    installedPlugin?.statusReasonCode === PLUGIN_WORKER_BLOCKED_IN_CLOUD_REASON;
 
   const isVerified = item.trust.tier === "verified";
   const Icon = TYPE_ICONS[item.type];
@@ -146,8 +161,30 @@ export function CatalogCard({
               >
                 Checking installationâ€¦
               </Button>
+            ) : item.type === "plugin" && cloudPolicy.controlsBlocked && !installedPlugin ? (
+              cloudPolicy.isCloud ? (
+                <Badge
+                  variant="destructive"
+                  className="text-[11px] h-7 px-2.5 shrink-0 cursor-default"
+                >
+                  <AlertTriangle aria-hidden="true" className="mr-1 h-3 w-3" />
+                  Unavailable on AoA Cloud
+                </Badge>
+              ) : (
+                <Button size="sm" variant="outline" className="text-[11.5px] h-7 px-3 shrink-0" disabled>
+                  Checking availability…
+                </Button>
+              )
             ) : installedPlugin ? (
-              installedPlugin.status === "ready" ? (
+              cloudBlocked ? (
+                <Badge
+                  variant="destructive"
+                  className="text-[11px] h-7 px-2.5 shrink-0 cursor-default"
+                >
+                  <AlertTriangle aria-hidden="true" className="mr-1 h-3 w-3" />
+                  Blocked on AoA Cloud
+                </Badge>
+              ) : installedPlugin.status === "ready" ? (
                 <Badge className="text-[11px] h-7 px-2.5 shrink-0 bg-green-600 hover:bg-green-600 cursor-default">
                   Installed
                 </Badge>

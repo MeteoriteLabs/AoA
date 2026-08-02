@@ -38,6 +38,10 @@ import { isUuidLike } from "@armyofagents/shared";
 import { pluginRegistryService } from "../services/plugin-registry.js";
 import { logger } from "../middleware/logger.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
+import {
+  cloudPluginExecutionBlockedEnvelope,
+  isCloudPluginExecutionBlocked,
+} from "../services/cloud-plugin-execution.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -258,6 +262,18 @@ export function pluginUiStaticRoutes(
     assertBoard(req);
     if (!isUuidLike(pluginId)) {
       res.status(404).json({ error: "Plugin not found" });
+      return;
+    }
+
+    // Same-origin plugin JavaScript is executable tenant code. Gate it by
+    // deployment mode independently of persisted lifecycle status so stale
+    // `ready` rows are safe during boot reconciliation.
+    if (isCloudPluginExecutionBlocked()) {
+      log.warn(
+        { pluginId, reasonCode: "PLUGIN_WORKER_BLOCKED_IN_CLOUD" },
+        "blocked cloud plugin UI bundle"
+      );
+      res.status(503).json(cloudPluginExecutionBlockedEnvelope());
       return;
     }
 

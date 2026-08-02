@@ -41,6 +41,7 @@ import { pluginRollbackService } from "./plugin-rollback.js";
 import type {
   PluginStatus,
   PluginRecord,
+  PluginStatusReasonCode,
   PaperclipPluginManifestV1,
 } from "@armyofagents/shared";
 import { pluginRegistryService } from "./plugin-registry.js";
@@ -51,6 +52,14 @@ import type {
 } from "./plugin-worker-manager.js";
 import { badRequest, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
+import {
+  CLOUD_PLUGIN_BLOCK_MESSAGE,
+  CloudPluginExecutionBlockedError,
+  PLUGIN_WORKER_BLOCKED_IN_CLOUD,
+  isCloudPluginExecutionBlocked,
+  recordCloudPluginBlock,
+  type PluginActivationSource,
+} from "./cloud-plugin-execution.js";
 
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for testing)
@@ -99,8 +108,8 @@ export function diffCapabilities(
 const VALID_TRANSITIONS: Record<string, readonly PluginStatus[]> = {
   installed: ["ready", "error", "uninstalled"],
   ready: ["ready", "disabled", "error", "upgrade_pending", "uninstalled"],
-  disabled: ["ready", "uninstalled"],
-  error: ["ready", "uninstalled"],
+  disabled: ["ready", "error", "uninstalled"],
+  error: ["ready", "error", "uninstalled"],
   upgrade_pending: ["ready", "error", "uninstalled"],
   uninstalled: ["installed"], // reinstall
 };
@@ -197,6 +206,12 @@ export interface PluginLifecycleManager {
    * Transitions → `error`.
    */
   markError(pluginId: string, error: string): Promise<PluginRecord>;
+
+  /** Persist the stable cloud policy denial and throw its typed error. */
+  blockActivationInCloud(
+    pluginId: string,
+    source?: PluginActivationSource
+  ): Promise<void>;
 
   /**
    * Mark a plugin as requiring upgrade approval.
@@ -378,7 +393,8 @@ export function pluginLifecycleManager(
     pluginId: string,
     to: PluginStatus,
     lastError: string | null = null,
-    existingPlugin?: PluginRecord
+    existingPlugin?: PluginRecord,
+    statusReasonCode: PluginStatusReasonCode | null = null
   ): Promise<PluginRecord> {
     const plugin = existingPlugin ?? (await requirePlugin(pluginId));
     assertTransition(plugin, to);
@@ -388,6 +404,7 @@ export function pluginLifecycleManager(
     const updated = await registry.updateStatus(pluginId, {
       status: to,
       lastError,
+      statusReasonCode,
     });
 
     if (!updated)
@@ -408,6 +425,38 @@ export function pluginLifecycleManager(
     });
 
     return result;
+  }
+
+  async function blockActivationInCloud(
+    pluginId: string,
+    source: PluginActivationSource = "lifecycle"
+  ): Promise<void> {
+    if (!isCloudPluginExecutionBlocked()) return;
+
+    const plugin = await requirePlugin(pluginId);
+    recordCloudPluginBlock({
+      pluginId,
+      companyId: plugin.companyId,
+      source,
+      sink: "lifecycle",
+    });
+
+    // This single registry write owns status, structured reason, diagnostic,
+    // and timestamp. If it fails, the exception still prevents activation and
+    // no ready event is published.
+    const result = await transition(
+      pluginId,
+      "error",
+      CLOUD_PLUGIN_BLOCK_MESSAGE,
+      plugin,
+      PLUGIN_WORKER_BLOCKED_IN_CLOUD
+    );
+    emitDomain("plugin.error", {
+      pluginId,
+      pluginKey: result.pluginKey,
+      error: CLOUD_PLUGIN_BLOCK_MESSAGE,
+    });
+    throw new CloudPluginExecutionBlockedError();
   }
 
   function emitDomain(
@@ -524,6 +573,7 @@ export function pluginLifecycleManager(
      * @returns The updated plugin record.
      */
     async load(pluginId: string): Promise<PluginRecord> {
+      await blockActivationInCloud(pluginId, "lifecycle");
       await assertCompanyOverlayAllowsActivation(pluginId);
       const result = await transition(pluginId, "ready");
       await activateReadyPlugin(pluginId);
@@ -563,6 +613,8 @@ export function pluginLifecycleManager(
             `Plugin must be in 'disabled', 'error', or 'upgrade_pending' status to be enabled.`
         );
       }
+
+      await blockActivationInCloud(pluginId, "lifecycle");
 
       await assertCompanyOverlayAllowsActivation(pluginId);
 
@@ -678,6 +730,13 @@ export function pluginLifecycleManager(
       return result;
     },
 
+    async blockActivationInCloud(
+      pluginId: string,
+      source: PluginActivationSource = "lifecycle"
+    ): Promise<void> {
+      await blockActivationInCloud(pluginId, source);
+    },
+
     // -- markUpgradePending -----------------------------------------------
     async markUpgradePending(pluginId: string): Promise<PluginRecord> {
       const plugin = await requirePlugin(pluginId);
@@ -728,6 +787,8 @@ export function pluginLifecycleManager(
             `Plugin must be in 'ready' or 'upgrade_pending' status to be upgraded.`
         );
       }
+
+      await blockActivationInCloud(pluginId, "lifecycle");
 
       log.info(
         { pluginId, pluginKey: plugin.pluginKey, targetVersion: version },
@@ -833,6 +894,11 @@ export function pluginLifecycleManager(
         );
       }
 
+      await blockActivationInCloud(
+        pluginId,
+        options.activationSource ?? "direct"
+      );
+
       log.info(
         { pluginId, pluginKey: plugin.pluginKey },
         "plugin lifecycle: starting worker"
@@ -873,6 +939,8 @@ export function pluginLifecycleManager(
             `Plugin must be in 'ready' status.`
         );
       }
+
+      await blockActivationInCloud(pluginId, "restart");
 
       const handle = workerManager.getWorker(pluginId);
       if (!handle) {

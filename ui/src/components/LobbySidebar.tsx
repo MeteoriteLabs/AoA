@@ -75,7 +75,9 @@ function LobbyNavRow({ icon: Icon, label, active, collapsed, onClick }: LobbyNav
   return (
     <Tooltip>
       <TooltipTrigger asChild>{button}</TooltipTrigger>
-      <TooltipContent side="right" sideOffset={8}>{label}</TooltipContent>
+      <TooltipContent side="right" sideOffset={8}>
+        {label}
+      </TooltipContent>
     </Tooltip>
   );
 }
@@ -187,7 +189,7 @@ export function LobbySidebar({
     queryFn: () => profileApi.get(),
     staleTime: 60_000,
   });
-  const showInstanceSettings = profile?.isInstanceAdmin === true;
+  const showInstanceSettings = profile?.canManageInstanceSettings === true;
 
   const navTo = (path: string) => {
     navigate(path);
@@ -245,7 +247,9 @@ export function LobbySidebar({
                   <Plus />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent side="right" sideOffset={8}>New company</TooltipContent>
+              <TooltipContent side="right" sideOffset={8}>
+                New company
+              </TooltipContent>
             </Tooltip>
           ) : (
             <DropdownMenu>

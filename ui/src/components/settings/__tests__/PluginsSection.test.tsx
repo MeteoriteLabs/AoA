@@ -8,6 +8,7 @@ import type { InstalledPlugin } from "@/api/plugins";
 import { PluginsSection } from "../PluginsSection";
 import * as pluginsApi from "@/api/plugins";
 import { profileApi } from "@/api/profile";
+import { queryKeys } from "@/lib/queryKeys";
 
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({ selectedCompanyId: "company-1" }),
@@ -58,6 +59,7 @@ function plugin(overrides: Partial<InstalledPlugin> = {}): InstalledPlugin {
     packageName: "@aoa/github-issues",
     version: "1.0.0",
     status: "ready",
+    statusReasonCode: null,
     categories: ["issues"],
     manifest: {
       displayName: "GitHub Issues Sync",
@@ -89,10 +91,16 @@ function update(overrides: Partial<PendingUpdate> = {}): PendingUpdate {
   };
 }
 
-function renderSection() {
+function renderSection(
+  deploymentMode: "local_trusted" | "cloud_auth" = "local_trusted"
+) {
   const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    defaultOptions: {
+      queries: { retry: false, staleTime: Infinity },
+      mutations: { retry: false },
+    },
   });
+  queryClient.setQueryData(queryKeys.health, { status: "ok", deploymentMode });
   return render(
     <QueryClientProvider client={queryClient}>
       <PluginsSection />
@@ -112,6 +120,7 @@ describe("PluginsSection", () => {
       displayName: "Admin",
       avatarUrl: null,
       isInstanceAdmin: true,
+      canManageInstanceSettings: true,
     });
   });
 
@@ -156,12 +165,44 @@ describe("PluginsSection", () => {
       displayName: "Member",
       avatarUrl: null,
       isInstanceAdmin: false,
+      canManageInstanceSettings: false,
     });
     renderSection();
 
     expect(
       await screen.findByRole("button", { name: "View GitHub Issues Sync" })
     ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Update GitHub Issues Sync" })
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows the cloud block with guidance and no futile update action", async () => {
+    vi.mocked(pluginsApi.listCompanyPlugins).mockResolvedValue([
+      plugin({
+        status: "error",
+        statusReasonCode: "PLUGIN_WORKER_BLOCKED_IN_CLOUD",
+        lastError:
+          "Plugin execution is blocked on AoA Cloud until isolated workers are available",
+      }),
+    ]);
+    renderSection();
+
+    expect(await screen.findByText("Blocked on AoA Cloud")).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", {
+        name: "Read the cloud plugin execution policy",
+      })
+    ).toHaveAttribute("href", "/docs/guides/cloud-plugin-execution");
+    expect(
+      screen.queryByRole("button", { name: "Update GitHub Issues Sync" })
+    ).not.toBeInTheDocument();
+  });
+
+  it("hides update actions in cloud mode before durable state is reconciled", async () => {
+    renderSection("cloud_auth");
+
+    expect(await screen.findByText("Blocked on AoA Cloud")).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Update GitHub Issues Sync" })
     ).not.toBeInTheDocument();

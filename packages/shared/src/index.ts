@@ -317,6 +317,8 @@ export {
   // Plugin system
   PLUGIN_API_VERSION,
   PLUGIN_STATUSES,
+  PLUGIN_WORKER_BLOCKED_IN_CLOUD_REASON,
+  PLUGIN_STATUS_REASON_CODES,
   PLUGIN_CATEGORIES,
   PLUGIN_CAPABILITIES,
   PLUGIN_TRUST_TIERS,
@@ -334,6 +336,7 @@ export {
   PLUGIN_JOB_RUN_TRIGGERS,
   PLUGIN_WEBHOOK_DELIVERY_STATUSES,
   type PluginStatus,
+  type PluginStatusReasonCode,
   type PluginCategory,
   type PluginCapability,
   type PluginTrustTier,

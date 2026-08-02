@@ -48,6 +48,12 @@ vi.mock("../routes/authz.js", () => ({
 import { createMarketplaceCompanyRouter } from "../routes/marketplace-company.js";
 import { assertCanManageInstanceSettings } from "../routes/authz.js";
 import { skillMergeSnapshotToken } from "../services/marketplace-install/skill-update-merge.js";
+import {
+  CLOUD_PLUGIN_BLOCK_MESSAGE,
+  CLOUD_PLUGIN_EXECUTION_DOC_PATH,
+  CloudPluginExecutionBlockedError,
+  PLUGIN_WORKER_BLOCKED_IN_CLOUD,
+} from "../services/cloud-plugin-execution.js";
 
 beforeEach(() => {
   authzMocks.assertBoard.mockReset();
@@ -249,6 +255,7 @@ describe("POST /updates/:id/apply plugin updates", () => {
     pluginLoader,
     pluginRollback,
     lifecycleLoad,
+    blockActivationInCloud = vi.fn(async () => {}),
     capturedSets = [],
   }: {
     updateRow: any;
@@ -258,6 +265,7 @@ describe("POST /updates/:id/apply plugin updates", () => {
     pluginLoader?: any;
     pluginRollback?: any;
     lifecycleLoad?: any;
+    blockActivationInCloud?: any;
     capturedSets?: any[];
   }) {
     let selectCall = 0;
@@ -304,7 +312,11 @@ describe("POST /updates/:id/apply plugin updates", () => {
             items: catalogItems,
           }),
         },
-        pluginLifecycle: { upgrade, load: lifecycleLoad ?? vi.fn() } as any,
+        pluginLifecycle: {
+          upgrade,
+          load: lifecycleLoad ?? vi.fn(),
+          blockActivationInCloud,
+        } as any,
         pluginLoader,
         pluginRollback,
       }),
@@ -447,6 +459,44 @@ describe("POST /updates/:id/apply plugin updates", () => {
       companyId: "c1",
     });
     expect(lifecycleLoad).toHaveBeenCalledWith("plugin-1");
+  });
+
+  it("returns the canonical cloud denial without rollback side effects", async () => {
+    const upgrade = vi.fn();
+    const blockActivationInCloud = vi.fn(async () => {
+      throw new CloudPluginExecutionBlockedError();
+    });
+    const installPlugin = vi.fn(async () => ({}));
+    const lifecycleLoad = vi.fn(async () => ({}));
+    const getRollbackTarget = vi.fn(async () => ({
+      packageName: "@aoa/github-issues",
+      version: "0.1.1",
+    }));
+    const { app } = buildPluginApplyApp({
+      updateRow: baseUpdateRow,
+      pluginRows: [[{ ...basePluginRow, packageName: "@aoa/github-issues" }]],
+      upgrade,
+      lifecycleLoad,
+      pluginLoader: { installPlugin },
+      pluginRollback: { getRollbackTarget },
+      blockActivationInCloud,
+    });
+
+    const res = await request(app)
+      .post("/api/companies/c1/marketplace/updates/upd-plugin-1/apply")
+      .send({});
+
+    expect(res.status).toBe(503);
+    expect(res.body).toEqual({
+      error: CLOUD_PLUGIN_BLOCK_MESSAGE,
+      code: PLUGIN_WORKER_BLOCKED_IN_CLOUD,
+      docs: CLOUD_PLUGIN_EXECUTION_DOC_PATH,
+    });
+    expect(blockActivationInCloud).toHaveBeenCalledWith("plugin-1", "marketplace");
+    expect(upgrade).not.toHaveBeenCalled();
+    expect(getRollbackTarget).not.toHaveBeenCalled();
+    expect(installPlugin).not.toHaveBeenCalled();
+    expect(lifecycleLoad).not.toHaveBeenCalled();
   });
 
   it("falls back to catalog npm package name when installed plugin has no catalog item id", async () => {

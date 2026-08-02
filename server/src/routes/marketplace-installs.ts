@@ -47,6 +47,10 @@ import { marketplaceNotifications } from "../services/marketplace-notifications.
 import { logger } from "../middleware/logger.js";
 import { agentInstructionsService } from "../services/agent-instructions.js";
 import { listServerAdapters } from "../adapters/index.js";
+import {
+  PLUGIN_WORKER_BLOCKED_IN_CLOUD,
+  cloudPluginExecutionBlockedEnvelope,
+} from "../services/cloud-plugin-execution.js";
 
 /**
  * Check if a user role can install a given catalog item type.
@@ -405,6 +409,14 @@ export function createMarketplaceInstallRouter(deps: MarketplaceInstallRoutesDep
     const op = await findOperationById(db, req.params.operationId, companyId);
     if (!op) {
       res.status(404).json({ error: "Operation not found" });
+      return;
+    }
+    if (
+      op.status === "failure" &&
+      op.itemType === "plugin" &&
+      op.errorCode === PLUGIN_WORKER_BLOCKED_IN_CLOUD
+    ) {
+      res.status(503).json(cloudPluginExecutionBlockedEnvelope());
       return;
     }
     res.json(op);

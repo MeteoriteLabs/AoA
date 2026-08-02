@@ -1,12 +1,15 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { X } from "lucide-react";
+import { AlertTriangle, X } from "lucide-react";
+import { PLUGIN_WORKER_BLOCKED_IN_CLOUD_REASON } from "@armyofagents/shared";
 import type { InstalledPlugin } from "../../api/plugins.js";
 import * as pluginsApi from "../../api/plugins.js";
 import { pluginsApi as pluginsApiClient } from "../../api/plugins.js";
 import type { PendingUpdate } from "../../api/marketplace.js";
 import { PluginConfigForm } from "./PluginConfigForm.js";
 import { CapabilityDeltaModal } from "./CapabilityDeltaModal.js";
+import { useToast } from "@/context/ToastContext";
+import { useCloudPluginExecutionPolicy } from "@/hooks/useCloudPluginExecutionPolicy";
 
 interface Props {
   companyId: string;
@@ -29,6 +32,26 @@ export function PluginDetailSlideOver({
   const [upgradeResult, setUpgradeResult] =
     useState<pluginsApi.UpgradeResult | null>(null);
   const queryClient = useQueryClient();
+  const { pushToast } = useToast();
+  const cloudPolicy = useCloudPluginExecutionPolicy();
+  const cloudBlocked =
+    cloudPolicy.isCloud ||
+    plugin.statusReasonCode === PLUGIN_WORKER_BLOCKED_IN_CLOUD_REASON;
+  const executionControlsBlocked =
+    cloudPolicy.controlsBlocked ||
+    plugin.statusReasonCode === PLUGIN_WORKER_BLOCKED_IN_CLOUD_REASON;
+  const reconcileCloudBlock = (err: unknown): boolean => {
+    if (!pluginsApi.isCloudPluginExecutionBlockedError(err)) return false;
+    void queryClient.invalidateQueries({
+      queryKey: ["company-plugins", companyId],
+    });
+    pushToast({
+      title: `${plugin.manifest.displayName} is blocked on AoA Cloud`,
+      body: "Cloud execution requires isolated workers. Self-hosting is the current recovery path.",
+      tone: "info",
+    });
+    return true;
+  };
 
   const {
     data: config,
@@ -52,6 +75,9 @@ export function PluginDetailSlideOver({
         setUpgradeResult(result);
       }
     },
+    onError: (err) => {
+      reconcileCloudBlock(err);
+    },
   });
 
   const toggleMutation = useMutation({
@@ -61,6 +87,9 @@ export function PluginDetailSlideOver({
       queryClient.invalidateQueries({
         queryKey: ["company-plugins", companyId],
       }),
+    onError: (err) => {
+      reconcileCloudBlock(err);
+    },
   });
 
   const retryMutation = useMutation({
@@ -69,6 +98,9 @@ export function PluginDetailSlideOver({
       queryClient.invalidateQueries({
         queryKey: ["company-plugins", companyId],
       }),
+    onError: (err) => {
+      reconcileCloudBlock(err);
+    },
   });
 
   const statusColor: Record<string, string> = {
@@ -170,7 +202,7 @@ export function PluginDetailSlideOver({
                 },
                 {
                   label: "Status",
-                  value: plugin.status,
+                  value: cloudBlocked ? "Blocked on AoA Cloud" : plugin.status,
                   valueClass: statusColor[plugin.status] ?? "text-zinc-300",
                 },
                 {
@@ -194,7 +226,7 @@ export function PluginDetailSlideOver({
               ))}
 
               {/* Upgrade banner */}
-              {pendingUpdate && canManage && (
+              {pendingUpdate && canManage && !executionControlsBlocked && (
                 <div className="bg-amber-950/20 border border-amber-900/40 rounded-lg p-3 mt-3">
                   <div className="flex justify-between items-center mb-1.5">
                     <span className="text-xs font-bold text-amber-400">
@@ -248,6 +280,26 @@ export function PluginDetailSlideOver({
                 </>
               )}
 
+              {cloudBlocked && (
+                <div className="mt-3 rounded-lg border border-amber-900/50 bg-amber-950/20 p-3">
+                  <p className="flex items-center gap-1.5 text-xs font-semibold text-amber-300">
+                    <AlertTriangle aria-hidden="true" className="h-3.5 w-3.5" />
+                    Blocked on AoA Cloud
+                  </p>
+                  <p className="mt-1 text-[10px] leading-relaxed text-zinc-400">
+                    Plugins cannot execute in the shared cloud control plane
+                    until isolated workers are available. There is no operator
+                    override; self-hosting is the current recovery path.
+                  </p>
+                  <a
+                    className="mt-2 inline-block text-[10px] text-indigo-300 underline"
+                    href="/docs/guides/cloud-plugin-execution"
+                  >
+                    Read the cloud plugin execution policy
+                  </a>
+                </div>
+              )}
+
               {/* Error */}
               {plugin.lastError && (
                 <div className="mt-3 bg-red-950/20 border border-red-900/40 rounded-lg p-3">
@@ -266,17 +318,19 @@ export function PluginDetailSlideOver({
                   <p className="text-[10px] font-semibold text-zinc-600 uppercase tracking-wider">
                     Actions
                   </p>
-                  <button
-                    type="button"
-                    disabled={toggleMutation.isPending}
-                    onClick={() => toggleMutation.mutate(!plugin.enabled)}
-                    className="w-full text-left text-xs text-zinc-400 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-60 border border-zinc-700 rounded-lg px-3 py-2 transition-colors"
-                  >
-                    {plugin.enabled
-                      ? "Disable for this company"
-                      : "Enable for this company"}
-                  </button>
-                  {plugin.status === "error" && (
+                  {!executionControlsBlocked && (
+                    <button
+                      type="button"
+                      disabled={toggleMutation.isPending}
+                      onClick={() => toggleMutation.mutate(!plugin.enabled)}
+                      className="w-full text-left text-xs text-zinc-400 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-60 border border-zinc-700 rounded-lg px-3 py-2 transition-colors"
+                    >
+                      {plugin.enabled
+                        ? "Disable for this company"
+                        : "Enable for this company"}
+                    </button>
+                  )}
+                  {plugin.status === "error" && !executionControlsBlocked && (
                     <button
                       type="button"
                       disabled={retryMutation.isPending}
@@ -288,13 +342,15 @@ export function PluginDetailSlideOver({
                         : "Retry activation"}
                     </button>
                   )}
-                  {plugin.status === "error" && retryMutation.isError && (
-                    <p className="text-[10px] text-red-400 mt-1">
-                      {retryMutation.error instanceof Error
-                        ? retryMutation.error.message
-                        : "Retry failed"}
-                    </p>
-                  )}
+                  {plugin.status === "error" &&
+                    !executionControlsBlocked &&
+                    retryMutation.isError && (
+                      <p className="text-[10px] text-red-400 mt-1">
+                        {retryMutation.error instanceof Error
+                          ? retryMutation.error.message
+                          : "Retry failed"}
+                      </p>
+                    )}
                 </div>
               ) : (
                 <div className="mt-4 rounded-lg border border-zinc-800 bg-zinc-900/60 p-3 text-xs text-zinc-500">

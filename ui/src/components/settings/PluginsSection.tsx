@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Puzzle } from "lucide-react";
+import { AlertTriangle, Puzzle } from "lucide-react";
+import { PLUGIN_WORKER_BLOCKED_IN_CLOUD_REASON } from "@armyofagents/shared";
 import { Button } from "@/components/ui/button";
 import { useCompany } from "../../context/CompanyContext.js";
 import { useToast } from "../../context/ToastContext.js";
@@ -12,6 +13,7 @@ import type { InstalledPlugin } from "../../api/plugins.js";
 import type { PendingUpdate } from "../../api/marketplace.js";
 import { cn } from "../../lib/utils.js";
 import { profileApi } from "@/api/profile";
+import { useCloudPluginExecutionPolicy } from "@/hooks/useCloudPluginExecutionPolicy";
 
 const CATEGORY_STYLE: Record<string, string> = {
   notifications:
@@ -31,7 +33,16 @@ const CATEGORY_EMOJI: Record<string, string> = {
   integrations: "🔗",
 };
 
-function PluginStatusBadge({ status }: { status: string }) {
+const CLOUD_BLOCK_REASON = PLUGIN_WORKER_BLOCKED_IN_CLOUD_REASON;
+
+function PluginStatusBadge({
+  status,
+  statusReasonCode,
+}: {
+  status: string;
+  statusReasonCode?: string | null;
+}) {
+  const cloudBlocked = statusReasonCode === CLOUD_BLOCK_REASON;
   const styles: Record<string, string> = {
     ready: "bg-green-950/40 text-green-400 border-green-900",
     error: "bg-red-950/40 text-red-400 border-red-900",
@@ -45,7 +56,10 @@ function PluginStatusBadge({ status }: { status: string }) {
         styles[status] ?? "bg-zinc-800 text-zinc-500 border-zinc-700"
       )}
     >
-      {status}
+      {cloudBlocked && (
+        <AlertTriangle aria-hidden="true" className="mr-1 inline h-3 w-3" />
+      )}
+      {cloudBlocked ? "Blocked on AoA Cloud" : status}
     </span>
   );
 }
@@ -67,7 +81,11 @@ function PluginCard({
   isUpdating?: boolean;
   canManage: boolean;
 }) {
+  const cloudPolicy = useCloudPluginExecutionPolicy();
   const hasUpdate = !!pendingUpdate;
+  const cloudBlocked = cloudPolicy.isCloud || plugin.statusReasonCode === CLOUD_BLOCK_REASON;
+  const executionControlsBlocked =
+    cloudPolicy.controlsBlocked || plugin.statusReasonCode === CLOUD_BLOCK_REASON;
   const primaryCategory = plugin.categories[0] ?? "integrations";
   const iconStyle =
     CATEGORY_STYLE[primaryCategory] ?? CATEGORY_STYLE.integrations;
@@ -113,7 +131,10 @@ function PluginCard({
             ↑ Update {pendingUpdate!.latestVersion}
           </span>
         )}
-        <PluginStatusBadge status={plugin.status} />
+        <PluginStatusBadge
+          status={plugin.status}
+          statusReasonCode={cloudBlocked ? CLOUD_BLOCK_REASON : plugin.statusReasonCode}
+        />
         {plugin.categories.slice(0, 1).map((cat) => (
           <span
             key={cat}
@@ -123,6 +144,21 @@ function PluginCard({
           </span>
         ))}
       </div>
+
+      {cloudBlocked && (
+        <div className="rounded-md border border-amber-900/50 bg-amber-950/20 p-2 text-[10px] leading-relaxed text-amber-300">
+          <p>
+            Cloud plugin execution requires isolated workers. There is no
+            operator override; self-hosting is the current recovery path.
+          </p>
+          <a
+            className="mt-1 inline-block underline"
+            href="/docs/guides/cloud-plugin-execution"
+          >
+            Read the cloud plugin execution policy
+          </a>
+        </div>
+      )}
 
       <div className="flex items-center justify-between pt-2.5 border-t border-zinc-800">
         <div className="flex gap-1 flex-wrap">
@@ -140,7 +176,7 @@ function PluginCard({
         </span>
       </div>
       <div className="flex items-center gap-2">
-        {canManage && hasUpdate && onApplyUpdate && (
+        {canManage && hasUpdate && onApplyUpdate && !executionControlsBlocked && (
           <Button
             size="sm"
             variant="outline"
@@ -182,7 +218,7 @@ export function PluginsSection() {
     queryKey: ["auth", "profile"],
     queryFn: profileApi.get,
   });
-  const canManage = profile?.isInstanceAdmin === true;
+  const canManage = profile?.canManageInstanceSettings === true;
 
   const { data: installedPlugins, isLoading } = useQuery({
     queryKey: ["company-plugins", selectedCompanyId],
@@ -240,6 +276,15 @@ export function PluginsSection() {
         tone: "success",
       });
     } catch (err) {
+      if (pluginsApi.isCloudPluginExecutionBlockedError(err)) {
+        invalidatePluginUpdateState();
+        pushToast({
+          title: `${plugin.manifest.displayName} is blocked on AoA Cloud`,
+          body: "The update was not installed because AoA Cloud requires isolated plugin workers.",
+          tone: "info",
+        });
+        return;
+      }
       pushToast({
         title: "Failed to apply update",
         body: err instanceof Error ? err.message : undefined,

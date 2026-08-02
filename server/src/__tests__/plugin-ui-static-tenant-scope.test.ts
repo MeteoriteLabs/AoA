@@ -24,6 +24,7 @@ vi.mock("../services/plugin-registry.js", () => ({
 
 import { errorHandler } from "../middleware/error-handler.js";
 import { pluginUiStaticRoutes } from "../routes/plugin-ui-static.js";
+import { setDeploymentMode } from "../config/deployment-mode.js";
 
 const PLUGIN_ID = "11111111-1111-4111-8111-111111111111";
 const COMPANY_A = "company-a";
@@ -89,12 +90,28 @@ afterAll(() => {
 });
 
 beforeEach(() => {
+  setDeploymentMode("local_trusted");
   registry.getById.mockReset();
   registry.getConfig.mockReset();
   registry.getConfig.mockResolvedValue(null);
 });
 
 describe("tenant-scoped plugin UI assets", () => {
+  it("returns the canonical 503 envelope in cloud before registry access", async () => {
+    setDeploymentMode("cloud_auth");
+    const response = await appFor(actor([COMPANY_A]))
+      .get(`/_plugins/${PLUGIN_ID}/ui/index.js`)
+      .expect(503);
+
+    expect(response.body).toEqual({
+      error:
+        "Plugin execution is blocked on AoA Cloud until isolated workers are available",
+      code: "PLUGIN_WORKER_BLOCKED_IN_CLOUD",
+      docs: "/docs/guides/cloud-plugin-execution",
+    });
+    expect(registry.getById).not.toHaveBeenCalled();
+  });
+
   it("rejects unauthenticated requests before registry access", async () => {
     await appFor({ type: "none" })
       .get(`/_plugins/${PLUGIN_ID}/ui/index.js`)

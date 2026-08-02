@@ -49,6 +49,9 @@ export interface InstallOperation {
   status: "pending" | "running" | "success" | "failure" | "requested";
   resultEntityId: string | null;
   errorMessage: string | null;
+  /** Stable policy/error code synthesized from non-2xx operation responses. */
+  errorCode: string | null;
+  errorDocs: string | null;
   cascadeResults: unknown[] | null;
   startedAt: string;
   completedAt: string | null;

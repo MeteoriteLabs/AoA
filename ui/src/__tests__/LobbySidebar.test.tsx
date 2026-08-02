@@ -25,8 +25,8 @@ vi.mock("@/components/UserMenu", () => ({
   UserMenu: () => <div data-testid="user-menu" />,
 }));
 
-// The sidebar gates the instance-Settings row on profileApi.get().isInstanceAdmin.
-// Default to admin so the pre-existing tests (which assert the row) keep passing.
+// The sidebar gates the instance-Settings row on the canonical operator-plane
+// capability returned by profileApi.get().
 const mockProfileGet = vi.fn();
 vi.mock("@/api/profile", () => ({
   profileApi: {
@@ -38,7 +38,7 @@ vi.mock("@/api/profile", () => ({
 // doesn't supply. Stub Tooltip+children so collapsed-mode buttons render.
 vi.mock("@/components/ui/tooltip", () => ({
   Tooltip: ({ children }: any) => <>{children}</>,
-  TooltipTrigger: ({ children, asChild }: any) => asChild ? children : <>{children}</>,
+  TooltipTrigger: ({ children, asChild }: any) => (asChild ? children : <>{children}</>),
   TooltipContent: () => null,
   TooltipProvider: ({ children }: any) => <>{children}</>,
 }));
@@ -51,7 +51,9 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
   DropdownMenuTrigger: ({ children }: any) => <>{children}</>,
   DropdownMenuContent: ({ children }: any) => <div>{children}</div>,
   DropdownMenuItem: ({ children, onSelect }: any) => (
-    <div role="menuitem" onClick={onSelect}>{children}</div>
+    <div role="menuitem" onClick={onSelect}>
+      {children}
+    </div>
   ),
 }));
 
@@ -70,6 +72,7 @@ describe("LobbySidebar", () => {
       email: "user@example.com",
       displayName: "User One",
       avatarUrl: null,
+      canManageInstanceSettings: true,
       isInstanceAdmin: true,
     });
     // Reset persisted collapse preference between tests so default is expanded.
@@ -150,13 +153,17 @@ describe("LobbySidebar", () => {
   //
   // The non-admin test resolves a deferred profile INSIDE act() and asserts
   // absence strictly post-settle; its control twin runs the exact same flush
-  // with isInstanceAdmin: true and requires the row synchronously. Together
+  // with canManageInstanceSettings: true and requires the row synchronously. Together
   // they guarantee the absence assertion is not vacuous (pre-settle the row
   // is also hidden, so a truthiness regression could otherwise slip past).
 
   function deferredProfile() {
     let resolveProfile!: (value: unknown) => void;
-    mockProfileGet.mockReturnValue(new Promise((resolve) => { resolveProfile = resolve; }));
+    mockProfileGet.mockReturnValue(
+      new Promise((resolve) => {
+        resolveProfile = resolve;
+      }),
+    );
     return async (overrides: Record<string, unknown>) => {
       // react-query delivers observer notifications on its default scheduler
       // (setTimeout(cb, 0)). A fixed setTimeout(0) hop was NOT a reliable settle
@@ -188,15 +195,21 @@ describe("LobbySidebar", () => {
   it("hides the Settings row (and System section header) for non-instance-admins", async () => {
     const resolveWith = deferredProfile();
     renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
-    await resolveWith({ isInstanceAdmin: false });
+    await resolveWith({
+      canManageInstanceSettings: false,
+      isInstanceAdmin: false,
+    });
     expect(screen.queryByRole("button", { name: /settings/i })).toBeNull();
     expect(screen.queryByText("System")).toBeNull();
   });
 
-  it("control: the identical post-settle flush shows the row when isInstanceAdmin is true", async () => {
+  it("control: the identical post-settle flush shows the row for operators", async () => {
     const resolveWith = deferredProfile();
     renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
-    await resolveWith({ isInstanceAdmin: true });
+    await resolveWith({
+      canManageInstanceSettings: true,
+      isInstanceAdmin: true,
+    });
     // Must be present synchronously after the same flush the non-admin test
     // uses — proves that flush is sufficient for the absence assertions above.
     expect(screen.getByRole("button", { name: /settings/i })).toBeInTheDocument();
@@ -260,7 +273,9 @@ describe("LobbySidebar", () => {
     );
     expect(container.querySelector("aside")?.getAttribute("data-collapsed")).toBe("false");
     // Navigate INTO a secondary-sidebar page → force-collapse.
-    rerender(<LobbySidebar onCreateCompany={onCreateCompany} hasSecondarySidebar activeItem="settings" />);
+    rerender(
+      <LobbySidebar onCreateCompany={onCreateCompany} hasSecondarySidebar activeItem="settings" />,
+    );
     expect(container.querySelector("aside")?.getAttribute("data-collapsed")).toBe("true");
     // Navigate back OUT → restore the expanded preference.
     rerender(<LobbySidebar onCreateCompany={onCreateCompany} />);

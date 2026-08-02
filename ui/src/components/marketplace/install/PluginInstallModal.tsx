@@ -17,6 +17,7 @@ import { CapabilityConsentStep } from "./CapabilityConsentStep.js";
 import { useCompany } from "@/context/CompanyContext";
 import { useInstallOperation } from "@/hooks/useInstallOperation";
 import { useInstallToast } from "../toast/useInstallToast";
+import { useCloudPluginExecutionPolicy } from "@/hooks/useCloudPluginExecutionPolicy";
 
 export interface PluginInstallModalProps {
   item: CatalogItem;
@@ -48,6 +49,7 @@ export function PluginInstallModal({
     companyId: installCompanyId ?? "",
   });
   const { show, update, trackOperation } = useInstallToast();
+  const cloudPolicy = useCloudPluginExecutionPolicy();
 
   const capabilities = (item.capabilities ?? [])
     .map((c) => c.id)
@@ -68,7 +70,7 @@ export function PluginInstallModal({
   }, [open]);
 
   const handleInstall = async () => {
-    if (!installCompanyId) return;
+    if (!installCompanyId || cloudPolicy.controlsBlocked) return;
     const toastId = show({
       status: "installing",
       message: `Installing ${item.name}...`,
@@ -123,7 +125,9 @@ export function PluginInstallModal({
           />
 
           <p className="text-xs text-muted-foreground">
-            This plugin will be installed only for the active company.
+            {cloudPolicy.isCloud
+              ? "Plugin installs are unavailable on AoA Cloud until isolated workers are available."
+              : "This plugin will be installed only for the active company."}
           </p>
         </DialogBody>
 
@@ -136,10 +140,15 @@ export function PluginInstallModal({
             disabled={
               installMutation.isPending ||
               !installCompanyId ||
-              !capabilitiesAgreed
+              !capabilitiesAgreed ||
+              cloudPolicy.controlsBlocked
             }
           >
-            {installMutation.isPending ? "Starting install..." : "Install"}
+            {cloudPolicy.isCloud
+              ? "Unavailable on AoA Cloud"
+              : installMutation.isPending
+                ? "Starting install..."
+                : "Install"}
           </Button>
         </DialogFooter>
       </DialogContent>

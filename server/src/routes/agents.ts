@@ -858,6 +858,12 @@ export function agentRoutes(db: Db) {
   });
 
   router.get("/instance/scheduler-heartbeats", async (req, res) => {
+    // This endpoint is an instance-wide tenant-data scan. The cloud operator
+    // plane must never inherit ambient access to every tenant, so reject from
+    // the static deployment mode before touching the database.
+    if (tenantIsolationEnforced()) {
+      throw forbidden("Scheduler heartbeat overview is unavailable in cloud mode");
+    }
     if (req.actor.type !== "board" || !req.actor.isInstanceAdmin) {
       throw forbidden("Instance admin required");
     }

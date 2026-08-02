@@ -18,7 +18,17 @@ import type {
   PluginConfig,
   PluginStatus,
 } from "@armyofagents/shared";
-import { api } from "./client";
+import { api, ApiError } from "./client";
+
+export function isCloudPluginExecutionBlockedError(
+  err: unknown,
+): err is ApiError {
+  return (
+    err instanceof ApiError &&
+    (err.body as { code?: unknown } | null)?.code ===
+      "PLUGIN_WORKER_BLOCKED_IN_CLOUD"
+  );
+}
 
 /**
  * Normalized UI contribution record returned by `GET /api/plugins/ui-contributions`.
@@ -507,6 +517,7 @@ export interface InstalledPlugin {
   packageName: string;
   version: string;
   status: string;
+  statusReasonCode: PluginRecord["statusReasonCode"];
   categories: string[];
   manifest: {
     displayName: string;

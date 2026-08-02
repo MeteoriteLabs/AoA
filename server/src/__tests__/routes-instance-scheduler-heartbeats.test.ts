@@ -3,6 +3,7 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { agentRoutes } from "../routes/agents.js";
 import { errorHandler } from "../middleware/index.js";
+import { setDeploymentMode } from "../config/deployment-mode.js";
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -68,7 +69,15 @@ function makeDb(rows: unknown[]) {
   } as any;
 }
 
-function createApp(db: any, actorOverride: Partial<{ isInstanceAdmin: boolean; type: string }> = {}) {
+function createApp(
+  db: any,
+  actorOverride: Partial<{
+    isInstanceAdmin: boolean;
+    operator: boolean;
+    type: string;
+    source: string;
+  }> = {},
+) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -76,7 +85,8 @@ function createApp(db: any, actorOverride: Partial<{ isInstanceAdmin: boolean; t
       type: actorOverride.type ?? "board",
       userId: "local-board",
       companyIds: ["company-1"],
-      source: "local_implicit",
+      source: actorOverride.source ?? "local_implicit",
+      operator: actorOverride.operator ?? true,
       isInstanceAdmin: actorOverride.isInstanceAdmin ?? true,
     };
     next();
@@ -106,6 +116,7 @@ function makeRow(overrides: Partial<Record<string, unknown>> = {}) {
 describe("GET /api/instance/scheduler-heartbeats", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    setDeploymentMode("local_trusted");
   });
 
   it("returns derived scheduler agents with heartbeat policy", async () => {
@@ -178,5 +189,20 @@ describe("GET /api/instance/scheduler-heartbeats", () => {
     const res = await request(app).get("/api/instance/scheduler-heartbeats");
 
     expect(res.status).toBe(403);
+  });
+
+  it("rejects cloud operators before reading scheduler data", async () => {
+    setDeploymentMode("cloud_auth");
+    const db = { select: vi.fn() } as any;
+    const app = createApp(db, {
+      source: "session",
+      operator: true,
+      isInstanceAdmin: false,
+    });
+
+    const res = await request(app).get("/api/instance/scheduler-heartbeats");
+
+    expect(res.status).toBe(403);
+    expect(db.select).not.toHaveBeenCalled();
   });
 });

@@ -293,6 +293,7 @@ export function pluginRegistryService(db: Db) {
             status: "installed" as PluginStatus,
             trustTier: "untrusted",
             lastError: null,
+            statusReasonCode: null,
             updatedAt: new Date(),
           })
           .where(eq(plugins.id, existing.id))
@@ -378,7 +379,7 @@ export function pluginRegistryService(db: Db) {
 
     // ----- Status ---------------------------------------------------------
 
-    /** Update a plugin's lifecycle status and optional error message. */
+    /** Atomically update lifecycle status, structured reason, and diagnostic. */
     updateStatus: async (id: string, input: UpdatePluginStatus) => {
       const plugin = await getById(id);
       if (!plugin) throw notFound("Plugin not found");
@@ -387,7 +388,16 @@ export function pluginRegistryService(db: Db) {
         .update(plugins)
         .set({
           status: input.status,
-          lastError: input.lastError ?? null,
+          // Successful states clear stale failure data. `disabled` deliberately
+          // preserves its operator-provided reason; this field has always
+          // doubled as the disable diagnostic shown by health surfaces.
+          lastError:
+            input.status === "error" || input.status === "disabled"
+              ? input.lastError ?? null
+              : null,
+          // Generic failures deliberately persist no structured policy code.
+          statusReasonCode:
+            input.status === "error" ? input.statusReasonCode ?? null : null,
           updatedAt: new Date(),
         })
         .where(eq(plugins.id, id))
@@ -422,6 +432,8 @@ export function pluginRegistryService(db: Db) {
         .update(plugins)
         .set({
           status: "uninstalled" as PluginStatus,
+          lastError: null,
+          statusReasonCode: null,
           updatedAt: new Date(),
         })
         .where(eq(plugins.id, id))

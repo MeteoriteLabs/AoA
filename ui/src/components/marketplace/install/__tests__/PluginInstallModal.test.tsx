@@ -11,12 +11,19 @@ import { InstallToastProvider } from "@/components/marketplace/toast/ToastProvid
 import { ToastViewport } from "@/components/ToastViewport";
 import { SLACK_PLUGIN } from "@/__tests__/__fixtures__/marketplace-catalog";
 import { marketplaceApi } from "@/api/marketplace";
+import { queryKeys } from "@/lib/queryKeys";
 
 vi.mock("@/api/marketplace", async () => {
-  const actual = await vi.importActual<typeof import("@/api/marketplace")>("@/api/marketplace");
+  const actual = await vi.importActual<typeof import("@/api/marketplace")>(
+    "@/api/marketplace"
+  );
   return {
     ...actual,
-    marketplaceApi: { ...actual.marketplaceApi, install: vi.fn(), getOperation: vi.fn() },
+    marketplaceApi: {
+      ...actual.marketplaceApi,
+      install: vi.fn(),
+      getOperation: vi.fn(),
+    },
   };
 });
 
@@ -27,8 +34,14 @@ vi.mock("@/context/CompanyContext", () => ({
   }),
 }));
 
-function wrap(node: ReactNode) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function wrap(
+  node: ReactNode,
+  deploymentMode: "local_trusted" | "cloud_auth" = "local_trusted"
+) {
+  const qc = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+  });
+  qc.setQueryData(queryKeys.health, { status: "ok", deploymentMode });
   return render(
     <QueryClientProvider client={qc}>
       <MemoryRouter>
@@ -39,7 +52,7 @@ function wrap(node: ReactNode) {
           </InstallToastProvider>
         </ToastProvider>
       </MemoryRouter>
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
 }
 
@@ -49,7 +62,9 @@ describe("PluginInstallModal", () => {
   });
 
   it("renders capabilities + version + trust badge", () => {
-    wrap(<PluginInstallModal item={SLACK_PLUGIN} open onOpenChange={() => {}} />);
+    wrap(
+      <PluginInstallModal item={SLACK_PLUGIN} open onOpenChange={() => {}} />
+    );
     expect(screen.getByText("Install Slack")).toBeInTheDocument();
     expect(screen.getByText("companies.read")).toBeInTheDocument();
     expect(screen.getByText("issues.read")).toBeInTheDocument();
@@ -63,7 +78,13 @@ describe("PluginInstallModal", () => {
       status: "pending",
     });
     const onOpenChange = vi.fn();
-    wrap(<PluginInstallModal item={SLACK_PLUGIN} open onOpenChange={onOpenChange} />);
+    wrap(
+      <PluginInstallModal
+        item={SLACK_PLUGIN}
+        open
+        onOpenChange={onOpenChange}
+      />
+    );
 
     // Check consent checkbox first — required before Install is enabled
     await userEvent.click(screen.getByRole("checkbox"));
@@ -77,35 +98,55 @@ describe("PluginInstallModal", () => {
       catalogItemId: SLACK_PLUGIN.id,
     });
     await waitFor(() =>
-      expect(screen.getByText(/Installing Slack/)).toBeInTheDocument(),
+      expect(screen.getByText(/Installing Slack/)).toBeInTheDocument()
     );
   });
 
   it("on install API failure: shows failure toast", async () => {
     vi.mocked(marketplaceApi.install).mockRejectedValueOnce(
-      new Error("503 Service Unavailable"),
+      new Error("503 Service Unavailable")
     );
-    wrap(<PluginInstallModal item={SLACK_PLUGIN} open onOpenChange={() => {}} />);
+    wrap(
+      <PluginInstallModal item={SLACK_PLUGIN} open onOpenChange={() => {}} />
+    );
 
     // Check consent checkbox first — required before Install is enabled
     await userEvent.click(screen.getByRole("checkbox"));
     await userEvent.click(screen.getByRole("button", { name: "Install" }));
 
     await waitFor(() =>
-      expect(screen.getByText(/Failed to start install/)).toBeInTheDocument(),
+      expect(screen.getByText(/Failed to start install/)).toBeInTheDocument()
     );
     expect(screen.getByText("503 Service Unavailable")).toBeInTheDocument();
   });
 
+  it("fails closed and does not call install in cloud mode", async () => {
+    wrap(
+      <PluginInstallModal item={SLACK_PLUGIN} open onOpenChange={() => {}} />,
+      "cloud_auth"
+    );
+
+    const installButton = screen.getByRole("button", {
+      name: "Unavailable on AoA Cloud",
+    });
+    expect(installButton).toBeDisabled();
+    await userEvent.click(installButton);
+    expect(marketplaceApi.install).not.toHaveBeenCalled();
+  });
+
   describe("capability consent gate", () => {
     it("Install button is disabled until consent checkbox is checked (SLACK_PLUGIN has capabilities)", async () => {
-      wrap(<PluginInstallModal item={SLACK_PLUGIN} open onOpenChange={() => {}} />);
+      wrap(
+        <PluginInstallModal item={SLACK_PLUGIN} open onOpenChange={() => {}} />
+      );
       const installBtn = screen.getByRole("button", { name: "Install" });
       expect(installBtn).toBeDisabled();
     });
 
     it("Install button is enabled after checking the consent checkbox", async () => {
-      wrap(<PluginInstallModal item={SLACK_PLUGIN} open onOpenChange={() => {}} />);
+      wrap(
+        <PluginInstallModal item={SLACK_PLUGIN} open onOpenChange={() => {}} />
+      );
       const installBtn = screen.getByRole("button", { name: "Install" });
       expect(installBtn).toBeDisabled();
 
@@ -118,7 +159,9 @@ describe("PluginInstallModal", () => {
 
     it("Install button is NOT disabled when item has no capabilities", () => {
       const noCapItem = { ...SLACK_PLUGIN, capabilities: [] };
-      wrap(<PluginInstallModal item={noCapItem} open onOpenChange={() => {}} />);
+      wrap(
+        <PluginInstallModal item={noCapItem} open onOpenChange={() => {}} />
+      );
       const installBtn = screen.getByRole("button", { name: "Install" });
       expect(installBtn).not.toBeDisabled();
     });
@@ -146,18 +189,28 @@ describe("PluginInstallModal", () => {
     });
 
     const onOpenChange = vi.fn();
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+    });
+    qc.setQueryData(queryKeys.health, {
+      status: "ok",
+      deploymentMode: "local_trusted",
+    });
     const { rerender } = render(
       <QueryClientProvider client={qc}>
         <MemoryRouter>
           <ToastProvider>
             <InstallToastProvider>
-              <PluginInstallModal item={SLACK_PLUGIN} open onOpenChange={onOpenChange} />
+              <PluginInstallModal
+                item={SLACK_PLUGIN}
+                open
+                onOpenChange={onOpenChange}
+              />
               <ToastViewport />
             </InstallToastProvider>
           </ToastProvider>
         </MemoryRouter>
-      </QueryClientProvider>,
+      </QueryClientProvider>
     );
 
     // Check consent checkbox first — required before Install is enabled
@@ -171,17 +224,21 @@ describe("PluginInstallModal", () => {
         <MemoryRouter>
           <ToastProvider>
             <InstallToastProvider>
-              <PluginInstallModal item={SLACK_PLUGIN} open={false} onOpenChange={onOpenChange} />
+              <PluginInstallModal
+                item={SLACK_PLUGIN}
+                open={false}
+                onOpenChange={onOpenChange}
+              />
               <ToastViewport />
             </InstallToastProvider>
           </ToastProvider>
         </MemoryRouter>
-      </QueryClientProvider>,
+      </QueryClientProvider>
     );
 
     await waitFor(
       () => expect(screen.getByText(/Installed Slack/)).toBeInTheDocument(),
-      { timeout: 4000 },
+      { timeout: 4000 }
     );
   });
 });

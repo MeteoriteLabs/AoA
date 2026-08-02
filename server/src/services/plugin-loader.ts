@@ -41,6 +41,14 @@ import type {
   PluginUiSlotDeclaration,
 } from "@armyofagents/shared";
 import { logger } from "../middleware/logger.js";
+import {
+  assertCloudPluginExecutionAllowed,
+  beginCloudPluginBootReconciliation,
+  CloudPluginExecutionBlockedError,
+  isCloudPluginExecutionBlocked,
+  recordCloudPluginBootReconciled,
+  type PluginActivationSource,
+} from "./cloud-plugin-execution.js";
 import { pluginManifestValidator } from "./plugin-manifest-validator.js";
 import { pluginCapabilityValidator } from "./plugin-capability-validator.js";
 import {
@@ -1267,6 +1275,13 @@ export function pluginLoader(
   async function loadManifestFromPath(
     manifestPath: string
   ): Promise<PaperclipPluginManifestV1> {
+    // JavaScript manifests are executable modules. Cloud must reject before
+    // import(), even if a caller bypasses the normal install/lifecycle routes.
+    assertCloudPluginExecutionAllowed({
+      pluginId: "unregistered-plugin",
+      source: "unknown",
+      sink: "loader",
+    });
     let raw: unknown;
 
     try {
@@ -1659,6 +1674,14 @@ export function pluginLoader(
     async installPlugin(
       installOptions: PluginInstallOptions
     ): Promise<DiscoveredPlugin> {
+      // Final install boundary: run before registry reads, npm download, local
+      // path inspection, or executable manifest import.
+      assertCloudPluginExecutionAllowed({
+        pluginId: "unregistered-plugin",
+        companyId: installOptions.companyId,
+        source: "direct",
+        sink: "loader",
+      });
       return withCompanyInstallLock(installOptions.companyId, async () => {
         if (
           installOptions.packageName &&
@@ -1736,6 +1759,13 @@ export function pluginLoader(
       discovered: DiscoveredPlugin;
       escalatedCaps: string[];
     }> {
+      // Defense in depth for callers that reach the loader without lifecycle.
+      // This must precede package lookup/download and manifest import.
+      assertCloudPluginExecutionAllowed({
+        pluginId,
+        source: "direct",
+        sink: "loader",
+      });
       const plugin = (await registry.getById(pluginId)) as {
         id: string;
         companyId: string;
@@ -1936,18 +1966,22 @@ export function pluginLoader(
       }
 
       log.info("plugin-loader: loading all ready plugins");
+      beginCloudPluginBootReconciliation();
 
-      // Fetch all plugins in ready status, ordered by installOrder
-      const readyCandidates = (await registry.listByStatus(
-        "ready"
-      )) as PluginRecord[];
+      // Cloud reconciles every persisted non-uninstalled row from stored JSON,
+      // not only stale `ready` rows. Self-hosted activation remains ready-only.
+      const cloudBlocked = isCloudPluginExecutionBlocked();
+      const readyCandidates = (cloudBlocked
+        ? await registry.listInstalled()
+        : await registry.listByStatus("ready")) as PluginRecord[];
       const disabledRows = await db
         .select({ pluginId: pluginCompanySettings.pluginId })
         .from(pluginCompanySettings)
         .where(eq(pluginCompanySettings.enabled, false));
-      const readyPlugins = excludeExplicitlyDisabledPlugins(
+      const readyPlugins = selectBootActivationCandidates(
         readyCandidates,
-        disabledRows
+        disabledRows,
+        cloudBlocked
       );
 
       if (readyPlugins.length === 0) {
@@ -1962,7 +1996,7 @@ export function pluginLoader(
 
       // Load plugins in parallel
       const results = await Promise.allSettled(
-        readyPlugins.map((plugin) => activatePlugin(plugin))
+        readyPlugins.map((plugin) => activatePlugin(plugin, "boot"))
       );
 
       const loadResults = results.map((r, i) => {
@@ -2063,7 +2097,7 @@ export function pluginLoader(
         );
       }
 
-      return activatePlugin(plugin);
+      return activatePlugin(plugin, "direct");
     },
 
     // -----------------------------------------------------------------------
@@ -2168,7 +2202,8 @@ export function pluginLoader(
    * `error` in the database when activation fails.
    */
   async function activatePlugin(
-    plugin: PluginRecord
+    plugin: PluginRecord,
+    activationSource: PluginActivationSource
   ): Promise<PluginLoadResult> {
     const manifest = plugin.manifestJson;
     const pluginId = plugin.id;
@@ -2204,6 +2239,10 @@ export function pluginLoader(
     } = runtimeServices;
 
     try {
+      // Reconcile stale ready rows before resolving files, allocating host
+      // services, publishing readiness, or exposing any runtime contribution.
+      await lifecycleManager.blockActivationInCloud(pluginId, activationSource);
+
       log.info(
         { pluginId, pluginKey, version: plugin.version },
         "plugin-loader: activating plugin"
@@ -2254,6 +2293,8 @@ export function pluginLoader(
         instanceInfo,
         apiVersion: manifest.apiVersion,
         hostHandlers,
+        companyId: plugin.companyId,
+        activationSource,
         autoRestart: true,
       };
       if (runtimeServices.streamBus) {
@@ -2422,19 +2463,28 @@ export function pluginLoader(
 
       // Mark the plugin as errored in the database so it is not retried
       // automatically on next startup without operator intervention.
-      try {
-        await lifecycleManager.markError(
-          pluginId,
-          `Activation failed: ${errorMessage}`
-        );
-      } catch (markErr) {
-        log.error(
-          {
+      // The cloud policy helper already persisted its typed reason atomically.
+      // Do not overwrite that reason with a generic activation error.
+      if (!(err instanceof CloudPluginExecutionBlockedError)) {
+        try {
+          await lifecycleManager.markError(
             pluginId,
-            err: markErr instanceof Error ? markErr.message : String(markErr),
-          },
-          "plugin-loader: failed to mark plugin as error after activation failure"
-        );
+            `Activation failed: ${errorMessage}`
+          );
+        } catch (markErr) {
+          log.error(
+            {
+              pluginId,
+              err: markErr instanceof Error ? markErr.message : String(markErr),
+            },
+            "plugin-loader: failed to mark plugin as error after activation failure"
+          );
+        }
+      } else if (activationSource === "boot") {
+        recordCloudPluginBootReconciled({
+          pluginId,
+          companyId: plugin.companyId,
+        });
       }
 
       return {
@@ -2578,6 +2628,19 @@ export function excludeExplicitlyDisabledPlugins<T extends { id: string }>(
 ): T[] {
   const explicitlyDisabled = new Set(disabledRows.map((row) => row.pluginId));
   return candidates.filter((plugin) => !explicitlyDisabled.has(plugin.id));
+}
+
+export function selectBootActivationCandidates<T extends { id: string }>(
+  candidates: T[],
+  disabledRows: Array<{ pluginId: string }>,
+  reconcileBlockedCloud: boolean
+): T[] {
+  // Cloud boot must reconcile every stale ready row to the typed blocked state,
+  // including rows whose company overlay is disabled. Self-hosted boot still
+  // honors that overlay and skips activation.
+  return reconcileBlockedCloud
+    ? candidates
+    : excludeExplicitlyDisabledPlugins(candidates, disabledRows);
 }
 
 function isPathInsideDir(candidatePath: string, parentDir: string): boolean {

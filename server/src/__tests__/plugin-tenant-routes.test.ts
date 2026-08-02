@@ -1,6 +1,6 @@
 import express from "express";
 import supertest from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const registry = vi.hoisted(() => ({
   listInstalledForCompanies: vi.fn(),
@@ -11,8 +11,11 @@ const registry = vi.hoisted(() => ({
   getConfig: vi.fn(),
 }));
 const lifecycle = vi.hoisted(() => ({
+  load: vi.fn(),
   enable: vi.fn(),
   disable: vi.fn(),
+  upgrade: vi.fn(),
+  blockActivationInCloud: vi.fn(),
 }));
 
 vi.mock("../services/plugin-registry.js", () => ({
@@ -24,7 +27,17 @@ vi.mock("../services/plugin-lifecycle.js", () => ({
 }));
 
 import { errorHandler } from "../middleware/index.js";
-import { pluginRoutes } from "../routes/plugins.js";
+import {
+  pluginCompanySettingsRoutes,
+  pluginRoutes,
+} from "../routes/plugins.js";
+import { setDeploymentMode } from "../config/deployment-mode.js";
+import {
+  CLOUD_PLUGIN_BLOCK_MESSAGE,
+  CLOUD_PLUGIN_EXECUTION_DOC_PATH,
+  CloudPluginExecutionBlockedError,
+  PLUGIN_WORKER_BLOCKED_IN_CLOUD,
+} from "../services/cloud-plugin-execution.js";
 
 const COMPANY_A = "company-a";
 const COMPANY_B = "company-b";
@@ -73,7 +86,8 @@ function makeApp(
   app.use(
     express.json({
       verify: (req, _res, buffer) => {
-        (req as typeof req & { rawBody?: Buffer }).rawBody = Buffer.from(buffer);
+        (req as typeof req & { rawBody?: Buffer }).rawBody =
+          Buffer.from(buffer);
       },
     })
   );
@@ -103,6 +117,7 @@ function makeApp(
 }
 
 beforeEach(() => {
+  setDeploymentMode("local_trusted");
   for (const mock of Object.values(registry)) mock.mockReset();
   for (const mock of Object.values(lifecycle)) mock.mockReset();
   registry.listInstalledForCompanies.mockResolvedValue([]);
@@ -111,6 +126,10 @@ beforeEach(() => {
   registry.getByKey.mockResolvedValue(null);
   registry.getByKeyScoped.mockResolvedValue(null);
   registry.getConfig.mockResolvedValue(null);
+});
+
+afterEach(() => {
+  setDeploymentMode("local_trusted");
 });
 
 describe("tenant-scoped plugin collections", () => {
@@ -128,6 +147,62 @@ describe("tenant-scoped plugin collections", () => {
     expect(registry.listInstalledForCompanies).toHaveBeenCalledWith([
       COMPANY_A,
     ]);
+  });
+
+  it("projects stale non-ready plugin rows as blocked in cloud list responses", async () => {
+    setDeploymentMode("cloud_auth");
+    registry.listInstalledForCompanies.mockResolvedValue([
+      {
+        ...plugin(PLUGIN_A, COMPANY_A),
+        status: "disabled",
+        statusReasonCode: null,
+        lastError: null,
+      },
+    ]);
+
+    const response = await makeApp(makeActor([COMPANY_A], true)).get(
+      "/api/plugins"
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.body[0]).toMatchObject({
+      id: PLUGIN_A,
+      status: "error",
+      statusReasonCode: PLUGIN_WORKER_BLOCKED_IN_CLOUD,
+      lastError: CLOUD_PLUGIN_BLOCK_MESSAGE,
+    });
+  });
+
+  it("projects stale ready rows across detail, health, and dashboard reads", async () => {
+    setDeploymentMode("cloud_auth");
+    registry.getById.mockResolvedValue(plugin(PLUGIN_A, COMPANY_A));
+
+    const detail = await makeApp(makeActor([COMPANY_A], true))
+      .get(`/api/plugins/${PLUGIN_A}`)
+      .expect(200);
+    expect(detail.body).toMatchObject({
+      status: "error",
+      statusReasonCode: PLUGIN_WORKER_BLOCKED_IN_CLOUD,
+      lastError: CLOUD_PLUGIN_BLOCK_MESSAGE,
+    });
+
+    const health = await makeApp(makeActor([COMPANY_A], true))
+      .get(`/api/plugins/${PLUGIN_A}/health`)
+      .expect(200);
+    expect(health.body).toMatchObject({
+      status: "error",
+      healthy: false,
+      lastError: CLOUD_PLUGIN_BLOCK_MESSAGE,
+    });
+
+    const dashboard = await makeApp(makeActor([COMPANY_A], true))
+      .get(`/api/plugins/${PLUGIN_A}/dashboard`)
+      .expect(200);
+    expect(dashboard.body.health).toMatchObject({
+      status: "error",
+      healthy: false,
+      lastError: CLOUD_PLUGIN_BLOCK_MESSAGE,
+    });
   });
 
   it("scopes status-filtered lists and short-circuits an actor with no companies", async () => {
@@ -183,6 +258,47 @@ describe("tenant-scoped plugin collections", () => {
     await makeApp(makeActor(), { db })
       .get(`/api/plugins/ui-contributions?companyId=${COMPANY_A}`)
       .expect(200, []);
+  });
+});
+
+describe("legacy company plugin settings cloud projection", () => {
+  it("never exposes a stale ready row as executable", async () => {
+    setDeploymentMode("cloud_auth");
+    let selectIndex = 0;
+    const db = {
+      select: () => ({
+        from: () => ({
+          where: async () => {
+            selectIndex += 1;
+            return selectIndex === 1 ? [plugin(PLUGIN_A, COMPANY_A)] : [];
+          },
+        }),
+      }),
+    } as any;
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = {
+        type: "board",
+        source: "local_implicit",
+        userId: "local",
+        isInstanceAdmin: true,
+        companyIds: [COMPANY_A],
+      } as never;
+      next();
+    });
+    app.use("/api", pluginCompanySettingsRoutes(db, lifecycle as never));
+    app.use(errorHandler);
+
+    const response = await supertest(app)
+      .get(`/api/companies/${COMPANY_A}/plugin-settings`)
+      .expect(200);
+    expect(response.body[0]).toMatchObject({
+      pluginId: PLUGIN_A,
+      status: "error",
+      statusReasonCode: PLUGIN_WORKER_BLOCKED_IN_CLOUD,
+      lastError: CLOUD_PLUGIN_BLOCK_MESSAGE,
+    });
   });
 });
 
@@ -383,6 +499,180 @@ describe("global plugin lifecycle overlay synchronization", () => {
 });
 
 describe("tenant-scoped plugin runtime calls", () => {
+  const blockedEnvelope = {
+    error: CLOUD_PLUGIN_BLOCK_MESSAGE,
+    code: PLUGIN_WORKER_BLOCKED_IN_CLOUD,
+    docs: CLOUD_PLUGIN_EXECUTION_DOC_PATH,
+  };
+
+  it("returns the stable 503 policy envelope for every cloud worker-backed route", async () => {
+    setDeploymentMode("cloud_auth");
+    const operator = makeActor([COMPANY_A], true);
+    const cases: Array<{
+      method: "get" | "post";
+      path: string;
+      body?: Record<string, unknown>;
+      actor?: object;
+    }> = [
+      {
+        method: "post",
+        path: "/api/plugins/tools/execute",
+        body: {},
+      },
+      {
+        method: "post",
+        path: `/api/plugins/${PLUGIN_A}/bridge/data`,
+        body: {},
+      },
+      {
+        method: "post",
+        path: `/api/plugins/${PLUGIN_A}/bridge/action`,
+        body: {},
+      },
+      {
+        method: "post",
+        path: `/api/plugins/${PLUGIN_A}/data/read`,
+        body: {},
+      },
+      {
+        method: "post",
+        path: `/api/plugins/${PLUGIN_A}/actions/write`,
+        body: {},
+      },
+      {
+        method: "get",
+        path: `/api/plugins/ui-contributions?companyId=${COMPANY_A}`,
+      },
+      {
+        method: "get",
+        path: `/api/plugins/${PLUGIN_A}/bridge/stream/events?companyId=${COMPANY_A}`,
+      },
+      {
+        method: "post",
+        path: `/api/plugins/${PLUGIN_A}/config/test`,
+        body: {},
+        actor: operator,
+      },
+      {
+        method: "post",
+        path: `/api/plugins/${PLUGIN_A}/jobs/job-1/trigger`,
+        body: {},
+        actor: operator,
+      },
+      {
+        method: "post",
+        path: `/api/plugins/${PLUGIN_A}/webhooks/push`,
+        body: {},
+      },
+    ];
+
+    for (const testCase of cases) {
+      const request = makeApp(testCase.actor ?? makeActor(), {
+        sourceIp: "198.51.100.250",
+      });
+      const response =
+        testCase.method === "get"
+          ? await request.get(testCase.path)
+          : await request.post(testCase.path).send(testCase.body ?? {});
+      expect(response.status, testCase.path).toBe(503);
+      expect(response.body, testCase.path).toEqual(blockedEnvelope);
+    }
+
+    expect(registry.getById).not.toHaveBeenCalled();
+  });
+
+  it("returns the canonical 503 before a cloud install reaches the loader", async () => {
+    setDeploymentMode("cloud_auth");
+    const installed = plugin(PLUGIN_A, COMPANY_A);
+    registry.getByKeyScoped.mockResolvedValue(installed);
+    const installPlugin = vi.fn(async () => ({
+      manifest: {
+        id: installed.pluginKey,
+        displayName: "Shared",
+        version: "1.0.0",
+      },
+    }));
+    const response = await makeApp(makeActor([COMPANY_A], true), {
+      loader: { installPlugin },
+    })
+      .post("/api/plugins/install")
+      .send({ packageName: "@acme/shared", companyId: COMPANY_A });
+
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual(blockedEnvelope);
+    expect(installPlugin).not.toHaveBeenCalled();
+    expect(registry.getByKeyScoped).not.toHaveBeenCalled();
+    expect(lifecycle.load).not.toHaveBeenCalled();
+  });
+
+  it("persists the cloud reason before enable without mutating the company overlay", async () => {
+    setDeploymentMode("cloud_auth");
+    registry.getById.mockResolvedValue({
+      ...plugin(PLUGIN_A, COMPANY_A),
+      status: "disabled",
+    });
+    const values = vi.fn();
+    lifecycle.blockActivationInCloud.mockRejectedValueOnce(
+      new CloudPluginExecutionBlockedError()
+    );
+    const db = {
+      select: vi.fn(() => ({
+        from: () => ({ where: () => Promise.resolve([]) }),
+      })),
+      insert: vi.fn(() => ({ values })),
+    };
+
+    const response = await makeApp(makeActor([COMPANY_A], true), { db }).post(
+      `/api/plugins/${PLUGIN_A}/enable`
+    );
+
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual(blockedEnvelope);
+    expect(registry.getById).toHaveBeenCalledWith(PLUGIN_A);
+    expect(lifecycle.blockActivationInCloud).toHaveBeenCalledWith(
+      PLUGIN_A,
+      "direct"
+    );
+    expect(db.select).not.toHaveBeenCalled();
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(values).not.toHaveBeenCalled();
+    expect(lifecycle.enable).not.toHaveBeenCalled();
+  });
+
+  it("returns the canonical 503 before upgrade auto-rollback side effects", async () => {
+    registry.getById.mockResolvedValue(plugin(PLUGIN_A, COMPANY_A));
+    lifecycle.upgrade.mockRejectedValueOnce(
+      new CloudPluginExecutionBlockedError()
+    );
+    const db = { select: vi.fn() };
+
+    const response = await makeApp(makeActor([COMPANY_A], true), { db })
+      .post(`/api/plugins/${PLUGIN_A}/upgrade`)
+      .send({ version: "2.0.0" });
+
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual(blockedEnvelope);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it("returns the canonical 503 before manual rollback side effects", async () => {
+    setDeploymentMode("cloud_auth");
+    const upgradePlugin = vi.fn();
+    const db = { select: vi.fn() };
+
+    const response = await makeApp(makeActor([COMPANY_A], true), {
+      db,
+      loader: { upgradePlugin },
+    }).post(`/api/plugins/${PLUGIN_A}/rollback`);
+
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual(blockedEnvelope);
+    expect(registry.getById).not.toHaveBeenCalled();
+    expect(db.select).not.toHaveBeenCalled();
+    expect(upgradePlugin).not.toHaveBeenCalled();
+    expect(lifecycle.load).not.toHaveBeenCalled();
+  });
+
   const bridgePaths = [
     {
       path: `/api/plugins/${PLUGIN_B}/bridge/data`,

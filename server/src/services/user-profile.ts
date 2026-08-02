@@ -5,11 +5,14 @@ import type { CurrentUserProfile, UpdateCurrentUserProfile } from "@armyofagents
 import { unauthorized } from "../errors.js";
 
 /**
- * The user-table-backed slice of {@link CurrentUserProfile}. `isInstanceAdmin`
- * is actor-derived (instance_user_roles / local_implicit), not a user column —
- * the route (routes/auth-profile.ts) composes it onto every response.
+ * The user-table-backed slice of {@link CurrentUserProfile}. Both instance
+ * settings capability fields are actor-derived, not user columns; the route
+ * composes the canonical capability and its legacy alias onto every response.
  */
-export type UserProfileRecord = Omit<CurrentUserProfile, "isInstanceAdmin">;
+export type UserProfileRecord = Omit<
+  CurrentUserProfile,
+  "canManageInstanceSettings" | "isInstanceAdmin"
+>;
 
 function toProfile(row: {
   id: string;

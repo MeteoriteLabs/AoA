@@ -21,6 +21,14 @@ vi.mock("../routes/authz.js", () => ({
 }));
 
 import { companyPluginRoutes } from "../routes/company-plugins.js";
+import { pluginCompanySettingsRoutes } from "../routes/plugins.js";
+import { setDeploymentMode } from "../config/deployment-mode.js";
+import {
+  CLOUD_PLUGIN_BLOCK_MESSAGE,
+  CLOUD_PLUGIN_EXECUTION_DOC_PATH,
+  CloudPluginExecutionBlockedError,
+  PLUGIN_WORKER_BLOCKED_IN_CLOUD,
+} from "../services/cloud-plugin-execution.js";
 
 // Helper: extract a named route handler from the Express router
 function getRouteHandler(router: any, method: string, path: string) {
@@ -176,7 +184,11 @@ describe("POST /:pluginId/upgrade — auto-rollback snapshot cleanup", () => {
         }),
       }),
     };
-    const lifecycle = { disable: vi.fn(), enable: vi.fn() };
+    const lifecycle = {
+      disable: vi.fn(),
+      enable: vi.fn(),
+      blockActivationInCloud: vi.fn(),
+    };
     const router = companyPluginRoutes(
       mockDb as any,
       lifecycle as any,
@@ -215,7 +227,11 @@ describe("POST /:pluginId/upgrade — auto-rollback snapshot cleanup", () => {
         }),
       }),
     };
-    const lifecycle = { disable: vi.fn(), enable: vi.fn() };
+    const lifecycle = {
+      disable: vi.fn(),
+      enable: vi.fn(),
+      blockActivationInCloud: vi.fn(),
+    };
     const router = companyPluginRoutes(
       mockDb as any,
       lifecycle as any,
@@ -232,6 +248,112 @@ describe("POST /:pluginId/upgrade — auto-rollback snapshot cleanup", () => {
 
     expect(lifecycle.enable).toHaveBeenCalledWith("plugin-1");
     expect(res.json).toHaveBeenCalledWith({ enabled: true });
+  });
+
+  it("reconciles a company enable in cloud before overlay mutation", async () => {
+    setDeploymentMode("cloud_auth");
+    try {
+      const db = {
+        select: vi.fn(() => ({
+          from: () => ({
+            where: () =>
+              Promise.resolve([{ id: "plugin-1", status: "disabled" }]),
+          }),
+        })),
+        insert: vi.fn(),
+        update: vi.fn(),
+      };
+      const lifecycle = {
+        disable: vi.fn(),
+        enable: vi.fn(),
+        blockActivationInCloud: vi
+          .fn()
+          .mockRejectedValue(new CloudPluginExecutionBlockedError()),
+      };
+      const router = companyPluginRoutes(
+        db as any,
+        lifecycle as any,
+        {} as any
+      );
+      const handler = getRouteHandler(router, "patch", "/:pluginId/settings");
+      const req = {
+        params: { companyId: "company-a", pluginId: "plugin-1" },
+        body: { enabled: true },
+      } as any;
+      const res = { json: vi.fn(), status: vi.fn().mockReturnThis() } as any;
+
+      await handler(req, res, vi.fn());
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.json).toHaveBeenCalledWith({
+        error: CLOUD_PLUGIN_BLOCK_MESSAGE,
+        code: PLUGIN_WORKER_BLOCKED_IN_CLOUD,
+        docs: CLOUD_PLUGIN_EXECUTION_DOC_PATH,
+      });
+      expect(db.select).toHaveBeenCalledOnce();
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+      expect(lifecycle.blockActivationInCloud).toHaveBeenCalledWith(
+        "plugin-1",
+        "direct"
+      );
+      expect(lifecycle.enable).not.toHaveBeenCalled();
+    } finally {
+      setDeploymentMode("local_trusted");
+    }
+  });
+
+  it("reconciles the legacy cloud enable route before overlay mutation", async () => {
+    setDeploymentMode("cloud_auth");
+    try {
+      const db = {
+        select: vi.fn(() => ({
+          from: () => ({
+            where: () =>
+              Promise.resolve([{ id: "plugin-1", status: "disabled" }]),
+          }),
+        })),
+        insert: vi.fn(),
+        update: vi.fn(),
+      };
+      const lifecycle = {
+        disable: vi.fn(),
+        enable: vi.fn(),
+        blockActivationInCloud: vi
+          .fn()
+          .mockRejectedValue(new CloudPluginExecutionBlockedError()),
+      };
+      const router = pluginCompanySettingsRoutes(db as any, lifecycle as any);
+      const handler = getRouteHandler(
+        router,
+        "put",
+        "/companies/:companyId/plugin-settings/:pluginId"
+      );
+      const req = {
+        params: { companyId: "company-a", pluginId: "plugin-1" },
+        body: { enabled: true },
+      } as any;
+      const res = { json: vi.fn(), status: vi.fn().mockReturnThis() } as any;
+
+      await handler(req, res, vi.fn());
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.json).toHaveBeenCalledWith({
+        error: CLOUD_PLUGIN_BLOCK_MESSAGE,
+        code: PLUGIN_WORKER_BLOCKED_IN_CLOUD,
+        docs: CLOUD_PLUGIN_EXECUTION_DOC_PATH,
+      });
+      expect(db.select).toHaveBeenCalledOnce();
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+      expect(lifecycle.blockActivationInCloud).toHaveBeenCalledWith(
+        "plugin-1",
+        "direct"
+      );
+      expect(lifecycle.enable).not.toHaveBeenCalled();
+    } finally {
+      setDeploymentMode("local_trusted");
+    }
   });
 
   it("does NOT delete the snapshot if rollback (installPlugin) throws", async () => {
@@ -314,5 +436,103 @@ describe("POST /:pluginId/upgrade — auto-rollback snapshot cleanup", () => {
 
     // Snapshot must NOT be deleted when rollback fails
     expect(deletedWhereArgs).toHaveLength(0);
+  });
+
+  it("blocks manual rollback in cloud before DB, loader, or lifecycle work", async () => {
+    setDeploymentMode("cloud_auth");
+    try {
+      const db = { select: vi.fn() };
+      const lifecycle = { load: vi.fn() };
+      const loader = { upgradePlugin: vi.fn() };
+      const router = companyPluginRoutes(
+        db as any,
+        lifecycle as any,
+        loader as any
+      );
+      const handler = getRouteHandler(
+        router,
+        "post",
+        "/:pluginId/upgrade/rollback"
+      );
+      const req = {
+        params: { companyId: "company-1", pluginId: "plugin-1" },
+        actor: {
+          type: "board",
+          source: "session",
+          userId: "operator-1",
+          operator: true,
+          isInstanceAdmin: false,
+          companyIds: ["company-1"],
+        },
+      } as any;
+      const res = {
+        status: vi.fn().mockReturnThis(),
+        json: vi.fn(),
+      } as any;
+
+      await handler(req, res, vi.fn());
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.json).toHaveBeenCalledWith({
+        error: CLOUD_PLUGIN_BLOCK_MESSAGE,
+        code: PLUGIN_WORKER_BLOCKED_IN_CLOUD,
+        docs: CLOUD_PLUGIN_EXECUTION_DOC_PATH,
+      });
+      expect(db.select).not.toHaveBeenCalled();
+      expect(loader.upgradePlugin).not.toHaveBeenCalled();
+      expect(lifecycle.load).not.toHaveBeenCalled();
+    } finally {
+      setDeploymentMode("local_trusted");
+    }
+  });
+
+  it("returns canonical cloud denial before upgrade-approval status validation", async () => {
+    setDeploymentMode("cloud_auth");
+    try {
+      const mockDb = {
+        select: () => ({
+          from: () => ({
+            where: () => Promise.resolve([{ id: "plugin-1", status: "error" }]),
+          }),
+        }),
+      };
+      const lifecycle = {
+        blockActivationInCloud: vi
+          .fn()
+          .mockRejectedValue(new CloudPluginExecutionBlockedError()),
+        load: vi.fn(),
+      };
+      const router = companyPluginRoutes(
+        mockDb as any,
+        lifecycle as any,
+        {} as any
+      );
+      const handler = getRouteHandler(
+        router,
+        "post",
+        "/:pluginId/upgrade/approve"
+      );
+      const req = {
+        params: { companyId: "company-a", pluginId: "plugin-1" },
+        body: {},
+      } as any;
+      const res = { json: vi.fn(), status: vi.fn().mockReturnThis() } as any;
+
+      await handler(req, res, vi.fn());
+
+      expect(lifecycle.blockActivationInCloud).toHaveBeenCalledWith(
+        "plugin-1",
+        "direct"
+      );
+      expect(lifecycle.load).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.json).toHaveBeenCalledWith({
+        error: CLOUD_PLUGIN_BLOCK_MESSAGE,
+        code: PLUGIN_WORKER_BLOCKED_IN_CLOUD,
+        docs: CLOUD_PLUGIN_EXECUTION_DOC_PATH,
+      });
+    } finally {
+      setDeploymentMode("local_trusted");
+    }
   });
 });

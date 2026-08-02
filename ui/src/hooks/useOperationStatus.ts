@@ -1,5 +1,6 @@
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { marketplaceApi, type InstallOperation } from "@/api/marketplace";
+import { ApiError } from "@/api/client";
 
 const POLL_INTERVAL_MS = 2000;
 
@@ -22,7 +23,38 @@ export function useOperationStatus(
   return useQuery({
     queryKey: ["marketplace", "operation", companyId, operationId] as const,
     queryFn: async () => {
-      const data = await marketplaceApi.getOperation(companyId!, operationId!);
+      let data: InstallOperation;
+      try {
+        data = await marketplaceApi.getOperation(companyId!, operationId!);
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 503) {
+          const body = err.body as {
+            error?: unknown;
+            code?: unknown;
+            docs?: unknown;
+          } | null;
+          if (body?.code === "PLUGIN_WORKER_BLOCKED_IN_CLOUD") {
+            return {
+              id: operationId!,
+              companyId: companyId!,
+              catalogItemId: "",
+              itemType: "plugin" as const,
+              targetDepartmentId: null,
+              status: "failure" as const,
+              resultEntityId: null,
+              errorMessage:
+                typeof body.error === "string" ? body.error : err.message,
+              errorCode: body.code,
+              errorDocs: typeof body.docs === "string" ? body.docs : null,
+              cascadeResults: null,
+              startedAt: new Date().toISOString(),
+              completedAt: new Date().toISOString(),
+              createdAt: new Date().toISOString(),
+            } satisfies InstallOperation;
+          }
+        }
+        throw err;
+      }
       if (startedAfter && new Date(data.createdAt) < startedAfter) {
         return { ...data, status: "failure" as const, errorMessage: "stale_operation" };
       }

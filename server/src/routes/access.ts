@@ -1589,6 +1589,12 @@ export function accessRoutes(
     if (!allowed) throw forbidden("Instance admin required");
   }
 
+  function assertAdminUserManagementAvailable() {
+    if (opts.deploymentMode === "cloud_auth") {
+      throw forbidden("Instance-wide user administration is unavailable in cloud mode");
+    }
+  }
+
   router.get("/board-claim/:token", async (req, res) => {
     const token = (req.params.token as string).trim();
     const code =
@@ -2916,6 +2922,7 @@ export function accessRoutes(
   router.post(
     "/admin/users/:userId/promote-instance-admin",
     async (req, res) => {
+      assertAdminUserManagementAvailable();
       await assertInstanceAdmin(req);
       const userId = req.params.userId as string;
       const result = await access.promoteInstanceAdmin(userId);
@@ -2924,6 +2931,7 @@ export function accessRoutes(
   );
 
   router.get("/admin/users", async (req, res) => {
+    assertAdminUserManagementAvailable();
     await assertInstanceAdmin(req);
     const query = searchAdminUsersQuerySchema.parse(req.query);
     const needle = query.query.trim().toLowerCase();
@@ -2986,6 +2994,7 @@ export function accessRoutes(
   router.post(
     "/admin/users/:userId/demote-instance-admin",
     async (req, res) => {
+      assertAdminUserManagementAvailable();
       await assertInstanceAdmin(req);
       const userId = req.params.userId as string;
       const removed = await access.demoteInstanceAdmin(userId);
@@ -2995,6 +3004,7 @@ export function accessRoutes(
   );
 
   router.get("/admin/users/:userId/company-access", async (req, res) => {
+    assertAdminUserManagementAvailable();
     await assertInstanceAdmin(req);
     const userId = req.params.userId as string;
     res.json(await loadUserCompanyAccessResponse(db, access, userId));
@@ -3004,6 +3014,7 @@ export function accessRoutes(
     "/admin/users/:userId/company-access",
     validate(updateUserCompanyAccessSchema),
     async (req, res) => {
+      assertAdminUserManagementAvailable();
       await assertInstanceAdmin(req);
       const userId = req.params.userId as string;
       await access.setUserCompanyAccess(

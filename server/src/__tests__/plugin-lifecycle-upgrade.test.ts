@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { afterEach, describe, it, expect, vi, beforeEach } from "vitest";
 
 // ── Hoisted mock state (vi.mock factories are hoisted before imports) ─────────
 
@@ -15,6 +15,7 @@ const { mockSaveSnapshot, mockGetById, mockUpdateStatus } = vi.hoisted(() => {
     apiVersion: "1.0",
     categories: [],
     lastError: null,
+    statusReasonCode: null,
     installedAt: new Date(),
     updatedAt: new Date(),
     catalogItemId: null,
@@ -52,17 +53,85 @@ vi.mock("../services/plugin-registry.js", () => ({
   }),
 }));
 vi.mock("../services/plugin-loader.js", () => ({ pluginLoader: vi.fn() }));
-vi.mock("../middleware/logger.js", () => ({
-  logger: {
-    child: vi.fn(() => ({ info: vi.fn(), error: vi.fn(), warn: vi.fn() })),
-  },
-}));
+vi.mock("../middleware/logger.js", () => {
+  const logger = {
+    info: vi.fn(),
+    error: vi.fn(),
+    warn: vi.fn(),
+    child: vi.fn(),
+  };
+  logger.child.mockReturnValue(logger);
+  return { logger };
+});
 
 import {
   diffCapabilities,
   pluginLifecycleManager,
 } from "../services/plugin-lifecycle.js";
 import { createPluginHostServiceCleanup } from "../services/plugin-host-service-cleanup.js";
+import { setDeploymentMode } from "../config/deployment-mode.js";
+import {
+  CLOUD_PLUGIN_BLOCK_MESSAGE,
+  CloudPluginExecutionBlockedError,
+  PLUGIN_WORKER_BLOCKED_IN_CLOUD,
+} from "../services/cloud-plugin-execution.js";
+
+afterEach(() => setDeploymentMode("local_trusted"));
+
+describe("cloud plugin lifecycle policy", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUpdateStatus.mockImplementation(
+      async (
+        _id: string,
+        input: {
+          status: string;
+          lastError?: string | null;
+          statusReasonCode?: string | null;
+        }
+      ) => ({
+        id: "plugin-1",
+        pluginKey: "test.plugin",
+        companyId: "co-a",
+        status: input.status,
+        lastError: input.lastError ?? null,
+        statusReasonCode: input.statusReasonCode ?? null,
+      })
+    );
+  });
+
+  it("atomically persists the typed blocked state before activation", async () => {
+    setDeploymentMode("cloud_auth");
+    const loadSingle = vi.fn();
+    const lifecycle = pluginLifecycleManager({} as any, {
+      loader: { hasRuntimeServices: () => true, loadSingle } as any,
+    });
+
+    await expect(lifecycle.load("plugin-1")).rejects.toBeInstanceOf(
+      CloudPluginExecutionBlockedError
+    );
+    expect(mockUpdateStatus).toHaveBeenCalledWith("plugin-1", {
+      status: "error",
+      lastError: CLOUD_PLUGIN_BLOCK_MESSAGE,
+      statusReasonCode: PLUGIN_WORKER_BLOCKED_IN_CLOUD,
+    });
+    expect(loadSingle).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when persisting the blocked state fails", async () => {
+    setDeploymentMode("cloud_auth");
+    mockUpdateStatus.mockRejectedValueOnce(new Error("database unavailable"));
+    const loadSingle = vi.fn();
+    const lifecycle = pluginLifecycleManager({} as any, {
+      loader: { hasRuntimeServices: () => true, loadSingle } as any,
+    });
+
+    await expect(lifecycle.load("plugin-1")).rejects.toThrow(
+      "database unavailable"
+    );
+    expect(loadSingle).not.toHaveBeenCalled();
+  });
+});
 
 // ── diffCapabilities (pure function, no DB) ───────────────────────────────────
 
@@ -227,10 +296,7 @@ describe("worker restart cleanup ordering", () => {
     const lifecycle = pluginLifecycleManager({} as any, {
       workerManager: workerManager as any,
     });
-    const cleanup = createPluginHostServiceCleanup(
-      lifecycle,
-      new Map()
-    );
+    const cleanup = createPluginHostServiceCleanup(lifecycle, new Map());
     cleanup.replace("plugin-1", () => {
       order.push("dispose");
       activeSubscriptions = 0;

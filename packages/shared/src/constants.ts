@@ -1260,6 +1260,15 @@ export const PLUGIN_STATUSES = [
 ] as const;
 export type PluginStatus = (typeof PLUGIN_STATUSES)[number];
 
+/** Stable, machine-readable reasons for a plugin lifecycle status. */
+export const PLUGIN_WORKER_BLOCKED_IN_CLOUD_REASON =
+  "PLUGIN_WORKER_BLOCKED_IN_CLOUD" as const;
+export const PLUGIN_STATUS_REASON_CODES = [
+  PLUGIN_WORKER_BLOCKED_IN_CLOUD_REASON,
+] as const;
+export type PluginStatusReasonCode =
+  (typeof PLUGIN_STATUS_REASON_CODES)[number];
+
 export const PLUGIN_CATEGORIES = [
   "connector",
   "ui",

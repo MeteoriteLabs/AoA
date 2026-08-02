@@ -22,7 +22,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { Router } from "express";
-import type { Request } from "express";
+import type { Request, Response } from "express";
 import { and, desc, eq, gte, inArray } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
@@ -75,6 +75,18 @@ import { logger } from "../middleware/logger.js";
 import { pluginWebhookLimiter } from "../middleware/rate-limit.js";
 import { pluginRollbackService } from "../services/plugin-rollback.js";
 import { conflict } from "../errors.js";
+import {
+  CloudPluginExecutionBlockedError,
+  cloudPluginExecutionBlockedEnvelope,
+  isCloudPluginExecutionBlocked,
+  projectCloudPluginPolicyState,
+  recordCloudPluginBlock,
+} from "../services/cloud-plugin-execution.js";
+function respondIfCloudPluginBlocked(error: unknown, res: Response): boolean {
+  if (!(error instanceof CloudPluginExecutionBlockedError)) return false;
+  res.status(503).json(cloudPluginExecutionBlockedEnvelope());
+  return true;
+}
 
 /** UI slot declaration extracted from plugin manifest */
 type PluginUiSlotDeclaration = NonNullable<
@@ -306,6 +318,25 @@ export function pluginRoutes(
       loader,
       workerManager: bridgeDeps?.workerManager ?? webhookDeps?.workerManager,
     });
+
+  function rejectBlockedCloudExecution(
+    res: Response,
+    context: {
+      pluginId: string;
+      companyId?: string;
+      source?: "direct" | "marketplace";
+      sink?: "worker-manager" | "loader";
+    }
+  ): boolean {
+    if (!isCloudPluginExecutionBlocked()) return false;
+    recordCloudPluginBlock({
+      ...context,
+      source: context.source ?? "direct",
+      sink: context.sink ?? "worker-manager",
+    });
+    res.status(503).json(cloudPluginExecutionBlockedEnvelope());
+    return true;
+  }
 
   /**
    * Resolve a plugin for a bare, non-company-qualified board route.
@@ -540,7 +571,7 @@ export function pluginRoutes(
     const plugins = status
       ? await registry.listByStatusForCompanies(status, companyIds)
       : await registry.listInstalledForCompanies(companyIds);
-    res.json(plugins);
+    res.json(plugins.map(projectCloudPluginPolicyState));
   });
 
   /**
@@ -603,6 +634,14 @@ export function pluginRoutes(
       res
         .status(400)
         .json({ error: '"companyId" query parameter is required' });
+      return;
+    }
+    if (
+      rejectBlockedCloudExecution(res, {
+        pluginId: "plugin-ui-contributions",
+        companyId,
+      })
+    ) {
       return;
     }
     await assertCompanyAccess(db, req, companyId);
@@ -711,6 +750,18 @@ export function pluginRoutes(
    */
   router.post("/plugins/tools/execute", async (req, res) => {
     assertBoard(req);
+
+    if (
+      rejectBlockedCloudExecution(res, {
+        pluginId: "plugin-tool-dispatch",
+        companyId:
+          typeof req.body?.runContext?.companyId === "string"
+            ? req.body.runContext.companyId
+            : undefined,
+      })
+    ) {
+      return;
+    }
 
     if (!toolDeps) {
       res.status(501).json({ error: "Plugin tool dispatch is not enabled" });
@@ -860,6 +911,16 @@ export function pluginRoutes(
       return;
     }
 
+    if (
+      rejectBlockedCloudExecution(res, {
+        pluginId: "unregistered-plugin",
+        source: "direct",
+        sink: "loader",
+      })
+    ) {
+      return;
+    }
+
     try {
       // Resolve the owning company for this install. Uses actor-scoped resolution
       // (not the audit fan-out helper) so multi-company instances install into the
@@ -919,6 +980,7 @@ export function pluginRoutes(
           .json({ error: "Plugin installed but not found in registry" });
       }
     } catch (err) {
+      if (respondIfCloudPluginBlocked(err, res)) return;
       const message = err instanceof Error ? err.message : String(err);
       res.status(400).json({ error: message });
     }
@@ -1050,6 +1112,18 @@ export function pluginRoutes(
   router.post("/plugins/:pluginId/bridge/data", async (req, res) => {
     assertBoard(req);
 
+    if (
+      rejectBlockedCloudExecution(res, {
+        pluginId: req.params.pluginId,
+        companyId:
+          typeof req.body?.companyId === "string"
+            ? req.body.companyId
+            : undefined,
+      })
+    ) {
+      return;
+    }
+
     if (!bridgeDeps) {
       res.status(501).json({ error: "Plugin bridge is not enabled" });
       return;
@@ -1129,6 +1203,18 @@ export function pluginRoutes(
    */
   router.post("/plugins/:pluginId/bridge/action", async (req, res) => {
     assertBoard(req);
+
+    if (
+      rejectBlockedCloudExecution(res, {
+        pluginId: req.params.pluginId,
+        companyId:
+          typeof req.body?.companyId === "string"
+            ? req.body.companyId
+            : undefined,
+      })
+    ) {
+      return;
+    }
 
     if (!bridgeDeps) {
       res.status(501).json({ error: "Plugin bridge is not enabled" });
@@ -1215,6 +1301,18 @@ export function pluginRoutes(
   router.post("/plugins/:pluginId/data/:key", async (req, res) => {
     assertBoard(req);
 
+    if (
+      rejectBlockedCloudExecution(res, {
+        pluginId: req.params.pluginId,
+        companyId:
+          typeof req.body?.companyId === "string"
+            ? req.body.companyId
+            : undefined,
+      })
+    ) {
+      return;
+    }
+
     if (!bridgeDeps) {
       res.status(501).json({ error: "Plugin bridge is not enabled" });
       return;
@@ -1292,6 +1390,18 @@ export function pluginRoutes(
    */
   router.post("/plugins/:pluginId/actions/:key", async (req, res) => {
     assertBoard(req);
+
+    if (
+      rejectBlockedCloudExecution(res, {
+        pluginId: req.params.pluginId,
+        companyId:
+          typeof req.body?.companyId === "string"
+            ? req.body.companyId
+            : undefined,
+      })
+    ) {
+      return;
+    }
 
     if (!bridgeDeps) {
       res.status(501).json({ error: "Plugin bridge is not enabled" });
@@ -1377,6 +1487,18 @@ export function pluginRoutes(
   router.get("/plugins/:pluginId/bridge/stream/:channel", async (req, res) => {
     assertBoard(req);
 
+    if (
+      rejectBlockedCloudExecution(res, {
+        pluginId: req.params.pluginId,
+        companyId:
+          typeof req.query.companyId === "string"
+            ? req.query.companyId
+            : undefined,
+      })
+    ) {
+      return;
+    }
+
     if (!bridgeDeps?.streamBus) {
       res.status(501).json({ error: "Plugin stream bridge is not enabled" });
       return;
@@ -1457,11 +1579,12 @@ export function pluginRoutes(
     assertBoard(req);
     assertCanManageInstanceSettings(req);
     const { pluginId } = req.params;
-    const plugin = await resolvePluginForActor(req, pluginId);
-    if (!plugin) {
+    const rawPlugin = await resolvePluginForActor(req, pluginId);
+    if (!rawPlugin) {
       res.status(404).json({ error: "Plugin not found" });
       return;
     }
+    const plugin = projectCloudPluginPolicyState(rawPlugin);
 
     // Enrich with worker capabilities when available
     const worker = bridgeDeps?.workerManager.getWorker(plugin.id);
@@ -1542,6 +1665,9 @@ export function pluginRoutes(
     }
 
     try {
+      // Resolve ownership first, then atomically persist the durable cloud
+      // reason before any company overlay or runtime mutation.
+      await lifecycle.blockActivationInCloud(plugin.id, "direct");
       await persistPluginCompanyEnabled(plugin.id, plugin.companyId, true);
       const result = await lifecycle.enable(plugin.id);
       await logPluginMutationActivity(
@@ -1561,6 +1687,7 @@ export function pluginRoutes(
       });
       res.json(result);
     } catch (err) {
+      if (respondIfCloudPluginBlocked(err, res)) return;
       const message = err instanceof Error ? err.message : String(err);
       res.status(400).json({ error: message });
     }
@@ -1636,11 +1763,12 @@ export function pluginRoutes(
     assertCanManageInstanceSettings(req);
     const { pluginId } = req.params;
 
-    const plugin = await resolvePluginForActor(req, pluginId);
-    if (!plugin) {
+    const rawPlugin = await resolvePluginForActor(req, pluginId);
+    if (!rawPlugin) {
       res.status(404).json({ error: "Plugin not found" });
       return;
     }
+    const plugin = projectCloudPluginPolicyState(rawPlugin);
 
     const checks: PluginHealthCheckResult["checks"] = [];
 
@@ -1770,6 +1898,9 @@ export function pluginRoutes(
     }
 
     try {
+      // Persist the durable cloud reason before lifecycle status validation;
+      // otherwise a disabled/error row could fall into auto-rollback.
+      await lifecycle.blockActivationInCloud(plugin.id, "direct");
       // Upgrade the plugin:
       // 1. Downloads and validates new version via loader (no throw on new caps)
       // 2. Diffs capabilities; if escalated → upgrade_pending (operator gate)
@@ -1795,6 +1926,7 @@ export function pluginRoutes(
       });
       res.json(result);
     } catch (err) {
+      if (respondIfCloudPluginBlocked(err, res)) return;
       // M4.D7 self-healing: upgrade failed — auto-revert to the snapshot saved inside upgrade().
       const rollback = pluginRollbackService(db);
       const target = await rollback
@@ -1939,7 +2071,10 @@ export function pluginRoutes(
       // If the worker implements onConfigChanged, send the new config via RPC.
       // If it doesn't (METHOD_NOT_IMPLEMENTED), restart the worker so it picks
       // up the new config on re-initialize. If no worker is running, skip.
-      if (bridgeDeps?.workerManager.isRunning(plugin.id)) {
+      if (
+        !isCloudPluginExecutionBlocked() &&
+        bridgeDeps?.workerManager.isRunning(plugin.id)
+      ) {
         try {
           await bridgeDeps.workerManager.call(plugin.id, "configChanged", {
             config: body.configJson,
@@ -1992,6 +2127,14 @@ export function pluginRoutes(
     assertBoard(req);
     assertCanManageInstanceSettings(req);
 
+    if (
+      rejectBlockedCloudExecution(res, {
+        pluginId: req.params.pluginId,
+      })
+    ) {
+      return;
+    }
+
     if (!bridgeDeps) {
       res.status(501).json({ error: "Plugin bridge is not enabled" });
       return;
@@ -2040,7 +2183,9 @@ export function pluginRoutes(
       const result = await bridgeDeps.workerManager.call(
         plugin.id,
         "validateConfig",
-        { config: body.configJson }
+        {
+          config: body.configJson,
+        }
       );
 
       // The worker returns PluginConfigValidationResult { ok, warnings?, errors? }
@@ -2196,6 +2341,13 @@ export function pluginRoutes(
   router.post("/plugins/:pluginId/jobs/:jobId/trigger", async (req, res) => {
     assertBoard(req);
     assertCanManageInstanceSettings(req);
+    if (
+      rejectBlockedCloudExecution(res, {
+        pluginId: req.params.pluginId,
+      })
+    ) {
+      return;
+    }
     if (!jobDeps) {
       res.status(501).json({ error: "Job scheduling is not enabled" });
       return;
@@ -2268,6 +2420,16 @@ export function pluginRoutes(
     "/plugins/:pluginId/webhooks/:endpointKey",
     pluginWebhookLimiter,
     async (req, res) => {
+      if (
+        rejectBlockedCloudExecution(res, {
+          pluginId:
+            typeof req.params.pluginId === "string"
+              ? req.params.pluginId
+              : "unknown-plugin",
+        })
+      ) {
+        return;
+      }
       if (!webhookDeps) {
         res.status(501).json({ error: "Webhook ingestion is not enabled" });
         return;
@@ -2436,11 +2598,12 @@ export function pluginRoutes(
     assertCanManageInstanceSettings(req);
     const { pluginId } = req.params;
 
-    const plugin = await resolvePluginForActor(req, pluginId);
-    if (!plugin) {
+    const rawPlugin = await resolvePluginForActor(req, pluginId);
+    if (!rawPlugin) {
       res.status(404).json({ error: "Plugin not found" });
       return;
     }
+    const plugin = projectCloudPluginPolicyState(rawPlugin);
 
     // --- Worker diagnostics ---
     let worker: {
@@ -2665,6 +2828,10 @@ export function pluginRoutes(
     assertCanManageInstanceSettings(req);
     const { pluginId } = req.params;
 
+    if (rejectBlockedCloudExecution(res, { pluginId })) {
+      return;
+    }
+
     const plugin = await resolvePluginForActor(req, pluginId);
     if (!plugin) {
       res.status(404).json({ error: "Plugin not found" });
@@ -2712,6 +2879,7 @@ export function pluginRoutes(
       });
       res.json(updated);
     } catch (err) {
+      if (respondIfCloudPluginBlocked(err, res)) return;
       const message = err instanceof Error ? err.message : String(err);
       res.status(400).json({ error: `Rollback failed: ${message}` });
     }
@@ -2754,7 +2922,9 @@ export function pluginCompanySettingsRoutes(
         pluginKey: plugins.pluginKey,
         version: plugins.version,
         status: plugins.status,
+        statusReasonCode: plugins.statusReasonCode,
         manifestJson: plugins.manifestJson,
+        lastError: plugins.lastError,
         installedAt: plugins.installedAt,
         updatedAt: plugins.updatedAt,
       })
@@ -2774,7 +2944,8 @@ export function pluginCompanySettingsRoutes(
 
     const settingsMap = new Map(companySettings.map((s) => [s.pluginId, s]));
 
-    const result = installedPlugins.map((plugin) => {
+    const result = installedPlugins.map((rawPlugin) => {
+      const plugin = projectCloudPluginPolicyState(rawPlugin);
       const cs = settingsMap.get(plugin.id);
       return {
         pluginId: plugin.id,
@@ -2784,10 +2955,11 @@ export function pluginCompanySettingsRoutes(
         description: (plugin.manifestJson as any)?.description ?? "",
         version: plugin.version,
         status: plugin.status,
+        statusReasonCode: plugin.statusReasonCode,
         categories: (plugin.manifestJson as any)?.categories ?? [],
         enabled: cs?.enabled ?? true,
         settingsJson: cs?.settingsJson ?? {},
-        lastError: cs?.lastError ?? null,
+        lastError: plugin.lastError ?? cs?.lastError ?? null,
       };
     });
 
@@ -2824,6 +2996,15 @@ export function pluginCompanySettingsRoutes(
       if (!plugin) {
         res.status(404).json({ error: "Plugin not found" });
         return;
+      }
+
+      if (enabled === true) {
+        try {
+          await lifecycle.blockActivationInCloud(plugin.id, "direct");
+        } catch (error) {
+          if (respondIfCloudPluginBlocked(error, res)) return;
+          throw error;
+        }
       }
 
       // Upsert company settings
@@ -2867,10 +3048,15 @@ export function pluginCompanySettingsRoutes(
         saved = inserted;
       }
 
-      if (enabled === false && plugin.status === "ready") {
-        await lifecycle.disable(pluginId, "Disabled for company");
-      } else if (enabled === true && plugin.status === "disabled") {
-        await lifecycle.enable(pluginId);
+      try {
+        if (enabled === false && plugin.status === "ready") {
+          await lifecycle.disable(pluginId, "Disabled for company");
+        } else if (enabled === true && plugin.status === "disabled") {
+          await lifecycle.enable(pluginId);
+        }
+      } catch (error) {
+        if (respondIfCloudPluginBlocked(error, res)) return;
+        throw error;
       }
       res.json(saved);
     }

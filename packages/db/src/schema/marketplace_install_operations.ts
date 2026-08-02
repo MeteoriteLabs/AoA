@@ -40,6 +40,8 @@ export const marketplaceInstallOperations = pgTable(
     status: text("status").$type<"pending" | "running" | "success" | "failure" | "requested">().notNull().default("pending"),
     resultEntityId: text("result_entity_id"),
     errorMessage: text("error_message"),
+    errorCode: text("error_code"),
+    errorDocs: text("error_docs"),
     cascadeResults: jsonb("cascade_results").$type<CascadeStepResult[]>(),
     idempotencyKey: text("idempotency_key"),
     // text() not uuid() — actor.userId is "local-board" (literal string) in local_trusted mode.

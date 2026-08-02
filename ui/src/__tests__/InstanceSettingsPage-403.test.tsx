@@ -118,7 +118,10 @@ describe("InstanceSettingsPage 403 access state", () => {
     mockCompanyContext.companies = [makeCompany()];
     mockGetGeneral.mockRejectedValue(forbidden());
     mockGetExperimental.mockRejectedValue(forbidden());
-    mockGetHealth.mockResolvedValue({ status: "ok", deploymentMode: "authenticated" });
+    mockGetHealth.mockResolvedValue({
+      status: "ok",
+      deploymentMode: "authenticated",
+    });
   });
 
   it("renders the instance-admin-required state instead of the raw failure copy", async () => {
@@ -129,19 +132,17 @@ describe("InstanceSettingsPage 403 access state", () => {
         name: /instance settings require instance-admin access/i,
       }),
     ).toBeInTheDocument();
-    expect(
-      screen.getByText(/open your company and go to\s*settings there/i),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByText("Failed to load general settings."),
-    ).not.toBeInTheDocument();
+    expect(screen.getByText(/open your company and go to\s*settings there/i)).toBeInTheDocument();
+    expect(screen.queryByText("Failed to load general settings.")).not.toBeInTheDocument();
   });
 
   it("offers a button into the selected company's settings", async () => {
     const user = userEvent.setup();
     renderSettings();
 
-    const button = await screen.findByRole("button", { name: /open company settings/i });
+    const button = await screen.findByRole("button", {
+      name: /open company settings/i,
+    });
     await user.click(button);
     // makeCompany() has issuePrefix "TC" → company settings route.
     expect(mockNavigate).toHaveBeenCalledWith("/TC/settings");
@@ -154,7 +155,9 @@ describe("InstanceSettingsPage 403 access state", () => {
     const user = userEvent.setup();
     renderSettings();
 
-    const button = await screen.findByRole("button", { name: /back to lobby/i });
+    const button = await screen.findByRole("button", {
+      name: /back to lobby/i,
+    });
     await user.click(button);
     expect(mockNavigate).toHaveBeenCalledWith("/");
   });
@@ -170,9 +173,7 @@ describe("InstanceSettingsPage 403 access state", () => {
     });
     renderSettings();
 
-    expect(
-      await screen.findByText("Failed to load general settings."),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Failed to load general settings.")).toBeInTheDocument();
     expect(
       screen.queryByRole("heading", {
         name: /instance settings require instance-admin access/i,
@@ -192,5 +193,99 @@ describe("InstanceSettingsPage 403 access state", () => {
         name: /instance settings require instance-admin access/i,
       }),
     ).toBeInTheDocument();
+  });
+
+  it("fails closed on a cloud heartbeats deep link before mounting the heartbeat view", async () => {
+    mockGetGeneral.mockResolvedValue({
+      censorUsernameInLogs: false,
+      keyboardShortcuts: false,
+    });
+    mockGetExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      autoRestartDevServerWhenIdle: false,
+      enableWorkspaceTtlSweeper: false,
+    });
+    mockGetHealth.mockResolvedValue({
+      status: "ok",
+      deploymentMode: "cloud_auth",
+    });
+    const user = userEvent.setup();
+    renderSettings({ initialEntries: ["/instance/settings?tab=heartbeats"] });
+
+    const heading = await screen.findByRole("heading", {
+      name: /heartbeats is unavailable on aoa cloud/i,
+    });
+    expect(document.activeElement).toBe(heading);
+    expect(screen.queryByTestId("heartbeats-tab-stub")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^heartbeats$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^access$/i })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /back to general/i }));
+    expect(mockNavigate.mock.calls[0]?.[0]).toBe("/instance/settings?tab=general");
+  });
+
+  it("does not mount heartbeats while deployment health is still loading", async () => {
+    mockGetHealth.mockReturnValue(new Promise(() => {}));
+    renderSettings({ initialEntries: ["/instance/settings?tab=heartbeats"] });
+
+    expect(
+      await screen.findByRole("heading", {
+        name: /checking heartbeats availability/i,
+      }),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("heartbeats-tab-stub")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^heartbeats$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^access$/i })).not.toBeInTheDocument();
+  });
+
+  it("shows the cloud-unavailable state even when operator settings requests are denied", async () => {
+    mockGetHealth.mockResolvedValue({ status: "ok", deploymentMode: "cloud_auth" });
+    renderSettings({ initialEntries: ["/instance/settings?tab=heartbeats"] });
+
+    expect(
+      await screen.findByRole("heading", {
+        name: /heartbeats is unavailable on aoa cloud/i,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", {
+        name: /instance settings require instance-admin access/i,
+      }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId("heartbeats-tab-stub")).not.toBeInTheDocument();
+  });
+
+  it("keeps heartbeats closed when health fails and retries explicitly", async () => {
+    mockGetGeneral.mockResolvedValue({
+      censorUsernameInLogs: false,
+      keyboardShortcuts: false,
+    });
+    mockGetExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      autoRestartDevServerWhenIdle: false,
+      enableWorkspaceTtlSweeper: false,
+    });
+    mockGetHealth.mockRejectedValueOnce(new Error("offline"));
+    mockGetHealth.mockResolvedValueOnce({
+      status: "ok",
+      deploymentMode: "cloud_auth",
+    });
+    const user = userEvent.setup();
+    renderSettings({ initialEntries: ["/instance/settings?tab=heartbeats"] });
+
+    expect(
+      await screen.findByRole("heading", {
+        name: /couldn't verify heartbeats availability/i,
+      }),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("heartbeats-tab-stub")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /retry deployment check/i }));
+    expect(
+      await screen.findByRole("heading", {
+        name: /heartbeats is unavailable on aoa cloud/i,
+      }),
+    ).toBeInTheDocument();
+    expect(mockGetHealth).toHaveBeenCalledTimes(2);
   });
 });

@@ -2,11 +2,14 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { PLUGIN_WORKER_BLOCKED_IN_CLOUD_REASON } from "@armyofagents/shared";
 import type { ReactNode } from "react";
 
 import { PluginDetailSlideOver } from "../PluginDetailSlideOver";
 import type { InstalledPlugin } from "@/api/plugins";
 import * as pluginsApi from "@/api/plugins";
+import { ToastProvider } from "@/context/ToastContext";
+import { queryKeys } from "@/lib/queryKeys";
 
 // Hoist spy so it can be referenced both inside vi.mock and in test bodies.
 const { retryActivationSpy } = vi.hoisted(() => ({
@@ -66,11 +69,22 @@ function makePlugin(overrides: Partial<InstalledPlugin> = {}): InstalledPlugin {
   };
 }
 
-function wrap(node: ReactNode) {
+function wrap(
+  node: ReactNode,
+  deploymentMode: "local_trusted" | "cloud_auth" = "local_trusted"
+) {
   const qc = new QueryClient({
-    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    defaultOptions: {
+      queries: { retry: false, staleTime: Infinity },
+      mutations: { retry: false },
+    },
   });
-  return render(<QueryClientProvider client={qc}>{node}</QueryClientProvider>);
+  qc.setQueryData(queryKeys.health, { status: "ok", deploymentMode });
+  return render(
+    <QueryClientProvider client={qc}>
+      <ToastProvider>{node}</ToastProvider>
+    </QueryClientProvider>
+  );
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
@@ -107,6 +121,62 @@ describe("PluginDetailSlideOver — Retry activation button", () => {
       />
     );
 
+    expect(
+      screen.queryByRole("button", { name: /retry activation/i })
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows the cloud policy state and hides futile lifecycle actions", () => {
+    const plugin = makePlugin({
+      status: "error",
+      statusReasonCode: PLUGIN_WORKER_BLOCKED_IN_CLOUD_REASON,
+      lastError:
+        "Plugin execution is blocked on AoA Cloud until isolated workers are available",
+    });
+    wrap(
+      <PluginDetailSlideOver
+        companyId="company-1"
+        plugin={plugin}
+        pendingUpdate={undefined}
+        onClose={vi.fn()}
+      />
+    );
+
+    expect(screen.getAllByText("Blocked on AoA Cloud").length).toBeGreaterThan(
+      0
+    );
+    expect(
+      screen.getByRole("link", {
+        name: /read the cloud plugin execution policy/i,
+      })
+    ).toHaveAttribute("href", "/docs/guides/cloud-plugin-execution");
+    expect(
+      screen.queryByRole("button", { name: /retry activation/i })
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /enable for this company/i })
+    ).not.toBeInTheDocument();
+  });
+
+  it("uses deployment mode to hide futile lifecycle actions before durable state is reconciled", () => {
+    const plugin = makePlugin({
+      status: "error",
+      statusReasonCode: null,
+      lastError: "Previous worker failure",
+    });
+    wrap(
+      <PluginDetailSlideOver
+        companyId="company-1"
+        plugin={plugin}
+        pendingUpdate={undefined}
+        onClose={vi.fn()}
+      />,
+      "cloud_auth"
+    );
+
+    expect(screen.getAllByText("Blocked on AoA Cloud").length).toBeGreaterThan(
+      0
+    );
     expect(
       screen.queryByRole("button", { name: /retry activation/i })
     ).not.toBeInTheDocument();

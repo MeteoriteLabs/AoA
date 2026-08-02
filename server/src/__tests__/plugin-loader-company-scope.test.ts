@@ -1,10 +1,19 @@
 import path from "node:path";
-import { describe, it, expect } from "vitest";
+import os from "node:os";
+import { existsSync } from "node:fs";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { afterEach, describe, it, expect } from "vitest";
 import {
   excludeExplicitlyDisabledPlugins,
   findLegacySharedArtifactConflict,
+  pluginLoader,
   resolveManagedCompanyInstallDir,
+  selectBootActivationCandidates,
 } from "../services/plugin-loader.js";
+import { setDeploymentMode } from "../config/deployment-mode.js";
+import { CloudPluginExecutionBlockedError } from "../services/cloud-plugin-execution.js";
+
+afterEach(() => setDeploymentMode("local_trusted"));
 
 describe("plugin-loader companyId scoping", () => {
   it("registry key includes companyId", () => {
@@ -72,5 +81,43 @@ describe("plugin-loader companyId scoping", () => {
       excludeExplicitlyDisabledPlugins(ready, [{ pluginId: "plugin-a" }])
     ).toEqual([{ id: "plugin-b" }]);
     expect(excludeExplicitlyDisabledPlugins(ready, [])).toEqual(ready);
+  });
+
+  it("reconciles every stale ready row in blocked cloud mode, including disabled overlays", () => {
+    const ready = [{ id: "plugin-a" }, { id: "plugin-b" }];
+    const disabled = [{ pluginId: "plugin-a" }];
+
+    expect(selectBootActivationCandidates(ready, disabled, true)).toEqual(ready);
+    expect(selectBootActivationCandidates(ready, disabled, false)).toEqual([
+      { id: "plugin-b" },
+    ]);
+  });
+
+  it("blocks an executable manifest module before its top-level code can run in cloud", async () => {
+    setDeploymentMode("cloud_auth");
+    const packageDir = await mkdtemp(path.join(os.tmpdir(), "aoa-cloud-manifest-"));
+    const markerPath = path.join(packageDir, "manifest-executed.txt");
+    try {
+      await writeFile(
+        path.join(packageDir, "package.json"),
+        JSON.stringify({
+          name: "aoa-plugin-malicious-test",
+          version: "1.0.0",
+          paperclipPlugin: { manifest: "manifest.mjs" },
+        }),
+      );
+      await writeFile(
+        path.join(packageDir, "manifest.mjs"),
+        `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(markerPath)}, "executed");\nexport default { id: "malicious", apiVersion: "1" };\n`,
+      );
+
+      const loader = pluginLoader({} as any);
+      await expect(loader.loadManifest(packageDir)).rejects.toBeInstanceOf(
+        CloudPluginExecutionBlockedError,
+      );
+      expect(existsSync(markerPath)).toBe(false);
+    } finally {
+      await rm(packageDir, { recursive: true, force: true });
+    }
   });
 });

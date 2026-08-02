@@ -1,5 +1,6 @@
 import type {
   PluginStatus,
+  PluginStatusReasonCode,
   PluginCategory,
   PluginCapability,
   PluginUiSlotType,
@@ -284,6 +285,8 @@ export interface PluginRecord {
   packagePath: string | null;
   /** Most recent error message, or operator-provided disable reason. */
   lastError: string | null;
+  /** Stable policy/error reason; null for ordinary runtime failures. */
+  statusReasonCode: PluginStatusReasonCode | null;
   /** Trust tier for sandbox capability gating. */
   trustTier: PluginTrustTier;
   /** Timestamp when the plugin was first installed. */
@@ -516,6 +519,7 @@ export interface InstallPlugin {
 export interface UpdatePluginStatus {
   status: PluginStatus;
   lastError?: string | null;
+  statusReasonCode?: PluginStatusReasonCode | null;
 }
 
 /** Input for creating or fully replacing a plugin's instance configuration. */

@@ -6,6 +6,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
 import { marketplaceApi, type PendingUpdate } from "@/api/marketplace";
 import { MarketplaceUpdatesPanel } from "../MarketplaceUpdatesPanel";
+import { queryKeys } from "@/lib/queryKeys";
+import { healthApi } from "@/api/health";
 
 const mutateAsync = vi.fn();
 let pendingUpdates: PendingUpdate[] = [];
@@ -31,7 +33,7 @@ vi.mock("@/hooks/usePendingUpdates", () => ({
 
 vi.mock("@/api/marketplace", async () => {
   const actual = await vi.importActual<typeof import("@/api/marketplace")>(
-    "@/api/marketplace",
+    "@/api/marketplace"
   );
   return {
     ...actual,
@@ -42,6 +44,10 @@ vi.mock("@/api/marketplace", async () => {
   };
 });
 
+vi.mock("@/api/health", () => ({
+  healthApi: { get: vi.fn() },
+}));
+
 vi.mock("@/components/marketplace/SnapshotUpdateModal", () => ({
   SnapshotUpdateModal: ({ itemName }: { itemName: string }) => (
     <div role="dialog">Reviewing {itemName}</div>
@@ -49,7 +55,13 @@ vi.mock("@/components/marketplace/SnapshotUpdateModal", () => ({
 }));
 
 vi.mock("@/components/settings/CapabilityDeltaModal", () => ({
-  CapabilityDeltaModal: ({ pluginName, delta }: { pluginName: string; delta: string[] }) => (
+  CapabilityDeltaModal: ({
+    pluginName,
+    delta,
+  }: {
+    pluginName: string;
+    delta: string[];
+  }) => (
     <div role="dialog">
       New permissions required for {pluginName}: {delta.join(", ")}
     </div>
@@ -72,14 +84,28 @@ function update(overrides: Partial<PendingUpdate>): PendingUpdate {
   };
 }
 
-function renderPanel() {
+function renderPanel(
+  options: {
+    deploymentMode?: "local_trusted" | "cloud_auth";
+    seedHealth?: boolean;
+  } = {}
+) {
   const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    defaultOptions: {
+      queries: { retry: false, staleTime: Infinity },
+      mutations: { retry: false },
+    },
   });
+  if (options.seedHealth !== false) {
+    queryClient.setQueryData(queryKeys.health, {
+      status: "ok",
+      deploymentMode: options.deploymentMode ?? "local_trusted",
+    });
+  }
   const view = render(
     <QueryClientProvider client={queryClient}>
       <MarketplaceUpdatesPanel />
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
   return { ...view, queryClient };
 }
@@ -90,12 +116,19 @@ describe("MarketplaceUpdatesPanel", () => {
     mutateAsync.mockReset();
     toastMocks.pushToast.mockReset();
     vi.mocked(marketplaceApi.applyUpdate).mockClear();
+    vi.mocked(healthApi.get).mockReset();
+    vi.mocked(healthApi.get).mockResolvedValue({
+      status: "ok",
+      deploymentMode: "local_trusted",
+    });
   });
 
   it("renders the empty state when no updates are pending", () => {
     renderPanel();
 
-    expect(screen.getByText("All marketplace items are up to date")).toBeInTheDocument();
+    expect(
+      screen.getByText("All marketplace items are up to date")
+    ).toBeInTheDocument();
   });
 
   it("applies plugin updates directly", async () => {
@@ -104,11 +137,66 @@ describe("MarketplaceUpdatesPanel", () => {
     renderPanel();
 
     expect(screen.getByText("GitHub Issues")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Update GitHub Issues" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "Update GitHub Issues" })
+    );
 
     await waitFor(() =>
-      expect(marketplaceApi.applyUpdate).toHaveBeenCalledWith("company-1", "update-1"),
+      expect(marketplaceApi.applyUpdate).toHaveBeenCalledWith(
+        "company-1",
+        "update-1"
+      )
     );
+  });
+
+  it("hides plugin apply in cloud mode while leaving non-plugin apply available", async () => {
+    pendingUpdates = [
+      update({}),
+      update({
+        id: "agent-update",
+        itemType: "agent",
+        catalogItemName: "Senior Engineer",
+      }),
+    ];
+    renderPanel({ deploymentMode: "cloud_auth" });
+
+    expect(
+      screen.queryByRole("button", { name: "Update GitHub Issues" })
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText("Plugin updates are unavailable on AoA Cloud.")
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Update Senior Engineer" })
+    ).toBeInTheDocument();
+  });
+
+  it("fails closed while deployment policy is unresolved", () => {
+    pendingUpdates = [update({})];
+    vi.mocked(healthApi.get).mockReturnValue(new Promise(() => {}));
+    renderPanel({ seedHealth: false });
+
+    expect(
+      screen.queryByRole("button", { name: "Update GitHub Issues" })
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/unavailable until deployment policy is verified/i)
+    ).toBeInTheDocument();
+  });
+
+  it("stays fail-closed when deployment policy lookup errors", async () => {
+    pendingUpdates = [update({})];
+    vi.mocked(healthApi.get).mockRejectedValue(new Error("health unavailable"));
+    renderPanel({ seedHealth: false });
+
+    expect(
+      await screen.findByText(
+        /unavailable until deployment policy is verified/i
+      )
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Update GitHub Issues" })
+    ).not.toBeInTheDocument();
   });
 
   it("opens snapshot review for non-plugin updates", async () => {
@@ -123,9 +211,13 @@ describe("MarketplaceUpdatesPanel", () => {
 
     renderPanel();
 
-    await userEvent.click(screen.getByRole("button", { name: "Review Senior Engineer" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "Review Senior Engineer" })
+    );
 
-    expect(screen.getByRole("dialog")).toHaveTextContent("Reviewing Senior Engineer");
+    expect(screen.getByRole("dialog")).toHaveTextContent(
+      "Reviewing Senior Engineer"
+    );
   });
 
   // ── F3: `/apply` handles agents and skills now; the button must reach it ──
@@ -147,10 +239,15 @@ describe("MarketplaceUpdatesPanel", () => {
     pendingUpdates = [agentUpdate()];
     renderPanel();
 
-    await userEvent.click(screen.getByRole("button", { name: "Update Senior Engineer" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "Update Senior Engineer" })
+    );
 
     await waitFor(() =>
-      expect(marketplaceApi.applyUpdate).toHaveBeenCalledWith("company-1", "agent-update-1"),
+      expect(marketplaceApi.applyUpdate).toHaveBeenCalledWith(
+        "company-1",
+        "agent-update-1"
+      )
     );
   });
 
@@ -160,23 +257,35 @@ describe("MarketplaceUpdatesPanel", () => {
     pendingUpdates = [agentUpdate({ status: "conflict" })];
     renderPanel();
 
-    expect(screen.queryByRole("button", { name: "Update Senior Engineer" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Review Senior Engineer" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Update Senior Engineer" })
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Review Senior Engineer" })
+    ).toBeInTheDocument();
   });
 
   it("falls through to review when apply reports the agent is customized", async () => {
     pendingUpdates = [agentUpdate()];
     vi.mocked(marketplaceApi.applyUpdate).mockRejectedValueOnce(
-      new ApiError("Agent instructions are customized. Manual merge required.", 409, {
-        code: "AGENT_INSTRUCTIONS_CUSTOMIZED",
-      }),
+      new ApiError(
+        "Agent instructions are customized. Manual merge required.",
+        409,
+        {
+          code: "AGENT_INSTRUCTIONS_CUSTOMIZED",
+        }
+      )
     );
 
     renderPanel();
 
-    await userEvent.click(screen.getByRole("button", { name: "Update Senior Engineer" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "Update Senior Engineer" })
+    );
 
-    expect(await screen.findByRole("dialog")).toHaveTextContent("Reviewing Senior Engineer");
+    expect(await screen.findByRole("dialog")).toHaveTextContent(
+      "Reviewing Senior Engineer"
+    );
   });
 
   // The discriminator: `/apply` also answers 409 for a row that is simply no
@@ -187,17 +296,22 @@ describe("MarketplaceUpdatesPanel", () => {
     vi.mocked(marketplaceApi.applyUpdate).mockRejectedValueOnce(
       new ApiError("Update is not pending (current: applied)", 409, {
         error: "Update is not pending (current: applied)",
-      }),
+      })
     );
 
     renderPanel();
 
-    await userEvent.click(screen.getByRole("button", { name: "Update Senior Engineer" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "Update Senior Engineer" })
+    );
 
     await waitFor(() =>
       expect(toastMocks.pushToast).toHaveBeenCalledWith(
-        expect.objectContaining({ title: "Failed to apply update", tone: "error" }),
-      ),
+        expect.objectContaining({
+          title: "Failed to apply update",
+          tone: "error",
+        })
+      )
     );
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
@@ -214,10 +328,12 @@ describe("MarketplaceUpdatesPanel", () => {
 
     renderPanel();
 
-    await userEvent.click(screen.getByRole("button", { name: "Update GitHub Issues" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "Update GitHub Issues" })
+    );
 
     expect(await screen.findByRole("dialog")).toHaveTextContent(
-      "New permissions required for GitHub Issues: storage.write",
+      "New permissions required for GitHub Issues: storage.write"
     );
   });
 
@@ -226,19 +342,21 @@ describe("MarketplaceUpdatesPanel", () => {
     vi.mocked(marketplaceApi.applyUpdate).mockRejectedValueOnce(
       new ApiError("Instance admin access required", 403, {
         error: "Instance admin access required",
-      }),
+      })
     );
 
     renderPanel();
 
-    await userEvent.click(screen.getByRole("button", { name: "Update GitHub Issues" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "Update GitHub Issues" })
+    );
 
     await waitFor(() =>
       expect(toastMocks.pushToast).toHaveBeenCalledWith({
         title: "Only instance admins can update plugins",
         body: "Ask an instance admin to apply the GitHub Issues plugin update.",
         tone: "error",
-      }),
+      })
     );
   });
 
@@ -249,13 +367,13 @@ describe("MarketplaceUpdatesPanel", () => {
     const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
 
     await userEvent.click(
-      screen.getByRole("button", { name: "Dismiss GitHub Issues update" }),
+      screen.getByRole("button", { name: "Dismiss GitHub Issues update" })
     );
 
     await waitFor(() =>
       expect(invalidateSpy).toHaveBeenCalledWith({
         queryKey: ["marketplace-updates", "company-1"],
-      }),
+      })
     );
   });
 });

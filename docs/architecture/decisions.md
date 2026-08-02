@@ -839,6 +839,18 @@ The plugin worker sandbox (`server/src/services/plugin-sandbox.ts`,
   patch and is explicitly **out of scope** for the in-process sandbox. Tracked as separate
   infra work.
 
+**Cloud enforcement amendment (2026-08-03).** Because this worker model is not
+a tenant boundary, `cloud_auth` must not execute any host-process plugin worker,
+including a plugin whose mutable trust tier is `core`. Activation is rejected at
+the lifecycle boundary and independently before worker registration and
+`child_process.fork()`. Executable plugin UI, bridge, and stream surfaces are
+also deployment-gated independently of persisted status, so a stale `ready` row
+cannot execute during boot reconciliation. The stable persisted/HTTP reason is
+`PLUGIN_WORKER_BLOCKED_IN_CLOUD`; there is no operator override. Self-hosted
+`local_trusted` and `authenticated` behavior remains unchanged. Agent gVisor
+does not cover plugin workers. See
+`docs/guides/cloud-plugin-execution.md`.
+
 ## Decision #104 — Optimistic concurrency for agent updates: optional `updatedAt` token → 409 (2026-06-25)
 
 Agent updates (`PATCH /api/agents/:id` → `agentService.update`) were pure
