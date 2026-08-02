@@ -23,7 +23,7 @@ describe("createSelfServeOrganization", () => {
     const ensureOrgOwner = vi.fn(async () => "m1");
     // 3rd arg is now a FACTORY (handle) => { ensureOrgOwner } so the membership
     // write can bind to the transaction handle.
-    const org = await createSelfServeOrganization(
+    const { organization: org } = await createSelfServeOrganization(
       db,
       { name: "Acme", ownerUserId: "u1" },
       (() => ({ ensureOrgOwner })) as any,
@@ -48,7 +48,7 @@ describe("createSelfServeOrganization", () => {
   it("normalizes at the service seam and rejects invisible names without a write", async () => {
     const normalized = fakeDb();
     const ensureOrgOwner = vi.fn(async () => "m1");
-    const org = await createSelfServeOrganization(
+    const { organization: org } = await createSelfServeOrganization(
       normalized.db,
       { name: "  Cafe\u0301  ", ownerUserId: "u1" },
       (() => ({ ensureOrgOwner })) as any,

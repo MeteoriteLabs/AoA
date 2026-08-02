@@ -15,7 +15,9 @@ import {
   createWorkerToken,
   hashWorkerToken,
   registerWorkerHeartbeat,
+  revokeExecutionTargetWorkerToken,
   resolveWorkerTargetId,
+  rotateExecutionTargetWorkerToken,
 } from "../services/execution-targets.js";
 import { environmentService } from "../services/environments.js";
 
@@ -117,10 +119,34 @@ describe.skipIf(process.platform === "win32")("worker token round-trip (real DB,
       .insert(executionTargets)
       .values({ organizationId: ORG, slug: "wkr-2", kind: "dedicated_worker", trustClass: "dedicated_tenant", status: "offline", workerTokenHash: hashWorkerToken(token1) })
       .returning();
-    const token2 = createWorkerToken();
-    await db.execute(sql`UPDATE execution_targets SET worker_token_hash = ${hashWorkerToken(token2)} WHERE id = ${row!.id}`);
+    const rotated = await rotateExecutionTargetWorkerToken(db, { organizationId: ORG, targetId: row!.id });
+    expect(rotated?.target.id).toBe(row!.id);
+    expect(rotated?.target).not.toHaveProperty("workerTokenHash");
     expect(await resolveWorkerTargetId(db, token1)).toBeNull();
-    expect(await resolveWorkerTargetId(db, token2)).toBe(row!.id);
+    expect(await resolveWorkerTargetId(db, rotated!.workerToken)).toBe(row!.id);
+  }, 90_000);
+
+  it("revoking the token clears auth and prevents heartbeat resurrection", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const token = createWorkerToken();
+    const [row] = await db
+      .insert(executionTargets)
+      .values({ organizationId: ORG, slug: "wkr-revoked", kind: "dedicated_worker", trustClass: "dedicated_tenant", status: "active", workerTokenHash: hashWorkerToken(token) })
+      .returning();
+
+    const revoked = await revokeExecutionTargetWorkerToken(db, { organizationId: ORG, targetId: row!.id });
+    expect(revoked).toEqual(expect.objectContaining({ id: row!.id, status: "disabled" }));
+    expect(revoked).not.toHaveProperty("workerTokenHash");
+    expect(await resolveWorkerTargetId(db, token)).toBeNull();
+    await expect(
+      rotateExecutionTargetWorkerToken(db, { organizationId: ORG, targetId: row!.id }),
+    ).resolves.toBeNull();
+    expect((await registerWorkerHeartbeat(db, { targetId: row!.id, status: "active" })).updated).toBe(0);
+    const [after] = await db
+      .select({ status: executionTargets.status, workerTokenHash: executionTargets.workerTokenHash })
+      .from(executionTargets)
+      .where(eq(executionTargets.id, row!.id));
+    expect(after).toEqual({ status: "disabled", workerTokenHash: null });
   }, 90_000);
 
   it("environmentService exposes the executionTargetId FK but NEVER the worker secret", async () => {

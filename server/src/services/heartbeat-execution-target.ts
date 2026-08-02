@@ -6,6 +6,20 @@
 // (or null when routing fell back to local), it produces the config the run
 // dispatches with. A null routed target returns the input config UNCHANGED (same
 // reference) — the self-hosted/default-off fallback path stays byte-identical.
+import type { Db } from "@armyofagents/db";
+import { resolveCompanyOrganizationId } from "./org-concurrency.js";
+
+export async function resolveHeartbeatExecutionTargetOrganizationId(
+  db: Db,
+  input: { companyId: string; tenantIsolationEnforced: boolean },
+): Promise<string | null> {
+  const organizationId = await resolveCompanyOrganizationId(db, input.companyId);
+  if (!organizationId && input.tenantIsolationEnforced) {
+    throw new Error(`Cloud heartbeat run cannot resolve an organization for company ${input.companyId}.`);
+  }
+  return organizationId;
+}
+
 export function mergeResolvedExecutionTarget(
   config: Record<string, unknown>,
   adapterConfig: Record<string, unknown> | null,

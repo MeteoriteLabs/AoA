@@ -2,9 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import type { StepProps } from "../registry";
 import { organizationsApi } from "../../api/organizations";
 import {
+  isConfirmedPendingTenant,
   readPendingTenant,
   writePendingTenant,
-  type PendingTenant,
+  type ConfirmedPendingTenant,
+  type PendingTenantAttempt,
 } from "../pendingTenant";
 import { Button } from "@/components/ui/button";
 import { Reveal } from "../motion";
@@ -37,12 +39,17 @@ export function CreateOrganizationStep({ ctx, onComplete }: StepProps) {
   const [name, setName] = useState(pendingAtMount?.name ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const createdRef = useRef<PendingTenant | null>(pendingAtMount);
+  const createdRef = useRef<ConfirmedPendingTenant | null>(
+    isConfirmedPendingTenant(pendingAtMount) ? pendingAtMount : null,
+  );
+  const attemptRef = useRef<PendingTenantAttempt | null>(
+    pendingAtMount && !isConfirmedPendingTenant(pendingAtMount) ? pendingAtMount : null,
+  );
 
   // Auto-resolve on mount when a persisted tenant exists (post-reload / strand
   // resume): adopt its id and advance to the company step without re-creating.
   useEffect(() => {
-    if (!pendingAtMount) return;
+    if (!isConfirmedPendingTenant(pendingAtMount)) return;
     ctx.setOrganizationId?.(pendingAtMount.id);
     onComplete();
     // Mount-only: pendingAtMount is frozen for this mount; re-running on
@@ -64,8 +71,20 @@ export function CreateOrganizationStep({ ctx, onComplete }: StepProps) {
     setBusy(true);
     setError(null);
     try {
-      const org = await organizationsApi.create({ name: name.trim() });
-      const pending: PendingTenant = { id: org.id, name: org.name };
+      const normalizedName = name.trim();
+      const attempt =
+        attemptRef.current?.name === normalizedName
+          ? attemptRef.current
+          : { name: normalizedName, creationRequestId: crypto.randomUUID() };
+      attemptRef.current = attempt;
+      // Persist the request identity before the network call. If the server
+      // commits but the response is lost, a reload replays the same request.
+      writePendingTenant(ctx.userId, attempt);
+      const org = await organizationsApi.create({
+        name: normalizedName,
+        creationRequestId: attempt.creationRequestId,
+      });
+      const pending: ConfirmedPendingTenant = { id: org.id, name: org.name };
       createdRef.current = pending;
       // Persist BEFORE onComplete so a reload during the engine's re-read still
       // finds the recovery hint (OrgStep clears it once the company consumes it).

@@ -81,6 +81,20 @@ describe("applyPendingMigrations advisory lock (concurrent-replica safety)", () 
     expect(underLock).toContain("inspectMigrations(");
   });
 
+  it("enforces the snapshot gate under the lock before every apply path", () => {
+    const lockIdx = body.indexOf("pg_advisory_lock(");
+    const reinspectIdx = body.indexOf("const stateUnderLock = await inspectMigrations(");
+    const gateIdx = body.indexOf("assertMigrationSnapshotGate(");
+    const migrateIdx = body.indexOf("migratePg(");
+    const manualIdx = body.indexOf("applyPendingMigrationsManually(");
+
+    expect(lockIdx).toBeGreaterThan(-1);
+    expect(reinspectIdx).toBeGreaterThan(lockIdx);
+    expect(gateIdx).toBeGreaterThan(reinspectIdx);
+    expect(gateIdx).toBeLessThan(migrateIdx);
+    expect(gateIdx).toBeLessThan(manualIdx);
+  });
+
   it("uses a dedicated single-connection pool for the lock session", () => {
     // The lock must be held on its own connection for the whole inspect+apply.
     const lockIdx = body.indexOf("pg_advisory_lock(");

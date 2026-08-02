@@ -4,7 +4,7 @@ import { CreateOrganizationStep } from "../CreateOrganizationStep";
 import { validateRegistry, type StepContext } from "../../registry";
 import { ONBOARDING_STEPS } from "../index";
 
-const createOrg = vi.fn(async (_: { name: string }) => ({ id: "org1", name: "Acme" }));
+const createOrg = vi.fn(async (_: { name: string; creationRequestId?: string }) => ({ id: "org1", name: "Acme" }));
 vi.mock("../../../api/organizations", () => ({ organizationsApi: { create: (a: any) => createOrg(a) } }));
 
 const ctx: StepContext = {
@@ -48,7 +48,10 @@ describe("CreateOrganizationStep", () => {
     );
     fireEvent.change(screen.getByLabelText(/organization name/i), { target: { value: "Acme" } });
     fireEvent.click(screen.getByRole("button", { name: /continue/i }));
-    await waitFor(() => expect(createOrg).toHaveBeenCalledWith({ name: "Acme" }));
+    await waitFor(() => expect(createOrg).toHaveBeenCalledWith({
+      name: "Acme",
+      creationRequestId: expect.any(String),
+    }));
     await waitFor(() => expect(setOrganizationId).toHaveBeenCalledWith("org1"));
     await waitFor(() => expect(onComplete).toHaveBeenCalled());
   });
@@ -82,6 +85,29 @@ describe("CreateOrganizationStep", () => {
     expect(createOrg).toHaveBeenCalledTimes(1);
     expect(setOrganizationId).toHaveBeenCalledWith("org1");
     expect(localStorage.getItem("aoa.onboarding.pendingTenant.u1")).toContain('"id":"org1"');
+  });
+
+  it("persists and reuses the request id after a lost create response", async () => {
+    createOrg
+      .mockRejectedValueOnce(new Error("response lost"))
+      .mockResolvedValueOnce({ id: "org1", name: "Acme" });
+    const first = render(
+      <CreateOrganizationStep ctx={ctx} onComplete={vi.fn()} onBack={() => {}} />,
+    );
+    fireEvent.change(screen.getByLabelText(/organization name/i), { target: { value: "Acme" } });
+    fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+    expect(await screen.findByText("response lost")).toBeTruthy();
+    const firstRequestId = createOrg.mock.calls[0]?.[0].creationRequestId;
+    expect(firstRequestId).toEqual(expect.any(String));
+    expect(localStorage.getItem("aoa.onboarding.pendingTenant.u1")).toContain(firstRequestId);
+
+    first.unmount();
+    const onComplete = vi.fn();
+    render(<CreateOrganizationStep ctx={ctx} onComplete={onComplete} onBack={() => {}} />);
+    expect(onComplete).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+    await waitFor(() => expect(onComplete).toHaveBeenCalled());
+    expect(createOrg.mock.calls[1]?.[0].creationRequestId).toBe(firstRequestId);
   });
 
   it("does NOT create a second org after a reload (remount) — adopts the persisted tenant", async () => {

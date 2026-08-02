@@ -12,6 +12,24 @@ const orgConcurrencySource = readFileSync(
 );
 
 describe("cloud org-concurrency claim wiring", () => {
+  it("threads Company -> Organization into execution-target routing without enabling org-default credentials", () => {
+    const providerResolutionIndex = heartbeatSource.indexOf("const hbResolved = await resolveProviderCredential(");
+    const executionTargetOrgIndex = heartbeatSource.indexOf(
+      "resolveHeartbeatExecutionTargetOrganizationId(db",
+      providerResolutionIndex,
+    );
+    const targetRoutingIndex = heartbeatSource.indexOf("resolveExecutionTargetForRun(db", executionTargetOrgIndex);
+    const providerResolution = heartbeatSource.slice(providerResolutionIndex, executionTargetOrgIndex);
+    const targetRouting = heartbeatSource.slice(executionTargetOrgIndex, targetRoutingIndex + 500);
+
+    expect(providerResolutionIndex).toBeGreaterThan(-1);
+    expect(executionTargetOrgIndex).toBeGreaterThan(providerResolutionIndex);
+    expect(targetRoutingIndex).toBeGreaterThan(executionTargetOrgIndex);
+    expect(providerResolution).toContain("organizationId: null");
+    expect(targetRouting).toContain("organizationId: executionTargetOrganizationId");
+    expect(targetRouting).toContain("tenantIsolationEnforced: tenantIsolationEnforced()");
+  });
+
   it("resolves Company -> Organization and uses the atomic helper only in cloud mode", () => {
     const singleAgentFunction = heartbeatSource.slice(
       heartbeatSource.indexOf("async function startQueuedRunsForSingleAgent"),

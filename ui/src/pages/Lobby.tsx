@@ -6,7 +6,10 @@ import { useCompany } from "@/context/CompanyContext";
 import { profileApi } from "@/api/profile";
 import { companiesApi, type CompanyStats } from "@/api/companies";
 import { getOnboardingProgress } from "@/api/onboarding";
-import { readPendingOrganization } from "@/onboarding/pendingOrganization";
+import {
+  isConfirmedPendingOrganization,
+  readPendingOrganization,
+} from "@/onboarding/pendingOrganization";
 import { queryKeys } from "@/lib/queryKeys";
 import { LobbyCompanyCard } from "@/components/LobbyCompanyCard";
 import { LobbyEmptyState } from "@/components/LobbyEmptyState";
@@ -54,7 +57,10 @@ export function Lobby({
   const pendingOrganization = profile?.id ? readPendingOrganization(profile.id) : null;
   const interruptedCompanies = visibleCompanies.filter((_, index) => {
     const progress = progressQueries[index]?.data;
-    if (progress == null) return pendingOrganization?.id === visibleCompanies[index]?.id;
+    if (progress == null) {
+      return isConfirmedPendingOrganization(pendingOrganization) &&
+        pendingOrganization.id === visibleCompanies[index]?.id;
+    }
     return !progress.completedStates.includes("SETUP_COMPLETE");
   });
 

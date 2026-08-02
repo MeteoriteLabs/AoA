@@ -90,9 +90,17 @@ These identifiers are wire-compat and will not change. See [Wire Compatibility R
 
 4. **Run database migrations.**
    ```bash
-   pnpm db:migrate
+   AOA_DEPLOYMENT_MODE=authenticated pnpm db:migrate
    ```
    If you have `AOA_MIGRATION_AUTO_APPLY=true` set, migrations run automatically on server start — you can skip this step.
+
+   Replace `authenticated` with the deployment's configured mode. Before
+   applying migration `0188` to a populated `cloud_auth` database, take
+   a full database snapshot and record `"0188"` in
+   `instance_settings.general.migrationSnapshots`. The same gate is enforced by
+   server auto-apply and `pnpm db:migrate`. A manual migration with no explicit
+   deployment mode fails closed for this one-way cutover rather than assuming
+   local trusted mode.
 
 5. **Restart the server.**
    ```bash

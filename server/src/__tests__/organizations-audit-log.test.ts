@@ -20,7 +20,7 @@ vi.mock("../middleware/logger.js", () => ({
 // without a real db, and stub the access-service factory the router constructs.
 const CREATED_ORG = { id: "org-new-1", name: "Acme", slug: "acme" };
 vi.mock("../services/organizations.js", () => ({
-  createSelfServeOrganization: vi.fn(async () => CREATED_ORG),
+  createSelfServeOrganization: vi.fn(async () => ({ organization: CREATED_ORG, created: true })),
 }));
 vi.mock("../services/organization-access.js", () => ({
   organizationAccessService: () => ({ listOrgMemberships: async () => [] }),
@@ -65,5 +65,21 @@ describe("self-serve organization creation — audit trail (Fix B)", () => {
       }),
       "self-serve organization created",
     );
+  });
+
+  it("does not emit a duplicate audit line when an idempotent request is replayed", async () => {
+    const { createSelfServeOrganization } = await import("../services/organizations.js");
+    vi.mocked(createSelfServeOrganization).mockResolvedValueOnce({
+      organization: CREATED_ORG,
+      created: false,
+    } as never);
+
+    const res = await request(makeApp(boardUser))
+      .post("/api/organizations")
+      .send({ name: "Acme", creationRequestId: "d259a6f1-d10a-4f79-a057-d47d3ef11152" });
+
+    expect(res.status).toBe(201);
+    expect(res.body.id).toBe(CREATED_ORG.id);
+    expect(infoSpy).not.toHaveBeenCalled();
   });
 });

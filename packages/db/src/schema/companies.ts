@@ -19,6 +19,9 @@ export const companies = pgTable(
     // NOT dropped in #316: that first needs every company-insert path audited to
     // set organization_id explicitly. Keep the .default(...) chain until then.
     organizationId: uuid("organization_id").notNull().default("00000000-0000-0000-0000-000000000001").references(() => organizations.id, { onDelete: "restrict" }),
+    // Optional client-generated replay anchor for company creation. The same
+    // request may only materialize once inside its owning Organization.
+    creationRequestId: uuid("creation_request_id"),
     name: text("name").notNull(),
     description: text("description"),
     status: text("status").notNull().default("active"),
@@ -72,5 +75,9 @@ export const companies = pgTable(
     // Company-qualified routes can safely relax this back to per-Organization.
     // The 23505 retry in companyService keys on this constraint name.
     issuePrefixUniqueIdx: uniqueIndex("companies_issue_prefix_idx").on(table.issuePrefix),
+    organizationCreationRequestUq: uniqueIndex("companies_organization_creation_request_uq").on(
+      table.organizationId,
+      table.creationRequestId,
+    ),
   }),
 );

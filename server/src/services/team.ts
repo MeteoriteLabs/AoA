@@ -1217,3 +1217,37 @@ export async function materializeCompanyProfileFromGlobal(
     attributionUserId,
   );
 }
+
+/**
+ * Repair a missing founder company profile after an idempotent company-create
+ * replay without overwriting company-specific edits made after the original
+ * create. The unique key makes the insert race-safe: an existing or concurrently
+ * created profile wins unchanged.
+ */
+export async function ensureCompanyProfileFromGlobal(
+  db: Db,
+  companyId: string,
+  userId: string,
+  attributionUserId: string | null,
+): Promise<void> {
+  const globalProfile = await getUserProfile(db, userId);
+  const socialLinks = (globalProfile?.socialLinks ?? []).flatMap((link) => {
+    const parsed = humanSocialLinkSchema.safeParse(link);
+    return parsed.success ? [parsed.data] : [];
+  });
+  await db
+    .insert(companyUserProfiles)
+    .values({
+      companyId,
+      userId,
+      displayName: globalProfile?.displayName ?? null,
+      title: globalProfile?.title ?? null,
+      bio: globalProfile?.bio ?? null,
+      timezone: globalProfile?.timezone ?? null,
+      socialLinks,
+      updatedByUserId: attributionUserId,
+    })
+    .onConflictDoNothing({
+      target: [companyUserProfiles.companyId, companyUserProfiles.userId],
+    });
+}

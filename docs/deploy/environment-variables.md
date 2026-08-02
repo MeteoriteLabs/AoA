@@ -16,8 +16,8 @@ All environment variables that AoA reads. Grouped by concern. The list is verifi
 | `DATABASE_URL` | (embedded) | PostgreSQL connection string. If unset, AoA boots `embedded-postgres@18.x` automatically |
 | `AOA_HOME` | `~/.aoa` (with legacy `~/.paperclip` fallback) | Base directory for all AoA data. Resolved by `cli/src/config/home.ts`: prefers `~/.aoa/`, falls back to `~/.paperclip/` if the legacy dir exists and the new one does not |
 | `AOA_INSTANCE_ID` | `default` | Instance identifier (for multiple local instances on one machine) |
-| `AOA_DEPLOYMENT_MODE` | `local_trusted` | `local_trusted` or `authenticated` |
-| `AOA_DEPLOYMENT_EXPOSURE` | `private` | `private` or `public`. Only meaningful when `AOA_DEPLOYMENT_MODE=authenticated` |
+| `AOA_DEPLOYMENT_MODE` | `local_trusted` | `local_trusted`, `authenticated`, or `cloud_auth`. Pass the configured value to manual `pnpm db:migrate` runs so migration safety policy is explicit. |
+| `AOA_DEPLOYMENT_EXPOSURE` | `private` | `private` or `public`. Meaningful for `authenticated`; `cloud_auth` requires `public`. |
 | `AOA_PUBLIC_URL` | (derived) | Public-facing URL for deployment. Used in invite links and webhook URLs |
 | `AOA_DEPLOY_SHA` | (unset) | Exact lowercase 40-character Git commit injected by the trusted deployment workflow. The server exposes it from `/api/health` so deployment health checks can prove the running container matches the requested revision. Leave unset for ordinary local development. |
 | `AOA_IMAGE_REVISION` | `unknown` | Build-time revision written to the container's `org.opencontainers.image.revision` label. When supplied to the server as an exact lowercase 40-character Git SHA, marketplace reconciliation also accepts it as a fallback if `AOA_DEPLOY_SHA` is absent. The trusted remote deployment passes the same reviewed SHA to both values. |

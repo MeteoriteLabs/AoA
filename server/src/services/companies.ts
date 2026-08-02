@@ -1,4 +1,5 @@
-import { and, eq, count, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, count, inArray, isNull, sql } from "drizzle-orm";
+import { isDeepStrictEqual } from "node:util";
 import type { Db } from "@armyofagents/db";
 import { DEFAULT_ORGANIZATION_ID } from "@armyofagents/shared";
 import { memoryFoldersService, seedCompanyRootFolder } from "./memory-folders.js";
@@ -56,12 +57,14 @@ import {
   runtimeProviderKeys,
   workspaceOperations,
   workspaceRuntimeServices,
+  userRoles,
 } from "@armyofagents/db";
 import { notCrewAssigned } from "./issue-crew-scope.js";
 // Type-only (mirrors Fix 5's `import type { organizationAccessService }`): lets
 // `createWithOperator` accept a `buildAccess` factory typed against the access
 // service WITHOUT a runtime companies↔access import cycle.
 import type { accessService } from "./access.js";
+import { conflict } from "../errors.js";
 
 type CompanyStatsEntry = {
   agentCount: number;
@@ -118,6 +121,104 @@ export function companyService(db: Db) {
     }
 
     return false;
+  }
+
+  function isCreationRequestConflict(error: unknown) {
+    let current: unknown = error;
+    const seen = new Set<unknown>();
+    while (typeof current === "object" && current !== null && !seen.has(current)) {
+      seen.add(current);
+      const candidate = current as {
+        cause?: unknown;
+        code?: unknown;
+        constraint?: unknown;
+        constraint_name?: unknown;
+      };
+      const constraint = typeof candidate.constraint === "string"
+        ? candidate.constraint
+        : typeof candidate.constraint_name === "string"
+          ? candidate.constraint_name
+          : undefined;
+      if (
+        candidate.code === "23505" &&
+        constraint === "companies_organization_creation_request_uq"
+      ) {
+        return true;
+      }
+      current = candidate.cause;
+    }
+    return false;
+  }
+
+  function sameJson(left: unknown, right: unknown): boolean {
+    return isDeepStrictEqual(left ?? {}, right ?? {});
+  }
+
+  function companyCreationPayloadMatches(
+    existing: typeof companies.$inferSelect,
+    data: Omit<typeof companies.$inferInsert, "organizationId"> & { organizationId?: string },
+    organizationId: string,
+  ): boolean {
+    return (
+      existing.organizationId === organizationId &&
+      existing.name === data.name &&
+      existing.description === (data.description ?? null) &&
+      existing.status === (data.status ?? "active") &&
+      existing.budgetMonthlyCents === (data.budgetMonthlyCents ?? 0) &&
+      existing.requireBoardApprovalForNewAgents ===
+        (data.requireBoardApprovalForNewAgents ?? true) &&
+      existing.agentCompletionPolicyDefault ===
+        (data.agentCompletionPolicyDefault ?? "review_required") &&
+      existing.agentCompletionReviewGuardrail ===
+        (data.agentCompletionReviewGuardrail ?? false) &&
+      existing.humanQuestionSlaHours === (data.humanQuestionSlaHours ?? 24) &&
+      existing.rootFolder === (data.rootFolder ?? null) &&
+      existing.brandColor === (data.brandColor ?? null) &&
+      sameJson(existing.commanderAdapterConfig, data.commanderAdapterConfig) &&
+      sameJson(existing.crewAdapterConfig, data.crewAdapterConfig)
+    );
+  }
+
+  async function resolveCompanyCreationReplay(
+    handle: Db,
+    data: Omit<typeof companies.$inferInsert, "organizationId"> & { organizationId?: string },
+  ) {
+    if (!data.creationRequestId) return null;
+    const organizationId = data.organizationId ?? DEFAULT_ORGANIZATION_ID;
+    const existing = await handle
+      .select()
+      .from(companies)
+      .where(
+        and(
+          eq(companies.organizationId, organizationId),
+          eq(companies.creationRequestId, data.creationRequestId),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    if (!existing) return null;
+    if (!companyCreationPayloadMatches(existing, data, organizationId)) {
+      throw conflict("Company creation request was already used with different details");
+    }
+    return existing;
+  }
+
+  async function resolveCompanyFoundingOperator(handle: Db, companyId: string): Promise<string> {
+    const founder = await handle
+      .select({ userId: userRoles.userId })
+      .from(userRoles)
+      .where(
+        and(
+          eq(userRoles.companyId, companyId),
+          eq(userRoles.role, "founder"),
+        ),
+      )
+      .orderBy(asc(userRoles.createdAt), asc(userRoles.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!founder) {
+      throw new Error(`Company creation replay cannot resolve founding operator for ${companyId}`);
+    }
+    return founder.userId;
   }
 
   // Group A (P3 extraction) — the OPERATOR-INDEPENDENT company seeders. These
@@ -268,18 +369,64 @@ export function companyService(db: Db) {
   // Group A (operator-independent seeders) runs best-effort AFTER the committed
   // tx — never inside it, so a non-critical seed failure cannot roll back a
   // committed company. Group B (operator-dependent) stays with the caller.
-  async function createWithOperator(
+  async function createWithOperator<TActivity = never>(
     data: Omit<typeof companies.$inferInsert, "organizationId"> & { organizationId?: string },
     opts: CreateCompanyOptions,
     ownerUserId: string | null | undefined,
     buildAccess: (handle: Db) => Pick<ReturnType<typeof accessService>, "ensureRealOperator">,
-  ): Promise<{ company: typeof companies.$inferSelect; operatorId: string }> {
+    recordActivity?: (
+      handle: Db,
+      company: typeof companies.$inferSelect,
+      operatorId: string,
+    ) => Promise<TActivity>,
+  ): Promise<{
+    company: typeof companies.$inferSelect;
+    operatorId: string;
+    created: boolean;
+    committedActivity: TActivity | null;
+  }> {
+    const initialReplay = await resolveCompanyCreationReplay(db, data);
+    if (initialReplay) {
+      // A prior request may have committed immediately before the process died
+      // in the best-effort bootstrap phase. Reconcile the idempotent Group-A
+      // resources on every replay so response-loss recovery also repairs a
+      // partially bootstrapped company.
+      const operatorId = await resolveCompanyFoundingOperator(db, initialReplay.id);
+      await seedNewCompanyBestEffort(initialReplay.id, opts.requestedByUserId ?? null);
+      return {
+        company: initialReplay,
+        operatorId,
+        created: false,
+        committedActivity: null,
+      };
+    }
     const base = deriveIssuePrefixBase(data.name);
     let suffix = 1;
     while (suffix < 10000) {
       const candidate = `${base}${suffixForAttempt(suffix)}`;
       try {
-        const { company, operatorId } = await db.transaction(async (tx) => {
+        const result = await db.transaction(async (tx) => {
+          if (data.creationRequestId) {
+            // Serialize the Organization-scoped request key. Another
+            // Organization may legitimately use the same random UUID because
+            // the durable key is the composite (organizationId, requestId).
+            await tx.execute(
+              sql`SELECT pg_advisory_xact_lock(hashtext('aoa:company-create'), hashtext(${`${data.organizationId ?? DEFAULT_ORGANIZATION_ID}:${data.creationRequestId}`}))`,
+            );
+            const replay = await resolveCompanyCreationReplay(tx as unknown as Db, data);
+            if (replay) {
+              const operatorId = await resolveCompanyFoundingOperator(
+                tx as unknown as Db,
+                replay.id,
+              );
+              return {
+                company: replay,
+                operatorId,
+                created: false as const,
+                committedActivity: null,
+              };
+            }
+          }
           const rows = await tx
             .insert(companies)
             .values({
@@ -293,11 +440,34 @@ export function companyService(db: Db) {
             inserted.id,
             ownerUserId,
           );
-          return { company: inserted, operatorId: opId };
+          const activity = recordActivity
+            ? await recordActivity(tx as unknown as Db, inserted, opId)
+            : null;
+          return {
+            company: inserted,
+            operatorId: opId,
+            created: true as const,
+            committedActivity: activity,
+          };
         });
-        await seedNewCompanyBestEffort(company.id, opts.requestedByUserId ?? null);
-        return { company, operatorId };
+        // These ensure-style seeders are idempotent and intentionally run for
+        // both a new commit and an advisory-lock replay.
+        await seedNewCompanyBestEffort(result.company.id, opts.requestedByUserId ?? null);
+        return result;
       } catch (error) {
+        if (data.creationRequestId && isCreationRequestConflict(error)) {
+          const replay = await resolveCompanyCreationReplay(db, data);
+          if (replay) {
+            const operatorId = await resolveCompanyFoundingOperator(db, replay.id);
+            await seedNewCompanyBestEffort(replay.id, opts.requestedByUserId ?? null);
+            return {
+              company: replay,
+              operatorId,
+              created: false,
+              committedActivity: null,
+            };
+          }
+        }
         if (!isIssuePrefixConflict(error)) throw error;
       }
       suffix += 1;
@@ -350,7 +520,11 @@ export function companyService(db: Db) {
       // seam for any direct/non-route caller. No legitimate caller passes
       // organizationId here (company-portability import update passes only
       // name/description/brandColor/requireBoardApprovalForNewAgents).
-      const { organizationId: _omitOrganizationId, ...mutable } = data;
+      const {
+        organizationId: _omitOrganizationId,
+        creationRequestId: _omitCreationRequestId,
+        ...mutable
+      } = data;
       return db
         .update(companies)
         .set({ ...mutable, updatedAt: new Date() })

@@ -37,6 +37,7 @@ export const companiesApi = {
     // later, don't need to send it). The onboarding CompanyContext.createCompany
     // caller always supplies it.
     organizationId?: string;
+    creationRequestId?: string;
     description?: string | null;
     budgetMonthlyCents?: number;
   }) => api.post<Company>("/companies", data),

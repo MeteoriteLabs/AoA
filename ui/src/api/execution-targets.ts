@@ -15,7 +15,18 @@ export interface ExecutionTargetSummary {
   lastSeenAt: string | null;
 }
 
+export interface ExecutionTargetRegistration extends ExecutionTargetSummary {
+  workerToken: string;
+}
+
 export const executionTargetsApi = {
   list: (organizationId: string) =>
     api.get<ExecutionTargetSummary[]>(`/organizations/${organizationId}/execution-targets`),
+  rotateToken: (organizationId: string, targetId: string) =>
+    api.post<ExecutionTargetRegistration>(
+      `/organizations/${organizationId}/execution-targets/${targetId}/rotate-token`,
+      {},
+    ),
+  revoke: (organizationId: string, targetId: string) =>
+    api.post<ExecutionTargetSummary>(`/organizations/${organizationId}/execution-targets/${targetId}/revoke`, {}),
 };

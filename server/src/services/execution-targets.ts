@@ -18,12 +18,63 @@ export async function resolveWorkerTargetId(db: Db, token: string): Promise<stri
   const rows = await db
     .select({ id: executionTargets.id })
     .from(executionTargets)
-    .where(eq(executionTargets.workerTokenHash, hashWorkerToken(trimmed)));
+    .where(
+      and(
+        eq(executionTargets.workerTokenHash, hashWorkerToken(trimmed)),
+        ne(executionTargets.status, "disabled"),
+      ),
+    );
   return rows[0]?.id ?? null;
 }
 export function stripWorkerSecret<T extends { workerTokenHash?: unknown }>(row: T): Omit<T, "workerTokenHash"> {
   const { workerTokenHash: _omit, ...rest } = row;
   return rest;
+}
+
+export async function rotateExecutionTargetWorkerToken(
+  db: Db,
+  input: { organizationId: string; targetId: string },
+) {
+  const workerToken = createWorkerToken();
+  const [row] = await db
+    .update(executionTargets)
+    .set({
+      workerTokenHash: hashWorkerToken(workerToken),
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(executionTargets.id, input.targetId),
+        eq(executionTargets.organizationId, input.organizationId),
+        ne(executionTargets.status, "disabled"),
+      ),
+    )
+    .returning();
+
+  if (!row) return null;
+  return { target: stripWorkerSecret(row), workerToken };
+}
+
+export async function revokeExecutionTargetWorkerToken(
+  db: Db,
+  input: { organizationId: string; targetId: string },
+) {
+  const [row] = await db
+    .update(executionTargets)
+    .set({
+      workerTokenHash: null,
+      status: "disabled",
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(executionTargets.id, input.targetId),
+        eq(executionTargets.organizationId, input.organizationId),
+      ),
+    )
+    .returning();
+
+  return row ? stripWorkerSecret(row) : null;
 }
 
 /**

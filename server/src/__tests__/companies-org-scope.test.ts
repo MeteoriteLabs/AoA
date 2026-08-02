@@ -24,7 +24,7 @@ vi.mock("../services/index.js", () => ({
     createWithOperator: async (input: any, opts: any, ownerUserId: any, buildAccess: any) => {
       const company = await create(input, opts);
       const operatorId = await buildAccess(undefined).ensureRealOperator(company.id, ownerUserId);
-      return { company, operatorId };
+      return { company, operatorId, created: true, committedActivity: null };
     },
     stats,
     getById: vi.fn(),
@@ -50,6 +50,7 @@ vi.mock("../services/internal-agent/aoa-agents/ensure-commander.js", () => ({
 }));
 vi.mock("../services/team.js", () => ({
   materializeCompanyProfileFromGlobal: vi.fn().mockResolvedValue(undefined),
+  ensureCompanyProfileFromGlobal: vi.fn().mockResolvedValue(undefined),
 }));
 
 import { companyRoutes } from "../routes/companies.js";

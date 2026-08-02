@@ -48,11 +48,14 @@ describe("organization routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     routeSpies.createSelfServeOrganization.mockResolvedValue({
-      id: "org-new",
-      name: "Acme",
-      slug: "acme",
-      status: "active",
-      plan: "beta",
+      organization: {
+        id: "org-new",
+        name: "Acme",
+        slug: "acme",
+        status: "active",
+        plan: "beta",
+      },
+      created: true,
     });
     routeSpies.listOrgMemberships.mockResolvedValue([]);
   });
@@ -65,7 +68,7 @@ describe("organization routes", () => {
     expect(res.body).toMatchObject({ id: "org-new", name: "Acme" });
     expect(routeSpies.createSelfServeOrganization).toHaveBeenCalledWith(
       db,
-      { name: "Acme", ownerUserId: "user-1" },
+      { name: "Acme", ownerUserId: "user-1", creationRequestId: undefined },
       expect.any(Function),
     );
     expect(routeSpies.loggerInfo).toHaveBeenCalledWith(
@@ -76,6 +79,27 @@ describe("organization routes", () => {
       }),
       "self-serve organization created",
     );
+  });
+
+  it("forwards a valid request id and rejects a malformed one", async () => {
+    const { app, db } = makeApp(boardActor);
+    const creationRequestId = "d259a6f1-d10a-4f79-a057-d47d3ef11152";
+    const valid = await request(app)
+      .post("/api/organizations")
+      .send({ name: "Acme", creationRequestId });
+    expect(valid.status).toBe(201);
+    expect(routeSpies.createSelfServeOrganization).toHaveBeenCalledWith(
+      db,
+      { name: "Acme", ownerUserId: "user-1", creationRequestId },
+      expect.any(Function),
+    );
+
+    routeSpies.createSelfServeOrganization.mockClear();
+    const invalid = await request(app)
+      .post("/api/organizations")
+      .send({ name: "Acme", creationRequestId: "not-a-uuid" });
+    expect(invalid.status).toBe(400);
+    expect(routeSpies.createSelfServeOrganization).not.toHaveBeenCalled();
   });
 
   it("rejects organization creation without a signed-in board user", async () => {

@@ -9,6 +9,14 @@ describe("organization validators", () => {
     const parsed = createOrganizationSchema.parse({ name: "  Acme  " });
     expect(parsed.name).toBe("Acme");
   });
+  it("accepts an optional UUID request id and rejects a malformed one", () => {
+    const creationRequestId = "d259a6f1-d10a-4f79-a057-d47d3ef11152";
+    expect(createOrganizationSchema.parse({ name: "Acme", creationRequestId }))
+      .toMatchObject({ creationRequestId });
+    expect(() =>
+      createOrganizationSchema.parse({ name: "Acme", creationRequestId: "not-a-uuid" }),
+    ).toThrow();
+  });
   it("normalizes organization names to NFC", () => {
     const parsed = createOrganizationSchema.parse({ name: "  Cafe\u0301  " });
     expect(parsed.name).toBe("Caf\u00e9");

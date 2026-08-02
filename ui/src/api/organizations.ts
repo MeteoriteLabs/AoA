@@ -17,6 +17,7 @@ export interface OrganizationMembership {
 }
 
 export const organizationsApi = {
-  create: (data: { name: string }) => api.post<Organization>("/organizations", data),
+  create: (data: { name: string; creationRequestId?: string }) =>
+    api.post<Organization>("/organizations", data),
   list: () => api.get<OrganizationMembership[]>("/organizations"),
 };

@@ -37,6 +37,7 @@ import {
 import {
   mergeResolvedExecutionTarget,
   handleExecutionTargetRoutingError,
+  resolveHeartbeatExecutionTargetOrganizationId,
 } from "./heartbeat-execution-target.js";
 import type { TrustBoundary } from "./cli-auth-topology.js";
 import { assertUnsandboxedMultitenantAllowed } from "./unsandboxed-multitenant-guard.js";
@@ -3327,8 +3328,12 @@ export function heartbeatService(db: Db) {
     // executionTarget untouched (config reference preserved). Routing is best-effort:
     // a routing error (e.g. an unavailable environment pin) logs and falls back to
     // local rather than failing the run.
+    const executionTargetOrganizationId = await resolveHeartbeatExecutionTargetOrganizationId(db, {
+      companyId: agent.companyId,
+      tenantIsolationEnforced: tenantIsolationEnforced(),
+    });
     const routedExecutionTarget = await resolveExecutionTargetForRun(db, {
-      organizationId: (agent as { organizationId?: string | null }).organizationId ?? null,
+      organizationId: executionTargetOrganizationId,
       companyId: agent.companyId,
       credentialKind: p4CredentialHint.credentialKind,
       executionTargetSlug: p4CredentialHint.executionTargetSlug,

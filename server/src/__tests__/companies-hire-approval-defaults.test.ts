@@ -25,7 +25,7 @@ vi.mock("../services/index.js", () => ({
     createWithOperator: vi.fn(async (input: any, opts: any, ownerUserId: any, buildAccess: any) => {
       const company = await mockCreate(input, opts);
       const operatorId = await buildAccess(undefined).ensureRealOperator(company.id, ownerUserId);
-      return { company, operatorId };
+      return { company, operatorId, created: true, committedActivity: null };
     }),
     update: vi.fn(),
     archive: vi.fn(),

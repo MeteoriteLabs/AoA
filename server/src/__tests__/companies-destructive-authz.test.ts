@@ -16,7 +16,10 @@ vi.mock("../services/index.js", () => ({
 }));
 vi.mock("../services/internal-agent/aoa-skills-seeder.js", () => ({ seedAoaNativeSkills: vi.fn() }));
 vi.mock("../services/internal-agent/aoa-agents/ensure-commander.js", () => ({ ensureCommanderAgent: vi.fn() }));
-vi.mock("../services/team.js", () => ({ materializeCompanyProfileFromGlobal: vi.fn() }));
+vi.mock("../services/team.js", () => ({
+  materializeCompanyProfileFromGlobal: vi.fn(),
+  ensureCompanyProfileFromGlobal: vi.fn(),
+}));
 
 import { companyRoutes } from "../routes/companies.js";
 import { errorHandler } from "../middleware/error-handler.js";

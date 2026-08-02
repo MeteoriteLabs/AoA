@@ -29,6 +29,29 @@ vi.mock("../services/execution-targets.js", () => ({
   },
   listExecutionTargets: async () => [],
   registerWorkerHeartbeat: async () => ({ updated: 1 }),
+  rotateExecutionTargetWorkerToken: async (_db: unknown, input: { organizationId: string; targetId: string }) =>
+    input.organizationId === "77777777-7777-4777-8777-777777777777" &&
+    input.targetId === "88888888-8888-4888-8888-888888888888"
+      ? {
+          target: {
+            id: input.targetId,
+            organizationId: input.organizationId,
+            slug: "et-1",
+            status: "active",
+          },
+          workerToken: "aoa_wtk_rotated",
+        }
+      : null,
+  revokeExecutionTargetWorkerToken: async (_db: unknown, input: { organizationId: string; targetId: string }) =>
+    input.organizationId === "77777777-7777-4777-8777-777777777777" &&
+    input.targetId === "88888888-8888-4888-8888-888888888888"
+      ? {
+          id: input.targetId,
+          organizationId: input.organizationId,
+          slug: "et-1",
+          status: "disabled",
+        }
+      : null,
   resolveWorkerTargetId: async (_db: unknown, token: string) =>
     token === "aoa_wtk_valid" ? "et-abc-123" : null,
 }));
@@ -38,6 +61,7 @@ import { executionTargetRoutes } from "../routes/execution-targets.js";
 import { errorHandler } from "../middleware/error-handler.js";
 
 const ORG = "77777777-7777-4777-8777-777777777777";
+const TARGET = "88888888-8888-4888-8888-888888888888";
 const INSERTED = {
   id: "et-abc-123",
   organizationId: ORG,
@@ -102,6 +126,69 @@ describe("execution-target registration — audit trail (finding ②)", () => {
     const payload = infoSpy.mock.calls[0]![0];
     expect(payload).not.toHaveProperty("workerToken");
     expect(payload).not.toHaveProperty("workerTokenHash");
+  });
+
+  it("rotates a same-org worker token, returns it once, and audits without secrets", async () => {
+    const res = await request(makeApp(boardAdmin)).post(
+      `/api/organizations/${ORG}/execution-targets/${TARGET}/rotate-token`,
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(
+      expect.objectContaining({ id: TARGET, organizationId: ORG, workerToken: "aoa_wtk_rotated" }),
+    );
+    expect(res.body.workerTokenHash).toBeUndefined();
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "execution_target.worker_token.rotated",
+        organizationId: ORG,
+        executionTargetId: TARGET,
+        operatorUserId: "operator-9",
+        scope: "org_scoped",
+      }),
+      "execution target worker token rotated",
+    );
+    const payload = infoSpy.mock.calls[0]![0];
+    expect(payload).not.toHaveProperty("workerToken");
+    expect(payload).not.toHaveProperty("workerTokenHash");
+  });
+
+  it("revokes and disables a same-org target, and audits without secrets", async () => {
+    const res = await request(makeApp(boardAdmin)).post(
+      `/api/organizations/${ORG}/execution-targets/${TARGET}/revoke`,
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(expect.objectContaining({ id: TARGET, organizationId: ORG, status: "disabled" }));
+    expect(res.body.workerToken).toBeUndefined();
+    expect(res.body.workerTokenHash).toBeUndefined();
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "execution_target.worker_token.revoked",
+        organizationId: ORG,
+        executionTargetId: TARGET,
+        operatorUserId: "operator-9",
+        scope: "org_scoped",
+      }),
+      "execution target worker token revoked",
+    );
+    const payload = infoSpy.mock.calls[0]![0];
+    expect(payload).not.toHaveProperty("workerToken");
+    expect(payload).not.toHaveProperty("workerTokenHash");
+  });
+
+  it("returns 404 without an audit line when the target is outside the organization", async () => {
+    const otherOrg = "99999999-9999-4999-8999-999999999999";
+    const rotate = await request(makeApp(boardAdmin)).post(
+      `/api/organizations/${otherOrg}/execution-targets/${TARGET}/rotate-token`,
+    );
+    const revoke = await request(makeApp(boardAdmin)).post(
+      `/api/organizations/${otherOrg}/execution-targets/${TARGET}/revoke`,
+    );
+
+    expect(rotate.status).toBe(404);
+    expect(revoke.status).toBe(404);
+    expect(infoSpy).not.toHaveBeenCalled();
   });
 
   it("uses the standard 400 response for malformed registration input", async () => {

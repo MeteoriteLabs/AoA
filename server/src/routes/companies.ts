@@ -15,12 +15,16 @@ import { forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { assertRole } from "../middleware/rbac.js";
 import { accessService, companyPortabilityService, companyService, logActivity } from "../services/index.js";
+import { insertActivityLog, publishActivityLogged } from "../services/activity-log.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { invalidateCompanyTenant } from "./authz-tenant.js";
 import { tenantIsolationEnforced } from "../config/deployment-mode.js";
 import { seedAoaNativeSkills } from "../services/internal-agent/aoa-skills-seeder.js";
 import { ensureCommanderAgent } from "../services/internal-agent/aoa-agents/ensure-commander.js";
-import { materializeCompanyProfileFromGlobal } from "../services/team.js";
+import {
+  ensureCompanyProfileFromGlobal,
+  materializeCompanyProfileFromGlobal,
+} from "../services/team.js";
 import { logger } from "../middleware/logger.js";
 import { organizationAccessService } from "../services/organization-access.js";
 import type { OrgCapability } from "../services/organization-access.js";
@@ -315,11 +319,21 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
     // (operator-independent seeders) runs best-effort post-commit inside
     // createWithOperator; Group B (operator-dependent, below) stays here and
     // reuses the returned operatorId.
-    const { company, operatorId } = await svc.createWithOperator(
+    const { company, operatorId, created, committedActivity } = await svc.createWithOperator(
       { ...req.body, requireBoardApprovalForNewAgents, organizationId },
       { requestedByUserId: req.actor.userId ?? null },
       req.actor.userId,
       (tx) => accessService(tx),
+      (tx, inserted) =>
+        insertActivityLog(tx, {
+          companyId: inserted.id,
+          actorType: "user",
+          actorId: req.actor.userId ?? "board",
+          action: "company.created",
+          entityType: "company",
+          entityId: inserted.id,
+          details: { name: inserted.name },
+        }),
     );
     // Seed the founder's company Human Operating Profile from their GLOBAL
     // profile. Onboarding's HumanProfileStep writes only the global
@@ -328,7 +342,10 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
     // their own company Team page. The invited-approve and manual-add paths
     // already materialize via the same helper — founder-create was the gap.
     // Best-effort — never block company creation. (Codex P2)
-    await materializeCompanyProfileFromGlobal(db, company.id, operatorId, operatorId).catch((err) => {
+    const reconcileFounderProfile = created
+      ? materializeCompanyProfileFromGlobal
+      : ensureCompanyProfileFromGlobal;
+    await reconcileFounderProfile(db, company.id, operatorId, operatorId).catch((err) => {
       logger.warn(
         { err, companyId: company.id, userId: operatorId },
         "company create: founder profile seeding failed (non-fatal)",
@@ -350,15 +367,16 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
     await ensureCommanderAgent(db, company.id).catch(() => {
       // Never block company creation on Commander skill-init re-run failure
     });
-    await logActivity(db, {
-      companyId: company.id,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
-      action: "company.created",
-      entityType: "company",
-      entityId: company.id,
-      details: { name: company.name },
-    });
+    if (committedActivity) {
+      try {
+        publishActivityLogged(committedActivity);
+      } catch (err) {
+        logger.warn(
+          { err, companyId: company.id },
+          "company create: post-commit activity publish failed (non-fatal)",
+        );
+      }
+    }
     res.status(201).json(company);
   });
 

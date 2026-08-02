@@ -4,7 +4,7 @@ import { OrgStep } from "../OrgStep";
 import { validateRegistry, type StepContext } from "../../registry";
 import { ONBOARDING_STEPS } from "../index";
 
-const createCompany = vi.fn(async (_data: { name: string; organizationId: string }) => ({
+const createCompany = vi.fn(async (_data: { name: string; organizationId?: string; creationRequestId?: string }) => ({
   id: "c1",
   name: "Acme",
 }));
@@ -54,7 +54,11 @@ describe("OrgStep (Stage C / order 2)", () => {
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "Acme" } });
     fireEvent.click(screen.getByText("Continue"));
     await waitFor(() => expect(onComplete).toHaveBeenCalled());
-    expect(createCompany).toHaveBeenCalledWith({ name: "Acme", organizationId: "org1" });
+    expect(createCompany).toHaveBeenCalledWith({
+      name: "Acme",
+      organizationId: "org1",
+      creationRequestId: expect.any(String),
+    });
     expect(advanceOnboarding).toHaveBeenCalledWith({
       companyId: "c1",
       journey: "founder",
@@ -130,6 +134,26 @@ describe("OrgStep (Stage C / order 2)", () => {
       requestedState: "COMPANY_CREATED",
     });
     expect(localStorage.getItem("aoa.onboarding.pendingOrganization.u1")).toBeNull();
+  });
+
+  it("reuses a persisted request id after the company response is lost", async () => {
+    createCompany
+      .mockRejectedValueOnce(new Error("response lost"))
+      .mockResolvedValueOnce({ id: "c1", name: "Acme" });
+    const first = render(<OrgStep ctx={ctx} onComplete={vi.fn()} onBack={() => {}} />);
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Acme" } });
+    fireEvent.click(screen.getByText("Continue"));
+    expect(await screen.findByText("response lost")).toBeTruthy();
+    const firstRequestId = createCompany.mock.calls[0]?.[0].creationRequestId;
+    expect(firstRequestId).toEqual(expect.any(String));
+    expect(localStorage.getItem("aoa.onboarding.pendingOrganization.u1")).toContain(firstRequestId);
+
+    first.unmount();
+    const onComplete = vi.fn();
+    render(<OrgStep ctx={ctx} onComplete={onComplete} onBack={() => {}} />);
+    fireEvent.click(screen.getByText("Continue"));
+    await waitFor(() => expect(onComplete).toHaveBeenCalled());
+    expect(createCompany.mock.calls[1]?.[0].creationRequestId).toBe(firstRequestId);
   });
 
   it("reuses the selected company when resuming an org layer without a recovery hint", async () => {

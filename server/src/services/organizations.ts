@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { organizations, organizationMemberships } from "@armyofagents/db";
 import {
@@ -7,6 +7,7 @@ import {
   DEFAULT_ORGANIZATION_SLUG,
 } from "@armyofagents/shared";
 import type { organizationAccessService } from "./organization-access.js";
+import { conflict } from "../errors.js";
 
 /** Lowercase kebab-case slug base; falls back to "org" when name has no [a-z0-9]. */
 export function slugifyOrganizationName(name: string): string {
@@ -32,6 +33,56 @@ export function isOrgSlugConflict(error: unknown): boolean {
     current = c.cause;
   }
   return false;
+}
+
+/** Walks the error cause-chain for the self-serve creation replay constraint. */
+export function isOrgCreationRequestConflict(error: unknown): boolean {
+  let current: unknown = error;
+  const seen = new Set<unknown>();
+  while (typeof current === "object" && current !== null && !seen.has(current)) {
+    seen.add(current);
+    const candidate = current as {
+      cause?: unknown;
+      code?: unknown;
+      constraint?: unknown;
+      constraint_name?: unknown;
+    };
+    const constraintName =
+      typeof candidate.constraint === "string"
+        ? candidate.constraint
+        : typeof candidate.constraint_name === "string"
+          ? candidate.constraint_name
+          : undefined;
+    if (
+      candidate.code === "23505" &&
+      constraintName === "organizations_creator_creation_request_uq"
+    ) {
+      return true;
+    }
+    current = candidate.cause;
+  }
+  return false;
+}
+
+async function resolveOrganizationCreationReplay(
+  handle: Db,
+  input: { name: string; ownerUserId: string; creationRequestId: string },
+) {
+  const existing = await handle
+    .select()
+    .from(organizations)
+    .where(
+      and(
+        eq(organizations.createdByUserId, input.ownerUserId),
+        eq(organizations.creationRequestId, input.creationRequestId),
+      ),
+    )
+    .then((rows) => rows[0] ?? null);
+  if (!existing) return null;
+  if (existing.name !== input.name) {
+    throw conflict("Organization creation request was already used with different details");
+  }
+  return existing;
 }
 
 export function organizationService(db: Db) {
@@ -123,27 +174,67 @@ export function organizationService(db: Db) {
  */
 export async function createSelfServeOrganization(
   db: Db,
-  input: { name: string; ownerUserId: string },
+  input: { name: string; ownerUserId: string; creationRequestId?: string },
   buildOrgAccess: (handle: Db) => Pick<ReturnType<typeof organizationAccessService>, "ensureOrgOwner">,
 ) {
   // The route validates this too. Keep the public service seam defensive so a
   // future caller cannot persist control/bidi characters by bypassing Express.
-  const { name } = createOrganizationSchema.parse({ name: input.name });
+  const { name, creationRequestId } = createOrganizationSchema.parse({
+    name: input.name,
+    creationRequestId: input.creationRequestId,
+  });
+  if (creationRequestId) {
+    const replay = await resolveOrganizationCreationReplay(db, {
+      name,
+      ownerUserId: input.ownerUserId,
+      creationRequestId,
+    });
+    if (replay) return { organization: replay, created: false };
+  }
   const base = slugifyOrganizationName(name);
   let attempt = 0;
   while (attempt < 10000) {
     const candidate = attempt === 0 ? base : `${base}-${attempt + 1}`;
     try {
-      return await db.transaction(async (tx) => {
+      const result = await db.transaction(async (tx) => {
+        if (creationRequestId) {
+          // Serialize this creator-scoped request key. A different creator may
+          // legitimately use the same random UUID because the durable key is
+          // the composite (createdByUserId, creationRequestId).
+          await tx.execute(
+            sql`SELECT pg_advisory_xact_lock(hashtext('aoa:organization-create'), hashtext(${`${input.ownerUserId}:${creationRequestId}`}))`,
+          );
+          const replay = await resolveOrganizationCreationReplay(tx as unknown as Db, {
+            name,
+            ownerUserId: input.ownerUserId,
+            creationRequestId,
+          });
+          if (replay) return { organization: replay, created: false as const };
+        }
         const rows = await tx
           .insert(organizations)
-          .values({ name, slug: candidate, plan: "beta", createdByUserId: input.ownerUserId })
+          .values({
+            name,
+            slug: candidate,
+            plan: "beta",
+            createdByUserId: input.ownerUserId,
+            creationRequestId: creationRequestId ?? null,
+          })
           .returning();
         const org = rows[0];
         await buildOrgAccess(tx as unknown as Db).ensureOrgOwner(org.id, input.ownerUserId);
-        return org;
+        return { organization: org, created: true as const };
       });
+      return result;
     } catch (error) {
+      if (creationRequestId && isOrgCreationRequestConflict(error)) {
+        const replay = await resolveOrganizationCreationReplay(db, {
+          name,
+          ownerUserId: input.ownerUserId,
+          creationRequestId,
+        });
+        if (replay) return { organization: replay, created: false };
+      }
       if (!isOrgSlugConflict(error)) throw error;
     }
     attempt += 1;

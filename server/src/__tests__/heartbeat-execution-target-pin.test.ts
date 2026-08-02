@@ -5,7 +5,20 @@
 // requires an explicit pin to fail closed. This pure-helper test pins the
 // contract: throw when pinned, null (local fallback) when unpinned.
 import { describe, expect, it } from "vitest";
-import { handleExecutionTargetRoutingError } from "../services/heartbeat-execution-target.js";
+import {
+  handleExecutionTargetRoutingError,
+  resolveHeartbeatExecutionTargetOrganizationId,
+} from "../services/heartbeat-execution-target.js";
+
+function companyOrgDb(organizationId: string | null) {
+  return {
+    select: () => ({
+      from: () => ({
+        where: async () => (organizationId === null ? [] : [{ organizationId }]),
+      }),
+    }),
+  } as unknown as Parameters<typeof resolveHeartbeatExecutionTargetOrganizationId>[0];
+}
 
 describe("handleExecutionTargetRoutingError — explicit pin fails closed (Decision #117 §4)", () => {
   it("re-throws when an explicit execution-target pin is unavailable", () => {
@@ -46,5 +59,34 @@ describe("handleExecutionTargetRoutingError — explicit pin fails closed (Decis
     expect(() =>
       handleExecutionTargetRoutingError(err, { hasExplicitPin: true, credentialKind: "company_api_key" }),
     ).toThrow(err);
+  });
+});
+
+describe("resolveHeartbeatExecutionTargetOrganizationId", () => {
+  it("threads the company's real organization into execution-target routing", async () => {
+    await expect(
+      resolveHeartbeatExecutionTargetOrganizationId(companyOrgDb("org-1"), {
+        companyId: "company-1",
+        tenantIsolationEnforced: true,
+      }),
+    ).resolves.toBe("org-1");
+  });
+
+  it("fails closed when cloud routing cannot resolve the company organization", async () => {
+    await expect(
+      resolveHeartbeatExecutionTargetOrganizationId(companyOrgDb(null), {
+        companyId: "company-1",
+        tenantIsolationEnforced: true,
+      }),
+    ).rejects.toThrow(/cannot resolve an organization/i);
+  });
+
+  it("preserves the self-hosted null-org fallback", async () => {
+    await expect(
+      resolveHeartbeatExecutionTargetOrganizationId(companyOrgDb(null), {
+        companyId: "company-1",
+        tenantIsolationEnforced: false,
+      }),
+    ).resolves.toBeNull();
   });
 });

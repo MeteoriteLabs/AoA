@@ -152,6 +152,22 @@ Regression matrix:
 3. Verify Git reports numeric diff stats and `git diff --check` is clean.
 4. Record the decided V1 policy: existing cloud WebSocket membership sweeps remain intact; plugin streams are statically unavailable until isolated execution lands; governed break-glass plus one shared REST/WebSocket decision remains a documented follow-up. Better Auth logout/session revocation is enforced on reconnect, not by polling already-open board sockets.
 
+### Batch 5 — Exact-head Codex findings after live QA
+
+1. Move the irreversible-0188 snapshot gate to the shared migration boundary so server boot, `pnpm db:migrate`, and direct `applyPendingMigrations()` callers cannot diverge. Enforce it after the advisory-lock reinspection and before either migration apply path; an unspecified deployment mode fails closed only for the risky populated/0188/no-marker state.
+2. Resolve `companies.organization_id` before heartbeat execution-target routing. Keep deferred `org_default` provider lookup inert, but make the already-live same-org environment pin path functional and retain foreign/inactive/personal-subscription fail-closed behavior.
+3. Add org-admin execution-target credential lifecycle: rotate returns a new token once and invalidates the old token atomically; revoke clears the hash and disables the target. Both operations use an organization-and-target predicate, structured secret-free audit logs, and reject cross-org IDs.
+4. Insert `company.created` through the same prefix-attempt transaction as company/founder access. Publish the activity event only after commit and treat publication failure as non-fatal.
+5. Close commit-before-response-loss duplication for both Organization and Company onboarding creates with persisted client request IDs, database uniqueness, sequential/concurrent replay, payload-mismatch rejection, and attempt-vs-confirmed client recovery state. Organization audit is emitted only for the first creation.
+
+Batch 5 acceptance tests:
+
+- manual/shared migration entrypoints refuse the populated 0188 no-marker state and preserve empty/self-hosted/non-0188 behavior
+- an org-owned explicit environment target pin resolves through heartbeat using the company tenant
+- rotated/revoked worker tokens lose authorization immediately; cross-org lifecycle calls cannot address the row
+- audit insert failure rolls back company and access; post-commit event failure does not change the 201 result
+- same request ID returns the same Organization/Company under sequential and concurrent retries; a different payload returns 409; an unconfirmed browser attempt retries rather than auto-advancing
+
 ## Failure Modes and Rescue
 
 | Failure | Required behavior | Rescue/diagnostic |
@@ -207,7 +223,7 @@ pnpm gen:tools:md:check
 git diff --check
 ```
 
-The first `pnpm db:generate` after the schema edit must create and be reviewed as migration `0198`; stage/review that migration, then run `pnpm db:generate` a second time and require no additional diff to prove schema drift is clean. Brand and policy are authoritative CI-only jobs from `.github/workflows/pr.yml`; fresh Linux `verify`, `migrations`, `brand-check`, `policy`, lint, embedded-Postgres integration, e2e, and pgvector lanes must pass.
+Batch 4 generated and reviewed migration `0198`. Batch 5's creation-replay schema edit must generate and be reviewed as migration `0199`; after it is staged, run `pnpm db:generate` again and require no additional diff to prove schema drift is clean. Brand and policy are authoritative CI-only jobs from `.github/workflows/pr.yml`; fresh Linux `verify`, `migrations`, `brand-check`, `policy`, lint, embedded-Postgres integration, e2e, and pgvector lanes must pass.
 
 Implementation evidence captured 2026-08-03:
 
@@ -218,8 +234,12 @@ Implementation evidence captured 2026-08-03:
 - The first unconstrained full suite encountered only the two documented Windows timing thresholds; both files passed unchanged in isolation. The authoritative constrained full rerun `pnpm test:run -- --maxWorkers=4` exited 0 in 537.2 seconds, and the final post-QA-fix rerun exited 0 in 522.7 seconds.
 - A second `pnpm db:generate` reported `No schema changes, nothing to migrate`; the tracked/untracked `packages/db` set was byte-for-byte unchanged before and after generation.
 - `git diff --check` exited 0 apart from Windows EOL notices, and `live-events-ws.ts` reports numeric text stats (`777 602`) rather than a binary diff.
-- Fresh-instance browser QA applied all 199 migrations through `0198`, completed profile/organization/company/environment setup, and exercised General, Heartbeats, Access, instance Health, and company Plugins. All affected route requests returned 2xx and the final browser console was clean. The local Codex CLI capability probe returned its expected environment-specific 422 after 22.9 seconds and did not block direct platform QA.
+- Pre-Batch-5 fresh-instance browser QA applied all 199 migrations through `0198`, completed profile/organization/company/environment setup, and exercised General, Heartbeats, Access, instance Health, and company Plugins. All affected route requests returned 2xx and the final browser console was clean. Batch 5 adds reviewed migration `0199` (two nullable creation-request columns and their composite tenant-scoped unique indexes); fresh Linux migration/integration CI must apply all 200 migrations through `0199`. The local Codex CLI capability probe returned its expected environment-specific 422 after 22.9 seconds and did not block direct platform QA.
 - Browser QA also exposed a pre-existing Windows static-bundle CSP defect: the server hashed raw CRLF script bytes while the HTML parser canonicalized line endings to LF. `extractInlineScriptHashes()` now mirrors browser CRLF/bare-CR normalization; a dedicated regression test plus the 24-test CSP/Helmet matrix, server typecheck, and lint pass. The live CSP header now emits the browser-required `sha256-GMMGCcIrt9B7slaoONV5HkFvNZz1rJ6JTd19YFHvy20=` hash and reloads with no CSP error.
+- Batch 5 independently reproduced and fixed all five exact-head Codex findings plus the sibling company-create response-loss window: heartbeat target routing now resolves the Company's real Organization; migration 0188's snapshot gate is enforced in the shared migration apply boundary; worker tokens have same-Organization rotate/revoke lifecycle with disabled-state rejection at both rotation and authentication; company/audit/operator creation is one transaction with non-fatal post-commit publication; and Organization/Company creation uses composite-scoped durable request IDs, advisory serialization, payload-conflict 409s, and pre-POST UI persistence.
+- Replay recovery was then adversarially tightened: it resolves the original persisted founder (including local generated operators and retries by another admin), reruns only idempotent bootstrap/skill/Commander ensures, inserts a missing founder profile with composite-key `ON CONFLICT DO NOTHING`, preserves later company-profile edits, and never duplicates the durable `company.created` audit/event. Two final independent targeted reviews report no P0-P3 findings.
+- Migration `0199_special_justice.sql` contains only the two nullable creation-request columns and their tenant-scoped unique indexes; both indexes use the repository-required `IF NOT EXISTS`. The migration idempotency/snapshot-gate focused matrix passed 36/36, and a second `pnpm db:generate` reported `No schema changes, nothing to migrate`.
+- The final authoritative constrained suite `pnpm test:run -- --maxWorkers=4` exited 0 in 541.7 seconds. Final `pnpm -r typecheck`, full server ESLint, `pnpm build`, forbidden-token scan, tools JSON/Markdown checks, external-repo-backed skills check, and `git diff --check` all passed.
 - Remaining merge gates are operational: commit/push this reviewed worktree to PR #316, require fresh Linux CI, fetch/reconcile all review threads, request another whole-PR `@codex review`, and repeat the loop if it returns any actionable finding. gVisor remains a fresh follow-up PR from updated `main`.
 
 Known Windows flake protocol:

@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 // Value-carrying drizzle mock so the fake DB can honour the hash predicate.
 vi.mock("drizzle-orm", () => ({
   eq: (col: unknown, val: unknown) => ({ op: "eq", col, val }),
+  ne: (col: unknown, val: unknown) => ({ op: "ne", col, val }),
+  and: (...clauses: unknown[]) => ({ op: "and", clauses }),
 }));
 vi.mock("@armyofagents/db", () => {
   const table = new Proxy({}, { get: (_t, p) => (typeof p === "string" ? p : undefined) });
@@ -17,14 +19,21 @@ import {
 } from "../services/execution-targets.js";
 
 // select({id}).from().where({op:"eq",col:"workerTokenHash",val}) → matching ids.
-function makeFakeDb(rows: Array<{ id: string; workerTokenHash: string | null }>) {
+function matches(row: Record<string, unknown>, clause: any): boolean {
+  if (clause.op === "and") return clause.clauses.every((part: any) => matches(row, part));
+  if (clause.op === "eq") return row[clause.col] === clause.val;
+  if (clause.op === "ne") return row[clause.col] !== clause.val;
+  return false;
+}
+
+function makeFakeDb(rows: Array<{ id: string; workerTokenHash: string | null; status?: string }>) {
   return {
     select: () => ({
       from: () => ({
         where: (clause: any) =>
           Promise.resolve(
             rows
-              .filter((r) => clause.op === "eq" && (r as any)[clause.col] === clause.val)
+              .filter((r) => matches({ status: "active", ...r }, clause))
               .map((r) => ({ id: r.id })),
           ),
       }),
@@ -59,6 +68,20 @@ describe("worker-token helpers (Finding #3 — the row id is no longer the crede
     expect(await resolveWorkerTargetId(db, "")).toBeNull();
     expect(await resolveWorkerTargetId(db, "   ")).toBeNull();
     expect(await resolveWorkerTargetId(db, "not-a-real-token")).toBeNull();
+  });
+
+  it("a revoked target with a null token hash rejects its former token", async () => {
+    const formerToken = createWorkerToken();
+    const db = makeFakeDb([{ id: "t-1", workerTokenHash: null }]);
+    expect(await resolveWorkerTargetId(db, formerToken)).toBeNull();
+  });
+
+  it("a disabled target rejects authentication even if a stale hash remains", async () => {
+    const token = createWorkerToken();
+    const db = makeFakeDb([
+      { id: "t-1", workerTokenHash: hashWorkerToken(token), status: "disabled" },
+    ]);
+    expect(await resolveWorkerTargetId(db, token)).toBeNull();
   });
 
   it("stripWorkerSecret removes only the hash, keeping the FK id", () => {

@@ -101,7 +101,7 @@ describe.skipIf(process.platform !== "linux")(
     });
 
     it("commits the org row AND the owner membership together on success", async () => {
-      const org = await createSelfServeOrganization(
+      const { organization: org } = await createSelfServeOrganization(
         db,
         { name: "Atomic Co", ownerUserId },
         organizationAccessService,
@@ -122,6 +122,71 @@ describe.skipIf(process.platform !== "linux")(
       expect(membership[0].status).toBe("active");
     });
 
+    it("replays sequential and concurrent requests with the same creator, key, and payload", async () => {
+      const creationRequestId = randomUUID();
+      const name = `Replay Org ${randomUUID()}`;
+      const create = () =>
+        createSelfServeOrganization(
+          db,
+          { name, ownerUserId, creationRequestId },
+          organizationAccessService,
+        );
+
+      const first = await create();
+      const sequential = await create();
+      const [concurrentA, concurrentB] = await Promise.all([create(), create()]);
+      expect(new Set([
+        first.organization.id,
+        sequential.organization.id,
+        concurrentA.organization.id,
+        concurrentB.organization.id,
+      ])).toEqual(new Set([first.organization.id]));
+      expect(first.created).toBe(true);
+      expect(sequential.created).toBe(false);
+      expect(await db.select().from(organizations).where(eq(organizations.name, name)))
+        .toHaveLength(1);
+    });
+
+    it("returns 409 for a different payload in one scope but permits the same key for another creator", async () => {
+      const creationRequestId = randomUUID();
+      const name = `Scoped Replay Org ${randomUUID()}`;
+      await createSelfServeOrganization(
+        db,
+        { name, ownerUserId, creationRequestId },
+        organizationAccessService,
+      );
+      await expect(
+        createSelfServeOrganization(
+          db,
+          { name: `${name} changed`, ownerUserId, creationRequestId },
+          organizationAccessService,
+        ),
+      ).rejects.toMatchObject({ status: 409 });
+
+      const otherOwner = `org-replay-owner-${randomUUID()}`;
+      const now = new Date();
+      await db.insert(authUsers).values({
+        id: otherOwner,
+        name: "Other Org Replay Owner",
+        email: `${otherOwner}@example.test`,
+        createdAt: now,
+        updatedAt: now,
+      });
+      const otherScope = await createSelfServeOrganization(
+        db,
+        { name, ownerUserId: otherOwner, creationRequestId },
+        organizationAccessService,
+      );
+      expect(otherScope.created).toBe(true);
+      expect(otherScope.organization.id).not.toBe(
+        (await createSelfServeOrganization(
+          db,
+          { name, ownerUserId, creationRequestId },
+          organizationAccessService,
+        )).organization.id,
+      );
+    });
+
     it("retries with a fresh slug in a NEW transaction on a 23505 slug conflict (same name → acme, acme-2)", async () => {
       // Seed two real users so each attempt's owner-membership write satisfies the
       // organization_memberships.user_id -> "user"(id) FK.
@@ -139,12 +204,12 @@ describe.skipIf(process.platform !== "linux")(
       // and retried with "acme-2" in a brand-new transaction. Regression-guards the
       // slug-retry path now that the 23505 surfaces from inside db.transaction — a
       // future refactor of isOrgSlugConflict or the catch could silently break it.
-      const orgA = await createSelfServeOrganization(
+      const { organization: orgA } = await createSelfServeOrganization(
         db,
         { name: "Acme", ownerUserId: ownerA },
         organizationAccessService,
       );
-      const orgB = await createSelfServeOrganization(
+      const { organization: orgB } = await createSelfServeOrganization(
         db,
         { name: "Acme", ownerUserId: ownerB },
         organizationAccessService,

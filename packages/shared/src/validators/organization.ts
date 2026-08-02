@@ -24,6 +24,7 @@ export const createOrganizationSchema = z.object({
     )
     .transform((value) => value.trim().normalize("NFC"))
     .pipe(z.string().min(1).max(100)),
+  creationRequestId: z.string().uuid().optional(),
 }).strict();
 export type CreateOrganization = z.infer<typeof createOrganizationSchema>;
 

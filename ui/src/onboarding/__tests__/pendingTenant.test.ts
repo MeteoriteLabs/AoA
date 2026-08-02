@@ -18,6 +18,15 @@ describe("pendingTenant durability", () => {
     expect(readPendingTenant("u1")).toEqual({ id: "org1", name: "Acme Org" });
   });
 
+  it("round-trips an unconfirmed creation attempt", () => {
+    const attempt = {
+      creationRequestId: "d259a6f1-d10a-4f79-a057-d47d3ef11152",
+      name: "Acme Org",
+    };
+    writePendingTenant("u1", attempt);
+    expect(readPendingTenant("u1")).toEqual(attempt);
+  });
+
   it("returns null when nothing is stored", () => {
     expect(readPendingTenant("u1")).toBeNull();
   });
@@ -26,6 +35,11 @@ describe("pendingTenant durability", () => {
     localStorage.setItem(pendingTenantKey("u1"), "not json");
     expect(readPendingTenant("u1")).toBeNull();
     localStorage.setItem(pendingTenantKey("u1"), JSON.stringify({ id: "org1" }));
+    expect(readPendingTenant("u1")).toBeNull();
+    localStorage.setItem(
+      pendingTenantKey("u1"),
+      JSON.stringify({ name: "Acme", creationRequestId: "not-a-uuid" }),
+    );
     expect(readPendingTenant("u1")).toBeNull();
   });
 

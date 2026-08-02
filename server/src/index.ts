@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import type { Request as ExpressRequest, RequestHandler } from "express";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import {
   createDb,
   ensurePostgresDatabase,
@@ -18,7 +18,6 @@ import {
   authUsers,
   companies,
   companyMemberships,
-  instanceSettings,
   instanceUserRoles,
 } from "@armyofagents/db";
 import detectPort from "detect-port";
@@ -70,11 +69,6 @@ import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { tryRecoverOrphanPostgres } from "./postgres/embedded-orphan-recovery.js";
-import {
-  readCompanyCountForSnapshotGate,
-  shouldBlockForMissingSnapshot,
-  SnapshotGateError,
-} from "./postgres/snapshot-gate.js";
 import { assertTestSupportFlagSafe } from "./services/test-support-safety.js";
 import { createProcessShutdownHandler } from "./services/server-shutdown.js";
 import { DEFAULT_BACKUP_RETENTION } from "@armyofagents/shared";
@@ -187,49 +181,6 @@ type EnsureMigrationsOptions = {
   autoApply?: boolean;
 };
 
-// Phase 1 (multi-tenant cloud) reversibility follow-up: refuse to apply 0188
-// on a cloud_auth deployment with real company data and no recorded snapshot
-// marker. No-ops entirely outside cloud_auth (self-hosted local_trusted /
-// authenticated never gate). Opens its OWN short-lived connection because this
-// runs BEFORE `db` exists — `ensureMigrations` only has a connection string at
-// this point. Fails safe: a missing `companies`/`instance_settings` table (a
-// genuinely fresh DB) is treated as "nothing to lose" rather than blocking.
-async function checkMigrationSnapshotGate(
-  connectionString: string,
-  pendingMigrationTags: string[],
-): Promise<void> {
-  if (config.deploymentMode !== "cloud_auth") return;
-
-  let companyCount: number;
-  let recordedSnapshots: string[] = [];
-  const gateDb = createDb(connectionString);
-  try {
-    companyCount = await readCompanyCountForSnapshotGate(() =>
-      gateDb.execute(sql`SELECT count(*)::int AS count FROM companies`),
-    );
-    try {
-      const settingsRows = await gateDb.select().from(instanceSettings).limit(1);
-      const general = settingsRows[0]?.general as { migrationSnapshots?: string[] } | undefined;
-      recordedSnapshots = general?.migrationSnapshots ?? [];
-    } catch {
-      recordedSnapshots = [];
-    }
-  } finally {
-    await gateDb.$client.end({ timeout: 5 }).catch(() => {});
-  }
-
-  if (
-    shouldBlockForMissingSnapshot({
-      deploymentMode: config.deploymentMode,
-      pendingMigrationTags,
-      companyCount,
-      recordedSnapshots,
-    })
-  ) {
-    throw new SnapshotGateError();
-  }
-}
-
 async function ensureMigrations(
   connectionString: string,
   label: string,
@@ -250,8 +201,6 @@ async function ensureMigrations(
   }
   if (state.status === "upToDate") return "already applied";
 
-  await checkMigrationSnapshotGate(connectionString, state.pendingMigrations);
-
   if (state.status === "needsMigrations" && state.reason === "no-migration-journal-non-empty-db") {
     logger.warn(
       { tableCount: state.tableCount },
@@ -267,7 +216,9 @@ async function ensureMigrations(
     }
 
     logger.info({ pendingMigrations: state.pendingMigrations }, `Applying ${state.pendingMigrations.length} pending migrations for ${label}`);
-    await applyPendingMigrations(connectionString);
+    await applyPendingMigrations(connectionString, {
+      deploymentMode: config.deploymentMode,
+    });
     return "applied (pending migrations)";
   }
 
@@ -281,7 +232,9 @@ async function ensureMigrations(
   }
 
   logger.info({ pendingMigrations: state.pendingMigrations }, `Applying ${state.pendingMigrations.length} pending migrations for ${label}`);
-  await applyPendingMigrations(connectionString);
+  await applyPendingMigrations(connectionString, {
+    deploymentMode: config.deploymentMode,
+  });
   return "applied (pending migrations)";
 }
 

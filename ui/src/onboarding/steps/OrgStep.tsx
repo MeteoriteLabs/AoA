@@ -5,9 +5,11 @@ import { companiesApi } from "../../api/companies";
 import { advanceOnboarding } from "../../api/onboarding";
 import {
   clearPendingOrganization,
+  isConfirmedPendingOrganization,
   readPendingOrganization,
   writePendingOrganization,
-  type PendingOrganization,
+  type ConfirmedPendingOrganization,
+  type PendingOrganizationAttempt,
 } from "../pendingOrganization";
 import { clearPendingTenant } from "../pendingTenant";
 import { Button } from "@/components/ui/button";
@@ -44,7 +46,14 @@ export function OrgStep({ ctx, onComplete }: StepProps) {
   // same-mount retry, while localStorage survives a reload/tab close between the
   // company POST and the onboarding PATCH. A selected org-layer company is also
   // safe to reuse when resuming an interrupted flow.
-  const createdRef = useRef<PendingOrganization | null>(pendingAtMount);
+  const createdRef = useRef<ConfirmedPendingOrganization | null>(
+    isConfirmedPendingOrganization(pendingAtMount) ? pendingAtMount : null,
+  );
+  const attemptRef = useRef<PendingOrganizationAttempt | null>(
+    pendingAtMount && !isConfirmedPendingOrganization(pendingAtMount)
+      ? pendingAtMount
+      : null,
+  );
 
   const revisitedCompanyId = ctx.companyId;
   const [revisitedName, setRevisitedName] = useState<string | null>(null);
@@ -80,9 +89,30 @@ export function OrgStep({ ctx, onComplete }: StepProps) {
       // resolves it — the server 403s an omitted id for a founder in >=2 orgs).
       // It is null only on the self-hosted path, where omitting it makes
       // resolveCompanyOrganizationId derive DEFAULT_ORGANIZATION_ID.
-      const company =
-        resumableCompany ??
-        (await createCompany({ name: name.trim(), organizationId: ctx.organizationId ?? undefined }));
+      const normalizedName = name.trim();
+      const organizationId = ctx.organizationId ?? undefined;
+      let company = resumableCompany;
+      if (!company) {
+        const priorAttempt = attemptRef.current;
+        const attempt =
+          priorAttempt?.name === normalizedName &&
+          priorAttempt.organizationId === organizationId
+            ? priorAttempt
+            : {
+                name: normalizedName,
+                organizationId,
+                creationRequestId: crypto.randomUUID(),
+              };
+        attemptRef.current = attempt;
+        // Persist before POST so commit-plus-lost-response retries use the
+        // same server idempotency key rather than creating a ghost company.
+        writePendingOrganization(ctx.userId, attempt);
+        company = await createCompany({
+          name: normalizedName,
+          organizationId,
+          creationRequestId: attempt.creationRequestId,
+        });
+      }
       createdRef.current = company;
       writePendingOrganization(ctx.userId, company);
       await advanceOnboarding({

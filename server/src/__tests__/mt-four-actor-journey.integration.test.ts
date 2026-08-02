@@ -159,7 +159,7 @@ beforeAll(async () => {
     // 2) A self-serves org A, then creates A1 + A2 via the REAL service path.
     //    resolveCompanyOrganizationId (single-org actor) picks orgA, not the
     //    sentinel (companies.ts:49). ensureRealOperator mirrors POST /companies:240.
-    orgA = (await createSelfServeOrganization(db, { name: "Org A", ownerUserId: A }, organizationAccessService)).id;
+    orgA = (await createSelfServeOrganization(db, { name: "Org A", ownerUserId: A }, organizationAccessService)).organization.id;
     a1 = (
       await companyService(db).create({
         name: "A One",
@@ -176,7 +176,7 @@ beforeAll(async () => {
     await access.ensureRealOperator(a2, A);
 
     // 3) B mirrors.
-    orgB = (await createSelfServeOrganization(db, { name: "Org B", ownerUserId: B }, organizationAccessService)).id;
+    orgB = (await createSelfServeOrganization(db, { name: "Org B", ownerUserId: B }, organizationAccessService)).organization.id;
     const b1Company = await companyService(db).create({ name: "B One", organizationId: orgB });
     b1 = b1Company.id;
     b1OrgId = b1Company.organizationId as string;

@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
+import type { DeploymentMode } from "@armyofagents/shared";
 import { drizzle as drizzlePg } from "drizzle-orm/postgres-js";
 import { migrate as migratePg } from "drizzle-orm/postgres-js/migrator";
 import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 import * as schema from "./schema/index.js";
+import { assertMigrationSnapshotGate } from "./migration-snapshot-gate.js";
 
 const MIGRATIONS_FOLDER = fileURLToPath(new URL("./migrations", import.meta.url));
 const DRIZZLE_MIGRATIONS_TABLE = "__drizzle_migrations";
@@ -646,7 +648,14 @@ export async function inspectMigrations(url: string): Promise<MigrationState> {
   }
 }
 
-export async function applyPendingMigrations(url: string): Promise<void> {
+export interface ApplyPendingMigrationsOptions {
+  deploymentMode?: DeploymentMode;
+}
+
+export async function applyPendingMigrations(
+  url: string,
+  options: ApplyPendingMigrationsOptions = {},
+): Promise<void> {
   const initialState = await inspectMigrations(url);
   if (initialState.status === "upToDate") return;
 
@@ -668,6 +677,20 @@ export async function applyPendingMigrations(url: string): Promise<void> {
     // waited on the lock.
     const stateUnderLock = await inspectMigrations(url);
     if (stateUnderLock.status === "upToDate") return;
+
+    // The backup gate belongs at the shared apply boundary, under the same
+    // advisory lock as the migration itself. This covers server auto-apply,
+    // pnpm db:migrate, and direct library callers before either migration path
+    // can execute 0188. Missing deployment context is deliberately fail-closed
+    // for a populated database with 0188 pending.
+    await assertMigrationSnapshotGate({
+      deploymentMode: options.deploymentMode,
+      pendingMigrationTags: stateUnderLock.pendingMigrations,
+      queryCompanyCount: () =>
+        lockSql.unsafe(`SELECT count(*)::int AS count FROM companies`),
+      queryRecordedSnapshots: () =>
+        lockSql.unsafe(`SELECT general FROM instance_settings LIMIT 1`),
+    });
 
     const sql = postgres(url, { max: 1 });
     try {

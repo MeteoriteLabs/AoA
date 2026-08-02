@@ -17,6 +17,9 @@ export const createCompanySchema = z.object({
   // and authorizes it against the caller's own membership (never trusts this
   // value directly as an authorization target -- anti-tenant-hop).
   organizationId: z.string().uuid().optional(),
+  // Optional for backwards compatibility; first-party create surfaces always
+  // provide this UUID so an ambiguous network retry replays one company.
+  creationRequestId: z.string().uuid().optional(),
   // Phase 1 Phase E batch 2 (T20): OnboardingWizard now collects Commander +
   // Crew adapter picks at company-create time. Both are optional — when
   // omitted, the companies row keeps its `{}` default and downstream code
@@ -32,7 +35,7 @@ export const updateCompanySchema = createCompanySchema
   // Omit it BEFORE .partial() so PATCH /companies/:id can never accept it and
   // reparent a company across organizations (Codex ①). createCompanySchema is
   // untouched — create-time tenant pick in cloud_auth is unchanged.
-  .omit({ organizationId: true })
+  .omit({ organizationId: true, creationRequestId: true })
   .partial()
   .extend({
     status: z.enum(COMPANY_STATUSES).optional(),

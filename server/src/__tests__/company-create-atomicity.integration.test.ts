@@ -30,12 +30,14 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 
+const provisionCompanyCrewMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 vi.mock("../services/crew-provisioning.js", () => ({
-  provisionCompanyCrew: vi.fn().mockResolvedValue(undefined),
+  provisionCompanyCrew: provisionCompanyCrewMock,
 }));
 
 import {
   applyPendingMigrations,
+  activityLog,
   agents,
   authUsers,
   companies,
@@ -49,6 +51,7 @@ import {
 } from "@armyofagents/db";
 import { accessService } from "../services/access.js";
 import { companyService } from "../services/companies.js";
+import { insertActivityLog } from "../services/activity-log.js";
 import { allocateEmbeddedPgPort } from "./helpers/embedded-pg-port.js";
 
 type EmbeddedPostgresInstance = {
@@ -143,6 +146,223 @@ describe.skipIf(process.platform !== "linux")(
       // with the failed operator write — no orphan company with no membership.
       const surviving = await db.select().from(companies).where(eq(companies.name, name));
       expect(surviving).toHaveLength(0);
+    });
+
+    it("rolls back company, operator, and audit together when audit persistence fails", async () => {
+      const name = `Audit Atomic Company ${randomUUID()}`;
+      const creationRequestId = randomUUID();
+      const svc = companyService(db);
+
+      await expect(
+        svc.createWithOperator(
+          { name, organizationId: orgId, creationRequestId },
+          { requestedByUserId: ownerUserId },
+          ownerUserId,
+          (tx) => accessService(tx),
+          async () => {
+            throw new Error("forced audit failure");
+          },
+        ),
+      ).rejects.toThrow("forced audit failure");
+      expect(await db.select().from(companies).where(eq(companies.name, name))).toHaveLength(0);
+      expect(
+        await db
+          .select()
+          .from(companyMemberships)
+          .where(eq(companyMemberships.principalId, ownerUserId)),
+      ).toHaveLength(0);
+      expect(
+        await db.select().from(userRoles).where(eq(userRoles.userId, ownerUserId)),
+      ).toHaveLength(0);
+      expect(
+        await db
+          .select()
+          .from(organizationMemberships)
+          .where(
+            and(
+              eq(organizationMemberships.organizationId, orgId),
+              eq(organizationMemberships.userId, ownerUserId),
+            ),
+          ),
+      ).toHaveLength(0);
+
+      const result = await svc.createWithOperator(
+        { name, organizationId: orgId, creationRequestId },
+        { requestedByUserId: ownerUserId },
+        ownerUserId,
+        (tx) => accessService(tx),
+        (tx, company) =>
+          insertActivityLog(tx, {
+            companyId: company.id,
+            actorType: "user",
+            actorId: ownerUserId,
+            action: "company.created",
+            entityType: "company",
+            entityId: company.id,
+            details: { name },
+          }),
+      );
+      expect(result.created).toBe(true);
+      expect(await db.select().from(companies).where(eq(companies.name, name))).toHaveLength(1);
+      expect(
+        await db
+          .select()
+          .from(activityLog)
+          .where(
+            and(
+              eq(activityLog.companyId, result.company.id),
+              eq(activityLog.action, "company.created"),
+            ),
+          ),
+      ).toHaveLength(1);
+
+      const replay = await svc.createWithOperator(
+        { name, organizationId: orgId, creationRequestId },
+        { requestedByUserId: ownerUserId },
+        ownerUserId,
+        (tx) => accessService(tx),
+        (tx, company) =>
+          insertActivityLog(tx, {
+            companyId: company.id,
+            actorType: "user",
+            actorId: ownerUserId,
+            action: "company.created",
+            entityType: "company",
+            entityId: company.id,
+            details: { name },
+          }),
+      );
+      expect(replay.created).toBe(false);
+      expect(
+        await db
+          .select()
+          .from(activityLog)
+          .where(
+            and(
+              eq(activityLog.companyId, result.company.id),
+              eq(activityLog.action, "company.created"),
+            ),
+          ),
+      ).toHaveLength(1);
+    });
+
+    it("replays sequential and concurrent creates with the same request id", async () => {
+      const creationRequestId = randomUUID();
+      const name = `Replay Company ${randomUUID()}`;
+      const svc = companyService(db);
+      const create = () =>
+        svc.createWithOperator(
+          { name, organizationId: orgId, creationRequestId },
+          { requestedByUserId: ownerUserId },
+          ownerUserId,
+          (tx) => accessService(tx),
+        );
+
+      const first = await create();
+      const sequential = await create();
+      const [concurrentA, concurrentB] = await Promise.all([create(), create()]);
+      expect(new Set([
+        first.company.id,
+        sequential.company.id,
+        concurrentA.company.id,
+        concurrentB.company.id,
+      ])).toEqual(new Set([first.company.id]));
+      expect(await db.select().from(companies).where(eq(companies.name, name))).toHaveLength(1);
+    });
+
+    it("reconciles idempotent post-commit bootstrap when a create request is replayed", async () => {
+      const creationRequestId = randomUUID();
+      const name = `Replay Bootstrap ${randomUUID()}`;
+      const svc = companyService(db);
+      const input = { name, organizationId: orgId, creationRequestId };
+
+      const first = await svc.createWithOperator(
+        input,
+        { requestedByUserId: ownerUserId },
+        ownerUserId,
+        (tx) => accessService(tx),
+      );
+      const laterFounderId = `later-founder-${randomUUID()}`;
+      const now = new Date();
+      await db.insert(authUsers).values({
+        id: laterFounderId,
+        name: "Later Founder",
+        email: `${laterFounderId}@example.test`,
+        createdAt: now,
+        updatedAt: now,
+      });
+      await accessService(db).ensureRealOperator(first.company.id, laterFounderId);
+      provisionCompanyCrewMock.mockClear();
+
+      const replay = await svc.createWithOperator(
+        input,
+        { requestedByUserId: ownerUserId },
+        `different-replayer-${randomUUID()}`,
+        (tx) => accessService(tx),
+      );
+
+      expect(replay.created).toBe(false);
+      expect(replay.operatorId).toBe(ownerUserId);
+      expect(provisionCompanyCrewMock).toHaveBeenCalledOnce();
+    });
+
+    it("recovers the generated local operator identity on replay", async () => {
+      const creationRequestId = randomUUID();
+      const name = `Local Replay Operator ${randomUUID()}`;
+      const svc = companyService(db);
+      const input = { name, organizationId: orgId, creationRequestId };
+
+      const first = await svc.createWithOperator(
+        input,
+        {},
+        null,
+        (tx) => accessService(tx),
+      );
+      const replay = await svc.createWithOperator(
+        input,
+        {},
+        null,
+        (tx) => accessService(tx),
+      );
+
+      expect(replay.created).toBe(false);
+      expect(replay.operatorId).toBe(first.operatorId);
+      expect(replay.operatorId).not.toBe("board");
+    });
+
+    it("returns 409 for different details in one scope but permits the same key in another org", async () => {
+      const creationRequestId = randomUUID();
+      const originalName = `Original ${randomUUID()}`;
+      const svc = companyService(db);
+      await svc.createWithOperator(
+        { name: originalName, organizationId: orgId, creationRequestId },
+        {},
+        ownerUserId,
+        (tx) => accessService(tx),
+      );
+      await expect(
+        svc.createWithOperator(
+          { name: `Different ${randomUUID()}`, organizationId: orgId, creationRequestId },
+          {},
+          ownerUserId,
+          (tx) => accessService(tx),
+        ),
+      ).rejects.toMatchObject({ status: 409 });
+
+      const otherOrgId = randomUUID();
+      await db.insert(organizations).values({
+        id: otherOrgId,
+        name: "Other Replay Scope",
+        slug: `other-replay-${randomUUID()}`,
+      });
+      const otherScope = await svc.createWithOperator(
+        { name: originalName, organizationId: otherOrgId, creationRequestId },
+        {},
+        ownerUserId,
+        (tx) => accessService(tx),
+      );
+      expect(otherScope.created).toBe(true);
+      expect(otherScope.company.organizationId).toBe(otherOrgId);
     });
 
     it("commits the company row AND the founder membership/role/org membership together on success, and runs Group-A seeders", async () => {

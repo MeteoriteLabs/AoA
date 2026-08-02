@@ -16,12 +16,14 @@ import {
   hashWorkerToken,
   listExecutionTargets,
   registerWorkerHeartbeat,
+  revokeExecutionTargetWorkerToken,
   resolveWorkerTargetId,
+  rotateExecutionTargetWorkerToken,
   stripWorkerSecret,
 } from "../services/execution-targets.js";
 import { organizationAccessService } from "../services/organization-access.js";
 import { assertBoard } from "./authz.js";
-import { conflict, forbidden, unauthorized } from "../errors.js";
+import { conflict, forbidden, notFound, unauthorized } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { validate } from "../middleware/validate.js";
 import { isUniqueViolation } from "../services/db-errors.js";
@@ -120,6 +122,62 @@ export function executionTargetRoutes(opts: { db: Db }) {
       const orgId = uuidParam.parse(req.params.orgId);
       await assertOrgAdmin(req, orgId);
       res.json(await listExecutionTargets(opts.db, orgId));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.post("/organizations/:orgId/execution-targets/:targetId/rotate-token", async (req, res, next) => {
+    try {
+      const orgId = uuidParam.parse(req.params.orgId);
+      const targetId = uuidParam.parse(req.params.targetId);
+      await assertOrgAdmin(req, orgId);
+      const rotated = await rotateExecutionTargetWorkerToken(opts.db, {
+        organizationId: orgId,
+        targetId,
+      });
+      if (!rotated) throw notFound("Execution target not found");
+
+      const operatorUserId = req.actor.type === "board" ? (req.actor.userId ?? null) : null;
+      logger.info(
+        {
+          action: "execution_target.worker_token.rotated",
+          organizationId: orgId,
+          executionTargetId: targetId,
+          operatorUserId,
+          scope: "org_scoped",
+        },
+        "execution target worker token rotated",
+      );
+      res.json({ ...rotated.target, workerToken: rotated.workerToken });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.post("/organizations/:orgId/execution-targets/:targetId/revoke", async (req, res, next) => {
+    try {
+      const orgId = uuidParam.parse(req.params.orgId);
+      const targetId = uuidParam.parse(req.params.targetId);
+      await assertOrgAdmin(req, orgId);
+      const target = await revokeExecutionTargetWorkerToken(opts.db, {
+        organizationId: orgId,
+        targetId,
+      });
+      if (!target) throw notFound("Execution target not found");
+
+      const operatorUserId = req.actor.type === "board" ? (req.actor.userId ?? null) : null;
+      logger.info(
+        {
+          action: "execution_target.worker_token.revoked",
+          organizationId: orgId,
+          executionTargetId: targetId,
+          operatorUserId,
+          scope: "org_scoped",
+        },
+        "execution target worker token revoked",
+      );
+      res.json(target);
     } catch (err) {
       next(err);
     }

@@ -54,6 +54,7 @@ vi.mock("../services/internal-agent/aoa-agents/ensure-commander.js", () => ({
 }));
 vi.mock("../services/team.js", () => ({
   materializeCompanyProfileFromGlobal: vi.fn().mockResolvedValue(undefined),
+  ensureCompanyProfileFromGlobal: vi.fn().mockResolvedValue(undefined),
 }));
 
 import { companyRoutes } from "../routes/companies.js";

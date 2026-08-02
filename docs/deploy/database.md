@@ -60,12 +60,17 @@ export DATABASE_URL=postgres://paperclip:paperclip@localhost:5432/paperclip
 #   ~/.aoa/instances/default/.env
 ```
 
-Push the schema:
+For a disposable local development database only, you can push the current
+schema directly:
 
 ```sh
 DATABASE_URL=postgres://paperclip:paperclip@localhost:5432/paperclip \
   npx drizzle-kit push
 ```
+
+Do not use `drizzle-kit push` for an existing or production database. It skips
+the migration journal, data backfills, and migration safety gates. Use
+`pnpm db:migrate` for upgrades.
 
 ## 3. Hosted PostgreSQL (Supabase)
 
@@ -93,6 +98,13 @@ across the whole inspect-and-apply, so if two replicas do auto-apply
 concurrently only one runs the migrator; the other waits, re-inspects under the
 lock, and finds the schema already up to date. This is a safety net, **not** a
 substitute for a single migration job.
+
+The init job must set `AOA_DEPLOYMENT_MODE=cloud_auth`. Migration `0188` is a
+one-way multi-tenant cutover for populated databases, so the shared migrator
+refuses to apply it until a full database snapshot has been taken and `"0188"`
+has been recorded in `instance_settings.general.migrationSnapshots`. If the
+manual migrator cannot determine the deployment mode, it also fails closed for
+that populated 0188 case instead of assuming a trusted local deployment.
 
 If using connection pooling, disable prepared statements:
 
