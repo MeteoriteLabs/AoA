@@ -7,14 +7,14 @@
 
 ## Review-thread triage
 
-The initial thread-aware GitHub audit found 58 unresolved Codex threads. Subsequent exact-head Codex passes added three more threads, bringing the final reviewed set to 61:
+The initial thread-aware GitHub audit found 58 unresolved Codex threads. Subsequent exact-head Codex passes added five more threads, bringing the final reviewed set to 63:
 
 - 41 are already fixed or outdated.
 - 7 describe explicitly deferred, unshipped capabilities.
 - 3 are duplicates of those deferred capability gaps.
 - 4 are false positives or non-reachable as claimed.
 - The initially actionable findings were fixed and resolved after verification.
-- Ten threads remain intentionally open for the documented, unshipped follow-up capabilities.
+- Eleven threads remain intentionally open for the documented, unshipped follow-up capabilities; the latest is the already-specified third `org_default` caller.
 - The latest two P1 threads cover tenant-reachable local Git execution and preview-socket revocation; both are addressed by this final patch.
 
 Independent code review also found that the earlier provider dead-key repair catches every materialization error, including database and vault failures. A related deferred WebSocket cleanup is small and security-relevant enough to close while the same revalidation loop is being changed.
@@ -100,6 +100,14 @@ Regression coverage: cloud refusal reaches no Git mock for workspace status/log/
 
 Regression coverage: active cloud board remains; org/company revocation closes; database errors close; non-cloud board does not query; exact agent key and status are revalidated; timers stop after socket closure.
 
+### 9. Keep prefix-backed company routes globally unambiguous
+
+- Restore global `companies.issue_prefix` uniqueness while the board route contract remains `/:companyPrefix/*`.
+- Keep the company allocator's 23505 retry keyed to the global index so same-name companies in different Organizations receive distinct route prefixes without leaking tenant details.
+- Retain company-qualified `/companies/:companyId/...` routes as the permanent follow-up; that namespace can safely relax prefix uniqueness back to per-Organization.
+
+Regression coverage: the full migration chain rejects the same company prefix both within and across Organizations, and the allocator retries the global constraint with the next deterministic prefix.
+
 ## Small contract and documentation cleanup
 
 - Remove the unused public `slug`/`plan` inputs from the shared self-serve organization-create validator so it matches the server's safe `{name}` contract.
@@ -118,7 +126,7 @@ Regression coverage: active cloud board remains; org/company revocation closes; 
 
 ## Verification gate
 
-1. Focused unit and integration tests for all eight fixes.
+1. Focused unit and integration tests for all nine fixes.
 2. `pnpm -r typecheck`.
 3. `pnpm test:run` on a clean full rerun.
 4. `pnpm build`.

@@ -37,8 +37,8 @@ afterAll(async () => {
   try { if (dataDir) await rm(dataDir, { recursive: true, force: true }); } catch { /* ignore */ }
 }, 60_000);
 
-describe.skipIf(process.platform !== "linux")("0188 uniqueness matrix — real DB", () => {
-  it("allows the SAME issue_prefix in DIFFERENT organizations", async () => {
+describe.skipIf(process.platform !== "linux")("organization uniqueness matrix — real DB", () => {
+  it("rejects the SAME route prefix in DIFFERENT organizations", async () => {
     if (setupError) throw new Error(String(setupError));
     const orgs = organizationService(db);
     const a = await orgs.create({ name: "Org A" });
@@ -46,7 +46,7 @@ describe.skipIf(process.platform !== "linux")("0188 uniqueness matrix — real D
     await db.execute(sql`INSERT INTO companies (name, issue_prefix, organization_id) VALUES ('CA', 'DUP', ${a.id})`);
     await expect(
       db.execute(sql`INSERT INTO companies (name, issue_prefix, organization_id) VALUES ('CB', 'DUP', ${b.id})`),
-    ).resolves.toBeDefined();
+    ).rejects.toThrow();
   });
 
   it("rejects the SAME issue_prefix within ONE organization", async () => {
@@ -80,6 +80,15 @@ describe.skipIf(process.platform !== "linux")("0188 uniqueness matrix — real D
     const org = await organizationService(db).create({ name: "Org E" });
     const c1 = await companyService(db).create({ name: "Same Name Co", organizationId: org.id });
     const c2 = await companyService(db).create({ name: "Same Name Co", organizationId: org.id });
+    expect(c1.issuePrefix).not.toBe(c2.issuePrefix);
+  });
+
+  it("auto-suffixes the prefix when same-named companies are created across orgs", async () => {
+    const orgs = organizationService(db);
+    const a = await orgs.create({ name: "Org F" });
+    const b = await orgs.create({ name: "Org G" });
+    const c1 = await companyService(db).create({ name: "Cross Org Same Name", organizationId: a.id });
+    const c2 = await companyService(db).create({ name: "Cross Org Same Name", organizationId: b.id });
     expect(c1.issuePrefix).not.toBe(c2.issuePrefix);
   });
 });

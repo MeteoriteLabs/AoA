@@ -3,8 +3,8 @@
 // Design note (honest): applyPendingMigrations applies the WHOLE chain to
 // head 0192 — the repo exposes no "migrate to 0186 then stop" seam. So this
 // AUTOMATED suite proves the chain's backfill statements are correct and
-// idempotent on populated rows and that cross-migration invariants (per-org
-// uniqueness, tenant-column population, cross-phase FKs) hold on a populated
+// idempotent on populated rows and that cross-migration invariants (temporary
+// global route-prefix uniqueness, tenant-column population, cross-phase FKs) hold on a populated
 // DB. The TRUE staged "seed a pre-0188 backup -> apply -> assert -> rollback"
 // is the executed drill in Phase 6 plan Section 7 against a real
 // `pnpm db:backup` snapshot (staging is natural there). Together they cover
@@ -78,11 +78,11 @@ describe.skipIf(process.platform !== "linux")("MT chain 0188->0192 on populated 
     await db.execute(sql`ALTER TABLE companies ALTER COLUMN organization_id SET NOT NULL`);
   });
 
-  it("0188 per-org prefix uniqueness holds; same prefix in a DIFFERENT org is allowed", async () => {
+  it("head restores global prefix uniqueness while prefix-backed routes remain ambiguous", async () => {
     const a = rows(await db.execute(sql`INSERT INTO organizations (name, slug) VALUES ('Org A', 'org-a-chain') RETURNING id`))[0].id;
     const b = rows(await db.execute(sql`INSERT INTO organizations (name, slug) VALUES ('Org B', 'org-b-chain') RETURNING id`))[0].id;
     await db.execute(sql`INSERT INTO companies (name, issue_prefix, organization_id) VALUES ('CA', 'DUP', ${a})`);
-    await expect(db.execute(sql`INSERT INTO companies (name, issue_prefix, organization_id) VALUES ('CB', 'DUP', ${b})`)).resolves.toBeDefined();
+    await expect(db.execute(sql`INSERT INTO companies (name, issue_prefix, organization_id) VALUES ('CB', 'DUP', ${b})`)).rejects.toThrow();
     await expect(db.execute(sql`INSERT INTO companies (name, issue_prefix, organization_id) VALUES ('CA2', 'DUP', ${a})`)).rejects.toThrow();
   });
 

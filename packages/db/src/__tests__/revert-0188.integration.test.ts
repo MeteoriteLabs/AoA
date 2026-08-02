@@ -383,7 +383,8 @@ describe.skipIf(process.platform === "win32")("revert0188 against a real applied
     // Preconditions the migrator established.
     expect(await orgCount()).toBe(1);
     expect(await journalRowsForHash(hash0188)).toBe(1); // migrator stored the 0188 row by hash
-    expect(await indexExists("companies_org_issue_prefix_idx")).toBe(true);
+    expect(await indexExists("companies_org_issue_prefix_idx")).toBe(false);
+    expect(await indexExists("companies_issue_prefix_idx")).toBe(true);
     expect(await constraintExists("provider_connections_organization_id_organizations_id_fk")).toBe(true);
     expect(await constraintExists("execution_targets_organization_id_organizations_id_fk")).toBe(true);
 

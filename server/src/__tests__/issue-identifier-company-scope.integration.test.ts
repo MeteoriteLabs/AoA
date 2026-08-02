@@ -1,10 +1,9 @@
 /**
  * Real-DB integration test for company-scoped issue-identifier resolution
- * (Codex PR #316 round-6 finding). Phase-1 multi-tenancy made issue prefixes
- * ORG-scoped (`companies_org_issue_prefix_idx` on (organization_id,
- * issue_prefix)) and identifiers PER-COMPANY (`issues_identifier_idx` on
- * (company_id, identifier)), so two companies in DIFFERENT orgs can both own
- * prefix `ACM` and both have an issue `ACM-1`.
+ * (Codex PR #316 round-6 finding). Identifiers are PER-COMPANY
+ * (`issues_identifier_idx` on (company_id, identifier)), so raw/imported data
+ * can contain the same identifier in two companies even while the temporary
+ * global route-prefix constraint gives those companies distinct prefixes.
  *
  * `issueService.getByIdentifierInCompany(companyId, id)` must return THIS
  * company's `ACM-1` — never the other org's. The old/global
@@ -93,7 +92,7 @@ describe.skipIf(process.platform !== "linux")(
     let issueBId: string;
     let issueA2Id: string;
 
-    it("setup: two orgs, each with a company using prefix ACM and an issue ACM-1", async () => {
+    it("setup: two orgs with distinct route prefixes but the same stored issue identifier", async () => {
       if (setupError) {
         throw new Error(
           `embedded-postgres setup failed; cannot run integration test: ${String(setupError)}`,
@@ -106,15 +105,14 @@ describe.skipIf(process.platform !== "linux")(
         INSERT INTO organizations (id, name, slug) VALUES (gen_random_uuid(), 'Org B', 'org-b-idscope') RETURNING id
       `));
 
-      // Both companies share prefix 'ACM' — legal because they live in DIFFERENT
-      // orgs (companies_org_issue_prefix_idx is on (organization_id, issue_prefix)).
+      // Route prefixes are globally unique until company-qualified URLs ship.
       companyAId = firstId(await db.execute<{ id: string }>(sql`
         INSERT INTO companies (id, name, issue_prefix, organization_id)
         VALUES (gen_random_uuid(), 'ACME (org A)', 'ACM', ${orgAId}) RETURNING id
       `));
       companyBId = firstId(await db.execute<{ id: string }>(sql`
         INSERT INTO companies (id, name, issue_prefix, organization_id)
-        VALUES (gen_random_uuid(), 'ACME (org B)', 'ACM', ${orgBId}) RETURNING id
+        VALUES (gen_random_uuid(), 'ACME (org B)', 'ACMB', ${orgBId}) RETURNING id
       `));
 
       // Both companies have an issue ACM-1 — legal because identifiers are

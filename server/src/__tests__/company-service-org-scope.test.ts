@@ -4,10 +4,10 @@ import { resolve } from "node:path";
 
 const SRC = readFileSync(resolve(__dirname, "../services/companies.ts"), "utf8");
 
-describe("companyService org-scoping + 23505 handler rename", () => {
-  it("keys the prefix-conflict handler on the re-scoped constraint name", () => {
-    expect(SRC).toContain('constraint === "companies_org_issue_prefix_idx"');
-    expect(SRC).not.toContain('constraint === "companies_issue_prefix_idx"');
+describe("companyService org-scoping + route-safe prefix allocation", () => {
+  it("keys the prefix-conflict handler on the temporary global route constraint", () => {
+    expect(SRC).toContain('constraint === "companies_issue_prefix_idx"');
+    expect(SRC).not.toContain('constraint === "companies_org_issue_prefix_idx"');
   });
   it("defaults organization_id to the sentinel on insert (back-compat)", () => {
     expect(SRC).toContain("DEFAULT_ORGANIZATION_ID");

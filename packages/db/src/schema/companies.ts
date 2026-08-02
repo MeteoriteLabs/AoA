@@ -67,8 +67,10 @@ export const companies = pgTable(
     enableTeams: boolean("enable_teams").notNull().default(false),
   },
   (table) => ({
-    // Re-scoped in Phase 1: prefix uniqueness is per-Organization, not global.
+    // Temporary route-safety invariant: the current board URL namespace is
+    // /:companyPrefix, so a prefix must identify exactly one company globally.
+    // Company-qualified routes can safely relax this back to per-Organization.
     // The 23505 retry in companyService keys on this constraint name.
-    issuePrefixUniqueIdx: uniqueIndex("companies_org_issue_prefix_idx").on(table.organizationId, table.issuePrefix),
+    issuePrefixUniqueIdx: uniqueIndex("companies_issue_prefix_idx").on(table.issuePrefix),
   }),
 );

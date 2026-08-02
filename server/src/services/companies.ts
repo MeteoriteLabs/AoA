@@ -110,7 +110,7 @@ export function companyService(db: Db) {
           ? candidate.constraint_name
           : undefined;
 
-      if (candidate.code === "23505" && constraint === "companies_org_issue_prefix_idx") {
+      if (candidate.code === "23505" && constraint === "companies_issue_prefix_idx") {
         return true;
       }
 
