@@ -25,7 +25,7 @@ export interface PluginInstallModalProps {
 }
 
 /**
- * Modal for plugin install, instance-scoped, no company picker.
+ * Modal for plugin install in the active company, with no implicit fallback.
  * Shows capabilities for review.
  *
  * Flow on Install click:
@@ -34,23 +34,29 @@ export interface PluginInstallModalProps {
  *   3. Global toast provider tracks operation status
  *   4. On terminal status, toast updates and auto-dismisses
  *
- * Plugins are instance-scoped; installing under any company URL produces an
- * identical instance-wide plugin row.
+ * Plugin rows are company-scoped; the selected company is the install target.
  */
-export function PluginInstallModal({ item, open, onOpenChange }: PluginInstallModalProps) {
-  const { selectedCompanyId, companies } = useCompany();
-  const installCompanyId =
-    selectedCompanyId ?? companies.find((c) => c.status !== "archived")?.id ?? null;
+export function PluginInstallModal({
+  item,
+  open,
+  onOpenChange,
+}: PluginInstallModalProps) {
+  const { selectedCompanyId } = useCompany();
+  const installCompanyId = selectedCompanyId;
 
-  const installMutation = useInstallOperation({ companyId: installCompanyId ?? "" });
+  const installMutation = useInstallOperation({
+    companyId: installCompanyId ?? "",
+  });
   const { show, update, trackOperation } = useInstallToast();
 
   const capabilities = (item.capabilities ?? [])
     .map((c) => c.id)
     .filter((id): id is PluginCapability =>
-      (PLUGIN_CAPABILITIES as readonly string[]).includes(id),
+      (PLUGIN_CAPABILITIES as readonly string[]).includes(id)
     );
-  const [capabilitiesAgreed, setCapabilitiesAgreed] = useState(capabilities.length === 0);
+  const [capabilitiesAgreed, setCapabilitiesAgreed] = useState(
+    capabilities.length === 0
+  );
 
   useEffect(() => {
     setCapabilitiesAgreed(capabilities.length === 0);
@@ -63,10 +69,15 @@ export function PluginInstallModal({ item, open, onOpenChange }: PluginInstallMo
 
   const handleInstall = async () => {
     if (!installCompanyId) return;
-    const toastId = show({ status: "installing", message: `Installing ${item.name}...` });
+    const toastId = show({
+      status: "installing",
+      message: `Installing ${item.name}...`,
+    });
     onOpenChange(false);
     try {
-      const result = await installMutation.mutateAsync({ catalogItemId: item.id });
+      const result = await installMutation.mutateAsync({
+        catalogItemId: item.id,
+      });
       trackOperation({
         toastId,
         companyId: installCompanyId,
@@ -100,7 +111,7 @@ export function PluginInstallModal({ item, open, onOpenChange }: PluginInstallMo
               v{item.version}
             </Badge>
             <Badge variant="secondary" className="text-xs">
-              Instance-wide
+              Company-scoped
             </Badge>
           </div>
 
@@ -112,7 +123,7 @@ export function PluginInstallModal({ item, open, onOpenChange }: PluginInstallMo
           />
 
           <p className="text-xs text-muted-foreground">
-            Plugins are installed instance-wide and available to all companies.
+            This plugin will be installed only for the active company.
           </p>
         </DialogBody>
 
@@ -122,7 +133,11 @@ export function PluginInstallModal({ item, open, onOpenChange }: PluginInstallMo
           </Button>
           <Button
             onClick={handleInstall}
-            disabled={installMutation.isPending || !installCompanyId || !capabilitiesAgreed}
+            disabled={
+              installMutation.isPending ||
+              !installCompanyId ||
+              !capabilitiesAgreed
+            }
           >
             {installMutation.isPending ? "Starting install..." : "Install"}
           </Button>

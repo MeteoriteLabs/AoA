@@ -12,9 +12,10 @@ import {
   TYPE_LABELS_PLURAL,
   deriveMarketplacePlacement,
 } from "@/lib/marketplace-constants";
-import { pluginsApi } from "@/api/plugins";
+import { listCompanyPlugins, type InstalledPlugin } from "@/api/plugins";
 import { queryKeys } from "@/lib/queryKeys";
-import type { MarketplaceItemType, PluginRecord } from "@armyofagents/shared";
+import type { MarketplaceItemType } from "@armyofagents/shared";
+import { useCompany } from "@/context/CompanyContext";
 
 const TYPES: MarketplaceItemType[] = ["plugin", "skill", "agent", "team"];
 
@@ -26,16 +27,27 @@ export default function MarketplaceSearch() {
   const { data: catalog, error: catalogError } = useCatalog();
   const { data: packages, error: packagesError } = usePackages();
   useMarketplaceSidebar("home");
+  const { selectedCompanyId } = useCompany();
 
-  const { data: installedPlugins } = useQuery({
-    queryKey: queryKeys.plugins.all,
-    queryFn: () => pluginsApi.list(),
+  const {
+    data: installedPlugins,
+    error: installedPluginsError,
+    refetch: refetchInstalledPlugins,
+  } = useQuery({
+    queryKey: queryKeys.plugins.companyList(selectedCompanyId ?? ""),
+    queryFn: () => listCompanyPlugins(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
   });
 
   const installedByPackageName = useMemo(
-    () => new Map((installedPlugins ?? []).map((p: PluginRecord) => [p.packageName, p])),
-    [installedPlugins],
+    () =>
+      new Map(
+        (installedPlugins ?? []).map((p: InstalledPlugin) => [p.packageName, p])
+      ),
+    [installedPlugins]
   );
+  const installedStateReady =
+    !!selectedCompanyId && installedPlugins !== undefined;
 
   const grouped = useMemo(() => {
     if (!catalog || packages === undefined) return null;
@@ -80,7 +92,10 @@ export default function MarketplaceSearch() {
               <h1 className="text-2xl font-semibold">
                 {q ? `Search: "${q}"` : "All items"}
                 {category && (
-                  <span className="text-muted-foreground"> · category: {category}</span>
+                  <span className="text-muted-foreground">
+                    {" "}
+                    · category: {category}
+                  </span>
                 )}
               </h1>
               <p className="text-sm text-muted-foreground">
@@ -90,7 +105,9 @@ export default function MarketplaceSearch() {
 
             {totalCount === 0 ? (
               <div className="text-center py-12">
-                <p className="text-muted-foreground">No items match your search.</p>
+                <p className="text-muted-foreground">
+                  No items match your search.
+                </p>
                 <Link
                   to="/marketplace"
                   className="text-sm text-primary hover:underline mt-2 inline-block"
@@ -105,7 +122,9 @@ export default function MarketplaceSearch() {
                 return (
                   <section key={type}>
                     <div className="flex items-center justify-between mb-4">
-                      <h2 className="text-lg font-semibold">{TYPE_LABELS_PLURAL[type]}</h2>
+                      <h2 className="text-lg font-semibold">
+                        {TYPE_LABELS_PLURAL[type]}
+                      </h2>
                       <Link
                         to={`/marketplace/${type}`}
                         className="text-xs text-primary hover:underline"
@@ -115,7 +134,16 @@ export default function MarketplaceSearch() {
                     </div>
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                       {items.map((item) => (
-                        <CatalogCard key={item.id} item={item} installedByPackageName={installedByPackageName} />
+                        <CatalogCard
+                          key={item.id}
+                          item={item}
+                          installedByPackageName={installedByPackageName}
+                          installedStateReady={installedStateReady}
+                          installedStateError={installedPluginsError != null}
+                          onRetryInstalledState={() =>
+                            void refetchInstalledPlugins()
+                          }
+                        />
                       ))}
                     </div>
                   </section>

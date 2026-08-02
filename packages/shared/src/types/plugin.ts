@@ -44,7 +44,8 @@ export interface PluginJobDeclaration {
 
 /**
  * Declares a webhook endpoint the plugin can receive.
- * Route: `POST /api/plugins/:pluginId/webhooks/:endpointKey`
+ * Route: `POST /api/plugins/:pluginId/webhooks/:endpointKey`, where
+ * `pluginId` is the tenant-specific `plugins.id` UUID (not the manifest key).
  *
  * @see PLUGIN_SPEC.md §18 — Webhooks
  */
@@ -444,7 +445,13 @@ export interface PluginJobRunRecord {
   /** What triggered this run. */
   trigger: "schedule" | "manual" | "retry";
   /** Current run status. */
-  status: "pending" | "queued" | "running" | "succeeded" | "failed" | "cancelled";
+  status:
+    | "pending"
+    | "queued"
+    | "running"
+    | "succeeded"
+    | "failed"
+    | "cancelled";
   /** Run duration in milliseconds. */
   durationMs: number | null;
   /** Error message if the run failed. */

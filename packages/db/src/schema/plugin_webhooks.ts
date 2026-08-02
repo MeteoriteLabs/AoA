@@ -14,7 +14,8 @@ import type { PluginWebhookDeliveryStatus } from "@armyofagents/shared";
  * `plugin_webhook_deliveries` table — inbound webhook delivery history for plugins.
  *
  * When an external system sends an HTTP POST to a plugin's registered webhook
- * endpoint (e.g. `/api/plugins/:pluginKey/webhooks/:webhookKey`), the server
+ * endpoint (e.g. `/api/plugins/:pluginInstallationId/webhooks/:webhookKey`,
+ * where `pluginInstallationId` is the tenant-specific `plugins.id` UUID), the server
  * creates a row in this table before dispatching the payload to the plugin
  * worker. This provides an auditable log of every delivery attempt.
  *
@@ -44,7 +45,10 @@ export const pluginWebhookDeliveries = pgTable(
     /** Optional de-duplication ID provided by the external system. */
     externalId: text("external_id"),
     /** Current delivery state. */
-    status: text("status").$type<PluginWebhookDeliveryStatus>().notNull().default("pending"),
+    status: text("status")
+      .$type<PluginWebhookDeliveryStatus>()
+      .notNull()
+      .default("pending"),
     /** Wall-clock processing duration in milliseconds. Null until delivery finishes. */
     durationMs: integer("duration_ms"),
     /** Error message if `status === "failed"`. */
@@ -52,14 +56,19 @@ export const pluginWebhookDeliveries = pgTable(
     /** Raw JSON body of the inbound HTTP request. */
     payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
     /** Relevant HTTP headers from the inbound request (e.g. signature headers). */
-    headers: jsonb("headers").$type<Record<string, string>>().notNull().default({}),
+    headers: jsonb("headers")
+      .$type<Record<string, string>>()
+      .notNull()
+      .default({}),
     startedAt: timestamp("started_at", { withTimezone: true }),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (table) => ({
     pluginIdx: index("plugin_webhook_deliveries_plugin_idx").on(table.pluginId),
     statusIdx: index("plugin_webhook_deliveries_status_idx").on(table.status),
     keyIdx: index("plugin_webhook_deliveries_key_idx").on(table.webhookKey),
-  }),
+  })
 );

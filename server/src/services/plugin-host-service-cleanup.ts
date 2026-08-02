@@ -9,13 +9,15 @@ export interface PluginWorkerRuntimeEvent {
 
 export interface PluginHostServiceCleanupController {
   handleWorkerEvent(event: PluginWorkerRuntimeEvent): void;
+  replace(pluginId: string, dispose: () => void): void;
+  disposePlugin(pluginId: string): void;
   disposeAll(): void;
   teardown(): void;
 }
 
 export function createPluginHostServiceCleanup(
   lifecycle: LifecycleLike,
-  disposers: Map<string, () => void>,
+  disposers: Map<string, () => void>
 ): PluginHostServiceCleanupController {
   const runDispose = (pluginId: string, remove = false) => {
     const dispose = disposers.get(pluginId);
@@ -42,6 +44,15 @@ export function createPluginHostServiceCleanup(
       if (event.type === "plugin.worker.crashed") {
         runDispose(event.pluginId);
       }
+    },
+
+    replace(pluginId, dispose) {
+      runDispose(pluginId);
+      disposers.set(pluginId, dispose);
+    },
+
+    disposePlugin(pluginId) {
+      runDispose(pluginId, true);
     },
 
     disposeAll() {

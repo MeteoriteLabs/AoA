@@ -103,6 +103,16 @@ describe("plugin admin routes — non-admin board gets 403", () => {
   }
 
   const cases = [
+    { method: "get" as const, path: "/api/plugins/examples" },
+    { method: "get" as const, path: "/api/plugins/tools" },
+    { method: "get" as const, path: "/api/plugins/plugin-test-id" },
+    { method: "get" as const, path: "/api/plugins/plugin-test-id/health" },
+    { method: "get" as const, path: "/api/plugins/plugin-test-id/logs" },
+    { method: "get" as const, path: "/api/plugins/plugin-test-id/config" },
+    { method: "get" as const, path: "/api/plugins/plugin-test-id/jobs" },
+    { method: "get" as const, path: "/api/plugins/plugin-test-id/jobs/job-test-id/runs" },
+    { method: "get" as const, path: "/api/plugins/plugin-test-id/dashboard" },
+    { method: "get" as const, path: "/api/plugins/plugin-test-id/version-history" },
     { method: "post" as const, path: "/api/plugins/install", body: {} },
     { method: "delete" as const, path: "/api/plugins/plugin-test-id" },
     { method: "post" as const, path: "/api/plugins/plugin-test-id/enable", body: {} },
@@ -188,13 +198,18 @@ describe("company plugin routes — mutations require instance admin (H9)", () =
   // Reads must stay member-accessible — the gate must NOT be on the GETs.
   for (const path of [
     "/api/companies/co-1/plugins",
-    "/api/companies/co-1/plugins/plugin-1/config",
   ]) {
     it(`GET ${path} → NOT 403 for a non-admin company member`, async () => {
       const res = await makeApp(NON_ADMIN_MEMBER).get(path);
       expect(res.status).not.toBe(403);
     });
   }
+
+  it("protects operator-provided company plugin config from ordinary members", async () => {
+    const res = await makeApp(NON_ADMIN_MEMBER)
+      .get("/api/companies/co-1/plugins/plugin-1/config");
+    expect(res.status).toBe(403);
+  });
 });
 
 // ---------------------------------------------------------------------------

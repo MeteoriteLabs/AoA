@@ -95,12 +95,11 @@ export function PluginManager() {
   const invalidatePluginQueries = () => {
     queryClient.invalidateQueries({ queryKey: queryKeys.plugins.all });
     queryClient.invalidateQueries({ queryKey: queryKeys.plugins.examples });
-    queryClient.invalidateQueries({ queryKey: queryKeys.plugins.uiContributions });
   };
 
   const installMutation = useMutation({
     mutationFn: (params: { packageName: string; version?: string; isLocalPath?: boolean }) =>
-      pluginsApi.install(params),
+      pluginsApi.install({ ...params, companyId: selectedCompany?.id }),
     onSuccess: () => {
       invalidatePluginQueries();
       setInstallDialogOpen(false);

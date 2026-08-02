@@ -40,10 +40,7 @@ import { pluginsApi, type PluginUiContribution } from "@/api/plugins";
 import { authApi } from "@/api/auth";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
-import {
-  PluginBridgeContext,
-  type PluginHostContext,
-} from "./bridge";
+import { PluginBridgeContext, type PluginHostContext } from "./bridge";
 
 export type PluginSlotContext = {
   companyId?: string | null;
@@ -70,18 +67,18 @@ type PluginSlotComponentProps = {
 
 export type RegisteredPluginComponent =
   | {
-    kind: "react";
-    component: ComponentType<PluginSlotComponentProps>;
-  }
+      kind: "react";
+      component: ComponentType<PluginSlotComponentProps>;
+    }
   | {
-    kind: "web-component";
-    tagName: string;
-  };
+      kind: "web-component";
+      tagName: string;
+    };
 
 type SlotFilters = {
   slotTypes: PluginUiSlotType[];
   entityType?: PluginUiSlotEntityType | null;
-  companyId?: string | null;
+  companyId: string | null | undefined;
   enabled?: boolean;
 };
 
@@ -93,16 +90,26 @@ type UsePluginSlotsResult = {
 
 /**
  * In-memory registry for plugin UI exports loaded by the host page.
- * Keys are `${pluginKey}:${exportName}` to match manifest slot declarations.
+ * Keys are `${pluginId}:${exportName}`. Plugin keys are only unique within a
+ * company, so using the database id prevents one tenant's bundle from
+ * replacing another tenant's component when the active company changes.
  */
 const registry = new Map<string, RegisteredPluginComponent>();
 
-function buildRegistryKey(pluginKey: string, exportName: string): string {
-  return `${pluginKey}:${exportName}`;
+function buildRegistryKey(pluginId: string, exportName: string): string {
+  return `${pluginId}:${exportName}`;
 }
 
 function requiresEntityType(slotType: PluginUiSlotType): boolean {
-  return slotType === "detailTab" || slotType === "taskDetailView" || slotType === "contextMenuItem" || slotType === "commentAnnotation" || slotType === "commentContextMenuItem" || slotType === "projectSidebarItem" || slotType === "toolbarButton";
+  return (
+    slotType === "detailTab" ||
+    slotType === "taskDetailView" ||
+    slotType === "contextMenuItem" ||
+    slotType === "commentAnnotation" ||
+    slotType === "commentContextMenuItem" ||
+    slotType === "projectSidebarItem" ||
+    slotType === "toolbarButton"
+  );
 }
 
 function getErrorMessage(error: unknown): string {
@@ -114,11 +121,11 @@ function getErrorMessage(error: unknown): string {
  * Registers a React component export for a plugin UI slot.
  */
 export function registerPluginReactComponent(
-  pluginKey: string,
+  pluginId: string,
   exportName: string,
-  component: ComponentType<PluginSlotComponentProps>,
+  component: ComponentType<PluginSlotComponentProps>
 ): void {
-  registry.set(buildRegistryKey(pluginKey, exportName), {
+  registry.set(buildRegistryKey(pluginId, exportName), {
     kind: "react",
     component,
   });
@@ -128,25 +135,27 @@ export function registerPluginReactComponent(
  * Registers a custom element tag for a plugin UI slot.
  */
 export function registerPluginWebComponent(
-  pluginKey: string,
+  pluginId: string,
   exportName: string,
-  tagName: string,
+  tagName: string
 ): void {
-  registry.set(buildRegistryKey(pluginKey, exportName), {
+  registry.set(buildRegistryKey(pluginId, exportName), {
     kind: "web-component",
     tagName,
   });
 }
 
-function resolveRegisteredComponent(slot: ResolvedPluginSlot): RegisteredPluginComponent | null {
-  return registry.get(buildRegistryKey(slot.pluginKey, slot.exportName)) ?? null;
+function resolveRegisteredComponent(
+  slot: ResolvedPluginSlot
+): RegisteredPluginComponent | null {
+  return registry.get(buildRegistryKey(slot.pluginId, slot.exportName)) ?? null;
 }
 
 export function resolveRegisteredPluginComponent(
-  pluginKey: string,
-  exportName: string,
+  pluginId: string,
+  exportName: string
 ): RegisteredPluginComponent | null {
-  return registry.get(buildRegistryKey(pluginKey, exportName)) ?? null;
+  return registry.get(buildRegistryKey(pluginId, exportName)) ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -182,8 +191,12 @@ function buildPluginModuleKey(contribution: PluginUiContribution): string {
 }
 
 function buildPluginUiUrl(contribution: PluginUiContribution): string {
-  const cacheHint = encodeURIComponent(contribution.updatedAt ?? contribution.version ?? "0");
-  return `/_plugins/${encodeURIComponent(contribution.pluginId)}/ui/${contribution.uiEntryFile}?v=${cacheHint}`;
+  const cacheHint = encodeURIComponent(
+    contribution.updatedAt ?? contribution.version ?? "0"
+  );
+  return `/_plugins/${encodeURIComponent(contribution.pluginId)}/ui/${
+    contribution.uiEntryFile
+  }?v=${cacheHint}`;
 }
 
 /**
@@ -211,13 +224,20 @@ const shimBlobUrls: Record<string, string> = {};
 
 function applyJsxRuntimeKey(
   props: Record<string, unknown> | null | undefined,
-  key: string | number | undefined,
+  key: string | number | undefined
 ): Record<string, unknown> {
   if (key === undefined) return props ?? {};
   return { ...(props ?? {}), key };
 }
 
-function getShimBlobUrl(specifier: "react" | "react-dom" | "react-dom/client" | "react/jsx-runtime" | "sdk-ui"): string {
+function getShimBlobUrl(
+  specifier:
+    | "react"
+    | "react-dom"
+    | "react-dom/client"
+    | "react/jsx-runtime"
+    | "sdk-ui"
+): string {
   if (shimBlobUrls[specifier]) return shimBlobUrls[specifier];
 
   let source: string;
@@ -316,18 +336,24 @@ function rewriteBareSpecifiers(source: string): string {
  * @param url - The URL to the plugin's UI entry module
  * @returns The module's exports
  */
-async function importPluginModule(url: string): Promise<Record<string, unknown>> {
+async function importPluginModule(
+  url: string
+): Promise<Record<string, unknown>> {
   // Check if the bridge registry is available. If not, fall back to direct
   // import (which will fail on bare specifiers but won't crash the loader).
   if (!globalThis.__paperclipPluginBridge__) {
-    console.warn("[plugin-loader] Bridge registry not initialized, falling back to direct import");
+    console.warn(
+      "[plugin-loader] Bridge registry not initialized, falling back to direct import"
+    );
     return import(/* @vite-ignore */ url);
   }
 
   // Fetch the module source text
   const response = await fetch(url);
   if (!response.ok) {
-    throw new Error(`Failed to fetch plugin module: ${response.status} ${response.statusText}`);
+    throw new Error(
+      `Failed to fetch plugin module: ${response.status} ${response.statusText}`
+    );
   }
 
   const source = await response.text();
@@ -356,7 +382,7 @@ async function importPluginModule(url: string): Promise<Record<string, unknown>>
  * This replaces the previous approach where plugin bundles had to
  * self-register via `window.paperclipPlugins.registerReactComponent()`.
  * Now the host is responsible for importing the module and binding
- * exports to the correct `pluginKey:exportName` registry keys.
+ * exports to the correct `pluginId:exportName` registry keys.
  *
  * Plugin modules are loaded with bare-specifier rewriting so that imports
  * of `@armyofagents/plugin-sdk/ui`, `react`, and `react-dom` resolve to the
@@ -366,7 +392,9 @@ async function importPluginModule(url: string): Promise<Record<string, unknown>>
  * that matches an `exportName` declared in a slot AND that export is a
  * string (the custom element tag name), it's registered as a web component.
  */
-async function loadPluginModule(contribution: PluginUiContribution): Promise<void> {
+async function loadPluginModule(
+  contribution: PluginUiContribution
+): Promise<void> {
   const { pluginId, pluginKey, slots, launchers } = contribution;
   const moduleKey = buildPluginModuleKey(contribution);
 
@@ -418,7 +446,7 @@ async function loadPluginModule(contribution: PluginUiContribution): Promise<voi
         const exported = mod[exportName];
         if (exported === undefined) {
           console.warn(
-            `Plugin "${pluginKey}" declares slot export "${exportName}" but the module does not export it.`,
+            `Plugin "${pluginKey}" declares slot export "${exportName}" but the module does not export it.`
           );
           continue;
         }
@@ -426,16 +454,16 @@ async function loadPluginModule(contribution: PluginUiContribution): Promise<voi
         if (typeof exported === "function") {
           // React component (function component or class component).
           registerPluginReactComponent(
-            pluginKey,
+            pluginId,
             exportName,
-            exported as ComponentType<PluginSlotComponentProps>,
+            exported as ComponentType<PluginSlotComponentProps>
           );
         } else if (typeof exported === "string") {
           // Web component tag name.
-          registerPluginWebComponent(pluginKey, exportName, exported);
+          registerPluginWebComponent(pluginId, exportName, exported);
         } else {
           console.warn(
-            `Plugin "${pluginKey}" export "${exportName}" is neither a function nor a string tag name — skipping.`,
+            `Plugin "${pluginKey}" export "${exportName}" is neither a function nor a string tag name — skipping.`
           );
         }
       }
@@ -453,10 +481,14 @@ async function loadPluginModule(contribution: PluginUiContribution): Promise<voi
   await importPromise;
 }
 
-function isLauncherComponentTarget(launcher: PluginLauncherDeclaration): boolean {
-  return launcher.action.type === "openModal"
-    || launcher.action.type === "openDrawer"
-    || launcher.action.type === "openPopover";
+function isLauncherComponentTarget(
+  launcher: PluginLauncherDeclaration
+): boolean {
+  return (
+    launcher.action.type === "openModal" ||
+    launcher.action.type === "openDrawer" ||
+    launcher.action.type === "openPopover"
+  );
 }
 
 /**
@@ -465,14 +497,14 @@ function isLauncherComponentTarget(launcher: PluginLauncherDeclaration): boolean
  * Returns a promise that resolves once all modules have been loaded (or
  * failed). Plugins that are already loaded are skipped.
  */
-async function ensurePluginModulesLoaded(contributions: PluginUiContribution[]): Promise<void> {
-  await Promise.all(
-    contributions.map((c) => loadPluginModule(c)),
-  );
+async function ensurePluginModulesLoaded(
+  contributions: PluginUiContribution[]
+): Promise<void> {
+  await Promise.all(contributions.map((c) => loadPluginModule(c)));
 }
 
 export async function ensurePluginContributionLoaded(
-  contribution: PluginUiContribution,
+  contribution: PluginUiContribution
 ): Promise<void> {
   await loadPluginModule(contribution);
 }
@@ -483,7 +515,9 @@ export async function ensurePluginContributionLoaded(
  * - If all are loaded (or no contributions) → "loaded"
  * - If all finished but some errored → "loaded" (errors are logged, not fatal)
  */
-function aggregateLoadState(contributions: PluginUiContribution[]): "loading" | "loaded" {
+function aggregateLoadState(
+  contributions: PluginUiContribution[]
+): "loading" | "loaded" {
   for (const c of contributions) {
     const state = pluginLoadStates.get(buildPluginModuleKey(c));
     if (state === "loading" || state === "idle" || state === undefined) {
@@ -504,7 +538,9 @@ function aggregateLoadState(contributions: PluginUiContribution[]): "loading" | 
  * who consume slots via `usePluginSlots()` automatically get module loading
  * without extra wiring.
  */
-function usePluginModuleLoader(contributions: PluginUiContribution[] | undefined) {
+function usePluginModuleLoader(
+  contributions: PluginUiContribution[] | undefined
+) {
   const [, setTick] = useState(0);
 
   useEffect(() => {
@@ -542,20 +578,30 @@ function usePluginModuleLoader(contributions: PluginUiContribution[] | undefined
  * newly-discovered contributions. Components render once loading completes.
  */
 export function usePluginSlots(filters: SlotFilters): UsePluginSlotsResult {
-  const queryEnabled = filters.enabled ?? true;
-  const { data, isLoading: isQueryLoading, error } = useQuery({
-    queryKey: queryKeys.plugins.uiContributions,
-    queryFn: () => pluginsApi.listUiContributions(),
+  const companyId = filters.companyId ?? null;
+  const queryEnabled = Boolean(companyId) && (filters.enabled ?? true);
+  const {
+    data,
+    isLoading: isQueryLoading,
+    error,
+  } = useQuery({
+    queryKey: queryKeys.plugins.uiContributions(companyId ?? ""),
+    queryFn: () => pluginsApi.listUiContributions(companyId!),
     enabled: queryEnabled,
   });
 
   // Kick off dynamic imports for any new plugin contributions.
   usePluginModuleLoader(data);
 
-  const slotTypesKey = useMemo(() => [...filters.slotTypes].sort().join("|"), [filters.slotTypes]);
+  const slotTypesKey = useMemo(
+    () => [...filters.slotTypes].sort().join("|"),
+    [filters.slotTypes]
+  );
 
   const slots = useMemo(() => {
-    const allowedTypes = new Set(slotTypesKey.split("|").filter(Boolean) as PluginUiSlotType[]);
+    const allowedTypes = new Set(
+      slotTypesKey.split("|").filter(Boolean) as PluginUiSlotType[]
+    );
     const rows: ResolvedPluginSlot[] = [];
     for (const contribution of data ?? []) {
       for (const slot of contribution.slots) {
@@ -605,7 +651,10 @@ type PluginSlotErrorBoundaryState = {
   hasError: boolean;
 };
 
-class PluginSlotErrorBoundary extends Component<PluginSlotErrorBoundaryProps, PluginSlotErrorBoundaryState> {
+class PluginSlotErrorBoundary extends Component<
+  PluginSlotErrorBoundaryProps,
+  PluginSlotErrorBoundaryState
+> {
   override state: PluginSlotErrorBoundaryState = { hasError: false };
 
   static getDerivedStateFromError(): PluginSlotErrorBoundaryState {
@@ -625,7 +674,12 @@ class PluginSlotErrorBoundary extends Component<PluginSlotErrorBoundaryProps, Pl
   override render() {
     if (this.state.hasError) {
       return (
-        <div className={cn("rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1 text-xs text-destructive", this.props.className)}>
+        <div
+          className={cn(
+            "rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1 text-xs text-destructive",
+            this.props.className
+          )}
+        >
           {this.props.slot.pluginDisplayName}: failed to render
         </div>
       );
@@ -674,14 +728,20 @@ type PluginSlotMountProps = {
  * The bridge hooks need the full host context shape; the slot context carries
  * the subset available from the rendering location.
  */
-function slotContextToHostContext(
+export function slotContextToHostContext(
   pluginSlotContext: PluginSlotContext,
   userId: string | null,
+  pluginInstallationId: string
 ): PluginHostContext {
   return {
+    pluginInstallationId,
     companyId: pluginSlotContext.companyId ?? null,
     companyPrefix: pluginSlotContext.companyPrefix ?? null,
-    projectId: pluginSlotContext.projectId ?? (pluginSlotContext.entityType === "project" ? pluginSlotContext.entityId ?? null : null),
+    projectId:
+      pluginSlotContext.projectId ??
+      (pluginSlotContext.entityType === "project"
+        ? pluginSlotContext.entityId ?? null
+        : null),
     entityId: pluginSlotContext.entityId ?? null,
     entityType: pluginSlotContext.entityType ?? null,
     parentEntityId: pluginSlotContext.parentEntityId ?? null,
@@ -710,8 +770,14 @@ function PluginBridgeScope({
     queryFn: () => authApi.getSession(),
   });
   const userId = session?.user?.id ?? session?.session?.userId ?? null;
-  const hostContext = useMemo(() => slotContextToHostContext(context, userId), [context, userId]);
-  const value = useMemo(() => ({ pluginId, hostContext }), [pluginId, hostContext]);
+  const hostContext = useMemo(
+    () => slotContextToHostContext(context, userId, pluginId),
+    [context, userId, pluginId]
+  );
+  const value = useMemo(
+    () => ({ pluginId, hostContext }),
+    [pluginId, hostContext]
+  );
 
   return (
     <PluginBridgeContext.Provider value={value}>
@@ -749,7 +815,12 @@ export function PluginSlotMount({
   if (!component) {
     if (missingBehavior === "hidden") return null;
     return (
-      <div className={cn("rounded-md border border-dashed border-border px-2 py-1 text-xs text-muted-foreground", className)}>
+      <div
+        className={cn(
+          "rounded-md border border-dashed border-border px-2 py-1 text-xs text-muted-foreground",
+          className
+        )}
+      >
         {slot.pluginDisplayName}: {slot.displayName}
       </div>
     );
@@ -801,11 +872,17 @@ export function PluginSlotOutlet({
     slotTypes,
     entityType,
     companyId: context.companyId,
+    enabled: !!context.companyId,
   });
 
   if (errorMessage) {
     return (
-      <div className={cn("rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1 text-xs text-destructive", errorClassName)}>
+      <div
+        className={cn(
+          "rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1 text-xs text-destructive",
+          errorClassName
+        )}
+      >
         Plugin extensions unavailable: {errorMessage}
       </div>
     );

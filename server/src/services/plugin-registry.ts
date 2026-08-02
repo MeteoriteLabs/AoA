@@ -1,4 +1,4 @@
-import { asc, eq, ne, sql, and } from "drizzle-orm";
+import { asc, eq, ne, sql, and, inArray } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   plugins,
@@ -38,9 +38,15 @@ import { conflict, notFound } from "../errors.js";
  */
 function isPluginKeyConflict(error: unknown): boolean {
   if (typeof error !== "object" || error === null) return false;
-  const err = error as { code?: string; constraint?: string; constraint_name?: string };
+  const err = error as {
+    code?: string;
+    constraint?: string;
+    constraint_name?: string;
+  };
   const constraint = err.constraint ?? err.constraint_name;
-  return err.code === "23505" && constraint === "plugins_company_plugin_key_idx";
+  return (
+    err.code === "23505" && constraint === "plugins_company_plugin_key_idx"
+  );
 }
 
 function mapLegacyPaperclipKey(pluginKey: string): string | null {
@@ -98,7 +104,9 @@ export function pluginRegistryService(db: Db) {
     const row = await db
       .select()
       .from(plugins)
-      .where(and(eq(plugins.companyId, companyId), eq(plugins.pluginKey, pluginKey)))
+      .where(
+        and(eq(plugins.companyId, companyId), eq(plugins.pluginKey, pluginKey))
+      )
       .then((rows) => rows[0] ?? null);
     if (row) return row;
     const legacyAlias = mapLegacyPaperclipKey(pluginKey);
@@ -106,13 +114,73 @@ export function pluginRegistryService(db: Db) {
     return db
       .select()
       .from(plugins)
-      .where(and(eq(plugins.companyId, companyId), eq(plugins.pluginKey, legacyAlias)))
+      .where(
+        and(
+          eq(plugins.companyId, companyId),
+          eq(plugins.pluginKey, legacyAlias)
+        )
+      )
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function getByPackageNameScoped(
+    packageName: string,
+    companyId: string
+  ) {
+    return db
+      .select()
+      .from(plugins)
+      .where(
+        and(
+          eq(plugins.companyId, companyId),
+          eq(plugins.packageName, packageName)
+        )
+      )
+      .then((rows) => rows[0] ?? null);
+  }
+
+  function companyScopeCondition(companyIds: string[] | undefined) {
+    if (companyIds === undefined) return undefined;
+    if (companyIds.length === 0) return null;
+    return inArray(plugins.companyId, companyIds);
+  }
+
+  async function listInstalledForCompanies(companyIds: string[] | undefined) {
+    const companyScope = companyScopeCondition(companyIds);
+    if (companyScope === null) return [];
+    return db
+      .select()
+      .from(plugins)
+      .where(
+        companyScope
+          ? and(ne(plugins.status, "uninstalled"), companyScope)
+          : ne(plugins.status, "uninstalled")
+      )
+      .orderBy(asc(plugins.installOrder));
+  }
+
+  async function listByStatusForCompanies(
+    status: PluginStatus,
+    companyIds: string[] | undefined
+  ) {
+    const companyScope = companyScopeCondition(companyIds);
+    if (companyScope === null) return [];
+    return db
+      .select()
+      .from(plugins)
+      .where(
+        companyScope
+          ? and(eq(plugins.status, status), companyScope)
+          : eq(plugins.status, status)
+      )
+      .orderBy(asc(plugins.installOrder));
   }
 
   async function nextInstallOrder(companyId: string): Promise<number> {
     const result = await db
-      .select({ maxOrder: sql<number>`coalesce(max(${plugins.installOrder}), 0)` })
+      .select({
+        maxOrder: sql<number>`coalesce(max(${plugins.installOrder}), 0)`,
+      })
       .from(plugins)
       .where(eq(plugins.companyId, companyId));
     return (result[0]?.maxOrder ?? 0) + 1;
@@ -126,30 +194,27 @@ export function pluginRegistryService(db: Db) {
     // ----- Read -----------------------------------------------------------
 
     /** List all registered plugins ordered by install order. */
-    list: () =>
-      db
-        .select()
-        .from(plugins)
-        .orderBy(asc(plugins.installOrder)),
+    list: () => db.select().from(plugins).orderBy(asc(plugins.installOrder)),
 
     /**
      * List installed plugins (excludes soft-deleted/uninstalled).
      * Use for Plugin Manager and default API list so uninstalled plugins do not appear.
      */
-    listInstalled: () =>
-      db
-        .select()
-        .from(plugins)
-        .where(ne(plugins.status, "uninstalled"))
-        .orderBy(asc(plugins.installOrder)),
+    listInstalled: () => listInstalledForCompanies(undefined),
+
+    /**
+     * List installed plugins visible in a bare, non-company-qualified context.
+     * `undefined` preserves self-hosted all-access, `[]` returns no rows, and a
+     * non-empty array is pushed down as a company predicate.
+     */
+    listInstalledForCompanies,
 
     /** List plugins filtered by status. */
     listByStatus: (status: PluginStatus) =>
-      db
-        .select()
-        .from(plugins)
-        .where(eq(plugins.status, status))
-        .orderBy(asc(plugins.installOrder)),
+      listByStatusForCompanies(status, undefined),
+
+    /** Company-scoped counterpart to `listByStatus`; see `listInstalledForCompanies`. */
+    listByStatusForCompanies,
 
     /** Get a single plugin by primary key. */
     getById,
@@ -162,6 +227,7 @@ export function pluginRegistryService(db: Db) {
      * Preferred over `getByKey` when a companyId is available, to ensure multi-tenant isolation.
      */
     getByKeyScoped,
+    getByPackageNameScoped,
 
     // ----- Install / Register --------------------------------------------
 
@@ -177,7 +243,11 @@ export function pluginRegistryService(db: Db) {
      * @param companyId - The owning company. Required. If omitted, falls back to the first company
      *                    in the database (legacy escape hatch — prefer passing explicitly).
      */
-    install: async (input: InstallPlugin, manifest: PaperclipPluginManifestV1, companyId?: string) => {
+    install: async (
+      input: InstallPlugin,
+      manifest: PaperclipPluginManifestV1,
+      companyId?: string
+    ) => {
       // Resolve the target company before checking for an existing row so that
       // the reinstall path is scoped to the same company (prevents matching
       // a soft-deleted row from a different tenant).
@@ -188,11 +258,16 @@ export function pluginRegistryService(db: Db) {
           .from(companies)
           .limit(1)
           .catch((err) => {
-            console.error("[plugin-registry] Failed to fetch fallback company:", err);
+            console.error(
+              "[plugin-registry] Failed to fetch fallback company:",
+              err
+            );
             return [] as { id: string }[];
           });
         if (!company) {
-          throw new Error("No companies found in database; cannot install plugin without a company context");
+          throw new Error(
+            "No companies found in database; cannot install plugin without a company context"
+          );
         }
         finalCompanyId = company.id;
       }
@@ -226,7 +301,9 @@ export function pluginRegistryService(db: Db) {
       }
 
       if (!finalCompanyId) {
-        throw new Error("[plugin-registry] Cannot install plugin: companyId could not be resolved");
+        throw new Error(
+          "[plugin-registry] Cannot install plugin: companyId could not be resolved"
+        );
       }
 
       const installOrder = await nextInstallOrder(finalCompanyId);
@@ -267,17 +344,23 @@ export function pluginRegistryService(db: Db) {
       id: string,
       data: {
         packageName?: string;
+        packagePath?: string | null;
         version?: string;
         manifest?: PaperclipPluginManifestV1;
-      },
+      }
     ) => {
       const plugin = await getById(id);
       if (!plugin) throw notFound("Plugin not found");
 
-      const setClause: Partial<typeof plugins.$inferInsert> & { updatedAt: Date } = {
+      const setClause: Partial<typeof plugins.$inferInsert> & {
+        updatedAt: Date;
+      } = {
         updatedAt: new Date(),
       };
-      if (data.packageName !== undefined) setClause.packageName = data.packageName;
+      if (data.packageName !== undefined)
+        setClause.packageName = data.packageName;
+      if (data.packagePath !== undefined)
+        setClause.packagePath = data.packagePath;
       if (data.version !== undefined) setClause.version = data.version;
       if (data.manifest !== undefined) {
         setClause.manifestJson = data.manifest;
@@ -365,7 +448,11 @@ export function pluginRegistryService(db: Db) {
      * @param input - The upsert payload with configJson
      * @param companyId - Optional companyId for new rows. If not provided, uses plugin.companyId.
      */
-    upsertConfig: async (pluginId: string, input: UpsertPluginConfig, companyId?: string) => {
+    upsertConfig: async (
+      pluginId: string,
+      input: UpsertPluginConfig,
+      companyId?: string
+    ) => {
       const plugin = await getById(pluginId);
       if (!plugin) throw notFound("Plugin not found");
 
@@ -385,7 +472,12 @@ export function pluginRegistryService(db: Db) {
             lastError: null,
             updatedAt: new Date(),
           })
-          .where(and(eq(pluginConfig.pluginId, pluginId), eq(pluginConfig.companyId, finalCompanyId)))
+          .where(
+            and(
+              eq(pluginConfig.pluginId, pluginId),
+              eq(pluginConfig.companyId, finalCompanyId)
+            )
+          )
           .returning()
           .then((rows) => rows[0]);
       }
@@ -409,7 +501,11 @@ export function pluginRegistryService(db: Db) {
      * @param input - The patch payload with configJson (partial merge)
      * @param companyId - Optional companyId for new rows. If not provided, uses plugin.companyId.
      */
-    patchConfig: async (pluginId: string, input: PatchPluginConfig, companyId?: string) => {
+    patchConfig: async (
+      pluginId: string,
+      input: PatchPluginConfig,
+      companyId?: string
+    ) => {
       const plugin = await getById(pluginId);
       if (!plugin) throw notFound("Plugin not found");
 
@@ -430,7 +526,12 @@ export function pluginRegistryService(db: Db) {
             lastError: null,
             updatedAt: new Date(),
           })
-          .where(and(eq(pluginConfig.pluginId, pluginId), eq(pluginConfig.companyId, finalCompanyId)))
+          .where(
+            and(
+              eq(pluginConfig.pluginId, pluginId),
+              eq(pluginConfig.companyId, finalCompanyId)
+            )
+          )
           .returning()
           .then((rows) => rows[0]);
       }
@@ -482,8 +583,10 @@ export function pluginRegistryService(db: Db) {
      */
     listEntities: (pluginId: string, query?: PluginEntityQuery) => {
       const conditions = [eq(pluginEntities.pluginId, pluginId)];
-      if (query?.entityType) conditions.push(eq(pluginEntities.entityType, query.entityType));
-      if (query?.externalId) conditions.push(eq(pluginEntities.externalId, query.externalId));
+      if (query?.entityType)
+        conditions.push(eq(pluginEntities.entityType, query.entityType));
+      if (query?.externalId)
+        conditions.push(eq(pluginEntities.externalId, query.externalId));
 
       return db
         .select()
@@ -505,7 +608,7 @@ export function pluginRegistryService(db: Db) {
     getEntityByExternalId: (
       pluginId: string,
       entityType: string,
-      externalId: string,
+      externalId: string
     ) =>
       db
         .select()
@@ -514,8 +617,8 @@ export function pluginRegistryService(db: Db) {
           and(
             eq(pluginEntities.pluginId, pluginId),
             eq(pluginEntities.entityType, entityType),
-            eq(pluginEntities.externalId, externalId),
-          ),
+            eq(pluginEntities.externalId, externalId)
+          )
         )
         .then((rows) => rows[0] ?? null),
 
@@ -529,7 +632,10 @@ export function pluginRegistryService(db: Db) {
      */
     upsertEntity: async (
       pluginId: string,
-      input: Omit<typeof pluginEntities.$inferInsert, "id" | "pluginId" | "createdAt" | "updatedAt">,
+      input: Omit<
+        typeof pluginEntities.$inferInsert,
+        "id" | "pluginId" | "createdAt" | "updatedAt"
+      >
     ) => {
       // Drizzle doesn't support pg-specific onConflictDoUpdate easily in the insert() call
       // with complex where clauses, so we do it manually.
@@ -540,8 +646,8 @@ export function pluginRegistryService(db: Db) {
           and(
             eq(pluginEntities.pluginId, pluginId),
             eq(pluginEntities.entityType, input.entityType),
-            eq(pluginEntities.externalId, input.externalId ?? ""),
-          ),
+            eq(pluginEntities.externalId, input.externalId ?? "")
+          )
         )
         .then((rows) => rows[0] ?? null);
 
@@ -607,7 +713,9 @@ export function pluginRegistryService(db: Db) {
       db
         .select()
         .from(pluginJobs)
-        .where(and(eq(pluginJobs.pluginId, pluginId), eq(pluginJobs.jobKey, jobKey)))
+        .where(
+          and(eq(pluginJobs.pluginId, pluginId), eq(pluginJobs.jobKey, jobKey))
+        )
         .then((rows) => rows[0] ?? null),
 
     /**
@@ -621,12 +729,14 @@ export function pluginRegistryService(db: Db) {
     upsertJob: async (
       pluginId: string,
       jobKey: string,
-      input: { schedule: string; status?: PluginJobStatus },
+      input: { schedule: string; status?: PluginJobStatus }
     ) => {
       const existing = await db
         .select()
         .from(pluginJobs)
-        .where(and(eq(pluginJobs.pluginId, pluginId), eq(pluginJobs.jobKey, jobKey)))
+        .where(
+          and(eq(pluginJobs.pluginId, pluginId), eq(pluginJobs.jobKey, jobKey))
+        )
         .then((rows) => rows[0] ?? null);
 
       if (existing) {
@@ -665,7 +775,7 @@ export function pluginRegistryService(db: Db) {
     createJobRun: async (
       pluginId: string,
       jobId: string,
-      trigger: PluginJobRunTrigger,
+      trigger: PluginJobRunTrigger
     ) => {
       return db
         .insert(pluginJobRuns)
@@ -695,7 +805,7 @@ export function pluginRegistryService(db: Db) {
         logs?: string[];
         startedAt?: Date;
         finishedAt?: Date;
-      },
+      }
     ) => {
       return db
         .update(pluginJobRuns)
@@ -722,7 +832,7 @@ export function pluginRegistryService(db: Db) {
         externalId?: string;
         payload: Record<string, unknown>;
         headers?: Record<string, string>;
-      },
+      }
     ) => {
       return db
         .insert(pluginWebhookDeliveries)
@@ -753,7 +863,7 @@ export function pluginRegistryService(db: Db) {
         error?: string;
         startedAt?: Date;
         finishedAt?: Date;
-      },
+      }
     ) => {
       return db
         .update(pluginWebhookDeliveries)

@@ -4305,7 +4305,7 @@ export function heartbeatService(db: Db) {
         const pluginToolDispatcher: PluginToolDispatcher | undefined =
           (globalThis as any).__paperclipPluginToolDispatcher;
         if (pluginToolDispatcher) {
-          const pluginTools = pluginToolDispatcher.listToolsForAgent();
+          const pluginTools = pluginToolDispatcher.listToolsForAgent({ companyId: agent.companyId });
           if (pluginTools.length > 0) {
             context.pluginTools = pluginTools.map((t: { name: string; displayName: string; description: string }) => ({
               name: t.name,

@@ -81,6 +81,13 @@ export interface PluginBridgeError {
  * @see PLUGIN_SPEC.md §19 — UI Extension Model
  */
 export interface PluginHostContext {
+  /**
+   * UUID of this installed plugin row (`plugins.id`). Use this stable,
+   * tenant-specific identity when constructing public webhook URLs. This is
+   * distinct from the manifest ID/key, which may be shared by many companies.
+   * Optional for source compatibility with hosts predating this field.
+   */
+  pluginInstallationId?: string | null;
   /** UUID of the currently active company, if any. */
   companyId: string | null;
   /** URL prefix for the current company (e.g. `"my-company"`). */
@@ -106,7 +113,7 @@ export interface PluginHostContext {
  * Async-capable callback invoked during a host-managed close lifecycle.
  */
 export type PluginRenderCloseHandler = (
-  event: PluginRenderCloseEvent,
+  event: PluginRenderCloseEvent
 ) => void | Promise<void>;
 
 /**
@@ -378,4 +385,6 @@ export interface PluginStreamResult<T = unknown> {
  * </button>
  * ```
  */
-export type PluginActionFn = (params?: Record<string, unknown>) => Promise<unknown>;
+export type PluginActionFn = (
+  params?: Record<string, unknown>
+) => Promise<unknown>;

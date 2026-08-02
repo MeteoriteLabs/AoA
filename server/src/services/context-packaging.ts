@@ -422,7 +422,7 @@ export function contextPackagingService(db: Db) {
       const dispatcher: import("./plugin-tool-dispatcher.js").PluginToolDispatcher | undefined =
         (globalThis as any).__paperclipPluginToolDispatcher;
       if (dispatcher) {
-        const tools = dispatcher.listToolsForAgent();
+        const tools = dispatcher.listToolsForAgent({ companyId });
         if (tools.length > 0) {
           const toolParts: string[] = ["## Available Plugin Tools"];
           for (const tool of tools) {

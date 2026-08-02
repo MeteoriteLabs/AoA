@@ -63,7 +63,7 @@ export type ResolvedPluginLauncher = PluginLauncherDeclaration & {
 type UsePluginLaunchersFilters = {
   placementZones: PluginLauncherPlacementZone[];
   entityType?: PluginUiSlotEntityType | null;
-  companyId?: string | null;
+  companyId: string | null | undefined;
   enabled?: boolean;
 };
 
@@ -86,7 +86,7 @@ type PluginLauncherRuntimeContextValue = {
     launcher: ResolvedPluginLauncher,
     hostContext: PluginLauncherContext,
     contribution: PluginUiContribution,
-    sourceEl?: HTMLElement | null,
+    sourceEl?: HTMLElement | null
   ): Promise<void>;
 };
 
@@ -122,10 +122,11 @@ const focusableElementSelector = [
 ].join(",");
 const launcherOverlayBaseZIndex = 1000;
 const supportedLauncherBounds = new Set<PluginLauncherBounds>(
-  PLUGIN_LAUNCHER_BOUNDS,
+  PLUGIN_LAUNCHER_BOUNDS
 );
 
-const PluginLauncherRuntimeContext = createContext<PluginLauncherRuntimeContextValue | null>(null);
+const PluginLauncherRuntimeContext =
+  createContext<PluginLauncherRuntimeContextValue | null>(null);
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
@@ -136,11 +137,15 @@ function buildLauncherHostContext(
   context: PluginLauncherContext,
   renderEnvironment: PluginRenderEnvironmentContext | null,
   userId: string | null,
+  pluginInstallationId: string
 ): PluginHostContext {
   return {
+    pluginInstallationId,
     companyId: context.companyId ?? null,
     companyPrefix: context.companyPrefix ?? null,
-    projectId: context.projectId ?? (context.entityType === "project" ? context.entityId ?? null : null),
+    projectId:
+      context.projectId ??
+      (context.entityType === "project" ? context.entityId ?? null : null),
     entityId: context.entityId ?? null,
     entityType: context.entityType ?? null,
     userId,
@@ -150,7 +155,9 @@ function buildLauncherHostContext(
 
 function focusFirstElement(container: HTMLElement | null): void {
   if (!container) return;
-  const firstFocusable = container.querySelector<HTMLElement>(focusableElementSelector);
+  const firstFocusable = container.querySelector<HTMLElement>(
+    focusableElementSelector
+  );
   if (firstFocusable) {
     firstFocusable.focus();
     return;
@@ -161,7 +168,7 @@ function focusFirstElement(container: HTMLElement | null): void {
 function trapFocus(container: HTMLElement, event: KeyboardEvent): void {
   if (event.key !== "Tab") return;
   const focusable = Array.from(
-    container.querySelectorAll<HTMLElement>(focusableElementSelector),
+    container.querySelectorAll<HTMLElement>(focusableElementSelector)
   ).filter((el) => !el.hasAttribute("disabled") && el.tabIndex !== -1);
 
   if (focusable.length === 0) {
@@ -186,7 +193,9 @@ function trapFocus(container: HTMLElement, event: KeyboardEvent): void {
   }
 }
 
-function launcherTriggerClassName(placementZone: PluginLauncherPlacementZone): string {
+function launcherTriggerClassName(
+  placementZone: PluginLauncherPlacementZone
+): string {
   switch (placementZone) {
     case "projectSidebarItem":
       return "justify-start h-auto px-3 py-1 text-[12px] font-normal text-muted-foreground hover:text-foreground";
@@ -204,7 +213,9 @@ function launcherTriggerClassName(placementZone: PluginLauncherPlacementZone): s
   }
 }
 
-function launcherShellBoundsStyle(bounds: PluginLauncherBounds | null): CSSProperties {
+function launcherShellBoundsStyle(
+  bounds: PluginLauncherBounds | null
+): CSSProperties {
   switch (bounds) {
     case "compact":
       return { width: "min(28rem, calc(100vw - 2rem))" };
@@ -222,7 +233,9 @@ function launcherShellBoundsStyle(bounds: PluginLauncherBounds | null): CSSPrope
 
 function launcherPopoverStyle(instance: LauncherInstance): CSSProperties {
   const rect = instance.sourceRect;
-  const baseWidth = launcherShellBoundsStyle(instance.bounds).width ?? "min(24rem, calc(100vw - 2rem))";
+  const baseWidth =
+    launcherShellBoundsStyle(instance.bounds).width ??
+    "min(24rem, calc(100vw - 2rem))";
   if (!rect) {
     return {
       width: baseWidth,
@@ -236,7 +249,7 @@ function launcherPopoverStyle(instance: LauncherInstance): CSSProperties {
   const top = Math.min(rect.bottom + 8, window.innerHeight - 32);
   const left = Math.min(
     Math.max(rect.left, 16),
-    Math.max(16, window.innerWidth - 360),
+    Math.max(16, window.innerWidth - 360)
   );
 
   return {
@@ -248,7 +261,10 @@ function launcherPopoverStyle(instance: LauncherInstance): CSSProperties {
 }
 
 function isPluginLauncherBounds(value: unknown): value is PluginLauncherBounds {
-  return typeof value === "string" && supportedLauncherBounds.has(value as PluginLauncherBounds);
+  return (
+    typeof value === "string" &&
+    supportedLauncherBounds.has(value as PluginLauncherBounds)
+  );
 }
 
 /**
@@ -261,18 +277,19 @@ function isPluginLauncherBounds(value: unknown): value is PluginLauncherBounds {
  * can stay on cached metadata.
  */
 export function usePluginLaunchers(
-  filters: UsePluginLaunchersFilters,
+  filters: UsePluginLaunchersFilters
 ): UsePluginLaunchersResult {
-  const queryEnabled = filters.enabled ?? true;
+  const companyId = filters.companyId ?? null;
+  const queryEnabled = Boolean(companyId) && (filters.enabled ?? true);
   const { data, isLoading, error } = useQuery({
-    queryKey: queryKeys.plugins.uiContributions,
-    queryFn: () => pluginsApi.listUiContributions(),
+    queryKey: queryKeys.plugins.uiContributions(companyId ?? ""),
+    queryFn: () => pluginsApi.listUiContributions(companyId!),
     enabled: queryEnabled,
   });
 
   const placementZonesKey = useMemo(
     () => [...filters.placementZones].sort().join("|"),
-    [filters.placementZones],
+    [filters.placementZones]
   );
 
   const contributionsByPluginId = useMemo(() => {
@@ -285,7 +302,9 @@ export function usePluginLaunchers(
 
   const launchers = useMemo(() => {
     const placementZones = new Set(
-      placementZonesKey.split("|").filter(Boolean) as PluginLauncherPlacementZone[],
+      placementZonesKey
+        .split("|")
+        .filter(Boolean) as PluginLauncherPlacementZone[]
     );
     const rows: ResolvedPluginLauncher[] = [];
     for (const contribution of data ?? []) {
@@ -328,13 +347,16 @@ export function usePluginLaunchers(
 
 async function resolveLauncherComponent(
   contribution: PluginUiContribution,
-  launcher: ResolvedPluginLauncher,
+  launcher: ResolvedPluginLauncher
 ): Promise<RegisteredPluginComponent | null> {
   const exportName = launcher.action.target;
-  const existing = resolveRegisteredPluginComponent(launcher.pluginKey, exportName);
+  const existing = resolveRegisteredPluginComponent(
+    launcher.pluginId,
+    exportName
+  );
   if (existing) return existing;
   await ensurePluginContributionLoaded(contribution);
-  return resolveRegisteredPluginComponent(launcher.pluginKey, exportName);
+  return resolveRegisteredPluginComponent(launcher.pluginId, exportName);
 }
 
 /**
@@ -353,7 +375,10 @@ function PluginLauncherBridgeScope({
   hostContext: PluginHostContext;
   children: ReactNode;
 }) {
-  const value = useMemo(() => ({ pluginId, hostContext }), [pluginId, hostContext]);
+  const value = useMemo(
+    () => ({ pluginId, hostContext }),
+    [pluginId, hostContext]
+  );
 
   return (
     <PluginBridgeContext.Provider value={value}>
@@ -371,7 +396,10 @@ type LauncherErrorBoundaryState = {
   hasError: boolean;
 };
 
-class LauncherErrorBoundary extends Component<LauncherErrorBoundaryProps, LauncherErrorBoundaryState> {
+class LauncherErrorBoundary extends Component<
+  LauncherErrorBoundaryProps,
+  LauncherErrorBoundaryState
+> {
   override state: LauncherErrorBoundaryState = { hasError: false };
 
   static getDerivedStateFromError(): LauncherErrorBoundaryState {
@@ -413,15 +441,28 @@ function LauncherRenderContent({
   });
   const userId = session?.user?.id ?? session?.session?.userId ?? null;
   const hostContext = useMemo(
-    () => buildLauncherHostContext(instance.hostContext, renderEnvironment, userId),
-    [instance.hostContext, renderEnvironment, userId],
+    () =>
+      buildLauncherHostContext(
+        instance.hostContext,
+        renderEnvironment,
+        userId,
+        instance.launcher.pluginId
+      ),
+    [
+      instance.hostContext,
+      instance.launcher.pluginId,
+      renderEnvironment,
+      userId,
+    ]
   );
 
   if (!component) {
     if (renderEnvironment.environment === "iframe") {
       return (
         <iframe
-          src={`/_plugins/${encodeURIComponent(instance.launcher.pluginId)}/ui/${instance.launcher.action.target}`}
+          src={`/_plugins/${encodeURIComponent(
+            instance.launcher.pluginId
+          )}/ui/${instance.launcher.action.target}`}
           title={`${instance.launcher.pluginDisplayName} ${instance.launcher.displayName}`}
           className="h-full min-h-[24rem] w-full rounded-md border border-border bg-background"
         />
@@ -430,7 +471,8 @@ function LauncherRenderContent({
 
     return (
       <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
-        {instance.launcher.pluginDisplayName}: could not resolve launcher target "{instance.launcher.action.target}".
+        {instance.launcher.pluginDisplayName}: could not resolve launcher target
+        "{instance.launcher.action.target}".
       </div>
     );
   }
@@ -443,14 +485,20 @@ function LauncherRenderContent({
     });
   }
 
-  const node = createElement(component.component as never, {
-    launcher: instance.launcher,
-    context: hostContext,
-  } as never);
+  const node = createElement(
+    component.component as never,
+    {
+      launcher: instance.launcher,
+      context: hostContext,
+    } as never
+  );
 
   return (
     <LauncherErrorBoundary launcher={instance.launcher}>
-      <PluginLauncherBridgeScope pluginId={instance.launcher.pluginId} hostContext={hostContext}>
+      <PluginLauncherBridgeScope
+        pluginId={instance.launcher.pluginId}
+        hostContext={hostContext}
+      >
         {node}
       </PluginLauncherBridgeScope>
     </LauncherErrorBoundary>
@@ -467,7 +515,10 @@ function LauncherModalShell({
   instance: LauncherInstance;
   stackIndex: number;
   isTopmost: boolean;
-  requestBounds: (key: string, request: PluginModalBoundsRequest) => Promise<void>;
+  requestBounds: (
+    key: string,
+    request: PluginModalBoundsRequest
+  ) => Promise<void>;
   closeLauncher: (key: string, event: PluginRenderCloseEvent) => Promise<void>;
 }) {
   const contentRef = useRef<HTMLDivElement | null>(null);
@@ -487,7 +538,10 @@ function LauncherModalShell({
       if (!contentRef.current) return;
       if (event.key === "Escape") {
         event.preventDefault();
-        void closeLauncher(instance.key, { reason: "escapeKey", nativeEvent: event });
+        void closeLauncher(instance.key, {
+          reason: "escapeKey",
+          nativeEvent: event,
+        });
         return;
       }
       trapFocus(contentRef.current, event);
@@ -496,34 +550,39 @@ function LauncherModalShell({
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [closeLauncher, instance.key, isTopmost]);
 
-  const renderEnvironment = useMemo<PluginRenderEnvironmentContext>(() => ({
-    environment: instance.launcher.render?.environment ?? "hostOverlay",
-    launcherId: instance.launcher.id,
-    bounds: instance.bounds,
-    requestModalBounds: (request) => requestBounds(instance.key, request),
-    closeLifecycle: {
-      onBeforeClose: (handler) => {
-        instance.beforeCloseHandlers.add(handler);
-        return () => instance.beforeCloseHandlers.delete(handler);
+  const renderEnvironment = useMemo<PluginRenderEnvironmentContext>(
+    () => ({
+      environment: instance.launcher.render?.environment ?? "hostOverlay",
+      launcherId: instance.launcher.id,
+      bounds: instance.bounds,
+      requestModalBounds: (request) => requestBounds(instance.key, request),
+      closeLifecycle: {
+        onBeforeClose: (handler) => {
+          instance.beforeCloseHandlers.add(handler);
+          return () => instance.beforeCloseHandlers.delete(handler);
+        },
+        onClose: (handler) => {
+          instance.closeHandlers.add(handler);
+          return () => instance.closeHandlers.delete(handler);
+        },
       },
-      onClose: (handler) => {
-        instance.closeHandlers.add(handler);
-        return () => instance.closeHandlers.delete(handler);
-      },
-    },
-  }), [instance, requestBounds]);
+    }),
+    [instance, requestBounds]
+  );
 
   const baseZ = launcherOverlayBaseZIndex + stackIndex * 20;
   // Keep each launcher in a deterministic z-index band so every stacked modal,
   // drawer, or popover retains its own backdrop/panel pairing.
   const shellType = instance.launcher.action.type;
-  const containerStyle = shellType === "openPopover"
-    ? launcherPopoverStyle(instance)
-    : launcherShellBoundsStyle(instance.bounds);
+  const containerStyle =
+    shellType === "openPopover"
+      ? launcherPopoverStyle(instance)
+      : launcherShellBoundsStyle(instance.bounds);
 
-  const panelClassName = shellType === "openDrawer"
-    ? "fixed right-0 top-0 h-full max-w-[min(44rem,100vw)] overflow-hidden border-l border-border bg-background shadow-2xl"
-    : shellType === "openPopover"
+  const panelClassName =
+    shellType === "openDrawer"
+      ? "fixed right-0 top-0 h-full max-w-[min(44rem,100vw)] overflow-hidden border-l border-border bg-background shadow-2xl"
+      : shellType === "openPopover"
       ? "fixed overflow-hidden rounded-xl border border-border bg-background shadow-2xl"
       : "fixed left-1/2 top-1/2 max-h-[calc(100vh-2rem)] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-2xl border border-border bg-background shadow-2xl";
 
@@ -536,7 +595,10 @@ function LauncherModalShell({
         onMouseDown={(event) => {
           if (!isTopmost) return;
           if (event.target !== event.currentTarget) return;
-          void closeLauncher(instance.key, { reason: "backdrop", nativeEvent: event });
+          void closeLauncher(instance.key, {
+            reason: "backdrop",
+            nativeEvent: event,
+          });
         }}
       />
       <div
@@ -568,7 +630,9 @@ function LauncherModalShell({
             variant="ghost"
             size="sm"
             className="ml-auto"
-            onClick={() => void closeLauncher(instance.key, { reason: "programmatic" })}
+            onClick={() =>
+              void closeLauncher(instance.key, { reason: "programmatic" })
+            }
           >
             Close
           </Button>
@@ -576,10 +640,15 @@ function LauncherModalShell({
         <div
           className={cn(
             "overflow-auto p-4",
-            shellType === "openDrawer" ? "h-[calc(100%-3.5rem)]" : "max-h-[calc(100vh-7rem)]",
+            shellType === "openDrawer"
+              ? "h-[calc(100%-3.5rem)]"
+              : "max-h-[calc(100vh-7rem)]"
           )}
         >
-          <LauncherRenderContent instance={instance} renderEnvironment={renderEnvironment} />
+          <LauncherRenderContent
+            instance={instance}
+            renderEnvironment={renderEnvironment}
+          />
         </div>
       </div>
     </>
@@ -608,18 +677,23 @@ export function PluginLauncherProvider({ children }: { children: ReactNode }) {
         for (const handler of [...instance.closeHandlers]) {
           void handler(event);
         }
-        if (instance.sourceElement && document.contains(instance.sourceElement)) {
+        if (
+          instance.sourceElement &&
+          document.contains(instance.sourceElement)
+        ) {
           instance.sourceElement.focus();
         }
       });
     },
-    [],
+    []
   );
 
   useEffect(() => {
     if (stack.length === 0) return;
     void Promise.all(
-      stack.map((entry) => closeLauncher(entry.key, { reason: "hostNavigation" })),
+      stack.map((entry) =>
+        closeLauncher(entry.key, { reason: "hostNavigation" })
+      )
     );
     // Only react to navigation changes, not stack churn.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -634,13 +708,11 @@ export function PluginLauncherProvider({ children }: { children: ReactNode }) {
       }
       setStack((current) =>
         current.map((entry) =>
-          entry.key === key
-            ? { ...entry, bounds: request.bounds }
-            : entry,
-        ),
+          entry.key === key ? { ...entry, bounds: request.bounds } : entry
+        )
       );
     },
-    [],
+    []
   );
 
   const activateLauncher = useCallback(
@@ -648,7 +720,7 @@ export function PluginLauncherProvider({ children }: { children: ReactNode }) {
       launcher: ResolvedPluginLauncher,
       hostContext: PluginLauncherContext,
       contribution: PluginUiContribution,
-      sourceEl?: HTMLElement | null,
+      sourceEl?: HTMLElement | null
     ) => {
       switch (launcher.action.type) {
         case "navigate":
@@ -656,26 +728,40 @@ export function PluginLauncherProvider({ children }: { children: ReactNode }) {
           return;
         case "deepLink":
           if (/^https?:\/\//.test(launcher.action.target)) {
-            window.open(launcher.action.target, "_blank", "noopener,noreferrer");
+            window.open(
+              launcher.action.target,
+              "_blank",
+              "noopener,noreferrer"
+            );
           } else {
             navigate(launcher.action.target);
           }
           return;
         case "performAction":
+          if (!hostContext.companyId) {
+            throw new Error(
+              "Plugin launcher actions require a company context"
+            );
+          }
           await pluginsApi.bridgePerformAction(
             launcher.pluginId,
             launcher.action.target,
             launcher.action.params,
-            hostContext.companyId ?? null,
+            hostContext.companyId
           );
           return;
         case "openModal":
         case "openDrawer":
         case "openPopover": {
-          const component = await resolveLauncherComponent(contribution, launcher);
+          const component = await resolveLauncherComponent(
+            contribution,
+            launcher
+          );
           const sourceRect = sourceEl?.getBoundingClientRect() ?? null;
           const nextEntry: LauncherInstance = {
-            key: `${launcher.pluginId}:${launcher.id}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
+            key: `${launcher.pluginId}:${
+              launcher.id
+            }:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
             launcher,
             hostContext,
             contribution,
@@ -691,12 +777,12 @@ export function PluginLauncherProvider({ children }: { children: ReactNode }) {
         }
       }
     },
-    [navigate],
+    [navigate]
   );
 
   const value = useMemo<PluginLauncherRuntimeContextValue>(
     () => ({ activateLauncher }),
-    [activateLauncher],
+    [activateLauncher]
   );
 
   return (
@@ -719,7 +805,9 @@ export function PluginLauncherProvider({ children }: { children: ReactNode }) {
 export function usePluginLauncherRuntime(): PluginLauncherRuntimeContextValue {
   const value = useContext(PluginLauncherRuntimeContext);
   if (!value) {
-    throw new Error("usePluginLauncherRuntime must be used within PluginLauncherProvider");
+    throw new Error(
+      "usePluginLauncherRuntime must be used within PluginLauncherProvider"
+    );
   }
   return value;
 }
@@ -736,7 +824,12 @@ function DefaultLauncherTrigger({
   return (
     <Button
       type="button"
-      variant={placementZone === "toolbarButton" || placementZone === "globalToolbarButton" ? "outline" : "ghost"}
+      variant={
+        placementZone === "toolbarButton" ||
+        placementZone === "globalToolbarButton"
+          ? "outline"
+          : "ghost"
+      }
       size="sm"
       className={launcherTriggerClassName(placementZone)}
       onClick={onClick}
@@ -764,16 +857,22 @@ export function PluginLauncherOutlet({
   errorClassName,
 }: PluginLauncherOutletProps) {
   const { activateLauncher } = usePluginLauncherRuntime();
-  const { launchers, contributionsByPluginId, errorMessage } = usePluginLaunchers({
-    placementZones,
-    entityType,
-    companyId: context.companyId,
-    enabled: !!context.companyId,
-  });
+  const { launchers, contributionsByPluginId, errorMessage } =
+    usePluginLaunchers({
+      placementZones,
+      entityType,
+      companyId: context.companyId,
+      enabled: !!context.companyId,
+    });
 
   if (errorMessage) {
     return (
-      <div className={cn("rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1 text-xs text-destructive", errorClassName)}>
+      <div
+        className={cn(
+          "rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1 text-xs text-destructive",
+          errorClassName
+        )}
+      >
         Plugin launchers unavailable: {errorMessage}
       </div>
     );
@@ -784,14 +883,24 @@ export function PluginLauncherOutlet({
   return (
     <div className={className}>
       {launchers.map((launcher) => (
-        <div key={`${launcher.pluginKey}:${launcher.id}`} className={itemClassName}>
+        <div
+          key={`${launcher.pluginKey}:${launcher.id}`}
+          className={itemClassName}
+        >
           <DefaultLauncherTrigger
             launcher={launcher}
             placementZone={launcher.placementZone}
             onClick={(event) => {
-              const contribution = contributionsByPluginId.get(launcher.pluginId);
+              const contribution = contributionsByPluginId.get(
+                launcher.pluginId
+              );
               if (!contribution) return;
-              void activateLauncher(launcher, context, contribution, event.currentTarget);
+              void activateLauncher(
+                launcher,
+                context,
+                contribution,
+                event.currentTarget
+              );
             }}
           />
         </div>
@@ -825,7 +934,12 @@ export function PluginLauncherButton({
         onClick={(event) => {
           event.preventDefault();
           onActivated?.();
-          void activateLauncher(launcher, context, contribution, event.currentTarget);
+          void activateLauncher(
+            launcher,
+            context,
+            contribution,
+            event.currentTarget
+          );
         }}
       />
     </div>

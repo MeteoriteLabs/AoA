@@ -13,26 +13,41 @@ interface Props {
   plugin: InstalledPlugin;
   pendingUpdate: PendingUpdate | undefined;
   onClose: () => void;
+  canManage?: boolean;
 }
 
 type Tab = "overview" | "settings";
 
-export function PluginDetailSlideOver({ companyId, plugin, pendingUpdate, onClose }: Props) {
+export function PluginDetailSlideOver({
+  companyId,
+  plugin,
+  pendingUpdate,
+  onClose,
+  canManage = true,
+}: Props) {
   const [tab, setTab] = useState<Tab>("overview");
-  const [upgradeResult, setUpgradeResult] = useState<pluginsApi.UpgradeResult | null>(null);
+  const [upgradeResult, setUpgradeResult] =
+    useState<pluginsApi.UpgradeResult | null>(null);
   const queryClient = useQueryClient();
 
-  const { data: config } = useQuery({
+  const {
+    data: config,
+    error: configError,
+    isLoading: configLoading,
+  } = useQuery({
     queryKey: ["plugin-config", companyId, plugin.id],
     queryFn: () => pluginsApi.getPluginConfig(companyId, plugin.id),
-    enabled: tab === "settings",
+    enabled: canManage && tab === "settings",
   });
 
   const upgradeMutation = useMutation({
-    mutationFn: (version: string) => pluginsApi.upgradePlugin(companyId, plugin.id, version),
+    mutationFn: (version: string) =>
+      pluginsApi.upgradePlugin(companyId, plugin.id, version),
     onSuccess: (result) => {
       if (result.status === "ready") {
-        queryClient.invalidateQueries({ queryKey: ["company-plugins", companyId] });
+        queryClient.invalidateQueries({
+          queryKey: ["company-plugins", companyId],
+        });
       } else {
         setUpgradeResult(result);
       }
@@ -40,13 +55,20 @@ export function PluginDetailSlideOver({ companyId, plugin, pendingUpdate, onClos
   });
 
   const toggleMutation = useMutation({
-    mutationFn: (enabled: boolean) => pluginsApi.patchPluginSettings(companyId, plugin.id, enabled),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["company-plugins", companyId] }),
+    mutationFn: (enabled: boolean) =>
+      pluginsApi.patchPluginSettings(companyId, plugin.id, enabled),
+    onSuccess: () =>
+      queryClient.invalidateQueries({
+        queryKey: ["company-plugins", companyId],
+      }),
   });
 
   const retryMutation = useMutation({
     mutationFn: () => pluginsApiClient.retryActivation(plugin.id),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["company-plugins", companyId] }),
+    onSuccess: () =>
+      queryClient.invalidateQueries({
+        queryKey: ["company-plugins", companyId],
+      }),
   });
 
   const statusColor: Record<string, string> = {
@@ -59,31 +81,39 @@ export function PluginDetailSlideOver({ companyId, plugin, pendingUpdate, onClos
 
   return (
     <>
-      {upgradeResult?.status === "upgrade_pending" && upgradeResult.delta && (
-        <CapabilityDeltaModal
-          companyId={companyId}
-          pluginId={plugin.id}
-          pluginName={plugin.manifest.displayName}
-          fromVersion={plugin.version}
-          toVersion={upgradeResult.version}
-          delta={upgradeResult.delta}
-          onApproved={() => {
-            setUpgradeResult(null);
-            queryClient.invalidateQueries({ queryKey: ["company-plugins", companyId] });
-          }}
-          onCancelled={() => setUpgradeResult(null)}
-        />
-      )}
+      {canManage &&
+        upgradeResult?.status === "upgrade_pending" &&
+        upgradeResult.delta && (
+          <CapabilityDeltaModal
+            companyId={companyId}
+            pluginId={plugin.id}
+            pluginName={plugin.manifest.displayName}
+            fromVersion={plugin.version}
+            toVersion={upgradeResult.version}
+            delta={upgradeResult.delta}
+            onApproved={() => {
+              setUpgradeResult(null);
+              queryClient.invalidateQueries({
+                queryKey: ["company-plugins", companyId],
+              });
+            }}
+            onCancelled={() => setUpgradeResult(null)}
+          />
+        )}
 
       <div className="w-[360px] bg-zinc-900 border-l border-zinc-800 flex flex-col overflow-hidden">
         {/* Header */}
         <div className="px-4 pt-4 pb-0 border-b border-zinc-800">
           <div className="flex items-start justify-between mb-3">
             <div className="flex items-center gap-2.5">
-              <div className="text-xl">{plugin.categories.includes("notifications") ? "🔔" : "🔌"}</div>
+              <div className="text-xl">
+                {plugin.categories.includes("notifications") ? "🔔" : "🔌"}
+              </div>
               <div>
                 <div className="flex items-center gap-2">
-                  <span className="text-sm font-bold text-zinc-100">{plugin.manifest.displayName}</span>
+                  <span className="text-sm font-bold text-zinc-100">
+                    {plugin.manifest.displayName}
+                  </span>
                   <span className="text-[9px] bg-indigo-950 border border-indigo-900 text-indigo-300 px-1.5 py-0.5 rounded-full">
                     Plugin
                   </span>
@@ -104,7 +134,10 @@ export function PluginDetailSlideOver({ companyId, plugin, pendingUpdate, onClos
 
           {/* Tabs */}
           <div className="flex">
-            {(["overview", "settings"] as Tab[]).map((t) => (
+            {(canManage
+              ? (["overview", "settings"] as Tab[])
+              : (["overview"] as Tab[])
+            ).map((t) => (
               <button
                 key={t}
                 type="button"
@@ -130,7 +163,9 @@ export function PluginDetailSlideOver({ companyId, plugin, pendingUpdate, onClos
                 { label: "Installed version", value: `v${plugin.version}` },
                 {
                   label: "Latest in catalog",
-                  value: pendingUpdate ? `v${pendingUpdate.latestVersion}` : `v${plugin.version} (current)`,
+                  value: pendingUpdate
+                    ? `v${pendingUpdate.latestVersion}`
+                    : `v${plugin.version} (current)`,
                   valueClass: pendingUpdate ? "text-amber-400" : undefined,
                 },
                 {
@@ -148,17 +183,23 @@ export function PluginDetailSlideOver({ companyId, plugin, pendingUpdate, onClos
                   className="flex justify-between items-center py-2 border-b border-zinc-800/60"
                 >
                   <span className="text-xs text-zinc-500">{label}</span>
-                  <span className={`text-xs font-medium ${valueClass ?? "text-zinc-300"}`}>
+                  <span
+                    className={`text-xs font-medium ${
+                      valueClass ?? "text-zinc-300"
+                    }`}
+                  >
                     {value}
                   </span>
                 </div>
               ))}
 
               {/* Upgrade banner */}
-              {pendingUpdate && (
+              {pendingUpdate && canManage && (
                 <div className="bg-amber-950/20 border border-amber-900/40 rounded-lg p-3 mt-3">
                   <div className="flex justify-between items-center mb-1.5">
-                    <span className="text-xs font-bold text-amber-400">Update available</span>
+                    <span className="text-xs font-bold text-amber-400">
+                      Update available
+                    </span>
                     <span className="text-[10px] text-zinc-600">
                       v{plugin.version} → v{pendingUpdate.latestVersion}
                     </span>
@@ -168,15 +209,21 @@ export function PluginDetailSlideOver({ companyId, plugin, pendingUpdate, onClos
                   </p>
                   <button
                     type="button"
-                    onClick={() => upgradeMutation.mutate(pendingUpdate.latestVersion)}
+                    onClick={() =>
+                      upgradeMutation.mutate(pendingUpdate.latestVersion)
+                    }
                     disabled={upgradeMutation.isPending}
                     className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white text-xs font-semibold py-1.5 rounded-md transition-colors"
                   >
-                    {upgradeMutation.isPending ? "Upgrading…" : `Upgrade to v${pendingUpdate.latestVersion}`}
+                    {upgradeMutation.isPending
+                      ? "Upgrading…"
+                      : `Upgrade to v${pendingUpdate.latestVersion}`}
                   </button>
                   {upgradeMutation.isError && (
                     <p className="text-[10px] text-red-400 mt-1.5">
-                      {upgradeMutation.error instanceof Error ? upgradeMutation.error.message : "Upgrade failed"}
+                      {upgradeMutation.error instanceof Error
+                        ? upgradeMutation.error.message
+                        : "Upgrade failed"}
                     </p>
                   )}
                 </div>
@@ -204,47 +251,77 @@ export function PluginDetailSlideOver({ companyId, plugin, pendingUpdate, onClos
               {/* Error */}
               {plugin.lastError && (
                 <div className="mt-3 bg-red-950/20 border border-red-900/40 rounded-lg p-3">
-                  <p className="text-[10px] font-semibold text-red-400 mb-1">Last error</p>
-                  <p className="text-[10px] text-zinc-500 font-mono break-all">{plugin.lastError}</p>
+                  <p className="text-[10px] font-semibold text-red-400 mb-1">
+                    Last error
+                  </p>
+                  <p className="text-[10px] text-zinc-500 font-mono break-all">
+                    {plugin.lastError}
+                  </p>
                 </div>
               )}
 
               {/* Actions */}
-              <div className="mt-4 space-y-2">
-                <p className="text-[10px] font-semibold text-zinc-600 uppercase tracking-wider">Actions</p>
-                <button
-                  type="button"
-                  disabled={toggleMutation.isPending}
-                  onClick={() => toggleMutation.mutate(!plugin.enabled)}
-                  className="w-full text-left text-xs text-zinc-400 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-60 border border-zinc-700 rounded-lg px-3 py-2 transition-colors"
-                >
-                  {plugin.enabled ? "Disable for this company" : "Enable for this company"}
-                </button>
-                {plugin.status === "error" && (
+              {canManage ? (
+                <div className="mt-4 space-y-2">
+                  <p className="text-[10px] font-semibold text-zinc-600 uppercase tracking-wider">
+                    Actions
+                  </p>
                   <button
                     type="button"
-                    disabled={retryMutation.isPending}
-                    onClick={() => retryMutation.mutate()}
-                    className="w-full text-left text-xs text-amber-400 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-60 border border-amber-900/40 rounded-lg px-3 py-2 transition-colors"
+                    disabled={toggleMutation.isPending}
+                    onClick={() => toggleMutation.mutate(!plugin.enabled)}
+                    className="w-full text-left text-xs text-zinc-400 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-60 border border-zinc-700 rounded-lg px-3 py-2 transition-colors"
                   >
-                    {retryMutation.isPending ? "Retrying…" : "Retry activation"}
+                    {plugin.enabled
+                      ? "Disable for this company"
+                      : "Enable for this company"}
                   </button>
-                )}
-                {plugin.status === "error" && retryMutation.isError && (
-                  <p className="text-[10px] text-red-400 mt-1">
-                    {retryMutation.error instanceof Error
-                      ? retryMutation.error.message
-                      : "Retry failed"}
-                  </p>
-                )}
-              </div>
+                  {plugin.status === "error" && (
+                    <button
+                      type="button"
+                      disabled={retryMutation.isPending}
+                      onClick={() => retryMutation.mutate()}
+                      className="w-full text-left text-xs text-amber-400 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-60 border border-amber-900/40 rounded-lg px-3 py-2 transition-colors"
+                    >
+                      {retryMutation.isPending
+                        ? "Retrying…"
+                        : "Retry activation"}
+                    </button>
+                  )}
+                  {plugin.status === "error" && retryMutation.isError && (
+                    <p className="text-[10px] text-red-400 mt-1">
+                      {retryMutation.error instanceof Error
+                        ? retryMutation.error.message
+                        : "Retry failed"}
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <div className="mt-4 rounded-lg border border-zinc-800 bg-zinc-900/60 p-3 text-xs text-zinc-500">
+                  Plugin settings and lifecycle actions require an instance
+                  administrator.
+                </div>
+              )}
+            </div>
+          ) : configError ? (
+            <div
+              role="alert"
+              className="rounded-lg border border-red-900/40 bg-red-950/20 p-3 text-xs text-red-400"
+            >
+              {configError instanceof Error
+                ? configError.message
+                : "Could not load plugin configuration"}
+            </div>
+          ) : configLoading ? (
+            <div className="text-xs text-zinc-500">
+              Loading configurationâ€¦
             </div>
           ) : (
             <PluginConfigForm
               companyId={companyId}
               pluginId={plugin.id}
               schema={plugin.manifest.instanceConfigSchema as any}
-              initialValues={config?.configJson ?? plugin.configJson}
+              initialValues={config?.configJson ?? {}}
             />
           )}
         </div>

@@ -26,11 +26,14 @@ import { companyPluginRoutes } from "../routes/company-plugins.js";
 function getRouteHandler(router: any, method: string, path: string) {
   const layer = router.stack.find(
     (l: any) =>
-      l.route?.path === path &&
-      l.route?.methods?.[method.toLowerCase()],
+      l.route?.path === path && l.route?.methods?.[method.toLowerCase()]
   );
   if (!layer) throw new Error(`Route ${method} ${path} not found`);
-  return layer.route.stack[0].handle as (req: any, res: any, next: any) => Promise<void>;
+  return layer.route.stack[0].handle as (
+    req: any,
+    res: any,
+    next: any
+  ) => Promise<void>;
 }
 
 describe("POST /:pluginId/upgrade — auto-rollback snapshot cleanup", () => {
@@ -94,17 +97,19 @@ describe("POST /:pluginId/upgrade — auto-rollback snapshot cleanup", () => {
     };
 
     const mockLifecycle = {
-      upgrade: vi.fn().mockRejectedValue(new Error("upgrade failed intentionally")),
+      upgrade: vi
+        .fn()
+        .mockRejectedValue(new Error("upgrade failed intentionally")),
       load: vi.fn().mockResolvedValue(undefined),
     };
     const mockLoader = {
-      installPlugin: vi.fn().mockResolvedValue(undefined),
+      upgradePlugin: vi.fn().mockResolvedValue(undefined),
     };
 
     const router = companyPluginRoutes(
       mockDb as any,
       mockLifecycle as any,
-      mockLoader as any,
+      mockLoader as any
     );
 
     const handler = getRouteHandler(router, "post", "/:pluginId/upgrade");
@@ -121,11 +126,112 @@ describe("POST /:pluginId/upgrade — auto-rollback snapshot cleanup", () => {
     await handler(req, res, vi.fn());
 
     // Rollback must have fired
-    expect(mockLoader.installPlugin).toHaveBeenCalledOnce();
+    expect(mockLoader.upgradePlugin).toHaveBeenCalledWith("plugin-1", {
+      packageName: "@test/plugin",
+      version: "1.0.0",
+    });
     expect(mockLifecycle.load).toHaveBeenCalledWith("plugin-1");
 
     // Snapshot must have been deleted after successful rollback
     expect(deletedWhereArgs).toHaveLength(1);
+  });
+
+  it("rejects foreign plugin settings before inserting a company overlay", async () => {
+    const insert = vi.fn();
+    const update = vi.fn();
+    const mockDb = {
+      select: () => ({ from: () => ({ where: () => Promise.resolve([]) }) }),
+      insert,
+      update,
+    };
+    const router = companyPluginRoutes(mockDb as any, {} as any, {} as any);
+    const handler = getRouteHandler(router, "patch", "/:pluginId/settings");
+    const req = {
+      params: { companyId: "company-a", pluginId: "plugin-b" },
+      body: { enabled: false },
+    } as any;
+    const res = { json: vi.fn(), status: vi.fn().mockReturnThis() } as any;
+
+    await handler(req, res, vi.fn());
+
+    expect(res.status).toHaveBeenCalledWith(404);
+    expect(insert).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("persists a company disable and tears down the shared runtime lifecycle", async () => {
+    let selectCall = 0;
+    const mockDb = {
+      select: () => ({
+        from: () => ({
+          where: () =>
+            Promise.resolve(
+              selectCall++ === 0 ? [{ id: "plugin-1", status: "ready" }] : []
+            ),
+        }),
+      }),
+      insert: () => ({
+        values: () => ({
+          returning: () => Promise.resolve([{ enabled: false }]),
+        }),
+      }),
+    };
+    const lifecycle = { disable: vi.fn(), enable: vi.fn() };
+    const router = companyPluginRoutes(
+      mockDb as any,
+      lifecycle as any,
+      {} as any
+    );
+    const handler = getRouteHandler(router, "patch", "/:pluginId/settings");
+    const req = {
+      params: { companyId: "company-a", pluginId: "plugin-1" },
+      body: { enabled: false },
+    } as any;
+    const res = { json: vi.fn(), status: vi.fn().mockReturnThis() } as any;
+
+    await handler(req, res, vi.fn());
+
+    expect(lifecycle.disable).toHaveBeenCalledWith(
+      "plugin-1",
+      "Disabled for company"
+    );
+    expect(res.json).toHaveBeenCalledWith({ enabled: false });
+  });
+
+  it("persists a company enable and activates the shared runtime lifecycle", async () => {
+    let selectCall = 0;
+    const mockDb = {
+      select: () => ({
+        from: () => ({
+          where: () =>
+            Promise.resolve(
+              selectCall++ === 0 ? [{ id: "plugin-1", status: "disabled" }] : []
+            ),
+        }),
+      }),
+      insert: () => ({
+        values: () => ({
+          returning: () => Promise.resolve([{ enabled: true }]),
+        }),
+      }),
+    };
+    const lifecycle = { disable: vi.fn(), enable: vi.fn() };
+    const router = companyPluginRoutes(
+      mockDb as any,
+      lifecycle as any,
+      {} as any
+    );
+    const handler = getRouteHandler(router, "patch", "/:pluginId/settings");
+    const req = {
+      params: { companyId: "company-a", pluginId: "plugin-1" },
+      body: { enabled: true },
+    } as any;
+    const res = { json: vi.fn(), status: vi.fn().mockReturnThis() } as any;
+
+    await handler(req, res, vi.fn());
+
+    expect(lifecycle.enable).toHaveBeenCalledWith("plugin-1");
+    expect(res.json).toHaveBeenCalledWith({ enabled: true });
   });
 
   it("does NOT delete the snapshot if rollback (installPlugin) throws", async () => {
@@ -188,17 +294,20 @@ describe("POST /:pluginId/upgrade — auto-rollback snapshot cleanup", () => {
     };
     const mockLoader = {
       // installPlugin throws — rollback failed
-      installPlugin: vi.fn().mockRejectedValue(new Error("reinstall failed")),
+      upgradePlugin: vi.fn().mockRejectedValue(new Error("reinstall failed")),
     };
 
     const router = companyPluginRoutes(
       mockDb as any,
       mockLifecycle as any,
-      mockLoader as any,
+      mockLoader as any
     );
 
     const handler = getRouteHandler(router, "post", "/:pluginId/upgrade");
-    const req = { params: { companyId: "co-a", pluginId: "plugin-1" }, body: {} } as any;
+    const req = {
+      params: { companyId: "co-a", pluginId: "plugin-1" },
+      body: {},
+    } as any;
     const res = { json: vi.fn(), status: vi.fn().mockReturnThis() } as any;
 
     await handler(req, res, vi.fn());

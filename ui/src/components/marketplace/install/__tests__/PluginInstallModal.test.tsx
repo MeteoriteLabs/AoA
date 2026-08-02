@@ -54,7 +54,7 @@ describe("PluginInstallModal", () => {
     expect(screen.getByText("companies.read")).toBeInTheDocument();
     expect(screen.getByText("issues.read")).toBeInTheDocument();
     expect(screen.getByText("v1.0.0")).toBeInTheDocument();
-    expect(screen.getByText("Instance-wide")).toBeInTheDocument();
+    expect(screen.getByText("Company-scoped")).toBeInTheDocument();
   });
 
   it("on Install click: closes modal + shows installing toast + POSTs install", async () => {

@@ -76,6 +76,7 @@ import {
   SnapshotGateError,
 } from "./postgres/snapshot-gate.js";
 import { assertTestSupportFlagSafe } from "./services/test-support-safety.js";
+import { createProcessShutdownHandler } from "./services/server-shutdown.js";
 import { DEFAULT_BACKUP_RETENTION } from "@armyofagents/shared";
 import { runChroniclerSweep, CHRONICLER_SWEEP_INTERVAL_MS } from "./services/internal-agent/aoa-agents/sweep-chronicler.js";
 import { ensureCrewAgents, ensureInfrastructureAgents, isCrewMarketplaceManaged } from "./services/internal-agent/aoa-agents/crew-seeding.js";
@@ -1520,32 +1521,19 @@ server.listen(listenPort, config.host, () => {
   }
 });
 
-if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
-  const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
-    // Shutdown plugin subsystem first
-    const pluginSys = (app as any).__pluginSubsystem;
-    if (pluginSys) {
-      logger.info("Stopping plugin subsystem");
-      pluginSys.jobScheduler.stop();
-      await pluginSys.workerManager.stopAll().catch((err: unknown) => {
-        logger.error({ err }, "Plugin worker shutdown failed");
-      });
-    }
+const shutdown = createProcessShutdownHandler({
+  getPluginSubsystem: () => (app as any).__pluginSubsystem,
+  ownedEmbeddedPostgres:
+    embeddedPostgres && embeddedPostgresStartedByThisProcess
+      ? embeddedPostgres
+      : null,
+  logger,
+  exit: (code) => process.exit(code),
+});
 
-    logger.info({ signal }, "Stopping embedded PostgreSQL");
-    try {
-      await embeddedPostgres?.stop();
-    } catch (err) {
-      logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
-    } finally {
-      process.exit(0);
-    }
-  };
-
-  process.once("SIGINT", () => {
-    void shutdown("SIGINT");
-  });
-  process.once("SIGTERM", () => {
-    void shutdown("SIGTERM");
-  });
-}
+process.once("SIGINT", () => {
+  void shutdown("SIGINT");
+});
+process.once("SIGTERM", () => {
+  void shutdown("SIGTERM");
+});

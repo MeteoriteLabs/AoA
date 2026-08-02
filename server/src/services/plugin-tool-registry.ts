@@ -23,7 +23,11 @@ import type {
   PaperclipPluginManifestV1,
   PluginToolDeclaration,
 } from "@armyofagents/shared";
-import type { ToolRunContext, ToolResult, ExecuteToolParams } from "@armyofagents/plugin-sdk";
+import type {
+  ToolRunContext,
+  ToolResult,
+  ExecuteToolParams,
+} from "@armyofagents/plugin-sdk";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { logger } from "../middleware/logger.js";
 
@@ -57,6 +61,8 @@ export interface RegisteredTool {
    * where `id === pluginKey`).
    */
   pluginDbId: string;
+  /** Owning company. Empty only for legacy/test registrations without scope. */
+  companyId: string;
   /** The tool's bare name (without namespace prefix). */
   name: string;
   /** Fully namespaced identifier: `"<pluginId>:<toolName>"`. */
@@ -75,6 +81,8 @@ export interface RegisteredTool {
 export interface ToolListFilter {
   /** Only return tools owned by this plugin. */
   pluginId?: string;
+  /** Only return tools installed for this company. */
+  companyId?: string;
 }
 
 /**
@@ -112,7 +120,12 @@ export interface PluginToolRegistry {
    * @param pluginDbId - The plugin's database UUID, used for worker routing
    *   and availability checks. If omitted, `pluginId` is used (backwards-compat).
    */
-  registerPlugin(pluginId: string, manifest: PaperclipPluginManifestV1, pluginDbId?: string): void;
+  registerPlugin(
+    pluginId: string,
+    manifest: PaperclipPluginManifestV1,
+    pluginDbId?: string,
+    companyId?: string
+  ): void;
 
   /**
    * Remove all tool registrations for a plugin.
@@ -129,7 +142,7 @@ export interface PluginToolRegistry {
    * @param namespacedName - Fully qualified name, e.g. `"acme.linear:search-issues"`
    * @returns The registered tool entry, or `null` if not found
    */
-  getTool(namespacedName: string): RegisteredTool | null;
+  getTool(namespacedName: string, companyId?: string): RegisteredTool | null;
 
   /**
    * Look up a registered tool by plugin ID and bare tool name.
@@ -138,7 +151,11 @@ export interface PluginToolRegistry {
    * @param toolName - The bare tool name (without namespace prefix)
    * @returns The registered tool entry, or `null` if not found
    */
-  getToolByPlugin(pluginId: string, toolName: string): RegisteredTool | null;
+  getToolByPlugin(
+    pluginId: string,
+    toolName: string,
+    companyId?: string
+  ): RegisteredTool | null;
 
   /**
    * List all registered tools, optionally filtered.
@@ -154,7 +171,9 @@ export interface PluginToolRegistry {
    * @param namespacedName - e.g. `"acme.linear:search-issues"`
    * @returns `{ pluginId, toolName }` or `null` if the format is invalid
    */
-  parseNamespacedName(namespacedName: string): { pluginId: string; toolName: string } | null;
+  parseNamespacedName(
+    namespacedName: string
+  ): { pluginId: string; toolName: string } | null;
 
   /**
    * Build a namespaced tool name from a plugin ID and bare tool name.
@@ -180,7 +199,7 @@ export interface PluginToolRegistry {
   executeTool(
     namespacedName: string,
     parameters: unknown,
-    runContext: ToolRunContext,
+    runContext: ToolRunContext
   ): Promise<ToolExecutionResult>;
 
   /**
@@ -225,7 +244,7 @@ export interface PluginToolRegistry {
  * ```
  */
 export function createPluginToolRegistry(
-  workerManager?: PluginWorkerManager,
+  workerManager?: PluginWorkerManager
 ): PluginToolRegistry {
   const log = logger.child({ service: "plugin-tool-registry" });
 
@@ -234,13 +253,8 @@ export function createPluginToolRegistry(
 
   // Secondary index: pluginId → set of namespaced names (for bulk operations)
   //
-  // INVARIANT: this registry assumes one running worker per pluginKey (instance-wide
-  // plugins). The namespace key passed to registerPlugin() is pluginKey, not pluginDbId,
-  // so two companies installing the same pluginKey and loading separate workers would
-  // cause the second registration to silently overwrite the first.
-  // If per-company worker isolation is ever introduced, the namespace key must change
-  // to pluginDbId (the DB row UUID) throughout the entire runtime stack:
-  // plugin-tool-registry, plugin-tool-dispatcher, plugin-worker-manager, live events.
+  // Entries are grouped by plugin DB UUID, so lifecycle cleanup removes only
+  // that tenant-owned worker even when another company uses the same plugin key.
   const byPlugin = new Map<string, Set<string>>();
 
   // -----------------------------------------------------------------------
@@ -251,7 +265,13 @@ export function createPluginToolRegistry(
     return `${pluginId}${TOOL_NAMESPACE_SEPARATOR}${toolName}`;
   }
 
-  function parseName(namespacedName: string): { pluginId: string; toolName: string } | null {
+  function buildScopedName(companyId: string, namespacedName: string): string {
+    return `${companyId}\u0000${namespacedName}`;
+  }
+
+  function parseName(
+    namespacedName: string
+  ): { pluginId: string; toolName: string } | null {
     const sepIndex = namespacedName.lastIndexOf(TOOL_NAMESPACE_SEPARATOR);
     if (sepIndex <= 0 || sepIndex >= namespacedName.length - 1) {
       return null;
@@ -262,12 +282,19 @@ export function createPluginToolRegistry(
     };
   }
 
-  function addTool(pluginId: string, decl: PluginToolDeclaration, pluginDbId: string): void {
+  function addTool(
+    pluginId: string,
+    decl: PluginToolDeclaration,
+    pluginDbId: string,
+    companyId: string
+  ): void {
     const namespacedName = buildName(pluginId, decl.name);
+    const scopedName = buildScopedName(companyId, namespacedName);
 
     const entry: RegisteredTool = {
       pluginId,
       pluginDbId,
+      companyId,
       name: decl.name,
       namespacedName,
       displayName: decl.displayName,
@@ -275,25 +302,25 @@ export function createPluginToolRegistry(
       parametersSchema: decl.parametersSchema,
     };
 
-    byNamespace.set(namespacedName, entry);
+    byNamespace.set(scopedName, entry);
 
-    let pluginTools = byPlugin.get(pluginId);
+    let pluginTools = byPlugin.get(pluginDbId);
     if (!pluginTools) {
       pluginTools = new Set();
-      byPlugin.set(pluginId, pluginTools);
+      byPlugin.set(pluginDbId, pluginTools);
     }
-    pluginTools.add(namespacedName);
+    pluginTools.add(scopedName);
   }
 
-  function removePluginTools(pluginId: string): number {
-    const pluginTools = byPlugin.get(pluginId);
+  function removePluginTools(pluginDbId: string): number {
+    const pluginTools = byPlugin.get(pluginDbId);
     if (!pluginTools) return 0;
 
     const count = pluginTools.size;
     for (const name of pluginTools) {
       byNamespace.delete(name);
     }
-    byPlugin.delete(pluginId);
+    byPlugin.delete(pluginDbId);
 
     return count;
   }
@@ -303,15 +330,21 @@ export function createPluginToolRegistry(
   // -----------------------------------------------------------------------
 
   return {
-    registerPlugin(pluginId: string, manifest: PaperclipPluginManifestV1, pluginDbId?: string): void {
+    registerPlugin(
+      pluginId: string,
+      manifest: PaperclipPluginManifestV1,
+      pluginDbId?: string,
+      companyId?: string
+    ): void {
       const dbId = pluginDbId ?? pluginId;
+      const tenantId = companyId ?? "";
 
       // Remove any previously registered tools for this plugin (idempotent)
-      const previousCount = removePluginTools(pluginId);
+      const previousCount = removePluginTools(dbId);
       if (previousCount > 0) {
         log.debug(
           { pluginId, previousCount },
-          "cleared previous tool registrations before re-registering",
+          "cleared previous tool registrations before re-registering"
         );
       }
 
@@ -322,7 +355,7 @@ export function createPluginToolRegistry(
       }
 
       for (const decl of tools) {
-        addTool(pluginId, decl, dbId);
+        addTool(pluginId, decl, dbId, tenantId);
       }
 
       log.info(
@@ -331,7 +364,7 @@ export function createPluginToolRegistry(
           toolCount: tools.length,
           tools: tools.map((t) => buildName(pluginId, t.name)),
         },
-        `registered ${tools.length} tool(s) for plugin`,
+        `registered ${tools.length} tool(s) for plugin`
       );
     },
 
@@ -340,36 +373,54 @@ export function createPluginToolRegistry(
       if (removed > 0) {
         log.info(
           { pluginId, removedCount: removed },
-          `unregistered ${removed} tool(s) for plugin`,
+          `unregistered ${removed} tool(s) for plugin`
         );
       }
     },
 
-    getTool(namespacedName: string): RegisteredTool | null {
-      return byNamespace.get(namespacedName) ?? null;
+    getTool(namespacedName: string, companyId?: string): RegisteredTool | null {
+      if (companyId !== undefined) {
+        return (
+          byNamespace.get(buildScopedName(companyId, namespacedName)) ?? null
+        );
+      }
+      const matches = Array.from(byNamespace.values()).filter(
+        (tool) => tool.namespacedName === namespacedName
+      );
+      return matches.length === 1 ? matches[0] : null;
     },
 
-    getToolByPlugin(pluginId: string, toolName: string): RegisteredTool | null {
+    getToolByPlugin(
+      pluginId: string,
+      toolName: string,
+      companyId?: string
+    ): RegisteredTool | null {
       const namespacedName = buildName(pluginId, toolName);
-      return byNamespace.get(namespacedName) ?? null;
+      if (companyId !== undefined) {
+        return (
+          byNamespace.get(buildScopedName(companyId, namespacedName)) ?? null
+        );
+      }
+      const matches = Array.from(byNamespace.values()).filter(
+        (tool) => tool.namespacedName === namespacedName
+      );
+      return matches.length === 1 ? matches[0] : null;
     },
 
     listTools(filter?: ToolListFilter): RegisteredTool[] {
-      if (filter?.pluginId) {
-        const pluginTools = byPlugin.get(filter.pluginId);
-        if (!pluginTools) return [];
-        const result: RegisteredTool[] = [];
-        for (const name of pluginTools) {
-          const tool = byNamespace.get(name);
-          if (tool) result.push(tool);
-        }
-        return result;
-      }
-
-      return Array.from(byNamespace.values());
+      return Array.from(byNamespace.values()).filter(
+        (tool) =>
+          (filter?.pluginId === undefined ||
+            tool.pluginId === filter.pluginId ||
+            tool.pluginDbId === filter.pluginId) &&
+          (filter?.companyId === undefined ||
+            tool.companyId === filter.companyId)
+      );
     },
 
-    parseNamespacedName(namespacedName: string): { pluginId: string; toolName: string } | null {
+    parseNamespacedName(
+      namespacedName: string
+    ): { pluginId: string; toolName: string } | null {
       return parseName(namespacedName);
     },
 
@@ -380,24 +431,26 @@ export function createPluginToolRegistry(
     async executeTool(
       namespacedName: string,
       parameters: unknown,
-      runContext: ToolRunContext,
+      runContext: ToolRunContext
     ): Promise<ToolExecutionResult> {
       // 1. Resolve the namespaced name
       const parsed = parseName(namespacedName);
       if (!parsed) {
         throw new Error(
-          `Invalid tool name "${namespacedName}". Expected format: "<pluginId>${TOOL_NAMESPACE_SEPARATOR}<toolName>"`,
+          `Invalid tool name "${namespacedName}". Expected format: "<pluginId>${TOOL_NAMESPACE_SEPARATOR}<toolName>"`
         );
       }
 
       const { pluginId, toolName } = parsed;
 
       // 2. Verify the tool is registered
-      const tool = byNamespace.get(namespacedName);
+      const tool = byNamespace.get(
+        buildScopedName(runContext.companyId, namespacedName)
+      );
       if (!tool) {
         throw new Error(
           `Tool "${namespacedName}" is not registered. ` +
-          `The plugin may not be installed or its worker may not be running.`,
+            `The plugin may not be installed or its worker may not be running.`
         );
       }
 
@@ -405,7 +458,7 @@ export function createPluginToolRegistry(
       if (!workerManager) {
         throw new Error(
           `Cannot execute tool "${namespacedName}" — no worker manager configured. ` +
-          `Tool execution requires a PluginWorkerManager.`,
+            `Tool execution requires a PluginWorkerManager.`
         );
       }
 
@@ -414,14 +467,21 @@ export function createPluginToolRegistry(
       if (!workerManager.isRunning(dbId)) {
         throw new Error(
           `Cannot execute tool "${namespacedName}" — ` +
-          `worker for plugin "${pluginId}" is not running.`,
+            `worker for plugin "${pluginId}" is not running.`
         );
       }
 
       // 5. Dispatch the executeTool RPC call to the worker
       log.debug(
-        { pluginId, pluginDbId: dbId, toolName, namespacedName, agentId: runContext.agentId, runId: runContext.runId },
-        "executing tool via plugin worker",
+        {
+          pluginId,
+          pluginDbId: dbId,
+          toolName,
+          namespacedName,
+          agentId: runContext.agentId,
+          runId: runContext.runId,
+        },
+        "executing tool via plugin worker"
       );
 
       const rpcParams: ExecuteToolParams = {
@@ -441,7 +501,7 @@ export function createPluginToolRegistry(
           hasData: result.data !== undefined,
           hasError: !!result.error,
         },
-        "tool execution completed",
+        "tool execution completed"
       );
 
       return { pluginId, toolName, result };
@@ -449,7 +509,11 @@ export function createPluginToolRegistry(
 
     toolCount(pluginId?: string): number {
       if (pluginId !== undefined) {
-        return byPlugin.get(pluginId)?.size ?? 0;
+        const direct = byPlugin.get(pluginId)?.size;
+        if (direct !== undefined) return direct;
+        return Array.from(byNamespace.values()).filter(
+          (tool) => tool.pluginId === pluginId
+        ).length;
       }
       return byNamespace.size;
     },

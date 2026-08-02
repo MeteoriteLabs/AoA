@@ -13,7 +13,6 @@ export interface PluginLoaderLike {
     packageName?: string;
     version?: string;
     localPath?: string;
-    installDir?: string;
     companyId: string;
     catalogItemId?: string;
     /**

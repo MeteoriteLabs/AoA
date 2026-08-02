@@ -1307,6 +1307,7 @@ function KitchenSinkEmbeddedApp({ context }: { context: PluginPageProps["context
 }
 
 function KitchenSinkConsole({ context }: { context: { companyId: string | null; companyPrefix?: string | null; projectId?: string | null; entityId?: string | null; entityType?: string | null } }) {
+  const hostContext = useHostContext();
   const companyId = context.companyId;
   const overview = usePluginOverview(companyId);
   const [companiesLimit, setCompaniesLimit] = useState(20);
@@ -1486,7 +1487,13 @@ function KitchenSinkConsole({ context }: { context: { companyId: string | null; 
 
   async function sendWebhook() {
     try {
-      const response = await hostFetchJson(`/api/plugins/${PLUGIN_ID}/webhooks/${WEBHOOK_KEYS.demo}`, {
+      const pluginInstallationId = hostContext.pluginInstallationId;
+      if (!pluginInstallationId) {
+        throw new Error(
+          "This host does not expose the installed plugin UUID required for public webhooks."
+        );
+      }
+      const response = await hostFetchJson(`/api/plugins/${encodeURIComponent(pluginInstallationId)}/webhooks/${WEBHOOK_KEYS.demo}`, {
         method: "POST",
         body: JSON.stringify({
           source: "kitchen-sink-ui",

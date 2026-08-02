@@ -324,11 +324,13 @@ export const queryKeys = {
     list: ["plugins", "list"] as const,
     detail: (id: string) => ["plugins", "detail", id] as const,
     config: (id: string) => ["plugins", "config", id] as const,
-    uiContributions: ["plugins", "ui-contributions"] as const,
+    uiContributions: (companyId: string) =>
+      ["plugins", "ui-contributions", companyId] as const,
     health: (id: string) => ["plugins", "health", id] as const,
     dashboard: (id: string) => ["plugins", "dashboard", id] as const,
     logs: (id: string) => ["plugins", "logs", id] as const,
     examples: ["plugins", "examples"] as const,
+    companyList: (companyId: string) => ["plugins", "company-list", companyId] as const,
     companySettings: (companyId: string) => ["plugins", "company-settings", companyId] as const,
   },
 };

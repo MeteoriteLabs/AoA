@@ -1,6 +1,22 @@
-import { useState, useMemo, useRef, useEffect, useCallback, type ComponentType, type ReactNode } from "react";
+import {
+  useState,
+  useMemo,
+  useRef,
+  useEffect,
+  useCallback,
+  type ComponentType,
+  type ReactNode,
+} from "react";
 import { useSearchParams } from "react-router-dom";
-import { Bot, ChevronLeft, ChevronRight, Layers, Puzzle, Search, Sparkles } from "lucide-react";
+import {
+  Bot,
+  ChevronLeft,
+  ChevronRight,
+  Layers,
+  Puzzle,
+  Search,
+  Sparkles,
+} from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useCompany } from "@/context/CompanyContext";
@@ -16,7 +32,7 @@ import {
   type MarketplaceSidebarKey,
 } from "@/components/marketplace/useMarketplaceSidebar";
 import { useNavigate } from "@/lib/router";
-import { pluginsApi } from "@/api/plugins";
+import { listCompanyPlugins, type InstalledPlugin } from "@/api/plugins";
 import { queryKeys } from "@/lib/queryKeys";
 import { deriveMarketplacePlacement } from "@/lib/marketplace-constants";
 import { cn } from "@/lib/utils";
@@ -24,7 +40,6 @@ import type {
   MarketplaceItemType,
   MarketplaceCatalogItem,
   MarketplacePackage,
-  PluginRecord,
 } from "@armyofagents/shared";
 
 type SortMode = "all" | "featured" | "recent" | "az";
@@ -35,14 +50,23 @@ const SORT_OPTIONS = [
   { key: "az", label: "A–Z" },
 ] as const;
 
-const TRUST_RANK: Record<string, number> = { verified: 2, community: 1, unverified: 0 };
+const TRUST_RANK: Record<string, number> = {
+  verified: 2,
+  community: 1,
+  unverified: 0,
+};
 
-function applySort(items: MarketplaceCatalogItem[], mode: SortMode): MarketplaceCatalogItem[] {
+function applySort(
+  items: MarketplaceCatalogItem[],
+  mode: SortMode
+): MarketplaceCatalogItem[] {
   if (mode === "featured") {
     return items.filter((it) => it.featured === true);
   }
   if (mode === "recent") {
-    return [...items].sort((a, b) => (b.addedAt ?? "").localeCompare(a.addedAt ?? ""));
+    return [...items].sort((a, b) =>
+      (b.addedAt ?? "").localeCompare(a.addedAt ?? "")
+    );
   }
   if (mode === "az") {
     return [...items].sort((a, b) => a.name.localeCompare(b.name));
@@ -58,7 +82,10 @@ function applySort(items: MarketplaceCatalogItem[], mode: SortMode): Marketplace
 
 const SECTION_CAP = 6;
 
-const SECTION_ICONS: Record<MarketplaceItemType, ComponentType<{ className?: string }>> = {
+const SECTION_ICONS: Record<
+  MarketplaceItemType,
+  ComponentType<{ className?: string }>
+> = {
   skill: Sparkles,
   plugin: Puzzle,
   agent: Bot,
@@ -79,7 +106,12 @@ const SECTION_LABELS: Record<MarketplaceItemType, string> = {
   team: "Teams",
 };
 
-const SECTION_ORDER: ReadonlyArray<MarketplaceItemType> = ["skill", "plugin", "agent", "team"];
+const SECTION_ORDER: ReadonlyArray<MarketplaceItemType> = [
+  "skill",
+  "plugin",
+  "agent",
+  "team",
+];
 const SKILL_PACKAGE_PREVIEW_COUNT = 6;
 
 const SECTION_SINGULAR: Record<MarketplaceItemType, string> = {
@@ -115,7 +147,7 @@ function TypeEmptyState({
       <span
         className={cn(
           "mx-auto mb-4 inline-flex size-12 items-center justify-center rounded-xl border",
-          tone,
+          tone
         )}
       >
         <Icon className="size-5" />
@@ -123,7 +155,9 @@ function TypeEmptyState({
       <h3 className="text-[15px] font-semibold">No third-party {label} yet</h3>
       <p className="mx-auto mt-1.5 max-w-sm text-[13px] text-dim">
         {aoaCount > 0
-          ? `The community catalog hasn’t published any ${label} yet — but AoA ships ${aoaCount} first-party ${aoaCount === 1 ? singular : label} you can use right now.`
+          ? `The community catalog hasn’t published any ${label} yet — but AoA ships ${aoaCount} first-party ${
+              aoaCount === 1 ? singular : label
+            } you can use right now.`
           : `The community catalog hasn’t published any ${label} yet. New ${label} land here as the catalog grows.`}
       </p>
       {aoaCount > 0 && (
@@ -147,17 +181,29 @@ interface SectionHeaderProps {
   onSeeAll: () => void;
 }
 
-function SectionHeader({ type, total, showSeeAll, onSeeAll }: SectionHeaderProps) {
+function SectionHeader({
+  type,
+  total,
+  showSeeAll,
+  onSeeAll,
+}: SectionHeaderProps) {
   const Icon = SECTION_ICONS[type];
   const tone = SECTION_TONES[type];
   return (
     <div className="mb-3 flex items-center justify-between">
       <h2 className="flex items-center gap-2 text-[0.7rem] font-semibold uppercase tracking-[0.1em] text-dim">
-        <span className={cn("inline-flex size-5 items-center justify-center rounded-md border", tone)}>
+        <span
+          className={cn(
+            "inline-flex size-5 items-center justify-center rounded-md border",
+            tone
+          )}
+        >
           <Icon className="size-3" />
         </span>
         {SECTION_LABELS[type]}
-        <span className="text-very-dim font-normal normal-case tracking-normal">· {total}</span>
+        <span className="text-very-dim font-normal normal-case tracking-normal">
+          · {total}
+        </span>
       </h2>
       {showSeeAll && (
         <button
@@ -188,7 +234,9 @@ function PackagesHeader({
           <Layers className="size-3" />
         </span>
         {title}
-        <span className="text-very-dim font-normal normal-case tracking-normal">· {total}</span>
+        <span className="text-very-dim font-normal normal-case tracking-normal">
+          · {total}
+        </span>
       </h2>
       {onSeeAll && (
         <button
@@ -242,7 +290,8 @@ function OverviewShelf({
     const node = scrollRef.current;
     if (!node) return;
     node.scrollBy({
-      left: direction === "left" ? -node.clientWidth * 0.9 : node.clientWidth * 0.9,
+      left:
+        direction === "left" ? -node.clientWidth * 0.9 : node.clientWidth * 0.9,
       behavior: "smooth",
     });
   };
@@ -256,7 +305,7 @@ function OverviewShelf({
         onClick={() => scrollShelf("left")}
         className={cn(
           "absolute left-2 top-1/2 z-10 hidden size-8 -translate-y-1/2 items-center justify-center rounded-full border border-border-strong bg-card/95 text-dim shadow-lg shadow-black/20 transition-all hover:bg-card-2 hover:text-foreground md:flex",
-          !canScrollLeft && "pointer-events-none opacity-0",
+          !canScrollLeft && "pointer-events-none opacity-0"
         )}
       >
         <ChevronLeft className="size-4" />
@@ -268,7 +317,7 @@ function OverviewShelf({
         onClick={() => scrollShelf("right")}
         className={cn(
           "absolute right-2 top-1/2 z-10 hidden size-8 -translate-y-1/2 items-center justify-center rounded-full border border-border-strong bg-card/95 text-dim shadow-lg shadow-black/20 transition-all hover:bg-card-2 hover:text-foreground md:flex",
-          !canScrollRight && "pointer-events-none opacity-0",
+          !canScrollRight && "pointer-events-none opacity-0"
         )}
       >
         <ChevronRight className="size-4" />
@@ -296,16 +345,26 @@ function OverviewShelf({
 export default function Marketplace() {
   const { data: catalog, error: catalogError } = useCatalog();
   const { data: packages, error: packagesError } = usePackages();
-  useCompany();
+  const { selectedCompanyId } = useCompany();
 
-  const { data: installedPlugins } = useQuery({
-    queryKey: queryKeys.plugins.all,
-    queryFn: () => pluginsApi.list(),
+  const {
+    data: installedPlugins,
+    error: installedPluginsError,
+    refetch: refetchInstalledPlugins,
+  } = useQuery({
+    queryKey: queryKeys.plugins.companyList(selectedCompanyId ?? ""),
+    queryFn: () => listCompanyPlugins(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
   });
   const installedByPackageName = useMemo(
-    () => new Map((installedPlugins ?? []).map((p: PluginRecord) => [p.packageName, p])),
-    [installedPlugins],
+    () =>
+      new Map(
+        (installedPlugins ?? []).map((p: InstalledPlugin) => [p.packageName, p])
+      ),
+    [installedPlugins]
   );
+  const installedStateReady =
+    !!selectedCompanyId && installedPlugins !== undefined;
 
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -314,21 +373,30 @@ export default function Marketplace() {
   const isAoaView = searchParams.get("view") === "aoa";
   const typeParam = searchParams.get("type");
   const selectedType: MarketplaceItemType | null =
-    typeParam === "plugin" || typeParam === "skill" || typeParam === "agent" || typeParam === "team"
+    typeParam === "plugin" ||
+    typeParam === "skill" ||
+    typeParam === "agent" ||
+    typeParam === "team"
       ? typeParam
       : null;
-  const activeKey: MarketplaceSidebarKey = isAoaView ? "aoa" : selectedType ?? "home";
+  const activeKey: MarketplaceSidebarKey = isAoaView
+    ? "aoa"
+    : selectedType ?? "home";
   const { pillItems } = useMarketplaceSidebar(activeKey);
   const goType = (t: MarketplaceItemType | null) =>
     navigate(t ? `/marketplace?type=${t}` : "/marketplace");
   const activePillRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
-    activePillRef.current?.scrollIntoView?.({ inline: "center", block: "nearest" });
+    activePillRef.current?.scrollIntoView?.({
+      inline: "center",
+      block: "nearest",
+    });
   }, [activeKey]);
   const [sortMode, setSortMode] = useState<SortMode>("all");
   const [showAllSkillPackages, setShowAllSkillPackages] = useState(false);
   const [search, setSearch] = useState("");
-  const [packageToInstall, setPackageToInstall] = useState<MarketplacePackage | null>(null);
+  const [packageToInstall, setPackageToInstall] =
+    useState<MarketplacePackage | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
   // Cmd/Ctrl+K to focus search.
@@ -357,7 +425,12 @@ export default function Marketplace() {
   const placementLoading = placement === null && placementError == null;
   const aoaItems = placement?.aoaItems ?? [];
   const aoaByType = useMemo(() => {
-    const out: Record<MarketplaceItemType, number> = { skill: 0, plugin: 0, agent: 0, team: 0 };
+    const out: Record<MarketplaceItemType, number> = {
+      skill: 0,
+      plugin: 0,
+      agent: 0,
+      team: 0,
+    };
     for (const it of aoaItems) out[it.type] += 1;
     return out;
   }, [aoaItems]);
@@ -366,8 +439,11 @@ export default function Marketplace() {
   // "no third-party items of this type exist" (show the AoA cross-sell) from "a
   // search/sub-filter matched nothing" (show the generic "No matches.").
   const mainTypeCount = useMemo(
-    () => (selectedType ? mainItems.filter((i) => i.type === selectedType).length : 0),
-    [mainItems, selectedType],
+    () =>
+      selectedType
+        ? mainItems.filter((i) => i.type === selectedType).length
+        : 0,
+    [mainItems, selectedType]
   );
   const base = isAoaView ? aoaItems : mainItems;
   const mainPackages = placement?.mainPackages ?? [];
@@ -388,16 +464,22 @@ export default function Marketplace() {
     if (q) {
       list = list.filter(
         (it) =>
-          it.name.toLowerCase().includes(q) || it.description.toLowerCase().includes(q),
+          it.name.toLowerCase().includes(q) ||
+          it.description.toLowerCase().includes(q)
       );
     }
     return applySort(list, sortMode);
   }, [base, selectedType, search, sortMode]);
 
   // Group visible (post-search, post-sort) items by type.
-  const grouped = useMemo<Record<MarketplaceItemType, MarketplaceCatalogItem[]>>(() => {
+  const grouped = useMemo<
+    Record<MarketplaceItemType, MarketplaceCatalogItem[]>
+  >(() => {
     const out: Record<MarketplaceItemType, MarketplaceCatalogItem[]> = {
-      skill: [], plugin: [], agent: [], team: [],
+      skill: [],
+      plugin: [],
+      agent: [],
+      team: [],
     };
     for (const it of visible) out[it.type].push(it);
     return out;
@@ -417,7 +499,11 @@ export default function Marketplace() {
           scrollTestId="marketplace-packages-overview-scroll"
         >
           {overviewPackages.map((pkg) => (
-            <PackageCard key={pkg.id} pkg={pkg} onInstallAll={setPackageToInstall} />
+            <PackageCard
+              key={pkg.id}
+              pkg={pkg}
+              onInstallAll={setPackageToInstall}
+            />
           ))}
         </OverviewShelf>
       </section>
@@ -438,7 +524,9 @@ export default function Marketplace() {
               <Layers className="size-3" />
             </span>
             Skill packages
-            <span className="text-very-dim font-normal normal-case tracking-normal">· {mainPackages.length}</span>
+            <span className="text-very-dim font-normal normal-case tracking-normal">
+              · {mainPackages.length}
+            </span>
           </h2>
           {hasMore && (
             <button
@@ -455,7 +543,11 @@ export default function Marketplace() {
           className="grid grid-cols-1 gap-3.5 sm:grid-cols-2"
         >
           {visiblePackages.map((pkg) => (
-            <PackageCard key={pkg.id} pkg={pkg} onInstallAll={setPackageToInstall} />
+            <PackageCard
+              key={pkg.id}
+              pkg={pkg}
+              onInstallAll={setPackageToInstall}
+            />
           ))}
         </div>
       </section>
@@ -464,7 +556,11 @@ export default function Marketplace() {
 
   // Render a single section block. `capped` is the visible-after-cap slice;
   // `total` is the full count used in the header + cap decision.
-  function renderSection(type: MarketplaceItemType, capped: MarketplaceCatalogItem[], total: number) {
+  function renderSection(
+    type: MarketplaceItemType,
+    capped: MarketplaceCatalogItem[],
+    total: number
+  ) {
     if (total === 0) return null;
     const isOverview = selectedType === null;
     return (
@@ -472,7 +568,9 @@ export default function Marketplace() {
         <SectionHeader
           type={type}
           total={total}
-          showSeeAll={selectedType === null && !isAoaView && total > SECTION_CAP}
+          showSeeAll={
+            selectedType === null && !isAoaView && total > SECTION_CAP
+          }
           onSeeAll={() => goType(type)}
         />
         {isOverview ? (
@@ -482,6 +580,9 @@ export default function Marketplace() {
                 key={item.id}
                 item={item}
                 installedByPackageName={installedByPackageName}
+                installedStateReady={installedStateReady}
+                installedStateError={installedPluginsError != null}
+                onRetryInstalledState={() => void refetchInstalledPlugins()}
               />
             ))}
           </OverviewShelf>
@@ -492,6 +593,9 @@ export default function Marketplace() {
                 key={item.id}
                 item={item}
                 installedByPackageName={installedByPackageName}
+                installedStateReady={installedStateReady}
+                installedStateError={installedPluginsError != null}
+                onRetryInstalledState={() => void refetchInstalledPlugins()}
               />
             ))}
           </div>
@@ -511,8 +615,8 @@ export default function Marketplace() {
             Marketplace<span className="text-brand">.</span>
           </h1>
           <p className="mt-1 text-[0.86rem] text-dim">
-            Skills, plugins, agents, and teams — installable from any GitHub repo. External
-            MCP connectors live under Connectors.
+            Skills, plugins, agents, and teams — installable from any GitHub
+            repo. External MCP connectors live under Connectors.
           </p>
         </div>
 
@@ -542,7 +646,7 @@ export default function Marketplace() {
                   "inline-flex items-center gap-1.5 px-3 py-2 rounded-full text-[12.5px] font-medium border whitespace-nowrap shrink-0 transition-colors",
                   p.active
                     ? "bg-brand/[0.08] text-[hsl(15_60%_75%)] border-brand/[0.25]"
-                    : "bg-card border-border text-foreground/[0.78] hover:bg-card-2 hover:text-foreground",
+                    : "bg-card border-border text-foreground/[0.78] hover:bg-card-2 hover:text-foreground"
                 )}
               >
                 {p.icon}
@@ -573,7 +677,8 @@ export default function Marketplace() {
             <p>Failed to load marketplace.</p>
             <p className="mt-1 text-very-dim">{placementError.message}</p>
           </div>
-        ) : visible.length === 0 && (selectedType !== null || overviewPackages.length === 0) ? (
+        ) : visible.length === 0 &&
+          (selectedType !== null || overviewPackages.length === 0) ? (
           selectedType !== null && !isAoaView && mainTypeCount === 0 ? (
             <TypeEmptyState
               type={selectedType}
@@ -590,10 +695,18 @@ export default function Marketplace() {
           selectedType === "skill" ? (
             <>
               {renderSkillPackageSection()}
-              {renderSection(selectedType, grouped[selectedType], grouped[selectedType].length)}
+              {renderSection(
+                selectedType,
+                grouped[selectedType],
+                grouped[selectedType].length
+              )}
             </>
           ) : (
-            renderSection(selectedType, grouped[selectedType], grouped[selectedType].length)
+            renderSection(
+              selectedType,
+              grouped[selectedType],
+              grouped[selectedType].length
+            )
           )
         ) : (
           // All-view (Home) or AoA view: overview shelves. AoA promotes its
@@ -603,7 +716,11 @@ export default function Marketplace() {
             {SECTION_ORDER.map((type) => {
               const groupedItems = grouped[type];
               const cap = isAoaView ? groupedItems.length : SECTION_CAP;
-              return renderSection(type, groupedItems.slice(0, cap), groupedItems.length);
+              return renderSection(
+                type,
+                groupedItems.slice(0, cap),
+                groupedItems.length
+              );
             })}
           </>
         )}

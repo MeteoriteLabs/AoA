@@ -32,8 +32,12 @@ import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
 import type { Db } from "@armyofagents/db";
+import { pluginCompanySettings } from "@armyofagents/db";
+import { and, eq } from "drizzle-orm";
+import { isUuidLike } from "@armyofagents/shared";
 import { pluginRegistryService } from "../services/plugin-registry.js";
 import { logger } from "../middleware/logger.js";
+import { assertBoard, assertCompanyAccess } from "./authz.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -89,6 +93,17 @@ const MIME_TYPES: Record<string, string> = {
   ".txt": "text/plain; charset=utf-8",
 };
 
+function isPathInsideDir(candidatePath: string, parentDir: string): boolean {
+  const relative = path.relative(
+    path.resolve(parentDir),
+    path.resolve(candidatePath)
+  );
+  return (
+    relative === "" ||
+    (!relative.startsWith("..") && !path.isAbsolute(relative))
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Helper
 // ---------------------------------------------------------------------------
@@ -110,20 +125,26 @@ export function resolvePluginUiDir(
   localPluginDir: string,
   packageName: string,
   entrypointsUi: string,
-  packagePath?: string | null,
+  packagePath?: string | null
 ): string | null {
-  // For local-path installs, prefer the persisted package path.
+  // Persisted paths are authoritative for both tenant-managed and local-path
+  // installs. A missing or invalid path must not fall back to a same-named
+  // package in the legacy shared npm root.
   if (packagePath) {
     const resolvedPackagePath = path.resolve(packagePath);
     if (fs.existsSync(resolvedPackagePath)) {
-      const uiDirFromPackagePath = path.resolve(resolvedPackagePath, entrypointsUi);
+      const uiDirFromPackagePath = path.resolve(
+        resolvedPackagePath,
+        entrypointsUi
+      );
       if (
-        uiDirFromPackagePath.startsWith(resolvedPackagePath)
-        && fs.existsSync(uiDirFromPackagePath)
+        isPathInsideDir(uiDirFromPackagePath, resolvedPackagePath) &&
+        fs.existsSync(uiDirFromPackagePath)
       ) {
         return uiDirFromPackagePath;
       }
     }
+    return null;
   }
 
   // Resolve the package root within the local plugin directory's node_modules.
@@ -131,7 +152,11 @@ export function resolvePluginUiDir(
   let packageRoot: string;
   if (packageName.startsWith("@")) {
     // Scoped package: @scope/name -> node_modules/@scope/name
-    packageRoot = path.join(localPluginDir, "node_modules", ...packageName.split("/"));
+    packageRoot = path.join(
+      localPluginDir,
+      "node_modules",
+      ...packageName.split("/")
+    );
   } else {
     packageRoot = path.join(localPluginDir, "node_modules", packageName);
   }
@@ -155,7 +180,7 @@ export function resolvePluginUiDir(
   const uiDir = path.resolve(packageRoot, entrypointsUi);
 
   // Verify the resolved UI directory exists and is actually inside the package
-  if (!fs.existsSync(uiDir)) {
+  if (!isPathInsideDir(uiDir, packageRoot) || !fs.existsSync(uiDir)) {
     return null;
   }
 
@@ -196,7 +221,7 @@ export interface PluginUiStaticRouteOptions {
  * Create an Express router that serves plugin UI static files.
  *
  * This route handles `GET /_plugins/:pluginId/ui/*` requests by:
- * 1. Looking up the plugin in the registry by ID or key
+ * 1. Looking up the plugin by UUID and checking the board actor's company access
  * 2. Verifying the plugin is in 'ready' status with UI declared
  * 3. Resolving the file path within the plugin's dist/ui/ directory
  * 4. Serving the file with appropriate cache headers
@@ -205,7 +230,10 @@ export interface PluginUiStaticRouteOptions {
  * @param options - Configuration options
  * @returns Express router
  */
-export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions) {
+export function pluginUiStaticRoutes(
+  db: Db,
+  options: PluginUiStaticRouteOptions
+) {
   const router = Router();
   const registry = pluginRegistryService(db);
   const log = logger.child({ service: "plugin-ui-static" });
@@ -215,9 +243,8 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
    *
    * Serve a static file from a plugin's UI bundle directory.
    *
-   * The :pluginId parameter accepts either:
-   * - Database UUID
-   * - Plugin key (e.g., "acme.linear")
+   * The :pluginId parameter accepts a database UUID. Plugin keys are scoped to
+   * a company and are therefore deliberately not accepted on this bare route.
    *
    * The wildcard captures the relative file path within the UI directory.
    *
@@ -228,38 +255,43 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
   router.get("/:pluginId/ui/*filePath", async (req, res) => {
     const { pluginId } = req.params;
 
+    assertBoard(req);
+    if (!isUuidLike(pluginId)) {
+      res.status(404).json({ error: "Plugin not found" });
+      return;
+    }
+
     // Extract the relative file path from the named wildcard.
     // In Express 5 with path-to-regexp v8, named wildcards may return
     // an array of path segments or a single string.
     const rawParam = req.params.filePath;
     const rawFilePath = Array.isArray(rawParam)
       ? rawParam.join("/")
-      : rawParam as string | undefined;
+      : (rawParam as string | undefined);
 
     if (!rawFilePath || rawFilePath.length === 0) {
       res.status(400).json({ error: "File path is required" });
       return;
     }
 
-    // Step 1: Look up the plugin
-    let plugin = null;
-    try {
-      plugin = await registry.getById(pluginId);
-    } catch (error) {
-      const maybeCode =
-        typeof error === "object" && error !== null && "code" in error
-          ? (error as { code?: unknown }).code
-          : undefined;
-      if (maybeCode !== "22P02") {
-        throw error;
-      }
-    }
+    // Step 1: Look up the exact tenant-owned plugin row and enforce access.
+    const plugin = await registry.getById(pluginId);
     if (!plugin) {
-      // Unscoped: UI assets are not company-specific (same package for all tenants).
-      plugin = await registry.getByKey(pluginId);
+      res.status(404).json({ error: "Plugin not found" });
+      return;
     }
+    await assertCompanyAccess(db, req, plugin.companyId);
 
-    if (!plugin) {
+    const [companySettings] = await db
+      .select({ enabled: pluginCompanySettings.enabled })
+      .from(pluginCompanySettings)
+      .where(
+        and(
+          eq(pluginCompanySettings.pluginId, plugin.id),
+          eq(pluginCompanySettings.companyId, plugin.companyId)
+        )
+      );
+    if (companySettings?.enabled === false) {
       res.status(404).json({ error: "Plugin not found" });
       return;
     }
@@ -287,14 +319,15 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
         configRow &&
         typeof configRow === "object" &&
         "configJson" in configRow &&
-        (configRow as { configJson: Record<string, unknown> }).configJson?.devUiUrl;
+        (configRow as { configJson: Record<string, unknown> }).configJson
+          ?.devUiUrl;
 
       if (typeof devUiUrl === "string" && devUiUrl.length > 0) {
         // Dev proxy is only available in development mode
         if (process.env.NODE_ENV === "production") {
           log.warn(
             { pluginId: plugin.id },
-            "plugin-ui-static: devUiUrl ignored in production",
+            "plugin-ui-static: devUiUrl ignored in production"
           );
           // Fall through to static file serving below
         } else {
@@ -321,11 +354,19 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
           }
 
           // Proxy the request to the dev server
-          const targetUrl = new URL(rawFilePath, devUiUrl.endsWith("/") ? devUiUrl : devUiUrl + "/");
+          const targetUrl = new URL(
+            rawFilePath,
+            devUiUrl.endsWith("/") ? devUiUrl : devUiUrl + "/"
+          );
 
           // SSRF protection: only allow http/https and localhost targets for dev proxy
-          if (targetUrl.protocol !== "http:" && targetUrl.protocol !== "https:") {
-            res.status(400).json({ error: "devUiUrl must use http or https protocol" });
+          if (
+            targetUrl.protocol !== "http:" &&
+            targetUrl.protocol !== "https:"
+          ) {
+            res
+              .status(400)
+              .json({ error: "devUiUrl must use http or https protocol" });
             return;
           }
 
@@ -341,7 +382,7 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
           if (!isLoopback) {
             log.warn(
               { pluginId: plugin.id, devUiUrl, host: devHost },
-              "plugin-ui-static: devUiUrl must target localhost, rejecting proxy",
+              "plugin-ui-static: devUiUrl must target localhost, rejecting proxy"
             );
             res.status(400).json({ error: "devUiUrl must target localhost" });
             return;
@@ -349,14 +390,16 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
 
           log.debug(
             { pluginId: plugin.id, devUiUrl, targetUrl: targetUrl.href },
-            "plugin-ui-static: proxying to devUiUrl",
+            "plugin-ui-static: proxying to devUiUrl"
           );
 
           try {
             const controller = new AbortController();
             const timeout = setTimeout(() => controller.abort(), 10_000);
             try {
-              const upstream = await fetch(targetUrl.href, { signal: controller.signal });
+              const upstream = await fetch(targetUrl.href, {
+                signal: controller.signal,
+              });
               if (!upstream.ok) {
                 res.status(upstream.status).json({
                   error: `Dev server returned ${upstream.status}`,
@@ -379,9 +422,12 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
               {
                 pluginId: plugin.id,
                 devUiUrl,
-                err: proxyErr instanceof Error ? proxyErr.message : String(proxyErr),
+                err:
+                  proxyErr instanceof Error
+                    ? proxyErr.message
+                    : String(proxyErr),
               },
-              "plugin-ui-static: failed to proxy to devUiUrl, falling back to static",
+              "plugin-ui-static: failed to proxy to devUiUrl, falling back to static"
             );
             // Fall through to static serving below
           }
@@ -396,13 +442,17 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
       options.localPluginDir,
       plugin.packageName,
       manifest.entrypoints.ui,
-      plugin.packagePath,
+      plugin.packagePath
     );
 
     if (!uiDir) {
       log.warn(
-        { pluginId: plugin.id, pluginKey: plugin.pluginKey, packageName: plugin.packageName },
-        "plugin-ui-static: UI directory not found on disk",
+        {
+          pluginId: plugin.id,
+          pluginKey: plugin.pluginKey,
+          packageName: plugin.packageName,
+        },
+        "plugin-ui-static: UI directory not found on disk"
       );
       res.status(404).json({ error: "Plugin UI directory not found" });
       return;
@@ -449,9 +499,15 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
 
     // Step 7: Set cache headers
     if (isContentHashed) {
-      res.set("Cache-Control", CACHE_CONTROL_IMMUTABLE);
+      res.set(
+        "Cache-Control",
+        CACHE_CONTROL_IMMUTABLE.replace("public", "private")
+      );
     } else {
-      res.set("Cache-Control", CACHE_CONTROL_REVALIDATE);
+      res.set(
+        "Cache-Control",
+        CACHE_CONTROL_REVALIDATE.replace("public", "private")
+      );
 
       // Compute and set ETag for conditional request support
       const etag = computeETag(fileStat.size, fileStat.mtimeMs);
@@ -472,10 +528,8 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
       res.set("Content-Type", contentType);
     }
 
-    // Step 9: Set CORS headers (plugin UI may be loaded from different origin in dev)
-    res.set("Access-Control-Allow-Origin", "*");
-
-    // Step 10: Send the file
+    // Step 9: Send the file. Assets are same-origin and authenticated; do not
+    // expose tenant bundles through permissive cross-origin responses.
     // The plugin source can live in Git worktrees (e.g. ".worktrees/...").
     // `send` defaults to dotfiles:"ignore", which treats dot-directories as
     // not found. We already enforce traversal safety above, so allow dot paths.
@@ -483,7 +537,7 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
       if (err) {
         log.error(
           { err, pluginId: plugin.id, filePath: resolvedFilePath },
-          "plugin-ui-static: error sending file",
+          "plugin-ui-static: error sending file"
         );
         // Only send error if headers haven't been sent yet
         if (!res.headersSent) {

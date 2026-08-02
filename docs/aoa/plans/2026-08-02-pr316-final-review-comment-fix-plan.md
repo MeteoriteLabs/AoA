@@ -168,4 +168,128 @@ The QA pass also reproduced three pre-existing, non-blocking issues outside this
 7. Independent whole-patch review against `origin/main`.
 8. Commit and push to PR #316, trigger fresh Codex review, and require complete Linux CI before merge.
 
-Local verification completed on the exact local patch: the two focused suites passed 38 tests; the cloud/tenant/security matrix passed 186 tests across 25 files; `pnpm -r typecheck`, server lint, the forbidden-token scan, `pnpm build`, and `pnpm db:generate` passed. The full workspace suite passed with `--maxWorkers=50%`; two unrelated Windows parallel-run flakes were reproduced as passing in isolation before the reduced-contention clean run. Schema generation and the build-time marketplace snapshot fetch produced no drift; `git diff --check` is clean apart from Windows line-ending notices. Independent security and scope reviews found no remaining actionable issue in the patch. Fresh Linux CI and an exact-head Codex review remain mandatory after push.
+Local verification completed on the exact local patch: focused plugin, lifecycle, shutdown, webhook, UI, cloud, tenant, and security suites passed; `pnpm -r typecheck`, server lint, the forbidden-token scan, `pnpm build`, and `pnpm db:generate` passed. The authoritative full workspace suite passed with `--maxWorkers=25%`; two unrelated Windows OpenCode adapter timeout flakes from higher-contention runs were reproduced as passing in isolation before the clean bounded run. Schema generation and the build-time marketplace snapshot fetch produced no drift; `git diff --check` is clean apart from Windows line-ending notices. Independent security and correctness delta reviews found no remaining P0/P1/P2 issue in the patch. Fresh Linux CI and an exact-head Codex review remain mandatory after push.
+
+## Exact-head plugin isolation review at `50801657`
+
+Codex's whole-PR review found a further merge-blocking P1: the legacy global plugin list and config endpoints accepted any board actor and queried company-owned plugin rows without a company predicate. Two independent audits confirmed the reported enumeration/config chain and found the same missing boundary on sibling plugin reads and bridge calls.
+
+### Architecture decision
+
+Reuse the existing company ownership model and authorization primitives; do not create a parallel plugin tenancy layer.
+
+```text
+request
+  |
+  +-- collection/runtime UI -- explicit companyId --> assertCompanyAccess
+  |                                                --> company-filtered query
+  |
+  +-- bare plugin reference --> accessibleCompanyIdsForActor
+  |                           --> scoped UUID/key resolve
+  |                           --> 404 when inaccessible / 409 when ambiguous
+  |
+  +-- instance diagnostic --> assertCanManageInstanceSettings
+                              --> existing global diagnostic path
+```
+
+Production failure covered: a cloud board member guesses or enumerates a foreign plugin ID, then reads config/logs/job history, loads foreign UI, or invokes its bridge worker. Every path must reject before tenant data or worker execution is reached.
+
+### Implementation tasks
+
+- [x] Add company-aware plugin registry collection methods with the same `undefined = all`, `[] = none`, `[ids] = scoped` semantics already used by bare task resolution.
+- [x] Add a reject-ambiguous actor-scoped plugin resolver for board-readable per-plugin routes.
+- [x] Scope `GET /api/plugins` to the actor's accessible companies.
+- [x] Require an explicit company for UI contributions, scope ready plugins to it, and key frontend caches by company.
+- [x] Require bridge/data/action/SSE calls to resolve a plugin owned by the requested company before worker access.
+- [x] Verify tool execution's registered plugin belongs to `runContext.companyId`; operator-gate global tool discovery.
+- [x] Apply the scoped resolver or operator gate to detail, health, logs, config, jobs, dashboard, and version-history reads.
+- [x] Add the missing company predicate to both plugin-company-settings list and mutation plugin lookup.
+- [x] Remove `plugins.ts` from the `assertBoard` pairing allowlist once every handler is paired or explicitly justified.
+- [x] Add two-company regression tests and frontend company-cache tests.
+
+### Test coverage diagram
+
+```text
+CODE PATHS                                      USER FLOWS
+GET /plugins                                    Marketplace installed badges
+  +-- local/self-host all access                  +-- member sees only accessible installs
+  +-- member scoped list                          +-- tenant switch cannot reuse prior cache
+  +-- zero companies -> []
+
+GET /ui-contributions?companyId=...             Company plugin UI
+  +-- missing company -> 400                      +-- own company loads slots/launchers
+  +-- inaccessible company -> 403                 +-- foreign company is rejected
+  +-- own company -> ready rows only               +-- disabled/foreign plugins do not load
+
+GET /:pluginId/config and sibling reads          Instance diagnostics
+  +-- own UUID/key -> scoped result                +-- operator/local self-host still works
+  +-- foreign UUID/key -> 404, no data read        +-- ordinary tenant cannot inspect foreign IDs
+  +-- duplicate accessible key -> 409
+
+bridge/tool execution                            Runtime invocation
+  +-- plugin company == request company -> call    +-- own plugin action succeeds
+  +-- mismatch/missing scope -> reject first       +-- foreign worker is never invoked
+```
+
+### Verification gate for this finding family
+
+1. Focused route/service/UI tests covering both companies, empty membership, duplicate keys, operator, and `local_implicit`.
+2. The existing high-risk cloud/tenant/security matrix.
+3. Typecheck, lint, forbidden-token scan, build, database drift, and `git diff --check`.
+4. Clean full test suite with bounded Windows worker concurrency.
+5. Independent final diff review, push, thread reply/resolution, another exact-head whole-PR Codex review, and fresh Linux CI.
+
+## NOT in scope
+
+- Real gVisor execution and the other initiatives in the follow-up handoff remain a separate PR.
+- A plugin subsystem rewrite is unnecessary; the existing company ownership, company routes, and auth helpers are reused.
+- Marketplace product redesign is not needed; only tenant-correct installed-state/cache behavior may change.
+- Public webhook authentication remains the plugin contract and is not altered by this board-route isolation fix.
+
+## What already exists
+
+- `assertCompanyAccess` is the fail-closed company boundary and preserves `local_implicit` behavior.
+- `accessibleCompanyIdsForActor` already defines safe bare-route scoping semantics.
+- `/api/companies/:companyId/plugins` and its config route already provide member-readable company-scoped data.
+- `SlotFilters` and launcher filters already carry `companyId`; the current UI simply fails to use it in the contribution query/cache key.
+- `plugin.companyId` and `(company_id, plugin_key)` uniqueness already model ownership; no migration is needed.
+
+## Final implementation and verification outcome
+
+The exact-head plugin isolation finding is closed locally, including the sibling runtime surfaces found during implementation review:
+
+- Global diagnostics and raw package installation are operator-only; company plugin reads/config/settings use explicit company authorization and ownership predicates.
+- Bridge data/actions/SSE, agent tools, events, streams, static UI assets, worker host calls, and loader artifacts are bound to the plugin row's database ID and owning company.
+- Company enable/disable overlays are enforced before lifecycle activation and at runtime; global lifecycle transitions keep the company overlay synchronized.
+- Managed npm artifacts use per-company roots and persisted authoritative paths; legacy shared artifacts fail closed when two tenants would collide.
+- UI contributions, slots, launchers, Marketplace installed state, settings reads, and React Query caches are company-scoped.
+- Public webhook URLs now require the tenant-specific `plugins.id` UUID; manifest-key URLs are rejected as ambiguous. The SDK host context exposes `pluginInstallationId`, the kitchen-sink example uses it, and API/SDK/schema compatibility guidance records the migration.
+- Plugin HostServices disposers are retained and invoked on replacement, activation failure, worker crash/stop, unload, uninstall/disable, and shutdown so stale live-event subscriptions cannot survive a runtime generation.
+- The common server shutdown path now tears down plugin workers and HostServices in both external-Postgres and process-owned embedded-Postgres modes, deduplicates concurrent termination signals, and exits only after cleanup.
+- Public plugin webhooks are limited to 300 requests per minute per source IP before UUID lookup, database writes, or worker RPC. Plugin-specific signature verification remains in the worker and failed-delivery audit records remain intact.
+
+Final local evidence on the complete uncommitted patch:
+
+- Focused final plugin suites: 57/57 passed; final webhook suite: 35/35 passed; independent whole-plugin matrix: 23 files / 194 tests passed.
+- `pnpm -r typecheck` passed across all 23 workspace projects, including the SDK and kitchen-sink example.
+- Higher-contention `pnpm test:run` attempts hit only two known Windows OpenCode adapter timeout flakes; both passed immediately in isolation (5/5). The authoritative exact-tree bounded rerun, `pnpm test:run --maxWorkers=25%`, passed with exit 0.
+- `pnpm build`, server lint, `pnpm check:tokens`, and `pnpm db:generate` passed; Drizzle reported no schema drift.
+- `git diff --check` is clean apart from Windows LF/CRLF notices.
+- An isolated instance booted with its own AoA home, app port, and embedded-Postgres port. Health, UI serving, company creation, company plugin list, company-qualified contributions/tools, missing-company rejection, and UUID-only webhook rejection behaved as designed. A real Playwright browser render of `/{companyPrefix}/settings?tab=plugins` loaded the empty Plugins state and all background API calls returned 200. Both isolated listeners were stopped afterward.
+- Independent full-PR correctness, security-delta, and final post-fix reviews found no remaining P0/P1/P2 blocker. Fresh Linux CI and a whole-PR Codex review on the pushed head remain required before merge.
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | not required | Security bug fix; no product-direction change |
+| Codex Review | `/codex review` | Independent second opinion | 1 | fixed locally | P1 global plugin disclosure plus sibling runtime surfaces |
+| Eng Review | `/plan-eng-review` | Architecture & tests | 2 | implemented and verified | Tenant scoping, lifecycle cleanup, webhook contract/abuse controls; 0 unresolved design decisions |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | not required | Cache-key/API wiring only |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | not required | No new developer workflow |
+
+**CODEX:** Confirmed global plugin reads crossed company boundaries; the exact reported chain and sibling paths are fixed locally.
+**CROSS-MODEL:** Independent correctness, security, and plugin-runtime audits agree on the tenant boundary and added the webhook compatibility, lifecycle cleanup, and abuse-limit fixes captured above.
+**VERDICT:** Local implementation and verification are complete. Commit/push, exact-head Codex review, and fresh required Linux CI remain mandatory; gVisor stays in the next PR.
+
+NO UNRESOLVED DECISIONS

@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 
 import { PluginDetailSlideOver } from "../PluginDetailSlideOver";
 import type { InstalledPlugin } from "@/api/plugins";
+import * as pluginsApi from "@/api/plugins";
 
 // Hoist spy so it can be referenced both inside vi.mock and in test bodies.
 const { retryActivationSpy } = vi.hoisted(() => ({
@@ -14,7 +15,9 @@ const { retryActivationSpy } = vi.hoisted(() => ({
 
 // Mock all named exports from plugins API.
 vi.mock("@/api/plugins", async () => {
-  const actual = await vi.importActual<typeof import("@/api/plugins")>("@/api/plugins");
+  const actual = await vi.importActual<typeof import("@/api/plugins")>(
+    "@/api/plugins"
+  );
   return {
     ...actual,
     patchPluginSettings: vi.fn(),
@@ -85,11 +88,11 @@ describe("PluginDetailSlideOver — Retry activation button", () => {
         plugin={plugin}
         pendingUpdate={undefined}
         onClose={vi.fn()}
-      />,
+      />
     );
 
     expect(
-      screen.getByRole("button", { name: /retry activation/i }),
+      screen.getByRole("button", { name: /retry activation/i })
     ).toBeInTheDocument();
   });
 
@@ -101,11 +104,11 @@ describe("PluginDetailSlideOver — Retry activation button", () => {
         plugin={plugin}
         pendingUpdate={undefined}
         onClose={vi.fn()}
-      />,
+      />
     );
 
     expect(
-      screen.queryByRole("button", { name: /retry activation/i }),
+      screen.queryByRole("button", { name: /retry activation/i })
     ).not.toBeInTheDocument();
   });
 
@@ -120,10 +123,12 @@ describe("PluginDetailSlideOver — Retry activation button", () => {
         plugin={plugin}
         pendingUpdate={undefined}
         onClose={vi.fn()}
-      />,
+      />
     );
 
-    expect(screen.getByText("Worker crashed: ECONNREFUSED")).toBeInTheDocument();
+    expect(
+      screen.getByText("Worker crashed: ECONNREFUSED")
+    ).toBeInTheDocument();
   });
 
   it('calls retryActivation with the plugin id when "Retry activation" is clicked', async () => {
@@ -136,19 +141,19 @@ describe("PluginDetailSlideOver — Retry activation button", () => {
         plugin={plugin}
         pendingUpdate={undefined}
         onClose={vi.fn()}
-      />,
+      />
     );
 
     await userEvent.click(
-      screen.getByRole("button", { name: /retry activation/i }),
+      screen.getByRole("button", { name: /retry activation/i })
     );
 
     await waitFor(() =>
-      expect(retryActivationSpy).toHaveBeenCalledWith("plugin-123"),
+      expect(retryActivationSpy).toHaveBeenCalledWith("plugin-123")
     );
   });
 
-  it('shows retry error message when plugin is in error state and retryActivation rejects', async () => {
+  it("shows retry error message when plugin is in error state and retryActivation rejects", async () => {
     retryActivationSpy.mockRejectedValue(new Error("Network error"));
 
     const plugin = makePlugin({ status: "error" });
@@ -158,15 +163,60 @@ describe("PluginDetailSlideOver — Retry activation button", () => {
         plugin={plugin}
         pendingUpdate={undefined}
         onClose={vi.fn()}
-      />,
+      />
     );
 
     await userEvent.click(
-      screen.getByRole("button", { name: /retry activation/i }),
+      screen.getByRole("button", { name: /retry activation/i })
     );
 
     await waitFor(() =>
-      expect(screen.getByText("Network error")).toBeInTheDocument(),
+      expect(screen.getByText("Network error")).toBeInTheDocument()
     );
+  });
+
+  it("renders a normal member view-only without settings or lifecycle actions", () => {
+    wrap(
+      <PluginDetailSlideOver
+        companyId="company-1"
+        plugin={makePlugin({ status: "error" })}
+        pendingUpdate={undefined}
+        onClose={vi.fn()}
+        canManage={false}
+      />
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "settings" })
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /retry activation/i })
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /disable for this company/i })
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/require an instance administrator/i)
+    ).toBeInTheDocument();
+  });
+
+  it("surfaces a configuration fetch failure instead of an empty editable form", async () => {
+    vi.mocked(pluginsApi.getPluginConfig).mockRejectedValueOnce(
+      new Error("Configuration access denied")
+    );
+    wrap(
+      <PluginDetailSlideOver
+        companyId="company-1"
+        plugin={makePlugin()}
+        pendingUpdate={undefined}
+        onClose={vi.fn()}
+      />
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "settings" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Configuration access denied"
+    );
+    expect(screen.queryByTestId("plugin-config-form")).not.toBeInTheDocument();
   });
 });
