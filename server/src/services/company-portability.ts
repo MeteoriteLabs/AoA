@@ -1035,7 +1035,11 @@ async function readAgentInstructions(agent: AgentLike): Promise<{ body: string; 
 export function companyPortabilityService(db: Db) {
   const companies = companyService(db);
   const agents = agentService(db);
-  const access = accessService(db);
+  // P3: the former `access` service handle held ONLY the now-removed
+  // `ensureRealOperator` call — company + founder membership are now written
+  // atomically inside `companies.createWithOperator`, which takes a tx-bound
+  // `accessService` factory directly. `accessService` stays imported for that
+  // factory below.
   const projects = projectService(db);
   const issues = issueService(db);
   const skills = companySkillService(db);
@@ -2176,7 +2180,21 @@ export function companyPortabilityService(db: Db) {
       //
       // Latency is bounded by CREW_INSTALL_DEADLINE_MS + the catalog budget
       // (~42s worst case); import is already a long-running operation.
-      const created = await companies.create({
+      // P3 (mirrors Fix 5): the company row AND the importer's founder
+      // membership/role/org membership are written atomically inside ONE
+      // transaction (`createWithOperator`), so a transient fault mid-import can
+      // never commit an orphan company with no membership for anyone. This
+      // REPLACES the previous non-atomic `create` + separate `ensureRealOperator`
+      // pair. `buildAccess` is bound to the tx handle so the operator writes join
+      // it. Group A (operator-independent seeders) runs best-effort post-commit
+      // inside createWithOperator; Group B (route-only, operator-dependent) is
+      // deliberately NOT run on the import path.
+      //
+      // D2/H2 + no-self-lockout: seeding the IMPORTER as a genuine founder
+      // (company owner membership + founder role + org owner membership) also
+      // guarantees a real human founder for the agent-restoration parenting
+      // below. Replaces the old bare "board" company-only membership.
+      const created = await companies.createWithOperator({
         name: companyName,
         description: include.company ? (sourceManifest.company?.description ?? null) : null,
         brandColor: include.company ? (sourceManifest.company?.brandColor ?? null) : null,
@@ -2190,17 +2208,11 @@ export function companyPortabilityService(db: Db) {
           ? (sourceManifest.company?.agentCompletionReviewGuardrail ?? false)
           : false,
         // D2/H3: the owning Organization is server-resolved + authorized in the
-        // route (mirrors POST /). undefined -> companies.create falls back to the
-        // DEFAULT sentinel (self-hosted single-tenant), unchanged.
+        // route (mirrors POST /). undefined -> createWithOperator falls back to
+        // the DEFAULT sentinel (self-hosted single-tenant), unchanged.
         organizationId: opts?.organizationId ?? undefined,
-      }, { requestedByUserId: actorUserId ?? null });
-      // D2/H2 + no-self-lockout: seed the IMPORTER as a genuine founder of the
-      // freshly created company — company owner membership + founder role + org
-      // owner membership (ensureRealOperator, access.ts). This also guarantees a
-      // real human founder for the agent-restoration parenting below. Replaces
-      // the old bare "board" company-only membership.
-      await access.ensureRealOperator(created.id, actorUserId);
-      targetCompany = created;
+      }, { requestedByUserId: actorUserId ?? null }, actorUserId, (tx) => accessService(tx));
+      targetCompany = created.company;
       companyAction = "created";
     } else {
       targetCompany = await companies.getById(input.target.companyId);

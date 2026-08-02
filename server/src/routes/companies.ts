@@ -307,11 +307,20 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
     // requestedByUserId attributes the crew's marketplace install operation
     // (T2.3). The column is free text with no FK, and `local_trusted` actors
     // legitimately have no userId — hence the null fallback.
-    const company = await svc.create(
+    //
+    // P3 (mirrors Fix 5): the company row + founder membership/role/org
+    // membership are written atomically inside ONE transaction, so a transient
+    // fault can never commit an orphan company with no membership. `buildAccess`
+    // is bound to the tx handle so ensureRealOperator's writes join it. Group A
+    // (operator-independent seeders) runs best-effort post-commit inside
+    // createWithOperator; Group B (operator-dependent, below) stays here and
+    // reuses the returned operatorId.
+    const { company, operatorId } = await svc.createWithOperator(
       { ...req.body, requireBoardApprovalForNewAgents, organizationId },
       { requestedByUserId: req.actor.userId ?? null },
+      req.actor.userId,
+      (tx) => accessService(tx),
     );
-    const operatorId = await access.ensureRealOperator(company.id, req.actor.userId);
     // Seed the founder's company Human Operating Profile from their GLOBAL
     // profile. Onboarding's HumanProfileStep writes only the global
     // `user_profiles` row (companyId is null at that step); without this, the

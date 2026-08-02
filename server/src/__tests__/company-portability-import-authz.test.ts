@@ -28,6 +28,15 @@ vi.mock("../services/companies.js", () => ({
   companyService: () => ({
     getById: vi.fn(async (id: string) => ({ id, name: "Target Co" })),
     create: createMock,
+    // P3: importBundle now creates via the atomic `createWithOperator`; delegate
+    // to `createMock` (so the organizationId-threading assertion holds) and call
+    // ensureRealOperator via the passed access factory (so the operator-scoping
+    // assertion holds).
+    createWithOperator: vi.fn(async (input: any, opts: any, ownerUserId: any, buildAccess: any) => {
+      const company = await createMock(input, opts);
+      const operatorId = await buildAccess(undefined).ensureRealOperator(company.id, ownerUserId ?? null);
+      return { company, operatorId };
+    }),
     update: vi.fn(async (id: string, patch: Record<string, unknown>) => ({
       id,
       name: (patch.name as string) ?? "Target Co",

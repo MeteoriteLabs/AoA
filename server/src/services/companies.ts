@@ -58,6 +58,10 @@ import {
   workspaceRuntimeServices,
 } from "@armyofagents/db";
 import { notCrewAssigned } from "./issue-crew-scope.js";
+// Type-only (mirrors Fix 5's `import type { organizationAccessService }`): lets
+// `createWithOperator` accept a `buildAccess` factory typed against the access
+// service WITHOUT a runtime companies↔access import cycle.
+import type { accessService } from "./access.js";
 
 type CompanyStatsEntry = {
   agentCount: number;
@@ -116,6 +120,101 @@ export function companyService(db: Db) {
     return false;
   }
 
+  // Group A (P3 extraction) — the OPERATOR-INDEPENDENT company seeders. These
+  // run best-effort AFTER the company row is committed, on BOTH the operator-free
+  // `create` path and the atomic `createWithOperator` path, so the two paths seed
+  // identically without duplicating the logic. Group B (profile materialization,
+  // native skills, the QA-BUG-007 Commander re-run) is OPERATOR-DEPENDENT and
+  // stays in the route — it is intentionally NOT run here.
+  //
+  // Takes only `companyId` + `requestedByUserId`: no operator is needed for any
+  // of these steps.
+  async function seedNewCompanyBestEffort(
+    companyId: string,
+    requestedByUserId: string | null,
+  ): Promise<void> {
+    await seedCompanyRootFolder(memoryFoldersService(db), {
+      companyId,
+    }).catch((err: unknown) => {
+      logger.warn({ err, companyId }, "memory company-root folder seeding failed");
+    });
+    // Decision #100 — the Commander Team comes with every company.
+    // Eagerly seed (1) the default internal_agent_config row and (2) the
+    // Commander kind='aoa' agent linked into that config. (1) MUST precede
+    // (2) — ensureCommanderAgent's internal_agent_config UPDATE no-ops
+    // without an existing config row. Both are idempotent and seeded
+    // non-fatally — exactly mirroring the root-folder seed above — so a
+    // seed failure never breaks company create.
+    //
+    // Phase 1 (Task C1 + Phase D batch 2): the Discussion Extraction
+    // ("Scribe") agent is no longer seeded at company create. The
+    // autonomous extraction drain is gated OFF (AOA_SCRIBE_AUTONOMOUS_
+    // DRAIN_ENABLED) — extraction now runs as tool calls from Memory
+    // Keeper (phase=done sweep) and Adjutant (optional, mid-discussion).
+    // `ensureExtractionAgent` is preserved in the codebase for rollback
+    // safety and so the dispatcher's lazy ensure on the legacy autonomous
+    // path keeps working when the env flag is re-enabled; it is no longer
+    // wired into bootstrap.
+    //
+    // T3.5: skip CREW provisioning entirely if the marketplace already
+    // governs this company's crew. A brand-new company that gets a
+    // marketplace install immediately after creation must not have those
+    // agents overwritten by the legacy seeders.
+    //
+    // T2.3 note on why this gate SURVIVED rather than being deleted as
+    // "unreachable": it is what pins the read-before-write ordering below,
+    // and `aoa-bootstrap-wiring.test.ts` (`stampsOriginOnSeed`) is the
+    // regression guard for the silent failure that ordering prevents.
+    // It also correctly short-circuits the concurrent-create case, where a
+    // sibling create already installed the marketplace crew.
+    //
+    // Read the gate BEFORE seeding anything. The predicate matches any
+    // kind='aoa' row with a non-`@legacy` templateOrigin, and the seeders
+    // below insert kind='aoa' rows — reading after writing would be a
+    // read-your-own-writes hazard the moment anyone stamps an origin at
+    // insert time (today nothing does; see crew-seeding.ts). The failure
+    // mode is silent: the company would see its own fresh Commander,
+    // conclude "marketplace-managed", and skip its entire crew.
+    //
+    // isCrewMarketplaceManaged fails open to `false` on a DB error, so a
+    // transient blip degrades to the legacy seeders rather than leaving the
+    // company crewless — the same semantics the inline copy of this query
+    // used to provide.
+    const crewIsMarketplaceManaged = await isCrewMarketplaceManaged(db, companyId);
+
+    // P8d / Phase 4B: internal_agent_config + Commander are seeded
+    // UNCONDITIONALLY — Commander is not marketplace-owned, and a company
+    // without a config row has no autonomy/provider/model dial at all.
+    // Steward belongs to the gated CREW roster. Config MUST precede
+    // ensureInfrastructureAgents: ensureCommanderAgent's
+    // internal_agent_config UPDATE no-ops without an existing config row.
+    await ensureInternalAgentConfig(db, companyId).catch((err: unknown) => {
+      logger.warn({ err, companyId }, "internal_agent_config seeding failed");
+    });
+    // P3: now that this runs POST-commit, wrap it best-effort. It was the ONLY
+    // un-wrapped seeder here — while inline in the pre-commit try, an unexpected
+    // throw would have surfaced as a create failure (and, in createWithOperator,
+    // been mistaken for a non-conflict error). ensureInfrastructureAgents already
+    // swallows per-step failures internally (runEnsureSteps), so this is
+    // belt-and-suspenders that also fully de-risks the move post-commit.
+    await ensureInfrastructureAgents(db, companyId).catch((err: unknown) => {
+      logger.warn({ err, companyId }, "infrastructure agents (Commander) seeding failed");
+    });
+
+    // T2.3 (P8/P8c): install `team:aoa-curated/default-crew` from the
+    // marketplace so this company is born UPDATEABLE. Legacy-seeded rows
+    // are stamped `…@legacy` and `crew-updater.ts` skips those forever.
+    //
+    // provisionCompanyCrew never throws and degrades to the legacy seeders
+    // (with a log naming the crew members the fallback cannot provide), so
+    // a marketplace outage cannot break onboarding.
+    if (!crewIsMarketplaceManaged) {
+      await provisionCompanyCrew(db, companyId, {
+        requestedByUserId: requestedByUserId ?? null,
+      });
+    }
+  }
+
   async function createCompanyWithUniquePrefix(
     data: Omit<typeof companies.$inferInsert, "organizationId"> & { organizationId?: string },
     opts: CreateCompanyOptions = {},
@@ -136,79 +235,68 @@ export function companyService(db: Db) {
           })
           .returning();
         const company = rows[0];
-        await seedCompanyRootFolder(memoryFoldersService(db), {
-          companyId: company.id,
-        }).catch((err: unknown) => {
-          logger.warn({ err, companyId: company.id }, "memory company-root folder seeding failed");
-        });
-        // Decision #100 — the Commander Team comes with every company.
-        // Eagerly seed (1) the default internal_agent_config row and (2) the
-        // Commander kind='aoa' agent linked into that config. (1) MUST precede
-        // (2) — ensureCommanderAgent's internal_agent_config UPDATE no-ops
-        // without an existing config row. Both are idempotent and seeded
-        // non-fatally — exactly mirroring the root-folder seed above — so a
-        // seed failure never breaks company create.
-        //
-        // Phase 1 (Task C1 + Phase D batch 2): the Discussion Extraction
-        // ("Scribe") agent is no longer seeded at company create. The
-        // autonomous extraction drain is gated OFF (AOA_SCRIBE_AUTONOMOUS_
-        // DRAIN_ENABLED) — extraction now runs as tool calls from Memory
-        // Keeper (phase=done sweep) and Adjutant (optional, mid-discussion).
-        // `ensureExtractionAgent` is preserved in the codebase for rollback
-        // safety and so the dispatcher's lazy ensure on the legacy autonomous
-        // path keeps working when the env flag is re-enabled; it is no longer
-        // wired into bootstrap.
-        //
-        // T3.5: skip CREW provisioning entirely if the marketplace already
-        // governs this company's crew. A brand-new company that gets a
-        // marketplace install immediately after creation must not have those
-        // agents overwritten by the legacy seeders.
-        //
-        // T2.3 note on why this gate SURVIVED rather than being deleted as
-        // "unreachable": it is what pins the read-before-write ordering below,
-        // and `aoa-bootstrap-wiring.test.ts` (`stampsOriginOnSeed`) is the
-        // regression guard for the silent failure that ordering prevents.
-        // It also correctly short-circuits the concurrent-create case, where a
-        // sibling create already installed the marketplace crew.
-        //
-        // Read the gate BEFORE seeding anything. The predicate matches any
-        // kind='aoa' row with a non-`@legacy` templateOrigin, and the seeders
-        // below insert kind='aoa' rows — reading after writing would be a
-        // read-your-own-writes hazard the moment anyone stamps an origin at
-        // insert time (today nothing does; see crew-seeding.ts). The failure
-        // mode is silent: the company would see its own fresh Commander,
-        // conclude "marketplace-managed", and skip its entire crew.
-        //
-        // isCrewMarketplaceManaged fails open to `false` on a DB error, so a
-        // transient blip degrades to the legacy seeders rather than leaving the
-        // company crewless — the same semantics the inline copy of this query
-        // used to provide.
-        const crewIsMarketplaceManaged = await isCrewMarketplaceManaged(db, company.id);
-
-        // P8d / Phase 4B: internal_agent_config + Commander are seeded
-        // UNCONDITIONALLY — Commander is not marketplace-owned, and a company
-        // without a config row has no autonomy/provider/model dial at all.
-        // Steward belongs to the gated CREW roster. Config MUST precede
-        // ensureInfrastructureAgents: ensureCommanderAgent's
-        // internal_agent_config UPDATE no-ops without an existing config row.
-        await ensureInternalAgentConfig(db, company.id).catch((err: unknown) => {
-          logger.warn({ err, companyId: company.id }, "internal_agent_config seeding failed");
-        });
-        await ensureInfrastructureAgents(db, company.id);
-
-        // T2.3 (P8/P8c): install `team:aoa-curated/default-crew` from the
-        // marketplace so this company is born UPDATEABLE. Legacy-seeded rows
-        // are stamped `…@legacy` and `crew-updater.ts` skips those forever.
-        //
-        // provisionCompanyCrew never throws and degrades to the legacy seeders
-        // (with a log naming the crew members the fallback cannot provide), so
-        // a marketplace outage cannot break onboarding.
-        if (!crewIsMarketplaceManaged) {
-          await provisionCompanyCrew(db, company.id, {
-            requestedByUserId: opts.requestedByUserId ?? null,
-          });
-        }
+        await seedNewCompanyBestEffort(company.id, opts.requestedByUserId ?? null);
         return company;
+      } catch (error) {
+        if (!isIssuePrefixConflict(error)) throw error;
+      }
+      suffix += 1;
+    }
+    throw new Error("Unable to allocate unique issue prefix");
+  }
+
+  // P3 — atomic company + founder-membership create (mirrors Fix 5's
+  // `createSelfServeOrganization`). The company insert AND the operator write
+  // (`ensureRealOperator`: authUsers + company owner membership + founder role +
+  // org owner membership) run inside ONE `db.transaction`, so a transient fault
+  // between them can NEVER leave an orphan company with no membership for anyone
+  // (unrecoverable in cloud_auth).
+  //
+  // PREFIX RETRY: the issue-prefix de-dup loop lives OUTSIDE the transaction —
+  // each attempt is a fresh transaction with exactly ONE company insert +
+  // operator write. A 23505 prefix conflict aborts (and rolls back) only that
+  // attempt's transaction and is caught outside it; the next attempt retries
+  // with a new candidate prefix in a brand-new transaction. Any OTHER error
+  // re-throws (the tx rolls back → no orphan). Retrying INSIDE a single
+  // transaction is impossible: a 23505 aborts the whole PG tx.
+  //
+  // `buildAccess` is a factory bound to the TRANSACTION handle so all of
+  // ensureRealOperator's writes (and its `companies.organizationId` read) join
+  // the same tx. It is a PARAMETER (not a direct `accessService` call) to avoid
+  // a companies↔access runtime import cycle.
+  //
+  // Group A (operator-independent seeders) runs best-effort AFTER the committed
+  // tx — never inside it, so a non-critical seed failure cannot roll back a
+  // committed company. Group B (operator-dependent) stays with the caller.
+  async function createWithOperator(
+    data: Omit<typeof companies.$inferInsert, "organizationId"> & { organizationId?: string },
+    opts: CreateCompanyOptions,
+    ownerUserId: string | null | undefined,
+    buildAccess: (handle: Db) => Pick<ReturnType<typeof accessService>, "ensureRealOperator">,
+  ): Promise<{ company: typeof companies.$inferSelect; operatorId: string }> {
+    const base = deriveIssuePrefixBase(data.name);
+    let suffix = 1;
+    while (suffix < 10000) {
+      const candidate = `${base}${suffixForAttempt(suffix)}`;
+      try {
+        const { company, operatorId } = await db.transaction(async (tx) => {
+          const rows = await tx
+            .insert(companies)
+            .values({
+              ...data,
+              organizationId: data.organizationId ?? DEFAULT_ORGANIZATION_ID,
+              issuePrefix: candidate,
+            })
+            .returning();
+          const inserted = rows[0];
+          const opId = await buildAccess(tx as unknown as Db).ensureRealOperator(
+            inserted.id,
+            ownerUserId,
+          );
+          return { company: inserted, operatorId: opId };
+        });
+        await seedNewCompanyBestEffort(company.id, opts.requestedByUserId ?? null);
+        return { company, operatorId };
       } catch (error) {
         if (!isIssuePrefixConflict(error)) throw error;
       }
@@ -251,6 +339,8 @@ export function companyService(db: Db) {
       data: Omit<typeof companies.$inferInsert, "organizationId"> & { organizationId?: string },
       opts: CreateCompanyOptions = {},
     ) => createCompanyWithUniquePrefix(data, opts),
+
+    createWithOperator,
 
     update: (id: string, data: Partial<typeof companies.$inferInsert>) => {
       // Tenant-key immutability (Codex ①): organizationId is assigned once at

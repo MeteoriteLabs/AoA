@@ -25,6 +25,14 @@ vi.mock("../services/index.js", () => ({
     stats: vi.fn(),
     getById: vi.fn(),
     create: mockCreate,
+    // P3: the route creates atomically via `createWithOperator`. Delegate to
+    // `mockCreate` for the company and provision the operator via the passed
+    // access factory, so ensureRealOperator runs and its id flows to Group B.
+    createWithOperator: vi.fn(async (input: any, opts: any, ownerUserId: any, buildAccess: any) => {
+      const company = await mockCreate(input, opts);
+      const operatorId = await buildAccess(undefined).ensureRealOperator(company.id, ownerUserId);
+      return { company, operatorId };
+    }),
     update: vi.fn(),
     archive: vi.fn(),
     remove: vi.fn(),
