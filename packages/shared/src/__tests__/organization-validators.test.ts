@@ -22,6 +22,10 @@ describe("organization validators", () => {
       "Acme\u001bCorp",
       "Acme\u202eCorp",
       "Acme\u200bCorp",
+      "Acme\u2028Corp",
+      "Acme\u2029Corp",
+      "Acme\u2061Corp",
+      "\u200C\u200D",
     ]) {
       expect(() => createOrganizationSchema.parse({ name })).toThrow();
     }

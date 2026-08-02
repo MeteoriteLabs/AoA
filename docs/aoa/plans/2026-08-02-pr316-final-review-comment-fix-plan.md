@@ -111,7 +111,7 @@ Regression coverage: the full migration chain rejects the same company prefix bo
 ## Small contract and documentation cleanup
 
 - Remove the unused public `slug`/`plan` inputs from the shared self-serve organization-create validator so it matches the server's safe `{name}` contract.
-- Trim, NFC-normalize, and bound self-serve organization names; reject terminal controls, bidi formatting controls, and unsafe invisible separators before slug derivation.
+- Trim, NFC-normalize, and bound self-serve organization names; reject Unicode control/format characters, hard line separators, and joiner-only names while preserving ZWNJ/ZWJ within visible names before slug derivation.
 - Correct the provider resolver's stale auth-method count and make execution-target credential hints fail closed for any future unhandled method.
 - Lock provider-connection revoke behavior: filesystem cleanup failures surface only after the transactional logical revoke and assignment disablement.
 - Correct the PR description's stale instruction to enable unsandboxed multi-tenant execution. Hosted execution remains fail-closed until the gVisor worker plane ships.

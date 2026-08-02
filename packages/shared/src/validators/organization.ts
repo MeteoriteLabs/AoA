@@ -1,17 +1,25 @@
 import { z } from "zod";
 import { ORGANIZATION_ROLES } from "../constants.js";
 
-// Reject terminal controls and format characters that can reorder or hide an
-// organization name. ZWNJ/ZWJ (U+200C/U+200D) remain allowed because they are
-// meaningful in several writing systems; identity and authorization use IDs.
-const UNSAFE_ORGANIZATION_NAME_CHARACTERS =
-  /[\u0000-\u001F\u007F-\u009F\u061C\u200B\u200E\u200F\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/u;
+// Reject controls, format characters, and hard line separators that can reorder
+// or hide an organization name. ZWNJ/ZWJ (U+200C/U+200D) remain allowed because
+// they are meaningful in several writing systems; identity/authz use IDs.
+const SAFE_ORGANIZATION_NAME_JOINERS = /[\u200C\u200D]/gu;
+const UNSAFE_ORGANIZATION_NAME_CHARACTERS = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+
+function containsUnsafeOrganizationNameCharacters(value: string): boolean {
+  const withoutJoiners = value.replace(SAFE_ORGANIZATION_NAME_JOINERS, "");
+  return (
+    withoutJoiners.trim().length === 0 ||
+    UNSAFE_ORGANIZATION_NAME_CHARACTERS.test(withoutJoiners)
+  );
+}
 
 export const createOrganizationSchema = z.object({
   name: z
     .string()
     .refine(
-      (value) => !UNSAFE_ORGANIZATION_NAME_CHARACTERS.test(value),
+      (value) => !containsUnsafeOrganizationNameCharacters(value),
       "name contains invalid or invisible characters",
     )
     .transform((value) => value.trim().normalize("NFC"))

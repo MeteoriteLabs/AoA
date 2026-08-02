@@ -17,7 +17,7 @@ Body:
 { "name": "Acme" }
 ```
 
-Creates the Organization and its owner membership atomically. The signed-in user becomes the owner. The endpoint trims names, normalizes them to Unicode NFC, limits them to 100 characters, and rejects terminal controls, bidi formatting controls, and unsafe invisible separators. The server generates and de-duplicates the slug. Returns `201` with the Organization row.
+Creates the Organization and its owner membership atomically. The signed-in user becomes the owner. The endpoint trims names, normalizes them to Unicode NFC, limits them to 100 characters, and rejects control/format characters and hard Unicode line separators while permitting ZWNJ/ZWJ joiners within otherwise visible international-script names. The server generates and de-duplicates the slug. Returns `201` with the Organization row.
 
 ## List my organization memberships
 

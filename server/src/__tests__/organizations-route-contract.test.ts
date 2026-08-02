@@ -108,6 +108,10 @@ describe("organization routes", () => {
     ["escape-containing", "Acme\u001bCorp"],
     ["bidi-override-containing", "Acme\u202eCorp"],
     ["zero-width-space-containing", "Acme\u200bCorp"],
+    ["line-separator-containing", "Acme\u2028Corp"],
+    ["paragraph-separator-containing", "Acme\u2029Corp"],
+    ["invisible-function-containing", "Acme\u2061Corp"],
+    ["joiner-only", "\u200C\u200D"],
     ["oversized", "a".repeat(101)],
   ])("rejects a %s organization name before persistence", async (_label, name) => {
     const { app } = makeApp(boardActor);
