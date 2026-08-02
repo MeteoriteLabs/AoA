@@ -12,6 +12,12 @@ export const companies = pgTable(
     // writer (raw e2e seeds, portability edge paths, future migrations) lands
     // in the default org instead of hitting a NOT NULL violation. SET DEFAULT
     // does NOT rewrite existing rows, so 0188's explicit backfill still runs.
+    // TRACKING (0188 follow-up): this sentinel DEFAULT is intentionally fail-OPEN
+    // for the single-org world — an insert omitting organization_id buckets into
+    // the sentinel org rather than erroring. It MUST be dropped (so a NULL trips
+    // the NOT NULL constraint = fail closed) BEFORE multi-org write paths go live.
+    // NOT dropped in #316: that first needs every company-insert path audited to
+    // set organization_id explicitly. Keep the .default(...) chain until then.
     organizationId: uuid("organization_id").notNull().default("00000000-0000-0000-0000-000000000001").references(() => organizations.id, { onDelete: "restrict" }),
     name: text("name").notNull(),
     description: text("description"),

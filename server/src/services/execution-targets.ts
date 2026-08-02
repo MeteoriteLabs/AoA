@@ -78,16 +78,20 @@ export async function registerWorkerHeartbeat(
  *
  * SECURITY (P5 review, finding #1): this list must NOT include system/shared rows
  * (organizationId = NULL — the seeded control-plane target + operator-registered
- * pool targets). Their primary-key UUID doubles as the worker bearer token
- * (routes/execution-targets.ts:16-27), so returning a system row to a tenant admin
- * hands them a credential to mutate/offline an operator-owned target they do not
- * own (cross-tenant DoS). The run-routing read path (execution-target-resolver.ts
+ * pool targets). The row id is NO LONGER a credential — worker auth is by the
+ * SHA-256 worker_token_hash (resolveWorkerTargetId/requireWorkerToken,
+ * routes/execution-targets.ts:22-27) — but a system/operator-owned row still must
+ * not be returned to a tenant admin: the row id is the sole selector for
+ * registerWorkerHeartbeat, so leaking a system row's id lets a tenant admin
+ * mutate/offline an operator-owned target they do not own (cross-tenant DoS).
+ * The run-routing read path (execution-target-resolver.ts
  * resolveExecutionTargetForRun) reads system rows SEPARATELY and never exposes
  * their ids to a caller, so routing to the shared pool is unaffected.
  */
 export async function listExecutionTargets(db: Db, organizationId: string | null) {
   // organizationId is required to see any target; a null org sees nothing — and
-  // must not even scan the table (its id doubles as the worker bearer token).
+  // must not even scan the table (system rows must never surface to a tenant admin;
+  // the row id is the sole selector for registerWorkerHeartbeat, not a credential).
   if (organizationId == null) return [];
   // Scope in SQL (index execution_targets_org_idx); the no-system/cross-org
   // guarantee is the WHERE clause, not a JS post-filter.
