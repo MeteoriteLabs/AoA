@@ -8,7 +8,7 @@ import {
   organizationMemberships,
 } from "@armyofagents/db";
 import { authorizeCompanyUpgrade } from "../services/upgrade-auth.js";
-import { authorizeUpgrade } from "../realtime/live-events-ws.js";
+import { authorizeUpgrade, hasActiveCloudMembership } from "../realtime/live-events-ws.js";
 
 // Any exact origin string in the trusted allowlist. The board origin that
 // better-auth already trusts is threaded through as `trustedOrigins` on the
@@ -740,5 +740,47 @@ describe("live-events authorizeUpgrade", () => {
 
     expect(context).toBeNull();
     expect(resolveSessionFromHeaders).not.toHaveBeenCalled();
+  });
+});
+
+describe("hasActiveCloudMembership", () => {
+  it("returns true with active org + active company membership and an owning organization", async () => {
+    const db = makeUpgradeAuthDb({
+      company: { organizationId: "org-1" },
+      orgMemberships: [{ id: "om-1" }],
+      memberships: [{ id: "cm-1" }],
+    });
+
+    await expect(hasActiveCloudMembership(db as any, "company-1", "user-1")).resolves.toBe(true);
+  });
+
+  it("returns false when the org membership is missing", async () => {
+    const db = makeUpgradeAuthDb({
+      company: { organizationId: "org-1" },
+      orgMemberships: [],
+      memberships: [{ id: "cm-1" }],
+    });
+
+    await expect(hasActiveCloudMembership(db as any, "company-1", "user-1")).resolves.toBe(false);
+  });
+
+  it("returns false when the company membership is missing", async () => {
+    const db = makeUpgradeAuthDb({
+      company: { organizationId: "org-1" },
+      orgMemberships: [{ id: "om-1" }],
+      memberships: [],
+    });
+
+    await expect(hasActiveCloudMembership(db as any, "company-1", "user-1")).resolves.toBe(false);
+  });
+
+  it("returns false when the company has no owning organization", async () => {
+    const db = makeUpgradeAuthDb({
+      company: { organizationId: null },
+      orgMemberships: [{ id: "om-1" }],
+      memberships: [{ id: "cm-1" }],
+    });
+
+    await expect(hasActiveCloudMembership(db as any, "company-1", "user-1")).resolves.toBe(false);
   });
 });

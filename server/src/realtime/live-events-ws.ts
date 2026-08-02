@@ -122,6 +122,60 @@ function headersFromIncomingMessage(req: IncomingMessage): Headers {
   return headers;
 }
 
+/**
+ * The `cloud_auth` tenant-isolation predicate: a user may access a company iff
+ * they hold BOTH an active organization membership for the company's owning
+ * organization AND an active company membership. A company membership WITHOUT an
+ * org membership is DENIED (the deliberate tenant invariant), and a company with
+ * no owning organization is DENIED. This is the SAME predicate the cloud_auth
+ * WebSocket handshake enforces, extracted so the connection membership-sweep can
+ * re-run it against already-open sockets (bounded-staleness re-validation).
+ *
+ * ONLY valid for `cloud_auth`. The `authenticated` handshake admits users via
+ * instance_admin OR company membership with NO org requirement — do NOT call
+ * this helper outside cloud_auth.
+ */
+export async function hasActiveCloudMembership(
+  db: Db,
+  companyId: string,
+  userId: string,
+): Promise<boolean> {
+  const companyRow = await db
+    .select({ organizationId: companies.organizationId })
+    .from(companies)
+    .where(eq(companies.id, companyId))
+    .then((rows) => rows[0] ?? null);
+  const organizationId = companyRow?.organizationId ?? null;
+  if (!organizationId) return false;
+
+  const [orgMembership, companyMembership] = await Promise.all([
+    db
+      .select({ id: organizationMemberships.id })
+      .from(organizationMemberships)
+      .where(
+        and(
+          eq(organizationMemberships.userId, userId),
+          eq(organizationMemberships.organizationId, organizationId),
+          eq(organizationMemberships.status, "active"),
+        ),
+      )
+      .then((rows) => rows[0] ?? null),
+    db
+      .select({ id: companyMemberships.id })
+      .from(companyMemberships)
+      .where(
+        and(
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, userId),
+          eq(companyMemberships.companyId, companyId),
+          eq(companyMemberships.status, "active"),
+        ),
+      )
+      .then((rows) => rows[0] ?? null),
+  ]);
+  return Boolean(orgMembership && companyMembership);
+}
+
 export async function authorizeUpgrade(
   db: Db,
   req: IncomingMessage,
@@ -185,41 +239,10 @@ export async function authorizeUpgrade(
       // membership for the company's owning organization AND an active company
       // membership. A company membership WITHOUT an org membership is DENIED (the
       // deliberate tenant invariant). No instance_admin bypass here — the
-      // authenticated branch below keeps its own instance_admin rule.
-      const companyRow = await db
-        .select({ organizationId: companies.organizationId })
-        .from(companies)
-        .where(eq(companies.id, companyId))
-        .then((rows) => rows[0] ?? null);
-      const organizationId = companyRow?.organizationId ?? null;
-      if (!organizationId) return null;
-
-      const [orgMembership, companyMembership] = await Promise.all([
-        db
-          .select({ id: organizationMemberships.id })
-          .from(organizationMemberships)
-          .where(
-            and(
-              eq(organizationMemberships.userId, userId),
-              eq(organizationMemberships.organizationId, organizationId),
-              eq(organizationMemberships.status, "active"),
-            ),
-          )
-          .then((rows) => rows[0] ?? null),
-        db
-          .select({ id: companyMemberships.id })
-          .from(companyMemberships)
-          .where(
-            and(
-              eq(companyMemberships.principalType, "user"),
-              eq(companyMemberships.principalId, userId),
-              eq(companyMemberships.companyId, companyId),
-              eq(companyMemberships.status, "active"),
-            ),
-          )
-          .then((rows) => rows[0] ?? null),
-      ]);
-      if (!orgMembership || !companyMembership) return null;
+      // authenticated branch below keeps its own instance_admin rule. Extracted
+      // into hasActiveCloudMembership so the connection membership-sweep can
+      // re-run the exact same predicate against already-open sockets.
+      if (!(await hasActiveCloudMembership(db, companyId, userId))) return null;
 
       return {
         companyId,
@@ -328,6 +351,9 @@ export function setupLiveEventsWebSocketServer(
   const wss = new WebSocketServer({ noServer: true });
   const cleanupByClient = new Map<WsSocket, () => void>();
   const aliveByClient = new Map<WsSocket, boolean>();
+  // Per-open-socket upgrade context, so the cloud_auth membership sweep can
+  // re-validate each board socket's tenant membership after the handshake.
+  const contextByClient = new Map<WsSocket, UpgradeContext>();
 
   // Plan 7: per-thread subscription registry. A connection only receives
   // thread.* events for threads it has explicitly subscribed to (via a
@@ -455,6 +481,39 @@ export function setupLiveEventsWebSocketServer(
     }
   }, Math.max(1000, Math.floor(PRESENCE_TTL_MS / 3)));
 
+  // cloud_auth ONLY: bounded-staleness membership re-validation. The handshake
+  // (authorizeUpgrade) checks tenant membership once, but a founder can revoke a
+  // membership mid-session (removeMember deletes the row without closing the
+  // socket) — that user would keep receiving company-bus events until they
+  // disconnect. Periodically re-run the exact handshake predicate
+  // (hasActiveCloudMembership) per open board socket and close (1008) any that
+  // now fail. STRICT no-op outside cloud_auth: hasActiveCloudMembership enforces
+  // the cloud invariant (active org AND company membership); running it against
+  // `authenticated`/`local_trusted` sockets would wrongly evict instance_admins
+  // and ordinary members who legitimately have no org membership. We only
+  // close(1008) here — the socket's own "close" handler owns full teardown
+  // (unsubscribe + map deletes), so deleting maps here would leak the
+  // company-bus subscription.
+  const membershipSweepInterval = setInterval(() => {
+    if (opts.deploymentMode !== "cloud_auth") return;
+    for (const [socket, ctx] of contextByClient) {
+      if (ctx.actorType !== "board") continue; // agents: covered by key/status checks
+      void (async () => {
+        try {
+          const stillMember = await hasActiveCloudMembership(db, ctx.companyId, ctx.actorId);
+          if (!stillMember && socket.readyState === WebSocket.OPEN) {
+            socket.close(1008, "membership revoked");
+          }
+        } catch (err) {
+          logger.warn(
+            { err, companyId: ctx.companyId },
+            "cloud membership re-validation sweep failed for a socket",
+          );
+        }
+      })();
+    }
+  }, 30000);
+
   wss.on("connection", (socket: WsSocket, req: IncomingMessage) => {
     const context = (req as IncomingMessageWithContext).aoaUpgradeContext;
     if (!context) {
@@ -495,6 +554,7 @@ export function setupLiveEventsWebSocketServer(
 
     cleanupByClient.set(socket, unsubscribe);
     aliveByClient.set(socket, true);
+    contextByClient.set(socket, context);
 
     socket.on("pong", () => {
       aliveByClient.set(socket, true);
@@ -547,6 +607,7 @@ export function setupLiveEventsWebSocketServer(
       if (cleanup) cleanup();
       cleanupByClient.delete(socket);
       aliveByClient.delete(socket);
+      contextByClient.delete(socket);
       threadRegistry.removeConnection(socket);
 
       // Plan 7: drop this connection's presence and notify the affected threads
@@ -574,6 +635,7 @@ export function setupLiveEventsWebSocketServer(
   wss.on("close", () => {
     clearInterval(pingInterval);
     clearInterval(presenceSweepInterval);
+    clearInterval(membershipSweepInterval);
   });
 
   server.on("upgrade", (req, socket, head) => {
