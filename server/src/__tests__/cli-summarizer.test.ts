@@ -1,4 +1,5 @@
-﻿import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { setDeploymentMode } from "../config/deployment-mode.js";
 
 const spawnArgs: any[] = [];
 vi.mock("node:child_process", () => ({
@@ -32,5 +33,16 @@ describe("summarizeViaCli", () => {
     const a = spawnArgs[0].args.join(" ");
     expect(a).not.toContain("--mcp-config");
     expect(a).not.toContain("mcp");
+  });
+});
+
+describe("summarizeViaCli — cloud_auth fail-closed", () => {
+  afterEach(() => setDeploymentMode("local_trusted"));
+  it("refuses on cloud_auth without spawning a CLI", async () => {
+    setDeploymentMode("cloud_auth");
+    const before = spawnArgs.length;
+    await expect(summarizeViaCli({ cliTool: "claude", transcript: "hello" }))
+      .rejects.toThrow(/AoA Cloud|cloud_auth/i);
+    expect(spawnArgs.length).toBe(before);
   });
 });
