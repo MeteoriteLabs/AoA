@@ -148,6 +148,8 @@ export function candidatePassesStaticGates(input: GateInput): GateResult {
 }
 
 import type { Db } from "@armyofagents/db";
+import { SecretCandidateUnavailableError } from "../secrets/secret-candidate-errors.js";
+import { ProviderCredentialBindingError } from "./provider-credential-bindings.js";
 import type { SecretConsumerContext } from "./secrets.js";
 
 export interface ResolveArgs {
@@ -359,9 +361,10 @@ export async function resolveProviderCredential(
       try {
         subscriptionEnv = await deps.resolveSubscriptionEnv(db, row, args);
       } catch (err) {
+        if (!(err instanceof ProviderCredentialBindingError)) throw err;
         lastRejection = {
           connectionId: row.connectionId,
-          reason: err instanceof Error ? err.message : "subscription_unavailable",
+          reason: err.code,
         };
         continue;
       }
@@ -375,9 +378,10 @@ export async function resolveProviderCredential(
       try {
         secretValue = await deps.resolveSecretValueForConnection(db, row, args);
       } catch (err) {
+        if (!(err instanceof SecretCandidateUnavailableError)) throw err;
         lastRejection = {
           connectionId: row.connectionId,
-          reason: err instanceof Error ? err.message : "secret_unavailable",
+          reason: err.code,
         };
         continue;
       }

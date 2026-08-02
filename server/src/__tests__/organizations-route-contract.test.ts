@@ -86,6 +86,21 @@ describe("organization routes", () => {
     expect(routeSpies.createSelfServeOrganization).not.toHaveBeenCalled();
   });
 
+  it("rejects caller-controlled slug and plan fields", async () => {
+    const { app } = makeApp(boardActor);
+
+    const slugResponse = await request(app)
+      .post("/api/organizations")
+      .send({ name: "Acme", slug: "caller-slug" });
+    const planResponse = await request(app)
+      .post("/api/organizations")
+      .send({ name: "Acme", plan: "enterprise" });
+
+    expect(slugResponse.status).toBe(400);
+    expect(planResponse.status).toBe(400);
+    expect(routeSpies.createSelfServeOrganization).not.toHaveBeenCalled();
+  });
+
   it("rejects agent actors from organization routes", async () => {
     const { app } = makeApp({ type: "agent", companyId: "co1" });
     const res = await request(app).get("/api/organizations");

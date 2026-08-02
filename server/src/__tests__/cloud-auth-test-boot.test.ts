@@ -23,6 +23,7 @@ describe("cloud_auth test-support boot relaxation (AOA_E2E_TEST_SUPPORT)", () =>
     expect(() =>
       assertTestSupportFlagSafe({
         testSupportEnabled: true,
+        testSupportToken: "t".repeat(32),
         deploymentExposure: privateLoopbackCloud.deploymentExposure,
         bindHost: "127.0.0.1",
         authPublicBaseUrl: privateLoopbackCloud.authPublicBaseUrl,

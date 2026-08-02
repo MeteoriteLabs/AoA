@@ -1,14 +1,12 @@
 import { Router } from "express";
-import { z } from "zod";
 import type { Db } from "@armyofagents/db";
+import { createOrganizationSchema } from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";
 import { assertBoard } from "./authz.js";
 import { forbidden } from "../errors.js";
 import { organizationAccessService } from "../services/organization-access.js";
 import { createSelfServeOrganization } from "../services/organizations.js";
 import { logger } from "../middleware/logger.js";
-
-const createOrgSchema = z.object({ name: z.string().min(1) });
 
 export function organizationRoutes(db: Db): Router {
   const router = Router();
@@ -17,7 +15,7 @@ export function organizationRoutes(db: Db): Router {
   // Self-serve org creation: any signed-in board user may create an org and
   // becomes its owner. NO instance_admin gate — this is the multi-tenant thesis.
   // rbac: instance-admin-not-required — org-level endpoint with no companyId in path; there is no existing company/org scope to check against (the org is being CREATED by this call), so "authenticated board user" is the entire authorization surface by design.
-  router.post("/", validate(createOrgSchema), async (req, res) => {
+  router.post("/", validate(createOrganizationSchema), async (req, res) => {
     assertBoard(req);
     if (!req.actor.userId) throw forbidden("Sign in to create an organization");
     const org = await createSelfServeOrganization(db, { name: req.body.name, ownerUserId: req.actor.userId }, organizationAccessService);

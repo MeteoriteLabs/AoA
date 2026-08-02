@@ -24,20 +24,24 @@ describe("cloud org-concurrency claim wiring", () => {
     expect(singleAgentFunction).toContain("resolveCompanyOrganizationId(db, agent.companyId)");
     expect(singleAgentFunction).toContain("claimQueuedRunsWithOrgCapacity(db");
     expect(organizationFunction).toContain("if (!tenantIsolationEnforced())");
-    expect(organizationFunction).toContain("dispatchQueuedAgentsForOrg(");
-    expect(organizationFunction).toContain("startQueuedRunsForSingleAgent(candidateAgentId, organizationId)");
+    expect(organizationFunction).toContain("startQueuedRunsForSingleAgent(agentId, organizationId)");
+    expect(organizationFunction).not.toContain("dispatchQueuedAgentsForOrg(");
     expect(singleAgentFunction).not.toContain("agent as { organizationId?: string | null }");
   });
 
   it("takes the transaction-scoped org lock before counting and claiming", () => {
     const txIndex = orgConcurrencySource.indexOf("return db.transaction(async (tx)");
     const lockIndex = orgConcurrencySource.indexOf("pg_advisory_xact_lock");
-    const agentCountIndex = orgConcurrencySource.indexOf("agentRunningRow");
+    const orgCountIndex = orgConcurrencySource.indexOf("const orgRunning");
+    const globalOrderIndex = orgConcurrencySource.indexOf(
+      ".orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))",
+    );
     const claimIndex = orgConcurrencySource.indexOf(".update(heartbeatRuns)");
     expect(txIndex).toBeGreaterThan(-1);
     expect(lockIndex).toBeGreaterThan(txIndex);
-    expect(agentCountIndex).toBeGreaterThan(lockIndex);
-    expect(claimIndex).toBeGreaterThan(agentCountIndex);
+    expect(orgCountIndex).toBeGreaterThan(lockIndex);
+    expect(globalOrderIndex).toBeGreaterThan(orgCountIndex);
+    expect(claimIndex).toBeGreaterThan(globalOrderIndex);
   });
 
   it("runs failure-isolated claim mirrors only after the atomic helper resolves", () => {

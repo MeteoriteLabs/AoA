@@ -43,7 +43,9 @@ import { assertUnsandboxedMultitenantAllowed } from "./unsandboxed-multitenant-g
 import { tenantIsolationEnforced } from "../config/deployment-mode.js";
 import {
   claimQueuedRunsWithOrgCapacity,
-  dispatchQueuedAgentsForOrg,
+  HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT,
+  HEARTBEAT_MAX_CONCURRENT_RUNS_MAX,
+  normalizeMaxConcurrentRuns,
   resolveCompanyOrganizationId,
   runClaimMirrorsBestEffort,
 } from "./org-concurrency.js";
@@ -193,8 +195,11 @@ import {
 import { resolveRuntimeDecisionRoutingEnabled } from "./runtime-decision-routing-flag.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
-export const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
-export const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
+export {
+  HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT,
+  HEARTBEAT_MAX_CONCURRENT_RUNS_MAX,
+  normalizeMaxConcurrentRuns,
+};
 export const MAX_TURN_CONTINUATION_RETRY_REASON = "max_turn_continuation";
 export const MAX_TURN_CONTINUATION_WAKE_REASON = "max_turn_continuation_retry";
 export const MAX_TURN_CONTINUATION_MAX_ATTEMPTS = 2;
@@ -312,12 +317,6 @@ export function isCheckoutConflictError(error: unknown): boolean {
 
 function appendExcerpt(prev: string, chunk: string) {
   return appendWithCap(prev, chunk, MAX_EXCERPT_BYTES);
-}
-
-export function normalizeMaxConcurrentRuns(value: unknown) {
-  const parsed = Math.floor(asNumber(value, HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT));
-  if (!Number.isFinite(parsed)) return HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT;
-  return Math.max(HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT, Math.min(HEARTBEAT_MAX_CONCURRENT_RUNS_MAX, parsed));
 }
 
 // D1: RAW resolver — does NOT apply the D1 unsandboxed-multitenant gate.
@@ -2560,7 +2559,6 @@ export function heartbeatService(db: Db) {
     return withAgentStartLock(agentId, async () => {
       const agent = await getAgent(agentId);
       if (!agent) return [];
-      const policy = parseHeartbeatPolicy(agent);
 
       if (tenantIsolationEnforced()) {
         const organizationId = await resolveCompanyOrganizationId(db, agent.companyId);
@@ -2570,8 +2568,6 @@ export function heartbeatService(db: Db) {
         if (expectedOrganizationId && organizationId !== expectedOrganizationId) return [];
         const cloudClaims = await claimQueuedRunsWithOrgCapacity(db, {
           organizationId,
-          agentId,
-          perAgentCap: policy.maxConcurrentRuns,
         });
         await runClaimMirrorsBestEffort(
           cloudClaims,
@@ -2625,6 +2621,7 @@ export function heartbeatService(db: Db) {
         return cloudClaims;
       }
 
+      const policy = parseHeartbeatPolicy(agent);
       const runningCount = await countRunningRunsForAgent(agentId);
       const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
 
@@ -2700,15 +2697,11 @@ export function heartbeatService(db: Db) {
       throw new Error(`Cloud heartbeat run cannot resolve an Organization for company ${triggerAgent.companyId}.`);
     }
 
-    // Organization capacity is shared, so schedule oldest queued work first
-    // across agents. Each candidate still uses its own agent lock and the
-    // shared Organization advisory lock. Continue past an agent already at its
-    // per-agent cap so it cannot head-of-line block another eligible agent.
-    return dispatchQueuedAgentsForOrg(
-      db,
-      organizationId,
-      (candidateAgentId) => startQueuedRunsForSingleAgent(candidateAgentId, organizationId),
-    );
+    // The cloud claimant scans the Organization queue once, skips capped
+    // agents, and fills shared capacity in global FIFO order under the
+    // Organization advisory lock. The trigger agent only supplies the local
+    // in-process lock; claims may belong to any agent in this Organization.
+    return startQueuedRunsForSingleAgent(agentId, organizationId);
   }
 
   async function getLatestRunForSession(

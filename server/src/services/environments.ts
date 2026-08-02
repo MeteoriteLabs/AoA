@@ -1,6 +1,6 @@
 import { eq, and } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { environmentLeases, environments } from "@armyofagents/db";
+import { companies, environmentLeases, environments, executionTargets } from "@armyofagents/db";
 import type {
   CreateEnvironmentInput,
   EnvironmentLeaseCleanupStatus,
@@ -8,10 +8,59 @@ import type {
   EnvironmentLeaseStatus,
   UpdateEnvironmentInput,
 } from "@armyofagents/shared";
+import { unprocessable } from "../errors.js";
 
 export type EnvironmentService = ReturnType<typeof environmentService>;
 
+const EXECUTION_TARGET_UNAVAILABLE = "Execution target is unavailable for this company";
+
+/**
+ * A company may pin a system/shared target or a target owned by its own
+ * Organization. Missing tenant context fails closed.
+ */
+export function mayCompanyPinExecutionTarget(
+  companyOrganizationId: string | null,
+  targetOrganizationId: string | null,
+): boolean {
+  return targetOrganizationId === null || (
+    companyOrganizationId !== null && companyOrganizationId === targetOrganizationId
+  );
+}
+
 export function environmentService(db: Db) {
+  async function assertExecutionTargetAvailableToCompany(
+    companyId: string,
+    executionTargetId: string | null | undefined,
+  ): Promise<void> {
+    // `null` explicitly clears a pin and `undefined` leaves an update unchanged.
+    if (executionTargetId == null) return;
+
+    // Production create/update calls this service with the transaction handle
+    // supplied by routes/environments.ts. KEY SHARE keeps both ownership rows
+    // stable until the environment FK write commits without blocking unrelated
+    // reads or non-key updates.
+    const [company] = await db
+      .select({ organizationId: companies.organizationId })
+      .from(companies)
+      .where(eq(companies.id, companyId))
+      .for("key share");
+    const [target] = await db
+      .select({ organizationId: executionTargets.organizationId })
+      .from(executionTargets)
+      .where(eq(executionTargets.id, executionTargetId))
+      .for("key share");
+
+    if (
+      !company ||
+      !target ||
+      !mayCompanyPinExecutionTarget(company.organizationId, target.organizationId)
+    ) {
+      // Deliberately identical for missing and foreign targets so this mutation
+      // cannot be used to enumerate another Organization's fleet inventory.
+      throw unprocessable(EXECUTION_TARGET_UNAVAILABLE);
+    }
+  }
+
   return {
     list: async (companyId: string) => {
       return db.select().from(environments).where(eq(environments.companyId, companyId));
@@ -26,6 +75,7 @@ export function environmentService(db: Db) {
     },
 
     create: async (companyId: string, input: CreateEnvironmentInput) => {
+      await assertExecutionTargetAvailableToCompany(companyId, input.executionTargetId);
       const [env] = await db
         .insert(environments)
         .values({ companyId, ...input })
@@ -34,6 +84,7 @@ export function environmentService(db: Db) {
     },
 
     update: async (companyId: string, id: string, input: UpdateEnvironmentInput) => {
+      await assertExecutionTargetAvailableToCompany(companyId, input.executionTargetId);
       const rows = await db
         .update(environments)
         .set({ ...input, updatedAt: new Date() })

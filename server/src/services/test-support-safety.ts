@@ -1,10 +1,15 @@
+import { createHash, timingSafeEqual } from "node:crypto";
+
 export interface TestSupportFlagInput {
   testSupportEnabled: boolean;
+  testSupportToken?: string | null;
   deploymentExposure: string;
   bindHost: string;
   authPublicBaseUrl?: string | null;
   nodeEnv?: string;
 }
+
+export const TEST_SUPPORT_TOKEN_MIN_BYTES = 32;
 
 export class TestSupportFlagUnsafeError extends Error {
   constructor(reason: string) {
@@ -22,9 +27,22 @@ function isLoopbackHost(host: string): boolean {
   return normalized === "127.0.0.1" || normalized === "localhost" || normalized === "::1";
 }
 
+/** Compare fixed-length digests so an incorrect token is never compared directly. */
+export function testSupportTokensMatch(expected: string, presented: string): boolean {
+  const expectedDigest = createHash("sha256").update(expected).digest();
+  const presentedDigest = createHash("sha256").update(presented).digest();
+  return timingSafeEqual(expectedDigest, presentedDigest);
+}
+
 /** Refuse the auth-bypass flag on any production, public, or non-loopback boot. */
 export function assertTestSupportFlagSafe(input: TestSupportFlagInput): void {
   if (!input.testSupportEnabled) return;
+  const testSupportToken = input.testSupportToken?.trim() ?? "";
+  if (Buffer.byteLength(testSupportToken, "utf8") < TEST_SUPPORT_TOKEN_MIN_BYTES) {
+    throw new TestSupportFlagUnsafeError(
+      `AOA_E2E_TEST_SUPPORT_TOKEN is missing or shorter than ${TEST_SUPPORT_TOKEN_MIN_BYTES} bytes`,
+    );
+  }
   if (input.deploymentExposure !== "private") {
     throw new TestSupportFlagUnsafeError(`deploymentExposure=${input.deploymentExposure}`);
   }

@@ -61,11 +61,18 @@ const { WebSocket, WebSocketServer } = require("ws") as {
   WebSocketServer: new (opts: { noServer: boolean }) => WsServer;
 };
 
-interface UpgradeContext {
-  companyId: string;
-  actorType: "board" | "agent";
-  actorId: string;
-}
+export type UpgradeContext =
+  | {
+      companyId: string;
+      actorType: "board";
+      actorId: string;
+    }
+  | {
+      companyId: string;
+      actorType: "agent";
+      actorId: string;
+      keyId: string;
+    };
 
 interface IncomingMessageWithContext extends IncomingMessage {
   aoaUpgradeContext?: UpgradeContext;
@@ -174,6 +181,74 @@ export async function hasActiveCloudMembership(
       .then((rows) => rows[0] ?? null),
   ]);
   return Boolean(orgMembership && companyMembership);
+}
+
+export async function hasActiveAgentSocketAuthorization(
+  db: Db,
+  context: Extract<UpgradeContext, { actorType: "agent" }>,
+): Promise<boolean> {
+  const key = await db
+    .select({
+      id: agentApiKeys.id,
+      companyId: agentApiKeys.companyId,
+      agentId: agentApiKeys.agentId,
+      revokedAt: agentApiKeys.revokedAt,
+    })
+    .from(agentApiKeys)
+    .where(and(eq(agentApiKeys.id, context.keyId), isNull(agentApiKeys.revokedAt)))
+    .then((rows) => rows[0] ?? null);
+  if (
+    !key ||
+    key.id !== context.keyId ||
+    key.companyId !== context.companyId ||
+    key.agentId !== context.actorId ||
+    key.revokedAt
+  ) {
+    return false;
+  }
+
+  const agent = await db
+    .select({ id: agents.id, companyId: agents.companyId, status: agents.status })
+    .from(agents)
+    .where(eq(agents.id, context.actorId))
+    .then((rows) => rows[0] ?? null);
+  return Boolean(
+    agent &&
+    agent.id === context.actorId &&
+    agent.companyId === context.companyId &&
+    agent.status !== "terminated" &&
+    agent.status !== "pending_approval"
+  );
+}
+
+export async function enforceLiveEventSocketAuthorization(
+  db: Db,
+  socket: Pick<WsSocket, "readyState" | "close">,
+  context: UpgradeContext,
+  deploymentMode: DeploymentMode,
+  onError?: (error: unknown) => void,
+): Promise<boolean> {
+  try {
+    const authorized = context.actorType === "agent"
+      ? await hasActiveAgentSocketAuthorization(db, context)
+      : deploymentMode === "cloud_auth"
+        ? await hasActiveCloudMembership(db, context.companyId, context.actorId)
+        : true;
+    if (!authorized && socket.readyState === WebSocket.OPEN) {
+      socket.close(1008, "authorization revoked");
+    }
+    return authorized;
+  } catch (error) {
+    try {
+      onError?.(error);
+    } catch {
+      // Reporting must not defeat the fail-closed authorization boundary.
+    }
+    if (socket.readyState === WebSocket.OPEN) {
+      socket.close(1011, "authorization re-validation failed");
+    }
+    return false;
+  }
 }
 
 export async function authorizeUpgrade(
@@ -318,6 +393,7 @@ export async function authorizeUpgrade(
     companyId,
     actorType: "agent",
     actorId: key.agentId,
+    keyId: key.id,
   };
 }
 
@@ -481,36 +557,25 @@ export function setupLiveEventsWebSocketServer(
     }
   }, Math.max(1000, Math.floor(PRESENCE_TTL_MS / 3)));
 
-  // cloud_auth ONLY: bounded-staleness membership re-validation. The handshake
-  // (authorizeUpgrade) checks tenant membership once, but a founder can revoke a
-  // membership mid-session (removeMember deletes the row without closing the
-  // socket) — that user would keep receiving company-bus events until they
-  // disconnect. Periodically re-run the exact handshake predicate
-  // (hasActiveCloudMembership) per open board socket and close (1008) any that
-  // now fail. STRICT no-op outside cloud_auth: hasActiveCloudMembership enforces
-  // the cloud invariant (active org AND company membership); running it against
-  // `authenticated`/`local_trusted` sockets would wrongly evict instance_admins
-  // and ordinary members who legitimately have no org membership. We only
-  // close(1008) here — the socket's own "close" handler owns full teardown
-  // (unsubscribe + map deletes), so deleting maps here would leak the
-  // company-bus subscription.
+  // Bounded-staleness authorization re-validation. Cloud board sockets re-run
+  // the active Organization + Company membership predicate. Agent sockets in
+  // every mode re-check the exact key used at handshake plus the agent's live
+  // company and status. Non-cloud board sockets remain unchanged. The socket's
+  // own close handler owns subscription and map teardown.
   const membershipSweepInterval = setInterval(() => {
-    if (opts.deploymentMode !== "cloud_auth") return;
     for (const [socket, ctx] of contextByClient) {
-      if (ctx.actorType !== "board") continue; // agents: covered by key/status checks
-      void (async () => {
-        try {
-          const stillMember = await hasActiveCloudMembership(db, ctx.companyId, ctx.actorId);
-          if (!stillMember && socket.readyState === WebSocket.OPEN) {
-            socket.close(1008, "membership revoked");
-          }
-        } catch (err) {
+      void enforceLiveEventSocketAuthorization(
+        db,
+        socket,
+        ctx,
+        opts.deploymentMode,
+        (err) => {
           logger.warn(
             { err, companyId: ctx.companyId },
-            "cloud membership re-validation sweep failed for a socket",
+            "live-events authorization re-validation failed for a socket",
           );
-        }
-      })();
+        },
+      );
     }
   }, 30000);
 

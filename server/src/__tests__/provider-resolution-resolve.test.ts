@@ -11,6 +11,8 @@ vi.mock("drizzle-orm", () => ({
 }));
 
 import { resolveProviderCredential } from "../services/provider-resolution.js";
+import { ProviderCredentialBindingError } from "../services/provider-credential-bindings.js";
+import { SecretCandidateUnavailableError } from "../secrets/secret-candidate-errors.js";
 
 // Minimal deps double: no assignment rows → must fall back to the legacy path.
 function makeDeps(overrides: Partial<Parameters<typeof resolveProviderCredential>[2]> = {}) {
@@ -97,7 +99,9 @@ describe("resolveProviderCredential", () => {
       ]),
       resolveSecretValueForConnection: vi.fn(
         async (_db: unknown, row: { secretRef: string | null }) => {
-          if (row.secretRef === "deleted-sec") throw new Error("secret_not_found");
+          if (row.secretRef === "deleted-sec") {
+            throw new SecretCandidateUnavailableError("secret_missing", "Secret not found");
+          }
           return "sk-company";
         },
       ),
@@ -121,12 +125,66 @@ describe("resolveProviderCredential", () => {
         },
       ]),
       resolveSecretValueForConnection: vi.fn(async () => {
-        throw new Error("secret_not_found");
+        throw new SecretCandidateUnavailableError("secret_missing", "Secret not found");
       }),
     });
     const r = await resolveProviderCredential({} as never, args, deps as never);
     // makeDeps default selfHostedSingleTenant:true → a dead key falls through to
     // the legacy ladder instead of aborting the resolver.
     expect(r.source).toBe("legacy");
+  });
+
+  it("generic secret failures abort without trying lower candidates or legacy", async () => {
+    const infrastructureFailure = new Error("database unavailable");
+    const resolveSecretValueForConnection = vi.fn(async () => {
+      throw infrastructureFailure;
+    });
+    const deps = makeDeps({
+      loadCandidateRows: vi.fn(async () => [
+        {
+          connectionId: "conn-high", authMethod: "api_key", scopeType: "agent_override",
+          priority: 10, connectionUpdatedAt: 2, state: "verified", termsAttestedAt: new Date(),
+          sharingPolicy: "company_agents", connectionCompanyId: "co1", connectionOwnerUserId: null,
+          executionTargetId: null, config: {}, secretRef: "sec-high",
+        },
+        {
+          connectionId: "conn-low", authMethod: "api_key", scopeType: "company_default",
+          priority: 0, connectionUpdatedAt: 1, state: "verified", termsAttestedAt: new Date(),
+          sharingPolicy: "company_agents", connectionCompanyId: "co1", connectionOwnerUserId: null,
+          executionTargetId: null, config: {}, secretRef: "sec-low",
+        },
+      ]),
+      resolveSecretValueForConnection,
+    });
+
+    await expect(resolveProviderCredential({} as never, args, deps as never)).rejects.toBe(infrastructureFailure);
+    expect(resolveSecretValueForConnection).toHaveBeenCalledTimes(1);
+    expect(deps.legacyResolveConfig).not.toHaveBeenCalled();
+  });
+
+  it("only typed subscription binding failures fall through", async () => {
+    const candidate = {
+      connectionId: "conn-sub", authMethod: "personal_subscription", scopeType: "agent_override",
+      priority: 0, connectionUpdatedAt: 1, state: "verified", termsAttestedAt: new Date(),
+      sharingPolicy: "owner_only", connectionCompanyId: "co1", connectionOwnerUserId: "owner-1",
+      executionTargetId: "control-plane", config: {}, secretRef: null,
+    };
+    const typedDeps = makeDeps({
+      loadCandidateRows: vi.fn(async () => [candidate]),
+      resolveSubscriptionEnv: vi.fn(async () => {
+        throw new ProviderCredentialBindingError("binding_missing", "No binding");
+      }),
+    });
+    await expect(resolveProviderCredential({} as never, args, typedDeps as never)).resolves.toMatchObject({ source: "legacy" });
+
+    const filesystemFailure = new Error("EACCES");
+    const genericDeps = makeDeps({
+      loadCandidateRows: vi.fn(async () => [candidate]),
+      resolveSubscriptionEnv: vi.fn(async () => {
+        throw filesystemFailure;
+      }),
+    });
+    await expect(resolveProviderCredential({} as never, args, genericDeps as never)).rejects.toBe(filesystemFailure);
+    expect(genericDeps.legacyResolveConfig).not.toHaveBeenCalled();
   });
 });

@@ -8,7 +8,11 @@ import {
   organizationMemberships,
 } from "@armyofagents/db";
 import { authorizeCompanyUpgrade } from "../services/upgrade-auth.js";
-import { authorizeUpgrade, hasActiveCloudMembership } from "../realtime/live-events-ws.js";
+import {
+  authorizeUpgrade,
+  enforceLiveEventSocketAuthorization,
+  hasActiveCloudMembership,
+} from "../realtime/live-events-ws.js";
 
 // Any exact origin string in the trusted allowlist. The board origin that
 // better-auth already trusts is threaded through as `trustedOrigins` on the
@@ -439,6 +443,7 @@ describe("live-events authorizeUpgrade", () => {
       companyId: "company-1",
       actorType: "agent",
       actorId: "agent-1",
+      keyId: "key-1",
     });
     expect(db.update).toHaveBeenCalledTimes(1);
   });
@@ -529,6 +534,7 @@ describe("live-events authorizeUpgrade", () => {
       companyId: "company-1",
       actorType: "agent",
       actorId: "agent-1",
+      keyId: "key-1",
     });
   });
 
@@ -782,5 +788,107 @@ describe("hasActiveCloudMembership", () => {
     });
 
     await expect(hasActiveCloudMembership(db as any, "company-1", "user-1")).resolves.toBe(false);
+  });
+});
+
+describe("live-events open-socket authorization re-validation", () => {
+  function socket() {
+    return { readyState: 1, close: vi.fn() };
+  }
+
+  it("keeps an active exact agent key and eligible agent connected", async () => {
+    const db = makeUpgradeAuthDb({
+      key: { id: "key-1", companyId: "company-1", agentId: "agent-1", revokedAt: null },
+      agent: { id: "agent-1", companyId: "company-1", status: "idle" },
+    });
+    const ws = socket();
+
+    await expect(enforceLiveEventSocketAuthorization(
+      db as any,
+      ws,
+      { companyId: "company-1", actorType: "agent", actorId: "agent-1", keyId: "key-1" },
+      "authenticated",
+    )).resolves.toBe(true);
+    expect(ws.close).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["revoked exact key", { id: "key-1", companyId: "company-1", agentId: "agent-1", revokedAt: new Date() }, { id: "agent-1", companyId: "company-1", status: "idle" }],
+    ["different active key", { id: "key-2", companyId: "company-1", agentId: "agent-1", revokedAt: null }, { id: "agent-1", companyId: "company-1", status: "idle" }],
+    ["terminated agent", { id: "key-1", companyId: "company-1", agentId: "agent-1", revokedAt: null }, { id: "agent-1", companyId: "company-1", status: "terminated" }],
+    ["pending agent", { id: "key-1", companyId: "company-1", agentId: "agent-1", revokedAt: null }, { id: "agent-1", companyId: "company-1", status: "pending_approval" }],
+  ])("closes for %s", async (_label, key, agent) => {
+    const db = makeUpgradeAuthDb({ key, agent });
+    const ws = socket();
+
+    await expect(enforceLiveEventSocketAuthorization(
+      db as any,
+      ws,
+      { companyId: "company-1", actorType: "agent", actorId: "agent-1", keyId: "key-1" },
+      "authenticated",
+    )).resolves.toBe(false);
+    expect(ws.close).toHaveBeenCalledWith(1008, "authorization revoked");
+  });
+
+  it("closes a cloud board socket when membership is revoked", async () => {
+    const db = makeUpgradeAuthDb({
+      company: { organizationId: "org-1" },
+      orgMemberships: [],
+      memberships: [{ id: "cm-1" }],
+    });
+    const ws = socket();
+
+    await expect(enforceLiveEventSocketAuthorization(
+      db as any,
+      ws,
+      { companyId: "company-1", actorType: "board", actorId: "user-1" },
+      "cloud_auth",
+    )).resolves.toBe(false);
+    expect(ws.close).toHaveBeenCalledWith(1008, "authorization revoked");
+  });
+
+  it("fails closed when a re-validation query errors", async () => {
+    const error = new Error("database unavailable");
+    const onError = vi.fn();
+    const db = { select: vi.fn(() => { throw error; }) };
+    const ws = socket();
+
+    await expect(enforceLiveEventSocketAuthorization(
+      db as any,
+      ws,
+      { companyId: "company-1", actorType: "board", actorId: "user-1" },
+      "cloud_auth",
+      onError,
+    )).resolves.toBe(false);
+    expect(onError).toHaveBeenCalledWith(error);
+    expect(ws.close).toHaveBeenCalledWith(1011, "authorization re-validation failed");
+  });
+
+  it("still fails closed when error reporting throws", async () => {
+    const db = { select: vi.fn(() => { throw new Error("database unavailable"); }) };
+    const ws = socket();
+
+    await expect(enforceLiveEventSocketAuthorization(
+      db as any,
+      ws,
+      { companyId: "company-1", actorType: "board", actorId: "user-1" },
+      "cloud_auth",
+      () => { throw new Error("logger unavailable"); },
+    )).resolves.toBe(false);
+    expect(ws.close).toHaveBeenCalledWith(1011, "authorization re-validation failed");
+  });
+
+  it("does not query cloud membership for a non-cloud board socket", async () => {
+    const db = { select: vi.fn(() => { throw new Error("must not query"); }) };
+    const ws = socket();
+
+    await expect(enforceLiveEventSocketAuthorization(
+      db as any,
+      ws,
+      { companyId: "company-1", actorType: "board", actorId: "user-1" },
+      "authenticated",
+    )).resolves.toBe(true);
+    expect(db.select).not.toHaveBeenCalled();
+    expect(ws.close).not.toHaveBeenCalled();
   });
 });

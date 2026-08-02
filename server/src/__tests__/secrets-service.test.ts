@@ -14,6 +14,7 @@ import {
   shouldEnforceSecretBinding,
 } from "../services/secrets.js";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
+import { SecretCandidateUnavailableError } from "../secrets/secret-candidate-errors.js";
 
 function makeThenable<T>(rows: T[]) {
   return {
@@ -261,13 +262,15 @@ describe("secretService", () => {
       bindings: [],
     });
 
-    await expect(secretService(db as any).resolveSecretValue("company-1", "secret-1", "latest", {
+    const resolution = secretService(db as any).resolveSecretValue("company-1", "secret-1", "latest", {
       consumerType: "agent",
       consumerId: "agent-1",
       actorType: "agent",
       actorId: "agent-1",
       configPath: "env.OPENAI_API_KEY",
-    })).rejects.toThrow("Secret is not bound");
+    });
+    await expect(resolution).rejects.toBeInstanceOf(SecretCandidateUnavailableError);
+    await expect(resolution).rejects.toMatchObject({ code: "secret_unbound" });
 
     expect(db.inserted).toEqual([
       expect.objectContaining({
@@ -279,9 +282,63 @@ describe("secretService", () => {
           consumerId: "agent-1",
           configPath: "env.OPENAI_API_KEY",
           outcome: "failure",
+          errorCode: "secret_unbound",
         }),
       }),
     ]);
+  });
+
+  it.each([
+    {
+      label: "missing",
+      secret: null,
+      version: null,
+      providerConfigs: [],
+      code: "secret_missing",
+      status: 404,
+    },
+    {
+      label: "deleted",
+      secret: { id: "secret-1", companyId: "company-1", provider: "local_encrypted", providerConfigId: null, latestVersion: 1, status: "active", deletedAt: new Date() },
+      version: null,
+      providerConfigs: [],
+      code: "secret_missing",
+      status: 404,
+    },
+    {
+      label: "inactive",
+      secret: { id: "secret-1", companyId: "company-1", provider: "local_encrypted", providerConfigId: null, latestVersion: 1, status: "disabled", deletedAt: null },
+      version: null,
+      providerConfigs: [],
+      code: "secret_inactive",
+      status: 422,
+    },
+    {
+      label: "missing version",
+      secret: { id: "secret-1", companyId: "company-1", provider: "local_encrypted", providerConfigId: null, latestVersion: 1, status: "active", deletedAt: null },
+      version: null,
+      providerConfigs: [],
+      code: "secret_version_missing",
+      status: 404,
+    },
+    {
+      label: "disabled provider config",
+      secret: { id: "secret-1", companyId: "company-1", provider: "aws_secrets_manager", providerConfigId: "cfg-1", externalRef: "arn:secret", latestVersion: 1, status: "active", deletedAt: null },
+      version: { secretId: "secret-1", version: 1, material: { externalRef: "arn:secret" } },
+      providerConfigs: [{ id: "cfg-1", companyId: "company-1", provider: "aws_secrets_manager", status: "disabled", disabledAt: new Date(), config: { region: "us-east-1" } }],
+      code: "provider_config_disabled",
+      status: 422,
+    },
+  ])("types $label as a candidate-local resolution failure", async ({ secret, version, providerConfigs, code, status }) => {
+    const db = makeFakeDb({ secret, version, providerConfigs });
+    const resolution = secretService(db as any).resolveSecretValue("company-1", "secret-1", "latest", {
+      consumerType: "system",
+      consumerId: "provider-resolution",
+      actorType: "system",
+    });
+
+    await expect(resolution).rejects.toBeInstanceOf(SecretCandidateUnavailableError);
+    await expect(resolution).rejects.toMatchObject({ code, status, expose: true });
   });
 
   it("rejects remote import preview for disabled provider configs before provider calls", async () => {

@@ -5,15 +5,16 @@ import {
 } from "../validators/organization.js";
 
 describe("organization validators", () => {
-  it("accepts a minimal create payload and defaults plan/slug omitted", () => {
+  it("accepts the self-serve create payload", () => {
     const parsed = createOrganizationSchema.parse({ name: "Acme" });
     expect(parsed.name).toBe("Acme");
   });
   it("rejects an empty name", () => {
     expect(() => createOrganizationSchema.parse({ name: "" })).toThrow();
   });
-  it("rejects a slug with uppercase or spaces", () => {
-    expect(() => createOrganizationSchema.parse({ name: "Acme", slug: "Acme Inc" })).toThrow();
+  it("rejects caller-controlled slug and plan fields", () => {
+    expect(() => createOrganizationSchema.parse({ name: "Acme", slug: "acme" })).toThrow();
+    expect(() => createOrganizationSchema.parse({ name: "Acme", plan: "enterprise" })).toThrow();
   });
   it("invite defaults role to member and requires a valid email", () => {
     const parsed = inviteToOrganizationSchema.parse({ email: "a@b.com" });

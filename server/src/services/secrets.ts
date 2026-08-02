@@ -27,6 +27,7 @@ import {
 import { getProviderByAdapterType } from "@armyofagents/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { getSecretProvider, listSecretProviders } from "../secrets/provider-registry.js";
+import { SecretCandidateUnavailableError } from "../secrets/secret-candidate-errors.js";
 import type { SecretProviderVaultRuntimeConfig } from "../secrets/types.js";
 // Task 7's owner-hop resolver. Reused deliberately rather than re-derived: some
 // providers READ a credential another OWNS (pi -> anthropic, cursor_cloud ->
@@ -97,6 +98,7 @@ function versionSelectorFromString(value: string): number | "latest" {
 }
 
 function errorCode(err: unknown) {
+  if (err instanceof SecretCandidateUnavailableError) return err.code;
   if (err && typeof err === "object" && "status" in err) return `http_${String((err as any).status)}`;
   return "secret_resolve_failed";
 }
@@ -274,7 +276,12 @@ export function secretService(db: Db) {
     if (row.companyId !== secret.companyId || row.provider !== secret.provider) {
       throw unprocessable("Secret provider config does not match secret");
     }
-    if (row.status === "disabled" || row.disabledAt) throw unprocessable("Secret provider config is disabled");
+    if (row.status === "disabled" || row.disabledAt) {
+      throw new SecretCandidateUnavailableError(
+        "provider_config_disabled",
+        "Secret provider config is disabled",
+      );
+    }
     return {
       id: row.id,
       provider: row.provider as SecretProvider,
@@ -345,7 +352,12 @@ export function secretService(db: Db) {
         ),
       )
       .then((rows) => rows[0] ?? null);
-    if (!binding) throw unprocessable("Secret is not bound to this consumer path");
+    if (!binding) {
+      throw new SecretCandidateUnavailableError(
+        "secret_unbound",
+        "Secret is not bound to this consumer path",
+      );
+    }
   }
 
   async function resolveSecretValue(
@@ -357,12 +369,23 @@ export function secretService(db: Db) {
     let secret: typeof companySecrets.$inferSelect | null = null;
     let resolvedVersion: number | null = null;
     try {
-      secret = await assertSecretInCompany(companyId, secretId);
-      if (secret.status !== "active") throw unprocessable("Secret is not active");
+      secret = await getById(secretId);
+      if (!secret || secret.deletedAt) {
+        throw new SecretCandidateUnavailableError("secret_missing", "Secret not found");
+      }
+      if (secret.companyId !== companyId) throw unprocessable("Secret must belong to same company");
+      if (secret.status !== "active") {
+        throw new SecretCandidateUnavailableError("secret_inactive", "Secret is not active");
+      }
       await assertBinding(secret, context);
       resolvedVersion = version === "latest" ? secret.latestVersion : version;
       const versionRow = await getSecretVersion(secret.id, resolvedVersion);
-      if (!versionRow) throw notFound("Secret version not found");
+      if (!versionRow) {
+        throw new SecretCandidateUnavailableError(
+          "secret_version_missing",
+          "Secret version not found",
+        );
+      }
       const provider = getSecretProvider(secret.provider as SecretProvider);
       const value = await provider.resolveVersion({
         material: versionRow.material as Record<string, unknown>,

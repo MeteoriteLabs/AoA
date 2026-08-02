@@ -10,6 +10,7 @@ import {
   type SecretListEntry,
 } from "@aws-sdk/client-secrets-manager";
 import { unprocessable } from "../errors.js";
+import { SecretCandidateUnavailableError } from "./secret-candidate-errors.js";
 import type {
   PreparedSecretVersion,
   SecretProviderModule,
@@ -141,6 +142,15 @@ function sanitizeAwsError(err: unknown): Error {
   return unprocessable(`AWS Secrets Manager operation failed: ${cleaned}`);
 }
 
+function isAwsResourceNotFound(err: unknown): boolean {
+  return Boolean(
+    err &&
+      typeof err === "object" &&
+      "name" in err &&
+      (err as { name?: unknown }).name === "ResourceNotFoundException",
+  );
+}
+
 function configRecord(providerConfig?: SecretProviderVaultRuntimeConfig | null) {
   const config = providerConfig?.config ?? {};
   const region = typeof config.region === "string" ? config.region.trim() : "";
@@ -264,6 +274,12 @@ export function createAwsSecretsManagerProvider(opts?: {
         }
         return resolved.SecretString;
       } catch (err) {
+        if (isAwsResourceNotFound(err)) {
+          throw new SecretCandidateUnavailableError(
+            "aws_secret_not_found",
+            "AWS secret is unavailable",
+          );
+        }
         throw sanitizeAwsError(err);
       }
     },

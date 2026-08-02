@@ -14,10 +14,7 @@ import {
   type Db,
 } from "@armyofagents/db";
 import { allocateEmbeddedPgPort } from "./helpers/embedded-pg-port.js";
-import {
-  claimQueuedRunsWithOrgCapacity,
-  dispatchQueuedAgentsForOrg,
-} from "../services/org-concurrency.js";
+import { claimQueuedRunsWithOrgCapacity } from "../services/org-concurrency.js";
 
 type EmbeddedPostgresInstance = {
   initialise(): Promise<void>;
@@ -86,8 +83,8 @@ describe.skipIf(process.platform !== "linux")("atomic org concurrency claims", (
     ]).returning();
 
     const [claimsA, claimsB] = await Promise.all([
-      claimQueuedRunsWithOrgCapacity(db, { organizationId: orgId, agentId: agentA, perAgentCap: 1 }),
-      claimQueuedRunsWithOrgCapacity(db, { organizationId: orgId, agentId: agentB, perAgentCap: 1 }),
+      claimQueuedRunsWithOrgCapacity(db, { organizationId: orgId }),
+      claimQueuedRunsWithOrgCapacity(db, { organizationId: orgId }),
     ]);
     expect(claimsA.length + claimsB.length).toBe(1);
 
@@ -109,12 +106,7 @@ describe.skipIf(process.platform !== "linux")("atomic org concurrency claims", (
       status: "queued",
       createdAt: new Date(Date.now() + 1_000),
     });
-    const nextClaims = await dispatchQueuedAgentsForOrg(db, orgId, (candidateAgentId) =>
-      claimQueuedRunsWithOrgCapacity(db, {
-        organizationId: orgId,
-        agentId: candidateAgentId,
-        perAgentCap: 1,
-      }));
+    const nextClaims = await claimQueuedRunsWithOrgCapacity(db, { organizationId: orgId });
     expect(nextClaims).toHaveLength(1);
     expect(nextClaims[0]!.agentId).not.toBe(running.agentId);
   });
@@ -147,14 +139,52 @@ describe.skipIf(process.platform !== "linux")("atomic org concurrency claims", (
       { companyId, agentId: eligibleAgentId, status: "queued", createdAt: new Date(now - 1_000) },
     ]);
 
-    const claims = await dispatchQueuedAgentsForOrg(db, orgId, (candidateAgentId) =>
-      claimQueuedRunsWithOrgCapacity(db, {
-        organizationId: orgId,
-        agentId: candidateAgentId,
-        perAgentCap: 1,
-      }));
+    const claims = await claimQueuedRunsWithOrgCapacity(db, { organizationId: orgId });
 
     expect(claims).toHaveLength(1);
     expect(claims[0]!.agentId).toBe(eligibleAgentId);
+  });
+
+  it("claims the globally oldest eligible runs instead of draining one agent first", async () => {
+    const orgId = randomUUID();
+    const companyId = randomUUID();
+    const agentA = randomUUID();
+    const agentB = randomUUID();
+    await db.insert(organizations).values({
+      id: orgId,
+      name: "FIFO Org",
+      slug: `fifo-${orgId}`,
+      concurrencyCap: 2,
+    });
+    await db.insert(companies).values({
+      id: companyId,
+      organizationId: orgId,
+      name: "FIFO Company",
+      issuePrefix: "FIF",
+    });
+    await db.insert(agents).values([
+      {
+        id: agentA,
+        companyId,
+        name: "Agent A",
+        runtimeConfig: { heartbeat: { maxConcurrentRuns: 2 } },
+      },
+      { id: agentB, companyId, name: "Agent B" },
+    ]);
+    const now = Date.now();
+    const inserted = await db.insert(heartbeatRuns).values([
+      { companyId, agentId: agentA, status: "queued", createdAt: new Date(now - 3_000) },
+      { companyId, agentId: agentB, status: "queued", createdAt: new Date(now - 2_000) },
+      { companyId, agentId: agentA, status: "queued", createdAt: new Date(now - 1_000) },
+    ]).returning();
+
+    const claims = await claimQueuedRunsWithOrgCapacity(db, { organizationId: orgId });
+
+    expect(claims.map((run) => run.id)).toEqual([inserted[0]!.id, inserted[1]!.id]);
+    const remaining = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, inserted[2]!.id));
+    expect(remaining[0]!.status).toBe("queued");
   });
 });

@@ -6,6 +6,7 @@ import {
 
 const safe = {
   testSupportEnabled: true,
+  testSupportToken: "t".repeat(32),
   deploymentExposure: "private",
   bindHost: "127.0.0.1",
   authPublicBaseUrl: "http://localhost:3210",
@@ -27,6 +28,15 @@ describe("assertTestSupportFlagSafe", () => {
         nodeEnv: "production",
       }),
     ).not.toThrow();
+  });
+
+  it.each([
+    [undefined, "missing token"],
+    ["t".repeat(31), "token shorter than 32 bytes"],
+  ])("refuses a dedicated test-support boot with %s (%s)", (testSupportToken) => {
+    expect(() => assertTestSupportFlagSafe({ ...safe, testSupportToken })).toThrow(
+      TestSupportFlagUnsafeError,
+    );
   });
 
   it.each([

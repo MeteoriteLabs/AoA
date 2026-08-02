@@ -11,6 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import {
   applyPendingMigrations,
@@ -237,6 +238,87 @@ describe.skipIf(process.platform === "win32")(
       // Subsequent get returns null
       const gone = await svc.get(companyAId, id);
       expect(gone).toBeNull();
+    });
+
+    it("execution-target pins allow same-org/system targets and reject missing/cross-org targets", async () => {
+      if (setupError) throw new Error(String(setupError));
+
+      const orgA = randomUUID();
+      const orgB = randomUUID();
+      const companyA = randomUUID();
+      const companyB = randomUUID();
+      const targetA = randomUUID();
+      const targetB = randomUUID();
+      const systemTarget = randomUUID();
+      const suffix = randomUUID().slice(0, 8);
+
+      await db.execute(sql`
+        INSERT INTO organizations (id, name, slug)
+        VALUES
+          (${orgA}, 'Pin Org A', ${`pin-org-a-${suffix}`}),
+          (${orgB}, 'Pin Org B', ${`pin-org-b-${suffix}`})
+      `);
+      await db.execute(sql`
+        INSERT INTO companies (id, organization_id, name, issue_prefix)
+        VALUES
+          (${companyA}, ${orgA}, 'Pin Company A', ${`PA${suffix.slice(0, 4)}`}),
+          (${companyB}, ${orgB}, 'Pin Company B', ${`PB${suffix.slice(0, 4)}`})
+      `);
+      await db.execute(sql`
+        INSERT INTO execution_targets (id, organization_id, slug, kind, trust_class)
+        VALUES
+          (${targetA}, ${orgA}, ${`pin-target-a-${suffix}`}, 'dedicated_worker', 'dedicated_tenant'),
+          (${targetB}, ${orgB}, ${`pin-target-b-${suffix}`}, 'dedicated_worker', 'dedicated_tenant'),
+          (${systemTarget}, NULL, ${`pin-system-${suffix}`}, 'pooled_gvisor', 'shared_multitenant')
+      `);
+
+      const mutate = <T>(operation: (txSvc: ReturnType<typeof environmentService>) => Promise<T>) =>
+        db.transaction((tx) => operation(environmentService(tx as unknown as Db)));
+
+      const sameOrg = await mutate((txSvc) => txSvc.create(companyA, {
+        name: "same-org-pin",
+        executionTargetId: targetA,
+      }));
+      const system = await mutate((txSvc) => txSvc.create(companyA, {
+        name: "system-pin",
+        executionTargetId: systemTarget,
+      }));
+      expect(sameOrg?.executionTargetId).toBe(targetA);
+      expect(system?.executionTargetId).toBe(systemTarget);
+
+      await expect(mutate((txSvc) => txSvc.create(companyA, {
+        name: "cross-org-pin",
+        executionTargetId: targetB,
+      }))).rejects.toMatchObject({
+        status: 422,
+        message: "Execution target is unavailable for this company",
+      });
+      await expect(mutate((txSvc) => txSvc.create(companyA, {
+        name: "missing-pin",
+        executionTargetId: randomUUID(),
+      }))).rejects.toMatchObject({
+        status: 422,
+        message: "Execution target is unavailable for this company",
+      });
+      expect((await svc.list(companyA)).map((env) => env.name)).not.toContain("cross-org-pin");
+      expect((await svc.list(companyA)).map((env) => env.name)).not.toContain("missing-pin");
+
+      const unpinned = await mutate((txSvc) => txSvc.create(companyA, { name: "update-pin" }));
+      await expect(mutate((txSvc) => txSvc.update(companyA, unpinned!.id, {
+        name: "must-not-persist",
+        executionTargetId: targetB,
+      }))).rejects.toMatchObject({ status: 422 });
+      expect(await svc.get(companyA, unpinned!.id)).toMatchObject({
+        name: "update-pin",
+        executionTargetId: null,
+      });
+
+      const pinned = await mutate((txSvc) => txSvc.update(companyA, unpinned!.id, { executionTargetId: targetA }));
+      const omitted = await mutate((txSvc) => txSvc.update(companyA, unpinned!.id, { name: "pin-preserved" }));
+      const cleared = await mutate((txSvc) => txSvc.update(companyA, unpinned!.id, { executionTargetId: null }));
+      expect(pinned?.executionTargetId).toBe(targetA);
+      expect(omitted?.executionTargetId).toBe(targetA);
+      expect(cleared?.executionTargetId).toBeNull();
     });
   },
 );

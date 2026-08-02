@@ -132,6 +132,7 @@ const config = loadConfig();
 // before migrations, database bootstrap, or route initialization does work.
 assertTestSupportFlagSafe({
   testSupportEnabled: process.env.AOA_E2E_TEST_SUPPORT === "1",
+  testSupportToken: process.env.AOA_E2E_TEST_SUPPORT_TOKEN,
   deploymentExposure: config.deploymentExposure,
   bindHost: config.host,
   authPublicBaseUrl: config.authPublicBaseUrl ?? null,

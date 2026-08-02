@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const REPO = fileURLToPath(new URL("../../../", import.meta.url));
-const TOKEN = "AOA_E2E_TEST_SUPPORT";
+const TOKENS = ["AOA_E2E_TEST_SUPPORT", "AOA_E2E_TEST_SUPPORT_TOKEN"];
 
 function walk(dir: string, files: string[] = []): string[] {
   if (!existsSync(dir)) return files;
@@ -36,13 +36,15 @@ describe("AOA_E2E_TEST_SUPPORT deployment leak gate", () => {
       ...walk(join(REPO, "releases")),
       ...rootDeploymentFiles,
     ];
-    const offenders = candidates.filter((path) => {
-      try {
-        return readFileSync(path, "utf8").includes(TOKEN);
-      } catch {
-        return false;
-      }
-    });
-    expect(offenders, `${TOKEN} leaked into deploy paths`).toEqual([]);
+    for (const token of TOKENS) {
+      const offenders = candidates.filter((path) => {
+        try {
+          return readFileSync(path, "utf8").includes(token);
+        } catch {
+          return false;
+        }
+      });
+      expect(offenders, `${token} leaked into deploy paths`).toEqual([]);
+    }
   });
 });

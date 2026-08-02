@@ -1,7 +1,32 @@
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { companies, heartbeatRuns, organizations } from "@armyofagents/db";
+import { agents, companies, heartbeatRuns, organizations } from "@armyofagents/db";
 import { ORG_MAX_CONCURRENT_RUNS_DEFAULT, ORG_MAX_CONCURRENT_RUNS_MAX } from "@armyofagents/shared";
+
+export const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
+export const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
+
+export function normalizeMaxConcurrentRuns(value: unknown): number {
+  const parsed = Math.floor(
+    typeof value === "number" ? value : HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT,
+  );
+  if (!Number.isFinite(parsed)) return HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT;
+  return Math.max(
+    HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT,
+    Math.min(HEARTBEAT_MAX_CONCURRENT_RUNS_MAX, parsed),
+  );
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+export function maxConcurrentRunsFromRuntimeConfig(runtimeConfig: unknown): number {
+  const heartbeat = asRecord(asRecord(runtimeConfig).heartbeat);
+  return normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns);
+}
 
 // Phase 5, Task 10 — mirrors heartbeat.ts's normalizeMaxConcurrentRuns /
 // countRunningRunsForAgent per-agent clamp, layered one level up at the
@@ -51,38 +76,6 @@ export async function resolveCompanyOrganizationId(db: Db, companyId: string): P
   return row?.organizationId ?? null;
 }
 
-/**
- * Return agents with queued work in oldest-work-first order for one
- * Organization. Capacity belongs to the Organization, so a completion by one
- * agent must be able to wake queued work owned by another agent.
- */
-export async function listQueuedAgentIdsForOrg(db: Db, organizationId: string): Promise<string[]> {
-  const rows = await db
-    .select({
-      agentId: heartbeatRuns.agentId,
-      oldestQueuedAt: sql<Date>`min(${heartbeatRuns.createdAt})`,
-    })
-    .from(heartbeatRuns)
-    .innerJoin(companies, eq(companies.id, heartbeatRuns.companyId))
-    .where(and(eq(companies.organizationId, organizationId), eq(heartbeatRuns.status, "queued")))
-    .groupBy(heartbeatRuns.agentId)
-    .orderBy(sql`min(${heartbeatRuns.createdAt})`, asc(heartbeatRuns.agentId));
-  return rows.map((row) => row.agentId);
-}
-
-/** Dispatch queued agents oldest-first, continuing past agents that cannot claim. */
-export async function dispatchQueuedAgentsForOrg<T>(
-  db: Db,
-  organizationId: string,
-  dispatchAgent: (agentId: string) => Promise<readonly T[]>,
-): Promise<T[]> {
-  const dispatched: T[] = [];
-  for (const agentId of await listQueuedAgentIdsForOrg(db, organizationId)) {
-    dispatched.push(...await dispatchAgent(agentId));
-  }
-  return dispatched;
-}
-
 /** Count running heartbeat runs across every company in the organization. */
 export async function countRunningRunsForOrg(db: Db, organizationId: string): Promise<number> {
   const companyRows = await db
@@ -124,8 +117,6 @@ export async function claimQueuedRunsWithOrgCapacity(
   db: Db,
   input: {
     organizationId: string;
-    agentId: string;
-    perAgentCap: number;
   },
 ): Promise<Array<typeof heartbeatRuns.$inferSelect>> {
   return db.transaction(async (tx) => {
@@ -134,29 +125,56 @@ export async function claimQueuedRunsWithOrgCapacity(
       sql`SELECT pg_advisory_xact_lock(hashtext('aoa:heartbeat-org-start'), hashtext(${input.organizationId}))`,
     );
 
-    // Re-read both occupancies only after acquiring the org lock. Counting
+    // Re-read Organization occupancy only after acquiring the lock. Counting
     // before the lock would preserve the cross-agent check-then-act race.
-    const [agentRunningRow] = await tx
-      .select({ count: sql<number>`count(*)` })
-      .from(heartbeatRuns)
-      .where(and(eq(heartbeatRuns.agentId, input.agentId), eq(heartbeatRuns.status, "running")));
-    const agentSlots = Math.max(0, input.perAgentCap - Number(agentRunningRow?.count ?? 0));
-
     const orgCap = await resolveOrgConcurrencyCap(txDb, input.organizationId);
     const orgRunning = await countRunningRunsForOrg(txDb, input.organizationId);
-    const effectiveSlots = Math.min(agentSlots, orgAvailableSlots({ cap: orgCap, running: orgRunning }));
-    if (effectiveSlots <= 0) return [];
+    const organizationSlots = orgAvailableSlots({ cap: orgCap, running: orgRunning });
+    if (organizationSlots <= 0) return [];
 
+    // One globally ordered queue is the scheduling source of truth. The prior
+    // approach ordered agents by their oldest item and then batch-claimed per
+    // agent, letting A:t1 plus A:t3 jump ahead of B:t2 when A had two slots.
     const queuedRuns = await tx
-      .select()
+      .select({
+        id: heartbeatRuns.id,
+        agentId: heartbeatRuns.agentId,
+        startedAt: heartbeatRuns.startedAt,
+        runtimeConfig: agents.runtimeConfig,
+      })
       .from(heartbeatRuns)
-      .where(and(eq(heartbeatRuns.agentId, input.agentId), eq(heartbeatRuns.status, "queued")))
-      .orderBy(asc(heartbeatRuns.createdAt))
-      .limit(effectiveSlots);
+      .innerJoin(companies, eq(companies.id, heartbeatRuns.companyId))
+      .innerJoin(agents, eq(agents.id, heartbeatRuns.agentId))
+      .where(and(eq(companies.organizationId, input.organizationId), eq(heartbeatRuns.status, "queued")))
+      .orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id));
+    if (queuedRuns.length === 0) return [];
+
+    const runningByAgentRows = await tx
+      .select({
+        agentId: heartbeatRuns.agentId,
+        count: sql<number>`count(*)`,
+      })
+      .from(heartbeatRuns)
+      .innerJoin(companies, eq(companies.id, heartbeatRuns.companyId))
+      .where(and(eq(companies.organizationId, input.organizationId), eq(heartbeatRuns.status, "running")))
+      .groupBy(heartbeatRuns.agentId);
+    const runningByAgent = new Map(
+      runningByAgentRows.map((row) => [row.agentId, Number(row.count ?? 0)]),
+    );
+
+    const selectedRuns: Array<{ id: string; startedAt: Date | null }> = [];
+    for (const run of queuedRuns) {
+      const running = runningByAgent.get(run.agentId) ?? 0;
+      const cap = maxConcurrentRunsFromRuntimeConfig(run.runtimeConfig);
+      if (running >= cap) continue;
+      selectedRuns.push({ id: run.id, startedAt: run.startedAt });
+      runningByAgent.set(run.agentId, running + 1);
+      if (selectedRuns.length >= organizationSlots) break;
+    }
 
     const claimedAt = new Date();
     const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
-    for (const run of queuedRuns) {
+    for (const run of selectedRuns) {
       const claimed = await tx
         .update(heartbeatRuns)
         .set({

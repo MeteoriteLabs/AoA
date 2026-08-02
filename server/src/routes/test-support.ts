@@ -6,11 +6,13 @@ import type { DeploymentMode } from "@armyofagents/shared";
 import { eq } from "drizzle-orm";
 import type { Config } from "../config.js";
 import { resolveBetterAuthSigningSecret } from "../auth/better-auth.js";
+import { testSupportTokensMatch } from "../services/test-support-safety.js";
 
 /**
- * Session cookie name for the e2e session mint below. This router is mounted
- * ONLY in local_trusted + the dev escape hatch (see app.ts), where better-auth
- * runs with `useSecureCookies: false` (private exposure, no explicit https
+ * Session cookie name for the e2e session mint below. The legacy developer
+ * path is local_trusted-only; dedicated cloud e2e uses the separately
+ * authenticated AOA_E2E_TEST_SUPPORT seam. Both run on private loopback, where
+ * better-auth uses `useSecureCookies: false` (no explicit https
  * base URL — see buildBetterAuthConfig), so the cookie carries no `__Secure-`
  * prefix and the default `better-auth` prefix + `session_token` name apply.
  */
@@ -95,6 +97,21 @@ export function testSupportRoutes(
     if (!testSupportEnabled(opts.deploymentMode)) {
       res.status(404).json({ error: "Not found" });
       return;
+    }
+    if (process.env.AOA_E2E_TEST_SUPPORT === "1") {
+      const expectedToken = process.env.AOA_E2E_TEST_SUPPORT_TOKEN?.trim() ?? "";
+      const authorization = req.header("authorization")?.trim() ?? "";
+      const match = /^Bearer\s+(.+)$/i.exec(authorization);
+      const presentedToken = match?.[1]?.trim() ?? "";
+      if (
+        !expectedToken ||
+        !presentedToken ||
+        !testSupportTokensMatch(expectedToken, presentedToken)
+      ) {
+        res.setHeader("WWW-Authenticate", "Bearer");
+        res.status(401).json({ error: "authentication required" });
+        return;
+      }
     }
     const actor = req.actor;
     // The dedicated loopback-only seam must mint the first cloud_auth session,
