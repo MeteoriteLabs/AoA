@@ -8,8 +8,10 @@ import { getOrgSpend } from "../services/org-spend.js";
 import { assertBoard } from "./authz.js";
 import { organizationAccessService } from "../services/organization-access.js";
 import { forbidden } from "../errors.js";
+import { z } from "zod";
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+const uuidParam = z.string().uuid();
 
 export function orgSpendRoutes(opts: { db: Db }) {
   const router = Router();
@@ -22,7 +24,7 @@ export function orgSpendRoutes(opts: { db: Db }) {
     try {
       // rbac: instance-admin-not-required — the orgAccess.canOrg check below is the gate.
       assertBoard(req);
-      const orgId = req.params.orgId as string;
+      const orgId = uuidParam.parse(req.params.orgId);
       const userId = req.actor.type === "board" ? (req.actor.userId ?? null) : null;
       if (!userId) throw forbidden("Sign in to view organization spend");
       const allowed = await orgAccess.canOrg(orgId, userId, "org:spend:view");

@@ -40,7 +40,7 @@ const MULTI_TENANT_HARDENED_TMPFS = [
  *
  * @param hardenForMultiTenant When `true` AND the resolved target is a
  *   docker/sandbox target, FORCE the hardened security baseline regardless of the
- *   input config (allowHostGateway off, host-network clamped to none,
+ *   input config (allowHostGateway off, network forced to none,
  *   cap-drop/read-only/no-new-privileges/ipc-private on, uid 1000:1000, seccomp
  *   default, safe tmpfs). This is the SINK-level guard so EVERY tenant-authored
  *   producer (agents.adapterConfig.executionTarget, environments.target,
@@ -140,11 +140,9 @@ export function resolveAdapterExecutionTarget(
       image,
       workdir: asString(config.workdir, "/workspace"),
       shell: shell === "bash" ? "bash" : "sh",
-      // Host networking = full host access, never safe on shared infra: clamp
-      // host -> none. bridge/none pass through — bridge egress is governed by the
-      // Gate-B worker-image egress firewall (out of scope for the app layer).
-      network: resolvedNetwork === "host" ? "none" : resolvedNetwork,
-      remove: asBoolean(config.remove, true),
+      // Local Docker gets no network until the validated worker plane owns egress.
+      network: "none",
+      remove: true,
       env,
       installCommand: asString(config.installCommand, "") || null,
       runtime,
@@ -160,12 +158,11 @@ export function resolveAdapterExecutionTarget(
         seccompProfile: null,
         // A tenant tmpfs could drop noexec,nosuid — force the safe baseline set.
         tmpfs: [...MULTI_TENANT_HARDENED_TMPFS],
-        // Benign resource limits (DoS mitigation, not sandbox escape) may still
-        // come from config; fall back to the hardened defaults when unset.
-        memory: isolation?.memory ?? "2g",
-        cpus: isolation?.cpus ?? "2",
-        pidsLimit: isolation?.pidsLimit ?? 512,
-        ulimitNofile: isolation?.ulimitNofile ?? null,
+        // Tenant input cannot relax or expand shared-host resource limits.
+        memory: "2g",
+        cpus: "2",
+        pidsLimit: 512,
+        ulimitNofile: null,
       },
       // Closes the SSRF host-gateway route to the control-plane host — never
       // legitimate on shared infra, even when the callback bridge is active.

@@ -42,9 +42,10 @@ import type { TrustBoundary } from "./cli-auth-topology.js";
 import { assertUnsandboxedMultitenantAllowed } from "./unsandboxed-multitenant-guard.js";
 import { tenantIsolationEnforced } from "../config/deployment-mode.js";
 import {
-  resolveOrgConcurrencyCap,
-  countRunningRunsForOrg,
-  orgAvailableSlots,
+  claimQueuedRunsWithOrgCapacity,
+  dispatchQueuedAgentsForOrg,
+  resolveCompanyOrganizationId,
+  runClaimMirrorsBestEffort,
 } from "./org-concurrency.js";
 import { environmentRunOrchestrator, type EnvironmentAcquisitionResult } from "./environment-run-orchestrator.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
@@ -2146,7 +2147,7 @@ export function heartbeatService(db: Db) {
           wakeupRequestId: dueRun.wakeupRequestId,
         },
       });
-      await startNextQueuedRunForAgent(dueRun.agentId);
+      await dispatchQueuedRunsAfterAgentSignal(dueRun.agentId);
     }
 
     return { checked: dueRuns.length, promoted, cancelled };
@@ -2229,6 +2230,14 @@ export function heartbeatService(db: Db) {
       .then((rows) => rows[0] ?? null);
     if (!claimed) return null;
 
+    await publishQueuedRunClaim(claimed, claimedAt);
+    return claimed;
+  }
+
+  async function publishQueuedRunClaim(
+    claimed: typeof heartbeatRuns.$inferSelect,
+    claimedAt = new Date(),
+  ) {
     publishLiveEvent({
       companyId: claimed.companyId,
       type: "heartbeat.run.status",
@@ -2246,7 +2255,6 @@ export function heartbeatService(db: Db) {
     });
 
     await setWakeupStatus(claimed.wakeupRequestId, "claimed", { claimedAt });
-    return claimed;
   }
 
   async function finalizeAgentStatus(
@@ -2349,7 +2357,7 @@ export function heartbeatService(db: Db) {
         await releaseIssueExecutionAndPromote(updatedRun);
       }
       await finalizeAgentStatus(run.agentId, "failed");
-      await startNextQueuedRunForAgent(run.agentId);
+      await dispatchQueuedRunsAfterAgentSignal(run.agentId);
       // No runningProcesses.delete here: this branch is guarded by
       // `if (runningProcesses.has(run.id)) continue` above, so there is nothing
       // to delete. Deregistration is owned by spawnTrackedChild's close/error
@@ -2548,38 +2556,88 @@ export function heartbeatService(db: Db) {
     }
   }
 
-  async function startNextQueuedRunForAgent(agentId: string) {
+  async function startQueuedRunsForSingleAgent(agentId: string, expectedOrganizationId?: string) {
     return withAgentStartLock(agentId, async () => {
       const agent = await getAgent(agentId);
       if (!agent) return [];
       const policy = parseHeartbeatPolicy(agent);
+
+      if (tenantIsolationEnforced()) {
+        const organizationId = await resolveCompanyOrganizationId(db, agent.companyId);
+        if (!organizationId) {
+          throw new Error(`Cloud heartbeat run cannot resolve an Organization for company ${agent.companyId}.`);
+        }
+        if (expectedOrganizationId && organizationId !== expectedOrganizationId) return [];
+        const cloudClaims = await claimQueuedRunsWithOrgCapacity(db, {
+          organizationId,
+          agentId,
+          perAgentCap: policy.maxConcurrentRuns,
+        });
+        await runClaimMirrorsBestEffort(
+          cloudClaims,
+          publishQueuedRunClaim,
+          (err, claimedRun) => {
+            logger.warn(
+              { err, runId: claimedRun.id },
+              "queued heartbeat claim mirror failed; launching committed run",
+            );
+          },
+        );
+        if (cloudClaims.length === 0) return [];
+
+        for (const claimedRun of cloudClaims) {
+          void executeRun(claimedRun.id).catch(async (err) => {
+            logger.error({ err, runId: claimedRun.id }, "queued heartbeat execution failed");
+            const current = await getRun(claimedRun.id);
+            if (!current) return;
+
+            await executionWorkspacesSvc.releaseWorkspaceRunsForRun(current.id);
+            await releaseRuntimeServicesForRun(current.id).catch(() => undefined);
+            await environmentRuntimeService(db).releaseRunLeases(current.id).catch(() => undefined);
+
+            if (current.status === "queued" || current.status === "running") {
+              const message = err instanceof Error ? err.message : String(err);
+              const failed = await setRunStatus(current.id, "failed", {
+                error: message,
+                errorCode: "pre_spawn_failed",
+                finishedAt: new Date(),
+              });
+              await setWakeupStatus(current.wakeupRequestId, "failed", {
+                finishedAt: new Date(),
+                error: message,
+              });
+              await cancelRuntimeDecisionPromptsForRun(current, "run failed");
+              if (failed) {
+                await appendRunEvent(failed, 1, {
+                  eventType: "lifecycle",
+                  stream: "system",
+                  level: "error",
+                  message,
+                });
+                await releaseIssueExecutionAndPromote(failed);
+              }
+              await finalizeAgentStatus(current.agentId, "failed");
+            }
+
+            await dispatchQueuedRunsAfterAgentSignal(current.agentId);
+          });
+        }
+        return cloudClaims;
+      }
+
       const runningCount = await countRunningRunsForAgent(agentId);
       const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
 
-      // Per-Organization concurrency clamp (Phase 5, Task 10), layered on top of
-      // the per-agent clamp above without altering it (guardrail: preserve the
-      // existing per-agent clamp exactly). `agents` has no organizationId column
-      // yet — same "not yet threaded onto the run scope" placeholder Task 9 used
-      // for execution-target routing (see the P4->P5 seam comment above, ~:3187).
-      // Real org-id threading is a shared follow-up for both seams; until then
-      // organizationId is always null here and this whole block is a no-op, so
-      // effectiveSlots === availableSlots (unchanged behavior).
-      const organizationId = (agent as { organizationId?: string | null }).organizationId ?? null;
-      let orgSlots = Number.POSITIVE_INFINITY;
-      if (organizationId) {
-        const cap = await resolveOrgConcurrencyCap(db, organizationId);
-        const orgRunning = await countRunningRunsForOrg(db, organizationId);
-        orgSlots = orgAvailableSlots({ cap, running: orgRunning });
-      }
-      const effectiveSlots = Math.min(availableSlots, orgSlots);
-      if (effectiveSlots <= 0) return [];
+      // Self-hosted keeps the pre-Phase-5 per-agent-only path. The sentinel
+      // Organization must not impose a hosted quota on a local instance.
+      if (availableSlots <= 0) return [];
 
       const queuedRuns = await db
         .select()
         .from(heartbeatRuns)
         .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")))
         .orderBy(asc(heartbeatRuns.createdAt))
-        .limit(effectiveSlots);
+        .limit(availableSlots);
       if (queuedRuns.length === 0) return [];
 
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
@@ -2623,11 +2681,34 @@ export function heartbeatService(db: Db) {
             await finalizeAgentStatus(current.agentId, "failed");
           }
 
-          await startNextQueuedRunForAgent(current.agentId);
+          await dispatchQueuedRunsAfterAgentSignal(current.agentId);
         });
       }
       return claimedRuns;
     });
+  }
+
+  async function dispatchQueuedRunsAfterAgentSignal(agentId: string) {
+    if (!tenantIsolationEnforced()) {
+      return startQueuedRunsForSingleAgent(agentId);
+    }
+
+    const triggerAgent = await getAgent(agentId);
+    if (!triggerAgent) return [];
+    const organizationId = await resolveCompanyOrganizationId(db, triggerAgent.companyId);
+    if (!organizationId) {
+      throw new Error(`Cloud heartbeat run cannot resolve an Organization for company ${triggerAgent.companyId}.`);
+    }
+
+    // Organization capacity is shared, so schedule oldest queued work first
+    // across agents. Each candidate still uses its own agent lock and the
+    // shared Organization advisory lock. Continue past an agent already at its
+    // per-agent cap so it cannot head-of-line block another eligible agent.
+    return dispatchQueuedAgentsForOrg(
+      db,
+      organizationId,
+      (candidateAgentId) => startQueuedRunsForSingleAgent(candidateAgentId, organizationId),
+    );
   }
 
   async function getLatestRunForSession(
@@ -5225,7 +5306,7 @@ export function heartbeatService(db: Db) {
         .catch((leaseReleaseErr: unknown) => {
           logger.warn({ err: leaseReleaseErr, runId: run.id }, "heartbeat: failed to release environment leases in finally");
         });
-      await startNextQueuedRunForAgent(agent.id);
+      await dispatchQueuedRunsAfterAgentSignal(agent.id);
     }
   }
 
@@ -5390,7 +5471,7 @@ export function heartbeatService(db: Db) {
       },
     });
 
-    await startNextQueuedRunForAgent(promotedRun.agentId);
+    await dispatchQueuedRunsAfterAgentSignal(promotedRun.agentId);
   }
 
   async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}) {
@@ -5851,7 +5932,7 @@ export function heartbeatService(db: Db) {
         },
       });
 
-      await startNextQueuedRunForAgent(agent.id);
+      await dispatchQueuedRunsAfterAgentSignal(agent.id);
       return newRun;
     }
 
@@ -5972,7 +6053,7 @@ export function heartbeatService(db: Db) {
       },
     });
 
-    await startNextQueuedRunForAgent(agent.id);
+    await dispatchQueuedRunsAfterAgentSignal(agent.id);
 
     return newRun;
   }
@@ -6224,7 +6305,7 @@ export function heartbeatService(db: Db) {
       // that ignored SIGTERM was never force-killed. Deregistration is owned by
       // spawnTrackedChild's close/error listeners; the escalation timer now fires.
       await finalizeAgentStatus(run.agentId, "cancelled");
-      await startNextQueuedRunForAgent(run.agentId);
+      await dispatchQueuedRunsAfterAgentSignal(run.agentId);
       return cancelled;
     },
 

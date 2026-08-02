@@ -1,10 +1,10 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildRuntimeServiceProcessTreeKillCommand,
   cleanupExecutionWorkspaceArtifacts,
@@ -14,9 +14,12 @@ import {
   releaseRuntimeServicesForRun,
   refreshAdapterManagedPreviewRuntimeServiceRows,
   refreshLocalProcessRuntimeServiceRows,
+  refreshPersistedRuntimeServiceRows,
   resolveRuntimeServiceReadinessOptions,
+  startLocalRuntimeService,
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
+  terminateChildProcess,
   type RealizedExecutionWorkspace,
 } from "../services/workspace-runtime.ts";
 import { resolveAoaConfigPath } from "../paths.ts";
@@ -43,6 +46,79 @@ describe("runtime service process cleanup", () => {
 
     expect(buildRuntimeServiceProcessTreeKillCommand(1234, "linux")).toBeNull();
   });
+
+  it("escalates a POSIX process group to SIGKILL and confirms exit", async () => {
+    const signal = vi.fn();
+    const waitForExit = vi.fn()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    const child = { pid: 1234, kill: vi.fn() } as unknown as ChildProcess;
+
+    await expect(terminateChildProcess(child, {
+      platform: "linux",
+      signal,
+      waitForExit,
+    })).resolves.toBe(true);
+
+    expect(signal).toHaveBeenNthCalledWith(1, -1234, "SIGTERM");
+    expect(signal).toHaveBeenNthCalledWith(2, -1234, "SIGKILL");
+    expect(waitForExit).toHaveBeenNthCalledWith(1, -1234, 500);
+    expect(waitForExit).toHaveBeenNthCalledWith(2, -1234, 2_000);
+  });
+
+  it("does not claim Windows tree termination when taskkill cannot confirm it", async () => {
+    const runWindowsTreeKill = vi.fn().mockRejectedValue(new Error("taskkill unavailable"));
+    const waitForExit = vi.fn()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    const kill = vi.fn();
+    const child = { pid: 1234, kill } as unknown as ChildProcess;
+
+    await expect(terminateChildProcess(child, {
+      platform: "win32",
+      runWindowsTreeKill,
+      waitForExit,
+    })).resolves.toBe(false);
+
+    expect(kill).toHaveBeenCalledWith("SIGKILL");
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "kills a detached process that ignores SIGTERM before reporting success",
+    async () => {
+      const child = spawn(process.execPath, [
+        "-e",
+        "process.on('SIGTERM', () => {}); console.log('ready'); setInterval(() => {}, 1000);",
+      ], {
+        detached: true,
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      const pid = child.pid!;
+
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error("child did not become ready")), 2_000);
+          child.stdout!.once("data", () => {
+            clearTimeout(timer);
+            resolve();
+          });
+          child.once("error", reject);
+        });
+
+        await expect(terminateChildProcess(child)).resolves.toBe(true);
+        expect(() => process.kill(pid, 0)).toThrow(
+          expect.objectContaining({ code: "ESRCH" }),
+        );
+      } finally {
+        try {
+          process.kill(-pid, "SIGKILL");
+        } catch {
+          // Expected after the termination assertion succeeds.
+        }
+      }
+    },
+    10_000,
+  );
 });
 
 async function createTempRepo() {
@@ -1118,6 +1194,182 @@ describe("ensureRuntimeServicesForRun", () => {
     await expect(fetch(services[0]!.url!)).rejects.toThrow();
   });
 
+  it.skipIf(process.platform === "win32")(
+    "confirms a SIGTERM-resistant descendant exits before completing a tracked stop",
+    async () => {
+      const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-stop-tree-"));
+      const workspace = buildWorkspace(workspaceRoot);
+      const runId = "run-stop-tree";
+      leasedRunIds.add(runId);
+      const descendantScript = [
+        "process.on('SIGTERM', () => {});",
+        "require('node:http').createServer((req,res)=>res.end('ok')).listen(Number(process.env.PORT), '127.0.0.1');",
+      ].join(" ");
+      const command = `trap 'exit 0' TERM; node -e ${JSON.stringify(descendantScript)} & wait`;
+
+      const services = await ensureRuntimeServicesForRun({
+        runId,
+        agent: {
+          id: "agent-1",
+          name: "Codex Coder",
+          companyId: "company-1",
+        },
+        issue: null,
+        workspace,
+        executionWorkspaceId: "execution-workspace-stop-tree",
+        config: {
+          workspaceRuntime: {
+            services: [
+              {
+                name: "web",
+                command,
+                port: { type: "auto" },
+                readiness: {
+                  type: "http",
+                  urlTemplate: "http://127.0.0.1:{{port}}",
+                  timeoutSec: 10,
+                  intervalMs: 100,
+                },
+                lifecycle: "shared",
+                reuseScope: "execution_workspace",
+                stopPolicy: { type: "manual" },
+              },
+            ],
+          },
+        },
+        adapterEnv: {},
+      });
+
+      try {
+        await expect(stopRuntimeServicesForExecutionWorkspace({
+          executionWorkspaceId: "execution-workspace-stop-tree",
+          workspaceCwd: workspace.cwd,
+        })).resolves.toBeUndefined();
+        await expect(fetch(services[0]!.url!)).rejects.toThrow();
+      } finally {
+        await releaseRuntimeServicesForRun(runId);
+        leasedRunIds.delete(runId);
+      }
+    },
+    15_000,
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "keeps a readiness-failed process tracked when cleanup cannot be confirmed",
+    async () => {
+      const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-readiness-fail-"));
+      const workspace = buildWorkspace(workspaceRoot);
+      const pidPath = path.join(workspaceRoot, "service.pid");
+      const command = `node -e ${JSON.stringify(
+        `require('node:fs').writeFileSync(${JSON.stringify(pidPath)}, JSON.stringify({ pid: process.pid, pgid: process.ppid })); setInterval(() => {}, 1000);`,
+      )}`;
+      let processGroupId: number | null = null;
+
+      try {
+        await expect(startLocalRuntimeService({
+          runId: "run-readiness-fail",
+          agent: {
+            id: "agent-1",
+            name: "Codex Coder",
+            companyId: "company-1",
+          },
+          issue: null,
+          workspace,
+          executionWorkspaceId: "execution-workspace-readiness-fail",
+          adapterEnv: {},
+          service: {
+            name: "never-ready",
+            command,
+            port: { type: "auto" },
+            readiness: {
+              type: "http",
+              urlTemplate: "http://127.0.0.1:{{port}}",
+              timeoutSec: 1,
+              intervalMs: 100,
+            },
+            lifecycle: "shared",
+            stopPolicy: { type: "manual" },
+          },
+          reuseKey: "readiness-fail",
+          scopeType: "execution_workspace",
+          scopeId: "execution-workspace-readiness-fail",
+          terminationDeps: {
+            platform: "linux",
+            signal: () => undefined,
+            waitForExit: async () => false,
+          },
+        })).rejects.toThrow("process remains tracked as starting/unhealthy");
+
+        const identity = JSON.parse(await fs.readFile(pidPath, "utf8")) as { pid: number; pgid: number };
+        const descendantPid = identity.pid;
+        processGroupId = identity.pgid;
+        expect(() => process.kill(descendantPid, 0)).not.toThrow();
+
+        await stopRuntimeServicesForExecutionWorkspace({
+          executionWorkspaceId: "execution-workspace-readiness-fail",
+          workspaceCwd: workspace.cwd,
+        });
+        expect(() => process.kill(descendantPid, 0)).toThrow(
+          expect.objectContaining({ code: "ESRCH" }),
+        );
+      } finally {
+        if (processGroupId) {
+          try {
+            process.kill(-processGroupId, "SIGKILL");
+          } catch {
+            // Expected when the tracked cleanup succeeded.
+          }
+        }
+      }
+    },
+    15_000,
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "does not signal a stale PID after the readiness child already exited",
+    async () => {
+      const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-readiness-exit-"));
+      const signal = vi.fn();
+
+      await expect(startLocalRuntimeService({
+        runId: "run-readiness-exit",
+        agent: {
+          id: "agent-1",
+          name: "Codex Coder",
+          companyId: "company-1",
+        },
+        issue: null,
+        workspace: buildWorkspace(workspaceRoot),
+        executionWorkspaceId: "execution-workspace-readiness-exit",
+        adapterEnv: {},
+        service: {
+          name: "exits-before-ready",
+          command: "node -e \"process.exit(1)\"",
+          port: { type: "auto" },
+          readiness: {
+            type: "http",
+            urlTemplate: "http://127.0.0.1:{{port}}",
+            timeoutSec: 1,
+            intervalMs: 100,
+          },
+          lifecycle: "shared",
+          stopPolicy: { type: "manual" },
+        },
+        reuseKey: "readiness-exit",
+        scopeType: "execution_workspace",
+        scopeId: "execution-workspace-readiness-exit",
+        terminationDeps: {
+          platform: "linux",
+          signal,
+          waitForExit: async () => true,
+        },
+      })).rejects.toThrow("Failed to start runtime service");
+
+      expect(signal).not.toHaveBeenCalled();
+    },
+    10_000,
+  );
+
   it("does not stop services in sibling directories when matching by workspace cwd", async () => {
     const workspaceParent = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-sibling-"));
     const targetWorkspaceRoot = path.join(workspaceParent, "project");
@@ -1811,6 +2063,84 @@ describe("refreshLocalProcessRuntimeServiceRows", () => {
       stoppedAt: now,
       healthCheckedAt: now,
       updatedAt: now,
+    });
+  });
+
+  it("terminates a persisted local process before writing a health-driven stopped state", async () => {
+    const now = new Date("2026-05-17T10:01:00.000Z");
+    const updates: Array<Record<string, unknown>> = [];
+    const db = {
+      update: () => ({
+        set: (value: Record<string, unknown>) => {
+          updates.push(value);
+          return { where: async () => [] };
+        },
+      }),
+    } as never;
+    let aliveChecks = 0;
+    const terminate = vi.fn();
+
+    const result = await refreshPersistedRuntimeServiceRows({
+      db,
+      rows: [{
+        ...baseRow,
+        issueId: null,
+        healthStatus: "unhealthy",
+        healthCheckedAt: new Date("2026-05-17T10:00:00.000Z"),
+      } as any],
+      now,
+      ttlMs: 30_000,
+      probeUrl: async () => false,
+      terminationDeps: {
+        isAlive: async () => aliveChecks++ === 0,
+        inspectIdentity: () => "matching",
+        terminate,
+        waitForExitMs: 10,
+      },
+    });
+
+    expect(terminate).toHaveBeenCalled();
+    expect(result[0]).toMatchObject({ status: "stopped", healthStatus: "unhealthy" });
+    expect(updates.at(-1)).toMatchObject({ status: "stopped" });
+  });
+
+  it("keeps an unverifiable local process active and tracked after failed health probes", async () => {
+    const updates: Array<Record<string, unknown>> = [];
+    const db = {
+      update: () => ({
+        set: (value: Record<string, unknown>) => {
+          updates.push(value);
+          return { where: async () => [] };
+        },
+      }),
+    } as never;
+
+    const result = await refreshPersistedRuntimeServiceRows({
+      db,
+      rows: [{
+        ...baseRow,
+        issueId: null,
+        healthStatus: "unhealthy",
+        healthCheckedAt: new Date("2026-05-17T10:00:00.000Z"),
+      } as any],
+      now: new Date("2026-05-17T10:01:00.000Z"),
+      ttlMs: 30_000,
+      probeUrl: async () => false,
+      terminationDeps: {
+        isAlive: async () => true,
+        inspectIdentity: () => "unknown",
+      },
+    });
+
+    expect(result[0]).toMatchObject({
+      status: "running",
+      healthStatus: "unhealthy",
+      stoppedAt: null,
+    });
+    expect(updates.at(-1)).toMatchObject({
+      status: "running",
+      healthStatus: "unhealthy",
+      stoppedAt: null,
     });
   });
 });

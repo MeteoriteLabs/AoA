@@ -36,8 +36,9 @@ vi.mock("../services/permissions.js", () => ({
   }),
 }));
 
-import { projectRoutes } from "../routes/projects.js";
+import { assertCloudWorkspaceCommandConfigurationAllowed, projectRoutes } from "../routes/projects.js";
 import { errorHandler } from "../middleware/error-handler.js";
+import { setDeploymentMode } from "../config/deployment-mode.js";
 
 function makeApp(actor: any) {
   const app = express();
@@ -78,11 +79,29 @@ describe("PATCH /projects/:id with provisionCommand", () => {
   });
 
   it("200 for founder", async () => {
+    setDeploymentMode("local_trusted");
     const app = makeApp(baseActor("user-fnd"));
     const res = await request(app)
       .patch("/api/projects/p1")
       .send({ executionWorkspacePolicy: policyWithCmd });
     expect(res.status).toBe(200);
+  });
+
+  it("rejects new local workspace-command configuration in cloud_auth", () => {
+    setDeploymentMode("cloud_auth");
+    try {
+      let caught: unknown;
+      try {
+        assertCloudWorkspaceCommandConfigurationAllowed();
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toMatchObject({ status: 400 });
+      expect(caught).toBeInstanceOf(Error);
+      expect((caught as Error).message).toMatch(/AOA_ALLOW_UNSANDBOXED_MULTITENANT/);
+    } finally {
+      setDeploymentMode("local_trusted");
+    }
   });
 
   it("403 for agent actor", async () => {
@@ -151,5 +170,29 @@ describe("PATCH /projects/:id with provisionCommand", () => {
         },
       });
     expect(res.status).toBe(403);
+  });
+});
+
+describe("project-workspace reserved runtime metadata", () => {
+  const reserved = {
+    cwd: "/repo",
+    metadata: {
+      runtimeConfig: {
+        desiredState: "running",
+        workspaceRuntime: { services: [{ name: "web", command: "echo unsafe" }] },
+      },
+    },
+  };
+
+  it.each([
+    ["agent", { type: "agent", agentId: "a1", companyId: "company-A", source: "agent_key" }],
+    ["mcp", { type: "mcp", userId: "mcp-user-1", companyId: "company-A", source: "key" }],
+    ["team member", baseActor("user-tm")],
+    ["team lead", baseActor("user-lead")],
+  ])("rejects server-reserved runtimeConfig from %s callers", async (_label, actor) => {
+    const res = await request(makeApp(actor))
+      .post("/api/projects/p1/workspaces")
+      .send(reserved);
+    expect(res.status).toBe(400);
   });
 });

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 
@@ -7,6 +7,8 @@ vi.mock("drizzle-orm", () => ({
   eq: vi.fn((a: any, b: any) => ({ eq: [a, b] })),
   desc: vi.fn((col: any) => ({ desc: col })),
   inArray: vi.fn((col: any, vals: any) => ({ inArray: [col, vals] })),
+  isNotNull: vi.fn((col: any) => ({ isNotNull: col })),
+  or: vi.fn((...args: any[]) => ({ or: args })),
 }));
 
 vi.mock("@armyofagents/db", () => ({
@@ -106,14 +108,18 @@ import {
   buildWorkspaceRuntimeDesiredStatePatch,
   listConfiguredRuntimeServiceEntries,
   resetRuntimeServicesForTests,
+  reconcilePersistedRuntimeServicesOnStartup,
   resolveConfiguredRuntimeServiceIndexForRow,
   resolveShell,
+  runWorkspaceJobForControl,
   startRuntimeServicesForWorkspaceControl,
   resolveWorkspaceRuntimeReadinessTimeoutSec,
   restartDesiredRuntimeServicesOnStartup,
   stopRuntimeServicesForExecutionWorkspace,
   stopRuntimeServicesForProjectWorkspace,
+  terminatePersistedLocalRuntimeProcess,
 } from "../services/workspace-runtime.js";
+import { setDeploymentMode } from "../config/deployment-mode.js";
 import {
   mergeProjectWorkspaceRuntimeConfig,
   readProjectWorkspaceRuntimeConfig,
@@ -159,7 +165,14 @@ function makeRuntimeRow(overrides: Record<string, unknown> = {}) {
 }
 
 beforeEach(async () => {
+  setDeploymentMode("local_trusted");
+  delete process.env.AOA_ALLOW_UNSANDBOXED_MULTITENANT;
   await resetRuntimeServicesForTests();
+});
+
+afterEach(() => {
+  setDeploymentMode("local_trusted");
+  delete process.env.AOA_ALLOW_UNSANDBOXED_MULTITENANT;
 });
 
 // ── Pure function tests ───────────────────────────────────────────────────────
@@ -371,6 +384,23 @@ describe("runtime service row targeting", () => {
 });
 
 describe("startRuntimeServicesForWorkspaceControl", () => {
+  it("refuses local runtime-service commands in cloud_auth", async () => {
+    setDeploymentMode("cloud_auth");
+    await expect(startRuntimeServicesForWorkspaceControl({
+      actor: { id: "agent-1", name: "Board", companyId: "company-1" },
+      issue: null,
+      workspace: {
+        baseCwd: process.cwd(), source: "project_primary", projectId: "project-1",
+        workspaceId: "workspace-root-1", repoUrl: null, repoRef: null,
+        strategy: "project_primary", cwd: process.cwd(), branchName: null,
+        worktreePath: null, warnings: [], created: false,
+      },
+      executionWorkspaceId: "workspace-1",
+      config: { workspaceRuntime: { services: [{ name: "web", command: "echo unsafe" }] } },
+      adapterEnv: { SECRET_VALUE: "must-not-reach-a-process" },
+    })).rejects.toThrow(/AOA_ALLOW_UNSANDBOXED_MULTITENANT/);
+  });
+
   it("does not persist a fake startedByRunId for manual runtime service starts", async () => {
     const refs = await startRuntimeServicesForWorkspaceControl({
       actor: { id: "agent-1", name: "Board", companyId: "company-1" },
@@ -409,6 +439,87 @@ describe("startRuntimeServicesForWorkspaceControl", () => {
       executionWorkspaceId: "workspace-1",
       workspaceCwd: process.cwd(),
     });
+  });
+});
+
+describe("terminatePersistedLocalRuntimeProcess", () => {
+  it("identity-verifies and confirms exit before accepting a stale process as reaped", async () => {
+    let aliveChecks = 0;
+    const terminate = vi.fn();
+    const safe = await terminatePersistedLocalRuntimeProcess(
+      { providerRef: "4242", startedAt: new Date("2026-08-02T00:00:00Z") },
+      {
+        isAlive: async () => aliveChecks++ === 0,
+        inspectIdentity: () => "matching",
+        terminate,
+        waitForExitMs: 10,
+      },
+    );
+
+    expect(safe).toBe(true);
+    expect(terminate).toHaveBeenCalledWith(
+      4242,
+      process.platform === "win32" ? null : 4242,
+    );
+  });
+
+  it("fails closed when a live persisted PID cannot be identity-verified", async () => {
+    const safe = await terminatePersistedLocalRuntimeProcess(
+      { providerRef: "4242", startedAt: new Date() },
+      { isAlive: async () => true, inspectIdentity: () => "unknown" },
+    );
+    expect(safe).toBe(false);
+  });
+
+  it("accepts a confirmed reused PID without signalling the unrelated process", async () => {
+    const terminate = vi.fn();
+    const safe = await terminatePersistedLocalRuntimeProcess(
+      { providerRef: "4242", startedAt: new Date() },
+      {
+        isAlive: async () => true,
+        inspectIdentity: () => "different",
+        terminate,
+      },
+    );
+    expect(safe).toBe(true);
+    expect(terminate).not.toHaveBeenCalled();
+  });
+
+  it("blocks cloud startup and preserves tracking rows when a live PID is unverifiable", async () => {
+    setDeploymentMode("cloud_auth");
+    const update = vi.fn();
+    const db = {
+      select: () => ({
+        from: () => ({
+          where: async () => [{ id: "service-1", providerRef: "4242", startedAt: new Date(), status: "running" }],
+        }),
+      }),
+      update,
+    } as never;
+
+    await expect(reconcilePersistedRuntimeServicesOnStartup(db, {
+      isAlive: async () => true,
+      inspectIdentity: () => "unknown",
+    })).rejects.toThrow(/Cloud startup refused/);
+    expect(update).not.toHaveBeenCalled();
+  });
+});
+
+describe("runWorkspaceJobForControl", () => {
+  it("refuses a local one-shot workspace command in cloud_auth", async () => {
+    setDeploymentMode("cloud_auth");
+    await expect(runWorkspaceJobForControl({
+      actor: { id: "agent-1", name: "Board", companyId: "company-1" },
+      issue: null,
+      workspace: {
+        baseCwd: process.cwd(), source: "project_primary", projectId: "project-1",
+        workspaceId: "workspace-root-1", repoUrl: null, repoRef: null,
+        strategy: "project_primary", cwd: process.cwd(), branchName: null,
+        worktreePath: null, warnings: [], created: false,
+      },
+      command: { name: "unsafe", command: "echo unsafe" },
+      adapterEnv: { SECRET_VALUE: "must-not-reach-a-process" },
+    })).rejects.toThrow(/AOA_ALLOW_UNSANDBOXED_MULTITENANT/);
   });
 });
 

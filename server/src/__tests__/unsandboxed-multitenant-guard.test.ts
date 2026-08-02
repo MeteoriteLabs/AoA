@@ -21,7 +21,7 @@ describe("assertUnsandboxedMultitenantAllowed (D1)", () => {
   // egress) — NOT genuine per-tenant isolation on cloud_auth without a gVisor pool.
   const dockerSandbox = { type: "sandbox-docker" as const, image: "node:22" };
   const dockerSandboxRunc = { type: "sandbox-docker" as const, image: "node:22", runtime: "runc" as const };
-  // Only a gVisor (runsc) docker target is a genuinely-isolated boundary.
+  // A runtime string alone does not prove that a validated gVisor worker exists.
   const dockerSandboxRunsc = { type: "sandbox-docker" as const, image: "node:22", runtime: "runsc" as const };
   const providerSandbox = {
     type: "provider-sandbox" as const,
@@ -102,11 +102,11 @@ describe("assertUnsandboxedMultitenantAllowed (D1)", () => {
     expect(log.warn).not.toHaveBeenCalled();
   });
 
-  it("is a no-op on cloud_auth when the target is genuinely isolated (gVisor docker / provider-sandbox)", () => {
+  it("refuses a claimed runsc Docker target but allows provider-sandbox on cloud_auth", () => {
     const log = { warn: vi.fn() };
     expect(() =>
       assertUnsandboxedMultitenantAllowed(dockerSandboxRunsc, { tenantIsolationEnforced: true, sink: "org agent", env: noEnv, log }),
-    ).not.toThrow();
+    ).toThrow(/runtime name is not proof/);
     expect(() =>
       assertUnsandboxedMultitenantAllowed(providerSandbox, { tenantIsolationEnforced: true, sink: "org agent", env: noEnv, log }),
     ).not.toThrow();

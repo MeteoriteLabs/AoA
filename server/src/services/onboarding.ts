@@ -170,6 +170,9 @@ export async function advanceState(
     requestedState: OnboardingState;
   },
 ): Promise<AdvanceResult> {
+  // Accept the retired wire value as a compatibility alias. Read-time
+  // normalization alone is insufficient because older clients still PATCH it.
+  const requestedState = normalizeLegacyOnboardingState(args.requestedState);
   for (let attempt = 0; attempt < 3; attempt++) {
     const row = await ensureProgress(db, {
       userId: args.userId,
@@ -177,7 +180,7 @@ export async function advanceState(
       journey: args.journey,
     });
     const order = orderedStatesFor(row.journey);
-    const decision = computeAdvance(order, row.currentState, row.completedStates, args.requestedState);
+    const decision = computeAdvance(order, row.currentState, row.completedStates, requestedState);
     if (decision.kind === "noop") return { status: "ok", row };
     if (decision.kind === "illegal") return { status: "illegal", reason: decision.reason };
 

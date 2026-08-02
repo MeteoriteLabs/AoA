@@ -23,12 +23,9 @@ import { FIELD, GradientText, LABEL, StepCard, StepHeading, StepShell } from "./
  * machine (that machine is per-company; an Organization exists above the
  * company layer, see Phase 2 Task 9's org-first journey resolver). Its
  * registry `isComplete` instead reads `ctx.organizationId` directly (see
- * `steps/index.ts`). This is a known limitation: `organizationId` lives only
- * in FlowEngine's in-memory state, so a hard reload between this step and
- * company creation currently re-prompts for a new organization rather than
- * resuming — closing that gap (e.g. by consulting the caller's
- * organizationMemberships server-side) is tracked as a follow-up, not part
- * of this UI-cluster task.
+ * `steps/index.ts`). Reload recovery is persisted per user in `pendingTenant`:
+ * this step adopts that Organization on mount, and `OrgStep` clears the hint
+ * after the Company has been created and its progress write succeeds.
  */
 export function CreateOrganizationStep({ ctx, onComplete }: StepProps) {
   // Reload durability (Fix 3a): a tenant persisted on a prior mount means the

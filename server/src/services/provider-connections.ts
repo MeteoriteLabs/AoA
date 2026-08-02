@@ -1,10 +1,10 @@
 // server/src/services/provider-connections.ts
 import type { Db } from "@armyofagents/db";
 import { providerConnections, providerAssignments } from "@armyofagents/db";
-import { and, eq } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 import type { AuthMethod } from "@armyofagents/shared";
 import type { CliAuthTopology } from "./cli-auth-topology.js";
-import { unprocessable } from "../errors.js";
+import { conflict, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import { removeScopedSubscriptionCredentialHome } from "./provider-credentials.js";
 
@@ -33,27 +33,48 @@ export function assertSubscriptionAllowed(authMethod: AuthMethod, topology: CliA
 
 export function providerConnectionService(db: Db, topology: CliAuthTopology) {
   return {
-    /** Mark a connection verified. Asserts the cloud_auth gate again at verify. */
+    /**
+     * Mark a pending connection verified. `revoked` is terminal and `suspended`
+     * requires a separate governed resume path; verify must never resurrect
+     * either state. The conditional update closes verify/revoke TOCTOU races,
+     * and the activity row commits in the same transaction as the transition.
+     */
     async verify(companyId: string, connectionId: string, actorUserId: string) {
-      const [conn] = await db
-        .select()
-        .from(providerConnections)
-        .where(and(eq(providerConnections.id, connectionId), eq(providerConnections.companyId, companyId)))
-        .limit(1);
-      if (!conn) throw unprocessable("Connection not found", { code: "connection_not_found" });
-      assertSubscriptionAllowed(conn.authMethod as AuthMethod, topology);
-      if (!conn.termsAttestedAt) {
-        throw unprocessable("Provider terms must be attested before verification", { code: "terms_not_attested" });
-      }
-      const now = new Date();
-      await db
-        .update(providerConnections)
-        .set({ state: "verified", verifiedAt: now, updatedAt: now })
-        .where(eq(providerConnections.id, connectionId));
-      await logActivity(db, {
-        companyId, actorType: "user", actorId: actorUserId,
-        action: "provider_connection.verified", entityType: "provider_connection", entityId: connectionId,
-        details: { provider: conn.provider, authMethod: conn.authMethod },
+      await db.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
+        const [conn] = await txDb
+          .select()
+          .from(providerConnections)
+          .where(and(eq(providerConnections.id, connectionId), eq(providerConnections.companyId, companyId)))
+          .limit(1);
+        if (!conn) throw unprocessable("Connection not found", { code: "connection_not_found" });
+        assertSubscriptionAllowed(conn.authMethod as AuthMethod, topology);
+        if (!conn.termsAttestedAt) {
+          throw unprocessable("Provider terms must be attested before verification", { code: "terms_not_attested" });
+        }
+        if (conn.state === "verified") return;
+        if (conn.state !== "pending") {
+          throw conflict(`Cannot verify a ${conn.state} provider connection.`);
+        }
+
+        const now = new Date();
+        const transitioned = await txDb
+          .update(providerConnections)
+          .set({ state: "verified", verifiedAt: now, updatedAt: now })
+          .where(and(
+            eq(providerConnections.id, connectionId),
+            eq(providerConnections.companyId, companyId),
+            eq(providerConnections.state, "pending"),
+          ))
+          .returning({ id: providerConnections.id });
+        if (transitioned.length === 0) {
+          throw conflict("Provider connection changed while it was being verified.");
+        }
+        await logActivity(txDb, {
+          companyId, actorType: "user", actorId: actorUserId,
+          action: "provider_connection.verified", entityType: "provider_connection", entityId: connectionId,
+          details: { provider: conn.provider, authMethod: conn.authMethod },
+        });
       });
     },
 
@@ -70,29 +91,50 @@ export function providerConnectionService(db: Db, topology: CliAuthTopology) {
     /** Revoke: state=revoked, disable dependent assignments, wipe on-disk home for
      *  personal_subscription. Generalizes routes/provider-credentials.ts:324-362. */
     async revoke(companyId: string, connectionId: string, actorUserId: string) {
-      const [conn] = await db
-        .select()
-        .from(providerConnections)
-        .where(and(eq(providerConnections.id, connectionId), eq(providerConnections.companyId, companyId)))
-        .limit(1);
-      if (!conn) return null;
       const now = new Date();
-      await db.transaction(async (tx) => {
+      const conn = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
-        await txDb
-          .update(providerConnections)
-          .set({ state: "revoked", revokedAt: now, updatedAt: now })
-          .where(eq(providerConnections.id, connectionId));
+        const [existing] = await txDb
+          .select()
+          .from(providerConnections)
+          .where(and(eq(providerConnections.id, connectionId), eq(providerConnections.companyId, companyId)))
+          .limit(1);
+        if (!existing) return null;
+
+        // Idempotent revoke: audit only the call that wins the connection state
+        // transition, but always repair dependent assignments. The latter is
+        // load-bearing because the schema does not constrain assignment state
+        // to connection state and older/in-flight writers may leave one active.
+        const transitioned = existing.state === "revoked"
+          ? []
+          : await txDb
+              .update(providerConnections)
+              .set({ state: "revoked", revokedAt: now, updatedAt: now })
+              .where(and(
+                eq(providerConnections.id, connectionId),
+                eq(providerConnections.companyId, companyId),
+                ne(providerConnections.state, "revoked"),
+              ))
+              .returning();
         await txDb
           .update(providerAssignments)
           .set({ state: "disabled", updatedAt: now })
           .where(eq(providerAssignments.connectionId, connectionId));
-        await logActivity(txDb, {
-          companyId, actorType: "user", actorId: actorUserId,
-          action: "provider_connection.revoked", entityType: "provider_connection", entityId: connectionId,
-          details: { provider: conn.provider, authMethod: conn.authMethod },
-        });
+        if (transitioned.length > 0) {
+          await logActivity(txDb, {
+            companyId, actorType: "user", actorId: actorUserId,
+            action: "provider_connection.revoked", entityType: "provider_connection", entityId: connectionId,
+            details: { provider: existing.provider, authMethod: existing.authMethod },
+          });
+        }
+        return transitioned[0] ?? {
+          ...existing,
+          state: "revoked" as const,
+          revokedAt: existing.revokedAt ?? now,
+          updatedAt: now,
+        };
       });
+      if (!conn) return null;
       let filesRemoved = false;
       if (
         conn.authMethod === "personal_subscription" &&

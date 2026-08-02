@@ -12,25 +12,17 @@ describe("executionTargetToAdapterConfig hardening (P5 review gap #1, deployment
     config: { image: "x", network: "bridge", allowHostGateway: true, isolation: { capDropAll: false, readOnlyRootfs: false, noNewPrivileges: false } },
   };
 
-  it("MULTI_TENANT + TENANT target: forces allowHostGateway false + network none + hardened isolation, ignoring weakened config", () => {
-    const cfg = executionTargetToAdapterConfig(weakenedTenant, /* multiTenant */ true) as Record<string, unknown>;
-    expect(cfg.allowHostGateway).toBe(false); // SSRF host-gateway route stays closed
-    expect(cfg.network).toBe("none"); // a tenant cannot choose bridge egress on shared infra
-    const iso = cfg.isolation as Record<string, unknown>;
-    expect(iso.capDropAll).toBe(true); // hardened flags cannot be turned off by tenant config
-    expect(iso.readOnlyRootfs).toBe(true);
-    expect(iso.noNewPrivileges).toBe(true);
-    expect(cfg.image).toBe("x"); // benign field still honored
+  it("MULTI_TENANT + TENANT target: remains registry-only until the worker plane is validated", () => {
+    expect(() => executionTargetToAdapterConfig(weakenedTenant, /* multiTenant */ true))
+      .toThrow(/registry-only.*Gate-B/i);
   });
 
-  it("MULTI_TENANT + OPERATOR (system) target: forces allowHostGateway false but honors operator network (bridge egress)", () => {
-    const cfg = executionTargetToAdapterConfig({
+  it("MULTI_TENANT + OPERATOR target: also remains inert before Gate-B", () => {
+    expect(() => executionTargetToAdapterConfig({
       id: "t", slug: "pool", kind: "pooled_gvisor", trustClass: "shared_multitenant", status: "active",
       organizationId: null,
       config: { network: "bridge", allowHostGateway: true },
-    }, /* multiTenant */ true) as Record<string, unknown>;
-    expect(cfg.allowHostGateway).toBe(false); // a shared pool never routes to the control-plane host
-    expect(cfg.network).toBe("bridge"); // operator may set bridge (Gate-B egress firewall governs it)
+    }, /* multiTenant */ true)).toThrow(/registry-only.*Gate-B/i);
   });
 
   it("SELF-HOSTED: honors allowHostGateway:true + custom network + custom (weaker) isolation from the trusted config", () => {

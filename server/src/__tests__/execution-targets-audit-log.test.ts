@@ -29,30 +29,35 @@ vi.mock("../services/execution-targets.js", () => ({
   },
   listExecutionTargets: async () => [],
   registerWorkerHeartbeat: async () => ({ updated: 1 }),
-  resolveWorkerTargetId: async () => null,
+  resolveWorkerTargetId: async (_db: unknown, token: string) =>
+    token === "aoa_wtk_valid" ? "et-abc-123" : null,
 }));
 vi.mock("@armyofagents/db", () => ({ executionTargets: {} }));
-vi.mock("@armyofagents/shared", () => ({
-  createExecutionTargetSchema: { safeParse: (body: unknown) => ({ success: true, data: body }) },
-}));
 
 import { executionTargetRoutes } from "../routes/execution-targets.js";
 import { errorHandler } from "../middleware/error-handler.js";
 
-const ORG = "org-777";
+const ORG = "77777777-7777-4777-8777-777777777777";
 const INSERTED = {
   id: "et-abc-123",
   organizationId: ORG,
   slug: "et-1",
-  kind: "local",
-  trustClass: "trusted",
+  kind: "local_host",
+  trustClass: "local_trusted",
   workerTokenHash: "hash-of-token",
 };
 
-function makeApp(actor: unknown) {
+function makeApp(actor: unknown, insertError?: unknown) {
   // Fake db: insert(...).values(...).returning() → the persisted row.
   const db = {
-    insert: () => ({ values: () => ({ returning: async () => [INSERTED] }) }),
+    insert: () => ({
+      values: () => ({
+        returning: async () => {
+          if (insertError) throw insertError;
+          return [INSERTED];
+        },
+      }),
+    }),
   } as never;
   const app = express();
   app.use(express.json());
@@ -73,7 +78,7 @@ describe("execution-target registration — audit trail (finding ②)", () => {
   it("emits a structured audit log line on successful registration", async () => {
     const res = await request(makeApp(boardAdmin))
       .post(`/api/organizations/${ORG}/execution-targets`)
-      .send({ slug: "et-1", kind: "local", trustClass: "trusted" });
+      .send({ slug: "et-1", kind: "local_host", trustClass: "local_trusted" });
 
     // Response shape is unchanged: 201 + row (minus secret) + one-time token.
     expect(res.status).toBe(201);
@@ -97,5 +102,55 @@ describe("execution-target registration — audit trail (finding ②)", () => {
     const payload = infoSpy.mock.calls[0]![0];
     expect(payload).not.toHaveProperty("workerToken");
     expect(payload).not.toHaveProperty("workerTokenHash");
+  });
+
+  it("uses the standard 400 response for malformed registration input", async () => {
+    const res = await request(makeApp(boardAdmin))
+      .post(`/api/organizations/${ORG}/execution-targets`)
+      .send({ slug: "Not Valid", kind: "local_host", trustClass: "local_trusted" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBeDefined();
+    expect(infoSpy).not.toHaveBeenCalled();
+  });
+
+  it("returns 409 for a duplicate organization slug", async () => {
+    const duplicate = {
+      cause: { code: "23505", constraint_name: "execution_targets_org_slug_uq" },
+    };
+    const res = await request(makeApp(boardAdmin, duplicate))
+      .post(`/api/organizations/${ORG}/execution-targets`)
+      .send({ slug: "et-1", kind: "local_host", trustClass: "local_trusted" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/already exists/i);
+  });
+
+  it("rejects malformed organization ids before access or database work", async () => {
+    const res = await request(makeApp(boardAdmin))
+      .post("/api/organizations/not-a-uuid/execution-targets")
+      .send({ slug: "et-1", kind: "local_host", trustClass: "local_trusted" });
+
+    expect(res.status).toBe(400);
+    expect(infoSpy).not.toHaveBeenCalled();
+  });
+
+  it("strictly validates worker heartbeat status, capabilities, and fields", async () => {
+    const invalidStatus = await request(makeApp(boardAdmin))
+      .post("/api/execution-targets/heartbeat")
+      .set("authorization", "Bearer aoa_wtk_valid")
+      .send({ status: "compromised" });
+    const invalidCapabilities = await request(makeApp(boardAdmin))
+      .post("/api/execution-targets/heartbeat")
+      .set("authorization", "Bearer aoa_wtk_valid")
+      .send({ capabilities: ["runsc"] });
+    const unknownField = await request(makeApp(boardAdmin))
+      .post("/api/execution-targets/heartbeat")
+      .set("authorization", "Bearer aoa_wtk_valid")
+      .send({ status: "active", targetId: "another-tenant" });
+
+    expect(invalidStatus.status).toBe(400);
+    expect(invalidCapabilities.status).toBe(400);
+    expect(unknownField.status).toBe(400);
   });
 });

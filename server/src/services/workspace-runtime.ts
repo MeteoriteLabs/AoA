@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import type { AdapterRuntimeServiceReport } from "@armyofagents/adapter-utils";
 import type { Db } from "@armyofagents/db";
 import { executionWorkspaces, projectWorkspaces, workspaceRuntimeServices } from "@armyofagents/db";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, or } from "drizzle-orm";
 import type {
   WorkspaceRuntimeDesiredState,
   WorkspaceRuntimeServiceStateMap,
@@ -22,6 +22,13 @@ import { readExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import { probePreviewUrl } from "./runtime-service-preview-detection.js";
 import { emitRuntimeServiceTaskOutput } from "./task-output-emitters.js";
+import { tenantIsolationEnforced } from "../config/deployment-mode.js";
+import { assertUnsandboxedMultitenantAllowed } from "./unsandboxed-multitenant-guard.js";
+import {
+  inspectProcessStartIdentity,
+  terminateByPid,
+  type ProcessStartIdentityMatch,
+} from "../utils/terminate-process.js";
 
 export interface ExecutionWorkspaceInput {
   baseCwd: string;
@@ -92,8 +99,89 @@ interface RuntimeServiceRecord extends RuntimeServiceRef {
 
 const runtimeServicesById = new Map<string, RuntimeServiceRecord>();
 const runtimeServicesByReuseKey = new Map<string, string>();
+const runtimeServiceStopsInProgress = new Set<string>();
 const runtimeServiceLeasesByRun = new Map<string, string[]>();
 const execFileAsync = promisify(execFile);
+
+/** Fail closed before any tenant-authored command reaches the local host shell. */
+export function assertLocalWorkspaceCommandAllowed(sink: string): void {
+  assertUnsandboxedMultitenantAllowed(
+    { type: "local" },
+    { tenantIsolationEnforced: tenantIsolationEnforced(), sink },
+  );
+}
+
+interface PersistedRuntimeProcessIdentity {
+  providerRef: string | null;
+  startedAt: Date;
+}
+
+interface PersistedRuntimeProcessTerminationDeps {
+  isAlive?: (pid: number) => Promise<boolean>;
+  inspectIdentity?: (
+    pid: number,
+    expected: { startedAt: Date },
+  ) => ProcessStartIdentityMatch;
+  terminate?: typeof terminateByPid;
+  waitForExitMs?: number;
+}
+
+async function isProcessEffectivelyAlive(pid: number): Promise<boolean> {
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EPERM") return false;
+  }
+  if (process.platform === "linux") {
+    try {
+      const stat = await fs.readFile(`/proc/${pid}/stat`, "utf8");
+      const closeParen = stat.lastIndexOf(")");
+      if (closeParen >= 0 && stat.slice(closeParen + 2).startsWith("Z ")) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Reap a persisted detached local runtime process without risking PID reuse.
+ * Returns false when a live PID cannot be identity-verified or confirmed dead;
+ * cloud startup treats that as a hard remediation gate.
+ */
+export async function terminatePersistedLocalRuntimeProcess(
+  row: PersistedRuntimeProcessIdentity,
+  deps: PersistedRuntimeProcessTerminationDeps = {},
+): Promise<boolean> {
+  const rawPid = row.providerRef?.trim() ?? "";
+  if (!/^\d+$/.test(rawPid)) return false;
+  const pid = Number(rawPid);
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+
+  const isAlive = deps.isAlive ?? isProcessEffectivelyAlive;
+  if (!await isAlive(pid)) return true;
+
+  const identity = (deps.inspectIdentity ?? inspectProcessStartIdentity)(
+    pid,
+    { startedAt: row.startedAt },
+  );
+  // A confirmed mismatch is a reused PID. It is safe to reconcile the stale
+  // AoA row, but signalling that unrelated process would be destructive.
+  if (identity === "different") return true;
+  if (identity !== "matching") return false;
+
+  (deps.terminate ?? terminateByPid)(
+    pid,
+    process.platform === "win32" ? null : pid,
+  );
+
+  const deadline = Date.now() + (deps.waitForExitMs ?? 2_000);
+  while (Date.now() <= deadline) {
+    if (!await isAlive(pid)) return true;
+    await delay(50);
+  }
+  return false;
+}
 
 function stableStringify(value: unknown): string {
   if (Array.isArray(value)) {
@@ -455,32 +543,89 @@ export function buildRuntimeServiceProcessTreeKillCommand(
   return { command: "taskkill.exe", args: ["/PID", String(pid), "/T", "/F"] };
 }
 
-async function terminateChildProcess(child: ChildProcess) {
-  if (!child.pid) return;
-  const windowsTreeKill = buildRuntimeServiceProcessTreeKillCommand(child.pid);
-  if (windowsTreeKill) {
+export interface TerminateChildProcessDeps {
+  platform?: NodeJS.Platform;
+  runWindowsTreeKill?: (command: string, args: string[]) => Promise<void>;
+  signal?: (target: number, signal: NodeJS.Signals) => void;
+  waitForExit?: (target: number, timeoutMs: number) => Promise<boolean>;
+}
+
+async function waitForProcessTargetExit(target: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
     try {
-      await execFileAsync(windowsTreeKill.command, windowsTreeKill.args, {
+      process.kill(target, 0);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ESRCH") return true;
+    }
+    await delay(50);
+  }
+  return false;
+}
+
+/**
+ * Terminate a runtime-service process tree and confirm it is gone. A fulfilled
+ * stop must be strong enough for callers to delete in-memory tracking and
+ * persist `stopped`; merely delivering SIGTERM is not that contract.
+ */
+export async function terminateChildProcess(
+  child: ChildProcess,
+  deps: TerminateChildProcessDeps = {},
+): Promise<boolean> {
+  if (!child.pid) return true;
+  const platform = deps.platform ?? process.platform;
+  const waitForExit = deps.waitForExit ?? waitForProcessTargetExit;
+  const signal = deps.signal ?? ((target, requestedSignal) => process.kill(target, requestedSignal));
+  const windowsTreeKill = buildRuntimeServiceProcessTreeKillCommand(child.pid, platform);
+  if (platform === "win32" && windowsTreeKill) {
+    const runWindowsTreeKill = deps.runWindowsTreeKill ?? (async (command, args) => {
+      await execFileAsync(command, args, {
         timeout: 5000,
         windowsHide: true,
       });
-      return;
-    } catch {
-      // Fall through to the direct child kill when taskkill is unavailable or
-      // the wrapper process exited before we could terminate its tree.
-    }
-  }
-  if (process.platform !== "win32") {
+    });
     try {
-      process.kill(-child.pid, "SIGTERM");
-      return;
+      await runWindowsTreeKill(windowsTreeKill.command, windowsTreeKill.args);
+      return await waitForExit(child.pid, 2_000);
     } catch {
-      // Fall through to the direct child kill.
+      // A non-zero taskkill result can mean the process already exited.
+      if (await waitForExit(child.pid, 0)) return true;
+      // Direct termination cannot prove the rest of the Windows tree exited,
+      // so keep the runtime tracked even if the wrapper itself disappears.
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // The false return below preserves tracking for operator remediation.
+      }
+      await waitForExit(child.pid, 2_000);
+      return false;
     }
   }
-  if (!child.killed) {
-    child.kill("SIGTERM");
+
+  let target = -child.pid;
+  try {
+    signal(target, "SIGTERM");
+  } catch {
+    target = child.pid;
+    try {
+      child.kill("SIGTERM");
+    } catch {
+      // The liveness check below distinguishes already-gone from still-live.
+    }
   }
+  if (await waitForExit(target, 500)) return true;
+
+  try {
+    signal(target, "SIGKILL");
+  } catch {
+    target = child.pid;
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // The final liveness check decides whether the stop succeeded.
+    }
+  }
+  return await waitForExit(target, 2_000);
 }
 
 function buildWorkspaceCommandEnv(input: {
@@ -619,6 +764,7 @@ async function recordWorkspaceCommandOperation(
     successMessage?: string | null;
   },
 ) {
+  assertLocalWorkspaceCommandAllowed(`${input.phase} command`);
   if (!recorder) {
     await runWorkspaceCommand(input);
     return;
@@ -1774,12 +1920,36 @@ export async function refreshPersistedRuntimeServiceRows(input: {
   ttlMs?: number;
   maxConcurrency?: number;
   probeUrl?: (url: string) => Promise<boolean>;
+  terminationDeps?: PersistedRuntimeProcessTerminationDeps;
 }): Promise<WorkspaceRuntimeServiceRow[]> {
   const adapterRows = await refreshAdapterManagedPreviewRuntimeServiceRows(input);
   const localRows = await refreshLocalProcessRuntimeServiceRows({
     ...input,
     rows: adapterRows.rows,
   });
+  const originalById = new Map(input.rows.map((row) => [row.id, row]));
+  for (const update of localRows.updates) {
+    if (update.status !== "stopped") continue;
+    const original = originalById.get(update.id);
+    if (!original || original.provider !== "local_process") continue;
+
+    const tracked = runtimeServicesById.has(update.id);
+    const terminated = tracked
+      ? await stopRuntimeService(update.id).then(() => true, () => false)
+      : await terminatePersistedLocalRuntimeProcess(original, input.terminationDeps);
+    if (terminated) continue;
+
+    // A failed health probe does not prove the detached process exited. Keep
+    // the row active and unhealthy so it remains visible to retries and the
+    // startup cutover gate instead of orphaning a live process behind `stopped`.
+    update.status = original.status;
+    update.stoppedAt = original.stoppedAt;
+    const refreshed = localRows.rows.find((row) => row.id === update.id);
+    if (refreshed) {
+      refreshed.status = original.status;
+      refreshed.stoppedAt = original.stoppedAt;
+    }
+  }
   await persistRuntimeServiceHealthUpdates(input.db, [
     ...adapterRows.updates,
     ...localRows.updates,
@@ -1811,7 +1981,7 @@ export async function refreshPersistedAdapterManagedPreviewRuntimeServices(input
   return refreshed.rows;
 }
 
-async function startLocalRuntimeService(input: {
+export async function startLocalRuntimeService(input: {
   db?: Db;
   runId: string;
   startedByRunId?: string | null;
@@ -1826,11 +1996,13 @@ async function startLocalRuntimeService(input: {
   reuseKey: string | null;
   scopeType: "project_workspace" | "execution_workspace" | "run" | "agent";
   scopeId: string | null;
+  terminationDeps?: TerminateChildProcessDeps;
 }): Promise<RuntimeServiceRecord> {
   const serviceName = asString(input.service.name, "service");
   const lifecycle = asString(input.service.lifecycle, "shared") === "ephemeral" ? "ephemeral" : "shared";
   const command = asString(input.service.command, "");
   if (!command) throw new Error(`Runtime service "${serviceName}" is missing command`);
+  assertLocalWorkspaceCommandAllowed("workspace runtime-service command");
   const serviceCwdTemplate = asString(input.service.cwd, ".");
   const portConfig = parseObject(input.service.port);
   const port = asString(portConfig.type, "") === "auto" ? await allocatePort() : null;
@@ -1882,20 +2054,10 @@ async function startLocalRuntimeService(input: {
     asString(expose.urlTemplate, "") ||
     asString(readiness.urlTemplate, "");
   const url = urlTemplate ? renderTemplate(urlTemplate, templateData) : null;
-
-  try {
-    await waitForReadiness({ service: input.service, url });
-  } catch (err) {
-    await terminateChildProcess(child);
-    throw new Error(
-      `Failed to start runtime service "${serviceName}": ${err instanceof Error ? err.message : String(err)}${stderrExcerpt ? ` | stderr: ${stderrExcerpt.trim()}` : ""}`,
-    );
-  }
-
   const envFingerprint = createHash("sha256").update(stableStringify(envConfig)).digest("hex");
   const startedByRunId = input.startedByRunId === undefined ? input.runId : input.startedByRunId;
   const leaseRunId = input.leaseRunId === undefined ? input.runId : input.leaseRunId;
-  return {
+  const record: RuntimeServiceRecord = {
     id: randomUUID(),
     companyId: input.agent.companyId,
     projectId: input.workspace.projectId,
@@ -1903,7 +2065,7 @@ async function startLocalRuntimeService(input: {
     executionWorkspaceId: input.executionWorkspaceId ?? null,
     issueId: input.issue?.id ?? null,
     serviceName,
-    status: "running",
+    status: "starting",
     lifecycle,
     scopeType: input.scopeType,
     scopeId: input.scopeId,
@@ -1920,7 +2082,7 @@ async function startLocalRuntimeService(input: {
     startedAt: new Date().toISOString(),
     stoppedAt: null,
     stopPolicy: parseObject(input.service.stopPolicy),
-    healthStatus: "healthy",
+    healthStatus: "unknown",
     reused: false,
     db: input.db,
     child,
@@ -1928,6 +2090,64 @@ async function startLocalRuntimeService(input: {
     idleTimer: null,
     envFingerprint,
   };
+  // Persist the detached process identity before the first asynchronous
+  // readiness wait. If the server crashes during that wait, startup
+  // reconciliation can still discover and reap the process group.
+  registerRuntimeService(input.db, record);
+
+  try {
+    await persistRuntimeServiceRecord(input.db, record);
+    await waitForReadiness({ service: input.service, url });
+    if (runtimeServicesById.get(record.id) !== record) {
+      throw new Error("process exited before readiness completed");
+    }
+  } catch (err) {
+    let terminated = runtimeServicesById.get(record.id) !== record;
+    if (!terminated && (child.exitCode !== null || child.signalCode !== null)) {
+      // The group leader exited while readiness was pending. On POSIX, only
+      // signal the original group when a descendant still proves that PGID is
+      // live; otherwise avoid using a stale numeric PID that may be reused.
+      terminated = process.platform === "win32" || !child.pid ||
+        await waitForProcessTargetExit(-child.pid, 0);
+    }
+    if (!terminated) {
+      runtimeServiceStopsInProgress.add(record.id);
+      try {
+        terminated = await terminateChildProcess(child, input.terminationDeps);
+      } finally {
+        runtimeServiceStopsInProgress.delete(record.id);
+      }
+    }
+    if (!terminated) {
+      // Never discard a process identity just because startup readiness failed.
+      // A live or unverifiable group remains active, unhealthy, and durable so
+      // health refresh or startup reconciliation can retry the termination.
+      record.status = "starting";
+      record.stoppedAt = null;
+      record.healthStatus = "unhealthy";
+      runtimeServicesById.set(record.id, record);
+      if (record.reuseKey) runtimeServicesByReuseKey.set(record.reuseKey, record.id);
+    } else {
+      record.status = "failed";
+      record.healthStatus = "unhealthy";
+      record.stoppedAt = new Date().toISOString();
+      runtimeServicesById.delete(record.id);
+      if (record.reuseKey && runtimeServicesByReuseKey.get(record.reuseKey) === record.id) {
+        runtimeServicesByReuseKey.delete(record.reuseKey);
+      }
+    }
+    await persistRuntimeServiceRecord(input.db, record);
+    throw new Error(
+      `Failed to start runtime service "${serviceName}": ${err instanceof Error ? err.message : String(err)}` +
+      `${stderrExcerpt ? ` | stderr: ${stderrExcerpt.trim()}` : ""}` +
+      `${terminated ? "" : " | cleanup could not be confirmed; process remains tracked as starting/unhealthy"}`,
+    );
+  }
+
+  record.status = "running";
+  record.healthStatus = "healthy";
+  await persistRuntimeServiceRecord(input.db, record);
+  return record;
 }
 
 function scheduleIdleStop(record: RuntimeServiceRecord) {
@@ -1944,17 +2164,35 @@ async function stopRuntimeService(serviceId: string) {
   const record = runtimeServicesById.get(serviceId);
   if (!record) return;
   clearIdleTimer(record);
-  record.status = "stopped";
-  record.lastUsedAt = new Date().toISOString();
-  record.stoppedAt = new Date().toISOString();
-  if (record.child && record.child.pid) {
-    await terminateChildProcess(record.child);
+  runtimeServiceStopsInProgress.add(serviceId);
+  try {
+    if (record.child && record.child.pid) {
+      const terminated = await terminateChildProcess(record.child);
+      if (!terminated) {
+        // The child exit event may have raced with the confirmation failure.
+        // Restore both indexes and active state so a surviving process group
+        // remains visible and retryable instead of becoming a hidden orphan.
+        record.status = "running";
+        record.stoppedAt = null;
+        record.healthStatus = "unhealthy";
+        record.lastUsedAt = new Date().toISOString();
+        runtimeServicesById.set(record.id, record);
+        if (record.reuseKey) runtimeServicesByReuseKey.set(record.reuseKey, record.id);
+        await persistRuntimeServiceRecord(record.db, record);
+        throw new Error(`Runtime service ${serviceId} could not be confirmed stopped`);
+      }
+    }
+    record.status = "stopped";
+    record.lastUsedAt = new Date().toISOString();
+    record.stoppedAt = new Date().toISOString();
+    runtimeServicesById.delete(serviceId);
+    if (record.reuseKey) {
+      runtimeServicesByReuseKey.delete(record.reuseKey);
+    }
+    await persistRuntimeServiceRecord(record.db, record);
+  } finally {
+    runtimeServiceStopsInProgress.delete(serviceId);
   }
-  runtimeServicesById.delete(serviceId);
-  if (record.reuseKey) {
-    runtimeServicesByReuseKey.delete(record.reuseKey);
-  }
-  await persistRuntimeServiceRecord(record.db, record);
 }
 
 async function markPersistedRuntimeServicesStoppedForExecutionWorkspace(input: {
@@ -1987,18 +2225,42 @@ function registerRuntimeService(db: Db | undefined, record: RuntimeServiceRecord
   }
 
   record.child?.on("exit", (code, signal) => {
-    const current = runtimeServicesById.get(record.id);
-    if (!current) return;
-    clearIdleTimer(current);
-    current.status = code === 0 || signal === "SIGTERM" ? "stopped" : "failed";
-    current.healthStatus = current.status === "failed" ? "unhealthy" : "unknown";
-    current.lastUsedAt = new Date().toISOString();
-    current.stoppedAt = new Date().toISOString();
-    runtimeServicesById.delete(current.id);
-    if (current.reuseKey && runtimeServicesByReuseKey.get(current.reuseKey) === current.id) {
-      runtimeServicesByReuseKey.delete(current.reuseKey);
-    }
-    void persistRuntimeServiceRecord(db, current);
+    void (async () => {
+      const current = runtimeServicesById.get(record.id);
+      if (!current) return;
+      // The explicit stop path owns state transition and deletion while it is
+      // confirming the entire process tree, not just the group leader.
+      if (runtimeServiceStopsInProgress.has(record.id)) return;
+
+      // On POSIX a detached shell can exit while a descendant in its process
+      // group survives. Keep that group tracked until health/stop logic reaps it.
+      if (
+        process.platform !== "win32" &&
+        current.child?.pid &&
+        !(await waitForProcessTargetExit(-current.child.pid, 0))
+      ) {
+        clearIdleTimer(current);
+        current.status = "running";
+        current.healthStatus = "unhealthy";
+        current.lastUsedAt = new Date().toISOString();
+        current.stoppedAt = null;
+        await persistRuntimeServiceRecord(db, current);
+        return;
+      }
+
+      clearIdleTimer(current);
+      current.status = code === 0 || signal === "SIGTERM" ? "stopped" : "failed";
+      current.healthStatus = current.status === "failed" ? "unhealthy" : "unknown";
+      current.lastUsedAt = new Date().toISOString();
+      current.stoppedAt = new Date().toISOString();
+      runtimeServicesById.delete(current.id);
+      if (current.reuseKey && runtimeServicesByReuseKey.get(current.reuseKey) === current.id) {
+        runtimeServicesByReuseKey.delete(current.reuseKey);
+      }
+      await persistRuntimeServiceRecord(db, current);
+    })().catch((err) => {
+      logger.error({ err, runtimeServiceId: record.id }, "failed to reconcile runtime service child exit");
+    });
   });
 }
 
@@ -2071,8 +2333,6 @@ export async function ensureRuntimeServicesForRun(input: {
         scopeType,
         scopeId,
       });
-      registerRuntimeService(input.db, record);
-      await persistRuntimeServiceRecord(input.db, record);
       acquiredServiceIds.push(record.id);
       refs.push(toRuntimeServiceRef(record));
     }
@@ -2177,37 +2437,68 @@ export async function listWorkspaceRuntimeServicesForProjectWorkspaces(
   return grouped;
 }
 
-export async function reconcilePersistedRuntimeServicesOnStartup(db: Db) {
+export async function reconcilePersistedRuntimeServicesOnStartup(
+  db: Db,
+  terminationDeps: PersistedRuntimeProcessTerminationDeps = {},
+) {
   const staleRows = await db
-    .select({ id: workspaceRuntimeServices.id })
+    .select({
+      id: workspaceRuntimeServices.id,
+      providerRef: workspaceRuntimeServices.providerRef,
+      startedAt: workspaceRuntimeServices.startedAt,
+      status: workspaceRuntimeServices.status,
+    })
     .from(workspaceRuntimeServices)
     .where(
       and(
         eq(workspaceRuntimeServices.provider, "local_process"),
-        inArray(workspaceRuntimeServices.status, ["starting", "running"]),
+        or(
+          inArray(workspaceRuntimeServices.status, ["starting", "running"]),
+          isNotNull(workspaceRuntimeServices.providerRef),
+        ),
       ),
     );
 
   if (staleRows.length === 0) return { reconciled: 0 };
 
-  const now = new Date();
-  await db
-    .update(workspaceRuntimeServices)
-    .set({
-      status: "stopped",
-      healthStatus: "unknown",
-      stoppedAt: now,
-      lastUsedAt: now,
-      updatedAt: now,
-    })
-    .where(
-      and(
-        eq(workspaceRuntimeServices.provider, "local_process"),
-        inArray(workspaceRuntimeServices.status, ["starting", "running"]),
-      ),
+  const unresolved: string[] = [];
+  for (const row of staleRows) {
+    if (!await terminatePersistedLocalRuntimeProcess(row, terminationDeps)) unresolved.push(row.id);
+  }
+  if (unresolved.length > 0 && tenantIsolationEnforced()) {
+    throw new Error(
+      `Cloud startup refused: ${unresolved.length} persisted local runtime process(es) ` +
+      `could not be identity-verified and terminated (${unresolved.join(", ")}). ` +
+      `Stop them on the control-plane host before restarting AoA.`,
     );
+  }
+  if (unresolved.length > 0) {
+    logger.warn({ runtimeServiceIds: unresolved }, "could not verify stale local runtime processes during startup");
+  }
 
-  return { reconciled: staleRows.length };
+  const resolvedIds = staleRows
+    .filter((row) =>
+      !unresolved.includes(row.id) &&
+      (row.status === "starting" || row.status === "running"),
+    )
+    .map((row) => row.id);
+  if (resolvedIds.length > 0) {
+    const now = new Date();
+    await db
+      .update(workspaceRuntimeServices)
+      .set({
+        status: "stopped",
+        healthStatus: "unknown",
+        stoppedAt: now,
+        lastUsedAt: now,
+        updatedAt: now,
+      })
+      // Snapshot-fenced: never mark a process spawned after the startup SELECT
+      // as stopped without first identity-verifying and terminating it.
+      .where(inArray(workspaceRuntimeServices.id, resolvedIds));
+  }
+
+  return { reconciled: resolvedIds.length, unresolved: unresolved.length };
 }
 
 export async function persistAdapterManagedRuntimeServices(input: {
@@ -2567,8 +2858,6 @@ export async function startRuntimeServicesForWorkspaceControl(input: {
       scopeType,
       scopeId,
     });
-    registerRuntimeService(input.db, record);
-    await persistRuntimeServiceRecord(input.db, record);
     refs.push(toRuntimeServiceRef(record));
   }
 
@@ -2638,6 +2927,7 @@ export async function runWorkspaceJobForControl(input: {
   if (!rawCommand) {
     throw new Error(`Workspace job "${name}" is missing command`);
   }
+  assertLocalWorkspaceCommandAllowed("workspace control-job command");
   const renderContext = {
     workspace: {
       cwd: input.workspace.cwd,

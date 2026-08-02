@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { orgRoleCan } from "../services/organization-access.js";
+import {
+  organizationAccessService,
+  orgRoleCan,
+} from "../services/organization-access.js";
 
 describe("orgRoleCan (role x capability matrix)", () => {
   it("owner can do everything org-scoped", () => {
@@ -24,5 +27,43 @@ describe("orgRoleCan (role x capability matrix)", () => {
     expect(orgRoleCan("billing", "billing:manage")).toBe(true);
     expect(orgRoleCan("billing", "company:create")).toBe(false);
     expect(orgRoleCan("billing", "company:list:metadata")).toBe(true);
+  });
+});
+
+describe("ensureOrgMembership authority preservation", () => {
+  it("reactivates genuine access and clears break-glass provenance without downgrading", async () => {
+    const membership = {
+      id: "membership-1",
+      organizationId: "org-1",
+      userId: "user-1",
+      role: "admin",
+      status: "suspended",
+      createdByBreakGlass: true,
+    };
+    const conflictUpdates: Array<Record<string, unknown>> = [];
+    const db = {
+      insert: () => ({
+        values: () => ({
+          onConflictDoUpdate: (config: { set: Record<string, unknown> }) => {
+            conflictUpdates.push(config.set);
+            return { returning: async () => [{ id: membership.id }] };
+          },
+        }),
+      }),
+    };
+
+    await organizationAccessService(db as never).ensureOrgMembership(
+      "org-1",
+      "user-1",
+      "member",
+      "active",
+    );
+
+    expect(conflictUpdates).toHaveLength(1);
+    expect(conflictUpdates[0]).toMatchObject({
+      status: "active",
+      createdByBreakGlass: false,
+    });
+    expect(conflictUpdates[0]).toHaveProperty("role");
   });
 });

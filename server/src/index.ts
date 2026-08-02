@@ -71,6 +71,7 @@ import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { tryRecoverOrphanPostgres } from "./postgres/embedded-orphan-recovery.js";
 import { shouldBlockForMissingSnapshot, SnapshotGateError } from "./postgres/snapshot-gate.js";
+import { assertTestSupportFlagSafe } from "./services/test-support-safety.js";
 import { DEFAULT_BACKUP_RETENTION } from "@armyofagents/shared";
 import { runChroniclerSweep, CHRONICLER_SWEEP_INTERVAL_MS } from "./services/internal-agent/aoa-agents/sweep-chronicler.js";
 import { ensureCrewAgents, ensureInfrastructureAgents, isCrewMarketplaceManaged } from "./services/internal-agent/aoa-agents/crew-seeding.js";
@@ -127,6 +128,15 @@ type EmbeddedPostgresCtor = new (opts: {
 }) => EmbeddedPostgresInstance;
 
 const config = loadConfig();
+// The dedicated e2e session mint bypasses OAuth. Reject unsafe combinations
+// before migrations, database bootstrap, or route initialization does work.
+assertTestSupportFlagSafe({
+  testSupportEnabled: process.env.AOA_E2E_TEST_SUPPORT === "1",
+  deploymentExposure: config.deploymentExposure,
+  bindHost: config.host,
+  authPublicBaseUrl: config.authPublicBaseUrl ?? null,
+  nodeEnv: process.env.NODE_ENV,
+});
 if (process.env.AOA_SECRETS_PROVIDER === undefined) {
   process.env.AOA_SECRETS_PROVIDER = config.secretsProvider;
 }
@@ -740,9 +750,16 @@ const tickWorkQuestionWorkers = (now = new Date()) => {
   }
 };
 
+// This cutover guard is independent of heartbeat scheduling. A deployment that
+// disables heartbeat must still reap (or refuse to forget) pre-upgrade detached
+// tenant processes before it continues booting. It must also run before any
+// durable worker can dispatch a continuation into heartbeat execution.
+await reconcilePersistedRuntimeServicesOnStartup(db as any);
+
 // Run independently of the heartbeat scheduler flag. This is intentionally
 // separate from the heartbeat interval below so HEARTBEAT_SCHEDULER_ENABLED
-// cannot strand durable questions in `pending`.
+// cannot strand durable questions in `pending`. Start it only after the
+// detached-process cutover gate above has completed.
 tickWorkQuestionWorkers();
 setInterval(() => tickWorkQuestionWorkers(), config.heartbeatSchedulerIntervalMs);
 
@@ -784,11 +801,6 @@ if (config.heartbeatSchedulerEnabled) {
   // Reap orphaned runs at startup (no threshold -- runningProcesses is empty)
   void heartbeat.reapOrphanedRuns().catch((err) => {
     logger.error({ err }, "startup reap of orphaned heartbeat runs failed");
-  });
-
-  // Reconcile stale runtime service states after server restart
-  void reconcilePersistedRuntimeServicesOnStartup(db as any).catch((err) => {
-    logger.error({ err }, "reconcilePersistedRuntimeServicesOnStartup failed");
   });
 
   // Auto-resume runtime services that were desiredState:running when server stopped

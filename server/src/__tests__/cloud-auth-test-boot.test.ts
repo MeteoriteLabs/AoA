@@ -4,6 +4,7 @@ import {
   allowCloudAuthBootWithoutGoogle,
   buildBetterAuthConfig,
 } from "../auth/better-auth.js";
+import { assertTestSupportFlagSafe } from "../services/test-support-safety.js";
 
 const noGoogleCloud = {
   deploymentMode: "cloud_auth", devLocalIdentity: false,
@@ -13,8 +14,22 @@ const noGoogleCloud = {
 } as any;
 
 describe("cloud_auth test-support boot relaxation (AOA_E2E_TEST_SUPPORT)", () => {
-  it("boots WITHOUT Google creds when the flag is set", () => {
-    expect(() => assertAuthProviderConfigured(noGoogleCloud, true)).not.toThrow();
+  it("boots WITHOUT Google creds only on a safety-gated private loopback test process", () => {
+    const privateLoopbackCloud = {
+      ...noGoogleCloud,
+      deploymentExposure: "private",
+      authPublicBaseUrl: "http://127.0.0.1:3210",
+    };
+    expect(() =>
+      assertTestSupportFlagSafe({
+        testSupportEnabled: true,
+        deploymentExposure: privateLoopbackCloud.deploymentExposure,
+        bindHost: "127.0.0.1",
+        authPublicBaseUrl: privateLoopbackCloud.authPublicBaseUrl,
+        nodeEnv: "test",
+      }),
+    ).not.toThrow();
+    expect(() => assertAuthProviderConfigured(privateLoopbackCloud, true)).not.toThrow();
   });
   it("REFUSES to boot without Google creds when the flag is UNSET (real-prod invariant)", () => {
     expect(() => assertAuthProviderConfigured(noGoogleCloud, false)).toThrow(/Google OAuth is not configured/i);

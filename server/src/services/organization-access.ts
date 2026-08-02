@@ -1,5 +1,5 @@
 // Mirrors accessService shape (server/src/services/access.ts:42).
-import { and, eq, gt, isNull } from "drizzle-orm";
+import { and, eq, gt, isNull, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { operatorBreakGlassGrants, organizationMemberships } from "@armyofagents/db";
 import type { OrganizationRole } from "@armyofagents/shared";
@@ -79,26 +79,32 @@ export function organizationAccessService(db: Db) {
   async function ensureOrgMembership(
     organizationId: string, userId: string, role: OrganizationRole = "member", status = "active",
   ) {
-    // Race-safe + idempotent: P1's 0188 backfill and access.ensureRealOperator
-    // (Task 10) may also insert the SAME (organizationId,userId) owner row, so the
-    // insert uses onConflictDoNothing on the P1 unique index and re-reads. Never
-    // downgrades an existing owner to a weaker role on conflict.
-    await db.insert(organizationMemberships)
+    // One atomic upsert closes both races at this admission seam: concurrent
+    // weaker ensures cannot downgrade authority, and the break-glass sweeper
+    // cannot delete a row between a provenance read and clear. PostgreSQL row
+    // locking makes either ordering safe: ensure wins and sets provenance false,
+    // or cleanup deletes first and this statement recreates genuine access.
+    const ensuredRole = role === "owner"
+      ? "owner"
+      : role === "member"
+        ? sql<OrganizationRole>`${organizationMemberships.role}`
+        : sql<OrganizationRole>`CASE
+            WHEN ${organizationMemberships.role} = 'member' THEN ${role}
+            ELSE ${organizationMemberships.role}
+          END`;
+    const [membership] = await db.insert(organizationMemberships)
       .values({ organizationId, userId, role, status })
-      .onConflictDoNothing({
+      .onConflictDoUpdate({
         target: [organizationMemberships.organizationId, organizationMemberships.userId],
-      });
-    const existing = await getMembership(organizationId, userId);
-    if (existing && (existing.role !== role || existing.status !== status)) {
-      // Only promote (never clobber an owner with a member write): callers pass the
-      // intended role explicitly, and self-serve create always passes "owner".
-      if (!(existing.role === "owner" && role !== "owner")) {
-        await db.update(organizationMemberships)
-          .set({ role, status, updatedAt: new Date() })
-          .where(eq(organizationMemberships.id, existing.id));
-      }
-    }
-    return existing?.id ?? (await getMembership(organizationId, userId))!.id;
+        set: {
+          role: ensuredRole,
+          status,
+          createdByBreakGlass: false,
+          updatedAt: new Date(),
+        },
+      })
+      .returning({ id: organizationMemberships.id });
+    return membership!.id;
   }
 
   async function ensureOrgOwner(organizationId: string, userId: string) {

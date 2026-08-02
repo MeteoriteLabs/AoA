@@ -13,10 +13,12 @@ import {
 import { validate } from "../middleware/validate.js";
 import { assertRole } from "../middleware/rbac.js";
 import { accessService, projectService, logActivity, instanceSettingsService, secretService } from "../services/index.js";
-import { conflict, forbidden, HttpError } from "../errors.js";
+import { badRequest, conflict, forbidden, HttpError } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { gateProjectExecutionWorkspacePolicy, parseProjectExecutionWorkspacePolicy } from "../services/execution-workspace-policy.js";
 import { assertCanControlWorkspace } from "../services/workspace-authz.js";
+import { tenantIsolationEnforced } from "../config/deployment-mode.js";
+import { assertUnsandboxedMultitenantAllowed } from "../services/unsandboxed-multitenant-guard.js";
 
 /**
  * Detects whether a request body's executionWorkspacePolicy carries any of the
@@ -38,6 +40,17 @@ export function sniffsShellCommandFields(policy: unknown): boolean {
       || typeof ws.teardownCommand === "string"
       || typeof ws.cleanupCommand === "string"
       || hasRuntimeServiceCommand;
+}
+
+export function assertCloudWorkspaceCommandConfigurationAllowed(): void {
+  try {
+    assertUnsandboxedMultitenantAllowed(
+      { type: "local" },
+      { tenantIsolationEnforced: tenantIsolationEnforced(), sink: "workspace command configuration" },
+    );
+  } catch (error) {
+    throw badRequest(error instanceof Error ? error.message : String(error));
+  }
 }
 
 export function projectRoutes(db: Db) {
@@ -134,6 +147,7 @@ export function projectRoutes(db: Db) {
         return;
       }
       await assertRole(db, req, companyId, "founder");
+      assertCloudWorkspaceCommandConfigurationAllowed();
     } else if (req.body.executionWorkspacePolicy !== undefined) {
       await assertCanControlWorkspace(db, req, { companyId, projectId: null });
     }
@@ -219,6 +233,7 @@ export function projectRoutes(db: Db) {
         return;
       }
       await assertRole(db, req, existing.companyId, "founder");
+      assertCloudWorkspaceCommandConfigurationAllowed();
     } else if (req.body.executionWorkspacePolicy !== undefined) {
       await assertCanControlWorkspace(db, req, { companyId: existing.companyId, projectId: existing.id });
     }

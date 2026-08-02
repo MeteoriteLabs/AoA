@@ -18,7 +18,7 @@ import { healthRoutes } from "./routes/health.js";
 import { onboardingJourneyRoutes } from "./routes/onboarding-journey.js";
 import { onboardingRoutes } from "./routes/onboarding.js";
 import { onboardingJoinRoutes } from "./routes/onboarding-join.js";
-import { testSupportRoutes } from "./routes/test-support.js";
+import { testSupportEnabled, testSupportRoutes } from "./routes/test-support.js";
 import { onboardingEnvironmentRoutes } from "./routes/onboarding-environment.js";
 import { commanderVerifyRoutes } from "./routes/commander-verify.js";
 import { commanderKeyRoutes } from "./routes/commander-key.js";
@@ -279,9 +279,9 @@ export async function createApp(
   app.use("/api", onboardingJourneyRoutes(db));
   app.use("/api", onboardingRoutes(db));
   app.use("/api", onboardingJoinRoutes(db));
-  // Test-only e2e support — fail-closed: local_trusted + the e2e escape hatch
-  // only, never in authenticated mode.
-  if (opts.deploymentMode === "local_trusted" && process.env.AOA_DEV_LOCAL_IDENTITY === "1") {
+  // Test-only e2e support. Dedicated cloud-mode support is fail-closed at
+  // startup; local_trusted retains its developer-identity escape hatch.
+  if (testSupportEnabled(opts.deploymentMode)) {
     app.use("/api", testSupportRoutes(db, { deploymentMode: opts.deploymentMode }));
   }
   app.use("/api", onboardingEnvironmentRoutes(db));

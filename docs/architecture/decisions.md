@@ -1786,6 +1786,26 @@ the event shape covers them); tool-count budgeting.
 
 2. **gVisor is a hardened profile layered onto the existing `sandbox-docker` transport, not a new transport.** `buildDockerRunArgs` (`packages/adapter-utils/src/execution-target.ts`) gained an opt-in, default-off `runtime`/`isolation` profile: `--runtime=runsc`, `--user`, `--cap-drop=ALL`, `--read-only`, `--tmpfs`, `--memory`/`--memory-swap`, `--cpus`, `--pids-limit`, `--security-opt no-new-privileges`(+ optional `seccomp=`), `--ulimit nofile=`, `--ipc private`. Leaving `runtime`/`isolation` unset reproduces the exact pre-Phase-5 arg list byte-for-byte (locked by an exact-array regression test) — a self-hosted `sandbox-docker` environment is unaffected. `resolveGvisorSandboxTarget` (`server/src/services/environment-runtime.ts`) maps a `driver: "sandbox", config.provider: "gvisor"` environment to this hardened profile with sane defaults (`user 1000:1000`, `capDropAll`/`noNewPrivileges`/`readOnlyRootfs` on, `2g`/`2 cpus`/`512 pids`, `network: "none"`); a `createGvisorSandboxRuntimeProvider` (`server/src/services/gvisor-sandbox-provider.ts`) registers the pool-transport seam (peer to the existing E2B provider) for a future multi-worker pool client — the single-box beta runs the hardened `sandbox-docker` path directly, no pool client is implemented yet.
 
+**2026-08-02 fail-closed clarification:** direct `sandbox-docker`/`runsc` execution remains available only to self-hosted single-tenant installs. On shared `cloud_auth` infrastructure, pooled and dedicated targets are registry-only and fail closed before adapter execution until the worker pool exists and Gate-B hardware validation passes. The control-plane host is not a tenant worker.
+
+This clarification supersedes the earlier “single-box beta” wording below for
+hosted deployments. A tenant-authored `runtime: "runsc"` value is configuration,
+not worker-plane provenance: the cloud guard refuses every local Docker-family
+target unless the explicit process-wide unsafe override is enabled. The sink also
+forces `network: none`, removal, and fixed resource ceilings as defense in depth.
+Organization capacity is claimed atomically under a transaction advisory lock and
+completion dispatches the oldest queued work across the Organization; an unresolved
+Company-to-Organization edge fails closed in `cloud_auth` instead of bypassing the cap.
+The same refusal applies before workspace provision/cleanup/jobs and local runtime
+services, including archive and startup paths; guarding only the final adapter
+process is insufficient because these commands are independently tenant-authored.
+At startup, persisted local runtime-service PIDs are matched against their OS
+start identity before process-group termination and are reconciled before desired
+services can restart. A live PID that cannot be verified or confirmed dead blocks
+`cloud_auth` boot and remains tracked for operator remediation; PID reuse is never
+handled with a blind kill. Generic project-workspace metadata may not write the
+server-reserved `runtimeConfig` auto-start envelope.
+
 3. **SSRF fix: `--add-host host.docker.internal:host-gateway` becomes conditional.** It was previously emitted unconditionally by every `sandbox-docker` run, which is a route from any sandboxed container straight to the control-plane host. It is now emitted only when the callback bridge is actually running **and** the target explicitly opts in via `allowHostGateway` (default `false`). This ships in this PR for every `sandbox-docker` run, not only gVisor — closing an existing SSRF-adjacent route in the pre-Phase-5 code, not something newly introduced by gVisor.
 
 4. **Route-by-credential: `execution-target-resolver.ts` replaces the old hard-throw** that previously rejected any run needing a dedicated target it couldn't resolve. `chooseExecutionTargetRow` reads the Phase 4 credential-resolution seam `{ credentialKind, executionTargetSlug }` verbatim (it does not re-query `provider_credentials`): a `company_api_key` (business key) run routes to the org's `pooled_gvisor` target (or falls back to the local driver if no pooled target is configured — this local fallback also occurs on SHARED infra when the org has no pooled target, not only self-hosted; the D1 guard `assertUnsandboxedMultitenantAllowed` (`server/src/services/unsandboxed-multitenant-guard.ts`) now EXISTS and FAILS CLOSED on this: on `cloud_auth` it refuses the local (and non-`runsc` docker) fallback unless `AOA_ALLOW_UNSANDBOXED_MULTITENANT=1`, so a shared-infra `company_api_key` run no longer silently runs locally — it is no longer merely tracked); a `personal_subscription` run routes to the specific `dedicated_worker` (or `local_host`) target whose slug matches the credential's bound `AOA_EXECUTION_TARGET_ID`, and **fails closed** (throws) if no matching target is active — a personal-subscription run never silently falls back to a different tenant's dedicated worker or the shared pool. An explicit `environments.execution_target_id` pin always wins over credential-kind routing, and is itself checked against a personal-subscription's bound slug before being honored.

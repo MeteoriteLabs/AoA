@@ -1161,7 +1161,9 @@ export {
   dockerIsolationSchema,
   gvisorEnvironmentConfigSchema,
   createExecutionTargetSchema,
+  workerExecutionTargetHeartbeatSchema,
   type CreateExecutionTargetInput,
+  type WorkerExecutionTargetHeartbeatInput,
 } from "./validators/index.js";
 
 export {

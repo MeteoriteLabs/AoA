@@ -37,3 +37,9 @@ export const createExecutionTargetSchema = z.object({
   config: z.record(z.unknown()).optional().default({}),
 });
 export type CreateExecutionTargetInput = z.infer<typeof createExecutionTargetSchema>;
+
+export const workerExecutionTargetHeartbeatSchema = z.object({
+  status: z.enum(["active", "draining", "offline"]).optional(),
+  capabilities: z.record(z.unknown()).optional(),
+}).strict();
+export type WorkerExecutionTargetHeartbeatInput = z.infer<typeof workerExecutionTargetHeartbeatSchema>;

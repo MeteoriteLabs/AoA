@@ -100,50 +100,28 @@ export function executionTargetToAdapterConfig(
   // Whether this run executes on SHARED multi-tenant infra. The security boundary
   // is deployment-mode, NOT organizationId: on a founder's OWN box (self-hosted
   // single_user/single_tenant) the config is trusted and must be honored, while on
-  // shared infra a tenant-authored config must not be able to weaken the sandbox.
-  // Fail-closed default (`true`) hardens when a caller forgets to pass; the sole
+  // shared infra this registry path must never execute in the control plane.
+  // Fail-closed default (`true`) rejects when a caller forgets to pass; the sole
   // production caller (heartbeat) passes the resolved trust boundary explicitly.
   multiTenant = true,
 ): Record<string, unknown> | null {
   const cfg = target.config ?? {};
   if (target.kind === "local_host") return null; // local driver, no override
   if (target.kind === "pooled_gvisor" || target.kind === "dedicated_worker") {
-    // SECURITY (P5 review, critic gap #1 — deployment-mode-aware revision):
-    // execution_targets.config is z.record(z.unknown()) and CRUD is org-admin-scoped,
-    // so a lower-privileged tenant admin could otherwise author a target whose config
-    // WEAKENS the sandbox — re-opening the exact SSRF (`--add-host host-gateway` route
-    // to the control-plane host) and turning off cap-drop / read-only. But the boundary
-    // is "shared infra vs the founder's own box", not organizationId:
-    //   • SELF-HOSTED (multiTenant === false): the founder owns the box. Honor the
-    //     config exactly — allowHostGateway:true (the local MCP callback bridge), a
-    //     custom network, and a custom isolation profile are all legitimate. This
-    //     restores pre-P5 behavior for self-hosted single-tenant (no egress/bridge
-    //     regression).
-    //   • MULTI_TENANT (shared infra): a TENANT-authored target (organizationId != null)
-    //     always gets the full hardened isolation baseline (+ network none) — its config
-    //     cannot turn off any security flag. An OPERATOR-owned system row
-    //     (organizationId == null, trusted) may keep a custom network (bridge, governed
-    //     by the Gate-B worker-image egress firewall) but STILL gets
-    //     allowHostGateway:false — a shared pool never routes to the control-plane host.
-    if (!multiTenant) {
-      // Self-hosted single-tenant: config is trusted, honor as authored.
-      return {
-        type: "sandbox-docker",
-        image: (cfg.image as string) ?? "aoa/agent-base:latest",
-        runtime: "runsc",
-        network: (cfg.network as string) ?? "none",
-        allowHostGateway: cfg.allowHostGateway === true,
-        isolation: cfg.isolation ?? HARDENED_ISOLATION,
-      };
+    if (multiTenant) {
+      throw new Error(
+        "Cloud execution targets are registry-only until the gVisor worker pool and Gate-B hardware validation are complete.",
+      );
     }
-    const operatorOwned = target.organizationId == null;
+    // Self-hosted single-tenant execution is the only direct Docker path. The
+    // founder owns this host, so preserve its authored callback/network profile.
     return {
       type: "sandbox-docker",
       image: (cfg.image as string) ?? "aoa/agent-base:latest",
       runtime: "runsc",
-      network: operatorOwned ? ((cfg.network as string) ?? "none") : "none",
-      allowHostGateway: false,
-      isolation: operatorOwned ? (cfg.isolation ?? HARDENED_ISOLATION) : HARDENED_ISOLATION,
+      network: (cfg.network as string) ?? "none",
+      allowHostGateway: cfg.allowHostGateway === true,
+      isolation: cfg.isolation ?? HARDENED_ISOLATION,
     };
   }
   return null;

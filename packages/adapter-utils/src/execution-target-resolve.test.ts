@@ -43,6 +43,7 @@ describe("resolveAdapterExecutionTarget hardenForMultiTenant (sink-level P5 hard
     type: "sandbox-docker",
     image: "node:22",
     allowHostGateway: true,
+    remove: false,
     network: "host",
     isolation: {
       capDropAll: false,
@@ -52,6 +53,10 @@ describe("resolveAdapterExecutionTarget hardenForMultiTenant (sink-level P5 hard
       user: "0:0",
       seccompProfile: "unconfined",
       tmpfs: ["/tmp:rw,exec,suid"],
+      memory: "64g",
+      cpus: "32",
+      pidsLimit: 100000,
+      ulimitNofile: 1000000,
     },
   };
 
@@ -59,7 +64,8 @@ describe("resolveAdapterExecutionTarget hardenForMultiTenant (sink-level P5 hard
     const t = resolveAdapterExecutionTarget(weakened, true);
     if (t.type !== "sandbox-docker") throw new Error("expected sandbox-docker");
     expect(t.allowHostGateway).toBe(false); // SSRF host-gateway route closed
-    expect(t.network).toBe("none"); // host clamped to none
+    expect(t.network).toBe("none");
+    expect(t.remove).toBe(true);
     expect(t.isolation?.capDropAll).toBe(true);
     expect(t.isolation?.readOnlyRootfs).toBe(true);
     expect(t.isolation?.noNewPrivileges).toBe(true);
@@ -70,12 +76,17 @@ describe("resolveAdapterExecutionTarget hardenForMultiTenant (sink-level P5 hard
       "/tmp:rw,noexec,nosuid,size=64m",
       "/home/agent:rw,nosuid,size=256m",
     ]); // malicious tmpfs not honored
+    expect(t.isolation?.memory).toBe("2g");
+    expect(t.isolation?.cpus).toBe("2");
+    expect(t.isolation?.pidsLimit).toBe(512);
+    expect(t.isolation?.ulimitNofile).toBeNull();
   });
 
   it("hardenForMultiTenant=false honors the config exactly (self-hosted)", () => {
     const t = resolveAdapterExecutionTarget(weakened, false);
     if (t.type !== "sandbox-docker") throw new Error("expected sandbox-docker");
     expect(t.allowHostGateway).toBe(true);
+    expect(t.remove).toBe(false);
     expect(t.network).toBe("host");
     expect(t.isolation?.capDropAll).toBe(false);
     expect(t.isolation?.readOnlyRootfs).toBe(false);
@@ -85,13 +96,13 @@ describe("resolveAdapterExecutionTarget hardenForMultiTenant (sink-level P5 hard
     expect(t.isolation?.seccompProfile).toBe("unconfined");
   });
 
-  it("hardenForMultiTenant=true leaves network 'bridge' as bridge (egress = Gate B)", () => {
+  it("hardenForMultiTenant=true forces bridge networking to none", () => {
     const t = resolveAdapterExecutionTarget(
       { type: "sandbox-docker", image: "node:22", network: "bridge" },
       true,
     );
     if (t.type !== "sandbox-docker") throw new Error("expected sandbox-docker");
-    expect(t.network).toBe("bridge");
+    expect(t.network).toBe("none");
     // A bare docker target with no isolation still gets the forced hardened profile.
     expect(t.isolation?.capDropAll).toBe(true);
     expect(t.allowHostGateway).toBe(false);

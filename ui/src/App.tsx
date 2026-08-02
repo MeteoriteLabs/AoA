@@ -407,6 +407,7 @@ export function App() {
             <Route path="commander" element={<UnprefixedBoardRedirect />} />
             <Route path="memory" element={<UnprefixedBoardRedirect />} />
             <Route path="budget" element={<UnprefixedBoardRedirect />} />
+            <Route path="settings" element={<UnprefixedBoardRedirect />} />
             <Route path="secrets" element={<UnprefixedBoardRedirect />} />
             <Route path="projects" element={<UnprefixedBoardRedirect />} />
             <Route path="projects/:projectId" element={<UnprefixedBoardRedirect />} />

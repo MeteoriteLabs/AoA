@@ -503,7 +503,9 @@ export {
   dockerIsolationSchema,
   gvisorEnvironmentConfigSchema,
   createExecutionTargetSchema,
+  workerExecutionTargetHeartbeatSchema,
   type CreateExecutionTargetInput,
+  type WorkerExecutionTargetHeartbeatInput,
 } from "./execution-target.js";
 
 export { isGitHubRepoUrl } from "./github.js";
