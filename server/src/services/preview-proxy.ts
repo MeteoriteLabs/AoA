@@ -7,9 +7,14 @@ import type { DeploymentMode } from "@armyofagents/shared";
 import { eq } from "drizzle-orm";
 import httpProxy from "http-proxy";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
+import { logger } from "../middleware/logger.js";
 import { assertCompanyAccess } from "../routes/authz.js";
 import { stripPreviewQueryAuthParams } from "./preview-auth-query.js";
-import { authorizeCompanyUpgrade } from "./upgrade-auth.js";
+import { authorizeCompanyUpgrade, type UpgradeActorContext } from "./upgrade-auth.js";
+import {
+  hasActiveAgentSocketAuthorization,
+  hasActiveCloudMembership,
+} from "./upgrade-socket-authorization.js";
 import { isAllowedPreviewUpstream } from "./preview-url.js";
 
 const STRIPPED_UPSTREAM_HEADERS = [
@@ -167,6 +172,95 @@ function parsePreviewServiceId(pathname: string): string | null {
   }
 }
 
+type PreviewAuthorizationSocket = Pick<
+  Duplex,
+  "destroy" | "destroyed" | "once" | "off"
+>;
+
+/** Fail closed when an already-open preview tunnel loses authorization. */
+export async function enforcePreviewSocketAuthorization(
+  db: Db,
+  socket: Pick<PreviewAuthorizationSocket, "destroy" | "destroyed">,
+  actor: UpgradeActorContext,
+  deploymentMode: DeploymentMode,
+  onError?: (error: unknown) => void,
+): Promise<boolean> {
+  const needsRevalidation = actor.actorType === "agent" || deploymentMode === "cloud_auth";
+  if (!needsRevalidation) return true;
+
+  try {
+    const authorized = actor.actorType === "agent"
+      ? await hasActiveAgentSocketAuthorization(db, actor)
+      : await hasActiveCloudMembership(db, actor.companyId, actor.actorId);
+    if (!authorized && !socket.destroyed) socket.destroy();
+    return authorized;
+  } catch (error) {
+    try {
+      onError?.(error);
+    } catch {
+      // Reporting must not defeat the fail-closed authorization boundary.
+    }
+    if (!socket.destroyed) socket.destroy();
+    return false;
+  }
+}
+
+/**
+ * Revalidate preview tunnels with bounded staleness. The timer is per socket,
+ * unref'd, non-overlapping, and removed on every terminal socket event.
+ */
+export function startPreviewSocketAuthorizationRevalidation(
+  db: Db,
+  socket: PreviewAuthorizationSocket,
+  actor: UpgradeActorContext,
+  deploymentMode: DeploymentMode,
+  intervalMs = 30_000,
+): () => void {
+  const needsRevalidation = actor.actorType === "agent" || deploymentMode === "cloud_auth";
+  if (!needsRevalidation || socket.destroyed) return () => {};
+
+  let stopped = false;
+  let checking = false;
+  const cleanup = () => {
+    if (stopped) return;
+    stopped = true;
+    clearInterval(timer);
+    socket.off("close", cleanup);
+    socket.off("end", cleanup);
+    socket.off("error", cleanup);
+  };
+  const timer = setInterval(() => {
+    if (stopped || checking) return;
+    if (socket.destroyed) {
+      cleanup();
+      return;
+    }
+    checking = true;
+    void enforcePreviewSocketAuthorization(
+      db,
+      socket,
+      actor,
+      deploymentMode,
+      (err) => {
+        logger.warn(
+          { err, companyId: actor.companyId, actorType: actor.actorType },
+          "preview websocket authorization re-validation failed",
+        );
+      },
+    ).then((authorized) => {
+      if (!authorized) cleanup();
+    }).finally(() => {
+      checking = false;
+    });
+  }, intervalMs);
+  timer.unref?.();
+
+  socket.once("close", cleanup);
+  socket.once("end", cleanup);
+  socket.once("error", cleanup);
+  return cleanup;
+}
+
 export async function handlePreviewProxyUpgrade(
   db: Db,
   req: IncomingMessage,
@@ -208,6 +302,7 @@ export async function handlePreviewProxyUpgrade(
     originalUrl: req.url,
   });
 
+  startPreviewSocketAuthorizationRevalidation(db, socket, actor, opts.deploymentMode);
   previewProxy.ws(req, socket, head, { target, ignorePath: true }, (err) => {
     rejectPreviewUpgrade(
       socket,

@@ -39,6 +39,7 @@ import {
 } from "../services/github-app.js";
 import { emitPullRequestTaskOutput } from "../services/task-output-emitters.js";
 import { resolveGitRoot, runGit, push } from "../services/git.js";
+import { assertLocalWorkspaceCommandAllowed } from "../services/local-workspace-command-guard.js";
 const setPatSchema = z.object({ pat: z.string().min(1) });
 const syncPrBodySchema = z.object({ force: z.boolean().optional().default(false) });
 const createPrBodySchema = z.object({
@@ -381,9 +382,21 @@ export function githubRoutes(db: Db) {
       return;
     }
 
-    // Resolve head branch: client-provided > DB record > live git detection
+    // Resolve head branch: client-provided > DB record > live git detection.
+    // In cloud_auth, keep API-only PR creation available while skipping every
+    // local Git subprocess unless the operator explicitly enabled the unsafe
+    // process-wide override.
+    let localGitAllowed = false;
+    if (ws.cwd) {
+      try {
+        assertLocalWorkspaceCommandAllowed("GitHub PR workspace Git command");
+        localGitAllowed = true;
+      } catch {
+        localGitAllowed = false;
+      }
+    }
     let headBranch = parsed.data.head ?? ws.branchName ?? null;
-    if (!headBranch && ws.cwd) {
+    if (!headBranch && ws.cwd && localGitAllowed) {
       try {
         const gitRoot = await resolveGitRoot(ws.cwd);
         if (gitRoot) {
@@ -402,7 +415,7 @@ export function githubRoutes(db: Db) {
 
     // Auto-push: ensure the branch exists on the remote before creating the PR.
     // Without this, GitHub returns 422 ("head sha can't be blank").
-    if (ws.cwd) {
+    if (ws.cwd && localGitAllowed) {
       try {
         const gitRoot = await resolveGitRoot(ws.cwd);
         if (gitRoot) {

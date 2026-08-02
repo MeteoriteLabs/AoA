@@ -34,6 +34,7 @@ import {
 import { runGit as runGitService } from "./git.js";
 import { isUniqueViolation } from "./db-errors.js";
 import { emitBranchTaskOutput } from "./task-output-emitters.js";
+import { assertLocalWorkspaceCommandAllowed } from "./local-workspace-command-guard.js";
 
 type ExecutionWorkspaceRow = typeof executionWorkspaces.$inferSelect;
 type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
@@ -143,6 +144,8 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
       warnings,
     };
   }
+
+  assertLocalWorkspaceCommandAllowed("workspace Git close-readiness command");
 
   let repoRoot: string | null = null;
   try {

@@ -19,6 +19,7 @@ import { heartbeatRuns, issues } from "@armyofagents/db";
 import { executionWorkspaceService } from "../services/index.js";
 import { assertCompanyAccess } from "./authz.js";
 import { assertCanControlWorkspace } from "../services/workspace-authz.js";
+import { assertLocalWorkspaceCommandAllowed } from "../services/local-workspace-command-guard.js";
 import {
   resolveGitRoot,
   getStatus,
@@ -79,6 +80,11 @@ async function resolveWorkspaceGit(
     res.json({ gitAvailable: false, reason: "Workspace has no local directory path." });
     return null;
   }
+
+  // Every operation below resolves or invokes local Git. Repository config can
+  // execute tenant-controlled helpers even for nominally read-only commands, so
+  // refuse at the shared route chokepoint before the first Git subprocess.
+  assertLocalWorkspaceCommandAllowed("workspace Git command");
 
   const gitRoot = await resolveGitRoot(cwd);
   if (!gitRoot) {

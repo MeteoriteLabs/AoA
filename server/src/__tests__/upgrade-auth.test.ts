@@ -110,6 +110,7 @@ describe("authorizeCompanyUpgrade", () => {
       companyId: "company-1",
       actorType: "agent",
       actorId: "agent-1",
+      keyId: "key-1",
     });
     expect(db.update).toHaveBeenCalledTimes(1);
   });
@@ -132,6 +133,7 @@ describe("authorizeCompanyUpgrade", () => {
       companyId: "company-1",
       actorType: "agent",
       actorId: "agent-1",
+      keyId: "key-1",
     });
     expect(db.update).toHaveBeenCalledTimes(1);
   });
@@ -156,6 +158,7 @@ describe("authorizeCompanyUpgrade", () => {
       companyId: "company-1",
       actorType: "agent",
       actorId: "agent-1",
+      keyId: "key-1",
     });
     expect(db.update).toHaveBeenCalledTimes(1);
   });

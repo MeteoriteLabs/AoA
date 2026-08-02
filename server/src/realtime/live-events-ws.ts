@@ -7,10 +7,8 @@ import type { Db } from "@armyofagents/db";
 import {
   agentApiKeys,
   agents,
-  companies,
   companyMemberships,
   instanceUserRoles,
-  organizationMemberships,
 } from "@armyofagents/db";
 import type { DeploymentMode, LiveEvent } from "@armyofagents/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
@@ -29,6 +27,13 @@ import {
 import { threadService } from "../services/threads.js";
 import { permissionService } from "../services/permissions.js";
 import { hubItemsService } from "../services/hub-items.js";
+import {
+  hasActiveAgentSocketAuthorization,
+  hasActiveCloudMembership,
+  type UpgradeSocketActorContext,
+} from "../services/upgrade-socket-authorization.js";
+
+export { hasActiveCloudMembership } from "../services/upgrade-socket-authorization.js";
 
 interface WsSocket {
   readyState: number;
@@ -61,18 +66,7 @@ const { WebSocket, WebSocketServer } = require("ws") as {
   WebSocketServer: new (opts: { noServer: boolean }) => WsServer;
 };
 
-export type UpgradeContext =
-  | {
-      companyId: string;
-      actorType: "board";
-      actorId: string;
-    }
-  | {
-      companyId: string;
-      actorType: "agent";
-      actorId: string;
-      keyId: string;
-    };
+export type UpgradeContext = UpgradeSocketActorContext;
 
 interface IncomingMessageWithContext extends IncomingMessage {
   aoaUpgradeContext?: UpgradeContext;
@@ -142,85 +136,6 @@ function headersFromIncomingMessage(req: IncomingMessage): Headers {
  * instance_admin OR company membership with NO org requirement — do NOT call
  * this helper outside cloud_auth.
  */
-export async function hasActiveCloudMembership(
-  db: Db,
-  companyId: string,
-  userId: string,
-): Promise<boolean> {
-  const companyRow = await db
-    .select({ organizationId: companies.organizationId })
-    .from(companies)
-    .where(eq(companies.id, companyId))
-    .then((rows) => rows[0] ?? null);
-  const organizationId = companyRow?.organizationId ?? null;
-  if (!organizationId) return false;
-
-  const [orgMembership, companyMembership] = await Promise.all([
-    db
-      .select({ id: organizationMemberships.id })
-      .from(organizationMemberships)
-      .where(
-        and(
-          eq(organizationMemberships.userId, userId),
-          eq(organizationMemberships.organizationId, organizationId),
-          eq(organizationMemberships.status, "active"),
-        ),
-      )
-      .then((rows) => rows[0] ?? null),
-    db
-      .select({ id: companyMemberships.id })
-      .from(companyMemberships)
-      .where(
-        and(
-          eq(companyMemberships.principalType, "user"),
-          eq(companyMemberships.principalId, userId),
-          eq(companyMemberships.companyId, companyId),
-          eq(companyMemberships.status, "active"),
-        ),
-      )
-      .then((rows) => rows[0] ?? null),
-  ]);
-  return Boolean(orgMembership && companyMembership);
-}
-
-export async function hasActiveAgentSocketAuthorization(
-  db: Db,
-  context: Extract<UpgradeContext, { actorType: "agent" }>,
-): Promise<boolean> {
-  const key = await db
-    .select({
-      id: agentApiKeys.id,
-      companyId: agentApiKeys.companyId,
-      agentId: agentApiKeys.agentId,
-      revokedAt: agentApiKeys.revokedAt,
-    })
-    .from(agentApiKeys)
-    .where(and(eq(agentApiKeys.id, context.keyId), isNull(agentApiKeys.revokedAt)))
-    .then((rows) => rows[0] ?? null);
-  if (
-    !key ||
-    key.id !== context.keyId ||
-    key.companyId !== context.companyId ||
-    key.agentId !== context.actorId ||
-    key.revokedAt
-  ) {
-    return false;
-  }
-
-  const agent = await db
-    .select({ id: agents.id, companyId: agents.companyId, status: agents.status })
-    .from(agents)
-    .where(eq(agents.id, context.actorId))
-    .then((rows) => rows[0] ?? null);
-  return Boolean(
-    agent &&
-    agent.id === context.actorId &&
-    agent.companyId === context.companyId &&
-    agent.status !== "terminated" &&
-    agent.status !== "pending_approval"
-  );
-}
-
 export async function enforceLiveEventSocketAuthorization(
   db: Db,
   socket: Pick<WsSocket, "readyState" | "close">,

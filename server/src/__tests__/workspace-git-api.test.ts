@@ -47,6 +47,11 @@ vi.mock("../services/workspace-authz.js", () => ({
   assertCanControlWorkspace: vi.fn(),
 }));
 
+const mockAssertLocalWorkspaceCommandAllowed = vi.hoisted(() => vi.fn());
+vi.mock("../services/local-workspace-command-guard.js", () => ({
+  assertLocalWorkspaceCommandAllowed: mockAssertLocalWorkspaceCommandAllowed,
+}));
+
 // ---- Mock authz (assertCompanyAccess) ----
 vi.mock("../routes/authz.js", () => ({
   assertCompanyAccess: vi.fn(),
@@ -115,9 +120,39 @@ function createSequenceDb(rows: unknown[][]) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockAssertLocalWorkspaceCommandAllowed.mockReset();
   mockWsSvc.getById.mockResolvedValue(mockWorkspace);
   mockResolveGitRoot.mockResolvedValue("/tmp/test-workspace");
   mockGetCachedStatus.mockReturnValue(null);
+  mockAssertLocalWorkspaceCommandAllowed.mockReturnValue(undefined);
+});
+
+describe("cloud local-Git refusal chokepoint", () => {
+  it("rejects status, log, commit, and push before resolving or invoking Git", async () => {
+    mockAssertLocalWorkspaceCommandAllowed.mockImplementation(() => {
+      throw new Error("Refusing unsandboxed workspace Git command");
+    });
+    const app = createApp();
+
+    const responses = await Promise.all([
+      request(app).get("/api/execution-workspaces/ws-1/git/status"),
+      request(app).get("/api/execution-workspaces/ws-1/git/log"),
+      request(app)
+        .post("/api/execution-workspaces/ws-1/git/commit")
+        .send({ message: "safe message", files: ["file.txt"] }),
+      request(app)
+        .post("/api/execution-workspaces/ws-1/git/push")
+        .send({ remote: "origin", branch: "main" }),
+    ]);
+
+    expect(responses.map((res) => res.status)).toEqual([500, 500, 500, 500]);
+    expect(mockAssertLocalWorkspaceCommandAllowed).toHaveBeenCalledTimes(4);
+    expect(mockResolveGitRoot).not.toHaveBeenCalled();
+    expect(mockGetStatus).not.toHaveBeenCalled();
+    expect(mockGetLog).not.toHaveBeenCalled();
+    expect(mockCommit).not.toHaveBeenCalled();
+    expect(mockPush).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------

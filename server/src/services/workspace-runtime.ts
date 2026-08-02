@@ -23,7 +23,7 @@ import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-c
 import { probePreviewUrl } from "./runtime-service-preview-detection.js";
 import { emitRuntimeServiceTaskOutput } from "./task-output-emitters.js";
 import { tenantIsolationEnforced } from "../config/deployment-mode.js";
-import { assertUnsandboxedMultitenantAllowed } from "./unsandboxed-multitenant-guard.js";
+import { assertLocalWorkspaceCommandAllowed } from "./local-workspace-command-guard.js";
 import {
   inspectProcessStartIdentity,
   terminateByPid,
@@ -103,13 +103,7 @@ const runtimeServiceStopsInProgress = new Set<string>();
 const runtimeServiceLeasesByRun = new Map<string, string[]>();
 const execFileAsync = promisify(execFile);
 
-/** Fail closed before any tenant-authored command reaches the local host shell. */
-export function assertLocalWorkspaceCommandAllowed(sink: string): void {
-  assertUnsandboxedMultitenantAllowed(
-    { type: "local" },
-    { tenantIsolationEnforced: tenantIsolationEnforced(), sink },
-  );
-}
+export { assertLocalWorkspaceCommandAllowed } from "./local-workspace-command-guard.js";
 
 interface PersistedRuntimeProcessIdentity {
   providerRef: string | null;
@@ -373,6 +367,12 @@ async function executeProcess(input: {
   cwd: string;
   env?: NodeJS.ProcessEnv;
 }): Promise<{ stdout: string; stderr: string; code: number | null }> {
+  // Some callers record Git operations by invoking this process helper
+  // directly, so the shared spawn chokepoint—not only runGit—must enforce the
+  // cloud boundary before repository config can launch helpers or hooks.
+  if (input.command === "git") {
+    assertLocalWorkspaceCommandAllowed("workspace Git command");
+  }
   const proc = await new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve, reject) => {
     const child = spawn(input.command, input.args, {
       cwd: input.cwd,

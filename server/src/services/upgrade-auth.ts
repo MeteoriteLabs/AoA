@@ -3,22 +3,20 @@ import type { IncomingMessage } from "node:http";
 import {
   agentApiKeys,
   agents,
-  companies,
   companyMemberships,
   instanceUserRoles,
-  organizationMemberships,
   type Db,
 } from "@armyofagents/db";
 import type { DeploymentMode } from "@armyofagents/shared";
 import { and, eq, isNull } from "drizzle-orm";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { getPreviewQueryAuthToken } from "./preview-auth-query.js";
+import {
+  hasActiveCloudMembership,
+  type UpgradeSocketActorContext,
+} from "./upgrade-socket-authorization.js";
 
-export interface UpgradeActorContext {
-  companyId: string;
-  actorType: "board" | "agent";
-  actorId: string;
-}
+export type UpgradeActorContext = UpgradeSocketActorContext;
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -107,40 +105,7 @@ export async function authorizeCompanyUpgrade(
       // invariant). No instance_admin/operator bypass here — assertCompanyAccess
       // reaches operators only via a live break-glass check, which this WS path
       // does not implement, so operators fall back to their real memberships.
-      const companyRow = await db
-        .select({ organizationId: companies.organizationId })
-        .from(companies)
-        .where(eq(companies.id, companyId))
-        .then((rows) => rows[0] ?? null);
-      const organizationId = companyRow?.organizationId ?? null;
-      if (!organizationId) return null;
-
-      const [orgMembership, companyMembership] = await Promise.all([
-        db
-          .select({ id: organizationMemberships.id })
-          .from(organizationMemberships)
-          .where(
-            and(
-              eq(organizationMemberships.userId, userId),
-              eq(organizationMemberships.organizationId, organizationId),
-              eq(organizationMemberships.status, "active"),
-            ),
-          )
-          .then((rows) => rows[0] ?? null),
-        db
-          .select({ id: companyMemberships.id })
-          .from(companyMemberships)
-          .where(
-            and(
-              eq(companyMemberships.principalType, "user"),
-              eq(companyMemberships.principalId, userId),
-              eq(companyMemberships.companyId, companyId),
-              eq(companyMemberships.status, "active"),
-            ),
-          )
-          .then((rows) => rows[0] ?? null),
-      ]);
-      if (!orgMembership || !companyMembership) return null;
+      if (!(await hasActiveCloudMembership(db, companyId, userId))) return null;
       return { companyId, actorType: "board", actorId: userId };
     }
 
@@ -199,5 +164,5 @@ export async function authorizeCompanyUpgrade(
     .set({ lastUsedAt: new Date() })
     .where(eq(agentApiKeys.id, key.id));
 
-  return { companyId, actorType: "agent", actorId: key.agentId };
+  return { companyId, actorType: "agent", actorId: key.agentId, keyId: key.id };
 }
