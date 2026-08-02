@@ -8,6 +8,61 @@ export interface SnapshotGateInput {
 }
 
 const GATED_MIGRATION = "0188";
+const UNDEFINED_TABLE_SQLSTATE = "42P01";
+
+/**
+ * PostgreSQL errors can be wrapped by Drizzle and other adapters. Walk the
+ * complete cause chain so only SQLSTATE 42P01 means a genuinely fresh schema.
+ */
+export function isUndefinedTableError(error: unknown): boolean {
+  const seen = new Set<object>();
+  let current = error;
+
+  while (typeof current === "object" && current !== null && !seen.has(current)) {
+    seen.add(current);
+    const candidate = current as { cause?: unknown; code?: unknown };
+    if (candidate.code === UNDEFINED_TABLE_SQLSTATE) return true;
+    current = candidate.cause;
+  }
+
+  return false;
+}
+
+type CompanyCountRow = { count?: unknown };
+
+/**
+ * Read the pre-migration company count without converting operational database
+ * failures into an empty database. Only an actually missing companies table is
+ * safe to treat as zero; every other error must abort startup.
+ */
+export async function readCompanyCountForSnapshotGate(
+  query: () => Promise<unknown>,
+): Promise<number> {
+  let result: unknown;
+  try {
+    result = await query();
+  } catch (error) {
+    if (isUndefinedTableError(error)) return 0;
+    throw error;
+  }
+
+  const rows = Array.isArray(result)
+    ? (result as CompanyCountRow[])
+    : Array.isArray((result as { rows?: unknown } | null)?.rows)
+      ? (result as { rows: CompanyCountRow[] }).rows
+      : null;
+  const rawCount = rows?.[0]?.count;
+  const count =
+    typeof rawCount === "number"
+      ? rawCount
+      : typeof rawCount === "string" && /^\d+$/.test(rawCount)
+        ? Number(rawCount)
+        : Number.NaN;
+  if (!Number.isSafeInteger(count) || count < 0) {
+    throw new Error("Could not read a valid companies count for the migration snapshot gate");
+  }
+  return count;
+}
 
 /**
  * Pure predicate: true => refuse to apply 0188 until an operator records a

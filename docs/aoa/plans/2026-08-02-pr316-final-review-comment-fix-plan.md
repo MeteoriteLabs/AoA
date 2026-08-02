@@ -1,25 +1,23 @@
 # PR #316 final review-comment fix plan
 
 **Branch:** `claude/multitenant-cloud`
-**Reviewed HEAD:** `a4ca65778d69e8a04df6a071a28561692c99c8e4`
+**Reviewed remote HEAD:** `21d5d7ab821d7aa43116a371def6d18b2d7ac6eb`
 **Base:** `main`
 **Purpose:** close the current production-safety findings before landing PR #316. Real gVisor execution remains a separate follow-up PR.
 
 ## Review-thread triage
 
-The initial thread-aware GitHub audit found 58 unresolved Codex threads. Subsequent exact-head Codex passes added five more threads, bringing the final reviewed set to 63:
+The initial thread-aware GitHub audit found 58 unresolved Codex threads. Subsequent exact-head Codex passes brought the reviewed set to 66 threads:
 
-- 41 are already fixed or outdated.
-- 7 describe explicitly deferred, unshipped capabilities.
-- 3 are duplicates of those deferred capability gaps.
-- 4 are false positives or non-reachable as claimed.
-- The initially actionable findings were fixed and resolved after verification.
-- Eleven threads remain intentionally open for the documented, unshipped follow-up capabilities; the latest is the already-specified third `org_default` caller.
-- The latest two P1 threads cover tenant-reachable local Git execution and preview-socket revocation; both are addressed by this final patch.
+- 53 are resolved after verification, including findings that became outdated when their fixes landed.
+- 11 remain intentionally open for documented, unshipped follow-up capabilities; the latest is the already-specified third `org_default` caller.
+- The two exact-head findings at `21d5d7ab` are fixed locally and will be replied to and resolved only after this patch is pushed.
 
 Independent code review also found that the earlier provider dead-key repair catches every materialization error, including database and vault failures. A related deferred WebSocket cleanup is small and security-relevant enough to close while the same revalidation loop is being changed.
 
-The final Codex pass at `a4ca6577` added two further P1 findings. Three independent audits confirmed both as reachable violations of the declared cloud fail-closed boundary, so they remain in this PR rather than moving to the gVisor follow-up.
+The Codex pass at `a4ca6577` added two further P1 findings. Three independent audits confirmed both as reachable violations of the declared cloud fail-closed boundary, so they remain in this PR rather than moving to the gVisor follow-up.
+
+The exact-head Codex pass at `21d5d7ab` added two final findings: global agent maintenance endpoints were reachable by ordinary cloud board users, and the 0188 migration snapshot gate converted every database error into an empty-database result. Independent security and scope reviews confirmed both as production blockers. The local patch below closes them before any merge decision.
 
 ## In-scope fixes
 
@@ -108,6 +106,39 @@ Regression coverage: active cloud board remains; org/company revocation closes; 
 
 Regression coverage: the full migration chain rejects the same company prefix both within and across Organizations, and the allocator retries the global constraint with the next deterministic prefix.
 
+### 10. Restrict global agent maintenance to the operator plane
+
+- Replace board-only authorization on both global backfill routes with the shared instance-settings operator decision.
+- Permit only an authenticated operator or the synthetic `local_implicit` board in self-hosted mode.
+- Reject ordinary cloud board users and data-plane `isInstanceAdmin` users before any global database read or service mutation.
+- Preserve the existing multi-company iteration and aggregate result for authorized operators.
+
+Regression coverage: ordinary cloud board and non-operator instance-admin actors receive 403 with zero reads/writes; operator and local-implicit callers can run the parent backfill; the human-at-top route enumerates companies and sums repairs.
+
+### 11. Make the 0188 snapshot gate fail closed on database errors
+
+- Extract the company-count read into a directly testable helper.
+- Treat only PostgreSQL SQLSTATE `42P01` (`undefined_table`) as a genuinely fresh schema with zero companies.
+- Walk wrapped `.cause` chains with cycle protection because Drizzle/adapters can wrap the PostgreSQL error.
+- Propagate permission, connection, cancellation, and unclassified database failures instead of bypassing the snapshot requirement.
+- Reject malformed, null, blank, boolean, negative, non-integer, and unsafe count results rather than coercing them to zero.
+
+Regression coverage: direct/wrapped/nested `42P01` returns zero; `42501`, `08006`, and `57014` rethrow unchanged; cyclic causes terminate; direct and driver-wrapped counts pass; malformed result shapes fail closed.
+
+## Live platform QA
+
+An isolated Windows instance was launched from the patched source with its own `AOA_HOME`, embedded PostgreSQL port, application port, and workspace root. The default developer instance and data were not touched.
+
+- Completed founder onboarding through profile, Organization, company, workspace root, and provider selection.
+- Reached the lobby and company Home after first-run completion.
+- Loaded company-qualified Providers and Environments settings; provider checks returned HTTP 200.
+- Verified bare task URLs redirect through the selected company prefix and an unknown prefix renders the access-required surface.
+- Verified both patched global backfills still work for `local_implicit` self-hosted mode.
+- Verified organization-name validation rejects U+2028, U+2029, U+2061, and joiner-only input using explicit UTF-8 request bytes.
+- Captured screenshots and logs under the gitignored `.gstack/qa-reports/` directory, then stopped only the isolated listener.
+
+The QA pass also reproduced three pre-existing, non-blocking issues outside this PR: a Windows CRLF-only CSP hash mismatch from #157 (Linux production builds are unaffected), malformed non-UUID task URLs that can produce some 500 responses, and a missing-task slide-over that fans out 404 requests before settling. These should be filed as focused follow-ups rather than expanding this already-large multi-tenant PR.
+
 ## Small contract and documentation cleanup
 
 - Remove the unused public `slug`/`plan` inputs from the shared self-serve organization-create validator so it matches the server's safe `{name}` contract.
@@ -137,4 +168,4 @@ Regression coverage: the full migration chain rejects the same company prefix bo
 7. Independent whole-patch review against `origin/main`.
 8. Commit and push to PR #316, trigger fresh Codex review, and require complete Linux CI before merge.
 
-Local verification completed on the final patch: focused guard suites, `pnpm -r typecheck`, server lint, a clean `pnpm test:run`, `pnpm build`, the forbidden-token scan, and `pnpm db:generate` all passed. Schema generation and the build-time marketplace snapshot fetch produced no drift; `git diff --check` is clean apart from Windows line-ending notices. Three independent review passes found no remaining actionable P1/P2. Fresh Linux CI and an exact-head Codex review remain mandatory after push.
+Local verification completed on the exact local patch: the two focused suites passed 38 tests; the cloud/tenant/security matrix passed 186 tests across 25 files; `pnpm -r typecheck`, server lint, the forbidden-token scan, `pnpm build`, and `pnpm db:generate` passed. The full workspace suite passed with `--maxWorkers=50%`; two unrelated Windows parallel-run flakes were reproduced as passing in isolation before the reduced-contention clean run. Schema generation and the build-time marketplace snapshot fetch produced no drift; `git diff --check` is clean apart from Windows line-ending notices. Independent security and scope reviews found no remaining actionable issue in the patch. Fresh Linux CI and an exact-head Codex review remain mandatory after push.

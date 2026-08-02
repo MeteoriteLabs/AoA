@@ -37,7 +37,13 @@ import {
   secretService,
 } from "../services/index.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
-import { accessibleCompanyIdsForActor, assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import {
+  accessibleCompanyIdsForActor,
+  assertBoard,
+  assertCanManageInstanceSettings,
+  assertCompanyAccess,
+  getActorInfo,
+} from "./authz.js";
 import { assertRole } from "../middleware/rbac.js";
 import { findActiveServerAdapter, findServerAdapter, listAdapterModels } from "../adapters/index.js";
 import { redactEventPayload, redactSecretsInString } from "../redaction.js";
@@ -2220,9 +2226,7 @@ export function agentRoutes(db: Db) {
   // Temporary admin endpoint — backfill parentType/parentId from reportsTo (T3).
   // Remove after confirming all data migrated.
   router.post("/agents/admin/backfill-parent-fields", async (req, res) => {
-    // rbac: instance-admin-not-required
-    // TODO(plugins-workstream): replace with assertCanManageInstanceSettings(req) — see plugins workstream tracking issue
-    assertBoard(req);
+    assertCanManageInstanceSettings(req);
     const count = await svc.backfillParentFields();
     res.json({ ok: true, backfilledCount: count });
   });
@@ -2231,9 +2235,7 @@ export function agentRoutes(db: Db) {
   // every chain tops at a human (W6 human-at-top). Iterates all companies and
   // sums the re-parent counts. Remove after confirming all data migrated.
   router.post("/agents/admin/backfill-human-at-top", async (req, res) => {
-    // rbac: instance-admin-not-required
-    // TODO(plugins-workstream): replace with assertCanManageInstanceSettings(req) — see plugins workstream tracking issue
-    assertBoard(req);
+    assertCanManageInstanceSettings(req);
     const rows = await db.select({ id: companies.id }).from(companies);
     let reparented = 0;
     for (const c of rows) {

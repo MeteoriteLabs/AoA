@@ -70,7 +70,11 @@ import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { tryRecoverOrphanPostgres } from "./postgres/embedded-orphan-recovery.js";
-import { shouldBlockForMissingSnapshot, SnapshotGateError } from "./postgres/snapshot-gate.js";
+import {
+  readCompanyCountForSnapshotGate,
+  shouldBlockForMissingSnapshot,
+  SnapshotGateError,
+} from "./postgres/snapshot-gate.js";
 import { assertTestSupportFlagSafe } from "./services/test-support-safety.js";
 import { DEFAULT_BACKUP_RETENTION } from "@armyofagents/shared";
 import { runChroniclerSweep, CHRONICLER_SWEEP_INTERVAL_MS } from "./services/internal-agent/aoa-agents/sweep-chronicler.js";
@@ -195,18 +199,13 @@ async function checkMigrationSnapshotGate(
 ): Promise<void> {
   if (config.deploymentMode !== "cloud_auth") return;
 
-  let companyCount = 0;
+  let companyCount: number;
   let recordedSnapshots: string[] = [];
   const gateDb = createDb(connectionString);
   try {
-    try {
-      const companyRows = await gateDb.execute(sql`SELECT count(*)::int AS count FROM companies`);
-      const rows = Array.isArray(companyRows) ? companyRows : (companyRows as any).rows;
-      companyCount = Number(rows?.[0]?.count ?? 0);
-    } catch {
-      // companies table does not exist yet (fresh DB) — nothing to lose.
-      companyCount = 0;
-    }
+    companyCount = await readCompanyCountForSnapshotGate(() =>
+      gateDb.execute(sql`SELECT count(*)::int AS count FROM companies`),
+    );
     try {
       const settingsRows = await gateDb.select().from(instanceSettings).limit(1);
       const general = settingsRows[0]?.general as { migrationSnapshots?: string[] } | undefined;

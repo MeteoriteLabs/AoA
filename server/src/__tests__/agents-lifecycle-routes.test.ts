@@ -25,6 +25,7 @@ const mockAgentService = vi.hoisted(() => ({
   getConfigRevision: vi.fn(),
   getChainOfCommand: vi.fn().mockResolvedValue([]),
   backfillParentFields: vi.fn().mockResolvedValue(0),
+  backfillHumanAtTop: vi.fn().mockResolvedValue(0),
   listKeys: vi.fn(),
   createApiKey: vi.fn(),
   revokeKey: vi.fn(),
@@ -101,14 +102,14 @@ const companyAActor = {
   isInstanceAdmin: false,
 };
 
-function makeApp(actor: any) {
+function makeApp(actor: any, db: any = {}) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api", agentRoutes({} as any));
+  app.use("/api", agentRoutes(db));
   app.use(errorHandler);
   return app;
 }
@@ -214,5 +215,89 @@ describe("/agents/:id/{pause,resume,terminate} cross-tenant", () => {
     expect(res.status).toBe(200);
     expect(mockAgentService.terminate).toHaveBeenCalledWith(AGENT_ID);
     expect(mockHeartbeatService.cancelActiveForAgent).toHaveBeenCalledWith(AGENT_ID);
+  });
+});
+
+describe("agent global backfill authorization", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockAgentService.backfillParentFields.mockResolvedValue(2);
+    mockAgentService.backfillHumanAtTop.mockReset().mockResolvedValue(0);
+  });
+
+  const backfillPaths = [
+    "/api/agents/admin/backfill-parent-fields",
+    "/api/agents/admin/backfill-human-at-top",
+  ];
+
+  for (const actor of [
+    {
+      label: "ordinary cloud board",
+      value: {
+        type: "board",
+        source: "session",
+        userId: "tenant-user",
+        companyIds: ["company-A"],
+        organizationIds: ["org-A"],
+        isInstanceAdmin: false,
+        operator: false,
+      },
+    },
+    {
+      label: "data-plane admin without operator authority",
+      value: {
+        type: "board",
+        source: "session",
+        userId: "tenant-admin",
+        companyIds: ["company-A"],
+        organizationIds: ["org-A"],
+        isInstanceAdmin: true,
+        operator: false,
+      },
+    },
+  ]) {
+    for (const path of backfillPaths) {
+      it(`rejects ${actor.label} at ${path} before any global write`, async () => {
+        const select = vi.fn();
+        const res = await request(makeApp(actor.value, { select })).post(path).send({});
+
+        expect(res.status).toBe(403);
+        expect(mockAgentService.backfillParentFields).not.toHaveBeenCalled();
+        expect(mockAgentService.backfillHumanAtTop).not.toHaveBeenCalled();
+        expect(select).not.toHaveBeenCalled();
+      });
+    }
+  }
+
+  it.each([
+    ["operator", { type: "board", source: "session", userId: "operator", operator: true }],
+    ["local implicit board", { type: "board", source: "local_implicit", userId: "local-board" }],
+  ])("allows %s to run the parent-field backfill", async (_label, actor) => {
+    const res = await request(makeApp(actor))
+      .post("/api/agents/admin/backfill-parent-fields")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true, backfilledCount: 2 });
+    expect(mockAgentService.backfillParentFields).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows an operator to enumerate companies and sums human-at-top repairs", async () => {
+    mockAgentService.backfillHumanAtTop
+      .mockResolvedValueOnce(1)
+      .mockResolvedValueOnce(2);
+    const from = vi.fn().mockResolvedValue([{ id: "company-A" }, { id: "company-B" }]);
+    const select = vi.fn(() => ({ from }));
+    const actor = { type: "board", source: "session", userId: "operator", operator: true };
+
+    const res = await request(makeApp(actor, { select }))
+      .post("/api/agents/admin/backfill-human-at-top")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ reparented: 3 });
+    expect(select).toHaveBeenCalledTimes(1);
+    expect(mockAgentService.backfillHumanAtTop).toHaveBeenNthCalledWith(1, "company-A");
+    expect(mockAgentService.backfillHumanAtTop).toHaveBeenNthCalledWith(2, "company-B");
   });
 });
