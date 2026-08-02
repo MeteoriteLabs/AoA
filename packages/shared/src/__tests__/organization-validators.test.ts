@@ -6,11 +6,14 @@ import {
 
 describe("organization validators", () => {
   it("accepts the self-serve create payload", () => {
-    const parsed = createOrganizationSchema.parse({ name: "Acme" });
+    const parsed = createOrganizationSchema.parse({ name: "  Acme  " });
     expect(parsed.name).toBe("Acme");
   });
-  it("rejects an empty name", () => {
+  it("rejects empty, database-invalid, and oversized names", () => {
     expect(() => createOrganizationSchema.parse({ name: "" })).toThrow();
+    expect(() => createOrganizationSchema.parse({ name: "   " })).toThrow();
+    expect(() => createOrganizationSchema.parse({ name: "Acme\0Corp" })).toThrow();
+    expect(() => createOrganizationSchema.parse({ name: "a".repeat(101) })).toThrow();
   });
   it("rejects caller-controlled slug and plan fields", () => {
     expect(() => createOrganizationSchema.parse({ name: "Acme", slug: "acme" })).toThrow();

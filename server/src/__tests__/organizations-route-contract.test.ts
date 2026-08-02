@@ -101,6 +101,19 @@ describe("organization routes", () => {
     expect(routeSpies.createSelfServeOrganization).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["blank", "   "],
+    ["NUL-containing", "Acme\0Corp"],
+    ["oversized", "a".repeat(101)],
+  ])("rejects a %s organization name before persistence", async (_label, name) => {
+    const { app } = makeApp(boardActor);
+
+    const res = await request(app).post("/api/organizations").send({ name });
+
+    expect(res.status).toBe(400);
+    expect(routeSpies.createSelfServeOrganization).not.toHaveBeenCalled();
+  });
+
   it("rejects agent actors from organization routes", async () => {
     const { app } = makeApp({ type: "agent", companyId: "co1" });
     const res = await request(app).get("/api/organizations");

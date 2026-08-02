@@ -81,6 +81,7 @@ Regression coverage: typed candidate failure falls through; generic secret/subsc
 ## Small contract and documentation cleanup
 
 - Remove the unused public `slug`/`plan` inputs from the shared self-serve organization-create validator so it matches the server's safe `{name}` contract.
+- Trim and bound self-serve organization names and reject PostgreSQL-invalid NUL characters before slug derivation.
 - Correct the PR description's stale instruction to enable unsandboxed multi-tenant execution. Hosted execution remains fail-closed until the gVisor worker plane ships.
 - Reply to and resolve only the review threads proven fixed by this patch; leave intentional follow-up threads open with their existing scope notes.
 
