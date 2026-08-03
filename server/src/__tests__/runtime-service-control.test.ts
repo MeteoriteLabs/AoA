@@ -449,6 +449,7 @@ describe("terminatePersistedLocalRuntimeProcess", () => {
     const safe = await terminatePersistedLocalRuntimeProcess(
       { providerRef: "4242", startedAt: new Date("2026-08-02T00:00:00Z") },
       {
+        platform: "linux",
         isAlive: async () => aliveChecks++ === 0,
         inspectIdentity: () => "matching",
         terminate,
@@ -459,8 +460,47 @@ describe("terminatePersistedLocalRuntimeProcess", () => {
     expect(safe).toBe(true);
     expect(terminate).toHaveBeenCalledWith(
       4242,
-      process.platform === "win32" ? null : 4242,
+      4242,
     );
+  });
+
+  it("fails closed when the persisted POSIX leader is gone but its process group is alive", async () => {
+    const inspectIdentity = vi.fn();
+    const terminate = vi.fn();
+    const isAlive = vi.fn(async (target: number) => target === -4242);
+
+    const safe = await terminatePersistedLocalRuntimeProcess(
+      { providerRef: "4242", startedAt: new Date("2026-08-02T00:00:00Z") },
+      { platform: "linux", isAlive, inspectIdentity, terminate },
+    );
+
+    expect(safe).toBe(false);
+    expect(isAlive).toHaveBeenNthCalledWith(1, 4242);
+    expect(isAlive).toHaveBeenNthCalledWith(2, -4242);
+    expect(inspectIdentity).not.toHaveBeenCalled();
+    expect(terminate).not.toHaveBeenCalled();
+  });
+
+  it("does not report success when only the POSIX leader exits after group termination", async () => {
+    let leaderChecks = 0;
+    const isAlive = vi.fn(async (target: number) => {
+      if (target === 4242) return leaderChecks++ === 0;
+      return target === -4242;
+    });
+
+    const safe = await terminatePersistedLocalRuntimeProcess(
+      { providerRef: "4242", startedAt: new Date("2026-08-02T00:00:00Z") },
+      {
+        platform: "linux",
+        isAlive,
+        inspectIdentity: () => "matching",
+        terminate: vi.fn(),
+        waitForExitMs: 10,
+      },
+    );
+
+    expect(safe).toBe(false);
+    expect(isAlive).toHaveBeenCalledWith(-4242);
   });
 
   it("fails closed when a live persisted PID cannot be identity-verified", async () => {

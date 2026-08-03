@@ -111,7 +111,8 @@ interface PersistedRuntimeProcessIdentity {
 }
 
 interface PersistedRuntimeProcessTerminationDeps {
-  isAlive?: (pid: number) => Promise<boolean>;
+  platform?: NodeJS.Platform;
+  isAlive?: (target: number) => Promise<boolean>;
   inspectIdentity?: (
     pid: number,
     expected: { startedAt: Date },
@@ -120,15 +121,17 @@ interface PersistedRuntimeProcessTerminationDeps {
   waitForExitMs?: number;
 }
 
-async function isProcessEffectivelyAlive(pid: number): Promise<boolean> {
+async function isProcessTargetEffectivelyAlive(target: number): Promise<boolean> {
   try {
-    process.kill(pid, 0);
+    process.kill(target, 0);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EPERM") return false;
   }
-  if (process.platform === "linux") {
+  // Negative POSIX targets address a process group, not a /proc PID. The
+  // signal-0 probe above is the authoritative liveness check for that target.
+  if (target > 0 && process.platform === "linux") {
     try {
-      const stat = await fs.readFile(`/proc/${pid}/stat`, "utf8");
+      const stat = await fs.readFile(`/proc/${target}/stat`, "utf8");
       const closeParen = stat.lastIndexOf(")");
       if (closeParen >= 0 && stat.slice(closeParen + 2).startsWith("Z ")) return false;
     } catch {
@@ -152,8 +155,18 @@ export async function terminatePersistedLocalRuntimeProcess(
   const pid = Number(rawPid);
   if (!Number.isSafeInteger(pid) || pid <= 0) return false;
 
-  const isAlive = deps.isAlive ?? isProcessEffectivelyAlive;
-  if (!await isAlive(pid)) return true;
+  const platform = deps.platform ?? process.platform;
+  const isAlive = deps.isAlive ?? isProcessTargetEffectivelyAlive;
+  const leaderAlive = await isAlive(pid);
+  const terminationTarget = platform === "win32" ? pid : -pid;
+  if (!leaderAlive) {
+    // A detached POSIX leader may exit while tenant-command descendants remain
+    // in its process group. With the recorded leader gone there is no process
+    // start identity left to verify safely, so preserve the row and make cloud
+    // startup fail closed until an operator remediates the group.
+    if (platform !== "win32" && await isAlive(terminationTarget)) return false;
+    return true;
+  }
 
   const identity = (deps.inspectIdentity ?? inspectProcessStartIdentity)(
     pid,
@@ -166,12 +179,14 @@ export async function terminatePersistedLocalRuntimeProcess(
 
   (deps.terminate ?? terminateByPid)(
     pid,
-    process.platform === "win32" ? null : pid,
+    platform === "win32" ? null : pid,
   );
 
   const deadline = Date.now() + (deps.waitForExitMs ?? 2_000);
   while (Date.now() <= deadline) {
-    if (!await isAlive(pid)) return true;
+    // POSIX success means the entire detached process group is gone, not only
+    // its shell/leader. Windows taskkill targets the tree through the PID.
+    if (!await isAlive(terminationTarget)) return true;
     await delay(50);
   }
   return false;

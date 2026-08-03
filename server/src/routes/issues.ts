@@ -795,6 +795,12 @@ export function issueRoutes(db: Db, storage: StorageService) {
   router.param("issueId", async (req, res, next, rawId) => {
     try {
       const companyId = req.params.companyId as string | undefined;
+      // This company-qualified attachment param hook runs before its handler.
+      // Gate the URL company before the identifier lookup to avoid exposing
+      // task existence through 404-versus-401/403 response differences.
+      if (companyId) {
+        await assertCompanyAccess(db, req, companyId);
+      }
       req.params.issueId = await normalizeIssueIdentifier(
         rawId,
         companyId,

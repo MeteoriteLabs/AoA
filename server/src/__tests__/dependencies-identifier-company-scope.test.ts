@@ -1,6 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { setDeploymentMode } from "../config/deployment-mode.js";
 import { errorHandler } from "../middleware/index.js";
 import { dependencyRoutes } from "../routes/dependencies.js";
 
@@ -36,18 +37,18 @@ vi.mock("../services/index.js", () => ({
 const COMPANY_A = "11111111-1111-1111-1111-111111111111";
 const RESOLVED_ISSUE_ID = "22222222-2222-4222-8222-222222222222";
 
-function createApp() {
+function createApp(actor: Record<string, unknown> = {
+  type: "board" as const,
+  userId: "user-a",
+  source: "session",
+  companyIds: [COMPANY_A],
+  operator: false,
+  isInstanceAdmin: false,
+}) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as express.Request & { actor: unknown }).actor = {
-      type: "board" as const,
-      userId: "user-a",
-      source: "session",
-      companyIds: [COMPANY_A],
-      operator: false,
-      isInstanceAdmin: false,
-    };
+    (req as express.Request & { actor: unknown }).actor = actor;
     next();
   });
   app.use("/api", dependencyRoutes({} as never));
@@ -56,7 +57,85 @@ function createApp() {
 }
 
 describe("dependencies routes — company-scoped identifier resolution", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setDeploymentMode("local_trusted");
+  });
+
+  it.each([
+    ["anonymous", { type: "none", source: "none" }, 401],
+    [
+      "cross-tenant board",
+      {
+        type: "board",
+        userId: "user-b",
+        source: "session",
+        companyIds: [],
+        operator: false,
+        isInstanceAdmin: false,
+      },
+      403,
+    ],
+    [
+      "cross-tenant agent",
+      {
+        type: "agent",
+        agentId: "agent-b",
+        companyId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      },
+      403,
+    ],
+    [
+      "cross-tenant MCP key",
+      {
+        type: "mcp",
+        source: "mcp_key",
+        userId: "user-b",
+        companyId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        companyIds: ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"],
+      },
+      403,
+    ],
+  ])(
+    "rejects %s before identifier lookup, with no existing-versus-absent oracle",
+    async (_label, actor, expectedStatus) => {
+      mockIssueService.getByIdentifierInCompany.mockResolvedValue({
+        id: RESOLVED_ISSUE_ID,
+        companyId: COMPANY_A,
+        identifier: "ACM-1",
+      });
+
+      for (const identifier of ["ACM-1", "ACM-999", RESOLVED_ISSUE_ID]) {
+        const res = await request(createApp(actor)).get(
+          `/api/companies/${COMPANY_A}/issues/${identifier}/dependencies`,
+        );
+        expect(res.status, `${identifier}: ${JSON.stringify(res.body)}`).toBe(expectedStatus);
+      }
+
+      expect(mockIssueService.getByIdentifierInCompany).not.toHaveBeenCalled();
+      expect(mockDependencyService.getDependencies).not.toHaveBeenCalled();
+    },
+  );
+
+  it("allows an active cloud MCP scope to resolve inside its company", async () => {
+    setDeploymentMode("cloud_auth");
+    mockIssueService.getByIdentifierInCompany.mockResolvedValue({
+      id: RESOLVED_ISSUE_ID,
+      companyId: COMPANY_A,
+      identifier: "ACM-1",
+    });
+
+    const res = await request(createApp({
+      type: "mcp",
+      source: "mcp_key",
+      userId: "user-a",
+      companyId: COMPANY_A,
+      companyIds: [COMPANY_A],
+    })).get(`/api/companies/${COMPANY_A}/issues/ACM-1/dependencies`);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.getByIdentifierInCompany).toHaveBeenCalledWith(COMPANY_A, "ACM-1");
+  });
 
   it("resolves an identifier via getByIdentifierInCompany(:companyId, id), never the global lookup", async () => {
     mockIssueService.getByIdentifierInCompany.mockResolvedValue({

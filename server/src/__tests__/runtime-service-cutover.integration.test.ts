@@ -47,4 +47,46 @@ describe("cloud runtime-service cutover", () => {
       try { process.kill(-pid, "SIGKILL"); } catch { /* already reaped */ }
     }
   }, 10_000);
+
+  itLinux("fails closed when a detached leader exits but its process group survives", async () => {
+    const leader = spawn(process.execPath, [
+      "-e",
+      [
+        "const { spawn } = require('node:child_process');",
+        "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+        "child.unref();",
+      ].join(" "),
+    ], {
+      detached: true,
+      stdio: "ignore",
+    });
+    leader.unref();
+    const pid = leader.pid!;
+
+    const isAlive = (target: number) => {
+      try {
+        process.kill(target, 0);
+        return true;
+      } catch (error) {
+        return (error as NodeJS.ErrnoException).code === "EPERM";
+      }
+    };
+
+    try {
+      const deadline = Date.now() + 5_000;
+      while (Date.now() <= deadline && (isAlive(pid) || !isAlive(-pid))) {
+        await delay(25);
+      }
+
+      expect(isAlive(pid)).toBe(false);
+      expect(isAlive(-pid)).toBe(true);
+      await expect(terminatePersistedLocalRuntimeProcess({
+        providerRef: String(pid),
+        startedAt: new Date(),
+      })).resolves.toBe(false);
+      expect(isAlive(-pid)).toBe(true);
+    } finally {
+      try { process.kill(-pid, "SIGKILL"); } catch { /* already reaped */ }
+    }
+  }, 10_000);
 });

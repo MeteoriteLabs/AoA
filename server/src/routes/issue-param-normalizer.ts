@@ -1,7 +1,7 @@
 import type { Request, Router } from "express";
 import type { Db } from "@armyofagents/db";
 import { issueService } from "../services/issues.js";
-import { accessibleCompanyIdsForActor } from "./authz.js";
+import { accessibleCompanyIdsForActor, assertCompanyAccess } from "./authz.js";
 import { notFound } from "../errors.js";
 
 const ISSUE_IDENTIFIER_RE = /^[A-Z]+-\d+$/i;
@@ -66,6 +66,13 @@ export function registerIssueParamNormalizer(
         const companyId = companyParamName
           ? (req.params[companyParamName] as string | undefined)
           : undefined;
+        // Express parameter hooks run before handlers. Authorize the URL company
+        // before resolving a human-readable identifier inside it; otherwise an
+        // unauthorized caller can distinguish an existing task (later 401/403)
+        // from an absent one (404 here).
+        if (companyId) {
+          await assertCompanyAccess(db, req, companyId);
+        }
         // Bare route (no company in URL): scope the global resolve to the
         // actor's accessible companies. Company-scoped routes ignore this.
         req.params[paramName] = await normalizeIssueParam(
