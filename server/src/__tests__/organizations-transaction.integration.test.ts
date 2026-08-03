@@ -106,6 +106,20 @@ describe.skipIf(process.platform !== "linux")(
         { name: "Atomic Co", ownerUserId },
         organizationAccessService,
       );
+      const otherOwnerUserId = `org-tx-other-owner-${randomUUID()}`;
+      const now = new Date();
+      await db.insert(authUsers).values({
+        id: otherOwnerUserId,
+        name: "Other Org Tx Owner",
+        email: `${otherOwnerUserId}@example.test`,
+        createdAt: now,
+        updatedAt: now,
+      });
+      const { organization: otherOrg } = await createSelfServeOrganization(
+        db,
+        { name: "Other Atomic Co", ownerUserId: otherOwnerUserId },
+        organizationAccessService,
+      );
       const rows = await db.select().from(organizations).where(eq(organizations.id, org.id));
       expect(rows).toHaveLength(1);
       const membership = await db
@@ -126,6 +140,11 @@ describe.skipIf(process.platform !== "linux")(
         organizationId: org.id,
         organizationName: org.name,
         organizationSlug: org.slug,
+      }));
+      expect(joinedMemberships).not.toContainEqual(expect.objectContaining({
+        organizationId: otherOrg.id,
+        organizationName: otherOrg.name,
+        organizationSlug: otherOrg.slug,
       }));
     });
 
