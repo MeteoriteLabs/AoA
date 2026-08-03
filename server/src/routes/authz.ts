@@ -4,6 +4,7 @@ import { forbidden, unauthorized } from "../errors.js";
 import { assertTenantMembership, resolveCompanyTenant } from "./authz-tenant.js";
 import { tenantIsolationEnforced } from "../config/deployment-mode.js";
 import { hasActiveBreakGlass } from "../services/operator-break-glass.js";
+import { hasActiveCloudMembership } from "../services/upgrade-socket-authorization.js";
 
 export function assertBoard(req: Request) {
   // R9a: an unauthenticated request gets 401 (not the 403 below), mirroring
@@ -50,6 +51,19 @@ export async function assertCompanyAccess(db: Db, req: Request, companyId: strin
   if (req.actor.type === "mcp") {
     if (req.actor.companyId !== companyId) {
       throw forbidden("MCP key cannot access another company");
+    }
+    // MCP keys are delegated user credentials. In cloud mode, the durable key
+    // record is not sufficient authorization: an organization suspension can
+    // leave both the company membership and key active. Revalidate both live
+    // memberships on every company access so suspended keys become dormant
+    // immediately without relying on every membership writer to revoke them.
+    if (tenantIsolationEnforced()) {
+      if (
+        !req.actor.userId ||
+        !(await hasActiveCloudMembership(db, companyId, req.actor.userId))
+      ) {
+        throw forbidden("MCP key owner does not have active company access");
+      }
     }
     return;
   }

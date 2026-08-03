@@ -166,7 +166,8 @@ Default recommendation: land #316 first, then create a fresh `codex/` follow-up 
 - [x] **T6 (P2)** — Add organization/provider/execution-target/environment API documentation and route-level provider coverage.
 - [x] **T7 (P1)** — Run targeted tests, full recursive typecheck, full tests, build, forbidden-token, no-drift, and diff-hygiene checks locally.
 - [x] **T8 (P1)** — Order startup reconciliation before background dispatch and make health-driven local-process stops identity-safe, retryable, and covered by lifecycle regression tests.
-- [ ] **T9 (P1 external gate)** — Commit/push the reviewed tree and require fresh Linux CI, including real PostgreSQL claim races and the real detached-process cutover test, before merge.
+- [x] **T9 (P1)** — Revalidate the owning user's live organization and company memberships for every cloud MCP company-access decision so org suspension immediately makes delegated keys dormant.
+- [ ] **T10 (P1 external gate)** — Commit/push the reviewed tree and require fresh Linux CI, including real PostgreSQL claim races and the real detached-process cutover test, before merge.
 
 ## Implemented Audit Fixes
 
@@ -185,19 +186,22 @@ Default recommendation: land #316 first, then create a fresh `codex/` follow-up 
 13. Startup identity-verifies and terminates persisted local runtime process groups before any durable worker, heartbeat dispatch, or desired-service restart, independently of the heartbeat flag. An unverifiable live PID blocks cloud boot and keeps its row for remediation.
 14. Local-process stops now wait after `SIGTERM`, escalate tracked POSIX groups to `SIGKILL`, confirm exit, or identity-check and terminate persisted PIDs before recording `stopped`; unconfirmed processes remain active, unhealthy, and visible to retry/startup reconciliation. Explicit stops coordinate with child-exit events, natural POSIX leader exit checks group liveness, and Windows tree-kill completion is verified.
 15. Detached local runtime identity is registered and persisted as `starting` before readiness waits, closing the hard-crash discovery window. Confirmed failure persists `failed`; unconfirmed cleanup retains `starting`/`unhealthy` plus both indexes; and an already-exited readiness child is never signalled through a stale/reused PID.
-16. The Windows aggregate-only routine import timing check retains the `3s` Linux CI budget and uses a `5s` Windows budget; the isolated Windows import measured `1.698s`.
+16. Routine and teams route-import contracts retain the meaningful `3s` Linux CI performance guard. Windows drops the nondeterministic wall-clock assertion while still requiring import completion and factory-contract assertions under the test timeout: fresh isolated teams imports ranged from `1.882s` to `8.501s`, and routines reached `6.926s`, disproving both the original `3s` and interim `5s` Windows budgets as stable cycle detectors.
+17. Cloud MCP keys now revalidate the owning user's active organization and company memberships at the central company-access boundary. Same-company keys become dormant immediately after either membership is suspended, while cross-company rejection still short-circuits and self-hosted behavior is unchanged.
 
 ## Verification Record
 
-- `pnpm -r typecheck` — pass after the final lifecycle patch (23 of 24 workspace projects; 89.3s).
-- `pnpm test:run` — pass on the final isolated full rerun after all lifecycle fixes (193.1s). Earlier parallel-load attempts reproduced only known Windows OpenCode subprocess timeouts; the isolated run is clean. The routine import contract keeps `3s` on Linux and uses `5s` on Windows.
+- `pnpm -r typecheck` — pass after the MCP live-membership patch (23 of 24 workspace projects; 75.5s).
+- `pnpm test:run` — pass on the final clean full rerun after the MCP and import-contract fixes (201.6s). Earlier aggregate attempts reproduced a Windows OpenCode subprocess timeout that passed three isolated reruns and the invalid route-import timing assumptions documented above.
 - Focused runtime lifecycle suite (`workspace-runtime`, runtime-service control/cutover, terminate-process) — pass after each remediation round. Linux-only real-process regressions cover SIGTERM-resistant leaders/descendants, forced readiness-cleanup failure with tracked recovery, and stale-PID no-signal behavior.
-- `pnpm build` — pass (63.7s); bundled marketplace/connectors refresh produced no worktree drift.
+- `pnpm build` — pass (62.8s); bundled marketplace/connectors refresh produced no worktree drift.
 - `node scripts/check-forbidden-tokens.mjs` — pass.
 - `pnpm db:generate` — pass, no schema changes or migration drift.
 - `git diff --check` — pass apart from PowerShell LF-to-CRLF notices.
 - `pnpm --filter @armyofagents/server lint` — pass (18.6s). The repository has no root `pnpm lint` script; baseline GitHub lint is green.
-- Baseline GitHub head `1eb61ec7`: open and mergeable; required verify/e2e/e2e-pgvector/lint/migrations/brand/policy/ci-required checks pass; advisory LLM eval failed. These local fixes are not represented in CI until committed and pushed.
+- Generated tools manifest, tools documentation, and AoA native skills seeder freshness checks — pass (skills checked against `C:/Users/TK/.aoa/wt/aoa-skills`).
+- MCP live-membership focused suites (`tenant-isolation-matrix`, `mcp-cross-tenant`, `upgrade-auth`, and `mcp-server`) — 72 tests pass; server typecheck and lint pass. The regression exercises the protocol route and proves suspended-org denial happens before company lookup, MCP client touch, or tool dispatch.
+- Baseline GitHub head `da9e8634`: open and mergeable; required verify/e2e/e2e-pgvector/lint/migrations/brand/policy/ci-required checks pass; advisory LLM eval failed. The current MCP/import-contract fixes are not represented in CI until committed and pushed.
 
 ## External Gates and Deferred Work
 

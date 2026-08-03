@@ -135,6 +135,77 @@ describe("tenant isolation matrix — assertCompanyAccess chokepoint (cloud_auth
     await expect(assertCompanyAccess(db(ORG_A), req, CO_A)).rejects.toThrow(/another company/i);
   });
 
+  it("allows a same-company mcp key whose owner has active org and company memberships", async () => {
+    const req = {
+      actor: {
+        type: "mcp",
+        source: "mcp_key",
+        userId: "mcp-active",
+        companyId: CO_A,
+      },
+    } as any;
+    await expect(assertCompanyAccess(db(ORG_A), req, CO_A)).resolves.toBeUndefined();
+  });
+
+  it("denies a same-company mcp key after its owner's org membership is suspended", async () => {
+    let selectCall = 0;
+    const suspendedOrgDb = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            then: (resolve: (rows: unknown[]) => unknown) => {
+              selectCall += 1;
+              if (selectCall === 1) return Promise.resolve([{ organizationId: ORG_A }]).then(resolve);
+              if (selectCall === 2) return Promise.resolve([]).then(resolve);
+              return Promise.resolve([{ id: "company-membership" }]).then(resolve);
+            },
+          }),
+        }),
+      }),
+    } as any;
+    const req = {
+      actor: {
+        type: "mcp",
+        source: "mcp_key",
+        userId: "mcp-suspended",
+        companyId: CO_A,
+      },
+    } as any;
+    await expect(assertCompanyAccess(suspendedOrgDb, req, CO_A)).rejects.toThrow(/active company access/i);
+  });
+
+  it("denies a same-company mcp key when the company membership is inactive", async () => {
+    let selectCall = 0;
+    const missingCompanyDb = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            then: (resolve: (rows: unknown[]) => unknown) => {
+              selectCall += 1;
+              if (selectCall === 1) return Promise.resolve([{ organizationId: ORG_A }]).then(resolve);
+              if (selectCall === 2) return Promise.resolve([{ id: "org-membership" }]).then(resolve);
+              return Promise.resolve([]).then(resolve);
+            },
+          }),
+        }),
+      }),
+    } as any;
+    const req = {
+      actor: {
+        type: "mcp",
+        source: "mcp_key",
+        userId: "mcp-no-company",
+        companyId: CO_A,
+      },
+    } as any;
+    await expect(assertCompanyAccess(missingCompanyDb, req, CO_A)).rejects.toThrow(/active company access/i);
+  });
+
+  it("fails closed for a same-company mcp key without its owning user id", async () => {
+    const req = { actor: { type: "mcp", source: "mcp_key", companyId: CO_A } } as any;
+    await expect(assertCompanyAccess(db(ORG_A), req, CO_A)).rejects.toThrow(/active company access/i);
+  });
+
   it("an unauthenticated actor is rejected", async () => {
     const req = { actor: { type: "none", source: "none" } } as any;
     await expect(assertCompanyAccess(db(ORG_A), req, CO_A)).rejects.toThrow();
@@ -163,6 +234,23 @@ describe("tenant isolation matrix — self-hosted bypass preserved (not enforced
   it("local_implicit loopback retains the bypass in self-hosted", async () => {
     const req = { actor: { type: "board", source: "local_implicit", userId: "local-board" } } as any;
     await expect(assertCompanyAccess(db(ORG_A), req, CO_A)).resolves.toBeUndefined();
+  });
+
+  it("same-company mcp keys retain their legacy self-hosted behavior without membership rows", async () => {
+    const noQueryDb = {
+      select: () => {
+        throw new Error("self-hosted MCP access must not query cloud membership");
+      },
+    } as any;
+    const req = {
+      actor: {
+        type: "mcp",
+        source: "mcp_key",
+        userId: "local-mcp-user",
+        companyId: CO_A,
+      },
+    } as any;
+    await expect(assertCompanyAccess(noQueryDb, req, CO_A)).resolves.toBeUndefined();
   });
 });
 
