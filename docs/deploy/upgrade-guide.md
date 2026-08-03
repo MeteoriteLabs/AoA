@@ -100,27 +100,42 @@ These identifiers are wire-compat and will not change. See [Wire Compatibility R
    on the canonical `instance_settings` row where `singleton_key = 'default'`:
 
    ```sql
-   UPDATE instance_settings
+   INSERT INTO instance_settings (singleton_key, general)
+   VALUES ('default', '{"migrationSnapshots":["0188"]}'::jsonb)
+   ON CONFLICT (singleton_key) DO UPDATE
    SET general = jsonb_set(
-         general,
+         instance_settings.general,
          '{migrationSnapshots}',
-         CASE
-           WHEN COALESCE(general->'migrationSnapshots', '[]'::jsonb) @> '["0188"]'::jsonb
-             THEN COALESCE(general->'migrationSnapshots', '[]'::jsonb)
-           ELSE COALESCE(general->'migrationSnapshots', '[]'::jsonb) || '["0188"]'::jsonb
-         END,
+         (
+           SELECT CASE
+             WHEN cleaned.markers @> '["0188"]'::jsonb THEN cleaned.markers
+             ELSE cleaned.markers || '["0188"]'::jsonb
+           END
+           FROM (
+             SELECT COALESCE(jsonb_agg(candidate.marker), '[]'::jsonb) AS markers
+             FROM jsonb_array_elements(
+               CASE
+                 WHEN jsonb_typeof(instance_settings.general->'migrationSnapshots') = 'array'
+                   THEN instance_settings.general->'migrationSnapshots'
+                 ELSE '[]'::jsonb
+               END
+             ) AS candidate(marker)
+             WHERE jsonb_typeof(candidate.marker) = 'string'
+           ) AS cleaned
+         ),
          true
        ),
-       updated_at = now()
-   WHERE singleton_key = 'default';
+       updated_at = now();
 
    SELECT general->'migrationSnapshots' AS migration_snapshots
    FROM instance_settings
    WHERE singleton_key = 'default';
    ```
 
-   The `UPDATE` must affect exactly one row and the verification result must
-   contain `"0188"`; otherwise stop. The same gate is enforced by
+   The command must insert or update exactly one row and the verification
+   result must contain `"0188"`; otherwise stop. Keep every application replica
+   stopped from this marker operation until the migration job completes, so no
+   settings writer can race the cutover. The same gate is enforced by
    server auto-apply and `pnpm db:migrate`. A manual migration with no explicit
    deployment mode fails closed for this one-way cutover rather than assuming
    local trusted mode.

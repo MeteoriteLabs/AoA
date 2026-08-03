@@ -188,6 +188,10 @@ Batch 5 acceptance tests:
    denial. Preserve the ordinary error state, clear only the canonical cloud
    reason/message in reads, and expose Retry/Enable so the documented recovery
    path is usable; successful activation clears the durable fields.
+6. Make the snapshot-marker runbook work when the canonical instance-settings
+   row has never been lazily created: use an idempotent
+   `INSERT ... ON CONFLICT (singleton_key) DO UPDATE`, preserve existing
+   markers, and verify the canonical row before applying 0188.
 
 Batch 6 acceptance tests:
 
@@ -197,6 +201,7 @@ Batch 6 acceptance tests:
 - the primary Plugins settings predicate excludes uninstalled rows
 - the actual Drizzle predicate SQL/parameters are asserted so mocks cannot create a false green
 - cloud mode continues projecting every installed state as blocked, while self-hosted reads clear only the stale canonical cloud diagnostic and preserve unrelated errors
+- both operator runbooks upsert an absent canonical settings row and retain the explicit canonical verification query
 
 ## Failure Modes and Rescue
 
@@ -293,6 +298,24 @@ Implementation evidence captured 2026-08-03:
   tools JSON/Markdown freshness, external native-skills freshness, schema drift
   generation (`No schema changes, nothing to migrate`), and `git diff --check`
   passed after the last code change.
+- The next exact-head Codex pass found one documentation-path P2: migration 0048
+  creates no canonical settings row, while the runbook used `UPDATE`, so a
+  populated database that had never opened Instance Settings could not record
+  the required marker. Both runbooks now use an idempotent canonical-row upsert,
+  and source plus real-PostgreSQL contract tests pin the absent-row-safe SQL,
+  idempotence, concurrent serialization, malformed-marker repair, preservation
+  of unrelated settings, and canonical verification. The focused Windows matrix
+  passed 40/40 with the three embedded-PostgreSQL cases correctly reserved for
+  Linux. Three independent reviewers returned clean verdicts: two found no
+  P0-P3 in the exact repair and one found no new actionable P0-P2 across the full
+  merge-base diff.
+- The final exact-candidate rerun passed `pnpm test:run -- --maxWorkers=4` in
+  518 seconds, all 23 workspace typecheck scopes, the production build, full
+  server lint, forbidden-token scan, generated tools JSON/Markdown freshness,
+  external native-skills freshness, and `git diff --check`. `pnpm db:generate`
+  reported `No schema changes, nothing to migrate`, and did not change the
+  tracked or untracked worktree set. Fresh Linux CI remains required to execute
+  the three real-PostgreSQL runbook cases and all authoritative platform lanes.
 - Remaining merge gates are operational: commit/push this reviewed worktree to PR #316, require fresh Linux CI, fetch/reconcile all review threads, request another whole-PR `@codex review`, and repeat the loop if it returns any actionable finding. gVisor remains a fresh follow-up PR from updated `main`.
 
 Known Windows flake protocol:
