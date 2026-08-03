@@ -167,7 +167,8 @@ Default recommendation: land #316 first, then create a fresh `codex/` follow-up 
 - [x] **T7 (P1)** — Run targeted tests, full recursive typecheck, full tests, build, forbidden-token, no-drift, and diff-hygiene checks locally.
 - [x] **T8 (P1)** — Order startup reconciliation before background dispatch and make health-driven local-process stops identity-safe, retryable, and covered by lifecycle regression tests.
 - [x] **T9 (P1)** — Revalidate the owning user's live organization and company memberships for every cloud MCP company-access decision so org suspension immediately makes delegated keys dormant.
-- [ ] **T10 (P1 external gate)** — Commit/push the reviewed tree and require fresh Linux CI, including real PostgreSQL claim races and the real detached-process cutover test, before merge.
+- [x] **T10 (P2)** — Move cloud MCP live-membership validation before bare-identifier scope derivation, cache the one-request company snapshot, and make existing/missing identifiers indistinguishable to suspended keys.
+- [ ] **T11 (P1 external gate)** — Commit/push the reviewed tree and require fresh Linux CI, including real PostgreSQL claim races and the real detached-process cutover test, before merge.
 
 ## Implemented Audit Fixes
 
@@ -187,21 +188,23 @@ Default recommendation: land #316 first, then create a fresh `codex/` follow-up 
 14. Local-process stops now wait after `SIGTERM`, escalate tracked POSIX groups to `SIGKILL`, confirm exit, or identity-check and terminate persisted PIDs before recording `stopped`; unconfirmed processes remain active, unhealthy, and visible to retry/startup reconciliation. Explicit stops coordinate with child-exit events, natural POSIX leader exit checks group liveness, and Windows tree-kill completion is verified.
 15. Detached local runtime identity is registered and persisted as `starting` before readiness waits, closing the hard-crash discovery window. Confirmed failure persists `failed`; unconfirmed cleanup retains `starting`/`unhealthy` plus both indexes; and an already-exited readiness child is never signalled through a stale/reused PID.
 16. Routine and teams route-import contracts retain the meaningful `3s` Linux CI performance guard. Windows drops the nondeterministic wall-clock assertion while still requiring import completion and factory-contract assertions under the test timeout: fresh isolated teams imports ranged from `1.882s` to `8.501s`, and routines reached `6.926s`, disproving both the original `3s` and interim `5s` Windows budgets as stable cycle detectors.
-17. Cloud MCP keys now revalidate the owning user's active organization and company memberships at the central company-access boundary. Same-company keys become dormant immediately after either membership is suspended, while cross-company rejection still short-circuits and self-hosted behavior is unchanged.
+17. Cloud MCP access now requires the owning user's active organization and company memberships. Same-company keys become dormant after either membership is suspended, while cross-company rejection and self-hosted behavior remain unchanged.
+18. Cloud MCP authentication now performs that live check before any route parameter hook derives lookup scope. Suspended keys remain unauthenticated/unscoped; active keys carry a per-request authorized-company snapshot consumed by bare resolution and the central guard, avoiding both the identifier oracle and duplicate membership queries while preserving self-hosted and `lastUsedAt` semantics.
 
 ## Verification Record
 
-- `pnpm -r typecheck` — pass after the MCP live-membership patch (23 of 24 workspace projects; 75.5s).
-- `pnpm test:run` — pass on the final clean full rerun after the MCP and import-contract fixes (201.6s). Earlier aggregate attempts reproduced a Windows OpenCode subprocess timeout that passed three isolated reruns and the invalid route-import timing assumptions documented above.
+- `pnpm -r typecheck` — pass after the MCP pre-authorization patch (23 of 24 workspace projects; 83.1s).
+- `pnpm test:run` — pass on the final clean full rerun after the MCP pre-authorization patch (202.4s). An earlier aggregate attempt hit the established Windows OpenCode subprocess-timeout class; the exact `execute-mcp-gate` file then passed three isolated fresh-process runs (4/4 each).
 - Focused runtime lifecycle suite (`workspace-runtime`, runtime-service control/cutover, terminate-process) — pass after each remediation round. Linux-only real-process regressions cover SIGTERM-resistant leaders/descendants, forced readiness-cleanup failure with tracked recovery, and stale-PID no-signal behavior.
-- `pnpm build` — pass (62.8s); bundled marketplace/connectors refresh produced no worktree drift.
+- `pnpm build` — pass (67.1s); bundled marketplace/connectors refresh produced no worktree drift.
 - `node scripts/check-forbidden-tokens.mjs` — pass.
 - `pnpm db:generate` — pass, no schema changes or migration drift.
 - `git diff --check` — pass apart from PowerShell LF-to-CRLF notices.
 - `pnpm --filter @armyofagents/server lint` — pass (18.6s). The repository has no root `pnpm lint` script; baseline GitHub lint is green.
 - Generated tools manifest, tools documentation, and AoA native skills seeder freshness checks — pass (skills checked against `C:/Users/TK/.aoa/wt/aoa-skills`).
 - MCP live-membership focused suites (`tenant-isolation-matrix`, `mcp-cross-tenant`, `upgrade-auth`, and `mcp-server`) — 72 tests pass; server typecheck and lint pass. The regression exercises the protocol route and proves suspended-org denial happens before company lookup, MCP client touch, or tool dispatch.
-- Baseline GitHub head `da9e8634`: open and mergeable; required verify/e2e/e2e-pgvector/lint/migrations/brand/policy/ci-required checks pass; advisory LLM eval failed. The current MCP/import-contract fixes are not represented in CI until committed and pushed.
+- MCP pre-authorization focused suites (`mcp-auth-membership`, `accessible-company-ids-for-actor`, `tenant-isolation-matrix`, `mcp-cross-tenant`, and the real issues router) — 58 tests pass. They execute the real live-membership predicate, prove suspended/inactive owners remain unscoped before routing, and assert existing/absent bare identifiers both return `404`.
+- Baseline GitHub head `bd13f964`: open and mergeable; e2e/e2e-pgvector/lint/migrations/brand/policy pass while the long verify job remains in progress; advisory LLM eval failed. The current MCP pre-authorization fix is not represented in CI until committed and pushed.
 
 ## External Gates and Deferred Work
 

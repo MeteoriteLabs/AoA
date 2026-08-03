@@ -168,6 +168,25 @@ describe("issue responsible user routes", () => {
     mockEnqueueIssueAssigneeWakeup.mockResolvedValue(undefined);
   });
 
+  it("gives a suspended MCP key the same 404 for existing and absent bare identifiers", async () => {
+    // actorMiddleware leaves a cloud MCP key owner with inactive membership as
+    // `none`, so bare lookup receives an empty authorized-company snapshot.
+    mockIssueService.getByIdentifier.mockImplementation(
+      async (_identifier: string, allowedCompanyIds?: string[]) =>
+        allowedCompanyIds?.includes(companyId) ? baseIssue : null,
+    );
+    mockIssueService.getById.mockResolvedValue(null);
+    const app = createApp({ type: "none", source: "none" });
+
+    const existing = await request(app).get("/api/issues/AOA-1");
+    const absent = await request(app).get("/api/issues/AOA-999");
+
+    expect(existing.status).toBe(404);
+    expect(absent.status).toBe(404);
+    expect(mockIssueService.getByIdentifier).toHaveBeenNthCalledWith(1, "AOA-1", []);
+    expect(mockIssueService.getByIdentifier).toHaveBeenNthCalledWith(2, "AOA-999", []);
+  });
+
   it("requires feedback when review changes are requested", async () => {
     mockIssueService.getById.mockResolvedValue({ ...baseIssue, status: "in_review" });
 

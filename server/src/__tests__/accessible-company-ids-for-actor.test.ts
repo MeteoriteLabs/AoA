@@ -32,9 +32,26 @@ describe("accessibleCompanyIdsForActor", () => {
     expect(accessibleCompanyIdsForActor(actor)).toEqual([]);
   });
 
-  it("mcp actor → [companyId]", () => {
+  it("self-hosted mcp actor → embedded [companyId]", () => {
     const actor = { type: "mcp", source: "mcp_key", companyId: "c1" } as Actor;
     expect(accessibleCompanyIdsForActor(actor)).toEqual(["c1"]);
+  });
+
+  it("cloud mcp actor → auth middleware's live company scope", () => {
+    setDeploymentMode("cloud_auth");
+    const actor = {
+      type: "mcp",
+      source: "mcp_key",
+      companyId: "c1",
+      companyIds: ["c1"],
+    } as Actor;
+    expect(accessibleCompanyIdsForActor(actor)).toEqual(["c1"]);
+  });
+
+  it("cloud mcp actor without a live scope → []", () => {
+    setDeploymentMode("cloud_auth");
+    const actor = { type: "mcp", source: "mcp_key", companyId: "c1" } as Actor;
+    expect(accessibleCompanyIdsForActor(actor)).toEqual([]);
   });
 
   it("board loopback (local_implicit) → undefined (all-access)", () => {

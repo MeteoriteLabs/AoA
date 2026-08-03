@@ -8,6 +8,7 @@ import { tenantIsolationEnforced } from "../config/deployment-mode.js";
 import type { DeploymentMode } from "@armyofagents/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
+import { hasActiveCloudMembership } from "../services/upgrade-socket-authorization.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -275,15 +276,30 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           .then((rows) => rows[0] ?? null);
 
     if (mcpKey) {
+      const cloud = opts.deploymentMode === "cloud_auth";
+      // MCP keys are delegated user credentials. Reject stale keys at the
+      // authentication boundary, before bare-identifier parameter hooks or any
+      // other pre-handler lookup can derive scope from the embedded company id.
+      // Preserve lastUsedAt as token-presentation telemetry (it has always been
+      // updated before resource authorization, including wrong-company use).
       await db
         .update(mcpApiKeys)
         .set({ lastUsedAt: new Date() })
         .where(eq(mcpApiKeys.id, mcpKey.id));
+      if (
+        cloud &&
+        (!mcpKey.userId ||
+          !(await hasActiveCloudMembership(db, mcpKey.companyId, mcpKey.userId)))
+      ) {
+        next();
+        return;
+      }
 
       req.actor = {
         type: "mcp",
         userId: mcpKey.userId,
         companyId: mcpKey.companyId,
+        companyIds: cloud ? [mcpKey.companyId] : undefined,
         keyId: mcpKey.id,
         runId: runIdHeader || undefined,
         source: "mcp_key",

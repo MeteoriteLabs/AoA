@@ -21,6 +21,12 @@ const db = (org: string) =>
     }),
   }) as any;
 
+const noQueryDb = () => ({
+  select: () => {
+    throw new Error("authorization must consume the middleware's live scope snapshot");
+  },
+}) as any;
+
 const ORG_A = "org-A";
 const ORG_B = "org-B";
 const CO_A = "company-A";
@@ -142,68 +148,43 @@ describe("tenant isolation matrix — assertCompanyAccess chokepoint (cloud_auth
         source: "mcp_key",
         userId: "mcp-active",
         companyId: CO_A,
+        companyIds: [CO_A],
       },
     } as any;
-    await expect(assertCompanyAccess(db(ORG_A), req, CO_A)).resolves.toBeUndefined();
+    await expect(assertCompanyAccess(noQueryDb(), req, CO_A)).resolves.toBeUndefined();
   });
 
   it("denies a same-company mcp key after its owner's org membership is suspended", async () => {
-    let selectCall = 0;
-    const suspendedOrgDb = {
-      select: () => ({
-        from: () => ({
-          where: () => ({
-            then: (resolve: (rows: unknown[]) => unknown) => {
-              selectCall += 1;
-              if (selectCall === 1) return Promise.resolve([{ organizationId: ORG_A }]).then(resolve);
-              if (selectCall === 2) return Promise.resolve([]).then(resolve);
-              return Promise.resolve([{ id: "company-membership" }]).then(resolve);
-            },
-          }),
-        }),
-      }),
-    } as any;
     const req = {
       actor: {
         type: "mcp",
         source: "mcp_key",
         userId: "mcp-suspended",
         companyId: CO_A,
+        companyIds: [],
       },
     } as any;
-    await expect(assertCompanyAccess(suspendedOrgDb, req, CO_A)).rejects.toThrow(/active company access/i);
+    await expect(assertCompanyAccess(noQueryDb(), req, CO_A)).rejects.toThrow(/active company access/i);
   });
 
   it("denies a same-company mcp key when the company membership is inactive", async () => {
-    let selectCall = 0;
-    const missingCompanyDb = {
-      select: () => ({
-        from: () => ({
-          where: () => ({
-            then: (resolve: (rows: unknown[]) => unknown) => {
-              selectCall += 1;
-              if (selectCall === 1) return Promise.resolve([{ organizationId: ORG_A }]).then(resolve);
-              if (selectCall === 2) return Promise.resolve([{ id: "org-membership" }]).then(resolve);
-              return Promise.resolve([]).then(resolve);
-            },
-          }),
-        }),
-      }),
-    } as any;
     const req = {
       actor: {
         type: "mcp",
         source: "mcp_key",
         userId: "mcp-no-company",
         companyId: CO_A,
+        companyIds: [],
       },
     } as any;
-    await expect(assertCompanyAccess(missingCompanyDb, req, CO_A)).rejects.toThrow(/active company access/i);
+    await expect(assertCompanyAccess(noQueryDb(), req, CO_A)).rejects.toThrow(/active company access/i);
   });
 
   it("fails closed for a same-company mcp key without its owning user id", async () => {
-    const req = { actor: { type: "mcp", source: "mcp_key", companyId: CO_A } } as any;
-    await expect(assertCompanyAccess(db(ORG_A), req, CO_A)).rejects.toThrow(/active company access/i);
+    const req = {
+      actor: { type: "mcp", source: "mcp_key", companyId: CO_A, companyIds: [CO_A] },
+    } as any;
+    await expect(assertCompanyAccess(noQueryDb(), req, CO_A)).rejects.toThrow(/active company access/i);
   });
 
   it("an unauthenticated actor is rejected", async () => {

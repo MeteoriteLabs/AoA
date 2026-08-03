@@ -3,14 +3,6 @@ import request from "supertest";
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { setDeploymentMode } from "../config/deployment-mode.js";
 
-const cloudMembership = vi.hoisted(() => ({
-  hasActive: vi.fn<(_db: unknown, companyId: string, userId: string) => Promise<boolean>>(),
-}));
-
-vi.mock("../services/upgrade-socket-authorization.js", () => ({
-  hasActiveCloudMembership: cloudMembership.hasActive,
-}));
-
 // Break the drizzle-orm ESM cycle (mirrors mcp-server.test.ts).
 vi.mock("@armyofagents/db", () => {
   const makeTable = () =>
@@ -107,7 +99,6 @@ function buildApp(actor: Record<string, unknown>) {
 describe("MCP inbound cross-tenant (cloud_auth)", () => {
   beforeEach(() => {
     setDeploymentMode("cloud_auth");
-    cloudMembership.hasActive.mockReset().mockResolvedValue(true);
   });
 
   it("403s a company-A mcp key hitting a company-B JSON-RPC endpoint (service not called)", async () => {
@@ -125,7 +116,6 @@ describe("MCP inbound cross-tenant (cloud_auth)", () => {
     expect(res.body.error.message).toMatch(/another company/i);
     // The cross-company denial fires BEFORE any downstream MCP work.
     expect(touchClient).not.toHaveBeenCalled();
-    expect(cloudMembership.hasActive).not.toHaveBeenCalled();
   });
 
   it("403s a company-A mcp key reading a company-B task resource", async () => {
@@ -154,6 +144,7 @@ describe("MCP inbound cross-tenant (cloud_auth)", () => {
       source: "mcp_key",
       userId: "user-B",
       companyId: "company-B",
+      companyIds: ["company-B"],
       keyId: "key-B",
     });
     const res = await request(app)
@@ -162,16 +153,15 @@ describe("MCP inbound cross-tenant (cloud_auth)", () => {
     expect(res.status).toBe(200);
     expect(res.body.result.serverInfo).toBeDefined();
     expect(touchClient).toHaveBeenCalled();
-    expect(cloudMembership.hasActive).toHaveBeenCalledWith({}, "company-B", "user-B");
   });
 
   it("403s a same-company mcp key after its owner's live membership is suspended", async () => {
-    cloudMembership.hasActive.mockResolvedValue(false);
     const { app, touchClient, getById } = buildApp({
       type: "mcp",
       source: "mcp_key",
       userId: "user-suspended",
       companyId: "company-B",
+      companyIds: [],
       keyId: "key-suspended",
     });
     const res = await request(app)
@@ -179,7 +169,6 @@ describe("MCP inbound cross-tenant (cloud_auth)", () => {
       .send({ jsonrpc: "2.0", id: 4, method: "initialize", params: {} });
     expect(res.status).toBe(403);
     expect(res.body.error.message).toMatch(/active company access/i);
-    expect(cloudMembership.hasActive).toHaveBeenCalledWith({}, "company-B", "user-suspended");
     expect(getById).not.toHaveBeenCalled();
     expect(touchClient).not.toHaveBeenCalled();
   });
