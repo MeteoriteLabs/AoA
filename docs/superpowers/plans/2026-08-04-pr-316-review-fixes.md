@@ -163,7 +163,7 @@ docker run --rm --user node --entrypoint bash aoa-pr316-working-tree-fast:latest
   -lc "pnpm --filter @armyofagents/shared typecheck"
 
 docker run --rm --user node --entrypoint bash aoa-pr316-working-tree-fast:latest `
-  -lc "pnpm test:run -- packages/shared/src/validators/company-portability-import-target.test.ts server/src/__tests__/organization-access.test.ts server/src/__tests__/organizations-route-contract.test.ts server/src/__tests__/organizations-transaction.integration.test.ts server/src/__tests__/companies-import-authz-route.test.ts ui/src/__tests__/CompanyImport.test.tsx ui/src/onboarding/__tests__/resolveCreateCompanyOrg.test.ts ui/src/onboarding/__tests__/CreateAnotherCompany.test.tsx"
+  -lc "pnpm exec vitest run packages/shared/src/validators/company-portability-import-target.test.ts server/src/__tests__/organization-access.test.ts server/src/__tests__/organizations-route-contract.test.ts server/src/__tests__/organizations-transaction.integration.test.ts server/src/__tests__/companies-import-authz-route.test.ts ui/src/__tests__/CompanyImport.test.tsx ui/src/onboarding/__tests__/resolveCreateCompanyOrg.test.ts ui/src/onboarding/__tests__/CreateAnotherCompany.test.tsx"
 ```
 
 Expected: shared typecheck fails because the handwritten target type omits `organizationId`; the focused tests fail because membership names/slugs are not projected and cloud import requests omit `organizationId`.
@@ -412,7 +412,7 @@ Expected: frozen install and offline reinstall pass.
 
 ```powershell
 docker run --rm --user node --entrypoint bash aoa-pr316-fixed-runtime:latest `
-  -lc "pnpm test:run -- packages/shared/src/validators/company-portability-import-target.test.ts server/src/__tests__/organization-access.test.ts server/src/__tests__/organizations-route-contract.test.ts server/src/__tests__/organizations-transaction.integration.test.ts server/src/__tests__/companies-import-authz-route.test.ts ui/src/__tests__/CompanyImport.test.tsx ui/src/onboarding/__tests__/resolveCreateCompanyOrg.test.ts ui/src/onboarding/__tests__/CreateAnotherCompany.test.tsx ui/src/components/settings/__tests__/PluginDetailSlideOver.test.tsx ui/src/onboarding/steps/__tests__/CloudDeferredStep.test.tsx ui/src/onboarding/steps/__tests__/VerifyStep.test.tsx ui/src/onboarding/__tests__/CloudProviderKeyNotice.test.tsx"
+  -lc "pnpm exec vitest run packages/shared/src/validators/company-portability-import-target.test.ts server/src/__tests__/organization-access.test.ts server/src/__tests__/organizations-route-contract.test.ts server/src/__tests__/organizations-transaction.integration.test.ts server/src/__tests__/companies-import-authz-route.test.ts ui/src/__tests__/CompanyImport.test.tsx ui/src/onboarding/__tests__/resolveCreateCompanyOrg.test.ts ui/src/onboarding/__tests__/CreateAnotherCompany.test.tsx ui/src/components/settings/__tests__/PluginDetailSlideOver.test.tsx ui/src/onboarding/steps/__tests__/CloudDeferredStep.test.tsx ui/src/onboarding/steps/__tests__/VerifyStep.test.tsx ui/src/onboarding/__tests__/CloudProviderKeyNotice.test.tsx"
 ```
 
 Expected: all focused regression tests pass.
