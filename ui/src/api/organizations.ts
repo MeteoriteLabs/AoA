@@ -11,6 +11,8 @@ export interface Organization {
 export interface OrganizationMembership {
   id: string;
   organizationId: string;
+  organizationName: string;
+  organizationSlug: string;
   userId: string;
   role: "owner" | "admin" | "member" | "billing";
   status: string;

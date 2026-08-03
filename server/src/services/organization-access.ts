@@ -1,7 +1,7 @@
 // Mirrors accessService shape (server/src/services/access.ts:42).
-import { and, eq, gt, isNull, sql } from "drizzle-orm";
+import { and, eq, getTableColumns, gt, isNull, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { operatorBreakGlassGrants, organizationMemberships } from "@armyofagents/db";
+import { operatorBreakGlassGrants, organizationMemberships, organizations } from "@armyofagents/db";
 import type { OrganizationRole } from "@armyofagents/shared";
 
 export type OrgCapability =
@@ -112,8 +112,23 @@ export function organizationAccessService(db: Db) {
   }
 
   async function listOrgMemberships(userId: string) {
-    return db.select().from(organizationMemberships)
-      .where(and(eq(organizationMemberships.userId, userId), eq(organizationMemberships.status, "active")));
+    return db
+      .select({
+        ...getTableColumns(organizationMemberships),
+        organizationName: organizations.name,
+        organizationSlug: organizations.slug,
+      })
+      .from(organizationMemberships)
+      .innerJoin(
+        organizations,
+        eq(organizations.id, organizationMemberships.organizationId),
+      )
+      .where(
+        and(
+          eq(organizationMemberships.userId, userId),
+          eq(organizationMemberships.status, "active"),
+        ),
+      );
   }
 
   return { getMembership, canOrg, ensureOrgMembership, ensureOrgOwner, listOrgMemberships };

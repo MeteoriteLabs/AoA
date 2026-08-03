@@ -5,6 +5,8 @@ import type { OrganizationMembership } from "../../api/organizations";
 const m = (over: Partial<OrganizationMembership>): OrganizationMembership => ({
   id: "mem-1",
   organizationId: "org",
+  organizationName: "Organization",
+  organizationSlug: "organization",
   userId: "u1",
   role: "owner",
   status: "active",

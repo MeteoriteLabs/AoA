@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
 import type { Company } from "@armyofagents/shared";
 import { companiesApi } from "../api/companies";
@@ -26,6 +26,8 @@ import { Separator } from "@/components/ui/separator";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { companyPortabilityApi } from "../api/company-portability";
+import { healthApi } from "../api/health";
+import { organizationsApi } from "../api/organizations";
 import { ApiError } from "../api/client";
 import { cn } from "@/lib/utils";
 
@@ -91,7 +93,35 @@ export function CompanyImport({
   const [strategy, setStrategy] = useState<CompanyPortabilityCollisionStrategy>("rename");
   const [preview, setPreview] = useState<CompanyPortabilityPreviewResult | null>(initialPreview);
   const [importResult, setImportResult] = useState<CompanyPortabilityImportResult | null>(null);
+  const [selectedOrganizationId, setSelectedOrganizationId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const healthQuery = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => healthApi.get(),
+    retry: false,
+  });
+  const organizationsQuery = useQuery({
+    queryKey: queryKeys.organizations.list,
+    queryFn: () => organizationsApi.list(),
+    retry: false,
+  });
+  const memberships = organizationsQuery.data ?? [];
+  const eligibleOrganizations = useMemo(
+    () => memberships.filter(
+      (membership) =>
+        membership.status === "active" &&
+        (membership.role === "owner" || membership.role === "admin"),
+    ),
+    [memberships],
+  );
+  const isCloud = healthQuery.data?.deploymentMode === "cloud_auth";
+
+  useEffect(() => {
+    if (isCloud && eligibleOrganizations.length === 1) {
+      setSelectedOrganizationId(eligibleOrganizations[0]!.organizationId);
+    }
+  }, [eligibleOrganizations, isCloud]);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Import Company" }]);
@@ -101,7 +131,12 @@ export function CompanyImport({
     if (!bundle) throw new Error("No bundle loaded");
     return {
       source: { type: "inline", manifest: bundle.manifest, files: bundle.files },
-      target: { mode: "new_company" },
+      target: {
+        mode: "new_company",
+        ...(selectedOrganizationId
+          ? { organizationId: selectedOrganizationId }
+          : {}),
+      },
       collisionStrategy: strategy,
     };
   };
@@ -164,6 +199,12 @@ export function CompanyImport({
     importMutation.mutate();
   }
 
+  function handleOrganizationChange(organizationId: string) {
+    setSelectedOrganizationId(organizationId || null);
+    setPreview(null);
+    setImportResult(null);
+  }
+
   function resetBundle() {
     setBundle(null);
     setFileName(null);
@@ -173,8 +214,13 @@ export function CompanyImport({
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
-  const canPreview = !!bundle && !previewMutation.isPending;
-  const canImport = !!preview && !importMutation.isPending && preview.errors.length === 0;
+  const hasResolvedCloudDestination = !isCloud || Boolean(selectedOrganizationId);
+  const canPreview = !!bundle
+    && healthQuery.isSuccess
+    && organizationsQuery.isSuccess
+    && hasResolvedCloudDestination
+    && !previewMutation.isPending;
+  const canImport = canPreview && !!preview && !importMutation.isPending && preview.errors.length === 0;
 
   const bundleCompanyName = bundle?.manifest.company?.name ?? "Unknown";
 
@@ -289,6 +335,49 @@ export function CompanyImport({
                 {COLLISION_STRATEGIES.find((s) => s.value === strategy)?.help}
               </p>
             </div>
+
+            {isCloud && eligibleOrganizations.length > 1 && (
+              <div className="space-y-2">
+                <Label htmlFor="destination-organization" className="text-sm font-medium">
+                  Destination organization
+                </Label>
+                <select
+                  id="destination-organization"
+                  aria-label="Destination organization"
+                  value={selectedOrganizationId ?? ""}
+                  onChange={(event) => handleOrganizationChange(event.target.value)}
+                  className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <option value="">Select an organization</option>
+                  {eligibleOrganizations.map((membership) => (
+                    <option key={membership.id} value={membership.organizationId}>
+                      {membership.organizationName} ({membership.organizationSlug})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {healthQuery.isPending && (
+              <div className="rounded-md border border-muted-foreground/30 bg-muted/20 p-3 text-sm text-muted-foreground">
+                Loading deployment configuration…
+              </div>
+            )}
+            {healthQuery.isError && (
+              <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+                Couldn't load your workspace deployment configuration. Import is unavailable until it loads.
+              </div>
+            )}
+            {organizationsQuery.isError && (
+              <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+                Couldn't load your organizations. Import is unavailable until it loads.
+              </div>
+            )}
+            {isCloud && organizationsQuery.isSuccess && eligibleOrganizations.length === 0 && (
+              <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+                You need owner or admin access to an organization before importing a company.
+              </div>
+            )}
 
             <div className="flex items-center gap-2 pt-2">
               <Button onClick={handlePreview} disabled={!canPreview || !!showcase}>

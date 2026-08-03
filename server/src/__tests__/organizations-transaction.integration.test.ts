@@ -120,6 +120,13 @@ describe.skipIf(process.platform !== "linux")(
       expect(membership).toHaveLength(1);
       expect(membership[0].role).toBe("owner");
       expect(membership[0].status).toBe("active");
+
+      const joinedMemberships = await organizationAccessService(db).listOrgMemberships(ownerUserId);
+      expect(joinedMemberships).toContainEqual(expect.objectContaining({
+        organizationId: org.id,
+        organizationName: org.name,
+        organizationSlug: org.slug,
+      }));
     });
 
     it("replays sequential and concurrent requests with the same creator, key, and payload", async () => {

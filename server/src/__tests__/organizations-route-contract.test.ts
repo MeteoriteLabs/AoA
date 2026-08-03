@@ -155,15 +155,25 @@ describe("organization routes", () => {
   });
 
   it("lists only memberships resolved for the signed-in user", async () => {
-    const memberships = [
-      { id: "m1", organizationId: "org-1", userId: "user-1", role: "owner", status: "active" },
-    ];
+    const memberships = [{
+      id: "m1",
+      organizationId: "org-1",
+      organizationName: "Acme Holdings",
+      organizationSlug: "acme-holdings",
+      userId: "user-1",
+      role: "owner",
+      status: "active",
+    }];
     routeSpies.listOrgMemberships.mockResolvedValueOnce(memberships);
     const { app } = makeApp(boardActor);
     const res = await request(app).get("/api/organizations");
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual(memberships);
+    expect(res.body[0]).toMatchObject({
+      organizationName: "Acme Holdings",
+      organizationSlug: "acme-holdings",
+    });
     expect(routeSpies.listOrgMemberships).toHaveBeenCalledWith("user-1");
   });
 

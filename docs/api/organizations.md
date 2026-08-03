@@ -25,7 +25,7 @@ Creates the Organization and its owner membership atomically. The signed-in user
 GET /api/organizations
 ```
 
-Returns the signed-in user's active membership rows. This is a membership list, not an unscoped Organization catalog. A board actor without a user identity receives an empty array.
+Returns the signed-in user's active membership rows. Every row includes `organizationName` and `organizationSlug` display fields in addition to its membership fields. This is a membership list, not an unscoped Organization catalog. A board actor without a user identity receives an empty array.
 
 ## Organization spend
 

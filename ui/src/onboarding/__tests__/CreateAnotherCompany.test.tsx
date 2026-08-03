@@ -57,6 +57,8 @@ vi.mock("../steps/CreateOrganizationStep", () => ({
 const membership = (over: Partial<OrganizationMembership>): OrganizationMembership => ({
   id: "mem-1",
   organizationId: "org",
+  organizationName: "Organization",
+  organizationSlug: "organization",
   userId: "u1",
   role: "owner",
   status: "active",

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { CompanyPortabilityImportTarget } from "../types/company-portability.js";
 import { companyPortabilityImportSchema } from "./company-portability.js";
 
 // Minimal known-valid inline source (mirrors the shape validated by the import route).
@@ -19,7 +20,16 @@ const baseSource = {
 
 const ORG = "00000000-0000-0000-0000-0000000000a1";
 
+const typedNewCompanyTarget: CompanyPortabilityImportTarget = {
+  mode: "new_company",
+  organizationId: ORG,
+};
+
 describe("companyPortabilityImportSchema — new_company target organizationId", () => {
+  it("keeps the handwritten import target aligned with the schema", () => {
+    expect(typedNewCompanyTarget).toMatchObject({ organizationId: ORG });
+  });
+
   it("preserves an explicit organizationId on a new_company target", () => {
     const parsed = companyPortabilityImportSchema.parse({
       source: baseSource,

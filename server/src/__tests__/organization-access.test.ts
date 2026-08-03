@@ -67,3 +67,32 @@ describe("ensureOrgMembership authority preservation", () => {
     expect(conflictUpdates[0]).toHaveProperty("role");
   });
 });
+
+describe("listOrgMemberships", () => {
+  it("returns active memberships with their organization display fields", async () => {
+    const row = {
+      id: "membership-1",
+      organizationId: "org-1",
+      organizationName: "Acme Holdings",
+      organizationSlug: "acme-holdings",
+      userId: "user-1",
+      role: "owner",
+      status: "active",
+    };
+    const calls: string[] = [];
+    const db = {
+      select: () => ({
+        from: () => ({
+          innerJoin: () => {
+            calls.push("innerJoin");
+            return { where: async () => [row] };
+          },
+        }),
+      }),
+    };
+
+    await expect(organizationAccessService(db as never).listOrgMemberships("user-1"))
+      .resolves.toEqual([row]);
+    expect(calls).toEqual(["innerJoin"]);
+  });
+});
