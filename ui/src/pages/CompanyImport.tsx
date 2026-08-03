@@ -92,6 +92,7 @@ export function CompanyImport({
   const [parseError, setParseError] = useState<string | null>(null);
   const [strategy, setStrategy] = useState<CompanyPortabilityCollisionStrategy>("rename");
   const [preview, setPreview] = useState<CompanyPortabilityPreviewResult | null>(initialPreview);
+  const [previewDestinationId, setPreviewDestinationId] = useState<string | null>(null);
   const [importResult, setImportResult] = useState<CompanyPortabilityImportResult | null>(null);
   const [selectedOrganizationId, setSelectedOrganizationId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -116,12 +117,35 @@ export function CompanyImport({
     [memberships],
   );
   const isCloud = healthQuery.data?.deploymentMode === "cloud_auth";
+  const selectedOrganizationIsEligible = selectedOrganizationId !== null
+    && eligibleOrganizations.some(
+      (membership) => membership.organizationId === selectedOrganizationId,
+    );
+  const effectiveOrganizationId = isCloud
+    ? eligibleOrganizations.length === 1
+      ? eligibleOrganizations[0]!.organizationId
+      : selectedOrganizationIsEligible
+        ? selectedOrganizationId
+        : null
+    : null;
+  const effectiveOrganizationIdRef = useRef<string | null>(effectiveOrganizationId);
+  effectiveOrganizationIdRef.current = effectiveOrganizationId;
 
   useEffect(() => {
-    if (isCloud && eligibleOrganizations.length === 1) {
-      setSelectedOrganizationId(eligibleOrganizations[0]!.organizationId);
+    const nextSelectedOrganizationId = isCloud
+      ? eligibleOrganizations.length === 1
+        ? eligibleOrganizations[0]!.organizationId
+        : selectedOrganizationIsEligible
+          ? selectedOrganizationId
+          : null
+      : null;
+    if (nextSelectedOrganizationId !== selectedOrganizationId) {
+      setSelectedOrganizationId(nextSelectedOrganizationId);
+      setPreview(null);
+      setPreviewDestinationId(null);
+      setImportResult(null);
     }
-  }, [eligibleOrganizations, isCloud]);
+  }, [eligibleOrganizations, isCloud, selectedOrganizationId, selectedOrganizationIsEligible]);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Import Company" }]);
@@ -133,8 +157,8 @@ export function CompanyImport({
       source: { type: "inline", manifest: bundle.manifest, files: bundle.files },
       target: {
         mode: "new_company",
-        ...(selectedOrganizationId
-          ? { organizationId: selectedOrganizationId }
+        ...(effectiveOrganizationId
+          ? { organizationId: effectiveOrganizationId }
           : {}),
       },
       collisionStrategy: strategy,
@@ -142,9 +166,20 @@ export function CompanyImport({
   };
 
   const previewMutation = useMutation({
-    mutationFn: () => companyPortabilityApi.previewImport(buildRequest()),
-    onSuccess: (data) => {
-      setPreview(data);
+    mutationFn: async () => {
+      const request = buildRequest();
+      const destinationId = request.target.mode === "new_company"
+        ? request.target.organizationId ?? null
+        : null;
+      return {
+        destinationId,
+        preview: await companyPortabilityApi.previewImport(request),
+      };
+    },
+    onSuccess: ({ destinationId, preview: result }) => {
+      if (destinationId !== effectiveOrganizationIdRef.current) return;
+      setPreview(result);
+      setPreviewDestinationId(destinationId);
       setImportResult(null);
     },
   });
@@ -172,6 +207,7 @@ export function CompanyImport({
     if (!file) return;
     setParseError(null);
     setPreview(null);
+    setPreviewDestinationId(null);
     setImportResult(null);
     const reader = new FileReader();
     reader.onload = () => {
@@ -202,6 +238,7 @@ export function CompanyImport({
   function handleOrganizationChange(organizationId: string) {
     setSelectedOrganizationId(organizationId || null);
     setPreview(null);
+    setPreviewDestinationId(null);
     setImportResult(null);
   }
 
@@ -210,17 +247,22 @@ export function CompanyImport({
     setFileName(null);
     setParseError(null);
     setPreview(null);
+    setPreviewDestinationId(null);
     setImportResult(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
-  const hasResolvedCloudDestination = !isCloud || Boolean(selectedOrganizationId);
+  const hasResolvedCloudDestination = !isCloud || Boolean(effectiveOrganizationId);
   const canPreview = !!bundle
     && healthQuery.isSuccess
     && organizationsQuery.isSuccess
     && hasResolvedCloudDestination
     && !previewMutation.isPending;
-  const canImport = canPreview && !!preview && !importMutation.isPending && preview.errors.length === 0;
+  const canImport = canPreview
+    && previewDestinationId === effectiveOrganizationId
+    && !!preview
+    && !importMutation.isPending
+    && preview.errors.length === 0;
 
   const bundleCompanyName = bundle?.manifest.company?.name ?? "Unknown";
 

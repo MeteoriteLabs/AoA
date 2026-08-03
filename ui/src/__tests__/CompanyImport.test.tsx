@@ -1,11 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { screen, waitFor, cleanup, fireEvent } from "@testing-library/react";
+import type { ReactElement } from "react";
+import { screen, waitFor, cleanup, fireEvent, render } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router-dom";
 
 // These tests render a multi-step import flow; give enough headroom for slow CI runs.
 vi.setConfig({ testTimeout: 15000 });
 import { renderWithProviders, mockCompanyContext, makeCompany } from "./test-utils";
 import { CompanyImport } from "../pages/CompanyImport";
+import { ThemeProvider } from "../context/ThemeContext";
+import { queryKeys } from "../lib/queryKeys";
 
 const previewImport = vi.fn();
 const importBundle = vi.fn();
@@ -154,11 +159,31 @@ function membership(overrides: Partial<{
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 async function uploadBundle(user: ReturnType<typeof userEvent.setup>, bundle: object | string) {
   const text = typeof bundle === "string" ? bundle : JSON.stringify(bundle);
   const file = new File([text], "bundle.aoa-bundle.json", { type: "application/json" });
   const input = screen.getByTestId("bundle-file-input") as HTMLInputElement;
   await user.upload(input, file);
+}
+
+function renderWithQueryClient(ui: ReactElement, queryClient: QueryClient) {
+  return render(ui, {
+    wrapper: ({ children }) => (
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <ThemeProvider>{children}</ThemeProvider>
+        </MemoryRouter>
+      </QueryClientProvider>
+    ),
+  });
 }
 
 describe("CompanyImport page", () => {
@@ -288,6 +313,54 @@ describe("CompanyImport page", () => {
     await waitFor(() => expect(importBundle).toHaveBeenCalledWith(expect.objectContaining({
       target: { mode: "new_company", organizationId: "org-1" },
     })));
+  });
+
+  it("invalidates a completed preview when the sole eligible organization changes on refetch", async () => {
+    const user = userEvent.setup();
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    healthGetMock.mockResolvedValue({ deploymentMode: "cloud_auth" });
+    organizationsListMock
+      .mockResolvedValueOnce([membership({ organizationId: "org-1" })])
+      .mockResolvedValueOnce([membership({ organizationId: "org-2", organizationName: "Beta Labs" })]);
+    previewImport.mockResolvedValue(makePreviewResult());
+    renderWithQueryClient(<CompanyImport />, queryClient);
+    await uploadBundle(user, makeValidBundle());
+    const previewButton = await screen.findByRole("button", { name: /^preview$/i });
+    await waitFor(() => expect(previewButton).not.toBeDisabled());
+    fireEvent.click(previewButton);
+    const importButton = screen.getByRole("button", { name: /^import$/i });
+    await waitFor(() => expect(importButton).not.toBeDisabled());
+
+    await queryClient.invalidateQueries({ queryKey: queryKeys.organizations.list });
+    await waitFor(() => expect(organizationsListMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(importButton).toBeDisabled());
+    expect(screen.queryByRole("heading", { name: /^preview$/i })).toBeNull();
+  });
+
+  it("discards a preview response that resolves after its destination changes", async () => {
+    const user = userEvent.setup();
+    const previewRequest = deferred<ReturnType<typeof makePreviewResult>>();
+    healthGetMock.mockResolvedValue({ deploymentMode: "cloud_auth" });
+    organizationsListMock.mockResolvedValue([
+      membership({ organizationId: "org-1" }),
+      membership({ id: "membership-2", organizationId: "org-2", organizationName: "Beta Labs", organizationSlug: "beta-labs", role: "admin" }),
+    ]);
+    previewImport.mockReturnValue(previewRequest.promise);
+    renderWithProviders(<CompanyImport />);
+    await uploadBundle(user, makeValidBundle());
+    const select = await screen.findByLabelText(/destination organization/i);
+    await user.selectOptions(select, "org-1");
+    fireEvent.click(screen.getByRole("button", { name: /^preview$/i }));
+    await waitFor(() => expect(previewImport).toHaveBeenCalledWith(expect.objectContaining({
+      target: { mode: "new_company", organizationId: "org-1" },
+    })));
+
+    await user.selectOptions(select, "org-2");
+    previewRequest.resolve(makePreviewResult());
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /^preview$/i })).not.toBeDisabled());
+    expect(screen.getByRole("button", { name: /^import$/i })).toBeDisabled();
+    expect(screen.queryByRole("heading", { name: /^preview$/i })).toBeNull();
   });
 
   it("keeps cloud actions disabled when membership lacks owner or admin access", async () => {
