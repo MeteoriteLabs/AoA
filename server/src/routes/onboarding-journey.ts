@@ -12,6 +12,7 @@ import { and, desc, eq, gt, inArray, isNotNull, isNull, ne, or, sql } from "driz
 import type { PostAuthJourneyResult, PendingInvitation, OrganizationRole } from "@armyofagents/shared";
 import { resolvePostAuthJourney } from "../services/post-auth-journey.js";
 import { organizationAccessService, orgRoleCan } from "../services/organization-access.js";
+import { accessibleCompanyIdsForActor } from "./authz.js";
 
 const TEAM_INVITE_KEY = "teamInvite";
 
@@ -45,6 +46,14 @@ export async function getJourneyForUser(
   db: Db,
   args: {
     userId: string;
+    /**
+     * Company ids already authorized for this actor. In cloud_auth this is the
+     * active company-membership ∩ active owning-Organization set built by
+     * actorMiddleware. `undefined` is the canonical unscoped sentinel for a
+     * self-hosted local/instance-admin actor. Keeping this required prevents
+     * journey routing from drifting away from the authorization boundary again.
+     */
+    authorizedCompanyIds: readonly string[] | undefined;
     deepLinkCompanyId?: string | null;
     isInstanceAdmin?: boolean;
   },
@@ -172,7 +181,14 @@ export async function getJourneyForUser(
     (a, b) => a.createdAt.localeCompare(b.createdAt) || a.companyId.localeCompare(b.companyId),
   );
 
-  let returningCompanyIds = memberships.map((membership) => membership.companyId);
+  const membershipCompanyIds = memberships.map((membership) => membership.companyId);
+  let returningCompanyIds = membershipCompanyIds;
+  if (args.authorizedCompanyIds !== undefined) {
+    const authorizedCompanyIds = new Set(args.authorizedCompanyIds);
+    returningCompanyIds = membershipCompanyIds.filter((companyId) =>
+      authorizedCompanyIds.has(companyId),
+    );
+  }
   if (returningCompanyIds.length === 0 && args.isInstanceAdmin) {
     const adminVisibleCompanies = await db
       .select({ companyId: companies.id })
@@ -259,6 +275,7 @@ export function onboardingJourneyRoutes(db: Db): Router {
     }
     const result = await getJourneyForUser(db, {
       userId: actor.userId,
+      authorizedCompanyIds: accessibleCompanyIdsForActor(actor),
       isInstanceAdmin: actor.isInstanceAdmin === true,
     });
     res.json(result);

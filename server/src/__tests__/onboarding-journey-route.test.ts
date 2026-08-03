@@ -2,9 +2,22 @@ import express from "express";
 import request from "supertest";
 import { describe, it, expect } from "vitest";
 import {
-  getJourneyForUser,
+  getJourneyForUser as getJourneyForUserImpl,
   onboardingJourneyRoutes,
 } from "../routes/onboarding-journey.js";
+
+type JourneyArgs = Parameters<typeof getJourneyForUserImpl>[1];
+type TestJourneyArgs = Omit<JourneyArgs, "authorizedCompanyIds"> & {
+  authorizedCompanyIds?: readonly string[];
+};
+
+function getJourneyForUser(db: any, args: TestJourneyArgs) {
+  const {
+    authorizedCompanyIds = ["c1", "member-company"],
+    ...rest
+  } = args;
+  return getJourneyForUserImpl(db, { ...rest, authorizedCompanyIds });
+}
 
 // Sequence mock: each awaited query resolves the next canned result set.
 // `_whereCalls` / `_orderByCalls` capture each where()/orderBy() argument list
@@ -119,6 +132,80 @@ describe("getJourneyForUser (A5 + RB7/RB9 wiring)", () => {
         filed: true,
       },
     ]);
+  });
+
+  it("excludes a stale company membership outside the actor-authorized tenant set", async () => {
+    const db = seqDb([
+      [{ email: "u@x.com", emailVerified: true }],
+      [{ companyId: "stale-company" }],
+      [], // no active Organization memberships
+      [], // pending requests
+      [], // open invites
+    ]);
+
+    const r = await getJourneyForUser(db, {
+      userId: "u1",
+      authorizedCompanyIds: [],
+    });
+
+    expect(r).toEqual({
+      journey: "founder",
+      targetCompanyId: null,
+      pendingInvitations: [],
+      inviteToken: null,
+    });
+    expect(
+      (db._whereCalls as unknown[]).some((condition) =>
+        conditionColumns(condition).includes("first_run_completed_at"),
+      ),
+    ).toBe(false);
+  });
+
+  it("lets a valid invitation win after excluding a stale company membership", async () => {
+    const db = seqDb([
+      [{ email: "u@x.com", emailVerified: true }],
+      [{ companyId: "stale-company" }],
+      [], // no active Organization memberships
+      [
+        {
+          inviteId: "invite-1",
+          companyId: "invited-company",
+          companyName: "Invited Company",
+          createdAt: new Date("2026-08-03T00:00:00Z"),
+          defaults: null,
+        },
+      ],
+      [], // open invites
+    ]);
+
+    const r = await getJourneyForUser(db, {
+      userId: "u1",
+      authorizedCompanyIds: [],
+    });
+
+    expect(r.journey).toBe("invited");
+    expect(r.targetCompanyId).toBe("invited-company");
+    expect(r.resumeFirstRunCompanyId ?? null).toBeNull();
+  });
+
+  it("uses only the authorized company for returning and first-run resume", async () => {
+    const db = seqDb([
+      [{ email: "u@x.com", emailVerified: true }],
+      [{ companyId: "stale-company" }, { companyId: "allowed-company" }],
+      [{ organizationId: "allowed-org", role: "owner" }],
+      [], // pending requests
+      [], // open invites
+      [{ companyId: "allowed-company" }], // authorized first-run resume
+    ]);
+
+    const r = await getJourneyForUser(db, {
+      userId: "u1",
+      authorizedCompanyIds: ["allowed-company"],
+    });
+
+    expect(r.journey).toBe("returning");
+    expect(r.targetCompanyId).toBe("allowed-company");
+    expect(r.resumeFirstRunCompanyId).toBe("allowed-company");
   });
 
   it("returning via ORGANIZATION membership alone — zero company memberships (Phase 2 Task 9, org-first)", async () => {
@@ -562,6 +649,34 @@ describe("GET /api/onboarding/journey", () => {
     });
   });
 
+  it("preserves every real membership for an unscoped local implicit admin", async () => {
+    const db = seqDb([
+      [{ email: "local@x.com", emailVerified: true }],
+      [{ companyId: "c1" }, { companyId: "c2" }],
+      [], // Organization membership is not required in local_trusted mode
+      [], // pending requests
+      [], // open invites
+      [{ companyId: "c2" }], // unfinished first-run company is not the first membership
+    ]);
+    const app = makeApp(db, {
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      // No companyIds by design: accessibleCompanyIdsForActor returns the
+      // unscoped `undefined` sentinel for this self-hosted actor.
+    });
+
+    const res = await request(app).get("/api/onboarding/journey");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      journey: "returning",
+      targetCompanyId: "c1",
+      resumeFirstRunCompanyId: "c2",
+    });
+  });
+
   it("does not expose an existing company to a non-admin without membership", async () => {
     const db = seqDb([
       [{ email: "member@x.com", emailVerified: true }],
@@ -586,6 +701,32 @@ describe("GET /api/onboarding/journey", () => {
       journey: "founder",
       targetCompanyId: null,
     });
+  });
+
+  it("does not route a suspended Organization member through a stale company membership", async () => {
+    const db = seqDb([
+      [{ email: "member@x.com", emailVerified: true }],
+      [{ companyId: "stale-company" }],
+      [], // listOrgMemberships returns active rows only: suspended means empty
+      [], // pending requests
+      [], // open invites
+    ]);
+    const app = makeApp(db, {
+      type: "board",
+      userId: "member-1",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [], // actorMiddleware's active-org intersection
+    });
+
+    const res = await request(app).get("/api/onboarding/journey");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      journey: "founder",
+      targetCompanyId: null,
+    });
+    expect(res.body.resumeFirstRunCompanyId ?? null).toBeNull();
   });
 
   it("rejects callers without a board identity before querying", async () => {

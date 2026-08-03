@@ -316,6 +316,26 @@ Implementation evidence captured 2026-08-03:
   reported `No schema changes, nothing to migrate`, and did not change the
   tracked or untracked worktree set. Fresh Linux CI remains required to execute
   the three real-PostgreSQL runbook cases and all authoritative platform lanes.
+- The following exact-head Codex pass on `8286424f` found a real onboarding P2:
+  journey resolution re-read active Company memberships without using the
+  cloud actor's active-Organization intersection, so a suspended Organization
+  member could be routed to an inaccessible first-run Company and strand on a
+  403/loading state. Journey and resume candidates now intersect the raw rows
+  with the canonical `accessibleCompanyIdsForActor` result. `[]` remains a
+  fail-closed scoped set, while `undefined` preserves the unscoped self-hosted
+  loopback/instance-admin contract. An independent reviewer caught and rejected
+  an earlier `actor.companyIds ?? []` version because it collapsed that sentinel;
+  the corrected route-level regression proves a local implicit admin keeps both
+  real memberships and can resume unfinished onboarding in the non-first one.
+- The corrected onboarding/auth matrix passed 63/63 with 11 established
+  Linux-only integration cases skipped on Windows. Three post-correction
+  independent reviews found no P0-P3; their sibling audit covered onboarding
+  progress, first-run, environment setup, invitations, Company selection, CLI,
+  and Organization listing. The final exact-candidate full suite passed in
+  520.3 seconds, followed by all 23 workspace typecheck scopes, production
+  build, full server lint, forbidden-token scan, tools JSON/Markdown freshness,
+  external native-skills freshness, `git diff --check`, and `pnpm db:generate`
+  with no schema or worktree-set change.
 - Remaining merge gates are operational: commit/push this reviewed worktree to PR #316, require fresh Linux CI, fetch/reconcile all review threads, request another whole-PR `@codex review`, and repeat the loop if it returns any actionable finding. gVisor remains a fresh follow-up PR from updated `main`.
 
 Known Windows flake protocol:
