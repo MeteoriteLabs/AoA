@@ -6,7 +6,7 @@ import { memoryAssetsService } from "../services/memory-assets.js";
 import type { StorageService } from "../storage/types.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { resolveStorageTenant } from "./authz-tenant.js";
-import { assertRole } from "../middleware/rbac.js";
+import { assertHumanRole } from "../middleware/rbac.js";
 import { SUPPORTED_UPLOAD_MIME_TYPES_SET } from "./memory-asset-upload-types.js";
 
 export { SUPPORTED_UPLOAD_MIME_TYPES_SET };
@@ -47,7 +47,7 @@ export function memoryAssetsUploadRoutes(opts: RoutesOptions) {
       try {
         const companyId = req.params.companyId as string;
         await assertCompanyAccess(db, req, companyId);
-        if (opts.db) await assertRole(opts.db, req, companyId, "team_lead");
+        if (opts.db) await assertHumanRole(opts.db, req, companyId, "team_lead");
 
         try {
           await runSingle(req, res);

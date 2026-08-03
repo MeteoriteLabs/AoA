@@ -1,7 +1,7 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, ne, or } from "drizzle-orm";
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@armyofagents/db";
-import { issues, projects, projectWorkspaces, workspaceRuntimeServices } from "@armyofagents/db";
+import { projects, projectWorkspaces, workspaceRuntimeServices } from "@armyofagents/db";
 import {
   updateExecutionWorkspaceSchema,
   workspaceRuntimeControlTargetSchema,
@@ -12,22 +12,25 @@ import { executionWorkspaceService, instanceSettingsService, logActivity, worksp
 import { parseProjectExecutionWorkspacePolicy } from "../services/execution-workspace-policy.js";
 import {
   mergeExecutionWorkspaceConfig,
-  mergeExecutionWorkspaceMetadataPatch,
   readExecutionWorkspaceConfig,
   toWorkspaceRuntimeService,
 } from "../services/execution-workspaces.js";
 import { readProjectWorkspaceRuntimeConfig } from "../services/project-workspace-runtime-config.js";
 import {
+  areRuntimeServicesTrackedLocally,
   buildWorkspaceRuntimeDesiredStatePatch,
   cleanupExecutionWorkspaceArtifacts,
   ensurePersistedExecutionWorkspaceAvailable,
   listConfiguredRuntimeServiceEntries,
   refreshPersistedRuntimeServiceRows,
   resolveConfiguredRuntimeServiceIndexForRow,
+  RuntimeServiceActivationFenceError,
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
+  withRuntimeControlLocks,
 } from "../services/workspace-runtime.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertCloudWorkspaceCommandConfigurationAllowed } from "./projects.js";
 import {
   assertCanConfigureWorkspaceShellCommands,
   assertCanControlWorkspace,
@@ -39,6 +42,48 @@ export function executionWorkspaceRoutes(db: Db) {
   const svc = executionWorkspaceService(db);
   const workspaceOperationsSvc = workspaceOperationService(db);
   const instanceSettings = instanceSettingsService(db);
+
+  const loadPidBearingLocalRuntimeRows = async (workspace: {
+    id: string;
+    companyId: string;
+    mode: string;
+    projectWorkspaceId: string | null;
+    config?: { workspaceRuntime?: Record<string, unknown> | null } | null;
+  }, options: { includeInheritedProjectRuntime?: boolean } = {}) => {
+    const inheritsProjectRuntime =
+      options.includeInheritedProjectRuntime !== false &&
+      workspace.mode === "shared_workspace" &&
+      Boolean(workspace.projectWorkspaceId) &&
+      !workspace.config?.workspaceRuntime;
+    const scope = inheritsProjectRuntime
+      ? and(
+          eq(workspaceRuntimeServices.projectWorkspaceId, workspace.projectWorkspaceId!),
+          eq(workspaceRuntimeServices.scopeType, "project_workspace"),
+        )
+      : workspace.mode === "shared_workspace" && options.includeInheritedProjectRuntime === false
+        ? and(
+            eq(workspaceRuntimeServices.executionWorkspaceId, workspace.id),
+            ne(workspaceRuntimeServices.scopeType, "project_workspace"),
+          )
+        : eq(workspaceRuntimeServices.executionWorkspaceId, workspace.id);
+    return await db
+      .select({
+        id: workspaceRuntimeServices.id,
+        serviceName: workspaceRuntimeServices.serviceName,
+        command: workspaceRuntimeServices.command,
+        cwd: workspaceRuntimeServices.cwd,
+      })
+      .from(workspaceRuntimeServices)
+      .where(and(
+        eq(workspaceRuntimeServices.companyId, workspace.companyId),
+        scope,
+        eq(workspaceRuntimeServices.provider, "local_process"),
+        or(
+          inArray(workspaceRuntimeServices.status, ["starting", "running"]),
+          isNotNull(workspaceRuntimeServices.providerRef),
+        ),
+      ));
+  };
 
   async function assertIsolatedWorkspacesEnabled(res: Response): Promise<boolean> {
     const experimental = await instanceSettings.getExperimental();
@@ -100,32 +145,23 @@ export function executionWorkspaceRoutes(db: Db) {
         companyId: existing.companyId,
         projectId: existing.projectId ?? null,
       });
+      assertCloudWorkspaceCommandConfigurationAllowed();
     }
-    const patch: Record<string, unknown> = {
-      ...restBody,
-      ...(req.body.cleanupEligibleAt ? { cleanupEligibleAt: new Date(req.body.cleanupEligibleAt) } : {}),
-    };
+    const patch: Record<string, unknown> = { ...restBody };
     if (configPatch !== undefined) {
-      const metadataBase = req.body.metadata !== undefined
-        ? mergeExecutionWorkspaceMetadataPatch({
-          existingMetadata: existing.metadata,
-          incomingMetadata: req.body.metadata,
-        })
-        : existing.metadata;
       patch.metadata = mergeExecutionWorkspaceConfig(
-        metadataBase,
+        existing.metadata,
         configPatch as Record<string, unknown>,
       );
-    } else if (req.body.metadata !== undefined) {
-      patch.metadata = mergeExecutionWorkspaceMetadataPatch({
-        existingMetadata: existing.metadata,
-        incomingMetadata: req.body.metadata,
-      });
     }
     let workspace = existing;
     let cleanupWarnings: string[] = [];
 
     if (req.body.status === "archived" && existing.status !== "archived") {
+      await withRuntimeControlLocks([
+        `execution:${existing.id}`,
+        existing.projectWorkspaceId ? `project:${existing.projectWorkspaceId}` : null,
+      ], async () => {
       const readiness = await svc.getCloseReadiness(id);
       if (readiness && readiness.state === "blocked") {
         res.status(409).json({
@@ -136,27 +172,32 @@ export function executionWorkspaceRoutes(db: Db) {
         return;
       }
 
-      if (existing.mode === "shared_workspace") {
-        await db
-          .update(issues)
-          .set({ executionWorkspaceId: null })
-          .where(
-            and(
-              eq(issues.companyId, existing.companyId),
-              eq(issues.executionWorkspaceId, existing.id),
-            ),
-          );
+      const localServiceIds = (await loadPidBearingLocalRuntimeRows(existing, {
+        // Archiving a shared session must preserve inherited project runtime
+        // infrastructure; only execution-linked processes belong to the session.
+        includeInheritedProjectRuntime: false,
+      })).map((row) => row.id);
+      if (!areRuntimeServicesTrackedLocally(localServiceIds)) {
+        res.status(409).json({
+          error: "Workspace has runtime services owned by another or unavailable runtime host",
+        });
+        return;
       }
 
       const closedAt = new Date();
-      const archivedWorkspace = await svc.update(id, {
-        ...patch,
-        status: "archived",
-        closedAt,
-        cleanupReason: null,
+      const archivedWorkspace = await svc.archiveIfVersion({
+        id,
+        companyId: existing.companyId,
+        expectedUpdatedAt: existing.updatedAt,
+        patch: {
+          ...patch,
+          closedAt,
+          cleanupReason: null,
+        },
+        detachLinkedIssues: existing.mode === "shared_workspace",
       });
       if (!archivedWorkspace) {
-        res.status(404).json({ error: "Execution workspace not found" });
+        res.status(409).json({ error: "Execution workspace changed before it could be archived" });
         return;
       }
       workspace = archivedWorkspace;
@@ -165,7 +206,8 @@ export function executionWorkspaceRoutes(db: Db) {
         await stopRuntimeServicesForExecutionWorkspace({
           db,
           executionWorkspaceId: existing.id,
-          workspaceCwd: existing.cwd,
+          workspaceCwd: existing.mode === "shared_workspace" ? null : existing.cwd,
+          preserveProjectWorkspaceServices: existing.mode === "shared_workspace",
         });
         const projectWorkspace = existing.projectWorkspaceId
           ? await db
@@ -225,10 +267,12 @@ export function executionWorkspaceRoutes(db: Db) {
         });
         return;
       }
+      });
+      if (res.headersSent) return;
     } else {
-      const updatedWorkspace = await svc.update(id, patch);
+      const updatedWorkspace = await svc.updateIfVersion(id, existing.updatedAt, patch);
       if (!updatedWorkspace) {
-        res.status(404).json({ error: "Execution workspace not found" });
+        res.status(409).json({ error: "Execution workspace changed before the update could be committed" });
         return;
       }
       workspace = updatedWorkspace;
@@ -318,6 +362,20 @@ export function executionWorkspaceRoutes(db: Db) {
       return;
     }
 
+    const authorizedWorkspace = await svc.getById(id);
+    if (!authorizedWorkspace) {
+      res.status(404).json({ error: "Execution workspace not found" });
+      return;
+    }
+    await assertCompanyAccess(db, req, authorizedWorkspace.companyId);
+    await assertCanControlWorkspace(db, req, {
+      companyId: authorizedWorkspace.companyId,
+      projectId: authorizedWorkspace.projectId ?? null,
+    });
+    await withRuntimeControlLocks([
+      `execution:${authorizedWorkspace.id}`,
+      authorizedWorkspace.projectWorkspaceId ? `project:${authorizedWorkspace.projectWorkspaceId}` : null,
+    ], async () => {
     const existing = await svc.getById(id);
     if (!existing) {
       res.status(404).json({ error: "Execution workspace not found" });
@@ -328,6 +386,10 @@ export function executionWorkspaceRoutes(db: Db) {
       companyId: existing.companyId,
       projectId: existing.projectId ?? null,
     });
+    if (action !== "stop" && (existing.status === "archived" || existing.status === "cleanup_failed")) {
+      res.status(409).json({ error: `Execution workspace is ${existing.status} and cannot be activated` });
+      return;
+    }
 
     const workspaceCwd = existing.cwd;
     if (!workspaceCwd) {
@@ -344,6 +406,7 @@ export function executionWorkspaceRoutes(db: Db) {
             repoRef: projectWorkspaces.repoRef,
             defaultRef: projectWorkspaces.defaultRef,
             metadata: projectWorkspaces.metadata,
+            updatedAt: projectWorkspaces.updatedAt,
           })
           .from(projectWorkspaces)
           .where(
@@ -396,6 +459,16 @@ export function executionWorkspaceRoutes(db: Db) {
             workspaceCwd,
           })
         : null);
+    const runtimeServiceForSelectedIndex = selectedRuntimeServiceId || selectedServiceIndex === null
+      ? selectedRuntimeService
+      : effectiveRuntimeServices.find((service) =>
+          resolveConfiguredRuntimeServiceIndexForRow({
+            services: configuredServices,
+            row: service,
+            workspaceCwd,
+          }) === selectedServiceIndex,
+        ) ?? null;
+    let runtimeServiceIdsToStop: string[] | null = null;
     if (
       selectedServiceIndex !== null
       && (selectedServiceIndex < 0 || selectedServiceIndex >= configuredServices.length)
@@ -434,20 +507,6 @@ export function executionWorkspaceRoutes(db: Db) {
       executionWorkspaceId: existing.id,
     });
 
-    const ensureWorkspaceAvailable = async () =>
-      await ensurePersistedExecutionWorkspaceAvailable(
-        existing,
-        {
-          baseCwd: projectWorkspace?.cwd ?? workspaceCwd,
-          source: existing.mode === "shared_workspace" ? "project_primary" : "task_session",
-          projectId: existing.projectId,
-          workspaceId: existing.projectWorkspaceId,
-          repoUrl: existing.repoUrl,
-          repoRef: existing.baseRef,
-        },
-        recorder,
-      );
-
     let runtimeServiceCount = effectiveRuntimeServices.length;
     const stdout: string[] = [];
     const stderr: string[] = [];
@@ -455,63 +514,254 @@ export function executionWorkspaceRoutes(db: Db) {
       if (stream === "stdout") stdout.push(chunk);
       else stderr.push(chunk);
     };
+    const currentDesiredState: "running" | "stopped" =
+      existing.config?.desiredState
+      ?? (effectiveRuntimeServices.some((service) => service.status === "starting" || service.status === "running")
+        ? "running"
+        : "stopped");
+    const nextRuntimeState = action === "stop" && selectedRuntimeServiceId && resolvedServiceIndex === null
+      ? {
+          desiredState: currentDesiredState,
+          serviceStates: existing.config?.serviceStates ?? null,
+        }
+      : buildWorkspaceRuntimeDesiredStatePatch({
+          config: { workspaceRuntime: effectiveRuntimeConfig ?? {} },
+          currentDesiredState,
+          currentServiceStates: existing.config?.serviceStates ?? null,
+          action: action as "start" | "stop" | "restart",
+          serviceIndex: resolvedServiceIndex,
+        });
+    const desiredStateMetadata = mergeExecutionWorkspaceConfig(
+      existing.metadata as Record<string, unknown> | null,
+      {
+        desiredState: nextRuntimeState.desiredState,
+        serviceStates: nextRuntimeState.serviceStates,
+      },
+    );
+    let desiredStateCommitted = false;
+    let activationExpectedUpdatedAt = existing.updatedAt;
+
+    if (action === "start" || action === "stop" || action === "restart") {
+      // Query every PID-bearing row, not the deduplicated presentation model:
+      // an old live row must not be hidden by a newer terminal row with the
+      // same reuse/identity key.
+      const persistedLocalRows = await loadPidBearingLocalRuntimeRows(existing);
+      const indexedPersistedRows = persistedLocalRows.map((row) => ({
+        row,
+        serviceIndex: resolveConfiguredRuntimeServiceIndexForRow({
+          services: configuredServices,
+          row,
+          workspaceCwd,
+        }),
+      }));
+      if (
+        (selectedServiceIndex !== null || action === "start" || action === "restart") &&
+        indexedPersistedRows.some((entry) => entry.serviceIndex === null)
+      ) {
+        res.status(409).json({
+          error: "PID-bearing runtime rows are ambiguous; select a runtimeServiceId before controlling this service",
+        });
+        return;
+      }
+      let scopedPersistedRows = persistedLocalRows;
+      if (action !== "start" && action !== "restart") {
+        if (resolvedServiceIndex !== null) {
+          scopedPersistedRows = indexedPersistedRows
+            .filter((entry) => entry.serviceIndex === resolvedServiceIndex)
+            .map((entry) => entry.row);
+        } else if (selectedRuntimeServiceId) {
+          scopedPersistedRows = persistedLocalRows.filter((row) => row.id === selectedRuntimeServiceId);
+        }
+      }
+      const requestedLocalServiceIds = scopedPersistedRows.map((row) => row.id);
+      if (!areRuntimeServicesTrackedLocally(requestedLocalServiceIds)) {
+        res.status(409).json({
+          error: "Runtime service is owned by another or unavailable runtime host",
+        });
+        return;
+      }
+      if (selectedRuntimeServiceId || selectedServiceIndex !== null) {
+        const selectedLocalRows = resolvedServiceIndex !== null
+          ? indexedPersistedRows
+              .filter((entry) => entry.serviceIndex === resolvedServiceIndex)
+              .map((entry) => entry.row)
+          : selectedRuntimeServiceId
+            ? persistedLocalRows.filter((row) => row.id === selectedRuntimeServiceId)
+            : [];
+        runtimeServiceIdsToStop = selectedLocalRows.map((row) => row.id);
+        const selectedAdapterService = runtimeServiceForSelectedIndex?.provider === "adapter_managed"
+          ? runtimeServiceForSelectedIndex.id
+          : null;
+        if (selectedAdapterService) runtimeServiceIdsToStop.push(selectedAdapterService);
+      } else if (action === "stop" || action === "restart") {
+        // Always stop the rows explicitly scoped by the workspace read model.
+        // CWD containment can capture sibling/child workspaces and cross scope.
+        runtimeServiceIdsToStop = [
+          ...requestedLocalServiceIds,
+          ...effectiveRuntimeServices
+            .filter((service) => service.provider === "adapter_managed")
+            .map((service) => service.id),
+        ];
+      }
+    }
 
     try {
       if (action === "stop" || action === "restart") {
-        await stopRuntimeServicesForExecutionWorkspace({
-          db,
-          executionWorkspaceId: existing.id,
-          workspaceCwd,
-          runtimeServiceId: selectedRuntimeServiceId,
-        });
+        const stoppedRuntimeState = selectedRuntimeServiceId && resolvedServiceIndex === null
+          ? {
+              desiredState: currentDesiredState,
+              serviceStates: existing.config?.serviceStates ?? null,
+            }
+          : buildWorkspaceRuntimeDesiredStatePatch({
+              config: { workspaceRuntime: effectiveRuntimeConfig ?? {} },
+              currentDesiredState,
+              currentServiceStates: existing.config?.serviceStates ?? null,
+              action: "stop",
+              serviceIndex: resolvedServiceIndex,
+            });
+        const stoppedMetadata = mergeExecutionWorkspaceConfig(
+          existing.metadata as Record<string, unknown> | null,
+          {
+            desiredState: stoppedRuntimeState.desiredState,
+            serviceStates: stoppedRuntimeState.serviceStates,
+          },
+        );
+        // Persist the irreversible stop intent first. Any later config update
+        // observes/stays based on stopped state; restart promotes it back to
+        // running only inside the start batch's atomic commit guard.
+        const claimedStop = await svc.updateIfVersion(
+          existing.id,
+          existing.updatedAt,
+          { metadata: stoppedMetadata },
+          ["active", "idle", "in_review"],
+          projectWorkspace
+            ? { id: projectWorkspace.id, expectedUpdatedAt: projectWorkspace.updatedAt }
+            : null,
+        );
+        if (!claimedStop) {
+          res.status(409).json({ error: "Execution workspace changed before runtime stop could be committed" });
+          return;
+        }
+        activationExpectedUpdatedAt = claimedStop.updatedAt;
+        if (action === "stop") desiredStateCommitted = true;
+        // A serviceIndex with no current row is already stopped; restart can
+        // proceed directly to starting just that configured service. Never
+        // translate a missing indexed row into an unscoped "stop all" call.
+        if (runtimeServiceIdsToStop === null || runtimeServiceIdsToStop.length > 0) {
+          await stopRuntimeServicesForExecutionWorkspace({
+            db,
+            executionWorkspaceId: existing.id,
+            workspaceCwd,
+            runtimeServiceIds: runtimeServiceIdsToStop,
+          });
+        }
       }
 
       if (action === "start" || action === "restart") {
-        const availableWorkspace = await ensureWorkspaceAvailable();
+        const activationWorkspace = await svc.getById(existing.id);
+        if (
+          !activationWorkspace ||
+          activationWorkspace.status === "archived" ||
+          activationWorkspace.status === "cleanup_failed" ||
+          String(activationWorkspace.updatedAt) !== String(activationExpectedUpdatedAt)
+        ) {
+          res.status(409).json({ error: "Execution workspace became unavailable before runtime activation" });
+          return;
+        }
+        const availableWorkspace = await ensurePersistedExecutionWorkspaceAvailable(
+          activationWorkspace,
+          {
+            baseCwd: projectWorkspace?.cwd ?? workspaceCwd,
+            source: activationWorkspace.mode === "shared_workspace" ? "project_primary" : "task_session",
+            projectId: activationWorkspace.projectId,
+            workspaceId: activationWorkspace.projectWorkspaceId,
+            repoUrl: activationWorkspace.repoUrl,
+            repoRef: activationWorkspace.baseRef,
+          },
+          recorder,
+        );
         if (!availableWorkspace) {
           res.status(422).json({ error: "Execution workspace needs a local path before AoA can manage local runtime services" });
           return;
         }
-        const startedServices = await startRuntimeServicesForWorkspaceControl({
-          db,
-          actor: actorAgent,
-          issue: existing.sourceIssueId
-            ? { id: existing.sourceIssueId, identifier: null, title: existing.name }
-            : null,
-          workspace: availableWorkspace,
-          executionWorkspaceId: existing.id,
-          config: { workspaceRuntime: effectiveRuntimeConfig },
-          adapterEnv: {},
-          onLog,
-          serviceIndex: resolvedServiceIndex,
-        });
+        let startedServices;
+        try {
+          startedServices = await startRuntimeServicesForWorkspaceControl({
+            db,
+            actor: actorAgent,
+            issue: existing.sourceIssueId
+              ? { id: existing.sourceIssueId, identifier: null, title: existing.name }
+              : null,
+            workspace: availableWorkspace,
+            executionWorkspaceId: existing.id,
+            config: { workspaceRuntime: effectiveRuntimeConfig },
+            adapterEnv: {},
+            onLog,
+            serviceIndex: resolvedServiceIndex,
+            commitGuard: async () => {
+              const persisted = await svc.updateIfVersion(
+                existing.id,
+                activationWorkspace.updatedAt,
+                { metadata: desiredStateMetadata },
+                ["active", "idle", "in_review"],
+                projectWorkspace
+                  ? { id: projectWorkspace.id, expectedUpdatedAt: projectWorkspace.updatedAt }
+                  : null,
+              );
+              desiredStateCommitted = Boolean(persisted);
+              return desiredStateCommitted;
+            },
+          });
+        } catch (err) {
+          if (!(err instanceof RuntimeServiceActivationFenceError)) throw err;
+          if (availableWorkspace.created && err.cleanupArtifactsAllowed) {
+            const rollbackCleanup = await cleanupExecutionWorkspaceArtifacts({
+              workspace: {
+                ...activationWorkspace,
+                cwd: availableWorkspace.cwd,
+                providerRef: availableWorkspace.worktreePath ?? activationWorkspace.providerRef,
+              },
+              projectWorkspace: projectWorkspace
+                ? { cwd: projectWorkspace.cwd, cleanupCommand: null }
+                : null,
+              recorder,
+            });
+            if (!rollbackCleanup.cleaned) {
+              await svc.update(existing.id, {
+                status: "cleanup_failed",
+                cleanupReason: rollbackCleanup.warnings.join(" | ") || "Runtime activation rollback could not remove recreated workspace artifacts",
+              });
+            }
+          }
+          res.status(409).json({ error: "Execution workspace became unavailable during runtime activation" });
+          return;
+        }
         runtimeServiceCount = startedServices.length;
       } else {
-        runtimeServiceCount = selectedRuntimeServiceId ? Math.max(0, (existing.runtimeServices?.length ?? 1) - 1) : 0;
+        const scopedStop = Boolean(selectedRuntimeServiceId) || selectedServiceIndex !== null;
+        runtimeServiceCount = scopedStop
+          ? effectiveRuntimeServices.filter((service) =>
+              (service.status === "starting" || service.status === "running") &&
+              !(runtimeServiceIdsToStop ?? []).includes(service.id),
+            ).length
+          : 0;
       }
 
-      const currentDesiredState: "running" | "stopped" =
-        existing.config?.desiredState
-        ?? (effectiveRuntimeServices.some((service) => service.status === "starting" || service.status === "running")
-          ? "running"
-          : "stopped");
-      const nextRuntimeState = action === "stop" && selectedRuntimeServiceId && resolvedServiceIndex === null
-        ? {
-            desiredState: currentDesiredState,
-            serviceStates: existing.config?.serviceStates ?? null,
-          }
-        : buildWorkspaceRuntimeDesiredStatePatch({
-            config: { workspaceRuntime: effectiveRuntimeConfig ?? {} },
-            currentDesiredState,
-            currentServiceStates: existing.config?.serviceStates ?? null,
-            action: action as "start" | "stop" | "restart",
-            serviceIndex: resolvedServiceIndex,
-          });
-      const metadata = mergeExecutionWorkspaceConfig(existing.metadata as Record<string, unknown> | null, {
-        desiredState: nextRuntimeState.desiredState,
-        serviceStates: nextRuntimeState.serviceStates,
-      });
-      await svc.update(existing.id, { metadata });
+      if (!desiredStateCommitted) {
+        const persistedDesiredState = await svc.updateIfVersion(
+          existing.id,
+          existing.updatedAt,
+          { metadata: desiredStateMetadata },
+          ["active", "idle", "in_review"],
+          projectWorkspace
+            ? { id: projectWorkspace.id, expectedUpdatedAt: projectWorkspace.updatedAt }
+            : null,
+        );
+        if (!persistedDesiredState) {
+          res.status(409).json({ error: "Execution workspace changed before runtime state could be committed" });
+          return;
+        }
+      }
     } catch (err) {
       res.status(500).json({
         error: "Runtime command failed",
@@ -549,6 +799,7 @@ export function executionWorkspaceRoutes(db: Db) {
       runtimeServiceCount,
       stdout: stdout.join(""),
       stderr: stderr.join(""),
+    });
     });
   }
 

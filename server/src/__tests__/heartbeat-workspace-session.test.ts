@@ -172,6 +172,20 @@ describe("shouldUsePersistedExecutionWorkspaceForRun", () => {
       }),
     ).toBe(false);
   });
+
+  it.each(["cleanup_failed", "deleted", "unknown"])(
+    "does not reuse terminal or unknown persisted workspace status %s",
+    (status) => {
+      expect(
+        shouldUsePersistedExecutionWorkspaceForRun({
+          issueExecutionWorkspaceId: "workspace-1",
+          issueExecutionWorkspacePreference: "reuse_existing",
+          hasIssueScopedExecutionWorkspace: true,
+          existingExecutionWorkspaceStatus: status,
+        }),
+      ).toBe(false);
+    },
+  );
 });
 
 describe("shouldResetTaskSessionForWake", () => {

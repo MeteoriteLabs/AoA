@@ -7,7 +7,7 @@
  *   (b) the handler calls enqueueInboxItem with originMedium:'paste'
  *   (c) the handler uses the authed user id when originSource is omitted
  *   (d) 201 response shape: { inboxItemId, deduped }
- *   (e) RBAC: founder + team_lead have access (assertRole called correctly)
+ *   (e) RBAC: founder + team_lead have access (assertHumanRole called correctly)
  *
  * Mock pattern mirrors threads-inbox.test.ts exactly.
  */
@@ -100,6 +100,7 @@ vi.mock("../middleware/validate.js", () => ({
 
 vi.mock("../middleware/rbac.js", () => ({
   assertRole: vi.fn().mockResolvedValue(undefined),
+  assertHumanRole: vi.fn().mockResolvedValue(undefined),
   assertDepartmentAccess: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -359,14 +360,14 @@ describe("paste producer handler — delegates to enqueueInboxItem (Task 0.6)", 
     expect(inboxProducer.enqueueInboxItem).not.toHaveBeenCalled();
   });
 
-  it("RBAC: assertRole is called with founder and team_lead", async () => {
+  it("RBAC: assertHumanRole is called with founder and team_lead", async () => {
     await invokeHandler(
       {} as any,
       { companyId: "co-rbac-check" },
       { rawContent: "rbac test" },
     );
 
-    expect(vi.mocked(rbacModule.assertRole)).toHaveBeenCalledWith(
+    expect(vi.mocked(rbacModule.assertHumanRole)).toHaveBeenCalledWith(
       expect.anything(), // db
       expect.anything(), // req
       "co-rbac-check",   // companyId

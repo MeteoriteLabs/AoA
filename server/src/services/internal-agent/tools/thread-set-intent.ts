@@ -4,7 +4,7 @@
 // Validates against the THREAD_INTENTS enum from the shared package, then
 // writes the array into discussions.intent (jsonb).
 
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { discussions } from "@armyofagents/db";
 import { THREAD_INTENTS } from "@armyofagents/shared";
 import type { AgentTool } from "../types.js";
@@ -66,12 +66,16 @@ export const threadSetIntentTool: AgentTool = {
         error: "INVALID_INTENT",
       };
     }
-    await ctx.db
+    const updated = await ctx.db
       .update(discussions)
       // jsonb column accepts arbitrary JSON; cast through any to satisfy the
       // strict Drizzle column type that expects the JSON pre-validated.
       .set({ intent: stringIntent as unknown as never })
-      .where(eq(discussions.id, threadId));
+      .where(and(eq(discussions.id, threadId), eq(discussions.companyId, ctx.companyId)))
+      .returning({ id: discussions.id });
+    if (!Array.isArray(updated) || updated.length === 0) {
+      return { success: false, data: null, summary: "Thread not found", error: "NOT_FOUND" };
+    }
     return {
       success: true,
       data: { threadId, intent: stringIntent },

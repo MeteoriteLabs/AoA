@@ -316,6 +316,7 @@ export function InstanceSettingsPage() {
             onChange={(patch) => generalMutation.mutate(patch)}
             isSaving={generalMutation.isPending}
             isPrivacyActive={activeTab === "privacy"}
+            deploymentMode={deploymentMode}
           />
         </TabsContent>
 
@@ -414,6 +415,7 @@ function PrivacyPanel({
   onChange,
   isSaving,
   isPrivacyActive,
+  deploymentMode,
 }: {
   generalQuery: ReturnType<
     typeof useQuery<Awaited<ReturnType<typeof instanceSettingsApi.getGeneral>>>
@@ -421,13 +423,14 @@ function PrivacyPanel({
   onChange: (patch: PatchInstanceGeneralSettings) => void;
   isSaving: boolean;
   isPrivacyActive: boolean;
+  deploymentMode: string | undefined;
 }) {
   // Fetch bundle history only when the Privacy tab is actually being viewed —
   // avoids a request when the user lands on General and never visits Privacy.
   const exportsQuery = useQuery({
     queryKey: queryKeys.feedback.exports(BUNDLE_HISTORY_LIMIT),
     queryFn: () => feedbackApi.listExports(BUNDLE_HISTORY_LIMIT),
-    enabled: isPrivacyActive,
+    enabled: isPrivacyActive && deploymentMode !== "cloud_auth",
   });
 
   return (
@@ -440,6 +443,7 @@ function PrivacyPanel({
       bundleHistory={exportsQuery.data}
       bundleHistoryLoading={exportsQuery.isLoading}
       bundleHistoryError={exportsQuery.error}
+      showBundleHistory={deploymentMode !== "cloud_auth"}
     />
   );
 }

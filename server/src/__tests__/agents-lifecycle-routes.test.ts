@@ -1,7 +1,8 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { drizzleOperatorStubs, makeTableProxy } from "./helpers/drizzle-mock.js";
+import { setDeploymentMode } from "../config/deployment-mode.js";
 
 vi.mock("drizzle-orm", () => drizzleOperatorStubs());
 
@@ -220,10 +221,12 @@ describe("/agents/:id/{pause,resume,terminate} cross-tenant", () => {
 
 describe("agent global backfill authorization", () => {
   beforeEach(() => {
+    setDeploymentMode("local_trusted");
     vi.clearAllMocks();
     mockAgentService.backfillParentFields.mockResolvedValue(2);
     mockAgentService.backfillHumanAtTop.mockReset().mockResolvedValue(0);
   });
+  afterEach(() => setDeploymentMode("local_trusted"));
 
   const backfillPaths = [
     "/api/agents/admin/backfill-parent-fields",
@@ -299,5 +302,16 @@ describe("agent global backfill authorization", () => {
     expect(select).toHaveBeenCalledTimes(1);
     expect(mockAgentService.backfillHumanAtTop).toHaveBeenNthCalledWith(1, "company-A");
     expect(mockAgentService.backfillHumanAtTop).toHaveBeenNthCalledWith(2, "company-B");
+  });
+
+  it.each(backfillPaths)("rejects cloud operators at %s before global tenant work", async (path) => {
+    setDeploymentMode("cloud_auth");
+    const select = vi.fn();
+    const actor = { type: "board", source: "session", userId: "operator", operator: true };
+    const res = await request(makeApp(actor, { select })).post(path).send({});
+    expect(res.status).toBe(403);
+    expect(mockAgentService.backfillParentFields).not.toHaveBeenCalled();
+    expect(mockAgentService.backfillHumanAtTop).not.toHaveBeenCalled();
+    expect(select).not.toHaveBeenCalled();
   });
 });

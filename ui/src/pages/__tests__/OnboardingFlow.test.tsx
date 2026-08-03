@@ -20,6 +20,7 @@ const mockNavigate = vi.hoisted(() => vi.fn());
 const mockRemoveQueries = vi.hoisted(() => vi.fn());
 const mockGetOnboardingProgress = vi.hoisted(() => vi.fn());
 const mockAdvanceOnboarding = vi.hoisted(() => vi.fn());
+const mockGetHealth = vi.hoisted(() => vi.fn());
 
 vi.mock("@tanstack/react-query", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-query")>();
@@ -43,6 +44,9 @@ vi.mock("../../api/onboarding", () => ({
   onboardingApi: { getProgress: vi.fn(), advance: vi.fn() },
   getOnboardingProgress: mockGetOnboardingProgress,
   advanceOnboarding: mockAdvanceOnboarding,
+}));
+vi.mock("../../api/health", () => ({
+  healthApi: { get: mockGetHealth },
 }));
 vi.mock("../../onboarding/FlowEngine", () => ({
   FlowEngine: (props: { companyId: string | null; onFinished?: () => void }) => {
@@ -100,6 +104,10 @@ describe("OnboardingFlowPage", () => {
     });
     mockAdvanceOnboarding.mockResolvedValue({
       completedStates: ["AUTHENTICATED", "PROFILE_SET"],
+    });
+    mockGetHealth.mockResolvedValue({
+      status: "ok",
+      deploymentMode: "local_trusted",
     });
   });
 

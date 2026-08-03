@@ -11,6 +11,7 @@ import { ONBOARDING_STEPS } from "../onboarding/steps";
 import { CreateAnotherCompany } from "../onboarding/CreateAnotherCompany";
 import { InvitedJoinTerminal } from "../onboarding/InvitedJoinTerminal";
 import { FirstRunHome } from "../onboarding/FirstRunHome";
+import { healthApi } from "../api/health";
 
 /**
  * The onboarding route (Stage B / B7). Wires the FlowEngine with the real
@@ -37,6 +38,11 @@ export function OnboardingFlowPage({ journey }: { journey: OnboardingJourney }) 
     queryFn: () => authApi.getSession(),
     retry: false,
   });
+  const healthQuery = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => healthApi.get(),
+    retry: false,
+  });
   const userId = session?.user?.id;
   const profileProgressQuery = useQuery({
     queryKey: ["onboarding", "progress", "user-layer", userId],
@@ -53,7 +59,7 @@ export function OnboardingFlowPage({ journey }: { journey: OnboardingJourney }) 
     retry: false,
   });
 
-  if (isLoading || (isNewFounderOrganization && profileProgressQuery.isLoading)) {
+  if (isLoading || healthQuery.isLoading || (isNewFounderOrganization && profileProgressQuery.isLoading)) {
     return (
       <div className="onboarding-dark flex min-h-screen items-center justify-center bg-background">
         <p className="text-sm text-dim">Loading…</p>
@@ -64,6 +70,14 @@ export function OnboardingFlowPage({ journey }: { journey: OnboardingJourney }) 
   if (!userId) {
     navigate("/auth", { replace: true });
     return null;
+  }
+
+  if (healthQuery.error) {
+    return (
+      <div className="onboarding-dark flex min-h-screen items-center justify-center bg-background px-6">
+        <p className="text-sm text-destructive">Failed to determine deployment mode</p>
+      </div>
+    );
   }
 
   if (isNewFounderOrganization && profileProgressQuery.error) {
@@ -145,6 +159,7 @@ export function OnboardingFlowPage({ journey }: { journey: OnboardingJourney }) 
       userId={userId}
       companyId={journey === "invited" ? null : (selectedCompanyId ?? null)}
       journey={journey}
+      deploymentMode={healthQuery.data?.deploymentMode}
       api={onboardingApi}
       registry={ONBOARDING_STEPS}
       onBack={() => navigate("/", { replace: true })}

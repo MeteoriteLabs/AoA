@@ -89,7 +89,9 @@ describe("Thread Tools (P2.1)", () => {
         select: vi.fn().mockReturnValue({
           from: vi.fn().mockReturnValue({
             innerJoin: vi.fn().mockReturnValue({
-              where: vi.fn().mockResolvedValue(items),
+              innerJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue(items),
+              }),
             }),
           }),
         }),
@@ -161,6 +163,13 @@ describe("Thread Tools (P2.1)", () => {
       const filtered = result.data as any[];
       expect(filtered).toHaveLength(1);
       expect(filtered[0].id).toBe("i-3");
+    });
+
+    it("returns no extracted items for a thread outside the company", async () => {
+      const tool = createThreadTools().find((t) => t.name === "query_extracted_items")!;
+      const ctx = { companyId: "co-1", db: makeMockDb([]) as any, services: {} as any } as unknown as ToolContext;
+      const result = await tool.execute({ threadId: "foreign-thread" }, ctx);
+      expect(result).toMatchObject({ success: true, data: [] });
     });
   });
 });

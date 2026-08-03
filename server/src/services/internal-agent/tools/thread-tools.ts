@@ -1,5 +1,5 @@
-import { eq } from "drizzle-orm";
-import { discussionExtractedItems, discussionEntries } from "@armyofagents/db";
+import { and, eq } from "drizzle-orm";
+import { discussionExtractedItems, discussionEntries, discussions } from "@armyofagents/db";
 import type { AgentTool } from "../types.js";
 
 export function createThreadTools(): AgentTool[] {
@@ -99,7 +99,11 @@ export function createThreadTools(): AgentTool[] {
             discussionEntries,
             eq(discussionEntries.id, discussionExtractedItems.discussionEntryId),
           )
-          .where(eq(discussionEntries.discussionId, threadId as string));
+          .innerJoin(discussions, eq(discussions.id, discussionEntries.discussionId))
+          .where(and(
+            eq(discussionEntries.discussionId, threadId as string),
+            eq(discussions.companyId, ctx.companyId),
+          ));
         const filtered = rows
           .filter((r: any) => !status || r.status === status)
           .filter((r: any) => !type || r.type === type);

@@ -16,6 +16,7 @@ import {
   hasActiveCloudMembership,
 } from "./upgrade-socket-authorization.js";
 import { isAllowedPreviewUpstream } from "./preview-url.js";
+import { isRuntimeProcessOwnedByCurrentReplica } from "./runtime-process-owner.js";
 
 const STRIPPED_UPSTREAM_HEADERS = [
   "cookie",
@@ -68,7 +69,7 @@ previewProxy.on("proxyRes", (proxyRes) => {
   hardenPreviewResponseHeaders(proxyRes.headers, { applySandbox: true });
 });
 
-async function resolvePreviewRuntimeServiceRow(
+async function findPreviewRuntimeServiceRow(
   db: Db,
   serviceId: string,
 ) {
@@ -78,16 +79,22 @@ async function resolvePreviewRuntimeServiceRow(
     .where(eq(workspaceRuntimeServices.id, serviceId))
     .limit(1);
 
-  if (!row) {
-    return { ok: false as const, status: 404, error: "Preview service not found" };
-  }
+  return row ?? null;
+}
 
+function validatePreviewRuntimeServiceRow(
+  row: typeof workspaceRuntimeServices.$inferSelect,
+) {
   if (!row.executionWorkspaceId && !row.projectWorkspaceId) {
     return { ok: false as const, status: 409, error: "Preview service is not linked to a workspace" };
   }
 
   if (row.status !== "running" || row.healthStatus === "unhealthy") {
     return { ok: false as const, status: 409, error: "Preview service is not available" };
+  }
+
+  if (!isRuntimeProcessOwnedByCurrentReplica(row)) {
+    return { ok: false as const, status: 409, error: "Preview service is owned by another runtime host" };
   }
 
   if (!isAllowedPreviewUpstream(row.url)) {
@@ -102,10 +109,12 @@ export async function resolvePreviewRuntimeService(
   req: Request,
   serviceId: string,
 ) {
-  const resolved = await resolvePreviewRuntimeServiceRow(db, serviceId);
-  if (!resolved.ok) return resolved;
-  await assertCompanyAccess(db, req, resolved.row.companyId);
-  return resolved;
+  const row = await findPreviewRuntimeServiceRow(db, serviceId);
+  if (!row) return { ok: false as const, status: 404, error: "Preview service not found" };
+  // Authenticate company scope before revealing service state, ownership, or
+  // upstream validity through distinguishable error responses.
+  await assertCompanyAccess(db, req, row.companyId);
+  return validatePreviewRuntimeServiceRow(row);
 }
 
 export function buildPreviewTargetUrl(input: {
@@ -284,15 +293,21 @@ export async function handlePreviewProxyUpgrade(
     return true;
   }
 
-  const resolved = await resolvePreviewRuntimeServiceRow(db, serviceId);
-  if (!resolved.ok) {
-    rejectPreviewUpgrade(socket, resolved.status, "Preview Unavailable");
+  const row = await findPreviewRuntimeServiceRow(db, serviceId);
+  if (!row) {
+    rejectPreviewUpgrade(socket, 404, "Preview Unavailable");
     return true;
   }
 
-  const actor = await authorizeCompanyUpgrade(db, req, resolved.row.companyId, parsed, opts);
+  const actor = await authorizeCompanyUpgrade(db, req, row.companyId, parsed, opts);
   if (!actor) {
     rejectPreviewUpgrade(socket, 403, "Forbidden");
+    return true;
+  }
+
+  const resolved = validatePreviewRuntimeServiceRow(row);
+  if (!resolved.ok) {
+    rejectPreviewUpgrade(socket, resolved.status, "Preview Unavailable");
     return true;
   }
 

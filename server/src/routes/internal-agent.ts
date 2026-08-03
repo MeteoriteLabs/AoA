@@ -12,7 +12,7 @@ import {
   internalAgentReminders,
 } from "@armyofagents/db";
 import { validate } from "../middleware/index.js";
-import { assertRole } from "../middleware/rbac.js";
+import { assertHumanRole } from "../middleware/rbac.js";
 import { internalAgentChatLimiter } from "../middleware/rate-limit.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { HttpError, badRequest, notFound, forbidden } from "../errors.js";
@@ -599,7 +599,7 @@ export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentSt
     async (req, res) => {
       const companyId = req.params.companyId as string;
       await assertCompanyAccess(db, req, companyId);
-      await assertRole(db, req, companyId, "founder");
+      await assertHumanRole(db, req, companyId, "founder");
 
       await db
         .update(internalAgentConfig)
@@ -892,7 +892,7 @@ export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentSt
     async (req, res) => {
       const companyId = req.params.companyId as string;
       await assertCompanyAccess(db, req, companyId);
-      await assertRole(db, req, companyId, "founder");
+      await assertHumanRole(db, req, companyId, "founder");
       await ensureCommanderAgent(db, companyId);
 
       const configs = await db
@@ -916,7 +916,7 @@ export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentSt
     async (req, res) => {
       const companyId = req.params.companyId as string;
       await assertCompanyAccess(db, req, companyId);
-      await assertRole(db, req, companyId, "founder");
+      await assertHumanRole(db, req, companyId, "founder");
 
       // Validate autonomy level. Threads crew (Discussions feature) opens
       // L0-L2 — the design ceiling per § 4 (task + route + execute). Goals
@@ -980,7 +980,7 @@ export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentSt
     async (req, res) => {
       const companyId = req.params.companyId as string;
       await assertCompanyAccess(db, req, companyId);
-      await assertRole(db, req, companyId, "founder");
+      await assertHumanRole(db, req, companyId, "founder");
 
       const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
       const offset = parseInt(req.query.offset as string) || 0;

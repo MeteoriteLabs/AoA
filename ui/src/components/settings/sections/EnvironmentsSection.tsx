@@ -9,9 +9,10 @@ import {
 } from "@/api/environments";
 import { secretsApi } from "@/api/secrets";
 import { executionTargetsApi } from "@/api/execution-targets";
+import { healthApi } from "@/api/health";
 import { queryKeys } from "@/lib/queryKeys";
 import { useQuery } from "@tanstack/react-query";
-import type { CompanySecret, Environment } from "@armyofagents/shared";
+import type { CompanySecret, DeploymentMode, Environment } from "@armyofagents/shared";
 import type { CreateEnvironmentInput, EnvironmentProbeResult, UpdateEnvironmentInput } from "@armyofagents/shared";
 import { buildGvisorConfig, normalizeExecutionTargetId, parseGvisorConfig } from "./environment-target-form";
 import { Button } from "@/components/ui/button";
@@ -231,6 +232,7 @@ interface EnvironmentDialogProps {
   secrets: CompanySecret[];
   onClose: () => void;
   onSubmit: (data: CreateEnvironmentInput | UpdateEnvironmentInput) => void;
+  cloudMode: boolean;
 }
 
 function EnvironmentDialog({
@@ -244,6 +246,7 @@ function EnvironmentDialog({
   secrets,
   onClose,
   onSubmit,
+  cloudMode,
 }: EnvironmentDialogProps) {
   const probeMutation = useProbeEnvironment();
   // Org-admin-gated (server/src/routes/execution-targets.ts). A non-admin
@@ -252,7 +255,7 @@ function EnvironmentDialog({
   const executionTargetsQuery = useQuery({
     queryKey: queryKeys.executionTargets.list(organizationId ?? ""),
     queryFn: () => executionTargetsApi.list(organizationId as string),
-    enabled: !!organizationId,
+    enabled: !!organizationId && !cloudMode,
     retry: false,
   });
   const executionTargets = executionTargetsQuery.data ?? [];
@@ -261,6 +264,7 @@ function EnvironmentDialog({
     envVarsRaw: safeStringify(initial?.envVars),
     connectionTargetRaw: safeStringify(initial?.connectionTarget ?? undefined),
     ...readTarget(initial),
+    ...(!initial && cloudMode ? { targetType: "e2b" as const } : {}),
   }));
 
   const [envVarsError, setEnvVarsError] = useState<string | null>(null);
@@ -278,6 +282,7 @@ function EnvironmentDialog({
         envVarsRaw: safeStringify(initial?.envVars),
         connectionTargetRaw: safeStringify(initial?.connectionTarget ?? undefined),
         ...readTarget(initial),
+        ...(!initial && cloudMode ? { targetType: "e2b" as const } : {}),
       });
       setEnvVarsError(null);
       setConnectionTargetError(null);
@@ -288,6 +293,10 @@ function EnvironmentDialog({
   }
 
   function buildEnvironmentInput(): { ok: true; value: CreateEnvironmentInput | UpdateEnvironmentInput } | { ok: false } {
+    if (cloudMode && form.targetType !== "e2b") {
+      setConfigError("AoA Cloud currently supports E2B environments only. Migrate this environment to E2B to save changes.");
+      return { ok: false };
+    }
     const evResult = safeParse(form.envVarsRaw);
     const ctResult = safeParse(form.connectionTargetRaw);
     const configResult = form.targetType === "e2b" || form.targetType === "gvisor"
@@ -492,11 +501,22 @@ function EnvironmentDialog({
               }}
               data-testid="environment-target-select"
             >
-              <option value="local">Local</option>
-              <option value="sandbox-docker">Sandbox Docker</option>
+              {cloudMode && form.targetType !== "e2b" && (
+                <option value={form.targetType} disabled>
+                  {form.targetType} (unavailable on AoA Cloud)
+                </option>
+              )}
+              {!cloudMode && <option value="local">Local</option>}
+              {!cloudMode && <option value="sandbox-docker">Sandbox Docker</option>}
               <option value="e2b">E2B Sandbox</option>
-              <option value="gvisor">gVisor Sandbox (hardened, runsc)</option>
+              {!cloudMode && <option value="gvisor">gVisor Sandbox (hardened, runsc)</option>}
             </select>
+            {cloudMode && (
+              <p className="text-xs text-muted-foreground">
+                E2B supports regular heartbeat-agent command execution. Commander, crew, local
+                workspace jobs, Docker, gVisor, and worker-pool routing remain unavailable on AoA Cloud.
+              </p>
+            )}
           </div>
 
           {form.targetType === "gvisor" && (
@@ -561,7 +581,7 @@ function EnvironmentDialog({
             </div>
           )}
 
-          {!!organizationId && (
+          {!!organizationId && !cloudMode && (
             <div className="space-y-1.5">
               <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
                 Pin to Execution Target <span className="text-muted-foreground/50">(optional)</span>
@@ -843,10 +863,13 @@ function RowSkeleton() {
 export function EnvironmentsSection({
   companyId,
   organizationId = null,
+  deploymentMode = "local_trusted",
 }: {
   companyId: string;
   organizationId?: string | null;
+  deploymentMode?: DeploymentMode;
 }) {
+  const cloudMode = deploymentMode === "cloud_auth";
   const { data: environments, isLoading, isError } = useEnvironments(companyId);
   const secretsQuery = useQuery({
     queryKey: queryKeys.secrets.list(companyId),
@@ -976,6 +999,16 @@ export function EnvironmentsSection({
                     {" · "}
                     Created {formatDate(env.createdAt)}
                   </div>
+                  {cloudMode && !(
+                    env.driver === "sandbox"
+                    && env.config?.provider === "e2b"
+                    && env.target == null
+                    && env.executionTargetId == null
+                  ) && (
+                    <div className="mt-1 text-xs text-amber-500">
+                      Unavailable on AoA Cloud. Edit this environment and migrate it to unpinned E2B.
+                    </div>
+                  )}
                 </div>
 
                 <Button
@@ -1041,6 +1074,7 @@ export function EnvironmentsSection({
         secrets={secretsQuery.data ?? []}
         onClose={() => { setCreateOpen(false); createMutation.reset(); }}
         onSubmit={handleCreate}
+        cloudMode={cloudMode}
       />
 
       {/* ------------------------------------------------------------------ */}
@@ -1057,6 +1091,7 @@ export function EnvironmentsSection({
         secrets={secretsQuery.data ?? []}
         onClose={() => { setEditTarget(null); updateMutation.reset(); }}
         onSubmit={handleUpdate}
+        cloudMode={cloudMode}
       />
 
       {/* ------------------------------------------------------------------ */}
@@ -1099,6 +1134,10 @@ export function EnvironmentsSection({
 
 export function EnvironmentsSectionWrapper() {
   const { selectedCompanyId, selectedCompany } = useCompany();
+  const healthQuery = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => healthApi.get(),
+  });
 
   if (!selectedCompanyId) {
     return (
@@ -1112,6 +1151,7 @@ export function EnvironmentsSectionWrapper() {
     <EnvironmentsSection
       companyId={selectedCompanyId}
       organizationId={selectedCompany?.organizationId ?? null}
+      deploymentMode={healthQuery.data?.deploymentMode}
     />
   );
 }

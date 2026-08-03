@@ -1,9 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Environment, EnvironmentLease } from "@armyofagents/shared";
 import {
   EnvironmentRunError,
   environmentRunOrchestrator,
 } from "../services/environment-run-orchestrator.js";
+import { setDeploymentMode } from "../config/deployment-mode.js";
 
 const COMPANY = "00000000-0000-0000-0000-000000000001";
 const ENVIRONMENT_ID = "00000000-0000-0000-0000-000000000010";
@@ -54,6 +55,8 @@ function makeLease(overrides: Partial<EnvironmentLease> = {}): EnvironmentLease 
 }
 
 describe("environmentRunOrchestrator", () => {
+  afterEach(() => setDeploymentMode("local_trusted"));
+
   it("resolves an active environment and acquires a lease for a run", async () => {
     const environment = makeEnvironment();
     const lease = makeLease();
@@ -87,13 +90,11 @@ describe("environmentRunOrchestrator", () => {
     expect(result.configPatch).toEqual({ executionTarget: { type: "local" } });
     expect(runtime.acquireRunLease).toHaveBeenCalledWith({
       companyId: COMPANY,
-      environment,
+      environment: { ...environment, executionTargetId: null },
       issueId: "issue-1",
       heartbeatRunId: RUN_ID,
       persistedExecutionWorkspace: { id: "workspace-1", mode: "per_task" },
-      // Deployment-mode-aware sandbox hardening resolved once per env run (P5 residual).
-      // Value depends on the resolved trust boundary; irrelevant here (non-gvisor).
-      multiTenant: expect.any(Boolean),
+      multiTenant: false,
     });
   });
 
@@ -140,6 +141,35 @@ describe("environmentRunOrchestrator", () => {
         allowHostGateway: false,
       },
     });
+  });
+
+  it("rejects a persisted Docker/gVisor environment in cloud before acquiring a lease", async () => {
+    setDeploymentMode("cloud_auth");
+    const environment = makeEnvironment({
+      driver: "sandbox",
+      config: { provider: "gvisor", runtime: "runsc" },
+      target: { type: "sandbox-docker", image: "node:22-bookworm", runtime: "runsc" },
+      executionTargetId: "00000000-0000-4000-8000-000000000099",
+    });
+    const acquireRunLease = vi.fn();
+    const orchestrator = environmentRunOrchestrator({} as never, {
+      environments: { get: vi.fn(async () => environment) },
+      environmentRuntime: { acquireRunLease },
+    });
+
+    await expect(orchestrator.acquireForRun({
+      companyId: COMPANY,
+      environmentId: ENVIRONMENT_ID,
+      adapterType: "codex_local",
+      issueId: null,
+      heartbeatRunId: RUN_ID,
+      persistedExecutionWorkspace: null,
+    })).rejects.toMatchObject<Partial<EnvironmentRunError>>({
+      code: "environment_target_unavailable",
+      environmentId: ENVIRONMENT_ID,
+      driver: "sandbox",
+    });
+    expect(acquireRunLease).not.toHaveBeenCalled();
   });
 
   it("returns provider-backed sandbox execution targets that call the runtime provider", async () => {

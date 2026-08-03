@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  areRuntimeServicesTrackedLocally,
   buildRuntimeServiceProcessTreeKillCommand,
   cleanupExecutionWorkspaceArtifacts,
   ensureRuntimeServicesForRun,
@@ -16,6 +17,7 @@ import {
   refreshLocalProcessRuntimeServiceRows,
   refreshPersistedRuntimeServiceRows,
   resolveRuntimeServiceReadinessOptions,
+  RuntimeServiceActivationFenceError,
   startLocalRuntimeService,
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
@@ -25,6 +27,7 @@ import {
 import { resolveAoaConfigPath } from "../paths.ts";
 import type { WorkspaceOperation } from "@armyofagents/shared";
 import type { WorkspaceOperationRecorder } from "../services/workspace-operations.ts";
+import { setDeploymentMode } from "../config/deployment-mode.ts";
 
 const execFileAsync = promisify(execFile);
 const leasedRunIds = new Set<string>();
@@ -35,6 +38,24 @@ async function expectSameRealPath(actual: string, expected: string): Promise<voi
 
 async function runGit(cwd: string, args: string[]) {
   await execFileAsync("git", args, { cwd });
+}
+
+async function expectLinuxProcessExited(pid: number) {
+  try {
+    process.kill(pid, 0);
+  } catch (err) {
+    expect(err).toMatchObject({ code: "ESRCH" });
+    return;
+  }
+
+  try {
+    const stat = await fs.readFile(`/proc/${pid}/stat`, "utf8");
+    const closeParen = stat.lastIndexOf(")");
+    expect(closeParen).toBeGreaterThanOrEqual(0);
+    expect(stat.slice(closeParen + 2).split(" ")[0]).toBe("Z");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
 }
 
 describe("runtime service process cleanup", () => {
@@ -283,6 +304,7 @@ afterEach(async () => {
   delete process.env.AOA_INSTANCE_ID;
   delete process.env.AOA_WORKTREES_DIR;
   delete process.env.DATABASE_URL;
+  setDeploymentMode("local_trusted");
 });
 
 describe("resolveRuntimeServiceReadinessOptions", () => {
@@ -822,6 +844,38 @@ describe("realizeExecutionWorkspace", () => {
     });
   });
 
+  it("preserves a forged runtime-created local path outside approved roots", async () => {
+    const victimRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-cleanup-victim-"));
+    const marker = path.join(victimRoot, "keep.txt");
+    await fs.writeFile(marker, "keep", "utf8");
+
+    const cleanup = await cleanupExecutionWorkspaceArtifacts({
+      workspace: {
+        id: "execution-workspace-forged-path",
+        cwd: victimRoot,
+        providerType: "local_fs",
+        providerRef: victimRoot,
+        branchName: null,
+        repoUrl: null,
+        baseRef: null,
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        sourceIssueId: "issue-1",
+        metadata: { createdByRuntime: true },
+      },
+      projectWorkspace: {
+        cwd: path.join(victimRoot, "..", "unrelated-project"),
+        cleanupCommand: null,
+      },
+    });
+
+    expect(cleanup.cleaned).toBe(true);
+    expect(cleanup.warnings).toEqual([
+      expect.stringContaining("outside approved runtime workspace roots"),
+    ]);
+    await expect(fs.readFile(marker, "utf8")).resolves.toBe("keep");
+  });
+
   it("keeps an unmerged runtime-created branch and warns instead of force deleting it", async () => {
     const repoRoot = await createTempRepo();
 
@@ -961,6 +1015,449 @@ describe("realizeExecutionWorkspace", () => {
 });
 
 describe("ensureRuntimeServicesForRun", () => {
+  it("rejects and rolls back the whole run batch when an earlier service exits during later readiness", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-run-late-exit-"));
+    const workspace = buildWorkspace(workspaceRoot);
+    const delayedReadyService = {
+      name: "delayed-ready-survivor",
+      command: "node -e \"setTimeout(() => require('node:http').createServer((_, r) => r.end('ok')).listen(Number(process.env.PORT), '127.0.0.1'), 700); setInterval(() => {}, 1000)\"",
+      lifecycle: "shared",
+      reuseScope: "execution_workspace",
+      port: { type: "auto" },
+      readiness: {
+        type: "http",
+        urlTemplate: "http://127.0.0.1:{{port}}",
+        timeoutSec: 3,
+        intervalMs: 100,
+      },
+      stopPolicy: { type: "manual" },
+    };
+    const common = {
+      agent: { id: "agent-1", name: "Codex Coder", companyId: "company-run-late-exit" },
+      issue: null,
+      workspace,
+      executionWorkspaceId: "execution-run-late-exit",
+      adapterEnv: {},
+    };
+
+    await expect(ensureRuntimeServicesForRun({
+      ...common,
+      runId: "run-late-exit",
+      config: {
+        workspaceRuntime: {
+          services: [
+            { name: "exits-early", command: "node -e \"setTimeout(() => process.exit(0), 100)\"" },
+            delayedReadyService,
+          ],
+        },
+      },
+    })).rejects.toBeInstanceOf(RuntimeServiceActivationFenceError);
+
+    const retry = await startRuntimeServicesForWorkspaceControl({
+      ...common,
+      actor: common.agent,
+      config: { workspaceRuntime: { services: [delayedReadyService] } },
+    });
+    expect(retry[0]?.reused).toBe(false);
+    await stopRuntimeServicesForExecutionWorkspace({
+      executionWorkspaceId: common.executionWorkspaceId,
+      workspaceCwd: workspaceRoot,
+    });
+  }, 15_000);
+
+  it("rolls back a shared manual service when a later run service fails", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-run-batch-"));
+    const workspace = buildWorkspace(workspaceRoot);
+    const sharedService = {
+      name: "run-batch-shared",
+      command: "node -e \"setInterval(() => {}, 1000)\"",
+      lifecycle: "shared",
+      reuseScope: "execution_workspace",
+      stopPolicy: { type: "manual" },
+    };
+    const common = {
+      agent: { id: "agent-1", name: "Codex Coder", companyId: "company-run-batch" },
+      issue: null,
+      workspace,
+      executionWorkspaceId: "execution-run-batch",
+      adapterEnv: {},
+    };
+
+    await expect(ensureRuntimeServicesForRun({
+      ...common,
+      runId: "run-batch-failed",
+      config: { workspaceRuntime: { services: [sharedService, { name: "missing-command" }] } },
+    })).rejects.toThrow(/missing command/);
+
+    const retry = await startRuntimeServicesForWorkspaceControl({
+      ...common,
+      actor: common.agent,
+      config: { workspaceRuntime: { services: [sharedService] } },
+    });
+    expect(retry[0]?.reused).toBe(false);
+    await stopRuntimeServicesForExecutionWorkspace({
+      executionWorkspaceId: common.executionWorkspaceId,
+      workspaceCwd: workspaceRoot,
+    });
+  });
+
+  it("serializes concurrent run acquisition so a failed batch rolls back before the next run starts", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-run-adopt-"));
+    const workspace = buildWorkspace(workspaceRoot);
+    const sharedService = {
+      name: "run-adopted-shared",
+      command: "node -e \"setInterval(() => {}, 1000)\"",
+      lifecycle: "shared",
+      reuseScope: "execution_workspace",
+      stopPolicy: { type: "manual" },
+    };
+    const common = {
+      agent: { id: "agent-1", name: "Codex Coder", companyId: "company-run-adopt" },
+      issue: null,
+      workspace,
+      executionWorkspaceId: "execution-run-adopt",
+      adapterEnv: {},
+    };
+    const failingRun = ensureRuntimeServicesForRun({
+      ...common,
+      runId: "run-adopt-failing",
+      config: {
+        workspaceRuntime: {
+          services: [
+            sharedService,
+            {
+              name: "run-never-ready",
+              command: "node -e \"setInterval(() => {}, 1000)\"",
+              port: { type: "auto" },
+              readiness: {
+                type: "http",
+                urlTemplate: "http://127.0.0.1:{{port}}",
+                timeoutSec: 1,
+                intervalMs: 100,
+              },
+            },
+          ],
+        },
+      },
+    });
+    const failingOutcome = failingRun.then(
+      () => null,
+      (error: unknown) => error,
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const successful = await ensureRuntimeServicesForRun({
+      ...common,
+      runId: "run-adopt-successful",
+      config: { workspaceRuntime: { services: [sharedService] } },
+    });
+    expect(successful[0]?.reused).toBe(false);
+    expect(String(await failingOutcome)).toMatch(/Readiness check failed/);
+    expect(areRuntimeServicesTrackedLocally([successful[0]!.id])).toBe(true);
+
+    await releaseRuntimeServicesForRun("run-adopt-successful");
+    await stopRuntimeServicesForExecutionWorkspace({
+      executionWorkspaceId: common.executionWorkspaceId,
+      workspaceCwd: workspaceRoot,
+    });
+  }, 10_000);
+
+  it("still rolls back a failed run batch when lease-release persistence fails", async () => {
+    let persistCalls = 0;
+    const db = {
+      insert: () => ({
+        values: () => ({
+          onConflictDoUpdate: async () => {
+            persistCalls += 1;
+            if (persistCalls === 3) throw new Error("lease release persistence failed");
+          },
+        }),
+      }),
+    } as never;
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-run-release-fail-"));
+    const workspace = buildWorkspace(workspaceRoot);
+    const sharedService = {
+      name: "run-release-fail-shared",
+      command: "node -e \"setInterval(() => {}, 1000)\"",
+      lifecycle: "shared",
+      reuseScope: "execution_workspace",
+      stopPolicy: { type: "manual" },
+    };
+    const common = {
+      agent: { id: "agent-1", name: "Codex Coder", companyId: "company-run-release-fail" },
+      issue: null,
+      workspace,
+      executionWorkspaceId: "execution-run-release-fail",
+      adapterEnv: {},
+    };
+
+    await expect(ensureRuntimeServicesForRun({
+      ...common,
+      db,
+      runId: "run-release-fail",
+      config: { workspaceRuntime: { services: [sharedService, { name: "missing-command" }] } },
+    })).rejects.toThrow(/missing command/);
+
+    const retry = await startRuntimeServicesForWorkspaceControl({
+      ...common,
+      actor: common.agent,
+      config: { workspaceRuntime: { services: [sharedService] } },
+    });
+    expect(retry[0]?.reused).toBe(false);
+    await stopRuntimeServicesForExecutionWorkspace({
+      executionWorkspaceId: common.executionWorkspaceId,
+      workspaceCwd: workspaceRoot,
+    });
+  });
+
+  it("releases every service lease even when an earlier persistence operation fails", async () => {
+    let persistCalls = 0;
+    const db = {
+      insert: () => ({
+        values: () => ({
+          onConflictDoUpdate: async () => {
+            persistCalls += 1;
+            if (persistCalls === 5) throw new Error("release persistence failed");
+          },
+        }),
+      }),
+    } as never;
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-release-all-"));
+    const services = await ensureRuntimeServicesForRun({
+      db,
+      runId: "run-release-all",
+      agent: { id: "agent-1", name: "Codex Coder", companyId: "company-1" },
+      issue: null,
+      workspace: buildWorkspace(workspaceRoot),
+      executionWorkspaceId: "execution-workspace-release-all",
+      config: {
+        workspaceRuntime: {
+          services: ["one", "two"].map((name) => ({
+            name,
+            command: "node -e \"setInterval(() => {}, 1000)\"",
+            lifecycle: "shared",
+            reuseScope: "execution_workspace",
+            stopPolicy: { type: "on_run_finish" },
+          })),
+        },
+      },
+      adapterEnv: {},
+    });
+
+    expect(services).toHaveLength(2);
+    await expect(releaseRuntimeServicesForRun("run-release-all"))
+      .rejects.toThrow("release persistence failed");
+    expect(areRuntimeServicesTrackedLocally(services.map((service) => service.id))).toBe(false);
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "terminates a detached service when the final running-state persist fails",
+    async () => {
+      let persistCalls = 0;
+      let processId: number | null = null;
+      const db = {
+        insert: () => ({
+          values: (values: { providerRef?: string | null }) => ({
+            onConflictDoUpdate: async () => {
+              if (values.providerRef) processId = Number(values.providerRef);
+              persistCalls += 1;
+              if (persistCalls === 2) throw new Error("final running persist failed");
+            },
+          }),
+        }),
+      } as never;
+      const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-final-persist-"));
+
+      await expect(startLocalRuntimeService({
+        db,
+        runId: "run-final-persist-failure",
+        agent: { id: "agent-1", name: "Codex Coder", companyId: "company-1" },
+        issue: null,
+        workspace: buildWorkspace(workspaceRoot),
+        executionWorkspaceId: "execution-workspace-final-persist-failure",
+        adapterEnv: {},
+        service: {
+          name: "final-persist-failure",
+          command: "node -e \"setInterval(() => {}, 1000)\"",
+          lifecycle: "ephemeral",
+          stopPolicy: { type: "on_run_finish" },
+        },
+        reuseKey: null,
+        scopeType: "run",
+        scopeId: "run-final-persist-failure",
+      })).rejects.toThrow("final running persist failed");
+
+      expect(processId).not.toBeNull();
+      await expectLinuxProcessExited(processId!);
+      expect(persistCalls).toBe(3);
+    },
+    15_000,
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "keeps a stopped service retryable until its terminal state is durable",
+    async () => {
+      let persistCalls = 0;
+      const db = {
+        insert: () => ({
+          values: () => ({
+            onConflictDoUpdate: async () => {
+              persistCalls += 1;
+              if (persistCalls === 3) throw new Error("terminal persist failed");
+            },
+          }),
+        }),
+      } as never;
+      const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-terminal-retry-"));
+      const executionWorkspaceId = "execution-workspace-terminal-retry";
+      const record = await startLocalRuntimeService({
+        db,
+        runId: "run-terminal-retry",
+        agent: { id: "agent-1", name: "Codex Coder", companyId: "company-1" },
+        issue: null,
+        workspace: buildWorkspace(workspaceRoot),
+        executionWorkspaceId,
+        adapterEnv: {},
+        service: {
+          name: "terminal-retry",
+          command: "node -e \"setInterval(() => {}, 1000)\"",
+          lifecycle: "shared",
+          stopPolicy: { type: "manual" },
+        },
+        reuseKey: "terminal-retry",
+        scopeType: "execution_workspace",
+        scopeId: executionWorkspaceId,
+      });
+
+      await expect(stopRuntimeServicesForExecutionWorkspace({
+        executionWorkspaceId,
+        workspaceCwd: workspaceRoot,
+      })).rejects.toThrow("terminal persist failed");
+      expect(areRuntimeServicesTrackedLocally([record.id])).toBe(true);
+
+      await expect(stopRuntimeServicesForExecutionWorkspace({
+        executionWorkspaceId,
+        workspaceCwd: workspaceRoot,
+      })).resolves.toBeUndefined();
+      expect(areRuntimeServicesTrackedLocally([record.id])).toBe(false);
+      expect(persistCalls).toBe(4);
+    },
+    15_000,
+  );
+
+  it("observes a rejecting runtime log sink without escaping the service lifecycle", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-log-sink-"));
+    const executionWorkspaceId = "execution-workspace-log-sink";
+    const onLog = vi.fn(async () => {
+      throw new Error("log persistence unavailable");
+    });
+
+    const record = await startLocalRuntimeService({
+      runId: "run-log-sink",
+      agent: { id: "agent-1", name: "Codex Coder", companyId: "company-1" },
+      issue: null,
+      workspace: buildWorkspace(workspaceRoot),
+      executionWorkspaceId,
+      adapterEnv: {},
+      service: {
+        name: "log-sink",
+        command: "node -e \"console.log('hello'); setInterval(() => {}, 1000)\"",
+        lifecycle: "shared",
+        stopPolicy: { type: "manual" },
+      },
+      onLog,
+      reuseKey: "log-sink",
+      scopeType: "execution_workspace",
+      scopeId: executionWorkspaceId,
+    });
+
+    await vi.waitFor(() => expect(onLog).toHaveBeenCalled());
+    await expect(stopRuntimeServicesForExecutionWorkspace({
+      executionWorkspaceId,
+      workspaceCwd: workspaceRoot,
+    })).resolves.toBeUndefined();
+    expect(areRuntimeServicesTrackedLocally([record.id])).toBe(false);
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "blocks a queued shared start when failed readiness leaves the first process unresolved",
+    async () => {
+      const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-single-flight-fail-"));
+      const workspace = buildWorkspace(workspaceRoot);
+      const pidPath = path.join(workspaceRoot, "service-pids.jsonl");
+      const command = `node -e ${JSON.stringify(
+        `require('node:fs').appendFileSync(${JSON.stringify(pidPath)}, JSON.stringify({ pid: process.pid, pgid: process.ppid }) + '\\n'); setInterval(() => {}, 1000);`,
+      )}`;
+      const config = {
+        workspaceRuntime: {
+          services: [{
+            name: "never-ready-shared",
+            command,
+            lifecycle: "shared",
+            reuseScope: "execution_workspace",
+            port: { type: "auto" },
+            readiness: {
+              type: "http",
+              urlTemplate: "http://127.0.0.1:{{port}}",
+              timeoutSec: 1,
+              intervalMs: 100,
+            },
+            stopPolicy: { type: "manual" },
+          }],
+        },
+      };
+      const common = {
+        agent: { id: "agent-1", name: "Codex Coder", companyId: "company-1" },
+        issue: null,
+        workspace,
+        executionWorkspaceId: "execution-workspace-single-flight-fail",
+        config,
+        adapterEnv: {},
+        terminationDeps: {
+          platform: "linux" as const,
+          signal: () => undefined,
+          waitForExit: async () => false,
+        },
+      };
+      let processGroupId: number | null = null;
+
+      try {
+        const results = await Promise.allSettled([
+          ensureRuntimeServicesForRun({ ...common, runId: "run-single-flight-fail-1" }),
+          ensureRuntimeServicesForRun({ ...common, runId: "run-single-flight-fail-2" }),
+        ]);
+
+        expect(results.map((result) => result.status)).toEqual(["rejected", "rejected"]);
+        expect(results.some((result) =>
+          result.status === "rejected" && /stop or reconcile/.test(String(result.reason)),
+        )).toBe(true);
+
+        const identities = (await fs.readFile(pidPath, "utf8"))
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line) as { pid: number; pgid: number });
+        expect(identities).toHaveLength(1);
+        processGroupId = identities[0]!.pgid;
+        expect(() => process.kill(identities[0]!.pid, 0)).not.toThrow();
+
+        await stopRuntimeServicesForExecutionWorkspace({
+          executionWorkspaceId: "execution-workspace-single-flight-fail",
+          workspaceCwd: workspace.cwd,
+        });
+        await expectLinuxProcessExited(identities[0]!.pid);
+      } finally {
+        if (processGroupId) {
+          try {
+            process.kill(-processGroupId, "SIGKILL");
+          } catch {
+            // Expected when tracked cleanup succeeded.
+          }
+        }
+      }
+    },
+    15_000,
+  );
+
   it("reuses shared runtime services across runs and starts a new service after release", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-workspace-"));
     const workspace = buildWorkspace(workspaceRoot);
@@ -1034,6 +1531,29 @@ describe("ensureRuntimeServicesForRun", () => {
     expect(second).toHaveLength(1);
     expect(second[0]?.reused).toBe(true);
     expect(second[0]?.id).toBe(first[0]?.id);
+
+    const persistFailureDb = {
+      insert: () => ({
+        values: () => ({
+          onConflictDoUpdate: async () => {
+            throw new Error("persist reuse failed");
+          },
+        }),
+      }),
+    } as never;
+    await expect(ensureRuntimeServicesForRun({
+      db: persistFailureDb,
+      runId: "run-persist-failure",
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+      issue: null,
+      workspace,
+      config,
+      adapterEnv: {},
+    })).rejects.toThrow("persist reuse failed");
 
     await releaseRuntimeServicesForRun(run1);
     leasedRunIds.delete(run1);
@@ -1309,9 +1829,7 @@ describe("ensureRuntimeServicesForRun", () => {
           executionWorkspaceId: "execution-workspace-readiness-fail",
           workspaceCwd: workspace.cwd,
         });
-        expect(() => process.kill(descendantPid, 0)).toThrow(
-          expect.objectContaining({ code: "ESRCH" }),
-        );
+        await expectLinuxProcessExited(descendantPid);
       } finally {
         if (processGroupId) {
           try {
@@ -1431,6 +1949,50 @@ describe("ensureRuntimeServicesForRun", () => {
 });
 
 describe("normalizeAdapterManagedRuntimeServices", () => {
+  it("namespaces every adapter service identity branch by company", () => {
+    const workspace = buildWorkspace("/tmp/project");
+    const reports = [
+      {
+        id: "adapter-service-1",
+        serviceName: "reported-id",
+        scopeType: "execution_workspace" as const,
+        providerRef: "sandbox-123",
+      },
+      {
+        serviceName: "preview-url",
+        scopeType: "execution_workspace" as const,
+        url: "https://preview.example/",
+        command: null,
+        providerRef: null,
+      },
+      {
+        serviceName: "fallback",
+        scopeType: "run" as const,
+        providerRef: "sandbox-456",
+      },
+    ];
+    const normalizeForCompany = (companyId: string) => normalizeAdapterManagedRuntimeServices({
+      adapterType: "openclaw_gateway",
+      runId: "run-1",
+      agent: { id: `agent-${companyId}`, name: "Gateway Agent", companyId },
+      issue: null,
+      workspace,
+      executionWorkspaceId: "execution-workspace-1",
+      reports,
+    });
+
+    const companyA = normalizeForCompany("company-a");
+    const companyB = normalizeForCompany("company-b");
+    const companyARepeat = normalizeForCompany("company-a");
+
+    expect(companyA).toHaveLength(3);
+    for (let index = 0; index < companyA.length; index += 1) {
+      expect(companyA[index]?.id).not.toBe(reports[index]?.id);
+      expect(companyA[index]?.id).not.toBe(companyB[index]?.id);
+      expect(companyA[index]?.id).toBe(companyARepeat[index]?.id);
+    }
+  });
+
   it("fills workspace defaults and derives stable ids for adapter-managed services", () => {
     const workspace = buildWorkspace("/tmp/project");
     const now = new Date("2026-03-09T12:00:00.000Z");
@@ -1642,6 +2204,22 @@ describe("refreshAdapterManagedPreviewRuntimeServiceRows", () => {
     createdAt: new Date("2026-05-16T00:00:00.000Z"),
     updatedAt: new Date("2026-05-16T00:00:00.000Z"),
   };
+
+  it("does not probe adapter-managed loopback previews from a cloud control-plane replica", async () => {
+    setDeploymentMode("cloud_auth");
+    const probeUrl = vi.fn(async () => true);
+
+    const result = await refreshAdapterManagedPreviewRuntimeServiceRows({
+      rows: [baseRow as any],
+      now: new Date("2026-05-17T10:01:00.000Z"),
+      ttlMs: 0,
+      probeUrl,
+    });
+
+    expect(probeUrl).not.toHaveBeenCalled();
+    expect(result.rows[0]).toBe(baseRow);
+    expect(result.updates).toEqual([]);
+  });
 
   it("does not probe preview rows checked within the TTL", async () => {
     let probes = 0;
@@ -1912,6 +2490,7 @@ describe("refreshLocalProcessRuntimeServiceRows", () => {
     url: "http://127.0.0.1:54853/",
     provider: "local_process",
     providerRef: "12345",
+    processOwnerId: "owner-a",
     ownerAgentId: "agent-1",
     startedByRunId: null,
     lastUsedAt: new Date("2026-05-16T00:00:00.000Z"),
@@ -1929,6 +2508,7 @@ describe("refreshLocalProcessRuntimeServiceRows", () => {
     const now = new Date("2026-05-17T10:00:00.000Z");
 
     const result = await refreshLocalProcessRuntimeServiceRows({
+      processOwnerId: "owner-a",
       rows: [baseRow as any],
       now,
       probeUrl: async () => {
@@ -1958,6 +2538,7 @@ describe("refreshLocalProcessRuntimeServiceRows", () => {
     };
 
     const result = await refreshLocalProcessRuntimeServiceRows({
+      processOwnerId: "owner-a",
       rows: [stoppedRow as any],
       now: new Date("2026-05-17T10:00:00.000Z"),
       probeUrl: async () => {
@@ -2008,6 +2589,7 @@ describe("refreshLocalProcessRuntimeServiceRows", () => {
       let probes = 0;
       const now = new Date("2026-05-17T10:00:00.000Z");
       const result = await refreshLocalProcessRuntimeServiceRows({
+        processOwnerId: "owner-a",
         rows: [{
           ...baseRow,
           id: refs[0]!.id,
@@ -2051,6 +2633,7 @@ describe("refreshLocalProcessRuntimeServiceRows", () => {
     };
 
     const result = await refreshLocalProcessRuntimeServiceRows({
+      processOwnerId: "owner-a",
       rows: [unhealthyRow as any],
       now,
       ttlMs: 30_000,
@@ -2081,6 +2664,7 @@ describe("refreshLocalProcessRuntimeServiceRows", () => {
     const terminate = vi.fn();
 
     const result = await refreshPersistedRuntimeServiceRows({
+      processOwnerId: "owner-a",
       db,
       rows: [{
         ...baseRow,
@@ -2116,6 +2700,7 @@ describe("refreshLocalProcessRuntimeServiceRows", () => {
     } as never;
 
     const result = await refreshPersistedRuntimeServiceRows({
+      processOwnerId: "owner-a",
       db,
       rows: [{
         ...baseRow,
@@ -2142,5 +2727,24 @@ describe("refreshLocalProcessRuntimeServiceRows", () => {
       healthStatus: "unhealthy",
       stoppedAt: null,
     });
+  });
+
+  it("does not probe, terminate, or update a foreign-owner local service", async () => {
+    const probeUrl = vi.fn(async () => false);
+    const isAlive = vi.fn(async () => true);
+    const update = vi.fn();
+
+    const result = await refreshPersistedRuntimeServiceRows({
+      db: { update } as never,
+      rows: [{ ...baseRow, processOwnerId: "owner-b" } as any],
+      processOwnerId: "owner-a",
+      probeUrl,
+      terminationDeps: { isAlive },
+    });
+
+    expect(result[0]).toMatchObject({ status: "running", processOwnerId: "owner-b" });
+    expect(probeUrl).not.toHaveBeenCalled();
+    expect(isAlive).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
   });
 });

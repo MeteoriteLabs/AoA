@@ -5,6 +5,7 @@ import {
   type StepDefinition,
   type StepContext,
 } from "../registry";
+import { ONBOARDING_STEPS } from "../steps";
 
 const dummyComponent = null as unknown as StepDefinition["Component"];
 
@@ -62,6 +63,18 @@ describe("resolveNextStep (Stage B / B5)", () => {
 
   it("returns null when nothing remains", () => {
     expect(resolveNextStep([], ctx())).toBeNull();
+  });
+
+  it("does not deadlock cloud founders before their human profile", () => {
+    const cloudCtx = ctx({ deploymentMode: "cloud_auth" });
+    expect(resolveNextStep(ONBOARDING_STEPS, cloudCtx)?.id).toBe("human-profile");
+
+    expect(
+      resolveNextStep(
+        ONBOARDING_STEPS,
+        ctx({ deploymentMode: "cloud_auth", completedStates: ["AUTHENTICATED", "PROFILE_SET"] }),
+      )?.id,
+    ).toBe("organization");
   });
 });
 

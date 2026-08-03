@@ -139,6 +139,7 @@ Default recommendation: land #316 first, then create a fresh `codex/` follow-up 
 | 14 | Security / Ops | Complete persisted-runtime reconciliation before any durable worker or heartbeat dispatch | Mechanical | Fail closed before work | A startup continuation could otherwise launch tenant work before the legacy-process cutover gate completed. | Running reconciliation concurrently with background dispatch. |
 | 15 | Security / Ops | Never persist a local-process stop until the owned process is confirmed gone or safely identified as a reused PID | Mechanical | State must match reality | A failed health probe or delivered SIGTERM does not prove process exit; hiding a live process behind a stopped row defeats the cloud cutover invariant. | Marking the row stopped after probes or signal delivery alone. |
 | 16 | Security / Ops | Preserve process identity when readiness fails and cleanup cannot be confirmed | Mechanical | Never lose the handle | Throwing a startup error must not discard the only PID/process-group identity for tenant code that may still be live. | Treating a readiness error as proof cleanup succeeded. |
+| 17 | Security / Ops | Bind persisted local PIDs and loopback previews to one runtime-process owner | Scope integrity | PIDs are namespace-local | Shared-database replicas must never probe, signal, stop, or proxy a foreign host's numeric PID/loopback URL. | Treating PID + wall-clock start time as globally unique. |
 
 ## What Already Exists
 
@@ -171,6 +172,9 @@ Default recommendation: land #316 first, then create a fresh `codex/` follow-up 
 - [x] **T11 (P2)** — Authorize every company-qualified issue parameter before identifier resolution, eliminating existing-versus-absent tenant oracles and unauthorized attachment lookups.
 - [x] **T12 (P1)** — Reconcile persisted POSIX runtime process groups rather than only their leaders, failing cloud startup closed when an unverifiable descendant group survives.
 - [ ] **T13 (P1 external gate)** — Commit/push the reviewed tree and require fresh Linux CI, including real PostgreSQL claim races and the real detached-process cutover tests, before merge.
+- [x] **T14 (P1)** — Persist runtime process-owner provenance; owner-gate startup/health/stop/preview paths; fail cloud startup on legacy ownerless PIDs; and cover two-replica/PID-collision regressions.
+- [x] **T15 (P1)** — Re-audit internal-agent tools and human-governance mutations, close cross-company lookup/mutation paths, and replace mixed actor role gates with explicit board-human gates.
+- [x] **T16 (P1)** — Make cloud environment and onboarding surfaces truthful: allow only unpinned E2B environments, keep local/Docker/gVisor/worker execution unavailable, and prevent cloud onboarding from activating unsupported agents.
 
 ## Implemented Audit Fixes
 
@@ -194,15 +198,21 @@ Default recommendation: land #316 first, then create a fresh `codex/` follow-up 
 18. Cloud MCP authentication now performs that live check before any route parameter hook derives lookup scope. Suspended keys remain unauthenticated/unscoped; active keys carry a per-request authorized-company snapshot consumed by bare resolution and the central guard, avoiding both the identifier oracle and duplicate membership queries while preserving self-hosted and `lastUsedAt` semantics.
 19. Company-qualified issue parameter hooks now call the central company-access guard before resolving identifiers or accepting UUID fast paths. Dependency GET/POST/DELETE and attachment upload therefore reject anonymous and cross-tenant actors before tenant lookup, with handler guards retained as defense-in-depth.
 20. Persisted POSIX runtime reconciliation now probes the detached process group as well as its leader. A dead leader with surviving descendants remains unresolved and blocks cloud startup without unsafe signalling; after an identity-matched kill, success requires the entire group to disappear. Windows retains its verified `taskkill /T /F` path.
+21. Every persisted local-process identity now carries a stable runtime owner. Startup, health checks, explicit stops, cleanup, API projections, and HTTP/WebSocket preview proxying operate only on rows owned by the current runtime host; foreign-host rows remain visible but non-actionable, and cloud boot fails closed on legacy ownerless PID rows.
+22. Internal-agent thread, entry, artifact, memory, project, and workspace operations now scope both lookup endpoints to the caller company before reads or mutations. Link creation validates both endpoints, artifact attachment rejects foreign entries, and `thread.setIntent` uses a scoped conditional update.
+23. Governance-only mutations now use `assertHumanRole`, which rejects agent actors instead of inheriting the historical mixed board/agent bypass in `assertRole`. Marketplace configuration and skill-update mutations separately retain an explicit board plus founder gate.
+24. Cloud environment creation, update, and run orchestration accept only unpinned E2B sandbox environments. The UI hides local, Docker, gVisor, and execution-target controls in cloud mode, marks migrated unsupported rows unavailable, and onboarding explicitly defers Commander/gVisor while creating agents paused with heartbeat disabled.
+25. Execution-workspace lifecycle state and runtime metadata are server-owned. Public PATCH can archive or update non-runtime config only; runtime start/stop/archive/cleanup paths reauthorize under control locks, use version fences, stop only locally tracked services, and preserve cleanup failures for retry.
+26. Migration `0200` adds runtime-process ownership and retires unsafe legacy adapter rows; `0201` adds runtime identity versioning. The handwritten index is idempotent, generated snapshots and journal are synchronized, and `pnpm db:generate` reports no drift.
 
 ## Verification Record
 
-- `pnpm -r typecheck` — pass after the combined company-authorization and POSIX process-group patches (23 of 24 workspace projects; 76.0s).
-- `pnpm test:run` — pass on the first clean full run after the combined patches (205.4s). An earlier MCP-patch aggregate attempt hit the established Windows OpenCode subprocess-timeout class; the exact `execute-mcp-gate` file then passed three isolated fresh-process runs (4/4 each).
+- `pnpm -r typecheck` — pass on the final local candidate (23 of 24 workspace projects; 82.4s).
+- Exact `pnpm test:run` on Linux — pass on the final local candidate (215.7s). Windows aggregate runs encountered the established OpenCode child-process contention class; the exact affected suites pass in isolated fresh processes, and the authoritative Linux full run is green.
 - Focused runtime lifecycle suite (`workspace-runtime`, runtime-service control/cutover, terminate-process) — pass after each remediation round. Linux-only real-process regressions cover SIGTERM-resistant leaders/descendants, forced readiness-cleanup failure with tracked recovery, and stale-PID no-signal behavior.
-- `pnpm build` — pass (63.9s); bundled marketplace/connectors refresh produced no worktree drift.
+- `pnpm build` — pass (59.5s); bundled marketplace/connectors refresh produced no worktree drift.
 - `node scripts/check-forbidden-tokens.mjs` — pass.
-- `pnpm db:generate` — pass, no schema changes or migration drift.
+- `pnpm db:generate` — pass, no schema changes or migration drift after migrations 0200/0201.
 - `git diff --check` — pass apart from PowerShell LF-to-CRLF notices.
 - `pnpm --filter @armyofagents/server lint` — pass (18.6s). The repository has no root `pnpm lint` script; baseline GitHub lint is green.
 - Generated tools manifest, tools documentation, and AoA native skills seeder freshness checks — pass (skills checked against `C:/Users/TK/.aoa/wt/aoa-skills`).
@@ -210,7 +220,9 @@ Default recommendation: land #316 first, then create a fresh `codex/` follow-up 
 - MCP pre-authorization focused suites (`mcp-auth-membership`, `accessible-company-ids-for-actor`, `tenant-isolation-matrix`, `mcp-cross-tenant`, and the real issues router) — 58 tests pass. They execute the real live-membership predicate, prove suspended/inactive owners remain unscoped before routing, and assert existing/absent bare identifiers both return `404`.
 - Company-qualified parameter authorization suites (`dependencies-identifier-company-scope`, `issues-comments-attachments`, `issue-param-normalizer`, `assert-company-access-tenant`, and `mcp-auth-membership`) — 63 tests pass. Anonymous and cross-tenant board/agent/MCP actors receive the same authorization result for existing identifiers, absent identifiers, and raw UUIDs, with zero tenant resolver calls; active cloud MCP and authorized local-board paths remain successful. Three independent reviewers reported no P0-P3 findings; a separate focused run passed 74 tests plus server typecheck and diff hygiene.
 - Runtime reconciliation focused suites — 62 tests pass with two POSIX cases skipped on Windows. The exact Linux integration suite passed ten consecutive container runs (4/4 each), and a separate 20-iteration stress probe reproduced and safely cleaned the dead-leader/live-group topology every time. Three independent runtime reviews reported no P0-P3 findings; server typecheck and diff hygiene pass.
-- Baseline GitHub head `b328730a`: open and mergeable; policy/changes/lint/migrations/brand/e2e/e2e-pgvector pass while Linux verify remains in progress; advisory LLM eval failed independently. The current parameter and runtime-process-group fixes are not represented in CI until committed and pushed.
+- Runtime-owner, execution-workspace control/archive, cloud environment, onboarding, human-governance, and internal-agent tenant-isolation focused suites all pass. The final RBAC/mock repair batch passes 85/85, the affected server batch passes 60/60, onboarding passes 5/5, and the exact OpenCode timeout suites pass 7/7 in isolation.
+- Generated tool manifest, generated tool docs, native skills seeder, forbidden-token, and diff-hygiene checks pass. The final changed-file scan found no unresolved production TODO/FIXME or unguarded process/tenant boundary introduced by this fix set.
+- Baseline remote head `b63e58eb` is open and mergeable. Its latest workflow was stopped at the initial `changes`/`policy` jobs by the external GitHub Actions account/billing condition, so dependent required jobs were skipped; the advisory LLM evaluation also failed independently. Earlier reviewed heads passed the Linux required matrix, but this uncommitted final candidate has no remote CI evidence until it is pushed.
 
 ## External Gates and Deferred Work
 

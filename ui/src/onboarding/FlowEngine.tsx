@@ -32,6 +32,7 @@ export type FlowEngineProps = {
   userId: string;
   companyId: string | null;
   journey: OnboardingJourney;
+  deploymentMode?: "local_trusted" | "authenticated" | "cloud_auth";
   api: FlowEngineApi;
   registry?: StepDefinition[];
   onFinished?: () => void;
@@ -84,6 +85,7 @@ export function FlowEngine({
   userId,
   companyId,
   journey,
+  deploymentMode,
   api,
   registry = ONBOARDING_REGISTRY,
   onFinished,
@@ -119,7 +121,7 @@ export function FlowEngine({
   const ctx: StepContext | null =
     completed === null
       ? null
-      : { userId, companyId, journey, completedStates: completed, organizationId, setOrganizationId };
+      : { userId, companyId, journey, completedStates: completed, deploymentMode, organizationId, setOrganizationId };
   const applicableSteps = ctx
     ? registry
         .filter((candidate) => candidate.journeys.includes(ctx.journey))

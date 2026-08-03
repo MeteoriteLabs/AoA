@@ -11,6 +11,7 @@ import { logger } from "../middleware/logger.js";
 import { validate } from "../middleware/validate.js";
 import { assertCanManageInstanceSettings, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { registerIssueParamNormalizer } from "./issue-param-normalizer.js";
+import { tenantIsolationEnforced } from "../config/deployment-mode.js";
 
 export function feedbackRoutes(db: Db) {
   const router = Router();
@@ -156,6 +157,12 @@ export function feedbackRoutes(db: Db) {
   // section. Caller can pass ?limit=N (clamped to [1, 50], default 10).
   router.get("/feedback/exports", async (req, res) => {
     assertCanManageInstanceSettings(req);
+    if (tenantIsolationEnforced()) {
+      res.status(403).json({
+        error: "Global feedback export history is unavailable in multi-tenant deployments",
+      });
+      return;
+    }
 
     const limitRaw = typeof req.query.limit === "string" ? parseInt(req.query.limit, 10) : undefined;
     const limit = Number.isFinite(limitRaw) ? (limitRaw as number) : undefined;

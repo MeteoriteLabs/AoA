@@ -4,7 +4,7 @@ import { updateBriefSchema, updateBriefItemSchema, approveBriefSchema } from "@a
 import { validate } from "../middleware/validate.js";
 import { briefService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
-import { assertRole } from "../middleware/rbac.js";
+import { assertHumanRole } from "../middleware/rbac.js";
 
 export function briefRoutes(db: Db) {
   const router = Router();
@@ -110,7 +110,7 @@ export function briefRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     const briefId = req.params.id as string;
     await assertCompanyAccess(db, req, companyId);
-    await assertRole(db, req, companyId, "founder");
+    await assertHumanRole(db, req, companyId, "founder");
     const actor = getActorInfo(req);
 
     const { dependencies } = req.body;

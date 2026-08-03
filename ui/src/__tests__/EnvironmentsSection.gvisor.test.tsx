@@ -134,6 +134,7 @@ function idleMutation() {
 function renderSection({
   companyId = "comp-1",
   organizationId = null as string | null,
+  deploymentMode = "local_trusted" as "local_trusted" | "authenticated" | "cloud_auth",
 } = {}) {
   const qc = new QueryClient({
     defaultOptions: {
@@ -144,7 +145,7 @@ function renderSection({
 
   return render(
     <QueryClientProvider client={qc}>
-      <EnvironmentsSection companyId={companyId} organizationId={organizationId} />
+      <EnvironmentsSection companyId={companyId} organizationId={organizationId} deploymentMode={deploymentMode} />
     </QueryClientProvider>,
   );
 }
@@ -166,6 +167,31 @@ beforeEach(() => {
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 describe("EnvironmentsSection — gVisor sandbox option + execution-target pin", () => {
+  it("shows only E2B and no execution-target pin in cloud_auth", async () => {
+    const user = userEvent.setup();
+    renderSection({ organizationId: "org-1", deploymentMode: "cloud_auth" });
+    await user.click(screen.getByRole("button", { name: /new environment/i }));
+    const select = screen.getByTestId("environment-target-select") as HTMLSelectElement;
+    expect(Array.from(select.options).map((option) => option.value)).toEqual(["e2b"]);
+    expect(screen.queryByTestId("environment-execution-target-pin-select")).not.toBeInTheDocument();
+    expect(screen.getByText(/gVisor.*remain unavailable on AoA Cloud/i)).toBeInTheDocument();
+    expect(executionTargetsApi.list).not.toHaveBeenCalled();
+  });
+
+  it("warns when an existing cloud environment must be migrated", () => {
+    useEnvironmentsMock.mockReturnValue({
+      data: [makeEnvironment({
+        driver: "sandbox",
+        config: { provider: "gvisor", runtime: "runsc" },
+        executionTargetId: "et-shared-pool",
+      })],
+      isLoading: false,
+      isError: false,
+    });
+    renderSection({ deploymentMode: "cloud_auth" });
+    expect(screen.getByText(/Unavailable on AoA Cloud.*migrate.*unpinned E2B/i)).toBeInTheDocument();
+  });
+
   it("lists gVisor as a target-type option alongside local/sandbox-docker/e2b", async () => {
     const user = userEvent.setup();
     renderSection();

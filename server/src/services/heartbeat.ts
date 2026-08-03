@@ -724,7 +724,7 @@ export function shouldUsePersistedExecutionWorkspaceForRun(input: {
   hasIssueScopedExecutionWorkspace: boolean;
   existingExecutionWorkspaceStatus?: string | null;
 }): boolean {
-  if (!input.existingExecutionWorkspaceStatus || input.existingExecutionWorkspaceStatus === "archived") {
+  if (!input.existingExecutionWorkspaceStatus || !["active", "idle", "in_review"].includes(input.existingExecutionWorkspaceStatus)) {
     return false;
   }
   return (
@@ -3660,7 +3660,8 @@ export function heartbeatService(db: Db) {
       // ── Persist execution workspace ─────────────────────────────────
       try {
         persistedExecutionWorkspace = workspaceToUpdate
-          ? await executionWorkspacesSvc.update(workspaceToUpdate.id, {
+          ? workspaceToUpdate.updatedAt
+            ? await executionWorkspacesSvc.updateIfVersion(workspaceToUpdate.id, workspaceToUpdate.updatedAt, {
               cwd: executionWorkspace.cwd,
               repoUrl: executionWorkspace.repoUrl,
               baseRef: executionWorkspace.repoRef,
@@ -3674,7 +3675,8 @@ export function heartbeatService(db: Db) {
                 source: executionWorkspace.source,
                 createdByRuntime: executionWorkspace.created,
               },
-            })
+              }, ["active", "idle", "in_review"])
+            : null
           : resolvedProjectId
             ? await executionWorkspacesSvc.createTaskOwnedIdempotent({
                 companyId: agent.companyId,
@@ -3707,6 +3709,9 @@ export function heartbeatService(db: Db) {
                 },
               })
             : null;
+        if (workspaceToUpdate && !persistedExecutionWorkspace) {
+          throw new Error("Execution workspace changed or became unavailable before the run could claim it");
+        }
       } catch (error) {
         if (executionWorkspace.created) {
           try {
@@ -4133,6 +4138,16 @@ export function heartbeatService(db: Db) {
           config: resolvedConfigWithEnvironmentAcquisition,
           adapterEnv,
           onLog,
+          activationGuard: persistedExecutionWorkspace
+            ? async () => {
+                const current = await executionWorkspacesSvc.getById(persistedExecutionWorkspace!.id);
+                return Boolean(
+                  current &&
+                  ["active", "idle", "in_review"].includes(current.status) &&
+                  String(current.updatedAt) === String(persistedExecutionWorkspace!.updatedAt)
+                );
+              }
+            : undefined,
         });
         if (runtimeServices.length > 0) {
           context.paperclipRuntimeServices = runtimeServices;

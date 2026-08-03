@@ -64,6 +64,7 @@ import {
   mergeSkillUpdate,
   skillMergeSnapshotToken,
 } from "../services/marketplace-install/skill-update-merge.js";
+import { fetchCatalogResource } from "../services/marketplace-install/fetch-resource.js";
 import type { AgentInstructionsServiceLike } from "../services/marketplace-install/agent-create.js";
 import { SKILL_CUSTOMIZED_ERROR_CODE, type MarketplaceCatalogFile } from "@armyofagents/shared";
 import type { PluginLifecycleManager } from "../services/plugin-lifecycle.js";
@@ -202,6 +203,7 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
     assertBoard(req);
     const companyId = (req.params as Record<string, string>).companyId;
     await assertCompanyAccess(db, req, companyId);
+    await assertRole(db, req, companyId, "founder");
 
     const parsed = MarketplaceSettingsPatchSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -239,6 +241,7 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
     assertBoard(req);
     const companyId = (req.params as Record<string, string>).companyId;
     await assertCompanyAccess(db, req, companyId);
+    await assertRole(db, req, companyId, "founder");
 
     const { id } = req.params as { id: string };
     await db
@@ -258,6 +261,7 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
     assertBoard(req);
     const companyId = (req.params as Record<string, string>).companyId;
     await assertCompanyAccess(db, req, companyId);
+    await assertRole(db, req, companyId, "founder");
 
     const { id } = req.params as { id: string };
     const [update] = await db
@@ -550,11 +554,7 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
       return;
     }
     try {
-      const upstreamRes = await fetch(catalogItem.resourceUrl as string, {
-        signal: AbortSignal.timeout(15000),
-      });
-      if (!upstreamRes.ok) throw new Error(`Fetch failed: ${upstreamRes.status}`);
-      const upstreamContent = await upstreamRes.text();
+      const upstreamContent = await fetchCatalogResource(catalogItem, "skill update diff");
 
       const diff = computeSectionDiff(skill.markdown ?? "", upstreamContent);
       res.json({
@@ -578,6 +578,7 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
     assertBoard(req);
     const companyId = (req.params as Record<string, string>).companyId;
     await assertCompanyAccess(db, req, companyId);
+    await assertRole(db, req, companyId, "founder");
 
     const { id } = req.params as { id: string };
     const { decisions, snapshotToken } = req.body as {

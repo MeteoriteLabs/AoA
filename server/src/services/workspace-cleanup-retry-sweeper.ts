@@ -1,9 +1,15 @@
 import { rm } from "node:fs/promises";
 import path from "node:path";
-import { and, eq, lt, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, lt, or, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { executionWorkspaces, projectWorkspaces } from "@armyofagents/db";
+import { executionWorkspaces, projectWorkspaces, workspaceRuntimeServices } from "@armyofagents/db";
 import { logger } from "../middleware/logger.js";
+import { isApprovedRuntimeWorkspacePath } from "./runtime-workspace-path-policy.js";
+import {
+  areRuntimeServicesTrackedLocally,
+  stopRuntimeServicesForExecutionWorkspace,
+  withRuntimeControlLocks,
+} from "./workspace-runtime.js";
 
 export interface WorkspaceCleanupRetrySweepResult {
   scanned: number;
@@ -33,10 +39,13 @@ export async function retryCleanupFailedWorkspaces(
   const failed = await db
     .select({
       id: executionWorkspaces.id,
+      companyId: executionWorkspaces.companyId,
+      projectWorkspaceId: executionWorkspaces.projectWorkspaceId,
       cwd: executionWorkspaces.cwd,
       providerRef: executionWorkspaces.providerRef,
       providerType: executionWorkspaces.providerType,
       metadata: executionWorkspaces.metadata,
+      updatedAt: executionWorkspaces.updatedAt,
     })
     .from(executionWorkspaces)
     .where(
@@ -59,20 +68,57 @@ export async function retryCleanupFailedWorkspaces(
     .filter((c): c is string => Boolean(c))
     .map((c) => path.resolve(c));
 
-  const markArchived = async (id: string) => {
+  const markArchived = async (workspace: { id: string; companyId: string; updatedAt: Date }) => {
     await db
       .update(executionWorkspaces)
       .set({ status: "archived", cleanupReason: null, updatedAt: new Date() })
-      .where(eq(executionWorkspaces.id, id));
+      .where(and(
+        eq(executionWorkspaces.id, workspace.id),
+        eq(executionWorkspaces.companyId, workspace.companyId),
+        eq(executionWorkspaces.status, "cleanup_failed"),
+        eq(executionWorkspaces.updatedAt, workspace.updatedAt),
+      ));
   };
 
   for (const ws of failed) {
+    await withRuntimeControlLocks([
+      `execution:${ws.id}`,
+      ws.projectWorkspaceId ? `project:${ws.projectWorkspaceId}` : null,
+    ], async () => {
+    try {
+      const pidBearingRows = await db
+        .select({ id: workspaceRuntimeServices.id })
+        .from(workspaceRuntimeServices)
+        .where(and(
+          eq(workspaceRuntimeServices.companyId, ws.companyId),
+          eq(workspaceRuntimeServices.executionWorkspaceId, ws.id),
+          eq(workspaceRuntimeServices.provider, "local_process"),
+          or(
+            inArray(workspaceRuntimeServices.status, ["starting", "running"]),
+            isNotNull(workspaceRuntimeServices.providerRef),
+          ),
+        ));
+      const localServiceIds = pidBearingRows.map((row) => row.id);
+      if (!areRuntimeServicesTrackedLocally(localServiceIds)) {
+        throw new Error("runtime services are owned by another or unavailable runtime host");
+      }
+      await stopRuntimeServicesForExecutionWorkspace({
+        db,
+        executionWorkspaceId: ws.id,
+        workspaceCwd: ws.cwd,
+      });
+    } catch (err) {
+      stillBlocked++;
+      logger.debug({ wsId: ws.id, err }, "cleanup_failed retry could not stop runtime services");
+      return;
+    }
+
     const target = ws.providerRef ?? ws.cwd;
     if (!target) {
       // No path to clean — mark archived so we stop re-scanning.
-      await markArchived(ws.id);
+      await markArchived(ws);
       recovered++;
-      continue;
+      return;
     }
 
     // Mirror cleanupExecutionWorkspaceArtifacts' gates: the runtime only ever
@@ -85,6 +131,10 @@ export async function retryCleanupFailedWorkspaces(
     const containsProjectWorkspace = projectCwds.some(
       (pc) => resolvedTarget === pc || pc.startsWith(`${resolvedTarget}${path.sep}`),
     );
+    const approvedRuntimePath = isApprovedRuntimeWorkspacePath({
+      candidate: resolvedTarget,
+      projectWorkspaceCwds: projectCwds,
+    });
 
     // Mirror cleanupExecutionWorkspaceArtifacts' provider-specific gates:
     //  - git_worktree: an isolated runtime worktree dir — always retried,
@@ -96,6 +146,7 @@ export async function retryCleanupFailedWorkspaces(
     //  - any other provider: nothing to remove — preserve.
     const removable =
       !containsProjectWorkspace &&
+      approvedRuntimePath &&
       (ws.providerType === "git_worktree" ||
         (ws.providerType === "local_fs" && createdByRuntime));
 
@@ -107,17 +158,18 @@ export async function retryCleanupFailedWorkspaces(
           providerType: ws.providerType,
           createdByRuntime,
           containsProjectWorkspace,
+          approvedRuntimePath,
         },
         "cleanup_failed retry skipped: preserved path (not a removable runtime dir, or contains a project workspace); archiving without removal",
       );
-      await markArchived(ws.id);
+      await markArchived(ws);
       preserved++;
-      continue;
+      return;
     }
 
     try {
       await rm(target, { recursive: true, force: true });
-      await markArchived(ws.id);
+      await markArchived(ws);
       recovered++;
     } catch (err) {
       stillBlocked++;
@@ -126,6 +178,7 @@ export async function retryCleanupFailedWorkspaces(
         "cleanup_failed retry still blocked",
       );
     }
+    });
   }
 
   if (failed.length > 0) {

@@ -5,7 +5,7 @@ import { validate } from "../middleware/validate.js";
 import { goalService, memoryLifecycleService, logActivity } from "../services/index.js";
 import { HttpError } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
-import { assertRole } from "../middleware/rbac.js";
+import { assertHumanRole } from "../middleware/rbac.js";
 import { logger } from "../middleware/logger.js";
 
 const log = logger.child({ route: "goals" });
@@ -45,7 +45,7 @@ export function goalRoutes(db: Db) {
   router.post("/companies/:companyId/goals", validate(createGoalSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertCompanyAccess(db, req, companyId);
-    await assertRole(db, req, companyId, "founder", "team_lead");
+    await assertHumanRole(db, req, companyId, "founder", "team_lead");
 
     // Company-wide goals have no projects; scoped goals carry projectIds. The
     // goal service validates parent scope/cycles and throws HttpError on violation.
@@ -82,7 +82,7 @@ export function goalRoutes(db: Db) {
       return;
     }
     await assertCompanyAccess(db, req, existing.companyId);
-    await assertRole(db, req, existing.companyId, "founder", "team_lead");
+    await assertHumanRole(db, req, existing.companyId, "founder", "team_lead");
     let goal;
     try {
       goal = await svc.update(id, req.body);
@@ -141,7 +141,7 @@ export function goalRoutes(db: Db) {
       return;
     }
     await assertCompanyAccess(db, req, existing.companyId);
-    await assertRole(db, req, existing.companyId, "founder", "team_lead");
+    await assertHumanRole(db, req, existing.companyId, "founder", "team_lead");
     const parentIds = Array.isArray(req.body?.parentIds)
       ? (req.body.parentIds as string[])
       : [];
@@ -177,7 +177,7 @@ export function goalRoutes(db: Db) {
       return;
     }
     await assertCompanyAccess(db, req, existing.companyId);
-    await assertRole(db, req, existing.companyId, "founder", "team_lead");
+    await assertHumanRole(db, req, existing.companyId, "founder", "team_lead");
     const goal = await svc.remove(id);
     if (!goal) {
       res.status(404).json({ error: "Goal not found" });

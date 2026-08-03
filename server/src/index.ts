@@ -47,6 +47,7 @@ import { runInboxSweep } from "./services/internal-agent/aoa-agents/sweep-inbox.
 import { runStewardSweep, STEWARD_SWEEP_INTERVAL_MS } from "./services/internal-agent/aoa-agents/sweep-steward.js";
 import { operatorBreakGlassService, realBreakGlassDeps } from "./services/operator-break-glass.js";
 import {
+  reconcileLegacyAdapterRuntimeIdentitiesOnStartup,
   reconcilePersistedRuntimeServicesOnStartup,
   restartDesiredRuntimeServicesOnStartup,
 } from "./services/workspace-runtime.js";
@@ -708,7 +709,8 @@ const tickWorkQuestionWorkers = (now = new Date()) => {
 // disables heartbeat must still reap (or refuse to forget) pre-upgrade detached
 // tenant processes before it continues booting. It must also run before any
 // durable worker can dispatch a continuation into heartbeat execution.
-await reconcilePersistedRuntimeServicesOnStartup(db as any);
+await reconcileLegacyAdapterRuntimeIdentitiesOnStartup(db as any);
+const runtimeProcessReconciliation = await reconcilePersistedRuntimeServicesOnStartup(db as any);
 
 // Run independently of the heartbeat scheduler flag. This is intentionally
 // separate from the heartbeat interval below so HEARTBEAT_SCHEDULER_ENABLED
@@ -716,6 +718,31 @@ await reconcilePersistedRuntimeServicesOnStartup(db as any);
 // detached-process cutover gate above has completed.
 tickWorkQuestionWorkers();
 setInterval(() => tickWorkQuestionWorkers(), config.heartbeatSchedulerIntervalMs);
+
+// Auto-resume is durable runtime state, not a heartbeat scheduling concern.
+// Keep it outside HEARTBEAT_SCHEDULER_ENABLED, after the process-ownership
+// cutover gate. Per-activation commit guards make this safe in the background.
+if (
+  (runtimeProcessReconciliation.unresolved ?? 0) === 0 &&
+  (runtimeProcessReconciliation.foreign ?? 0) === 0
+) {
+  void restartDesiredRuntimeServicesOnStartup(db as any)
+    .then((restartSummary) => {
+      if (restartSummary.failed > 0) {
+        logger.warn(restartSummary, "desired runtime-service startup reconciliation complete with failures");
+      } else {
+        logger.info(restartSummary, "desired runtime-service startup reconciliation complete");
+      }
+    })
+    .catch((err) => {
+      logger.error({ err }, "restartDesiredRuntimeServicesOnStartup failed");
+    });
+} else {
+  logger.warn(
+    runtimeProcessReconciliation,
+    "skipped desired runtime-service restart while legacy or foreign process rows remain",
+  );
+}
 
 if (config.heartbeatSchedulerEnabled) {
   const heartbeat = heartbeatService(db as any);
@@ -755,11 +782,6 @@ if (config.heartbeatSchedulerEnabled) {
   // Reap orphaned runs at startup (no threshold -- runningProcesses is empty)
   void heartbeat.reapOrphanedRuns().catch((err) => {
     logger.error({ err }, "startup reap of orphaned heartbeat runs failed");
-  });
-
-  // Auto-resume runtime services that were desiredState:running when server stopped
-  void restartDesiredRuntimeServicesOnStartup(db as any).catch((err) => {
-    logger.error({ err }, "restartDesiredRuntimeServicesOnStartup failed");
   });
 
   // Periodic sweep: mark stale workspaces as cleanup-eligible based on project TTL.

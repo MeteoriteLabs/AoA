@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const mockEmitRuntimeServiceTaskOutput = vi.hoisted(() => vi.fn().mockResolvedValue(null));
+
 // ── Mocks ────────────────────────────────────────────────────────────────────
 
 vi.mock("drizzle-orm", () => ({
@@ -8,6 +10,8 @@ vi.mock("drizzle-orm", () => ({
   desc: vi.fn((col: any) => ({ desc: col })),
   inArray: vi.fn((col: any, vals: any) => ({ inArray: [col, vals] })),
   isNotNull: vi.fn((col: any) => ({ isNotNull: col })),
+  isNull: vi.fn((col: any) => ({ isNull: col })),
+  ne: vi.fn((a: any, b: any) => ({ ne: [a, b] })),
   or: vi.fn((...args: any[]) => ({ or: args })),
 }));
 
@@ -66,6 +70,7 @@ vi.mock("@armyofagents/db", () => ({
     url: "wrs_url",
     provider: "wrs_provider",
     providerRef: "wrs_provider_ref",
+    processOwnerId: "wrs_process_owner_id",
     lastUsedAt: "wrs_last_used_at",
     startedAt: "wrs_started_at",
     stoppedAt: "wrs_stopped_at",
@@ -102,15 +107,21 @@ vi.mock("../middleware/logger.js", () => ({
   },
 }));
 
+vi.mock("../services/task-output-emitters.js", () => ({
+  emitRuntimeServiceTaskOutput: mockEmitRuntimeServiceTaskOutput,
+}));
+
 // ── Imports under test ────────────────────────────────────────────────────────
 
 import {
+  areRuntimeServicesTrackedLocally,
   buildWorkspaceRuntimeDesiredStatePatch,
   listConfiguredRuntimeServiceEntries,
   resetRuntimeServicesForTests,
   reconcilePersistedRuntimeServicesOnStartup,
   resolveConfiguredRuntimeServiceIndexForRow,
   resolveShell,
+  RuntimeServiceActivationFenceError,
   runWorkspaceJobForControl,
   startRuntimeServicesForWorkspaceControl,
   resolveWorkspaceRuntimeReadinessTimeoutSec,
@@ -118,6 +129,7 @@ import {
   stopRuntimeServicesForExecutionWorkspace,
   stopRuntimeServicesForProjectWorkspace,
   terminatePersistedLocalRuntimeProcess,
+  withRuntimeControlLocks,
 } from "../services/workspace-runtime.js";
 import { setDeploymentMode } from "../config/deployment-mode.js";
 import {
@@ -151,6 +163,7 @@ function makeRuntimeRow(overrides: Record<string, unknown> = {}) {
     url: "http://localhost:3000",
     provider: "local_process",
     providerRef: null,
+    processOwnerId: "owner-a",
     ownerAgentId: null,
     startedByRunId: null,
     lastUsedAt: now,
@@ -167,12 +180,14 @@ function makeRuntimeRow(overrides: Record<string, unknown> = {}) {
 beforeEach(async () => {
   setDeploymentMode("local_trusted");
   delete process.env.AOA_ALLOW_UNSANDBOXED_MULTITENANT;
+  process.env.AOA_RUNTIME_PROCESS_OWNER_ID = "owner-a";
   await resetRuntimeServicesForTests();
 });
 
 afterEach(() => {
   setDeploymentMode("local_trusted");
   delete process.env.AOA_ALLOW_UNSANDBOXED_MULTITENANT;
+  delete process.env.AOA_RUNTIME_PROCESS_OWNER_ID;
 });
 
 // ── Pure function tests ───────────────────────────────────────────────────────
@@ -384,6 +399,426 @@ describe("runtime service row targeting", () => {
 });
 
 describe("startRuntimeServicesForWorkspaceControl", () => {
+  it("rolls back an uncommitted batch when its activation fence is superseded", async () => {
+    const workspace = {
+      baseCwd: process.cwd(), source: "project_primary" as const, projectId: "project-fence",
+      workspaceId: "workspace-fence", repoUrl: null, repoRef: null,
+      strategy: "project_primary" as const, cwd: process.cwd(), branchName: null,
+      worktreePath: null, warnings: [], created: false,
+    };
+    const service = {
+      name: "fenced-web",
+      lifecycle: "shared",
+      command: "node -e \"setInterval(() => {}, 1000)\"",
+    };
+    const baseInput = {
+      actor: { id: "agent-1", name: "Board", companyId: "company-fence" },
+      issue: null,
+      workspace,
+      executionWorkspaceId: "execution-fence",
+      adapterEnv: {},
+      config: { workspaceRuntime: { services: [service] } },
+    };
+
+    await expect(startRuntimeServicesForWorkspaceControl({
+      ...baseInput,
+      commitGuard: async () => false,
+    })).rejects.toBeInstanceOf(RuntimeServiceActivationFenceError);
+
+    const retry = await startRuntimeServicesForWorkspaceControl(baseInput);
+    expect(retry[0]?.reused).toBe(false);
+    await stopRuntimeServicesForExecutionWorkspace({
+      executionWorkspaceId: "execution-fence",
+      workspaceCwd: process.cwd(),
+    });
+  });
+
+  it("fails activation when a concurrent stop removes the service before commit", async () => {
+    let enterGuard!: () => void;
+    let releaseGuard!: () => void;
+    const guardEntered = new Promise<void>((resolve) => { enterGuard = resolve; });
+    const guardRelease = new Promise<void>((resolve) => { releaseGuard = resolve; });
+    const executionWorkspaceId = "execution-stop-at-guard";
+    const start = startRuntimeServicesForWorkspaceControl({
+      actor: { id: "agent-1", name: "Board", companyId: "company-stop-at-guard" },
+      issue: null,
+      workspace: {
+        baseCwd: process.cwd(), source: "project_primary", projectId: "project-stop-at-guard",
+        workspaceId: "workspace-stop-at-guard", repoUrl: null, repoRef: null,
+        strategy: "project_primary", cwd: process.cwd(), branchName: null,
+        worktreePath: null, warnings: [], created: false,
+      },
+      executionWorkspaceId,
+      config: {
+        workspaceRuntime: {
+          services: [{
+            name: "stop-at-guard",
+            command: "node -e \"setInterval(() => {}, 1000)\"",
+            reuseScope: "execution_workspace",
+          }],
+        },
+      },
+      adapterEnv: {},
+      commitGuard: async () => {
+        enterGuard();
+        await guardRelease;
+        return true;
+      },
+    });
+
+    await guardEntered;
+    await stopRuntimeServicesForExecutionWorkspace({
+      executionWorkspaceId,
+      workspaceCwd: process.cwd(),
+    });
+    releaseGuard();
+
+    await expect(start).rejects.toBeInstanceOf(RuntimeServiceActivationFenceError);
+  });
+
+  it("validates the whole batch before committing any service", async () => {
+    let enterGuard!: () => void;
+    let releaseGuard!: () => void;
+    const guardEntered = new Promise<void>((resolve) => { enterGuard = resolve; });
+    const guardRelease = new Promise<void>((resolve) => { releaseGuard = resolve; });
+    const baseInput = {
+      actor: { id: "agent-1", name: "Board", companyId: "company-two-pass" },
+      issue: null,
+      workspace: {
+        baseCwd: process.cwd(), source: "project_primary" as const, projectId: "project-two-pass",
+        workspaceId: "workspace-two-pass", repoUrl: null, repoRef: null,
+        strategy: "project_primary" as const, cwd: process.cwd(), branchName: null,
+        worktreePath: null, warnings: [], created: false,
+      },
+      executionWorkspaceId: "execution-two-pass",
+      adapterEnv: {},
+    };
+    const firstService = {
+      name: "two-pass-stable",
+      command: "node -e \"setInterval(() => {}, 1000)\"",
+      reuseScope: "execution_workspace",
+    };
+    const start = startRuntimeServicesForWorkspaceControl({
+      ...baseInput,
+      config: {
+        workspaceRuntime: {
+          services: [
+            firstService,
+            { name: "two-pass-exits", command: "node -e \"setTimeout(() => process.exit(0), 100)\"" },
+          ],
+        },
+      },
+      commitGuard: async () => {
+        enterGuard();
+        await guardRelease;
+        return true;
+      },
+    });
+
+    await guardEntered;
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    releaseGuard();
+    await expect(start).rejects.toBeInstanceOf(RuntimeServiceActivationFenceError);
+
+    const retry = await startRuntimeServicesForWorkspaceControl({
+      ...baseInput,
+      config: { workspaceRuntime: { services: [firstService] } },
+    });
+    expect(retry[0]?.reused).toBe(false);
+    await stopRuntimeServicesForExecutionWorkspace({
+      executionWorkspaceId: baseInput.executionWorkspaceId,
+      workspaceCwd: process.cwd(),
+    });
+  });
+
+  it("does not reuse a shared service after its effective command or cwd changes", async () => {
+    const baseInput = {
+      actor: { id: "agent-1", name: "Board", companyId: "company-reuse-config" },
+      issue: null,
+      workspace: {
+        baseCwd: process.cwd(), source: "project_primary" as const, projectId: "project-reuse-config",
+        workspaceId: "workspace-reuse-config", repoUrl: null, repoRef: null,
+        strategy: "project_primary" as const, cwd: process.cwd(), branchName: null,
+        worktreePath: null, warnings: [], created: false,
+      },
+      executionWorkspaceId: "execution-reuse-config",
+      adapterEnv: {},
+    };
+    const start = async (command: string, cwd = ".") => await startRuntimeServicesForWorkspaceControl({
+      ...baseInput,
+      config: {
+        workspaceRuntime: {
+          services: [{ name: "config-sensitive", command, cwd, reuseScope: "project_workspace" }],
+        },
+      },
+    });
+
+    const original = await start("node -e \"setInterval(() => {}, 1000)\"");
+    const changedCommand = await start("node -e \"setInterval(() => {}, 2000)\"");
+    const changedCwd = await start("node -e \"setInterval(() => {}, 2000)\"", "server");
+
+    expect(new Set([original[0]?.id, changedCommand[0]?.id, changedCwd[0]?.id]).size).toBe(3);
+    expect([original[0]?.reused, changedCommand[0]?.reused, changedCwd[0]?.reused]).toEqual([false, false, false]);
+    await stopRuntimeServicesForExecutionWorkspace({
+      executionWorkspaceId: baseInput.executionWorkspaceId,
+      workspaceCwd: process.cwd(),
+    });
+  });
+
+  it("rolls back newly created services when a later service in the batch fails", async () => {
+    const workspace = {
+      baseCwd: process.cwd(), source: "project_primary" as const, projectId: "project-1",
+      workspaceId: "workspace-root-rollback", repoUrl: null, repoRef: null,
+      strategy: "project_primary" as const, cwd: process.cwd(), branchName: null,
+      worktreePath: null, warnings: [], created: false,
+    };
+    const firstService = {
+      name: "rollback-web",
+      lifecycle: "shared",
+      command: "node -e \"setInterval(() => {}, 1000)\"",
+    };
+    const baseInput = {
+      actor: { id: "agent-1", name: "Board", companyId: "company-rollback" },
+      issue: null,
+      workspace,
+      executionWorkspaceId: "workspace-rollback",
+      adapterEnv: {},
+    };
+
+    await expect(startRuntimeServicesForWorkspaceControl({
+      ...baseInput,
+      config: {
+        workspaceRuntime: {
+          services: [firstService, { name: "broken-service" }],
+        },
+      },
+    })).rejects.toThrow(/missing command/);
+
+    const retry = await startRuntimeServicesForWorkspaceControl({
+      ...baseInput,
+      config: { workspaceRuntime: { services: [firstService] } },
+    });
+    expect(retry).toHaveLength(1);
+    expect(retry[0]?.reused).toBe(false);
+
+    await stopRuntimeServicesForExecutionWorkspace({
+      executionWorkspaceId: "workspace-rollback",
+      workspaceCwd: process.cwd(),
+    });
+  });
+
+  it("does not roll back a shared service adopted by a concurrent successful batch", async () => {
+    const workspace = {
+      baseCwd: process.cwd(), source: "project_primary" as const, projectId: "project-concurrent-rollback",
+      workspaceId: "workspace-concurrent-rollback", repoUrl: null, repoRef: null,
+      strategy: "project_primary" as const, cwd: process.cwd(), branchName: null,
+      worktreePath: null, warnings: [], created: false,
+    };
+    const sharedService = {
+      name: "shared-adopted-web",
+      lifecycle: "shared",
+      reuseScope: "execution_workspace",
+      command: "node -e \"setInterval(() => {}, 1000)\"",
+    };
+    const baseInput = {
+      actor: { id: "agent-1", name: "Board", companyId: "company-concurrent-rollback" },
+      issue: null,
+      workspace,
+      executionWorkspaceId: "execution-concurrent-rollback",
+      adapterEnv: {},
+    };
+    const failingBatch = startRuntimeServicesForWorkspaceControl({
+      ...baseInput,
+      invocationId: "failing-batch",
+      config: {
+        workspaceRuntime: {
+          services: [
+            sharedService,
+            {
+              name: "never-ready",
+              command: "node -e \"setInterval(() => {}, 1000)\"",
+              port: { type: "auto" },
+              readiness: {
+                type: "http",
+                urlTemplate: "http://127.0.0.1:{{port}}",
+                timeoutSec: 1,
+                intervalMs: 100,
+              },
+            },
+          ],
+        },
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const successfulBatch = await startRuntimeServicesForWorkspaceControl({
+      ...baseInput,
+      invocationId: "successful-batch",
+      config: { workspaceRuntime: { services: [sharedService] } },
+    });
+    expect(successfulBatch[0]?.reused).toBe(true);
+
+    await expect(failingBatch).rejects.toThrow(/Readiness check failed/);
+    expect(areRuntimeServicesTrackedLocally([successfulBatch[0]!.id])).toBe(true);
+
+    await stopRuntimeServicesForExecutionWorkspace({
+      executionWorkspaceId: "execution-concurrent-rollback",
+      workspaceCwd: process.cwd(),
+    });
+  }, 10_000);
+
+  it("single-flights concurrent shared starts with the same reuse key", async () => {
+    const input = {
+      actor: { id: "agent-1", name: "Board", companyId: "company-1" },
+      issue: null,
+      workspace: {
+        baseCwd: process.cwd(), source: "project_primary" as const, projectId: "project-1",
+        workspaceId: "workspace-root-1", repoUrl: null, repoRef: null,
+        strategy: "project_primary" as const, cwd: process.cwd(), branchName: null,
+        worktreePath: null, warnings: [], created: false,
+      },
+      executionWorkspaceId: "workspace-concurrent",
+      config: {
+        workspaceRuntime: {
+          services: [{
+            name: "shared-web",
+            lifecycle: "shared",
+            command: "node -e \"setInterval(() => {}, 1000)\"",
+            port: { type: "auto" },
+          }],
+        },
+      },
+      adapterEnv: {},
+    };
+
+    const [first, second] = await Promise.all([
+      startRuntimeServicesForWorkspaceControl(input),
+      startRuntimeServicesForWorkspaceControl(input),
+    ]);
+
+    expect(first).toHaveLength(1);
+    expect(second).toHaveLength(1);
+    expect(first[0]?.id).toBe(second[0]?.id);
+    expect([first[0]?.reused, second[0]?.reused].sort()).toEqual([false, true]);
+    expect(areRuntimeServicesTrackedLocally([first[0]!.id])).toBe(true);
+
+    await stopRuntimeServicesForExecutionWorkspace({
+      executionWorkspaceId: "workspace-concurrent",
+      workspaceCwd: process.cwd(),
+    });
+  });
+
+  it("reuses an omitted-lifecycle service using the documented shared default", async () => {
+    const input = {
+      actor: { id: "agent-1", name: "Board", companyId: "company-default-shared" },
+      issue: null,
+      workspace: {
+        baseCwd: process.cwd(), source: "project_primary" as const, projectId: "project-default-shared",
+        workspaceId: "workspace-default-shared", repoUrl: null, repoRef: null,
+        strategy: "project_primary" as const, cwd: process.cwd(), branchName: null,
+        worktreePath: null, warnings: [], created: false,
+      },
+      executionWorkspaceId: "execution-default-shared",
+      config: {
+        workspaceRuntime: {
+          services: [{ name: "default-shared", command: "node -e \"setInterval(() => {}, 1000)\"" }],
+        },
+      },
+      adapterEnv: {},
+    };
+
+    const first = await startRuntimeServicesForWorkspaceControl(input);
+    const second = await startRuntimeServicesForWorkspaceControl(input);
+    expect(second[0]?.id).toBe(first[0]?.id);
+    expect(second[0]?.reused).toBe(true);
+    await stopRuntimeServicesForExecutionWorkspace({
+      executionWorkspaceId: input.executionWorkspaceId,
+      workspaceCwd: process.cwd(),
+    });
+  });
+
+  it("does not reuse shared processes across companies or effective adapter environments", async () => {
+    const start = async (companyId: string, executionWorkspaceId: string, credential: string) =>
+      await startRuntimeServicesForWorkspaceControl({
+        actor: { id: `agent-${companyId}`, name: "Board", companyId },
+        issue: null,
+        workspace: {
+          baseCwd: process.cwd(), source: "agent_home", projectId: null,
+          workspaceId: null, repoUrl: null, repoRef: null,
+          strategy: "project_primary", cwd: process.cwd(), branchName: null,
+          worktreePath: null, warnings: [], created: false,
+        },
+        executionWorkspaceId,
+        config: {
+          workspaceRuntime: {
+            services: [{
+              name: "shared-web",
+              lifecycle: "shared",
+              reuseScope: "project_workspace",
+              command: "node -e \"setInterval(() => {}, 1000)\"",
+            }],
+          },
+        },
+        adapterEnv: { PROVIDER_TOKEN: credential },
+      });
+
+    const companyAFirst = await start("company-a", "workspace-a1", "token-a");
+    const companyB = await start("company-b", "workspace-b", "token-a");
+    const companyASecond = await start("company-a", "workspace-a2", "token-b");
+
+    expect(new Set([
+      companyAFirst[0]?.id,
+      companyB[0]?.id,
+      companyASecond[0]?.id,
+    ]).size).toBe(3);
+    expect([companyAFirst[0]?.reused, companyB[0]?.reused, companyASecond[0]?.reused])
+      .toEqual([false, false, false]);
+
+    for (const executionWorkspaceId of ["workspace-a1", "workspace-b", "workspace-a2"]) {
+      await stopRuntimeServicesForExecutionWorkspace({
+        executionWorkspaceId,
+        workspaceCwd: process.cwd(),
+      });
+    }
+  });
+
+  it("preserves project-scoped infrastructure when a shared session is archived", async () => {
+    const refs = await startRuntimeServicesForWorkspaceControl({
+      actor: { id: "agent-1", name: "Board", companyId: "company-1" },
+      issue: null,
+      workspace: {
+        baseCwd: process.cwd(), source: "project_primary", projectId: "project-1",
+        workspaceId: "project-workspace-1", repoUrl: null, repoRef: null,
+        strategy: "project_primary", cwd: process.cwd(), branchName: null,
+        worktreePath: null, warnings: [], created: false,
+      },
+      executionWorkspaceId: "shared-session-1",
+      config: {
+        workspaceRuntime: {
+          services: [{
+            name: "shared-web",
+            command: "node -e \"setInterval(() => {}, 1000)\"",
+            reuseScope: "project_workspace",
+          }],
+        },
+      },
+      adapterEnv: {},
+    });
+
+    await stopRuntimeServicesForExecutionWorkspace({
+      executionWorkspaceId: "shared-session-1",
+      workspaceCwd: null,
+      preserveProjectWorkspaceServices: true,
+    });
+    expect(areRuntimeServicesTrackedLocally([refs[0]!.id])).toBe(true);
+
+    await stopRuntimeServicesForExecutionWorkspace({
+      executionWorkspaceId: "shared-session-1",
+      workspaceCwd: process.cwd(),
+    });
+    expect(areRuntimeServicesTrackedLocally([refs[0]!.id])).toBe(false);
+  });
+
   it("refuses local runtime-service commands in cloud_auth", async () => {
     setDeploymentMode("cloud_auth");
     await expect(startRuntimeServicesForWorkspaceControl({
@@ -399,6 +834,26 @@ describe("startRuntimeServicesForWorkspaceControl", () => {
       config: { workspaceRuntime: { services: [{ name: "web", command: "echo unsafe" }] } },
       adapterEnv: { SECRET_VALUE: "must-not-reach-a-process" },
     })).rejects.toThrow(/AOA_ALLOW_UNSANDBOXED_MULTITENANT/);
+  });
+
+  it("requires a unique process owner before the unsafe cloud override can spawn", async () => {
+    setDeploymentMode("cloud_auth");
+    process.env.AOA_ALLOW_UNSANDBOXED_MULTITENANT = "1";
+    delete process.env.AOA_RUNTIME_PROCESS_OWNER_ID;
+
+    await expect(startRuntimeServicesForWorkspaceControl({
+      actor: { id: "agent-1", name: "Board", companyId: "company-1" },
+      issue: null,
+      workspace: {
+        baseCwd: process.cwd(), source: "project_primary", projectId: "project-1",
+        workspaceId: "workspace-root-1", repoUrl: null, repoRef: null,
+        strategy: "project_primary", cwd: process.cwd(), branchName: null,
+        worktreePath: null, warnings: [], created: false,
+      },
+      executionWorkspaceId: "workspace-1",
+      config: { workspaceRuntime: { services: [{ name: "web", command: "echo unsafe" }] } },
+      adapterEnv: {},
+    })).rejects.toThrow(/AOA_RUNTIME_PROCESS_OWNER_ID is required/);
   });
 
   it("does not persist a fake startedByRunId for manual runtime service starts", async () => {
@@ -443,11 +898,28 @@ describe("startRuntimeServicesForWorkspaceControl", () => {
 });
 
 describe("terminatePersistedLocalRuntimeProcess", () => {
+  it("does not inspect or signal foreign and legacy persisted PIDs", async () => {
+    const isAlive = vi.fn(async () => true);
+    const inspectIdentity = vi.fn(() => "matching" as const);
+    const terminate = vi.fn();
+
+    for (const processOwnerId of ["owner-b", null]) {
+      await expect(terminatePersistedLocalRuntimeProcess(
+        { processOwnerId, providerRef: "4242", startedAt: new Date() },
+        { processOwnerId: "owner-a", isAlive, inspectIdentity, terminate },
+      )).resolves.toBe(false);
+    }
+
+    expect(isAlive).not.toHaveBeenCalled();
+    expect(inspectIdentity).not.toHaveBeenCalled();
+    expect(terminate).not.toHaveBeenCalled();
+  });
+
   it("identity-verifies and confirms exit before accepting a stale process as reaped", async () => {
     let aliveChecks = 0;
     const terminate = vi.fn();
     const safe = await terminatePersistedLocalRuntimeProcess(
-      { providerRef: "4242", startedAt: new Date("2026-08-02T00:00:00Z") },
+      { processOwnerId: "owner-a", providerRef: "4242", startedAt: new Date("2026-08-02T00:00:00Z") },
       {
         platform: "linux",
         isAlive: async () => aliveChecks++ === 0,
@@ -470,7 +942,7 @@ describe("terminatePersistedLocalRuntimeProcess", () => {
     const isAlive = vi.fn(async (target: number) => target === -4242);
 
     const safe = await terminatePersistedLocalRuntimeProcess(
-      { providerRef: "4242", startedAt: new Date("2026-08-02T00:00:00Z") },
+      { processOwnerId: "owner-a", providerRef: "4242", startedAt: new Date("2026-08-02T00:00:00Z") },
       { platform: "linux", isAlive, inspectIdentity, terminate },
     );
 
@@ -489,7 +961,7 @@ describe("terminatePersistedLocalRuntimeProcess", () => {
     });
 
     const safe = await terminatePersistedLocalRuntimeProcess(
-      { providerRef: "4242", startedAt: new Date("2026-08-02T00:00:00Z") },
+      { processOwnerId: "owner-a", providerRef: "4242", startedAt: new Date("2026-08-02T00:00:00Z") },
       {
         platform: "linux",
         isAlive,
@@ -505,7 +977,7 @@ describe("terminatePersistedLocalRuntimeProcess", () => {
 
   it("fails closed when a live persisted PID cannot be identity-verified", async () => {
     const safe = await terminatePersistedLocalRuntimeProcess(
-      { providerRef: "4242", startedAt: new Date() },
+      { processOwnerId: "owner-a", providerRef: "4242", startedAt: new Date() },
       { isAlive: async () => true, inspectIdentity: () => "unknown" },
     );
     expect(safe).toBe(false);
@@ -514,7 +986,7 @@ describe("terminatePersistedLocalRuntimeProcess", () => {
   it("accepts a confirmed reused PID without signalling the unrelated process", async () => {
     const terminate = vi.fn();
     const safe = await terminatePersistedLocalRuntimeProcess(
-      { providerRef: "4242", startedAt: new Date() },
+      { processOwnerId: "owner-a", providerRef: "4242", startedAt: new Date() },
       {
         isAlive: async () => true,
         inspectIdentity: () => "different",
@@ -537,11 +1009,141 @@ describe("terminatePersistedLocalRuntimeProcess", () => {
       update,
     } as never;
 
+    const isAlive = vi.fn(async () => true);
     await expect(reconcilePersistedRuntimeServicesOnStartup(db, {
-      isAlive: async () => true,
+      isAlive,
       inspectIdentity: () => "unknown",
     })).rejects.toThrow(/Cloud startup refused/);
     expect(update).not.toHaveBeenCalled();
+    expect(isAlive).not.toHaveBeenCalled();
+  });
+
+  it("blocks cloud startup without OS calls when persisted rows exist but owner config is missing", async () => {
+    setDeploymentMode("cloud_auth");
+    const isAlive = vi.fn(async () => true);
+    const db = {
+      select: () => ({
+        from: () => ({
+          where: async () => [{
+            id: "service-foreign",
+            processOwnerId: "owner-a",
+            providerRef: "4242",
+            startedAt: new Date(),
+            status: "running",
+          }],
+        }),
+      }),
+      update: vi.fn(),
+    } as never;
+
+    await expect(reconcilePersistedRuntimeServicesOnStartup(db, {
+      processOwnerId: null,
+      isAlive,
+    })).rejects.toThrow(/AOA_RUNTIME_PROCESS_OWNER_ID is unset/);
+    expect(isAlive).not.toHaveBeenCalled();
+  });
+
+  it("reconciles only current-owner rows and clears their fenced PID identity", async () => {
+    const updates: Array<Record<string, unknown>> = [];
+    const startedAt = new Date("2026-08-03T00:00:00Z");
+    const rows = [
+      { id: "owned", processOwnerId: "owner-a", providerRef: "4242", startedAt, status: "running" },
+      { id: "foreign", processOwnerId: "owner-b", providerRef: "4242", startedAt, status: "running" },
+      { id: "legacy", processOwnerId: null, providerRef: "4242", startedAt, status: "running" },
+    ];
+    const db = {
+      select: () => ({ from: () => ({ where: async () => rows }) }),
+      update: () => ({
+        set: (values: Record<string, unknown>) => ({
+          where: () => ({
+            returning: async () => {
+              updates.push(values);
+              return [{
+                ...rows[0],
+                companyId: "company-1",
+                issueId: "issue-1",
+                executionWorkspaceId: "workspace-1",
+                serviceName: "web",
+                provider: "local_process",
+                url: null,
+                status: "stopped",
+                healthStatus: "unknown",
+                providerRef: null,
+                processOwnerId: null,
+              }];
+            },
+          }),
+        }),
+      }),
+    } as never;
+    const isAlive = vi.fn(async () => false);
+
+    await expect(reconcilePersistedRuntimeServicesOnStartup(db, {
+      processOwnerId: "owner-a",
+      platform: "linux",
+      isAlive,
+    })).resolves.toEqual({ reconciled: 1, unresolved: 1, foreign: 1 });
+
+    expect(isAlive).toHaveBeenCalledTimes(2);
+    expect(updates).toHaveLength(1);
+    expect(updates[0]).toMatchObject({
+      status: "stopped",
+      providerRef: null,
+      processOwnerId: null,
+    });
+    expect(mockEmitRuntimeServiceTaskOutput).toHaveBeenCalledWith(db, expect.objectContaining({
+      id: "owned",
+      issueId: "issue-1",
+      status: "stopped",
+      healthStatus: "unknown",
+      url: null,
+      providerRef: null,
+    }));
+  });
+
+  it("persists process ownership with the PID before readiness can wait", async () => {
+    const writes: Array<Record<string, unknown>> = [];
+    const db = {
+      insert: () => ({
+        values: (value: Record<string, unknown>) => {
+          writes.push(value);
+          return { onConflictDoUpdate: async () => undefined };
+        },
+      }),
+    } as never;
+
+    const refs = await startRuntimeServicesForWorkspaceControl({
+      db,
+      actor: { id: "agent-1", name: "Board", companyId: "company-1" },
+      issue: null,
+      workspace: {
+        baseCwd: process.cwd(), source: "project_primary", projectId: "project-1",
+        workspaceId: "workspace-root-1", repoUrl: null, repoRef: null,
+        strategy: "project_primary", cwd: process.cwd(), branchName: null,
+        worktreePath: null, warnings: [], created: false,
+      },
+      executionWorkspaceId: "workspace-owned",
+      config: {
+        workspaceRuntime: {
+          services: [{
+            name: "owned",
+            command: "node -e \"setInterval(() => {}, 1000)\"",
+          }],
+        },
+      },
+      adapterEnv: {},
+    });
+
+    expect(writes[0]).toMatchObject({
+      status: "starting",
+      processOwnerId: "owner-a",
+    });
+    expect(writes[0]?.providerRef).toMatch(/^\d+$/);
+    await stopRuntimeServicesForExecutionWorkspace({
+      executionWorkspaceId: "workspace-owned",
+      workspaceCwd: process.cwd(),
+    });
+    expect(refs).toHaveLength(1);
   });
 });
 
@@ -715,6 +1317,42 @@ describe("stopRuntimeServicesForProjectWorkspace", () => {
 // ── restartDesiredRuntimeServicesOnStartup ────────────────────────────────────
 
 describe("restartDesiredRuntimeServicesOnStartup", () => {
+  it("fails a startup activation when any persisted spawn input changes before commit", async () => {
+    const initial = {
+      id: "pw-fenced",
+      companyId: "company-fenced",
+      projectId: "project-fenced",
+      cwd: process.cwd(),
+      repoUrl: null,
+      repoRef: null,
+      defaultRef: null,
+      metadata: {
+        runtimeConfig: {
+          workspaceRuntime: { services: [] },
+          desiredState: "running",
+        },
+      },
+    };
+    const superseded = {
+      ...initial,
+      cwd: `${process.cwd()}-moved`,
+    };
+    let callIndex = 0;
+    const responses = [[initial], [superseded], []];
+    const db: any = {
+      select: vi.fn(() => ({
+        from: vi.fn().mockReturnThis(),
+        where: vi.fn().mockReturnThis(),
+        then: vi.fn((fn: (rows: any[]) => any) => Promise.resolve(fn(responses[callIndex++] ?? []))),
+      })),
+    };
+
+    await expect(restartDesiredRuntimeServicesOnStartup(db)).resolves.toEqual({
+      restarted: 0,
+      failed: 1,
+    });
+  });
+
   it("returns restarted=0 when no rows have desiredState=running", async () => {
     const db: any = {
       select: vi.fn(() => ({
@@ -753,5 +1391,33 @@ describe("restartDesiredRuntimeServicesOnStartup", () => {
 describe("resetRuntimeServicesForTests", () => {
   it("is a safe no-op when nothing is registered", async () => {
     await expect(resetRuntimeServicesForTests()).resolves.toBeUndefined();
+  });
+});
+
+describe("withRuntimeControlLocks", () => {
+  it("serializes overlapping start/stop ownership scopes until the first transition finishes", async () => {
+    const events: string[] = [];
+    let releaseFirst!: () => void;
+    let markEntered!: () => void;
+    const entered = new Promise<void>((resolve) => { markEntered = resolve; });
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+
+    const stop = withRuntimeControlLocks(["execution:ws-1", "project:pw-1"], async () => {
+      events.push("stop:begin");
+      markEntered();
+      await firstGate;
+      events.push("stop:end");
+    });
+    await entered;
+    const start = withRuntimeControlLocks(["project:pw-1", "execution:ws-1"], async () => {
+      events.push("start:begin");
+      events.push("start:end");
+    });
+
+    await Promise.resolve();
+    expect(events).toEqual(["stop:begin"]);
+    releaseFirst();
+    await Promise.all([stop, start]);
+    expect(events).toEqual(["stop:begin", "stop:end", "start:begin", "start:end"]);
   });
 });

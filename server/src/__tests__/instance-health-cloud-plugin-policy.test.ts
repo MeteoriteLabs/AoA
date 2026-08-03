@@ -6,25 +6,10 @@ import { CLOUD_PLUGIN_BLOCK_MESSAGE } from "../services/cloud-plugin-execution.j
 afterEach(() => setDeploymentMode("local_trusted"));
 
 describe("instance health cloud plugin policy", () => {
-  it("counts a stale ready plugin as blocked and emits an error finding", async () => {
+  it("does not query or expose tenant plugin state to cloud operators", async () => {
     setDeploymentMode("cloud_auth");
-    const rows = [
-      {
-        id: "plugin-1",
-        companyId: "company-1",
-        pluginKey: "acme.plugin",
-        status: "ready",
-        manifestJson: { displayName: "Acme Plugin" },
-        lastError: null,
-      },
-    ];
-    const db = {
-      select: () => ({
-        from: () => ({
-          orderBy: () => ({ limit: async () => rows }),
-        }),
-      }),
-    } as any;
+    let queried = false;
+    const db = { select: () => { queried = true; throw new Error("must not query"); } } as any;
 
     const report = await buildInstanceHealthReport(db, {
       deploymentMode: "cloud_auth",
@@ -33,24 +18,10 @@ describe("instance health cloud plugin policy", () => {
       companyDeletionEnabled: false,
     });
 
-    expect(report.sections.platform.plugins).toMatchObject({
-      total: 1,
-      ready: 0,
-      notReady: 1,
-    });
-    expect(report.sections.platform.plugins.plugins[0]).toMatchObject({
-      id: "plugin-1",
-      status: "error",
-      lastError: CLOUD_PLUGIN_BLOCK_MESSAGE,
-    });
-    expect(report.findings).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          id: "instance-plugin-plugin-1",
-          severity: "error",
-        }),
-      ])
-    );
+    expect(queried).toBe(false);
+    expect(report.sections.platform.plugins).toEqual({ total: 0, ready: 0, notReady: 0, plugins: [] });
+    expect(JSON.stringify(report)).not.toContain("plugin-1");
+    expect(JSON.stringify(report)).not.toContain("company-1");
   });
 
   it("does not report a historical cloud block as active after moving to self-hosted", async () => {

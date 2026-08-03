@@ -8,10 +8,13 @@ import {
   type EnvironmentRuntimeService,
 } from "./environment-runtime.js";
 import { resolveEnvironmentExecutionTargetConfigPatch } from "./environment-execution-target.js";
+import { getDeploymentMode } from "../config/deployment-mode.js";
+import { assertEnvironmentRuntimeSupportedForDeployment } from "./cloud-environment-policy.js";
 
 export type EnvironmentErrorCode =
   | "environment_not_found"
   | "environment_inactive"
+  | "environment_target_unavailable"
   | "lease_acquire_failed";
 
 export class EnvironmentRunError extends Error {
@@ -73,6 +76,7 @@ function normalizeEnvironment(row: unknown): Environment {
     target: record.target && typeof record.target === "object" && !Array.isArray(record.target)
       ? record.target as Record<string, unknown>
       : null,
+    executionTargetId: typeof record.executionTargetId === "string" ? record.executionTargetId : null,
     createdAt: toIsoString(record.createdAt),
     updatedAt: toIsoString(record.updatedAt),
   };
@@ -135,6 +139,20 @@ export function environmentRunOrchestrator(
         {
           environmentId: environment.id,
           driver: environment.driver,
+        },
+      );
+    }
+
+    try {
+      assertEnvironmentRuntimeSupportedForDeployment(getDeploymentMode(), environment);
+    } catch (err) {
+      throw new EnvironmentRunError(
+        "environment_target_unavailable",
+        err instanceof Error ? err.message : "Environment execution target is unavailable.",
+        {
+          environmentId: environment.id,
+          driver: environment.driver,
+          cause: err,
         },
       );
     }

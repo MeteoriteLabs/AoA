@@ -1,5 +1,5 @@
 import { and, eq } from "drizzle-orm";
-import { assets, discussionEntries } from "@armyofagents/db";
+import { assets, discussionEntries, discussions } from "@armyofagents/db";
 import type { AgentTool } from "../types.js";
 import { buildArtifactCandidateIdempotencyKey } from "./thread-action-keys.js";
 
@@ -154,7 +154,11 @@ export function createArtifactTool(): AgentTool {
         const existing = await ctx.db
           .select({ sourceInfo: discussionEntries.sourceInfo })
           .from(discussionEntries)
-          .where(eq(discussionEntries.id, attachToEntryId as string))
+          .innerJoin(discussions, eq(discussions.id, discussionEntries.discussionId))
+          .where(and(
+            eq(discussionEntries.id, attachToEntryId as string),
+            eq(discussions.companyId, ctx.companyId),
+          ))
           .then((rows: Array<{ sourceInfo: unknown }>) => rows[0] ?? null);
 
         if (existing) {

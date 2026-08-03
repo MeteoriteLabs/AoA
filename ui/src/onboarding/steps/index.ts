@@ -2,9 +2,8 @@ import { validateRegistry, type StepDefinition } from "../registry";
 import { HumanProfileStep } from "./HumanProfileStep";
 import { CreateOrganizationStep } from "./CreateOrganizationStep";
 import { OrgStep } from "./OrgStep";
-import { EnvironmentStep } from "./EnvironmentStep";
 import { CommanderStep } from "./CommanderStep";
-import { VerifyStep } from "./VerifyStep";
+import { CloudAwareEnvironmentStep, CloudAwareVerifyStep } from "./CloudDeferredStep";
 import { SpineCompleteStep } from "./SpineCompleteStep";
 
 /**
@@ -96,7 +95,7 @@ export const ONBOARDING_STEPS: StepDefinition[] = [
     canSkip: false,
     shouldInclude: () => true,
     isComplete: (ctx) => ctx.completedStates.includes("ENVIRONMENT_READY"),
-    Component: EnvironmentStep,
+    Component: CloudAwareEnvironmentStep,
     title: "Set up environment",
   },
   {
@@ -120,7 +119,7 @@ export const ONBOARDING_STEPS: StepDefinition[] = [
     canSkip: false,
     shouldInclude: () => true,
     isComplete: (ctx) => ctx.completedStates.includes("COMMANDER_VERIFIED"),
-    Component: VerifyStep,
+    Component: CloudAwareVerifyStep,
     title: "Verify tooling",
   },
   {

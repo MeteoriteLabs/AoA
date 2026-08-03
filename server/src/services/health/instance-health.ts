@@ -72,7 +72,9 @@ export async function buildInstanceHealthReport(
     }>,
   };
 
-  if (canQuery(_db)) {
+  // Cloud instance health is host/operator-plane only. Tenant plugin health is
+  // available from the company-scoped report after assertCompanyAccess.
+  if (canQuery(_db) && opts.deploymentMode !== "cloud_auth") {
     try {
       const pluginRows = await _db
         .select({
@@ -94,7 +96,7 @@ export async function buildInstanceHealthReport(
         (plugin) => plugin.status === "ready"
       ).length;
       pluginSection.notReady = pluginRows.length - pluginSection.ready;
-      pluginSection.plugins = policyRows.map((plugin) => ({
+      const detailedPlugins = policyRows.map((plugin) => ({
         id: plugin.id,
         companyId: plugin.companyId,
         pluginKey: plugin.pluginKey,
@@ -102,8 +104,9 @@ export async function buildInstanceHealthReport(
         status: plugin.status,
         lastError: sanitizeHealthDiagnostic(plugin.lastError),
       }));
+      pluginSection.plugins = detailedPlugins;
 
-      for (const plugin of pluginSection.plugins.filter(
+      for (const plugin of detailedPlugins.filter(
         (entry) => entry.status !== "ready"
       )) {
         findings.push({

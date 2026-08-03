@@ -6,7 +6,7 @@ import { getSafeServingHeaders } from "../services/asset-serving-safety.js";
 import type { StorageService } from "../storage/types.js";
 import { assertCompanyAccess } from "./authz.js";
 import { resolveStorageTenant } from "./authz-tenant.js";
-import { assertRole } from "../middleware/rbac.js";
+import { assertHumanRole } from "../middleware/rbac.js";
 
 // Minimal storage interface for the test seam — callers can inject a partial { getObject }
 // object rather than a full StorageService.
@@ -111,7 +111,7 @@ export function memoryAssetsRoutes(opts: RoutesOptions) {
         const companyId = req.params.companyId as string;
         const id = req.params.id as string;
         await assertCompanyAccess(db, req, companyId);
-        if (opts.db) await assertRole(opts.db, req, companyId, "team_lead");
+        if (opts.db) await assertHumanRole(opts.db, req, companyId, "team_lead");
         const parsed = memoryAssetUpdateSchema.safeParse(req.body);
         if (!parsed.success) {
           res.status(400).json({ error: parsed.error.flatten() });
@@ -137,7 +137,7 @@ export function memoryAssetsRoutes(opts: RoutesOptions) {
         const companyId = req.params.companyId as string;
         const id = req.params.id as string;
         await assertCompanyAccess(db, req, companyId);
-        if (opts.db) await assertRole(opts.db, req, companyId, "team_lead");
+        if (opts.db) await assertHumanRole(opts.db, req, companyId, "team_lead");
         await svc.remove(id, companyId);
         res.status(204).end();
       } catch (err) {

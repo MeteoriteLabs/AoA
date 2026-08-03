@@ -187,6 +187,7 @@ const mockAssertRole = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 
 vi.mock("../middleware/rbac.js", () => ({
   assertRole: mockAssertRole,
+  assertHumanRole: mockAssertRole,
   assertDepartmentAccess: vi.fn().mockResolvedValue(undefined),
   assertMemoryAccess: vi.fn().mockResolvedValue(undefined),
   assertMemoryApproval: vi.fn().mockResolvedValue(undefined),

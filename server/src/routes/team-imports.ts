@@ -5,7 +5,7 @@ import type { Db } from "@armyofagents/db";
 import { teamImportService } from "../services/index.js";
 import { validate } from "../middleware/validate.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
-import { assertRole, assertDepartmentAccess } from "../middleware/rbac.js";
+import { assertHumanRole, assertDepartmentAccess } from "../middleware/rbac.js";
 import { badRequest } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { safeLogActivity } from "../utils/safe-log-activity.js";
@@ -83,7 +83,7 @@ export function teamImportsRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       await assertCompanyAccess(db, req, companyId);
-      await assertRole(db, req, companyId, "team_lead");
+      await assertHumanRole(db, req, companyId, "team_lead");
 
       // Task 4 (P1-A): preview is read-only but still discloses
       // existing-agent name collisions across the company. Gate by the
@@ -134,7 +134,7 @@ export function teamImportsRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       await assertCompanyAccess(db, req, companyId);
-      await assertRole(db, req, companyId, "team_lead");
+      await assertHumanRole(db, req, companyId, "team_lead");
       await assertDepartmentAccess(db, req, companyId, req.body.parentProjectId);
 
       const team = await importSvc.install(companyId, req.body.yamlContent, {

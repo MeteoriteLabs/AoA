@@ -8,6 +8,14 @@ const authzMocks = vi.hoisted(() => ({
   assertCompanyAccess: vi.fn(),
   assertCanManageInstanceSettings: vi.fn(),
 }));
+const upstreamFetch = vi.hoisted(() => ({
+  body: "# New upstream content",
+  fetchCatalogResource: vi.fn(),
+}));
+
+vi.mock("../services/marketplace-install/fetch-resource.js", () => ({
+  fetchCatalogResource: upstreamFetch.fetchCatalogResource,
+}));
 
 vi.mock("@armyofagents/db", () => {
   const tableProxy = new Proxy({}, { get: () => Symbol("col") });
@@ -59,6 +67,8 @@ beforeEach(() => {
   authzMocks.assertBoard.mockReset();
   authzMocks.assertCompanyAccess.mockReset();
   authzMocks.assertCanManageInstanceSettings.mockReset();
+  upstreamFetch.body = "# New upstream content";
+  upstreamFetch.fetchCatalogResource.mockReset().mockImplementation(async () => upstreamFetch.body);
 });
 
 function buildApp(dbOverrides: any = {}) {
@@ -229,11 +239,6 @@ describe("POST /updates/:id/merge — derives customized from result bytes", () 
 
 describe("GET /updates/:id/diff — binds the reviewed skill snapshot", () => {
   it("returns a token for the exact local, upstream, and catalog version bytes", async () => {
-    global.fetch = vi.fn(async () => ({
-      ok: true,
-      text: async () => "# New upstream content",
-    })) as any;
-
     const { app } = buildApp();
     const res = await request(app).get(
       "/api/companies/c1/marketplace/updates/upd-1/diff",
@@ -242,6 +247,10 @@ describe("GET /updates/:id/diff — binds the reviewed skill snapshot", () => {
     expect(res.status).toBe(200);
     expect(res.body.snapshotToken).toBe(
       skillMergeSnapshotToken("# Old Content", "# New upstream content", "1.1.0"),
+    );
+    expect(upstreamFetch.fetchCatalogResource).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "skill:aoa-curated/code-review" }),
+      "skill update diff",
     );
   });
 });

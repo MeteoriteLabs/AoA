@@ -10,13 +10,15 @@ import { describe, expect, it, vi } from "vitest";
 import { requestThreadWorkspaceTool } from "../services/internal-agent/tools/workspace-request-for-thread.js";
 import type { ToolContext } from "../services/internal-agent/types.js";
 
-// The tool issues up to three queries in order:
+// The tool issues up to four queries in order:
 //   1. SELECT ... FROM discussions WHERE id = ? LIMIT 1
-//   2. SELECT ... FROM execution_workspaces WHERE ... LIMIT 1
-//   3. INSERT INTO execution_workspaces ... RETURNING
+//   2. SELECT ... FROM projects WHERE id/company = ? LIMIT 1
+//   3. SELECT ... FROM execution_workspaces WHERE ... LIMIT 1
+//   4. INSERT INTO execution_workspaces ... RETURNING
 // We sequence the select results by call ordinal.
 function makeDb(opts: {
   threadRows?: any[];
+  projectRows?: any[];
   existingWorkspaceRows?: any[];
   insertedWorkspaceRows?: any[];
 }) {
@@ -29,6 +31,15 @@ function makeDb(opts: {
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
             limit: vi.fn().mockResolvedValue(opts.threadRows ?? []),
+          }),
+        }),
+      };
+    }
+    if (selectCallNo === 2) {
+      return {
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue(opts.projectRows ?? [{ id: "proj-1" }]),
           }),
         }),
       };
@@ -175,6 +186,23 @@ describe("request_thread_workspace tool (C2 batch 2)", () => {
     );
     expect(result.success).toBe(false);
     expect(result.error).toBe("NOT_FOUND");
+  });
+
+  it("returns NOT_FOUND for a thread outside the caller company", async () => {
+    const { db, insertValues } = makeDb({ threadRows: [] });
+    const result = await requestThreadWorkspaceTool.execute({ threadId: "foreign-thread" }, makeCtx(db));
+    expect(result).toMatchObject({ success: false, error: "NOT_FOUND" });
+    expect(insertValues).not.toHaveBeenCalled();
+  });
+
+  it("returns NO_PROJECT for a project outside the caller company", async () => {
+    const { db, insertValues } = makeDb({
+      threadRows: [{ id: "thread-1", scopeType: "project", scopeId: "foreign-project" }],
+      projectRows: [],
+    });
+    const result = await requestThreadWorkspaceTool.execute({ threadId: "thread-1" }, makeCtx(db));
+    expect(result).toMatchObject({ success: false, error: "NO_PROJECT" });
+    expect(insertValues).not.toHaveBeenCalled();
   });
 
   it("returns INVALID_PARAMS when threadId is missing", async () => {

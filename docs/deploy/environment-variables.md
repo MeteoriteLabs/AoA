@@ -16,6 +16,7 @@ All environment variables that AoA reads. Grouped by concern. The list is verifi
 | `DATABASE_URL` | (embedded) | PostgreSQL connection string. If unset, AoA boots `embedded-postgres@18.x` automatically |
 | `AOA_HOME` | `~/.aoa` (with legacy `~/.paperclip` fallback) | Base directory for all AoA data. Resolved by `cli/src/config/home.ts`: prefers `~/.aoa/`, falls back to `~/.paperclip/` if the legacy dir exists and the new one does not |
 | `AOA_INSTANCE_ID` | `default` | Instance identifier (for multiple local instances on one machine) |
+| `AOA_RUNTIME_PROCESS_OWNER_ID` | host + `AOA_INSTANCE_ID` fingerprint outside `cloud_auth`; unset in `cloud_auth` | Stable identity for the OS PID namespace/replica that owns `local_process` runtime services. It is required before the unsafe cloud override may start a local runtime service **and on every cloud replica that boots while the shared DB still contains PID-bearing local-runtime rows**. Set a unique value per concurrently live replica/PID namespace (for example a Kubernetes Pod UID), and keep it stable while detached children from that owner can survive a server restart. Never share it across replicas. This is process-safety provenance; `AOA_INSTANCE_ID` and `AOA_EXECUTION_TARGET_ID` are not substitutes. |
 | `AOA_DEPLOYMENT_MODE` | `local_trusted` | `local_trusted`, `authenticated`, or `cloud_auth`. Pass the configured value to manual `pnpm db:migrate` runs so migration safety policy is explicit. |
 | `AOA_DEPLOYMENT_EXPOSURE` | `private` | `private` or `public`. Meaningful for `authenticated`; `cloud_auth` requires `public`. |
 | `AOA_PUBLIC_URL` | (derived) | Public-facing URL for deployment. Used in invite links and webhook URLs |
@@ -95,6 +96,13 @@ not yet run) — see the guide's status banner before deploying a pool on
 | Variable | Default | Description |
 | --- | --- | --- |
 | `AOA_ALLOW_UNSANDBOXED_MULTITENANT` | unset (local execution refused) | **Multi-tenant safety gate (D1).** When tenant isolation is enforced (`cloud_auth`), agent/crew/Commander processes, local Docker targets (including a claimed `runtime: "runsc"`), adapter probes, workspace provision/cleanup/jobs, and local runtime-service commands are REFUSED on the control-plane host unless this is set to `1`/`true`/`yes`. Real per-tenant execution isolation is deferred; a runtime string is not worker-plane provenance. New workspace-command configuration is also rejected without this override, while sink checks protect legacy persisted configuration. When set, the process logs one loud process-wide SECURITY warning. Self-hosted deployments (`local_trusted` and `authenticated` single-tenant) ignore this. Do not use the override in production multi-tenant deployments. |
+
+`AOA_RUNTIME_PROCESS_OWNER_ID` prevents one replica from interpreting another
+machine's numeric PID as local. It does not turn the process-local runtime
+maps, desired-state restart, or control APIs into a distributed scheduler.
+Run at most one owner of `local_process` services for a shared deployment;
+horizontal `cloud_auth` deployments are production-safe only with the
+unsandboxed override disabled until the worker/gVisor runtime lands.
 
 ## Agent JWT (signing for `AOA_API_KEY`)
 

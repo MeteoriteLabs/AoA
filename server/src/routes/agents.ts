@@ -44,7 +44,7 @@ import {
   assertCompanyAccess,
   getActorInfo,
 } from "./authz.js";
-import { assertRole } from "../middleware/rbac.js";
+import { assertHumanRole, assertRole } from "../middleware/rbac.js";
 import { findActiveServerAdapter, findServerAdapter, listAdapterModels } from "../adapters/index.js";
 import { redactEventPayload, redactSecretsInString } from "../redaction.js";
 import { runClaudeLogin } from "@armyofagents/adapter-claude-local/server";
@@ -813,7 +813,7 @@ export function agentRoutes(db: Db) {
   router.post("/companies/:companyId/agents/:id/triggers", async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertCompanyAccess(db, req, companyId);
-    await assertRole(db, req, companyId, "founder");
+    await assertHumanRole(db, req, companyId, "founder");
     const agentId = req.params.id as string;
     const { kind, config, enabled } = req.body as { kind: string; config?: Record<string, unknown>; enabled?: boolean };
     const created = await db
@@ -827,7 +827,7 @@ export function agentRoutes(db: Db) {
   router.patch("/companies/:companyId/agents/:id/triggers/:triggerId", async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertCompanyAccess(db, req, companyId);
-    await assertRole(db, req, companyId, "founder");
+    await assertHumanRole(db, req, companyId, "founder");
     const agentId = req.params.id as string;
     const triggerId = req.params.triggerId as string;
     const { enabled, config } = req.body as { enabled?: boolean; config?: Record<string, unknown> };
@@ -2233,6 +2233,10 @@ export function agentRoutes(db: Db) {
   // Remove after confirming all data migrated.
   router.post("/agents/admin/backfill-parent-fields", async (req, res) => {
     assertCanManageInstanceSettings(req);
+    if (tenantIsolationEnforced()) {
+      res.status(403).json({ error: "Global agent maintenance is unavailable in multi-tenant deployments" });
+      return;
+    }
     const count = await svc.backfillParentFields();
     res.json({ ok: true, backfilledCount: count });
   });
@@ -2242,6 +2246,10 @@ export function agentRoutes(db: Db) {
   // sums the re-parent counts. Remove after confirming all data migrated.
   router.post("/agents/admin/backfill-human-at-top", async (req, res) => {
     assertCanManageInstanceSettings(req);
+    if (tenantIsolationEnforced()) {
+      res.status(403).json({ error: "Global agent maintenance is unavailable in multi-tenant deployments" });
+      return;
+    }
     const rows = await db.select({ id: companies.id }).from(companies);
     let reparented = 0;
     for (const c of rows) {

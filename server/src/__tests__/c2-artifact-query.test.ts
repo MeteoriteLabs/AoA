@@ -12,7 +12,8 @@ import type { ToolContext } from "../services/internal-agent/types.js";
 function makeDbReturning(rows: any[]) {
   // The terminal .where(...) call resolves to the rows array.
   const where = vi.fn().mockResolvedValue(rows);
-  const innerJoin2 = vi.fn().mockReturnValue({ where });
+  const innerJoin3 = vi.fn().mockReturnValue({ where });
+  const innerJoin2 = vi.fn().mockReturnValue({ innerJoin: innerJoin3 });
   const innerJoin1 = vi.fn().mockReturnValue({ innerJoin: innerJoin2 });
   const from = vi.fn().mockReturnValue({ innerJoin: innerJoin1 });
   const select = vi.fn().mockReturnValue({ from });
@@ -77,6 +78,12 @@ describe("query_artifacts tool (C2 batch 2)", () => {
     expect(result.success).toBe(true);
     expect(result.data).toEqual([]);
     expect(result.summary).toContain("0");
+  });
+
+  it("returns no artifacts when the company-scoped join finds no owned thread", async () => {
+    const { db } = makeDbReturning([]);
+    const result = await queryArtifactsTool.execute({ threadId: "foreign-thread" }, makeCtx(db));
+    expect(result).toMatchObject({ success: true, data: [] });
   });
 
   it("returns INVALID_PARAMS when threadId is missing", async () => {

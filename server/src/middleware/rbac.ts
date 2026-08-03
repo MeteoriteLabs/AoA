@@ -57,6 +57,21 @@ export async function assertRole(
 }
 
 /**
+ * Human-governance role gate. Unlike assertRole, this never inherits the
+ * historical agent bypass used by mixed board/agent workflow APIs.
+ */
+export async function assertHumanRole(
+  db: Db,
+  req: Request,
+  companyId: string,
+  ...roles: UserRole[]
+): Promise<void> {
+  if (req.actor.type === "none") throw unauthorized();
+  if (req.actor.type !== "board") throw forbidden("Board access required");
+  await assertRole(db, req, companyId, ...roles);
+}
+
+/**
  * Asserts that the current user has access to the specified department.
  * Founder: full access. Team lead: only their department. Team member: no department management.
  *
