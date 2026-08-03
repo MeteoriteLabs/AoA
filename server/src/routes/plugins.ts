@@ -23,7 +23,7 @@ import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { Router } from "express";
 import type { Request, Response } from "express";
-import { and, desc, eq, gte, inArray } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, or } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   companies,
@@ -77,6 +77,7 @@ import { pluginRollbackService } from "../services/plugin-rollback.js";
 import { conflict } from "../errors.js";
 import {
   CloudPluginExecutionBlockedError,
+  PLUGIN_WORKER_BLOCKED_IN_CLOUD,
   cloudPluginExecutionBlockedEnvelope,
   isCloudPluginExecutionBlocked,
   projectCloudPluginPolicyState,
@@ -2915,7 +2916,10 @@ export function pluginCompanySettingsRoutes(
     const companyId = req.params.companyId as string;
     await assertCompanyAccess(db, req, companyId);
 
-    // Include disabled rows so the operator can re-enable them.
+    // Include disabled rows so the operator can re-enable them, plus the
+    // structured error persisted by cloud boot reconciliation so its
+    // diagnostic and metadata remain manageable. Unrelated errors stay out of
+    // this legacy installed-settings collection.
     const installedPlugins = await db
       .select({
         id: plugins.id,
@@ -2932,7 +2936,16 @@ export function pluginCompanySettingsRoutes(
       .where(
         and(
           eq(plugins.companyId, companyId),
-          inArray(plugins.status, ["ready", "disabled"])
+          or(
+            inArray(plugins.status, ["ready", "disabled"]),
+            and(
+              eq(plugins.status, "error"),
+              eq(
+                plugins.statusReasonCode,
+                PLUGIN_WORKER_BLOCKED_IN_CLOUD
+              )
+            )
+          )
         )
       );
 

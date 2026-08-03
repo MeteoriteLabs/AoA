@@ -16,6 +16,7 @@ vi.mock("../middleware/logger.js", () => ({
 
 import {
   beginCloudPluginBootReconciliation,
+  CLOUD_PLUGIN_BLOCK_MESSAGE,
   getCloudPluginBlockMetrics,
   projectCloudPluginPolicyState,
   recordCloudPluginBlock,
@@ -108,5 +109,30 @@ describe("cloud plugin execution observability", () => {
         lastError: null,
       }).status,
     ).toBe("uninstalled");
+  });
+
+  it("treats a persisted cloud block as recoverable after moving to self-hosted", () => {
+    setDeploymentMode("authenticated");
+    expect(
+      projectCloudPluginPolicyState({
+        status: "error",
+        statusReasonCode: "PLUGIN_WORKER_BLOCKED_IN_CLOUD",
+        lastError: CLOUD_PLUGIN_BLOCK_MESSAGE,
+      }),
+    ).toEqual({
+      status: "error",
+      statusReasonCode: null,
+      lastError: null,
+    });
+  });
+
+  it("preserves unrelated self-hosted error diagnostics", () => {
+    setDeploymentMode("authenticated");
+    const plugin = {
+      status: "error",
+      statusReasonCode: "PLUGIN_ACTIVATION_FAILED",
+      lastError: "worker crashed",
+    };
+    expect(projectCloudPluginPolicyState(plugin)).toBe(plugin);
   });
 });

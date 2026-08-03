@@ -17,6 +17,7 @@ import type {
   PluginRecord,
   PluginConfig,
   PluginStatus,
+  PluginStatusReasonCode,
 } from "@armyofagents/shared";
 import { api, ApiError } from "./client";
 
@@ -149,6 +150,7 @@ export interface CompanyPluginSetting {
   description: string;
   version: string;
   status: string;
+  statusReasonCode: PluginStatusReasonCode | null;
   categories: string[];
   enabled: boolean;
   settingsJson: Record<string, unknown>;
@@ -451,7 +453,7 @@ export const pluginsApi = {
   // Company-scoped plugin settings
   // ---------------------------------------------------------------------------
 
-  /** List all ready plugins with their company-level enable/disable state. */
+  /** List installed or cloud-blocked plugins with their company-level state. */
   listCompanySettings: (companyId: string) =>
     api.get<CompanyPluginSetting[]>(`/companies/${companyId}/plugin-settings`),
 
@@ -575,4 +577,3 @@ export const patchPluginSettings = (
   enabled: boolean,
 ) =>
   api.patch(`/companies/${companyId}/plugins/${pluginId}/settings`, { enabled });
-

@@ -83,7 +83,23 @@ export function projectCloudPluginPolicyState<
     lastError?: unknown;
   },
 >(plugin: T): T {
-  if (!isCloudPluginExecutionBlocked() || plugin.status === "uninstalled") {
+  if (!isCloudPluginExecutionBlocked()) {
+    // A cloud -> self-hosted move can leave the durable reconciliation reason
+    // on an error row. It is historical in a trusted runtime, not a live policy
+    // denial: clear only the canonical policy metadata in read projections so
+    // operators can use Retry/Enable. A successful lifecycle write clears the
+    // durable reason.
+    if (plugin.statusReasonCode !== PLUGIN_WORKER_BLOCKED_IN_CLOUD) {
+      return plugin;
+    }
+    return {
+      ...plugin,
+      statusReasonCode: null,
+      lastError:
+        plugin.lastError === CLOUD_PLUGIN_BLOCK_MESSAGE ? null : plugin.lastError,
+    } as T;
+  }
+  if (plugin.status === "uninstalled") {
     return plugin;
   }
   return {

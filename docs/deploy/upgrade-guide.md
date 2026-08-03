@@ -96,8 +96,31 @@ These identifiers are wire-compat and will not change. See [Wire Compatibility R
 
    Replace `authenticated` with the deployment's configured mode. Before
    applying migration `0188` to a populated `cloud_auth` database, take
-   a full database snapshot and record `"0188"` in
-   `instance_settings.general.migrationSnapshots`. The same gate is enforced by
+   a full database snapshot and record `"0188"` in `general.migrationSnapshots`
+   on the canonical `instance_settings` row where `singleton_key = 'default'`:
+
+   ```sql
+   UPDATE instance_settings
+   SET general = jsonb_set(
+         general,
+         '{migrationSnapshots}',
+         CASE
+           WHEN COALESCE(general->'migrationSnapshots', '[]'::jsonb) @> '["0188"]'::jsonb
+             THEN COALESCE(general->'migrationSnapshots', '[]'::jsonb)
+           ELSE COALESCE(general->'migrationSnapshots', '[]'::jsonb) || '["0188"]'::jsonb
+         END,
+         true
+       ),
+       updated_at = now()
+   WHERE singleton_key = 'default';
+
+   SELECT general->'migrationSnapshots' AS migration_snapshots
+   FROM instance_settings
+   WHERE singleton_key = 'default';
+   ```
+
+   The `UPDATE` must affect exactly one row and the verification result must
+   contain `"0188"`; otherwise stop. The same gate is enforced by
    server auto-apply and `pnpm db:migrate`. A manual migration with no explicit
    deployment mode fails closed for this one-way cutover rather than assuming
    local trusted mode.

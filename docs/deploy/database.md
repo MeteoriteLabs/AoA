@@ -102,7 +102,32 @@ substitute for a single migration job.
 The init job must set `AOA_DEPLOYMENT_MODE=cloud_auth`. Migration `0188` is a
 one-way multi-tenant cutover for populated databases, so the shared migrator
 refuses to apply it until a full database snapshot has been taken and `"0188"`
-has been recorded in `instance_settings.general.migrationSnapshots`. If the
+has been recorded in the canonical `instance_settings` row where
+`singleton_key = 'default'`, under `general.migrationSnapshots`. Record and
+verify the marker explicitly before starting the migration job:
+
+```sql
+UPDATE instance_settings
+SET general = jsonb_set(
+      general,
+      '{migrationSnapshots}',
+      CASE
+        WHEN COALESCE(general->'migrationSnapshots', '[]'::jsonb) @> '["0188"]'::jsonb
+          THEN COALESCE(general->'migrationSnapshots', '[]'::jsonb)
+        ELSE COALESCE(general->'migrationSnapshots', '[]'::jsonb) || '["0188"]'::jsonb
+      END,
+      true
+    ),
+    updated_at = now()
+WHERE singleton_key = 'default';
+
+SELECT general->'migrationSnapshots' AS migration_snapshots
+FROM instance_settings
+WHERE singleton_key = 'default';
+```
+
+The `UPDATE` must affect exactly one row and the verification result must contain
+`"0188"`. If it does not, stop instead of applying migration `0188`. If the
 manual migrator cannot determine the deployment mode, it also fails closed for
 that populated 0188 case instead of assuming a trusted local deployment.
 

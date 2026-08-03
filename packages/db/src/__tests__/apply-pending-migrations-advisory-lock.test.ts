@@ -95,6 +95,13 @@ describe("applyPendingMigrations advisory lock (concurrent-replica safety)", () 
     expect(gateIdx).toBeLessThan(manualIdx);
   });
 
+  it("reads snapshot markers only from the canonical instance-settings row", () => {
+    expect(body).toContain(
+      "SELECT general FROM instance_settings WHERE singleton_key = 'default'",
+    );
+    expect(body).not.toContain("SELECT general FROM instance_settings LIMIT 1");
+  });
+
   it("uses a dedicated single-connection pool for the lock session", () => {
     // The lock must be held on its own connection for the whole inspect+apply.
     const lockIdx = body.indexOf("pg_advisory_lock(");

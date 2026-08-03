@@ -99,6 +99,9 @@ export async function readRecordedSnapshotsForSnapshotGate(
   if (rows === null) {
     throw new Error("Could not read migration snapshot markers from instance settings");
   }
+  if (rows.length > 1) {
+    throw new Error("Could not identify a unique canonical instance settings row");
+  }
 
   const general = rows[0]?.general;
   if (general === undefined || general === null) return [];
@@ -133,7 +136,8 @@ export class SnapshotGateError extends Error {
     super(
       `Refusing to apply migration 0188 (multi-tenant tenant schema): ${context} with a ` +
         "populated companies table and no snapshot marker. Take a full DB snapshot, then " +
-        "record it via instance_settings.general.migrationSnapshots += \"0188\" before " +
+        "record it on instance_settings.singleton_key = 'default' via " +
+        "general.migrationSnapshots += \"0188\" before " +
         "retrying. Manual migrations must also set AOA_DEPLOYMENT_MODE to the configured " +
         "deployment mode. (One-way door once a second Organization exists.)",
     );

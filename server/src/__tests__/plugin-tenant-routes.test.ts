@@ -1,5 +1,6 @@
 import express from "express";
 import supertest from "supertest";
+import { PgDialect } from "drizzle-orm/pg-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const registry = vi.hoisted(() => ({
@@ -27,6 +28,9 @@ vi.mock("../services/plugin-lifecycle.js", () => ({
 }));
 
 import { errorHandler } from "../middleware/index.js";
+import {
+  companyPluginRoutes,
+} from "../routes/company-plugins.js";
 import {
   pluginCompanySettingsRoutes,
   pluginRoutes,
@@ -262,15 +266,23 @@ describe("tenant-scoped plugin collections", () => {
 });
 
 describe("legacy company plugin settings cloud projection", () => {
-  it("never exposes a stale ready row as executable", async () => {
+  it("includes only installed and structured cloud-blocked rows", async () => {
     setDeploymentMode("cloud_auth");
     let selectIndex = 0;
+    let installedPredicate: unknown;
     const db = {
       select: () => ({
         from: () => ({
-          where: async () => {
+          where: async (predicate: unknown) => {
             selectIndex += 1;
-            return selectIndex === 1 ? [plugin(PLUGIN_A, COMPANY_A)] : [];
+            if (selectIndex !== 1) return [];
+            installedPredicate = predicate;
+            return [{
+              ...plugin(PLUGIN_A, COMPANY_A),
+              status: "error",
+              statusReasonCode: PLUGIN_WORKER_BLOCKED_IN_CLOUD,
+              lastError: CLOUD_PLUGIN_BLOCK_MESSAGE,
+            }];
           },
         }),
       }),
@@ -299,6 +311,69 @@ describe("legacy company plugin settings cloud projection", () => {
       statusReasonCode: PLUGIN_WORKER_BLOCKED_IN_CLOUD,
       lastError: CLOUD_PLUGIN_BLOCK_MESSAGE,
     });
+
+    const query = new PgDialect().sqlToQuery(installedPredicate as never);
+    expect(query.sql).toBe(
+      '("plugins"."company_id" = $1 and ("plugins"."status" in ($2, $3) or ' +
+        '("plugins"."status" = $4 and "plugins"."status_reason_code" = $5)))'
+    );
+    expect(query.params).toEqual([
+      COMPANY_A,
+      "ready",
+      "disabled",
+      "error",
+      PLUGIN_WORKER_BLOCKED_IN_CLOUD,
+    ]);
+  });
+});
+
+describe("primary company plugin list", () => {
+  it("excludes soft-uninstalled rows at the database boundary", async () => {
+    let selectIndex = 0;
+    let installedPredicate: unknown;
+    const db = {
+      select: () => {
+        const current = selectIndex++;
+        return {
+          from: () => ({
+            where: (predicate: unknown) => {
+              if (current === 0) {
+                installedPredicate = predicate;
+                return { orderBy: async () => [plugin(PLUGIN_A, COMPANY_A)] };
+              }
+              return Promise.resolve([]);
+            },
+          }),
+        };
+      },
+    } as any;
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = {
+        type: "board",
+        source: "local_implicit",
+        userId: "local",
+        isInstanceAdmin: true,
+        companyIds: [COMPANY_A],
+      } as never;
+      next();
+    });
+    app.use(
+      "/api/companies/:companyId/plugins",
+      companyPluginRoutes(db, lifecycle as never, {} as never)
+    );
+    app.use(errorHandler);
+
+    await supertest(app)
+      .get(`/api/companies/${COMPANY_A}/plugins`)
+      .expect(200);
+
+    const query = new PgDialect().sqlToQuery(installedPredicate as never);
+    expect(query.sql).toBe(
+      '("plugins"."company_id" = $1 and "plugins"."status" <> $2)'
+    );
+    expect(query.params).toEqual([COMPANY_A, "uninstalled"]);
   });
 });
 

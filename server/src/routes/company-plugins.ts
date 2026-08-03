@@ -12,7 +12,7 @@
  * - Toggle plugin enabled/disabled for this company
  */
 import { Router } from "express";
-import { eq, and, desc } from "drizzle-orm";
+import { eq, and, desc, ne } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   plugins,
@@ -54,7 +54,12 @@ export function companyPluginRoutes(
       db
         .select()
         .from(plugins)
-        .where(eq(plugins.companyId, companyId))
+        .where(
+          and(
+            eq(plugins.companyId, companyId),
+            ne(plugins.status, "uninstalled")
+          )
+        )
         .orderBy(plugins.installedAt),
       db
         .select()

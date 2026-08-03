@@ -168,6 +168,36 @@ Batch 5 acceptance tests:
 - audit insert failure rolls back company and access; post-commit event failure does not change the 201 result
 - same request ID returns the same Organization/Company under sequential and concurrent retries; a different payload returns 409; an unconfirmed browser attempt retries rather than auto-advancing
 
+### Batch 6 — Exact-head Codex findings after Batch 5 verification
+
+1. Read the irreversible-migration snapshot marker only from the canonical
+   `instance_settings.singleton_key = 'default'` row. Reject impossible
+   multi-row callback results instead of selecting one, and name the canonical
+   row in the error and operator runbook.
+2. Treat `migrationSnapshots` as private operational metadata: exclude it from
+   strict public settings validation, preserve it through General settings
+   updates, and keep it out of the public PATCH contract.
+3. Keep durably cloud-blocked plugins visible in the legacy company plugin
+   settings collection by admitting only `status=error` rows with the canonical
+   `PLUGIN_WORKER_BLOCKED_IN_CLOUD` reason. Continue excluding generic errors
+   and uninstalled rows, and expose the returned reason in the UI client type.
+4. Exclude soft-uninstalled plugins from the primary company Plugins settings
+   list at the SQL boundary so they do not reappear after reload.
+5. On a cloud-to-self-hosted deployment transition, project the persisted cloud
+   reconciliation reason as historical metadata rather than a live policy
+   denial. Preserve the ordinary error state, clear only the canonical cloud
+   reason/message in reads, and expose Retry/Enable so the documented recovery
+   path is usable; successful activation clears the durable fields.
+
+Batch 6 acceptance tests:
+
+- a noncanonical settings row can neither satisfy nor defeat the migration gate
+- public settings reads retain their values when the private marker exists, and public updates retain the marker
+- the legacy plugin-settings predicate includes ready, disabled, and canonical cloud-blocked states only
+- the primary Plugins settings predicate excludes uninstalled rows
+- the actual Drizzle predicate SQL/parameters are asserted so mocks cannot create a false green
+- cloud mode continues projecting every installed state as blocked, while self-hosted reads clear only the stale canonical cloud diagnostic and preserve unrelated errors
+
 ## Failure Modes and Rescue
 
 | Failure | Required behavior | Rescue/diagnostic |
@@ -240,6 +270,29 @@ Implementation evidence captured 2026-08-03:
 - Replay recovery was then adversarially tightened: it resolves the original persisted founder (including local generated operators and retries by another admin), reruns only idempotent bootstrap/skill/Commander ensures, inserts a missing founder profile with composite-key `ON CONFLICT DO NOTHING`, preserves later company-profile edits, and never duplicates the durable `company.created` audit/event. Two final independent targeted reviews report no P0-P3 findings.
 - Migration `0199_special_justice.sql` contains only the two nullable creation-request columns and their tenant-scoped unique indexes; both indexes use the repository-required `IF NOT EXISTS`. The migration idempotency/snapshot-gate focused matrix passed 36/36, and a second `pnpm db:generate` reported `No schema changes, nothing to migrate`.
 - The final authoritative constrained suite `pnpm test:run -- --maxWorkers=4` exited 0 in 541.7 seconds. Final `pnpm -r typecheck`, full server ESLint, `pnpm build`, forbidden-token scan, tools JSON/Markdown checks, external-repo-backed skills check, and `git diff --check` all passed.
+- Batch 6 independently confirmed both new exact-head Codex P2 findings and found
+  two adjacent root-cause defects: public General settings updates could delete
+  the private migration marker, and the primary Plugins settings list could
+  return soft-uninstalled rows. The repairs select only the canonical settings
+  row, preserve private metadata, keep only structured cloud-blocked errors in
+  the legacy installed-settings collection, exclude soft-uninstalled rows from
+  the primary list, and synchronize the UI diagnostic type and operator docs.
+  The focused Batch 6 matrix passed 84/84; the broader plugin/UI matrix passed
+  82/82; all workspace typechecks and full server lint passed. Three independent
+  post-fix reviews reported no remaining P0-P3 in the repaired surfaces. The
+  final review also found and repaired a non-blocking cloud-to-self-hosted
+  recovery edge: stale cloud reconciliation metadata no longer suppresses
+  self-hosted Retry/Enable controls. A subsequent consumer audit caught that
+  Instance Health omitted the structured reason from its projection input; the
+  query and authenticated transition regression now keep Health consistent
+  with the plugin APIs. The post-repair plugin matrix passed 92/92 and the
+  focused Health/projection matrix passed 52/52, with server typecheck and lint
+  green. The authoritative pre-recovery-edge full suite passed in 542.3
+  seconds, and the final exact-candidate rerun passed in 575.4 seconds. Final
+  workspace typecheck, production build, server lint, forbidden-token scan,
+  tools JSON/Markdown freshness, external native-skills freshness, schema drift
+  generation (`No schema changes, nothing to migrate`), and `git diff --check`
+  passed after the last code change.
 - Remaining merge gates are operational: commit/push this reviewed worktree to PR #316, require fresh Linux CI, fetch/reconcile all review threads, request another whole-PR `@codex review`, and repeat the loop if it returns any actionable finding. gVisor remains a fresh follow-up PR from updated `main`.
 
 Known Windows flake protocol:

@@ -94,6 +94,15 @@ describe("migration snapshot gate database reads", () => {
       readRecordedSnapshotsForSnapshotGate(async () => Promise.reject(denied)),
     ).rejects.toBe(denied);
   });
+
+  it("fails closed if the canonical settings query returns more than one row", async () => {
+    await expect(
+      readRecordedSnapshotsForSnapshotGate(async () => [
+        { general: { migrationSnapshots: ["0188"] } },
+        { general: {} },
+      ]),
+    ).rejects.toThrow("unique canonical instance settings row");
+  });
 });
 
 describe("shouldBlockForMissingSnapshot", () => {

@@ -80,6 +80,7 @@ export async function buildInstanceHealthReport(
           companyId: plugins.companyId,
           pluginKey: plugins.pluginKey,
           status: plugins.status,
+          statusReasonCode: plugins.statusReasonCode,
           manifestJson: plugins.manifestJson,
           lastError: plugins.lastError,
         })

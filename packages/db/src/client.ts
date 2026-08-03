@@ -689,7 +689,9 @@ export async function applyPendingMigrations(
       queryCompanyCount: () =>
         lockSql.unsafe(`SELECT count(*)::int AS count FROM companies`),
       queryRecordedSnapshots: () =>
-        lockSql.unsafe(`SELECT general FROM instance_settings LIMIT 1`),
+        lockSql.unsafe(
+          `SELECT general FROM instance_settings WHERE singleton_key = 'default'`,
+        ),
     });
 
     const sql = postgres(url, { max: 1 });
