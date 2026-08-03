@@ -9,6 +9,10 @@ vi.mock("../../../api/onboarding", () => ({
   advanceOnboarding: (...args: unknown[]) => advanceOnboarding(...args),
 }));
 
+vi.mock("../VerifyStep", () => ({
+  VerifyStep: () => <div data-testid="local-verify-step" />,
+}));
+
 const ctx = {
   userId: "user-1",
   companyId: "company-1",
@@ -28,6 +32,7 @@ describe("cloud onboarding continuations", () => {
     render(<CloudAwareEnvironmentStep ctx={ctx as never} onComplete={onComplete} onBack={vi.fn()} />);
 
     expect(screen.queryByLabelText(/root folder/i)).not.toBeInTheDocument();
+    expect(screen.queryByTestId("cloud-provider-key-notice")).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: /continue setup/i }));
 
     expect(advanceOnboarding).toHaveBeenCalledWith({
@@ -43,6 +48,12 @@ describe("cloud onboarding continuations", () => {
     render(<CloudAwareVerifyStep ctx={ctx as never} onComplete={onComplete} onBack={vi.fn()} />);
 
     expect(screen.queryByText(/run checks/i)).not.toBeInTheDocument();
+    const notice = screen.getByTestId("cloud-provider-key-notice");
+    expect(notice).toHaveTextContent(/isn't required|not required/i);
+    expect(notice).not.toHaveTextContent(/extraction/i);
+    expect(
+      screen.getByRole("link", { name: /open settings.*providers/i }),
+    ).toHaveAttribute("href", "/settings?tab=providers");
     await userEvent.click(screen.getByRole("button", { name: /continue setup/i }));
 
     expect(advanceOnboarding).toHaveBeenCalledWith({
@@ -51,5 +62,18 @@ describe("cloud onboarding continuations", () => {
       requestedState: "COMMANDER_VERIFIED",
     });
     expect(onComplete).toHaveBeenCalledOnce();
+  });
+
+  it("routes local_trusted verification to the local verification step", () => {
+    render(
+      <CloudAwareVerifyStep
+        ctx={{ ...ctx, deploymentMode: "local_trusted" } as never}
+        onComplete={vi.fn()}
+        onBack={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId("local-verify-step")).toBeInTheDocument();
+    expect(screen.queryByTestId("cloud-provider-key-notice")).not.toBeInTheDocument();
   });
 });

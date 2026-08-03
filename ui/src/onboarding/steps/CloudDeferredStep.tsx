@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import type { OnboardingState } from "@armyofagents/shared";
 import type { StepProps } from "../registry";
+import { CloudProviderKeyNotice } from "../CloudProviderKeyNotice";
 import { advanceOnboarding } from "../../api/onboarding";
 import { Button } from "@/components/ui/button";
 import { Reveal } from "../motion";
@@ -14,10 +15,12 @@ function CloudDeferredStep({
   state,
   title,
   description,
+  supportingContent,
 }: StepProps & {
   state: OnboardingState;
   title: string;
   description: string;
+  supportingContent?: ReactNode;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,6 +57,7 @@ function CloudDeferredStep({
             in company Settings for supported heartbeat-agent runs; the gVisor
             worker pool and full workspace lifecycle remain deferred.
           </p>
+          {supportingContent && <div className="mt-3">{supportingContent}</div>}
           {error && <p className="mt-3 text-xs text-destructive">{error}</p>}
         </StepCard>
       </Reveal>
@@ -86,6 +90,9 @@ export function CloudAwareVerifyStep(props: StepProps) {
       state="COMMANDER_VERIFIED"
       title="Commander deferred"
       description="Commander uses a local CLI and cannot be verified or run on AoA Cloud yet. Continue to finish control-plane setup."
+      supportingContent={
+        <CloudProviderKeyNotice deploymentMode={props.ctx.deploymentMode} />
+      }
     />
   );
 }
