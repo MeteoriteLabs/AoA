@@ -8,6 +8,7 @@ import type { ReactNode } from "react";
 import { PluginDetailSlideOver } from "../PluginDetailSlideOver";
 import type { InstalledPlugin } from "@/api/plugins";
 import * as pluginsApi from "@/api/plugins";
+import { ApiError } from "@/api/client";
 import { ToastProvider } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
 
@@ -33,9 +34,25 @@ vi.mock("@/api/plugins", async () => {
   };
 });
 
-// CapabilityDeltaModal needs its own routing; stub it out for these unit tests.
+// CapabilityDeltaModal owns its API mutations; these controls model its completed
+// approve/cancel callbacks so this component's cache handling can be exercised.
 vi.mock("../CapabilityDeltaModal", () => ({
-  CapabilityDeltaModal: () => null,
+  CapabilityDeltaModal: ({
+    onApproved,
+    onCancelled,
+  }: {
+    onApproved: () => void;
+    onCancelled: () => void;
+  }) => (
+    <>
+      <button type="button" onClick={onApproved}>
+        Complete capability approval
+      </button>
+      <button type="button" onClick={onCancelled}>
+        Complete capability cancellation
+      </button>
+    </>
+  ),
 }));
 
 // PluginConfigForm may import things needing extra mocks — stub it too.
@@ -80,11 +97,28 @@ function wrap(
     },
   });
   qc.setQueryData(queryKeys.health, { status: "ok", deploymentMode });
-  return render(
-    <QueryClientProvider client={qc}>
-      <ToastProvider>{node}</ToastProvider>
-    </QueryClientProvider>
-  );
+  return {
+    queryClient: qc,
+    ...render(
+      <QueryClientProvider client={qc}>
+        <ToastProvider>{node}</ToastProvider>
+      </QueryClientProvider>
+    ),
+  };
+}
+
+function expectCompanyPluginStateInvalidated(
+  invalidateQueries: ReturnType<typeof vi.spyOn>
+) {
+  expect(invalidateQueries).toHaveBeenCalledWith({
+    queryKey: ["company-plugins", "company-1"],
+  });
+  expect(invalidateQueries).toHaveBeenCalledWith({
+    queryKey: queryKeys.plugins.companyList("company-1"),
+  });
+  expect(invalidateQueries).toHaveBeenCalledWith({
+    queryKey: queryKeys.plugins.uiContributions("company-1"),
+  });
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
@@ -288,5 +322,152 @@ describe("PluginDetailSlideOver — Retry activation button", () => {
       "Configuration access denied"
     );
     expect(screen.queryByTestId("plugin-config-form")).not.toBeInTheDocument();
+  });
+});
+
+describe("PluginDetailSlideOver lifecycle cache invalidation", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("invalidates all company plugin state after enabling or disabling", async () => {
+    vi.mocked(pluginsApi.patchPluginSettings).mockResolvedValue({});
+    const { queryClient } = wrap(
+      <PluginDetailSlideOver
+        companyId="company-1"
+        plugin={makePlugin({ enabled: false })}
+        pendingUpdate={undefined}
+        onClose={vi.fn()}
+      />
+    );
+    const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /enable for this company/i })
+    );
+
+    await waitFor(() =>
+      expectCompanyPluginStateInvalidated(invalidateQueries)
+    );
+  });
+
+  it("invalidates all company plugin state after retry activation succeeds", async () => {
+    retryActivationSpy.mockResolvedValue({});
+    const { queryClient } = wrap(
+      <PluginDetailSlideOver
+        companyId="company-1"
+        plugin={makePlugin({ status: "error" })}
+        pendingUpdate={undefined}
+        onClose={vi.fn()}
+      />
+    );
+    const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /retry activation/i })
+    );
+
+    await waitFor(() =>
+      expectCompanyPluginStateInvalidated(invalidateQueries)
+    );
+  });
+
+  it("invalidates all company plugin state after a ready upgrade succeeds", async () => {
+    vi.mocked(pluginsApi.upgradePlugin).mockResolvedValue({
+      status: "ready",
+      version: "2.0.0",
+    });
+    const { queryClient } = wrap(
+      <PluginDetailSlideOver
+        companyId="company-1"
+        plugin={makePlugin()}
+        pendingUpdate={{ latestVersion: "2.0.0" } as any}
+        onClose={vi.fn()}
+      />
+    );
+    const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
+
+    await userEvent.click(screen.getByRole("button", { name: /upgrade to/i }));
+
+    await waitFor(() =>
+      expectCompanyPluginStateInvalidated(invalidateQueries)
+    );
+  });
+
+  it("invalidates all company plugin state when a lifecycle error is cloud-blocked", async () => {
+    vi.mocked(pluginsApi.patchPluginSettings).mockRejectedValue(
+      new ApiError("blocked", 503, { code: "PLUGIN_WORKER_BLOCKED_IN_CLOUD" })
+    );
+    const { queryClient } = wrap(
+      <PluginDetailSlideOver
+        companyId="company-1"
+        plugin={makePlugin()}
+        pendingUpdate={undefined}
+        onClose={vi.fn()}
+      />
+    );
+    const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /disable for this company/i })
+    );
+
+    await waitFor(() =>
+      expectCompanyPluginStateInvalidated(invalidateQueries)
+    );
+  });
+
+  it("invalidates all company plugin state after capability upgrade approval", async () => {
+    vi.mocked(pluginsApi.upgradePlugin).mockResolvedValue({
+      status: "upgrade_pending",
+      version: "2.0.0",
+      delta: ["storage.write"],
+    });
+    const { queryClient } = wrap(
+      <PluginDetailSlideOver
+        companyId="company-1"
+        plugin={makePlugin()}
+        pendingUpdate={{ latestVersion: "2.0.0" } as any}
+        onClose={vi.fn()}
+      />
+    );
+    const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
+
+    await userEvent.click(screen.getByRole("button", { name: /upgrade to/i }));
+    await userEvent.click(
+      await screen.findByRole("button", { name: /complete capability approval/i })
+    );
+
+    await waitFor(() =>
+      expectCompanyPluginStateInvalidated(invalidateQueries)
+    );
+  });
+
+  it("invalidates all company plugin state after capability upgrade cancellation", async () => {
+    vi.mocked(pluginsApi.upgradePlugin).mockResolvedValue({
+      status: "upgrade_pending",
+      version: "2.0.0",
+      delta: ["storage.write"],
+    });
+    const { queryClient } = wrap(
+      <PluginDetailSlideOver
+        companyId="company-1"
+        plugin={makePlugin()}
+        pendingUpdate={{ latestVersion: "2.0.0" } as any}
+        onClose={vi.fn()}
+      />
+    );
+    const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
+
+    await userEvent.click(screen.getByRole("button", { name: /upgrade to/i }));
+    await userEvent.click(
+      await screen.findByRole("button", {
+        name: /complete capability cancellation/i,
+      })
+    );
+
+    await waitFor(() =>
+      expectCompanyPluginStateInvalidated(invalidateQueries)
+    );
   });
 });

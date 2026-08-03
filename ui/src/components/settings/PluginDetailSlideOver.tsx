@@ -10,6 +10,7 @@ import { PluginConfigForm } from "./PluginConfigForm.js";
 import { CapabilityDeltaModal } from "./CapabilityDeltaModal.js";
 import { useToast } from "@/context/ToastContext";
 import { useCloudPluginExecutionPolicy } from "@/hooks/useCloudPluginExecutionPolicy";
+import { queryKeys } from "@/lib/queryKeys";
 
 interface Props {
   companyId: string;
@@ -34,6 +35,19 @@ export function PluginDetailSlideOver({
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const cloudPolicy = useCloudPluginExecutionPolicy();
+  const invalidateCompanyPluginState = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({
+        queryKey: ["company-plugins", companyId],
+      }),
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.plugins.companyList(companyId),
+      }),
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.plugins.uiContributions(companyId),
+      }),
+    ]);
+  };
   const cloudBlocked =
     cloudPolicy.isCloud ||
     plugin.statusReasonCode === PLUGIN_WORKER_BLOCKED_IN_CLOUD_REASON;
@@ -42,9 +56,7 @@ export function PluginDetailSlideOver({
     plugin.statusReasonCode === PLUGIN_WORKER_BLOCKED_IN_CLOUD_REASON;
   const reconcileCloudBlock = (err: unknown): boolean => {
     if (!pluginsApi.isCloudPluginExecutionBlockedError(err)) return false;
-    void queryClient.invalidateQueries({
-      queryKey: ["company-plugins", companyId],
-    });
+    void invalidateCompanyPluginState();
     pushToast({
       title: `${plugin.manifest.displayName} is blocked on AoA Cloud`,
       body: "Cloud execution requires isolated workers. Self-hosting is the current recovery path.",
@@ -68,9 +80,7 @@ export function PluginDetailSlideOver({
       pluginsApi.upgradePlugin(companyId, plugin.id, version),
     onSuccess: (result) => {
       if (result.status === "ready") {
-        queryClient.invalidateQueries({
-          queryKey: ["company-plugins", companyId],
-        });
+        return invalidateCompanyPluginState();
       } else {
         setUpgradeResult(result);
       }
@@ -83,10 +93,7 @@ export function PluginDetailSlideOver({
   const toggleMutation = useMutation({
     mutationFn: (enabled: boolean) =>
       pluginsApi.patchPluginSettings(companyId, plugin.id, enabled),
-    onSuccess: () =>
-      queryClient.invalidateQueries({
-        queryKey: ["company-plugins", companyId],
-      }),
+    onSuccess: invalidateCompanyPluginState,
     onError: (err) => {
       reconcileCloudBlock(err);
     },
@@ -94,10 +101,7 @@ export function PluginDetailSlideOver({
 
   const retryMutation = useMutation({
     mutationFn: () => pluginsApiClient.retryActivation(plugin.id),
-    onSuccess: () =>
-      queryClient.invalidateQueries({
-        queryKey: ["company-plugins", companyId],
-      }),
+    onSuccess: invalidateCompanyPluginState,
     onError: (err) => {
       reconcileCloudBlock(err);
     },
@@ -125,11 +129,12 @@ export function PluginDetailSlideOver({
             delta={upgradeResult.delta}
             onApproved={() => {
               setUpgradeResult(null);
-              queryClient.invalidateQueries({
-                queryKey: ["company-plugins", companyId],
-              });
+              void invalidateCompanyPluginState();
             }}
-            onCancelled={() => setUpgradeResult(null)}
+            onCancelled={() => {
+              setUpgradeResult(null);
+              void invalidateCompanyPluginState();
+            }}
           />
         )}
 
