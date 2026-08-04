@@ -34,7 +34,7 @@ async function walkToVerify(page: Page, commander: "Claude" | "Codex"): Promise<
   await expect(page.getByRole("heading", { name: /your company/i })).toBeVisible({
     timeout: 20_000,
   });
-  await page.getByLabel("Organization name").fill(`E2E-TrackC-${Date.now()}`);
+  await page.getByLabel("Company name").fill(`E2E-TrackC-${Date.now()}`);
   await expect(page.getByRole("button", { name: /continue/i })).toBeEnabled({ timeout: 15_000 });
   await page.getByRole("button", { name: /continue/i }).click();
 

@@ -622,7 +622,7 @@ test.describe("Settings -> Providers readiness", () => {
 
     // Company — heading is "Your company" (#295 onboarding redesign).
     await expect(page.getByRole("heading", { name: /your company/i })).toBeVisible({ timeout: 20_000 });
-    await page.getByLabel("Organization name").fill(`E2E-Providers-Onboard-${Date.now()}`);
+    await page.getByLabel("Company name").fill(`E2E-Providers-Onboard-${Date.now()}`);
     await expect(page.getByRole("button", { name: /continue/i })).toBeEnabled({ timeout: 15_000 });
     await page.getByRole("button", { name: /continue/i }).click();
 
