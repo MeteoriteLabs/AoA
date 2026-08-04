@@ -3710,6 +3710,26 @@ export function heartbeatService(db: Db) {
               })
             : null;
         if (workspaceToUpdate && !persistedExecutionWorkspace) {
+          const reFetched = await executionWorkspacesSvc.getById(workspaceToUpdate.id);
+          if (reFetched && reFetched.status !== "archived") {
+            persistedExecutionWorkspace = await executionWorkspacesSvc.update(workspaceToUpdate.id, {
+              cwd: executionWorkspace.cwd,
+              repoUrl: executionWorkspace.repoUrl,
+              baseRef: executionWorkspace.repoRef,
+              branchName: executionWorkspace.branchName,
+              providerType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "local_fs",
+              providerRef: executionWorkspace.worktreePath,
+              status: "active",
+              lastUsedAt: new Date(),
+              metadata: {
+                ...(reFetched.metadata ?? {}),
+                source: executionWorkspace.source,
+                createdByRuntime: executionWorkspace.created,
+              },
+            });
+          }
+        }
+        if (workspaceToUpdate && !persistedExecutionWorkspace) {
           throw new Error("Execution workspace changed or became unavailable before the run could claim it");
         }
       } catch (error) {
