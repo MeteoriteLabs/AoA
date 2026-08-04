@@ -5,6 +5,7 @@ import os from "node:os";
 import { execFile, spawn } from "node:child_process";
 import { z } from "zod";
 import { assertCanManageInstanceSettings } from "./authz.js";
+import { assertLocalWorkspaceCommandAllowed } from "../services/local-workspace-command-guard.js";
 
 // Exported for reuse by the WS0a company-scoped workspace-fs routes
 // (routes/company-workspace-fs.ts) — purely additive; the handlers below are
@@ -33,6 +34,11 @@ function isPathInsideDir(parent: string, candidate: string): boolean {
 }
 
 export function checkGitRepo(dirPath: string): Promise<boolean> {
+  try {
+    assertLocalWorkspaceCommandAllowed("filesystem Git repository probe");
+  } catch {
+    return Promise.resolve(false);
+  }
   return new Promise((resolve) => {
     execFile("git", ["rev-parse", "--git-dir"], { cwd: dirPath, timeout: 3000 }, (err) => {
       resolve(!err);

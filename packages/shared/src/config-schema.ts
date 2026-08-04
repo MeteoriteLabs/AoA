@@ -136,6 +136,14 @@ export const paperclipConfigSchema = z
       return;
     }
 
+    if (value.server.deploymentMode === "cloud_auth" && value.server.exposure !== "public") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "server.exposure must be public when deploymentMode is cloud_auth",
+        path: ["server", "exposure"],
+      });
+    }
+
     if (value.auth.baseUrlMode === "explicit" && !value.auth.publicBaseUrl) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

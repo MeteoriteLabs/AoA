@@ -3,6 +3,7 @@ export {
   ensurePostgresDatabase,
   inspectMigrations,
   applyPendingMigrations,
+  type ApplyPendingMigrationsOptions,
   reconcilePendingMigrationHistory,
   type MigrationState,
   type MigrationHistoryReconcileResult,
@@ -10,6 +11,17 @@ export {
   type MigrationBootstrapResult,
   type Db,
 } from "./client.js";
+export {
+  assertMigrationSnapshotGate,
+  isUndefinedTableError,
+  readCompanyCountForSnapshotGate,
+  readRecordedSnapshotsForSnapshotGate,
+  shouldBlockForMissingSnapshot,
+  SnapshotGateError,
+  type AssertMigrationSnapshotGateInput,
+  type MigrationGateDeploymentMode,
+  type SnapshotGateInput,
+} from "./migration-snapshot-gate.js";
 export {
   runDatabaseBackup,
   formatDatabaseBackupResult,

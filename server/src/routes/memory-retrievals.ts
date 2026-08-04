@@ -37,7 +37,7 @@ export function memoryRetrievalsRoutes(db: Db) {
   router.get("/companies/:companyId/issues/:issueId/memory-retrievals", async (req, res) => {
     const companyId = req.params.companyId as string;
     const issueId = req.params.issueId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     const limitRaw = req.query.limit as string | undefined;
     const limit = limitRaw ? Math.max(1, parseInt(limitRaw, 10) || 0) : undefined;
@@ -50,7 +50,7 @@ export function memoryRetrievalsRoutes(db: Db) {
   router.get("/companies/:companyId/conversations/:conversationId/memory-retrievals", async (req, res) => {
     const companyId = req.params.companyId as string;
     const conversationId = req.params.conversationId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     // Per-user conversation: enforce owner/founder access (not just company
     // membership) — mirrors the /internal-agent/conversations/:id/messages guard.

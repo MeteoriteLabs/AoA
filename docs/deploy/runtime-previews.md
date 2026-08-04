@@ -25,6 +25,9 @@ Runtime preview URLs:
 - Strip AoA query auth tokens before forwarding HTTP or WebSocket preview traffic upstream.
 - Support normal HTTP traffic and WebSocket/HMR upgrade traffic.
 - Refuse stopped, unavailable, unhealthy, unsafe, or cross-company services.
+- Refuse `local_process` services owned by another control-plane replica before
+  probing or proxying their loopback URL. Only the recorded process owner can
+  health-check, stop, or proxy that local service.
 
 Runtime preview URLs do not create a public share link. Public and guest access require a separate sharing layer.
 
@@ -83,6 +86,13 @@ This phase intentionally keeps the preview proxy narrow:
 - No wildcard preview subdomains.
 - No Docker/cloud sandbox runtime.
 - No full multi-node runtime scheduler.
+
+Local runtime-service orchestration is single-owner. A shared database may
+contain rows from multiple replicas, but replicas deliberately leave foreign
+process rows untouched; cross-replica routing is deferred to the isolated
+worker runtime. Do not run local runtime services on multiple control-plane
+replicas, and keep `AOA_ALLOW_UNSANDBOXED_MULTITENANT` disabled in production
+`cloud_auth` deployments.
 
 If an app needs public review, use a deployment provider such as Vercel, Netlify, Render, Fly, GitHub Pages, or a future AoA external preview resource. Do not treat the local runtime preview URL as a public deployment URL.
 

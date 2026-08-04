@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import type { Request as ExpressRequest, RequestHandler } from "express";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import {
   createDb,
   ensurePostgresDatabase,
@@ -36,6 +36,7 @@ import {
   WORKER_INTERVAL_MS,
   workQuestionContinuationService,
   workQuestionSlaService,
+  organizationService,
 } from "./services/index.js";
 import { getDbCapabilities, probeDbCapabilities } from "./services/db-capabilities.js";
 import { runExtractionSweep } from "./services/internal-agent/subagents/extraction-sweeper.js";
@@ -44,7 +45,9 @@ import { runControllerSweep } from "./services/internal-agent/aoa-agents/sweep-c
 import { runMemoryKeeperSweep, MK_SWEEP_DEBOUNCE_MS } from "./services/internal-agent/aoa-agents/sweep-memory-keeper.js";
 import { runInboxSweep } from "./services/internal-agent/aoa-agents/sweep-inbox.js";
 import { runStewardSweep, STEWARD_SWEEP_INTERVAL_MS } from "./services/internal-agent/aoa-agents/sweep-steward.js";
+import { operatorBreakGlassService, realBreakGlassDeps } from "./services/operator-break-glass.js";
 import {
+  reconcileLegacyAdapterRuntimeIdentitiesOnStartup,
   reconcilePersistedRuntimeServicesOnStartup,
   restartDesiredRuntimeServicesOnStartup,
 } from "./services/workspace-runtime.js";
@@ -67,6 +70,8 @@ import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { tryRecoverOrphanPostgres } from "./postgres/embedded-orphan-recovery.js";
+import { assertTestSupportFlagSafe } from "./services/test-support-safety.js";
+import { createProcessShutdownHandler } from "./services/server-shutdown.js";
 import { DEFAULT_BACKUP_RETENTION } from "@armyofagents/shared";
 import { runChroniclerSweep, CHRONICLER_SWEEP_INTERVAL_MS } from "./services/internal-agent/aoa-agents/sweep-chronicler.js";
 import { ensureCrewAgents, ensureInfrastructureAgents, isCrewMarketplaceManaged } from "./services/internal-agent/aoa-agents/crew-seeding.js";
@@ -78,6 +83,7 @@ import { normalizeLegacyOnboardingState } from "./migrations/normalize-legacy-on
 import { backfillCrewTemplateOrigin } from "./services/internal-agent/aoa-agents/backfill-template-origin.js";
 import { backfillCrewOriginKind } from "./services/internal-agent/aoa-agents/backfill-crew-origin-kind.js";
 import { reconcileAutonomyScale } from "./services/internal-agent/aoa-agents/reconcile-autonomy-scale.js";
+import { runProviderConnectionsBackfill } from "./services/provider-connections-backfill.js";
 import {
   getMarketplaceCatalogService,
   loadCachedCatalog,
@@ -122,6 +128,16 @@ type EmbeddedPostgresCtor = new (opts: {
 }) => EmbeddedPostgresInstance;
 
 const config = loadConfig();
+// The dedicated e2e session mint bypasses OAuth. Reject unsafe combinations
+// before migrations, database bootstrap, or route initialization does work.
+assertTestSupportFlagSafe({
+  testSupportEnabled: process.env.AOA_E2E_TEST_SUPPORT === "1",
+  testSupportToken: process.env.AOA_E2E_TEST_SUPPORT_TOKEN,
+  deploymentExposure: config.deploymentExposure,
+  bindHost: config.host,
+  authPublicBaseUrl: config.authPublicBaseUrl ?? null,
+  nodeEnv: process.env.NODE_ENV,
+});
 if (process.env.AOA_SECRETS_PROVIDER === undefined) {
   process.env.AOA_SECRETS_PROVIDER = config.secretsProvider;
 }
@@ -185,6 +201,7 @@ async function ensureMigrations(
     }
   }
   if (state.status === "upToDate") return "already applied";
+
   if (state.status === "needsMigrations" && state.reason === "no-migration-journal-non-empty-db") {
     logger.warn(
       { tableCount: state.tableCount },
@@ -200,7 +217,9 @@ async function ensureMigrations(
     }
 
     logger.info({ pendingMigrations: state.pendingMigrations }, `Applying ${state.pendingMigrations.length} pending migrations for ${label}`);
-    await applyPendingMigrations(connectionString);
+    await applyPendingMigrations(connectionString, {
+      deploymentMode: config.deploymentMode,
+    });
     return "applied (pending migrations)";
   }
 
@@ -214,7 +233,9 @@ async function ensureMigrations(
   }
 
   logger.info({ pendingMigrations: state.pendingMigrations }, `Applying ${state.pendingMigrations.length} pending migrations for ${label}`);
-  await applyPendingMigrations(connectionString);
+  await applyPendingMigrations(connectionString, {
+    deploymentMode: config.deploymentMode,
+  });
   return "applied (pending migrations)";
 }
 
@@ -468,6 +489,12 @@ if (!process.env.DATABASE_URL) {
 // via getDbCapabilities() to gate semantic-search paths and embedding columns.
 await probeDbCapabilities(db as any);
 
+// Phase 1 (multi-tenant cloud): guarantee the sentinel default Organization
+// exists before any company-scoped work runs. Idempotent (ON CONFLICT DO
+// NOTHING) — safe on every boot. Must run after migrations (the organizations
+// table only exists post-0188) and before any company create/list flow below.
+await organizationService(db as any).ensureDefaultOrganization();
+
 if (config.deploymentMode === "local_trusted" && !isLoopbackHost(config.host)) {
   throw new Error(
     `local_trusted mode requires loopback host binding (received: ${config.host}). ` +
@@ -507,6 +534,9 @@ let resolveSession:
 let resolveSessionFromHeaders:
   | ((headers: Headers) => Promise<BetterAuthSessionResult | null>)
   | undefined;
+// Hoisted out of the auth-init block (mirrors resolveSessionFromHeaders/authReady)
+// so the WebSocket upgrade wiring below can pass it into the CSWSH Origin check.
+let effectiveTrustedOrigins: string[] = [];
 
 // revA R6 — Google is the only sign-in provider. Refuse to boot a would-be
 // locked-out deployment: `authenticated` without Google creds, or
@@ -514,6 +544,18 @@ let resolveSessionFromHeaders:
 {
   const { assertAuthProviderConfigured } = await import("./auth/better-auth.js");
   assertAuthProviderConfigured(config);
+}
+
+// Task 10 (Phase 2 lockout cluster, ATOMIC cutover) — boot-time invariant:
+// cloud_auth must never have a runtime instance_admin promotion path
+// enabled. Belt to the Task 7/8/10(a) code-level gates: if a future change
+// somehow re-enables bootstrap for cloud_auth, refuse to boot rather than
+// silently minting global admins in a hosted multi-tenant deployment.
+{
+  const { assertInstanceAdminBootstrapInvariant } = await import(
+    "./services/first-user-bootstrap.js"
+  );
+  assertInstanceAdminBootstrapInvariant({ deploymentMode: config.deploymentMode });
 }
 
 // RB4/R5 — the synthetic `local-board` admin is created ONLY under the dev
@@ -540,7 +582,7 @@ if (config.devLocalIdentity) {
     .split(",")
     .map((value) => value.trim())
     .filter((value) => value.length > 0);
-  const effectiveTrustedOrigins = Array.from(new Set([...derivedTrustedOrigins, ...envTrustedOrigins]));
+  effectiveTrustedOrigins = Array.from(new Set([...derivedTrustedOrigins, ...envTrustedOrigins]));
   logger.info(
     {
       deploymentMode: config.deploymentMode,
@@ -577,6 +619,8 @@ const workQuestionSnapshotBackfill = await backfillWorkQuestionSnapshots(db as a
 if (workQuestionSnapshotBackfill.updated > 0) {
   logger.info(workQuestionSnapshotBackfill, "work-question identity snapshot backfill complete");
 }
+const { ensureControlPlaneExecutionTarget } = await import("./services/execution-targets.js");
+await ensureControlPlaneExecutionTarget(db as any);
 const app = await createApp(db as any, {
   uiMode,
   storageService,
@@ -607,6 +651,7 @@ server.on("upgrade", (req, socket, head) => {
   void handlePreviewProxyUpgrade(db as any, req, socket, head, {
     deploymentMode: config.deploymentMode,
     resolveSessionFromHeaders,
+    trustedOrigins: effectiveTrustedOrigins,
   }).catch((err) => {
     logger.warn({ err, path: req.url }, "preview websocket upgrade failed");
     socket.destroy();
@@ -616,6 +661,7 @@ server.on("upgrade", (req, socket, head) => {
 setupLiveEventsWebSocketServer(server, db as any, {
   deploymentMode: config.deploymentMode,
   resolveSessionFromHeaders,
+  trustedOrigins: effectiveTrustedOrigins,
 });
 
 // Work-question continuation and SLA processing are durable workflow workers,
@@ -659,11 +705,44 @@ const tickWorkQuestionWorkers = (now = new Date()) => {
   }
 };
 
+// This cutover guard is independent of heartbeat scheduling. A deployment that
+// disables heartbeat must still reap (or refuse to forget) pre-upgrade detached
+// tenant processes before it continues booting. It must also run before any
+// durable worker can dispatch a continuation into heartbeat execution.
+await reconcileLegacyAdapterRuntimeIdentitiesOnStartup(db as any);
+const runtimeProcessReconciliation = await reconcilePersistedRuntimeServicesOnStartup(db as any);
+
 // Run independently of the heartbeat scheduler flag. This is intentionally
 // separate from the heartbeat interval below so HEARTBEAT_SCHEDULER_ENABLED
-// cannot strand durable questions in `pending`.
+// cannot strand durable questions in `pending`. Start it only after the
+// detached-process cutover gate above has completed.
 tickWorkQuestionWorkers();
 setInterval(() => tickWorkQuestionWorkers(), config.heartbeatSchedulerIntervalMs);
+
+// Auto-resume is durable runtime state, not a heartbeat scheduling concern.
+// Keep it outside HEARTBEAT_SCHEDULER_ENABLED, after the process-ownership
+// cutover gate. Per-activation commit guards make this safe in the background.
+if (
+  (runtimeProcessReconciliation.unresolved ?? 0) === 0 &&
+  (runtimeProcessReconciliation.foreign ?? 0) === 0
+) {
+  void restartDesiredRuntimeServicesOnStartup(db as any)
+    .then((restartSummary) => {
+      if (restartSummary.failed > 0) {
+        logger.warn(restartSummary, "desired runtime-service startup reconciliation complete with failures");
+      } else {
+        logger.info(restartSummary, "desired runtime-service startup reconciliation complete");
+      }
+    })
+    .catch((err) => {
+      logger.error({ err }, "restartDesiredRuntimeServicesOnStartup failed");
+    });
+} else {
+  logger.warn(
+    runtimeProcessReconciliation,
+    "skipped desired runtime-service restart while legacy or foreign process rows remain",
+  );
+}
 
 if (config.heartbeatSchedulerEnabled) {
   const heartbeat = heartbeatService(db as any);
@@ -703,16 +782,6 @@ if (config.heartbeatSchedulerEnabled) {
   // Reap orphaned runs at startup (no threshold -- runningProcesses is empty)
   void heartbeat.reapOrphanedRuns().catch((err) => {
     logger.error({ err }, "startup reap of orphaned heartbeat runs failed");
-  });
-
-  // Reconcile stale runtime service states after server restart
-  void reconcilePersistedRuntimeServicesOnStartup(db as any).catch((err) => {
-    logger.error({ err }, "reconcilePersistedRuntimeServicesOnStartup failed");
-  });
-
-  // Auto-resume runtime services that were desiredState:running when server stopped
-  void restartDesiredRuntimeServicesOnStartup(db as any).catch((err) => {
-    logger.error({ err }, "restartDesiredRuntimeServicesOnStartup failed");
   });
 
   // Periodic sweep: mark stale workspaces as cleanup-eligible based on project TTL.
@@ -886,6 +955,24 @@ void reconcileAutonomyScale(db as any)
   })
   .catch((err: unknown) =>
     logger.warn({ err }, "autonomy scale reconciliation failed"),
+  );
+
+// Phase 4 STRANGLER dual-write: idempotent backfill of provider_connections +
+// provider_assignments from the two legacy credential systems (company
+// `provider:*` secrets → api_key connections; verified personal_subscription
+// bindings → personal_subscription connections). Best-effort — a failure must
+// NEVER block boot. Inserts with ON CONFLICT DO NOTHING behind the identity/scope
+// uniques, so every re-run is a no-op. See provider-connections-backfill.ts.
+void runProviderConnectionsBackfill(db as any, (level, msg, meta) =>
+  level === "warn" ? logger.warn(meta ?? {}, msg) : logger.info(meta ?? {}, msg),
+)
+  .then((res) => {
+    if (res.inserted > 0 || res.errors > 0) {
+      logger.info(res, "provider-connections backfill complete");
+    }
+  })
+  .catch((err: unknown) =>
+    logger.warn({ err }, "provider-connections backfill failed"),
   );
 
 // T3.5 / T3.x: Check all marketplace-installed crew agents for catalog updates.
@@ -1277,6 +1364,31 @@ setInterval(() => {
     });
 }, RUNTIME_DECISION_TIMEOUT_SWEEP_INTERVAL_MS);
 
+// Operator break-glass sweeper (Phase 3, B3). Deletes the ORGANIZATION
+// membership materialized for a grant once the grant is past expiry or revoked,
+// then marks the grant swept. Authorization itself is TTL-checked live at each
+// access (hasActiveBreakGlass); this sweep is the janitor that reclaims the
+// standing tenant-access row afterward. Runs once at boot (clears anything a
+// crash left behind) then every 60s. Best-effort — never blocks or fails boot.
+// .unref() so it cannot keep the process alive on shutdown.
+{
+  const breakGlass = operatorBreakGlassService(db as any, realBreakGlassDeps(db as any));
+  void breakGlass.sweepExpired().catch((err: unknown) =>
+    logger.warn({ err }, "operator break-glass sweep (boot) failed"),
+  );
+  let breakGlassSweepInFlight = false;
+  setInterval(() => {
+    if (breakGlassSweepInFlight) return;
+    breakGlassSweepInFlight = true;
+    void breakGlass
+      .sweepExpired()
+      .catch((err: unknown) => logger.warn({ err }, "operator break-glass sweep tick failed"))
+      .finally(() => {
+        breakGlassSweepInFlight = false;
+      });
+  }, 60_000).unref();
+}
+
 if (config.databaseBackupEnabled) {
   const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
   let backupInFlight = false;
@@ -1384,32 +1496,19 @@ server.listen(listenPort, config.host, () => {
   }
 });
 
-if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
-  const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
-    // Shutdown plugin subsystem first
-    const pluginSys = (app as any).__pluginSubsystem;
-    if (pluginSys) {
-      logger.info("Stopping plugin subsystem");
-      pluginSys.jobScheduler.stop();
-      await pluginSys.workerManager.stopAll().catch((err: unknown) => {
-        logger.error({ err }, "Plugin worker shutdown failed");
-      });
-    }
+const shutdown = createProcessShutdownHandler({
+  getPluginSubsystem: () => (app as any).__pluginSubsystem,
+  ownedEmbeddedPostgres:
+    embeddedPostgres && embeddedPostgresStartedByThisProcess
+      ? embeddedPostgres
+      : null,
+  logger,
+  exit: (code) => process.exit(code),
+});
 
-    logger.info({ signal }, "Stopping embedded PostgreSQL");
-    try {
-      await embeddedPostgres?.stop();
-    } catch (err) {
-      logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
-    } finally {
-      process.exit(0);
-    }
-  };
-
-  process.once("SIGINT", () => {
-    void shutdown("SIGINT");
-  });
-  process.once("SIGTERM", () => {
-    void shutdown("SIGTERM");
-  });
-}
+process.once("SIGINT", () => {
+  void shutdown("SIGINT");
+});
+process.once("SIGTERM", () => {
+  void shutdown("SIGTERM");
+});

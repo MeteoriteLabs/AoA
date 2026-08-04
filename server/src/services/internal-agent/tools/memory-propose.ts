@@ -18,7 +18,7 @@
 // dedicated thread FK column; sourceContext is the existing text breadcrumb).
 // Best-effort embedding enqueue (non-fatal) so retrieval picks the item up.
 
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { memoryItems, discussions } from "@armyofagents/db";
 import type { AgentTool } from "../types.js";
 import { buildAddScopeItemIdempotencyKey } from "./thread-action-keys.js";
@@ -130,7 +130,7 @@ export const proposeMemoryFromThreadTool: AgentTool = {
           allowMemoryExtraction: discussions.allowMemoryExtraction,
         })
         .from(discussions)
-        .where(eq(discussions.id, sourceThreadId))
+        .where(and(eq(discussions.id, sourceThreadId), eq(discussions.companyId, ctx.companyId)))
         .limit(1);
       const gateThread = Array.isArray(gateRows) ? gateRows[0] : null;
       if (!gateThread) {
@@ -211,7 +211,7 @@ export const proposeMemoryFromThreadTool: AgentTool = {
         goalId: discussions.goalId,
       })
       .from(discussions)
-      .where(eq(discussions.id, sourceThreadId))
+      .where(and(eq(discussions.id, sourceThreadId), eq(discussions.companyId, ctx.companyId)))
       .limit(1);
     const thread = Array.isArray(threadRows) ? threadRows[0] : null;
     if (!thread) {

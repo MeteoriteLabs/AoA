@@ -9,7 +9,7 @@ export function searchRoutes(db: Db) {
 
   router.get("/companies/:companyId/search", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     const q = req.query.q as string | undefined;
     if (!q?.trim()) {

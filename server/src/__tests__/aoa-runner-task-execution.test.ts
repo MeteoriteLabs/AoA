@@ -66,6 +66,17 @@ vi.mock("node:fs/promises", () => {
   return { ...api, default: api };
 });
 
+// P4: the runner resolves provider credentials via resolveProviderCredential
+// (dynamic import). In production (real db) a self-hosted miss returns
+// host_login_fallback and never throws; but this proxy-table mock db doesn't stub
+// the provider_connections/assignments query, so the unmocked resolver would throw
+// and fail the run. Mock it to the no-op override (mirrors aoa-runner.test.ts:68).
+vi.mock("../services/provider-resolution.js", () => ({
+  resolveProviderCredential: vi.fn(async () => ({ source: "agent_env_override" })),
+  applyResolvedCredential: (config: unknown) => config,
+  toExecutionTargetHint: () => ({ credentialKind: null, executionTargetSlug: null }),
+}));
+
 vi.mock("drizzle-orm", () => ({
   and: vi.fn((...a: unknown[]) => ({ and: a })),
   asc: vi.fn((a: unknown) => ({ asc: a })),
@@ -117,7 +128,11 @@ vi.mock("../services/internal-agent/cli-mode.js", () => ({
 }));
 
 vi.mock("../services/heartbeat.js", () => ({
-  resolveAdapterExecutionContext: vi.fn(() => ({
+  resolveAdapterExecutionContextUnguarded: vi.fn(() => ({
+    executionTarget: {},
+    runtimeCommandSpec: {},
+  })),
+  resolveGuardedAdapterExecutionContext: vi.fn(() => ({
     executionTarget: {},
     runtimeCommandSpec: {},
   })),

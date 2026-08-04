@@ -26,6 +26,7 @@ export type InFlightSurface = (typeof IN_FLIGHT_SURFACES)[number];
 
 export type InFlightFlowProps = {
   companyId: string;
+  deploymentMode?: "local_trusted" | "authenticated" | "cloud_auth";
   /** Fired once, after the FINAL surface's onDone AND `setFirstRunCompleted`
    * has resolved — the caller (`FirstRunHome`) hands off to steady Home. */
   onDone: () => void;
@@ -88,7 +89,7 @@ function clearStoredStep(companyId: string): void {
  * surface is already idempotent, so starting at step 0 when there's no
  * stored marker (fresh company, or a browser that can't persist) is safe.
  */
-export function InFlightFlow({ companyId, onDone }: InFlightFlowProps) {
+export function InFlightFlow({ companyId, deploymentMode, onDone }: InFlightFlowProps) {
   const [index, setIndex] = useState<number>(() => readStoredStep(companyId));
   const doneFiredRef = useRef(false);
 
@@ -145,10 +146,10 @@ export function InFlightFlow({ companyId, onDone }: InFlightFlowProps) {
       surface = <LibrarianStep companyId={companyId} onDone={advance} />;
       break;
     case "agents":
-      surface = <CreateAgents companyId={companyId} onDone={advance} />;
+      surface = <CreateAgents companyId={companyId} deploymentMode={deploymentMode} onDone={advance} />;
       break;
     case "first_job":
-      surface = <FirstJobStep companyId={companyId} onDone={advance} />;
+      surface = <FirstJobStep companyId={companyId} deploymentMode={deploymentMode} onDone={advance} />;
       break;
     default:
       surface = null;

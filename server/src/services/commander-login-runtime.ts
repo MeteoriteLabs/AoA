@@ -21,8 +21,11 @@ import {
 import {
   assertProviderLoginUrl,
   prepareScopedCliAuthHome,
+  resolveCliAuthTopology,
   scopedCliAuthEnv,
 } from "./cli-auth-topology.js";
+import { loadConfig } from "../config.js";
+import { assertSubscriptionAllowed } from "./provider-connections.js";
 
 /** Route-facing discovery cap — bounds how long `start` waits for the URL. */
 const LOGIN_URL_DISCOVERY_MS = 60_000;
@@ -214,6 +217,15 @@ export function drizzleChallengeStore(db: Db): ChallengeStore {
  * the route (start/status/cancel) and the boot reaper (index.ts).
  */
 export function buildCommanderLoginService(db: Db): CommanderLoginService {
+  // Deployment topology is fixed for the process lifetime — resolve once. Personal-
+  // subscription logins are banned on a shared multi-tenant host; this is the
+  // login-runtime mint-path backstop the provider-connections.ts BOOT INVARIANT
+  // docstring requires, so a hosted instance cannot even record a PENDING
+  // personal_subscription credential (the create route + verify() already gate it).
+  const loginTopology = resolveCliAuthTopology({
+    deploymentMode: loadConfig().deploymentMode,
+    deploymentExposure: loadConfig().deploymentExposure,
+  });
   return createCommanderLoginService({
     store: drizzleChallengeStore(db),
     resolveAuthHome: (provider, env, scope) => {
@@ -239,6 +251,9 @@ export function buildCommanderLoginService(db: Db): CommanderLoginService {
       return Boolean(stat?.isFile());
     },
     onCredentialEvidence: async ({ companyId, provider, userId, executionTargetId }) => {
+      // Fail closed on a shared multi-tenant host: never even record a pending
+      // personal_subscription credential (mirrors the create route + verify() gate).
+      assertSubscriptionAllowed("personal_subscription", loginTopology);
       const now = new Date();
       await db
         .insert(providerCredentials)

@@ -61,6 +61,17 @@ describe("FirstJobStep (WS8 — In-flight standalone surface, task-only)", () =>
     );
   });
 
+  it("warns that cloud tasks need an enabled E2B-backed assignee", async () => {
+    render(<FirstJobStep companyId="c1" deploymentMode="cloud_auth" onDone={vi.fn()} />);
+
+    expect(
+      screen.getByText(/will not execute until the assignee has an e2b environment and is enabled/i),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(within(screen.getByLabelText("Assignee")).getAllByRole("option")).toHaveLength(1),
+    );
+  });
+
   it("assignee picker is populated from agentsApi.list, preferring org agents over hidden aoa crew", async () => {
     agentsList.mockResolvedValue([
       { id: "agent-1", kind: "org", name: "Scout" },

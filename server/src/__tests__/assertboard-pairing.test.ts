@@ -29,7 +29,6 @@ const __dirname = dirname(__filename);
 const ALLOWLISTED_FILES = new Set<string>([
   // Pending instance-admin sweep in the plugins workstream — tracked separately.
   // Remove from this set as each file gets its proper assertCanManageInstanceSettings gates.
-  "plugins.ts",
   "marketplace.ts",
 ]);
 
@@ -147,6 +146,6 @@ describe("assertBoard pairing guard", () => {
     // This second test makes the allowlist visible in test output and
     // catches accidental over-allowing. Adjust as the plugins workstream
     // lands and files get their proper gates.
-    expect([...ALLOWLISTED_FILES].sort()).toEqual(["marketplace.ts", "plugins.ts"]);
+    expect([...ALLOWLISTED_FILES].sort()).toEqual(["marketplace.ts"]);
   });
 });

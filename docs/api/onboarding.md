@@ -88,7 +88,7 @@ The shipped founder sequence is:
 ```text
 AUTHENTICATED
 → PROFILE_SET
-→ ORGANIZATION_CREATED
+→ COMPANY_CREATED
 → ENVIRONMENT_READY
 → COMMANDER_SELECTED
 → COMMANDER_VERIFIED
@@ -105,6 +105,10 @@ AUTHENTICATED → PROFILE_SET → JOIN_REQUESTED → SETUP_COMPLETE
 
 Additional `WALKTHROUGH_*` and discussion/scope states exist as reserved enum
 values. They are not driven by the current onboarding flow.
+
+`ORGANIZATION_CREATED` is accepted as a legacy request alias and is normalized
+to `COMPANY_CREATED` before transition checks and persistence. New clients must
+send and display the canonical `COMPANY_CREATED` state.
 
 ## Set Up the Local Environment
 

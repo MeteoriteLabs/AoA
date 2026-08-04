@@ -13,6 +13,8 @@ import {
 } from "@armyofagents/db";
 import type { Config } from "../config.js";
 import { logger } from "../middleware/logger.js";
+import { instanceAdminBootstrapEnabled } from "../services/first-user-bootstrap.js";
+import type { DeploymentMode } from "@armyofagents/shared";
 
 const DEV_FALLBACK_SECRET = "aoa-dev-secret";
 
@@ -137,19 +139,37 @@ async function attemptFirstAdminBootstrap(
 }
 
 /**
+ * Task 10b (Phase 2 lockout cluster) — e2e/test-support boot relaxation:
+ * `cloud_auth` may boot WITHOUT real Google creds ONLY when
+ * `AOA_E2E_TEST_SUPPORT === "1"` (sessions come from the P6 test-mint seam,
+ * never real OAuth). Real prod `cloud_auth` still hard-requires Google
+ * creds — the fail-closed guard that refuses to boot with this flag set on
+ * a real public deployment is P6 §4.0's; this helper does not weaken it.
+ */
+export function allowCloudAuthBootWithoutGoogle(
+  deploymentMode: DeploymentMode,
+  e2eTestSupport: boolean,
+): boolean {
+  return deploymentMode === "cloud_auth" && e2eTestSupport;
+}
+
+/**
  * Pure builder for the better-auth options object. Extracted so the provider
  * configuration is unit-testable without instantiating better-auth.
  *
  * Google is the ONLY sign-in provider (email/password removed). The google
  * social provider is attached only when both credentials are present; the
  * `assertAuthProviderConfigured` gate (called at startup) is what refuses to
- * boot a would-be-locked-out deployment.
+ * boot a would-be-locked-out deployment. `e2eTestSupport` defaults from the
+ * `AOA_E2E_TEST_SUPPORT` env var so runtime boot honors it without every
+ * call site having to thread it through explicitly.
  */
 export function buildBetterAuthConfig(
   db: Db,
   config: Config,
   trustedOrigins: string[],
   secret: string,
+  e2eTestSupport: boolean = process.env.AOA_E2E_TEST_SUPPORT === "1",
 ): Record<string, unknown> {
   const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
 
@@ -177,6 +197,14 @@ export function buildBetterAuthConfig(
         clientId: config.googleClientId,
         clientSecret: config.googleClientSecret,
       },
+    };
+  } else if (allowCloudAuthBootWithoutGoogle(config.deploymentMode, e2eTestSupport)) {
+    // e2e-only stub: mount a no-op Google provider so /api/auth/* routes
+    // exist and better-auth doesn't refuse to construct. Real sessions in
+    // this mode are minted by the P6 test-support seam, never by this
+    // provider — no real OAuth ever happens through it.
+    authConfig.socialProviders = {
+      google: { clientId: "e2e-stub-client", clientSecret: "e2e-stub-secret" },
     };
   }
 
@@ -210,32 +238,43 @@ export function buildBetterAuthConfig(
   // Fires at real user creation and again at session creation. The service is
   // advisory-locked + idempotent, so the session hook backfills an admin-less
   // instance after a transient create-hook failure without blocking sign-in.
-  authConfig.databaseHooks = {
-    user: {
-      create: {
-        after: async (user: { id: string }) => {
-          await attemptFirstAdminBootstrap(
-            db,
-            user.id,
-            "user_create",
-            config.headlessBootstrap === true,
-          );
+  //
+  // Task 10 (Phase 2 lockout cluster, ATOMIC cutover) — gated through the
+  // Task-4 chokepoint. `cloud_auth` (hosted multi-tenant beta) mints ZERO
+  // runtime instance_admins: both hooks are omitted entirely, not merely
+  // no-op'd, so there is no code path in that mode that can ever promote a
+  // user to the self-hosted global-admin role. Self-hosted local_trusted /
+  // authenticated keep both hooks exactly as before this change.
+  if (instanceAdminBootstrapEnabled(config.deploymentMode)) {
+    authConfig.databaseHooks = {
+      user: {
+        create: {
+          after: async (user: { id: string }) => {
+            await attemptFirstAdminBootstrap(
+              db,
+              user.id,
+              "user_create",
+              config.headlessBootstrap === true,
+            );
+          },
         },
       },
-    },
-    session: {
-      create: {
-        after: async (session: { userId: string }) => {
-          await attemptFirstAdminBootstrap(
-            db,
-            session.userId,
-            "session_create",
-            config.headlessBootstrap === true,
-          );
+      session: {
+        create: {
+          after: async (session: { userId: string }) => {
+            await attemptFirstAdminBootstrap(
+              db,
+              session.userId,
+              "session_create",
+              config.headlessBootstrap === true,
+            );
+          },
         },
       },
-    },
-  };
+    };
+  } else {
+    authConfig.databaseHooks = {};
+  }
 
   if (!baseUrl) {
     delete (authConfig as { baseURL?: string }).baseURL;
@@ -252,11 +291,20 @@ export function buildBetterAuthConfig(
  * cannot work — an instance lockout. A `local_trusted` deployment may boot
  * without Google ONLY when the dev escape hatch (`AOA_DEV_LOCAL_IDENTITY`) is
  * active. Call this at startup before serving traffic.
+ *
+ * Task 10b — `cloud_auth` may ALSO boot without Google creds, but ONLY under
+ * `e2eTestSupport` (defaults from `AOA_E2E_TEST_SUPPORT === "1"`). Real prod
+ * `cloud_auth` (flag unset) keeps hard-requiring Google creds — the error
+ * message below is UNCHANGED for that case.
  */
-export function assertAuthProviderConfigured(config: Config): void {
+export function assertAuthProviderConfigured(
+  config: Config,
+  e2eTestSupport: boolean = process.env.AOA_E2E_TEST_SUPPORT === "1",
+): void {
   const hasGoogle = Boolean(config.googleClientId && config.googleClientSecret);
   if (hasGoogle) return;
   if (config.deploymentMode === "local_trusted" && config.devLocalIdentity) return;
+  if (allowCloudAuthBootWithoutGoogle(config.deploymentMode, e2eTestSupport)) return;
   throw new Error(
     "Google OAuth is not configured (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET). " +
       "It is the only sign-in provider; set both before starting the server" +

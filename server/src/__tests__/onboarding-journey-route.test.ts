@@ -2,14 +2,36 @@ import express from "express";
 import request from "supertest";
 import { describe, it, expect } from "vitest";
 import {
-  getJourneyForUser,
+  getJourneyForUser as getJourneyForUserImpl,
   onboardingJourneyRoutes,
 } from "../routes/onboarding-journey.js";
+
+type JourneyArgs = Parameters<typeof getJourneyForUserImpl>[1];
+type TestJourneyArgs = Omit<JourneyArgs, "authorizedCompanyIds"> & {
+  authorizedCompanyIds?: readonly string[];
+};
+
+function getJourneyForUser(db: any, args: TestJourneyArgs) {
+  const {
+    authorizedCompanyIds = ["c1", "member-company"],
+    ...rest
+  } = args;
+  return getJourneyForUserImpl(db, { ...rest, authorizedCompanyIds });
+}
 
 // Sequence mock: each awaited query resolves the next canned result set.
 // `_whereCalls` / `_orderByCalls` capture each where()/orderBy() argument list
 // (REAL drizzle-orm SQL objects — this file does not mock drizzle) so tests
 // can regression-lock query gates and ordering.
+//
+// Call order inside getJourneyForUser (Phase 2 Task 9 — org-first): user row,
+// THEN company memberships + organization memberships together (a
+// Promise.all — company memberships resolves first, org memberships
+// second, matching array-literal evaluation order), THEN filed
+// join_requests ("pendingRows"), THEN (if emailVerified) open invites, THEN
+// (if returningCompanyIds is empty and the caller is instance-admin) the
+// admin-visible-companies fallback, THEN (if journey === "returning" with a
+// company id) the first-run resume query.
 function seqDb(results: unknown[][]) {
   let i = 0;
   const whereCalls: unknown[] = [];
@@ -86,6 +108,7 @@ describe("getJourneyForUser (A5 + RB7/RB9 wiring)", () => {
     const db = seqDb([
       [{ email: "u@x.com", emailVerified: true }],
       [{ companyId: "c1" }],
+      [], // organization memberships (Task 9)
       [
         {
           inviteId: "i2",
@@ -111,10 +134,166 @@ describe("getJourneyForUser (A5 + RB7/RB9 wiring)", () => {
     ]);
   });
 
+  it("excludes a stale company membership outside the actor-authorized tenant set", async () => {
+    const db = seqDb([
+      [{ email: "u@x.com", emailVerified: true }],
+      [{ companyId: "stale-company" }],
+      [], // no active Organization memberships
+      [], // pending requests
+      [], // open invites
+    ]);
+
+    const r = await getJourneyForUser(db, {
+      userId: "u1",
+      authorizedCompanyIds: [],
+    });
+
+    expect(r).toEqual({
+      journey: "founder",
+      targetCompanyId: null,
+      pendingInvitations: [],
+      inviteToken: null,
+    });
+    expect(
+      (db._whereCalls as unknown[]).some((condition) =>
+        conditionColumns(condition).includes("first_run_completed_at"),
+      ),
+    ).toBe(false);
+  });
+
+  it("lets a valid invitation win after excluding a stale company membership", async () => {
+    const db = seqDb([
+      [{ email: "u@x.com", emailVerified: true }],
+      [{ companyId: "stale-company" }],
+      [], // no active Organization memberships
+      [
+        {
+          inviteId: "invite-1",
+          companyId: "invited-company",
+          companyName: "Invited Company",
+          createdAt: new Date("2026-08-03T00:00:00Z"),
+          defaults: null,
+        },
+      ],
+      [], // open invites
+    ]);
+
+    const r = await getJourneyForUser(db, {
+      userId: "u1",
+      authorizedCompanyIds: [],
+    });
+
+    expect(r.journey).toBe("invited");
+    expect(r.targetCompanyId).toBe("invited-company");
+    expect(r.resumeFirstRunCompanyId ?? null).toBeNull();
+  });
+
+  it("uses only the authorized company for returning and first-run resume", async () => {
+    const db = seqDb([
+      [{ email: "u@x.com", emailVerified: true }],
+      [{ companyId: "stale-company" }, { companyId: "allowed-company" }],
+      [{ organizationId: "allowed-org", role: "owner" }],
+      [], // pending requests
+      [], // open invites
+      [{ companyId: "allowed-company" }], // authorized first-run resume
+    ]);
+
+    const r = await getJourneyForUser(db, {
+      userId: "u1",
+      authorizedCompanyIds: ["allowed-company"],
+    });
+
+    expect(r.journey).toBe("returning");
+    expect(r.targetCompanyId).toBe("allowed-company");
+    expect(r.resumeFirstRunCompanyId).toBe("allowed-company");
+  });
+
+  it("returning via ORGANIZATION membership alone — zero company memberships (Phase 2 Task 9, org-first)", async () => {
+    const db = seqDb([
+      [{ email: "u@x.com", emailVerified: true }], // user
+      [], // company memberships — none yet
+      [{ organizationId: "org1" }], // organization memberships — owner of a fresh tenant
+      [], // pending requests
+      [], // open invites
+    ]);
+    const r = await getJourneyForUser(db, { userId: "u1" });
+    expect(r.journey).toBe("returning");
+    expect(r.targetCompanyId).toBeNull();
+  });
+
+  it("returning ORG-OWNER with ZERO companies → resumeCompanyCreationOrgId set (strand resume)", async () => {
+    const db = seqDb([
+      [{ email: "u@x.com", emailVerified: true }], // user
+      [], // company memberships — none yet
+      [{ organizationId: "org1", role: "owner" }], // org memberships — owns a fresh tenant
+      [], // pending requests
+      [], // open invites
+      // NOTE: no resume-first-run query runs (returningCompanyIds is empty).
+    ]);
+    const r = await getJourneyForUser(db, { userId: "u1" });
+    expect(r.journey).toBe("returning");
+    expect(r.targetCompanyId).toBeNull();
+    expect(r.resumeCompanyCreationOrgId).toBe("org1");
+  });
+
+  it("multiple create-capable zero-company orgs → deterministic pick by earliest createdAt", async () => {
+    // Array order is deliberately NOT createdAt order: a naive `.find()` would
+    // return "org-a" (first row); the deterministic tiebreak must pick the org
+    // whose membership was created EARLIEST ("org-b", 2026-07-01) regardless of
+    // array position. createdAt disagrees with id-lexicographic here (id order
+    // would pick "org-a"), so this pins createdAt as the PRIMARY key.
+    const db = seqDb([
+      [{ email: "u@x.com", emailVerified: true }], // user
+      [], // company memberships — none
+      [
+        { organizationId: "org-a", role: "owner", createdAt: new Date("2026-07-20T00:00:00Z") },
+        { organizationId: "org-b", role: "owner", createdAt: new Date("2026-07-01T00:00:00Z") },
+      ],
+      [], // pending requests
+      [], // open invites
+    ]);
+    const r = await getJourneyForUser(db, { userId: "u1" });
+    expect(r.journey).toBe("returning");
+    expect(r.resumeCompanyCreationOrgId).toBe("org-b");
+  });
+
+  it("multiple create-capable orgs with equal/absent createdAt → deterministic pick by smallest organizationId", async () => {
+    // No createdAt (mirrors the seqDb mocks elsewhere): the createdAt tier ties,
+    // so the final tiebreak is the lexicographically smallest organizationId
+    // ("org-a") — again independent of array order ("org-z" is first).
+    const db = seqDb([
+      [{ email: "u@x.com", emailVerified: true }], // user
+      [], // company memberships — none
+      [
+        { organizationId: "org-z", role: "owner" },
+        { organizationId: "org-a", role: "admin" },
+      ],
+      [], // pending requests
+      [], // open invites
+    ]);
+    const r = await getJourneyForUser(db, { userId: "u1" });
+    expect(r.journey).toBe("returning");
+    expect(r.resumeCompanyCreationOrgId).toBe("org-a");
+  });
+
+  it("returning MEMBER (not create-capable) with zero companies → no company-creation resume", async () => {
+    const db = seqDb([
+      [{ email: "u@x.com", emailVerified: true }], // user
+      [], // company memberships — none
+      [{ organizationId: "org1", role: "member" }], // cross-invited member, not owner/admin
+      [], // pending requests
+      [], // open invites
+    ]);
+    const r = await getJourneyForUser(db, { userId: "u1" });
+    expect(r.journey).toBe("returning");
+    expect(r.resumeCompanyCreationOrgId ?? null).toBeNull();
+  });
+
   it("returning founder with an UNFINISHED first-run tail → resumeFirstRunCompanyId set (resume into /onboarding)", async () => {
     const db = seqDb([
       [{ email: "u@x.com", emailVerified: true }], // user
       [{ companyId: "c1" }], // memberships → returning
+      [], // organization memberships (Task 9)
       [], // pending requests
       [], // open invites
       [{ companyId: "c1" }], // resume query: c1's own first-run isn't complete
@@ -141,6 +320,7 @@ describe("getJourneyForUser (A5 + RB7/RB9 wiring)", () => {
     const db = seqDb([
       [{ email: "u@x.com", emailVerified: true }], // user
       [{ companyId: "c1" }], // memberships → returning
+      [], // organization memberships (Task 9)
       [], // pending requests
       [], // open invites
       [], // resume query: no incomplete first-run row
@@ -154,6 +334,7 @@ describe("getJourneyForUser (A5 + RB7/RB9 wiring)", () => {
     const db = seqDb([
       [{ email: "u@x.com", emailVerified: true }],
       [],
+      [], // organization memberships (Task 9)
       [
         {
           inviteId: "i2",
@@ -171,7 +352,7 @@ describe("getJourneyForUser (A5 + RB7/RB9 wiring)", () => {
   });
 
   it("founder when no membership and no pending request", async () => {
-    const db = seqDb([[{ email: "u@x.com", emailVerified: true }], [], []]);
+    const db = seqDb([[{ email: "u@x.com", emailVerified: true }], [], [], []]);
     const r = await getJourneyForUser(db, { userId: "u1" });
     expect(r).toEqual({
       journey: "founder",
@@ -185,6 +366,7 @@ describe("getJourneyForUser (A5 + RB7/RB9 wiring)", () => {
     const db = seqDb([
       [{ email: "admin@x.com", emailVerified: true }],
       [],
+      [], // organization memberships (Task 9)
       [
         {
           inviteId: "i2",
@@ -212,6 +394,7 @@ describe("getJourneyForUser (A5 + RB7/RB9 wiring)", () => {
     const db = seqDb([
       [{ email: "admin@x.com", emailVerified: true }],
       [{ companyId: "member-company" }],
+      [], // organization memberships (Task 9)
       [],
     ]);
 
@@ -225,7 +408,7 @@ describe("getJourneyForUser (A5 + RB7/RB9 wiring)", () => {
   });
 
   it("keeps an instance admin on the founder journey when the instance is empty", async () => {
-    const db = seqDb([[{ email: "admin@x.com", emailVerified: true }], [], [], []]);
+    const db = seqDb([[{ email: "admin@x.com", emailVerified: true }], [], [], [], []]);
 
     const r = await getJourneyForUser(db, {
       userId: "admin-1",
@@ -246,6 +429,7 @@ describe("getJourneyForUser — open-invite detection (tokenless invited entry)"
     const db = seqDb([
       [{ email: "u@x.com", emailVerified: true }],
       [], // memberships
+      [], // organization memberships (Task 9)
       [], // filed join_requests
       [
         {
@@ -279,6 +463,7 @@ describe("getJourneyForUser — open-invite detection (tokenless invited entry)"
     const db = seqDb([
       [{ email: "u@x.com", emailVerified: true }],
       [], // memberships
+      [], // organization memberships (Task 9)
       [
         {
           inviteId: "jr-invite",
@@ -299,6 +484,7 @@ describe("getJourneyForUser — open-invite detection (tokenless invited entry)"
     const db = seqDb([
       [{ email: "u@x.com", emailVerified: true }],
       [], // memberships
+      [], // organization memberships (Task 9)
       [], // filed join_requests
       [
         // SQL returns newest-first (desc(createdAt)); the merge keeps the first
@@ -336,6 +522,7 @@ describe("getJourneyForUser — open-invite detection (tokenless invited entry)"
     const db = seqDb([
       [{ email: "u@x.com", emailVerified: true }],
       [], // memberships
+      [], // organization memberships (Task 9)
       [], // filed join_requests
       [], // open invites
     ]);
@@ -354,6 +541,7 @@ describe("getJourneyForUser — open-invite detection (tokenless invited entry)"
     const db = seqDb([
       [{ email: "u@x.com", emailVerified: false }],
       [], // memberships
+      [], // organization memberships (Task 9)
       [], // filed join_requests
       // Would-be open invite: MUST NOT be consumed — detection is gated on a
       // verified email. If the query ran, this row would flip the journey.
@@ -371,6 +559,7 @@ describe("getJourneyForUser — open-invite detection (tokenless invited entry)"
     const db = seqDb([
       [{ email: "u@x.com", emailVerified: true }],
       [], // memberships
+      [], // organization memberships (Task 9)
       [], // filed join_requests
       [], // open invites — an expired/revoked/accepted invite comes back empty
     ]);
@@ -396,6 +585,7 @@ describe("getJourneyForUser — open-invite detection (tokenless invited entry)"
     const db = seqDb([
       [{ email: "u@x.com", emailVerified: true }],
       [], // memberships
+      [], // organization memberships (Task 9)
       [
         {
           inviteId: "jr-invite",
@@ -437,6 +627,7 @@ describe("GET /api/onboarding/journey", () => {
     const db = seqDb([
       [{ email: "admin@x.com", emailVerified: true }],
       [],
+      [], // organization memberships (Task 9)
       [],
       [], // open invites (tokenless detection)
       [{ companyId: "c1" }],
@@ -458,10 +649,39 @@ describe("GET /api/onboarding/journey", () => {
     });
   });
 
+  it("preserves every real membership for an unscoped local implicit admin", async () => {
+    const db = seqDb([
+      [{ email: "local@x.com", emailVerified: true }],
+      [{ companyId: "c1" }, { companyId: "c2" }],
+      [], // Organization membership is not required in local_trusted mode
+      [], // pending requests
+      [], // open invites
+      [{ companyId: "c2" }], // unfinished first-run company is not the first membership
+    ]);
+    const app = makeApp(db, {
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      // No companyIds by design: accessibleCompanyIdsForActor returns the
+      // unscoped `undefined` sentinel for this self-hosted actor.
+    });
+
+    const res = await request(app).get("/api/onboarding/journey");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      journey: "returning",
+      targetCompanyId: "c1",
+      resumeFirstRunCompanyId: "c2",
+    });
+  });
+
   it("does not expose an existing company to a non-admin without membership", async () => {
     const db = seqDb([
       [{ email: "member@x.com", emailVerified: true }],
       [],
+      [], // organization memberships (Task 9)
       [],
       [], // open invites (tokenless detection)
       [{ companyId: "c1" }],
@@ -481,6 +701,32 @@ describe("GET /api/onboarding/journey", () => {
       journey: "founder",
       targetCompanyId: null,
     });
+  });
+
+  it("does not route a suspended Organization member through a stale company membership", async () => {
+    const db = seqDb([
+      [{ email: "member@x.com", emailVerified: true }],
+      [{ companyId: "stale-company" }],
+      [], // listOrgMemberships returns active rows only: suspended means empty
+      [], // pending requests
+      [], // open invites
+    ]);
+    const app = makeApp(db, {
+      type: "board",
+      userId: "member-1",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [], // actorMiddleware's active-org intersection
+    });
+
+    const res = await request(app).get("/api/onboarding/journey");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      journey: "founder",
+      targetCompanyId: null,
+    });
+    expect(res.body.resumeFirstRunCompanyId ?? null).toBeNull();
   });
 
   it("rejects callers without a board identity before querying", async () => {

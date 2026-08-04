@@ -7,6 +7,9 @@ import { Map, type MapDoorPersona } from "./Map";
 import { StepPosition } from "./StepPosition";
 import { ONBOARDING_STEPS } from "./steps";
 import { computeFounderMapBase, computeOnboardingPosition } from "./onboardingProgress";
+import { useQuery } from "@tanstack/react-query";
+import { healthApi } from "@/api/health";
+import { queryKeys } from "@/lib/queryKeys";
 
 export type FirstRunHomeProps = {
   companyId: string;
@@ -43,6 +46,7 @@ type Phase = "loading" | "door" | "in_flight" | "done" | "error";
  * read actually succeeds.
  */
 export function FirstRunHome({ companyId, onComplete }: FirstRunHomeProps) {
+  const healthQuery = useQuery({ queryKey: queryKeys.health, queryFn: () => healthApi.get() });
   const [phase, setPhase] = useState<Phase>("loading");
   const [retryToken, setRetryToken] = useState(0);
   // Captured in a ref so the load effect can call it without listing `onComplete`
@@ -113,7 +117,11 @@ export function FirstRunHome({ companyId, onComplete }: FirstRunHomeProps) {
           </Button>
         </div>
       ) : phase === "in_flight" ? (
-        <InFlightFlow companyId={companyId} onDone={handleInFlightDone} />
+        <InFlightFlow
+          companyId={companyId}
+          deploymentMode={healthQuery.data?.deploymentMode}
+          onDone={handleInFlightDone}
+        />
       ) : phase === "door" ? (
         <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-3xl flex-col px-6 pt-8">
           <div className="flex items-center justify-end">

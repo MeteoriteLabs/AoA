@@ -25,7 +25,34 @@ import type {
   AdapterRuntimeCommandSpec,
 } from "./types.js";
 
-export function resolveAdapterExecutionTarget(raw: unknown): AdapterExecutionTarget {
+// Hardened tmpfs baseline forced on shared multi-tenant infra. Mirrors the
+// HARDENED_ISOLATION set in server/src/services/execution-target-resolver.ts — a
+// tenant-supplied tmpfs could drop `noexec,nosuid`, so we never honor it when
+// hardening; we substitute this safe set instead.
+const MULTI_TENANT_HARDENED_TMPFS = [
+  "/tmp:rw,noexec,nosuid,size=64m",
+  "/home/agent:rw,nosuid,size=256m",
+] as const;
+
+/**
+ * Resolve a raw (tenant-authorable) execution-target config into a typed
+ * AdapterExecutionTarget.
+ *
+ * @param hardenForMultiTenant When `true` AND the resolved target is a
+ *   docker/sandbox target, FORCE the hardened security baseline regardless of the
+ *   input config (allowHostGateway off, network forced to none,
+ *   cap-drop/read-only/no-new-privileges/ipc-private on, uid 1000:1000, seccomp
+ *   default, safe tmpfs). This is the SINK-level guard so EVERY tenant-authored
+ *   producer (agents.adapterConfig.executionTarget, environments.target,
+ *   environments.config) is neutralized on shared infra. adapter-utils stays
+ *   deployment-agnostic — the CALLER decides. Default `false`: honor config
+ *   exactly (self-hosted single-tenant, where the founder owns the box and the
+ *   local MCP callback bridge / custom network / custom isolation are legitimate).
+ */
+export function resolveAdapterExecutionTarget(
+  raw: unknown,
+  hardenForMultiTenant = false,
+): AdapterExecutionTarget {
   const config = parseObject(raw);
   const type = asString(config.type, "local");
   if (type === "local") return { type: "local" };
@@ -71,15 +98,90 @@ export function resolveAdapterExecutionTarget(raw: unknown): AdapterExecutionTar
 
   const shell = asString(config.shell, "sh");
   const network = asString(config.network, "bridge");
+
+  // NOTE (plan deviation): the plan defaults `runtime` to "runc"; its own
+  // back-compat test asserts the default is null ("no runtime"). Default to null
+  // so an unset runtime stays unset — behavior is identical because
+  // buildDockerRunArgs only acts on runtime === "runsc".
+  const runtimeRaw = asString(config.runtime, "runc");
+  const runtime = runtimeRaw === "runsc" ? "runsc" : null;
+  const isolationRaw = config.isolation && typeof config.isolation === "object" && !Array.isArray(config.isolation)
+    ? (config.isolation as Record<string, unknown>)
+    : null;
+  const isolation = isolationRaw
+    ? {
+        user: asString(isolationRaw.user, "") || null,
+        capDropAll: asBoolean(isolationRaw.capDropAll, false),
+        noNewPrivileges: asBoolean(isolationRaw.noNewPrivileges, false),
+        seccompProfile: asString(isolationRaw.seccompProfile, "") || null,
+        readOnlyRootfs: asBoolean(isolationRaw.readOnlyRootfs, false),
+        tmpfs: Array.isArray(isolationRaw.tmpfs)
+          ? isolationRaw.tmpfs.filter((v): v is string => typeof v === "string")
+          : [],
+        memory: asString(isolationRaw.memory, "") || null,
+        cpus: asString(isolationRaw.cpus, "") || null,
+        pidsLimit: typeof isolationRaw.pidsLimit === "number" ? isolationRaw.pidsLimit : null,
+        ulimitNofile: typeof isolationRaw.ulimitNofile === "number" ? isolationRaw.ulimitNofile : null,
+        ipcPrivate: asBoolean(isolationRaw.ipcPrivate, false),
+      }
+    : null;
+
+  const resolvedNetwork: "bridge" | "host" | "none" =
+    network === "host" || network === "none" ? network : "bridge";
+
+  if (hardenForMultiTenant) {
+    // SECURITY (P5 sink-level multi_tenant hardening): every tenant-authored
+    // producer of a docker/sandbox target funnels through here before reaching
+    // buildDockerRunArgs, so a config that WEAKENS the sandbox must be neutralized
+    // at this single choke point regardless of which producer supplied it. Mirrors
+    // the HARDENED baseline in server/src/services/execution-target-resolver.ts.
+    return {
+      type: "sandbox-docker",
+      image,
+      workdir: asString(config.workdir, "/workspace"),
+      shell: shell === "bash" ? "bash" : "sh",
+      // Local Docker gets no network until the validated worker plane owns egress.
+      network: "none",
+      remove: true,
+      env,
+      installCommand: asString(config.installCommand, "") || null,
+      runtime,
+      isolation: {
+        // Forced security flags — a tenant config cannot turn any of these off.
+        user: "1000:1000",
+        capDropAll: true,
+        noNewPrivileges: true,
+        readOnlyRootfs: true,
+        ipcPrivate: true,
+        // seccomp=unconfined would disable syscall filtering; never honor a
+        // tenant-supplied profile on shared infra (Docker's default profile applies).
+        seccompProfile: null,
+        // A tenant tmpfs could drop noexec,nosuid — force the safe baseline set.
+        tmpfs: [...MULTI_TENANT_HARDENED_TMPFS],
+        // Tenant input cannot relax or expand shared-host resource limits.
+        memory: "2g",
+        cpus: "2",
+        pidsLimit: 512,
+        ulimitNofile: null,
+      },
+      // Closes the SSRF host-gateway route to the control-plane host — never
+      // legitimate on shared infra, even when the callback bridge is active.
+      allowHostGateway: false,
+    };
+  }
+
   return {
     type: "sandbox-docker",
     image,
     workdir: asString(config.workdir, "/workspace"),
     shell: shell === "bash" ? "bash" : "sh",
-    network: network === "host" || network === "none" ? network : "bridge",
+    network: resolvedNetwork,
     remove: asBoolean(config.remove, true),
     env,
     installCommand: asString(config.installCommand, "") || null,
+    runtime,
+    isolation,
+    allowHostGateway: asBoolean(config.allowHostGateway, false),
   };
 }
 
@@ -146,18 +248,45 @@ export function formatDockerBindSource(localCwd: string): string {
   return localCwd.replaceAll("\\", "/");
 }
 
-export function buildDockerRunArgs(input: {
-  target: AdapterDockerExecutionTarget;
-  localCwd: string;
-  command: string;
-  args: string[];
-  env: Record<string, string>;
-  stdin?: string;
-}): string[] {
+export function buildDockerRunArgs(
+  input: {
+    target: AdapterDockerExecutionTarget;
+    localCwd: string;
+    command: string;
+    args: string[];
+    env: Record<string, string>;
+    stdin?: string;
+  },
+  opts: { hostGatewayActive?: boolean } = {},
+): string[] {
   const workdir = input.target.workdir ?? "/workspace";
+  const iso = input.target.isolation ?? null;
   const dockerArgs = ["run"];
   if (input.target.remove !== false) dockerArgs.push("--rm");
   if (input.stdin != null) dockerArgs.push("--interactive");
+
+  // gVisor runtime (opt-in).
+  if (input.target.runtime === "runsc") dockerArgs.push("--runtime", "runsc");
+
+  // Isolation profile (opt-in; default undefined = legacy args unchanged).
+  if (iso) {
+    if (iso.user) dockerArgs.push("--user", iso.user);
+    if (iso.capDropAll) dockerArgs.push("--cap-drop", "ALL");
+    if (iso.noNewPrivileges) dockerArgs.push("--security-opt", "no-new-privileges");
+    if (iso.seccompProfile) dockerArgs.push("--security-opt", `seccomp=${iso.seccompProfile}`);
+    if (iso.readOnlyRootfs) dockerArgs.push("--read-only");
+    for (const t of iso.tmpfs ?? []) dockerArgs.push("--tmpfs", t);
+    if (iso.memory) {
+      dockerArgs.push("--memory", iso.memory, "--memory-swap", iso.memory);
+    }
+    if (iso.cpus) dockerArgs.push("--cpus", iso.cpus);
+    if (typeof iso.pidsLimit === "number") dockerArgs.push("--pids-limit", String(iso.pidsLimit));
+    if (typeof iso.ulimitNofile === "number") {
+      dockerArgs.push("--ulimit", `nofile=${iso.ulimitNofile}:${iso.ulimitNofile}`);
+    }
+    if (iso.ipcPrivate) dockerArgs.push("--ipc", "private");
+  }
+
   dockerArgs.push(
     "--workdir",
     workdir,
@@ -165,9 +294,13 @@ export function buildDockerRunArgs(input: {
     `type=bind,source=${formatDockerBindSource(input.localCwd)},target=${workdir}`,
     "--network",
     input.target.network ?? "bridge",
-    "--add-host",
-    "host.docker.internal:host-gateway",
   );
+
+  // SSRF fix: host-gateway is a route to the control-plane host. Only emit it
+  // when the callback bridge is actually running AND the target opts in.
+  if (opts.hostGatewayActive && input.target.allowHostGateway) {
+    dockerArgs.push("--add-host", "host.docker.internal:host-gateway");
+  }
 
   for (const [key, value] of Object.entries(input.env)) {
     dockerArgs.push("--env", `${key}=${value}`);
@@ -589,14 +722,17 @@ export async function runAdapterExecutionTargetProcess(
     return await run(
       opts.runId,
       "docker",
-      buildDockerRunArgs({
-        target,
-        localCwd: workspace.localCwd,
-        command: commandSpec.command,
-        args: commandSpec.args,
-        env,
-        stdin: opts.stdin,
-      }),
+      buildDockerRunArgs(
+        {
+          target,
+          localCwd: workspace.localCwd,
+          command: commandSpec.command,
+          args: commandSpec.args,
+          env,
+          stdin: opts.stdin,
+        },
+        { hostGatewayActive: bridge != null },
+      ),
       {
         cwd: workspace.localCwd,
         env: {},

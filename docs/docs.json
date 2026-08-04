@@ -61,7 +61,8 @@
               "guides/board-operator/costs-and-budgets",
               "guides/board-operator/activity-log",
               "guides/board-operator/marketplace-recovery",
-              "guides/board-operator/execution-workspaces"
+              "guides/board-operator/execution-workspaces",
+              "guides/cloud-plugin-execution"
             ]
           },
           {

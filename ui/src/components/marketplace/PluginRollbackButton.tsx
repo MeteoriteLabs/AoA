@@ -21,7 +21,10 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { pluginsApi } from "@/api/plugins";
+import {
+  isCloudPluginExecutionBlockedError,
+  pluginsApi,
+} from "@/api/plugins";
 import { useToast } from "@/context/ToastContext";
 
 interface PluginRollbackButtonProps {
@@ -48,6 +51,16 @@ export function PluginRollbackButton({ pluginId, currentVersion }: PluginRollbac
       setOpen(false);
     },
     onError: (err: Error) => {
+      if (isCloudPluginExecutionBlockedError(err)) {
+        qc.invalidateQueries({ queryKey: ["plugins"] });
+        pushToast({
+          title: "Plugin is blocked on AoA Cloud",
+          body: "Rollback is blocked on AoA Cloud until isolated plugin workers are available.",
+          tone: "info",
+        });
+        setOpen(false);
+        return;
+      }
       pushToast({ title: "Rollback failed", body: err.message, tone: "error" });
     },
   });

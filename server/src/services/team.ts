@@ -32,7 +32,8 @@ import type {
   UserRole,
 } from "@armyofagents/shared";
 import { PERMISSION_KEYS, humanSocialLinkSchema } from "@armyofagents/shared";
-import { conflict, notFound } from "../errors.js";
+import { badRequest, conflict, notFound } from "../errors.js";
+import { tenantIsolationEnforced } from "../config/deployment-mode.js";
 import { accessService } from "./access.js";
 import { humanCapabilitiesService } from "./human-capabilities.js";
 import { orgHierarchyService } from "./org-hierarchy.js";
@@ -138,6 +139,9 @@ export function teamService(db: Db) {
 
   async function isInstanceAdmin(userId: string | null | undefined) {
     if (!userId) return false;
+    // B1 defense-in-depth: no data-plane instance_admin in cloud_auth, so
+    // effectiveRoleFromRows() cannot promote an operator to founder across tenants.
+    if (tenantIsolationEnforced()) return false;
     const row = await db
       .select({ id: instanceUserRoles.id })
       .from(instanceUserRoles)
@@ -681,6 +685,20 @@ export function teamService(db: Db) {
     input: { name: string; email: string; role: UserRole; projectId?: string | null; parentType?: "user" | null; parentId?: string | null },
     addedByUserId: string,
   ): Promise<{ userId: string }> {
+    // Fix 1 (P2): in cloud_auth, humans are admitted ONLY through the invite
+    // chokepoint (approveHumanJoinRequestTx), which writes BOTH the org and the
+    // company membership. Direct-add writes only the company membership, so
+    // assertCompanyAccess (authz.ts:71 — org AND company required) would 403 the
+    // added user on every request — a full lockout. Reject the path instead of
+    // patching it; this also collapses cloud admission onto the single audited
+    // seam that future seat-quota / SSO / SCIM enforcement hooks into.
+    // Self-hosted has no tenant boundary and is unchanged.
+    if (tenantIsolationEnforced()) {
+      throw badRequest(
+        "Direct add is not available in cloud mode. Send an email invite instead — it grants organization and company access together.",
+      );
+    }
+
     await assertFounder(companyId, addedByUserId);
 
     if (input.role === "founder") {
@@ -1198,4 +1216,38 @@ export async function materializeCompanyProfileFromGlobal(
     },
     attributionUserId,
   );
+}
+
+/**
+ * Repair a missing founder company profile after an idempotent company-create
+ * replay without overwriting company-specific edits made after the original
+ * create. The unique key makes the insert race-safe: an existing or concurrently
+ * created profile wins unchanged.
+ */
+export async function ensureCompanyProfileFromGlobal(
+  db: Db,
+  companyId: string,
+  userId: string,
+  attributionUserId: string | null,
+): Promise<void> {
+  const globalProfile = await getUserProfile(db, userId);
+  const socialLinks = (globalProfile?.socialLinks ?? []).flatMap((link) => {
+    const parsed = humanSocialLinkSchema.safeParse(link);
+    return parsed.success ? [parsed.data] : [];
+  });
+  await db
+    .insert(companyUserProfiles)
+    .values({
+      companyId,
+      userId,
+      displayName: globalProfile?.displayName ?? null,
+      title: globalProfile?.title ?? null,
+      bio: globalProfile?.bio ?? null,
+      timezone: globalProfile?.timezone ?? null,
+      socialLinks,
+      updatedByUserId: attributionUserId,
+    })
+    .onConflictDoNothing({
+      target: [companyUserProfiles.companyId, companyUserProfiles.userId],
+    });
 }

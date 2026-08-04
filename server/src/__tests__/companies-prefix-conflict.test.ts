@@ -12,6 +12,8 @@ describe("companyService issue prefix allocation", () => {
     const duplicatePrefixError = Object.assign(new Error("Failed query"), {
       cause: {
         code: "23505",
+        // Prefix-backed routes remain globally keyed until company-qualified
+        // URLs ship, so the retry handler must key on the global index.
         constraint_name: "companies_issue_prefix_idx",
       },
     });

@@ -112,6 +112,15 @@ export function activityService(db: Db) {
         )
         .orderBy(desc(heartbeatRuns.createdAt)),
 
+    companyIdForRun: async (runId: string): Promise<string | null> => {
+      const run = await db
+        .select({ companyId: heartbeatRuns.companyId })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.companyId ?? null;
+    },
+
     issuesForRun: async (runId: string) => {
       const run = await db
         .select({

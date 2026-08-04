@@ -30,6 +30,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { parseExtractedItems, type ExtractedItem } from "./extraction-parser.js";
 import { runCodexExecJson } from "./internal-agent/codex-exec.js";
+import { tenantIsolationEnforced } from "../config/deployment-mode.js";
 import {
   appendCapped,
   buildScrubbedCliEnv,
@@ -115,6 +116,21 @@ export async function extractViaCli(
   content: string,
   options: ExtractViaCliOptions = {},
 ): Promise<ExtractedItem[]> {
+  // Fail closed on AoA Cloud (cloud_auth): there is no per-tenant isolated
+  // extraction path yet, and the shared host's CLI login belongs to the
+  // OPERATOR — running tenant content through it would generate under the
+  // operator credential (the 4th unsandboxed sink; the other three are refused
+  // by the D1 guard). This is the single chokepoint for all four extraction
+  // sinks (discussion / debrief-push / file-import / crew memory-extract).
+  // `not_authed` maps to the "unavailable on AoA Cloud" copy in
+  // DiscussionDetail.extractionFailureMessage.
+  if (tenantIsolationEnforced()) {
+    throw new CliExtractionError(
+      "Extraction is unavailable on AoA Cloud (cloud_auth): there is no per-tenant isolated extraction path yet.",
+      "not_authed",
+    );
+  }
+
   const { timeoutMs = 60_000, codexModel = null } = options;
   const binary = CLI_BINARY_MAP[cliTool];
 

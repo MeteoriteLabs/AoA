@@ -22,6 +22,15 @@ const execFileAsync = promisify(execFile);
 
 /** Set per-test so the real materializer clones the fixture repo. */
 const repoState = vi.hoisted(() => ({ url: "" }));
+const upstreamFetchState = vi.hoisted(() => ({
+  markdown: "",
+  error: null as Error | null,
+  fetchCatalogResource: vi.fn(),
+}));
+
+vi.mock("../services/marketplace-install/fetch-resource.js", () => ({
+  fetchCatalogResource: upstreamFetchState.fetchCatalogResource,
+}));
 
 vi.mock("../services/marketplace-install/skill-bundle-materializer.js", async () => {
   const actual = await vi.importActual<
@@ -99,6 +108,11 @@ let cwdSpy: ReturnType<typeof vi.spyOn> | undefined;
 let sandbox = "";
 
 beforeEach(async () => {
+  upstreamFetchState.error = null;
+  upstreamFetchState.fetchCatalogResource.mockReset().mockImplementation(async () => {
+    if (upstreamFetchState.error) throw upstreamFetchState.error;
+    return upstreamFetchState.markdown;
+  });
   // `managedCatalogSkillDir` roots at process.cwd(); keep every write inside a
   // temp sandbox rather than the repo checkout.
   sandbox = await mkdtemp(path.join(os.tmpdir(), "t28-cwd-"));
@@ -438,7 +452,7 @@ describe("mergeSkillUpdate - bundle re-materialization (T2.8)", () => {
   it("raises a typed upstream error without touching disk or the database", async () => {
     const repo = await createRepoWithTwoCommits();
     repoState.url = repo.url;
-    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 503 })));
+    upstreamFetchState.error = new Error("upstream returned HTTP 503");
 
     const v1Dir = await materializeV1(repo.v1Sha);
     const { db, capture } = createDb();
@@ -542,10 +556,8 @@ describe("POST /updates/:id/merge - the route reaches disk", () => {
 // -- helpers ----------------------------------------------------------------
 
 function stubUpstreamMarkdown(markdown: string) {
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async () => ({ ok: true, status: 200, text: async () => markdown })),
-  );
+  upstreamFetchState.markdown = markdown;
+  upstreamFetchState.error = null;
 }
 
 function reviewedSnapshotToken({

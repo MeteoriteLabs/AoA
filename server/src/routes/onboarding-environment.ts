@@ -29,7 +29,7 @@ export function onboardingEnvironmentRoutes(db: Db): Router {
     }
     assertCanManageInstanceSettings(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const body = (req.body ?? {}) as { rootFolder?: unknown };
     const rootFolder = typeof body.rootFolder === "string" ? body.rootFolder.trim() : "";
     if (!rootFolder) {

@@ -6,12 +6,27 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import type { PluginRecord } from "@armyofagents/shared";
+import {
+  PLUGIN_WORKER_BLOCKED_IN_CLOUD_REASON,
+  type PluginRecord,
+} from "@armyofagents/shared";
 import { Link } from "@/lib/router";
-import { AlertTriangle, FlaskConical, Plus, Power, Puzzle, Settings, Store, Trash } from "lucide-react";
+import {
+  AlertTriangle,
+  FlaskConical,
+  Plus,
+  Power,
+  Puzzle,
+  Settings,
+  Store,
+  Trash,
+} from "lucide-react";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
-import { pluginsApi } from "@/api/plugins";
+import {
+  isCloudPluginExecutionBlockedError,
+  pluginsApi,
+} from "@/api/plugins";
 import { queryKeys } from "@/lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -31,6 +46,7 @@ import {
 import { useToast } from "@/context/ToastContext";
 import { cn } from "@/lib/utils";
 import { PluginRollbackButton } from "@/components/marketplace/PluginRollbackButton";
+import { useCloudPluginExecutionPolicy } from "@/hooks/useCloudPluginExecutionPolicy";
 
 function firstNonEmptyLine(value: string | null | undefined): string | null {
   if (!value) return null;
@@ -42,7 +58,16 @@ function firstNonEmptyLine(value: string | null | undefined): string | null {
 }
 
 function getPluginErrorSummary(plugin: PluginRecord): string {
-  return firstNonEmptyLine(plugin.lastError) ?? "Plugin entered an error state without a stored error message.";
+  return (
+    firstNonEmptyLine(plugin.lastError) ??
+    "Plugin entered an error state without a stored error message."
+  );
+}
+
+const CLOUD_BLOCK_REASON = PLUGIN_WORKER_BLOCKED_IN_CLOUD_REASON;
+
+function isCloudBlocked(plugin: PluginRecord): boolean {
+  return plugin.statusReasonCode === CLOUD_BLOCK_REASON;
 }
 
 /**
@@ -67,12 +92,20 @@ export function PluginManager() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
+  const cloudPolicy = useCloudPluginExecutionPolicy();
+  const isPluginCloudBlocked = (plugin: PluginRecord) =>
+    cloudPolicy.isCloud || isCloudBlocked(plugin);
+  const pluginExecutionControlsBlocked = (plugin: PluginRecord) =>
+    cloudPolicy.controlsBlocked || isCloudBlocked(plugin);
 
   const [installPackage, setInstallPackage] = useState("");
   const [installDialogOpen, setInstallDialogOpen] = useState(false);
-  const [uninstallPluginId, setUninstallPluginId] = useState<string | null>(null);
+  const [uninstallPluginId, setUninstallPluginId] = useState<string | null>(
+    null
+  );
   const [uninstallPluginName, setUninstallPluginName] = useState<string>("");
-  const [errorDetailsPlugin, setErrorDetailsPlugin] = useState<PluginRecord | null>(null);
+  const [errorDetailsPlugin, setErrorDetailsPlugin] =
+    useState<PluginRecord | null>(null);
 
   useEffect(() => {
     setBreadcrumbs([
@@ -82,7 +115,11 @@ export function PluginManager() {
     ]);
   }, [selectedCompany?.name, setBreadcrumbs]);
 
-  const { data: plugins, isLoading, error } = useQuery({
+  const {
+    data: plugins,
+    isLoading,
+    error,
+  } = useQuery({
     queryKey: queryKeys.plugins.all,
     queryFn: () => pluginsApi.list(),
   });
@@ -95,20 +132,45 @@ export function PluginManager() {
   const invalidatePluginQueries = () => {
     queryClient.invalidateQueries({ queryKey: queryKeys.plugins.all });
     queryClient.invalidateQueries({ queryKey: queryKeys.plugins.examples });
-    queryClient.invalidateQueries({ queryKey: queryKeys.plugins.uiContributions });
   };
 
   const installMutation = useMutation({
-    mutationFn: (params: { packageName: string; version?: string; isLocalPath?: boolean }) =>
-      pluginsApi.install(params),
-    onSuccess: () => {
+    mutationFn: (params: {
+      packageName: string;
+      version?: string;
+      isLocalPath?: boolean;
+    }) => pluginsApi.install({ ...params, companyId: selectedCompany?.id }),
+    onSuccess: (plugin) => {
       invalidatePluginQueries();
       setInstallDialogOpen(false);
       setInstallPackage("");
-      pushToast({ title: "Plugin installed successfully", tone: "success" });
+      if (isPluginCloudBlocked(plugin)) {
+        pushToast({
+          title: "Plugin unavailable on AoA Cloud",
+          body: "AoA Cloud does not accept plugin installs until isolated workers are available.",
+          tone: "info",
+        });
+      } else {
+        pushToast({ title: "Plugin installed successfully", tone: "success" });
+      }
     },
     onError: (err: Error) => {
-      pushToast({ title: "Failed to install plugin", body: err.message, tone: "error" });
+      if (isCloudPluginExecutionBlockedError(err)) {
+        invalidatePluginQueries();
+        setInstallDialogOpen(false);
+        setInstallPackage("");
+        pushToast({
+          title: "Plugin install blocked on AoA Cloud",
+          body: "No plugin package was installed. Use a self-hosted deployment until isolated workers are available.",
+          tone: "info",
+        });
+        return;
+      }
+      pushToast({
+        title: "Failed to install plugin",
+        body: err.message,
+        tone: "error",
+      });
     },
   });
 
@@ -119,7 +181,11 @@ export function PluginManager() {
       pushToast({ title: "Plugin uninstalled successfully", tone: "success" });
     },
     onError: (err: Error) => {
-      pushToast({ title: "Failed to uninstall plugin", body: err.message, tone: "error" });
+      pushToast({
+        title: "Failed to uninstall plugin",
+        body: err.message,
+        tone: "error",
+      });
     },
   });
 
@@ -130,7 +196,20 @@ export function PluginManager() {
       pushToast({ title: "Plugin enabled", tone: "success" });
     },
     onError: (err: Error) => {
-      pushToast({ title: "Failed to enable plugin", body: err.message, tone: "error" });
+      if (isCloudPluginExecutionBlockedError(err)) {
+        invalidatePluginQueries();
+        pushToast({
+          title: "Plugin is blocked on AoA Cloud",
+          body: "Cloud execution requires isolated workers. Self-hosting is the current recovery path.",
+          tone: "info",
+        });
+        return;
+      }
+      pushToast({
+        title: "Failed to enable plugin",
+        body: err.message,
+        tone: "error",
+      });
     },
   });
 
@@ -141,24 +220,45 @@ export function PluginManager() {
       pushToast({ title: "Plugin disabled", tone: "info" });
     },
     onError: (err: Error) => {
-      pushToast({ title: "Failed to disable plugin", body: err.message, tone: "error" });
+      pushToast({
+        title: "Failed to disable plugin",
+        body: err.message,
+        tone: "error",
+      });
     },
   });
 
   const installedPlugins = plugins ?? [];
   const examples = examplesQuery.data ?? [];
-  const installedByPackageName = new Map(installedPlugins.map((plugin) => [plugin.packageName, plugin]));
-  const examplePackageNames = new Set(examples.map((example) => example.packageName));
+  const installedByPackageName = new Map(
+    installedPlugins.map((plugin) => [plugin.packageName, plugin])
+  );
+  const examplePackageNames = new Set(
+    examples.map((example) => example.packageName)
+  );
   const errorSummaryByPluginId = useMemo(
     () =>
       new Map(
-        installedPlugins.map((plugin) => [plugin.id, getPluginErrorSummary(plugin)])
+        installedPlugins.map((plugin) => [
+          plugin.id,
+          getPluginErrorSummary(plugin),
+        ])
       ),
     [installedPlugins]
   );
 
-  if (isLoading) return <div className="p-4 text-sm text-muted-foreground">Loading plugins...</div>;
-  if (error) return <div className="p-4 text-sm text-destructive">Failed to load plugins.</div>;
+  if (isLoading)
+    return (
+      <div className="p-4 text-sm text-muted-foreground">
+        Loading plugins...
+      </div>
+    );
+  if (error)
+    return (
+      <div className="p-4 text-sm text-destructive">
+        Failed to load plugins.
+      </div>
+    );
 
   return (
     <div className="space-y-6 max-w-5xl">
@@ -167,10 +267,10 @@ export function PluginManager() {
           <Puzzle className="h-6 w-6 text-muted-foreground" />
           <h1 className="text-xl font-semibold">Plugin Manager</h1>
         </div>
-        
+
         <Dialog open={installDialogOpen} onOpenChange={setInstallDialogOpen}>
           <DialogTrigger asChild>
-            <Button size="sm" className="gap-2">
+            <Button size="sm" className="gap-2" disabled={cloudPolicy.controlsBlocked}>
               <Plus className="h-4 w-4" />
               Install Plugin
             </Button>
@@ -194,10 +294,17 @@ export function PluginManager() {
               </div>
             </DialogBody>
             <DialogFooter>
-              <Button variant="outline" onClick={() => setInstallDialogOpen(false)}>Cancel</Button>
               <Button
-                onClick={() => installMutation.mutate({ packageName: installPackage })}
-                disabled={!installPackage || installMutation.isPending}
+                variant="outline"
+                onClick={() => setInstallDialogOpen(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={() =>
+                  installMutation.mutate({ packageName: installPackage })
+                }
+                disabled={!installPackage || installMutation.isPending || cloudPolicy.controlsBlocked}
               >
                 {installMutation.isPending ? "Installing..." : "Install"}
               </Button>
@@ -212,7 +319,8 @@ export function PluginManager() {
           <div className="space-y-1 text-sm">
             <p className="font-medium text-foreground">Plugins are alpha.</p>
             <p className="text-muted-foreground">
-              The plugin runtime and API surface are still changing. Expect breaking changes while this feature settles.
+              The plugin runtime and API surface are still changing. Expect
+              breaking changes while this feature settles.
             </p>
           </div>
         </div>
@@ -226,9 +334,13 @@ export function PluginManager() {
         </div>
 
         {examplesQuery.isLoading ? (
-          <div className="text-sm text-muted-foreground">Loading bundled examples...</div>
+          <div className="text-sm text-muted-foreground">
+            Loading bundled examples...
+          </div>
         ) : examplesQuery.error ? (
-          <div className="text-sm text-destructive">Failed to load bundled examples.</div>
+          <div className="text-sm text-destructive">
+            Failed to load bundled examples.
+          </div>
         ) : examples.length === 0 ? (
           <div className="rounded-md border border-dashed px-4 py-3 text-sm text-muted-foreground">
             No bundled example plugins were found in this checkout.
@@ -236,7 +348,9 @@ export function PluginManager() {
         ) : (
           <ul className="divide-y rounded-md border bg-card">
             {examples.map((example) => {
-              const installedPlugin = installedByPackageName.get(example.packageName);
+              const installedPlugin = installedByPackageName.get(
+                example.packageName
+              );
               const installPending =
                 installMutation.isPending &&
                 installMutation.variables?.isLocalPath &&
@@ -247,12 +361,22 @@ export function PluginManager() {
                   <div className="flex items-center gap-4 px-4 py-3">
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
-                        <span className="font-medium">{example.displayName}</span>
+                        <span className="font-medium">
+                          {example.displayName}
+                        </span>
                         <Badge variant="outline">Example</Badge>
                         {installedPlugin ? (
                           <Badge
-                            variant={installedPlugin.status === "ready" ? "default" : "secondary"}
-                            className={installedPlugin.status === "ready" ? "bg-green-600 hover:bg-green-700" : ""}
+                            variant={
+                              installedPlugin.status === "ready"
+                                ? "default"
+                                : "secondary"
+                            }
+                            className={
+                              installedPlugin.status === "ready"
+                                ? "bg-green-600 hover:bg-green-700"
+                                : ""
+                            }
                           >
                             {installedPlugin.status}
                           </Badge>
@@ -260,32 +384,43 @@ export function PluginManager() {
                           <Badge variant="secondary">Not installed</Badge>
                         )}
                       </div>
-                      <p className="mt-1 text-sm text-muted-foreground">{example.description}</p>
-                      <p className="mt-1 text-xs text-muted-foreground">{example.packageName}</p>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        {example.description}
+                      </p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {example.packageName}
+                      </p>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       {installedPlugin ? (
                         <>
-                          {installedPlugin.status !== "ready" && (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              disabled={enableMutation.isPending}
-                              onClick={() => enableMutation.mutate(installedPlugin.id)}
-                            >
-                              Enable
-                            </Button>
-                          )}
+                          {installedPlugin.status !== "ready" &&
+                            !pluginExecutionControlsBlocked(installedPlugin) && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                disabled={enableMutation.isPending}
+                                onClick={() =>
+                                  enableMutation.mutate(installedPlugin.id)
+                                }
+                              >
+                                Enable
+                              </Button>
+                            )}
                           <Button variant="outline" size="sm" asChild>
-                            <Link to={`/instance/settings/plugins/${installedPlugin.id}`}>
-                              {installedPlugin.status === "ready" ? "Open Settings" : "Review"}
+                            <Link
+                              to={`/instance/settings/plugins/${installedPlugin.id}`}
+                            >
+                              {installedPlugin.status === "ready"
+                                ? "Open Settings"
+                                : "Review"}
                             </Link>
                           </Button>
                         </>
                       ) : (
                         <Button
                           size="sm"
-                          disabled={installPending || installMutation.isPending}
+                          disabled={installPending || installMutation.isPending || cloudPolicy.controlsBlocked}
                           onClick={() =>
                             installMutation.mutate({
                               packageName: example.localPath,
@@ -337,7 +472,9 @@ export function PluginManager() {
                       <Link
                         to={`/instance/settings/plugins/${plugin.id}`}
                         className="font-medium hover:underline truncate block"
-                        title={plugin.manifestJson.displayName ?? plugin.packageName}
+                        title={
+                          plugin.manifestJson.displayName ?? plugin.packageName
+                        }
                       >
                         {plugin.manifestJson.displayName ?? plugin.packageName}
                       </Link>
@@ -346,12 +483,20 @@ export function PluginManager() {
                       )}
                     </div>
                     <div>
-                      <p className="text-xs text-muted-foreground mt-0.5 truncate" title={plugin.packageName}>
-                        {plugin.packageName} · v{plugin.manifestJson.version ?? plugin.version}
+                      <p
+                        className="text-xs text-muted-foreground mt-0.5 truncate"
+                        title={plugin.packageName}
+                      >
+                        {plugin.packageName} · v
+                        {plugin.manifestJson.version ?? plugin.version}
                       </p>
                     </div>
-                    <p className="text-sm text-muted-foreground truncate mt-0.5" title={plugin.manifestJson.description}>
-                      {plugin.manifestJson.description || "No description provided."}
+                    <p
+                      className="text-sm text-muted-foreground truncate mt-0.5"
+                      title={plugin.manifestJson.description}
+                    >
+                      {plugin.manifestJson.description ||
+                        "No description provided."}
                     </p>
                     {plugin.status === "error" && (
                       <div className="mt-3 rounded-md border border-red-500/25 bg-red-500/[0.06] px-3 py-2">
@@ -359,13 +504,19 @@ export function PluginManager() {
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-2 text-sm font-medium text-red-700 dark:text-red-300">
                               <AlertTriangle className="h-4 w-4 shrink-0" />
-                              <span>Plugin error</span>
+                              <span>
+                                {isPluginCloudBlocked(plugin)
+                                  ? "Blocked on AoA Cloud"
+                                  : "Plugin error"}
+                              </span>
                             </div>
                             <p
                               className="mt-1 text-sm text-red-700/90 dark:text-red-200/90 break-words"
                               title={plugin.lastError ?? undefined}
                             >
-                              {errorSummaryByPluginId.get(plugin.id)}
+                              {isPluginCloudBlocked(plugin)
+                                ? "AoA Cloud does not run host plugin workers. There is no operator override; self-hosting is the current recovery path."
+                                : errorSummaryByPluginId.get(plugin.id)}
                             </p>
                           </div>
                           <Button
@@ -388,36 +539,63 @@ export function PluginManager() {
                             plugin.status === "ready"
                               ? "default"
                               : plugin.status === "error"
-                                ? "destructive"
+                              ? "destructive"
                               : "secondary"
                           }
                           className={cn(
                             "shrink-0",
-                            plugin.status === "ready" ? "bg-green-600 hover:bg-green-700" : ""
+                            plugin.status === "ready"
+                              ? "bg-green-600 hover:bg-green-700"
+                              : ""
                           )}
                         >
-                          {plugin.status}
+                          {isPluginCloudBlocked(plugin)
+                            ? "Blocked on AoA Cloud"
+                            : plugin.status}
                         </Badge>
-                        <Button
-                          variant="outline"
-                          size="icon-sm"
-                          className="h-8 w-8"
-                          title={plugin.status === "ready" ? "Disable" : "Enable"}
-                          onClick={() => {
-                            if (plugin.status === "ready") {
-                              disableMutation.mutate(plugin.id);
-                            } else {
-                              enableMutation.mutate(plugin.id);
+                        {!pluginExecutionControlsBlocked(plugin) && (
+                          <Button
+                            variant="outline"
+                            size="icon-sm"
+                            className="h-8 w-8"
+                            title={
+                              plugin.status === "ready" ? "Disable" : "Enable"
                             }
-                          }}
-                          disabled={enableMutation.isPending || disableMutation.isPending}
-                        >
-                          <Power className={cn("h-4 w-4", plugin.status === "ready" ? "text-green-600" : "")} />
-                        </Button>
-                        <PluginRollbackButton
-                          pluginId={plugin.id}
-                          currentVersion={plugin.manifestJson.version ?? plugin.version}
-                        />
+                            aria-label={
+                              plugin.status === "ready"
+                                ? "Disable plugin"
+                                : "Enable plugin"
+                            }
+                            onClick={() => {
+                              if (plugin.status === "ready") {
+                                disableMutation.mutate(plugin.id);
+                              } else {
+                                enableMutation.mutate(plugin.id);
+                              }
+                            }}
+                            disabled={
+                              enableMutation.isPending ||
+                              disableMutation.isPending
+                            }
+                          >
+                            <Power
+                              className={cn(
+                                "h-4 w-4",
+                                plugin.status === "ready"
+                                  ? "text-green-600"
+                                  : ""
+                              )}
+                            />
+                          </Button>
+                        )}
+                        {!pluginExecutionControlsBlocked(plugin) && (
+                          <PluginRollbackButton
+                            pluginId={plugin.id}
+                            currentVersion={
+                              plugin.manifestJson.version ?? plugin.version
+                            }
+                          />
+                        )}
                         <Button
                           variant="outline"
                           size="icon-sm"
@@ -425,14 +603,22 @@ export function PluginManager() {
                           title="Uninstall"
                           onClick={() => {
                             setUninstallPluginId(plugin.id);
-                            setUninstallPluginName(plugin.manifestJson.displayName ?? plugin.packageName);
+                            setUninstallPluginName(
+                              plugin.manifestJson.displayName ??
+                                plugin.packageName
+                            );
                           }}
                           disabled={uninstallMutation.isPending}
                         >
                           <Trash className="h-4 w-4" />
                         </Button>
                       </div>
-                      <Button variant="outline" size="sm" className="mt-2 h-8" asChild>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="mt-2 h-8"
+                        asChild
+                      >
                         <Link to={`/instance/settings/plugins/${plugin.id}`}>
                           <Settings className="h-4 w-4" />
                           Configure
@@ -449,17 +635,26 @@ export function PluginManager() {
 
       <Dialog
         open={uninstallPluginId !== null}
-        onOpenChange={(open) => { if (!open) setUninstallPluginId(null); }}
+        onOpenChange={(open) => {
+          if (!open) setUninstallPluginId(null);
+        }}
       >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Uninstall Plugin</DialogTitle>
             <DialogDescription>
-              Are you sure you want to uninstall <strong>{uninstallPluginName}</strong>? This action cannot be undone.
+              Are you sure you want to uninstall{" "}
+              <strong>{uninstallPluginName}</strong>? This action cannot be
+              undone.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setUninstallPluginId(null)}>Cancel</Button>
+            <Button
+              variant="outline"
+              onClick={() => setUninstallPluginId(null)}
+            >
+              Cancel
+            </Button>
             <Button
               variant="destructive"
               disabled={uninstallMutation.isPending}
@@ -479,13 +674,24 @@ export function PluginManager() {
 
       <Dialog
         open={errorDetailsPlugin !== null}
-        onOpenChange={(open) => { if (!open) setErrorDetailsPlugin(null); }}
+        onOpenChange={(open) => {
+          if (!open) setErrorDetailsPlugin(null);
+        }}
       >
         <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>Error Details</DialogTitle>
             <DialogDescription>
-              {errorDetailsPlugin?.manifestJson.displayName ?? errorDetailsPlugin?.packageName ?? "Plugin"} hit an error state.
+              {errorDetailsPlugin && isPluginCloudBlocked(errorDetailsPlugin)
+                ? `${
+                    errorDetailsPlugin.manifestJson.displayName ??
+                    errorDetailsPlugin.packageName
+                  } cannot execute on AoA Cloud.`
+                : `${
+                    errorDetailsPlugin?.manifestJson.displayName ??
+                    errorDetailsPlugin?.packageName ??
+                    "Plugin"
+                  } hit an error state.`}
             </DialogDescription>
           </DialogHeader>
           <DialogBody className="space-y-4">
@@ -494,14 +700,31 @@ export function PluginManager() {
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-700 dark:text-red-300" />
                 <div className="space-y-1 text-sm">
                   <p className="font-medium text-red-700 dark:text-red-300">
-                    What errored
+                    {errorDetailsPlugin && isPluginCloudBlocked(errorDetailsPlugin)
+                      ? "Why execution is blocked"
+                      : "What errored"}
                   </p>
                   <p className="text-red-700/90 dark:text-red-200/90 break-words">
-                    {errorDetailsPlugin ? getPluginErrorSummary(errorDetailsPlugin) : "No error summary available."}
+                    {errorDetailsPlugin
+                      ? getPluginErrorSummary(errorDetailsPlugin)
+                      : "No error summary available."}
                   </p>
                 </div>
               </div>
             </div>
+            {errorDetailsPlugin && isPluginCloudBlocked(errorDetailsPlugin) && (
+              <p className="text-sm text-muted-foreground">
+                There is no operator override. Self-hosting is the current
+                recovery path.{" "}
+                <a
+                  className="underline"
+                  href="/docs/guides/cloud-plugin-execution"
+                >
+                  Read the cloud plugin execution policy
+                </a>
+                .
+              </p>
+            )}
             <div className="space-y-2">
               <p className="text-sm font-medium">Full error output</p>
               <pre className="max-h-[50vh] overflow-auto rounded-md border bg-muted/40 p-3 text-xs leading-5 whitespace-pre-wrap break-words">
@@ -510,7 +733,10 @@ export function PluginManager() {
             </div>
           </DialogBody>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setErrorDetailsPlugin(null)}>
+            <Button
+              variant="outline"
+              onClick={() => setErrorDetailsPlugin(null)}
+            >
               Close
             </Button>
           </DialogFooter>

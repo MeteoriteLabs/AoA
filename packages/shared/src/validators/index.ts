@@ -496,6 +496,18 @@ export {
   type UpdateEnvironmentInput,
 } from "./environment.js";
 
+// Phase 5 execution-target registry (Task 5) — this validators file existed
+// but was never re-exported through the barrel; fixed here because Task 13's
+// registry route needs createExecutionTargetSchema via "@armyofagents/shared".
+export {
+  dockerIsolationSchema,
+  gvisorEnvironmentConfigSchema,
+  createExecutionTargetSchema,
+  workerExecutionTargetHeartbeatSchema,
+  type CreateExecutionTargetInput,
+  type WorkerExecutionTargetHeartbeatInput,
+} from "./execution-target.js";
+
 export { isGitHubRepoUrl } from "./github.js";
 
 export {

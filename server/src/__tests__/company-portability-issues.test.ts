@@ -99,6 +99,15 @@ vi.mock("../services/companies.js", () => ({
       companyCreateCalls.push(input);
       return { id: "new-co", ...input };
     }),
+    // P3: importBundle now creates via the atomic `createWithOperator`. Mirror
+    // the create + operator-provision as one call so `companyCreateCalls` still
+    // records the create input.
+    createWithOperator: vi.fn(async (input: { name: string }, _opts: any, ownerUserId: any, buildAccess: any) => {
+      companyCreateCalls.push(input);
+      const company = { id: "new-co", ...input };
+      const operatorId = await buildAccess(undefined).ensureRealOperator(company.id, ownerUserId ?? null);
+      return { company, operatorId };
+    }),
     update: vi.fn(async (id: string, patch: any) => ({ id, name: patch.name ?? companyStore[id]?.name ?? "Co" })),
   }),
 }));

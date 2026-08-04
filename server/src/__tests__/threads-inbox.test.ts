@@ -98,6 +98,7 @@ vi.mock("../middleware/validate.js", () => ({
 
 vi.mock("../middleware/rbac.js", () => ({
   assertRole: vi.fn().mockResolvedValue(undefined),
+  assertHumanRole: vi.fn().mockResolvedValue(undefined),
   assertDepartmentAccess: vi.fn().mockResolvedValue(undefined),
 }));
 

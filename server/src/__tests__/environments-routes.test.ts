@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { afterEach, describe, it, expect, vi, beforeEach } from "vitest";
 import express from "express";
 import request from "supertest";
 
@@ -46,6 +46,7 @@ vi.mock("../services/environment-probe.js", () => ({
 }));
 
 import { environmentRoutes } from "../routes/environments.js";
+import { setDeploymentMode } from "../config/deployment-mode.js";
 
 const companyId = "11111111-1111-4111-8111-111111111111";
 const envId = "22222222-2222-4222-8222-222222222222";
@@ -87,6 +88,78 @@ describe("environments routes", () => {
       summary: "Local environment configuration is valid.",
       checks: [{ name: "config", status: "passed", message: "Local runtime does not require provider config." }],
     });
+  });
+  afterEach(() => setDeploymentMode("local_trusted"));
+
+  it("cloud_auth rejects local create and probe before service work", async () => {
+    setDeploymentMode("cloud_auth");
+    const svc = { create: vi.fn() };
+    const app = buildApp(svc);
+    const create = await request(app)
+      .post(`/companies/${companyId}/environments`)
+      .send({ name: "Local", driver: "local", config: {}, target: { type: "local" } });
+    const probe = await request(app)
+      .post(`/companies/${companyId}/environments/probe`)
+      .send({ driver: "local", config: {} });
+    expect(create.status).toBe(422);
+    expect(probe.status).toBe(422);
+    expect(create.body.error).toMatch(/E2B environments/i);
+    expect(svc.create).not.toHaveBeenCalled();
+    expect(mocks.probeEnvironmentConfig).not.toHaveBeenCalled();
+  });
+
+  it("cloud_auth allows exact E2B create and validates merged PATCH state", async () => {
+    setDeploymentMode("cloud_auth");
+    const e2bEnv = {
+      ...mockEnv,
+      driver: "sandbox",
+      config: { provider: "e2b", template: "base" },
+      target: null,
+      executionTargetId: null,
+    };
+    const svc = {
+      get: vi.fn(async () => e2bEnv),
+      create: vi.fn(async () => e2bEnv),
+      update: vi.fn(async (_companyId: string, _id: string, input: unknown) => ({ ...e2bEnv, ...(input as object) })),
+    };
+    const app = buildApp(svc);
+    const create = await request(app)
+      .post(`/companies/${companyId}/environments`)
+      .send({ name: "Cloud", driver: "sandbox", config: { provider: "e2b", template: "base" }, target: null, executionTargetId: null });
+    const patch = await request(app)
+      .patch(`/companies/${companyId}/environments/${envId}`)
+      .send({ name: "Cloud renamed" });
+    expect(create.status).toBe(201);
+    expect(patch.status).toBe(200);
+    expect(svc.update).toHaveBeenCalled();
+  });
+
+  it("cloud_auth requires a partial PATCH to migrate the final state away from gVisor and pins", async () => {
+    setDeploymentMode("cloud_auth");
+    const svc = {
+      get: vi.fn(async () => ({
+        ...mockEnv,
+        driver: "sandbox",
+        config: { provider: "gvisor", runtime: "runsc" },
+        executionTargetId: "11111111-1111-4111-8111-111111111111",
+      })),
+      update: vi.fn(async (_companyId: string, _id: string, input: unknown) => ({
+        ...mockEnv,
+        ...(input as object),
+      })),
+    };
+    const app = buildApp(svc);
+    const metadataOnly = await request(app)
+      .patch(`/companies/${companyId}/environments/${envId}`)
+      .send({ name: "Still unsafe" });
+    expect(metadataOnly.status).toBe(422);
+    expect(svc.update).not.toHaveBeenCalled();
+
+    const migrated = await request(app)
+      .patch(`/companies/${companyId}/environments/${envId}`)
+      .send({ driver: "sandbox", config: { provider: "e2b", template: "base" }, target: null, executionTargetId: null });
+    expect(migrated.status).toBe(200);
+    expect(svc.update).toHaveBeenCalledOnce();
   });
 
   it.each([

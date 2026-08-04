@@ -521,18 +521,18 @@ describe("ProjectDetail — Workspaces tab", () => {
     // (the 5 s "unable to find confirm-archive-workspace" flake seen only under
     // parallel-suite CPU contention; same stale-node race already mitigated for
     // workspace-row-ws-1 above). Re-query fresh and click in one sync tick.
-    await screen.findByTestId("archive-workspace-ws-1", {}, { timeout: 5000 });
-    await screen.findByTestId("archive-workspace-ws-2", {}, { timeout: 5000 });
+    await screen.findByTestId("archive-workspace-ws-1", {}, { timeout: 15000 });
+    await screen.findByTestId("archive-workspace-ws-2", {}, { timeout: 15000 });
     fireEvent.click(screen.getByTestId("archive-workspace-ws-1"));
 
     // Readiness loads via getCloseReadiness mock; the AlertDialog action starts
     // disabled while readiness is loading. Wait for the dialog to open, THEN for
     // the action to enable. Re-query each waitFor tick so a React re-render
     // between query and assertion can't leave us holding a stale DOM node.
-    await screen.findByTestId("confirm-archive-workspace", {}, { timeout: 5000 });
+    await screen.findByTestId("confirm-archive-workspace", {}, { timeout: 15000 });
     await waitFor(() => {
       expect(screen.getByTestId("confirm-archive-workspace")).not.toBeDisabled();
-    }, { timeout: 5000 });
+    }, { timeout: 15000 });
 
     fireEvent.click(screen.getByTestId("confirm-archive-workspace"));
 

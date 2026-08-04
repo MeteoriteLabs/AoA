@@ -87,6 +87,35 @@ export interface TerminateIfMatchesDeps extends TerminateByPidDeps {
 
 const DEFAULT_START_MATCH_TOLERANCE_MS = 2_000;
 
+export type ProcessStartIdentityMatch = "matching" | "different" | "unknown";
+
+/**
+ * Classify a persisted PID without signalling it. Startup reconciliation must
+ * distinguish a confirmed reused PID from an identity that cannot be checked.
+ */
+export function inspectProcessStartIdentity(
+  pid: number,
+  expected: ProcessStartIdentity,
+  deps: TerminateIfMatchesDeps = {},
+): ProcessStartIdentityMatch {
+  if (!Number.isFinite(pid) || pid <= 0) return "unknown";
+  const platform = deps.platform ?? process.platform;
+  const queryStartTime = deps.queryStartTime ?? defaultQueryStartTime(platform);
+
+  let startTime: Date | null;
+  try {
+    startTime = queryStartTime(pid);
+  } catch {
+    startTime = null;
+  }
+  if (!startTime || Number.isNaN(startTime.getTime())) return "unknown";
+
+  const tolerance = deps.toleranceMs ?? DEFAULT_START_MATCH_TOLERANCE_MS;
+  return startTime.getTime() > expected.startedAt.getTime() + tolerance
+    ? "different"
+    : "matching";
+}
+
 /**
  * Identity-verifying terminate for the BOOT reaper (Codex P1, round 6 —
  * PID reuse). Kills `pid`/`pgid` ONLY when the target process's OS start time is
@@ -106,20 +135,7 @@ export function terminateByPidIfMatches(
   expected: ProcessStartIdentity,
   deps: TerminateIfMatchesDeps = {},
 ): boolean {
-  if (!Number.isFinite(pid) || pid <= 0) return false;
-  const platform = deps.platform ?? process.platform;
-  const queryStartTime = deps.queryStartTime ?? defaultQueryStartTime(platform);
-
-  let startTime: Date | null;
-  try {
-    startTime = queryStartTime(pid);
-  } catch {
-    startTime = null; // query itself blew up — identity is unknowable.
-  }
-  if (!startTime || Number.isNaN(startTime.getTime())) return false;
-
-  const tolerance = deps.toleranceMs ?? DEFAULT_START_MATCH_TOLERANCE_MS;
-  if (startTime.getTime() > expected.startedAt.getTime() + tolerance) return false;
+  if (inspectProcessStartIdentity(pid, expected, deps) !== "matching") return false;
 
   terminateByPid(pid, pgid, deps);
   return true;

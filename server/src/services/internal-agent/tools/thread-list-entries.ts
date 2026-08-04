@@ -8,8 +8,8 @@
 // entry text is small). Front-end + agents that need more should paginate
 // with explicit cursors in a future batch.
 
-import { desc, eq } from "drizzle-orm";
-import { discussionEntries } from "@armyofagents/db";
+import { and, desc, eq, getTableColumns } from "drizzle-orm";
+import { discussionEntries, discussions } from "@armyofagents/db";
 import type { AgentTool } from "../types.js";
 
 const MAX_ENTRIES = 200;
@@ -53,9 +53,10 @@ export const threadListEntriesTool: AgentTool = {
     // chronological order. ORDER BY DESC + LIMIT keeps the index scan on
     // (discussion_id, created_at) efficient even for very long threads.
     const rows = await ctx.db
-      .select()
+      .select(getTableColumns(discussionEntries))
       .from(discussionEntries)
-      .where(eq(discussionEntries.discussionId, threadId))
+      .innerJoin(discussions, eq(discussions.id, discussionEntries.discussionId))
+      .where(and(eq(discussionEntries.discussionId, threadId), eq(discussions.companyId, ctx.companyId)))
       .orderBy(desc(discussionEntries.createdAt))
       .limit(cappedLimit);
     const chronological = Array.isArray(rows) ? [...rows].reverse() : [];

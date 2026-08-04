@@ -11,12 +11,16 @@ import { CapabilityDeltaModal } from "@/components/settings/CapabilityDeltaModal
 import { useCompany } from "@/context/CompanyContext";
 import { useToast } from "@/context/ToastContext";
 import { useDismissUpdate, usePendingUpdates } from "@/hooks/usePendingUpdates";
+import { useCloudPluginExecutionPolicy } from "@/hooks/useCloudPluginExecutionPolicy";
 
 /**
  * The two `/apply` 409 codes that mean "your local copy diverges — merge it",
  * as opposed to the bare 409 for a row that is simply no longer pending.
  */
-const CUSTOMIZED_CONFLICT_CODES = new Set(["AGENT_INSTRUCTIONS_CUSTOMIZED", "SKILL_CUSTOMIZED"]);
+const CUSTOMIZED_CONFLICT_CODES = new Set([
+  "AGENT_INSTRUCTIONS_CUSTOMIZED",
+  "SKILL_CUSTOMIZED",
+]);
 
 function isCustomizedConflict(err: ApiError): boolean {
   const code = (err.body as { code?: unknown } | null | undefined)?.code;
@@ -36,6 +40,7 @@ export function MarketplaceUpdatesPanel() {
   const dismiss = useDismissUpdate();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
+  const cloudPluginPolicy = useCloudPluginExecutionPolicy();
   const [busyId, setBusyId] = useState<string | null>(null);
   const [reviewUpdate, setReviewUpdate] = useState<PendingUpdate | null>(null);
   const [permissionUpdate, setPermissionUpdate] = useState<{
@@ -48,9 +53,9 @@ export function MarketplaceUpdatesPanel() {
   const pending = useMemo(
     () =>
       (updates ?? []).filter(
-        (update) => update.status === "pending" || update.status === "conflict",
+        (update) => update.status === "pending" || update.status === "conflict"
       ),
-    [updates],
+    [updates]
   );
 
   const grouped = useMemo(
@@ -60,7 +65,7 @@ export function MarketplaceUpdatesPanel() {
         acc[update.itemType]!.push(update);
         return acc;
       }, {}),
-    [pending],
+    [pending]
   );
 
   const invalidateUpdates = async () => {
@@ -89,11 +94,20 @@ export function MarketplaceUpdatesPanel() {
    */
   const applyUpdate = async (update: PendingUpdate) => {
     if (!selectedCompany?.id) return;
+    if (update.itemType === "plugin" && cloudPluginPolicy.controlsBlocked)
+      return;
     setBusyId(update.id);
     try {
-      const result = await marketplaceApi.applyUpdate(selectedCompany.id, update.id);
+      const result = await marketplaceApi.applyUpdate(
+        selectedCompany.id,
+        update.id
+      );
       await invalidateUpdates();
-      if (result.status === "upgrade_pending" && result.pluginId && result.delta?.length) {
+      if (
+        result.status === "upgrade_pending" &&
+        result.pluginId &&
+        result.delta?.length
+      ) {
         setPermissionUpdate({
           update,
           pluginId: result.pluginId,
@@ -107,7 +121,10 @@ export function MarketplaceUpdatesPanel() {
         });
         return;
       }
-      pushToast({ title: `Updated ${update.catalogItemName}`, tone: "success" });
+      pushToast({
+        title: `Updated ${update.catalogItemName}`,
+        tone: "success",
+      });
     } catch (err) {
       if (err instanceof ApiError && err.status === 403) {
         pushToast({
@@ -117,7 +134,11 @@ export function MarketplaceUpdatesPanel() {
         });
         return;
       }
-      if (err instanceof ApiError && err.status === 409 && isCustomizedConflict(err)) {
+      if (
+        err instanceof ApiError &&
+        err.status === 409 &&
+        isCustomizedConflict(err)
+      ) {
         // Local edits are in the way — the status went stale between render and
         // click. Hand the founder straight to the review they actually need
         // rather than making them find the other button.
@@ -181,10 +202,12 @@ export function MarketplaceUpdatesPanel() {
         <UpdatesHeader />
         <div className="flex flex-col items-center justify-center gap-3 rounded-md border border-border px-4 py-12 text-center">
           <CheckCircle className="h-8 w-8 text-muted-foreground" />
-          <p className="text-sm font-medium">All marketplace items are up to date</p>
+          <p className="text-sm font-medium">
+            All marketplace items are up to date
+          </p>
           <p className="max-w-md text-xs text-muted-foreground">
-            Installed plugins, skills, agents, and teams will appear here when newer
-            marketplace versions are available.
+            Installed plugins, skills, agents, and teams will appear here when
+            newer marketplace versions are available.
           </p>
         </div>
       </div>
@@ -202,22 +225,37 @@ export function MarketplaceUpdatesPanel() {
             </h4>
             <div className="space-y-2">
               {items.map((update) => (
-                <UpdateCard
-                  key={update.id}
-                  update={update}
-                  isPending={busyId === update.id}
-                  onApply={
-                    update.itemType === "plugin" || update.status === "pending"
-                      ? () => applyUpdate(update)
-                      : undefined
-                  }
-                  onReview={
-                    update.itemType !== "plugin"
-                      ? () => setReviewUpdate(update)
-                      : undefined
-                  }
-                  onDismiss={() => dismissPendingUpdate(update)}
-                />
+                <div key={update.id} className="space-y-1">
+                  <UpdateCard
+                    update={update}
+                    isPending={busyId === update.id}
+                    onApply={
+                      (update.itemType === "plugin" &&
+                        !cloudPluginPolicy.controlsBlocked) ||
+                      (update.itemType !== "plugin" &&
+                        update.status === "pending")
+                        ? () => applyUpdate(update)
+                        : undefined
+                    }
+                    onReview={
+                      update.itemType !== "plugin"
+                        ? () => setReviewUpdate(update)
+                        : undefined
+                    }
+                    onDismiss={() => dismissPendingUpdate(update)}
+                  />
+                  {update.itemType === "plugin" &&
+                    cloudPluginPolicy.controlsBlocked && (
+                      <p
+                        className="px-1 text-xs text-muted-foreground"
+                        role="status"
+                      >
+                        {cloudPluginPolicy.isCloud
+                          ? "Plugin updates are unavailable on AoA Cloud."
+                          : "Plugin updates are unavailable until deployment policy is verified."}
+                      </p>
+                    )}
+                </div>
               ))}
             </div>
           </section>

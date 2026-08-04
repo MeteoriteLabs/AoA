@@ -26,6 +26,8 @@ export interface OperationRow {
   status: "pending" | "running" | "success" | "failure" | "requested";
   resultEntityId: string | null;
   errorMessage: string | null;
+  errorCode: string | null;
+  errorDocs: string | null;
   cascadeResults: CascadeStepResult[] | null;
   idempotencyKey: string | null;
   requestedByUserId: string | null;
@@ -173,7 +175,7 @@ export async function createPackageOperation(
 export async function updateOperation(
   db: Db,
   id: string,
-  patch: Partial<Pick<OperationRow, "status" | "resultEntityId" | "errorMessage" | "cascadeResults" | "completedAt">>,
+  patch: Partial<Pick<OperationRow, "status" | "resultEntityId" | "errorMessage" | "errorCode" | "errorDocs" | "cascadeResults" | "completedAt">>,
 ): Promise<void> {
   await db
     .update(marketplaceInstallOperations)
@@ -227,6 +229,8 @@ export async function claimOperationForDispatch(db: Db, id: string): Promise<boo
       status: "running",
       startedAt: new Date(),
       errorMessage: null,
+      errorCode: null,
+      errorDocs: null,
       completedAt: null,
     })
     .where(

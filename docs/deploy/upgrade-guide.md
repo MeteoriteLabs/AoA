@@ -90,9 +90,55 @@ These identifiers are wire-compat and will not change. See [Wire Compatibility R
 
 4. **Run database migrations.**
    ```bash
-   pnpm db:migrate
+   AOA_DEPLOYMENT_MODE=authenticated pnpm db:migrate
    ```
    If you have `AOA_MIGRATION_AUTO_APPLY=true` set, migrations run automatically on server start — you can skip this step.
+
+   Replace `authenticated` with the deployment's configured mode. Before
+   applying migration `0188` to a populated `cloud_auth` database, take
+   a full database snapshot and record `"0188"` in `general.migrationSnapshots`
+   on the canonical `instance_settings` row where `singleton_key = 'default'`:
+
+   ```sql
+   INSERT INTO instance_settings (singleton_key, general)
+   VALUES ('default', '{"migrationSnapshots":["0188"]}'::jsonb)
+   ON CONFLICT (singleton_key) DO UPDATE
+   SET general = jsonb_set(
+         instance_settings.general,
+         '{migrationSnapshots}',
+         (
+           SELECT CASE
+             WHEN cleaned.markers @> '["0188"]'::jsonb THEN cleaned.markers
+             ELSE cleaned.markers || '["0188"]'::jsonb
+           END
+           FROM (
+             SELECT COALESCE(jsonb_agg(candidate.marker), '[]'::jsonb) AS markers
+             FROM jsonb_array_elements(
+               CASE
+                 WHEN jsonb_typeof(instance_settings.general->'migrationSnapshots') = 'array'
+                   THEN instance_settings.general->'migrationSnapshots'
+                 ELSE '[]'::jsonb
+               END
+             ) AS candidate(marker)
+             WHERE jsonb_typeof(candidate.marker) = 'string'
+           ) AS cleaned
+         ),
+         true
+       ),
+       updated_at = now();
+
+   SELECT general->'migrationSnapshots' AS migration_snapshots
+   FROM instance_settings
+   WHERE singleton_key = 'default';
+   ```
+
+   The command must insert or update exactly one row and the verification
+   result must contain `"0188"`; otherwise stop. Keep every application replica
+   stopped from this marker operation until the migration job completes, so no
+   settings writer can race the cutover. The same gate is enforced by
+   server auto-apply and `pnpm db:migrate`. A manual migration with no explicit
+   deployment mode fails closed for this one-way cutover rather than assuming
+   local trusted mode.
 
 5. **Restart the server.**
    ```bash

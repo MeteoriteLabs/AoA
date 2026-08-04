@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 
 import { useOperationStatus } from "../useOperationStatus";
 import { marketplaceApi } from "@/api/marketplace";
+import { ApiError } from "@/api/client";
 
 vi.mock("@/api/marketplace", async () => {
   const actual = await vi.importActual<typeof import("@/api/marketplace")>(
@@ -57,5 +58,30 @@ describe("useOperationStatus", () => {
     );
     expect(result.current.fetchStatus).toBe("idle");
     expect(marketplaceApi.getOperation).not.toHaveBeenCalled();
+  });
+
+  it("turns the canonical cloud 503 into a terminal blocked operation", async () => {
+    vi.mocked(marketplaceApi.getOperation).mockRejectedValueOnce(
+      new ApiError(
+        "Plugin execution is blocked on AoA Cloud until isolated workers are available",
+        503,
+        {
+          error:
+            "Plugin execution is blocked on AoA Cloud until isolated workers are available",
+          code: "PLUGIN_WORKER_BLOCKED_IN_CLOUD",
+          docs: "/docs/guides/cloud-plugin-execution",
+        },
+      ),
+    );
+    const { result } = renderHook(
+      () => useOperationStatus({ companyId: "c1", operationId: "op-1" }),
+      { wrapper },
+    );
+
+    await waitFor(() => expect(result.current.data?.status).toBe("failure"));
+    expect(result.current.data?.errorCode).toBe(
+      "PLUGIN_WORKER_BLOCKED_IN_CLOUD",
+    );
+    expect(result.current.error).toBeNull();
   });
 });

@@ -105,6 +105,38 @@ describe("install toast adapter", () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: queryKeys.plugins.all });
   });
 
+  it("renders a truthful blocked toast with the policy link", async () => {
+    vi.mocked(marketplaceApi.getOperation).mockResolvedValue({
+      status: "failure",
+      errorCode: "PLUGIN_WORKER_BLOCKED_IN_CLOUD",
+      errorMessage:
+        "Plugin execution is blocked on AoA Cloud until isolated workers are available",
+      errorDocs: "/docs/guides/cloud-plugin-execution",
+    } as any);
+    setup();
+    let id = "";
+    act(() => {
+      id = api.show({ status: "installing", message: "Installing Slack" });
+    });
+    act(() => {
+      api.trackOperation({
+        toastId: id,
+        companyId: "c1",
+        operationId: "op-blocked",
+        itemName: "Slack",
+        invalidate: "plugins",
+      });
+    });
+
+    await waitFor(() =>
+      expect(screen.getByText("Slack is blocked on AoA Cloud")).toBeInTheDocument(),
+    );
+    expect(screen.getByRole("link", { name: /Read policy/ })).toHaveAttribute(
+      "href",
+      "/docs/guides/cloud-plugin-execution",
+    );
+  });
+
   it("useInstallToast no-ops outside the provider", () => {
     function NoopConsumer() {
       const { show, update, dismiss } = useInstallToast();

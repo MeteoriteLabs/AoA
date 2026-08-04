@@ -49,6 +49,10 @@ import type {
   InitializeParams,
 } from "@armyofagents/plugin-sdk";
 import { logger } from "../middleware/logger.js";
+import {
+  assertCloudPluginExecutionAllowed,
+  type PluginActivationSource,
+} from "./cloud-plugin-execution.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -168,6 +172,10 @@ export interface WorkerStartOptions {
   apiVersion: number;
   /** Handlers for worker→host RPC calls. */
   hostHandlers: WorkerToHostHandlers;
+  /** Tenant identifier used only for structured policy telemetry. */
+  companyId?: string;
+  /** Origin of this activation attempt used only for structured telemetry. */
+  activationSource?: PluginActivationSource;
   /** Default timeout for RPC calls (ms). Defaults to 30s. */
   rpcTimeoutMs?: number;
   /** Whether to auto-restart on crash. Defaults to true. */
@@ -444,7 +452,10 @@ export function createPluginWorkerHandle(
     if (isJsonRpcResponse(message)) {
       handleResponse(message);
     } else if (isJsonRpcRequest(message)) {
-      handleWorkerRequest(message as JsonRpcRequest);
+      // Fire-and-forget worker RPC dispatch (mirrors handleWorkerNotification
+      // below); this is an event callback and cannot await. `void` marks the
+      // intentional non-await for @typescript-eslint/no-floating-promises.
+      void handleWorkerRequest(message as JsonRpcRequest);
     } else if (isJsonRpcNotification(message)) {
       handleWorkerNotification(message as JsonRpcNotification);
     } else {
@@ -604,6 +615,15 @@ export function createPluginWorkerHandle(
   // -----------------------------------------------------------------------
 
   function spawnProcess(): ChildProcess {
+    // Final process-creation backstop. This protects direct handle users and
+    // crash auto-restarts even if an upstream lifecycle check regresses.
+    assertCloudPluginExecutionAllowed({
+      pluginId,
+      companyId: options.companyId,
+      source: options.activationSource ?? "unknown",
+      sink: "worker-fork",
+    });
+
     // Security: Do NOT spread process.env into the worker. Plugins should only
     // receive a minimal, controlled environment to prevent leaking host
     // secrets (like DATABASE_URL, internal API keys, etc.).
@@ -1230,6 +1250,15 @@ export function createPluginWorkerManager(
       pluginId: string,
       options: WorkerStartOptions,
     ): Promise<PluginWorkerHandle> {
+      // Mandatory sink gate: run before locks, handle construction, or map
+      // registration so a denied attempt leaves no executable worker state.
+      assertCloudPluginExecutionAllowed({
+        pluginId,
+        companyId: options.companyId,
+        source: options.activationSource ?? "unknown",
+        sink: "worker-manager",
+      });
+
       // Mutex: if a start is already in-flight for this plugin, wait for it
       const inFlight = startupLocks.get(pluginId);
       if (inFlight) {

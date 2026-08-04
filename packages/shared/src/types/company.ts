@@ -2,6 +2,7 @@ import type { AgentCompletionPolicy, CompanyStatus } from "../constants.js";
 
 export interface Company {
   id: string;
+  organizationId: string;
   name: string;
   description: string | null;
   status: CompanyStatus;

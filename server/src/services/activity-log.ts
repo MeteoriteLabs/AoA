@@ -17,7 +17,15 @@ export interface LogActivityInput {
   details?: Record<string, unknown> | null;
 }
 
-export async function logActivity(db: Db, input: LogActivityInput) {
+export interface PersistedActivity extends Omit<LogActivityInput, "details"> {
+  details: Record<string, unknown> | null;
+}
+
+/** Persist the mandatory audit row without publishing a pre-commit event. */
+export async function insertActivityLog(
+  db: Db,
+  input: LogActivityInput
+): Promise<PersistedActivity> {
   assertUnreservedActivityNamespace(input);
   const sanitizedDetails = input.details ? sanitizeRecord(input.details) : null;
   await db.insert(activityLog).values({
@@ -32,6 +40,16 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     details: sanitizedDetails,
   });
 
+  return {
+    ...input,
+    agentId: input.agentId ?? null,
+    runId: input.runId ?? null,
+    details: sanitizedDetails,
+  };
+}
+
+/** Publish only after the surrounding database transaction has committed. */
+export function publishActivityLogged(input: PersistedActivity): void {
   publishLiveEvent({
     companyId: input.companyId,
     type: "activity.logged",
@@ -43,7 +61,12 @@ export async function logActivity(db: Db, input: LogActivityInput) {
       entityId: input.entityId,
       agentId: input.agentId ?? null,
       runId: input.runId ?? null,
-      details: sanitizedDetails,
+      details: input.details,
     },
   });
+}
+
+export async function logActivity(db: Db, input: LogActivityInput) {
+  const persisted = await insertActivityLog(db, input);
+  publishActivityLogged(persisted);
 }

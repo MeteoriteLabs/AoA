@@ -360,7 +360,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: changes
     if: ${{ needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
-    timeout-minutes: 35
+    # Full server + ui + embedded-PG integration suites now run ~37 min (test
+    # phase alone), and the build step needs ~8 more — 45 left no margin (a green
+    # 17.4k-test run was canceled mid-build at 45m18s). 60 adds durable headroom.
+    timeout-minutes: 60
 
     steps:
       - name: Checkout repository
@@ -393,6 +396,40 @@ jobs:
         run: |
           pnpm gen:tools:check
           pnpm gen:tools:md:check
+
+  # Type-aware lint gate (Phase 3, B4). The ONLY guard that catches a dropped
+  # `await` on the now-async assertCompanyAccess — a silent cross-tenant IDOR
+  # that `tsc` cannot see (a discarded `Promise<void>` is a valid statement, so
+  # typecheck passes while the 403 is bypassed). @typescript-eslint/
+  # no-floating-promises flags exactly that. ESLint is platform-independent, so
+  # the required Linux lane is sufficient. Routed through ci-required (never an
+  # independently-required branch-protection check), per the aggregator-gate rule.
+  lint:
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint server (no-floating-promises IDOR guard)
+        run: pnpm --filter @armyofagents/server lint
 
   e2e:
     runs-on: ubuntu-latest
@@ -694,7 +731,7 @@ jobs:
   # so this gate goes RED (drafts are unmergeable; a passing required check
   # there would be the footgun). Marking ready re-runs everything for real.
   ci-required:
-    needs: [changes, policy, brand-check, verify, e2e, e2e-pgvector, migrations]
+    needs: [changes, policy, brand-check, verify, lint, e2e, e2e-pgvector, migrations]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -706,11 +743,12 @@ jobs:
           R_POLICY: ${{ needs.policy.result }}
           R_BRAND: ${{ needs['brand-check'].result }}
           R_VERIFY: ${{ needs.verify.result }}
+          R_LINT: ${{ needs.lint.result }}
           R_E2E: ${{ needs.e2e.result }}
           R_E2E_PGVECTOR: ${{ needs['e2e-pgvector'].result }}
           R_MIGRATIONS: ${{ needs.migrations.result }}
         run: |
-          echo "code=$R_CODE | changes=$R_CHANGES policy=$R_POLICY brand-check=$R_BRAND verify=$R_VERIFY e2e=$R_E2E e2e-pgvector=$R_E2E_PGVECTOR migrations=$R_MIGRATIONS"
+          echo "code=$R_CODE | changes=$R_CHANGES policy=$R_POLICY brand-check=$R_BRAND verify=$R_VERIFY lint=$R_LINT e2e=$R_E2E e2e-pgvector=$R_E2E_PGVECTOR migrations=$R_MIGRATIONS"
           fail=0
           # Detector must have succeeded. Skipped (draft) => red, by design.
           if [ "$R_CHANGES" != "success" ]; then
@@ -731,7 +769,7 @@ jobs:
           # Heavy jobs required to pass ONLY when code changed. On a docs-only
           # PR (code=false) they are skipped, which is allowed.
           if [ "$R_CODE" = "true" ]; then
-            for kv in "verify=$R_VERIFY" "e2e=$R_E2E" "e2e-pgvector=$R_E2E_PGVECTOR" "migrations=$R_MIGRATIONS"; do
+            for kv in "verify=$R_VERIFY" "lint=$R_LINT" "e2e=$R_E2E" "e2e-pgvector=$R_E2E_PGVECTOR" "migrations=$R_MIGRATIONS"; do
               name="${kv%%=*}"; res="${kv#*=}"
               [ "$res" = "success" ] || { echo "::error::$name=$res (required for code changes)"; fail=1; }
             done

@@ -17,7 +17,7 @@ vi.mock("@armyofagents/db", () => ({
   },
 }));
 
-const { assertRole, assertDepartmentAccess, assertMemoryAccess, assertMemoryApproval } =
+const { assertHumanRole, assertRole, assertDepartmentAccess, assertMemoryAccess, assertMemoryApproval } =
   await import("../middleware/rbac.js");
 const { HttpError } = await import("../errors.js");
 
@@ -39,6 +39,14 @@ function makeReq(overrides: Record<string, unknown>) {
 }
 
 describe("RBAC Middleware", () => {
+  describe("assertHumanRole", () => {
+    it("rejects agents even though the legacy assertRole helper permits mixed actor workflows", async () => {
+      const db = createMockDb([]);
+      const req = makeReq({ type: "agent", agentId: "a1", companyId: "c1" });
+      await expect(assertHumanRole(db, req, "c1", "founder")).rejects.toMatchObject({ status: 403 });
+    });
+  });
+
   describe("assertRole", () => {
     it("allows local_implicit (local_trusted mode)", async () => {
       const db = createMockDb([]);

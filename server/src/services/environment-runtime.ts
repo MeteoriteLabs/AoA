@@ -36,6 +36,11 @@ export interface EnvironmentDriverAcquireInput {
   issueId: string | null;
   heartbeatRunId: string | null;
   persistedExecutionWorkspace: PersistedExecutionWorkspaceRef | null;
+  // Deployment-mode-aware sandbox hardening (P5 SSRF residual). When the run executes
+  // on SHARED multi-tenant infra, the tenant-authored gVisor environment config must
+  // not weaken the sandbox; on self-hosted it is honored. Resolved once by the
+  // orchestrator; defaults to fail-closed hardening when absent.
+  multiTenant?: boolean;
 }
 
 export interface EnvironmentDriverReleaseInput {
@@ -179,9 +184,22 @@ function readString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
-function resolveDockerSandboxConfig(environment: Pick<Environment, "config">): Record<string, unknown> {
+export function resolveDockerSandboxConfig(
+  environment: Pick<Environment, "config">,
+  opts: { multiTenant?: boolean } = {},
+): Record<string, unknown> {
   const config = readObject(environment.config);
   const provider = readString(config.provider) ?? "sandbox-docker";
+  if (provider === "gvisor") {
+    // gVisor runs on the single-box sandbox-docker transport with a hardened,
+    // opt-in isolation profile. Normalize via resolveGvisorSandboxTarget so the
+    // lease metadata carries type/runtime/network/isolation/allowHostGateway for
+    // the downstream exec-target -> buildDockerRunArgs path. The multiTenant flag
+    // threads the deployment-mode-aware hardening (see resolveGvisorSandboxTarget).
+    // Non-gvisor docker providers below are untouched (byte-identical legacy behavior).
+    const target = resolveGvisorSandboxTarget(config, { multiTenant: opts.multiTenant });
+    return { ...config, ...target, provider: "sandbox-docker" };
+  }
   if (provider !== "sandbox-docker" && provider !== "docker" && provider !== "local-docker") {
     throw new Error(`Unsupported sandbox provider "${provider}"`);
   }
@@ -196,8 +214,62 @@ function resolveDockerSandboxConfig(environment: Pick<Environment, "config">): R
   };
 }
 
+export function resolveGvisorSandboxTarget(
+  config: Record<string, unknown>,
+  // Whether this run executes on SHARED multi-tenant infra. gVisor ENVIRONMENTS are
+  // always tenant-authored (company-scoped `environments.config`), so on shared infra
+  // this config must NOT be able to weaken the sandbox (the SSRF residual: a tenant
+  // gVisor config setting allowHostGateway:true / network:"bridge"|"host" / turning off
+  // capDropAll/readOnlyRootfs/noNewPrivileges would reach buildDockerRunArgs). On the
+  // founder's OWN box (self-hosted) the config is trusted and honored exactly.
+  // Fail-closed default (`true`) hardens when a caller forgets to thread it.
+  opts: { multiTenant?: boolean } = {},
+): {
+  type: "sandbox-docker";
+  image: string;
+  workdir: string;
+  network: "none" | "bridge" | "host";
+  runtime: "runsc";
+  allowHostGateway: boolean;
+  isolation: Record<string, unknown>;
+} {
+  const multiTenant = opts.multiTenant ?? true;
+  const image = readString(config.image);
+  if (!image) throw new Error("gVisor environments require config.image.");
+  const iso = (config.isolation && typeof config.isolation === "object" && !Array.isArray(config.isolation)
+    ? (config.isolation as Record<string, unknown>)
+    : {});
+  const networkRaw = readString(config.network) ?? "none";
+  const requestedNetwork = networkRaw === "bridge" || networkRaw === "host" ? networkRaw : "none";
+  const defaultTmpfs = ["/tmp:rw,noexec,nosuid,size=64m", "/home/agent:rw,nosuid,size=256m"];
+  // SECURITY (P5 residual): on shared infra force the hardened profile regardless of
+  // the tenant-authored config; on self-hosted honor config (byte-identical to pre-P5).
+  return {
+    type: "sandbox-docker",
+    image,
+    workdir: readString(config.workdir) ?? "/workspace",
+    network: multiTenant ? "none" : requestedNetwork,
+    runtime: "runsc",
+    allowHostGateway: multiTenant ? false : config.allowHostGateway === true,
+    isolation: {
+      user: multiTenant ? "1000:1000" : (readString(iso.user) ?? "1000:1000"),
+      capDropAll: multiTenant ? true : iso.capDropAll !== false,
+      noNewPrivileges: multiTenant ? true : iso.noNewPrivileges !== false,
+      seccompProfile: multiTenant ? null : readString(iso.seccompProfile),
+      readOnlyRootfs: multiTenant ? true : iso.readOnlyRootfs !== false,
+      tmpfs: multiTenant
+        ? defaultTmpfs
+        : (Array.isArray(iso.tmpfs) && iso.tmpfs.length > 0 ? iso.tmpfs : defaultTmpfs),
+      memory: multiTenant ? "2g" : (readString(iso.memory) ?? "2g"),
+      cpus: multiTenant ? "2" : (readString(iso.cpus) ?? "2"),
+      pidsLimit: multiTenant ? 512 : (typeof iso.pidsLimit === "number" ? iso.pidsLimit : 512),
+      ipcPrivate: multiTenant ? true : iso.ipcPrivate !== false,
+    },
+  };
+}
+
 function isDockerSandboxProvider(provider: string): boolean {
-  return provider === "sandbox-docker" || provider === "docker" || provider === "local-docker";
+  return provider === "sandbox-docker" || provider === "docker" || provider === "local-docker" || provider === "gvisor";
 }
 
 type RuntimeProviderKeyResolver = Pick<ReturnType<typeof runtimeProviderKeyService>, "resolveCredential">;
@@ -308,7 +380,7 @@ function createSandboxDockerEnvironmentDriver(
         }
       }
 
-      const sandboxConfig = resolveDockerSandboxConfig(input.environment);
+      const sandboxConfig = resolveDockerSandboxConfig(input.environment, { multiTenant: input.multiTenant });
       return normalizeEnvironmentLease(await environmentsSvc.acquireLease({
         companyId: input.companyId,
         environmentId: input.environment.id,

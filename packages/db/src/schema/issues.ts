@@ -124,7 +124,9 @@ export const issues = pgTable(
     ),
     parentIdx: index("issues_company_parent_idx").on(table.companyId, table.parentId),
     projectIdx: index("issues_company_project_idx").on(table.companyId, table.projectId),
-    identifierIdx: uniqueIndex("issues_identifier_idx").on(table.identifier),
+    // Per-company (Phase 1): issue_counter is per-company, so PAP-1 is unique
+    // within a company even when two companies (in different Orgs) share prefix.
+    identifierIdx: uniqueIndex("issues_identifier_idx").on(table.companyId, table.identifier),
     originRoutineUq: index("issues_open_routine_execution_uq")
       .on(table.originKind, table.originId)
       .where(sql`origin_kind IS NOT NULL AND status NOT IN ('done', 'cancelled')`),

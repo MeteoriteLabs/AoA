@@ -11,6 +11,7 @@ vi.mock("../routes/authz.js", () => ({
 
 vi.mock("../middleware/rbac.js", () => ({
   assertRole: vi.fn().mockResolvedValue(undefined),
+  assertHumanRole: vi.fn().mockResolvedValue(undefined),
 }));
 
 const { mockCreateJob, mockGetJob } = vi.hoisted(() => ({

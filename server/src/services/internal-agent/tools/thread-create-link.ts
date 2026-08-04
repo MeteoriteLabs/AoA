@@ -3,7 +3,8 @@
 // Task C2 batch 1 — `thread.createLink` (action tool).
 // Creates a typed link between two threads in `thread_links`.
 
-import { threadLinks } from "@armyofagents/db";
+import { and, eq, inArray } from "drizzle-orm";
+import { discussions, threadLinks } from "@armyofagents/db";
 import { THREAD_LINK_KINDS } from "@armyofagents/shared";
 import type { AgentTool } from "../types.js";
 
@@ -64,6 +65,14 @@ export const threadCreateLinkTool: AgentTool = {
         summary: `Invalid kind: ${kind}. Valid: ${THREAD_LINK_KINDS.join(", ")}`,
         error: "INVALID_KIND",
       };
+    }
+    const endpointIds = [...new Set([fromId, toId])];
+    const scopedEndpoints = await ctx.db
+      .select({ id: discussions.id })
+      .from(discussions)
+      .where(and(inArray(discussions.id, endpointIds), eq(discussions.companyId, ctx.companyId)));
+    if (!Array.isArray(scopedEndpoints) || scopedEndpoints.length !== endpointIds.length) {
+      return { success: false, data: null, summary: "Thread not found", error: "NOT_FOUND" };
     }
     const inserted = await ctx.db
       .insert(threadLinks)

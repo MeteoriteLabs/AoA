@@ -12,6 +12,7 @@ vi.mock("../../../api/projects", () => ({
 }));
 
 const agentsList = vi.hoisted(() => vi.fn(async () => [] as unknown[]));
+const agentsPause = vi.hoisted(() => vi.fn(async () => ({ status: "paused" })));
 const agentsCreate = vi.hoisted(() =>
   vi.fn(async (_companyId: string, data: Record<string, unknown>) => ({
     id: `agent-${(data.name as string).toLowerCase().replace(/\s+/g, "-")}`,
@@ -20,7 +21,7 @@ const agentsCreate = vi.hoisted(() =>
   })),
 );
 vi.mock("../../../api/agents", () => ({
-  agentsApi: { list: agentsList, create: agentsCreate },
+  agentsApi: { list: agentsList, create: agentsCreate, pause: agentsPause },
 }));
 
 const getCatalog = vi.hoisted(() =>
@@ -107,6 +108,27 @@ describe("CreateAgents (WS7 — In-flight standalone surface)", () => {
     expect(assignAgent).toHaveBeenCalledWith("dept-1", "agent-software-lead", "c1");
     expect((await screen.findAllByText("Created")).length).toBeGreaterThan(0);
     expect(advanceOnboarding).not.toHaveBeenCalled();
+  });
+
+  it("creates cloud agents paused until an E2B environment is attached", async () => {
+    render(<CreateAgents companyId="c1" deploymentMode="cloud_auth" onDone={vi.fn()} />);
+    await screen.findByDisplayValue("Software Lead");
+
+    expect(screen.getByText(/attach an e2b environment before enabling them/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Create & assign" }));
+
+    await waitFor(() => expect(agentsCreate).toHaveBeenCalled());
+    expect(agentsCreate).toHaveBeenCalledWith(
+      "c1",
+      expect.objectContaining({
+        runtimeConfig: expect.objectContaining({
+          heartbeat: expect.objectContaining({ enabled: false, wakeOnDemand: false }),
+        }),
+      }),
+    );
+    await waitFor(() => expect(agentsPause).toHaveBeenCalledWith("agent-software-lead", "c1"));
+    expect(agentsPause.mock.invocationCallOrder[0]).toBeLessThan(assignAgent.mock.invocationCallOrder[0]!);
+    expect(screen.queryByRole("button", { name: "Pick from marketplace" })).not.toBeInTheDocument();
   });
 
   it("is idempotent — reuses an existing same-named org agent instead of creating a new one", async () => {

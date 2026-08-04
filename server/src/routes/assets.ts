@@ -22,6 +22,7 @@ import {
 import { officeRenderLimiter } from "../middleware/rate-limit.js";
 import { HttpError } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { resolveStorageTenant } from "./authz-tenant.js";
 
 const MAX_ASSET_IMAGE_BYTES = Number(process.env.AOA_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
 // General asset upload contract (artifacts, API consumers, uploadFileArtifact):
@@ -66,7 +67,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
 
   router.post("/companies/:companyId/assets/images", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     try {
       await runSingleFileUpload(req, res);
@@ -108,6 +109,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
     const actor = getActorInfo(req);
     const stored = await storage.putFile({
       companyId,
+      organizationId: await resolveStorageTenant(db, companyId),
       namespace: `assets/${namespaceSuffix}`,
       originalFilename: file.originalname || null,
       contentType,
@@ -175,7 +177,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
 
   router.post("/companies/:companyId/assets/files", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     try {
       await runSingleFileUploadLarge(req, res);
@@ -241,6 +243,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
     const actor = getActorInfo(req);
     const stored = await storage.putFile({
       companyId,
+      organizationId: await resolveStorageTenant(db, companyId),
       namespace: `assets/${namespaceSuffix}`,
       originalFilename: file.originalname || null,
       contentType,
@@ -297,7 +300,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
   // ── Logo upload ─────────────────────────────────────────────────────
   router.post("/companies/:companyId/logo", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     try {
       await runSingleFileUpload(req, res);
@@ -332,6 +335,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
     const actor = getActorInfo(req);
     const stored = await storage.putFile({
       companyId,
+      organizationId: await resolveStorageTenant(db, companyId),
       namespace: "assets/logos",
       originalFilename: file.originalname || null,
       contentType,
@@ -371,7 +375,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
 
   router.delete("/companies/:companyId/logo", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     await db.update(companies).set({ logoAssetId: null }).where(eq(companies.id, companyId));
 
@@ -388,7 +392,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
       res.status(404).json({ error: "Asset not found" });
       return;
     }
-    assertCompanyAccess(req, asset.companyId);
+    await assertCompanyAccess(db, req, asset.companyId);
 
     res.json({
       id: asset.id,
@@ -406,9 +410,13 @@ export function assetRoutes(db: Db, storage: StorageService) {
       res.status(404).json({ error: "Asset not found" });
       return;
     }
-    assertCompanyAccess(req, asset.companyId);
+    await assertCompanyAccess(db, req, asset.companyId);
 
-    const object = await storage.getObject(asset.companyId, asset.objectKey);
+    const object = await storage.getObject(
+      await resolveStorageTenant(db, asset.companyId),
+      asset.companyId,
+      asset.objectKey,
+    );
     const safe = getSafeServingHeaders(
       asset.contentType || object.contentType,
       asset.originalFilename,
@@ -443,7 +451,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
         res.status(404).json({ error: "Asset not found" });
         return;
       }
-      assertCompanyAccess(req, asset.companyId);
+      await assertCompanyAccess(db, req, asset.companyId);
 
       const contentType = (asset.contentType || "").toLowerCase();
       if (contentType !== DOCX_MIME && contentType !== XLSX_MIME) {
@@ -458,7 +466,11 @@ export function assetRoutes(db: Db, storage: StorageService) {
       // buffer length as the authoritative guard (in case byteSize is stale/0).
       assertOfficeRenderSize(asset.byteSize ?? 0);
 
-      const object = await storage.getObject(asset.companyId, asset.objectKey);
+      const object = await storage.getObject(
+      await resolveStorageTenant(db, asset.companyId),
+      asset.companyId,
+      asset.objectKey,
+    );
       const buffer = await streamToBuffer(object.stream);
       const html =
         contentType === XLSX_MIME

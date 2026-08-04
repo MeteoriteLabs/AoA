@@ -100,11 +100,19 @@ export function DefineDepartments({ companyId, onDone }: DefineDepartmentsProps)
 
   /** Always-current mirror of `departments`, read inside `submitAll`'s
    * sequential loop so each department's turn uses LIVE field values, never
-   * a snapshot frozen at the start of the whole submit. */
+   * a snapshot frozen at the start of the whole submit.
+   *
+   * Synced DURING render (the `useLatest` pattern), NOT via a passive effect.
+   * `submitAll` reads `departmentsRef.current` from a click handler; a passive
+   * `useEffect` sync lags one commit behind, so a handler could observe a
+   * stale row even when the committed DOM the caller just gated on is current
+   * — e.g. a not-yet-prefilled `localPath` (→ the workspace step throws
+   * "must be an absolute path" and `onDone` never fires) or a status still
+   * "idle" after a prior submit already flipped it to "created" (→ the
+   * department gets re-created). Assigning during render keeps the mirror
+   * consistent with the render being committed, removing that settle race. */
   const departmentsRef = useRef<DeptDraft[]>(departments);
-  useEffect(() => {
-    departmentsRef.current = departments;
-  }, [departments]);
+  departmentsRef.current = departments;
 
   /** Guards against `onDone` firing more than once in a mounted lifecycle —
    * e.g. the founder clicking Continue again after every department already

@@ -37,14 +37,14 @@ interface ConfirmInput {
   actor: ActorInfo;
   body: { artifactId?: string; title?: string; type?: string; changelog?: string };
   /** Authorization gate, invoked with the company that owns the run (under lock). */
-  assertAccess: (companyId: string) => void;
+  assertAccess: (companyId: string) => Promise<void>;
 }
 
 interface DismissInput {
   runId: string;
   index: number;
   /** Authorization gate, invoked with the company that owns the run (under lock). */
-  assertAccess: (companyId: string) => void;
+  assertAccess: (companyId: string) => Promise<void>;
 }
 
 type CoreResult<TOk> = { ok: true; value: TOk } | { ok: false; status: number; error: string };
@@ -95,7 +95,7 @@ export async function confirmDetectedOutputCore(
     if (!run) {
       return { ok: false, status: 404, error: "Heartbeat run not found" };
     }
-    assertAccess(run.companyId);
+    await assertAccess(run.companyId);
 
     const outputs = run.detectedOutputs as unknown as DetectedOutput[] | null;
     if (!outputs || index >= outputs.length) {
@@ -265,7 +265,7 @@ export async function dismissDetectedOutputCore(
     if (!run) {
       return { ok: false, status: 404, error: "Heartbeat run not found" };
     }
-    assertAccess(run.companyId);
+    await assertAccess(run.companyId);
 
     const outputs = run.detectedOutputs as unknown as DetectedOutput[] | null;
     if (!outputs || index >= outputs.length) {
@@ -315,7 +315,7 @@ export function outputDetectionRoutes(db: Db) {
       res.status(404).json({ error: "Task not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(db, req, issue.companyId);
 
     // Query runs that have detected outputs for this issue
     const runs = await db
@@ -369,7 +369,7 @@ export function outputDetectionRoutes(db: Db) {
       res.status(404).json({ error: "Heartbeat run not found" });
       return;
     }
-    assertCompanyAccess(req, run.companyId);
+    await assertCompanyAccess(db, req, run.companyId);
 
     const outputs = (run.detectedOutputs as unknown as DetectedOutput[] | null) ?? [];
     const result: DetectedOutputForUI[] = outputs.map((o, i) => ({
@@ -401,7 +401,7 @@ export function outputDetectionRoutes(db: Db) {
         index,
         actor,
         body: req.body,
-        assertAccess: (companyId) => assertCompanyAccess(req, companyId),
+        assertAccess: async (companyId) => { await assertCompanyAccess(db, req, companyId); },
       });
 
       if (!result.ok) {
@@ -426,7 +426,7 @@ export function outputDetectionRoutes(db: Db) {
     const result = await dismissDetectedOutputCore(db, {
       runId,
       index,
-      assertAccess: (companyId) => assertCompanyAccess(req, companyId),
+      assertAccess: async (companyId) => { await assertCompanyAccess(db, req, companyId); },
     });
 
     if (!result.ok) {

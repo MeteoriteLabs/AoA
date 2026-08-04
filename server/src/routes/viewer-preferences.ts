@@ -30,7 +30,7 @@ export function viewerPreferencesRoutes(db: Db) {
 
   router.get("/companies/:companyId/viewer-preferences/me", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const userId = requireBoardUserId(req, res);
     const row = await getViewerPreference(db, userId, companyId);
     const resolved = await resolveViewerControl(db, companyId, userId);
@@ -46,7 +46,7 @@ export function viewerPreferencesRoutes(db: Db) {
     validate(updateViewerPreferenceSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const userId = requireBoardUserId(req, res);
       await upsertViewerPreference(db, userId, companyId, req.body.viewerControlLevel);
       const resolved = await resolveViewerControl(db, companyId, userId);

@@ -8,8 +8,9 @@ import { describe, expect, it, vi } from "vitest";
 import { threadSetIntentTool } from "../services/internal-agent/tools/thread-set-intent.js";
 import type { ToolContext } from "../services/internal-agent/types.js";
 
-function makeDb() {
-  const setMock = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) });
+function makeDb(updatedRows: any[] = [{ id: "t-1" }]) {
+  const returning = vi.fn().mockResolvedValue(updatedRows);
+  const setMock = vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning }) });
   const update = vi.fn().mockReturnValue({ set: setMock });
   return { db: { update } as any, setMock };
 }
@@ -92,5 +93,14 @@ describe("thread.setIntent tool (C2 batch 1)", () => {
     expect(result.success).toBe(true);
     const setCall = setMock.mock.calls[0][0];
     expect(setCall.intent).toEqual([]);
+  });
+
+  it("fails closed without leaking when the thread is outside the company", async () => {
+    const { db, setMock } = makeDb([]);
+    const result = await threadSetIntentTool.execute(
+      { threadId: "foreign-thread", intent: ["planning"] }, makeCtx(db),
+    );
+    expect(result).toMatchObject({ success: false, error: "NOT_FOUND" });
+    expect(setMock).toHaveBeenCalledOnce();
   });
 });

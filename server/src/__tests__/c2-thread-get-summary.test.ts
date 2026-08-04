@@ -96,6 +96,13 @@ describe("get_thread_summary tool (C2 batch 1)", () => {
     expect(result.error).toBe("NOT_FOUND");
   });
 
+  it("returns the same NOT_FOUND result for a thread outside the company", async () => {
+    const result = await getThreadSummaryTool.execute(
+      { threadId: "foreign-thread" }, makeCtx(makeDbWithTwoSelects([], [])),
+    );
+    expect(result).toMatchObject({ success: false, error: "NOT_FOUND" });
+  });
+
   it("returns INVALID_PARAMS when threadId is missing", async () => {
     const ctx = makeCtx(makeDbWithTwoSelects([], []));
     const result = await getThreadSummaryTool.execute({}, ctx);

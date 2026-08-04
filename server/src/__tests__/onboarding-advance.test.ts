@@ -48,7 +48,7 @@ describe("computeAdvance (Stage B / B3 + revC RC1)", () => {
       [
         "AUTHENTICATED",
         "PROFILE_SET",
-        "ORGANIZATION_CREATED",
+        "COMPANY_CREATED",
         "ENVIRONMENT_READY",
         "COMMANDER_SELECTED",
         "COMMANDER_VERIFIED",
@@ -61,7 +61,7 @@ describe("computeAdvance (Stage B / B3 + revC RC1)", () => {
       newCompleted: [
         "AUTHENTICATED",
         "PROFILE_SET",
-        "ORGANIZATION_CREATED",
+        "COMPANY_CREATED",
         "ENVIRONMENT_READY",
         "COMMANDER_SELECTED",
         "COMMANDER_VERIFIED",
@@ -74,7 +74,7 @@ describe("computeAdvance (Stage B / B3 + revC RC1)", () => {
     const completed: typeof ORDER = [
       "AUTHENTICATED",
       "PROFILE_SET",
-      "ORGANIZATION_CREATED",
+      "COMPANY_CREATED",
       "ENVIRONMENT_READY",
       "COMMANDER_SELECTED",
       "COMMANDER_VERIFIED",
@@ -175,9 +175,30 @@ describe("advanceState (Stage B / B3 + revC RC1)", () => {
     });
     expect(r).toEqual({
       status: "illegal",
-      reason: "state ORGANIZATION_CREATED not in journey",
+      reason: "state COMPANY_CREATED not in journey",
     });
     expect(db._row().currentState).toBe("PROFILE_SET");
+  });
+
+  it("accepts the legacy organization state alias but persists the canonical company state", async () => {
+    const db = fakeDb({
+      start: {
+        journey: "founder",
+        currentState: "PROFILE_SET",
+        completedStates: ["AUTHENTICATED", "PROFILE_SET"],
+      },
+    });
+    const r = await advanceState(db, {
+      userId: "u1",
+      companyId: null,
+      journey: "founder",
+      requestedState: "ORGANIZATION_CREATED",
+    });
+
+    expect(r.status).toBe("ok");
+    expect(db._row().currentState).toBe("COMPANY_CREATED");
+    expect(db._row().completedStates).toContain("COMPANY_CREATED");
+    expect(db._row().completedStates).not.toContain("ORGANIZATION_CREATED");
   });
 
   it("retries after one optimistic conflict, then succeeds", async () => {

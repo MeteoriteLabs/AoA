@@ -5,7 +5,7 @@ import type { Db } from "@armyofagents/db";
 import type { StorageService } from "../storage/types.js";
 import { fileImportService, SUPPORTED_MIME_TYPES } from "../services/file-import.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
-import { assertRole } from "../middleware/rbac.js";
+import { assertHumanRole } from "../middleware/rbac.js";
 
 const SUPPORTED_MIME_TYPES_SET = new Set<string>(SUPPORTED_MIME_TYPES);
 
@@ -36,8 +36,8 @@ export function fileImportRoutes(db: Db, storageService: StorageService) {
     async (req, res, next) => {
       try {
         const companyId = req.params.companyId as string;
-        assertCompanyAccess(req, companyId);
-        await assertRole(db, req, companyId, "founder");
+        await assertCompanyAccess(db, req, companyId);
+        await assertHumanRole(db, req, companyId, "founder");
 
         try {
           await runSingleFileUpload(req, res);
@@ -111,7 +111,7 @@ export function fileImportRoutes(db: Db, storageService: StorageService) {
       try {
         const companyId = req.params.companyId as string;
         const jobId = req.params.jobId as string;
-        assertCompanyAccess(req, companyId);
+        await assertCompanyAccess(db, req, companyId);
 
         const job = await svc.getJob(companyId, jobId);
         if (!job) {

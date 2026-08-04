@@ -1,6 +1,10 @@
 export { companies } from "./companies.js";
+export { organizations } from "./organizations.js";
+export { organizationMemberships } from "./organization_memberships.js";
+export { organizationInvitations } from "./organization_invitations.js";
 export { authUsers, authSessions, authAccounts, authVerifications } from "./auth.js";
 export { instanceUserRoles } from "./instance_user_roles.js";
+export { operatorBreakGlassGrants } from "./operator_break_glass_grants.js";
 export { agents } from "./agents.js";
 export { companyMemberships } from "./company_memberships.js";
 export { principalPermissionGrants } from "./principal_permission_grants.js";
@@ -131,8 +135,10 @@ export {
   providerCredentials,
   agentProviderCredentialBindings,
 } from "./provider_credentials.js";
+export { providerConnections, providerAssignments } from "./provider_connections.js";
 export { providerReadinessStatus } from "./provider_readiness_status.js";
 export { executionWorkspaces } from "./execution_workspaces.js";
+export { executionTargets } from "./execution_targets.js";
 export { environments } from "./environments.js";
 export { onboardingProgress } from "./onboarding_progress.js";
 export { userProfiles, type UserProfileSocialLink } from "./user_profiles.js";

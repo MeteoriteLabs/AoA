@@ -18,6 +18,16 @@ const mockCreate = vi.hoisted(() =>
 );
 const ensureRealOperatorMock = vi.hoisted(() => vi.fn().mockResolvedValue("operator-user-id"));
 const materializeMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const ensureProfileMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const publishActivityMock = vi.hoisted(() => vi.fn());
+const seedNativeSkillsMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const ensureCommanderMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const createOutcome = vi.hoisted(() => ({ created: true }));
+
+vi.mock("../services/activity-log.js", () => ({
+  insertActivityLog: vi.fn(async (_db: unknown, input: unknown) => input),
+  publishActivityLogged: publishActivityMock,
+}));
 
 vi.mock("../services/index.js", () => ({
   companyService: () => ({
@@ -25,6 +35,19 @@ vi.mock("../services/index.js", () => ({
     stats: vi.fn(),
     getById: vi.fn(),
     create: mockCreate,
+    // P3: the route creates atomically via `createWithOperator`. Delegate to
+    // `mockCreate` for the company and provision the operator via the passed
+    // access factory, so ensureRealOperator runs and its id flows to Group B.
+    createWithOperator: vi.fn(async (input: any, opts: any, ownerUserId: any, buildAccess: any, recordActivity: any) => {
+      const company = await mockCreate(input, opts);
+      const operatorId = createOutcome.created
+        ? await buildAccess(undefined).ensureRealOperator(company.id, ownerUserId)
+        : "operator-user-id";
+      const committedActivity = createOutcome.created
+        ? await recordActivity(undefined, company, operatorId)
+        : null;
+      return { company, operatorId, created: createOutcome.created, committedActivity };
+    }),
     update: vi.fn(),
     archive: vi.fn(),
     remove: vi.fn(),
@@ -45,14 +68,15 @@ vi.mock("../services/index.js", () => ({
 
 vi.mock("../services/team.js", () => ({
   materializeCompanyProfileFromGlobal: materializeMock,
+  ensureCompanyProfileFromGlobal: ensureProfileMock,
 }));
 
 vi.mock("../services/internal-agent/aoa-skills-seeder.js", () => ({
-  seedAoaNativeSkills: vi.fn().mockResolvedValue(undefined),
+  seedAoaNativeSkills: seedNativeSkillsMock,
 }));
 
 vi.mock("../services/internal-agent/aoa-agents/ensure-commander.js", () => ({
-  ensureCommanderAgent: vi.fn().mockResolvedValue(undefined),
+  ensureCommanderAgent: ensureCommanderMock,
 }));
 
 vi.mock("../middleware/logger.js", () => ({
@@ -84,6 +108,12 @@ describe("POST /api/companies — founder company profile seeding", () => {
     ensureRealOperatorMock.mockClear();
     materializeMock.mockReset();
     materializeMock.mockResolvedValue(undefined);
+    ensureProfileMock.mockReset();
+    ensureProfileMock.mockResolvedValue(undefined);
+    publishActivityMock.mockReset();
+    seedNativeSkillsMock.mockClear();
+    ensureCommanderMock.mockClear();
+    createOutcome.created = true;
   });
 
   it("materializes the founder's company profile from their global profile using the operator id", async () => {
@@ -104,5 +134,33 @@ describe("POST /api/companies — founder company profile seeding", () => {
 
     expect(res.status).toBe(201);
     expect(materializeMock).toHaveBeenCalledOnce();
+    expect(ensureProfileMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps the 201 response when post-commit realtime publication fails", async () => {
+    publishActivityMock.mockImplementationOnce(() => {
+      throw new Error("socket unavailable");
+    });
+
+    const res = await request(makeApp()).post("/api/companies").send({ name: "TestCo" });
+
+    expect(res.status).toBe(201);
+    expect(publishActivityMock).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "company.created", entityId: "co-test" }),
+    );
+  });
+
+  it("reconciles idempotent bootstrap on replay without republishing create activity", async () => {
+    createOutcome.created = false;
+
+    const res = await request(makeApp()).post("/api/companies").send({ name: "TestCo" });
+
+    expect(res.status).toBe(201);
+    expect(ensureRealOperatorMock).not.toHaveBeenCalled();
+    expect(materializeMock).not.toHaveBeenCalled();
+    expect(ensureProfileMock).toHaveBeenCalledOnce();
+    expect(seedNativeSkillsMock).toHaveBeenCalledOnce();
+    expect(ensureCommanderMock).toHaveBeenCalledOnce();
+    expect(publishActivityMock).not.toHaveBeenCalled();
   });
 });

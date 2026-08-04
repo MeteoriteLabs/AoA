@@ -23,6 +23,7 @@ import {
 } from "../services/marketplace-install/orchestrator.js";
 import { PackageInstallError } from "../services/marketplace-install/package-installer.js";
 import type { CatalogItem, MarketplaceCatalogFile, MarketplacePackage } from "@armyofagents/shared";
+import { CloudPluginExecutionBlockedError } from "../services/cloud-plugin-execution.js";
 
 const SKILL: CatalogItem = {
   id: "skill:aoa-curated/code-review", type: "skill", name: "Code Review", description: "...", version: "1.0.0",
@@ -311,6 +312,45 @@ describe("dispatchInstall", () => {
 
     expect(updateOp).toHaveBeenCalledWith("op-uuid-1", expect.objectContaining({ status: "failure", errorMessage: "fetch failed" }));
     expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: "marketplace.install.failed" }));
+  });
+
+  it("persists the stable cloud policy code and docs independently of message text", async () => {
+    const updateOp = vi.fn(async () => {});
+    const pluginItem = { ...SKILL, id: "plugin:test", type: "plugin" as const };
+
+    await dispatchInstall({
+      operation: {
+        id: "op-cloud",
+        catalogItemId: pluginItem.id,
+        itemType: "plugin",
+        companyId: "c1",
+      } as any,
+      catalogItem: pluginItem,
+      catalog: { ...CATALOG, items: [pluginItem] },
+      db: {} as any,
+      installers: {
+        installSkill: vi.fn(),
+        installAgent: vi.fn(),
+        installTeam: vi.fn(),
+        installPlugin: vi.fn(async () => {
+          const err = new CloudPluginExecutionBlockedError();
+          err.message = "A future localized diagnostic";
+          throw err;
+        }),
+      },
+      updateOperation: updateOp,
+      publishLiveEvent: vi.fn(),
+    });
+
+    expect(updateOp).toHaveBeenLastCalledWith(
+      "op-cloud",
+      expect.objectContaining({
+        status: "failure",
+        errorMessage: "A future localized diagnostic",
+        errorCode: "PLUGIN_WORKER_BLOCKED_IN_CLOUD",
+        errorDocs: "/docs/guides/cloud-plugin-execution",
+      }),
+    );
   });
 
   // T2.3 / D21 (Decision #111): a team install with NO targetDepartmentId is a

@@ -6,11 +6,13 @@ import type { DeploymentMode } from "@armyofagents/shared";
 import { eq } from "drizzle-orm";
 import type { Config } from "../config.js";
 import { resolveBetterAuthSigningSecret } from "../auth/better-auth.js";
+import { testSupportTokensMatch } from "../services/test-support-safety.js";
 
 /**
- * Session cookie name for the e2e session mint below. This router is mounted
- * ONLY in local_trusted + the dev escape hatch (see app.ts), where better-auth
- * runs with `useSecureCookies: false` (private exposure, no explicit https
+ * Session cookie name for the e2e session mint below. The legacy developer
+ * path is local_trusted-only; dedicated cloud e2e uses the separately
+ * authenticated AOA_E2E_TEST_SUPPORT seam. Both run on private loopback, where
+ * better-auth uses `useSecureCookies: false` (no explicit https
  * base URL — see buildBetterAuthConfig), so the cookie carries no `__Secure-`
  * prefix and the default `better-auth` prefix + `session_token` name apply.
  */
@@ -26,9 +28,20 @@ const SESSION_COOKIE_NAME = "better-auth.session_token";
 const SESSION_TTL_MS = 60 * 60 * 1000;
 
 /**
- * Test-only routes for e2e isolation. MOUNTED ONLY in local_trusted + the e2e
- * escape hatch (see app.ts) — never in authenticated mode. Each route is
- * self-scoped to req.actor (a spec can only reset its own state).
+ * Dedicated cloud e2e support is guarded at startup by
+ * assertTestSupportFlagSafe. The local_trusted developer escape hatch remains
+ * available for the existing browser suite.
+ */
+export function testSupportEnabled(deploymentMode: DeploymentMode): boolean {
+  return (
+    process.env.AOA_E2E_TEST_SUPPORT === "1" ||
+    (deploymentMode === "local_trusted" && process.env.AOA_DEV_LOCAL_IDENTITY === "1")
+  );
+}
+
+/**
+ * Test-only routes for e2e isolation. app.ts mounts this router only when one
+ * of the two explicit test-support gates is active.
  */
 export function testSupportRoutes(
   db: Db,
@@ -81,15 +94,33 @@ export function testSupportRoutes(
     // in app.ts is the primary gate, but a session-minting endpoint is
     // dangerous enough that a future mount refactor must not be able to expose
     // it silently. 404 (not 403) — don't advertise its existence.
-    if (
-      opts.deploymentMode !== "local_trusted" ||
-      process.env.AOA_DEV_LOCAL_IDENTITY !== "1"
-    ) {
+    if (!testSupportEnabled(opts.deploymentMode)) {
       res.status(404).json({ error: "Not found" });
       return;
     }
+    if (process.env.AOA_E2E_TEST_SUPPORT === "1") {
+      const expectedToken = process.env.AOA_E2E_TEST_SUPPORT_TOKEN?.trim() ?? "";
+      const authorization = req.header("authorization")?.trim() ?? "";
+      const match = /^Bearer\s+(.+)$/i.exec(authorization);
+      const presentedToken = match?.[1]?.trim() ?? "";
+      if (
+        !expectedToken ||
+        !presentedToken ||
+        !testSupportTokensMatch(expectedToken, presentedToken)
+      ) {
+        res.setHeader("WWW-Authenticate", "Bearer");
+        res.status(401).json({ error: "authentication required" });
+        return;
+      }
+    }
     const actor = req.actor;
-    if (actor.type !== "board" || !actor.userId) {
+    // The dedicated loopback-only seam must mint the first cloud_auth session,
+    // so it cannot require an existing board actor. The legacy local path
+    // retains its original actor requirement.
+    if (
+      process.env.AOA_E2E_TEST_SUPPORT !== "1" &&
+      (actor.type !== "board" || !actor.userId)
+    ) {
       res.status(401).json({ error: "authentication required" });
       return;
     }

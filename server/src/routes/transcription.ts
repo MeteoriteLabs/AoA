@@ -10,15 +10,15 @@ import { assertCompanyAccess } from "./authz.js";
  * 501 itself) and the original method+path so existing UI clients can detect
  * the deprecation and degrade gracefully.
  */
-export function transcriptionRoutes(_db: Db) {
+export function transcriptionRoutes(db: Db) {
   const router = Router();
 
   router.post(
     "/companies/:companyId/transcribe",
     transcribeLimiter,
-    (req, res) => {
+    async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       res.status(501).json({
         error: "transcription_not_available",
         message:

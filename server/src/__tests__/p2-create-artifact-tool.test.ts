@@ -36,7 +36,9 @@ describe("create_artifact tool (P2.5)", () => {
 
     return {
       select: vi.fn().mockReturnValue({
-        from: vi.fn().mockReturnValue({ where: whereMock }),
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({ where: whereMock }),
+        }),
       }),
       update: vi.fn().mockReturnValue({
         set: vi.fn().mockReturnValue({ where: whereMock }),
@@ -132,5 +134,15 @@ describe("create_artifact tool (P2.5)", () => {
 
     expect(result.success).toBe(true);
     expect(selectMock).not.toHaveBeenCalled();
+  });
+
+  it("does not attach to an entry outside the caller company", async () => {
+    const mockDb = makeAttachDb(null);
+    const result = await createArtifactTool().execute(
+      { title: "Design", type: "design", attachToEntryId: "foreign-entry" },
+      makeCtx({ db: mockDb }),
+    );
+    expect(result.success).toBe(true);
+    expect(mockDb.update).not.toHaveBeenCalled();
   });
 });

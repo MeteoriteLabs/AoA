@@ -51,6 +51,12 @@ vi.mock("../middleware/logger.js", () => ({
 
 vi.mock("../services/first-user-bootstrap.js", () => ({
   promoteFirstUserToInstanceAdmin: mockPromoteFirstUser,
+  // Mirrors the real chokepoint (server/src/services/first-user-bootstrap.ts)
+  // rather than importOriginal — that module also imports drizzle-orm's
+  // `and`/`eq`/`sql`, which would reintroduce the ESM cycle this file's mocks
+  // (above) exist to avoid. Pure logic, kept in lockstep with the real impl
+  // by dedicated coverage in instance-admin-bootstrap-gate.test.ts.
+  instanceAdminBootstrapEnabled: (mode: string) => mode !== "cloud_auth",
 }));
 
 const { createBetterAuthInstance, deriveAuthTrustedOrigins, buildBetterAuthConfig, assertAuthProviderConfigured } = await import("../auth/better-auth.js");

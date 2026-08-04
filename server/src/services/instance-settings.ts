@@ -14,9 +14,28 @@ import {
 import { eq } from "drizzle-orm";
 
 const DEFAULT_SINGLETON_KEY = "default";
+const MIGRATION_SNAPSHOTS_KEY = "migrationSnapshots";
+
+function splitStoredGeneralSettings(raw: unknown): {
+  publicSettings: unknown;
+  operationalMetadata: Record<string, unknown>;
+} {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return { publicSettings: raw, operationalMetadata: {} };
+  }
+
+  const publicSettings = { ...(raw as Record<string, unknown>) };
+  const operationalMetadata: Record<string, unknown> = {};
+  if (Object.prototype.hasOwnProperty.call(publicSettings, MIGRATION_SNAPSHOTS_KEY)) {
+    operationalMetadata[MIGRATION_SNAPSHOTS_KEY] = publicSettings[MIGRATION_SNAPSHOTS_KEY];
+    delete publicSettings[MIGRATION_SNAPSHOTS_KEY];
+  }
+  return { publicSettings, operationalMetadata };
+}
 
 function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
-  const parsed = instanceGeneralSettingsSchema.safeParse(raw ?? {});
+  const { publicSettings } = splitStoredGeneralSettings(raw);
+  const parsed = instanceGeneralSettingsSchema.safeParse(publicSettings ?? {});
   if (parsed.success) {
     return {
       censorUsernameInLogs: parsed.data.censorUsernameInLogs ?? false,
@@ -105,6 +124,7 @@ export function instanceSettingsService(db: Db) {
 
     updateGeneral: async (patch: PatchInstanceGeneralSettings): Promise<InstanceSettings> => {
       const current = await getOrCreateRow();
+      const { operationalMetadata } = splitStoredGeneralSettings(current.general);
       const nextGeneral = normalizeGeneralSettings({
         ...normalizeGeneralSettings(current.general),
         ...patch,
@@ -113,7 +133,7 @@ export function instanceSettingsService(db: Db) {
       const [updated] = await db
         .update(instanceSettings)
         .set({
-          general: { ...nextGeneral },
+          general: { ...nextGeneral, ...operationalMetadata },
           updatedAt: now,
         })
         .where(eq(instanceSettings.id, current.id))

@@ -6,11 +6,12 @@ import type { APIRequestContext, Browser, BrowserContext } from "@playwright/tes
  * local_trusted e2e has exactly ONE implicit identity — the synthetic
  * local-board actor every cookie-less request resolves to. Testing the invited
  * journey needs a SECOND authenticated user, and Google (the sole sign-in
- * provider) can't run in CI. `POST /api/test-support/session` (mounted only in
- * local_trusted + AOA_DEV_LOCAL_IDENTITY) mints a verified better-auth user +
- * session and returns the signed session cookie; a browser context carrying it
- * acts as that user (a resolved better-auth session OVERRIDES the local-board
- * escape hatch in actorMiddleware).
+ * provider) can't run in CI. `POST /api/test-support/session` mints a verified
+ * better-auth user + session and returns the signed session cookie. The legacy
+ * local_trusted path relies on its board actor; dedicated cloud e2e sends the
+ * per-run AOA_E2E_TEST_SUPPORT_TOKEN below. A browser context carrying the
+ * cookie acts as that user (a resolved better-auth session OVERRIDES the
+ * local-board escape hatch in actorMiddleware).
  */
 
 // Mirrors playwright.config.ts — browser.newContext() does NOT inherit the
@@ -38,7 +39,13 @@ export async function mintIdentity(
   request: APIRequestContext,
   opts: { email: string; name?: string },
 ): Promise<MintedIdentity> {
-  const res = await request.post("/api/test-support/session", { data: opts });
+  const testSupportToken = process.env.AOA_E2E_TEST_SUPPORT_TOKEN?.trim();
+  const res = await request.post("/api/test-support/session", {
+    data: opts,
+    ...(testSupportToken
+      ? { headers: { Authorization: `Bearer ${testSupportToken}` } }
+      : {}),
+  });
   if (!res.ok()) {
     throw new Error(
       `mintIdentity failed: ${res.status()} ${await res.text().catch(() => "")}`,

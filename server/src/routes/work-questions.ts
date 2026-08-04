@@ -36,7 +36,7 @@ export function workQuestionRoutes(db: Db) {
 
   router.get("/companies/:companyId/work-questions", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const actor = boardActor(req);
     const query = listWorkQuestionsSchema.parse(req.query);
     const hasSourceFilter = Boolean(
@@ -59,7 +59,7 @@ export function workQuestionRoutes(db: Db) {
 
   router.get("/companies/:companyId/work-questions/inline", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const actor = boardActor(req);
     const query = listWorkQuestionsSchema.parse(req.query);
     const hasSourceFilter = Boolean(
@@ -82,7 +82,7 @@ export function workQuestionRoutes(db: Db) {
 
   router.get("/companies/:companyId/work-questions/:id", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     res.json(await questions.getDetailForUser(companyId, req.params.id as string, boardActor(req)));
   });
 
@@ -92,7 +92,7 @@ export function workQuestionRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const questionId = req.params.id as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const actor = boardActor(req);
       const result = await questions.answer(companyId, questionId, actor, req.body);
       res.json(result);
@@ -105,7 +105,7 @@ export function workQuestionRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const questionId = req.params.id as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const actor = boardActor(req);
       const result = await questions.reassign(
         companyId,
@@ -124,7 +124,7 @@ export function workQuestionRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const questionId = req.params.id as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const actor = boardActor(req);
       const result = await questions.takeOver(companyId, questionId, actor, req.body.expectedVersion);
       res.json(result);
@@ -137,7 +137,7 @@ export function workQuestionRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const questionId = req.params.id as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const actor = boardActor(req);
       const result = await questions.retryContinuation(companyId, questionId, actor, req.body.expectedVersion);
       res.json(result);
@@ -150,7 +150,7 @@ export function workQuestionRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const questionId = req.params.id as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const actor = boardActor(req);
       const result = await questions.cancelByUser(companyId, questionId, actor, req.body.expectedVersion);
       res.json(result);

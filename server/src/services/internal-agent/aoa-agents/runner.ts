@@ -11,7 +11,8 @@ import { stripUserMcpArgs } from "../../mcp-arg-sanitize.js";
 import { resolveAgentConnectors } from "../../mcp-connectors-loader.js";
 import { adapterSupportsConnectors } from "../../mcp-connectors.js";
 import type { McpServerSpec } from "@armyofagents/adapter-utils";
-import { resolveAdapterExecutionContext } from "../../heartbeat.js";
+import { resolveGuardedAdapterExecutionContext } from "../../heartbeat.js";
+import { tenantIsolationEnforced } from "../../../config/deployment-mode.js";
 import { resolveBridgeEntrypoint } from "./bridge-path.js";
 import { publishLiveEvent, publishIssueStatusChanged, threadWorkingAgents, broadcastThreadPresence } from "../../live-events.js";
 import { logger } from "../../../middleware/logger.js";
@@ -515,22 +516,96 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     // normalized to binding objects, and codex-local copies only STRING env into
     // the child — so an unresolved per-agent OPENAI_API_KEY would be detected as
     // apikey here yet never reach the codex child, breaking the run. Mirror the
-    // org (heartbeat) + probe paths. resolveEnvBindings no-ops to {} for agents
-    // with no env; a missing secret throws → recorded as a failed run by the
-    // outer catch (correct — the run can't proceed without the configured key).
-    // (Codex P2.)
-    const runtimeBaseConfig = await secretService(db).resolveAdapterConfigForRuntime(
-      agent.companyId,
-      agent.adapterType,
-      baseConfig,
-      { consumerType: "agent", consumerId: agent.id, actorType: "agent", actorId: agent.id },
+    // org (heartbeat) path. resolveEnvBindings no-ops to {} for agents with no
+    // env; a missing secret throws → recorded as a failed run by the outer catch
+    // (correct — the run can't proceed without the configured key). (Codex P2.)
+    //
+    // Resolve the AGENT's OWN env ONLY here — NOT the company-key fallback. The
+    // legacy company `provider:<id>` key is deferred to the unified resolver's
+    // Step 4 (via resolveDeps.legacyResolveConfig below), exactly like heartbeat
+    // (heartbeat.ts:3217/3222). Pre-injecting the company key into currentEnv
+    // would trip the resolver's Step-0 agent_env_override short-circuit
+    // (provider-resolution.ts:300-305) and MASK every provider_assignments row —
+    // agent_override / personal_execution_default / company_default / org_default,
+    // including a founder's explicit agent→connection pin. So the company-key
+    // fallback must run AFTER the assignment lookup, never before it.
+    const resolvedEnv = await secretService(db).resolveEnvBindings(agent.companyId, baseConfig.env, {
+      consumerType: "agent",
+      consumerId: agent.id,
+      actorType: "agent",
+      actorId: agent.id,
+    });
+
+    // Unified provider-credential resolution (Phase 4). Reads the new
+    // provider_connections model FIRST; falls back to the legacy company-key /
+    // subscription ladder when no assignment exists (STRANGLER). This is also where
+    // crew FINALLY honors a personal_subscription binding — the old runner path never
+    // called resolveAgentSubscriptionEnvironment. Plan's stale local names
+    // (`adapterDeploymentMode`/`adapterDeploymentExposure`) do not exist in this
+    // runner; deployment mode/exposure come from loadConfig() (same source
+    // providers.ts uses to build the topology).
+    const { resolveProviderCredential, applyResolvedCredential } = await import(
+      "../../provider-resolution.js"
+    );
+    const { buildResolveDeps } = await import("../../provider-resolution-deps.js");
+    const { resolveCliAuthTopology } = await import("../../cli-auth-topology.js");
+    const { loadConfig } = await import("../../../config.js");
+    const runnerDeployConfig = loadConfig();
+    const topology = resolveCliAuthTopology({
+      deploymentMode: runnerDeployConfig.deploymentMode,
+      deploymentExposure: runnerDeployConfig.deploymentExposure,
+    });
+    const providerId =
+      agent.adapterType === "codex_local"
+        ? "openai"
+        : agent.adapterType === "claude_local"
+          ? "anthropic"
+          : agent.adapterType;
+    const resolveDeps = {
+      ...buildResolveDeps(db, topology),
+      // Bind the legacy fallback to THIS adapter (deps default is identity).
+      legacyResolveConfig: async (cfg: Record<string, unknown>) =>
+        secretService(db).resolveAdapterConfigForRuntime(agent.companyId, agent.adapterType, cfg, {
+          consumerType: "agent",
+          consumerId: agent.id,
+          actorType: "agent",
+          actorId: agent.id,
+        }),
+    };
+    const resolvedCredential = await resolveProviderCredential(
+      db,
+      {
+        organizationId: null,
+        companyId: agent.companyId,
+        agentId: agent.id,
+        actorKind: "crew",
+        adapterType: agent.adapterType,
+        provider: providerId,
+        executionTargetId: process.env.AOA_EXECUTION_TARGET_ID?.trim() || "control-plane",
+        currentEnv: resolvedEnv,
+        context: {
+          consumerType: "agent",
+          consumerId: agent.id,
+          actorType: "agent",
+          actorId: agent.id,
+        },
+      },
+      resolveDeps,
+    );
+    // Reunite the resolver's credential patch with the agent's adapter config
+    // (command/cwd/model/args from baseConfig) + agent-only resolvedEnv — the
+    // resolver's Step 4 (legacyResolveConfig) is where the company key finally
+    // lands for the no-assignment case, so applyResolvedCredential carries it in.
+    const runtimeBaseConfigResolved = applyResolvedCredential(
+      { ...baseConfig, env: resolvedEnv } as Record<string, unknown>,
+      resolvedCredential,
     );
 
     let providerStatus: ProviderStatus;
     try {
       providerStatus = await getProviderStatus(
         agent.adapterType,
-        { companyId: agent.companyId, adapterConfig: runtimeBaseConfig },
+        { companyId: agent.companyId, adapterConfig: runtimeBaseConfigResolved },
         realProviderStatusDeps,
       );
     } catch (statusErr) {
@@ -545,7 +620,7 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     }
     const resolvedBaseConfig = applyModelResolutionToConfig(
       agent.adapterType,
-      runtimeBaseConfig,
+      runtimeBaseConfigResolved,
       providerStatus,
       { inheritedEnvOpenAiKey: process.env.OPENAI_API_KEY ?? null },
     );
@@ -579,8 +654,9 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       ? (resolvedConfigRecord[argKey] as unknown[]).filter((v): v is string => typeof v === "string")
       : prevArgs;
     // A29 — do NOT scrub: connector tokens merge ON TOP of the already
-    // secret-bound env. `resolvedBaseConfig` is post-resolveAdapterConfigForRuntime
-    // + applyModelResolutionToConfig (i.e. post-secret-binding), so merging here
+    // secret-bound env. `resolvedBaseConfig` is post provider-credential
+    // resolution (resolveEnvBindings + resolveProviderCredential) +
+    // applyModelResolutionToConfig (i.e. post-secret-binding), so merging here
     // is not re-scrubbed downstream. Only add the env override when connectors
     // actually exist so the no-connector case is byte-identical to the pre-task
     // delivery. `...connectorEnvMerge` is placed AFTER `...resolvedBaseConfig` (a
@@ -600,7 +676,18 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     const config = isClaudeFamily
       ? { ...resolvedBaseConfig, promptTemplate: triggerPrompt, ...connectorEnvMerge, [argKey]: ["--mcp-config", cfgPath, "--strict-mcp-config", ...stripUserMcpArgs(userTail)] }
       : { ...resolvedBaseConfig, promptTemplate: triggerPrompt, ...connectorEnvMerge };
-    const { executionTarget, runtimeCommandSpec } = resolveAdapterExecutionContext(config, adapter);
+    // Sink-level multi_tenant hardening (trustBoundary) + D1 unsandboxed gate
+    // (cloud_auth) for CREW runs. `topology` is already resolved above (:544);
+    // tenantIsolationEnforced() is the cloud_auth signal.
+    const { executionTarget, runtimeCommandSpec } = resolveGuardedAdapterExecutionContext(
+      config,
+      adapter,
+      {
+        trustBoundary: topology.trustBoundary,
+        tenantIsolationEnforced: tenantIsolationEnforced(),
+        sink: "crew agent",
+      },
+    );
 
     // Audit follow-up #27: capture the redacted+capped prompt snapshot now so
     // it is available to fold into the next existing run-row write (either the

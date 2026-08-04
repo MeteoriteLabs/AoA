@@ -125,7 +125,7 @@ export interface PluginToolDispatcher {
    * @param namespacedName - e.g. `"acme.linear:search-issues"`
    * @returns The registered tool, or `null` if not found
    */
-  getTool(namespacedName: string): RegisteredTool | null;
+  getTool(namespacedName: string, companyId?: string): RegisteredTool | null;
 
   /**
    * Execute a tool by its namespaced name, routing to the correct
@@ -141,7 +141,7 @@ export interface PluginToolDispatcher {
   executeTool(
     namespacedName: string,
     parameters: unknown,
-    runContext: ToolRunContext,
+    runContext: ToolRunContext
   ): Promise<ToolExecutionResult>;
 
   /**
@@ -157,6 +157,7 @@ export interface PluginToolDispatcher {
     pluginId: string,
     manifest: PaperclipPluginManifestV1,
     pluginDbId?: string,
+    companyId?: string
   ): void;
 
   /**
@@ -221,7 +222,7 @@ export interface PluginToolDispatcher {
  * ```
  */
 export function createPluginToolDispatcher(
-  options: PluginToolDispatcherOptions = {},
+  options: PluginToolDispatcherOptions = {}
 ): PluginToolDispatcher {
   const { workerManager, lifecycleManager, db } = options;
   const log = logger.child({ service: "plugin-tool-dispatcher" });
@@ -230,9 +231,23 @@ export function createPluginToolDispatcher(
   const registry = createPluginToolRegistry(workerManager);
 
   // Track lifecycle event listeners so we can remove them on teardown
-  let enabledListener: ((payload: { pluginId: string; pluginKey: string }) => void) | null = null;
-  let disabledListener: ((payload: { pluginId: string; pluginKey: string; reason?: string }) => void) | null = null;
-  let unloadedListener: ((payload: { pluginId: string; pluginKey: string; removeData: boolean }) => void) | null = null;
+  let enabledListener:
+    | ((payload: { pluginId: string; pluginKey: string }) => void)
+    | null = null;
+  let disabledListener:
+    | ((payload: {
+        pluginId: string;
+        pluginKey: string;
+        reason?: string;
+      }) => void)
+    | null = null;
+  let unloadedListener:
+    | ((payload: {
+        pluginId: string;
+        pluginKey: string;
+        removeData: boolean;
+      }) => void)
+    | null = null;
 
   let initialized = false;
 
@@ -248,16 +263,21 @@ export function createPluginToolDispatcher(
     if (!db) {
       log.warn(
         { pluginId },
-        "cannot register tools from DB — no database connection configured",
+        "cannot register tools from DB — no database connection configured"
       );
       return;
     }
 
     const pluginRegistry = pluginRegistryService(db);
-    const plugin = await pluginRegistry.getById(pluginId) as PluginRecord | null;
+    const plugin = (await pluginRegistry.getById(
+      pluginId
+    )) as PluginRecord | null;
 
     if (!plugin) {
-      log.warn({ pluginId }, "plugin not found in registry, cannot register tools");
+      log.warn(
+        { pluginId },
+        "plugin not found in registry, cannot register tools"
+      );
       return;
     }
 
@@ -267,7 +287,12 @@ export function createPluginToolDispatcher(
       return;
     }
 
-    registry.registerPlugin(plugin.pluginKey, manifest, plugin.id);
+    registry.registerPlugin(
+      plugin.pluginKey,
+      manifest,
+      plugin.id,
+      plugin.companyId
+    );
   }
 
   /**
@@ -287,26 +312,49 @@ export function createPluginToolDispatcher(
   // Lifecycle event handlers
   // -----------------------------------------------------------------------
 
-  function handlePluginEnabled(payload: { pluginId: string; pluginKey: string }): void {
-    log.debug({ pluginId: payload.pluginId, pluginKey: payload.pluginKey }, "plugin enabled — registering tools");
+  function handlePluginEnabled(payload: {
+    pluginId: string;
+    pluginKey: string;
+  }): void {
+    log.debug(
+      { pluginId: payload.pluginId, pluginKey: payload.pluginKey },
+      "plugin enabled — registering tools"
+    );
     // Async registration from DB — we fire-and-forget since the lifecycle
     // event handler must be synchronous. Any errors are logged.
     void registerFromDb(payload.pluginId).catch((err) => {
       log.error(
-        { pluginId: payload.pluginId, err: err instanceof Error ? err.message : String(err) },
-        "failed to register tools after plugin enabled",
+        {
+          pluginId: payload.pluginId,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        "failed to register tools after plugin enabled"
       );
     });
   }
 
-  function handlePluginDisabled(payload: { pluginId: string; pluginKey: string; reason?: string }): void {
-    log.debug({ pluginId: payload.pluginId, pluginKey: payload.pluginKey }, "plugin disabled — unregistering tools");
-    registry.unregisterPlugin(payload.pluginKey);
+  function handlePluginDisabled(payload: {
+    pluginId: string;
+    pluginKey: string;
+    reason?: string;
+  }): void {
+    log.debug(
+      { pluginId: payload.pluginId, pluginKey: payload.pluginKey },
+      "plugin disabled — unregistering tools"
+    );
+    registry.unregisterPlugin(payload.pluginId);
   }
 
-  function handlePluginUnloaded(payload: { pluginId: string; pluginKey: string; removeData: boolean }): void {
-    log.debug({ pluginId: payload.pluginId, pluginKey: payload.pluginKey }, "plugin unloaded — unregistering tools");
-    registry.unregisterPlugin(payload.pluginKey);
+  function handlePluginUnloaded(payload: {
+    pluginId: string;
+    pluginKey: string;
+    removeData: boolean;
+  }): void {
+    log.debug(
+      { pluginId: payload.pluginId, pluginKey: payload.pluginKey },
+      "plugin unloaded — unregistering tools"
+    );
+    registry.unregisterPlugin(payload.pluginId);
   }
 
   // -----------------------------------------------------------------------
@@ -325,20 +373,27 @@ export function createPluginToolDispatcher(
       // Step 1: Load tools from all currently-ready plugins
       if (db) {
         const pluginRegistry = pluginRegistryService(db);
-        const readyPlugins = await pluginRegistry.listByStatus("ready") as PluginRecord[];
+        const readyPlugins = (await pluginRegistry.listByStatus(
+          "ready"
+        )) as PluginRecord[];
 
         let totalTools = 0;
         for (const plugin of readyPlugins) {
           const manifest = plugin.manifestJson;
           if (manifest?.tools && manifest.tools.length > 0) {
-            registry.registerPlugin(plugin.pluginKey, manifest, plugin.id);
+            registry.registerPlugin(
+              plugin.pluginKey,
+              manifest,
+              plugin.id,
+              plugin.companyId
+            );
             totalTools += manifest.tools.length;
           }
         }
 
         log.info(
           { readyPlugins: readyPlugins.length, registeredTools: totalTools },
-          "loaded tools from ready plugins",
+          "loaded tools from ready plugins"
         );
       }
 
@@ -354,13 +409,15 @@ export function createPluginToolDispatcher(
 
         log.debug("subscribed to lifecycle events");
       } else {
-        log.warn("no lifecycle manager provided — tools will not auto-update on plugin state changes");
+        log.warn(
+          "no lifecycle manager provided — tools will not auto-update on plugin state changes"
+        );
       }
 
       initialized = true;
       log.info(
         { totalTools: registry.toolCount() },
-        "plugin tool dispatcher initialized",
+        "plugin tool dispatcher initialized"
       );
     },
 
@@ -369,9 +426,12 @@ export function createPluginToolDispatcher(
 
       // Unsubscribe from lifecycle events
       if (lifecycleManager) {
-        if (enabledListener) lifecycleManager.off("plugin.enabled", enabledListener);
-        if (disabledListener) lifecycleManager.off("plugin.disabled", disabledListener);
-        if (unloadedListener) lifecycleManager.off("plugin.unloaded", unloadedListener);
+        if (enabledListener)
+          lifecycleManager.off("plugin.enabled", enabledListener);
+        if (disabledListener)
+          lifecycleManager.off("plugin.disabled", disabledListener);
+        if (unloadedListener)
+          lifecycleManager.off("plugin.unloaded", unloadedListener);
 
         enabledListener = null;
         disabledListener = null;
@@ -390,14 +450,14 @@ export function createPluginToolDispatcher(
       return registry.listTools(filter).map(toAgentDescriptor);
     },
 
-    getTool(namespacedName: string): RegisteredTool | null {
-      return registry.getTool(namespacedName);
+    getTool(namespacedName: string, companyId?: string): RegisteredTool | null {
+      return registry.getTool(namespacedName, companyId);
     },
 
     async executeTool(
       namespacedName: string,
       parameters: unknown,
-      runContext: ToolRunContext,
+      runContext: ToolRunContext
     ): Promise<ToolExecutionResult> {
       log.debug(
         {
@@ -405,13 +465,13 @@ export function createPluginToolDispatcher(
           agentId: runContext.agentId,
           runId: runContext.runId,
         },
-        "dispatching tool execution",
+        "dispatching tool execution"
       );
 
       const result = await registry.executeTool(
         namespacedName,
         parameters,
-        runContext,
+        runContext
       );
 
       log.debug(
@@ -421,7 +481,7 @@ export function createPluginToolDispatcher(
           hasContent: !!result.result.content,
           hasError: !!result.result.error,
         },
-        "tool execution completed",
+        "tool execution completed"
       );
 
       return result;
@@ -431,8 +491,9 @@ export function createPluginToolDispatcher(
       pluginId: string,
       manifest: PaperclipPluginManifestV1,
       pluginDbId?: string,
+      companyId?: string
     ): void {
-      registry.registerPlugin(pluginId, manifest, pluginDbId);
+      registry.registerPlugin(pluginId, manifest, pluginDbId, companyId);
     },
 
     unregisterPluginTools(pluginId: string): void {

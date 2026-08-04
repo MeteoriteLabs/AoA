@@ -21,7 +21,7 @@ export function inboxDismissalRoutes(db: Db) {
 
   router.get("/companies/:companyId/inbox-dismissals", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const userId = requireBoardUserId(req, res);
     const dismissals = await svc.list(userId, companyId);
     res.json(dismissals);
@@ -32,7 +32,7 @@ export function inboxDismissalRoutes(db: Db) {
     validate(createInboxDismissalSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const userId = requireBoardUserId(req, res);
       const dismissal = await svc.dismiss(userId, companyId, req.body.itemKey);
       res.status(201).json(dismissal);
@@ -43,7 +43,7 @@ export function inboxDismissalRoutes(db: Db) {
     "/companies/:companyId/inbox-dismissals/:itemKey",
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const userId = requireBoardUserId(req, res);
       const itemKey = decodeURIComponent(req.params.itemKey as string);
       await svc.undismiss(userId, companyId, itemKey);

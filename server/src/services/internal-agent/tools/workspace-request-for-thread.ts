@@ -20,7 +20,7 @@
 // null, satisfying the constraint.
 
 import { and, eq } from "drizzle-orm";
-import { discussions, executionWorkspaces } from "@armyofagents/db";
+import { discussions, executionWorkspaces, projects } from "@armyofagents/db";
 import type { AgentTool } from "../types.js";
 
 export const requestThreadWorkspaceTool: AgentTool = {
@@ -53,7 +53,7 @@ export const requestThreadWorkspaceTool: AgentTool = {
     const threadRows = await ctx.db
       .select()
       .from(discussions)
-      .where(eq(discussions.id, threadId))
+      .where(and(eq(discussions.id, threadId), eq(discussions.companyId, ctx.companyId)))
       .limit(1);
     const thread = Array.isArray(threadRows) ? threadRows[0] : null;
     if (!thread) {
@@ -81,6 +81,15 @@ export const requestThreadWorkspaceTool: AgentTool = {
           "Thread has no associated project for workspace scoping",
         error: "NO_PROJECT",
       };
+    }
+
+    const projectRows = await ctx.db
+      .select({ id: projects.id })
+      .from(projects)
+      .where(and(eq(projects.id, projectId), eq(projects.companyId, ctx.companyId)))
+      .limit(1);
+    if (!Array.isArray(projectRows) || projectRows.length === 0) {
+      return { success: false, data: null, summary: "Thread has no associated project for workspace scoping", error: "NO_PROJECT" };
     }
 
     // 3) Idempotency: return existing active thread workspace if one

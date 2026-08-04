@@ -10,11 +10,12 @@
 // attachment (callers can dedupe by artifactId if needed; surfacing both
 // hits matches the underlying physical model).
 
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import {
   artifacts,
   discussionEntries,
   discussionEntryAttachments,
+  discussions,
 } from "@armyofagents/db";
 import type { AgentTool } from "../types.js";
 
@@ -60,7 +61,12 @@ export const queryArtifactsTool: AgentTool = {
         discussionEntries,
         eq(discussionEntries.id, discussionEntryAttachments.discussionEntryId),
       )
-      .where(eq(discussionEntries.discussionId, threadId));
+      .innerJoin(discussions, eq(discussions.id, discussionEntries.discussionId))
+      .where(and(
+        eq(discussionEntries.discussionId, threadId),
+        eq(discussions.companyId, ctx.companyId),
+        eq(artifacts.companyId, ctx.companyId),
+      ));
     const list = Array.isArray(rows) ? rows : [];
 
     return {

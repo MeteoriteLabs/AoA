@@ -45,3 +45,18 @@ export async function fillFounderProfileStep(page: Page, name = "E2E Founder"): 
   await page.getByLabel("Title", { exact: true }).selectOption("Founder");
   await page.getByLabel("Timezone", { exact: true }).selectOption("UTC");
 }
+
+/**
+ * Drive the founder's Create-Organization step (Phase 2 multi-tenant "tenant"
+ * step, inserted between profile and the renamed company step): assert the
+ * "Your organization" heading, fill the org name, and Continue. The company
+ * step ("Your company") follows. Callers that only need to *reach* the org
+ * step should assert the heading directly instead.
+ */
+export async function fillOrganizationStep(page: Page, name: string): Promise<void> {
+  await expect(page.getByRole("heading", { name: /your organization/i })).toBeVisible({
+    timeout: 15_000,
+  });
+  await page.getByRole("textbox").first().fill(name);
+  await page.getByRole("button", { name: /continue/i }).click();
+}

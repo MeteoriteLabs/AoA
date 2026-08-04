@@ -20,6 +20,7 @@ interface RoutesOptions {
 
 export function memoryAssetRenderRoutes(opts: RoutesOptions) {
   const router = Router();
+  const db = opts.db!;
   const svc = opts.svc ?? memoryAssetsService(opts.db!);
   const storage = opts.storage ?? opts.storageService;
 
@@ -30,7 +31,7 @@ export function memoryAssetRenderRoutes(opts: RoutesOptions) {
       try {
         const companyId = req.params.companyId as string;
         const id = req.params.id as string;
-        assertCompanyAccess(req, companyId);
+        await assertCompanyAccess(db, req, companyId);
 
         const asset = await svc.get(id, companyId);
         if (!asset) {

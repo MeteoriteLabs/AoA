@@ -47,6 +47,10 @@ import { marketplaceNotifications } from "../services/marketplace-notifications.
 import { logger } from "../middleware/logger.js";
 import { agentInstructionsService } from "../services/agent-instructions.js";
 import { listServerAdapters } from "../adapters/index.js";
+import {
+  PLUGIN_WORKER_BLOCKED_IN_CLOUD,
+  cloudPluginExecutionBlockedEnvelope,
+} from "../services/cloud-plugin-execution.js";
 
 /**
  * Check if a user role can install a given catalog item type.
@@ -147,7 +151,7 @@ export function createMarketplaceInstallRouter(deps: MarketplaceInstallRoutesDep
       res.status(400).json({ error: "Company context required" });
       return;
     }
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     const catalog = await catalogService.readCache();
     if (!catalog) {
@@ -182,7 +186,7 @@ export function createMarketplaceInstallRouter(deps: MarketplaceInstallRoutesDep
       res.status(400).json({ error: "Company + user context required" });
       return;
     }
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     const parseResult = InstallRequestSchema.safeParse(req.body);
     if (!parseResult.success) {
@@ -400,11 +404,19 @@ export function createMarketplaceInstallRouter(deps: MarketplaceInstallRoutesDep
       res.status(400).json({ error: "Company context required" });
       return;
     }
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     const op = await findOperationById(db, req.params.operationId, companyId);
     if (!op) {
       res.status(404).json({ error: "Operation not found" });
+      return;
+    }
+    if (
+      op.status === "failure" &&
+      op.itemType === "plugin" &&
+      op.errorCode === PLUGIN_WORKER_BLOCKED_IN_CLOUD
+    ) {
+      res.status(503).json(cloudPluginExecutionBlockedEnvelope());
       return;
     }
     res.json(op);
@@ -418,7 +430,7 @@ export function createMarketplaceInstallRouter(deps: MarketplaceInstallRoutesDep
       res.status(400).json({ error: "Company context required" });
       return;
     }
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     // Uninstalling a team permanently deletes all its agents — founder-only,
     // same as DELETE /agents/:id. assertRole throws 403 for team_lead / team_member.
     await assertRole(db, req, companyId, "founder");

@@ -70,6 +70,11 @@ vi.mock("../services/git.js", () => ({
   push: mockPush,
 }));
 
+const mockAssertLocalWorkspaceCommandAllowed = vi.hoisted(() => vi.fn());
+vi.mock("../services/local-workspace-command-guard.js", () => ({
+  assertLocalWorkspaceCommandAllowed: mockAssertLocalWorkspaceCommandAllowed,
+}));
+
 const mockGetInstallation = vi.hoisted(() => vi.fn());
 const mockMintInstallationToken = vi.hoisted(() => vi.fn());
 vi.mock("../services/github-app.js", () => ({
@@ -170,9 +175,11 @@ describe("parseGitHubRepoUrl", () => {
 describe("createPullRequest service", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockAssertLocalWorkspaceCommandAllowed.mockReset();
     mockResolveGitRoot.mockResolvedValue(null);
     mockRunGit.mockResolvedValue("");
     mockPush.mockResolvedValue({ pushed: true, remote: "origin", branch: "feature/x" });
+    mockAssertLocalWorkspaceCommandAllowed.mockReturnValue(undefined);
   });
 
   const baseArgs = {
@@ -601,6 +608,28 @@ describe("POST /issues/:issueId/github-pr", () => {
     // Verify Octokit was called with the client-provided head
     expect(mockOctokit.pulls.create).toHaveBeenCalledWith(
       expect.objectContaining({ head: "feature/from-client" }),
+    );
+  });
+
+  it("cloud refusal skips all local Git while preserving API-only PR creation", async () => {
+    mockHappyPath();
+    mockWsSvc.getById.mockResolvedValue({ ...happyWs, cwd: "C:\\repo" });
+    mockAssertLocalWorkspaceCommandAllowed.mockImplementationOnce(() => {
+      throw new Error("Refusing unsandboxed workspace Git command");
+    });
+
+    const app = createApp(boardActor);
+    const res = await request(app)
+      .post("/api/issues/issue-1/github-pr")
+      .send(validBody);
+
+    expect(res.status).toBe(200);
+    expect(mockAssertLocalWorkspaceCommandAllowed).toHaveBeenCalledTimes(1);
+    expect(mockResolveGitRoot).not.toHaveBeenCalled();
+    expect(mockRunGit).not.toHaveBeenCalled();
+    expect(mockPush).not.toHaveBeenCalled();
+    expect(mockOctokit.pulls.create).toHaveBeenCalledWith(
+      expect.objectContaining({ head: "feature/x" }),
     );
   });
 

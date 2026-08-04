@@ -80,6 +80,7 @@ describe("auth profile routes", () => {
       email: "user@example.com",
       displayName: "User One",
       avatarUrl: "https://example.com/a.png",
+      canManageInstanceSettings: false,
       isInstanceAdmin: false,
     });
   });
@@ -96,11 +97,15 @@ describe("auth profile routes", () => {
       type: "board",
       userId: "admin-1",
       source: "session",
+      // Profile reports isInstanceAdmin from canManageInstanceSettings (operator
+      // plane); a genuine operator carries operator=true (minted by actorMiddleware).
+      operator: true,
       isInstanceAdmin: true,
     });
     const res = await request(app).get("/api/auth/profile");
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.canManageInstanceSettings).toBe(true);
     expect(res.body.isInstanceAdmin).toBe(true);
   });
 
@@ -117,6 +122,7 @@ describe("auth profile routes", () => {
     expect(res.body).toMatchObject({
       id: "local-board",
       displayName: "Local Board",
+      canManageInstanceSettings: true,
       isInstanceAdmin: true,
     });
     // Synthetic local-board actor never hits the user table.
@@ -145,6 +151,7 @@ describe("auth profile routes", () => {
     expect(res.body.displayName).toBe("New Name");
     // PATCH must carry the flag too — the UI writes this response into the
     // profile query cache, so omitting it would erase the flag client-side.
+    expect(res.body.canManageInstanceSettings).toBe(false);
     expect(res.body.isInstanceAdmin).toBe(false);
     expect(mockUserProfileService.update).toHaveBeenCalledWith("user-1", {
       displayName: "New Name",
@@ -163,7 +170,11 @@ describe("auth profile routes", () => {
     });
     const res = await request(app)
       .patch("/api/auth/profile")
-      .send({ displayName: "New Name", isInstanceAdmin: true });
+      .send({
+        displayName: "New Name",
+        canManageInstanceSettings: true,
+        isInstanceAdmin: true,
+      });
 
     expect(res.status).toBe(400);
     expect(mockUserProfileService.update).not.toHaveBeenCalled();
