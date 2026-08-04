@@ -629,15 +629,23 @@ export function executionWorkspaceRoutes(db: Db) {
         // Persist the irreversible stop intent first. Any later config update
         // observes/stays based on stopped state; restart promotes it back to
         // running only inside the start batch's atomic commit guard.
-        const claimedStop = await svc.updateIfVersion(
+        let claimedStop = await svc.updateIfVersion(
           existing.id,
           existing.updatedAt,
           { metadata: stoppedMetadata },
           ["active", "idle", "in_review"],
-          projectWorkspace
-            ? { id: projectWorkspace.id, expectedUpdatedAt: projectWorkspace.updatedAt }
-            : null,
         );
+        if (!claimedStop) {
+          const fresh = await svc.getById(existing.id);
+          if (fresh && fresh.status !== "archived") {
+            claimedStop = await svc.updateIfVersion(
+              existing.id,
+              fresh.updatedAt,
+              { metadata: stoppedMetadata },
+              ["active", "idle", "in_review"],
+            );
+          }
+        }
         if (!claimedStop) {
           res.status(409).json({ error: "Execution workspace changed before runtime stop could be committed" });
           return;
@@ -750,7 +758,7 @@ export function executionWorkspaceRoutes(db: Db) {
       if (!desiredStateCommitted) {
         const persistedDesiredState = await svc.updateIfVersion(
           existing.id,
-          existing.updatedAt,
+          activationExpectedUpdatedAt,
           { metadata: desiredStateMetadata },
           ["active", "idle", "in_review"],
           projectWorkspace
