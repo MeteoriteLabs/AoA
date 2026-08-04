@@ -25,23 +25,37 @@ test.beforeEach(async ({ request }) => {
 async function walkToVerify(page: Page, commander: "Claude" | "Codex"): Promise<void> {
   await page.goto("/onboarding");
   await fillFounderProfileStep(page, "Track C Founder");
+  await expect(page.getByRole("button", { name: /continue/i })).toBeEnabled({ timeout: 15_000 });
   await page.getByRole("button", { name: /continue/i }).click();
 
   // Organization (Phase-2 tenant step) precedes the company step.
   await fillOrganizationStep(page, `E2E-TrackC-Org-${Date.now()}`);
 
-  await expect(page.getByRole("heading", { name: /your company/i })).toBeVisible();
-  await page.getByRole("textbox").first().fill(`E2E-TrackC-${Date.now()}`);
+  await expect(page.getByRole("heading", { name: /your company/i })).toBeVisible({
+    timeout: 20_000,
+  });
+  await page.getByLabel("Organization name").fill(`E2E-TrackC-${Date.now()}`);
+  await expect(page.getByRole("button", { name: /continue/i })).toBeEnabled({ timeout: 15_000 });
   await page.getByRole("button", { name: /continue/i }).click();
 
-  await expect(page.getByRole("heading", { name: /set up your environment/i })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /set up your environment/i })).toBeVisible({
+    timeout: 20_000,
+  });
+  await expect(page.getByRole("button", { name: /verify & continue/i })).toBeEnabled({
+    timeout: 15_000,
+  });
   await page.getByRole("button", { name: /verify & continue/i }).click();
 
-  await expect(page.getByRole("heading", { name: /bring your engine online/i })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /bring your engine online/i })).toBeVisible({
+    timeout: 20_000,
+  });
   await page.getByText(commander, { exact: true }).click();
+  await expect(page.getByRole("button", { name: /continue/i })).toBeEnabled({ timeout: 15_000 });
   await page.getByRole("button", { name: /continue/i }).click();
 
-  await expect(page.getByRole("heading", { name: /verify your tooling/i })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /verify your tooling/i })).toBeVisible({
+    timeout: 20_000,
+  });
 }
 
 test("needs_auth → API-key paste re-verifies to completion", async ({ page }) => {

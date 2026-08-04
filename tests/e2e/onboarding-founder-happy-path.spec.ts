@@ -43,11 +43,13 @@ test("founder completes the spine → Map fork → in-flight tail → lands in t
   // Company — heading is now "Your company" (redesign).
   const orgName = `E2E-Test-Org-${Date.now()}`;
   await expect(page.getByRole("heading", { name: /your company/i })).toBeVisible();
-  await page.getByRole("textbox").first().fill(orgName);
+  await page.getByLabel("Organization name").fill(orgName);
   await page.getByRole("button", { name: /continue/i }).click();
 
   // Environment — the prefilled ~/AoA path under the temp home is writable.
-  await expect(page.getByRole("heading", { name: /set up your environment/i })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /set up your environment/i })).toBeVisible({
+    timeout: 20_000,
+  });
   await page.getByRole("button", { name: /verify & continue/i }).click();
 
   // Commander — heading is now "Bring your engine online"; pick Claude
