@@ -11,7 +11,10 @@
 
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { companyMcpConnectorAgents, companyMcpConnectors } from "@armyofagents/db";
+import {
+  companyMcpConnectorAgents,
+  companyMcpConnectors,
+} from "@armyofagents/db";
 import type { McpServerSpec } from "@armyofagents/adapter-utils";
 import { logger } from "../middleware/logger.js";
 import {
@@ -24,6 +27,17 @@ import {
 import { secretService, type SecretConsumerContext } from "./secrets.js";
 import { logActivity } from "./activity-log.js";
 import { loadConfig } from "../config.js";
+import { mcpConnectorService } from "./mcp-connectors-crud.js";
+import {
+  createDbRefreshLeaseStore,
+  createDbRefreshCommitter,
+  resolveConnectorToken,
+  OAuthRefreshError,
+} from "./mcp-connector-token-refresh.js";
+import { deriveOAuthBundleKey } from "./mcp-connector-oauth-bundle.js";
+import { refreshOAuthToken } from "./mcp-connector-oauth.js";
+import { requireOAuthProviderPolicy } from "./mcp-connector-oauth-policy.js";
+import { resolveConsentSecret } from "./mcp-connector-consent.js";
 import {
   isMcpConnectorBlocked,
   readMcpConnectorEmergencyPolicy,
@@ -31,6 +45,8 @@ import {
 
 export interface LoadEnabledConnectorRowsOptions {
   companyId: string;
+  /** Explicit integration-test seam; production uses connection-pinned HTTPS. */
+  oauthFetch?: typeof fetch;
   /**
    * The agent this run belongs to, or `null` for Commander. Commander is not
    * represented in `company_mcp_connector_agents` and receives every ACTIVE
@@ -47,13 +63,40 @@ export interface LoadEnabledConnectorRowsOptions {
  * `configPath` names the individual connector so the audit trail distinguishes
  * them.
  */
-function consumerContextFor(serverName: string): SecretConsumerContext {
+function consumerContextFor(
+  serverName: string,
+  mcpOAuthOwner?: SecretConsumerContext["mcpOAuthOwner"],
+): SecretConsumerContext {
   return {
     consumerType: "system",
     consumerId: "mcp-connectors",
     actorType: "system",
     configPath: `mcp.connector.${serverName}`,
+    ...(mcpOAuthOwner ? { mcpOAuthOwner } : {}),
   };
+}
+
+const CONNECTOR_RESOLUTION_CONCURRENCY = 4;
+
+async function mapWithConcurrency<T, R>(
+  values: readonly T[],
+  concurrency: number,
+  worker: (value: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(values.length);
+  let cursor = 0;
+  const runners = Array.from(
+    { length: Math.min(concurrency, values.length) },
+    async () => {
+      while (true) {
+        const index = cursor++;
+        if (index >= values.length) return;
+        results[index] = await worker(values[index]!);
+      }
+    },
+  );
+  await Promise.all(runners);
+  return results;
 }
 
 /**
@@ -70,7 +113,7 @@ function consumerContextFor(serverName: string): SecretConsumerContext {
  */
 export async function loadEnabledConnectorRows(
   db: Db,
-  { companyId, agentId }: LoadEnabledConnectorRowsOptions,
+  { companyId, agentId, oauthFetch }: LoadEnabledConnectorRowsOptions,
 ): Promise<LoadedConnectorRow[]> {
   // Fetch ALL of the company's connectors and let the pure selector apply the
   // status rule. Pre-filtering `status = 'active'` in SQL would put a
@@ -148,23 +191,144 @@ export async function loadEnabledConnectorRows(
   if (allowed.length === 0) return [];
 
   const secrets = secretService(db);
-  const resolved: LoadedConnectorRow[] = [];
-
-  for (const connector of allowed) {
+  const resolved = await mapWithConcurrency(allowed, CONNECTOR_RESOLUTION_CONCURRENCY, async (connector) => {
     let secretValue: string | null = null;
 
     // A connector with no secretRef is an unauthenticated server — a legitimate
     // configuration, not a failure. Do not call the secrets service for it.
     if (connector.secretRef) {
       try {
-        secretValue = await secrets.resolveByName(
-          companyId,
-          connector.secretRef,
-          consumerContextFor(connector.serverName),
-        );
+        // `oauthPolicyVersion` is the true OAuth signal — it is set ONLY for
+        // requiresOAuth catalog entries. `catalogEntryId` is set for EVERY
+        // catalog connector (incl. plain-secret ones like notion-http), so
+        // keying on it here misclassified non-OAuth catalog connectors as OAuth
+        // and dropped them from delivery (returned [] instead of ['notion']).
+        const hasOAuthIdentity = connector.oauthPolicyVersion != null;
+        if (hasOAuthIdentity) {
+          if (!connector.catalogEntryId || !connector.oauthPolicyVersion || connector.source !== "catalog") {
+            throw new OAuthRefreshError(
+              "OAuth connector identity is incomplete",
+              "policy",
+              "oauth_policy_blocked",
+            );
+          }
+          const policy = requireOAuthProviderPolicy(
+            connector.catalogEntryId,
+            connector.oauthPolicyVersion,
+          );
+          const expectedSecretName = `mcp:oauth:${connector.id}`;
+          const mcpOAuthOwner = {
+            connectorId: connector.id,
+            catalogEntryId: policy.entryId,
+            oauthPolicyVersion: policy.version,
+          };
+          if (connector.secretRef !== expectedSecretName) {
+            throw new OAuthRefreshError(
+              "OAuth connector credential binding does not match its immutable identity",
+              "policy",
+              "oauth_secret_binding_mismatch",
+            );
+          }
+          const assertRefreshAllowed = async () => {
+            const current = await db
+              .select({
+                companyId: companyMcpConnectors.companyId,
+                source: companyMcpConnectors.source,
+                status: companyMcpConnectors.status,
+                catalogEntryId: companyMcpConnectors.catalogEntryId,
+                oauthPolicyVersion: companyMcpConnectors.oauthPolicyVersion,
+                serverName: companyMcpConnectors.serverName,
+                secretRef: companyMcpConnectors.secretRef,
+              })
+              .from(companyMcpConnectors)
+              .where(eq(companyMcpConnectors.id, connector.id))
+              .limit(1)
+              .then((rows) => rows[0]);
+            if (
+              !current ||
+              current.companyId !== companyId ||
+              current.source !== "catalog" ||
+              current.status !== "active" ||
+              current.catalogEntryId !== policy.entryId ||
+              current.oauthPolicyVersion !== policy.version ||
+              current.serverName !== connector.serverName ||
+              current.secretRef !== expectedSecretName ||
+              isMcpConnectorBlocked(current.serverName)
+            ) {
+              throw new OAuthRefreshError(
+                "OAuth connector changed during refresh",
+                "policy",
+                "oauth_policy_blocked",
+              );
+            }
+            requireOAuthProviderPolicy(current.catalogEntryId, current.oauthPolicyVersion);
+          };
+          // All policy/identity/name checks happen before decrypting the secret.
+          await assertRefreshAllowed();
+          const raw = await secrets.resolveByName(
+            companyId,
+            expectedSecretName,
+            consumerContextFor(connector.serverName, mcpOAuthOwner),
+          );
+          const context = {
+            companyId,
+            connectorId: connector.id,
+            catalogEntryId: policy.entryId,
+            oauthPolicyVersion: policy.version,
+            secretName: expectedSecretName,
+            bundleKey: deriveOAuthBundleKey(resolveConsentSecret()),
+            serverName: connector.serverName,
+          };
+          secretValue = await resolveConnectorToken(
+            {
+              secrets: {
+                getByName: (c, n) => secrets.getByName(c, n),
+                resolveByName: (c, n) =>
+                  secrets.resolveByName(
+                    c,
+                    n,
+                    consumerContextFor(connector.serverName, mcpOAuthOwner),
+                  ),
+              },
+              leases: createDbRefreshLeaseStore(db),
+              refreshOAuthToken: oauthFetch
+                ? (params) => refreshOAuthToken(params, oauthFetch)
+                : undefined,
+              commitRefresh: createDbRefreshCommitter(db, context),
+              assertRefreshAllowed,
+            },
+            context,
+            raw,
+          );
+        } else {
+          secretValue = await secrets.resolveByName(
+            companyId,
+            connector.secretRef,
+            consumerContextFor(connector.serverName),
+          );
+        }
       } catch (err) {
         // Never log `secretValue` here — resolution failed, but keep the habit
         // explicit so a future edit does not add it.
+        if (err instanceof OAuthRefreshError && err.kind === "permanent") {
+          // Task 13: a dead refresh token (or a refresh request the AS rejects)
+          // must not fail the run — flip the connector to `needs_credentials` so
+          // the founder gets a re-authorize prompt (Task 16), and drop it from
+          // this load like any other unresolvable secret.
+          await mcpConnectorService(db)
+            .updateIfStatus(connector.id, "active", { status: "needs_credentials" })
+            .catch(() => {});
+          logActivity(db, {
+            companyId,
+            actorType: "system",
+            actorId: "oauth-broker",
+            agentId: null,
+            action: "mcp_connector.oauth_refresh_failed",
+            entityType: "mcp_connector",
+            entityId: connector.id,
+            details: { serverName: connector.serverName },
+          }).catch(() => {});
+        }
         logger.warn(
           {
             err,
@@ -173,13 +337,13 @@ export async function loadEnabledConnectorRows(
             serverName: connector.serverName,
             secretRef: connector.secretRef,
           },
-          "MCP connector skipped: secret could not be resolved",
+          "MCP connector skipped: secret could not be resolved/refreshed",
         );
-        continue;
+        return null; // failure isolation: drop THIS connector only
       }
     }
 
-    resolved.push({
+    return {
       connectorId: connector.id,
       serverName: connector.serverName,
       transport: connector.transport,
@@ -190,8 +354,8 @@ export async function loadEnabledConnectorRows(
       envTemplate: connector.envTemplate,
       trustTier: connector.trustTier ?? null,
       secretValue,
-    });
-  }
+    } satisfies LoadedConnectorRow;
+  });
 
   // The `mcp_connector.delivered` audit (Decision #116 clause 7) is emitted by
   // `resolveAgentConnectors` AFTER `buildConnectorSpecs`, NOT here — a row can
@@ -200,7 +364,7 @@ export async function loadEnabledConnectorRows(
   // transport, a malformed jsonb column). Auditing here would claim a connector
   // was delivered that never reached the CLI (Codex review). The row now carries
   // `connectorId`/`trustTier` so the caller can audit only the survivors.
-  return resolved;
+  return resolved.filter((row): row is LoadedConnectorRow => row !== null);
 }
 
 export interface ConnectorToolAutoAllowInput {

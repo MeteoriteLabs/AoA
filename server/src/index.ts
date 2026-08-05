@@ -92,6 +92,7 @@ import {
 import { runMarketplaceCrewMaintenance } from "./services/marketplace-reconcile.js";
 import { runStartupMarketplaceMaintenance } from "./services/marketplace-startup-maintenance.js";
 import { serializeSafeError } from "./services/safe-error.js";
+import { drainMcpConnectorOauthFlows } from "./services/mcp-connector-oauth-flow-sweeper.js";
 
 type BetterAuthSessionUser = {
   id: string;
@@ -515,6 +516,26 @@ await probeDbCapabilities(db as any);
 // NOTHING) — safe on every boot. Must run after migrations (the organizations
 // table only exists post-0188) and before any company create/list flow below.
 await organizationService(db as any).ensureDefaultOrganization();
+
+// OAuth browser flows are transient. Bound their retention independently of
+// request traffic: one best-effort sweep at boot, then hourly. The service uses
+// bounded, predicate-rechecked deletes and is safe across server instances.
+const MCP_OAUTH_FLOW_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
+let mcpOauthFlowSweepInFlight = false;
+const runMcpOauthFlowSweep = () => {
+  if (mcpOauthFlowSweepInFlight) return;
+  mcpOauthFlowSweepInFlight = true;
+  void drainMcpConnectorOauthFlows(db as any)
+    .then(({ deleted }) => {
+      if (deleted > 0) logger.info({ deleted }, "expired MCP OAuth flows swept");
+    })
+    .catch((err: unknown) => logger.warn({ err }, "MCP OAuth flow sweep failed (non-fatal)"))
+    .finally(() => { mcpOauthFlowSweepInFlight = false; });
+};
+runMcpOauthFlowSweep();
+const mcpOauthFlowSweepTimer = setInterval(runMcpOauthFlowSweep, MCP_OAUTH_FLOW_SWEEP_INTERVAL_MS);
+process.once("SIGTERM", () => clearInterval(mcpOauthFlowSweepTimer));
+process.once("SIGINT", () => clearInterval(mcpOauthFlowSweepTimer));
 
 if (config.deploymentMode === "local_trusted" && !isLoopbackHost(config.host)) {
   throw new Error(

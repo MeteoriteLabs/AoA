@@ -50,6 +50,21 @@ export interface ConnectorDeliverabilitySummary {
   blockedAgents: BlockedAgentDeliverability[];
 }
 
+export type McpConnectorOAuthEligibility =
+  | "not_oauth"
+  | "supported"
+  | "policy_blocked";
+
+export type McpConnectorOAuthCallbackResult = "completed" | "failed";
+
+export type McpConnectorOAuthCallbackReason =
+  | "access_denied"
+  | "provider_error"
+  | "token_exchange_failed"
+  | "secret_collision"
+  | "connector_changed"
+  | "policy_blocked";
+
 export interface McpConnector {
   id: string;
   companyId: string;
@@ -63,6 +78,13 @@ export interface McpConnector {
   envTemplate: Record<string, string>;
   secretRef: string | null;
   source: "byo" | "catalog";
+  /** Immutable server-owned catalog identity. Never inferred from serverName. */
+  catalogEntryId: string | null;
+  /** Version of the server policy that authorized this OAuth connector. */
+  oauthPolicyVersion: number | null;
+  /** Server-derived OAuth capability; clients must not recompute it from catalog data. */
+  oauthEligibility: McpConnectorOAuthEligibility;
+  oauthUnavailableReason?: string;
   /**
    * `needs_credentials` is PRODUCTION-REACHABLE (P3a-11): a catalog install
    * whose entry declares `requiresSecret` lands here with no bound secret, and
@@ -137,6 +159,14 @@ export interface McpConnectorShelfEntry extends McpConnectorCatalogEntry {
   consentRequired: boolean;
   consentToken?: string;
   consentExpiresAt?: number;
+  /**
+   * The OAuth broker path is available for this entry (mirrors the server's
+   * `entry.requiresOAuth` projection, reset to `false` if D7 refuses the entry
+   * outright). `true` + not-yet-installed is exactly the "Authorize" affordance;
+   * once installed the connector still needs the sign-in round trip before it is
+   * `active`, so this is orthogonal to `installable`.
+   */
+  oauthRequired?: boolean;
 }
 
 export interface McpConnectorShelf {
@@ -148,28 +178,51 @@ export const mcpConnectorsApi = {
   list: (companyId: string) =>
     api.get<McpConnector[]>(`/companies/${companyId}/mcp-connectors`),
   catalog: (companyId: string) =>
-    api.get<McpConnectorShelf>(`/companies/${companyId}/mcp-connectors/catalog`),
-  install: (companyId: string, body: { entryId: string; consentToken?: string }) =>
+    api.get<McpConnectorShelf>(
+      `/companies/${companyId}/mcp-connectors/catalog`
+    ),
+  install: (
+    companyId: string,
+    body: { entryId: string; consentToken?: string }
+  ) =>
     api.post<McpConnector & { approvalId?: string | null }>(
       `/companies/${companyId}/mcp-connectors/install`,
-      body,
+      body
+    ),
+  /** Starts (or restarts) the OAuth broker round trip for an installed connector.
+   *  The returned `authorizeUrl` is where the caller should navigate the browser
+   *  next; nothing is bound until the provider redirects back to the callback. */
+  oauthStart: (companyId: string, id: string) =>
+    api.post<{ authorizeUrl: string }>(
+      `/companies/${companyId}/mcp-connectors/${id}/oauth/start`,
+      {}
     ),
   bindCredentials: (companyId: string, id: string, secretRef: string) =>
-    api.post<McpConnector>(`/companies/${companyId}/mcp-connectors/${id}/credentials`, {
-      secretRef,
-    }),
+    api.post<McpConnector>(
+      `/companies/${companyId}/mcp-connectors/${id}/credentials`,
+      {
+        secretRef,
+      }
+    ),
   create: (companyId: string, body: CreateConnectorInput) =>
     api.post<McpConnector & { approvalId?: string | null }>(
       `/companies/${companyId}/mcp-connectors`,
-      body,
+      body
     ),
-  update: (companyId: string, id: string, body: { displayName?: string; status?: string }) =>
-    api.patch<McpConnector>(`/companies/${companyId}/mcp-connectors/${id}`, body),
+  update: (
+    companyId: string,
+    id: string,
+    body: { displayName?: string; status?: string }
+  ) =>
+    api.patch<McpConnector>(
+      `/companies/${companyId}/mcp-connectors/${id}`,
+      body
+    ),
   remove: (companyId: string, id: string) =>
     api.delete<McpConnector>(`/companies/${companyId}/mcp-connectors/${id}`),
   setAgents: (companyId: string, id: string, agentIds: string[]) =>
     api.put<{ connectorId: string; agentIds: string[] }>(
       `/companies/${companyId}/mcp-connectors/${id}/agents`,
-      { agentIds },
+      { agentIds }
     ),
 };

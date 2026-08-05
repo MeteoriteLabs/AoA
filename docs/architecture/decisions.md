@@ -1773,6 +1773,15 @@ concern.
 
 9. **AoA brokers OAuth; it does not delegate to the CLI.** Whether a CLI-stored MCP OAuth token keys by server name or URL is undocumented, and headless OAuth callbacks remain an open upstream limitation. Brokering and injecting a token as a static `Authorization` header also gives identical behavior across all four MCP-capable adapters, whereas delegation would be Claude-only. Better Auth's `genericOAuth` plugin is the broker substrate; it requires company-scoping (its `account` table is user-keyed and a user may belong to several companies) and explicit token lifetimes or refresh silently never fires.
 
+   **Implementation correction (2026-08-02):** the broker substrate is a
+   discovery-first, provider-policy-pinned AoA implementation, not Better Auth
+   `genericOAuth`. Better Auth remains the browser-session identity boundary.
+   The custom broker stores company-scoped, explicitly expiring,
+   broker-owned signed token bundles and performs its own fenced refresh. This
+   correction supersedes only the substrate sentence above; the company
+   scoping, explicit token lifetime, broker ownership, and historical record
+   remain controlling.
+
 10. **Adapter rollout is phased by writer complexity, not capability.** All four CLIs already support remote HTTP with auth headers; AoA's writers do not. `claude_local` ships first (its writer is raw `JSON.stringify`), then `gemini_local`, `opencode_local`, `codex_local`. The codex TOML stripper targets only `[mcp_servers.X]` and `[mcp_servers.X.env]`, so header support MUST land with a stripper fix or stale credentials accumulate across runs.
 
 **Deferred:** bulk registry import; flagship plugin track and the OAuth broker

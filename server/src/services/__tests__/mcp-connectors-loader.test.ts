@@ -16,6 +16,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { drizzleOperatorStubs, makeTableProxy } from "../../__tests__/helpers/drizzle-mock.js";
+import { OAuthRefreshError } from "../mcp-connector-token-refresh.js";
 
 vi.mock("@armyofagents/db", () => ({
   companyMcpConnectors: makeTableProxy("company_mcp_connectors"),
@@ -29,6 +30,7 @@ vi.mock("drizzle-orm", () => drizzleOperatorStubs());
 const resolveByName = vi.fn();
 const warn = vi.fn();
 const logActivityMock = vi.fn();
+const updateIfStatus = vi.fn();
 
 vi.mock("../secrets.js", () => ({
   secretService: () => ({ resolveByName }),
@@ -44,6 +46,14 @@ vi.mock("../../middleware/logger.js", () => ({
 // `warn`-count assertions elsewhere in this file.
 vi.mock("../activity-log.js", () => ({
   logActivity: (...args: unknown[]) => logActivityMock(...args),
+}));
+
+// The CRUD module's `updateIfStatus` is mocked as an observable spy (Task 13):
+// otherwise the real `db.update` runs against the sequence-mock db (which has
+// no `.update`), throws, and is swallowed by the loader's `.catch(() => {})`,
+// making the "flipped to needs_credentials" assertion unobservable.
+vi.mock("../mcp-connectors-crud.js", () => ({
+  mcpConnectorService: () => ({ updateIfStatus }),
 }));
 
 import {
@@ -118,6 +128,8 @@ beforeEach(() => {
   warn.mockReset();
   logActivityMock.mockReset();
   logActivityMock.mockResolvedValue(undefined);
+  updateIfStatus.mockReset();
+  updateIfStatus.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -203,6 +215,51 @@ describe("loadEnabledConnectorRows", () => {
 
     expect(rows).toEqual([]);
     expect(resolveByName).not.toHaveBeenCalled();
+  });
+
+  it("validates OAuth identity and current status before decrypting its secret", async () => {
+    const oauth = connectorRow({
+      id: "c-oauth",
+      source: "catalog",
+      serverName: "notion",
+      catalogEntryId: "notion-hosted",
+      oauthPolicyVersion: 1,
+      secretRef: "mcp:oauth:c-oauth",
+    });
+    const { db } = createSequenceDb([
+      [oauth],
+      [{ connectorId: "c-oauth" }],
+      [], // current-row recheck: connector was disabled/removed after selection
+    ]);
+
+    await expect(loadEnabledConnectorRows(db, { companyId: "co-1", agentId: "agent-1" }))
+      .resolves.toEqual([]);
+    expect(resolveByName).not.toHaveBeenCalled();
+  });
+
+  it("resolves connectors concurrently with a bound worker limit", async () => {
+    const connectors = Array.from({ length: 7 }, (_, index) => connectorRow({
+      id: `c-${index}`,
+      serverName: `server-${index}`,
+      secretRef: `mcp:${index}`,
+    }));
+    const { db } = createSequenceDb([
+      connectors,
+      connectors.map((connector) => ({ connectorId: connector.id })),
+    ]);
+    let active = 0;
+    let maxActive = 0;
+    resolveByName.mockImplementation(async () => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      return "secret";
+    });
+
+    const rows = await loadEnabledConnectorRows(db, { companyId: "co-1", agentId: "agent-1" });
+    expect(rows).toHaveLength(7);
+    expect(maxActive).toBe(4);
   });
 
   it("skips a connector whose secret THROWS and still returns the healthy one (A19)", async () => {
@@ -400,6 +457,38 @@ describe("loadEnabledConnectorRows", () => {
     });
   });
 
+  it("does not grant the OAuth-owner capability to a static connector using an OAuth secret name", async () => {
+    const { db } = createSequenceDb([
+      [
+        connectorRow({
+          id: "attacker-connector",
+          source: "byo",
+          catalogEntryId: null,
+          oauthPolicyVersion: null,
+          secretRef: "mcp:oauth:owner-connector",
+        }),
+      ],
+      [{ connectorId: "attacker-connector" }],
+    ]);
+    resolveByName.mockImplementation(async (_companyId, _name, context) => {
+      if (!context.mcpOAuthOwner) {
+        throw Object.assign(new Error("OAuth connector credentials cannot be used by generic secret consumers"), {
+          status: 422,
+        });
+      }
+      return "must-not-resolve";
+    });
+
+    await expect(
+      loadEnabledConnectorRows(db, { companyId: "co-1", agentId: "agent-1" }),
+    ).resolves.toEqual([]);
+    expect(resolveByName).toHaveBeenCalledWith(
+      "co-1",
+      "mcp:oauth:owner-connector",
+      expect.not.objectContaining({ mcpOAuthOwner: expect.anything() }),
+    );
+  });
+
   it("carries every spec-shaping column through to the returned row", async () => {
     const { db } = createSequenceDb([
       [
@@ -434,6 +523,29 @@ describe("loadEnabledConnectorRows", () => {
       trustTier: null,
       secretValue: null,
     });
+  });
+
+  it("flips a connector to needs_credentials and drops it when OAuth refresh fails (Task 13)", async () => {
+    // An expired bundle with no refresh token makes doRefresh throw
+    // OAuthRefreshError immediately — no network call, no `getByName` — so this
+    // drives the failure path deterministically.
+    const { db } = createSequenceDb([
+      [connectorRow({ id: "c-oauth-dead", serverName: "notion", secretRef: "mcp:notion" })],
+      [{ connectorId: "c-oauth-dead" }],
+    ]);
+    resolveByName.mockRejectedValue(
+      new OAuthRefreshError(
+        "OAuth credentials require reauthorization",
+        "permanent",
+        "oauth_refresh_token_missing",
+      ),
+    );
+
+    const rows = await loadEnabledConnectorRows(db, { companyId: "co-1", agentId: "agent-1" });
+
+    // The whole load did not abort, and the dead-refresh connector is dropped.
+    expect(rows).toEqual([]);
+    expect(updateIfStatus).toHaveBeenCalledWith("c-oauth-dead", "active", { status: "needs_credentials" });
   });
 
   it("returns an empty array when the company has no connectors", async () => {

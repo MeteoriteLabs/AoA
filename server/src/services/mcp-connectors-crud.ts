@@ -40,6 +40,8 @@ export type ConnectorInsert = {
    */
   requiresSecret?: boolean;
   source?: string;
+  catalogEntryId?: string | null;
+  oauthPolicyVersion?: number | null;
   /**
    * Catalog trust tier at install ("verified" | "community" | "unverified"), or
    * null for BYO. Persisted so the FU-19 delivery-time D7 re-check can honor the
@@ -224,6 +226,8 @@ export function mcpConnectorService(db: Db) {
           secretRef: input.secretRef ?? null,
           requiresSecret: input.requiresSecret ?? false,
           source: input.source ?? "byo",
+          catalogEntryId: input.catalogEntryId ?? null,
+          oauthPolicyVersion: input.oauthPolicyVersion ?? null,
           trustTier: input.trustTier ?? null,
           status: input.status,
           createdByUserId: input.createdByUserId ?? null,
