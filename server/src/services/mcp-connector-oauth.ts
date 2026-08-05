@@ -100,9 +100,31 @@ export async function resolvePublicOAuthHost(
   return addresses[0]!;
 }
 
-function safeLookup(hostname: string, _options: unknown, callback: LookupCallback): void {
-  void resolvePublicOAuthHost(hostname).then(
-    (selected) => callback(null, selected.address, selected.family),
+export function safeLookup(
+  hostname: string,
+  options: unknown,
+  callback: LookupCallback,
+  resolver: DnsResolver = dnsLookup,
+): void {
+  // Node's http/https agent calls the custom lookup with `options.all: true`
+  // (it wants every address). In that mode node:net expects the ARRAY form
+  // `callback(err, [{ address, family }])` — passing the single
+  // `callback(err, address, family)` form makes it read `addresses[0].address`
+  // off a string and throw ERR_INVALID_IP_ADDRESS ("Invalid IP address:
+  // undefined"), which broke every real OAuth request. Honor `options.all`.
+  const wantsAll =
+    typeof options === "object" && options !== null && (options as { all?: unknown }).all === true;
+  void resolvePublicOAuthHost(hostname, resolver).then(
+    (selected) => {
+      if (wantsAll) {
+        (callback as unknown as (
+          error: NodeJS.ErrnoException | null,
+          addresses: Array<{ address: string; family: number }>,
+        ) => void)(null, [{ address: selected.address, family: selected.family }]);
+      } else {
+        callback(null, selected.address, selected.family);
+      }
+    },
     (error: NodeJS.ErrnoException) => callback(error),
   );
 }

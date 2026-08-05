@@ -7,6 +7,7 @@ import {
   type OAuthStatePayload,
   discoverOAuthServer,
   registerOAuthClient,
+  safeLookup,
   buildAuthorizeUrl,
   exchangeAuthorizationCode,
   refreshOAuthToken,
@@ -289,5 +290,47 @@ describe("token endpoint", () => {
     const f = (async () => new Response(`{"padding":"${"x".repeat(1024 * 1024)}"}`, { status: 200 })) as typeof fetch;
     await expect(refreshOAuthToken({ tokenEndpoint: "https://as/token", refreshToken: "x", clientId: "c", resource: "https://mcp/x" }, f))
       .rejects.toThrow(/size limit/i);
+  });
+});
+
+describe("safeLookup — node http/https custom-lookup contract (SSRF guard)", () => {
+  // Regression for the P0 caught by the live Notion test: node's http/https
+  // agent calls the custom lookup with `options.all: true` and expects the
+  // ARRAY form `callback(err, [{ address, family }])`. Returning the single
+  // `callback(err, address, family)` form made node:net read addresses[0].address
+  // off a string -> ERR_INVALID_IP_ADDRESS -> every real OAuth request failed.
+  const publicResolver = async () => [{ address: "93.184.216.34", family: 4 }];
+
+  it("returns the ARRAY form when options.all is true", async () => {
+    const result = await new Promise((resolve, reject) =>
+      safeLookup(
+        "example.com",
+        { all: true, verbatim: true },
+        (err, addr) => (err ? reject(err) : resolve(addr)),
+        publicResolver,
+      ),
+    );
+    expect(result).toEqual([{ address: "93.184.216.34", family: 4 }]);
+  });
+
+  it("returns the single (address, family) form when options.all is falsy", async () => {
+    const result = await new Promise((resolve, reject) =>
+      safeLookup(
+        "example.com",
+        { all: false },
+        (err, address, family) => (err ? reject(err) : resolve({ address, family })),
+        publicResolver,
+      ),
+    );
+    expect(result).toEqual({ address: "93.184.216.34", family: 4 });
+  });
+
+  it("rejects (via callback error) when the resolved address is private/blocked", async () => {
+    const privateResolver = async () => [{ address: "10.0.0.5", family: 4 }];
+    await expect(
+      new Promise((resolve, reject) =>
+        safeLookup("internal.invalid", { all: true }, (err, addr) => (err ? reject(err) : resolve(addr)), privateResolver),
+      ),
+    ).rejects.toThrow(/blocked address/i);
   });
 });
