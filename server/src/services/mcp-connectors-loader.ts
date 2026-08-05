@@ -198,7 +198,12 @@ export async function loadEnabledConnectorRows(
     // configuration, not a failure. Do not call the secrets service for it.
     if (connector.secretRef) {
       try {
-        const hasOAuthIdentity = connector.catalogEntryId != null || connector.oauthPolicyVersion != null;
+        // `oauthPolicyVersion` is the true OAuth signal — it is set ONLY for
+        // requiresOAuth catalog entries. `catalogEntryId` is set for EVERY
+        // catalog connector (incl. plain-secret ones like notion-http), so
+        // keying on it here misclassified non-OAuth catalog connectors as OAuth
+        // and dropped them from delivery (returned [] instead of ['notion']).
+        const hasOAuthIdentity = connector.oauthPolicyVersion != null;
         if (hasOAuthIdentity) {
           if (!connector.catalogEntryId || !connector.oauthPolicyVersion || connector.source !== "catalog") {
             throw new OAuthRefreshError(
