@@ -169,8 +169,8 @@ async function main() {
       entityType: "mcp_connector",
       entityId: connector.id,
       details: {
-        previousSecretVersion: expectedVersion,
-        forcedExpirySecretVersion: updated.latestVersion,
+        previousVersion: expectedVersion,
+        forcedExpiryVersion: updated.latestVersion,
       },
     });
     return { updated, activity };
@@ -186,12 +186,15 @@ async function main() {
     mode: "apply",
     connectorId: connector.id,
     companyId: connector.companyId,
-    previousSecretVersion: expectedVersion,
-    forcedExpirySecretVersion: committed.updated.latestVersion,
+    previousVersion: expectedVersion,
+    forcedExpiryVersion: committed.updated.latestVersion,
   }));
 }
 
 void main().then(() => process.exit(0)).catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : "Forced expiry failed");
+  // Surface the underlying DB/pg error (drizzle wraps it as `.cause`) so an
+  // operator sees the real failure, not the generic "Failed query: insert ...".
+  const cause = error instanceof Error && error.cause instanceof Error ? `: ${error.cause.message}` : "";
+  console.error((error instanceof Error ? error.message : "Forced expiry failed") + cause);
   process.exit(1);
 });

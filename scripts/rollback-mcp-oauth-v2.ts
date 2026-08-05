@@ -217,7 +217,7 @@ async function main() {
         action: "mcp_connector.oauth_v2_rolled_back",
         entityType: "mcp_connector",
         entityId: connector.id,
-        details: { credentialArchived: live.exactSecretOwners.has(connector.id) },
+        details: { archived: live.exactSecretOwners.has(connector.id) },
       }));
     }
     for (const secret of live.exactSecrets) {
@@ -275,6 +275,9 @@ async function main() {
 }
 
 void main().then(() => process.exit(process.exitCode ?? 0)).catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : "OAuth v2 rollback failed");
+  // Surface the underlying DB/pg error (drizzle wraps it as `.cause`) so an
+  // operator sees the real failure, not the generic "Failed query: insert ...".
+  const cause = error instanceof Error && error.cause instanceof Error ? `: ${error.cause.message}` : "";
+  console.error((error instanceof Error ? error.message : "OAuth v2 rollback failed") + cause);
   process.exit(1);
 });

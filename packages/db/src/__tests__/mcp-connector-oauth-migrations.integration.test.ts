@@ -54,52 +54,68 @@ suite("MCP OAuth migration replay", () => {
     if (dataDir) await rm(dataDir, { recursive: true, force: true });
   }, 30_000);
 
-  it("0188 recovers when its table and first FK already exist, then replays", async () => {
-    const statements = splitMigration(await readFile(join(migrationsDir, "0188_narrow_blonde_phantom.sql"), "utf8"));
-    await runStatements(sql, statements.slice(0, 2));
+  // The three broker migrations (originally 0188/0189/0190) were collapsed into
+  // one 0202 during the #316 merge. These tests prove that single migration is
+  // idempotent under partial apply + full replay — the reason the R12 guards
+  // (IF NOT EXISTS / ADD COLUMN IF NOT EXISTS / DO $$ ... duplicate_object) exist.
+  const MIGRATION_FILE = "0202_lethal_vance_astro.sql";
+
+  it("0202 recovers from partial state (tables + first column already applied), then replays fully twice", async () => {
+    const statements = splitMigration(
+      await readFile(join(migrationsDir, MIGRATION_FILE), "utf8")
+    );
+    // Simulate an interrupted apply: the two CREATE TABLEs + the first ADD COLUMN
+    // already ran. The guards must let the full migration re-run cleanly on top.
+    await runStatements(sql, statements.slice(0, 3));
     await runStatements(sql, statements);
-    await runStatements(sql, statements);
-    const constraints = await sql<{ conname: string }[]>`
+    await runStatements(sql, statements); // fully idempotent second replay
+
+    const flowFks = await sql<{ conname: string }[]>`
       SELECT conname FROM pg_constraint
       WHERE conrelid = 'mcp_connector_oauth_flows'::regclass AND contype = 'f'
       ORDER BY conname
     `;
-    expect(constraints.map((row) => row.conname)).toEqual([
+    expect(flowFks.map((row) => row.conname)).toEqual([
       "mcp_connector_oauth_flows_company_id_companies_id_fk",
       "mcp_connector_oauth_flows_connector_id_company_mcp_connectors_id_fk",
     ]);
-  });
 
-  it("the generated migration recovers from partial state and replays", async () => {
-    const statements = splitMigration(await readFile(join(migrationsDir, "0189_clammy_micromacro.sql"), "utf8"));
-    await runStatements(sql, statements.slice(0, 2));
-    await runStatements(sql, statements);
-    await runStatements(sql, statements);
+    const leaseFks = await sql<{ conname: string }[]>`
+      SELECT conname FROM pg_constraint
+      WHERE conrelid = 'mcp_connector_oauth_refresh_leases'::regclass AND contype = 'f'
+      ORDER BY conname
+    `;
+    expect(leaseFks.map((row) => row.conname)).toEqual([
+      "mcp_connector_oauth_refresh_leases_company_id_companies_id_fk",
+      "mcp_connector_oauth_refresh_leases_secret_id_company_secrets_id_fk",
+    ]);
+
     const columns = await sql<{ column_name: string }[]>`
       SELECT column_name FROM information_schema.columns
       WHERE table_name = 'company_mcp_connectors'
         AND column_name IN ('catalog_entry_id', 'oauth_policy_version')
       ORDER BY column_name
     `;
-    expect(columns.map((row) => row.column_name)).toEqual(["catalog_entry_id", "oauth_policy_version"]);
+    expect(columns.map((row) => row.column_name)).toEqual([
+      "catalog_entry_id",
+      "oauth_policy_version",
+    ]);
+  });
+
+  it("0202 indexes (incl. the partial unique index) replay safely", async () => {
+    const statements = splitMigration(
+      await readFile(join(migrationsDir, MIGRATION_FILE), "utf8")
+    );
+    await runStatements(sql, statements);
+    await runStatements(sql, statements);
     const indexes = await sql<{ indexname: string }[]>`
       SELECT indexname FROM pg_indexes
       WHERE indexname IN (
         'company_mcp_connectors_company_catalog_entry_uq',
-        'mcp_connector_oauth_flows_status_expires_idx'
+        'mcp_connector_oauth_flows_status_expires_idx',
+        'mcp_connector_oauth_flows_status_updated_idx'
       ) ORDER BY indexname
     `;
-    expect(indexes).toHaveLength(2);
-  });
-
-  it("the cleanup index migration replays safely", async () => {
-    const statements = splitMigration(await readFile(join(migrationsDir, "0190_volatile_reaper.sql"), "utf8"));
-    await runStatements(sql, statements);
-    await runStatements(sql, statements);
-    const indexes = await sql<{ indexname: string }[]>`
-      SELECT indexname FROM pg_indexes
-      WHERE indexname = 'mcp_connector_oauth_flows_status_updated_idx'
-    `;
-    expect(indexes).toHaveLength(1);
+    expect(indexes).toHaveLength(3);
   });
 });

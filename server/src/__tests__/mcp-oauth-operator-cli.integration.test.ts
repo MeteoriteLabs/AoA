@@ -282,8 +282,8 @@ describe.skipIf(process.platform === "win32")(
         mode: "apply",
         connectorId,
         companyId,
-        previousSecretVersion: 1,
-        forcedExpirySecretVersion: 2,
+        previousVersion: 1,
+        forcedExpiryVersion: 2,
       });
 
       const [stored] = await db
@@ -352,8 +352,8 @@ describe.skipIf(process.platform === "win32")(
         );
       expect(activities).toHaveLength(1);
       expect(activities[0]!.details).toEqual({
-        previousSecretVersion: 1,
-        forcedExpirySecretVersion: 2,
+        previousVersion: 1,
+        forcedExpiryVersion: 2,
       });
 
       const repeated = runCli(FORCE_EXPIRY, [
@@ -505,7 +505,7 @@ describe.skipIf(process.platform === "win32")(
       expect(rollbackActivities[0]).toMatchObject({
         actorId: "oauth-v2-rollback",
         entityId: target.connector.id,
-        details: { credentialArchived: true },
+        details: { archived: true },
       });
 
       const verifyAfter = runCli(ROLLBACK, [scope, "--verify"]);
