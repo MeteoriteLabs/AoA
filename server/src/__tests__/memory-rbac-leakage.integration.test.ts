@@ -35,6 +35,7 @@ import { applyPendingMigrations, createDb, type Db } from "@armyofagents/db";
 import { memoryService } from "../services/memory.js";
 import { actorForAgentRun, memoryAccessConditions } from "../services/memory-access-sql.js";
 import { filterMemoryForActor, type MemoryActor } from "../services/memory-access.js";
+import { buildCrewContextBundle } from "../services/internal-agent/aoa-agents/crew-context-bundle.js";
 import { allocateEmbeddedPgPort } from "./helpers/embedded-pg-port.js";
 
 type EmbeddedPostgresInstance = {
@@ -306,6 +307,45 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect(extTitles.has("Company identity")).toBe(false); // identity: external NO
       expect(extTitles.has("Company-wide note")).toBe(false); // company: external NO
       expect(extTitles.has("Alpha domain (deptA)")).toBe(true); // its scoped access still works
+    });
+
+    it("crew bundle wiring: an entitled crew agent's ## Context renders an in-scope/company nonce but NOT an out-of-dept one (RBAC)", async () => {
+      assertSetupOk();
+      // A crew (kind='aoa') agent assigned to dept A only, and a task in dept A whose
+      // single-word title drives the memory query ('grackle' → ilike substring + temporal).
+      const crew = firstId(
+        await db.execute<{ id: string }>(sql`
+          INSERT INTO agents (id, company_id, name, kind, status)
+          VALUES (gen_random_uuid(), ${co}, 'Crew A', 'aoa', 'idle') RETURNING id`),
+      );
+      await db.execute(sql`
+        INSERT INTO agent_projects (agent_id, project_id, company_id) VALUES (${crew}, ${deptA}, ${co})`);
+      const task = firstId(
+        await db.execute<{ id: string }>(sql`
+          INSERT INTO issues (id, company_id, project_id, title, status)
+          VALUES (gen_random_uuid(), ${co}, ${deptA}, 'grackle', 'todo') RETURNING id`),
+      );
+
+      // Nonce in the task's department (crew agent entitled) + an out-of-dept nonce.
+      // Both contain 'grackle' (keyword match); crew retrieval is scoped to the task's dept,
+      // and the out-of-dept row is additionally RBAC-excluded (agent A is not in dept B).
+      await db.execute(sql`
+        INSERT INTO memory_items
+          (id, company_id, title, content, category, source, status, created_by, layer, visibility, department_id)
+        VALUES (gen_random_uuid(), ${co}, 'Crew in-scope', 'grackle codeword NONCE-INSCOPE',
+                'reference', 'founder', 'approved', 'itest', 'domain', 'scoped', ${deptA})`);
+      await db.execute(sql`
+        INSERT INTO memory_items
+          (id, company_id, title, content, category, source, status, created_by, layer, visibility, department_id)
+        VALUES (gen_random_uuid(), ${co}, 'Other dept secret', 'grackle codeword NONCE-OTHERDEPT',
+                'reference', 'founder', 'approved', 'itest', 'domain', 'scoped', ${deptB})`);
+
+      const bundle = await buildCrewContextBundle(db, { companyId: co, agentId: crew, issueId: task });
+
+      // The RBAC-gated bundle rendered the entitled dept-A nonce into the crew prompt (## Context)…
+      expect(bundle).toContain("NONCE-INSCOPE");
+      // …and the out-of-dept row is ABSENT (RBAC + task scope).
+      expect(bundle).not.toContain("NONCE-OTHERDEPT");
     });
 
     it("the gate is meaningful, not vacuous: WITHOUT accessConditions the dept-B row DOES come back", async () => {
