@@ -1,4 +1,4 @@
-import { and, eq, ilike, or, sql, desc, isNull, gt, inArray } from "drizzle-orm";
+import { and, eq, ilike, or, sql, desc, isNull, gt, inArray, type SQL } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { agents, embeddingQueue, memoryItems, memoryItemVersions, memoryRetrievals, suggestions } from "@armyofagents/db";
 import { MEMORY_ITEM_LAYERS, normalizeMemoryFolderPath } from "@armyofagents/shared";
@@ -38,6 +38,12 @@ export interface MemoryFilters {
   layer?: string;
   tags?: string[];
   search?: string;
+  /**
+   * RBAC WHERE conditions (from `memoryAccessConditions`) AND-ed into the query
+   * so a scoped actor can never list memory it isn't entitled to. Empty/undefined
+   * leaves the list unfiltered (the prior behavior for board/founder callers).
+   */
+  accessConditions?: SQL[];
 }
 
 export interface SemanticSearchFilters {
@@ -84,6 +90,12 @@ export interface MultiPathSearchFilters {
   enableSemantic?: boolean;
   enableKeyword?: boolean;
   enableTemporal?: boolean;
+  /**
+   * RBAC WHERE conditions (from `memoryAccessConditions`) AND-ed into every
+   * pathway so a scoped actor can never rank — nor leak — memory it isn't
+   * entitled to. Empty/undefined leaves the search unfiltered (founder board).
+   */
+  accessConditions?: SQL[];
 }
 
 export interface SearchAuditCandidatesFilters {
@@ -112,6 +124,9 @@ export interface MultiPathSearchResult {
   priority: number;
   validationCount: number;
   agentId: string | null;
+  ownerType: string | null;
+  ownerId: string | null;
+  invalidatedAt: Date | null;
   pinnedToSkill: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -243,6 +258,10 @@ export function memoryService(db: Db) {
           conditions.push(sql`${memoryItems.tags} @> ${JSON.stringify([tag])}::jsonb`);
         }
       }
+      // RBAC gate (P1-T5): AND the caller's access conditions into the list so a
+      // scoped actor never sees memory outside its entitlement. Resolves goal/task
+      // scope in-SQL via the project_goals junction + issues.projectId.
+      if (filters.accessConditions?.length) conditions.push(...filters.accessConditions);
 
       const rows = await db.select(memoryItemsSelection()).from(memoryItems).where(and(...conditions));
       // Enrich with per-item indexStatus (Task W5 — additive field, array contract preserved).
@@ -287,11 +306,21 @@ export function memoryService(db: Db) {
         .limit(Math.min(filters.limit ?? 50, 100));
     },
 
-    getById: async (companyId: string, id: string) => {
+    getById: async (companyId: string, id: string, accessConditions?: SQL[]) => {
+      // RBAC gate (P1-T5): the optional accessConditions (from
+      // `memoryAccessConditions`) are AND-ed into the WHERE so a by-id read
+      // resolves goal/task scope in-SQL — a row the actor can't see returns null
+      // (not a post-fetch-only decision, which would leak goal/task-scoped rows).
       const rows = await db
         .select(memoryItemsSelection())
         .from(memoryItems)
-        .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)));
+        .where(
+          and(
+            eq(memoryItems.id, id),
+            eq(memoryItems.companyId, companyId),
+            ...(accessConditions ?? []),
+          ),
+        );
       const row = rows[0] ?? null;
       if (!row) return null;
       // Enrich with per-item indexStatus (Task W5 — additive field, same outer shape).
@@ -572,8 +601,9 @@ export function memoryService(db: Db) {
      * embedding the query). p50 ~150ms.
      *
      * Scope filters (departmentId, projectId, goalId, layer, category) apply
-     * BEFORE search runs. Caller is responsible for downstream RBAC
-     * filtering (filterMemoryForScope).
+     * BEFORE search runs. RBAC is enforced in-SQL via `accessConditions`
+     * (from `memoryAccessConditions`) AND-ed into every pathway; the caller
+     * still runs `filterMemoryForActor` over the results as a safety net.
      */
     searchMultiPath: async (
       companyId: string,
@@ -593,9 +623,18 @@ export function memoryService(db: Db) {
         ];
         if (filters.layer) conds.push(eq(memoryItems.layer, filters.layer));
         if (filters.category) conds.push(eq(memoryItems.category, filters.category));
-        if (filters.departmentId) conds.push(eq(memoryItems.departmentId, filters.departmentId));
-        if (filters.projectId) conds.push(eq(memoryItems.projectId, filters.projectId));
-        if (filters.goalId) conds.push(eq(memoryItems.goalId, filters.goalId));
+        // Scope filters narrow to the run's dept/project/goal, but company-wide /
+        // fully-unscoped memory (the scope column IS NULL) is always relevant and must
+        // never be excluded by a scope filter (Decision #119). So each scope match is
+        // "= the run's scope OR the row is unscoped on that column".
+        if (filters.departmentId)
+          conds.push(or(eq(memoryItems.departmentId, filters.departmentId), isNull(memoryItems.departmentId))!);
+        if (filters.projectId)
+          conds.push(or(eq(memoryItems.projectId, filters.projectId), isNull(memoryItems.projectId))!);
+        if (filters.goalId)
+          conds.push(or(eq(memoryItems.goalId, filters.goalId), isNull(memoryItems.goalId))!);
+        // RBAC gate (P1-T2): AND the actor's access conditions into every pathway.
+        if (filters.accessConditions?.length) conds.push(...filters.accessConditions);
         return conds;
       };
 
@@ -620,6 +659,11 @@ export function memoryService(db: Db) {
         priority: memoryItems.priority,
         validationCount: memoryItems.validationCount,
         agentId: memoryItems.agentId,
+        // Ownership + invalidation columns feed the post-fetch RBAC safety net
+        // (filterMemoryForActor) that guards the searchMultiPath results.
+        ownerType: memoryItems.ownerType,
+        ownerId: memoryItems.ownerId,
+        invalidatedAt: memoryItems.invalidatedAt,
         pinnedToSkill: memoryItems.pinnedToSkill,
         accessedAt: memoryItems.accessedAt,
         lastValidatedAt: memoryItems.lastValidatedAt,
@@ -805,6 +849,9 @@ export function memoryService(db: Db) {
           priority: typeof item.priority === "number" ? item.priority : 0,
           validationCount,
           agentId: (item.agentId as string | null) ?? null,
+          ownerType: (item.ownerType as string | null) ?? null,
+          ownerId: (item.ownerId as string | null) ?? null,
+          invalidatedAt: (item.invalidatedAt as Date | null) ?? null,
           pinnedToSkill: Boolean(item.pinnedToSkill),
           createdAt: item.createdAt as Date,
           updatedAt: item.updatedAt as Date,

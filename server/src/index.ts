@@ -81,6 +81,7 @@ import { backfillWorkQuestionSnapshots } from "./migrations/backfill-work-questi
 import { backfillFirstRunCompleted } from "./migrations/backfill-first-run-completed.js";
 import { normalizeLegacyOnboardingState } from "./migrations/normalize-legacy-onboarding-state.js";
 import { backfillCrewTemplateOrigin } from "./services/internal-agent/aoa-agents/backfill-template-origin.js";
+import { backfillAllCompaniesIdentityMemory } from "./services/identity-backfill.js";
 import { backfillCrewOriginKind } from "./services/internal-agent/aoa-agents/backfill-crew-origin-kind.js";
 import { reconcileAutonomyScale } from "./services/internal-agent/aoa-agents/reconcile-autonomy-scale.js";
 import { runProviderConnectionsBackfill } from "./services/provider-connections-backfill.js";
@@ -129,6 +130,26 @@ type EmbeddedPostgresCtor = new (opts: {
 }) => EmbeddedPostgresInstance;
 
 const config = loadConfig();
+
+// Dev/sandbox affordance (opt-in via AOA_STRIP_CC_ENV=1): when AoA is launched
+// from inside a Claude Code session — especially a staging session — the inherited
+// CLAUDE_CODE_* / OAuth-routing vars + ANTHROPIC_BASE_URL point every spawned CLI
+// (Commander, extraction, crew/org runs, the auth probe) at the HOST session's
+// endpoint. A normal `claude login` (production) then reads as "revoked" there, so
+// the CLI reports needs_auth even though the machine is signed in. Stripping these
+// here — after loadConfig()'s .env load, before any adapter spawns — lets the child
+// CLIs fall back to the machine's own login. No-op in a normal terminal (vars absent).
+if (process.env.AOA_STRIP_CC_ENV === "1") {
+  const stripped = Object.keys(process.env).filter((k) =>
+    /^(CLAUDE_CODE_|CLAUDECODE$|USE_STAGING_OAUTH$|USE_LOCAL_OAUTH$|ANTHROPIC_BASE_URL$|AI_AGENT$)/i.test(k),
+  );
+  for (const k of stripped) delete process.env[k];
+  console.log(
+    `[aoa] AOA_STRIP_CC_ENV: removed ${stripped.length} Claude Code session var(s)` +
+      (stripped.length ? `: ${stripped.join(", ")}` : ""),
+  );
+}
+
 // The dedicated e2e session mint bypasses OAuth. Reject unsafe combinations
 // before migrations, database bootstrap, or route initialization does work.
 assertTestSupportFlagSafe({
@@ -929,6 +950,18 @@ void backfillMemoryFolderSeeds(db as any)
 void backfillCrewTemplateOrigin(db as any).catch((err: unknown) =>
   logger.warn({ err }, "crew templateOrigin backfill failed"),
 );
+
+// P1-T9 — idempotent backfill: mirror each company's vision/mission/values into
+// layer='identity' memory items (the single home for company identity; the
+// `companies` columns stay as a temporary mirror). Runs every boot; second run
+// inserts 0 rows. Best-effort — never blocks startup.
+void backfillAllCompaniesIdentityMemory(db as any)
+  .then((res) => {
+    if (res.items > 0) {
+      logger.info(res, "company identity memory backfill complete");
+    }
+  })
+  .catch((err: unknown) => logger.warn({ err }, "company identity memory backfill failed"));
 
 // WS0b — idempotent backfill: stamp firstRunCompletedAt=now() onto every
 // onboarding_progress row that is already SETUP_COMPLETE (currentState OR

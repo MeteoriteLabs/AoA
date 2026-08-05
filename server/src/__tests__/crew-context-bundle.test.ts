@@ -59,6 +59,25 @@ vi.mock("../services/memory.js", () => ({
   memoryService: vi.fn(() => ({ searchMultiPath: mockSearchMultiPath })),
 }));
 
+// ── memory-access mocks (RBAC actor resolver + post-filter — unit-isolated) ───
+// buildCrewContextBundle resolves the crew agent's actor via actorForAgentRun (a
+// real agent_projects DB query in prod) and post-filters served rows via
+// filterMemoryForActor. This unit test isolates the BUNDLE ASSEMBLY logic; the
+// RBAC gate itself is covered by memory-access.test.ts + the real-pg
+// memory-rbac-leakage.integration.test.ts crew-bundle case. Give a fixed agent
+// actor and a passthrough filter so the memory branch runs deterministically
+// without the DB round-trip (otherwise the actor resolves null and the code
+// correctly fail-closes before searchMultiPath).
+vi.mock("../services/memory-access-sql.js", () => ({
+  actorForAgentRun: vi.fn(async () => ({ kind: "agent", agentId: "crew-1", departmentIds: ["dept-1"] })),
+  memoryAccessConditions: vi.fn(() => []),
+  actorForMcp: vi.fn(),
+  actorForUser: vi.fn(),
+}));
+vi.mock("../services/memory-access.js", () => ({
+  filterMemoryForActor: vi.fn((items: unknown[]) => items),
+}));
+
 // ── Import AFTER mocks ────────────────────────────────────────────────────────
 import { buildCrewContextBundle } from "../services/internal-agent/aoa-agents/crew-context-bundle.js";
 

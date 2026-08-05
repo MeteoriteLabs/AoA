@@ -13,6 +13,7 @@ import {
   costEvents,
   environments,
   issues,
+  goals,
   memoryItems,
   companies,
   taskDependencies,
@@ -78,6 +79,10 @@ import type { RuntimeSkillEntry } from "./company-skills.js";
 import { buildPinnedMemorySkillEntries } from "./memory-skill-sync.js";
 import { memoryService, type MultiPathSearchResult } from "./memory.js";
 import { recordMemoryRetrievals } from "./memory-retrieval-audit.js";
+import { actorForAgentRun, memoryAccessConditions } from "./memory-access-sql.js";
+import { filterMemoryForActor } from "./memory-access.js";
+import { resolveRunMemoryScope } from "./memory-run-scope.js";
+import { buildAlwaysOnCore } from "./memory-core-block.js";
 import { issueService as createIssueService } from "./issues.js";
 import { quotaWindowsService } from "./quota-windows.js";
 import { extractSkillMentionIds } from "@armyofagents/shared";
@@ -1458,25 +1463,64 @@ export function heartbeatService(db: Db) {
       .where(eq(companies.id, companyId))
       .then((rows) => rows[0] ?? null);
 
-    // Resolve task text used by the semantic + keyword pathways
+    // Resolve task text + scope (department + goal + project type) used by the
+    // semantic + keyword pathways and the RBAC/scope gate.
     let issueText: string | null = null;
+    let issueScope: {
+      projectId: string | null;
+      projectType: string | null;
+      goalId: string | null;
+    } | null = null;
+    // Current goal title for the always-on core (P1-T6). Joined here (the select
+    // already leftJoins projects) so the core can name the goal without an extra
+    // query. Left join ⇒ null when the task has no goal — the core omits the line.
+    let goalTitle: string | null = null;
     if (issueId) {
       const issueRow = await db
-        .select({ title: issues.title, description: issues.description })
+        .select({
+          title: issues.title,
+          description: issues.description,
+          projectId: issues.projectId,
+          goalId: issues.goalId,
+          projectType: projects.type,
+          goalTitle: goals.title,
+        })
         .from(issues)
+        .leftJoin(projects, eq(projects.id, issues.projectId))
+        .leftJoin(goals, eq(goals.id, issues.goalId))
         .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
         .then((rows) => rows[0] ?? null);
       if (issueRow) {
         issueText = [issueRow.title, issueRow.description].filter(Boolean).join("\n");
+        issueScope = {
+          projectId: issueRow.projectId,
+          projectType: issueRow.projectType ?? null,
+          goalId: issueRow.goalId,
+        };
+        goalTitle = issueRow.goalTitle ?? null;
       }
     }
+
+    // RBAC + scope gate (enterprise memory model, P1-T3): resolve the running
+    // agent's actor and derive the task's department + goal scope so the ORG path
+    // fetches only memory this agent is entitled to and relevant to (was a
+    // company-wide, goal-less dump). agentId can be absent on some wake types —
+    // then we skip the actor gate and retain today's unfiltered behavior.
+    const actor = auditContext?.agentId
+      ? await actorForAgentRun(db, companyId, auditContext.agentId)
+      : null;
+    const scope = resolveRunMemoryScope(issueScope);
 
     // Multi-pathway retrieval: semantic + keyword + temporal fused via RRF,
     // then trust-weighted (validationCount + recency). Replaces the old manual
     // pgvector query + preference-category fallback with a single unified call.
     const memorySvc = memoryService(db);
-    const items: MultiPathSearchResult[] = await memorySvc
-      .searchMultiPath(companyId, issueText ?? "", { limit: itemLimit })
+    const rawItems: MultiPathSearchResult[] = await memorySvc
+      .searchMultiPath(companyId, issueText ?? "", {
+        limit: itemLimit,
+        ...scope,
+        ...(actor ? { accessConditions: memoryAccessConditions(db, actor) } : {}),
+      })
       .catch((err) => {
         logger.warn(
           { companyId, issueId, err },
@@ -1484,6 +1528,9 @@ export function heartbeatService(db: Db) {
         );
         return [] as MultiPathSearchResult[];
       });
+    // Safety net: even with the in-SQL conditions, never hand an actor a row it
+    // can't see (post-fetch filter mirrors the SQL gate — P0 memory-access.ts).
+    const items = actor ? filterMemoryForActor(rawItems, actor) : rawItems;
 
     // Audit: fire-and-forget — one row per item → memory_retrievals table.
     // Powers the "Auto-retrieved" group in the workspace Memory section.
@@ -1524,6 +1571,9 @@ export function heartbeatService(db: Db) {
         category: item.category,
         tags: item.tags ?? [],
       })),
+      // Current goal title for the always-on core (P1-T6); null when the task has
+      // no goal or there is no task on this wake.
+      goalTitle,
     };
   }
 
@@ -3933,6 +3983,16 @@ export function heartbeatService(db: Db) {
         if (memoryContext.memory.length > 0) {
           context.memory = memoryContext.memory;
         }
+        // Always-on core (P1-T6, scenario O5): a tiny deterministic block —
+        // role + current goal + a "call memory.search" pointer — set on EVERY
+        // run independent of retrieval ranking/limit, so an agent never starts
+        // without knowing its role and that a searchable company brain exists.
+        // Set unconditionally (not gated on memory results); mirrors the sibling
+        // context.memory contract.
+        context.memory_core = buildAlwaysOnCore({
+          agentRole: agent.role ?? agent.name ?? null,
+          goalTitle: memoryContext.goalTitle,
+        });
       } catch (err) {
         logger.warn(
           { companyId: agent.companyId, agentId: agent.id, runId: run.id, err },

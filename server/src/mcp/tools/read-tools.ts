@@ -7,10 +7,12 @@ import {
   notFoundResult,
   ok,
 } from "./types.js";
-import { assertScopedProjectAccess, canAccessProjectScopedEntity, filterMemoryForScope } from "./scope.js";
+import { assertScopedProjectAccess, canAccessProjectScopedEntity } from "./scope.js";
 import { companyBrainGraphService } from "../../services/company-brain-graph.js";
 import { expandRetrievalWithCompanyGraph } from "../../services/company-brain/retrieval-expansion.js";
 import { recordMemoryRetrievals } from "../../services/memory-retrieval-audit.js";
+import { actorForMcp, memoryAccessConditions } from "../../services/memory-access-sql.js";
+import { filterMemoryForActor } from "../../services/memory-access.js";
 
 async function handleMe(ctx: ToolContext): Promise<ToolResult> {
   const role = await ctx.resolveRole(ctx.companyId, ctx.actor.userId);
@@ -170,8 +172,10 @@ async function handleGetTaskComment(
  * Worker-facing memory search.
  *
  * Runs memorySvc.searchMultiPath (semantic + keyword + temporal +
- * RRF + trust weighting), then applies filterMemoryForScope to enforce
- * the caller's RBAC visibility. Each shown item is logged to
+ * RRF + trust weighting) with the caller's `memoryAccessConditions` AND-ed
+ * into the fetch (in-SQL, pre-ranking), then `filterMemoryForActor` as the
+ * post-fetch safety net — the converged enterprise-memory RBAC gate
+ * (P1-T5). Each shown item is logged to
  * memory_retrievals (triggeredBy: "agent_search" for agent actors,
  * "auto" otherwise — only agent_search wakes the workspace UI today
  * but the audit row is preserved either way).
@@ -194,18 +198,29 @@ async function handleMemorySearch(
     })
     .parse(args);
 
+  // Resolve the RBAC actor from the MCP caller (agent → agent_projects, human →
+  // user_roles) and build the in-SQL access gate. The gate is applied to the
+  // fetch so an unreadable row is never returned nor ranked.
+  const actor = await actorForMcp(ctx.db, ctx.companyId, {
+    source: ctx.actor.source,
+    userId: ctx.actor.userId,
+    agentId: ctx.actor.agentId,
+  }, ctx.scope);
+  const accessConditions = memoryAccessConditions(ctx.db, actor);
+
   const results = await ctx.services.memorySvc.searchMultiPath(ctx.companyId, parsed.query, {
     layer: parsed.layer,
     category: parsed.category,
     departmentId: parsed.departmentId,
     projectId: parsed.projectId,
     limit: parsed.limit ?? 10,
+    accessConditions,
   });
 
-  // RBAC filter — items the caller can't see drop out before being
-  // returned, but their audit rows are still emitted with
+  // Post-fetch safety net mirroring the SQL gate — items the caller can't see
+  // drop out before being returned, but their audit rows are still emitted with
   // shownToAgent=false so "queried but not shown" is debuggable.
-  const allowed = (await filterMemoryForScope(ctx.db, ctx.scope, results)) as typeof results;
+  const allowed = filterMemoryForActor(results, actor);
   const allowedIds = new Set(allowed.map((row) => row.id));
 
   void recordMemoryRetrievals(ctx.db, {
@@ -232,9 +247,11 @@ async function handleMemorySearch(
     seeds: allowed,
     loadNeighbors: (memoryItemId) =>
       graphSvc.getMemoryItemNeighbors(ctx.companyId, memoryItemId, graphActor),
-    loadMemoryItem: (memoryItemId) => ctx.services.memorySvc.getById(ctx.companyId, memoryItemId),
-    filterMemoryItems: async (items) =>
-      (await filterMemoryForScope(ctx.db, ctx.scope, items)) as typeof items,
+    // Graph neighbors are fetched by id, so the SQL gate must ride along on the
+    // fetch — a naive post-fetch-only filter would leak goal/task-scoped neighbors.
+    loadMemoryItem: (memoryItemId) =>
+      ctx.services.memorySvc.getById(ctx.companyId, memoryItemId, accessConditions),
+    filterMemoryItems: async (items) => filterMemoryForActor(items, actor),
   });
 
   return ok({ items: expanded.items, graphContext: expanded.graphContext });
@@ -258,12 +275,22 @@ async function handleMemoryGet(
 ): Promise<ToolResult> {
   const parsed = z.object({ id: z.string().uuid() }).parse(args);
 
-  const item = await ctx.services.memorySvc.getById(ctx.companyId, parsed.id);
+  // RBAC gate (P1-T5): resolve the actor, then apply the access conditions to the
+  // by-id fetch so goal/task scope is resolved in-SQL — an out-of-scope item comes
+  // back null (a pure post-fetch filter would pass goal/task-only rows through).
+  const actor = await actorForMcp(ctx.db, ctx.companyId, {
+    source: ctx.actor.source,
+    userId: ctx.actor.userId,
+    agentId: ctx.actor.agentId,
+  }, ctx.scope);
+  const accessConditions = memoryAccessConditions(ctx.db, actor);
+
+  const item = await ctx.services.memorySvc.getById(ctx.companyId, parsed.id, accessConditions);
   if (!item || item.status !== "approved") {
     return notFoundResult("Memory item not found");
   }
 
-  const allowed = await filterMemoryForScope(ctx.db, ctx.scope, [item]);
+  const allowed = filterMemoryForActor([item], actor);
   if (allowed.length === 0) {
     return notFoundResult("Memory item not found");
   }

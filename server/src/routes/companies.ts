@@ -25,6 +25,7 @@ import {
   ensureCompanyProfileFromGlobal,
   materializeCompanyProfileFromGlobal,
 } from "../services/team.js";
+import { backfillIdentityMemory } from "../services/identity-backfill.js";
 import { logger } from "../middleware/logger.js";
 import { organizationAccessService } from "../services/organization-access.js";
 import type { OrgCapability } from "../services/organization-access.js";
@@ -395,6 +396,14 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
     if (!company) {
       res.status(404).json({ error: "Company not found" });
       return;
+    }
+    // P1-T9 — mirror edited vision/mission/values into layer='identity' memory
+    // (the single home for company identity). Idempotent + best-effort; the
+    // startup backfill is the safety net for any path that bypasses this route.
+    if ("vision" in req.body || "mission" in req.body || "values" in req.body) {
+      await backfillIdentityMemory(db, companyId).catch((err: unknown) =>
+        logger.warn({ err, companyId }, "company identity memory mirror failed (non-fatal)"),
+      );
     }
     await logActivity(db, {
       companyId,

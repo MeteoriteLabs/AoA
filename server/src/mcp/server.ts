@@ -33,11 +33,12 @@ import {
   canAccessProjectScopedEntity,
   filterArtifactsForScope,
   filterGoalsForScope,
-  filterMemoryForScope,
   resolveScopedAgentIdsDefault,
   resolveUserRole,
   resolveUserScope,
 } from "./tools/scope.js";
+import { actorForMcp, memoryAccessConditions } from "../services/memory-access-sql.js";
+import { filterMemoryForActor } from "../services/memory-access.js";
 
 const JSON_RPC_VERSION = "2.0";
 const MCP_PROTOCOL_VERSION = "2024-11-05";
@@ -507,17 +508,26 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
         }
 
         if (resource.collection === "memory") {
+          // Converged enterprise-memory RBAC gate (P1-T5): resolve the caller's
+          // actor once, build the in-SQL access conditions, apply them to the
+          // fetch (so goal/task scope resolves in-SQL), then filterMemoryForActor
+          // as the post-fetch net. Replaces the goal/task-leaking filterMemoryForScope.
+          const memoryActor = await actorForMcp(db, companyId, {
+            source: protocolActor.source,
+            userId: protocolActor.userId,
+            agentId: protocolActor.agentId,
+          }, scope);
+          const memoryAccess = memoryAccessConditions(db, memoryActor);
           if (!resource.id) {
-            const rows = await filterMemoryForScope(
-              db,
-              scope,
-              await memorySvc.list(companyId, { status: "approved" }),
+            const rows = filterMemoryForActor(
+              await memorySvc.list(companyId, { status: "approved", accessConditions: memoryAccess }),
+              memoryActor,
             );
             res.json(jsonRpcResult(requestBody.id ?? null, asJsonContent(params.uri, rows)));
             return;
           }
-          const row = await memorySvc.getById(companyId, resource.id);
-          const filtered = row && row.status === "approved" ? await filterMemoryForScope(db, scope, [row]) : [];
+          const row = await memorySvc.getById(companyId, resource.id, memoryAccess);
+          const filtered = row && row.status === "approved" ? filterMemoryForActor([row], memoryActor) : [];
           if (filtered.length === 0) {
             res.status(404).json(jsonRpcError(requestBody.id ?? null, -32004, "Memory item not found"));
             return;

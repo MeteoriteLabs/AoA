@@ -45,7 +45,18 @@ function connectorEnvMergeFor(
   };
 }
 
-/** Minimum task-work surface exposed to an organization-agent heartbeat run. */
+/**
+ * Minimum task-work surface exposed to an organization-agent heartbeat run.
+ *
+ * Includes the read-only memory-retrieval tool `query_memory` so a running org
+ * agent can actually RETRIEVE company memory — the enterprise-memory model's
+ * primary ORG delivery path (context.memory is not read by the live CLI template;
+ * agents fetch on demand). NOTE the name: agents talk to the **internal-agent**
+ * tool registry (`createToolRegistry` → `query_memory`, `requiredRole:team_member`,
+ * no confirmation), NOT the external MCP-server registry (`memory.search`). Without
+ * this the agent's session has no memory tool at all and it cannot answer a
+ * "recall X from memory" task.
+ */
 export const ORG_HEARTBEAT_TOOL_ALLOWLIST = [
   "get_task",
   "get_heartbeat_context",
@@ -54,6 +65,7 @@ export const ORG_HEARTBEAT_TOOL_ALLOWLIST = [
   "set_task_status",
   "ask_human",
   "ask_founder",
+  "query_memory",
 ] as const;
 
 export function resolveHeartbeatEffectiveAutonomy(input: {

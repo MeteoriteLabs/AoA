@@ -36,6 +36,7 @@ function filterQueryResults<T extends CommanderMemoryToolCandidate>(input: {
   userId: string;
   userRole?: string | null;
   scope: Partial<NormalizedCommanderContextScope>;
+  actorType?: string | null;
 }): { shown: T[]; filtered: T[] } {
   const layerCandidates = input.requestedLayer
     ? input.items.filter((item) => item.layer === input.requestedLayer)
@@ -49,6 +50,7 @@ function filterQueryResults<T extends CommanderMemoryToolCandidate>(input: {
     userRole: input.userRole,
     scope: input.scope,
     mode: "explicit_query",
+    actorType: input.actorType,
   });
   return {
     shown: split.shown,
@@ -93,6 +95,7 @@ export function createMemoryTools(): AgentTool[] {
             userId: ctx.userId,
             userRole: ctx.userRole,
             scope: ctx.contextScope ?? {},
+            actorType: ctx.actorType,
           });
           const auditSplit = filterQueryResults({
             items: dedupeCandidates([
@@ -103,6 +106,7 @@ export function createMemoryTools(): AgentTool[] {
             userId: ctx.userId,
             userRole: ctx.userRole,
             scope: ctx.contextScope ?? {},
+            actorType: ctx.actorType,
           });
           const shownIds = new Set(split.shown.map((item) => item.id));
           const auditItems = toAuditItems({
@@ -138,6 +142,7 @@ export function createMemoryTools(): AgentTool[] {
           requestedLayer: layer as string | undefined,
           userId: ctx.userId,
           userRole: ctx.userRole,
+          actorType: ctx.actorType,
           scope: ctx.contextScope ?? {},
         });
         const limited = split.shown.slice(0, maxResults);

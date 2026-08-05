@@ -11,7 +11,7 @@ import { ArchiveCompanySection } from "@/components/settings/sections/ArchiveCom
 import { BudgetCapsSection } from "@/components/settings/sections/BudgetCapsSection";
 import { MCPApiKeysSection } from "@/components/settings/sections/MCPApiKeysSection";
 import { MCPConnectorsSection } from "@/components/settings/sections/MCPConnectorsSection";
-import { LLMProvidersSectionWrapper } from "@/components/settings/sections/LLMProvidersSectionWrapper";
+import { MemorySettingsSection } from "@/components/settings/sections/MemorySettingsSection";
 import { PluginsSectionWrapper } from "@/components/settings/sections/PluginsSectionWrapper";
 import { MarketplacePrefsSection } from "@/components/settings/sections/MarketplacePrefsSection";
 import { CommanderSection } from "@/components/settings/sections/CommanderSection";
@@ -49,7 +49,7 @@ function renderActiveSection(id: SettingsSectionId) {
     case "commander":
       return <CommanderSection />;
     case "memory":
-      return <LLMProvidersSectionWrapper />;
+      return <MemorySettingsSection />;
     case "providers":
       return <ProvidersSection />;
     case "budget":

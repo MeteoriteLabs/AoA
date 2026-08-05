@@ -62,6 +62,7 @@ export { companySecretVersions } from "./company_secret_versions.js";
 export { runtimeProviderKeys } from "./runtime_provider_keys.js";
 export { secretAccessEvents } from "./secret_access_events.js";
 export { memoryItems } from "./memory_items.js";
+export { memorySettings } from "./memory_settings.js";
 export { memoryAssets } from "./memory_assets.js";
 export { memoryFolders } from "./memory_folders.js";
 export { debriefs } from "./debriefs.js";

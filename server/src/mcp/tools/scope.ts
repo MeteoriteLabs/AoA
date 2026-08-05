@@ -173,18 +173,6 @@ export async function artifactProjectMap(db: Db, artifactIds: string[]) {
   return map;
 }
 
-export async function memoryTaskProjectMap(db: Db, taskIds: string[]) {
-  if (taskIds.length === 0) return new Map<string, string | null>();
-  const rows = await db
-    .select({
-      id: issues.id,
-      projectId: issues.projectId,
-    })
-    .from(issues)
-    .where(inArray(issues.id, taskIds));
-  return new Map(rows.map((row) => [row.id, row.projectId ?? null]));
-}
-
 export async function filterGoalsForScope(
   db: Db,
   scope: McpUserScope,
@@ -198,34 +186,6 @@ export async function filterGoalsForScope(
   return rows.filter((row) =>
     (projectMap.get(row.id) ?? []).some((projectId) => scope.projectIds.has(projectId)),
   );
-}
-
-export async function filterMemoryForScope(
-  db: Db,
-  scope: McpUserScope,
-  rows: Array<Record<string, any>>,
-) {
-  if (scope.kind === "founder") return rows;
-  const goalIds = rows.map((row) => row.goalId).filter((id): id is string => Boolean(id));
-  const taskIds = rows.map((row) => row.taskId).filter((id): id is string => Boolean(id));
-  const [goalProjects, taskProjects] = await Promise.all([
-    goalProjectMap(db, [...new Set(goalIds)]),
-    memoryTaskProjectMap(db, [...new Set(taskIds)]),
-  ]);
-  return rows.filter((row) => {
-    if (canAccessProjectScopedEntity(scope, row.departmentId)) return true;
-    if (canAccessProjectScopedEntity(scope, row.projectId)) return true;
-    if (
-      row.goalId &&
-      (goalProjects.get(row.goalId) ?? []).some((projectId) => scope.projectIds.has(projectId))
-    ) {
-      return true;
-    }
-    if (row.taskId && canAccessProjectScopedEntity(scope, taskProjects.get(row.taskId) ?? null)) {
-      return true;
-    }
-    return false;
-  });
 }
 
 export async function filterArtifactsForScope(

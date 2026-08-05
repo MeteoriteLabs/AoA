@@ -487,6 +487,11 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
           threadId: bundleThreadId,
           issueId: bundleIssueId,
           agentId,
+          // P1-T4: thread the run id so CREW memory retrieval is audited (O4).
+          runId,
+          // P1-T6: role label for the always-on core (goal title omitted on the
+          // crew path — the bundle does not load the goal).
+          agentRole: agent.role ?? agent.name ?? null,
         });
       } catch (bundleErr) {
         log.warn({ err: bundleErr }, "aoa-runner: failed to build crew context bundle (best-effort, ignored)");

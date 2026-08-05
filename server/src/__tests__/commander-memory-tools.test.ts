@@ -172,6 +172,29 @@ describe("Commander memory tools", () => {
     }));
   });
 
+  it("query_memory lets an agent browse identity memory without query text", async () => {
+    const memory = {
+      list: vi.fn(async () => [
+        {
+          id: "identity-1",
+          title: "Company Vision",
+          content: "Build the company brain",
+          layer: "identity",
+          status: "approved",
+          visibility: "company",
+          expiresAt: null,
+          createdBy: "system",
+        },
+      ]),
+    };
+    const tool = createMemoryTools().find((candidate) => candidate.name === "query_memory")!;
+    const ctx = { ...buildCtx(memory), actorType: "agent", agentId: "agent-1" };
+
+    const result = await tool.execute({ layer: "identity" }, ctx);
+
+    expect(result.data).toEqual([expect.objectContaining({ id: "identity-1" })]);
+  });
+
   it("suggest_memory attributes durable proposals to Commander while keeping approval pending", async () => {
     const memory = {
       create: vi.fn(async (_companyId, input) => ({ id: "m2", ...input })),

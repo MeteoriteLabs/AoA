@@ -79,9 +79,12 @@ vi.mock("../services/internal-agent/aoa-agents/ensure-commander.js", () => ({
   ensureCommanderAgent: ensureCommanderMock,
 }));
 
-vi.mock("../middleware/logger.js", () => ({
-  logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() },
-}));
+vi.mock("../middleware/logger.js", () => {
+  // `child` is required: the company routes now import identity-backfill.ts, which
+  // calls `logger.child(...)` at module load (PR #318 identity-memory mirror).
+  const base = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() };
+  return { logger: { ...base, child: vi.fn(() => base) } };
+});
 
 const db = { __sentinel: true } as unknown;
 
