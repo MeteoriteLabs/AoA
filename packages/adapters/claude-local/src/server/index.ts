@@ -7,6 +7,11 @@ export {
 export {
   sweepOrphanedIsolatedClaudeConfigDirs,
   ISOLATED_CLAUDE_CONFIG_MAX_AGE_MS,
+  // Overlay-auth allowlist: env keys an operator may set on adapterConfig.env that
+  // survive the ambient strip. Re-exported here so consumers (and the resolver's
+  // drift-guard test) can import it via the package's `./server` subpath — the
+  // module's own file is not a NodeNext-resolvable subpath export.
+  CLAUDE_OVERLAY_AUTH_KEYS,
   type ClaudeConfigDirSweepResult,
 } from "./ambient-config.js";
 export { listClaudeSkills, syncClaudeSkills } from "./skills.js";

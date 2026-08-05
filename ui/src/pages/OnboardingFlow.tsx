@@ -2,15 +2,16 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
-import type { OnboardingJourney, OnboardingState } from "@armyofagents/shared";
+import type { OnboardingJourney } from "@armyofagents/shared";
 import { authApi } from "../api/auth";
 import { queryKeys } from "../lib/queryKeys";
 import { advanceOnboarding, getOnboardingProgress, onboardingApi } from "../api/onboarding";
 import { DarkShell, FlowEngine } from "../onboarding/FlowEngine";
 import { ONBOARDING_STEPS } from "../onboarding/steps";
-import { OrgStep } from "../onboarding/steps/OrgStep";
+import { CreateAnotherCompany } from "../onboarding/CreateAnotherCompany";
 import { InvitedJoinTerminal } from "../onboarding/InvitedJoinTerminal";
 import { FirstRunHome } from "../onboarding/FirstRunHome";
+import { healthApi } from "../api/health";
 
 /**
  * The onboarding route (Stage B / B7). Wires the FlowEngine with the real
@@ -37,6 +38,11 @@ export function OnboardingFlowPage({ journey }: { journey: OnboardingJourney }) 
     queryFn: () => authApi.getSession(),
     retry: false,
   });
+  const healthQuery = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => healthApi.get(),
+    retry: false,
+  });
   const userId = session?.user?.id;
   const profileProgressQuery = useQuery({
     queryKey: ["onboarding", "progress", "user-layer", userId],
@@ -53,7 +59,7 @@ export function OnboardingFlowPage({ journey }: { journey: OnboardingJourney }) 
     retry: false,
   });
 
-  if (isLoading || (isNewFounderOrganization && profileProgressQuery.isLoading)) {
+  if (isLoading || healthQuery.isLoading || (isNewFounderOrganization && profileProgressQuery.isLoading)) {
     return (
       <div className="onboarding-dark flex min-h-screen items-center justify-center bg-background">
         <p className="text-sm text-dim">Loading…</p>
@@ -64,6 +70,14 @@ export function OnboardingFlowPage({ journey }: { journey: OnboardingJourney }) 
   if (!userId) {
     navigate("/auth", { replace: true });
     return null;
+  }
+
+  if (healthQuery.error) {
+    return (
+      <div className="onboarding-dark flex min-h-screen items-center justify-center bg-background px-6">
+        <p className="text-sm text-destructive">Failed to determine deployment mode</p>
+      </div>
+    );
   }
 
   if (isNewFounderOrganization && profileProgressQuery.error) {
@@ -87,18 +101,19 @@ export function OnboardingFlowPage({ journey }: { journey: OnboardingJourney }) 
   // engine with a pinned-null companyId would instead loop: OrgStep advances on
   // the NEW company while the engine re-reads the still-empty user layer.
   if (isNewFounderOrganization) {
-    const orgCtx = {
-      userId,
-      companyId: null,
-      journey,
-      completedStates: ["AUTHENTICATED", "PROFILE_SET"] as OnboardingState[],
-    };
+    // Fix 2 (design P1): resolve the founder's own create-capable Organization
+    // before the company step. In cloud_auth an explicit org id is mandatory —
+    // the server's resolveCompanyOrganizationId 403s a >=2-org founder who omits
+    // it and never guesses; a single-org founder is auto-picked silently. Only
+    // self-hosted omits the id (resolveCompanyOrganizationId derives
+    // DEFAULT_ORGANIZATION_ID). CreateAnotherCompany owns that whole resolution.
     return (
       <DarkShell>
         <div className="relative z-10 flex min-h-screen items-center justify-center px-6 py-8">
-          <OrgStep
-            ctx={orgCtx}
-            onComplete={() => navigate("/onboarding", { replace: true })}
+          <CreateAnotherCompany
+            userId={userId}
+            journey={journey}
+            onCompleteCompany={() => navigate("/onboarding", { replace: true })}
             onBack={() => navigate("/", { replace: true })}
           />
         </div>
@@ -144,6 +159,7 @@ export function OnboardingFlowPage({ journey }: { journey: OnboardingJourney }) 
       userId={userId}
       companyId={journey === "invited" ? null : (selectedCompanyId ?? null)}
       journey={journey}
+      deploymentMode={healthQuery.data?.deploymentMode}
       api={onboardingApi}
       registry={ONBOARDING_STEPS}
       onBack={() => navigate("/", { replace: true })}

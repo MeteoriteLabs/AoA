@@ -42,7 +42,7 @@ export function commanderKeyRoutes(
       return;
     }
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     await assertRole(db, req, companyId, "founder");
 
     const provider = req.body?.provider;

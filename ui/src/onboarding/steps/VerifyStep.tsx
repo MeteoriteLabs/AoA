@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { StepProps } from "../registry";
 import { api, ApiError } from "../../api/client";
+import { healthApi } from "../../api/health";
+import { CloudProviderKeyNotice } from "../CloudProviderKeyNotice";
 import { advanceOnboarding } from "../../api/onboarding";
 import { internalAgentApi } from "../../api/internal-agent";
 import {
@@ -137,6 +139,7 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
   const [outcome, setOutcome] = useState<Outcome>("idle");
   const [message, setMessage] = useState<string | null>(null);
   const [checks, setChecks] = useState<VerifyCheck[]>([]);
+  const [deploymentMode, setDeploymentMode] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(busy);
   busyRef.current = busy;
@@ -201,6 +204,19 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
       alive = false;
     };
   }, [ctx.companyId]);
+
+  useEffect(() => {
+    let alive = true;
+    void healthApi
+      .get()
+      .then((h) => {
+        if (alive) setDeploymentMode(h.deploymentMode ?? null);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (!ctx.companyId || !provider) {
@@ -512,6 +528,8 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
           subtitle="We check that your Commander CLI is installed, launchable, and signed in. You never have to touch a terminal unless something's missing."
         />
       </Reveal>
+
+      <CloudProviderKeyNotice deploymentMode={deploymentMode} />
 
       <Reveal delay={0.09}>
         <div className="flex flex-col items-center gap-3">

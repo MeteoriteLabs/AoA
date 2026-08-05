@@ -34,6 +34,8 @@ import {
 import { runGit as runGitService } from "./git.js";
 import { isUniqueViolation } from "./db-errors.js";
 import { emitBranchTaskOutput } from "./task-output-emitters.js";
+import { assertLocalWorkspaceCommandAllowed } from "./local-workspace-command-guard.js";
+import { isRuntimeProcessOwnedByCurrentReplica } from "./runtime-process-owner.js";
 
 type ExecutionWorkspaceRow = typeof executionWorkspaces.$inferSelect;
 type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
@@ -143,6 +145,8 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
       warnings,
     };
   }
+
+  assertLocalWorkspaceCommandAllowed("workspace Git close-readiness command");
 
   let repoRoot: string | null = null;
   try {
@@ -348,8 +352,10 @@ export function mergeExecutionWorkspaceConfig(
 export function toWorkspaceRuntimeService(row: WorkspaceRuntimeServiceRow): WorkspaceRuntimeService {
   const target = classifyRuntimeServiceTarget(row.url ?? null);
   const linkedToWorkspace = Boolean(row.executionWorkspaceId || row.projectWorkspaceId);
+  const availableOnThisHost = isRuntimeProcessOwnedByCurrentReplica(row);
   const canProxy =
     linkedToWorkspace &&
+    availableOnThisHost &&
     row.status === "running" &&
     row.healthStatus !== "unhealthy" &&
     isAllowedPreviewUpstream(row.url ?? null);
@@ -370,10 +376,10 @@ export function toWorkspaceRuntimeService(row: WorkspaceRuntimeServiceRow): Work
     command: row.command ?? null,
     cwd: row.cwd ?? null,
     port: row.port ?? null,
-    url: row.url ?? null,
+    url: availableOnThisHost ? (row.url ?? null) : null,
     previewUrl: canProxy ? buildRuntimeServicePreviewUrl(row.id) : null,
     previewAccess: canProxy ? target.access : null,
-    localTargetUrl: target.localTargetUrl,
+    localTargetUrl: availableOnThisHost ? target.localTargetUrl : null,
     provider: row.provider as WorkspaceRuntimeService["provider"],
     providerRef: row.providerRef ?? null,
     ownerAgentId: row.ownerAgentId ?? null,
@@ -490,6 +496,87 @@ export function executionWorkspaceService(db: Db) {
       .where(eq(executionWorkspaces.id, id))
       .returning()
       .then((rows) => rows[0] ?? null);
+    if (!row) return null;
+    const workspace = toExecutionWorkspace(row);
+    await emitBranchTaskOutput(db, workspace);
+    return workspace;
+  }
+
+  async function updateIfVersion(
+    id: string,
+    expectedUpdatedAt: Date,
+    patch: Partial<typeof executionWorkspaces.$inferInsert>,
+    allowedStatuses?: ExecutionWorkspace["status"][],
+    projectWorkspaceFence?: { id: string; expectedUpdatedAt: Date } | null,
+  ) {
+    const updateRow = async (tx: Db) => {
+      if (projectWorkspaceFence) {
+        // A same-value optimistic update obtains a row lock without advancing
+        // the generation. Project config updates either land before this fence
+        // (and make it fail) or wait until the execution-state commit finishes.
+        const fencedProjectRows = await tx
+          .update(projectWorkspaces)
+          .set({ updatedAt: projectWorkspaceFence.expectedUpdatedAt })
+          .where(and(
+            eq(projectWorkspaces.id, projectWorkspaceFence.id),
+            eq(projectWorkspaces.updatedAt, projectWorkspaceFence.expectedUpdatedAt),
+          ))
+          .returning({ id: projectWorkspaces.id });
+        if (fencedProjectRows.length === 0) return null;
+      }
+      return await tx
+        .update(executionWorkspaces)
+        .set({ ...patch, updatedAt: new Date() })
+        .where(and(
+          eq(executionWorkspaces.id, id),
+          eq(executionWorkspaces.updatedAt, expectedUpdatedAt),
+          ...(allowedStatuses?.length
+            ? [inArray(executionWorkspaces.status, allowedStatuses)]
+            : []),
+        ))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+    };
+    const row = projectWorkspaceFence
+      ? await db.transaction(async (tx) => await updateRow(tx as unknown as Db))
+      : await updateRow(db);
+    if (!row) return null;
+    const workspace = toExecutionWorkspace(row);
+    await emitBranchTaskOutput(db, workspace);
+    return workspace;
+  }
+
+  async function archiveIfVersion(input: {
+    id: string;
+    companyId: string;
+    expectedUpdatedAt: Date;
+    patch: Partial<typeof executionWorkspaces.$inferInsert>;
+    detachLinkedIssues: boolean;
+  }) {
+    const row = await db.transaction(async (tx) => {
+      const archivedRows = await tx
+        .update(executionWorkspaces)
+        .set({ ...input.patch, status: "archived", updatedAt: new Date() })
+        .where(and(
+          eq(executionWorkspaces.id, input.id),
+          eq(executionWorkspaces.companyId, input.companyId),
+          eq(executionWorkspaces.updatedAt, input.expectedUpdatedAt),
+          inArray(executionWorkspaces.status, ["active", "idle", "in_review"]),
+        ))
+        .returning();
+      const archived = archivedRows[0] ?? null;
+      if (!archived) return null;
+      if (input.detachLinkedIssues) {
+        await tx
+          .update(issues)
+          .set({ executionWorkspaceId: null })
+          .where(and(
+            eq(issues.companyId, input.companyId),
+            eq(issues.executionWorkspaceId, input.id),
+          ));
+      }
+      return archived;
+    });
     if (!row) return null;
     const workspace = toExecutionWorkspace(row);
     await emitBranchTaskOutput(db, workspace);
@@ -903,6 +990,8 @@ export function executionWorkspaceService(db: Db) {
     createTaskOwnedIdempotent,
 
     update,
+    updateIfVersion,
+    archiveIfVersion,
 
     /**
      * Atomically claim the per-workspace run lock for `runId`.

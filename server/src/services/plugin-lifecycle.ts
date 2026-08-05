@@ -41,13 +41,25 @@ import { pluginRollbackService } from "./plugin-rollback.js";
 import type {
   PluginStatus,
   PluginRecord,
+  PluginStatusReasonCode,
   PaperclipPluginManifestV1,
 } from "@armyofagents/shared";
 import { pluginRegistryService } from "./plugin-registry.js";
 import { pluginLoader, type PluginLoader } from "./plugin-loader.js";
-import type { PluginWorkerManager, WorkerStartOptions } from "./plugin-worker-manager.js";
+import type {
+  PluginWorkerManager,
+  WorkerStartOptions,
+} from "./plugin-worker-manager.js";
 import { badRequest, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
+import {
+  CLOUD_PLUGIN_BLOCK_MESSAGE,
+  CloudPluginExecutionBlockedError,
+  PLUGIN_WORKER_BLOCKED_IN_CLOUD,
+  isCloudPluginExecutionBlocked,
+  recordCloudPluginBlock,
+  type PluginActivationSource,
+} from "./cloud-plugin-execution.js";
 
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for testing)
@@ -57,7 +69,10 @@ import { logger } from "../middleware/logger.js";
  * Returns capabilities present in newCaps but absent in oldCaps.
  * Used to determine if an upgrade requires operator approval.
  */
-export function diffCapabilities(oldCaps: string[], newCaps: string[]): string[] {
+export function diffCapabilities(
+  oldCaps: string[],
+  newCaps: string[]
+): string[] {
   const oldSet = new Set(oldCaps);
   return newCaps.filter((c) => !oldSet.has(c));
 }
@@ -93,8 +108,8 @@ export function diffCapabilities(oldCaps: string[], newCaps: string[]): string[]
 const VALID_TRANSITIONS: Record<string, readonly PluginStatus[]> = {
   installed: ["ready", "error", "uninstalled"],
   ready: ["ready", "disabled", "error", "upgrade_pending", "uninstalled"],
-  disabled: ["ready", "uninstalled"],
-  error: ["ready", "uninstalled"],
+  disabled: ["ready", "error", "uninstalled"],
+  error: ["ready", "error", "uninstalled"],
   upgrade_pending: ["ready", "error", "uninstalled"],
   uninstalled: ["installed"], // reinstall
 };
@@ -123,7 +138,11 @@ export interface PluginLifecycleEvents {
   /** Emitted after a plugin is disabled (ready → disabled). */
   "plugin.disabled": { pluginId: string; pluginKey: string; reason?: string };
   /** Emitted after a plugin is unloaded (any → uninstalled). */
-  "plugin.unloaded": { pluginId: string; pluginKey: string; removeData: boolean };
+  "plugin.unloaded": {
+    pluginId: string;
+    pluginKey: string;
+    removeData: boolean;
+  };
   /** Emitted on any status change. */
   "plugin.status_changed": {
     pluginId: string;
@@ -142,13 +161,16 @@ export interface PluginLifecycleEvents {
 }
 
 type LifecycleEventName = keyof PluginLifecycleEvents;
-type LifecycleEventPayload<K extends LifecycleEventName> = PluginLifecycleEvents[K];
+type LifecycleEventPayload<K extends LifecycleEventName> =
+  PluginLifecycleEvents[K];
 
 // ---------------------------------------------------------------------------
 // PluginLifecycleManager
 // ---------------------------------------------------------------------------
 
 export interface PluginLifecycleManager {
+  /** Bind the runtime-aware loader after circular subsystem construction. */
+  bindLoader(loader: PluginLoader): void;
   /**
    * Load a newly installed plugin – transitions `installed` → `ready`.
    *
@@ -185,6 +207,12 @@ export interface PluginLifecycleManager {
    */
   markError(pluginId: string, error: string): Promise<PluginRecord>;
 
+  /** Persist the stable cloud policy denial and throw its typed error. */
+  blockActivationInCloud(
+    pluginId: string,
+    source?: PluginActivationSource
+  ): Promise<void>;
+
   /**
    * Mark a plugin as requiring upgrade approval.
    * Transitions `ready` → `upgrade_pending`.
@@ -199,7 +227,10 @@ export interface PluginLifecycleManager {
    * returns `{ version, status: "upgrade_pending", delta: addedCaps }`.
    * Otherwise, transitions to `ready` directly and returns `{ version, status: "ready" }`.
    */
-  upgrade(pluginId: string, version?: string): Promise<{ version: string; status: string; delta?: string[] }>;
+  upgrade(
+    pluginId: string,
+    version?: string
+  ): Promise<{ version: string; status: string; delta?: string[] }>;
 
   /**
    * Start the worker process for a plugin that is already in `ready` state.
@@ -251,7 +282,7 @@ export interface PluginLifecycleManager {
    */
   on<K extends LifecycleEventName>(
     event: K,
-    listener: (payload: LifecycleEventPayload<K>) => void,
+    listener: (payload: LifecycleEventPayload<K>) => void
   ): void;
 
   /**
@@ -259,7 +290,7 @@ export interface PluginLifecycleManager {
    */
   off<K extends LifecycleEventName>(
     event: K,
-    listener: (payload: LifecycleEventPayload<K>) => void,
+    listener: (payload: LifecycleEventPayload<K>) => void
   ): void;
 
   /**
@@ -267,7 +298,7 @@ export interface PluginLifecycleManager {
    */
   once<K extends LifecycleEventName>(
     event: K,
-    listener: (payload: LifecycleEventPayload<K>) => void,
+    listener: (payload: LifecycleEventPayload<K>) => void
   ): void;
 }
 
@@ -317,7 +348,7 @@ export interface PluginLifecycleManagerOptions {
  */
 export function pluginLifecycleManager(
   db: Db,
-  options?: PluginLoader | PluginLifecycleManagerOptions,
+  options?: PluginLoader | PluginLifecycleManagerOptions
 ): PluginLifecycleManager {
   // Support the legacy signature: pluginLifecycleManager(db, loader)
   // as well as the new options object form.
@@ -334,7 +365,7 @@ export function pluginLifecycleManager(
   }
 
   const registry = pluginRegistryService(db);
-  const pluginLoaderInstance = loaderArg ?? pluginLoader(db);
+  let pluginLoaderInstance = loaderArg ?? pluginLoader(db);
   const emitter = new EventEmitter();
   emitter.setMaxListeners(100); // plugins may have many listeners; 100 is a safe upper bound
 
@@ -353,7 +384,7 @@ export function pluginLifecycleManager(
   function assertTransition(plugin: PluginRecord, to: PluginStatus): void {
     if (!isValidTransition(plugin.status, to)) {
       throw badRequest(
-        `Invalid lifecycle transition: ${plugin.status} → ${to} for plugin ${plugin.pluginKey}`,
+        `Invalid lifecycle transition: ${plugin.status} → ${to} for plugin ${plugin.pluginKey}`
       );
     }
   }
@@ -363,8 +394,9 @@ export function pluginLifecycleManager(
     to: PluginStatus,
     lastError: string | null = null,
     existingPlugin?: PluginRecord,
+    statusReasonCode: PluginStatusReasonCode | null = null
   ): Promise<PluginRecord> {
-    const plugin = existingPlugin ?? await requirePlugin(pluginId);
+    const plugin = existingPlugin ?? (await requirePlugin(pluginId));
     assertTransition(plugin, to);
 
     const previousStatus = plugin.status;
@@ -372,14 +404,16 @@ export function pluginLifecycleManager(
     const updated = await registry.updateStatus(pluginId, {
       status: to,
       lastError,
+      statusReasonCode,
     });
 
-    if (!updated) throw notFound(`Plugin not found after status update: ${pluginId}`);
+    if (!updated)
+      throw notFound(`Plugin not found after status update: ${pluginId}`);
     const result = updated as PluginRecord;
 
     log.info(
       { pluginId, pluginKey: result.pluginKey, from: previousStatus, to },
-      `plugin lifecycle: ${previousStatus} → ${to}`,
+      `plugin lifecycle: ${previousStatus} → ${to}`
     );
 
     // Emit the generic status_changed event
@@ -393,9 +427,41 @@ export function pluginLifecycleManager(
     return result;
   }
 
+  async function blockActivationInCloud(
+    pluginId: string,
+    source: PluginActivationSource = "lifecycle"
+  ): Promise<void> {
+    if (!isCloudPluginExecutionBlocked()) return;
+
+    const plugin = await requirePlugin(pluginId);
+    recordCloudPluginBlock({
+      pluginId,
+      companyId: plugin.companyId,
+      source,
+      sink: "lifecycle",
+    });
+
+    // This single registry write owns status, structured reason, diagnostic,
+    // and timestamp. If it fails, the exception still prevents activation and
+    // no ready event is published.
+    const result = await transition(
+      pluginId,
+      "error",
+      CLOUD_PLUGIN_BLOCK_MESSAGE,
+      plugin,
+      PLUGIN_WORKER_BLOCKED_IN_CLOUD
+    );
+    emitDomain("plugin.error", {
+      pluginId,
+      pluginKey: result.pluginKey,
+      error: CLOUD_PLUGIN_BLOCK_MESSAGE,
+    });
+    throw new CloudPluginExecutionBlockedError();
+  }
+
   function emitDomain(
     event: LifecycleEventName,
-    payload: PluginLifecycleEvents[LifecycleEventName],
+    payload: PluginLifecycleEvents[LifecycleEventName]
   ): void {
     emitter.emit(event, payload);
   }
@@ -411,10 +477,14 @@ export function pluginLifecycleManager(
    */
   async function stopWorkerIfRunning(
     pluginId: string,
-    pluginKey: string,
+    pluginKey: string
   ): Promise<void> {
     if (!workerManager) return;
-    if (!workerManager.isRunning(pluginId) && !workerManager.getWorker(pluginId)) return;
+    if (
+      !workerManager.isRunning(pluginId) &&
+      !workerManager.getWorker(pluginId)
+    )
+      return;
 
     try {
       await workerManager.stopWorker(pluginId);
@@ -422,38 +492,48 @@ export function pluginLifecycleManager(
       emitDomain("plugin.worker_stopped", { pluginId, pluginKey });
     } catch (err) {
       log.warn(
-        { pluginId, pluginKey, err: err instanceof Error ? err.message : String(err) },
-        "plugin lifecycle: failed to stop worker (best-effort)",
+        {
+          pluginId,
+          pluginKey,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        "plugin lifecycle: failed to stop worker (best-effort)"
       );
     }
   }
 
   async function activateReadyPlugin(pluginId: string): Promise<void> {
     const supportsRuntimeActivation =
-      typeof pluginLoaderInstance.hasRuntimeServices === "function"
-      && typeof pluginLoaderInstance.loadSingle === "function";
-    if (!supportsRuntimeActivation || !pluginLoaderInstance.hasRuntimeServices()) {
+      typeof pluginLoaderInstance.hasRuntimeServices === "function" &&
+      typeof pluginLoaderInstance.loadSingle === "function";
+    if (
+      !supportsRuntimeActivation ||
+      !pluginLoaderInstance.hasRuntimeServices()
+    ) {
       return;
     }
 
     const loadResult = await pluginLoaderInstance.loadSingle(pluginId);
     if (!loadResult.success) {
       throw new Error(
-        loadResult.error
-        ?? `Failed to activate plugin ${loadResult.plugin.pluginKey}`,
+        loadResult.error ??
+          `Failed to activate plugin ${loadResult.plugin.pluginKey}`
       );
     }
   }
 
   async function deactivatePluginRuntime(
     pluginId: string,
-    pluginKey: string,
+    pluginKey: string
   ): Promise<void> {
     const supportsRuntimeDeactivation =
-      typeof pluginLoaderInstance.hasRuntimeServices === "function"
-      && typeof pluginLoaderInstance.unloadSingle === "function";
+      typeof pluginLoaderInstance.hasRuntimeServices === "function" &&
+      typeof pluginLoaderInstance.unloadSingle === "function";
 
-    if (supportsRuntimeDeactivation && pluginLoaderInstance.hasRuntimeServices()) {
+    if (
+      supportsRuntimeDeactivation &&
+      pluginLoaderInstance.hasRuntimeServices()
+    ) {
       await pluginLoaderInstance.unloadSingle(pluginId, pluginKey);
       return;
     }
@@ -461,11 +541,26 @@ export function pluginLifecycleManager(
     await stopWorkerIfRunning(pluginId, pluginKey);
   }
 
+  async function assertCompanyOverlayAllowsActivation(
+    pluginId: string
+  ): Promise<void> {
+    if (
+      typeof pluginLoaderInstance.isCompanyEnabled === "function" &&
+      !(await pluginLoaderInstance.isCompanyEnabled(pluginId))
+    ) {
+      throw badRequest("Plugin is disabled for this company");
+    }
+  }
+
   // -----------------------------------------------------------------------
   // Public API
   // -----------------------------------------------------------------------
 
   return {
+    bindLoader(loader: PluginLoader): void {
+      pluginLoaderInstance = loader;
+    },
+
     // -- load -------------------------------------------------------------
     /**
      * load — Transitions a plugin to 'ready' status and starts its worker.
@@ -478,6 +573,8 @@ export function pluginLifecycleManager(
      * @returns The updated plugin record.
      */
     async load(pluginId: string): Promise<PluginRecord> {
+      await blockActivationInCloud(pluginId, "lifecycle");
+      await assertCompanyOverlayAllowsActivation(pluginId);
       const result = await transition(pluginId, "ready");
       await activateReadyPlugin(pluginId);
 
@@ -506,12 +603,20 @@ export function pluginLifecycleManager(
       const plugin = await requirePlugin(pluginId);
 
       // Only allow enabling from disabled, error, or upgrade_pending states
-      if (plugin.status !== "disabled" && plugin.status !== "error" && plugin.status !== "upgrade_pending") {
+      if (
+        plugin.status !== "disabled" &&
+        plugin.status !== "error" &&
+        plugin.status !== "upgrade_pending"
+      ) {
         throw badRequest(
           `Cannot enable plugin in status '${plugin.status}'. ` +
-            `Plugin must be in 'disabled', 'error', or 'upgrade_pending' status to be enabled.`,
+            `Plugin must be in 'disabled', 'error', or 'upgrade_pending' status to be enabled.`
         );
       }
+
+      await blockActivationInCloud(pluginId, "lifecycle");
+
+      await assertCompanyOverlayAllowsActivation(pluginId);
 
       const result = await transition(pluginId, "ready", null, plugin);
       await activateReadyPlugin(pluginId);
@@ -530,13 +635,18 @@ export function pluginLifecycleManager(
       if (plugin.status !== "ready") {
         throw badRequest(
           `Cannot disable plugin in status '${plugin.status}'. ` +
-            `Plugin must be in 'ready' status to be disabled.`,
+            `Plugin must be in 'ready' status to be disabled.`
         );
       }
 
       await deactivatePluginRuntime(pluginId, plugin.pluginKey);
 
-      const result = await transition(pluginId, "disabled", reason ?? null, plugin);
+      const result = await transition(
+        pluginId,
+        "disabled",
+        reason ?? null,
+        plugin
+      );
       emitDomain("plugin.disabled", {
         pluginId,
         pluginKey: result.pluginKey,
@@ -548,7 +658,7 @@ export function pluginLifecycleManager(
     // -- unload -----------------------------------------------------------
     async unload(
       pluginId: string,
-      removeData = false,
+      removeData = false
     ): Promise<PluginRecord | null> {
       const plugin = await requirePlugin(pluginId);
 
@@ -559,7 +669,7 @@ export function pluginLifecycleManager(
           const deleted = await registry.uninstall(pluginId, true);
           log.info(
             { pluginId, pluginKey: plugin.pluginKey },
-            "plugin lifecycle: hard-deleted already-uninstalled plugin",
+            "plugin lifecycle: hard-deleted already-uninstalled plugin"
           );
           emitDomain("plugin.unloaded", {
             pluginId,
@@ -570,7 +680,7 @@ export function pluginLifecycleManager(
         }
         throw badRequest(
           `Plugin ${plugin.pluginKey} is already uninstalled. ` +
-            `Use removeData=true to permanently delete it.`,
+            `Use removeData=true to permanently delete it.`
         );
       }
 
@@ -582,7 +692,9 @@ export function pluginLifecycleManager(
 
       log.info(
         { pluginId, pluginKey: plugin.pluginKey, removeData },
-        `plugin lifecycle: ${plugin.status} → uninstalled${removeData ? " (hard delete)" : ""}`,
+        `plugin lifecycle: ${plugin.status} → uninstalled${
+          removeData ? " (hard delete)" : ""
+        }`
       );
 
       emitter.emit("plugin.status_changed", {
@@ -618,12 +730,24 @@ export function pluginLifecycleManager(
       return result;
     },
 
+    async blockActivationInCloud(
+      pluginId: string,
+      source: PluginActivationSource = "lifecycle"
+    ): Promise<void> {
+      await blockActivationInCloud(pluginId, source);
+    },
+
     // -- markUpgradePending -----------------------------------------------
     async markUpgradePending(pluginId: string): Promise<PluginRecord> {
       const plugin = await requirePlugin(pluginId);
       await deactivatePluginRuntime(pluginId, plugin.pluginKey);
 
-      const result = await transition(pluginId, "upgrade_pending", null, plugin);
+      const result = await transition(
+        pluginId,
+        "upgrade_pending",
+        null,
+        plugin
+      );
       emitDomain("plugin.upgrade_pending", {
         pluginId,
         pluginKey: result.pluginKey,
@@ -652,7 +776,7 @@ export function pluginLifecycleManager(
      */
     async upgrade(
       pluginId: string,
-      version?: string,
+      version?: string
     ): Promise<{ version: string; status: string; delta?: string[] }> {
       const plugin = await requirePlugin(pluginId);
 
@@ -660,13 +784,15 @@ export function pluginLifecycleManager(
       if (plugin.status !== "ready" && plugin.status !== "upgrade_pending") {
         throw badRequest(
           `Cannot upgrade plugin in status '${plugin.status}'. ` +
-            `Plugin must be in 'ready' or 'upgrade_pending' status to be upgraded.`,
+            `Plugin must be in 'ready' or 'upgrade_pending' status to be upgraded.`
         );
       }
 
+      await blockActivationInCloud(pluginId, "lifecycle");
+
       log.info(
         { pluginId, pluginKey: plugin.pluginKey, targetVersion: version },
-        "plugin lifecycle: upgrade requested",
+        "plugin lifecycle: upgrade requested"
       );
 
       // Save rollback snapshot so we can roll back if the upgrade fails
@@ -675,7 +801,7 @@ export function pluginLifecycleManager(
         plugin.companyId,
         plugin.version,
         plugin.packageName,
-        plugin.manifestJson,
+        plugin.manifestJson
       );
 
       await deactivatePluginRuntime(pluginId, plugin.pluginKey);
@@ -699,7 +825,7 @@ export function pluginLifecycleManager(
           newVersion: newManifest.version,
           addedCaps,
         },
-        "plugin lifecycle: package upgraded on disk",
+        "plugin lifecycle: package upgraded on disk"
       );
 
       // 2. Transition state based on capability delta
@@ -707,9 +833,14 @@ export function pluginLifecycleManager(
         // New capabilities require operator approval — worker stays stopped.
         log.info(
           { pluginId, pluginKey: plugin.pluginKey, addedCaps },
-          "plugin lifecycle: new capabilities detected, transitioning to upgrade_pending",
+          "plugin lifecycle: new capabilities detected, transitioning to upgrade_pending"
         );
-        const result = await transition(pluginId, "upgrade_pending", null, plugin);
+        const result = await transition(
+          pluginId,
+          "upgrade_pending",
+          null,
+          plugin
+        );
         emitDomain("plugin.upgrade_pending", {
           pluginId,
           pluginKey: result.pluginKey,
@@ -746,12 +877,12 @@ export function pluginLifecycleManager(
     // -- startWorker ------------------------------------------------------
     async startWorker(
       pluginId: string,
-      options: WorkerStartOptions,
+      options: WorkerStartOptions
     ): Promise<void> {
       if (!workerManager) {
         throw badRequest(
           "Cannot start worker: no PluginWorkerManager is configured. " +
-            "Provide a workerManager option when constructing the lifecycle manager.",
+            "Provide a workerManager option when constructing the lifecycle manager."
         );
       }
 
@@ -759,13 +890,18 @@ export function pluginLifecycleManager(
       if (plugin.status !== "ready") {
         throw badRequest(
           `Cannot start worker for plugin in status '${plugin.status}'. ` +
-            `Plugin must be in 'ready' status.`,
+            `Plugin must be in 'ready' status.`
         );
       }
 
+      await blockActivationInCloud(
+        pluginId,
+        options.activationSource ?? "direct"
+      );
+
       log.info(
         { pluginId, pluginKey: plugin.pluginKey },
-        "plugin lifecycle: starting worker",
+        "plugin lifecycle: starting worker"
       );
 
       await workerManager.startWorker(pluginId, options);
@@ -776,7 +912,7 @@ export function pluginLifecycleManager(
 
       log.info(
         { pluginId, pluginKey: plugin.pluginKey },
-        "plugin lifecycle: worker started",
+        "plugin lifecycle: worker started"
       );
     },
 
@@ -792,7 +928,7 @@ export function pluginLifecycleManager(
     async restartWorker(pluginId: string): Promise<void> {
       if (!workerManager) {
         throw badRequest(
-          "Cannot restart worker: no PluginWorkerManager is configured.",
+          "Cannot restart worker: no PluginWorkerManager is configured."
         );
       }
 
@@ -800,30 +936,42 @@ export function pluginLifecycleManager(
       if (plugin.status !== "ready") {
         throw badRequest(
           `Cannot restart worker for plugin in status '${plugin.status}'. ` +
-            `Plugin must be in 'ready' status.`,
+            `Plugin must be in 'ready' status.`
         );
       }
+
+      await blockActivationInCloud(pluginId, "restart");
 
       const handle = workerManager.getWorker(pluginId);
       if (!handle) {
         throw badRequest(
-          `Cannot restart worker for plugin "${plugin.pluginKey}": no worker is running.`,
+          `Cannot restart worker for plugin "${plugin.pluginKey}": no worker is running.`
         );
       }
 
       log.info(
         { pluginId, pluginKey: plugin.pluginKey },
-        "plugin lifecycle: restarting worker",
+        "plugin lifecycle: restarting worker"
       );
 
-      await handle.restart();
-
-      emitDomain("plugin.worker_stopped", { pluginId, pluginKey: plugin.pluginKey });
-      emitDomain("plugin.worker_started", { pluginId, pluginKey: plugin.pluginKey });
+      // Keep host-side cleanup between the old worker stopping and the
+      // replacement worker starting. Emitting worker_stopped after restart()
+      // would clear subscriptions that the replacement registered during its
+      // initialize/setup phase.
+      await handle.stop();
+      emitDomain("plugin.worker_stopped", {
+        pluginId,
+        pluginKey: plugin.pluginKey,
+      });
+      await handle.start();
+      emitDomain("plugin.worker_started", {
+        pluginId,
+        pluginKey: plugin.pluginKey,
+      });
 
       log.info(
         { pluginId, pluginKey: plugin.pluginKey },
-        "plugin lifecycle: worker restarted",
+        "plugin lifecycle: worker restarted"
       );
     },
 

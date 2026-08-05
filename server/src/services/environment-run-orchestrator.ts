@@ -8,10 +8,13 @@ import {
   type EnvironmentRuntimeService,
 } from "./environment-runtime.js";
 import { resolveEnvironmentExecutionTargetConfigPatch } from "./environment-execution-target.js";
+import { getDeploymentMode } from "../config/deployment-mode.js";
+import { assertEnvironmentRuntimeSupportedForDeployment } from "./cloud-environment-policy.js";
 
 export type EnvironmentErrorCode =
   | "environment_not_found"
   | "environment_inactive"
+  | "environment_target_unavailable"
   | "lease_acquire_failed";
 
 export class EnvironmentRunError extends Error {
@@ -73,6 +76,7 @@ function normalizeEnvironment(row: unknown): Environment {
     target: record.target && typeof record.target === "object" && !Array.isArray(record.target)
       ? record.target as Record<string, unknown>
       : null,
+    executionTargetId: typeof record.executionTargetId === "string" ? record.executionTargetId : null,
     createdAt: toIsoString(record.createdAt),
     updatedAt: toIsoString(record.updatedAt),
   };
@@ -87,6 +91,30 @@ export function environmentRunOrchestrator(
 ) {
   const environmentsSvc = options.environments ?? environmentService(db);
   const runtime = options.environmentRuntime ?? environmentRuntimeService(db);
+
+  // Deployment-mode-aware gVisor hardening (P5 SSRF residual). Resolve the trust
+  // boundary ONCE per env run and thread it to BOTH the lease-metadata path
+  // (resolveDockerSandboxConfig) and the exec-target path
+  // (resolveEnvironmentExecutionTargetConfigPatch -> resolveGvisorSandboxTarget ->
+  // buildDockerRunArgs). Self-resolved via the established dynamic-import pattern
+  // (config.js + cli-auth-topology); fail-closed to hardened if it cannot be read.
+  async function resolveMultiTenantBoundary(): Promise<boolean> {
+    try {
+      const [{ loadConfig }, { resolveCliAuthTopology }] = await Promise.all([
+        import("../config.js"),
+        import("./cli-auth-topology.js"),
+      ]);
+      const cfg = loadConfig();
+      return (
+        resolveCliAuthTopology({
+          deploymentMode: cfg.deploymentMode,
+          deploymentExposure: cfg.deploymentExposure,
+        }).trustBoundary === "multi_tenant"
+      );
+    } catch {
+      return true; // fail closed: harden if the topology cannot be resolved
+    }
+  }
 
   async function resolveEnvironment(input: {
     companyId: string;
@@ -111,6 +139,20 @@ export function environmentRunOrchestrator(
         {
           environmentId: environment.id,
           driver: environment.driver,
+        },
+      );
+    }
+
+    try {
+      assertEnvironmentRuntimeSupportedForDeployment(getDeploymentMode(), environment);
+    } catch (err) {
+      throw new EnvironmentRunError(
+        "environment_target_unavailable",
+        err instanceof Error ? err.message : "Environment execution target is unavailable.",
+        {
+          environmentId: environment.id,
+          driver: environment.driver,
+          cause: err,
         },
       );
     }
@@ -158,6 +200,7 @@ export function environmentRunOrchestrator(
         companyId: input.companyId,
         environmentId: input.environmentId,
       });
+      const multiTenant = await resolveMultiTenantBoundary();
 
       try {
         const leaseRecord = await runtime.acquireRunLease({
@@ -166,6 +209,7 @@ export function environmentRunOrchestrator(
           issueId: input.issueId,
           heartbeatRunId: input.heartbeatRunId,
           persistedExecutionWorkspace: input.persistedExecutionWorkspace,
+          multiTenant,
         });
         return {
           ...leaseRecord,
@@ -175,6 +219,7 @@ export function environmentRunOrchestrator(
             lease: leaseRecord.lease,
             adapterType: input.adapterType,
             providerRunner: buildProviderRunner(leaseRecord),
+            multiTenant,
           }),
         };
       } catch (err) {

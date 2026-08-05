@@ -10,11 +10,21 @@ import {
   instanceUserRoles,
 } from "@armyofagents/db";
 import { conflict, forbidden, notFound } from "../errors.js";
+import {
+  insertActivityLog,
+  publishActivityLogged,
+  type PersistedActivity,
+} from "./activity-log.js";
+import { logger } from "../middleware/logger.js";
 
 export const BOARD_API_KEY_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const CLI_AUTH_CHALLENGE_TTL_MS = 10 * 60 * 1000;
 
-export type CliAuthChallengeStatus = "pending" | "approved" | "cancelled" | "expired";
+export type CliAuthChallengeStatus =
+  | "pending"
+  | "approved"
+  | "cancelled"
+  | "expired";
 
 export function hashBearerToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -23,7 +33,10 @@ export function hashBearerToken(token: string) {
 export function tokenHashesMatch(left: string, right: string) {
   const leftBytes = Buffer.from(left, "utf8");
   const rightBytes = Buffer.from(right, "utf8");
-  return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
+  return (
+    leftBytes.length === rightBytes.length &&
+    timingSafeEqual(leftBytes, rightBytes)
+  );
 }
 
 export function createBoardApiToken() {
@@ -42,17 +55,36 @@ export function cliAuthChallengeExpiresAt(nowMs: number = Date.now()) {
   return new Date(nowMs + CLI_AUTH_CHALLENGE_TTL_MS);
 }
 
-function challengeStatusForRow(row: typeof cliAuthChallenges.$inferSelect): CliAuthChallengeStatus {
+function challengeStatusForRow(
+  row: typeof cliAuthChallenges.$inferSelect
+): CliAuthChallengeStatus {
+  // Approval is terminal for the challenge. The challenge's short polling TTL
+  // must not make an already-issued 30-day board key appear expired.
+  if (row.approvedAt && row.boardApiKeyId) return "approved";
   if (row.cancelledAt) return "cancelled";
   if (row.expiresAt.getTime() <= Date.now()) return "expired";
-  if (row.approvedAt && row.boardApiKeyId) return "approved";
   return "pending";
 }
 
 export function boardAuthService(db: Db) {
-  async function resolveBoardAccess(userId: string) {
+  function publishCommittedActivities(activities: PersistedActivity[]) {
+    for (const activity of activities) {
+      try {
+        publishActivityLogged(activity);
+      } catch (error) {
+        // The durable audit row is already committed. A realtime notification
+        // failure must not turn a successful credential mutation into a 500.
+        logger.warn(
+          { error, companyId: activity.companyId, action: activity.action },
+          "failed to publish committed board credential activity"
+        );
+      }
+    }
+  }
+
+  async function resolveBoardAccessWith(queryDb: Db, userId: string) {
     const [user, memberships, adminRole] = await Promise.all([
-      db
+      queryDb
         .select({
           id: authUsers.id,
           name: authUsers.name,
@@ -61,21 +93,26 @@ export function boardAuthService(db: Db) {
         .from(authUsers)
         .where(eq(authUsers.id, userId))
         .then((rows) => rows[0] ?? null),
-      db
+      queryDb
         .select({ companyId: companyMemberships.companyId })
         .from(companyMemberships)
         .where(
           and(
             eq(companyMemberships.principalType, "user"),
             eq(companyMemberships.principalId, userId),
-            eq(companyMemberships.status, "active"),
-          ),
+            eq(companyMemberships.status, "active")
+          )
         )
         .then((rows) => rows.map((row) => row.companyId)),
-      db
+      queryDb
         .select({ id: instanceUserRoles.id })
         .from(instanceUserRoles)
-        .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")))
+        .where(
+          and(
+            eq(instanceUserRoles.userId, userId),
+            eq(instanceUserRoles.role, "instance_admin")
+          )
+        )
         .then((rows) => rows[0] ?? null),
     ]);
 
@@ -86,12 +123,19 @@ export function boardAuthService(db: Db) {
     };
   }
 
-  async function resolveBoardActivityCompanyIds(input: {
-    userId: string;
-    requestedCompanyId?: string | null;
-    boardApiKeyId?: string | null;
-  }) {
-    const access = await resolveBoardAccess(input.userId);
+  async function resolveBoardAccess(userId: string) {
+    return resolveBoardAccessWith(db, userId);
+  }
+
+  async function resolveBoardActivityCompanyIdsWith(
+    queryDb: Db,
+    input: {
+      userId: string;
+      requestedCompanyId?: string | null;
+      boardApiKeyId?: string | null;
+    }
+  ) {
+    const access = await resolveBoardAccessWith(queryDb, input.userId);
     const companyIds = new Set(access.companyIds);
 
     if (companyIds.size === 0 && input.requestedCompanyId?.trim()) {
@@ -102,14 +146,14 @@ export function boardAuthService(db: Db) {
     }
 
     if (companyIds.size === 0 && input.boardApiKeyId?.trim()) {
-      const challengeCompanyIds = await db
+      const challengeCompanyIds = await queryDb
         .select({ requestedCompanyId: cliAuthChallenges.requestedCompanyId })
         .from(cliAuthChallenges)
         .where(eq(cliAuthChallenges.boardApiKeyId, input.boardApiKeyId.trim()))
         .then((rows) =>
           rows
             .map((row) => row.requestedCompanyId?.trim() ?? null)
-            .filter((value): value is string => Boolean(value)),
+            .filter((value): value is string => Boolean(value))
         );
       for (const companyId of challengeCompanyIds) {
         companyIds.add(companyId);
@@ -117,7 +161,7 @@ export function boardAuthService(db: Db) {
     }
 
     if (companyIds.size === 0 && access.isInstanceAdmin) {
-      const allCompanyIds = await db
+      const allCompanyIds = await queryDb
         .select({ id: companies.id })
         .from(companies)
         .then((rows) => rows.map((row) => row.id));
@@ -129,6 +173,14 @@ export function boardAuthService(db: Db) {
     return Array.from(companyIds);
   }
 
+  async function resolveBoardActivityCompanyIds(input: {
+    userId: string;
+    requestedCompanyId?: string | null;
+    boardApiKeyId?: string | null;
+  }) {
+    return resolveBoardActivityCompanyIdsWith(db, input);
+  }
+
   async function findBoardApiKeyByToken(token: string) {
     const tokenHash = hashBearerToken(token);
     const now = new Date();
@@ -136,26 +188,21 @@ export function boardAuthService(db: Db) {
       .select()
       .from(boardApiKeys)
       .where(
-        and(
-          eq(boardApiKeys.keyHash, tokenHash),
-          isNull(boardApiKeys.revokedAt),
-        ),
+        and(eq(boardApiKeys.keyHash, tokenHash), isNull(boardApiKeys.revokedAt))
       )
-      .then((rows) => rows.find((row) => !row.expiresAt || row.expiresAt.getTime() > now.getTime()) ?? null);
+      .then(
+        (rows) =>
+          rows.find(
+            (row) => !row.expiresAt || row.expiresAt.getTime() > now.getTime()
+          ) ?? null
+      );
   }
 
   async function touchBoardApiKey(id: string) {
-    await db.update(boardApiKeys).set({ lastUsedAt: new Date() }).where(eq(boardApiKeys.id, id));
-  }
-
-  async function revokeBoardApiKey(id: string) {
-    const now = new Date();
-    return db
+    await db
       .update(boardApiKeys)
-      .set({ revokedAt: now, lastUsedAt: now })
-      .where(and(eq(boardApiKeys.id, id), isNull(boardApiKeys.revokedAt)))
-      .returning()
-      .then((rows) => rows[0] ?? null);
+      .set({ lastUsedAt: new Date() })
+      .where(eq(boardApiKeys.id, id));
   }
 
   async function createCliAuthChallenge(input: {
@@ -206,7 +253,8 @@ export function boardAuthService(db: Db) {
   async function getCliAuthChallengeBySecret(id: string, token: string) {
     const challenge = await getCliAuthChallenge(id);
     if (!challenge) return null;
-    if (!tokenHashesMatch(challenge.secretHash, hashBearerToken(token))) return null;
+    if (!tokenHashesMatch(challenge.secretHash, hashBearerToken(token)))
+      return null;
     return challenge;
   }
 
@@ -224,7 +272,11 @@ export function boardAuthService(db: Db) {
         : Promise.resolve(null),
       challenge.approvedByUserId
         ? db
-            .select({ id: authUsers.id, name: authUsers.name, email: authUsers.email })
+            .select({
+              id: authUsers.id,
+              name: authUsers.name,
+              email: authUsers.email,
+            })
             .from(authUsers)
             .where(eq(authUsers.id, challenge.approvedByUserId))
             .then((rows) => rows[0] ?? null)
@@ -236,7 +288,9 @@ export function boardAuthService(db: Db) {
       status: challengeStatusForRow(challenge),
       command: challenge.command,
       clientName: challenge.clientName ?? null,
-      requestedAccess: challenge.requestedAccess as "board" | "instance_admin_required",
+      requestedAccess: challenge.requestedAccess as
+        | "board"
+        | "instance_admin_required",
       requestedCompanyId: challenge.requestedCompanyId ?? null,
       requestedCompanyName: company?.name ?? null,
       approvedAt: challenge.approvedAt?.toISOString() ?? null,
@@ -252,11 +306,19 @@ export function boardAuthService(db: Db) {
     };
   }
 
-  async function approveCliAuthChallenge(id: string, token: string, userId: string) {
-    const access = await resolveBoardAccess(userId);
-    return db.transaction(async (tx) => {
+  async function approveCliAuthChallenge(
+    id: string,
+    token: string,
+    userId: string,
+    approver: {
+      canManageInstanceSettings: boolean;
+      activityCompanyIds?: string[];
+    }
+  ) {
+    const committed = await db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
       await tx.execute(
-        sql`select ${cliAuthChallenges.id} from ${cliAuthChallenges} where ${cliAuthChallenges.id} = ${id} for update`,
+        sql`select ${cliAuthChallenges.id} from ${cliAuthChallenges} where ${cliAuthChallenges.id} = ${id} for update`
       );
 
       const challenge = await tx
@@ -264,19 +326,25 @@ export function boardAuthService(db: Db) {
         .from(cliAuthChallenges)
         .where(eq(cliAuthChallenges.id, id))
         .then((rows) => rows[0] ?? null);
-      if (!challenge || !tokenHashesMatch(challenge.secretHash, hashBearerToken(token))) {
+      if (
+        !challenge ||
+        !tokenHashesMatch(challenge.secretHash, hashBearerToken(token))
+      ) {
         throw notFound("CLI auth challenge not found");
       }
 
       const status = challengeStatusForRow(challenge);
-      if (status === "expired") return { status, challenge };
-      if (status === "cancelled") return { status, challenge };
-      // TODO: add `if (status === "approved") return { status, challenge };` here to make
-      // re-approval fully idempotent. Currently a second call skips key creation (boardApiKeyId
-      // is already set) but still re-runs the UPDATE, overwriting approvedAt/approvedByUserId.
-      // Functionally harmless since the UI disables the button on success, but worth tightening.
+      if (status !== "pending") {
+        return {
+          result: { status, challenge, newlyApproved: false },
+          activities: [] as PersistedActivity[],
+        };
+      }
 
-      if (challenge.requestedAccess === "instance_admin_required" && !access.isInstanceAdmin) {
+      if (
+        challenge.requestedAccess === "instance_admin_required" &&
+        !approver.canManageInstanceSettings
+      ) {
         throw forbidden("Instance admin required");
       }
 
@@ -308,33 +376,147 @@ export function boardAuthService(db: Db) {
         .returning()
         .then((rows) => rows[0] ?? challenge);
 
-      return { status: "approved" as const, challenge: updated };
+      const activityCompanyIds =
+        approver.activityCompanyIds ??
+        (await resolveBoardActivityCompanyIdsWith(txDb, {
+          userId,
+          requestedCompanyId: updated.requestedCompanyId,
+          boardApiKeyId: updated.boardApiKeyId,
+        }));
+      const activities: PersistedActivity[] = [];
+      for (const companyId of activityCompanyIds) {
+        activities.push(
+          await insertActivityLog(txDb, {
+            companyId,
+            actorType: "user",
+            actorId: userId,
+            action: "board_api_key.created",
+            entityType: "user",
+            entityId: userId,
+            details: {
+              boardApiKeyId: updated.boardApiKeyId,
+              requestedAccess: updated.requestedAccess,
+              requestedCompanyId: updated.requestedCompanyId,
+              challengeId: updated.id,
+            },
+          })
+        );
+      }
+
+      return {
+        result: {
+          status: "approved" as const,
+          challenge: updated,
+          newlyApproved: true,
+        },
+        activities,
+      };
     });
+    publishCommittedActivities(committed.activities);
+    return committed.result;
+  }
+
+  async function revokeCurrentBoardApiKey(input: {
+    keyId: string;
+    userId: string;
+    activityCompanyIds?: string[];
+  }) {
+    const committed = await db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      await tx.execute(
+        sql`select ${boardApiKeys.id} from ${boardApiKeys} where ${boardApiKeys.id} = ${input.keyId} for update`
+      );
+      const key = await tx
+        .select()
+        .from(boardApiKeys)
+        .where(
+          and(
+            eq(boardApiKeys.id, input.keyId),
+            eq(boardApiKeys.userId, input.userId)
+          )
+        )
+        .then((rows) => rows[0] ?? null);
+      if (!key || key.revokedAt) throw notFound("Board API key not found");
+
+      const now = new Date();
+      const revoked = await tx
+        .update(boardApiKeys)
+        .set({ revokedAt: now, lastUsedAt: now })
+        .where(and(eq(boardApiKeys.id, key.id), isNull(boardApiKeys.revokedAt)))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!revoked) throw notFound("Board API key not found");
+
+      const activityCompanyIds =
+        input.activityCompanyIds ??
+        (await resolveBoardActivityCompanyIdsWith(txDb, {
+          userId: key.userId,
+          boardApiKeyId: key.id,
+        }));
+      const activities: PersistedActivity[] = [];
+      for (const companyId of activityCompanyIds) {
+        activities.push(
+          await insertActivityLog(txDb, {
+            companyId,
+            actorType: "user",
+            actorId: key.userId,
+            action: "board_api_key.revoked",
+            entityType: "user",
+            entityId: key.userId,
+            details: {
+              boardApiKeyId: key.id,
+              revokedVia: "cli_auth_logout",
+            },
+          })
+        );
+      }
+      return { key: revoked, activities };
+    });
+    publishCommittedActivities(committed.activities);
+    return committed.key;
   }
 
   async function cancelCliAuthChallenge(id: string, token: string) {
-    const challenge = await getCliAuthChallengeBySecret(id, token);
-    if (!challenge) throw notFound("CLI auth challenge not found");
+    return db.transaction(async (tx) => {
+      // Serialize cancellation with approval on the same challenge row so a
+      // live key can never coexist with a later `cancelled` challenge state.
+      await tx.execute(
+        sql`select ${cliAuthChallenges.id} from ${cliAuthChallenges} where ${cliAuthChallenges.id} = ${id} for update`
+      );
 
-    const status = challengeStatusForRow(challenge);
-    if (status === "approved") return { status, challenge };
-    if (status === "expired") return { status, challenge };
-    if (status === "cancelled") return { status, challenge };
+      const challenge = await tx
+        .select()
+        .from(cliAuthChallenges)
+        .where(eq(cliAuthChallenges.id, id))
+        .then((rows) => rows[0] ?? null);
+      if (
+        !challenge ||
+        !tokenHashesMatch(challenge.secretHash, hashBearerToken(token))
+      ) {
+        throw notFound("CLI auth challenge not found");
+      }
 
-    const updated = await db
-      .update(cliAuthChallenges)
-      .set({
-        cancelledAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(eq(cliAuthChallenges.id, challenge.id))
-      .returning()
-      .then((rows) => rows[0] ?? challenge);
+      const status = challengeStatusForRow(challenge);
+      if (status !== "pending") return { status, challenge };
 
-    return { status: "cancelled" as const, challenge: updated };
+      const updated = await tx
+        .update(cliAuthChallenges)
+        .set({
+          cancelledAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(cliAuthChallenges.id, challenge.id))
+        .returning()
+        .then((rows) => rows[0] ?? challenge);
+
+      return { status: "cancelled" as const, challenge: updated };
+    });
   }
 
-  async function assertCurrentBoardKey(keyId: string | undefined, userId: string | undefined) {
+  async function assertCurrentBoardKey(
+    keyId: string | undefined,
+    userId: string | undefined
+  ) {
     if (!keyId || !userId) throw conflict("Board API key context is required");
     const key = await db
       .select()
@@ -349,7 +531,7 @@ export function boardAuthService(db: Db) {
     resolveBoardAccess,
     findBoardApiKeyByToken,
     touchBoardApiKey,
-    revokeBoardApiKey,
+    revokeCurrentBoardApiKey,
     createCliAuthChallenge,
     getCliAuthChallengeBySecret,
     describeCliAuthChallenge,

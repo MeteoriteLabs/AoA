@@ -62,6 +62,20 @@ describe("CommanderStep (Stage C / order 4)", () => {
       }),
     );
   });
+
+  it("describes the Commander limitation truthfully on AoA Cloud", () => {
+    render(
+      <CommanderStep
+        ctx={{ ...ctx, deploymentMode: "cloud_auth" }}
+        onComplete={vi.fn()}
+        onBack={() => {}}
+      />,
+    );
+
+    expect(screen.getByText(/commander does not run on aoa cloud yet/i)).toBeInTheDocument();
+    expect(screen.getByText(/claude provider preference/i)).toBeInTheDocument();
+    expect(screen.queryByText(/this runtime powers commander and every agent/i)).not.toBeInTheDocument();
+  });
 });
 
 describe("assembled registry includes the commander step", () => {

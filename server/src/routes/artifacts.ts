@@ -43,7 +43,7 @@ export function artifactRoutes(db: Db) {
   // List artifacts for a company
   router.get("/companies/:companyId/artifacts", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const includeArchived = req.query.includeArchived === "true";
     const result = await svc.list(companyId, { includeArchived });
     res.json(result);
@@ -57,7 +57,7 @@ export function artifactRoutes(db: Db) {
       res.status(404).json({ error: "Artifact not found" });
       return;
     }
-    assertCompanyAccess(req, artifact.companyId);
+    await assertCompanyAccess(db, req, artifact.companyId);
     res.json(artifact);
   });
 
@@ -67,7 +67,7 @@ export function artifactRoutes(db: Db) {
     validate(createArtifactSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
 
       const actor = getActorInfo(req);
       const artifact = await svc.create(companyId, actor.actorId, req.body);
@@ -99,7 +99,7 @@ export function artifactRoutes(db: Db) {
         res.status(404).json({ error: "Artifact not found" });
         return;
       }
-      assertCompanyAccess(req, existing.companyId);
+      await assertCompanyAccess(db, req, existing.companyId);
 
       const artifact = await svc.update(id, req.body);
       if (!artifact) {
@@ -135,7 +135,7 @@ export function artifactRoutes(db: Db) {
         res.status(404).json({ error: "Artifact not found" });
         return;
       }
-      assertCompanyAccess(req, existing.companyId);
+      await assertCompanyAccess(db, req, existing.companyId);
       assertBoard(req);
       await assertRole(db, req, existing.companyId, "founder");
 
@@ -170,7 +170,7 @@ export function artifactRoutes(db: Db) {
       res.status(404).json({ error: "Artifact not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(db, req, existing.companyId);
     assertBoard(req);
     await assertRole(db, req, existing.companyId, "founder");
 
@@ -193,7 +193,7 @@ export function artifactRoutes(db: Db) {
       res.status(404).json({ error: "Artifact not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(db, req, existing.companyId);
     assertBoard(req);
     await assertRole(db, req, existing.companyId, "founder");
 
@@ -219,7 +219,7 @@ export function artifactRoutes(db: Db) {
         res.status(404).json({ error: "Artifact not found" });
         return;
       }
-      assertCompanyAccess(req, existing.companyId);
+      await assertCompanyAccess(db, req, existing.companyId);
       await assertFounderMcpPublisher(req, existing.companyId);
 
       const {
@@ -283,7 +283,7 @@ export function artifactRoutes(db: Db) {
       res.status(404).json({ error: "Task not found" });
       return;
     }
-    assertCompanyAccess(req, issueInfo.companyId);
+    await assertCompanyAccess(db, req, issueInfo.companyId);
     const artifact = await svc.getByIssueId(issueId);
     res.json(artifact);
   });

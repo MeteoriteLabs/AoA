@@ -17,22 +17,15 @@ export interface LogActivityInput {
   details?: Record<string, unknown> | null;
 }
 
-export interface PreparedActivityEvent {
-  companyId: string;
-  payload: {
-    actorType: ActivityActorType;
-    actorId: string;
-    action: string;
-    entityType: string;
-    entityId: string;
-    agentId: string | null;
-    runId: string | null;
-    details: Record<string, unknown> | null;
-  };
+export interface PersistedActivity extends Omit<LogActivityInput, "details"> {
+  details: Record<string, unknown> | null;
 }
 
-/** Persist an activity row without publishing. Use this inside larger transactions. */
-export async function insertActivity(db: Db, input: LogActivityInput): Promise<PreparedActivityEvent> {
+/** Persist the mandatory audit row without publishing a pre-commit event. */
+export async function insertActivityLog(
+  db: Db,
+  input: LogActivityInput
+): Promise<PersistedActivity> {
   assertUnreservedActivityNamespace(input);
   const sanitizedDetails = input.details ? sanitizeRecord(input.details) : null;
   await db.insert(activityLog).values({
@@ -48,7 +41,18 @@ export async function insertActivity(db: Db, input: LogActivityInput): Promise<P
   });
 
   return {
+    ...input,
+    agentId: input.agentId ?? null,
+    runId: input.runId ?? null,
+    details: sanitizedDetails,
+  };
+}
+
+/** Publish only after the surrounding database transaction has committed. */
+export function publishActivityLogged(input: PersistedActivity): void {
+  publishLiveEvent({
     companyId: input.companyId,
+    type: "activity.logged",
     payload: {
       actorType: input.actorType,
       actorId: input.actorId,
@@ -57,7 +61,44 @@ export async function insertActivity(db: Db, input: LogActivityInput): Promise<P
       entityId: input.entityId,
       agentId: input.agentId ?? null,
       runId: input.runId ?? null,
-      details: sanitizedDetails,
+      details: input.details,
+    },
+  });
+}
+
+// --- Broker-flow compatibility API (used by mcp-connectors routes + token-refresh) ---
+// Same insert-then-publish split as above, exposed with the prepared-event shape
+// those call sites already consume. Delegates to insertActivityLog so there is one
+// insert path and redaction stays consistent (the live event carries sanitized details).
+
+export interface PreparedActivityEvent {
+  companyId: string;
+  payload: {
+    actorType: ActivityActorType;
+    actorId: string;
+    action: string;
+    entityType: string;
+    entityId: string;
+    agentId: string | null;
+    runId: string | null;
+    details: Record<string, unknown> | null;
+  };
+}
+
+/** Persist an activity row without publishing (transaction-safe); returns a prepared event. */
+export async function insertActivity(db: Db, input: LogActivityInput): Promise<PreparedActivityEvent> {
+  const persisted = await insertActivityLog(db, input);
+  return {
+    companyId: persisted.companyId,
+    payload: {
+      actorType: persisted.actorType,
+      actorId: persisted.actorId,
+      action: persisted.action,
+      entityType: persisted.entityType,
+      entityId: persisted.entityId,
+      agentId: persisted.agentId ?? null,
+      runId: persisted.runId ?? null,
+      details: persisted.details,
     },
   };
 }
@@ -72,5 +113,6 @@ export function publishActivity(event: PreparedActivityEvent) {
 }
 
 export async function logActivity(db: Db, input: LogActivityInput) {
-  publishActivity(await insertActivity(db, input));
+  const persisted = await insertActivityLog(db, input);
+  publishActivityLogged(persisted);
 }

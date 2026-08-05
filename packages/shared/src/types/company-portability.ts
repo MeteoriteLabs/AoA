@@ -376,6 +376,7 @@ export type CompanyPortabilityImportTarget =
   | {
       mode: "new_company";
       newCompanyName?: string | null;
+      organizationId?: string | null;
     }
   | {
       mode: "existing_company";

@@ -30,3 +30,7 @@ server/src/eval/commander-skill-triggering/skills-snapshot.json text eol=lf
 # inputs and manifest to LF so Windows core.autocrlf cannot invalidate hashes.
 docs/contracts/mcp-connectors/v1/*.json text eol=lf
 docs/contracts/mcp-connectors/v1/manifest.sha256 text eol=lf
+
+# This file's historical base blob contains NUL bytes. Treat the repaired
+# source as LF text so PR review and future diffs remain inspectable.
+server/src/realtime/live-events-ws.ts text eol=lf diff

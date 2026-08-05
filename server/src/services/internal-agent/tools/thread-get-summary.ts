@@ -4,7 +4,7 @@
 // Returns a thread's summary, intent, phase, autonomy, visibility, plus
 // the list of crew participants.
 
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { discussions, threadParticipants } from "@armyofagents/db";
 import type { AgentTool } from "../types.js";
 
@@ -45,7 +45,7 @@ export const getThreadSummaryTool: AgentTool = {
         ownerUserId: discussions.ownerUserId,
       })
       .from(discussions)
-      .where(eq(discussions.id, threadId))
+      .where(and(eq(discussions.id, threadId), eq(discussions.companyId, ctx.companyId)))
       .limit(1);
     const thread = Array.isArray(rows) ? rows[0] : null;
     if (!thread) {

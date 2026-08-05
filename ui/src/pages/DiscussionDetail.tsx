@@ -7,6 +7,7 @@ import { useDialog } from "../context/DialogContext";
 import { useToast } from "../context/ToastContext";
 import { discussionsApi, type DiscussionEntry, type ExtractedItem, type Annotation } from "../api/discussions";
 import { agentsApi } from "../api/agents";
+import { healthApi } from "../api/health";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -144,7 +145,29 @@ function getExtractionErrorKind(sourceInfo: Record<string, unknown> | null): Cli
 export function extractionFailureMessage(
   kind: CliExtractionErrorKind | null,
   message: string | null,
+  opts: { multiTenant?: boolean } = {},
 ): { primary: string; showSettings: boolean } {
+  // On AoA Cloud (multi-tenant) the shared host has no per-company keyless CLI
+  // login to borrow, and extraction is CLI-only (Decision #104 / CLAUDE.md Rule
+  // #11): a per-company provider key powers agents / Commander / embeddings but
+  // NEVER extraction. So a credential-shaped extraction failure is NOT actionable
+  // on cloud — there is no CLI login the founder can run, and setting a provider
+  // key would not help. Extraction is simply unavailable there, pending the
+  // deferred org-provider extraction sink.
+  //
+  // NOTE: This INTENTIONALLY REVERSES the earlier D3/#27 copy that pointed cloud
+  // founders at Settings → Providers. That copy was built on the wrong premise
+  // that a provider key enables extraction; it does not. The server's
+  // CLI-flavored `message` is intentionally dropped here.
+  if (opts.multiTenant && (kind === "not_authed" || kind === "not_installed")) {
+    return {
+      primary:
+        "Extraction isn't available on AoA Cloud yet. It needs a local CLI login " +
+        "the shared host can't provide, and a provider key doesn't enable extraction. " +
+        "Support is planned.",
+      showSettings: false,
+    };
+  }
   switch (kind) {
     case "not_installed":
       // Prefer the server's CLI-specific message (e.g. "codex CLI not found")
@@ -755,7 +778,10 @@ function ThreadEntryRow({
 
   const extractionError = getExtractionError(entry.sourceInfo);
   const extractionErrorKind = getExtractionErrorKind(entry.sourceInfo);
-  const failureCopy = extractionFailureMessage(extractionErrorKind, extractionError);
+  const { data: health } = useQuery({ queryKey: queryKeys.health, queryFn: () => healthApi.get() });
+  const failureCopy = extractionFailureMessage(extractionErrorKind, extractionError, {
+    multiTenant: health?.deploymentMode === "cloud_auth",
+  });
 
   return (
     <div className="rounded-lg border border-border bg-card">
@@ -889,6 +915,14 @@ function ThreadEntryRow({
               <p className="text-xs text-red-600/80 dark:text-red-400/80 ml-6">
                 {failureCopy.primary}
               </p>
+              {failureCopy.showSettings && (
+                <Link
+                  to="/settings?tab=providers"
+                  className="ml-6 text-xs text-red-700 dark:text-red-400 underline underline-offset-2"
+                >
+                  Open Settings → Providers
+                </Link>
+              )}
             </div>
           )}
 

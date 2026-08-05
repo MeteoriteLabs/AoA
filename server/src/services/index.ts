@@ -1,4 +1,5 @@
 export { companyService } from "./companies.js";
+export { organizationService } from "./organizations.js";
 export { agentService, deduplicateAgentName } from "./agents.js";
 export { assetService } from "./assets.js";
 export { projectService } from "./projects.js";
@@ -34,6 +35,7 @@ export { inboxDismissalService } from "./inbox-dismissals.js";
 export { userEntityPinService } from "./user-entity-pins.js";
 export { userNotesService } from "./user-notes.js";
 export { accessService } from "./access.js";
+export { organizationAccessService, orgRoleCan, type OrgCapability } from "./organization-access.js";
 export { teamService } from "./team.js";
 export { humanCapabilitiesService } from "./human-capabilities.js";
 export { humanContextService } from "./human-context.js";

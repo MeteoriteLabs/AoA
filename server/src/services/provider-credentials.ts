@@ -8,8 +8,10 @@ import {
   providerCredentials,
 } from "@armyofagents/db";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
-import { resolveScopedCliAuthHome } from "./cli-auth-topology.js";
+import { resolveCliAuthTopology, resolveScopedCliAuthHome } from "./cli-auth-topology.js";
 import { logActivity } from "./activity-log.js";
+import { loadConfig } from "../config.js";
+import { unprocessable } from "../errors.js";
 
 type ScopedSubscriptionCredential = {
   companyId: string;
@@ -34,6 +36,23 @@ export async function markScopedSubscriptionVerified(
   db: Db,
   args: ScopedSubscriptionCredential,
 ): Promise<string[]> {
+  // Fail closed on a shared multi-tenant host: never PROMOTE a personal_subscription
+  // credential to verified. This is the verify-path member of the "every mint/verify
+  // path asserts" BOOT INVARIANT contract (provider-connections.ts:12-19); both
+  // callers (verifyAndBindCommanderSubscriptionCredential + the commander-verify
+  // route) flow through here, so gating it here covers them locally. (Defense-in-
+  // depth: even without this, the resolver backstop + heartbeat gate + subscription
+  // chokepoint already prevent a verified sub from being injected into a run.)
+  const topology = resolveCliAuthTopology({
+    deploymentMode: loadConfig().deploymentMode,
+    deploymentExposure: loadConfig().deploymentExposure,
+  });
+  if (topology.trustBoundary === "multi_tenant") {
+    throw unprocessable(
+      "Personal subscription credentials are disabled on shared multi-tenant hosts.",
+      { code: "subscription_disabled_multi_tenant" },
+    );
+  }
   const authHome = resolveCredentialHome(args);
   const credentialFile = path.join(
     authHome,

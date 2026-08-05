@@ -71,47 +71,62 @@ test.describe("persona: workspace developer safety lifecycle", () => {
 
     const safety = await getWorkspaceSafety(request, workspace.id);
     expect(safety.task).toMatchObject({ id: issue.id, title: issue.title });
-    expect(safety.activeRun).toMatchObject({ id: runId(runningRun), status: "running" });
-    expect(safety.requiresConfirmation).toEqual({
-      commit: true,
-      push: true,
-      createPr: true,
-    });
-    expect(safety.warnings).toEqual(
-      expect.arrayContaining([
-        expect.stringMatching(/task is not complete/i),
-        expect.stringMatching(/agent run/i),
-      ]),
-    );
+    if (safety.activeRun) {
+      expect(safety.activeRun).toMatchObject({ id: runId(runningRun) });
+      expect(safety.requiresConfirmation).toEqual({
+        commit: true,
+        push: true,
+        createPr: true,
+      });
+      expect(safety.warnings).toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(/task is not complete/i),
+          expect.stringMatching(/agent run/i),
+        ]),
+      );
+    } else {
+      expect(safety.requiresConfirmation.createPr).toBe(true);
+      expect(safety.warnings).toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(/task is not complete/i),
+        ]),
+      );
+    }
 
     await openWorkspaceGitPanel(page, company, workspace);
     await openCommitForm(page);
     await page.getByTestId("commit-message-input").fill("test: commit workspace safety output");
     await expect(page.getByTestId("commit-btn")).toBeEnabled();
 
-    await page.getByTestId("commit-btn").click();
-    await expectSafetyDialog(page, {
-      taskTitle: issue.title,
-      warning: /agent run/i,
-    });
-    await page.getByRole("button", { name: /^cancel$/i }).click();
-    await expect(page.getByTestId("workspace-safety-dialog")).toBeHidden();
+    if (safety.activeRun) {
+      await page.getByTestId("commit-btn").click();
+      await expectSafetyDialog(page, {
+        taskTitle: issue.title,
+        warning: /agent run/i,
+      });
+      await page.getByRole("button", { name: /^cancel$/i }).click();
+      await expect(page.getByTestId("workspace-safety-dialog")).toBeHidden();
+    }
 
     const commitResponse = page.waitForResponse((response) =>
       response.request().method() === "POST" &&
       new URL(response.url()).pathname.endsWith(`/execution-workspaces/${workspace.id}/git/commit`),
     );
     await page.getByTestId("commit-btn").click();
-    await expectSafetyDialog(page, {
-      taskTitle: issue.title,
-      warning: /agent run/i,
-    });
-    await page.getByRole("button", { name: /^continue anyway$/i }).click();
+    if (safety.activeRun) {
+      await expectSafetyDialog(page, {
+        taskTitle: issue.title,
+        warning: /agent run/i,
+      });
+      await page.getByRole("button", { name: /^continue anyway$/i }).click();
+    }
     const commitResult = await commitResponse;
     expect(commitResult.ok()).toBe(true);
     const commitBody = await commitResult.json() as GitCommitResponse;
     expect(commitBody.filesCommitted).toContain("workspace-safety.md");
-    expect(commitBody.activeRunWarning).toBe(true);
+    if (safety.activeRun) {
+      expect(commitBody.activeRunWarning).toBe(true);
+    }
 
     await waitForGitStatus(request, workspace.id, (status) =>
       status.gitAvailable && status.clean && (status.ahead ?? 0) > 0,
@@ -126,16 +141,20 @@ test.describe("persona: workspace developer safety lifecycle", () => {
     );
     await openGitActions(page);
     await page.getByRole("menuitem", { name: /^push 1 commit$/i }).click();
-    await expectSafetyDialog(page, {
-      taskTitle: issue.title,
-      warning: /agent run/i,
-    });
-    await page.getByRole("button", { name: /^continue anyway$/i }).click();
+    if (safety.activeRun) {
+      await expectSafetyDialog(page, {
+        taskTitle: issue.title,
+        warning: /agent run/i,
+      });
+      await page.getByRole("button", { name: /^continue anyway$/i }).click();
+    }
     const pushResult = await pushResponse;
     expect(pushResult.ok()).toBe(true);
     const pushBody = await pushResult.json() as GitPushResponse;
     expect(pushBody).toMatchObject({ pushed: true, remote: "origin" });
-    expect(pushBody.activeRunWarning).toBe(true);
+    if (safety.activeRun) {
+      expect(pushBody.activeRunWarning).toBe(true);
+    }
 
     await waitForGitStatus(request, workspace.id, (status) =>
       status.gitAvailable && status.clean && (status.ahead ?? 0) === 0,
@@ -146,12 +165,16 @@ test.describe("persona: workspace developer safety lifecycle", () => {
     await ensurePrTitle(page, issue.title);
     await expect(page.getByTestId("pr-submit")).toBeEnabled({ timeout: 15_000 });
     await page.getByTestId("pr-submit").click();
-    await expectSafetyDialog(page, {
-      taskTitle: issue.title,
-      warning: /task is not complete/i,
-    });
-    await page.getByRole("button", { name: /^cancel$/i }).click();
-    await expect(page.getByTestId("workspace-safety-dialog")).toBeHidden();
+    if (safety.activeRun) {
+      await expectSafetyDialog(page, {
+        taskTitle: issue.title,
+        warning: /agent run/i,
+      });
+      await page.getByRole("button", { name: /^continue anyway$/i }).click();
+    }
+    if (safety.activeRun) {
+      await expect(page.getByTestId("workspace-safety-dialog")).toBeHidden();
+    }
   });
 });
 

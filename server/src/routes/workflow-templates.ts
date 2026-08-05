@@ -4,7 +4,7 @@ import { createWorkflowTemplateSchema, updateWorkflowTemplateSchema } from "@arm
 import { accessService, workflowTemplateService, logActivity } from "../services/index.js";
 import { forbidden, HttpError } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
-import { assertRole } from "../middleware/rbac.js";
+import { assertHumanRole } from "../middleware/rbac.js";
 import { validate } from "../middleware/validate.js";
 
 export function workflowTemplateRoutes(db: Db) {
@@ -25,7 +25,7 @@ export function workflowTemplateRoutes(db: Db) {
   // GET /companies/:companyId/workflow-templates
   router.get("/companies/:companyId/workflow-templates", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const result = await svc.list(companyId);
     res.json(result);
   });
@@ -34,7 +34,7 @@ export function workflowTemplateRoutes(db: Db) {
   router.get("/companies/:companyId/workflow-templates/:templateId", async (req, res) => {
     const companyId = req.params.companyId as string;
     const templateId = req.params.templateId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const template = await svc.getById(companyId, templateId);
     if (!template) {
       res.status(404).json({ error: "Workflow template not found" });
@@ -46,9 +46,9 @@ export function workflowTemplateRoutes(db: Db) {
   // POST /companies/:companyId/workflow-templates
   router.post("/companies/:companyId/workflow-templates", validate(createWorkflowTemplateSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     await assertCanOverrideCompletionPolicy(req, companyId);
-    await assertRole(db, req, companyId, "founder", "team_lead");
+    await assertHumanRole(db, req, companyId, "founder", "team_lead");
 
     const { name, steps } = req.body;
     if (!name || !steps || !Array.isArray(steps) || steps.length === 0) {
@@ -78,9 +78,9 @@ export function workflowTemplateRoutes(db: Db) {
   router.patch("/companies/:companyId/workflow-templates/:templateId", validate(updateWorkflowTemplateSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     const templateId = req.params.templateId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     await assertCanOverrideCompletionPolicy(req, companyId);
-    await assertRole(db, req, companyId, "founder", "team_lead");
+    await assertHumanRole(db, req, companyId, "founder", "team_lead");
 
     let template;
     try {
@@ -117,8 +117,8 @@ export function workflowTemplateRoutes(db: Db) {
   router.post("/companies/:companyId/workflow-templates/:templateId/instantiate", async (req, res) => {
     const companyId = req.params.companyId as string;
     const templateId = req.params.templateId as string;
-    assertCompanyAccess(req, companyId);
-    await assertRole(db, req, companyId, "founder", "team_lead");
+    await assertCompanyAccess(db, req, companyId);
+    await assertHumanRole(db, req, companyId, "founder", "team_lead");
 
     const { goalId, projectId } = req.body;
     if (!goalId || !projectId) {
@@ -162,8 +162,8 @@ export function workflowTemplateRoutes(db: Db) {
   router.delete("/companies/:companyId/workflow-templates/:templateId", async (req, res) => {
     const companyId = req.params.companyId as string;
     const templateId = req.params.templateId as string;
-    assertCompanyAccess(req, companyId);
-    await assertRole(db, req, companyId, "founder", "team_lead");
+    await assertCompanyAccess(db, req, companyId);
+    await assertHumanRole(db, req, companyId, "founder", "team_lead");
 
     const template = await svc.delete(companyId, templateId);
     if (!template) {

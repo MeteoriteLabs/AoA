@@ -14,6 +14,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { ServerAdapterModule } from "./types.js";
 import { logger } from "../middleware/logger.js";
+import { tenantIsolationEnforced } from "../config/deployment-mode.js";
 
 import {
   listAdapterPlugins,
@@ -28,6 +29,34 @@ import type { AdapterPluginRecord } from "../services/adapter-plugin-store.js";
 
 const uiParserCache = new Map<string, string>();
 
+export const CLOUD_EXTERNAL_ADAPTER_BLOCK_CODE =
+  "EXTERNAL_ADAPTER_EXECUTION_BLOCKED_IN_CLOUD";
+export const CLOUD_EXTERNAL_ADAPTER_BLOCK_MESSAGE =
+  "External adapter installation and execution are blocked on AoA Cloud until isolated workers are available";
+
+export class CloudExternalAdapterExecutionBlockedError extends Error {
+  readonly code = CLOUD_EXTERNAL_ADAPTER_BLOCK_CODE;
+
+  constructor() {
+    super(CLOUD_EXTERNAL_ADAPTER_BLOCK_MESSAGE);
+    this.name = "CloudExternalAdapterExecutionBlockedError";
+  }
+}
+
+export function assertExternalAdapterExecutionAllowed(sink: string): void {
+  if (!tenantIsolationEnforced()) return;
+  logger.warn(
+    {
+      service: "cloud-external-adapter-execution",
+      event: "external_adapter.cloud_blocked",
+      sink,
+      reasonCode: CLOUD_EXTERNAL_ADAPTER_BLOCK_CODE,
+    },
+    "blocked cloud external adapter execution"
+  );
+  throw new CloudExternalAdapterExecutionBlockedError();
+}
+
 export function getUiParserSource(adapterType: string): string | undefined {
   return uiParserCache.get(adapterType);
 }
@@ -36,7 +65,10 @@ export function getUiParserSource(adapterType: string): string | undefined {
  * On cache miss, attempt on-demand extraction from the plugin store.
  * Makes the ui-parser.js endpoint self-healing.
  */
-export function getOrExtractUiParserSource(adapterType: string): string | undefined {
+export function getOrExtractUiParserSource(
+  adapterType: string
+): string | undefined {
+  assertExternalAdapterExecutionAllowed("ui-parser");
   const cached = uiParserCache.get(adapterType);
   if (cached) return cached;
 
@@ -49,7 +81,7 @@ export function getOrExtractUiParserSource(adapterType: string): string | undefi
     uiParserCache.set(adapterType, source);
     logger.info(
       { type: adapterType, packageName: record.packageName, origin: "lazy" },
-      "UI parser extracted on-demand (cache miss)",
+      "UI parser extracted on-demand (cache miss)"
     );
   }
   return source;
@@ -59,7 +91,9 @@ export function getOrExtractUiParserSource(adapterType: string): string | undefi
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-function resolvePackageDir(record: Pick<AdapterPluginRecord, "localPath" | "packageName">): string {
+function resolvePackageDir(
+  record: Pick<AdapterPluginRecord, "localPath" | "packageName">
+): string {
   return record.localPath
     ? path.resolve(record.localPath)
     : path.resolve(getAdapterPluginsDir(), "node_modules", record.packageName);
@@ -71,7 +105,9 @@ function resolvePackageEntryPoint(packageDir: string): string {
 
   if (pkg.exports && typeof pkg.exports === "object" && pkg.exports["."]) {
     const exp = pkg.exports["."];
-    return typeof exp === "string" ? exp : (exp.import ?? exp.default ?? "index.js");
+    return typeof exp === "string"
+      ? exp
+      : exp.import ?? exp.default ?? "index.js";
   }
   return pkg.main ?? "index.js";
 }
@@ -84,12 +120,16 @@ const SUPPORTED_PARSER_CONTRACT = "1";
 
 function extractUiParserSource(
   packageDir: string,
-  packageName: string,
+  packageName: string
 ): string | undefined {
   const pkgJsonPath = path.join(packageDir, "package.json");
   const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8"));
 
-  if (!pkg.exports || typeof pkg.exports !== "object" || !pkg.exports["./ui-parser"]) {
+  if (
+    !pkg.exports ||
+    typeof pkg.exports !== "object" ||
+    !pkg.exports["./ui-parser"]
+  ) {
     return undefined;
   }
 
@@ -98,28 +138,36 @@ function extractUiParserSource(
     const major = contractVersion.split(".")[0];
     if (major !== SUPPORTED_PARSER_CONTRACT) {
       logger.warn(
-        { packageName, contractVersion, supported: `${SUPPORTED_PARSER_CONTRACT}.x` },
-        "Adapter declares unsupported UI parser contract version — skipping UI parser",
+        {
+          packageName,
+          contractVersion,
+          supported: `${SUPPORTED_PARSER_CONTRACT}.x`,
+        },
+        "Adapter declares unsupported UI parser contract version — skipping UI parser"
       );
       return undefined;
     }
   } else {
     logger.info(
       { packageName },
-      "Adapter has ./ui-parser export but no paperclip.adapterUiParser version — loading anyway (future versions may require it)",
+      "Adapter has ./ui-parser export but no paperclip.adapterUiParser version — loading anyway (future versions may require it)"
     );
   }
 
   const uiParserExp = pkg.exports["./ui-parser"];
-  const uiParserFile = typeof uiParserExp === "string"
-    ? uiParserExp
-    : (uiParserExp.import ?? uiParserExp.default);
+  const uiParserFile =
+    typeof uiParserExp === "string"
+      ? uiParserExp
+      : uiParserExp.import ?? uiParserExp.default;
   const uiParserPath = path.resolve(packageDir, uiParserFile);
 
-  if (!uiParserPath.startsWith(packageDir + path.sep) && uiParserPath !== packageDir) {
+  if (
+    !uiParserPath.startsWith(packageDir + path.sep) &&
+    uiParserPath !== packageDir
+  ) {
     logger.warn(
       { packageName, uiParserFile },
-      "UI parser path escapes package directory — skipping",
+      "UI parser path escapes package directory — skipping"
     );
     return undefined;
   }
@@ -132,11 +180,16 @@ function extractUiParserSource(
     const source = fs.readFileSync(uiParserPath, "utf-8");
     logger.info(
       { packageName, uiParserFile, size: source.length },
-      `Loaded UI parser from adapter package${contractVersion ? "" : " (no version declared)"}`,
+      `Loaded UI parser from adapter package${
+        contractVersion ? "" : " (no version declared)"
+      }`
     );
     return source;
   } catch (err) {
-    logger.warn({ err, packageName, uiParserFile }, "Failed to read UI parser from adapter package");
+    logger.warn(
+      { err, packageName, uiParserFile },
+      "Failed to read UI parser from adapter package"
+    );
     return undefined;
   }
 }
@@ -145,20 +198,23 @@ function extractUiParserSource(
 // Load / reload
 // ---------------------------------------------------------------------------
 
-function validateAdapterModule(mod: unknown, packageName: string): ServerAdapterModule {
+function validateAdapterModule(
+  mod: unknown,
+  packageName: string
+): ServerAdapterModule {
   const m = mod as Record<string, unknown>;
   const createServerAdapter = m.createServerAdapter;
   if (typeof createServerAdapter !== "function") {
     throw new Error(
       `Package "${packageName}" does not export createServerAdapter(). ` +
-      `Ensure the package's main entry exports a createServerAdapter function.`,
+        `Ensure the package's main entry exports a createServerAdapter function.`
     );
   }
 
   const adapterModule = createServerAdapter() as ServerAdapterModule;
   if (!adapterModule || !adapterModule.type) {
     throw new Error(
-      `createServerAdapter() from "${packageName}" returned an invalid module (missing "type").`,
+      `createServerAdapter() from "${packageName}" returned an invalid module (missing "type").`
     );
   }
   return adapterModule;
@@ -166,8 +222,11 @@ function validateAdapterModule(mod: unknown, packageName: string): ServerAdapter
 
 export async function loadExternalAdapterPackage(
   packageName: string,
-  localPath?: string,
+  localPath?: string
 ): Promise<ServerAdapterModule> {
+  // Final sink guard: this must run before package metadata/files are read and
+  // before the dynamic import, regardless of which caller reaches the loader.
+  assertExternalAdapterExecutionAllowed("load");
   const packageDir = localPath
     ? path.resolve(localPath)
     : path.resolve(getAdapterPluginsDir(), "node_modules", packageName);
@@ -176,7 +235,16 @@ export async function loadExternalAdapterPackage(
   const modulePath = path.resolve(packageDir, entryPoint);
   const uiParserSource = extractUiParserSource(packageDir, packageName);
 
-  logger.info({ packageName, packageDir, entryPoint, modulePath, hasUiParser: !!uiParserSource }, "Loading external adapter package");
+  logger.info(
+    {
+      packageName,
+      packageDir,
+      entryPoint,
+      modulePath,
+      hasUiParser: !!uiParserSource,
+    },
+    "Loading external adapter package"
+  );
 
   const mod = await import(modulePath);
   const adapterModule = validateAdapterModule(mod, packageName);
@@ -188,13 +256,18 @@ export async function loadExternalAdapterPackage(
   return adapterModule;
 }
 
-async function loadFromRecord(record: AdapterPluginRecord): Promise<ServerAdapterModule | null> {
+async function loadFromRecord(
+  record: AdapterPluginRecord
+): Promise<ServerAdapterModule | null> {
   try {
-    return await loadExternalAdapterPackage(record.packageName, record.localPath);
+    return await loadExternalAdapterPackage(
+      record.packageName,
+      record.localPath
+    );
   } catch (err) {
     logger.warn(
       { err, packageName: record.packageName, type: record.type },
-      "Failed to dynamically load external adapter; skipping",
+      "Failed to dynamically load external adapter; skipping"
     );
     return null;
   }
@@ -205,8 +278,10 @@ async function loadFromRecord(record: AdapterPluginRecord): Promise<ServerAdapte
  * Busts the ESM module cache via a cache-busting query string.
  */
 export async function reloadExternalAdapter(
-  type: string,
+  type: string
 ): Promise<ServerAdapterModule | null> {
+  // Final sink guard before store lookup, filesystem access, or import().
+  assertExternalAdapterExecutionAllowed("reload");
   const record = getAdapterPluginByType(type);
   if (!record) return null;
 
@@ -218,7 +293,9 @@ export async function reloadExternalAdapter(
   // Bust ESM module cache so re-import loads fresh code from disk.
   try {
     // @ts-expect-error -- Bun internal module cache
-    const bunCache = globalThis.Bun?.__moduleCache as Map<string, unknown> | undefined;
+    const bunCache = globalThis.Bun?.__moduleCache as
+      | Map<string, unknown>
+      | undefined;
     if (bunCache) {
       bunCache.delete(fileUrl);
       bunCache.delete(modulePath);
@@ -231,7 +308,7 @@ export async function reloadExternalAdapter(
 
   logger.info(
     { type, packageName: record.packageName, modulePath, cacheBustUrl },
-    "Reloading external adapter (cache bust)",
+    "Reloading external adapter (cache bust)"
   );
 
   const mod = await import(cacheBustUrl);
@@ -245,7 +322,7 @@ export async function reloadExternalAdapter(
 
   logger.info(
     { type, packageName: record.packageName, hasUiParser: !!uiParserSource },
-    "Successfully reloaded external adapter",
+    "Successfully reloaded external adapter"
   );
 
   return adapterModule;
@@ -268,7 +345,7 @@ export async function buildExternalAdapters(): Promise<ServerAdapterModule[]> {
   if (results.length > 0) {
     logger.info(
       { count: results.length, adapters: results.map((a) => a.type) },
-      "Loaded external adapters from plugin store",
+      "Loaded external adapters from plugin store"
     );
   }
 

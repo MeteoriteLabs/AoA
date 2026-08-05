@@ -21,6 +21,7 @@ const PRIORITIES = [
 
 export type FirstJobStepProps = {
   companyId: string;
+  deploymentMode?: "local_trusted" | "authenticated" | "cloud_auth";
   onDone: () => void;
 };
 
@@ -50,7 +51,8 @@ export type FirstJobStepProps = {
  * guarded via `fireOnDoneOnce` so a rapid double-submit only ever calls it
  * once.
  */
-export function FirstJobStep({ companyId, onDone }: FirstJobStepProps) {
+export function FirstJobStep({ companyId, deploymentMode, onDone }: FirstJobStepProps) {
+  const cloudMode = deploymentMode === "cloud_auth";
   const [agents, setAgents] = useState<AgentRow[]>([]);
   const [agentsError, setAgentsError] = useState<string | null>(null);
   const [departments, setDepartments] = useState<DepartmentRow[]>([]);
@@ -151,7 +153,9 @@ export function FirstJobStep({ companyId, onDone }: FirstJobStepProps) {
               Give it a <GradientText>first job</GradientText>
             </>
           }
-          subtitle="Give your agent its first task — or skip straight to Home."
+          subtitle={cloudMode
+            ? "Create a task now, but it will not execute until the assignee has an E2B environment and is enabled."
+            : "Give your agent its first task — or skip straight to Home."}
         />
       </Reveal>
 

@@ -128,6 +128,15 @@ describe("Lobby", () => {
     expect(screen.getByText("Beta Corp")).toBeInTheDocument();
   });
 
+  it("labels the company list 'Your companies', not 'Your organizations'", () => {
+    mockCompanyContext.companies = [makeCompany({ id: "c1", name: "Acme Inc", issuePrefix: "ACME" })];
+
+    renderWithProviders(<Lobby />);
+
+    expect(screen.getByText(/your companies/i)).toBeInTheDocument();
+    expect(screen.queryByText(/your organizations/i)).toBeNull();
+  });
+
   it("surfaces a returning user's pending invitation and opens its join flow", async () => {
     const user = userEvent.setup();
     mockCompanyContext.companies = [makeCompany()];

@@ -14,14 +14,14 @@ export function dashboardRoutes(db: Db) {
 
   router.get("/companies/:companyId/dashboard", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const summary = await dashSvc.summary(companyId);
     res.json(summary);
   });
 
   router.get("/companies/:companyId/home", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     try {
       await suggestionSvc.runAllDetectors(companyId);
     } catch (err) {

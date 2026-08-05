@@ -8,10 +8,13 @@ import {
   useProbeEnvironment,
 } from "@/api/environments";
 import { secretsApi } from "@/api/secrets";
+import { executionTargetsApi } from "@/api/execution-targets";
+import { healthApi } from "@/api/health";
 import { queryKeys } from "@/lib/queryKeys";
 import { useQuery } from "@tanstack/react-query";
-import type { CompanySecret, Environment } from "@armyofagents/shared";
+import type { CompanySecret, DeploymentMode, Environment } from "@armyofagents/shared";
 import type { CreateEnvironmentInput, EnvironmentProbeResult, UpdateEnvironmentInput } from "@armyofagents/shared";
+import { buildGvisorConfig, normalizeExecutionTargetId, parseGvisorConfig } from "./environment-target-form";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -73,13 +76,16 @@ function formatDate(iso: string): string {
   }
 }
 
-type EnvTargetType = "local" | "sandbox-docker" | "e2b";
+type EnvTargetType = "local" | "sandbox-docker" | "e2b" | "gvisor";
 type EnvTargetShell = "sh" | "bash";
 type EnvTargetNetwork = "bridge" | "host" | "none";
+
+const DEFAULT_GVISOR_FIELDS = { gvisorImage: "", gvisorMemory: "2g", gvisorCpus: "2", gvisorPidsLimit: "512" };
 
 function readTarget(initial: Environment | undefined) {
   const raw = initial?.target;
   const config = initial?.config ?? {};
+  const executionTargetId = initial?.executionTargetId ?? "";
   if (initial?.driver === "sandbox" && config.provider === "e2b") {
     const credentialSecretId = typeof config.credentialSecretId === "string" ? config.credentialSecretId : "";
     return {
@@ -96,6 +102,31 @@ function readTarget(initial: Environment | undefined) {
       e2bTemplate: typeof config.template === "string" ? config.template : "base",
       e2bTimeoutMs: typeof config.timeoutMs === "number" ? String(config.timeoutMs) : "60000",
       e2bReuseLease: config.reuseLease === true,
+      ...DEFAULT_GVISOR_FIELDS,
+      executionTargetId,
+    };
+  }
+  if (initial?.driver === "sandbox" && config.provider === "gvisor") {
+    const gvisorFields = parseGvisorConfig(config);
+    return {
+      targetType: "gvisor" as EnvTargetType,
+      targetImage: "",
+      targetWorkdir: "/workspace",
+      targetShell: "sh" as EnvTargetShell,
+      targetNetwork: "bridge" as EnvTargetNetwork,
+      targetRemove: true,
+      targetInstallCommand: "",
+      configRaw: safeStringify(config),
+      e2bCredentialMode: "default" as const,
+      e2bCredentialSecretId: "",
+      e2bTemplate: "base",
+      e2bTimeoutMs: "60000",
+      e2bReuseLease: false,
+      gvisorImage: gvisorFields.image,
+      gvisorMemory: gvisorFields.memory,
+      gvisorCpus: gvisorFields.cpus,
+      gvisorPidsLimit: gvisorFields.pidsLimit,
+      executionTargetId,
     };
   }
   if (raw?.type !== "sandbox-docker") {
@@ -113,6 +144,8 @@ function readTarget(initial: Environment | undefined) {
       e2bTemplate: "base",
       e2bTimeoutMs: "60000",
       e2bReuseLease: false,
+      ...DEFAULT_GVISOR_FIELDS,
+      executionTargetId,
     };
   }
   return {
@@ -129,6 +162,8 @@ function readTarget(initial: Environment | undefined) {
     e2bTemplate: "base",
     e2bTimeoutMs: "60000",
     e2bReuseLease: false,
+    ...DEFAULT_GVISOR_FIELDS,
+    executionTargetId,
   };
 }
 
@@ -138,6 +173,12 @@ function formatTargetSummary(env: Environment): string {
       ? env.config.template.trim()
       : "base";
     return `E2B Sandbox: ${template}`;
+  }
+  if (env.driver === "sandbox" && env.config?.provider === "gvisor") {
+    const image = typeof env.config.image === "string" && env.config.image.trim()
+      ? env.config.image.trim()
+      : "image missing";
+    return `gVisor Sandbox (runsc): ${image}`;
   }
   if (env.target?.type === "sandbox-docker") {
     const image = typeof env.target.image === "string" && env.target.image.trim()
@@ -169,10 +210,20 @@ interface EnvFormState {
   e2bTemplate: string;
   e2bTimeoutMs: string;
   e2bReuseLease: boolean;
+  gvisorImage: string;
+  gvisorMemory: string;
+  gvisorCpus: string;
+  gvisorPidsLimit: string;
+  // "" = unpinned (route by credential kind). See execution-target-resolver.ts.
+  executionTargetId: string;
 }
 
 interface EnvironmentDialogProps {
   companyId: string;
+  // Nullable: environments can be edited before a company has an
+  // organization context resolved. The "Pin to execution target" picker
+  // is hidden (not disabled) when this is null — see the render guard below.
+  organizationId?: string | null;
   open: boolean;
   mode: "create" | "edit";
   initial?: Environment;
@@ -181,10 +232,12 @@ interface EnvironmentDialogProps {
   secrets: CompanySecret[];
   onClose: () => void;
   onSubmit: (data: CreateEnvironmentInput | UpdateEnvironmentInput) => void;
+  cloudMode: boolean;
 }
 
 function EnvironmentDialog({
   companyId,
+  organizationId,
   open,
   mode,
   initial,
@@ -193,13 +246,25 @@ function EnvironmentDialog({
   secrets,
   onClose,
   onSubmit,
+  cloudMode,
 }: EnvironmentDialogProps) {
   const probeMutation = useProbeEnvironment();
+  // Org-admin-gated (server/src/routes/execution-targets.ts). A non-admin
+  // viewer or a company with no organizationId just sees no pin options —
+  // the picker degrades to "Auto" only, it never blocks the dialog.
+  const executionTargetsQuery = useQuery({
+    queryKey: queryKeys.executionTargets.list(organizationId ?? ""),
+    queryFn: () => executionTargetsApi.list(organizationId as string),
+    enabled: !!organizationId && !cloudMode,
+    retry: false,
+  });
+  const executionTargets = executionTargetsQuery.data ?? [];
   const [form, setForm] = useState<EnvFormState>(() => ({
     name: initial?.name ?? "",
     envVarsRaw: safeStringify(initial?.envVars),
     connectionTargetRaw: safeStringify(initial?.connectionTarget ?? undefined),
     ...readTarget(initial),
+    ...(!initial && cloudMode ? { targetType: "e2b" as const } : {}),
   }));
 
   const [envVarsError, setEnvVarsError] = useState<string | null>(null);
@@ -217,6 +282,7 @@ function EnvironmentDialog({
         envVarsRaw: safeStringify(initial?.envVars),
         connectionTargetRaw: safeStringify(initial?.connectionTarget ?? undefined),
         ...readTarget(initial),
+        ...(!initial && cloudMode ? { targetType: "e2b" as const } : {}),
       });
       setEnvVarsError(null);
       setConnectionTargetError(null);
@@ -227,9 +293,15 @@ function EnvironmentDialog({
   }
 
   function buildEnvironmentInput(): { ok: true; value: CreateEnvironmentInput | UpdateEnvironmentInput } | { ok: false } {
+    if (cloudMode && form.targetType !== "e2b") {
+      setConfigError("AoA Cloud currently supports E2B environments only. Migrate this environment to E2B to save changes.");
+      return { ok: false };
+    }
     const evResult = safeParse(form.envVarsRaw);
     const ctResult = safeParse(form.connectionTargetRaw);
-    const configResult = form.targetType === "e2b" ? { ok: true as const, value: {} } : safeParse(form.configRaw);
+    const configResult = form.targetType === "e2b" || form.targetType === "gvisor"
+      ? { ok: true as const, value: {} }
+      : safeParse(form.configRaw);
 
     if (!evResult.ok) {
       setEnvVarsError(evResult.error);
@@ -245,6 +317,10 @@ function EnvironmentDialog({
     }
     if (form.targetType === "sandbox-docker" && !form.targetImage.trim()) {
       setConnectionTargetError("Docker image is required for sandbox-docker.");
+      return { ok: false };
+    }
+    if (form.targetType === "gvisor" && !form.gvisorImage.trim()) {
+      setConfigError("Docker image is required for gVisor.");
       return { ok: false };
     }
     if (form.targetType === "e2b" && form.e2bCredentialMode === "secret" && !form.e2bCredentialSecretId) {
@@ -274,6 +350,10 @@ function EnvironmentDialog({
             : {}),
         }
       : {};
+    // gVisor target is null (like e2b): the sandbox-docker `target` field has
+    // no "gvisor" variant in environmentTargetSchema — the hardened docker
+    // invocation is derived server-side from `config` alone
+    // (resolveGvisorSandboxTarget, server/src/services/environment-runtime.ts).
     const target: CreateEnvironmentInput["target"] = form.targetType === "sandbox-docker"
       ? {
           type: "sandbox-docker" as const,
@@ -286,7 +366,7 @@ function EnvironmentDialog({
             ? { installCommand: form.targetInstallCommand.trim() }
             : {}),
         }
-      : form.targetType === "e2b"
+      : form.targetType === "e2b" || form.targetType === "gvisor"
         ? null
         : { type: "local" as const };
     const config = form.targetType === "e2b"
@@ -299,7 +379,14 @@ function EnvironmentDialog({
           timeoutMs,
           reuseLease: form.e2bReuseLease,
         }
-      : dockerConfig;
+      : form.targetType === "gvisor"
+        ? buildGvisorConfig({
+            image: form.gvisorImage,
+            memory: form.gvisorMemory,
+            cpus: form.gvisorCpus,
+            pidsLimit: form.gvisorPidsLimit,
+          })
+        : dockerConfig;
     return { ok: true, value: {
       name: form.name.trim(),
       driver: form.targetType === "local" ? "local" : "sandbox",
@@ -307,6 +394,7 @@ function EnvironmentDialog({
       envVars: evResult.value,
       connectionTarget: trimmedCt ? ctResult.value : null,
       target,
+      executionTargetId: normalizeExecutionTargetId(form.executionTargetId),
     } };
   }
 
@@ -398,23 +486,132 @@ function EnvironmentDialog({
             <select
               className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
               value={form.targetType}
-              onChange={(e) =>
+              onChange={(e) => {
+                const value = e.target.value;
                 setForm((f) => ({
                   ...f,
-                  targetType: e.target.value === "sandbox-docker"
+                  targetType: value === "sandbox-docker"
                     ? "sandbox-docker"
-                    : e.target.value === "e2b"
+                    : value === "e2b"
                       ? "e2b"
-                      : "local",
-                }))
-              }
+                      : value === "gvisor"
+                        ? "gvisor"
+                        : "local",
+                }));
+              }}
               data-testid="environment-target-select"
             >
-              <option value="local">Local</option>
-              <option value="sandbox-docker">Sandbox Docker</option>
+              {cloudMode && form.targetType !== "e2b" && (
+                <option value={form.targetType} disabled>
+                  {form.targetType} (unavailable on AoA Cloud)
+                </option>
+              )}
+              {!cloudMode && <option value="local">Local</option>}
+              {!cloudMode && <option value="sandbox-docker">Sandbox Docker</option>}
               <option value="e2b">E2B Sandbox</option>
+              {!cloudMode && <option value="gvisor">gVisor Sandbox (hardened, runsc)</option>}
             </select>
+            {cloudMode && (
+              <p className="text-xs text-muted-foreground">
+                E2B supports regular heartbeat-agent command execution. Commander, crew, local
+                workspace jobs, Docker, gVisor, and worker-pool routing remain unavailable on AoA Cloud.
+              </p>
+            )}
           </div>
+
+          {form.targetType === "gvisor" && (
+            <div className="grid gap-3 rounded-md border border-border p-3">
+              <p className="text-xs text-muted-foreground">
+                Runs the CLI under gVisor's <code className="text-[11px] bg-muted/40 px-1 rounded">runsc</code>{" "}
+                runtime with a hardened, default-off isolation profile (read-only rootfs, dropped
+                capabilities, no new privileges, no network). See{" "}
+                <code className="text-[11px] bg-muted/40 px-1 rounded">docs/aoa/guides/gvisor-worker-image.md</code>.
+              </p>
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                  Docker Image <span className="text-destructive">*</span>
+                </label>
+                <Input
+                  required
+                  placeholder="aoa/agent-base:latest"
+                  value={form.gvisorImage}
+                  onChange={(e) => setForm((f) => ({ ...f, gvisorImage: e.target.value }))}
+                  data-testid="environment-gvisor-image-input"
+                />
+              </div>
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                    Memory
+                  </label>
+                  <Input
+                    placeholder="2g"
+                    value={form.gvisorMemory}
+                    onChange={(e) => setForm((f) => ({ ...f, gvisorMemory: e.target.value }))}
+                    data-testid="environment-gvisor-memory-input"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                    CPUs
+                  </label>
+                  <Input
+                    placeholder="2"
+                    value={form.gvisorCpus}
+                    onChange={(e) => setForm((f) => ({ ...f, gvisorCpus: e.target.value }))}
+                    data-testid="environment-gvisor-cpus-input"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                    PIDs limit
+                  </label>
+                  <Input
+                    placeholder="512"
+                    value={form.gvisorPidsLimit}
+                    onChange={(e) => setForm((f) => ({ ...f, gvisorPidsLimit: e.target.value }))}
+                    inputMode="numeric"
+                    data-testid="environment-gvisor-pids-input"
+                  />
+                </div>
+              </div>
+              {configError && (
+                <p className="text-xs text-destructive">{configError}</p>
+              )}
+            </div>
+          )}
+
+          {!!organizationId && !cloudMode && (
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                Pin to Execution Target <span className="text-muted-foreground/50">(optional)</span>
+              </label>
+              <p className="text-xs text-muted-foreground">
+                Overrides route-by-credential — every run on this environment always uses the
+                selected target. Leave unpinned to route automatically (company API keys go to the
+                shared pool; personal subscriptions go to their bound dedicated target).
+              </p>
+              <select
+                className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                value={form.executionTargetId}
+                onChange={(e) => setForm((f) => ({ ...f, executionTargetId: e.target.value }))}
+                data-testid="environment-execution-target-pin-select"
+                disabled={executionTargetsQuery.isLoading}
+              >
+                <option value="">Auto (route by credential)</option>
+                {executionTargets.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.slug} ({t.kind}{t.status !== "active" ? `, ${t.status}` : ""})
+                  </option>
+                ))}
+              </select>
+              {executionTargetsQuery.isError && (
+                <p className="text-xs text-muted-foreground">
+                  Execution targets are only visible to organization admins.
+                </p>
+              )}
+            </div>
+          )}
 
           {form.targetType === "sandbox-docker" && (
             <div className="grid gap-3 rounded-md border border-border p-3">
@@ -663,7 +860,16 @@ function RowSkeleton() {
 // Main section
 // ---------------------------------------------------------------------------
 
-export function EnvironmentsSection({ companyId }: { companyId: string }) {
+export function EnvironmentsSection({
+  companyId,
+  organizationId = null,
+  deploymentMode = "local_trusted",
+}: {
+  companyId: string;
+  organizationId?: string | null;
+  deploymentMode?: DeploymentMode;
+}) {
+  const cloudMode = deploymentMode === "cloud_auth";
   const { data: environments, isLoading, isError } = useEnvironments(companyId);
   const secretsQuery = useQuery({
     queryKey: queryKeys.secrets.list(companyId),
@@ -793,6 +999,16 @@ export function EnvironmentsSection({ companyId }: { companyId: string }) {
                     {" · "}
                     Created {formatDate(env.createdAt)}
                   </div>
+                  {cloudMode && !(
+                    env.driver === "sandbox"
+                    && env.config?.provider === "e2b"
+                    && env.target == null
+                    && env.executionTargetId == null
+                  ) && (
+                    <div className="mt-1 text-xs text-amber-500">
+                      Unavailable on AoA Cloud. Edit this environment and migrate it to unpinned E2B.
+                    </div>
+                  )}
                 </div>
 
                 <Button
@@ -850,6 +1066,7 @@ export function EnvironmentsSection({ companyId }: { companyId: string }) {
       {/* ------------------------------------------------------------------ */}
       <EnvironmentDialog
         companyId={companyId}
+        organizationId={organizationId}
         open={createOpen}
         mode="create"
         isPending={createMutation.isPending}
@@ -857,6 +1074,7 @@ export function EnvironmentsSection({ companyId }: { companyId: string }) {
         secrets={secretsQuery.data ?? []}
         onClose={() => { setCreateOpen(false); createMutation.reset(); }}
         onSubmit={handleCreate}
+        cloudMode={cloudMode}
       />
 
       {/* ------------------------------------------------------------------ */}
@@ -864,6 +1082,7 @@ export function EnvironmentsSection({ companyId }: { companyId: string }) {
       {/* ------------------------------------------------------------------ */}
       <EnvironmentDialog
         companyId={companyId}
+        organizationId={organizationId}
         open={!!editTarget}
         mode="edit"
         initial={editTarget ?? undefined}
@@ -872,6 +1091,7 @@ export function EnvironmentsSection({ companyId }: { companyId: string }) {
         secrets={secretsQuery.data ?? []}
         onClose={() => { setEditTarget(null); updateMutation.reset(); }}
         onSubmit={handleUpdate}
+        cloudMode={cloudMode}
       />
 
       {/* ------------------------------------------------------------------ */}
@@ -913,7 +1133,11 @@ export function EnvironmentsSection({ companyId }: { companyId: string }) {
 // ---------------------------------------------------------------------------
 
 export function EnvironmentsSectionWrapper() {
-  const { selectedCompanyId } = useCompany();
+  const { selectedCompanyId, selectedCompany } = useCompany();
+  const healthQuery = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => healthApi.get(),
+  });
 
   if (!selectedCompanyId) {
     return (
@@ -923,5 +1147,11 @@ export function EnvironmentsSectionWrapper() {
     );
   }
 
-  return <EnvironmentsSection companyId={selectedCompanyId} />;
+  return (
+    <EnvironmentsSection
+      companyId={selectedCompanyId}
+      organizationId={selectedCompany?.organizationId ?? null}
+      deploymentMode={healthQuery.data?.deploymentMode}
+    />
+  );
 }

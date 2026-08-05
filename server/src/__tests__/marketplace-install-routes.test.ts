@@ -86,7 +86,7 @@ const CATALOG = {
   items: [SKILL, SKILL_B, AGENT, MIXED_SKILL, MIXED_TEAM],
 };
 
-function buildApp(catalog = CATALOG) {
+function buildApp(catalog = CATALOG, operationRows: unknown[] = []) {
   const app = express();
   app.use(express.json());
 
@@ -102,7 +102,7 @@ function buildApp(catalog = CATALOG) {
   const router = createMarketplaceInstallRouter({
     db: {
       insert: () => ({ values: () => ({ onConflictDoNothing: () => ({ returning: () => Promise.resolve([{ id: "op-1", status: "pending", companyId: "c1", catalogItemId: SKILL.id, itemType: "skill" }]) }) }) }),
-      select: () => ({ from: () => ({ where: () => ({ limit: () => Promise.resolve([]) }) }) }),
+      select: () => ({ from: () => ({ where: () => ({ limit: () => Promise.resolve(operationRows) }) }) }),
       update: () => ({ set: () => ({ where: () => Promise.resolve() }) }),
       transaction: async (cb: any) => cb({ insert: () => ({ values: () => ({ returning: () => Promise.resolve([{ id: "skill-1" }]) }) }) }),
     } as any,
@@ -127,6 +127,33 @@ function buildApp(catalog = CATALOG) {
 }
 
 const C_ID = "c1";
+
+describe("GET /api/companies/:companyId/marketplace/install/:operationId", () => {
+  it("returns the canonical 503 envelope for a blocked cloud plugin install", async () => {
+    const res = await request(
+      buildApp(CATALOG, [
+        {
+          id: "op-blocked",
+          companyId: C_ID,
+          catalogItemId: "plugin:aoa/test",
+          itemType: "plugin",
+          status: "failure",
+          errorMessage: "Localized or revised diagnostic text",
+          errorCode: "PLUGIN_WORKER_BLOCKED_IN_CLOUD",
+          errorDocs: "/some/older/docs/path",
+        },
+      ]),
+    ).get(`/api/companies/${C_ID}/marketplace/install/op-blocked`);
+
+    expect(res.status).toBe(503);
+    expect(res.body).toEqual({
+      error:
+        "Plugin execution is blocked on AoA Cloud until isolated workers are available",
+      code: "PLUGIN_WORKER_BLOCKED_IN_CLOUD",
+      docs: "/docs/guides/cloud-plugin-execution",
+    });
+  });
+});
 
 describe("POST /api/companies/:companyId/marketplace/install", () => {
   it("returns 202 with operationId for valid skill install", async () => {

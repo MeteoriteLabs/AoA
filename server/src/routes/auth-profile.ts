@@ -53,11 +53,13 @@ export function authProfileRoutes(db: Db) {
       throw unauthorized("Board authentication required");
     }
 
+    const mayManageInstanceSettings = canManageInstanceSettings(req);
     const profile: CurrentUserProfile = {
       ...(await loadActingUser(req.actor.userId, req.actor.source)),
       // Same source of truth as assertCanManageInstanceSettings — the auth
       // middleware computed this from instance_user_roles.
-      isInstanceAdmin: canManageInstanceSettings(req),
+      canManageInstanceSettings: mayManageInstanceSettings,
+      isInstanceAdmin: mayManageInstanceSettings,
     };
     res.json(profile);
   });
@@ -76,9 +78,11 @@ export function authProfileRoutes(db: Db) {
       // Include the flag here too — the UI writes the PATCH response into the
       // profile query cache (Me.tsx setQueryData), so dropping it would make
       // an admin's instance-Settings chrome disappear after a profile save.
+      const mayManageInstanceSettings = canManageInstanceSettings(req);
       const profile: CurrentUserProfile = {
         ...(await service.update(req.actor.userId, req.body)),
-        isInstanceAdmin: canManageInstanceSettings(req),
+        canManageInstanceSettings: mayManageInstanceSettings,
+        isInstanceAdmin: mayManageInstanceSettings,
       };
       res.json(profile);
     },

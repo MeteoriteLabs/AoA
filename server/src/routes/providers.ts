@@ -202,6 +202,8 @@ import {
 } from "../services/adapter-probe-concurrency.js";
 import { assertCompanyAccess } from "./authz.js";
 import { assertRole } from "../middleware/rbac.js";
+import { assertUnsandboxedMultitenantAllowed } from "../services/unsandboxed-multitenant-guard.js";
+import { tenantIsolationEnforced } from "../config/deployment-mode.js";
 import { HttpError, forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 
@@ -417,7 +419,7 @@ export function providerRoutes(db: Db): Router {
       res.status(401).json({ error: "authentication required" });
       return null;
     }
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     await assertRole(db, req, companyId, "founder");
     return actor.userId;
   }
@@ -428,7 +430,7 @@ export function providerRoutes(db: Db): Router {
    * Providers tab and the agent page cannot disagree about who sees a badge.
    */
   async function assertCanReadConfigurations(req: Request, companyId: string): Promise<void> {
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     if (req.actor.type === "board") {
       if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
       if (await access.canUser(companyId, req.actor.userId, "agents:create")) return;
@@ -553,6 +555,38 @@ export function providerRoutes(db: Db): Router {
           testedByUserId: req.actor.type === "board" ? (req.actor.userId ?? null) : null,
         });
         throw err;
+      }
+      // D1 (cloud isolation): the probe spawns a REAL `claude --print` / `codex
+      // exec` generation. This sink has NO execution target — it always runs on
+      // the local, unsandboxed control-plane host — so on `cloud_auth` it would
+      // run under the OPERATOR's login on the shared host. Refuse before spawning
+      // (no-op on every self-hosted deployment). Record `failed` so a prior
+      // `verified` row cannot survive and keep rendering the provider Ready.
+      if (tenantIsolationEnforced()) {
+        try {
+          assertUnsandboxedMultitenantAllowed(null, {
+            tenantIsolationEnforced: true,
+            sink: "adapter readiness probe",
+          });
+        } catch {
+          const cloudChecks: AdapterEnvironmentCheck[] = [
+            {
+              code: "readiness_unavailable_on_cloud",
+              level: "error",
+              message:
+                "Provider readiness testing is unavailable on AoA Cloud (a local probe would run on the shared host).",
+            },
+          ];
+          await recordReadiness(db, {
+            companyId,
+            providerId: descriptor.id,
+            scope,
+            outcome: "failed",
+            checks: cloudChecks,
+            testedByUserId: req.actor.type === "board" ? (req.actor.userId ?? null) : null,
+          });
+          return { outcome: "failed", checks: cloudChecks, testedAt: new Date().toISOString() };
+        }
       }
       let result: AdapterEnvironmentTestResult;
       try {

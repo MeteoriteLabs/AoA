@@ -21,7 +21,7 @@ export function userNoteRoutes(db: Db) {
 
   router.get("/companies/:companyId/user-notes", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const userId = requireBoardUserId(req, res);
     res.json(await svc.list(companyId, userId));
   });
@@ -31,7 +31,7 @@ export function userNoteRoutes(db: Db) {
     validate(createUserNoteSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const userId = requireBoardUserId(req, res);
       const note = await svc.create(companyId, userId, req.body);
       res.status(201).json(note);
@@ -43,7 +43,7 @@ export function userNoteRoutes(db: Db) {
     validate(updateUserNoteSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const userId = requireBoardUserId(req, res);
       const noteId = req.params.noteId as string;
       const note = await svc.update(companyId, userId, noteId, req.body);
@@ -53,7 +53,7 @@ export function userNoteRoutes(db: Db) {
 
   router.delete("/companies/:companyId/user-notes/:noteId", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const userId = requireBoardUserId(req, res);
     const noteId = req.params.noteId as string;
     await svc.archive(companyId, userId, noteId);

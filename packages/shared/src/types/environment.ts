@@ -18,6 +18,11 @@ export interface Environment {
   envVars: Record<string, unknown>;
   connectionTarget: Record<string, unknown> | null;
   target: Record<string, unknown> | null;
+  // Phase 5 execution-target registry (Task 5 added the DB column + Task 12
+  // reads/writes it from Settings > Environments; this response type never
+  // picked it up until now). null = route by credential (business key ->
+  // pooled_gvisor, personal subscription -> its bound dedicated target).
+  executionTargetId?: string | null;
   createdAt: string;
   updatedAt: string;
 }

@@ -27,6 +27,7 @@ vi.mock("../services/index.js", () => ({
 
 vi.mock("../middleware/rbac.js", () => ({
   assertRole: (...args: unknown[]) => mockAssertRole(...args),
+  assertHumanRole: (...args: unknown[]) => mockAssertRole(...args),
 }));
 
 function createApp(actor: Record<string, unknown>) {

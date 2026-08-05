@@ -68,7 +68,7 @@ export function memoryRoutes(db: Db) {
   // Semantic search — must be before /:id route
   router.get("/companies/:companyId/memory/search", embeddingSearchLimiter, async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const q = req.query.q as string | undefined;
     if (!q || !q.trim()) {
       res.status(400).json({ error: "Query parameter 'q' is required" });
@@ -86,7 +86,7 @@ export function memoryRoutes(db: Db) {
   // Find similar items — must be before /:id route
   router.get("/companies/:companyId/memory/find-similar", embeddingSearchLimiter, async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const content = req.query.content as string | undefined;
     if (!content || !content.trim()) {
       res.status(400).json({ error: "Query parameter 'content' is required" });
@@ -103,7 +103,7 @@ export function memoryRoutes(db: Db) {
 
   router.get("/companies/:companyId/memory", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     await assertMemoryAccess(db, req, companyId, "read");
     const filters = {
       category: req.query.category as string | undefined,
@@ -124,7 +124,7 @@ export function memoryRoutes(db: Db) {
 
   router.get("/companies/:companyId/memory-pending", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     await assertMemoryAccess(db, req, companyId, "read");
     const result = await svc.listPending(companyId);
     res.json(result);
@@ -133,7 +133,7 @@ export function memoryRoutes(db: Db) {
   router.get("/companies/:companyId/memory/items/:id/neighbors", async (req, res) => {
     const companyId = req.params.companyId as string;
     const id = req.params.id as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     await assertMemoryAccess(db, req, companyId, "read");
 
     const parsed = companyBrainNeighborQuerySchema.safeParse(req.query);
@@ -177,7 +177,7 @@ export function memoryRoutes(db: Db) {
   router.get("/companies/:companyId/memory/items/:id/usage", async (req, res) => {
     const companyId = req.params.companyId as string;
     const id = req.params.id as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     await assertMemoryAccess(db, req, companyId, "read");
 
     const principalId =
@@ -197,7 +197,7 @@ export function memoryRoutes(db: Db) {
 
   router.post("/companies/:companyId/memory/graph/edges", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     await assertMemoryAccess(db, req, companyId, "update");
 
     const parsed = createCompanyBrainSemanticEdgeSchema.safeParse(req.body);
@@ -236,7 +236,7 @@ export function memoryRoutes(db: Db) {
   router.patch("/companies/:companyId/memory/graph/edges/:edgeId", async (req, res) => {
     const companyId = req.params.companyId as string;
     const edgeId = req.params.edgeId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     await assertMemoryAccess(db, req, companyId, "update");
 
     const parsed = updateCompanyBrainSemanticEdgeSchema.safeParse(req.body);
@@ -266,7 +266,7 @@ export function memoryRoutes(db: Db) {
   router.delete("/companies/:companyId/memory/graph/edges/:edgeId", async (req, res) => {
     const companyId = req.params.companyId as string;
     const edgeId = req.params.edgeId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     await assertMemoryAccess(db, req, companyId, "update");
 
     const actor = getActorInfo(req);
@@ -289,7 +289,7 @@ export function memoryRoutes(db: Db) {
 
   router.get("/companies/:companyId/memory/graph", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     await assertMemoryAccess(db, req, companyId, "read");
 
     const parsed = companyBrainOverviewQuerySchema.safeParse(req.query);
@@ -316,7 +316,7 @@ export function memoryRoutes(db: Db) {
   router.get("/companies/:companyId/memory/:id", async (req, res) => {
     const companyId = req.params.companyId as string;
     const id = req.params.id as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     await assertMemoryAccess(db, req, companyId, "read");
     const item = await svc.getById(companyId, id);
     if (!item) {
@@ -328,7 +328,7 @@ export function memoryRoutes(db: Db) {
 
   router.post("/companies/:companyId/memory", validate(createMemoryItemSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     await assertMemoryAccess(db, req, companyId, "create", {
       layer: req.body.layer,
       departmentId: req.body.departmentId,
@@ -374,7 +374,7 @@ export function memoryRoutes(db: Db) {
   router.patch("/companies/:companyId/memory/:id", validate(updateMemoryItemSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     const id = req.params.id as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const existing = await svc.getById(companyId, id);
     if (!existing) {
       res.status(404).json({ error: "Memory item not found" });
@@ -432,7 +432,7 @@ export function memoryRoutes(db: Db) {
   router.delete("/companies/:companyId/memory/:id", async (req, res) => {
     const companyId = req.params.companyId as string;
     const id = req.params.id as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const existing = await svc.getById(companyId, id);
     if (!existing) {
       res.status(404).json({ error: "Memory item not found" });
@@ -466,7 +466,7 @@ export function memoryRoutes(db: Db) {
   router.post("/companies/:companyId/memory/:id/approve", async (req, res) => {
     const companyId = req.params.companyId as string;
     const id = req.params.id as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const existing = await svc.getById(companyId, id);
     if (!existing) {
       res.status(404).json({ error: "Memory item not found" });
@@ -513,7 +513,7 @@ export function memoryRoutes(db: Db) {
   router.post("/companies/:companyId/memory/:id/reject", async (req, res) => {
     const companyId = req.params.companyId as string;
     const id = req.params.id as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const existing = await svc.getById(companyId, id);
     if (!existing) {
       res.status(404).json({ error: "Memory item not found" });
@@ -562,7 +562,7 @@ export function memoryRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const id = req.params.id as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const existing = await svc.getById(companyId, id);
       if (!existing) {
         res.status(404).json({ error: "Memory item not found" });
@@ -611,7 +611,7 @@ export function memoryRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const id = req.params.id as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const existing = await svc.getById(companyId, id);
       if (!existing) {
         res.status(404).json({ error: "Memory item not found" });
@@ -657,7 +657,7 @@ export function memoryRoutes(db: Db) {
   router.get("/companies/:companyId/memory/:id/versions", async (req, res) => {
     const companyId = req.params.companyId as string;
     const id = req.params.id as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const item = await svc.getById(companyId, id);
     if (!item) {
       res.status(404).json({ error: "Memory item not found" });
@@ -670,7 +670,7 @@ export function memoryRoutes(db: Db) {
   router.post("/companies/:companyId/memory/:id/draft", async (req, res) => {
     const companyId = req.params.companyId as string;
     const id = req.params.id as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const actor = getActorInfo(req);
     const { content } = req.body;
     if (!content || typeof content !== "string") {
@@ -699,7 +699,7 @@ export function memoryRoutes(db: Db) {
   router.post("/companies/:companyId/memory/:id/publish", async (req, res) => {
     const companyId = req.params.companyId as string;
     const id = req.params.id as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     // R5 (#199): publishing a draft marks a version `approved` and swaps the item's
     // current content — an approval decision on this memory item — so it needs the same
     // authority as the version-approve route, for the item's layer/dept (Codex #201 P1).
@@ -747,7 +747,7 @@ export function memoryRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     const id = req.params.id as string;
     const versionId = req.params.versionId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const existing = await svc.getById(companyId, id);
     if (!existing) {
       res.status(404).json({ error: "Memory item not found" });
@@ -794,7 +794,7 @@ export function memoryRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     const id = req.params.id as string;
     const versionId = req.params.versionId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const existing = await svc.getById(companyId, id);
     if (!existing) {
       res.status(404).json({ error: "Memory item not found" });
@@ -839,7 +839,7 @@ export function memoryRoutes(db: Db) {
   router.post("/companies/:companyId/memory/:id/restore", async (req, res) => {
     const companyId = req.params.companyId as string;
     const id = req.params.id as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     // R5 (#199): restore sets the item's status → "approved", so it requires the same
     // approval authority as the approve route, for the item's layer/dept. Without this
     // a non-founder could write a domain item as `status:"archived"` (which the create
@@ -888,7 +888,7 @@ export function memoryRoutes(db: Db) {
   router.post("/companies/:companyId/memory/:id/touch", async (req, res) => {
     const companyId = req.params.companyId as string;
     const id = req.params.id as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const item = await svc.touchAccessedAt(companyId, id);
     if (!item) {
       res.status(404).json({ error: "Memory item not found" });
@@ -904,7 +904,7 @@ export function memoryRoutes(db: Db) {
       try {
         const companyId = req.params.companyId as string;
         const id = req.params.id as string;
-        assertCompanyAccess(req, companyId);
+        await assertCompanyAccess(db, req, companyId);
         const moveBodySchema = z.object({
           folderPath: z.string().min(1).max(512),
         });
@@ -937,7 +937,7 @@ export function memoryRoutes(db: Db) {
       try {
         const companyId = req.params.companyId as string;
         const id = req.params.id as string;
-        assertCompanyAccess(req, companyId);
+        await assertCompanyAccess(db, req, companyId);
         const parsed = z.object({ pinned: z.boolean() }).safeParse(req.body);
         if (!parsed.success) {
           res.status(400).json({ error: parsed.error.flatten() });
@@ -961,7 +961,7 @@ export function memoryRoutes(db: Db) {
       try {
         const companyId = req.params.companyId as string;
         const id = req.params.id as string;
-        assertCompanyAccess(req, companyId);
+        await assertCompanyAccess(db, req, companyId);
         const bodySchema = z.object({
           newLayer: z.enum(["identity", "domain", "active_context", "working"]),
           departmentId: z.string().nullable().optional(),
@@ -1060,7 +1060,7 @@ export function memoryRoutes(db: Db) {
   router.post("/companies/:companyId/memory/:id/reindex", async (req, res) => {
     const companyId = req.params.companyId as string;
     const id = req.params.id as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     // Board-only (P2, Codex): assertRole is a no-op for agent actors (rbac.ts
     // returns early for type==="agent"), so without assertBoard any company agent
     // key could drive re-index. This is a founder/team_lead UI action.
@@ -1141,7 +1141,7 @@ export function memoryRoutes(db: Db) {
    */
   router.post("/companies/:companyId/memory/reindex-failed", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     // Board-only (P2, Codex): block agent keys — assertRole no-ops for agents.
     assertBoard(req);
     await assertRole(db, req, companyId, "founder");
@@ -1256,7 +1256,7 @@ export function memoryRoutes(db: Db) {
    */
   router.post("/companies/:companyId/memory/reindex-all", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     // Board-only (P2, Codex): block agent keys — assertRole no-ops for agents.
     assertBoard(req);
     await assertRole(db, req, companyId, "founder");

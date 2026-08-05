@@ -40,7 +40,7 @@ Decisions made during product design and development. Do not relitigate unless e
 | 17 | Tasks don't care who does them | Same task model for humans and agents. Experience adapts. |
 | 18 | Agents can only self-transition: todo → in_progress → in_review | Only humans mark done/cancelled. Deliberate control point. |
 | 18A | Decision #18 is superseded by Decision #109 (2026-07-11) | Review-required remains the safe default; explicitly governed tasks may allow agent completion under policy, autonomy, and structured acceptance criteria. |
-| 19 | Drizzle only, no raw SQL | Matches Paperclip patterns. `pnpm db:generate` for all migrations. |
+| 19 | Drizzle only, no raw SQL | Matches Paperclip patterns. `pnpm db:generate` for all schema DDL. Narrow C14 exception: idempotency guards + data-only backfills may be hand-appended post-generation (e.g. 0189/0195), always idempotent; schema DDL is never hand-authored. |
 | 20 | ~~Sub-goals limited to one level deep~~ **(SUPERSEDED 2026-05-25)** | Superseded by the multi-parent goals model — goals form a freely-nested, multi-parent DAG; integrity (cycles + child⊆parent scope) enforced on write. See `docs/superpowers/plans/2026-05-25-threads-goals-followup.md` B0. |
 | 21 | Task dependencies use a separate `task_dependencies` table, not parentId | parentId = subtasks (hierarchy). Dependencies = blocking relationships (different concept). Separate table, separate logic. |
 | 22 | Cancelled dependency notifies but does NOT auto-cancel dependents | Too aggressive. Founder decides what to do with orphaned tasks. |
@@ -838,6 +838,18 @@ The plugin worker sandbox (`server/src/services/plugin-sandbox.ts`,
   container sandbox, or a mandatory egress proxy) — it is not fixable with an in-process
   patch and is explicitly **out of scope** for the in-process sandbox. Tracked as separate
   infra work.
+
+**Cloud enforcement amendment (2026-08-03).** Because this worker model is not
+a tenant boundary, `cloud_auth` must not execute any host-process plugin worker,
+including a plugin whose mutable trust tier is `core`. Activation is rejected at
+the lifecycle boundary and independently before worker registration and
+`child_process.fork()`. Executable plugin UI, bridge, and stream surfaces are
+also deployment-gated independently of persisted status, so a stale `ready` row
+cannot execute during boot reconciliation. The stable persisted/HTTP reason is
+`PLUGIN_WORKER_BLOCKED_IN_CLOUD`; there is no operator override. Self-hosted
+`local_trusted` and `authenticated` behavior remains unchanged. Agent gVisor
+does not cover plugin workers. See
+`docs/guides/cloud-plugin-execution.md`.
 
 ## Decision #104 — Optimistic concurrency for agent updates: optional `updatedAt` token → 409 (2026-06-25)
 
@@ -1786,3 +1798,45 @@ the event shape covers them); tool-count budgeting.
 `server/src/services/cli-spawn-safety.ts`,
 `packages/db/src/schema/company_mcp_connectors.ts`. Plan:
 `docs/aoa/plans/2026-07-23-mcp-connectors-foundation-byo.md`.
+
+## Decision #117 — Execution-target registry, hardened gVisor sandbox, route-by-credential, per-org concurrency clamp (multi-tenant cloud Phase 5, 2026-07-30)
+
+**Status:** Locked 2026-07-30 (implemented, see Plan). Depends on Phase 1 (`organizations` / `organization_id`, merged first) and Phase 4 (unified provider-credential resolver, merged first). Self-hosted single-tenant is unchanged — every mechanism below is opt-in / default-off and falls back to the pre-Phase-5 local driver when unconfigured.
+
+1. **`execution_targets` is a new tenant-scoped fleet-inventory table**, distinct from the company-scoped `environments` table (which gains a nullable `execution_target_id` FK; `null` = route by credential). `organization_id` is a real nullable FK to `organizations.id` (`ON DELETE CASCADE`) — nullable rows (`organization_id = NULL`) are system/shared targets: the pooled gVisor row and the seeded `control-plane` row. The FK is `ON DELETE CASCADE`, not `SET NULL`: `NULL organization_id` is the security-defining 'system/shared, operator-trusted' signal, so `SET NULL` would silently promote a deleted tenant's dedicated targets into trusted shared infra — cascading them away is the only safe behavior (see `packages/db/src/schema/execution_targets.ts` and migration 0196). Uniqueness is `(organization_id, slug)` with `NULLS NOT DISTINCT` (mirrors `provider_quota_windows`) so the boot seed is idempotent across restarts instead of duplicating a NULL-org row every time. `ensureControlPlaneExecutionTarget` seeds the `control-plane` row (`kind = local_host`, `trust_class = local_trusted`) at boot, keystoning back-compat for every existing self-hosted install that already sets `AOA_EXECUTION_TARGET_ID=control-plane`.
+
+2. **gVisor is a hardened profile layered onto the existing `sandbox-docker` transport, not a new transport.** `buildDockerRunArgs` (`packages/adapter-utils/src/execution-target.ts`) gained an opt-in, default-off `runtime`/`isolation` profile: `--runtime=runsc`, `--user`, `--cap-drop=ALL`, `--read-only`, `--tmpfs`, `--memory`/`--memory-swap`, `--cpus`, `--pids-limit`, `--security-opt no-new-privileges`(+ optional `seccomp=`), `--ulimit nofile=`, `--ipc private`. Leaving `runtime`/`isolation` unset reproduces the exact pre-Phase-5 arg list byte-for-byte (locked by an exact-array regression test) — a self-hosted `sandbox-docker` environment is unaffected. `resolveGvisorSandboxTarget` (`server/src/services/environment-runtime.ts`) maps a `driver: "sandbox", config.provider: "gvisor"` environment to this hardened profile with sane defaults (`user 1000:1000`, `capDropAll`/`noNewPrivileges`/`readOnlyRootfs` on, `2g`/`2 cpus`/`512 pids`, `network: "none"`); a `createGvisorSandboxRuntimeProvider` (`server/src/services/gvisor-sandbox-provider.ts`) registers the pool-transport seam (peer to the existing E2B provider) for a future multi-worker pool client — the single-box beta runs the hardened `sandbox-docker` path directly, no pool client is implemented yet.
+
+**2026-08-02 fail-closed clarification:** direct `sandbox-docker`/`runsc` execution remains available only to self-hosted single-tenant installs. On shared `cloud_auth` infrastructure, pooled and dedicated targets are registry-only and fail closed before adapter execution until the worker pool exists and Gate-B hardware validation passes. The control-plane host is not a tenant worker.
+
+This clarification supersedes the earlier “single-box beta” wording below for
+hosted deployments. A tenant-authored `runtime: "runsc"` value is configuration,
+not worker-plane provenance: the cloud guard refuses every local Docker-family
+target unless the explicit process-wide unsafe override is enabled. The sink also
+forces `network: none`, removal, and fixed resource ceilings as defense in depth.
+Organization capacity is claimed atomically under a transaction advisory lock and
+completion dispatches the oldest queued work across the Organization; an unresolved
+Company-to-Organization edge fails closed in `cloud_auth` instead of bypassing the cap.
+The same refusal applies before workspace provision/cleanup/jobs and local runtime
+services, including archive and startup paths; guarding only the final adapter
+process is insufficient because these commands are independently tenant-authored.
+At startup, persisted local runtime-service PIDs are matched against their OS
+start identity before process-group termination and are reconciled before desired
+services can restart. A live PID that cannot be verified or confirmed dead blocks
+`cloud_auth` boot and remains tracked for operator remediation; PID reuse is never
+handled with a blind kill. Generic project-workspace metadata may not write the
+server-reserved `runtimeConfig` auto-start envelope.
+
+3. **SSRF fix: `--add-host host.docker.internal:host-gateway` becomes conditional.** It was previously emitted unconditionally by every `sandbox-docker` run, which is a route from any sandboxed container straight to the control-plane host. It is now emitted only when the callback bridge is actually running **and** the target explicitly opts in via `allowHostGateway` (default `false`). This ships in this PR for every `sandbox-docker` run, not only gVisor — closing an existing SSRF-adjacent route in the pre-Phase-5 code, not something newly introduced by gVisor.
+
+4. **Route-by-credential: `execution-target-resolver.ts` replaces the old hard-throw** that previously rejected any run needing a dedicated target it couldn't resolve. `chooseExecutionTargetRow` reads the Phase 4 credential-resolution seam `{ credentialKind, executionTargetSlug }` verbatim (it does not re-query `provider_credentials`): a `company_api_key` (business key) run routes to the org's `pooled_gvisor` target (or falls back to the local driver if no pooled target is configured — this local fallback also occurs on SHARED infra when the org has no pooled target, not only self-hosted; the D1 guard `assertUnsandboxedMultitenantAllowed` (`server/src/services/unsandboxed-multitenant-guard.ts`) now EXISTS and FAILS CLOSED on this: on `cloud_auth` it refuses the local (and non-`runsc` docker) fallback unless `AOA_ALLOW_UNSANDBOXED_MULTITENANT=1`, so a shared-infra `company_api_key` run no longer silently runs locally — it is no longer merely tracked); a `personal_subscription` run routes to the specific `dedicated_worker` (or `local_host`) target whose slug matches the credential's bound `AOA_EXECUTION_TARGET_ID`, and **fails closed** (throws) if no matching target is active — a personal-subscription run never silently falls back to a different tenant's dedicated worker or the shared pool. An explicit `environments.execution_target_id` pin always wins over credential-kind routing, and is itself checked against a personal-subscription's bound slug before being honored.
+
+5. **Per-organization concurrency clamp layers on top of the existing per-agent clamp**, not instead of it — `orgAvailableSlots`/`normalizeOrgConcurrencyCap` (`server/src/services/org-concurrency.ts`) gate `startNextQueuedRunForAgent` on `min(perAgentSlots, perOrgSlots)`. `ORG_MAX_CONCURRENT_RUNS_DEFAULT = 8`, `ORG_MAX_CONCURRENT_RUNS_MAX = 200` (mirrors the D5 per-agent pattern in spirit, independent constants — do not conflate with `HEARTBEAT_MAX_CONCURRENT_RUNS_*`). A company with no `organization_id` (should not occur once Phase 1 backfills it, but defensively) stays unclamped by the org gate — only the per-agent clamp applies, so self-hosted/local behavior is unchanged either way.
+
+6. **Egress posture — stated plainly, not oversold.** `--network none` is the default and only *safe* posture the app layer guarantees. A pooled run that needs the provider API must run on a **filtered** `bridge`; filtering is a **worker-image** responsibility (a `DOCKER-USER` iptables/nftables policy or egress proxy denying RFC1918, `169.254.0.0/16` incl. the `169.254.169.254` cloud-metadata address, and the control-plane CIDR, allowing only provider API hosts + package registries) — **the app layer does not and will not filter egress**. The conditional `--add-host` fix (#3 above) removes one SSRF route; it is not egress filtering and does not by itself make `bridge` safe. **This firewall has not been validated on real hardware as of this decision.** Task 0's `runsc` + firewall validation spike (`docs/aoa/guides/gvisor-worker-image.md`) is a **pending Gate-B deployment step, not run during this PR** — the guide is a specification with an explicit "SPEC ONLY — NOT YET VALIDATED ON HARDWARE" banner and four UNRUN checkpoints (A: runsc present without nested virt; B: pinned `claude`/`codex` CLIs survive under `runsc`; C: the hardened flag set doesn't starve Node; D: the filtered `bridge` reaches the provider API but not metadata/RFC1918/control-plane). **A cloud pool on `bridge` is unshippable until checkpoint D passes on a real worker.**
+
+**Self-hosted single-tenant is unchanged.** No self-hosted install populates `execution_targets` beyond the auto-seeded `control-plane` row; `resolveExecutionTargetForRun` falls back to the pre-Phase-5 local driver whenever no pool/dedicated target is configured; `runtime`/`isolation` default to unset so `buildDockerRunArgs` reproduces the exact legacy arg list.
+
+**Deferred:** the real multi-worker `GvisorPoolClient` implementation + worker-token rotation (Task 13 ships a rotatable per-target credential — a SHA-256 `worker_token_hash`, migration 0194; the plaintext is returned once at registration and the row id is no longer a bearer credential). The multi-worker `GvisorPoolClient` that consumes it remains deferred; the Task 0 hardware spike itself (Gate-B, pending); generalizing the egress firewall beyond the documented iptables/nftables sketch to a maintained, tested artifact.
+
+**Key files:** `packages/db/src/schema/execution_targets.ts`, `packages/adapter-utils/src/execution-target.ts`, `packages/adapter-utils/src/types.ts`, `server/src/services/environment-runtime.ts`, `server/src/services/gvisor-sandbox-provider.ts`, `server/src/services/execution-target-resolver.ts`, `server/src/services/heartbeat-execution-target.ts`, `server/src/services/org-concurrency.ts`, `server/src/services/org-spend.ts`, `server/src/services/execution-targets.ts`, `server/src/routes/execution-targets.ts`, `server/src/routes/org-spend.ts`, `ui/src/components/settings/sections/EnvironmentsSection.tsx`, `ui/src/components/settings/sections/environment-target-form.ts`. Plan: `docs/aoa/plans/2026-07-29-aoa-mt-phase5-execution-gvisor.md`. Guide: `docs/aoa/guides/gvisor-worker-image.md`.

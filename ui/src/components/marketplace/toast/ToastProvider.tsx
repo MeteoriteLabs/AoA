@@ -4,7 +4,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { useOperationStatus } from "@/hooks/useOperationStatus";
 import { useToast, type ToastTone } from "@/context/ToastContext";
 
-export type InstallToastStatus = "installing" | "success" | "failure";
+export type InstallToastStatus = "installing" | "success" | "failure" | "blocked";
 
 export interface InstallToastInput {
   status: InstallToastStatus;
@@ -36,7 +36,10 @@ interface InstallToastContextValue {
 export const InstallToastContext = createContext<InstallToastContextValue | null>(null);
 
 function statusToTone(status: InstallToastStatus): ToastTone {
-  return status === "installing" ? "loading" : status === "success" ? "success" : "error";
+  if (status === "installing") return "loading";
+  if (status === "success") return "success";
+  if (status === "blocked") return "info";
+  return "error";
 }
 
 function toAction(input: { actionLabel?: string; actionTo?: string }) {
@@ -80,6 +83,19 @@ function OperationTracker({
         message:
           operation.requestedMessage ??
           `Request submitted - a founder will review ${operation.itemName}`,
+      });
+    } else if (
+      data.status === "failure" &&
+      data.errorCode === "PLUGIN_WORKER_BLOCKED_IN_CLOUD"
+    ) {
+      resolvedRef.current = true;
+      onResolve(operation, {
+        status: "blocked",
+        message: `${operation.itemName} is blocked on AoA Cloud`,
+        detail:
+          "The plugin was not installed because executable manifests and workers require isolation. Self-hosting is the current recovery path.",
+        actionLabel: "Read policy",
+        actionTo: data.errorDocs ?? "/docs/guides/cloud-plugin-execution",
       });
     } else if (data.status === "failure") {
       resolvedRef.current = true;

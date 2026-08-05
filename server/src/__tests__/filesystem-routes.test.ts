@@ -28,7 +28,7 @@ const nonAdminBoard = {
   isInstanceAdmin: false,
 };
 const localImplicit = { ...nonAdminBoard, source: "local_implicit" };
-const instanceAdmin = { ...nonAdminBoard, isInstanceAdmin: true };
+const instanceAdmin = { ...nonAdminBoard, operator: true, isInstanceAdmin: true };
 
 describe("filesystem routes — instance admin gate", () => {
   it("403 browse for non-admin board user", async () => {

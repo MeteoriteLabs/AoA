@@ -44,6 +44,7 @@ function makeDeptAgentState(dept: DeptRow): DeptAgentState {
 
 export type CreateAgentsProps = {
   companyId: string;
+  deploymentMode?: "local_trusted" | "authenticated" | "cloud_auth";
   onDone: () => void;
 };
 
@@ -69,7 +70,8 @@ export type CreateAgentsProps = {
  * the existing marketplace install toast, same as everywhere else installs
  * are triggered from). Skippable at any time.
  */
-export function CreateAgents({ companyId, onDone }: CreateAgentsProps) {
+export function CreateAgents({ companyId, deploymentMode, onDone }: CreateAgentsProps) {
+  const cloudMode = deploymentMode === "cloud_auth";
   const [departments, setDepartments] = useState<DeptRow[]>([]);
   const [deptState, setDeptState] = useState<Record<string, DeptAgentState>>({});
   const [loading, setLoading] = useState(true);
@@ -113,6 +115,10 @@ export function CreateAgents({ companyId, onDone }: CreateAgentsProps) {
   }, [companyId]);
 
   useEffect(() => {
+    if (cloudMode) {
+      setCatalogItems([]);
+      return;
+    }
     let cancelled = false;
     marketplaceApi
       .getCatalog()
@@ -134,7 +140,7 @@ export function CreateAgents({ companyId, onDone }: CreateAgentsProps) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [cloudMode]);
 
   function updateDept(deptId: string, patch: Partial<DeptAgentState>) {
     setDeptState((prev) => (prev[deptId] ? { ...prev, [deptId]: { ...prev[deptId], ...patch } } : prev));
@@ -179,9 +185,9 @@ export function CreateAgents({ companyId, onDone }: CreateAgentsProps) {
           adapterConfig: {},
           runtimeConfig: {
             heartbeat: {
-              enabled: true,
+              enabled: !cloudMode,
               intervalSec: 3600,
-              wakeOnDemand: true,
+              wakeOnDemand: !cloudMode,
               cooldownSec: 10,
               maxConcurrentRuns: 1,
             },
@@ -190,6 +196,11 @@ export function CreateAgents({ companyId, onDone }: CreateAgentsProps) {
         agentId = (agent as AgentRow).id;
       }
 
+      // The create endpoint intentionally starts agents idle. In cloud, pause
+      // before assignment so an assignment wake cannot race E2B setup.
+      if (cloudMode) {
+        await agentsApi.pause(agentId!, companyId);
+      }
       await projectsApi.assignAgent(dept.id, agentId!, companyId);
       markCreated(dept.id);
     } catch (e) {
@@ -211,7 +222,9 @@ export function CreateAgents({ companyId, onDone }: CreateAgentsProps) {
               Staff your <GradientText>departments</GradientText>
             </>
           }
-          subtitle="Give each department a worker agent — create your own, or pick one from the marketplace."
+          subtitle={cloudMode
+            ? "Create department agents in a paused state. Attach an E2B environment before enabling them on AoA Cloud."
+            : "Give each department a worker agent — create your own, or pick one from the marketplace."}
         />
       </Reveal>
 
@@ -252,19 +265,21 @@ export function CreateAgents({ companyId, onDone }: CreateAgentsProps) {
                     >
                       Create your own
                     </button>
-                    <button
-                      type="button"
-                      className={cn(
-                        "rounded-md border px-2.5 py-1 text-xs",
-                        state.mode === "marketplace"
-                          ? "border-brand bg-card-2 text-text"
-                          : "border-border-strong text-dim hover:bg-card-2/60",
-                      )}
-                      disabled={state.status === "creating"}
-                      onClick={() => updateDept(dept.id, { mode: "marketplace" })}
-                    >
-                      Pick from marketplace
-                    </button>
+                    {!cloudMode && (
+                      <button
+                        type="button"
+                        className={cn(
+                          "rounded-md border px-2.5 py-1 text-xs",
+                          state.mode === "marketplace"
+                            ? "border-brand bg-card-2 text-text"
+                            : "border-border-strong text-dim hover:bg-card-2/60",
+                        )}
+                        disabled={state.status === "creating"}
+                        onClick={() => updateDept(dept.id, { mode: "marketplace" })}
+                      >
+                        Pick from marketplace
+                      </button>
+                    )}
                   </div>
 
                   {state.mode === "form" && (
@@ -335,7 +350,7 @@ export function CreateAgents({ companyId, onDone }: CreateAgentsProps) {
                     </div>
                   )}
 
-                  {state.mode === "marketplace" && (
+                  {!cloudMode && state.mode === "marketplace" && (
                     <div className="mt-3 space-y-2">
                       {catalogItems.length === 0 && (
                         <p className="text-xs text-dim">No agents or teams available in the catalog.</p>

@@ -1,6 +1,14 @@
 import type { PostAuthJourneyResult, PendingInvitation } from "@armyofagents/shared";
 
 export type JourneyInput = {
+  /**
+   * Organization ids the user actively belongs to (org-first — Phase 2 Task
+   * 9). Optional: callers that only reason in terms of company memberships
+   * (e.g. self-hosted single-tenant call sites/tests that predate the
+   * Organization tenant layer) may omit it; an absent/empty list behaves
+   * exactly as before this field was introduced.
+   */
+  organizationMemberships?: string[];
   /** companyIds the user is already an active member of. */
   memberships: string[];
   /**
@@ -14,18 +22,23 @@ export type JourneyInput = {
 };
 
 /**
- * Pure post-auth journey resolver (RB7/RB9). Precedence:
- *   membership → returning (invitations still surfaced, never auto-routed)
+ * Pure post-auth journey resolver (RB7/RB9, org-first per Phase 2 Task 9).
+ * Precedence:
+ *   organization membership OR company membership → returning (invitations
+ *     still surfaced, never auto-routed). An org membership alone — zero
+ *     company memberships, e.g. a fresh multi-tenant org owner who hasn't
+ *     created a Company yet — is enough to be "returning", not "founder".
  *   else open invitation → invited (deep-linked company preferred, else first)
  *   else founder
  * The invite token is never returned (revC RC3); it lives in a server-side
  * handoff consumed at accept time.
  */
 export function resolvePostAuthJourney(input: JourneyInput): PostAuthJourneyResult {
-  if (input.memberships.length > 0) {
+  const hasOrgMembership = (input.organizationMemberships?.length ?? 0) > 0;
+  if (hasOrgMembership || input.memberships.length > 0) {
     return {
       journey: "returning",
-      targetCompanyId: input.memberships[0],
+      targetCompanyId: input.memberships[0] ?? null,
       pendingInvitations: input.pendingInvitations,
       inviteToken: null,
     };

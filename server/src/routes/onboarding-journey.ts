@@ -9,8 +9,10 @@ import {
   onboardingProgress,
 } from "@armyofagents/db";
 import { and, desc, eq, gt, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
-import type { PostAuthJourneyResult, PendingInvitation } from "@armyofagents/shared";
+import type { PostAuthJourneyResult, PendingInvitation, OrganizationRole } from "@armyofagents/shared";
 import { resolvePostAuthJourney } from "../services/post-auth-journey.js";
+import { organizationAccessService, orgRoleCan } from "../services/organization-access.js";
+import { accessibleCompanyIdsForActor } from "./authz.js";
 
 const TEAM_INVITE_KEY = "teamInvite";
 
@@ -21,10 +23,13 @@ function roleFromInviteDefaults(defaults: Record<string, unknown> | null | undef
 }
 
 /**
- * Resolve the post-auth journey for a user (A5 + RB7/RB9).
+ * Resolve the post-auth journey for a user (A5 + RB7/RB9, org-first per
+ * Phase 2 Task 9).
  *
- * - `returning` if the user has any active company membership, or if an
- *   instance admin can see an existing company through the global admin bypass.
+ * - `returning` if the user has any active Organization membership OR any
+ *   active company membership, or if an instance admin can see an existing
+ *   company through the global admin bypass. An org membership alone (zero
+ *   company memberships yet — e.g. a fresh multi-tenant org owner) is enough.
  * - `invited` if the user has an open, non-rejected human join_request they made
  *   (or, only when their email is verified, one snapshotting their email), OR —
  *   tokenless entry — an OPEN company-join invite matching their verified email
@@ -41,6 +46,14 @@ export async function getJourneyForUser(
   db: Db,
   args: {
     userId: string;
+    /**
+     * Company ids already authorized for this actor. In cloud_auth this is the
+     * active company-membership ∩ active owning-Organization set built by
+     * actorMiddleware. `undefined` is the canonical unscoped sentinel for a
+     * self-hosted local/instance-admin actor. Keeping this required prevents
+     * journey routing from drifting away from the authorization boundary again.
+     */
+    authorizedCompanyIds: readonly string[] | undefined;
     deepLinkCompanyId?: string | null;
     isInstanceAdmin?: boolean;
   },
@@ -54,6 +67,15 @@ export async function getJourneyForUser(
   const email = user?.email ?? null;
   const emailVerified = Boolean(user?.emailVerified);
 
+  const orgAccess = organizationAccessService(db);
+  // Sequential (not Promise.all) — deliberately: this route isn't a hot path,
+  // and a plain query builder thenable racing an async-function-wrapped
+  // thenable inside Promise.all resolves in a JS-engine-dependent order (the
+  // async wrapper schedules its PromiseResolveThenableJob a tick earlier),
+  // which is exactly the kind of implicit ordering the seqDb test mock
+  // (server/src/__tests__/onboarding-journey-route.test.ts) must NOT depend
+  // on. Sequential awaits keep the call order simple and match every other
+  // query in this function.
   const memberships = await db
     .select({ companyId: companyMemberships.companyId })
     .from(companyMemberships)
@@ -64,6 +86,8 @@ export async function getJourneyForUser(
         eq(companyMemberships.status, "active"),
       ),
     );
+  const orgMembershipRows = await orgAccess.listOrgMemberships(args.userId);
+  const organizationMemberships = orgMembershipRows.map((r) => r.organizationId);
 
   // Match the user's own pending human requests, plus (verified email only) any
   // pending human request snapshotting their verified email.
@@ -157,7 +181,14 @@ export async function getJourneyForUser(
     (a, b) => a.createdAt.localeCompare(b.createdAt) || a.companyId.localeCompare(b.companyId),
   );
 
-  let returningCompanyIds = memberships.map((membership) => membership.companyId);
+  const membershipCompanyIds = memberships.map((membership) => membership.companyId);
+  let returningCompanyIds = membershipCompanyIds;
+  if (args.authorizedCompanyIds !== undefined) {
+    const authorizedCompanyIds = new Set(args.authorizedCompanyIds);
+    returningCompanyIds = membershipCompanyIds.filter((companyId) =>
+      authorizedCompanyIds.has(companyId),
+    );
+  }
   if (returningCompanyIds.length === 0 && args.isInstanceAdmin) {
     const adminVisibleCompanies = await db
       .select({ companyId: companies.id })
@@ -167,6 +198,7 @@ export async function getJourneyForUser(
   }
 
   const result = resolvePostAuthJourney({
+    organizationMemberships,
     memberships: returningCompanyIds,
     pendingInvitations,
     deepLinkCompanyId: args.deepLinkCompanyId ?? null,
@@ -199,6 +231,36 @@ export async function getJourneyForUser(
     result.resumeFirstRunCompanyId = resume?.companyId ?? null;
   }
 
+  // Empty-Lobby strand resume (Fix 3b): a `returning` founder who is an
+  // OWNER/ADMIN of an org but holds ZERO company memberships created the org
+  // step then never made a company (e.g. a reload minted/kept the org, then they
+  // landed on an empty Lobby). Route them back into company creation UNDER that
+  // org. Computed purely from rows already fetched above — NO extra query, NO
+  // write (the ghost-org fix is client durability; no owner-dedup on
+  // POST /organizations). Scoped to create-capable roles so a cross-invited
+  // `member` (P5) — who anyway always holds a company membership, making
+  // returningCompanyIds non-empty for them — never triggers it, and so we never
+  // send a user to a create-company screen they'd 403 on. Mutually exclusive with
+  // the resumeFirstRunCompanyId branch above (that requires returningCompanyIds
+  // non-empty), so the query sequence is unchanged.
+  if (result.journey === "returning" && returningCompanyIds.length === 0) {
+    // Deterministic pick: `listOrgMemberships` has no ORDER BY, so when the user
+    // owns MORE THAN ONE create-capable zero-company org, choose by a stable key
+    // rather than array order — earliest membership `createdAt` first (a fresh
+    // owner org's membership createdAt is effectively its org-creation time), then
+    // the lexicographically smallest `organizationId` as the final tiebreak (robust
+    // when createdAt ties or is absent). `.filter` returns a fresh array, so the
+    // `.sort` never mutates `orgMembershipRows`.
+    const creatable = orgMembershipRows
+      .filter((row) => orgRoleCan(row.role as OrganizationRole, "company:create"))
+      .sort((a, b) => {
+        const at = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const bt = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return at - bt || a.organizationId.localeCompare(b.organizationId);
+      })[0];
+    result.resumeCompanyCreationOrgId = creatable?.organizationId ?? null;
+  }
+
   return result;
 }
 
@@ -213,6 +275,7 @@ export function onboardingJourneyRoutes(db: Db): Router {
     }
     const result = await getJourneyForUser(db, {
       userId: actor.userId,
+      authorizedCompanyIds: accessibleCompanyIdsForActor(actor),
       isInstanceAdmin: actor.isInstanceAdmin === true,
     });
     res.json(result);

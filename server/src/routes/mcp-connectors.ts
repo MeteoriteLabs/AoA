@@ -610,7 +610,7 @@ export function mcpConnectorRoutes(
   router.get("/companies/:companyId/mcp-connectors", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertBoard(req);
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const rows = await svc.list(companyId);
     res.json(
       rows.map((row) => {
@@ -659,13 +659,11 @@ export function mcpConnectorRoutes(
   // ⚠ Task 14 (UI): `consentExpiresAt` is present so the shelf can REFETCH before
   // opening the install dialog. Tokens live 15 minutes; rendering a dialog from a
   // shelf loaded an hour ago will 400 with `expired`.
-  router.get(
-    "/companies/:companyId/mcp-connectors/catalog",
-    async (req, res) => {
-      const companyId = req.params.companyId as string;
-      assertBoard(req);
-      assertCompanyAccess(req, companyId);
-      await assertRole(db, req, companyId, "founder");
+  router.get("/companies/:companyId/mcp-connectors/catalog", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertBoard(req);
+    await assertCompanyAccess(db, req, companyId);
+    await assertRole(db, req, companyId, "founder");
 
       const nowMs = Date.now();
       const { entries, stale } = await connectorCatalog.load(nowMs);
@@ -854,7 +852,7 @@ export function mcpConnectorRoutes(
     async (req, res) => {
       const companyId = req.params.companyId as string;
       assertBoard(req);
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       await assertRole(db, req, companyId, "founder");
 
       const { entryId, consentToken } = req.body as z.infer<
@@ -956,7 +954,7 @@ export function mcpConnectorRoutes(
     async (req, res) => {
       const companyId = req.params.companyId as string;
       assertBoard(req);
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       await assertRole(db, req, companyId, "founder");
 
       const body = req.body as z.infer<typeof createConnectorSchema>;
@@ -1041,7 +1039,7 @@ export function mcpConnectorRoutes(
       const companyId = req.params.companyId as string;
       const id = req.params.id as string;
       assertBoard(req);
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       await assertRole(db, req, companyId, "founder");
 
       const existing = await svc.getById(id);
@@ -1145,7 +1143,7 @@ export function mcpConnectorRoutes(
       const companyId = req.params.companyId as string;
       const id = req.params.id as string;
       assertBoard(req);
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       await assertRole(db, req, companyId, "founder");
 
       const existing = await svc.getById(id);
@@ -1249,14 +1247,12 @@ export function mcpConnectorRoutes(
   );
 
   // Delete — founder only.
-  router.delete(
-    "/companies/:companyId/mcp-connectors/:id",
-    async (req, res) => {
-      const companyId = req.params.companyId as string;
-      const id = req.params.id as string;
-      assertBoard(req);
-      assertCompanyAccess(req, companyId);
-      await assertRole(db, req, companyId, "founder");
+  router.delete("/companies/:companyId/mcp-connectors/:id", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const id = req.params.id as string;
+    assertBoard(req);
+    await assertCompanyAccess(db, req, companyId);
+    await assertRole(db, req, companyId, "founder");
 
       const existing = await svc.getById(id);
       if (!existing || existing.companyId !== companyId) {
@@ -1294,7 +1290,7 @@ export function mcpConnectorRoutes(
       const companyId = req.params.companyId as string;
       const id = req.params.id as string;
       assertBoard(req);
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       await assertRole(db, req, companyId, "founder");
 
       const existing = await svc.getById(id);
@@ -1344,7 +1340,7 @@ export function mcpConnectorRoutes(
       const companyId = req.params.companyId as string;
       const id = req.params.id as string;
       assertBoard(req);
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       await assertRole(db, req, companyId, "founder");
 
       const deploymentMode = loadConfig().deploymentMode;

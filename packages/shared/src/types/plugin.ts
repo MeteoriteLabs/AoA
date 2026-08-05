@@ -1,5 +1,6 @@
 import type {
   PluginStatus,
+  PluginStatusReasonCode,
   PluginCategory,
   PluginCapability,
   PluginUiSlotType,
@@ -44,7 +45,8 @@ export interface PluginJobDeclaration {
 
 /**
  * Declares a webhook endpoint the plugin can receive.
- * Route: `POST /api/plugins/:pluginId/webhooks/:endpointKey`
+ * Route: `POST /api/plugins/:pluginId/webhooks/:endpointKey`, where
+ * `pluginId` is the tenant-specific `plugins.id` UUID (not the manifest key).
  *
  * @see PLUGIN_SPEC.md §18 — Webhooks
  */
@@ -283,6 +285,8 @@ export interface PluginRecord {
   packagePath: string | null;
   /** Most recent error message, or operator-provided disable reason. */
   lastError: string | null;
+  /** Stable policy/error reason; null for ordinary runtime failures. */
+  statusReasonCode: PluginStatusReasonCode | null;
   /** Trust tier for sandbox capability gating. */
   trustTier: PluginTrustTier;
   /** Timestamp when the plugin was first installed. */
@@ -444,7 +448,13 @@ export interface PluginJobRunRecord {
   /** What triggered this run. */
   trigger: "schedule" | "manual" | "retry";
   /** Current run status. */
-  status: "pending" | "queued" | "running" | "succeeded" | "failed" | "cancelled";
+  status:
+    | "pending"
+    | "queued"
+    | "running"
+    | "succeeded"
+    | "failed"
+    | "cancelled";
   /** Run duration in milliseconds. */
   durationMs: number | null;
   /** Error message if the run failed. */
@@ -509,6 +519,7 @@ export interface InstallPlugin {
 export interface UpdatePluginStatus {
   status: PluginStatus;
   lastError?: string | null;
+  statusReasonCode?: PluginStatusReasonCode | null;
 }
 
 /** Input for creating or fully replacing a plugin's instance configuration. */

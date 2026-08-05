@@ -1,9 +1,10 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { errorHandler } from "../middleware/index.js";
 import { feedbackRoutes } from "../routes/feedback.js";
 import { forbidden, notFound } from "../errors.js";
+import { setDeploymentMode } from "../config/deployment-mode.js";
 
 const mockVotesService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -95,6 +96,9 @@ function boardActor(
     userId: overrides.userId ?? USER_A,
     source: overrides.source ?? "session",
     companyIds: overrides.companyIds ?? [COMPANY_A],
+    // Operator-plane authority mirrors a genuine operator (actorMiddleware mints
+    // operator alongside isInstanceAdmin); the operator-plane routes read it.
+    operator: overrides.isInstanceAdmin ?? false,
     isInstanceAdmin: overrides.isInstanceAdmin ?? false,
   };
 }
@@ -267,7 +271,7 @@ describe("feedback routes — GET /issues/:id/feedback-votes", () => {
     const res = await request(app).get("/api/issues/VQA-3/feedback-votes");
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("VQA-3");
+    expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("VQA-3", [COMPANY_A]);
     expect(mockVotesService.listVotes).toHaveBeenCalledWith({
       companyId: COMPANY_A,
       issueId: ISSUE_ID,
@@ -393,7 +397,11 @@ describe("feedback routes — DELETE /feedback-votes/:voteId", () => {
 // ── GET /feedback/exports (F.4 — admin bundle history) ───────────────────────
 
 describe("feedback routes — GET /feedback/exports", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setDeploymentMode("local_trusted");
+  });
+  afterEach(() => setDeploymentMode("local_trusted"));
 
   const sampleRow = {
     id: "export-1",
@@ -430,6 +438,15 @@ describe("feedback routes — GET /feedback/exports", () => {
     const res = await request(app).get("/api/feedback/exports");
     expect(res.status).toBe(200);
     expect(res.body).toEqual([]);
+  });
+
+  it("rejects cloud operators before reading cross-tenant export history", async () => {
+    setDeploymentMode("cloud_auth");
+    const app = createApp(boardActor({ source: "session", isInstanceAdmin: true }));
+    const res = await request(app).get("/api/feedback/exports");
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/multi-tenant/i);
+    expect(mockListExports).not.toHaveBeenCalled();
   });
 
   it("passes ?limit=3 through to listExports", async () => {

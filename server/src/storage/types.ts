@@ -38,6 +38,12 @@ export interface StorageProvider {
 
 export interface PutFileInput {
   companyId: string;
+  /**
+   * Owning organization. When present, new writes carry the `{organizationId}/{companyId}/…`
+   * tenant segment (org grouping + defense-in-depth). Optional/nullable: writers without a
+   * resolved org fall back to the legacy company-only prefix, which is still isolated.
+   */
+  organizationId?: string | null;
   namespace: string;
   originalFilename: string | null;
   contentType: string;
@@ -56,7 +62,25 @@ export interface PutFileResult {
 export interface StorageService {
   provider: StorageProviderId;
   putFile(input: PutFileInput): Promise<PutFileResult>;
+  // Backward-compatible overloads: legacy `(companyId, objectKey)` callers keep working;
+  // asset-serving routes pass the request-resolved `(organizationId, companyId, objectKey)`
+  // for cross-tenant defense-in-depth.
   getObject(companyId: string, objectKey: string): Promise<GetObjectResult>;
+  getObject(
+    organizationId: string | null,
+    companyId: string,
+    objectKey: string,
+  ): Promise<GetObjectResult>;
   headObject(companyId: string, objectKey: string): Promise<HeadObjectResult>;
+  headObject(
+    organizationId: string | null,
+    companyId: string,
+    objectKey: string,
+  ): Promise<HeadObjectResult>;
   deleteObject(companyId: string, objectKey: string): Promise<void>;
+  deleteObject(
+    organizationId: string | null,
+    companyId: string,
+    objectKey: string,
+  ): Promise<void>;
 }

@@ -6,6 +6,7 @@ import {
   ENVIRONMENT_LEASE_STATUSES,
   ENVIRONMENT_STATUSES,
 } from "../constants.js";
+import { gvisorEnvironmentConfigSchema } from "./execution-target.js";
 
 export const environmentDriverSchema = z.enum(ENVIRONMENT_DRIVERS);
 export const environmentStatusSchema = z.enum(ENVIRONMENT_STATUSES);
@@ -46,15 +47,25 @@ function rejectInvalidProviderConfig(
     return;
   }
   const config = input.config as Record<string, unknown>;
-  if (config.provider !== "e2b") return;
-  const parsed = e2bEnvironmentConfigSchema.safeParse(config);
-  if (!parsed.success) {
-    for (const issue of parsed.error.issues) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["config", ...issue.path],
-        message: issue.message,
-      });
+  if (config.provider === "e2b") {
+    const parsed = e2bEnvironmentConfigSchema.safeParse(config);
+    if (!parsed.success) {
+      for (const issue of parsed.error.issues) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["config", ...issue.path],
+          message: issue.message,
+        });
+      }
+    }
+    return;
+  }
+  if (config.provider === "gvisor") {
+    const parsed = gvisorEnvironmentConfigSchema.safeParse(config);
+    if (!parsed.success) {
+      for (const issue of parsed.error.issues) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["config", ...issue.path], message: issue.message });
+      }
     }
   }
 }
@@ -69,6 +80,7 @@ export const createEnvironmentSchema = z.object({
   envVars: z.record(z.unknown()).optional().default({}),
   connectionTarget: z.record(z.unknown()).optional().nullable(),
   target: environmentTargetSchema.optional().nullable(),
+  executionTargetId: z.string().uuid().optional().nullable(),
 }).superRefine(rejectInvalidProviderConfig);
 
 export const updateEnvironmentSchema = z.object({
@@ -81,6 +93,7 @@ export const updateEnvironmentSchema = z.object({
   envVars: z.record(z.unknown()).optional(),
   connectionTarget: z.record(z.unknown()).optional().nullable(),
   target: environmentTargetSchema.optional().nullable(),
+  executionTargetId: z.string().uuid().optional().nullable(),
 }).superRefine(rejectInvalidProviderConfig);
 
 export const probeEnvironmentSchema = z.object({

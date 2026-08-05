@@ -669,14 +669,18 @@ describe("a connector named __proto__ pollutes nothing and survives as an own pr
 describe("[inv-1] no (mode × approved × requiresSecret × hasSecret) yields active without a secret", () => {
   const BOOLS = [false, true] as const;
 
-  // DEPLOYMENT_MODES is exactly ["local_trusted", "authenticated"] — pinned so a
-  // future third mode forces this matrix to be re-read rather than silently
-  // skipping the new one.
+  // DEPLOYMENT_MODES is exactly ["local_trusted", "authenticated", "cloud_auth"]
+  // — pinned so a future fourth mode forces this matrix to be re-read rather
+  // than silently skipping the new one. cloud_auth (Phase 1 multi-tenant
+  // cloud) is a hosted, authenticated multi-tenant mode: resolveConnectorStatus
+  // treats it exactly like authenticated (its governance axis only
+  // special-cases "local_trusted", the loopback trust boundary), which is at
+  // least as restrictive as authenticated — the deliberate, safest choice.
   it("DEPLOYMENT_MODES is the real, complete set", () => {
-    expect([...DEPLOYMENT_MODES]).toEqual(["local_trusted", "authenticated"]);
+    expect([...DEPLOYMENT_MODES]).toEqual(["local_trusted", "authenticated", "cloud_auth"]);
   });
 
-  it("drives all 16 combinations through the resolver", () => {
+  it("drives all 24 combinations through the resolver", () => {
     const seen: string[] = [];
     for (const deploymentMode_ of DEPLOYMENT_MODES) {
       for (const approved of BOOLS) {
@@ -698,7 +702,8 @@ describe("[inv-1] no (mode × approved × requiresSecret × hasSecret) yields ac
         }
       }
     }
-    expect(seen).toHaveLength(16);
+    // 3 modes × 2 (approved) × 2 (requiresSecret) × 2 (hasSecret) = 24.
+    expect(seen).toHaveLength(24);
   });
 
   // A hostile/corrupt row: `requiresSecret` is jsonb-adjacent boolean column, and

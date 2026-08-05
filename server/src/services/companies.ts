@@ -1,5 +1,7 @@
-import { eq, count, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, count, inArray, isNull, sql } from "drizzle-orm";
+import { isDeepStrictEqual } from "node:util";
 import type { Db } from "@armyofagents/db";
+import { DEFAULT_ORGANIZATION_ID } from "@armyofagents/shared";
 import { memoryFoldersService, seedCompanyRootFolder } from "./memory-folders.js";
 import { ensureInternalAgentConfig } from "./internal-agent/aoa-agents/ensure-internal-agent-config.js";
 import {
@@ -50,10 +52,26 @@ import {
   companyMemberships,
   mcpApiKeys,
   mcpClientConnections,
+  providerAssignments,
+  providerConnections,
+  runtimeProviderKeys,
   workspaceOperations,
   workspaceRuntimeServices,
+  userRoles,
 } from "@armyofagents/db";
 import { notCrewAssigned } from "./issue-crew-scope.js";
+// Type-only (mirrors Fix 5's `import type { organizationAccessService }`): lets
+// `createWithOperator` accept a `buildAccess` factory typed against the access
+// service WITHOUT a runtime companies↔access import cycle.
+import type { accessService } from "./access.js";
+import { conflict } from "../errors.js";
+
+type CompanyStatsEntry = {
+  agentCount: number;
+  issueCount: number;
+  pendingApprovalCount: number;
+  unreadNotificationCount: number;
+};
 
 export interface CreateCompanyOptions {
   /**
@@ -105,8 +123,201 @@ export function companyService(db: Db) {
     return false;
   }
 
+  function isCreationRequestConflict(error: unknown) {
+    let current: unknown = error;
+    const seen = new Set<unknown>();
+    while (typeof current === "object" && current !== null && !seen.has(current)) {
+      seen.add(current);
+      const candidate = current as {
+        cause?: unknown;
+        code?: unknown;
+        constraint?: unknown;
+        constraint_name?: unknown;
+      };
+      const constraint = typeof candidate.constraint === "string"
+        ? candidate.constraint
+        : typeof candidate.constraint_name === "string"
+          ? candidate.constraint_name
+          : undefined;
+      if (
+        candidate.code === "23505" &&
+        constraint === "companies_organization_creation_request_uq"
+      ) {
+        return true;
+      }
+      current = candidate.cause;
+    }
+    return false;
+  }
+
+  function sameJson(left: unknown, right: unknown): boolean {
+    return isDeepStrictEqual(left ?? {}, right ?? {});
+  }
+
+  function companyCreationPayloadMatches(
+    existing: typeof companies.$inferSelect,
+    data: Omit<typeof companies.$inferInsert, "organizationId"> & { organizationId?: string },
+    organizationId: string,
+  ): boolean {
+    return (
+      existing.organizationId === organizationId &&
+      existing.name === data.name &&
+      existing.description === (data.description ?? null) &&
+      existing.status === (data.status ?? "active") &&
+      existing.budgetMonthlyCents === (data.budgetMonthlyCents ?? 0) &&
+      existing.requireBoardApprovalForNewAgents ===
+        (data.requireBoardApprovalForNewAgents ?? true) &&
+      existing.agentCompletionPolicyDefault ===
+        (data.agentCompletionPolicyDefault ?? "review_required") &&
+      existing.agentCompletionReviewGuardrail ===
+        (data.agentCompletionReviewGuardrail ?? false) &&
+      existing.humanQuestionSlaHours === (data.humanQuestionSlaHours ?? 24) &&
+      existing.rootFolder === (data.rootFolder ?? null) &&
+      existing.brandColor === (data.brandColor ?? null) &&
+      sameJson(existing.commanderAdapterConfig, data.commanderAdapterConfig) &&
+      sameJson(existing.crewAdapterConfig, data.crewAdapterConfig)
+    );
+  }
+
+  async function resolveCompanyCreationReplay(
+    handle: Db,
+    data: Omit<typeof companies.$inferInsert, "organizationId"> & { organizationId?: string },
+  ) {
+    if (!data.creationRequestId) return null;
+    const organizationId = data.organizationId ?? DEFAULT_ORGANIZATION_ID;
+    const existing = await handle
+      .select()
+      .from(companies)
+      .where(
+        and(
+          eq(companies.organizationId, organizationId),
+          eq(companies.creationRequestId, data.creationRequestId),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    if (!existing) return null;
+    if (!companyCreationPayloadMatches(existing, data, organizationId)) {
+      throw conflict("Company creation request was already used with different details");
+    }
+    return existing;
+  }
+
+  async function resolveCompanyFoundingOperator(handle: Db, companyId: string): Promise<string> {
+    const founder = await handle
+      .select({ userId: userRoles.userId })
+      .from(userRoles)
+      .where(
+        and(
+          eq(userRoles.companyId, companyId),
+          eq(userRoles.role, "founder"),
+        ),
+      )
+      .orderBy(asc(userRoles.createdAt), asc(userRoles.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!founder) {
+      throw new Error(`Company creation replay cannot resolve founding operator for ${companyId}`);
+    }
+    return founder.userId;
+  }
+
+  // Group A (P3 extraction) — the OPERATOR-INDEPENDENT company seeders. These
+  // run best-effort AFTER the company row is committed, on BOTH the operator-free
+  // `create` path and the atomic `createWithOperator` path, so the two paths seed
+  // identically without duplicating the logic. Group B (profile materialization,
+  // native skills, the QA-BUG-007 Commander re-run) is OPERATOR-DEPENDENT and
+  // stays in the route — it is intentionally NOT run here.
+  //
+  // Takes only `companyId` + `requestedByUserId`: no operator is needed for any
+  // of these steps.
+  async function seedNewCompanyBestEffort(
+    companyId: string,
+    requestedByUserId: string | null,
+  ): Promise<void> {
+    await seedCompanyRootFolder(memoryFoldersService(db), {
+      companyId,
+    }).catch((err: unknown) => {
+      logger.warn({ err, companyId }, "memory company-root folder seeding failed");
+    });
+    // Decision #100 — the Commander Team comes with every company.
+    // Eagerly seed (1) the default internal_agent_config row and (2) the
+    // Commander kind='aoa' agent linked into that config. (1) MUST precede
+    // (2) — ensureCommanderAgent's internal_agent_config UPDATE no-ops
+    // without an existing config row. Both are idempotent and seeded
+    // non-fatally — exactly mirroring the root-folder seed above — so a
+    // seed failure never breaks company create.
+    //
+    // Phase 1 (Task C1 + Phase D batch 2): the Discussion Extraction
+    // ("Scribe") agent is no longer seeded at company create. The
+    // autonomous extraction drain is gated OFF (AOA_SCRIBE_AUTONOMOUS_
+    // DRAIN_ENABLED) — extraction now runs as tool calls from Memory
+    // Keeper (phase=done sweep) and Adjutant (optional, mid-discussion).
+    // `ensureExtractionAgent` is preserved in the codebase for rollback
+    // safety and so the dispatcher's lazy ensure on the legacy autonomous
+    // path keeps working when the env flag is re-enabled; it is no longer
+    // wired into bootstrap.
+    //
+    // T3.5: skip CREW provisioning entirely if the marketplace already
+    // governs this company's crew. A brand-new company that gets a
+    // marketplace install immediately after creation must not have those
+    // agents overwritten by the legacy seeders.
+    //
+    // T2.3 note on why this gate SURVIVED rather than being deleted as
+    // "unreachable": it is what pins the read-before-write ordering below,
+    // and `aoa-bootstrap-wiring.test.ts` (`stampsOriginOnSeed`) is the
+    // regression guard for the silent failure that ordering prevents.
+    // It also correctly short-circuits the concurrent-create case, where a
+    // sibling create already installed the marketplace crew.
+    //
+    // Read the gate BEFORE seeding anything. The predicate matches any
+    // kind='aoa' row with a non-`@legacy` templateOrigin, and the seeders
+    // below insert kind='aoa' rows — reading after writing would be a
+    // read-your-own-writes hazard the moment anyone stamps an origin at
+    // insert time (today nothing does; see crew-seeding.ts). The failure
+    // mode is silent: the company would see its own fresh Commander,
+    // conclude "marketplace-managed", and skip its entire crew.
+    //
+    // isCrewMarketplaceManaged fails open to `false` on a DB error, so a
+    // transient blip degrades to the legacy seeders rather than leaving the
+    // company crewless — the same semantics the inline copy of this query
+    // used to provide.
+    const crewIsMarketplaceManaged = await isCrewMarketplaceManaged(db, companyId);
+
+    // P8d / Phase 4B: internal_agent_config + Commander are seeded
+    // UNCONDITIONALLY — Commander is not marketplace-owned, and a company
+    // without a config row has no autonomy/provider/model dial at all.
+    // Steward belongs to the gated CREW roster. Config MUST precede
+    // ensureInfrastructureAgents: ensureCommanderAgent's
+    // internal_agent_config UPDATE no-ops without an existing config row.
+    await ensureInternalAgentConfig(db, companyId).catch((err: unknown) => {
+      logger.warn({ err, companyId }, "internal_agent_config seeding failed");
+    });
+    // P3: now that this runs POST-commit, wrap it best-effort. It was the ONLY
+    // un-wrapped seeder here — while inline in the pre-commit try, an unexpected
+    // throw would have surfaced as a create failure (and, in createWithOperator,
+    // been mistaken for a non-conflict error). ensureInfrastructureAgents already
+    // swallows per-step failures internally (runEnsureSteps), so this is
+    // belt-and-suspenders that also fully de-risks the move post-commit.
+    await ensureInfrastructureAgents(db, companyId).catch((err: unknown) => {
+      logger.warn({ err, companyId }, "infrastructure agents (Commander) seeding failed");
+    });
+
+    // T2.3 (P8/P8c): install `team:aoa-curated/default-crew` from the
+    // marketplace so this company is born UPDATEABLE. Legacy-seeded rows
+    // are stamped `…@legacy` and `crew-updater.ts` skips those forever.
+    //
+    // provisionCompanyCrew never throws and degrades to the legacy seeders
+    // (with a log naming the crew members the fallback cannot provide), so
+    // a marketplace outage cannot break onboarding.
+    if (!crewIsMarketplaceManaged) {
+      await provisionCompanyCrew(db, companyId, {
+        requestedByUserId: requestedByUserId ?? null,
+      });
+    }
+  }
+
   async function createCompanyWithUniquePrefix(
-    data: typeof companies.$inferInsert,
+    data: Omit<typeof companies.$inferInsert, "organizationId"> & { organizationId?: string },
     opts: CreateCompanyOptions = {},
   ) {
     const base = deriveIssuePrefixBase(data.name);
@@ -116,81 +327,16 @@ export function companyService(db: Db) {
       try {
         const rows = await db
           .insert(companies)
-          .values({ ...data, issuePrefix: candidate })
+          .values({
+            ...data,
+            // Self-hosted single-tenant + company-portability import land in the
+            // sentinel Organization unless a real org context is supplied.
+            organizationId: data.organizationId ?? DEFAULT_ORGANIZATION_ID,
+            issuePrefix: candidate,
+          })
           .returning();
         const company = rows[0];
-        await seedCompanyRootFolder(memoryFoldersService(db), {
-          companyId: company.id,
-        }).catch((err: unknown) => {
-          logger.warn({ err, companyId: company.id }, "memory company-root folder seeding failed");
-        });
-        // Decision #100 — the Commander Team comes with every company.
-        // Eagerly seed (1) the default internal_agent_config row and (2) the
-        // Commander kind='aoa' agent linked into that config. (1) MUST precede
-        // (2) — ensureCommanderAgent's internal_agent_config UPDATE no-ops
-        // without an existing config row. Both are idempotent and seeded
-        // non-fatally — exactly mirroring the root-folder seed above — so a
-        // seed failure never breaks company create.
-        //
-        // Phase 1 (Task C1 + Phase D batch 2): the Discussion Extraction
-        // ("Scribe") agent is no longer seeded at company create. The
-        // autonomous extraction drain is gated OFF (AOA_SCRIBE_AUTONOMOUS_
-        // DRAIN_ENABLED) — extraction now runs as tool calls from Memory
-        // Keeper (phase=done sweep) and Adjutant (optional, mid-discussion).
-        // `ensureExtractionAgent` is preserved in the codebase for rollback
-        // safety and so the dispatcher's lazy ensure on the legacy autonomous
-        // path keeps working when the env flag is re-enabled; it is no longer
-        // wired into bootstrap.
-        //
-        // T3.5: skip CREW provisioning entirely if the marketplace already
-        // governs this company's crew. A brand-new company that gets a
-        // marketplace install immediately after creation must not have those
-        // agents overwritten by the legacy seeders.
-        //
-        // T2.3 note on why this gate SURVIVED rather than being deleted as
-        // "unreachable": it is what pins the read-before-write ordering below,
-        // and `aoa-bootstrap-wiring.test.ts` (`stampsOriginOnSeed`) is the
-        // regression guard for the silent failure that ordering prevents.
-        // It also correctly short-circuits the concurrent-create case, where a
-        // sibling create already installed the marketplace crew.
-        //
-        // Read the gate BEFORE seeding anything. The predicate matches any
-        // kind='aoa' row with a non-`@legacy` templateOrigin, and the seeders
-        // below insert kind='aoa' rows — reading after writing would be a
-        // read-your-own-writes hazard the moment anyone stamps an origin at
-        // insert time (today nothing does; see crew-seeding.ts). The failure
-        // mode is silent: the company would see its own fresh Commander,
-        // conclude "marketplace-managed", and skip its entire crew.
-        //
-        // isCrewMarketplaceManaged fails open to `false` on a DB error, so a
-        // transient blip degrades to the legacy seeders rather than leaving the
-        // company crewless — the same semantics the inline copy of this query
-        // used to provide.
-        const crewIsMarketplaceManaged = await isCrewMarketplaceManaged(db, company.id);
-
-        // P8d / Phase 4B: internal_agent_config + Commander are seeded
-        // UNCONDITIONALLY — Commander is not marketplace-owned, and a company
-        // without a config row has no autonomy/provider/model dial at all.
-        // Steward belongs to the gated CREW roster. Config MUST precede
-        // ensureInfrastructureAgents: ensureCommanderAgent's
-        // internal_agent_config UPDATE no-ops without an existing config row.
-        await ensureInternalAgentConfig(db, company.id).catch((err: unknown) => {
-          logger.warn({ err, companyId: company.id }, "internal_agent_config seeding failed");
-        });
-        await ensureInfrastructureAgents(db, company.id);
-
-        // T2.3 (P8/P8c): install `team:aoa-curated/default-crew` from the
-        // marketplace so this company is born UPDATEABLE. Legacy-seeded rows
-        // are stamped `…@legacy` and `crew-updater.ts` skips those forever.
-        //
-        // provisionCompanyCrew never throws and degrades to the legacy seeders
-        // (with a log naming the crew members the fallback cannot provide), so
-        // a marketplace outage cannot break onboarding.
-        if (!crewIsMarketplaceManaged) {
-          await provisionCompanyCrew(db, company.id, {
-            requestedByUserId: opts.requestedByUserId ?? null,
-          });
-        }
+        await seedNewCompanyBestEffort(company.id, opts.requestedByUserId ?? null);
         return company;
       } catch (error) {
         if (!isIssuePrefixConflict(error)) throw error;
@@ -200,8 +346,157 @@ export function companyService(db: Db) {
     throw new Error("Unable to allocate unique issue prefix");
   }
 
+  // P3 — atomic company + founder-membership create (mirrors Fix 5's
+  // `createSelfServeOrganization`). The company insert AND the operator write
+  // (`ensureRealOperator`: authUsers + company owner membership + founder role +
+  // org owner membership) run inside ONE `db.transaction`, so a transient fault
+  // between them can NEVER leave an orphan company with no membership for anyone
+  // (unrecoverable in cloud_auth).
+  //
+  // PREFIX RETRY: the issue-prefix de-dup loop lives OUTSIDE the transaction —
+  // each attempt is a fresh transaction with exactly ONE company insert +
+  // operator write. A 23505 prefix conflict aborts (and rolls back) only that
+  // attempt's transaction and is caught outside it; the next attempt retries
+  // with a new candidate prefix in a brand-new transaction. Any OTHER error
+  // re-throws (the tx rolls back → no orphan). Retrying INSIDE a single
+  // transaction is impossible: a 23505 aborts the whole PG tx.
+  //
+  // `buildAccess` is a factory bound to the TRANSACTION handle so all of
+  // ensureRealOperator's writes (and its `companies.organizationId` read) join
+  // the same tx. It is a PARAMETER (not a direct `accessService` call) to avoid
+  // a companies↔access runtime import cycle.
+  //
+  // Group A (operator-independent seeders) runs best-effort AFTER the committed
+  // tx — never inside it, so a non-critical seed failure cannot roll back a
+  // committed company. Group B (operator-dependent) stays with the caller.
+  async function createWithOperator<TActivity = never>(
+    data: Omit<typeof companies.$inferInsert, "organizationId"> & { organizationId?: string },
+    opts: CreateCompanyOptions,
+    ownerUserId: string | null | undefined,
+    buildAccess: (handle: Db) => Pick<ReturnType<typeof accessService>, "ensureRealOperator">,
+    recordActivity?: (
+      handle: Db,
+      company: typeof companies.$inferSelect,
+      operatorId: string,
+    ) => Promise<TActivity>,
+  ): Promise<{
+    company: typeof companies.$inferSelect;
+    operatorId: string;
+    created: boolean;
+    committedActivity: TActivity | null;
+  }> {
+    const initialReplay = await resolveCompanyCreationReplay(db, data);
+    if (initialReplay) {
+      // A prior request may have committed immediately before the process died
+      // in the best-effort bootstrap phase. Reconcile the idempotent Group-A
+      // resources on every replay so response-loss recovery also repairs a
+      // partially bootstrapped company.
+      const operatorId = await resolveCompanyFoundingOperator(db, initialReplay.id);
+      await seedNewCompanyBestEffort(initialReplay.id, opts.requestedByUserId ?? null);
+      return {
+        company: initialReplay,
+        operatorId,
+        created: false,
+        committedActivity: null,
+      };
+    }
+    const base = deriveIssuePrefixBase(data.name);
+    let suffix = 1;
+    while (suffix < 10000) {
+      const candidate = `${base}${suffixForAttempt(suffix)}`;
+      try {
+        const result = await db.transaction(async (tx) => {
+          if (data.creationRequestId) {
+            // Serialize the Organization-scoped request key. Another
+            // Organization may legitimately use the same random UUID because
+            // the durable key is the composite (organizationId, requestId).
+            await tx.execute(
+              sql`SELECT pg_advisory_xact_lock(hashtext('aoa:company-create'), hashtext(${`${data.organizationId ?? DEFAULT_ORGANIZATION_ID}:${data.creationRequestId}`}))`,
+            );
+            const replay = await resolveCompanyCreationReplay(tx as unknown as Db, data);
+            if (replay) {
+              const operatorId = await resolveCompanyFoundingOperator(
+                tx as unknown as Db,
+                replay.id,
+              );
+              return {
+                company: replay,
+                operatorId,
+                created: false as const,
+                committedActivity: null,
+              };
+            }
+          }
+          const rows = await tx
+            .insert(companies)
+            .values({
+              ...data,
+              organizationId: data.organizationId ?? DEFAULT_ORGANIZATION_ID,
+              issuePrefix: candidate,
+            })
+            .returning();
+          const inserted = rows[0];
+          const opId = await buildAccess(tx as unknown as Db).ensureRealOperator(
+            inserted.id,
+            ownerUserId,
+          );
+          const activity = recordActivity
+            ? await recordActivity(tx as unknown as Db, inserted, opId)
+            : null;
+          return {
+            company: inserted,
+            operatorId: opId,
+            created: true as const,
+            committedActivity: activity,
+          };
+        });
+        // These ensure-style seeders are idempotent and intentionally run for
+        // both a new commit and an advisory-lock replay.
+        await seedNewCompanyBestEffort(result.company.id, opts.requestedByUserId ?? null);
+        return result;
+      } catch (error) {
+        if (data.creationRequestId && isCreationRequestConflict(error)) {
+          const replay = await resolveCompanyCreationReplay(db, data);
+          if (replay) {
+            const operatorId = await resolveCompanyFoundingOperator(db, replay.id);
+            await seedNewCompanyBestEffort(replay.id, opts.requestedByUserId ?? null);
+            return {
+              company: replay,
+              operatorId,
+              created: false,
+              committedActivity: null,
+            };
+          }
+        }
+        if (!isIssuePrefixConflict(error)) throw error;
+      }
+      suffix += 1;
+    }
+    throw new Error("Unable to allocate unique issue prefix");
+  }
+
   return {
-    list: () => db.select().from(companies),
+    list: (allowedCompanyIds: string[] | "unscoped") => {
+      // Fix 4: push the actor's allowed-company set into SQL instead of scanning
+      // every tenant's companies and filtering in JS. The param is REQUIRED and
+      // discriminated so "unscoped" (all tenants) can only ever be reached by an
+      // explicit, visible choice — a caller can no longer leak every tenant by
+      // omitting the argument (that is now a TypeScript error). "unscoped" →
+      // unfiltered (self-hosted operator view, unchanged); empty → a `false`
+      // predicate (explicit degrade-to-none, never return-all). drizzle also
+      // lowers inArray(id, []) to `false`, but this keeps it version-independent.
+      if (allowedCompanyIds === "unscoped") {
+        return db.select().from(companies);
+      }
+      return db
+        .select()
+        .from(companies)
+        .where(
+          allowedCompanyIds.length === 0
+            ? sql`false`
+            : inArray(companies.id, allowedCompanyIds),
+        );
+    },
 
     getById: (id: string) =>
       db
@@ -210,16 +505,33 @@ export function companyService(db: Db) {
         .where(eq(companies.id, id))
         .then((rows) => rows[0] ?? null),
 
-    create: async (data: typeof companies.$inferInsert, opts: CreateCompanyOptions = {}) =>
-      createCompanyWithUniquePrefix(data, opts),
+    create: async (
+      data: Omit<typeof companies.$inferInsert, "organizationId"> & { organizationId?: string },
+      opts: CreateCompanyOptions = {},
+    ) => createCompanyWithUniquePrefix(data, opts),
 
-    update: (id: string, data: Partial<typeof companies.$inferInsert>) =>
-      db
+    createWithOperator,
+
+    update: (id: string, data: Partial<typeof companies.$inferInsert>) => {
+      // Tenant-key immutability (Codex ①): organizationId is assigned once at
+      // create and must NEVER be rewritten by an update — a cross-tenant reparent
+      // is a tenant-isolation breach. The update validator already omits it
+      // (validators/company.ts); this strip is the defense-in-depth at the service
+      // seam for any direct/non-route caller. No legitimate caller passes
+      // organizationId here (company-portability import update passes only
+      // name/description/brandColor/requireBoardApprovalForNewAgents).
+      const {
+        organizationId: _omitOrganizationId,
+        creationRequestId: _omitCreationRequestId,
+        ...mutable
+      } = data;
+      return db
         .update(companies)
-        .set({ ...data, updatedAt: new Date() })
+        .set({ ...mutable, updatedAt: new Date() })
         .where(eq(companies.id, id))
         .returning()
-        .then((rows) => rows[0] ?? null),
+        .then((rows) => rows[0] ?? null);
+    },
 
     archive: (id: string) =>
       db
@@ -265,6 +577,19 @@ export function companyService(db: Db) {
         await tx.delete(approvalComments).where(eq(approvalComments.companyId, id));
         await tx.delete(approvals).where(eq(approvals.companyId, id));
         // === Memberships, secrets, invites ===
+        // Two tables hold ON DELETE restrict FKs into company_secrets:
+        // provider_connections.secret_ref (migration 0190) and
+        // runtime_provider_keys.secret_id. A connection minted from a backfilled
+        // legacy key, or a stored runtime provider key, therefore PINS its secret.
+        // Unlike the belt-and-suspenders cascade deletes above, these are
+        // load-bearing: without them the companySecrets delete below hits the
+        // RESTRICT FK and aborts the whole transaction. Clear both referrers
+        // BEFORE companySecrets — provider_assignments first (its connection_id →
+        // provider_connections cascades, but explicit-and-ordered mirrors this
+        // teardown), then the connections and the runtime keys.
+        await tx.delete(providerAssignments).where(eq(providerAssignments.companyId, id));
+        await tx.delete(providerConnections).where(eq(providerConnections.companyId, id));
+        await tx.delete(runtimeProviderKeys).where(eq(runtimeProviderKeys.companyId, id));
         await tx.delete(companySecrets).where(eq(companySecrets.companyId, id));
         await tx.delete(joinRequests).where(eq(joinRequests.companyId, id));
         await tx.delete(invites).where(eq(invites.companyId, id));
@@ -303,13 +628,31 @@ export function companyService(db: Db) {
         return rows[0] ?? null;
       }),
 
-    stats: () =>
-      Promise.all([
+    stats: (allowedCompanyIds: string[] | "unscoped") => {
+      // Fix 4: empty allow-set → return none WITHOUT four instance-wide GROUP BY
+      // scans (explicit degrade-to-none; mirrors the list() guard). The param is
+      // REQUIRED and discriminated so "unscoped" (all tenants) can only be reached
+      // by an explicit choice, never by omission (now a TypeScript error).
+      if (allowedCompanyIds !== "unscoped" && allowedCompanyIds.length === 0) {
+        return Promise.resolve<Record<string, CompanyStatsEntry>>({});
+      }
+      // "unscoped" allow-set → unscoped (self-hosted operator view, unchanged).
+      // A non-empty allow-set is AND-ed into each aggregation as an inArray on
+      // the table's company_id, pushing the tenant filter into SQL. The
+      // `=== "unscoped"` ternary (not a derived boolean) narrows allowedCompanyIds
+      // to string[] in the scoped branch so inArray typechecks; the base branch
+      // returns the predicate UNCHANGED so the correlated-crew SQL stays byte-
+      // identical to today (crew-scope-counts.test.ts).
+      return Promise.all([
         db
           .select({ companyId: agents.companyId, count: count() })
           .from(agents)
           // Per-company agent counts exclude platform (Commander-team) agents.
-          .where(eq(agents.kind, "org"))
+          .where(
+            allowedCompanyIds === "unscoped"
+              ? eq(agents.kind, "org")
+              : and(eq(agents.kind, "org"), inArray(agents.companyId, allowedCompanyIds)),
+          )
           .groupBy(agents.companyId),
         db
           .select({ companyId: issues.companyId, count: count() })
@@ -319,28 +662,32 @@ export function companyService(db: Db) {
           // CROSS-COMPANY batch (groupBy company_id, no fixed company), so the
           // crew predicate is the CORRELATED form (no arg → agents.company_id =
           // issues.company_id). Crew tasks live only on the Crew Board.
-          .where(notCrewAssigned())
+          .where(
+            allowedCompanyIds === "unscoped"
+              ? notCrewAssigned()
+              : and(notCrewAssigned(), inArray(issues.companyId, allowedCompanyIds)),
+          )
           .groupBy(issues.companyId),
         db
           .select({ companyId: approvals.companyId, count: count() })
           .from(approvals)
-          .where(eq(approvals.status, "pending"))
+          .where(
+            allowedCompanyIds === "unscoped"
+              ? eq(approvals.status, "pending")
+              : and(eq(approvals.status, "pending"), inArray(approvals.companyId, allowedCompanyIds)),
+          )
           .groupBy(approvals.companyId),
         db
           .select({ companyId: notifications.companyId, count: count() })
           .from(notifications)
-          .where(isNull(notifications.readAt))
+          .where(
+            allowedCompanyIds === "unscoped"
+              ? isNull(notifications.readAt)
+              : and(isNull(notifications.readAt), inArray(notifications.companyId, allowedCompanyIds)),
+          )
           .groupBy(notifications.companyId),
       ]).then(([agentRows, issueRows, approvalRows, notificationRows]) => {
-        const result: Record<
-          string,
-          {
-            agentCount: number;
-            issueCount: number;
-            pendingApprovalCount: number;
-            unreadNotificationCount: number;
-          }
-        > = {};
+        const result: Record<string, CompanyStatsEntry> = {};
         function ensure(companyId: string) {
           if (!result[companyId]) {
             result[companyId] = {
@@ -365,6 +712,7 @@ export function companyService(db: Db) {
           ensure(row.companyId).unreadNotificationCount = row.count;
         }
         return result;
-      }),
+      });
+    },
   };
 }

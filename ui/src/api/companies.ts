@@ -32,6 +32,12 @@ export const companiesApi = {
   // dropped from this payload type.
   create: (data: {
     name: string;
+    // Phase 2 Task 12: optional here (the server derives DEFAULT_ORGANIZATION_ID
+    // when omitted — self-hosted single-tenant callers, if any are added
+    // later, don't need to send it). The onboarding CompanyContext.createCompany
+    // caller always supplies it.
+    organizationId?: string;
+    creationRequestId?: string;
     description?: string | null;
     budgetMonthlyCents?: number;
   }) => api.post<Company>("/companies", data),

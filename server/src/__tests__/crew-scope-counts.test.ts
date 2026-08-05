@@ -265,7 +265,9 @@ describe("companyService.stats() excludes crew from the per-company issue (activ
   // excludes non-org agents. Crew-agent tasks must not inflate the org surface.
   it("the issues-count select carries the (correlated) crew NOT-EXISTS predicate", async () => {
     const { db, captured } = capturingDb([]);
-    await companyService(db).stats();
+    // "unscoped" (operator view) hits the base branch, byte-identical to the
+    // pre-Fix-4 unfiltered SQL (Fix 4 made the param required + discriminated).
+    await companyService(db).stats("unscoped");
 
     const issueWheres = wheresFor(captured, issues);
     // Exactly one issues select runs in stats() and it excludes crew tasks.

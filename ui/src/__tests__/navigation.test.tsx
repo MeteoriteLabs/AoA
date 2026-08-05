@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { MemoryRouter, Route, Routes, Navigate, Outlet } from "react-router-dom";
+import { MemoryRouter, Route, Routes, Navigate, Outlet, useLocation } from "react-router-dom";
 
 /**
  * Navigation tests verify the routing structure defined in App.tsx.
@@ -19,7 +19,8 @@ function IssuesStub() {
   return <div data-testid="issues-page">Issues</div>;
 }
 function SettingsStub() {
-  return <div data-testid="settings-page">Settings</div>;
+  const location = useLocation();
+  return <div data-testid="settings-page">Settings{location.search}</div>;
 }
 function GoalsStub() {
   return <div data-testid="goals-page">Goals</div>;
@@ -41,11 +42,22 @@ function LayoutStub() {
   );
 }
 
+function UnprefixedBoardRedirectStub() {
+  const location = useLocation();
+  return (
+    <Navigate
+      to={`/TC${location.pathname}${location.search}${location.hash}`}
+      replace
+    />
+  );
+}
+
 function TestRoutes() {
   return (
     <Routes>
       {/* Lobby at root */}
       <Route index element={<LobbyStub />} />
+      <Route path="settings" element={<UnprefixedBoardRedirectStub />} />
 
       {/* Company-prefixed routes */}
       <Route path=":companyPrefix" element={<LayoutStub />}>
@@ -129,6 +141,16 @@ describe("Navigation", () => {
     );
 
     expect(screen.getByTestId("settings-page")).toBeInTheDocument();
+  });
+
+  it("unprefixed /settings preserves the Providers tab and redirects through the selected company", () => {
+    render(
+      <MemoryRouter initialEntries={["/settings?tab=providers"]}>
+        <TestRoutes />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByTestId("settings-page")).toHaveTextContent("Settings?tab=providers");
   });
 
   it("/issues/:id renders Issues component (dual-route)", () => {

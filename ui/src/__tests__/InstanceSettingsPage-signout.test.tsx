@@ -210,13 +210,14 @@ describe("InstanceSettingsPage Sign out section", () => {
     });
   });
 
-  it("renders SecondarySidebar with all 7 settings sections", () => {
+  it("renders SecondarySidebar with all 8 settings sections after deployment mode resolves", async () => {
     renderSettings();
     expect(screen.getByTestId("secondary-sidebar")).toBeInTheDocument();
     expect(screen.getByTestId("sidebar-item-general")).toBeInTheDocument();
+    expect(screen.getByTestId("sidebar-item-health")).toBeInTheDocument();
     expect(screen.getByTestId("sidebar-item-privacy")).toBeInTheDocument();
     expect(screen.getByTestId("sidebar-item-backups")).toBeInTheDocument();
-    expect(screen.getByTestId("sidebar-item-heartbeats")).toBeInTheDocument();
+    expect(await screen.findByTestId("sidebar-item-heartbeats")).toBeInTheDocument();
     expect(screen.getByTestId("sidebar-item-experimental")).toBeInTheDocument();
     expect(screen.getByTestId("sidebar-item-plugins")).toBeInTheDocument();
     expect(screen.getByTestId("sidebar-item-access")).toBeInTheDocument();

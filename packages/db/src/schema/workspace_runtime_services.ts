@@ -36,6 +36,10 @@ export const workspaceRuntimeServices = pgTable(
     url: text("url"),
     provider: text("provider").notNull(),
     providerRef: text("provider_ref"),
+    processOwnerId: text("process_owner_id"),
+    // Current adapter writers stamp this so startup can retire legacy global
+    // identities recreated by an older binary after a code-only rollback.
+    identityVersion: integer("identity_version"),
     ownerAgentId: uuid("owner_agent_id").references(() => agents.id, { onDelete: "set null" }),
     startedByRunId: uuid("started_by_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
     lastUsedAt: timestamp("last_used_at", { withTimezone: true }).notNull().defaultNow(),
@@ -67,6 +71,11 @@ export const workspaceRuntimeServices = pgTable(
     companyUpdatedIdx: index("workspace_runtime_services_company_updated_idx").on(
       table.companyId,
       table.updatedAt,
+    ),
+    providerOwnerStatusIdx: index("workspace_runtime_services_provider_owner_status_idx").on(
+      table.provider,
+      table.processOwnerId,
+      table.status,
     ),
   }),
 );

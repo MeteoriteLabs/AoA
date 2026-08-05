@@ -76,6 +76,7 @@ const mockAssertDepartmentAccess = vi.hoisted(() =>
 
 vi.mock("../middleware/rbac.js", () => ({
   assertRole: mockAssertRole,
+  assertHumanRole: mockAssertRole,
   assertDepartmentAccess: mockAssertDepartmentAccess,
 }));
 

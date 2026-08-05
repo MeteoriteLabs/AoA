@@ -4,6 +4,12 @@ vi.mock("../services/companies.js", () => ({
   companyService: () => ({
     getById: vi.fn(async (id: string) => ({ id, name: "Target Co" })),
     create: vi.fn(async (input: { name: string }) => ({ id: "created-co", name: input.name })),
+    // P3: importBundle creates via the atomic `createWithOperator`.
+    createWithOperator: vi.fn(async (input: { name: string }, _opts: any, ownerUserId: any, buildAccess: any) => {
+      const company = { id: "created-co", name: input.name };
+      const operatorId = await buildAccess(undefined).ensureRealOperator(company.id, ownerUserId ?? null);
+      return { company, operatorId };
+    }),
     update: vi.fn(async (id: string, patch: any) => ({ id, name: patch.name ?? "Target Co" })),
   }),
 }));

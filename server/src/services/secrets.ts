@@ -1,6 +1,7 @@
 import { and, desc, eq, isNull, ne, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
+  companies,
   companySecretBindings,
   companySecretProviderConfigs,
   companySecrets,
@@ -26,6 +27,7 @@ import {
 import { getProviderByAdapterType } from "@armyofagents/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { getSecretProvider, listSecretProviders } from "../secrets/provider-registry.js";
+import { SecretCandidateUnavailableError } from "../secrets/secret-candidate-errors.js";
 import type { PreparedSecretVersion, SecretProviderVaultRuntimeConfig } from "../secrets/types.js";
 // Task 7's owner-hop resolver. Reused deliberately rather than re-derived: some
 // providers READ a credential another OWNS (pi -> anthropic, cursor_cloud ->
@@ -188,6 +190,7 @@ function versionSelectorFromString(value: string): number | "latest" {
 }
 
 function errorCode(err: unknown) {
+  if (err instanceof SecretCandidateUnavailableError) return err.code;
   if (err && typeof err === "object" && "status" in err) return `http_${String((err as any).status)}`;
   return "secret_resolve_failed";
 }
@@ -365,7 +368,12 @@ export function secretService(db: Db) {
     if (row.companyId !== secret.companyId || row.provider !== secret.provider) {
       throw unprocessable("Secret provider config does not match secret");
     }
-    if (row.status === "disabled" || row.disabledAt) throw unprocessable("Secret provider config is disabled");
+    if (row.status === "disabled" || row.disabledAt) {
+      throw new SecretCandidateUnavailableError(
+        "provider_config_disabled",
+        "Secret provider config is disabled",
+      );
+    }
     return {
       id: row.id,
       provider: row.provider as SecretProvider,
@@ -436,7 +444,12 @@ export function secretService(db: Db) {
         ),
       )
       .then((rows) => rows[0] ?? null);
-    if (!binding) throw unprocessable("Secret is not bound to this consumer path");
+    if (!binding) {
+      throw new SecretCandidateUnavailableError(
+        "secret_unbound",
+        "Secret is not bound to this consumer path",
+      );
+    }
   }
 
   async function resolveSecretValue(
@@ -448,13 +461,26 @@ export function secretService(db: Db) {
     let secret: typeof companySecrets.$inferSelect | null = null;
     let resolvedVersion: number | null = null;
     try {
-      secret = await assertSecretInCompany(companyId, secretId);
-      if (secret.status !== "active") throw unprocessable("Secret is not active");
+      secret = await getById(secretId);
+      if (!secret || secret.deletedAt) {
+        throw new SecretCandidateUnavailableError("secret_missing", "Secret not found");
+      }
+      if (secret.companyId !== companyId) throw unprocessable("Secret must belong to same company");
+      if (secret.status !== "active") {
+        throw new SecretCandidateUnavailableError("secret_inactive", "Secret is not active");
+      }
+      // Broker-owned-secret guard (remediation R3): generic resolution paths must not
+      // resolve/mutate an mcp:* OAuth bundle outside the broker's own consumer context.
       assertMcpOAuthResolutionAllowed(secret, context);
       await assertBinding(secret, context);
       resolvedVersion = version === "latest" ? secret.latestVersion : version;
       const versionRow = await getSecretVersion(secret.id, resolvedVersion);
-      if (!versionRow) throw notFound("Secret version not found");
+      if (!versionRow) {
+        throw new SecretCandidateUnavailableError(
+          "secret_version_missing",
+          "Secret version not found",
+        );
+      }
       const provider = getSecretProvider(secret.provider as SecretProvider);
       const value = await provider.resolveVersion({
         material: versionRow.material as Record<string, unknown>,
@@ -747,11 +773,20 @@ export function secretService(db: Db) {
               context: { companyId, secretKey: key, secretName: input.name, version: 1 },
             });
       if (!prepared) throw unprocessable("Provider does not support external references");
+      // Tenant denormalization (multi-tenant cloud, C3): stamp the owning org so a
+      // new secret is never org-NULL. 0189 backfilled existing rows but the create
+      // path never wrote it. Company->org is immutable, so a pre-tx read is safe.
+      const companyOrg = await db
+        .select({ organizationId: companies.organizationId })
+        .from(companies)
+        .where(eq(companies.id, companyId))
+        .then((r) => r[0] ?? null);
       return db.transaction(async (tx) => {
         const secret = await tx
           .insert(companySecrets)
           .values({
             companyId,
+            organizationId: companyOrg?.organizationId ?? null,
             name: input.name,
             key,
             status: "active",

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { errorHandler } from "../middleware/error-handler.js";
 import { createPreviewRouter } from "../routes/preview.js";
 import { buildPreviewTargetUrl } from "../services/preview-proxy.js";
+import { setDeploymentMode } from "../config/deployment-mode.js";
 
 function startLocalServer(
   handler: http.RequestListener,
@@ -66,6 +67,7 @@ describe("preview proxy route", () => {
 
   afterEach(async () => {
     await Promise.all(cleanup.splice(0).map((close) => close()));
+    setDeploymentMode("local_trusted");
   });
 
   it("proxies registered healthy loopback runtime services and strips AoA credentials", async () => {
@@ -174,6 +176,27 @@ describe("preview proxy route", () => {
     expect(res.body.error).toBe("Preview service is not available");
   });
 
+  it("rejects foreign-owner local runtime services before proxying loopback", async () => {
+    const res = await request(makeApp(makeRuntimeRow({
+      provider: "local_process",
+      processOwnerId: "foreign-owner",
+    }))).get("/preview/services/svc-1/");
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/another runtime host/);
+  });
+
+  it("rejects adapter-managed loopback previews in cloud without contacting the control plane", async () => {
+    setDeploymentMode("cloud_auth");
+    const res = await request(makeApp(makeRuntimeRow({
+      provider: "adapter_managed",
+      url: "http://127.0.0.1:65534/private-control-plane",
+    }))).get("/preview/services/svc-1/");
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/another runtime host/);
+  });
+
   it("rejects runtime services with unsafe upstream targets", async () => {
     const res = await request(makeApp(makeRuntimeRow({
       url: "http://169.254.169.254/latest/meta-data",
@@ -186,6 +209,20 @@ describe("preview proxy route", () => {
   it("enforces company access before proxying", async () => {
     const res = await request(makeApp(
       makeRuntimeRow({ companyId: "company-1" }),
+      { type: "agent", agentId: "agent-1", companyId: "company-2" },
+    )).get("/preview/services/svc-1/");
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Agent key cannot access another company");
+  });
+
+  it("checks company access before revealing foreign runtime ownership", async () => {
+    const res = await request(makeApp(
+      makeRuntimeRow({
+        companyId: "company-1",
+        provider: "local_process",
+        processOwnerId: "foreign-owner",
+      }),
       { type: "agent", agentId: "agent-1", companyId: "company-2" },
     )).get("/preview/services/svc-1/");
 

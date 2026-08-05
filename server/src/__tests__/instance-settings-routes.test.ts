@@ -312,6 +312,11 @@ describe("instance settings routes", () => {
       type: "board",
       userId: "admin-user",
       source: "session",
+      // Operator-plane authority is what grants instance-settings access now.
+      // actorMiddleware mints operator=true alongside isInstanceAdmin for a
+      // genuine instance admin; canManageInstanceSettings reads operator so the
+      // data-plane isInstanceAdmin clamp (cloud_auth) never disables this plane.
+      operator: true,
       isInstanceAdmin: true,
       companyIds: ["company-1"],
     });

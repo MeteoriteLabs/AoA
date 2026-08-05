@@ -16,6 +16,8 @@ import { assertRole } from "../middleware/rbac.js";
 import { assertCompanyAccess } from "./authz.js";
 import { redactChecks } from "../services/providers/readiness.js";
 import { verifyAndBindCommanderSubscriptionCredential } from "../services/provider-credentials.js";
+import { assertUnsandboxedMultitenantAllowed } from "../services/unsandboxed-multitenant-guard.js";
+import { tenantIsolationEnforced } from "../config/deployment-mode.js";
 
 /**
  * Commander verify (Stage C / C7-C8, revA R14). Drives the SAME adapter
@@ -34,7 +36,7 @@ export function commanderVerifyRoutes(db: Db): Router {
       return;
     }
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     await assertRole(db, req, companyId, "founder");
     const adapterType = await resolveCommanderAdapterType(db, companyId);
     const adapter = findServerAdapter(adapterType);
@@ -56,6 +58,37 @@ export function commanderVerifyRoutes(db: Db): Router {
     }
 
     try {
+      // D1 (cloud isolation): Commander Verify drives the SAME adapter probe,
+      // which spawns a REAL `claude --print` / `codex exec` generation. This sink
+      // has NO execution target — it always runs on the local, unsandboxed
+      // control-plane host — so on `cloud_auth` it would run under the OPERATOR's
+      // login on the shared host (reachable by every founder during onboarding
+      // Verify). Refuse before spawning; return the route's own blocking result
+      // (422 + status:"fail") so onboarding stays on Verify. No-op self-hosted.
+      try {
+        assertUnsandboxedMultitenantAllowed(null, {
+          tenantIsolationEnforced: tenantIsolationEnforced(),
+          sink: "adapter readiness probe",
+        });
+      } catch {
+        res.status(422).json({
+          outcome: "failed" as const,
+          result: {
+            adapterType,
+            status: "fail" as const,
+            checks: [
+              {
+                code: "readiness_unavailable_on_cloud",
+                level: "error" as const,
+                message:
+                  "Commander readiness testing is unavailable on AoA Cloud (a local probe would run on the shared host).",
+              },
+            ],
+            testedAt: new Date().toISOString(),
+          },
+        });
+        return;
+      }
       const result = await adapter.testEnvironment({ companyId, adapterType, config: probeConfig });
       // Probe output is CLI-controlled and may echo keys or tokens. The generic
       // agent-test and Providers paths already redact this boundary; Commander

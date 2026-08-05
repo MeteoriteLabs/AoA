@@ -20,8 +20,8 @@ describe("tool-permissions endpoints — implementation contract", () => {
     expect(routeSrc).toContain("tool-permissions");
   });
 
-  it("PATCH assertRole uses exact 'founder' string", () => {
-    expect(routeSrc).toContain('assertRole(db, req, companyId, "founder")');
+  it("PATCH uses the human-only founder gate", () => {
+    expect(routeSrc).toContain('assertHumanRole(db, req, companyId, "founder")');
   });
 
   it("GET merges db overrides with COMMANDER_TOOL_PERMISSION_DEFAULT", () => {

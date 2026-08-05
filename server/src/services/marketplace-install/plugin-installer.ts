@@ -2,6 +2,10 @@ import { and, eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { plugins } from "@armyofagents/db";
 import type { CatalogItem } from "@armyofagents/shared";
+import {
+  assertCloudPluginExecutionAllowed,
+  isCloudPluginExecutionBlocked,
+} from "../cloud-plugin-execution.js";
 
 /**
  * Subset of the real plugin runtime services the marketplace wrapper needs.
@@ -13,7 +17,6 @@ export interface PluginLoaderLike {
     packageName?: string;
     version?: string;
     localPath?: string;
-    installDir?: string;
     companyId: string;
     catalogItemId?: string;
     /**
@@ -34,6 +37,7 @@ export interface PluginLoaderLike {
   };
   lifecycle: {
     load(pluginId: string): Promise<void>;
+    blockActivationInCloud(pluginId: string, source?: "marketplace"): Promise<void>;
   };
 }
 
@@ -88,11 +92,32 @@ export async function installMarketplacePlugin(
     )
     .limit(1);
 
+  if (isCloudPluginExecutionBlocked()) {
+    // A persisted, non-uninstalled row can safely be reconciled from stored
+    // manifest JSON. This writes the durable reason before denying. New and
+    // soft-uninstalled packages are denied without package I/O or JS import.
+    if (existing[0] && existing[0].status !== "uninstalled") {
+      await pluginLoader.lifecycle.blockActivationInCloud(
+        existing[0].id,
+        "marketplace",
+      );
+    }
+    assertCloudPluginExecutionAllowed({
+      pluginId: catalogItem.id,
+      companyId,
+      source: "marketplace",
+      sink: "loader",
+    });
+  }
+
   if (existing.length > 0) {
-    if (existing[0].version === catalogItem.npm.version) {
+    if (
+      existing[0].status !== "uninstalled" &&
+      existing[0].version === catalogItem.npm.version
+    ) {
       return { pluginId: existing[0].id, alreadyInstalled: true };
     }
-    throw new Error(
+    if (existing[0].status !== "uninstalled") throw new Error(
       `Plugin ${catalogItem.npm.packageName} installed at version ${existing[0].version} for company ${companyId}; ` +
       `catalog requests ${catalogItem.npm.version}. Use the upgrade flow to upgrade.`,
     );

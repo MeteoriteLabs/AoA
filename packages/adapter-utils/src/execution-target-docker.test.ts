@@ -46,16 +46,10 @@ describe("formatDockerBindSource", () => {
 });
 
 describe("buildDockerRunArgs", () => {
-  it("builds docker run args with bind mount, env, image, command, and args", () => {
+  it("legacy profile is unchanged and OMITS --add-host when the bridge is inactive", () => {
     expect(
       buildDockerRunArgs({
-        target: {
-          type: "sandbox-docker",
-          image: "node:22",
-          workdir: "/work",
-          network: "none",
-          env: {},
-        },
+        target: { type: "sandbox-docker", image: "node:22", workdir: "/work", network: "none", env: {} },
         localCwd: "C:\\repo",
         command: "node",
         args: ["script.js"],
@@ -70,8 +64,6 @@ describe("buildDockerRunArgs", () => {
       "type=bind,source=C:/repo,target=/work",
       "--network",
       "none",
-      "--add-host",
-      "host.docker.internal:host-gateway",
       "--env",
       "A=1",
       "--env",
@@ -92,6 +84,82 @@ describe("buildDockerRunArgs", () => {
     });
 
     expect(args).not.toContain("--rm");
+  });
+
+  it("emits --add-host ONLY when the bridge is active AND the target opts in", () => {
+    const withGateway = buildDockerRunArgs(
+      {
+        target: { type: "sandbox-docker", image: "node:22", network: "bridge", allowHostGateway: true, env: {} },
+        localCwd: "/repo",
+        command: "node",
+        args: [],
+        env: {},
+      },
+      { hostGatewayActive: true },
+    );
+    expect(withGateway).toContain("--add-host");
+    expect(withGateway).toContain("host.docker.internal:host-gateway");
+
+    const noOptIn = buildDockerRunArgs(
+      {
+        target: { type: "sandbox-docker", image: "node:22", network: "bridge", allowHostGateway: false, env: {} },
+        localCwd: "/repo",
+        command: "node",
+        args: [],
+        env: {},
+      },
+      { hostGatewayActive: true },
+    );
+    expect(noOptIn).not.toContain("--add-host");
+  });
+
+  it("emits the full hardened flag set incl. --runtime=runsc when isolation is set", () => {
+    const args = buildDockerRunArgs({
+      target: {
+        type: "sandbox-docker",
+        image: "aoa/agent-base:latest",
+        workdir: "/workspace",
+        network: "none",
+        runtime: "runsc",
+        env: {},
+        isolation: {
+          user: "1000:1000",
+          capDropAll: true,
+          noNewPrivileges: true,
+          seccompProfile: "/etc/aoa/seccomp.json",
+          readOnlyRootfs: true,
+          tmpfs: ["/tmp:rw,noexec,nosuid,size=64m", "/home/agent:rw,nosuid,size=256m"],
+          memory: "2g",
+          cpus: "2",
+          pidsLimit: 512,
+          ulimitNofile: 1024,
+          ipcPrivate: true,
+        },
+      },
+      localCwd: "/repo",
+      command: "claude",
+      args: ["-p", "hi"],
+      env: {},
+    });
+    const joined = args.join(" ");
+    expect(joined).toContain("--runtime runsc");
+    expect(joined).toContain("--user 1000:1000");
+    expect(joined).toContain("--cap-drop ALL");
+    expect(joined).toContain("--security-opt no-new-privileges");
+    expect(joined).toContain("--security-opt seccomp=/etc/aoa/seccomp.json");
+    expect(joined).toContain("--read-only");
+    expect(joined).toContain("--tmpfs /tmp:rw,noexec,nosuid,size=64m");
+    expect(joined).toContain("--tmpfs /home/agent:rw,nosuid,size=256m");
+    expect(joined).toContain("--memory 2g");
+    expect(joined).toContain("--memory-swap 2g");
+    expect(joined).toContain("--cpus 2");
+    expect(joined).toContain("--pids-limit 512");
+    expect(joined).toContain("--ulimit nofile=1024:1024");
+    expect(joined).toContain("--ipc private");
+    expect(joined).toContain("--network none");
+    // image + command always last, in order (image, command, then its args)
+    expect(args.slice(-4)).toEqual(["aoa/agent-base:latest", "claude", "-p", "hi"]);
+    expect(args[args.length - 1]).toBe("hi");
   });
 });
 
@@ -138,6 +206,8 @@ describe("runAdapterExecutionTargetProcess sandbox-docker", () => {
         graceSec: 3,
       }),
     );
+    // No bridge started here → host-gateway must not be injected by default.
+    expect(run.mock.calls[0]![2] as string[]).not.toContain("--add-host");
   });
 
   it("strips matching host identity env before Docker spawn", async () => {
@@ -162,7 +232,7 @@ describe("runAdapterExecutionTargetProcess sandbox-docker", () => {
 
     await expect(
       runAdapterExecutionTargetProcess(
-        { type: "sandbox-docker", image: "node:22" },
+        { type: "sandbox-docker", image: "node:22", allowHostGateway: true },
         baseOpts({
           authToken: "server-token",
           apiBaseUrl: "http://127.0.0.1:3100",

@@ -98,7 +98,7 @@ runWorker(plugin, import.meta.url);
 | `onConfigChanged?(newConfig)` | Optional. Apply new config without restart; if omitted, host restarts worker. |
 | `onShutdown?()` | Optional. Clean up before process exit (limited time window). |
 | `onValidateConfig?(config)` | Optional. Return `{ ok, warnings?, errors? }` for settings UI / Test Connection. |
-| `onWebhook?(input)` | Optional. Handle `POST /api/plugins/:pluginId/webhooks/:endpointKey`; required if webhooks declared. |
+| `onWebhook?(input)` | Optional. Handle `POST /api/plugins/:pluginId/webhooks/:endpointKey`; `:pluginId` is the installed row UUID from `PluginHostContext.pluginInstallationId`, not the manifest ID/key. Required if webhooks are declared. |
 
 **Context (`ctx`) in setup:** `config`, `events`, `jobs`, `launchers`, `http`, `secrets`, `activity`, `state`, `entities`, `projects`, `companies`, `issues`, `agents`, `goals`, `data`, `actions`, `streams`, `tools`, `metrics`, `logger`, `manifest`. Worker-side host APIs are capability-gated; declare capabilities in the manifest.
 

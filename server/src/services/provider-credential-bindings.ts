@@ -21,7 +21,8 @@ export class ProviderCredentialBindingError extends Error {
       | "credential_unavailable"
       | "credential_target_mismatch"
       | "credential_owner_inactive"
-      | "credential_path_invalid",
+      | "credential_path_invalid"
+      | "subscription_disabled_multi_tenant",
     message: string,
   ) {
     super(message);
@@ -145,8 +146,25 @@ export async function resolveAgentSubscriptionEnvironment(
     executionTargetId: string;
     env?: NodeJS.ProcessEnv;
     verifyPath?: boolean;
+    /** Caller's deployment trust boundary. When "multi_tenant" this function fails
+     *  closed — a personal subscription is a HOST-tied CLI login and must NEVER be
+     *  materialized on a shared host. Optional so self-hosted callers/tests are
+     *  unaffected; the two runtime callers (heartbeat legacy closure, resolver deps)
+     *  pass their real topology. */
+    trustBoundary?: string;
   },
 ): Promise<NodeJS.ProcessEnv> {
+  // Multi-tenant fail-closed CHOKEPOINT (defense-in-depth). This is the sole
+  // function that builds a subscription auth-home; enforcing the ban HERE makes
+  // "personal_subscription is disabled in multi_tenant" un-bypassable regardless of
+  // which caller reaches it (the new-model resolver backstop and the heartbeat
+  // legacy closure also gate it upstream — this is the last line).
+  if (args.trustBoundary === "multi_tenant") {
+    throw new ProviderCredentialBindingError(
+      "subscription_disabled_multi_tenant",
+      "Personal subscription credentials are disabled on shared multi-tenant hosts.",
+    );
+  }
   const rows = await db
     .select({
       credentialId: providerCredentials.id,

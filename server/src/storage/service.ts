@@ -43,21 +43,66 @@ function splitFilename(filename: string | null): { stem: string; ext: string } {
   };
 }
 
-function ensureCompanyPrefix(companyId: string, objectKey: string): void {
-  const expectedPrefix = `${companyId}/`;
-  if (!objectKey.startsWith(expectedPrefix)) {
-    throw forbidden("Object does not belong to company");
-  }
+/**
+ * Authoritative object-key access guard. Two key shapes are valid for a company:
+ *   - legacy:        `{companyId}/…`
+ *   - tenant-scoped: `{organizationId}/{companyId}/…`
+ * The company segment is the live isolation boundary (companyId is a globally-unique
+ * UUID). When the caller also supplies its resolved `organizationId` (asset-serving
+ * routes), the tenant segment of a tenant-scoped key MUST match it — defense-in-depth
+ * against cross-tenant reads. Callers without org context (`null`) still get the full
+ * company-boundary guarantee, so legacy and tenant-scoped keys remain readable from
+ * every path.
+ */
+function ensureObjectAccess(
+  organizationId: string | null,
+  companyId: string,
+  objectKey: string,
+): void {
   if (objectKey.includes("..")) {
     throw badRequest("Invalid object key");
   }
+  const segments = objectKey.split("/");
+  const legacyMatch = segments[0] === companyId; // {companyId}/…
+  const tenantScopedMatch = !legacyMatch && segments[1] === companyId; // {org}/{companyId}/…
+  if (legacyMatch) {
+    return;
+  }
+  if (tenantScopedMatch) {
+    if (organizationId !== null && segments[0] !== organizationId) {
+      throw forbidden("Object does not belong to organization");
+    }
+    return;
+  }
+  throw forbidden("Object does not belong to company");
+}
+
+/**
+ * Normalize the two accepted call shapes to `[organizationId, companyId, objectKey]`:
+ *   - `(companyId, objectKey)`                 — legacy, org unknown (null)
+ *   - `(organizationId, companyId, objectKey)` — tenant-aware (asset-serving routes)
+ */
+function resolveObjectArgs(
+  a: string | null,
+  b: string,
+  c?: string,
+): [string | null, string, string] {
+  if (c === undefined) {
+    return [null, a as string, b];
+  }
+  return [a, b, c];
 }
 
 function hashBuffer(input: Buffer): string {
   return createHash("sha256").update(input).digest("hex");
 }
 
-function buildObjectKey(companyId: string, namespace: string, originalFilename: string | null): string {
+function buildObjectKey(
+  organizationId: string | null,
+  companyId: string,
+  namespace: string,
+  originalFilename: string | null,
+): string {
   const ns = normalizeNamespace(namespace);
   const now = new Date();
   const year = String(now.getUTCFullYear());
@@ -66,7 +111,10 @@ function buildObjectKey(companyId: string, namespace: string, originalFilename: 
   const { stem, ext } = splitFilename(originalFilename);
   const suffix = randomUUID();
   const filename = `${suffix}-${stem}${ext}`;
-  return `${companyId}/${ns}/${year}/${month}/${day}/${filename}`;
+  // New writes carry the tenant segment when the org is known; otherwise fall back
+  // to the legacy company-only prefix (still isolated — companyId is globally unique).
+  const prefix = organizationId ? `${organizationId}/${companyId}` : companyId;
+  return `${prefix}/${ns}/${year}/${month}/${day}/${filename}`;
 }
 
 function assertPutFileInput(input: PutFileInput): void {
@@ -93,7 +141,12 @@ export function createStorageService(provider: StorageProvider): StorageService 
 
     async putFile(input: PutFileInput): Promise<PutFileResult> {
       assertPutFileInput(input);
-      const objectKey = buildObjectKey(input.companyId, input.namespace, input.originalFilename);
+      const objectKey = buildObjectKey(
+        input.organizationId ?? null,
+        input.companyId,
+        input.namespace,
+        input.originalFilename,
+      );
       const byteSize = input.body.length;
       const contentType = input.contentType.trim().toLowerCase();
       await provider.putObject({
@@ -113,18 +166,21 @@ export function createStorageService(provider: StorageProvider): StorageService 
       };
     },
 
-    async getObject(companyId: string, objectKey: string) {
-      ensureCompanyPrefix(companyId, objectKey);
+    async getObject(a: string | null, b: string, c?: string) {
+      const [organizationId, companyId, objectKey] = resolveObjectArgs(a, b, c);
+      ensureObjectAccess(organizationId, companyId, objectKey);
       return provider.getObject({ objectKey });
     },
 
-    async headObject(companyId: string, objectKey: string) {
-      ensureCompanyPrefix(companyId, objectKey);
+    async headObject(a: string | null, b: string, c?: string) {
+      const [organizationId, companyId, objectKey] = resolveObjectArgs(a, b, c);
+      ensureObjectAccess(organizationId, companyId, objectKey);
       return provider.headObject({ objectKey });
     },
 
-    async deleteObject(companyId: string, objectKey: string) {
-      ensureCompanyPrefix(companyId, objectKey);
+    async deleteObject(a: string | null, b: string, c?: string) {
+      const [organizationId, companyId, objectKey] = resolveObjectArgs(a, b, c);
+      ensureObjectAccess(organizationId, companyId, objectKey);
       await provider.deleteObject({ objectKey });
     },
   };

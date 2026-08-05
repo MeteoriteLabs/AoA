@@ -16,8 +16,9 @@ All environment variables that AoA reads. Grouped by concern. The list is verifi
 | `DATABASE_URL` | (embedded) | PostgreSQL connection string. If unset, AoA boots `embedded-postgres@18.x` automatically |
 | `AOA_HOME` | `~/.aoa` (with legacy `~/.paperclip` fallback) | Base directory for all AoA data. Resolved by `cli/src/config/home.ts`: prefers `~/.aoa/`, falls back to `~/.paperclip/` if the legacy dir exists and the new one does not |
 | `AOA_INSTANCE_ID` | `default` | Instance identifier (for multiple local instances on one machine) |
-| `AOA_DEPLOYMENT_MODE` | `local_trusted` | `local_trusted` or `authenticated` |
-| `AOA_DEPLOYMENT_EXPOSURE` | `private` | `private` or `public`. Only meaningful when `AOA_DEPLOYMENT_MODE=authenticated` |
+| `AOA_RUNTIME_PROCESS_OWNER_ID` | host + `AOA_INSTANCE_ID` fingerprint outside `cloud_auth`; unset in `cloud_auth` | Stable identity for the OS PID namespace/replica that owns `local_process` runtime services. It is required before the unsafe cloud override may start a local runtime service **and on every cloud replica that boots while the shared DB still contains PID-bearing local-runtime rows**. Set a unique value per concurrently live replica/PID namespace (for example a Kubernetes Pod UID), and keep it stable while detached children from that owner can survive a server restart. Never share it across replicas. This is process-safety provenance; `AOA_INSTANCE_ID` and `AOA_EXECUTION_TARGET_ID` are not substitutes. |
+| `AOA_DEPLOYMENT_MODE` | `local_trusted` | `local_trusted`, `authenticated`, or `cloud_auth`. Pass the configured value to manual `pnpm db:migrate` runs so migration safety policy is explicit. |
+| `AOA_DEPLOYMENT_EXPOSURE` | `private` | `private` or `public`. Meaningful for `authenticated`; `cloud_auth` requires `public`. |
 | `AOA_PUBLIC_URL` | (derived) | Public-facing URL for deployment. Used in invite links and webhook URLs |
 | `AOA_DEPLOY_SHA` | (unset) | Exact lowercase 40-character Git commit injected by the trusted deployment workflow. The server exposes it from `/api/health` so deployment health checks can prove the running container matches the requested revision. Leave unset for ordinary local development. |
 | `AOA_IMAGE_REVISION` | `unknown` | Build-time revision written to the container's `org.opencontainers.image.revision` label. When supplied to the server as an exact lowercase 40-character Git SHA, marketplace reconciliation also accepts it as a fallback if `AOA_DEPLOY_SHA` is absent. The trusted remote deployment passes the same reviewed SHA to both values. |
@@ -56,8 +57,52 @@ For horizontally scaled deployments, local-file run logs require sticky routing 
 | `AOA_EXECUTION_OWNERSHIP` | From install profile | Advanced topology override: `user_hosted`, `tenant_hosted`, or `aoa_hosted`. It must agree with `AOA_INSTALL_PROFILE`. |
 | `AOA_CODEX_DEVICE_AUTH` | `false` on remote installs | Enables Codex device-code subscription sign-in on a dedicated `remote_single_tenant` installation. It never enables sign-in on `hosted_multi_tenant`. |
 | `AOA_CLAUDE_PASTE_AUTH` | `false` on remote installs | Enables Claude paste-code subscription sign-in on a dedicated `remote_single_tenant` installation. It never enables sign-in on `hosted_multi_tenant`. |
-| `AOA_EXECUTION_TARGET_ID` | `control-plane` | Stable identity of the execution target that owns the provider-native credential files. Login, verification, binding, and agent execution must use the same value. |
+| `AOA_EXECUTION_TARGET_ID` | `control-plane` | Stable identity of the execution target that owns the provider-native credential files. Login, verification, binding, and agent execution must use the same value. Since Phase 5 (multi-tenant cloud, `execution_targets` registry) this string is an `execution_targets.slug` — the default `control-plane` is the row `ensureControlPlaneExecutionTarget` seeds idempotently at boot (`organization_id = NULL`, `kind = local_host`, `trust_class = local_trusted`). A dedicated worker for a personal subscription is registered with its own slug (`POST /organizations/:orgId/execution-targets`) and that slug is what `AOA_EXECUTION_TARGET_ID` must be set to on that worker. |
 | `AOA_SCOPED_CLI_AUTH` | `false` | When true, subscription-backed agent runs require a verified company/user/provider credential binding and fail closed if it is absent. Verified bindings are preferred even when this flag is false; the flag controls whether an entirely missing binding may fall back to the legacy global CLI home. |
+| `AOA_PROVIDER_RESOLVER` | (unset) | Dark-launch kill-switch for the Phase 4 unified provider-credential resolver. Set to `legacy` to bypass the new `provider_connections` / `provider_assignments` model and resolve credentials via the legacy ladder only (the `company_secrets` API-key env ladder + the subscription auth-home ladder), reproducing pre-Phase-4 behaviour with no redeploy. Any other value — or leaving it unset — uses the unified resolver. Read at `server/src/services/provider-resolution-deps.ts`. |
+
+### Execution targets & gVisor pool egress (multi-tenant cloud, Phase 5)
+
+Phase 5 adds a tenant-scoped `execution_targets` registry (fleet inventory) on
+top of the `AOA_EXECUTION_TARGET_ID` identity above. Runs route to a target by
+credential kind — `execution-target-resolver.ts`: a business (company) API key
+routes to the shared `pooled_gvisor` target, a personal subscription routes to
+the dedicated target whose slug matches its bound `AOA_EXECUTION_TARGET_ID`. No
+new environment variable governs this routing; it reads the `execution_targets`
+table and the P4 credential-kind seam. Self-hosted single-tenant installs are
+unaffected — they never populate `execution_targets` beyond the seeded
+`control-plane` row, and `resolveExecutionTargetForRun` falls back to the local
+driver when no pool target exists.
+
+**Pool egress allowlist policy.** A pooled gVisor run's Docker hardening
+(`--runtime=runsc`, dropped capabilities, read-only rootfs, etc.) is applied by
+the app layer via opt-in `buildDockerRunArgs` isolation flags — see
+[`docs/aoa/guides/gvisor-worker-image.md`](../aoa/guides/gvisor-worker-image.md)
+for the exact flag set. **Network egress filtering is NOT an app-layer
+concern**: `--network none` is the safe default (no egress at all), and a
+pooled run that needs the provider API must run on a **filtered** `bridge`
+network — filtering is a worker-image deliverable (a `DOCKER-USER` iptables/
+nftables policy or an egress proxy) that denies RFC1918, `169.254.0.0/16`
+(cloud metadata, incl. `169.254.169.254`), and the control-plane CIDR, while
+allowing only the provider API hosts and package registries. There is no
+environment variable for this allowlist yet — it is configured on the worker
+image/host, not via AoA server env vars. **As of this writing that firewall has
+not been validated on real hardware** (Task 0's spike is a pending Gate-B step,
+not yet run) — see the guide's status banner before deploying a pool on
+`bridge`.
+
+### Unsandboxed multi-tenant execution gate
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `AOA_ALLOW_UNSANDBOXED_MULTITENANT` | unset (local execution refused) | **Multi-tenant safety gate (D1).** When tenant isolation is enforced (`cloud_auth`), agent/crew/Commander processes, local Docker targets (including a claimed `runtime: "runsc"`), adapter probes, workspace provision/cleanup/jobs, and local runtime-service commands are REFUSED on the control-plane host unless this is set to `1`/`true`/`yes`. Real per-tenant execution isolation is deferred; a runtime string is not worker-plane provenance. New workspace-command configuration is also rejected without this override, while sink checks protect legacy persisted configuration. When set, the process logs one loud process-wide SECURITY warning. Self-hosted deployments (`local_trusted` and `authenticated` single-tenant) ignore this. Do not use the override in production multi-tenant deployments. |
+
+`AOA_RUNTIME_PROCESS_OWNER_ID` prevents one replica from interpreting another
+machine's numeric PID as local. It does not turn the process-local runtime
+maps, desired-state restart, or control APIs into a distributed scheduler.
+Run at most one owner of `local_process` services for a shared deployment;
+horizontal `cloud_auth` deployments are production-safe only with the
+unsandboxed override disabled until the worker/gVisor runtime lands.
 
 ## Agent JWT (signing for `AOA_API_KEY`)
 

@@ -36,7 +36,12 @@ function makeApp(db: unknown, actorOverride?: Record<string, unknown>) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    req.actor = (actorOverride ?? { type: "board", userId: "u1", isInstanceAdmin: true }) as never;
+    const base: any = actorOverride ?? { type: "board", userId: "u1", isInstanceAdmin: true };
+    // Mirror actorMiddleware: a genuine operator carries operator=true alongside
+    // isInstanceAdmin. The operator-plane gate (canManageInstanceSettings) reads it.
+    req.actor = (base.type === "board" && base.operator === undefined
+      ? { ...base, operator: base.isInstanceAdmin === true }
+      : base) as never;
     next();
   });
   app.use("/api", onboardingEnvironmentRoutes(db as never));

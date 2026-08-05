@@ -3,7 +3,25 @@ import {
   ProviderCredentialBindingError,
   chooseGovernedSubscriptionBinding,
   mayUseLegacySubscriptionHome,
+  resolveAgentSubscriptionEnvironment,
 } from "../services/provider-credential-bindings.js";
+
+describe("resolveAgentSubscriptionEnvironment multi_tenant chokepoint (BUG A residual fix)", () => {
+  it("fails closed BEFORE any DB read when trustBoundary is multi_tenant", async () => {
+    // The guard is the first statement, so a dummy db is never touched — proving no
+    // personal-subscription home can be materialized on a shared multi-tenant host,
+    // regardless of caller (new-model resolver deps OR the heartbeat legacy closure).
+    await expect(
+      resolveAgentSubscriptionEnvironment({} as never, {
+        companyId: "co1",
+        agentId: "ag1",
+        provider: "anthropic",
+        executionTargetId: "control-plane",
+        trustBoundary: "multi_tenant",
+      }),
+    ).rejects.toMatchObject({ code: "subscription_disabled_multi_tenant" });
+  });
+});
 
 const base = {
   credentialId: "credential-1",

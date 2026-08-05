@@ -18,7 +18,7 @@ import { validate } from "../middleware/validate.js";
 import { discussionService, logActivity, permissionService } from "../services/index.js";
 import { HttpError } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
-import { assertMemoryApproval, assertRole } from "../middleware/rbac.js";
+import { assertHumanRole, assertMemoryApproval, assertRole } from "../middleware/rbac.js";
 import { threadService, resolveMentionTargets, assertCanPostToThread } from "../services/threads.js";
 import type { Actor } from "../services/threads.js";
 import { threadScopeVersionService } from "../services/thread-scope-versions.js";
@@ -114,7 +114,7 @@ export function discussionRoutes(db: Db) {
   // 1.1 List discussions
   router.get("/companies/:companyId/discussions", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     const filters = {
       status: req.query.status as string | undefined,
@@ -145,8 +145,8 @@ export function discussionRoutes(db: Db) {
     "/companies/:companyId/discussions/inbox",
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
-      await assertRole(db, req, companyId, "founder", "team_lead");
+      await assertCompanyAccess(db, req, companyId);
+      await assertHumanRole(db, req, companyId, "founder", "team_lead");
 
       const { desc } = await import("drizzle-orm");
 
@@ -173,8 +173,8 @@ export function discussionRoutes(db: Db) {
     "/companies/:companyId/discussions/inbox",
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
-      await assertRole(db, req, companyId, "founder", "team_lead");
+      await assertCompanyAccess(db, req, companyId);
+      await assertHumanRole(db, req, companyId, "founder", "team_lead");
 
       const { rawContent, originSource } = req.body as {
         rawContent?: unknown;
@@ -210,7 +210,7 @@ export function discussionRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
 
       const discussion = await svc.getById(companyId, discussionId);
       if (!discussion) {
@@ -226,7 +226,7 @@ export function discussionRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
 
       try {
         const versions = await threadScopeVersionService(db).listVersions(companyId, discussionId);
@@ -244,9 +244,9 @@ export function discussionRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       assertBoard(req);
-      await assertRole(db, req, companyId, "founder", "team_lead");
+      await assertHumanRole(db, req, companyId, "founder", "team_lead");
 
       const actor = getActorInfo(req);
       try {
@@ -274,7 +274,7 @@ export function discussionRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
       const scopeVersionId = req.params.scopeVersionId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
 
       const version = await threadScopeVersionService(db).getVersion(companyId, discussionId, scopeVersionId);
       if (!version) {
@@ -292,9 +292,9 @@ export function discussionRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
       const scopeVersionId = req.params.scopeVersionId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       assertBoard(req);
-      await assertRole(db, req, companyId, "founder", "team_lead");
+      await assertHumanRole(db, req, companyId, "founder", "team_lead");
 
       const version = await threadScopeVersionService(db).updateDraft(companyId, discussionId, scopeVersionId, req.body);
       if (!version) {
@@ -316,7 +316,7 @@ export function discussionRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
       const scopeVersionId = req.params.scopeVersionId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       assertBoard(req);
       await assertRole(db, req, companyId, "founder", "team_lead");
 
@@ -354,7 +354,7 @@ export function discussionRoutes(db: Db) {
       const discussionId = req.params.discussionId as string;
       const scopeVersionId = req.params.scopeVersionId as string;
       const itemId = req.params.itemId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       assertBoard(req);
       await assertRole(db, req, companyId, "founder", "team_lead");
 
@@ -392,7 +392,7 @@ export function discussionRoutes(db: Db) {
       const discussionId = req.params.discussionId as string;
       const scopeVersionId = req.params.scopeVersionId as string;
       const itemId = req.params.itemId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       assertBoard(req);
       await assertRole(db, req, companyId, "founder", "team_lead");
 
@@ -459,7 +459,7 @@ export function discussionRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
       const scopeVersionId = req.params.scopeVersionId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       assertBoard(req);
       await assertRole(db, req, companyId, "founder", "team_lead");
 
@@ -509,7 +509,7 @@ export function discussionRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
       const scopeVersionId = req.params.scopeVersionId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       assertBoard(req);
       await assertRole(db, req, companyId, "founder", "team_lead");
 
@@ -556,7 +556,7 @@ export function discussionRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
       const scopeVersionId = req.params.scopeVersionId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       assertBoard(req);
       await assertRole(db, req, companyId, "founder", "team_lead");
 
@@ -584,7 +584,7 @@ export function discussionRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
       const scopeVersionId = req.params.scopeVersionId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       assertBoard(req);
       await assertRole(db, req, companyId, "founder", "team_lead");
 
@@ -612,8 +612,8 @@ export function discussionRoutes(db: Db) {
     validate(createDiscussionSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
-      await assertRole(db, req, companyId, "founder", "team_lead");
+      await assertCompanyAccess(db, req, companyId);
+      await assertHumanRole(db, req, companyId, "founder", "team_lead");
 
       const actor = getActorInfo(req);
 
@@ -657,8 +657,8 @@ export function discussionRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
-      assertCompanyAccess(req, companyId);
-      await assertRole(db, req, companyId, "founder", "team_lead");
+      await assertCompanyAccess(db, req, companyId);
+      await assertHumanRole(db, req, companyId, "founder", "team_lead");
 
       try {
         const updated = await svc.update(companyId, discussionId, req.body);
@@ -697,7 +697,7 @@ export function discussionRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
 
       const actor = getActorInfo(req);
       const threadActor = await buildActor(req, companyId);
@@ -767,8 +767,8 @@ export function discussionRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
       const entryId = req.params.entryId as string;
-      assertCompanyAccess(req, companyId);
-      await assertRole(db, req, companyId, "founder");
+      await assertCompanyAccess(db, req, companyId);
+      await assertHumanRole(db, req, companyId, "founder");
 
       try {
         const result = await svc.reprocessEntry(companyId, entryId);
@@ -802,8 +802,8 @@ export function discussionRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
-      assertCompanyAccess(req, companyId);
-      await assertRole(db, req, companyId, "founder");
+      await assertCompanyAccess(db, req, companyId);
+      await assertHumanRole(db, req, companyId, "founder");
 
       try {
         const result = await svc.reprocessAllEntries(companyId, discussionId);
@@ -838,8 +838,8 @@ export function discussionRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
       const itemId = req.params.itemId as string;
-      assertCompanyAccess(req, companyId);
-      await assertRole(db, req, companyId, "founder", "team_lead");
+      await assertCompanyAccess(db, req, companyId);
+      await assertHumanRole(db, req, companyId, "founder", "team_lead");
 
       try {
         const updated = await svc.updateItem(companyId, itemId, req.body);
@@ -874,8 +874,8 @@ export function discussionRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
-      assertCompanyAccess(req, companyId);
-      await assertRole(db, req, companyId, "founder");
+      await assertCompanyAccess(db, req, companyId);
+      await assertHumanRole(db, req, companyId, "founder");
 
       const actor = getActorInfo(req);
 
@@ -998,8 +998,8 @@ export function discussionRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const entryId = req.params.entryId as string;
-      assertCompanyAccess(req, companyId);
-      await assertRole(db, req, companyId, "founder", "team_lead");
+      await assertCompanyAccess(db, req, companyId);
+      await assertHumanRole(db, req, companyId, "founder", "team_lead");
 
       const actor = getActorInfo(req);
       try {
@@ -1025,8 +1025,8 @@ export function discussionRoutes(db: Db) {
     "/companies/:companyId/discussions/link",
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
-      await assertRole(db, req, companyId, "founder");
+      await assertCompanyAccess(db, req, companyId);
+      await assertHumanRole(db, req, companyId, "founder");
 
       const { entryId, targetDiscussionId } = req.body;
       if (!entryId || !targetDiscussionId) {
@@ -1134,7 +1134,7 @@ export function discussionRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
 
       // D16 authz gate: advancing to "assign" at L2 triggers auto-approve + task
       // creation + dispatch, which spends budget. The Approve button requires
@@ -1166,7 +1166,7 @@ export function discussionRoutes(db: Db) {
           // At L2, this advance WOULD auto-approve and spend — require the same
           // role as the Approve route (founder or team_lead).
           if (effectiveAutonomy >= 2) {
-            await assertRole(db, req, companyId, "founder", "team_lead");
+            await assertHumanRole(db, req, companyId, "founder", "team_lead");
           }
         }
       }
@@ -1188,7 +1188,7 @@ export function discussionRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const actor = await buildActor(req, companyId);
       try {
         const result = await tSvc.claim(companyId, discussionId, actor);
@@ -1207,7 +1207,7 @@ export function discussionRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const actor = await buildActor(req, companyId);
       try {
         const result = await tSvc.transferOwnership(companyId, discussionId, req.body.toUserId, actor);
@@ -1227,8 +1227,8 @@ export function discussionRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
-      assertCompanyAccess(req, companyId);
-      await assertRole(db, req, companyId, "founder");
+      await assertCompanyAccess(db, req, companyId);
+      await assertHumanRole(db, req, companyId, "founder");
       try {
         // Use Web Crypto for a URL-safe random token. Node 19+/browsers expose
         // `crypto.randomUUID()`; we want a longer 32-byte token so use
@@ -1273,8 +1273,8 @@ export function discussionRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
-      assertCompanyAccess(req, companyId);
-      await assertRole(db, req, companyId, "founder");
+      await assertCompanyAccess(db, req, companyId);
+      await assertHumanRole(db, req, companyId, "founder");
       try {
         const [updated] = await db
           .update(discussions)
@@ -1314,7 +1314,7 @@ export function discussionRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const actor = await buildActor(req, companyId);
       try {
         const result = await tSvc.addParticipant(companyId, discussionId, req.body, actor);
@@ -1332,8 +1332,8 @@ export function discussionRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
-      assertCompanyAccess(req, companyId);
-      await assertRole(db, req, companyId, "founder");
+      await assertCompanyAccess(db, req, companyId);
+      await assertHumanRole(db, req, companyId, "founder");
       const actor = await buildActor(req, companyId);
       try {
         const result = await tSvc.promoteToGoal(companyId, discussionId, req.body, actor);
@@ -1351,8 +1351,8 @@ export function discussionRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
-      assertCompanyAccess(req, companyId);
-      await assertRole(db, req, companyId, "founder");
+      await assertCompanyAccess(db, req, companyId);
+      await assertHumanRole(db, req, companyId, "founder");
       const actor = await buildActor(req, companyId);
       try {
         const result = await tSvc.assignScopeItems(companyId, discussionId, actor);
@@ -1370,7 +1370,7 @@ export function discussionRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const actor = await buildActor(req, companyId);
       try {
         const detail = await svc.getById(companyId, discussionId);
@@ -1423,7 +1423,7 @@ export function discussionRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
       assertBoard(req);
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const actor = await buildActor(req, companyId);
       const parsed = planBodySchema.safeParse(req.body);
       if (!parsed.success) {
@@ -1449,8 +1449,8 @@ export function discussionRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
-      assertCompanyAccess(req, companyId);
-      await assertRole(db, req, companyId, "founder");
+      await assertCompanyAccess(db, req, companyId);
+      await assertHumanRole(db, req, companyId, "founder");
       await db.update(discussions).set({ crewPaused: true, updatedAt: new Date() }).where(and(eq(discussions.id, discussionId), eq(discussions.companyId, companyId)));
       res.json({ crewPaused: true });
     },
@@ -1461,8 +1461,8 @@ export function discussionRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
-      assertCompanyAccess(req, companyId);
-      await assertRole(db, req, companyId, "founder");
+      await assertCompanyAccess(db, req, companyId);
+      await assertHumanRole(db, req, companyId, "founder");
       await db.update(discussions).set({ crewPaused: false, updatedAt: new Date() }).where(and(eq(discussions.id, discussionId), eq(discussions.companyId, companyId)));
       res.json({ crewPaused: false });
     },
@@ -1484,8 +1484,8 @@ export function discussionRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const itemId = req.params.itemId as string;
-      assertCompanyAccess(req, companyId);
-      await assertRole(db, req, companyId, "founder", "team_lead");
+      await assertCompanyAccess(db, req, companyId);
+      await assertHumanRole(db, req, companyId, "founder", "team_lead");
 
       const parsed = triageBodySchema.safeParse(req.body);
       if (!parsed.success) {
@@ -1655,7 +1655,7 @@ export function discussionRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const actor = await buildActor(req, companyId);
 
       const parsed = spinOffBodySchema.safeParse(req.body);
@@ -1687,7 +1687,7 @@ export function discussionRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       assertBoard(req);
       await assertRole(db, req, companyId, "founder");
       const actor = await buildActor(req, companyId);
@@ -1714,7 +1714,7 @@ export function discussionRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       assertBoard(req);
       await assertRole(db, req, companyId, "founder");
       const actor = await buildActor(req, companyId);
@@ -1793,7 +1793,7 @@ export function discussionRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const itemId = req.params.itemId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const actor = await buildActor(req, companyId);
 
       const parsed = routingBodySchema.safeParse(req.body);
@@ -1825,7 +1825,7 @@ export function discussionRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const fromId = req.params.fromId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const actor = await buildActor(req, companyId);
 
       const parsed = createLinkSchema.safeParse(req.body);
@@ -1850,7 +1850,7 @@ export function discussionRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const id = req.params.id as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const actor = await buildActor(req, companyId);
 
       try {
@@ -1891,12 +1891,12 @@ export function discussionRoutes(db: Db) {
       const proposalEntryId = req.params.proposalEntryId as string;
 
       // ── Auth: 1. Company access ────────────────────────────────────────────
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
 
       // ── Auth: 2. Role check — founder or team_lead can create tasks ────────
       // This is the primary authorization gate. It rejects with 403 for
       // team_member, unauthenticated, and agent actors (agents have separate paths).
-      await assertRole(db, req, companyId, "founder", "team_lead");
+      await assertHumanRole(db, req, companyId, "founder", "team_lead");
 
       // ── Auth: 3. Resolve approver identity ────────────────────────────────
       const actor = getActorInfo(req);
@@ -1991,7 +1991,7 @@ export function discussionRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const actor = await buildActor(req, companyId);
 
       const rawSince = Array.isArray(req.query.sinceSeq)

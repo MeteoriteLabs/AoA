@@ -12,9 +12,9 @@ const TASK_BUCKETS = new Set<CockpitTaskBucket>([
   "awaiting_review",
 ]);
 
-function requireBoardActor(req: Request, companyId: string) {
+async function requireBoardActor(db: Db, req: Request, companyId: string) {
   // Company access stays first so unauthenticated callers receive 401.
-  assertCompanyAccess(req, companyId);
+  await assertCompanyAccess(db, req, companyId);
   assertBoard(req);
   if (req.actor.type !== "board" || !req.actor.userId) {
     throw unauthorized("Board authentication required");
@@ -32,13 +32,13 @@ export function cockpitRoutes(db: Db) {
 
   router.get("/companies/:companyId/cockpit", async (req, res) => {
     const companyId = req.params.companyId as string;
-    const actor = requireBoardActor(req, companyId);
+    const actor = await requireBoardActor(db, req, companyId);
     res.json(await svc.get(companyId, actor));
   });
 
   router.get("/companies/:companyId/cockpit/tasks", async (req, res) => {
     const companyId = req.params.companyId as string;
-    const actor = requireBoardActor(req, companyId);
+    const actor = await requireBoardActor(db, req, companyId);
     const rawBucket = req.query.bucket;
     if (typeof rawBucket !== "string" || !TASK_BUCKETS.has(rawBucket as CockpitTaskBucket)) {
       throw badRequest("bucket must be mine, managed, or awaiting_review");
@@ -68,7 +68,7 @@ export function cockpitRoutes(db: Db) {
 
   router.get("/companies/:companyId/cockpit/counts", async (req, res) => {
     const companyId = req.params.companyId as string;
-    const actor = requireBoardActor(req, companyId);
+    const actor = await requireBoardActor(db, req, companyId);
     res.json(await svc.getCounts(companyId, actor));
   });
 

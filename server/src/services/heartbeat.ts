@@ -30,6 +30,26 @@ import {
   workQuestions,
 } from "@armyofagents/db";
 import { resolveEnvironmentRuntimeConfig } from "./environment-resolver.js";
+import {
+  resolveExecutionTargetForRun,
+  executionTargetToAdapterConfig,
+} from "./execution-target-resolver.js";
+import {
+  mergeResolvedExecutionTarget,
+  handleExecutionTargetRoutingError,
+  resolveHeartbeatExecutionTargetOrganizationId,
+} from "./heartbeat-execution-target.js";
+import type { TrustBoundary } from "./cli-auth-topology.js";
+import { assertUnsandboxedMultitenantAllowed } from "./unsandboxed-multitenant-guard.js";
+import { tenantIsolationEnforced } from "../config/deployment-mode.js";
+import {
+  claimQueuedRunsWithOrgCapacity,
+  HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT,
+  HEARTBEAT_MAX_CONCURRENT_RUNS_MAX,
+  normalizeMaxConcurrentRuns,
+  resolveCompanyOrganizationId,
+  runClaimMirrorsBestEffort,
+} from "./org-concurrency.js";
 import { environmentRunOrchestrator, type EnvironmentAcquisitionResult } from "./environment-run-orchestrator.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { conflict, notFound, HttpError } from "../errors.js";
@@ -176,8 +196,11 @@ import {
 import { resolveRuntimeDecisionRoutingEnabled } from "./runtime-decision-routing-flag.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
-export const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
-export const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
+export {
+  HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT,
+  HEARTBEAT_MAX_CONCURRENT_RUNS_MAX,
+  normalizeMaxConcurrentRuns,
+};
 export const MAX_TURN_CONTINUATION_RETRY_REASON = "max_turn_continuation";
 export const MAX_TURN_CONTINUATION_WAKE_REASON = "max_turn_continuation_retry";
 export const MAX_TURN_CONTINUATION_MAX_ATTEMPTS = 2;
@@ -297,20 +320,53 @@ function appendExcerpt(prev: string, chunk: string) {
   return appendWithCap(prev, chunk, MAX_EXCERPT_BYTES);
 }
 
-export function normalizeMaxConcurrentRuns(value: unknown) {
-  const parsed = Math.floor(asNumber(value, HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT));
-  if (!Number.isFinite(parsed)) return HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT;
-  return Math.max(HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT, Math.min(HEARTBEAT_MAX_CONCURRENT_RUNS_MAX, parsed));
-}
-
-export function resolveAdapterExecutionContext(
+// D1: RAW resolver — does NOT apply the D1 unsandboxed-multitenant gate.
+// Production dispatch sinks MUST call `resolveGuardedAdapterExecutionContext`;
+// direct use is only for isolated hardening unit tests. Named `...Unguarded` so a
+// future 4th dispatch sink cannot grab the canonical-looking name and silently
+// bypass the gate.
+export function resolveAdapterExecutionContextUnguarded(
   config: unknown,
   adapter: Pick<ServerAdapterModule, "getRuntimeCommandSpec">,
+  // Whether this run executes on SHARED multi-tenant infra. Threaded to the
+  // execution-target SINK so a tenant-authored adapterConfig.executionTarget
+  // (free-form z.record) cannot weaken the docker sandbox on shared infra
+  // (P5 sink-level hardening — closes the --add-host SSRF route + sandbox escape).
+  // Fail-closed DEFAULT `true`: a caller that forgets to resolve the boundary
+  // hardens rather than exposes. The two production callers (heartbeat run loop +
+  // crew runner) pass the resolved trust boundary explicitly.
+  multiTenant = true,
 ) {
   const adapterConfigObject = parseObject(config);
-  const executionTarget = resolveAdapterExecutionTarget(adapterConfigObject.executionTarget);
+  const executionTarget = resolveAdapterExecutionTarget(adapterConfigObject.executionTarget, multiTenant);
   const runtimeCommandSpec = adapter.getRuntimeCommandSpec?.(adapterConfigObject) ?? null;
   return { executionTarget, runtimeCommandSpec };
+}
+
+// D1: resolve the run's execution target AND apply the unsandboxed multi-tenant
+// gate in one call, so every dispatch sink (org-agent heartbeat + crew runner)
+// gets identical refuse/allow behavior. NOTE the two signals are intentionally
+// DECOUPLED (see the ★ signal correction): hardening keys off
+// `trustBoundary === "multi_tenant"` (broad — also neutralizes a tenant-authored
+// docker target on an `authenticated` self-host, a safe no-op on a local target),
+// while the REFUSAL keys off `tenantIsolationEnforced` (cloud_auth only). This
+// keeps `authenticated` self-hosters running (hardening no-ops on their local
+// target; the guard does not fire) while cloud_auth refuses.
+export function resolveGuardedAdapterExecutionContext(
+  config: unknown,
+  adapter: Pick<ServerAdapterModule, "getRuntimeCommandSpec">,
+  opts: { trustBoundary: TrustBoundary; tenantIsolationEnforced: boolean; sink: string },
+) {
+  const resolved = resolveAdapterExecutionContextUnguarded(
+    config,
+    adapter,
+    opts.trustBoundary === "multi_tenant",
+  );
+  assertUnsandboxedMultitenantAllowed(resolved.executionTarget, {
+    tenantIsolationEnforced: opts.tenantIsolationEnforced,
+    sink: opts.sink,
+  });
+  return resolved;
 }
 
 type HeartbeatRuntimeDecisionEvent = {
@@ -668,7 +724,7 @@ export function shouldUsePersistedExecutionWorkspaceForRun(input: {
   hasIssueScopedExecutionWorkspace: boolean;
   existingExecutionWorkspaceStatus?: string | null;
 }): boolean {
-  if (!input.existingExecutionWorkspaceStatus || input.existingExecutionWorkspaceStatus === "archived") {
+  if (!input.existingExecutionWorkspaceStatus || !["active", "idle", "in_review"].includes(input.existingExecutionWorkspaceStatus)) {
     return false;
   }
   return (
@@ -2091,7 +2147,7 @@ export function heartbeatService(db: Db) {
           wakeupRequestId: dueRun.wakeupRequestId,
         },
       });
-      await startNextQueuedRunForAgent(dueRun.agentId);
+      await dispatchQueuedRunsAfterAgentSignal(dueRun.agentId);
     }
 
     return { checked: dueRuns.length, promoted, cancelled };
@@ -2174,6 +2230,14 @@ export function heartbeatService(db: Db) {
       .then((rows) => rows[0] ?? null);
     if (!claimed) return null;
 
+    await publishQueuedRunClaim(claimed, claimedAt);
+    return claimed;
+  }
+
+  async function publishQueuedRunClaim(
+    claimed: typeof heartbeatRuns.$inferSelect,
+    claimedAt = new Date(),
+  ) {
     publishLiveEvent({
       companyId: claimed.companyId,
       type: "heartbeat.run.status",
@@ -2191,7 +2255,6 @@ export function heartbeatService(db: Db) {
     });
 
     await setWakeupStatus(claimed.wakeupRequestId, "claimed", { claimedAt });
-    return claimed;
   }
 
   async function finalizeAgentStatus(
@@ -2294,7 +2357,7 @@ export function heartbeatService(db: Db) {
         await releaseIssueExecutionAndPromote(updatedRun);
       }
       await finalizeAgentStatus(run.agentId, "failed");
-      await startNextQueuedRunForAgent(run.agentId);
+      await dispatchQueuedRunsAfterAgentSignal(run.agentId);
       // No runningProcesses.delete here: this branch is guarded by
       // `if (runningProcesses.has(run.id)) continue` above, so there is nothing
       // to delete. Deregistration is owned by spawnTrackedChild's close/error
@@ -2493,13 +2556,78 @@ export function heartbeatService(db: Db) {
     }
   }
 
-  async function startNextQueuedRunForAgent(agentId: string) {
+  async function startQueuedRunsForSingleAgent(agentId: string, expectedOrganizationId?: string) {
     return withAgentStartLock(agentId, async () => {
       const agent = await getAgent(agentId);
       if (!agent) return [];
+
+      if (tenantIsolationEnforced()) {
+        const organizationId = await resolveCompanyOrganizationId(db, agent.companyId);
+        if (!organizationId) {
+          throw new Error(`Cloud heartbeat run cannot resolve an Organization for company ${agent.companyId}.`);
+        }
+        if (expectedOrganizationId && organizationId !== expectedOrganizationId) return [];
+        const cloudClaims = await claimQueuedRunsWithOrgCapacity(db, {
+          organizationId,
+        });
+        await runClaimMirrorsBestEffort(
+          cloudClaims,
+          publishQueuedRunClaim,
+          (err, claimedRun) => {
+            logger.warn(
+              { err, runId: claimedRun.id },
+              "queued heartbeat claim mirror failed; launching committed run",
+            );
+          },
+        );
+        if (cloudClaims.length === 0) return [];
+
+        for (const claimedRun of cloudClaims) {
+          void executeRun(claimedRun.id).catch(async (err) => {
+            logger.error({ err, runId: claimedRun.id }, "queued heartbeat execution failed");
+            const current = await getRun(claimedRun.id);
+            if (!current) return;
+
+            await executionWorkspacesSvc.releaseWorkspaceRunsForRun(current.id);
+            await releaseRuntimeServicesForRun(current.id).catch(() => undefined);
+            await environmentRuntimeService(db).releaseRunLeases(current.id).catch(() => undefined);
+
+            if (current.status === "queued" || current.status === "running") {
+              const message = err instanceof Error ? err.message : String(err);
+              const failed = await setRunStatus(current.id, "failed", {
+                error: message,
+                errorCode: "pre_spawn_failed",
+                finishedAt: new Date(),
+              });
+              await setWakeupStatus(current.wakeupRequestId, "failed", {
+                finishedAt: new Date(),
+                error: message,
+              });
+              await cancelRuntimeDecisionPromptsForRun(current, "run failed");
+              if (failed) {
+                await appendRunEvent(failed, 1, {
+                  eventType: "lifecycle",
+                  stream: "system",
+                  level: "error",
+                  message,
+                });
+                await releaseIssueExecutionAndPromote(failed);
+              }
+              await finalizeAgentStatus(current.agentId, "failed");
+            }
+
+            await dispatchQueuedRunsAfterAgentSignal(current.agentId);
+          });
+        }
+        return cloudClaims;
+      }
+
       const policy = parseHeartbeatPolicy(agent);
       const runningCount = await countRunningRunsForAgent(agentId);
       const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
+
+      // Self-hosted keeps the pre-Phase-5 per-agent-only path. The sentinel
+      // Organization must not impose a hosted quota on a local instance.
       if (availableSlots <= 0) return [];
 
       const queuedRuns = await db
@@ -2551,11 +2679,30 @@ export function heartbeatService(db: Db) {
             await finalizeAgentStatus(current.agentId, "failed");
           }
 
-          await startNextQueuedRunForAgent(current.agentId);
+          await dispatchQueuedRunsAfterAgentSignal(current.agentId);
         });
       }
       return claimedRuns;
     });
+  }
+
+  async function dispatchQueuedRunsAfterAgentSignal(agentId: string) {
+    if (!tenantIsolationEnforced()) {
+      return startQueuedRunsForSingleAgent(agentId);
+    }
+
+    const triggerAgent = await getAgent(agentId);
+    if (!triggerAgent) return [];
+    const organizationId = await resolveCompanyOrganizationId(db, triggerAgent.companyId);
+    if (!organizationId) {
+      throw new Error(`Cloud heartbeat run cannot resolve an Organization for company ${triggerAgent.companyId}.`);
+    }
+
+    // The cloud claimant scans the Organization queue once, skips capped
+    // agents, and fills shared capacity in global FIFO order under the
+    // Organization advisory lock. The trigger agent only supplies the local
+    // in-process lock; claims may belong to any agent in this Organization.
+    return startQueuedRunsForSingleAgent(agentId, organizationId);
   }
 
   async function getLatestRunForSession(
@@ -3037,15 +3184,207 @@ export function heartbeatService(db: Db) {
     // Everything in `resolvedEnv` — project and environment scopes included, not
     // just the agent's own binding — outranks the company default, which is what
     // "the company key is the LAST stop before the host CLI's own login" means.
-    const resolvedConfig = (await secretsSvc.applyCompanyKeyFallbackForRuntime(
-      agent.companyId,
-      agent.adapterType,
+    // Unified provider-credential resolution (Phase 4). The org heartbeat keeps its
+    // bespoke 3-scope `resolvedEnv` assembly above (project → environment → agent),
+    // then routes the company-key fallback THROUGH the resolver so the new
+    // provider_connections model wins when an assignment exists and the legacy
+    // ladder (company-key + subscription-home) stays byte-identical otherwise.
+    // Plan's stale local names (`heartbeatDeploymentMode`/`heartbeatDeploymentExposure`)
+    // do NOT exist here; deployment mode/exposure come from loadConfig() (the same
+    // source providers.ts uses to build the CLI-auth topology).
+    const { resolveProviderCredential, applyResolvedCredential, toExecutionTargetHint } =
+      await import("./provider-resolution.js");
+    const { buildResolveDeps } = await import("./provider-resolution-deps.js");
+    const { resolveCliAuthTopology } = await import("./cli-auth-topology.js");
+    const { loadConfig: loadHeartbeatDeployConfig } = await import("../config.js");
+    const heartbeatDeployConfig = loadHeartbeatDeployConfig();
+    const hbTopology = resolveCliAuthTopology({
+      deploymentMode: heartbeatDeployConfig.deploymentMode,
+      deploymentExposure: heartbeatDeployConfig.deploymentExposure,
+    });
+    const hbProviderId =
+      agent.adapterType === "codex_local"
+        ? "openai"
+        : agent.adapterType === "claude_local"
+          ? "anthropic"
+          : agent.adapterType;
+    const hbDeps = {
+      ...buildResolveDeps(db, hbTopology),
+      legacyResolveConfig: async (cfg: Record<string, unknown>) =>
+        secretsSvc.applyCompanyKeyFallbackForRuntime(
+          agent.companyId,
+          agent.adapterType,
+          cfg,
+          { consumerType: "agent", consumerId: agent.id, ...secretActorContext },
+        ),
+      // The former standalone subscription block (was heartbeat.ts :3991-4035)
+      // becomes the legacy subscription fallback, preserving the
+      // mayUseLegacySubscriptionHome semantics for unmigrated companies.
+      legacySubscriptionEnv: async (postLegacyEnv: Record<string, string>) => {
+        // Multi-tenant fail-closed: the legacy subscription-home fallback is a SECOND
+        // resolution path, parallel to the new-model connection backstop. A founder's
+        // legacy personal_subscription credential + binding SURVIVE a self-hosted →
+        // multi_tenant data-dir cutover (the backfill/login gates only stop NEW rows,
+        // they do not delete preserved ones), so this path must ALSO refuse to inject
+        // a host-tied CLI login on a shared host. (resolveAgentSubscriptionEnvironment
+        // also fails closed on trustBoundary === "multi_tenant" as the chokepoint.)
+        if (hbTopology.trustBoundary === "multi_tenant") return null;
+        if (hbProviderId !== "openai" && hbProviderId !== "anthropic") return null;
+        // Read the POST-company-key env (the resolver passes it in) so the
+        // "company key present ⇒ skip subscription home" short-circuit matches the
+        // pre-P4 ordering. Reading the raw pre-fallback `resolvedEnv` here would add
+        // a CODEX_HOME/CLAUDE_CONFIG_DIR redirect on top of a company key for an
+        // unmigrated company that has BOTH — a strangler-faithfulness regression.
+        const cfgEnv = postLegacyEnv;
+        const apiKeyName = hbProviderId === "openai" ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY";
+        if (typeof cfgEnv[apiKeyName] === "string" && cfgEnv[apiKeyName].trim().length > 0) {
+          return null;
+        }
+        const scopedRequired = /^(1|true|yes)$/i.test(
+          process.env.AOA_SCOPED_CLI_AUTH?.trim() ?? "",
+        );
+        // ── P5 REBASE TARGET ──────────────────────────────────────────────────
+        // The dedicated-target throw relocated here from the deleted standalone
+        // subscription block. Phase 5 must rebase its "dedicated-target throw
+        // replacement" onto THIS local-target branch (and/or the resolver's
+        // execution-target seam) — NOT the deleted :3991-4035 block, which is gone.
+        const targetConfig = parseObject(
+          (mergedConfigWithEnvironmentTarget as Record<string, unknown>).executionTarget,
+        );
+        const targetType = typeof targetConfig.type === "string" ? targetConfig.type : "local";
+        if (targetType !== "local" && scopedRequired) {
+          throw new Error(
+            "Governed subscription credentials currently require the dedicated local execution target.",
+          );
+        }
+        if (targetType !== "local") return null;
+        try {
+          const boundEnv = await resolveAgentSubscriptionEnvironment(db, {
+            companyId: agent.companyId,
+            agentId: agent.id,
+            provider: hbProviderId,
+            executionTargetId: process.env.AOA_EXECUTION_TARGET_ID?.trim() || "control-plane",
+            trustBoundary: hbTopology.trustBoundary,
+          });
+          const out: Record<string, string> = {};
+          for (const [k, v] of Object.entries(boundEnv)) if (typeof v === "string") out[k] = v;
+          return out;
+        } catch (error) {
+          if (!mayUseLegacySubscriptionHome(error, scopedRequired)) throw error;
+          return null;
+        }
+      },
+    };
+    const hbResolved = await resolveProviderCredential(
+      db,
       {
-        ...mergedConfigWithEnvironmentTarget,
-        env: resolvedEnv,
-      } as Record<string, unknown>,
-      { consumerType: "agent", consumerId: agent.id, ...secretActorContext },
-    )) as Record<string, unknown>;
+        // organizationId null keeps org_default rows INERT (candidateMatchesScope
+        // fails closed on a null org id — M1). Threading the company's real
+        // organization_id here to activate org_default resolution is a follow-up;
+        // company_default + agent_override already work with null.
+        organizationId: null,
+        companyId: agent.companyId,
+        agentId: agent.id,
+        actorKind: "org",
+        adapterType: agent.adapterType,
+        provider: hbProviderId,
+        executionTargetId: process.env.AOA_EXECUTION_TARGET_ID?.trim() || "control-plane",
+        currentEnv: resolvedEnv as Record<string, string>,
+        context: { consumerType: "agent", consumerId: agent.id, ...secretActorContext },
+      },
+      hbDeps,
+    );
+    let resolvedConfig = applyResolvedCredential(
+      { ...mergedConfigWithEnvironmentTarget, env: resolvedEnv } as Record<string, unknown>,
+      hbResolved,
+    ) as Record<string, unknown>;
+
+    // P4→P5 SEAM (wired). Normalize the resolution for Phase 5's execution-target
+    // selector. P5 Task 9 will read `p4CredentialHint.credentialKind` +
+    // `p4CredentialHint.executionTargetSlug` instead of querying provider_credentials
+    // directly. There is no P5 run-context object on this branch yet, so it is a
+    // run-scoped LOCAL here (logged for observability) — a follow-up attaches it to
+    // the run context P5 threads. No field is fabricated on an unrelated object.
+    const p4CredentialHint = toExecutionTargetHint(hbResolved);
+    logger.debug(
+      { companyId: agent.companyId, agentId: agent.id, runId: run.id, p4CredentialHint },
+      "heartbeat: P4→P5 credential hint resolved (run-scope local; attach to P5 run context as a follow-up)",
+    );
+
+    // ── P5 Task 9: route this run to the credential-appropriate execution target ──
+    // Consume P4's normalized seam (p4CredentialHint) directly — do NOT re-read
+    // provider_credentials. Business key ("company_api_key") → shared pool;
+    // "personal_subscription" → its pinned dedicated target (fail-closed on a slug
+    // mismatch). The resolver gate at provider-resolution.ts:327 skips
+    // personal_subscription candidates when !selfHostedSingleTenant, so
+    // credentialKind is NEVER "personal_subscription" on a shared host. That gate
+    // does NOT, however, make the null-target local fallback below self-hosted-only:
+    // a company_api_key run on SHARED infra whose org has no pooled_gvisor target
+    // configured (DEFAULT-OFF gVisor) also resolves to null and falls back to the
+    // local driver — on shared infra. Closing that shared-infra-no-pool fallback is
+    // a separate guard (tracked as D1), NOT added here. When no execution target is
+    // configured (DEFAULT-OFF gVisor / self-hosted single tenant) the resolver
+    // returns null → the run keeps its existing (environment or local)
+    // executionTarget untouched (config reference preserved). Routing is best-effort:
+    // a routing error (e.g. an unavailable environment pin) logs and falls back to
+    // local rather than failing the run.
+    const executionTargetOrganizationId = await resolveHeartbeatExecutionTargetOrganizationId(db, {
+      companyId: agent.companyId,
+      tenantIsolationEnforced: tenantIsolationEnforced(),
+    });
+    const routedExecutionTarget = await resolveExecutionTargetForRun(db, {
+      organizationId: executionTargetOrganizationId,
+      companyId: agent.companyId,
+      credentialKind: p4CredentialHint.credentialKind,
+      executionTargetSlug: p4CredentialHint.executionTargetSlug,
+      pinnedTargetId: environmentRuntime.executionTargetId ?? null,
+    }).catch((error) => {
+      const hasExplicitPin = environmentRuntime.executionTargetId != null;
+      // Decision #117 §4: an explicit pin OR a personal_subscription run must fail
+      // closed. Both re-raise below (via handleExecutionTargetRoutingError) into the
+      // run crash-path — never silently fall back to the local host.
+      const failsClosed = hasExplicitPin || p4CredentialHint.credentialKind === "personal_subscription";
+      if (failsClosed) {
+        logger.error(
+          {
+            companyId: agent.companyId,
+            agentId: agent.id,
+            runId: run.id,
+            pinnedTargetId: environmentRuntime.executionTargetId ?? null,
+            credentialKind: p4CredentialHint.credentialKind,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          "heartbeat: execution target unavailable — failing closed",
+        );
+      } else {
+        logger.debug(
+          {
+            companyId: agent.companyId,
+            agentId: agent.id,
+            runId: run.id,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          "heartbeat: execution-target routing fell back to local",
+        );
+      }
+      return handleExecutionTargetRoutingError(error, {
+        hasExplicitPin,
+        credentialKind: p4CredentialHint.credentialKind,
+      });
+    });
+    resolvedConfig = mergeResolvedExecutionTarget(
+      resolvedConfig,
+      routedExecutionTarget
+        ? executionTargetToAdapterConfig(
+            routedExecutionTarget,
+            // Deployment-mode-aware hardening: only weaken-proof the sandbox on SHARED
+            // infra. On the founder's own box (self-hosted single_user/single_tenant)
+            // the target config is trusted and honored (local MCP bridge + custom
+            // network/isolation). hbTopology is already resolved above (:3081).
+            hbTopology.trustBoundary === "multi_tenant",
+          )
+        : null,
+    );
 
     // ── Issue ref for execution workspace ───────────────────────────
     const issueRef = issueContext
@@ -3321,7 +3660,8 @@ export function heartbeatService(db: Db) {
       // ── Persist execution workspace ─────────────────────────────────
       try {
         persistedExecutionWorkspace = workspaceToUpdate
-          ? await executionWorkspacesSvc.update(workspaceToUpdate.id, {
+          ? workspaceToUpdate.updatedAt
+            ? await executionWorkspacesSvc.updateIfVersion(workspaceToUpdate.id, workspaceToUpdate.updatedAt, {
               cwd: executionWorkspace.cwd,
               repoUrl: executionWorkspace.repoUrl,
               baseRef: executionWorkspace.repoRef,
@@ -3335,7 +3675,8 @@ export function heartbeatService(db: Db) {
                 source: executionWorkspace.source,
                 createdByRuntime: executionWorkspace.created,
               },
-            })
+              }, ["active", "idle", "in_review"])
+            : null
           : resolvedProjectId
             ? await executionWorkspacesSvc.createTaskOwnedIdempotent({
                 companyId: agent.companyId,
@@ -3368,6 +3709,29 @@ export function heartbeatService(db: Db) {
                 },
               })
             : null;
+        if (workspaceToUpdate && !persistedExecutionWorkspace) {
+          const reFetched = await executionWorkspacesSvc.getById(workspaceToUpdate.id);
+          if (reFetched && reFetched.status !== "archived") {
+            persistedExecutionWorkspace = await executionWorkspacesSvc.update(workspaceToUpdate.id, {
+              cwd: executionWorkspace.cwd,
+              repoUrl: executionWorkspace.repoUrl,
+              baseRef: executionWorkspace.repoRef,
+              branchName: executionWorkspace.branchName,
+              providerType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "local_fs",
+              providerRef: executionWorkspace.worktreePath,
+              status: "active",
+              lastUsedAt: new Date(),
+              metadata: {
+                ...(reFetched.metadata ?? {}),
+                source: executionWorkspace.source,
+                createdByRuntime: executionWorkspace.created,
+              },
+            });
+          }
+        }
+        if (workspaceToUpdate && !persistedExecutionWorkspace) {
+          throw new Error("Execution workspace changed or became unavailable before the run could claim it");
+        }
       } catch (error) {
         if (executionWorkspace.created) {
           try {
@@ -3794,6 +4158,16 @@ export function heartbeatService(db: Db) {
           config: resolvedConfigWithEnvironmentAcquisition,
           adapterEnv,
           onLog,
+          activationGuard: persistedExecutionWorkspace
+            ? async () => {
+                const current = await executionWorkspacesSvc.getById(persistedExecutionWorkspace!.id);
+                return Boolean(
+                  current &&
+                  ["active", "idle", "in_review"].includes(current.status) &&
+                  String(current.updatedAt) === String(persistedExecutionWorkspace!.updatedAt)
+                );
+              }
+            : undefined,
         });
         if (runtimeServices.length > 0) {
           context.paperclipRuntimeServices = runtimeServices;
@@ -3971,7 +4345,7 @@ export function heartbeatService(db: Db) {
         const pluginToolDispatcher: PluginToolDispatcher | undefined =
           (globalThis as any).__paperclipPluginToolDispatcher;
         if (pluginToolDispatcher) {
-          const pluginTools = pluginToolDispatcher.listToolsForAgent();
+          const pluginTools = pluginToolDispatcher.listToolsForAgent({ companyId: agent.companyId });
           if (pluginTools.length > 0) {
             context.pluginTools = pluginTools.map((t: { name: string; displayName: string; description: string }) => ({
               name: t.name,
@@ -3989,50 +4363,14 @@ export function heartbeatService(db: Db) {
 
       // ── Auto-enable skills mentioned in the issue body/comments ──────
       let runScopedConfig: Record<string, unknown> = resolvedConfigWithEnvironmentAcquisition;
-      const subscriptionProvider =
-        agent.adapterType === "codex_local"
-          ? "openai"
-          : agent.adapterType === "claude_local"
-            ? "anthropic"
-            : null;
-      const scopedCliAuthEnabled = /^(1|true|yes)$/i.test(
-        process.env.AOA_SCOPED_CLI_AUTH?.trim() ?? "",
-      );
-      if (subscriptionProvider) {
-        const configuredEnv = parseObject(runScopedConfig.env);
-        const apiKeyName =
-          subscriptionProvider === "openai" ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY";
-        const hasApiKey =
-          typeof configuredEnv[apiKeyName] === "string" &&
-          String(configuredEnv[apiKeyName]).trim().length > 0;
-        if (!hasApiKey) {
-          const targetConfig = parseObject(runScopedConfig.executionTarget);
-          const targetType =
-            typeof targetConfig.type === "string" ? targetConfig.type : "local";
-          if (targetType !== "local" && scopedCliAuthEnabled) {
-            throw new Error(
-              "Governed subscription credentials currently require the dedicated local execution target.",
-            );
-          }
-          if (targetType === "local") {
-            try {
-              const boundEnv = await resolveAgentSubscriptionEnvironment(db, {
-                companyId: agent.companyId,
-                agentId: agent.id,
-                provider: subscriptionProvider,
-                executionTargetId:
-                  process.env.AOA_EXECUTION_TARGET_ID?.trim() || "control-plane",
-              });
-              runScopedConfig = {
-                ...runScopedConfig,
-                env: { ...configuredEnv, ...boundEnv },
-              };
-            } catch (error) {
-              if (!mayUseLegacySubscriptionHome(error, scopedCliAuthEnabled)) throw error;
-            }
-          }
-        }
-      }
+      // Phase 4: the standalone subscription-home block that used to live here
+      // (company-key-present check → dedicated-target throw → resolveAgentSubscription
+      // Environment → mayUseLegacySubscriptionHome) has been folded into the unified
+      // resolver above — specifically the `legacySubscriptionEnv` closure of `hbDeps`,
+      // which the resolver's legacy fallback invokes. `resolvedConfig` (and therefore
+      // `runScopedConfig`) already carries any subscription-home env. The
+      // dedicated-target throw is preserved in that closure (marked "P5 REBASE
+      // TARGET"). Nothing else in this section changed.
       try {
         const mentionedSkillKeys = await resolveRunScopedMentionedSkillKeys(
           db,
@@ -4347,9 +4685,19 @@ export function heartbeatService(db: Db) {
         await originalOnLog(stream, chunk);
       };
 
-      const { executionTarget, runtimeCommandSpec } = resolveAdapterExecutionContext(
+      const { executionTarget, runtimeCommandSpec } = resolveGuardedAdapterExecutionContext(
         runScopedConfig,
         adapter,
+        // Sink-level multi_tenant hardening (trustBoundary) + D1 unsandboxed gate
+        // (cloud_auth): neutralize a tenant-authored adapterConfig.executionTarget on
+        // shared infra, and REFUSE an unsandboxed local dispatch on cloud_auth unless
+        // the operator opted in (AOA_ALLOW_UNSANDBOXED_MULTITENANT). hbTopology is
+        // resolved above (:3081); tenantIsolationEnforced() is the cloud_auth signal.
+        {
+          trustBoundary: hbTopology.trustBoundary,
+          tenantIsolationEnforced: tenantIsolationEnforced(),
+          sink: "org agent",
+        },
       );
 
       // Audit follow-up #27: persist the redacted+capped assembled prompt on
@@ -4991,7 +5339,7 @@ export function heartbeatService(db: Db) {
         .catch((leaseReleaseErr: unknown) => {
           logger.warn({ err: leaseReleaseErr, runId: run.id }, "heartbeat: failed to release environment leases in finally");
         });
-      await startNextQueuedRunForAgent(agent.id);
+      await dispatchQueuedRunsAfterAgentSignal(agent.id);
     }
   }
 
@@ -5156,7 +5504,7 @@ export function heartbeatService(db: Db) {
       },
     });
 
-    await startNextQueuedRunForAgent(promotedRun.agentId);
+    await dispatchQueuedRunsAfterAgentSignal(promotedRun.agentId);
   }
 
   async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}) {
@@ -5617,7 +5965,7 @@ export function heartbeatService(db: Db) {
         },
       });
 
-      await startNextQueuedRunForAgent(agent.id);
+      await dispatchQueuedRunsAfterAgentSignal(agent.id);
       return newRun;
     }
 
@@ -5738,7 +6086,7 @@ export function heartbeatService(db: Db) {
       },
     });
 
-    await startNextQueuedRunForAgent(agent.id);
+    await dispatchQueuedRunsAfterAgentSignal(agent.id);
 
     return newRun;
   }
@@ -5990,7 +6338,7 @@ export function heartbeatService(db: Db) {
       // that ignored SIGTERM was never force-killed. Deregistration is owned by
       // spawnTrackedChild's close/error listeners; the escalation timer now fires.
       await finalizeAgentStatus(run.agentId, "cancelled");
-      await startNextQueuedRunForAgent(run.agentId);
+      await dispatchQueuedRunsAfterAgentSignal(run.agentId);
       return cancelled;
     },
 

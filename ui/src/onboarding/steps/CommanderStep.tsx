@@ -21,6 +21,7 @@ const CARDS: { provider: CommanderProvider; label: string; desc: string }[] = [
  * server-side. Crew inherits the same provider.
  */
 export function CommanderStep({ ctx, onComplete }: StepProps) {
+  const cloudMode = ctx.deploymentMode === "cloud_auth";
   const [provider, setProvider] = useState<CommanderProvider | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,10 +55,14 @@ export function CommanderStep({ ctx, onComplete }: StepProps) {
         <StepHeading
           title={
             <>
-              Bring your <GradientText>engine</GradientText> online
+              {cloudMode
+                ? <>Choose your <GradientText>AI provider</GradientText></>
+                : <>Bring your <GradientText>engine</GradientText> online</>}
             </>
           }
-          subtitle="This runtime powers Commander and every agent. Pick a CLI — you can change the model later in Settings."
+          subtitle={cloudMode
+            ? "Save a provider preference for supported agent runs and future Commander availability. Commander does not run on AoA Cloud yet."
+            : "This runtime powers Commander and every agent. Pick a CLI — you can change the model later in Settings."}
         />
       </Reveal>
 
@@ -74,7 +79,9 @@ export function CommanderStep({ ctx, onComplete }: StepProps) {
               onClick={() => setProvider(c.provider)}
             >
               <div className="text-sm font-medium text-text">{c.label}</div>
-              <div className="text-xs text-dim">{c.desc}</div>
+              <div className="text-xs text-dim">
+                {cloudMode ? `${c.label} provider preference` : c.desc}
+              </div>
             </button>
           ))}
         </div>

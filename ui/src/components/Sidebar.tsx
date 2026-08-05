@@ -41,8 +41,8 @@ export function Sidebar() {
   });
   const liveRunCount = useLiveAgentCount();
   const { data: pluginContributions } = useQuery({
-    queryKey: queryKeys.plugins.uiContributions,
-    queryFn: () => pluginsApi.listUiContributions(),
+    queryKey: queryKeys.plugins.uiContributions(selectedCompanyId ?? ""),
+    queryFn: () => pluginsApi.listUiContributions(selectedCompanyId!),
     enabled: !!selectedCompanyId,
     staleTime: 60_000,
   });

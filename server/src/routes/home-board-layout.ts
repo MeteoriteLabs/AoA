@@ -29,7 +29,7 @@ export function homeBoardLayoutRoutes(db: Db) {
 
   router.get("/companies/:companyId/home-board-layout/me", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const userId = requireBoardUserId(req, res);
     res.json(await svc.get(userId, companyId));
   });
@@ -39,7 +39,7 @@ export function homeBoardLayoutRoutes(db: Db) {
     validate(updateHomeBoardLayoutSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const userId = requireBoardUserId(req, res);
       res.json(await svc.upsert(userId, companyId, req.body.layout));
     },
@@ -47,7 +47,7 @@ export function homeBoardLayoutRoutes(db: Db) {
 
   router.post("/companies/:companyId/home-board-layout/me/reset", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const userId = requireBoardUserId(req, res);
     await svc.reset(userId, companyId);
     res.json({ ok: true });

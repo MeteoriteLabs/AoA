@@ -141,6 +141,7 @@ describe("heartbeat environment resolution", () => {
       environmentId: envId1,
       envVars: { NODE_ENV: "test" },
       target,
+      executionTargetId: null,
     });
   });
 
@@ -169,7 +170,7 @@ describe("heartbeat environment resolution", () => {
       companyId,
     });
 
-    expect(result).toEqual({ environmentId: null, envVars: {}, target: null });
+    expect(result).toEqual({ environmentId: null, envVars: {}, target: null, executionTargetId: null });
   });
 
   it("environment envVars slot between project env and agent adapterConfig.env", () => {

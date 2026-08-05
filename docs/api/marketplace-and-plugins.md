@@ -205,6 +205,17 @@ GET /api/plugins/{pluginId}/version-history
 POST /api/plugins/{pluginId}/rollback
 ```
 
+For the public webhook route, `{pluginId}` must be the tenant-specific
+`plugins.id` UUID. Manifest IDs/keys are deliberately rejected because the
+same key can be installed by multiple companies. Plugin UI code can read the
+UUID from `PluginHostContext.pluginInstallationId`.
+
+Compatibility note (2026-08-02): integrations that previously stored a
+manifest-key webhook URL must replace that segment with the installed plugin
+UUID. There is no key fallback, because resolving a shared key would make an
+unauthenticated webhook ambiguous across tenants. Existing UUID webhook URLs
+continue to work unchanged.
+
 Bridge routes under `/api/plugins/{pluginId}/bridge/*` and `/api/plugins/{pluginId}/data/*` are for plugin runtime/UI communication and enforce plugin capability and host checks.
 
 ## Skills

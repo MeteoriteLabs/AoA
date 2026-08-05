@@ -162,13 +162,15 @@ describe("InFlightFlow (WS9 — In-flight sequencer)", () => {
     window.localStorage.setItem(STORAGE_KEY, "2");
     render(<InFlightFlow companyId="co-1" onDone={vi.fn()} />);
     await screen.findByText("finish-braindump");
-    expect(screen.getByTestId("onboarding-step-position").textContent).toBe("Step 10 of 13");
+    // Phase 2 Task 3/12 added CreateOrganizationStep to the founder spine, so
+    // the continuous counter (spine + In-flight) shifted by 1 (13 -> 14).
+    expect(screen.getByTestId("onboarding-step-position").textContent).toBe("Step 11 of 14");
 
     const back = screen.getByRole("button", { name: /^back$/i });
     await user.click(back);
 
     await screen.findByText("finish-integrations");
-    expect(screen.getByTestId("onboarding-step-position").textContent).toBe("Step 9 of 13");
+    expect(screen.getByTestId("onboarding-step-position").textContent).toBe("Step 10 of 14");
     expect(window.localStorage.getItem(STORAGE_KEY)).toBe("1");
   });
 });

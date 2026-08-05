@@ -1,4 +1,5 @@
 import { beforeEach, describe, it, expect, vi } from "vitest";
+import { eq } from "drizzle-orm";
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
@@ -189,6 +190,7 @@ vi.mock("../redaction.js", () => ({
 
 import {
   assertCanPostToThread,
+  canViewThread,
   threadService,
   computeCreateDefaults,
 } from "../services/threads.js";
@@ -537,6 +539,50 @@ describe("threadService.claim", () => {
 });
 
 // ── Task 5: transferOwnership ─────────────────────────────────────────────────
+
+describe("threadService.resolveViewerForThread agent RBAC", () => {
+  const privateThread = {
+    ownerUserId: "user-owner",
+    visibility: "private",
+    scopeType: null,
+    scopeId: null,
+  };
+
+  it("denies a same-company private thread to a nonparticipant agent", async () => {
+    const db = createSequenceDb([[privateThread], []]);
+    const resolved = await threadService(db).resolveViewerForThread(
+      "co1",
+      "thread-private",
+      {
+        userId: "agent-outsider",
+        role: "team_member",
+        principalType: "agent",
+      },
+    );
+
+    expect(resolved).not.toBeNull();
+    expect(resolved?.viewer.isParticipant).toBe(false);
+    expect(eq).toHaveBeenCalledWith("tp_principal_type", "agent");
+    expect(canViewThread(resolved!.thread, resolved!.viewer)).toBe(false);
+  });
+
+  it("allows a same-company private thread to an explicit agent participant", async () => {
+    const db = createSequenceDb([[privateThread], [{ id: "participant-1" }]]);
+    const resolved = await threadService(db).resolveViewerForThread(
+      "co1",
+      "thread-private",
+      {
+        userId: "agent-participant",
+        role: "team_member",
+        principalType: "agent",
+      },
+    );
+
+    expect(resolved?.viewer.isParticipant).toBe(true);
+    expect(eq).toHaveBeenCalledWith("tp_principal_type", "agent");
+    expect(canViewThread(resolved!.thread, resolved!.viewer)).toBe(true);
+  });
+});
 
 describe("threadService.transferOwnership", () => {
   it("transfers ownership and demotes previous owner", async () => {

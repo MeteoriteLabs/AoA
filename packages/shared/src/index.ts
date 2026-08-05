@@ -45,6 +45,11 @@ export {
   LIVE_EVENT_TYPES,
   PRINCIPAL_TYPES,
   MEMBERSHIP_STATUSES,
+  ORGANIZATION_STATUSES,
+  ORGANIZATION_ROLES,
+  ORGANIZATION_INVITATION_STATUSES,
+  DEFAULT_ORGANIZATION_ID,
+  DEFAULT_ORGANIZATION_SLUG,
   INSTANCE_USER_ROLES,
   INVITE_TYPES,
   INVITE_JOIN_TYPES,
@@ -56,6 +61,17 @@ export {
   ENVIRONMENT_LEASE_STATUSES,
   ENVIRONMENT_LEASE_POLICIES,
   ENVIRONMENT_LEASE_CLEANUP_STATUSES,
+  // Phase 5 execution-target registry (Task 1) — these were added to
+  // constants.ts by Task 1 but never re-exported through this barrel; fixed
+  // here because Task 10/13 need them via "@armyofagents/shared".
+  EXECUTION_TARGET_KINDS,
+  EXECUTION_TARGET_TRUST_CLASSES,
+  EXECUTION_TARGET_STATUSES,
+  ORG_MAX_CONCURRENT_RUNS_DEFAULT,
+  ORG_MAX_CONCURRENT_RUNS_MAX,
+  type ExecutionTargetKind,
+  type ExecutionTargetTrustClass,
+  type ExecutionTargetStatus,
   MEMORY_ITEM_CATEGORIES,
   MEMORY_ITEM_SOURCES,
   MEMORY_ITEM_STATUSES,
@@ -174,6 +190,9 @@ export {
   type LiveEventType,
   type PrincipalType,
   type MembershipStatus,
+  type OrganizationStatus,
+  type OrganizationRole,
+  type OrganizationInvitationStatus,
   type InstanceUserRole,
   type InviteType,
   type InviteJoinType,
@@ -298,6 +317,8 @@ export {
   // Plugin system
   PLUGIN_API_VERSION,
   PLUGIN_STATUSES,
+  PLUGIN_WORKER_BLOCKED_IN_CLOUD_REASON,
+  PLUGIN_STATUS_REASON_CODES,
   PLUGIN_CATEGORIES,
   PLUGIN_CAPABILITIES,
   PLUGIN_TRUST_TIERS,
@@ -315,6 +336,7 @@ export {
   PLUGIN_JOB_RUN_TRIGGERS,
   PLUGIN_WEBHOOK_DELIVERY_STATUSES,
   type PluginStatus,
+  type PluginStatusReasonCode,
   type PluginCategory,
   type PluginCapability,
   type PluginTrustTier,
@@ -347,6 +369,18 @@ export {
   cliToolToProvider,
 } from "./provider-mapping.js";
 export type { CrewProvider, CommanderProvider, CliTool, CrewAdapterType } from "./provider-mapping.js";
+
+export type {
+  Organization,
+  OrganizationMembership,
+  OrganizationInvitation,
+} from "./types/organization.js";
+export {
+  createOrganizationSchema,
+  inviteToOrganizationSchema,
+  type CreateOrganization,
+  type InviteToOrganization,
+} from "./validators/organization.js";
 
 export type {
   Company,
@@ -1125,6 +1159,14 @@ export {
   type E2bEnvironmentConfig,
   type ProbeEnvironmentInput,
   type UpdateEnvironmentInput,
+  // Phase 5 execution-target registry (Task 5/13) — see the matching note in
+  // validators/index.ts.
+  dockerIsolationSchema,
+  gvisorEnvironmentConfigSchema,
+  createExecutionTargetSchema,
+  workerExecutionTargetHeartbeatSchema,
+  type CreateExecutionTargetInput,
+  type WorkerExecutionTargetHeartbeatInput,
 } from "./validators/index.js";
 
 export {
@@ -1385,6 +1427,7 @@ export {
   INVITED_PHASE1_STATES,
   orderedStatesFor,
   FIRST_RUN_PERSONAS,
+  normalizeLegacyOnboardingState,
   type OnboardingJourney,
   type OnboardingState,
   type PendingInvitation,
@@ -1403,3 +1446,4 @@ export {
 } from "./adapter-probe.js";
 export * from "./providers/provider-catalog.js";
 export * from "./mcp-connector-catalog.js";
+export * from "./provider-connections.js";

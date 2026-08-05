@@ -3,16 +3,19 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { Db } from "@armyofagents/db";
 import {
   authUsers,
+  companies as companiesTable,
   companyMemberships,
   instanceUserRoles,
   invites,
   mcpApiKeys,
+  organizationMemberships,
   principalPermissionGrants,
   userRoles,
 } from "@armyofagents/db";
 import type { PermissionKey, PrincipalType } from "@armyofagents/shared";
 import { conflict, notFound } from "../errors.js";
 import { companyInviteExpiresAt } from "../routes/access-helpers.js";
+import { tenantIsolationEnforced } from "../config/deployment-mode.js";
 import { orgHierarchyService } from "./org-hierarchy.js";
 
 const INVITE_TOKEN_PREFIX = "aoa_invite_";
@@ -44,6 +47,10 @@ export function accessService(db: Db) {
 
   async function isInstanceAdmin(userId: string | null | undefined): Promise<boolean> {
     if (!userId) return false;
+    // B1: there is NO data-plane instance_admin in cloud_auth. Returning false
+    // here kills the canUser() short-circuit and (via team.effectiveRoleFromRows)
+    // any cross-tenant role grant, even if an actor-clamp were somehow bypassed.
+    if (tenantIsolationEnforced()) return false;
     const row = await db
       .select({ id: instanceUserRoles.id })
       .from(instanceUserRoles)
@@ -300,6 +307,29 @@ export function accessService(db: Db) {
       .limit(1).then((r) => r[0]);
     if (!existingRole) {
       await db.insert(userRoles).values({ companyId, userId: operatorId, role: "founder" });
+    }
+    // Task 10 (Phase 2 lockout cluster, ATOMIC cutover): the company's
+    // founding operator is ALSO made an owner member of the company's
+    // Organization (tenant). This is what lets a cloud_auth org owner who
+    // creates their first company keep passing the org:* capability checks
+    // for that org afterward (e.g. inviting teammates), without relying on
+    // any instance_admin role -- cloud_auth mints none. Idempotent: does
+    // nothing if a membership row already exists (P1's 0188 backfill or
+    // organizationAccessService.ensureOrgOwner may already have written one
+    // for this (organizationId, operatorId) pair -- never downgrades it).
+    const companyRow = await db.select({ organizationId: companiesTable.organizationId })
+      .from(companiesTable).where(eq(companiesTable.id, companyId)).limit(1).then((r) => r[0]);
+    if (companyRow?.organizationId) {
+      const existingOrgMembership = await db.select({ id: organizationMemberships.id }).from(organizationMemberships)
+        .where(and(
+          eq(organizationMemberships.organizationId, companyRow.organizationId),
+          eq(organizationMemberships.userId, operatorId),
+        )).limit(1).then((r) => r[0]);
+      if (!existingOrgMembership) {
+        await db.insert(organizationMemberships).values({
+          organizationId: companyRow.organizationId, userId: operatorId, role: "owner", status: "active",
+        });
+      }
     }
     return operatorId;
   }

@@ -1,6 +1,10 @@
 import { test, expect, type APIRequestContext, type Page, type Route } from "@playwright/test";
 import { seedCompany, cleanupTestCompanies } from "./helpers/seed-company";
-import { freshOnboardingState, fillFounderProfileStep } from "./helpers/onboarding-e2e";
+import {
+  freshOnboardingState,
+  fillFounderProfileStep,
+  fillOrganizationStep,
+} from "./helpers/onboarding-e2e";
 
 /**
  * E2E: Settings -> Providers readiness (Provider Readiness initiative, Task 15).
@@ -612,20 +616,35 @@ test.describe("Settings -> Providers readiness", () => {
     await fillFounderProfileStep(page, "E2E-Providers Founder");
     await page.getByRole("button", { name: /continue/i }).click();
 
-    // Organization — heading is "Your company" (#295 onboarding redesign).
-    await expect(page.getByRole("heading", { name: /your company/i })).toBeVisible();
-    await page.getByRole("textbox").first().fill(`E2E-Providers-Onboard-${Date.now()}`);
+    // Organization — the Phase-2 multi-tenant tenant step ("Your organization"),
+    // inserted before the company step.
+    await fillOrganizationStep(page, `E2E-Providers-Org-${Date.now()}`);
+
+    // Company — heading is "Your company" (#295 onboarding redesign).
+    await expect(page.getByRole("heading", { name: /your company/i })).toBeVisible({ timeout: 20_000 });
+    await page.getByLabel("Company name").fill(`E2E-Providers-Onboard-${Date.now()}`);
+    await expect(page.getByRole("button", { name: /continue/i })).toBeEnabled({ timeout: 15_000 });
     await page.getByRole("button", { name: /continue/i }).click();
 
-    await expect(page.getByRole("heading", { name: /set up your environment/i })).toBeVisible();
+    await expect(page.getByRole("heading", { name: /set up your environment/i })).toBeVisible({
+      timeout: 20_000,
+    });
+    await expect(page.getByRole("button", { name: /verify & continue/i })).toBeEnabled({
+      timeout: 15_000,
+    });
     await page.getByRole("button", { name: /verify & continue/i }).click();
 
     // Commander — heading is "Bring your engine online" (#295 redesign).
-    await expect(page.getByRole("heading", { name: /bring your engine online/i })).toBeVisible();
+    await expect(page.getByRole("heading", { name: /bring your engine online/i })).toBeVisible({
+      timeout: 20_000,
+    });
     await page.getByText("Claude", { exact: true }).click();
+    await expect(page.getByRole("button", { name: /continue/i })).toBeEnabled({ timeout: 15_000 });
     await page.getByRole("button", { name: /continue/i }).click();
 
-    await expect(page.getByRole("heading", { name: /verify your tooling/i })).toBeVisible();
+    await expect(page.getByRole("heading", { name: /verify your tooling/i })).toBeVisible({
+      timeout: 20_000,
+    });
     // No verdict before the first probe — a placeholder badge would be a claim
     // about nothing.
     await expect(page.getByTestId("verify-outcome-badge")).toHaveCount(0);

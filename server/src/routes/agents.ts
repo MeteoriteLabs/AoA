@@ -37,8 +37,14 @@ import {
   secretService,
 } from "../services/index.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
-import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
-import { assertRole } from "../middleware/rbac.js";
+import {
+  accessibleCompanyIdsForActor,
+  assertBoard,
+  assertCanManageInstanceSettings,
+  assertCompanyAccess,
+  getActorInfo,
+} from "./authz.js";
+import { assertHumanRole, assertRole } from "../middleware/rbac.js";
 import { findActiveServerAdapter, findServerAdapter, listAdapterModels } from "../adapters/index.js";
 import { redactEventPayload, redactSecretsInString } from "../redaction.js";
 import { runClaudeLogin } from "@armyofagents/adapter-claude-local/server";
@@ -54,6 +60,8 @@ import {
 } from "../services/default-agent-instructions.js";
 import { environmentRunOrchestrator } from "../services/environment-run-orchestrator.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
+import { assertUnsandboxedMultitenantAllowed } from "../services/unsandboxed-multitenant-guard.js";
+import { tenantIsolationEnforced } from "../config/deployment-mode.js";
 import { buildApprovalHubEmit, emitHubItem } from "../services/hub-source-producers.js";
 import { logger } from "../middleware/logger.js";
 import { liveRunsForCompany, liveRunsForIssue } from "./agents-live-runs.js";
@@ -198,7 +206,7 @@ export function agentRoutes(db: Db) {
   }
 
   async function assertCanCreateAgentsForCompany(req: Request, companyId: string) {
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     if (req.actor.type === "board") {
       if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return null;
       const allowed = await access.canUser(companyId, req.actor.userId, "agents:create");
@@ -224,7 +232,7 @@ export function agentRoutes(db: Db) {
   }
 
   async function actorCanReadConfigurationsForCompany(req: Request, companyId: string) {
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     if (req.actor.type === "board") {
       if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return true;
       return access.canUser(companyId, req.actor.userId, "agents:create");
@@ -240,7 +248,7 @@ export function agentRoutes(db: Db) {
     req: Request,
     targetAgent: { id: string; companyId: string; kind?: string | null },
   ) {
-    assertCompanyAccess(req, targetAgent.companyId);
+    await assertCompanyAccess(db, req, targetAgent.companyId);
     // Spec §10 governance: only founders may edit AoA agents (Commander +
     // sub-agents). assertRole is a NO-OP for agent actors (rbac.ts), so an
     // agent actor MUST be rejected explicitly here — calling assertRole alone
@@ -286,7 +294,7 @@ export function agentRoutes(db: Db) {
         ? companyIdQuery.trim()
         : null;
     if (requestedCompanyId) {
-      assertCompanyAccess(req, requestedCompanyId);
+      await assertCompanyAccess(db, req, requestedCompanyId);
       return requestedCompanyId;
     }
     if (req.actor.type === "agent" && req.actor.companyId) {
@@ -465,7 +473,7 @@ export function agentRoutes(db: Db) {
     req: Request,
     targetAgent: { id: string; companyId: string; kind?: string | null },
   ) {
-    assertCompanyAccess(req, targetAgent.companyId);
+    await assertCompanyAccess(db, req, targetAgent.companyId);
     // Spec §10 governance: only founders may edit AoA agents (Commander +
     // sub-agents). This is the single chokepoint for instructions path/bundle/
     // file mutations, so the kind='aoa' gate lives here (mirrors the FX2
@@ -585,7 +593,7 @@ export function agentRoutes(db: Db) {
 
   router.get("/companies/:companyId/adapters/:type/models", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const type = req.params.type as string;
     const models = await listAdapterModels(type);
     res.json(models);
@@ -677,6 +685,33 @@ export function agentRoutes(db: Db) {
           : null;
 
         try {
+          // D1 (cloud isolation): the probe spawns a REAL `claude --print` /
+          // `codex exec` generation. For a local/null target on `cloud_auth` it
+          // would run under the OPERATOR's login on the shared control-plane host.
+          // Refuse (no-op self-hosted AND on genuinely-isolated targets). Placed
+          // INSIDE the inner try so the refusal still hits the lease-release
+          // finally below AND the outer releaseProbeSlot finally.
+          try {
+            assertUnsandboxedMultitenantAllowed(
+              acquiredEnvironment?.configPatch.executionTarget ?? null,
+              { tenantIsolationEnforced: tenantIsolationEnforced(), sink: "adapter readiness probe" },
+            );
+          } catch {
+            res.json({
+              adapterType: type,
+              status: "fail" as const,
+              checks: [
+                {
+                  code: "readiness_unavailable_on_cloud",
+                  level: "error" as const,
+                  message:
+                    "Adapter readiness testing is unavailable on AoA Cloud (a local probe would run on the shared host). Configure a sandboxed execution environment or test self-hosted.",
+                },
+              ],
+              testedAt: new Date().toISOString(),
+            });
+            return;
+          }
           const result = await adapter.testEnvironment({
             companyId,
             adapterType: type,
@@ -725,7 +760,7 @@ export function agentRoutes(db: Db) {
 
   router.get("/companies/:companyId/agents", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const kind = req.query.kind === "aoa" ? "aoa" as const : undefined;
     const result = await svc.list(companyId, kind ? { kind } : undefined);
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
@@ -738,7 +773,7 @@ export function agentRoutes(db: Db) {
 
   router.get("/companies/:companyId/agents/:id/aoa-runs", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const agentId = req.params.id as string;
     const limit = Math.min(parseInt(String(req.query.limit ?? 50)), 200);
     const where = and(
@@ -766,7 +801,7 @@ export function agentRoutes(db: Db) {
 
   router.get("/companies/:companyId/agents/:id/triggers", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const agentId = req.params.id as string;
     const triggers = await db
       .select()
@@ -777,8 +812,8 @@ export function agentRoutes(db: Db) {
 
   router.post("/companies/:companyId/agents/:id/triggers", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    await assertRole(db, req, companyId, "founder");
+    await assertCompanyAccess(db, req, companyId);
+    await assertHumanRole(db, req, companyId, "founder");
     const agentId = req.params.id as string;
     const { kind, config, enabled } = req.body as { kind: string; config?: Record<string, unknown>; enabled?: boolean };
     const created = await db
@@ -791,8 +826,8 @@ export function agentRoutes(db: Db) {
 
   router.patch("/companies/:companyId/agents/:id/triggers/:triggerId", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    await assertRole(db, req, companyId, "founder");
+    await assertCompanyAccess(db, req, companyId);
+    await assertHumanRole(db, req, companyId, "founder");
     const agentId = req.params.id as string;
     const triggerId = req.params.triggerId as string;
     const { enabled, config } = req.body as { enabled?: boolean; config?: Record<string, unknown> };
@@ -823,6 +858,12 @@ export function agentRoutes(db: Db) {
   });
 
   router.get("/instance/scheduler-heartbeats", async (req, res) => {
+    // This endpoint is an instance-wide tenant-data scan. The cloud operator
+    // plane must never inherit ambient access to every tenant, so reject from
+    // the static deployment mode before touching the database.
+    if (tenantIsolationEnforced()) {
+      throw forbidden("Scheduler heartbeat overview is unavailable in cloud mode");
+    }
     if (req.actor.type !== "board" || !req.actor.isInstanceAdmin) {
       throw forbidden("Instance admin required");
     }
@@ -889,7 +930,7 @@ export function agentRoutes(db: Db) {
 
   router.get("/companies/:companyId/org", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const tree = await svc.orgForCompany(companyId);
     res.json(tree);
   });
@@ -922,7 +963,7 @@ export function agentRoutes(db: Db) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    assertCompanyAccess(req, agent.companyId);
+    await assertCompanyAccess(db, req, agent.companyId);
     if (req.actor.type === "agent" && req.actor.agentId !== id) {
       const canRead = await actorCanReadConfigurationsForCompany(req, agent.companyId);
       if (!canRead) {
@@ -1018,7 +1059,7 @@ export function agentRoutes(db: Db) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    assertCompanyAccess(req, agent.companyId);
+    await assertCompanyAccess(db, req, agent.companyId);
 
     const state = await heartbeat.getRuntimeState(id);
     res.json(state);
@@ -1032,7 +1073,7 @@ export function agentRoutes(db: Db) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    assertCompanyAccess(req, agent.companyId);
+    await assertCompanyAccess(db, req, agent.companyId);
 
     const sessions = await heartbeat.listTaskSessions(id);
     res.json(
@@ -1051,7 +1092,7 @@ export function agentRoutes(db: Db) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    assertCompanyAccess(req, agent.companyId);
+    await assertCompanyAccess(db, req, agent.companyId);
 
     const taskKey =
       typeof req.body.taskKey === "string" && req.body.taskKey.trim().length > 0
@@ -1274,7 +1315,7 @@ export function agentRoutes(db: Db) {
 
   router.post("/companies/:companyId/agents", validate(createAgentSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     await assertRole(db, req, companyId, "founder");
 
     if (req.actor.type === "agent") {
@@ -1349,7 +1390,7 @@ export function agentRoutes(db: Db) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(db, req, existing.companyId);
 
     // Spec §10 governance: only founders may edit AoA agents (Commander +
     // sub-agents). This handler uses neither shared authz helper, so the
@@ -1651,7 +1692,7 @@ export function agentRoutes(db: Db) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(db, req, existing.companyId);
     if (existing.kind === "aoa") {
       await assertRole(db, req, existing.companyId, "founder");
     }
@@ -1696,7 +1737,7 @@ export function agentRoutes(db: Db) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(db, req, existing.companyId);
     if (existing.kind === "aoa") {
       await assertRole(db, req, existing.companyId, "founder");
     }
@@ -1745,7 +1786,7 @@ export function agentRoutes(db: Db) {
       });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(db, req, existing.companyId);
 
     const agent = await svc.terminate(id);
     if (!agent) {
@@ -1786,7 +1827,7 @@ export function agentRoutes(db: Db) {
     // oracle every other `assertCompanyAccess` route in this file has. Closing
     // that would mean 404-ing on forbidden everywhere, which is a separate
     // decision about the whole file, not this handler.
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(db, req, existing.companyId);
     // D23 (T2.5): protected AoA agents are refused on identity, independent of
     // `kind`. Deliberately BEFORE the FX-del check below: that one is scoped to
     // kind='aoa', so it would stop covering a protected agent the day crew rows
@@ -1837,7 +1878,7 @@ export function agentRoutes(db: Db) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    assertCompanyAccess(req, agent.companyId);
+    await assertCompanyAccess(db, req, agent.companyId);
     const keys = await svc.listKeys(agent.id);
     res.json(keys);
   });
@@ -1849,7 +1890,7 @@ export function agentRoutes(db: Db) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    assertCompanyAccess(req, agent.companyId);
+    await assertCompanyAccess(db, req, agent.companyId);
 
     const key = await svc.createApiKey(agent.id, req.body.name);
     const actor = getActorInfo(req);
@@ -1875,7 +1916,7 @@ export function agentRoutes(db: Db) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    assertCompanyAccess(req, agent.companyId);
+    await assertCompanyAccess(db, req, agent.companyId);
 
     const key = await svc.getKeyById(req.params.keyId as string);
     if (!key || key.agentId !== agent.id) {
@@ -1907,7 +1948,7 @@ export function agentRoutes(db: Db) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    assertCompanyAccess(req, agent.companyId);
+    await assertCompanyAccess(db, req, agent.companyId);
 
     if (req.actor.type === "agent" && req.actor.agentId !== id) {
       res.status(403).json({ error: "Agent can only invoke itself" });
@@ -1956,7 +1997,7 @@ export function agentRoutes(db: Db) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    assertCompanyAccess(req, agent.companyId);
+    await assertCompanyAccess(db, req, agent.companyId);
 
     if (req.actor.type === "agent" && req.actor.agentId !== id) {
       res.status(403).json({ error: "Agent can only invoke itself" });
@@ -2007,7 +2048,7 @@ export function agentRoutes(db: Db) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    assertCompanyAccess(req, agent.companyId);
+    await assertCompanyAccess(db, req, agent.companyId);
     if (agent.adapterType !== "claude_local") {
       res.status(400).json({ error: "Login is only supported for claude_local agents" });
       return;
@@ -2037,7 +2078,7 @@ export function agentRoutes(db: Db) {
 
   router.get("/companies/:companyId/heartbeat-runs", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const agentId = req.query.agentId as string | undefined;
     const limitParam = req.query.limit as string | undefined;
     const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
@@ -2047,7 +2088,7 @@ export function agentRoutes(db: Db) {
 
   router.get("/companies/:companyId/live-runs", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     const minCountParam = req.query.minCount as string | undefined;
     const minCount = minCountParam ? Math.max(0, Math.min(20, parseInt(minCountParam, 10) || 0)) : 0;
@@ -2066,7 +2107,7 @@ export function agentRoutes(db: Db) {
       res.status(404).json({ error: "Heartbeat run not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(db, req, existing.companyId);
 
     const run = await heartbeat.cancelRun(runId);
 
@@ -2092,7 +2133,7 @@ export function agentRoutes(db: Db) {
       res.status(404).json({ error: "Heartbeat run not found" });
       return;
     }
-    assertCompanyAccess(req, run.companyId);
+    await assertCompanyAccess(db, req, run.companyId);
 
     const afterSeq = Number(req.query.afterSeq ?? 0);
     const limit = Number(req.query.limit ?? 200);
@@ -2111,7 +2152,7 @@ export function agentRoutes(db: Db) {
       res.status(404).json({ error: "Heartbeat run not found" });
       return;
     }
-    assertCompanyAccess(req, run.companyId);
+    await assertCompanyAccess(db, req, run.companyId);
 
     const offset = Number(req.query.offset ?? 0);
     const limitBytes = Number(req.query.limitBytes ?? 256000);
@@ -2127,12 +2168,14 @@ export function agentRoutes(db: Db) {
     const rawId = req.params.issueId as string;
     const issueSvc = issueService(db);
     const isIdentifier = /^[A-Z]+-\d+$/i.test(rawId);
-    const issue = isIdentifier ? await issueSvc.getByIdentifier(rawId) : await issueSvc.getById(rawId);
+    const issue = isIdentifier
+      ? await issueSvc.getByIdentifier(rawId, accessibleCompanyIdsForActor(req.actor))
+      : await issueSvc.getById(rawId);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(db, req, issue.companyId);
 
     // Task 5.5: heartbeat live rows for this issue UNION crew (internal_agent)
     // live rows for the same issue (related_entity_id = issue.id), so the card's
@@ -2145,12 +2188,14 @@ export function agentRoutes(db: Db) {
     const rawId = req.params.issueId as string;
     const issueSvc = issueService(db);
     const isIdentifier = /^[A-Z]+-\d+$/i.test(rawId);
-    const issue = isIdentifier ? await issueSvc.getByIdentifier(rawId) : await issueSvc.getById(rawId);
+    const issue = isIdentifier
+      ? await issueSvc.getByIdentifier(rawId, accessibleCompanyIdsForActor(req.actor))
+      : await issueSvc.getById(rawId);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(db, req, issue.companyId);
 
     let run = issue.executionRunId ? await heartbeat.getRun(issue.executionRunId) : null;
     if (run && run.status !== "queued" && run.status !== "running") {
@@ -2187,9 +2232,11 @@ export function agentRoutes(db: Db) {
   // Temporary admin endpoint — backfill parentType/parentId from reportsTo (T3).
   // Remove after confirming all data migrated.
   router.post("/agents/admin/backfill-parent-fields", async (req, res) => {
-    // rbac: instance-admin-not-required
-    // TODO(plugins-workstream): replace with assertCanManageInstanceSettings(req) — see plugins workstream tracking issue
-    assertBoard(req);
+    assertCanManageInstanceSettings(req);
+    if (tenantIsolationEnforced()) {
+      res.status(403).json({ error: "Global agent maintenance is unavailable in multi-tenant deployments" });
+      return;
+    }
     const count = await svc.backfillParentFields();
     res.json({ ok: true, backfilledCount: count });
   });
@@ -2198,9 +2245,11 @@ export function agentRoutes(db: Db) {
   // every chain tops at a human (W6 human-at-top). Iterates all companies and
   // sums the re-parent counts. Remove after confirming all data migrated.
   router.post("/agents/admin/backfill-human-at-top", async (req, res) => {
-    // rbac: instance-admin-not-required
-    // TODO(plugins-workstream): replace with assertCanManageInstanceSettings(req) — see plugins workstream tracking issue
-    assertBoard(req);
+    assertCanManageInstanceSettings(req);
+    if (tenantIsolationEnforced()) {
+      res.status(403).json({ error: "Global agent maintenance is unavailable in multi-tenant deployments" });
+      return;
+    }
     const rows = await db.select({ id: companies.id }).from(companies);
     let reparented = 0;
     for (const c of rows) {

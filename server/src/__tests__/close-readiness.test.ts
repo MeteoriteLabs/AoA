@@ -5,6 +5,8 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExecutionWorkspace } from "@armyofagents/shared";
+import { setDeploymentMode } from "../config/deployment-mode.js";
+import { UNSANDBOXED_MULTITENANT_OPT_IN_ENV } from "../services/unsandboxed-multitenant-guard.js";
 
 // ── Pure function tests ─────────────────────────────────────────────────────
 // readExecutionWorkspaceConfig + mergeExecutionWorkspaceConfig are pure; we
@@ -338,6 +340,7 @@ async function createTempRepo() {
 }
 
 afterEach(async () => {
+  setDeploymentMode("local_trusted");
   const dirs = Array.from(tempDirsToCleanup);
   tempDirsToCleanup.clear();
   await Promise.all(
@@ -346,6 +349,33 @@ afterEach(async () => {
 });
 
 describe("inspectGitCloseReadiness", () => {
+  it("cloud mode refuses before inspecting a local Git workspace", async () => {
+    const repoRoot = await createTempRepo();
+    const workspace = buildExecutionWorkspace({
+      providerType: "git_worktree",
+      cwd: repoRoot,
+      providerRef: repoRoot,
+      baseRef: "main",
+      branchName: "main",
+    });
+    const previousOverride = process.env[UNSANDBOXED_MULTITENANT_OPT_IN_ENV];
+    delete process.env[UNSANDBOXED_MULTITENANT_OPT_IN_ENV];
+    setDeploymentMode("cloud_auth");
+
+    try {
+      await expect(inspectGitCloseReadiness(workspace)).rejects.toThrow(
+        "Refusing to dispatch a workspace Git close-readiness command",
+      );
+    } finally {
+      if (previousOverride === undefined) {
+        delete process.env[UNSANDBOXED_MULTITENANT_OPT_IN_ENV];
+      } else {
+        process.env[UNSANDBOXED_MULTITENANT_OPT_IN_ENV] = previousOverride;
+      }
+      setDeploymentMode("local_trusted");
+    }
+  });
+
   it("returns null git when providerType is adapter_managed + no repo metadata", async () => {
     const workspace = buildExecutionWorkspace({
       providerType: "adapter_managed",

@@ -607,7 +607,11 @@ export function threadService(db: Db) {
     resolveViewerForThread: async (
       companyId: string,
       threadId: string,
-      viewer: { userId: string; role: "founder" | "team_lead" | "team_member" },
+      viewer: {
+        userId: string;
+        role: "founder" | "team_lead" | "team_member";
+        principalType?: "user" | "agent";
+      },
     ): Promise<{
       thread: { ownerUserId: string | null; visibility: ThreadVisibility };
       viewer: ThreadViewer;
@@ -632,20 +636,21 @@ export function threadService(db: Db) {
         };
       }
 
+      const principalType = viewer.principalType ?? "user";
       const participantRows = await db
         .select({ id: threadParticipants.id })
         .from(threadParticipants)
         .where(
           and(
             eq(threadParticipants.threadId, threadId),
-            eq(threadParticipants.principalType, "user"),
+            eq(threadParticipants.principalType, principalType),
             eq(threadParticipants.principalId, viewer.userId),
           ),
         );
       const isParticipant = participantRows.length > 0;
 
       let hasScopeAccess = row.scopeType == null;
-      if (!hasScopeAccess && row.scopeId) {
+      if (!hasScopeAccess && row.scopeId && principalType === "user") {
         const roleRows = await db
           .select({ id: userRoles.id })
           .from(userRoles)

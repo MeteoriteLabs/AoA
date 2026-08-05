@@ -52,6 +52,12 @@ const { tables } = vi.hoisted(() => ({
     "projectWorkspaces",
     "workspaceOperations",
     "workspaceRuntimeServices",
+    // Provider-credential RESTRICT-FK referrers into company_secrets: these MUST
+    // be deleted before companySecrets or the delete transaction aborts (added
+    // with the multi-tenant provider-connections work; see companies.ts remove()).
+    "providerAssignments",
+    "providerConnections",
+    "runtimeProviderKeys",
   ] as string[],
 }));
 

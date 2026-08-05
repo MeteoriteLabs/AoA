@@ -64,7 +64,8 @@ No rate limiting is enforced in local deployments. Production deployments may ad
 ## Domain References
 
 - [Authentication](authentication.md) and [Onboarding](onboarding.md)
-- [Companies](companies.md), [Team](team.md), and [Agents](agents.md)
+- [Organizations](organizations.md), [Companies](companies.md), [Team](team.md), and [Agents](agents.md)
+- [Provider Connections](provider-connections.md), [Execution Targets](execution-targets.md), and [Environments](environments.md)
 - [Tasks](issues.md), [Work Questions](work-questions.md), and [Discussions](discussions.md)
 - [Goals and Projects](goals-and-projects.md), [Workflow Templates](workflow-templates.md), and [Routines](routines.md)
 - [Artifacts](artifacts.md), [Workspaces](workspaces.md), and [Memory](memory.md)

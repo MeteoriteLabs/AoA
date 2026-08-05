@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
+import type { DeploymentMode } from "@armyofagents/shared";
 import { drizzle as drizzlePg } from "drizzle-orm/postgres-js";
 import { migrate as migratePg } from "drizzle-orm/postgres-js/migrator";
 import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 import * as schema from "./schema/index.js";
+import { assertMigrationSnapshotGate } from "./migration-snapshot-gate.js";
 
 const MIGRATIONS_FOLDER = fileURLToPath(new URL("./migrations", import.meta.url));
 const DRIZZLE_MIGRATIONS_TABLE = "__drizzle_migrations";
@@ -646,39 +648,91 @@ export async function inspectMigrations(url: string): Promise<MigrationState> {
   }
 }
 
-export async function applyPendingMigrations(url: string): Promise<void> {
+export interface ApplyPendingMigrationsOptions {
+  deploymentMode?: DeploymentMode;
+}
+
+export async function applyPendingMigrations(
+  url: string,
+  options: ApplyPendingMigrationsOptions = {},
+): Promise<void> {
   const initialState = await inspectMigrations(url);
   if (initialState.status === "upToDate") return;
 
-  const sql = postgres(url, { max: 1 });
-
+  // Finding #4: serialize concurrent-replica migrations. Cloud replicas
+  // auto-apply on boot (non-TTY); hold a session-level advisory lock across
+  // inspect+apply so two replicas don't both run non-idempotent DDL (e.g. 0188
+  // ADD COLUMN / ADD CONSTRAINT). Precedent: first-user-bootstrap.ts (which uses
+  // the *xact* variant); here we use the *session* variant because
+  // applyPendingMigrations has no surrounding transaction — the migrator opens
+  // its own per-file transactions. The lock is held on a dedicated max:1
+  // connection for the whole inspect+apply. Deadlock-free: drizzle's migrator
+  // takes no advisory lock, and this logical lock doesn't contend with the
+  // inspect/migrate connections.
+  const lockSql = postgres(url, { max: 1 });
   try {
-    const db = drizzlePg(sql);
-    await migratePg(db, { migrationsFolder: MIGRATIONS_FOLDER });
-  } finally {
-    await sql.end();
-  }
+    await lockSql`SELECT pg_advisory_lock(hashtext('aoa:migrations'))`;
 
-  let state = await inspectMigrations(url);
-  if (state.status === "upToDate") return;
+    // Re-inspect under the lock — a peer replica may have migrated while we
+    // waited on the lock.
+    const stateUnderLock = await inspectMigrations(url);
+    if (stateUnderLock.status === "upToDate") return;
 
-  const repair = await reconcilePendingMigrationHistory(url);
-  if (repair.repairedMigrations.length > 0) {
-    state = await inspectMigrations(url);
+    // The backup gate belongs at the shared apply boundary, under the same
+    // advisory lock as the migration itself. This covers server auto-apply,
+    // pnpm db:migrate, and direct library callers before either migration path
+    // can execute 0188. Missing deployment context is deliberately fail-closed
+    // for a populated database with 0188 pending.
+    await assertMigrationSnapshotGate({
+      deploymentMode: options.deploymentMode,
+      pendingMigrationTags: stateUnderLock.pendingMigrations,
+      queryCompanyCount: () =>
+        lockSql.unsafe(`SELECT count(*)::int AS count FROM companies`),
+      queryRecordedSnapshots: () =>
+        lockSql.unsafe(
+          `SELECT general FROM instance_settings WHERE singleton_key = 'default'`,
+        ),
+    });
+
+    const sql = postgres(url, { max: 1 });
+    try {
+      const db = drizzlePg(sql);
+      await migratePg(db, { migrationsFolder: MIGRATIONS_FOLDER });
+    } finally {
+      await sql.end();
+    }
+
+    let state = await inspectMigrations(url);
     if (state.status === "upToDate") return;
-  }
 
-  if (state.status !== "needsMigrations" || state.reason !== "pending-migrations") {
-    throw new Error("Migrations are still pending after attempted apply; run inspectMigrations for details.");
-  }
+    const repair = await reconcilePendingMigrationHistory(url);
+    if (repair.repairedMigrations.length > 0) {
+      state = await inspectMigrations(url);
+      if (state.status === "upToDate") return;
+    }
 
-  await applyPendingMigrationsManually(url, state.pendingMigrations);
+    if (state.status !== "needsMigrations" || state.reason !== "pending-migrations") {
+      throw new Error("Migrations are still pending after attempted apply; run inspectMigrations for details.");
+    }
 
-  const finalState = await inspectMigrations(url);
-  if (finalState.status !== "upToDate") {
-    throw new Error(
-      `Failed to apply pending migrations: ${finalState.pendingMigrations.join(", ")}`,
-    );
+    await applyPendingMigrationsManually(url, state.pendingMigrations);
+
+    const finalState = await inspectMigrations(url);
+    if (finalState.status !== "upToDate") {
+      throw new Error(
+        `Failed to apply pending migrations: ${finalState.pendingMigrations.join(", ")}`,
+      );
+    }
+  } finally {
+    // Every return after acquiring the lock is inside this try, so the finally
+    // always runs. Session end releases the advisory lock anyway, so an unlock
+    // failure is non-fatal.
+    try {
+      await lockSql`SELECT pg_advisory_unlock(hashtext('aoa:migrations'))`;
+    } catch {
+      /* lock is released on session end below */
+    }
+    await lockSql.end();
   }
 }
 

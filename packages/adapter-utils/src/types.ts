@@ -49,6 +49,20 @@ export interface AdapterLocalExecutionTarget {
   type: "local";
 }
 
+export interface AdapterDockerIsolation {
+  user?: string | null;                 // --user 1000:1000
+  readOnlyRootfs?: boolean;             // --read-only
+  tmpfs?: string[];                     // --tmpfs entries
+  memory?: string | null;              // --memory + --memory-swap
+  cpus?: string | null;                // --cpus
+  pidsLimit?: number | null;           // --pids-limit
+  capDropAll?: boolean;                // --cap-drop=ALL
+  noNewPrivileges?: boolean;           // --security-opt no-new-privileges
+  seccompProfile?: string | null;      // --security-opt seccomp=<path>
+  ulimitNofile?: number | null;        // --ulimit nofile=N:N
+  ipcPrivate?: boolean;                // --ipc private
+}
+
 export interface AdapterDockerExecutionTarget {
   type: "sandbox-docker";
   image: string;
@@ -58,6 +72,12 @@ export interface AdapterDockerExecutionTarget {
   remove?: boolean;
   env?: Record<string, string>;
   installCommand?: string | null;
+  /** gVisor: emit `--runtime=runsc`. Default undefined = runc (unchanged). */
+  runtime?: "runc" | "runsc" | null;
+  /** Opt-in hardening. Default undefined = legacy args (back-compat). */
+  isolation?: AdapterDockerIsolation | null;
+  /** When true AND callback bridge is active, emit `--add-host host-gateway`. */
+  allowHostGateway?: boolean;
 }
 
 export interface AdapterProviderSandboxRunInput {
@@ -472,7 +492,7 @@ export interface AdapterEnvironmentTestContext {
   executionTarget?: AdapterExecutionTarget;
   environmentName?: string | null;
   deployment?: {
-    mode?: "local_trusted" | "authenticated";
+    mode?: "local_trusted" | "authenticated" | "cloud_auth";
     exposure?: "private" | "public";
     bindHost?: string | null;
     allowedHostnames?: string[];

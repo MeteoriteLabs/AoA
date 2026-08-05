@@ -12,7 +12,7 @@ import {
   internalAgentReminders,
 } from "@armyofagents/db";
 import { validate } from "../middleware/index.js";
-import { assertRole } from "../middleware/rbac.js";
+import { assertHumanRole } from "../middleware/rbac.js";
 import { internalAgentChatLimiter } from "../middleware/rate-limit.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { HttpError, badRequest, notFound, forbidden } from "../errors.js";
@@ -166,7 +166,7 @@ export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentSt
     validate(chatMessageSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const actor = getActorInfo(req);
 
       // Set SSE headers (gotchas 5.2 — POST-based, not EventSource)
@@ -420,7 +420,7 @@ export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentSt
     validate(confirmActionSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
 
       const actor = getActorInfo(req);
       const { confirmId, decision } = req.body as {
@@ -581,7 +581,7 @@ export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentSt
     "/companies/:companyId/internal-agent/tool-permissions",
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
 
       const [config] = await db
         .select({ commanderToolPermissions: internalAgentConfig.commanderToolPermissions })
@@ -598,8 +598,8 @@ export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentSt
     validate(updateToolPermissionsSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
-      await assertRole(db, req, companyId, "founder");
+      await assertCompanyAccess(db, req, companyId);
+      await assertHumanRole(db, req, companyId, "founder");
 
       await db
         .update(internalAgentConfig)
@@ -623,7 +623,7 @@ export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentSt
     "/companies/:companyId/internal-agent/test-connection",
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
 
       const [config] = await db
         .select({ cliTool: internalAgentConfig.cliTool })
@@ -657,7 +657,7 @@ export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentSt
     "/companies/:companyId/internal-agent/runtime-settings",
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
 
       const [config] = await db
         .select({
@@ -679,7 +679,7 @@ export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentSt
     "/companies/:companyId/internal-agent/tool-trust-rules",
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const actor = getActorInfo(req);
 
       const rules = await runtimeApprovalService(db).listTrustRules(
@@ -707,7 +707,7 @@ export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentSt
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const ruleId = req.params.ruleId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const actor = getActorInfo(req);
 
       const revoked = await runtimeApprovalService(db).revokeTrustRule(
@@ -725,7 +725,7 @@ export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentSt
     "/companies/:companyId/internal-agent/conversation",
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const actor = getActorInfo(req);
 
       const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
@@ -788,7 +788,7 @@ export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentSt
     "/companies/:companyId/internal-agent/conversation",
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const actor = getActorInfo(req);
 
       // Archive current conversation
@@ -836,7 +836,7 @@ export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentSt
     "/companies/:companyId/internal-agent/greeting",
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
 
       // Fetch recent proactive runs (last 24 hours) to build a greeting
       const since = new Date();
@@ -891,8 +891,8 @@ export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentSt
     "/companies/:companyId/internal-agent/config",
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
-      await assertRole(db, req, companyId, "founder");
+      await assertCompanyAccess(db, req, companyId);
+      await assertHumanRole(db, req, companyId, "founder");
       await ensureCommanderAgent(db, companyId);
 
       const configs = await db
@@ -915,8 +915,8 @@ export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentSt
     validate(updateConfigSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
-      await assertRole(db, req, companyId, "founder");
+      await assertCompanyAccess(db, req, companyId);
+      await assertHumanRole(db, req, companyId, "founder");
 
       // Validate autonomy level. Threads crew (Discussions feature) opens
       // L0-L2 — the design ceiling per § 4 (task + route + execute). Goals
@@ -979,8 +979,8 @@ export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentSt
     "/companies/:companyId/internal-agent/runs",
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
-      await assertRole(db, req, companyId, "founder");
+      await assertCompanyAccess(db, req, companyId);
+      await assertHumanRole(db, req, companyId, "founder");
 
       const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
       const offset = parseInt(req.query.offset as string) || 0;
@@ -1058,7 +1058,7 @@ export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentSt
     "/companies/:companyId/internal-agent/reminders",
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const actor = getActorInfo(req);
 
       const statusFilter = (req.query.status as string) || "pending";
@@ -1090,7 +1090,7 @@ export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentSt
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const reminderId = req.params.reminderId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const actor = getActorInfo(req);
 
       const [updated] = await db
@@ -1118,7 +1118,7 @@ export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentSt
     "/companies/:companyId/internal-agent/conversations",
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const actor = getActorInfo(req);
 
       // Board-gated: MCP/agent tokens are always "team_member" and see only
@@ -1151,7 +1151,7 @@ export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentSt
     validate(z.object({ title: z.string().max(200).optional() })),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const actor = getActorInfo(req);
 
       const [conv] = await db
@@ -1181,7 +1181,7 @@ export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentSt
     validate(z.object({ orderedIds: z.array(z.string().uuid()).max(1000) })),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const actor = getActorInfo(req);
 
       const scope: SQL[] = [
@@ -1229,7 +1229,7 @@ export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentSt
     "/companies/:companyId/internal-agent/conversations/order",
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const actor = getActorInfo(req);
 
       await db
@@ -1252,7 +1252,7 @@ export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentSt
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const convId = req.params.convId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
 
       await loadOwnedConversation(db, req, companyId, convId);
 
@@ -1273,7 +1273,7 @@ export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentSt
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const convId = req.params.convId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
 
       await loadOwnedConversation(db, req, companyId, convId);
 
@@ -1294,7 +1294,7 @@ export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentSt
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const convId = req.params.convId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
 
       await loadOwnedConversation(db, req, companyId, convId);
 
@@ -1316,7 +1316,7 @@ export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentSt
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const convId = req.params.convId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
 
       await loadOwnedConversation(db, req, companyId, convId);
 
@@ -1334,7 +1334,7 @@ export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentSt
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const convId = req.params.convId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
 
       // loadOwnedConversation applies the same founder bypass used by
       // archive/pin/rename/delete: founders can access any company conversation,
@@ -1362,7 +1362,7 @@ export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentSt
     "/companies/:companyId/internal-agent/skills",
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const agentId = await ensureCommanderAgent(db, companyId);
       const skills = await companySkillService(db).listSkillListItemsForAgent(
         companyId,

@@ -7,15 +7,15 @@ import {
 import { assertCompanyAccess } from "./authz.js";
 import { notFound } from "../errors.js";
 
-export function memoryStarterTemplatesRoutes(_db: Db) {
+export function memoryStarterTemplatesRoutes(db: Db) {
   const router = Router();
 
   // ── List all templates ──────────────────────────────────────────────────
   // GET /companies/:companyId/memory/starter-templates
   // Returns all 11 templates with their items (small static payload).
   // No DB needed — data is static code.
-  router.get("/companies/:companyId/memory/starter-templates", (req, res) => {
-    assertCompanyAccess(req, req.params.companyId as string);
+  router.get("/companies/:companyId/memory/starter-templates", async (req, res) => {
+    await assertCompanyAccess(db, req, req.params.companyId as string);
     res.json(listStarterTemplates());
   });
 
@@ -31,7 +31,7 @@ export function memoryStarterTemplatesRoutes(_db: Db) {
         companyId: string;
         templateId: string;
       };
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
 
       const departmentId =
         typeof req.body?.departmentId === "string" && req.body.departmentId.trim()
@@ -39,7 +39,7 @@ export function memoryStarterTemplatesRoutes(_db: Db) {
           : null;
 
       try {
-        const result = await applyStarterTemplate(_db, companyId, templateId, {
+        const result = await applyStarterTemplate(db, companyId, templateId, {
           departmentId,
         });
         res.json(result);

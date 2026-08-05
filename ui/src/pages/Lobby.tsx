@@ -6,7 +6,10 @@ import { useCompany } from "@/context/CompanyContext";
 import { profileApi } from "@/api/profile";
 import { companiesApi, type CompanyStats } from "@/api/companies";
 import { getOnboardingProgress } from "@/api/onboarding";
-import { readPendingOrganization } from "@/onboarding/pendingOrganization";
+import {
+  isConfirmedPendingOrganization,
+  readPendingOrganization,
+} from "@/onboarding/pendingOrganization";
 import { queryKeys } from "@/lib/queryKeys";
 import { LobbyCompanyCard } from "@/components/LobbyCompanyCard";
 import { LobbyEmptyState } from "@/components/LobbyEmptyState";
@@ -54,7 +57,10 @@ export function Lobby({
   const pendingOrganization = profile?.id ? readPendingOrganization(profile.id) : null;
   const interruptedCompanies = visibleCompanies.filter((_, index) => {
     const progress = progressQueries[index]?.data;
-    if (progress == null) return pendingOrganization?.id === visibleCompanies[index]?.id;
+    if (progress == null) {
+      return isConfirmedPendingOrganization(pendingOrganization) &&
+        pendingOrganization.id === visibleCompanies[index]?.id;
+    }
     return !progress.completedStates.includes("SETUP_COMPLETE");
   });
 
@@ -88,7 +94,7 @@ export function Lobby({
   const subtitleParts: string[] = [];
   subtitleParts.push(
     `${visibleCompanies.length} ${
-      visibleCompanies.length === 1 ? "organization" : "organizations"
+      visibleCompanies.length === 1 ? "company" : "companies"
     }`
   );
   if (pendingCompanies > 0) {
@@ -177,7 +183,7 @@ export function Lobby({
       )}
 
       <div className="mb-3 sm:mb-3.5 text-[0.66rem] sm:text-[0.7rem] font-semibold uppercase tracking-[0.08em] text-dim">
-        Your organizations
+        Your companies
       </div>
 
       <div className="flex flex-col gap-3 sm:gap-3.5">

@@ -1,9 +1,19 @@
 import type { Db } from "@armyofagents/db";
 import { plugins } from "@armyofagents/db";
 import { asc } from "drizzle-orm";
-import type { DeploymentExposure, DeploymentMode, HealthFinding, HealthReport } from "@armyofagents/shared";
+import type {
+  DeploymentExposure,
+  DeploymentMode,
+  HealthFinding,
+  HealthReport,
+} from "@armyofagents/shared";
 import { sanitizeHealthDiagnostic } from "./redaction.js";
-import { buildHealthSummary, deriveHealthStatus, sortHealthFindings } from "./status.js";
+import {
+  buildHealthSummary,
+  deriveHealthStatus,
+  sortHealthFindings,
+} from "./status.js";
+import { projectCloudPluginPolicyState } from "../cloud-plugin-execution.js";
 
 export interface InstanceHealthOptions {
   deploymentMode: DeploymentMode;
@@ -16,7 +26,10 @@ function canQuery(db: Db): boolean {
   return typeof (db as unknown as { select?: unknown }).select === "function";
 }
 
-export async function buildInstanceHealthReport(_db: Db, opts: InstanceHealthOptions): Promise<HealthReport> {
+export async function buildInstanceHealthReport(
+  _db: Db,
+  opts: InstanceHealthOptions
+): Promise<HealthReport> {
   const checkedAt = new Date().toISOString();
   const findings: HealthFinding[] = [
     {
@@ -59,7 +72,9 @@ export async function buildInstanceHealthReport(_db: Db, opts: InstanceHealthOpt
     }>,
   };
 
-  if (canQuery(_db)) {
+  // Cloud instance health is host/operator-plane only. Tenant plugin health is
+  // available from the company-scoped report after assertCompanyAccess.
+  if (canQuery(_db) && opts.deploymentMode !== "cloud_auth") {
     try {
       const pluginRows = await _db
         .select({
@@ -67,6 +82,7 @@ export async function buildInstanceHealthReport(_db: Db, opts: InstanceHealthOpt
           companyId: plugins.companyId,
           pluginKey: plugins.pluginKey,
           status: plugins.status,
+          statusReasonCode: plugins.statusReasonCode,
           manifestJson: plugins.manifestJson,
           lastError: plugins.lastError,
         })
@@ -74,10 +90,13 @@ export async function buildInstanceHealthReport(_db: Db, opts: InstanceHealthOpt
         .orderBy(asc(plugins.pluginKey))
         .limit(100);
 
-      pluginSection.total = pluginRows.length;
-      pluginSection.ready = pluginRows.filter((plugin) => plugin.status === "ready").length;
+      const policyRows = pluginRows.map(projectCloudPluginPolicyState);
+      pluginSection.total = policyRows.length;
+      pluginSection.ready = policyRows.filter(
+        (plugin) => plugin.status === "ready"
+      ).length;
       pluginSection.notReady = pluginRows.length - pluginSection.ready;
-      pluginSection.plugins = pluginRows.map((plugin) => ({
+      const detailedPlugins = policyRows.map((plugin) => ({
         id: plugin.id,
         companyId: plugin.companyId,
         pluginKey: plugin.pluginKey,
@@ -85,8 +104,11 @@ export async function buildInstanceHealthReport(_db: Db, opts: InstanceHealthOpt
         status: plugin.status,
         lastError: sanitizeHealthDiagnostic(plugin.lastError),
       }));
+      pluginSection.plugins = detailedPlugins;
 
-      for (const plugin of pluginSection.plugins.filter((entry) => entry.status !== "ready")) {
+      for (const plugin of detailedPlugins.filter(
+        (entry) => entry.status !== "ready"
+      )) {
         findings.push({
           id: `instance-plugin-${plugin.id}`,
           scope: "instance",
@@ -94,7 +116,10 @@ export async function buildInstanceHealthReport(_db: Db, opts: InstanceHealthOpt
           severity: plugin.status === "error" ? "error" : "warning",
           title: `Plugin ${plugin.displayName} is ${plugin.status}`,
           message: plugin.lastError ?? "Plugin is not ready.",
-          action: { label: "Review plugin diagnostics", href: "/instance/settings?tab=health" },
+          action: {
+            label: "Review plugin diagnostics",
+            href: "/instance/settings?tab=health",
+          },
           source: "server",
           detectedAt: checkedAt,
         });
@@ -106,7 +131,11 @@ export async function buildInstanceHealthReport(_db: Db, opts: InstanceHealthOpt
         category: "runtime",
         severity: "warning",
         title: "Plugin diagnostics could not be loaded",
-        message: err instanceof Error ? sanitizeHealthDiagnostic(err.message) ?? "Plugin diagnostics failed." : "Plugin diagnostics failed.",
+        message:
+          err instanceof Error
+            ? sanitizeHealthDiagnostic(err.message) ??
+              "Plugin diagnostics failed."
+            : "Plugin diagnostics failed.",
         source: "server",
         detectedAt: checkedAt,
       });

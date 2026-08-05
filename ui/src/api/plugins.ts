@@ -17,8 +17,19 @@ import type {
   PluginRecord,
   PluginConfig,
   PluginStatus,
+  PluginStatusReasonCode,
 } from "@armyofagents/shared";
-import { api } from "./client";
+import { api, ApiError } from "./client";
+
+export function isCloudPluginExecutionBlockedError(
+  err: unknown,
+): err is ApiError {
+  return (
+    err instanceof ApiError &&
+    (err.body as { code?: unknown } | null)?.code ===
+      "PLUGIN_WORKER_BLOCKED_IN_CLOUD"
+  );
+}
 
 /**
  * Normalized UI contribution record returned by `GET /api/plugins/ui-contributions`.
@@ -139,6 +150,7 @@ export interface CompanyPluginSetting {
   description: string;
   version: string;
   status: string;
+  statusReasonCode: PluginStatusReasonCode | null;
   categories: string[];
   enabled: boolean;
   settingsJson: Record<string, unknown>;
@@ -204,7 +216,7 @@ export const pluginsApi = {
    * @param params.version - Target npm version tag/range (optional; defaults to latest).
    * @param params.isLocalPath - Set to `true` when `packageName` is a local path.
    */
-  install: (params: { packageName: string; version?: string; isLocalPath?: boolean }) =>
+  install: (params: { packageName: string; version?: string; isLocalPath?: boolean; companyId?: string }) =>
     api.post<PluginRecord>("/plugins/install", params),
 
   /**
@@ -300,14 +312,16 @@ export const pluginsApi = {
    *
    * @example
    * ```ts
-   * const rows = await pluginsApi.listUiContributions();
+   * const rows = await pluginsApi.listUiContributions(companyId);
    * const toolbarLaunchers = rows.flatMap((row) =>
    *   row.launchers.filter((launcher) => launcher.placementZone === "toolbarButton"),
    * );
    * ```
    */
-  listUiContributions: () =>
-    api.get<PluginUiContribution[]>("/plugins/ui-contributions"),
+  listUiContributions: (companyId: string) =>
+    api.get<PluginUiContribution[]>(
+      `/plugins/ui-contributions?companyId=${encodeURIComponent(companyId)}`,
+    ),
 
   // ===========================================================================
   // Plugin configuration endpoints
@@ -368,7 +382,7 @@ export const pluginsApi = {
    * @param pluginId - UUID of the plugin whose worker should handle the request
    * @param key - Plugin-defined data key (e.g. `"sync-health"`)
    * @param params - Optional query parameters forwarded to the worker handler
-   * @param companyId - Optional company scope used for board/company access checks.
+   * @param companyId - Required company scope used for board/company access checks.
    * @param renderEnvironment - Optional launcher/page snapshot forwarded for
    *   launcher-backed UI so workers can distinguish modal, drawer, popover, and
    *   page execution.
@@ -385,12 +399,12 @@ export const pluginsApi = {
   bridgeGetData: (
     pluginId: string,
     key: string,
-    params?: Record<string, unknown>,
-    companyId?: string | null,
+    params: Record<string, unknown> | undefined,
+    companyId: string,
     renderEnvironment?: PluginLauncherRenderContextSnapshot | null,
   ) =>
     api.post<{ data: unknown }>(`/plugins/${pluginId}/data/${encodeURIComponent(key)}`, {
-      companyId: companyId ?? undefined,
+      companyId,
       params,
       renderEnvironment: renderEnvironment ?? undefined,
     }),
@@ -408,7 +422,7 @@ export const pluginsApi = {
    * @param pluginId - UUID of the plugin whose worker should handle the request
    * @param key - Plugin-defined action key (e.g. `"resync"`)
    * @param params - Optional parameters forwarded to the worker handler
-   * @param companyId - Optional company scope used for board/company access checks.
+   * @param companyId - Required company scope used for board/company access checks.
    * @param renderEnvironment - Optional launcher/page snapshot forwarded for
    *   launcher-backed UI so workers can distinguish modal, drawer, popover, and
    *   page execution.
@@ -425,12 +439,12 @@ export const pluginsApi = {
   bridgePerformAction: (
     pluginId: string,
     key: string,
-    params?: Record<string, unknown>,
-    companyId?: string | null,
+    params: Record<string, unknown> | undefined,
+    companyId: string,
     renderEnvironment?: PluginLauncherRenderContextSnapshot | null,
   ) =>
     api.post<{ data: unknown }>(`/plugins/${pluginId}/actions/${encodeURIComponent(key)}`, {
-      companyId: companyId ?? undefined,
+      companyId,
       params,
       renderEnvironment: renderEnvironment ?? undefined,
     }),
@@ -439,7 +453,7 @@ export const pluginsApi = {
   // Company-scoped plugin settings
   // ---------------------------------------------------------------------------
 
-  /** List all ready plugins with their company-level enable/disable state. */
+  /** List installed or cloud-blocked plugins with their company-level state. */
   listCompanySettings: (companyId: string) =>
     api.get<CompanyPluginSetting[]>(`/companies/${companyId}/plugin-settings`),
 
@@ -505,6 +519,7 @@ export interface InstalledPlugin {
   packageName: string;
   version: string;
   status: string;
+  statusReasonCode: PluginRecord["statusReasonCode"];
   categories: string[];
   manifest: {
     displayName: string;
@@ -516,7 +531,6 @@ export interface InstalledPlugin {
   installedAt: string;
   updatedAt: string;
   enabled: boolean;
-  configJson: Record<string, unknown>;
 }
 
 export interface UpgradeResult {
@@ -563,4 +577,3 @@ export const patchPluginSettings = (
   enabled: boolean,
 ) =>
   api.patch(`/companies/${companyId}/plugins/${pluginId}/settings`, { enabled });
-

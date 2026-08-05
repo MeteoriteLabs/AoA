@@ -62,6 +62,8 @@ function makeServices() {
     access: { ensureMembership: vi.fn(async () => {}), setPrincipalGrants: vi.fn(async () => {}) },
     team: { applyInviteRole: vi.fn(async () => null) },
     capabilities: { ensureStandardDocuments: vi.fn(async () => {}) },
+    orgAccess: { ensureOrgMembership: vi.fn(async () => "m1") },
+    resolveCompanyOrg: vi.fn(async (): Promise<string | null> => "org-t1"),
   };
 }
 
@@ -94,6 +96,10 @@ describe("approveHumanJoinRequestTx", () => {
       approvalSource: "invite_email_match",
     });
     expect(services.access.ensureMembership).toHaveBeenCalledWith("c1", "user", "u1", "member", "active");
+    // Task 11: org membership is resolved from the invited COMPANY (c1), never
+    // a hardcoded/default org, and applied at "member" role.
+    expect(services.resolveCompanyOrg).toHaveBeenCalledWith("c1");
+    expect(services.orgAccess.ensureOrgMembership).toHaveBeenCalledWith("org-t1", "u1", "member");
     expect(services.access.setPrincipalGrants).toHaveBeenCalledWith(
       "c1", "user", "u1",
       [{ permissionKey: "tasks:assign", scope: null }],
@@ -120,7 +126,18 @@ describe("approveHumanJoinRequestTx", () => {
     const row = await approveHumanJoinRequestTx(db, services as never, args);
     expect(row).toBeNull();
     expect(services.access.ensureMembership).not.toHaveBeenCalled();
+    expect(services.resolveCompanyOrg).not.toHaveBeenCalled();
+    expect(services.orgAccess.ensureOrgMembership).not.toHaveBeenCalled();
     expect(reconcile).not.toHaveBeenCalled();
+  });
+
+  it("skips org membership (no-op, not a default-org fallback) when the company has no organizationId", async () => {
+    const services = makeServices();
+    services.resolveCompanyOrg = vi.fn(async () => null);
+    const { db } = makeTxDb({ id: "r1", status: "approved" });
+    const row = await approveHumanJoinRequestTx(db, services as never, args);
+    expect(row).toEqual({ id: "r1", status: "approved" });
+    expect(services.orgAccess.ensureOrgMembership).not.toHaveBeenCalled();
   });
 
   it("seeding failure is non-fatal — approval still completes", async () => {

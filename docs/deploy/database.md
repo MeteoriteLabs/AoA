@@ -60,12 +60,17 @@ export DATABASE_URL=postgres://paperclip:paperclip@localhost:5432/paperclip
 #   ~/.aoa/instances/default/.env
 ```
 
-Push the schema:
+For a disposable local development database only, you can push the current
+schema directly:
 
 ```sh
 DATABASE_URL=postgres://paperclip:paperclip@localhost:5432/paperclip \
   npx drizzle-kit push
 ```
+
+Do not use `drizzle-kit push` for an existing or production database. It skips
+the migration journal, data backfills, and migration safety gates. Use
+`pnpm db:migrate` for upgrades.
 
 ## 3. Hosted PostgreSQL (Supabase)
 
@@ -76,6 +81,132 @@ For production, use a hosted provider like [Supabase](https://supabase.com/).
 3. Set `DATABASE_URL` in your `.env`
 
 Use the **direct connection** (port 5432) for migrations and the **pooled connection** (port 6543) for the application.
+
+### Migrations in multi-replica cloud deployments
+
+On boot the server auto-applies any pending migrations
+(`applyPendingMigrations` in `packages/db/src/client.ts`). In a horizontally
+scaled cloud deployment, **run migrations as a single init-job / one-shot
+container that finishes before the application replicas start**, rather than
+relying on every replica's boot-time auto-apply. Two replicas booting at once
+can otherwise observe the same pending set and race non-idempotent DDL (an
+`ADD COLUMN` / `ADD CONSTRAINT` without `IF NOT EXISTS`).
+
+As defense-in-depth, `applyPendingMigrations` holds a **session-level
+PostgreSQL advisory lock** (`pg_advisory_lock(hashtext('aoa:migrations'))`)
+across the whole inspect-and-apply, so if two replicas do auto-apply
+concurrently only one runs the migrator; the other waits, re-inspects under the
+lock, and finds the schema already up to date. This is a safety net, **not** a
+substitute for a single migration job.
+
+The init job must set `AOA_DEPLOYMENT_MODE=cloud_auth`. Migration `0188` is a
+one-way multi-tenant cutover for populated databases, so the shared migrator
+refuses to apply it until a full database snapshot has been taken and `"0188"`
+has been recorded in the canonical `instance_settings` row where
+`singleton_key = 'default'`, under `general.migrationSnapshots`. Record and
+verify the marker explicitly before starting the migration job:
+
+```sql
+INSERT INTO instance_settings (singleton_key, general)
+VALUES ('default', '{"migrationSnapshots":["0188"]}'::jsonb)
+ON CONFLICT (singleton_key) DO UPDATE
+SET general = jsonb_set(
+      instance_settings.general,
+      '{migrationSnapshots}',
+      (
+        SELECT CASE
+          WHEN cleaned.markers @> '["0188"]'::jsonb THEN cleaned.markers
+          ELSE cleaned.markers || '["0188"]'::jsonb
+        END
+        FROM (
+          SELECT COALESCE(jsonb_agg(candidate.marker), '[]'::jsonb) AS markers
+          FROM jsonb_array_elements(
+            CASE
+              WHEN jsonb_typeof(instance_settings.general->'migrationSnapshots') = 'array'
+                THEN instance_settings.general->'migrationSnapshots'
+              ELSE '[]'::jsonb
+            END
+          ) AS candidate(marker)
+          WHERE jsonb_typeof(candidate.marker) = 'string'
+        ) AS cleaned
+      ),
+      true
+    ),
+    updated_at = now();
+
+SELECT general->'migrationSnapshots' AS migration_snapshots
+FROM instance_settings
+WHERE singleton_key = 'default';
+```
+
+The command must insert or update exactly one row and the verification result
+must contain `"0188"`. If it does not, stop instead of applying migration
+`0188`. Keep every application replica stopped from this marker operation until
+the migration job completes, so no settings writer can race the cutover. If the
+manual migrator cannot determine the deployment mode, it also fails closed for
+that populated 0188 case instead of assuming a trusted local deployment.
+
+Migration `0200` adds process-owner provenance for persisted local runtime
+PIDs. Drain and stop every pre-`0200` application binary before starting the
+new replicas: old binaries do not understand the owner column and can still
+probe or signal foreign numeric PIDs. The nullable column is intentionally not
+backfilled because legacy PID ownership cannot be inferred safely. In
+`cloud_auth`, an ownerless legacy PID row blocks startup until an operator has
+stopped the process on its original host and cleared the persisted PID. Trusted
+single-owner modes preserve legacy/foreign rows but skip desired-service
+auto-restart until those rows are remediated, preventing duplicate detached
+commands and port conflicts.
+
+The same migration changes adapter-managed runtime IDs from globally trusted
+adapter values to company-namespaced hashes. As a one-time cutover it retires
+all pre-`0200` `adapter_managed` runtime rows, marks their task outputs stopped,
+and clears their preview URLs before deleting the old rows. Active adapters
+publish fresh company-scoped rows on their next report. Expect a brief preview
+refresh after deployment; old preview links intentionally stop working.
+
+While any PID-bearing `local_process` row remains in the shared database,
+every `cloud_auth` replica must have its own explicit, unique
+`AOA_RUNTIME_PROCESS_OWNER_ID`; a replica with the variable unset refuses to
+boot because it cannot safely distinguish its own prior process rows from a
+foreign host's. Normal production cloud deployments should remediate these
+rows and leave the unsandboxed execution override disabled.
+
+### Offline remediation for migration 0200 runtime rows
+
+Use the runtime-service IDs printed in the startup error. First stop the old
+AoA binary and confirm on the original process host that each recorded PID and
+its process group/tree are gone. Do **not** use the SQL below as a process-stop
+mechanism: it only repairs tracking after OS-level termination has been
+independently confirmed. Take a database backup, substitute the exact UUIDs,
+and inspect the locked rows before updating them:
+
+```sql
+BEGIN;
+
+SELECT id, provider, status, provider_ref, process_owner_id, started_at
+FROM workspace_runtime_services
+WHERE id IN ('00000000-0000-0000-0000-000000000000')
+FOR UPDATE;
+
+-- Continue only after every listed PID/process group is confirmed absent on
+-- its original host. Otherwise ROLLBACK and remediate the OS process first.
+UPDATE workspace_runtime_services
+SET provider_ref = NULL,
+    process_owner_id = NULL,
+    status = 'stopped',
+    health_status = 'unknown',
+    stopped_at = now(),
+    last_used_at = now(),
+    updated_at = now()
+WHERE id IN ('00000000-0000-0000-0000-000000000000')
+  AND provider = 'local_process';
+
+COMMIT;
+```
+
+Verify those rows now have `provider_ref IS NULL`, then start exactly one new
+application replica first. In a rolling deployment, never overlap pre-0200
+binaries with the new version.
 
 If using connection pooling, disable prepared statements:
 

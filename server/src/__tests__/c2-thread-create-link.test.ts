@@ -7,11 +7,14 @@ import { describe, expect, it, vi } from "vitest";
 import { threadCreateLinkTool } from "../services/internal-agent/tools/thread-create-link.js";
 import type { ToolContext } from "../services/internal-agent/types.js";
 
-function makeDb(returningRows: any[] = [{ id: "link-1" }]) {
+function makeDb(returningRows: any[] = [{ id: "link-1" }], endpointRows: any[] = [{ id: "t-1" }, { id: "t-2" }]) {
   const returning = vi.fn().mockResolvedValue(returningRows);
   const values = vi.fn().mockReturnValue({ returning });
   const insert = vi.fn().mockReturnValue({ values });
-  return { db: { insert } as any, valuesMock: values };
+  const select = vi.fn().mockReturnValue({
+    from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(endpointRows) }),
+  });
+  return { db: { select, insert } as any, valuesMock: values };
 }
 
 function makeCtx(db: any): ToolContext {
@@ -115,5 +118,18 @@ describe("thread.createLink tool (C2 batch 1)", () => {
     );
     expect(result.success).toBe(false);
     expect(result.error).toBe("INVALID_PARAMS");
+  });
+
+  it.each([
+    ["foreign source", [{ id: "t-2" }]],
+    ["foreign target", [{ id: "t-1" }]],
+    ["both foreign", []],
+  ])("fails closed when %s is outside the company", async (_label, endpointRows) => {
+    const { db, valuesMock } = makeDb([{ id: "link-1" }], endpointRows);
+    const result = await threadCreateLinkTool.execute(
+      { fromId: "t-1", toId: "t-2", kind: "link" }, makeCtx(db),
+    );
+    expect(result).toMatchObject({ success: false, error: "NOT_FOUND" });
+    expect(valuesMock).not.toHaveBeenCalled();
   });
 });

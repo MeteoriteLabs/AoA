@@ -97,7 +97,13 @@ function makeApp(
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = actor;
+    // Mirror actorMiddleware: a genuine operator carries operator=true alongside
+    // isInstanceAdmin. The operator-plane gate (canManageInstanceSettings) reads it.
+    const a: any = actor;
+    (req as any).actor =
+      a && a.type === "board" && a.operator === undefined
+        ? { ...a, operator: a.isInstanceAdmin === true }
+        : a;
     onRequest?.();
     next();
   });

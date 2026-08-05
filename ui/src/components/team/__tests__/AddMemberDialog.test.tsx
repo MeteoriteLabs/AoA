@@ -222,3 +222,52 @@ describe("AddMemberDialog — invite is the primary path", () => {
     expect(teamApi.addMember).not.toHaveBeenCalled();
   });
 });
+
+describe("AddMemberDialog — cloud invite-only gating (Fix 1)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(accessApi.createCompanyInvite).mockResolvedValue(inviteResponse());
+    vi.mocked(teamApi.addMember).mockResolvedValue({ userId: "user-2" });
+  });
+
+  function renderWith(inviteOnly: boolean) {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, gcTime: 0 },
+        mutations: { retry: false },
+      },
+    });
+    function Wrapper({ children }: { children: ReactNode }) {
+      return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+    }
+    render(
+      <AddMemberDialog
+        companyId="company-1"
+        departments={[]}
+        members={[]}
+        isSystemAdmin={false}
+        inviteOnly={inviteOnly}
+        open
+        onOpenChange={vi.fn()}
+      />,
+      { wrapper: Wrapper },
+    );
+  }
+
+  it("hides the manual-add path entirely in cloud mode", () => {
+    renderWith(true);
+    // Invite form is still present...
+    expect(screen.getByLabelText("Email")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create link" })).toBeInTheDocument();
+    // ...but there is no way to switch to (or reach) direct add.
+    expect(screen.queryByRole("button", { name: /Add manually/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Invite by email/ })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Name")).not.toBeInTheDocument();
+  });
+
+  it("keeps both modes in self-hosted (inviteOnly=false)", () => {
+    renderWith(false);
+    expect(screen.getByRole("button", { name: /Invite by email/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Add manually/ })).toBeInTheDocument();
+  });
+});

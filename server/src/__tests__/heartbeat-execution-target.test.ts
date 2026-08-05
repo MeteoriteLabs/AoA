@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@armyofagents/db", () => {
   const makeTable = () =>
@@ -69,13 +69,14 @@ import {
   applyEnvironmentRuntimeTarget,
   mergeAdapterRuntimeServiceReports,
   resolveOutputDetectionCwd,
-  resolveAdapterExecutionContext,
+  resolveAdapterExecutionContextUnguarded,
+  resolveGuardedAdapterExecutionContext,
   resolveAdapterManagedRuntimeExecutionWorkspaceId,
 } from "../services/heartbeat.js";
 
 describe("heartbeat adapter execution target context", () => {
   it("defaults missing adapter config target to local context", () => {
-    const result = resolveAdapterExecutionContext({}, { getRuntimeCommandSpec: vi.fn(() => null) });
+    const result = resolveAdapterExecutionContextUnguarded({}, { getRuntimeCommandSpec: vi.fn(() => null) });
 
     expect(result).toEqual({
       executionTarget: { type: "local" },
@@ -90,7 +91,7 @@ describe("heartbeat adapter execution target context", () => {
       installCommand: "npm install -g @openai/codex",
     }));
 
-    const result = resolveAdapterExecutionContext(
+    const result = resolveAdapterExecutionContextUnguarded(
       {
         executionTarget: {
           type: "sandbox-docker",
@@ -102,6 +103,8 @@ describe("heartbeat adapter execution target context", () => {
         },
       },
       { getRuntimeCommandSpec },
+      // self-hosted single-tenant: config honored exactly (pass-through)
+      false,
     );
 
     expect(result).toEqual({
@@ -114,6 +117,9 @@ describe("heartbeat adapter execution target context", () => {
         remove: true,
         env: { NODE_ENV: "test" },
         installCommand: null,
+        runtime: null,
+        isolation: null,
+        allowHostGateway: false,
       },
       runtimeCommandSpec: {
         command: "codex",
@@ -131,12 +137,68 @@ describe("heartbeat adapter execution target context", () => {
     const adapter = { execute, getRuntimeCommandSpec: vi.fn() };
 
     expect(() =>
-      resolveAdapterExecutionContext(
+      resolveAdapterExecutionContextUnguarded(
         { executionTarget: { type: "sandbox-docker" } },
         adapter,
       ),
     ).toThrow('executionTarget.image is required for target "sandbox-docker"');
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("neutralizes a weakened tenant adapterConfig.executionTarget on multi_tenant", () => {
+    // agents.adapterConfig.executionTarget is a free-form z.record producer that
+    // reaches buildDockerRunArgs. On shared infra it must be sink-hardened.
+    const weakened = {
+      executionTarget: {
+        type: "sandbox-docker",
+        image: "node:22",
+        network: "host",
+        allowHostGateway: true,
+        isolation: { capDropAll: false, readOnlyRootfs: false, noNewPrivileges: false, user: "0:0" },
+      },
+    };
+
+    const hardened = resolveAdapterExecutionContextUnguarded(
+      weakened,
+      { getRuntimeCommandSpec: vi.fn(() => null) },
+      true, // multi_tenant
+    ).executionTarget;
+    if (hardened.type !== "sandbox-docker") throw new Error("expected sandbox-docker");
+    expect(hardened.allowHostGateway).toBe(false); // SSRF host-gateway route closed
+    expect(hardened.network).toBe("none"); // host clamped
+    expect(hardened.isolation?.capDropAll).toBe(true);
+    expect(hardened.isolation?.readOnlyRootfs).toBe(true);
+    expect(hardened.isolation?.noNewPrivileges).toBe(true);
+    expect(hardened.isolation?.user).toBe("1000:1000");
+
+    const honored = resolveAdapterExecutionContextUnguarded(
+      weakened,
+      { getRuntimeCommandSpec: vi.fn(() => null) },
+      false, // self-hosted single-tenant
+    ).executionTarget;
+    if (honored.type !== "sandbox-docker") throw new Error("expected sandbox-docker");
+    expect(honored.allowHostGateway).toBe(true);
+    expect(honored.network).toBe("host");
+    expect(honored.isolation?.capDropAll).toBe(false);
+    expect(honored.isolation?.user).toBe("0:0");
+  });
+
+  it("defaults to hardened (fail-closed) when the multiTenant flag is omitted", () => {
+    const target = resolveAdapterExecutionContextUnguarded(
+      {
+        executionTarget: {
+          type: "sandbox-docker",
+          image: "node:22",
+          network: "host",
+          allowHostGateway: true,
+        },
+      },
+      { getRuntimeCommandSpec: vi.fn(() => null) },
+    ).executionTarget;
+    if (target.type !== "sandbox-docker") throw new Error("expected sandbox-docker");
+    expect(target.allowHostGateway).toBe(false);
+    expect(target.network).toBe("none");
+    expect(target.isolation?.capDropAll).toBe(true);
   });
 
   it("applies an environment target over adapter config target", () => {
@@ -241,5 +303,84 @@ describe("heartbeat adapter execution target context", () => {
         effectiveCwd: "C:/aoa/fallback",
       }),
     ).toBe("C:/aoa/fallback");
+  });
+});
+
+describe("resolveGuardedAdapterExecutionContext — org-agent sink (D1)", () => {
+  const OPT_IN = "AOA_ALLOW_UNSANDBOXED_MULTITENANT";
+  let saved: string | undefined;
+  beforeEach(() => { saved = process.env[OPT_IN]; delete process.env[OPT_IN]; });
+  afterEach(() => { if (saved === undefined) delete process.env[OPT_IN]; else process.env[OPT_IN] = saved; });
+
+  it("refuses a local target on cloud_auth (isolation enforced) without the opt-in", () => {
+    expect(() =>
+      resolveGuardedAdapterExecutionContext({}, { getRuntimeCommandSpec: vi.fn(() => null) }, {
+        trustBoundary: "multi_tenant",
+        tenantIsolationEnforced: true,
+        sink: "org agent",
+      }),
+    ).toThrow(/AOA_ALLOW_UNSANDBOXED_MULTITENANT/);
+  });
+
+  it("allows a local target on cloud_auth when the opt-in is set", () => {
+    process.env[OPT_IN] = "1";
+    const result = resolveGuardedAdapterExecutionContext({}, { getRuntimeCommandSpec: vi.fn(() => null) }, {
+      trustBoundary: "multi_tenant",
+      tenantIsolationEnforced: true,
+      sink: "org agent",
+    });
+    expect(result.executionTarget).toEqual({ type: "local" });
+  });
+
+  it("honors a local target on an authenticated self-host (multi_tenant boundary, isolation NOT enforced) without any opt-in", () => {
+    // ★ This is the regression the signal correction fixes: multi_tenant hardening
+    // signal is TRUE but tenant isolation is NOT enforced (cloud_auth false), so the
+    // authenticated self-hoster keeps running a local target with no opt-in.
+    const result = resolveGuardedAdapterExecutionContext({}, { getRuntimeCommandSpec: vi.fn(() => null) }, {
+      trustBoundary: "multi_tenant",
+      tenantIsolationEnforced: false,
+      sink: "org agent",
+    });
+    expect(result.executionTarget).toEqual({ type: "local" });
+  });
+
+  it("refuses a tenant-authored runsc target until the validated worker plane exists", () => {
+    // runtime:"runsc" makes this a GENUINELY-isolated docker target — the only
+    // docker shape the D1 guard allows on cloud_auth. A runtime-less/runc docker
+    // target would now be REFUSED (shared host kernel + bridge egress).
+    expect(() => resolveGuardedAdapterExecutionContext(
+      { executionTarget: { type: "sandbox-docker", image: "node:22", runtime: "runsc", network: "host", allowHostGateway: true } },
+      { getRuntimeCommandSpec: vi.fn(() => null) },
+      { trustBoundary: "multi_tenant", tenantIsolationEnforced: true, sink: "org agent" },
+    )).toThrow(/runtime name is not proof/);
+  });
+});
+
+describe("resolveGuardedAdapterExecutionContext — crew-agent sink (D1)", () => {
+  // The crew runner (aoa-agents/runner.ts) dispatches through this SAME guarded
+  // helper, passing sink:"crew agent". This is that call site's contract.
+  const OPT_IN = "AOA_ALLOW_UNSANDBOXED_MULTITENANT";
+  let saved: string | undefined;
+  beforeEach(() => { saved = process.env[OPT_IN]; delete process.env[OPT_IN]; });
+  afterEach(() => { if (saved === undefined) delete process.env[OPT_IN]; else process.env[OPT_IN] = saved; });
+
+  it("refuses a local crew run on cloud_auth without the opt-in and names the crew sink", () => {
+    expect(() =>
+      resolveGuardedAdapterExecutionContext({}, { getRuntimeCommandSpec: vi.fn(() => null) }, {
+        trustBoundary: "multi_tenant",
+        tenantIsolationEnforced: true,
+        sink: "crew agent",
+      }),
+    ).toThrow(/crew agent/);
+  });
+
+  it("allows a local crew run on cloud_auth when opted in", () => {
+    process.env[OPT_IN] = "1";
+    const result = resolveGuardedAdapterExecutionContext({}, { getRuntimeCommandSpec: vi.fn(() => null) }, {
+      trustBoundary: "multi_tenant",
+      tenantIsolationEnforced: true,
+      sink: "crew agent",
+    });
+    expect(result.executionTarget).toEqual({ type: "local" });
   });
 });

@@ -108,7 +108,7 @@ export function Me() {
         {/* N2: /instance/settings is instance-admin-only — hide the gear for
             everyone else (default hidden while the profile loads, same as the
             Lobby sidebar row). */}
-        {profileQuery.data?.isInstanceAdmin === true && (
+        {profileQuery.data?.canManageInstanceSettings === true && (
           <button
             type="button"
             onClick={() => navigate("/instance/settings")}
@@ -140,7 +140,9 @@ export function Me() {
             <div className="space-y-6">
               <div className="flex items-center gap-4">
                 <Avatar size="lg" className="h-16 w-16">
-                  {normalizedAvatar ? <AvatarImage src={normalizedAvatar} alt={displayName} /> : null}
+                  {normalizedAvatar ? (
+                    <AvatarImage src={normalizedAvatar} alt={displayName} />
+                  ) : null}
                   <AvatarFallback className="text-lg">{initials}</AvatarFallback>
                 </Avatar>
                 <div className="min-w-0">
