@@ -553,6 +553,90 @@ describe.skipIf(process.platform === "win32")(
       expect(bundleAfterRefresh!.refreshToken).toBe("rt-1");
     }, 120_000);
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // R1 (multi-tenant merge blocker): the callback binds the exchanged provider
+    // token to a connector based on the board session that COMPLETES the flow.
+    // #316 reshaped the board actor model; a clean textual merge could silently
+    // break this binding. This test proves a cross-tenant session cannot complete
+    // another founder's flow. It runs in `authenticated` mode because the R1
+    // check is skipped under local_trusted (loopback trust).
+    // ─────────────────────────────────────────────────────────────────────────
+    it("R1: only the founder session that started the flow can complete the callback (cross-tenant is refused)", async () => {
+      if (setupError) throw setupError;
+
+      const priorMode = process.env.AOA_DEPLOYMENT_MODE;
+      const priorBaseUrl = process.env.AOA_AUTH_PUBLIC_BASE_URL;
+      process.env.AOA_DEPLOYMENT_MODE = "authenticated";
+      process.env.AOA_AUTH_PUBLIC_BASE_URL = "https://app.example.test";
+      try {
+        const a = await seedCompany("Tenant A Co");
+        const b = await seedCompany("Tenant B Co");
+        const founderA = app(boardActor(a.founderId, [a.companyId]));
+        const founderB = app(boardActor(b.founderId, [b.companyId]));
+
+        // Founder A installs the OAuth connector and starts the flow. In
+        // authenticated mode `startedByUserId` is the real session user (A).
+        const installed = await founderA
+          .post(`/api/companies/${a.companyId}/mcp-connectors/install`)
+          .send({ entryId: CATALOG_ENTRY.id });
+        expect(installed.status).toBe(201);
+        const connectorId = installed.body.id as string;
+
+        const started = await founderA
+          .post(
+            `/api/companies/${a.companyId}/mcp-connectors/${connectorId}/oauth/start`
+          )
+          .send({});
+        expect(started.status).toBe(200);
+
+        const flowRows = await db
+          .select()
+          .from(mcpConnectorOauthFlows)
+          .where(eq(mcpConnectorOauthFlows.connectorId, connectorId));
+        expect(flowRows).toHaveLength(1);
+        expect(flowRows[0].startedByUserId).toBe(a.founderId);
+        const state = flowRows[0].state;
+        const flowId = flowRows[0].id;
+        const secretName = `mcp:oauth:${connectorId}`;
+
+        // ── Cross-tenant hijack: founder B (different user AND company) tries to
+        //    complete founder A's flow. Must be refused BEFORE any code exchange
+        //    or secret write — a 403, not a silent bind.
+        const hijack = await founderB
+          .get(`/api/mcp-connectors/oauth/callback`)
+          .query({ code: "CODE", state });
+        expect(hijack.status).toBe(403);
+
+        // Nothing was bound: connector still needs credentials, no secret, and the
+        // flow is still pending (claimable only by the rightful owner).
+        const afterHijack = await connectorRow(connectorId);
+        expect(afterHijack.status).toBe("needs_credentials");
+        expect(afterHijack.secret_ref).toBeNull();
+        expect(
+          await secretService(db).getByName(a.companyId, secretName)
+        ).toBeFalsy();
+        const flowAfterHijack = await db
+          .select()
+          .from(mcpConnectorOauthFlows)
+          .where(eq(mcpConnectorOauthFlows.id, flowId));
+        expect(flowAfterHijack[0].status).toBe("pending");
+
+        // ── The rightful founder A completes the SAME flow successfully. ───────
+        const ok = await founderA
+          .get(`/api/mcp-connectors/oauth/callback`)
+          .query({ code: "CODE", state });
+        expect(ok.status).toBe(302);
+        const afterOk = await connectorRow(connectorId);
+        expect(afterOk.status).toBe("active");
+        expect(afterOk.secret_ref).toBe(secretName);
+      } finally {
+        if (priorMode === undefined) delete process.env.AOA_DEPLOYMENT_MODE;
+        else process.env.AOA_DEPLOYMENT_MODE = priorMode;
+        if (priorBaseUrl === undefined) delete process.env.AOA_AUTH_PUBLIC_BASE_URL;
+        else process.env.AOA_AUTH_PUBLIC_BASE_URL = priorBaseUrl;
+      }
+    }, 120_000);
+
     it("rolls back secret, connector, flow completion, and activity when the durable activity insert fails", async () => {
       if (setupError) throw setupError;
 
