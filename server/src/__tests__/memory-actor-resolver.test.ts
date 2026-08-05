@@ -68,7 +68,7 @@ describe("actorForUser", () => {
 });
 
 describe("actorForMcp", () => {
-  it("does not inherit a founder role for an external MCP key", async () => {
+  it("does not inherit a founder role for an external MCP key, and marks it external", async () => {
     const db = makeMockDb([[{ role: "founder", projectId: null }]]);
     expect(
       await actorForMcp(
@@ -77,7 +77,19 @@ describe("actorForMcp", () => {
         { source: "mcp", userId: "founder-owner" },
         { kind: "scoped", userId: "founder-owner", projectIds: new Set() },
       ),
-    ).toEqual({ kind: "team_member", userId: "founder-owner", departmentIds: [] });
+    ).toEqual({ kind: "team_member", userId: "founder-owner", departmentIds: [], external: true });
+  });
+
+  it("marks a board team_member as internal (external: false) so it retains company grounding", async () => {
+    const db = makeMockDb([]);
+    expect(
+      await actorForMcp(
+        db,
+        "co-1",
+        { source: "board", userId: "member-1" },
+        { kind: "scoped", userId: "member-1", projectIds: new Set(["deptA"]) },
+      ),
+    ).toEqual({ kind: "team_member", userId: "member-1", departmentIds: ["deptA"], external: false });
   });
 
   it("preserves founder scope for a board caller", async () => {

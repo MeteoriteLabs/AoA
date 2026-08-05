@@ -1831,3 +1831,24 @@ server-reserved `runtimeConfig` auto-start envelope.
 **Deferred:** the real multi-worker `GvisorPoolClient` implementation + worker-token rotation (Task 13 ships a rotatable per-target credential — a SHA-256 `worker_token_hash`, migration 0194; the plaintext is returned once at registration and the row id is no longer a bearer credential). The multi-worker `GvisorPoolClient` that consumes it remains deferred; the Task 0 hardware spike itself (Gate-B, pending); generalizing the egress firewall beyond the documented iptables/nftables sketch to a maintained, tested artifact.
 
 **Key files:** `packages/db/src/schema/execution_targets.ts`, `packages/adapter-utils/src/execution-target.ts`, `packages/adapter-utils/src/types.ts`, `server/src/services/environment-runtime.ts`, `server/src/services/gvisor-sandbox-provider.ts`, `server/src/services/execution-target-resolver.ts`, `server/src/services/heartbeat-execution-target.ts`, `server/src/services/org-concurrency.ts`, `server/src/services/org-spend.ts`, `server/src/services/execution-targets.ts`, `server/src/routes/execution-targets.ts`, `server/src/routes/org-spend.ts`, `ui/src/components/settings/sections/EnvironmentsSection.tsx`, `ui/src/components/settings/sections/environment-target-form.ts`. Plan: `docs/aoa/plans/2026-07-29-aoa-mt-phase5-execution-gvisor.md`. Guide: `docs/aoa/guides/gvisor-worker-image.md`.
+
+## Decision #118 — Memory read-visibility tiers: identity = agents + team-lead+, company = all internal members but not external MCP keys (2026-08-05)
+
+**Status:** Locked 2026-08-05 (implemented on `claude/memory-enterprise-build`, PR #318). Reconciles the two memory-RBAC read gates surfaced by the adversarial security review of the enterprise-memory merge.
+
+**Problem.** The enterprise-memory work added a second read gate (`memory-access.ts` `canActorSee` / `memory-access-sql.ts` `memoryAccessConditions`, guarding ORG-agent + CREW + external-MCP + MCP-board reads) alongside the pre-existing Commander gate (`memory-policy.ts` `canSeeDurableMemory`). The new gate admitted `layer='identity'` and `visibility='company'` rows to EVERY actor, which (a) contradicted the Commander gate (identity = team-lead+ for humans), (b) contradicted the "humans unchanged" intent of the actor-aware fix, and (c) silently let team_member humans and external MCP keys read company identity that the deleted `filterMemoryForScope` had excluded.
+
+**Decision (read tiers).**
+- **`identity`** → **agents** (grounding — an agent that cannot read the company vision cannot ground its work) + **founder / team_lead** humans (+ the `commander` actor kind). NOT team_member humans, NOT external MCP keys.
+- **`visibility='company'`** → every INTERNAL member (agents + founder/team_lead + team_member humans). NOT external MCP keys.
+- **`domain` / `active_context` / `working`** → scope-matched: a row's `departmentId`/`projectId`, its goal's project (via `project_goals`), or its task's project (via `issues.projectId`) must intersect the actor's assigned `projects.id` set.
+- **Private** (owner-typed `user`/`agent`, or `agentId` set) → owner-only (agent sees its own; human sees its own user-private; founder never sees others' private — break-glass is a separate P4 path).
+- **Invalidated** (`invalidatedAt` set) → nobody. **Founder** sees every non-private, non-invalidated row.
+
+**External-key distinction.** `actorForMcp` marks a bearer-token caller (`source='mcp'`) as `{ kind: 'team_member', external: true }`; a board/user human (`source='board'`) leaves `external` unset. The gate excludes `external` team_members from identity + company, so an external key sees only its explicitly-scoped memory + its own (typically empty) private set — third-party integrations do not receive company grounding by default.
+
+**Reconciliation.** `memory-policy.ts` already gated identity to `agent || team_lead+`; it now also recognizes `visibility='company'` → all members, so both gates agree. The remaining `company`-vs-`shared` visibility-vocabulary split between the two modules is a tracked consolidation follow-up, not a behavior gap (both are fail-closed for non-identity layers).
+
+**Do NOT** re-broaden identity/company to team_member humans or external MCP keys without a successor decision — the founder is the identity-layer gatekeeper (Decisions #15, #6, Rule #6). Company-wide *employee* readability of identity (Model B — readable by all members, gated from external keys, with a separate confidential tier so founders don't silently leak) was considered and deferred as a larger change.
+
+**Key files:** `server/src/services/memory-access.ts` (`canActorSee`, `MemoryActor.external`), `server/src/services/memory-access-sql.ts` (`actorForMcp`, `memoryAccessConditions`), `server/src/services/internal-agent/memory-policy.ts` (`canSeeDurableMemory`). Tests: `memory-access.test.ts`, `memory-actor-resolver.test.ts`, `memory-rbac-leakage.integration.test.ts` (tier case).

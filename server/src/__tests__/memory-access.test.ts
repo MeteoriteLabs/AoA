@@ -23,6 +23,9 @@ const founder: MemoryActor = { kind: "founder" };
 const agentA: MemoryActor = { kind: "agent", agentId: "ag1", departmentIds: ["deptA"] };
 const agentB: MemoryActor = { kind: "agent", agentId: "ag2", departmentIds: ["deptB"] };
 const leadA: MemoryActor = { kind: "team_lead", userId: "u1", departmentIds: ["deptA"] };
+const memberA: MemoryActor = { kind: "team_member", userId: "u2", departmentIds: ["deptA"] };
+// External MCP key: same team_member kind, but marked external → not an internal member.
+const externalKey: MemoryActor = { kind: "team_member", userId: "ext", departmentIds: [], external: true };
 
 describe("filterMemoryForActor", () => {
   it("founder sees all non-private, any department", () => {
@@ -37,14 +40,24 @@ describe("filterMemoryForActor", () => {
     expect(seen[0].departmentId).toBe("deptA");
   });
 
-  it("identity memory is company core — visible to any actor", () => {
+  it("identity memory: agents + team-lead+ see it; team_member humans and external MCP keys do NOT", () => {
     const items = [row({ layer: "identity", departmentId: null, visibility: "scoped" })];
+    // agents (grounding) + founder + team_lead
     expect(filterMemoryForActor(items, agentB)).toHaveLength(1);
+    expect(filterMemoryForActor(items, founder)).toHaveLength(1);
+    expect(filterMemoryForActor(items, leadA)).toHaveLength(1);
+    // NOT a team_member human, NOT an external MCP key
+    expect(filterMemoryForActor(items, memberA)).toHaveLength(0);
+    expect(filterMemoryForActor(items, externalKey)).toHaveLength(0);
   });
 
-  it("company-visibility memory is visible cross-department", () => {
+  it("company-visibility memory: every internal member sees it (incl. team_member); external MCP keys do NOT", () => {
     const items = [row({ visibility: "company", departmentId: "deptB" })];
     expect(filterMemoryForActor(items, agentA)).toHaveLength(1);
+    expect(filterMemoryForActor(items, founder)).toHaveLength(1);
+    expect(filterMemoryForActor(items, leadA)).toHaveLength(1);
+    expect(filterMemoryForActor(items, memberA)).toHaveLength(1); // internal member
+    expect(filterMemoryForActor(items, externalKey)).toHaveLength(0); // external key excluded
   });
 
   it("agent-private memory is visible only to the owning agent", () => {

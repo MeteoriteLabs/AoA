@@ -84,6 +84,9 @@ function canSeeDurableMemory<T extends CommanderMemoryCandidate>(
     return input.actorType === "agent" || isTeamLead(input.userRole);
   }
   if (item.visibility === "shared") return true;
+  // Company-wide items are readable by every member (matches memory-access.ts's
+  // `visibility='company'` tier). Commander has no external-key callers here.
+  if (item.visibility === "company") return true;
   if (!hasScope(item)) return isTeamLead(input.userRole);
   return matchesScope(item, input.scope);
 }

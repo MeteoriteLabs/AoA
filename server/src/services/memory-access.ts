@@ -9,7 +9,10 @@
 export type MemoryActor =
   | { kind: "founder" }
   | { kind: "team_lead"; userId: string; departmentIds: string[] }
-  | { kind: "team_member"; userId: string; departmentIds: string[] }
+  // `external: true` marks an external MCP-key caller (bearer token, source "mcp") —
+  // NOT an internal member. It is excluded from identity + company grounding. Board/
+  // user humans (source "board") leave it unset (internal member: sees company).
+  | { kind: "team_member"; userId: string; departmentIds: string[]; external?: boolean }
   | { kind: "commander"; userId: string; departmentIds: string[] }
   | { kind: "agent"; agentId: string; departmentIds: string[] };
 
@@ -41,9 +44,21 @@ export function canActorSee(item: AccessibleMemoryRow, actor: MemoryActor): bool
     return item.ownerType === "user" && item.ownerId === actor.userId;
   }
 
-  // Non-private:
-  if (item.layer === "identity") return true; // company core, everyone
-  if (item.visibility === "company") return true; // explicitly company-wide
+  // Non-private. Company-grounding tiers (reconciled with memory-policy.ts + CLAUDE.md;
+  // see docs/architecture/decisions.md):
+  //   identity → agents (grounding) + founder/team_lead (+commander). NOT team_member
+  //              humans, NOT external MCP keys.
+  //   company  → every internal member (incl. team_member humans). NOT external MCP keys.
+  const isExternalKey = actor.kind === "team_member" && actor.external === true;
+  if (item.layer === "identity") {
+    return (
+      actor.kind === "agent" ||
+      actor.kind === "founder" ||
+      actor.kind === "team_lead" ||
+      actor.kind === "commander"
+    );
+  }
+  if (item.visibility === "company") return !isExternalKey; // all internal members
   if (actor.kind === "founder") return true; // founder sees all non-private
   // Scoped: `departmentIds` carries every projects.id (dept- or project-type) the
   // actor can access, so match a row's departmentId OR projectId against it.

@@ -78,6 +78,10 @@ export async function actorForMcp(
     kind: "team_member",
     userId: actor.userId,
     departmentIds: [...scope.projectIds],
+    // External MCP keys (bearer token, source "mcp") are NOT internal members — the
+    // gate excludes them from identity + company grounding. Board/user humans
+    // (source "board") are internal members (see company, not identity).
+    external: actor.source === "mcp",
   };
 }
 
@@ -133,14 +137,16 @@ export function memoryAccessConditions(db: Db, actor: MemoryActor): SQL[] {
       )!
     : sql`false`;
 
-  const visibleNonPrivate = and(
-    nonPrivate,
-    or(
-      eq(memoryItems.layer, "identity"),
-      eq(memoryItems.visibility, "company"),
-      scopeMatch,
-    ),
-  )!;
+  // Company-grounding tiers (mirror canActorSee in memory-access.ts):
+  //   identity → agents + team_lead (+commander). NOT team_member humans / external keys.
+  //   company  → every internal member. NOT external MCP keys.
+  const seesIdentity =
+    actor.kind === "agent" || actor.kind === "team_lead" || actor.kind === "commander";
+  const isExternalKey = actor.kind === "team_member" && actor.external === true;
+  const visibleParts: SQL[] = [scopeMatch];
+  if (seesIdentity) visibleParts.push(eq(memoryItems.layer, "identity"));
+  if (!isExternalKey) visibleParts.push(eq(memoryItems.visibility, "company"));
+  const visibleNonPrivate = and(nonPrivate, or(...visibleParts)!)!;
 
   if (actor.kind === "agent") {
     // Non-private-visible rows PLUS the agent's own personal memory.

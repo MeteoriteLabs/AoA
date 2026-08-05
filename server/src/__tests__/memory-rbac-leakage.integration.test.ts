@@ -34,7 +34,7 @@ import { sql } from "drizzle-orm";
 import { applyPendingMigrations, createDb, type Db } from "@armyofagents/db";
 import { memoryService } from "../services/memory.js";
 import { actorForAgentRun, memoryAccessConditions } from "../services/memory-access-sql.js";
-import { filterMemoryForActor } from "../services/memory-access.js";
+import { filterMemoryForActor, type MemoryActor } from "../services/memory-access.js";
 import { allocateEmbeddedPgPort } from "./helpers/embedded-pg-port.js";
 
 type EmbeddedPostgresInstance = {
@@ -115,6 +115,11 @@ async function insertMemory(opts: {
 /** The production retrieval composition: actor → in-SQL gate → search → safety net. */
 async function visibleTitlesForAgent(agentId: string): Promise<Set<string>> {
   const actor = await actorForAgentRun(db, co, agentId);
+  return visibleTitlesForActor(actor);
+}
+
+/** Same production composition (in-SQL gate → search → safety net) for any actor. */
+async function visibleTitlesForActor(actor: MemoryActor): Promise<Set<string>> {
   const accessConditions = memoryAccessConditions(db, actor);
   const raw = await memoryService(db).searchMultiPath(co, "", { accessConditions, limit: 100 });
   return new Set(filterMemoryForActor(raw, actor).map((r) => r.title));
@@ -272,6 +277,35 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect(titles.has("Alpha domain (deptA)")).toBe(false); // cross-department
       expect(titles.has("Agent A private")).toBe(false); // cross-owner private
       expect(titles.has("Invalidated company note")).toBe(false);
+    });
+
+    it("tiers (MINOR-1): a team_member human sees company but NOT identity; an external MCP key sees neither", async () => {
+      assertSetupOk();
+      // Internal team_member human scoped to dept A (external unset → internal member).
+      // userId must be a real UUID — owner_id is a uuid column and the gate emits
+      // `owner_id = <userId>` for the own-private clause.
+      const member: MemoryActor = {
+        kind: "team_member",
+        userId: "11111111-1111-1111-1111-111111111111",
+        departmentIds: [deptA],
+      };
+      const memberTitles = await visibleTitlesForActor(member);
+      expect(memberTitles.has("Company-wide note")).toBe(true); // company: internal member YES
+      expect(memberTitles.has("Alpha domain (deptA)")).toBe(true); // own dept scoped
+      expect(memberTitles.has("Company identity")).toBe(false); // identity: team_member NO
+      expect(memberTitles.has("Beta domain (deptB)")).toBe(false); // cross-dept still denied
+
+      // External MCP key: same kind, marked external → NOT an internal member.
+      const external: MemoryActor = {
+        kind: "team_member",
+        userId: "22222222-2222-2222-2222-222222222222",
+        departmentIds: [deptA],
+        external: true,
+      };
+      const extTitles = await visibleTitlesForActor(external);
+      expect(extTitles.has("Company identity")).toBe(false); // identity: external NO
+      expect(extTitles.has("Company-wide note")).toBe(false); // company: external NO
+      expect(extTitles.has("Alpha domain (deptA)")).toBe(true); // its scoped access still works
     });
 
     it("the gate is meaningful, not vacuous: WITHOUT accessConditions the dept-B row DOES come back", async () => {
