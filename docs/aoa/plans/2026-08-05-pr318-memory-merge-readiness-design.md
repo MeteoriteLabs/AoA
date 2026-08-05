@@ -106,7 +106,7 @@ All three must pass; fix anything surfaced, then re-run.
 - **Crew fail-closed** on missing identity (D7/D8) still holds post-rebase.
 - The 7 merged conflict files — **no dropped semantics** from either side.
 
-**(b) Full typecheck + full test suite** — `pnpm typecheck` + `pnpm test` (the memory QA suites: `memory-qa`, plus `identity-backfill`, `memory-insert-no-pgvector`, RBAC gate tests). Green required. (Note the platform reality: Windows local skips integration+e2e; Linux PR CI is the authoritative run — see §6.)
+**(b) Full typecheck + full test suite** — `pnpm typecheck` + `pnpm test:run` (the memory QA suites: `memory-qa`, plus `identity-backfill`, `memory-insert-no-pgvector`, RBAC gate tests). Green required. (Note the platform reality: Windows local skips integration+e2e; Linux PR CI is the authoritative run — see §6.)
 
 **(c) Crew full end-to-end LLM run** — dispatch a real crew task in `mem-inst` (company `AcmeMem` `febba560`, agent `MemCrew` `3d0795bb`) and confirm the run output reflects retrieved company memory, not just a rendered bundle. Prereqs: `AOA_STRIP_CC_ENV=1` + `AOA_RUNTIME_DECISION_ROUTING=1` + agent `runtimeConfig.runtimeDecisionRoutingEnabled=true`. This is verification only — no code expected; if it fails it becomes a real finding.
 
