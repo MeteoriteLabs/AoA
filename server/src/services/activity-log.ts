@@ -66,6 +66,52 @@ export function publishActivityLogged(input: PersistedActivity): void {
   });
 }
 
+// --- Broker-flow compatibility API (used by mcp-connectors routes + token-refresh) ---
+// Same insert-then-publish split as above, exposed with the prepared-event shape
+// those call sites already consume. Delegates to insertActivityLog so there is one
+// insert path and redaction stays consistent (the live event carries sanitized details).
+
+export interface PreparedActivityEvent {
+  companyId: string;
+  payload: {
+    actorType: ActivityActorType;
+    actorId: string;
+    action: string;
+    entityType: string;
+    entityId: string;
+    agentId: string | null;
+    runId: string | null;
+    details: Record<string, unknown> | null;
+  };
+}
+
+/** Persist an activity row without publishing (transaction-safe); returns a prepared event. */
+export async function insertActivity(db: Db, input: LogActivityInput): Promise<PreparedActivityEvent> {
+  const persisted = await insertActivityLog(db, input);
+  return {
+    companyId: persisted.companyId,
+    payload: {
+      actorType: persisted.actorType,
+      actorId: persisted.actorId,
+      action: persisted.action,
+      entityType: persisted.entityType,
+      entityId: persisted.entityId,
+      agentId: persisted.agentId ?? null,
+      runId: persisted.runId ?? null,
+      details: persisted.details,
+    },
+  };
+}
+
+/** Publish only after the transaction containing insertActivity has committed. */
+export function publishActivity(event: PreparedActivityEvent) {
+  publishLiveEvent({
+    companyId: event.companyId,
+    type: "activity.logged",
+    payload: event.payload,
+  });
+}
+
 export async function logActivity(db: Db, input: LogActivityInput) {
   const persisted = await insertActivityLog(db, input);
   publishActivityLogged(persisted);

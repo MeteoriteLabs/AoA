@@ -114,6 +114,142 @@ describe("secretService", () => {
     expect(typeof svc.resolveSecretValue).toBe("function");
   });
 
+  it("rejects generic mutation and deletion of broker-owned OAuth credentials", async () => {
+    const secret = {
+      id: "secret-oauth",
+      companyId: "company-1",
+      name: "mcp:oauth:connector-1",
+      provider: "local_encrypted",
+      managedMode: "aoa_managed",
+      latestVersion: 1,
+      status: "active",
+      deletedAt: null,
+      providerMetadata: {
+        purpose: "mcp_oauth",
+        ownerConnectorId: "connector-1",
+        catalogEntryId: "notion-hosted",
+        oauthPolicyVersion: 1,
+      },
+    };
+    const svc = secretService(makeFakeDb({ secret, version: null }) as any);
+
+    await expect(svc.update(secret.id, { description: "tamper" })).rejects.toThrow("broker-managed");
+    await expect(svc.rotate(secret.id, { value: "tamper" })).rejects.toThrow("broker-managed");
+    await expect(svc.remove(secret.id)).rejects.toThrow("broker-managed");
+    await expect(svc.delete(secret.companyId, secret.name)).rejects.toThrow("broker-managed");
+  });
+
+  it("rejects broker-owned OAuth credentials in generic env persistence and resolution", async () => {
+    const secret = {
+      id: "secret-oauth",
+      companyId: "company-1",
+      name: "mcp:oauth:connector-1",
+      provider: "local_encrypted",
+      providerConfigId: null,
+      externalRef: null,
+      managedMode: "aoa_managed",
+      latestVersion: 1,
+      status: "active",
+      deletedAt: null,
+      providerMetadata: {
+        purpose: "mcp_oauth",
+        ownerConnectorId: "connector-1",
+        catalogEntryId: "notion-hosted",
+        oauthPolicyVersion: 1,
+      },
+    };
+    const db = makeFakeDb({ secret, version: null, bindings: [] });
+    const svc = secretService(db as any);
+
+    await expect(
+      svc.normalizeEnvConfigForPersistence("company-1", {
+        ATTACKER_TOKEN: {
+          type: "secret_ref",
+          secretId: "11111111-1111-4111-8111-111111111111",
+          version: "latest",
+        },
+      }),
+    ).rejects.toThrow("broker-managed");
+
+    await expect(
+      svc.createBinding({
+        companyId: "company-1",
+        secretId: secret.id,
+        targetType: "agent",
+        targetId: "attacker-agent",
+        configPath: "env.ATTACKER_TOKEN",
+      }),
+    ).rejects.toThrow("broker-managed");
+
+    await expect(
+      svc.resolveSecretValue("company-1", secret.id, "latest", {
+        consumerType: "system",
+        consumerId: "llm-provider:attacker",
+        actorType: "system",
+        configPath: "provider.attacker",
+      }),
+    ).rejects.toThrow(/cannot be used by generic secret consumers/i);
+  });
+
+  it("allows only the exact owner through the internal OAuth broker capability", async () => {
+    process.env.AOA_SECRETS_MASTER_KEY = "12345678901234567890123456789012";
+    const prepared = await localEncryptedProvider.createVersion({
+      value: "signed-oauth-bundle",
+      externalRef: null,
+      context: {
+        companyId: "company-1",
+        secretId: "secret-oauth",
+        secretKey: "MCP_OAUTH_CONNECTOR_1",
+        secretName: "mcp:oauth:connector-1",
+        version: 1,
+      },
+    });
+    const secret = {
+      id: "secret-oauth",
+      companyId: "company-1",
+      name: "mcp:oauth:connector-1",
+      provider: "local_encrypted",
+      providerConfigId: null,
+      externalRef: null,
+      latestVersion: 1,
+      status: "active",
+      deletedAt: null,
+      providerMetadata: {
+        purpose: "mcp_oauth",
+        ownerConnectorId: "connector-1",
+        catalogEntryId: "notion-hosted",
+        oauthPolicyVersion: 1,
+      },
+    };
+    const db = makeFakeDb({
+      secret,
+      version: { secretId: secret.id, version: 1, material: prepared.material },
+      bindings: [],
+    });
+    const svc = secretService(db as any);
+    const context = {
+      consumerType: "system" as const,
+      consumerId: "oauth-broker",
+      actorType: "system" as const,
+      configPath: "mcp.connector.notion",
+      mcpOAuthOwner: {
+        connectorId: "connector-1",
+        catalogEntryId: "notion-hosted",
+        oauthPolicyVersion: 1,
+      },
+    };
+
+    await expect(
+      svc.resolveSecretValue("company-1", secret.id, "latest", context),
+    ).resolves.toBe("signed-oauth-bundle");
+    await expect(
+      svc.resolveSecretValue("company-1", secret.id, "latest", {
+        ...context,
+        mcpOAuthOwner: { ...context.mcpOAuthOwner, connectorId: "attacker" },
+      }),
+    ).rejects.toThrow(/owned by another resource/i);
+  });
+
   it("normalizes env config for persistence with strict validation", async () => {
     await expect(secretService({} as any).normalizeEnvConfigForPersistence("company-1", {
       NODE_ENV: "production",

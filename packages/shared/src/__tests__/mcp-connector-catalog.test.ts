@@ -28,7 +28,10 @@ describe("McpConnectorCatalogEntrySchema", () => {
   });
 
   it("rejects a serverName outside /^[a-z0-9-]+$/", () => {
-    const r = McpConnectorCatalogEntrySchema.safeParse({ ...httpEntry, serverName: "Bad_Name" });
+    const r = McpConnectorCatalogEntrySchema.safeParse({
+      ...httpEntry,
+      serverName: "Bad_Name",
+    });
     expect(r.success).toBe(false);
   });
 
@@ -48,7 +51,10 @@ describe("McpConnectorCatalogEntrySchema", () => {
   });
 
   it("tolerates a purely additive optional field, stripping it (FU-22 / Decision #96)", () => {
-    const r = McpConnectorCatalogEntrySchema.safeParse({ ...httpEntry, iconUrl: "https://cdn/x.png" });
+    const r = McpConnectorCatalogEntrySchema.safeParse({
+      ...httpEntry,
+      iconUrl: "https://cdn/x.png",
+    });
     expect(r.success).toBe(true);
     expect(r.success && r.data).not.toHaveProperty("iconUrl");
   });
@@ -58,16 +64,13 @@ describe("McpConnectorCatalogEntrySchema", () => {
     (serverName) => {
       const file = {
         schemaVersion: "1.0.0",
-        entries: [
-          httpEntry,
-          { ...httpEntry, id: "reserved", serverName },
-        ],
+        entries: [httpEntry, { ...httpEntry, id: "reserved", serverName }],
       };
       const result = parseMcpConnectorCatalog(file);
       expect(result.entries.map((e) => e.id)).toEqual(["notion"]);
       expect(result.dropped).toEqual(["reserved"]);
       expect(result.malformed).toBe(false);
-    },
+    }
   );
 
   it("drops an unparseable entry but keeps the good ones (forward compatible)", () => {
@@ -110,7 +113,10 @@ describe("McpConnectorCatalogEntrySchema", () => {
   });
 
   it("accepts requiresOAuth:true as a valid entry (shown-but-not-installable)", () => {
-    const r = McpConnectorCatalogEntrySchema.safeParse({ ...httpEntry, requiresOAuth: true });
+    const r = McpConnectorCatalogEntrySchema.safeParse({
+      ...httpEntry,
+      requiresOAuth: true,
+    });
     expect(r.success).toBe(true);
     expect(r.success && r.data.requiresOAuth).toBe(true);
   });
@@ -132,7 +138,10 @@ describe("McpConnectorCatalogEntrySchema", () => {
   });
 
   it("rejects an http entry that also carries a command (symmetric transport exclusion)", () => {
-    const r = McpConnectorCatalogEntrySchema.safeParse({ ...httpEntry, command: "npx" });
+    const r = McpConnectorCatalogEntrySchema.safeParse({
+      ...httpEntry,
+      command: "npx",
+    });
     expect(r.success).toBe(false);
   });
 
@@ -155,26 +164,45 @@ describe("parseMcpConnectorCatalog — envelope handling (never throws)", () => 
     ["a string", "not a catalog"],
   ];
 
-  it.each(notObjectInputs)("treats %s input as malformed, never throws", (_label, input) => {
-    expect(() => parseMcpConnectorCatalog(input)).not.toThrow();
-    expect(parseMcpConnectorCatalog(input)).toEqual({ entries: [], dropped: [], malformed: true });
-  });
+  it.each(notObjectInputs)(
+    "treats %s input as malformed, never throws",
+    (_label, input) => {
+      expect(() => parseMcpConnectorCatalog(input)).not.toThrow();
+      expect(parseMcpConnectorCatalog(input)).toEqual({
+        entries: [],
+        dropped: [],
+        malformed: true,
+      });
+    }
+  );
 
   it("treats a missing `entries` field as malformed", () => {
     expect(() => parseMcpConnectorCatalog({})).not.toThrow();
-    expect(parseMcpConnectorCatalog({})).toEqual({ entries: [], dropped: [], malformed: true });
+    expect(parseMcpConnectorCatalog({})).toEqual({
+      entries: [],
+      dropped: [],
+      malformed: true,
+    });
   });
 
   it("treats a non-array `entries` field as malformed", () => {
     const input = { entries: "not-an-array" };
     expect(() => parseMcpConnectorCatalog(input)).not.toThrow();
-    expect(parseMcpConnectorCatalog(input)).toEqual({ entries: [], dropped: [], malformed: true });
+    expect(parseMcpConnectorCatalog(input)).toEqual({
+      entries: [],
+      dropped: [],
+      malformed: true,
+    });
   });
 
   it("treats a legitimately empty `entries` array as NOT malformed", () => {
     const input = { entries: [] };
     expect(() => parseMcpConnectorCatalog(input)).not.toThrow();
-    expect(parseMcpConnectorCatalog(input)).toEqual({ entries: [], dropped: [], malformed: false });
+    expect(parseMcpConnectorCatalog(input)).toEqual({
+      entries: [],
+      dropped: [],
+      malformed: false,
+    });
   });
 
   it("drops a non-object entry as <unidentified>, never throws, and is not malformed", () => {
@@ -210,7 +238,12 @@ describe("parseMcpConnectorCatalog — Finding 5: value-bearing alias rejection"
 
   it("DROPS an entry carrying a value-bearing `headerTemplate` alias (not retained)", () => {
     const input = {
-      entries: [{ ...httpEntry, headerTemplate: { Authorization: "Bearer sk-live-real" } }],
+      entries: [
+        {
+          ...httpEntry,
+          headerTemplate: { Authorization: "Bearer sk-live-real" },
+        },
+      ],
     };
     const result = parseMcpConnectorCatalog(input);
     expect(result.entries).toHaveLength(0);
@@ -250,7 +283,11 @@ describe("parseMcpConnectorCatalog — Finding 5: value-bearing alias rejection"
     const input = {
       entries: [
         { ...httpEntry, id: "good", iconUrl: "https://cdn/x.png" },
-        { ...httpEntry, id: "bad", headerTemplate: { Authorization: "Bearer sk-live-real" } },
+        {
+          ...httpEntry,
+          id: "bad",
+          headerTemplate: { Authorization: "Bearer sk-live-real" },
+        },
       ],
     };
     const result = parseMcpConnectorCatalog(input);
@@ -310,12 +347,102 @@ describe("parseMcpConnectorCatalog — Finding 7: duplicate id dedup (first-wins
   it("does not confuse distinct ids", () => {
     const input = {
       entries: [
-        { ...httpEntry, id: "a" },
-        { ...httpEntry, id: "b" },
+        { ...httpEntry, id: "a", serverName: "a" },
+        { ...httpEntry, id: "b", serverName: "b" },
       ],
     };
     const result = parseMcpConnectorCatalog(input);
     expect(result.entries.map((e) => e.id)).toEqual(["a", "b"]);
     expect(result.dropped).toEqual([]);
+  });
+
+  it("drops a later entry that reuses an existing serverName", () => {
+    const result = parseMcpConnectorCatalog({
+      entries: [
+        { ...httpEntry, id: "notion-primary" },
+        { ...httpEntry, id: "notion-shadow", displayName: "Shadow" },
+        {
+          ...httpEntry,
+          id: "linear",
+          serverName: "linear",
+          displayName: "Linear",
+        },
+      ],
+    });
+
+    expect(result.entries.map((entry) => entry.id)).toEqual([
+      "notion-primary",
+      "linear",
+    ]);
+    expect(result.dropped).toEqual(["notion-shadow"]);
+    expect(result.malformed).toBe(false);
+  });
+});
+
+describe("oauth block", () => {
+  it("accepts an entry with an oauth object of non-secret metadata", () => {
+    const parsed = McpConnectorCatalogEntrySchema.parse({
+      id: "notion-hosted",
+      serverName: "notion",
+      displayName: "Notion (hosted)",
+      transport: "http",
+      url: "https://mcp.notion.com/mcp",
+      requiresOAuth: true,
+      oauth: { scopes: ["default"] },
+    });
+    expect(parsed.oauth?.scopes).toEqual(["default"]);
+    expect(parsed.requiresOAuth).toBe(true);
+  });
+
+  it("defaults oauth scopes to [] and leaves oauth undefined when absent", () => {
+    const parsed = McpConnectorCatalogEntrySchema.parse({
+      id: "linear",
+      serverName: "linear",
+      displayName: "Linear",
+      transport: "http",
+      url: "https://x/mcp",
+    });
+    expect(parsed.oauth).toBeUndefined();
+  });
+
+  it("strips unknown keys inside oauth (forward-compat)", () => {
+    const parsed = McpConnectorCatalogEntrySchema.parse({
+      id: "x",
+      serverName: "x",
+      displayName: "X",
+      transport: "http",
+      url: "https://x/mcp",
+      oauth: { scopes: [], somethingNew: 1 },
+    });
+    expect(
+      (parsed.oauth as Record<string, unknown>).somethingNew
+    ).toBeUndefined();
+  });
+
+  it("defaults oauth.scopes to [] when an oauth block omits scopes", () => {
+    const parsed = McpConnectorCatalogEntrySchema.parse({
+      id: "declared",
+      serverName: "declared",
+      displayName: "Declared",
+      transport: "http",
+      url: "https://x/mcp",
+      oauth: {
+        authorizationUrl: "https://as/authorize",
+        tokenUrl: "https://as/token",
+      },
+    });
+    expect(parsed.oauth?.scopes).toEqual([]);
+  });
+
+  it("rejects an OAuth entry declared with stdio transport", () => {
+    const r = McpConnectorCatalogEntrySchema.safeParse({
+      id: "bad",
+      serverName: "bad",
+      displayName: "Bad",
+      transport: "stdio",
+      command: "npx some-pkg@1.0.0",
+      requiresOAuth: true,
+    });
+    expect(r.success).toBe(false);
   });
 });

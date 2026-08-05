@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { BadgeCheck, Cable, Github } from "lucide-react";
 import {
@@ -26,7 +26,8 @@ import { ConnectorInstallDialog, commandLine } from "./ConnectorInstallDialog";
  * from a bug, and founders work around bugs by pasting credentials into the
  * manual form.
  */
-const UNAVAILABLE_FALLBACK = "This connector cannot be installed in this deployment.";
+const UNAVAILABLE_FALLBACK =
+  "This connector cannot be installed in this deployment.";
 
 function TrustPill({ tier }: { tier: string }) {
   if (tier === "verified") return null;
@@ -39,24 +40,37 @@ function TrustPill({ tier }: { tier: string }) {
 
 interface ShelfCardProps {
   entry: McpConnectorShelfEntry;
-  installed: boolean;
+  installed: McpConnector | undefined;
   busy: boolean;
   onInstall: () => void;
+  /** Install (if needed) then start the OAuth broker round trip and navigate to
+   *  the provider's consent page. Only called for `entry.oauthRequired` cards. */
+  onAuthorize: () => void;
 }
 
 /** Marketplace card chrome (design-system §9.13), minus the bits that only make
  *  sense for catalog items: no TypeChip (every card here is a connector) and no
  *  detail-page link (connectors have no detail route). */
-function ShelfCard({ entry, installed, busy, onInstall }: ShelfCardProps) {
+function ShelfCard({
+  entry,
+  installed,
+  busy,
+  onInstall,
+  onAuthorize,
+}: ShelfCardProps) {
   const verified = entry.trust?.tier === "verified";
   const unavailable = !entry.installable;
+  const canRetryOAuth =
+    entry.oauthRequired &&
+    installed?.oauthEligibility === "supported" &&
+    installed.status === "needs_credentials";
 
   return (
     <div
       data-testid={`connector-shelf-card-${entry.id}`}
       className={cn(
         "relative rounded-xl border border-border-strong bg-card overflow-hidden p-4",
-        unavailable ? "opacity-70" : "card-hover",
+        unavailable ? "opacity-70" : "card-hover"
       )}
     >
       <div className="flex items-start gap-3">
@@ -109,7 +123,9 @@ function ShelfCard({ entry, installed, busy, onInstall }: ShelfCardProps) {
           data-testid="connector-unavailable-reason"
           className="mt-3 rounded-md border border-border bg-card-2 px-2.5 py-2 text-[11.5px] text-dim"
         >
-          <span className="font-medium text-foreground">Unavailable in this deployment. </span>
+          <span className="font-medium text-foreground">
+            Unavailable in this deployment.{" "}
+          </span>
           {entry.unavailableReason ?? UNAVAILABLE_FALLBACK}
         </div>
       )}
@@ -127,13 +143,33 @@ function ShelfCard({ entry, installed, busy, onInstall }: ShelfCardProps) {
               <span className="truncate">Docs</span>
             </a>
           ) : (
-            <span className="truncate">{entry.transport === "http" ? "HTTP" : "Local (stdio)"}</span>
+            <span className="truncate">
+              {entry.transport === "http" ? "HTTP" : "Local (stdio)"}
+            </span>
           )}
         </div>
-        {installed ? (
+        {installed && !canRetryOAuth ? (
           <Badge variant="active" className="h-7 px-2.5 shrink-0">
             Installed
           </Badge>
+        ) : entry.oauthRequired ? (
+          // The broker (Plan 4) handles OAuth entries: install-then-authorize,
+          // not install-then-done. `unavailable` still applies (D7 can refuse an
+          // OAuth entry's transport too), so a D7-refused OAuth card falls through
+          // to the unavailable branch below rather than offering a dead button.
+          unavailable ? null : (
+            <Button
+              size="sm"
+              className="text-[11.5px] h-7 px-3 shrink-0"
+              onClick={onAuthorize}
+              disabled={busy}
+              aria-label={`${
+                canRetryOAuth ? "Retry authorization for" : "Authorize"
+              } ${entry.displayName}`}
+            >
+              {busy ? "…" : canRetryOAuth ? "Retry authorization" : "Authorize"}
+            </Button>
+          )
         ) : unavailable ? null : (
           <Button
             size="sm"
@@ -153,7 +189,8 @@ function ShelfCard({ entry, installed, busy, onInstall }: ShelfCardProps) {
 export interface ConnectorShelfProps {
   companyId: string;
   /** The company's already-registered connectors, used to mark installed cards.
-   *  Matched on `serverName`, which is the (companyId, serverName) uniqueness
+   *  OAuth entries match on immutable `catalogEntryId`; `serverName` is never
+   *  used as OAuth identity. Static legacy rows retain a display-only fallback.
    *  key the server enforces — installing a second time 409s. */
   installed: McpConnector[];
   /** Called after a successful install so the surface can point the founder at
@@ -202,6 +239,16 @@ export function ConnectorShelf({
   const [dialogEntryId, setDialogEntryId] = useState<string | null>(null);
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const companyIdRef = useRef(companyId);
+  companyIdRef.current = companyId;
+  const redirectStartedRef = useRef(false);
+
+  useEffect(() => {
+    setDialogEntryId(null);
+    setPendingId(null);
+    setError(null);
+    redirectStartedRef.current = false;
+  }, [companyId]);
 
   const catalogQuery = useQuery({
     queryKey: queryKeys.mcpConnectors.catalog(companyId),
@@ -213,7 +260,13 @@ export function ConnectorShelf({
   // check below refetches, the open dialog re-renders against the refreshed
   // entry (new token, and the command that token was minted for) automatically.
   const dialogEntry = entries.find((e) => e.id === dialogEntryId) ?? null;
-  const installedNames = new Set(installed.map((c) => c.serverName));
+  const connectorForEntry = (entry: McpConnectorShelfEntry) =>
+    installed.find((connector) => connector.catalogEntryId === entry.id) ??
+    // Static pre-identity rows keep the historical display-only fallback. OAuth
+    // must be reinstalled/migrated and never receives this inference path.
+    (!entry.oauthRequired
+      ? installed.find((connector) => connector.serverName === entry.serverName)
+      : undefined);
 
   // Search filters what is DRAWN, never what `dialogEntry` resolves against —
   // typing while the consent dialog is open must not silently unmount the
@@ -224,27 +277,99 @@ export function ConnectorShelf({
         (e) =>
           e.displayName.toLowerCase().includes(q) ||
           e.serverName.toLowerCase().includes(q) ||
-          (e.description ?? "").toLowerCase().includes(q),
+          (e.description ?? "").toLowerCase().includes(q)
       )
     : entries;
 
   const installMutation = useMutation({
-    mutationFn: (body: { entryId: string; consentToken?: string }) =>
-      mcpConnectorsApi.install(companyId, body),
-    onSuccess: (created) => {
-      setError(null);
-      setDialogEntryId(null);
-      setPendingId(null);
+    mutationFn: ({ companyId: scopeCompanyId, body }: { companyId: string; body: { entryId: string; consentToken?: string } }) =>
+      mcpConnectorsApi.install(scopeCompanyId, body),
+    onSuccess: (created, variables) => {
+      if (companyIdRef.current === variables.companyId) {
+        setError(null);
+        setDialogEntryId(null);
+        setPendingId(null);
+        onInstalled(created);
+      }
       // Invalidating the LIST key also invalidates the catalog (it is a prefix
       // of the catalog key), which re-mints consent tokens — cheap and correct.
-      queryClient.invalidateQueries({ queryKey: queryKeys.mcpConnectors.list(companyId) });
-      onInstalled(created);
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.mcpConnectors.list(variables.companyId),
+      });
     },
-    onError: (err) => {
-      setPendingId(null);
-      setError(err instanceof ApiError ? err.message : "Failed to install connector");
+    onError: (err, variables) => {
+      if (companyIdRef.current === variables.companyId) {
+        setPendingId(null);
+        setError(
+          err instanceof ApiError ? err.message : "Failed to install connector"
+        );
+      }
     },
   });
+
+  const authorizeMutation = useMutation({
+    mutationFn: async ({ companyId: scopeCompanyId, entry, existingId }: { companyId: string; entry: McpConnectorShelfEntry; existingId?: string }) => {
+      // Install first if this immutable catalog identity isn't registered, then start
+      // the OAuth broker round trip and hand the browser off to the provider's
+      // consent page. A re-authorize (already installed, dead token) skips
+      // straight to oauth/start — no duplicate install POST.
+      const installedNow = existingId === undefined;
+      const connectorId =
+        existingId ??
+        (await mcpConnectorsApi.install(scopeCompanyId, { entryId: entry.id })).id;
+      try {
+        const { authorizeUrl } = await mcpConnectorsApi.oauthStart(
+          scopeCompanyId,
+          connectorId
+        );
+        return { authorizeUrl };
+      } catch (error) {
+        // Install and OAuth start are intentionally separate server operations.
+        // If start fails, re-read the successfully installed row so retry uses
+        // its immutable catalog identity instead of attempting a duplicate install.
+        if (installedNow) {
+          await queryClient.invalidateQueries({
+            queryKey: queryKeys.mcpConnectors.list(scopeCompanyId),
+            refetchType: "active",
+          });
+        }
+        throw error;
+      }
+    },
+    onSuccess: ({ authorizeUrl }, variables) => {
+      if (companyIdRef.current === variables.companyId) setPendingId(null);
+      // Mirrors installMutation: a fresh install needs the list re-fetched so a
+      // second click on this shelf (before the redirect lands) sees it installed.
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.mcpConnectors.list(variables.companyId),
+      });
+      if (companyIdRef.current === variables.companyId && !redirectStartedRef.current) {
+        redirectStartedRef.current = true;
+        window.location.assign(authorizeUrl);
+      }
+    },
+    onError: (err, variables) => {
+      if (companyIdRef.current === variables.companyId) {
+        setPendingId(null);
+        setError(
+          err instanceof ApiError ? err.message : "Failed to start authorization"
+        );
+      }
+    },
+  });
+
+  const handleAuthorize = (entry: McpConnectorShelfEntry) => {
+    const currentAuthorizePending =
+      authorizeMutation.isPending && authorizeMutation.variables?.companyId === companyId;
+    if (currentAuthorizePending || redirectStartedRef.current) return;
+    setError(null);
+    setPendingId(entry.id);
+    authorizeMutation.mutate({
+      companyId,
+      entry,
+      existingId: connectorForEntry(entry)?.id,
+    });
+  };
 
   const handleInstall = async (entry: McpConnectorShelfEntry) => {
     setError(null);
@@ -253,7 +378,7 @@ export function ConnectorShelf({
     // no host command to consent to, and the server asks for no token.
     if (!entry.consentRequired) {
       setPendingId(entry.id);
-      installMutation.mutate({ entryId: entry.id });
+      installMutation.mutate({ companyId, body: { entryId: entry.id } });
       return;
     }
 
@@ -266,6 +391,7 @@ export function ConnectorShelf({
     // founder never confirms a command bound to a token the server will reject.
     setPendingId(entry.id);
     const refreshed = await catalogQuery.refetch();
+    if (companyIdRef.current !== companyId) return;
     setPendingId(null);
     const fresh = refreshed.data?.entries.find((e) => e.id === entry.id);
     if (!fresh) {
@@ -280,21 +406,25 @@ export function ConnectorShelf({
   };
 
   if (catalogQuery.isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading connector catalog…</div>;
+    return (
+      <div role="status" aria-live="polite" className="text-sm text-muted-foreground">
+        Loading connector catalog…
+      </div>
+    );
   }
   if (catalogQuery.isError) {
     return (
-      <div className="text-sm text-muted-foreground">
-        Could not load the connector catalog. You can still add a connector by hand in
-        Settings → Connectors.
+      <div role="alert" className="text-sm text-muted-foreground">
+        Could not load the connector catalog. You can still add a connector by
+        hand in Settings → Connectors.
       </div>
     );
   }
   if (entries.length === 0) {
     return (
       <div className="text-sm text-muted-foreground">
-        No curated connectors are available right now. You can add one by hand in Settings
-        → Connectors.
+        No curated connectors are available right now. You can add one by hand
+        in Settings → Connectors.
       </div>
     );
   }
@@ -303,26 +433,28 @@ export function ConnectorShelf({
     <div className="space-y-3">
       {catalogQuery.data?.stale && (
         <div className="text-[11.5px] text-very-dim">
-          Showing a cached catalog — the connector directory could not be refreshed.
+          Showing a cached catalog — the connector directory could not be
+          refreshed.
         </div>
       )}
-      {error && <div className="text-sm text-destructive">{error}</div>}
+      {error && <div role="alert" className="text-sm text-destructive">{error}</div>}
       {visibleEntries.length === 0 ? (
         <div className="rounded-xl border border-border bg-card p-6 text-sm text-dim text-center">
           No matches.
         </div>
       ) : (
-      <div className="grid gap-3 sm:grid-cols-2">
-        {visibleEntries.map((entry) => (
-          <ShelfCard
-            key={entry.id}
-            entry={entry}
-            installed={installedNames.has(entry.serverName)}
-            busy={pendingId === entry.id}
-            onInstall={() => void handleInstall(entry)}
-          />
-        ))}
-      </div>
+        <div className="grid gap-3 sm:grid-cols-2">
+          {visibleEntries.map((entry) => (
+            <ShelfCard
+              key={entry.id}
+              entry={entry}
+              installed={connectorForEntry(entry)}
+              busy={pendingId === entry.id}
+              onInstall={() => void handleInstall(entry)}
+              onAuthorize={() => handleAuthorize(entry)}
+            />
+          ))}
+        </div>
       )}
 
       <ConnectorInstallDialog
@@ -332,7 +464,13 @@ export function ConnectorShelf({
           setError(null);
         }}
         onConfirm={(entry) =>
-          installMutation.mutate({ entryId: entry.id, consentToken: entry.consentToken })
+          installMutation.mutate({
+            companyId,
+            body: {
+              entryId: entry.id,
+              consentToken: entry.consentToken,
+            },
+          })
         }
         busy={installMutation.isPending}
         error={dialogEntryId ? error : null}

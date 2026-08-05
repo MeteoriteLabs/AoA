@@ -91,6 +91,21 @@ export const McpConnectorCatalogEntrySchema = z
      * `docs/aoa/plans/mcp-connectors-followups.md`.)
      */
     requiresOAuth: z.boolean().default(false),
+    /**
+     * OAuth metadata for requiresOAuth entries. NON-SECRET only (D5: the catalog never
+     * carries a credential). Discovery-first providers (Notion) need nothing here; the
+     * declared-endpoint fields are reserved for later non-DCR providers (Google/M365).
+     * Nested .strip() keeps additive forward-compat; `oauth` is NOT a VALUE_BEARING_ALIAS key.
+     */
+    oauth: z
+      .object({
+        scopes: z.array(z.string()).default([]),
+        authorizationUrl: z.string().url().optional(),
+        tokenUrl: z.string().url().optional(),
+        registrationUrl: z.string().url().optional(),
+      })
+      .strip()
+      .optional(),
     secretLabel: z.string().max(200).optional(),
     docsUrl: z.string().url().optional(),
     trust: McpConnectorTrustSchema,
@@ -144,9 +159,24 @@ export const McpConnectorCatalogEntrySchema = z
         });
       }
     }
+    // OAuth is a browser sign-in flow against a hosted HTTP server; a stdio
+    // connector spawns a local process and has no way to run it. Forbidding the
+    // combo here (rather than downstream) eliminates a dead branch where the
+    // shelf would show an OAuth stdio entry as installable but createConnector's
+    // command-safety gate would 400 it.
+    if (val.requiresOAuth && val.transport === "stdio") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["requiresOAuth"],
+        message:
+          "OAuth connectors must use http transport (OAuth is a browser sign-in flow for a hosted server, not stdio)",
+      });
+    }
   });
 
-export type McpConnectorCatalogEntry = z.infer<typeof McpConnectorCatalogEntrySchema>;
+export type McpConnectorCatalogEntry = z.infer<
+  typeof McpConnectorCatalogEntrySchema
+>;
 
 /**
  * KNOWN-DANGEROUS value-bearing alias keys (Codex Finding 5).
@@ -169,18 +199,28 @@ export type McpConnectorCatalogEntry = z.infer<typeof McpConnectorCatalogEntrySc
  * `.strip()`ed schema removes these keys before a `.superRefine` could ever see
  * them, so this must be a pre-check here in `parseMcpConnectorCatalog`.
  */
-const VALUE_BEARING_ALIAS_KEYS = ["headerTemplate", "envTemplate", "headers", "env"] as const;
+const VALUE_BEARING_ALIAS_KEYS = [
+  "headerTemplate",
+  "envTemplate",
+  "headers",
+  "env",
+] as const;
 
 /** The label recorded in `dropped` for an item — its `id`, or `<unidentified>`. */
 function droppedIdOf(item: unknown): string {
-  const id = typeof item === "object" && item !== null ? (item as { id?: unknown }).id : undefined;
+  const id =
+    typeof item === "object" && item !== null
+      ? (item as { id?: unknown }).id
+      : undefined;
   return typeof id === "string" ? id : "<unidentified>";
 }
 
 /** True when the raw item carries a known-dangerous value-bearing alias key. */
 function hasValueBearingAlias(item: unknown): boolean {
   if (typeof item !== "object" || item === null) return false;
-  return VALUE_BEARING_ALIAS_KEYS.some((k) => Object.prototype.hasOwnProperty.call(item, k));
+  return VALUE_BEARING_ALIAS_KEYS.some((k) =>
+    Object.prototype.hasOwnProperty.call(item, k)
+  );
 }
 
 /**
@@ -220,7 +260,9 @@ function hasValueBearingAlias(item: unknown): boolean {
  *   parse and install agree on exactly one entry per id; it defeats the
  *   append-a-duplicate attack (a trailing malicious clone loses to the original),
  *   and — unlike drop-ALL — it preserves availability of the presumably-intended
- *   primary entry when a publish mistake duplicates an id.
+ *   primary entry when a publish mistake duplicates an id. The same first-wins
+ *   rule applies to `serverName`: runtime connector configuration is keyed by
+ *   that name, so two different catalog ids must never compete for it.
  */
 export function parseMcpConnectorCatalog(input: unknown): {
   entries: McpConnectorCatalogEntry[];
@@ -239,6 +281,7 @@ export function parseMcpConnectorCatalog(input: unknown): {
   }
 
   const seenIds = new Set<string>();
+  const seenServerNames = new Set<string>();
   for (const item of raw) {
     // Finding 5: a known-dangerous value-bearing alias drops the whole entry,
     // BEFORE parsing (a `.strip()`ed schema would silently discard the key and
@@ -257,7 +300,11 @@ export function parseMcpConnectorCatalog(input: unknown): {
     // surfaces on the shelf. NOT the security boundary (createConnector + the
     // delivery-time reserved guard remain that): the adapter merge would strip
     // it anyway, but showing it as installable is a dead-install trap.
-    if ((RESERVED_MCP_SERVER_NAMES as readonly string[]).includes(parsed.data.serverName)) {
+    if (
+      (RESERVED_MCP_SERVER_NAMES as readonly string[]).includes(
+        parsed.data.serverName
+      )
+    ) {
       dropped.push(parsed.data.id);
       continue;
     }
@@ -267,7 +314,15 @@ export function parseMcpConnectorCatalog(input: unknown): {
       dropped.push(parsed.data.id);
       continue;
     }
+    // Runtime delivery keys MCP servers by name. Keeping two catalog identities
+    // for one name would make install/retry behavior depend on client-side
+    // inference, so reject the later publisher entry at the trust boundary.
+    if (seenServerNames.has(parsed.data.serverName)) {
+      dropped.push(parsed.data.id);
+      continue;
+    }
     seenIds.add(parsed.data.id);
+    seenServerNames.add(parsed.data.serverName);
     entries.push(parsed.data);
   }
   return { entries, dropped, malformed: false };

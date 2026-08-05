@@ -1,4 +1,5 @@
-import { boolean, index, pgTable, text, timestamp, uniqueIndex, uuid, jsonb } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { boolean, index, integer, pgTable, text, timestamp, uniqueIndex, uuid, jsonb } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 
 /**
@@ -34,6 +35,11 @@ export const companyMcpConnectors = pgTable(
     // never activate an uncredentialed connector.
     requiresSecret: boolean("requires_secret").notNull().default(false),
     source: text("source").notNull().default("byo"), // "byo" | "catalog"
+    // Immutable server-owned marketplace identity. User-authored/BYO rows keep
+    // both fields null; OAuth authority is derived from these fields plus the
+    // server's provider policy, never from mutable serverName/catalog metadata.
+    catalogEntryId: text("catalog_entry_id"),
+    oauthPolicyVersion: integer("oauth_policy_version"),
     // Catalog trust tier at INSTALL time ("verified" | "community" | "unverified"),
     // null for BYO connectors (no catalog provenance). Load-bearing for the FU-19
     // delivery-time D7 re-check: after a local_trusted -> authenticated conversion
@@ -52,5 +58,8 @@ export const companyMcpConnectors = pgTable(
       table.companyId,
       table.serverName,
     ),
+    companyCatalogEntryUq: uniqueIndex("company_mcp_connectors_company_catalog_entry_uq")
+      .on(table.companyId, table.catalogEntryId)
+      .where(sql`${table.catalogEntryId} IS NOT NULL`),
   }),
 );

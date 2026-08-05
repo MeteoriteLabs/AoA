@@ -32,4 +32,15 @@ describe("MCP connector emergency policy", () => {
     expect(isMcpConnectorBlocked("context7", policy)).toBe(true);
     expect(isMcpConnectorBlocked("notion", policy)).toBe(false);
   });
+
+  it("blocks the shipped OAuth connector server names from the operator runbook", () => {
+    const policy = readMcpConnectorEmergencyPolicy({
+      AOA_MCP_CONNECTOR_DENYLIST: "notion,sentry",
+    });
+
+    expect(isMcpConnectorBlocked("notion", policy)).toBe(true);
+    expect(isMcpConnectorBlocked("sentry", policy)).toBe(true);
+    // Catalog entry IDs are not runtime server names.
+    expect(isMcpConnectorBlocked("notion-hosted", policy)).toBe(false);
+  });
 });

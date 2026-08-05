@@ -1415,6 +1415,13 @@
       "when": 1785735001862,
       "tag": "0201_messy_titanium_man",
       "breakpoints": true
+    },
+    {
+      "idx": 202,
+      "version": "7",
+      "when": 1785915485855,
+      "tag": "0202_lethal_vance_astro",
+      "breakpoints": true
     }
   ]
 }
