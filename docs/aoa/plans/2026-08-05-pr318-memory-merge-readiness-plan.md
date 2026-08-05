@@ -53,7 +53,7 @@ git -C "C:/Users/TK/.aoa/wt/mem" status --short
 git -C "C:/Users/TK/.aoa/wt/mem" rev-parse --abbrev-ref HEAD
 git -C "C:/Users/TK/.aoa/wt/mem" log --oneline -1
 ```
-Expected: empty status; branch `claude/memory-enterprise-build`; HEAD `d7d285d88` (the latest docs commit — spec + plan) atop `5d23895a3` (the review-hardening).
+Expected: empty status; branch `claude/memory-enterprise-build`; HEAD = the latest `docs(memory):` commit atop `5d23895a3` (the review-hardening). The exact hash bumps with each doc edit — match the pattern (a docs commit on top of `5d23895a3`), not a literal SHA.
 
 - [ ] **Step 2: Fetch and re-confirm main's tip + migration ceiling (guards against main moving again)**
 
