@@ -955,10 +955,19 @@ export function secretService(db: Db) {
         if (input.expectedLatestVersion !== 0) {
           throw conflict("OAuth credential changed while authorization was completing");
         }
+        // Tenant denormalization (multi-tenant cloud, C3): stamp the owning org so
+        // the broker-managed OAuth secret is never org-NULL — mirroring create()
+        // and the #316 invariant. Company->org is immutable, so this read is safe.
+        const companyOrg = await db
+          .select({ organizationId: companies.organizationId })
+          .from(companies)
+          .where(eq(companies.id, input.companyId))
+          .then((r) => r[0] ?? null);
         const secret = await db
           .insert(companySecrets)
           .values({
             companyId: input.companyId,
+            organizationId: companyOrg?.organizationId ?? null,
             name: input.name,
             key: input.key,
             status: "active",
