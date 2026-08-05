@@ -5,7 +5,8 @@ import type { Db } from "@armyofagents/db";
 import { memoryAssetsService } from "../services/memory-assets.js";
 import type { StorageService } from "../storage/types.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
-import { assertRole } from "../middleware/rbac.js";
+import { resolveStorageTenant } from "./authz-tenant.js";
+import { assertHumanRole } from "../middleware/rbac.js";
 import { SUPPORTED_UPLOAD_MIME_TYPES_SET } from "./memory-asset-upload-types.js";
 
 export { SUPPORTED_UPLOAD_MIME_TYPES_SET };
@@ -22,6 +23,7 @@ interface RoutesOptions {
 
 export function memoryAssetsUploadRoutes(opts: RoutesOptions) {
   const router = Router();
+  const db = opts.db!;
   const assets = opts.assetsService ?? memoryAssetsService(opts.db!);
   const storage = opts.storage ?? opts.storageService;
 
@@ -44,8 +46,8 @@ export function memoryAssetsUploadRoutes(opts: RoutesOptions) {
     async (req, res, next) => {
       try {
         const companyId = req.params.companyId as string;
-        assertCompanyAccess(req, companyId);
-        if (opts.db) await assertRole(opts.db, req, companyId, "team_lead");
+        await assertCompanyAccess(db, req, companyId);
+        if (opts.db) await assertHumanRole(opts.db, req, companyId, "team_lead");
 
         try {
           await runSingle(req, res);
@@ -85,6 +87,7 @@ export function memoryAssetsUploadRoutes(opts: RoutesOptions) {
         const namespace = `imports/${Date.now()}-${safeName}`;
         const stored = await storage.putFile({
           companyId,
+          organizationId: await resolveStorageTenant(db, companyId),
           namespace,
           originalFilename: file.originalname,
           contentType: file.mimetype,

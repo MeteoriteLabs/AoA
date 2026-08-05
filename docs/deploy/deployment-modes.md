@@ -56,6 +56,33 @@ pnpm aoa onboard
 # Choose "authenticated" -> "public"
 ```
 
+## `cloud_auth`
+
+Hosted controlled-beta multi-tenant mode. Every Company belongs to an
+**Organization** (tenant); any signed-in user can self-serve-create an
+Organization and becomes its `owner`.
+
+- **Authentication**: login required (Google via Better Auth)
+- **Exposure**: always `public`, with an explicit `auth.publicBaseUrl` — the
+  config schema rejects any other combination
+- **`instance_admin` promotion**: disabled everywhere. All four runtime
+  promotion paths (both better-auth hooks, the `bootstrap_ceo` invite branch,
+  and board-claim) are gated by a single chokepoint,
+  `instanceAdminBootstrapEnabled(mode)`, which returns `false` for
+  `cloud_auth`. `instance_admin` is provisioned out-of-band only
+  (break-glass/operator tooling) — never at runtime.
+- **Self-serve Organizations**: `POST /api/organizations` lets any signed-in
+  board user create an Organization and become its owner; company-create
+  authorization is scoped to org role (`owner`/`admin`) rather than
+  instance-admin status.
+- **Board-claim**: not available — board-claim is a single-tenant
+  `local_trusted → authenticated` handoff and is inert in `cloud_auth`.
+
+```sh
+pnpm aoa onboard
+# Choose "cloud_auth"
+```
+
 ## Board Claim Flow
 
 When migrating from `local_trusted` to `authenticated`, set

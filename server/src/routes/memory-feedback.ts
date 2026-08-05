@@ -2,7 +2,7 @@ import { Router } from "express";
 import type { Db } from "@armyofagents/db";
 import { memoryFeedbackService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
-import { assertRole } from "../middleware/rbac.js";
+import { assertHumanRole } from "../middleware/rbac.js";
 
 export function memoryFeedbackRoutes(db: Db) {
   const router = Router();
@@ -13,8 +13,8 @@ export function memoryFeedbackRoutes(db: Db) {
     "/companies/:companyId/memory-feedback/detect",
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
-      await assertRole(db, req, companyId, "founder");
+      await assertCompanyAccess(db, req, companyId);
+      await assertHumanRole(db, req, companyId, "founder");
 
       const result = await svc.runAllDetectors(companyId);
 
@@ -40,7 +40,7 @@ export function memoryFeedbackRoutes(db: Db) {
     "/companies/:companyId/memory-feedback/patterns",
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const { status, patternType } = req.query as Record<
         string,
         string | undefined

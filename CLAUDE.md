@@ -18,7 +18,7 @@ You are reading this as context for working on the AoA codebase. This applies wh
 
 ## Critical Rules
 
-1. **Drizzle ORM only.** Schema changes go in `packages/db/src/schema/`. Run `pnpm db:generate` for migrations. NEVER write raw SQL migration files.
+1. **Drizzle ORM only.** Schema changes go in `packages/db/src/schema/`. Run `pnpm db:generate` for migrations. NEVER write raw SQL migration files. Schema DDL is always `db:generate` output. **Narrow exception (C14):** drizzle-kit cannot emit idempotency guards (`IF NOT EXISTS` / `DO $$ … duplicate_object`) or data-only backfills; a few migrations (e.g. `0189`, `0195`) hand-APPEND those after generation — always with an inline comment and always idempotent. Schema DDL is never hand-authored. See `AGENTS.md` and Decision #19.
 2. **Follow existing patterns.** New services follow `server/src/services/goals.ts`. New routes follow `server/src/routes/goals.ts`. New schemas follow `packages/db/src/schema/goals.ts`.
 3. **"Issues" = "Tasks" in UI only.** The DB table is `issues`. The API routes use `/issues`. All user-facing text says "Task" / "Tasks". Never rename the table or routes.
 4. **"Projects" table serves both Departments and Projects.** Distinguished by `type` field: `'department'` | `'project'`. Same mechanics for both.
@@ -342,7 +342,7 @@ Windows e2e skip is implemented at playwright config level (`tests/e2e/playwrigh
 
 ## Database Schema
 
-All table definitions live in `packages/db/src/schema/`. Schema changes use Drizzle ORM only — never raw SQL.
+All table definitions live in `packages/db/src/schema/`. Schema changes use Drizzle ORM only — never raw SQL — except the C14 narrow exception (hand-appended idempotency guards + data backfills, e.g. 0189/0195; schema DDL is always `db:generate`).
 
 ### Core / Company
 

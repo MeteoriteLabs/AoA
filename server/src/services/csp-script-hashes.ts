@@ -19,9 +19,10 @@ const SRC_ATTR_RE = /\bsrc\s*=/i;
  * `<script>` block. External scripts (those with `src=`) are skipped.
  *
  * The hashes are formatted to drop into a CSP `script-src 'sha256-<value>'`
- * directive. Browsers compute the hash over the exact bytes between the
- * opening `<script>` tag and the closing `</script>` tag (including any
- * leading/trailing whitespace), so we hash the captured body verbatim.
+ * directive. Browsers compute the hash over the script text after the HTML
+ * parser has normalized CRLF and bare CR line endings to LF. We preserve all
+ * other whitespace verbatim, but must perform the same newline normalization
+ * here or a bundle built on Windows will receive an unusable CSP hash.
  *
  * Failure modes return `[]` rather than throwing:
  * - Missing file → `[]` plus a warn log. Caller (helmet config) decides
@@ -62,7 +63,10 @@ export async function extractInlineScriptHashes(htmlPath: string): Promise<strin
       // execute anything).
       continue;
     }
-    const hash = createHash("sha256").update(body, "utf8").digest("base64");
+    const browserScriptText = body.replace(/\r\n?/g, "\n");
+    const hash = createHash("sha256")
+      .update(browserScriptText, "utf8")
+      .digest("base64");
     hashes.push(hash);
   }
 

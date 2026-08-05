@@ -7,10 +7,16 @@ import type { DeploymentMode } from "@armyofagents/shared";
 import { eq } from "drizzle-orm";
 import httpProxy from "http-proxy";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
+import { logger } from "../middleware/logger.js";
 import { assertCompanyAccess } from "../routes/authz.js";
 import { stripPreviewQueryAuthParams } from "./preview-auth-query.js";
-import { authorizeCompanyUpgrade } from "./upgrade-auth.js";
+import { authorizeCompanyUpgrade, type UpgradeActorContext } from "./upgrade-auth.js";
+import {
+  hasActiveAgentSocketAuthorization,
+  hasActiveCloudMembership,
+} from "./upgrade-socket-authorization.js";
 import { isAllowedPreviewUpstream } from "./preview-url.js";
+import { isRuntimeProcessOwnedByCurrentReplica } from "./runtime-process-owner.js";
 
 const STRIPPED_UPSTREAM_HEADERS = [
   "cookie",
@@ -63,7 +69,7 @@ previewProxy.on("proxyRes", (proxyRes) => {
   hardenPreviewResponseHeaders(proxyRes.headers, { applySandbox: true });
 });
 
-async function resolvePreviewRuntimeServiceRow(
+async function findPreviewRuntimeServiceRow(
   db: Db,
   serviceId: string,
 ) {
@@ -73,16 +79,22 @@ async function resolvePreviewRuntimeServiceRow(
     .where(eq(workspaceRuntimeServices.id, serviceId))
     .limit(1);
 
-  if (!row) {
-    return { ok: false as const, status: 404, error: "Preview service not found" };
-  }
+  return row ?? null;
+}
 
+function validatePreviewRuntimeServiceRow(
+  row: typeof workspaceRuntimeServices.$inferSelect,
+) {
   if (!row.executionWorkspaceId && !row.projectWorkspaceId) {
     return { ok: false as const, status: 409, error: "Preview service is not linked to a workspace" };
   }
 
   if (row.status !== "running" || row.healthStatus === "unhealthy") {
     return { ok: false as const, status: 409, error: "Preview service is not available" };
+  }
+
+  if (!isRuntimeProcessOwnedByCurrentReplica(row)) {
+    return { ok: false as const, status: 409, error: "Preview service is owned by another runtime host" };
   }
 
   if (!isAllowedPreviewUpstream(row.url)) {
@@ -97,10 +109,12 @@ export async function resolvePreviewRuntimeService(
   req: Request,
   serviceId: string,
 ) {
-  const resolved = await resolvePreviewRuntimeServiceRow(db, serviceId);
-  if (!resolved.ok) return resolved;
-  assertCompanyAccess(req, resolved.row.companyId);
-  return resolved;
+  const row = await findPreviewRuntimeServiceRow(db, serviceId);
+  if (!row) return { ok: false as const, status: 404, error: "Preview service not found" };
+  // Authenticate company scope before revealing service state, ownership, or
+  // upstream validity through distinguishable error responses.
+  await assertCompanyAccess(db, req, row.companyId);
+  return validatePreviewRuntimeServiceRow(row);
 }
 
 export function buildPreviewTargetUrl(input: {
@@ -167,6 +181,95 @@ function parsePreviewServiceId(pathname: string): string | null {
   }
 }
 
+type PreviewAuthorizationSocket = Pick<
+  Duplex,
+  "destroy" | "destroyed" | "once" | "off"
+>;
+
+/** Fail closed when an already-open preview tunnel loses authorization. */
+export async function enforcePreviewSocketAuthorization(
+  db: Db,
+  socket: Pick<PreviewAuthorizationSocket, "destroy" | "destroyed">,
+  actor: UpgradeActorContext,
+  deploymentMode: DeploymentMode,
+  onError?: (error: unknown) => void,
+): Promise<boolean> {
+  const needsRevalidation = actor.actorType === "agent" || deploymentMode === "cloud_auth";
+  if (!needsRevalidation) return true;
+
+  try {
+    const authorized = actor.actorType === "agent"
+      ? await hasActiveAgentSocketAuthorization(db, actor)
+      : await hasActiveCloudMembership(db, actor.companyId, actor.actorId);
+    if (!authorized && !socket.destroyed) socket.destroy();
+    return authorized;
+  } catch (error) {
+    try {
+      onError?.(error);
+    } catch {
+      // Reporting must not defeat the fail-closed authorization boundary.
+    }
+    if (!socket.destroyed) socket.destroy();
+    return false;
+  }
+}
+
+/**
+ * Revalidate preview tunnels with bounded staleness. The timer is per socket,
+ * unref'd, non-overlapping, and removed on every terminal socket event.
+ */
+export function startPreviewSocketAuthorizationRevalidation(
+  db: Db,
+  socket: PreviewAuthorizationSocket,
+  actor: UpgradeActorContext,
+  deploymentMode: DeploymentMode,
+  intervalMs = 30_000,
+): () => void {
+  const needsRevalidation = actor.actorType === "agent" || deploymentMode === "cloud_auth";
+  if (!needsRevalidation || socket.destroyed) return () => {};
+
+  let stopped = false;
+  let checking = false;
+  const cleanup = () => {
+    if (stopped) return;
+    stopped = true;
+    clearInterval(timer);
+    socket.off("close", cleanup);
+    socket.off("end", cleanup);
+    socket.off("error", cleanup);
+  };
+  const timer = setInterval(() => {
+    if (stopped || checking) return;
+    if (socket.destroyed) {
+      cleanup();
+      return;
+    }
+    checking = true;
+    void enforcePreviewSocketAuthorization(
+      db,
+      socket,
+      actor,
+      deploymentMode,
+      (err) => {
+        logger.warn(
+          { err, companyId: actor.companyId, actorType: actor.actorType },
+          "preview websocket authorization re-validation failed",
+        );
+      },
+    ).then((authorized) => {
+      if (!authorized) cleanup();
+    }).finally(() => {
+      checking = false;
+    });
+  }, intervalMs);
+  timer.unref?.();
+
+  socket.once("close", cleanup);
+  socket.once("end", cleanup);
+  socket.once("error", cleanup);
+  return cleanup;
+}
+
 export async function handlePreviewProxyUpgrade(
   db: Db,
   req: IncomingMessage,
@@ -175,6 +278,10 @@ export async function handlePreviewProxyUpgrade(
   opts: {
     deploymentMode: DeploymentMode;
     resolveSessionFromHeaders?: (headers: Headers) => Promise<BetterAuthSessionResult | null>;
+    // Forwarded verbatim into authorizeCompanyUpgrade for the CSWSH Origin check
+    // on the cookie/session branch. Must stay on this type or the field is
+    // silently dropped when `opts` is passed through below.
+    trustedOrigins?: string[];
   },
 ): Promise<boolean> {
   if (!req.url?.startsWith("/preview/services/")) return false;
@@ -186,15 +293,21 @@ export async function handlePreviewProxyUpgrade(
     return true;
   }
 
-  const resolved = await resolvePreviewRuntimeServiceRow(db, serviceId);
-  if (!resolved.ok) {
-    rejectPreviewUpgrade(socket, resolved.status, "Preview Unavailable");
+  const row = await findPreviewRuntimeServiceRow(db, serviceId);
+  if (!row) {
+    rejectPreviewUpgrade(socket, 404, "Preview Unavailable");
     return true;
   }
 
-  const actor = await authorizeCompanyUpgrade(db, req, resolved.row.companyId, parsed, opts);
+  const actor = await authorizeCompanyUpgrade(db, req, row.companyId, parsed, opts);
   if (!actor) {
     rejectPreviewUpgrade(socket, 403, "Forbidden");
+    return true;
+  }
+
+  const resolved = validatePreviewRuntimeServiceRow(row);
+  if (!resolved.ok) {
+    rejectPreviewUpgrade(socket, resolved.status, "Preview Unavailable");
     return true;
   }
 
@@ -204,6 +317,7 @@ export async function handlePreviewProxyUpgrade(
     originalUrl: req.url,
   });
 
+  startPreviewSocketAuthorizationRevalidation(db, socket, actor, opts.deploymentMode);
   previewProxy.ws(req, socket, head, { target, ignorePath: true }, (err) => {
     rejectPreviewUpgrade(
       socket,

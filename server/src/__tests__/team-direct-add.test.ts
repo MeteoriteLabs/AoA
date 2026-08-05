@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 
 // Mock @armyofagents/db to avoid drizzle-orm ESM cycle
 vi.mock("@armyofagents/db", () => {
@@ -66,6 +66,7 @@ vi.mock("../services/org-hierarchy.js", () => ({
 }));
 
 import { teamService } from "../services/team.js";
+import { setDeploymentMode } from "../config/deployment-mode.js";
 
 type MockRow = Record<string, unknown>;
 
@@ -304,6 +305,74 @@ describe("teamService.addMember", () => {
     // At least one update should set the parentId
     const parentUpdate = updateSets.find((s) => s.parentId === "parent-user");
     expect(parentUpdate).toBeDefined();
+  });
+});
+
+describe("teamService.addMember — cloud_auth invite-only guard (Fix 1)", () => {
+  // cloud_auth admits humans ONLY through the invite chokepoint
+  // (approveHumanJoinRequestTx), which writes BOTH org + company memberships.
+  // Direct-add writes only the company membership -> assertCompanyAccess
+  // (authz.ts:71) 403s the added user on every request. Reject it here.
+  beforeEach(() => {
+    resetMocks();
+    setDeploymentMode("cloud_auth");
+  });
+  afterEach(() => {
+    // Never leak cloud_auth into the other describes in this file.
+    setDeploymentMode("local_trusted");
+  });
+
+  it("rejects direct-add in cloud with an actionable invite message", async () => {
+    // The guard fires FIRST — no DB access, so no select sequences needed.
+    const db = createSequenceDb({});
+    const svc = teamService(db as any);
+    await expect(
+      svc.addMember(
+        "c1",
+        { name: "New User", email: "new@test.com", role: "team_member" },
+        "founder-user",
+      ),
+    ).rejects.toThrow(/Send an email invite instead/);
+  });
+
+  it("still one-click direct-adds in self-hosted (guard does NOT fire when not enforced)", async () => {
+    // Divergence lock: self-hosted has no tenant boundary and is unchanged.
+    setDeploymentMode("local_trusted");
+    mockAccessService.getMembership.mockResolvedValue({ id: "m1", status: "active" });
+    mockAccessService.ensureMembership.mockResolvedValue({ id: "m2" });
+    mockAccessService.setPrincipalGrants.mockResolvedValue(undefined);
+
+    const db = createSequenceDb({
+      selects: [
+        // assertFounder -> isInstanceAdmin
+        [],
+        // assertFounder -> userRoles -> founder
+        [{ role: "founder", projectId: null }],
+        // email uniqueness -> clean
+        [],
+        // find authUser by email -> not found (create new)
+        [],
+        // updateUserRole -> getUserRole -> isInstanceAdmin
+        [],
+        // updateUserRole -> getUserRole -> userRoles
+        [{ role: "team_member", projectId: null }],
+        // updateUserRole final getUserRole -> isInstanceAdmin
+        [],
+        // updateUserRole final getUserRole -> userRoles
+        [{ role: "team_member", projectId: null }],
+      ],
+      inserts: [
+        // insert authUser
+        [],
+      ],
+    });
+    const svc = teamService(db as any);
+    const result = await svc.addMember(
+      "c1",
+      { name: "New User", email: "new@test.com", role: "team_member" },
+      "founder-user",
+    );
+    expect(typeof result.userId).toBe("string");
   });
 });
 

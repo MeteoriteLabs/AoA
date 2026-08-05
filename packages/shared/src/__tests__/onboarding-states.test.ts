@@ -35,7 +35,7 @@ describe("onboarding states (Stage B / B2)", () => {
     expect(FOUNDER_PHASE1_STATES).toEqual([
       "AUTHENTICATED",
       "PROFILE_SET",
-      "ORGANIZATION_CREATED",
+      "COMPANY_CREATED",
       "ENVIRONMENT_READY",
       "COMMANDER_SELECTED",
       "COMMANDER_VERIFIED",

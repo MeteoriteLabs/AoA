@@ -12,9 +12,11 @@ function makeDbReturning(rows: any[]) {
   // The tool issues: db.select().from().where().orderBy().limit() → Promise<rows>
   const chain: any = {
     from: vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({
-        orderBy: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue(rows),
+      innerJoin: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          orderBy: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue(rows),
+          }),
         }),
       }),
     }),
@@ -72,8 +74,10 @@ describe("thread.listEntries tool (C2 batch 1)", () => {
     const db: any = {
       select: vi.fn().mockReturnValue({
         from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            orderBy: vi.fn().mockReturnValue({ limit: limitMock }),
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({ limit: limitMock }),
+            }),
           }),
         }),
       }),
@@ -91,8 +95,10 @@ describe("thread.listEntries tool (C2 batch 1)", () => {
     const db: any = {
       select: vi.fn().mockReturnValue({
         from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            orderBy: vi.fn().mockReturnValue({ limit: limitMock }),
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({ limit: limitMock }),
+            }),
           }),
         }),
       }),

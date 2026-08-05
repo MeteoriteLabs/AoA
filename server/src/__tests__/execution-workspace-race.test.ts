@@ -46,7 +46,7 @@ describe("selectConcurrentPersistedExecutionWorkspace", () => {
     expect(selected).toBeNull();
   });
 
-  it("rejects archived, wrong-branch, and wrong-path candidates", () => {
+  it("rejects terminal, wrong-branch, and wrong-path candidates", () => {
     const selected = selectConcurrentPersistedExecutionWorkspace({
       realizedWorkspace: {
         cwd: "/repo/.aoa/worktrees/AOA-22-race",
@@ -68,6 +68,13 @@ describe("selectConcurrentPersistedExecutionWorkspace", () => {
           providerRef: "/repo/.aoa/worktrees/AOA-22-race",
           branchName: "AOA-21-other",
           status: "active",
+        },
+        {
+          id: "cleanup-failed",
+          cwd: "/repo/.aoa/worktrees/AOA-22-race",
+          providerRef: "/repo/.aoa/worktrees/AOA-22-race",
+          branchName: "AOA-22-race",
+          status: "cleanup_failed",
         },
         {
           id: "wrong-path",

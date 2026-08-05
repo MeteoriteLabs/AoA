@@ -19,6 +19,7 @@ import { cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { AgentPanelProvider } from "../context/AgentPanelContext";
+import { AccessRequired } from "../pages/AccessRequired";
 
 const NewAgentDialog = lazy(() => import("./NewAgentDialog").then((m) => ({ default: m.NewAgentDialog })));
 const NewGoalDialog = lazy(() => import("./NewGoalDialog").then((m) => ({ default: m.NewGoalDialog })));
@@ -69,6 +70,10 @@ export function Layout() {
   const lastMainScrollTop = useRef(0);
   const [mobileNavVisible, setMobileNavVisible] = useState(true);
   const [cheatsheetOpen, setCheatsheetOpen] = useState(false);
+  // Set to the requested prefix when it matches none of the user's accessible
+  // companies — renders AccessRequired in place of the page instead of silently
+  // redirecting. Null whenever the prefix resolves (including a wrong-case one).
+  const [noAccessPrefix, setNoAccessPrefix] = useState<string | null>(null);
 
   const { data: health } = useQuery({
     queryKey: queryKeys.health,
@@ -79,26 +84,39 @@ export function Layout() {
   useEffect(() => {
     if (companiesLoading || onboardingTriggered.current) return;
     if (health?.deploymentMode === "authenticated") return;
-    if (companies.length === 0) {
+    // Only the first-time-founder path (no specific company requested) routes to
+    // onboarding. A user who requested a specific /PREFIX/... URL but has zero
+    // accessible companies (e.g. a revoked LAST membership) must fall through to
+    // the no-match effect below → AccessRequired, not the founder flow.
+    if (companies.length === 0 && !companyPrefix) {
       onboardingTriggered.current = true;
       // Onboarding is the FlowEngine at /onboarding (C13), not a modal.
       navigate("/onboarding");
     }
-  }, [companies, companiesLoading, navigate, health?.deploymentMode]);
+  }, [companies, companiesLoading, navigate, health?.deploymentMode, companyPrefix]);
 
   useEffect(() => {
-    if (!companyPrefix || companiesLoading || companies.length === 0) return;
+    // Do NOT early-return on companies.length === 0: a zero-company user who
+    // requested a specific prefix must reach the `matched === undefined` branch
+    // below so AccessRequired renders (the revoked-last-membership case). The
+    // matched/wrong-case/route-sync branches only run when a company matches, so
+    // they are unaffected by an empty list.
+    if (!companyPrefix || companiesLoading) return;
 
     const requestedPrefix = companyPrefix.toUpperCase();
     const matched = companies.find((company) => company.issuePrefix.toUpperCase() === requestedPrefix);
 
     if (!matched) {
-      const fallback =
-        (selectedCompanyId ? companies.find((company) => company.id === selectedCompanyId) : null)
-        ?? companies[0]!;
-      navigate(`/${fallback.issuePrefix}/home`, { replace: true });
+      // The client cannot tell "company does not exist" from "exists but I'm
+      // not a member" — both simply fall out of the accessible list. Surface an
+      // honest access-required state (with the requested prefix as context)
+      // rather than silently bouncing a shared link elsewhere.
+      setNoAccessPrefix(companyPrefix);
       return;
     }
+
+    // Resolved to an accessible company — clear any prior no-access state.
+    setNoAccessPrefix(null);
 
     if (companyPrefix !== matched.issuePrefix) {
       const suffix = location.pathname.replace(/^\/[^/]+/, "");
@@ -283,7 +301,7 @@ export function Layout() {
           )}
           onScroll={handleMainScroll}
         >
-          <Outlet />
+          {noAccessPrefix ? <AccessRequired requestedPrefix={noAccessPrefix} /> : <Outlet />}
         </main>
       </div>
 

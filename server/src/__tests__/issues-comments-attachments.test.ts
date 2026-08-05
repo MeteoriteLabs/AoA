@@ -1,6 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { setDeploymentMode } from "../config/deployment-mode.js";
 import { errorHandler } from "../middleware/index.js";
 
 const companyId = "11111111-1111-4111-8111-111111111111";
@@ -33,6 +34,7 @@ const mockIssueService = vi.hoisted(() => ({
   list: vi.fn(),
   getById: vi.fn(),
   getByIdentifier: vi.fn(),
+  getByIdentifierInCompany: vi.fn(),
   create: vi.fn(),
   update: vi.fn(),
   remove: vi.fn(),
@@ -183,6 +185,7 @@ const dispatchedWakeups = new Set<string>();
 
 beforeEach(() => {
   vi.clearAllMocks();
+  setDeploymentMode("local_trusted");
   mockAccessService.canUser.mockResolvedValue(true);
   mockAccessService.hasPermission.mockResolvedValue(true);
   mockIssueService.getById.mockResolvedValue(makeIssue());
@@ -333,6 +336,47 @@ beforeEach(() => {
     };
     return rows[id] ?? null;
   });
+});
+
+describe("POST /companies/:companyId/issues/:issueId/attachments authorization ordering", () => {
+  it.each([
+    [
+      "anonymous",
+      {
+        type: "none",
+        source: "none",
+        userId: undefined,
+        isInstanceAdmin: false,
+        companyIds: [],
+      },
+      401,
+    ],
+    [
+      "cross-tenant board",
+      {
+        userId: "other-user",
+        isInstanceAdmin: false,
+        companyIds: [],
+      },
+      403,
+    ],
+  ])(
+    "rejects %s before a company-scoped identifier lookup",
+    async (_label, actor, expectedStatus) => {
+      mockIssueService.getByIdentifierInCompany.mockResolvedValue(makeIssue());
+
+      for (const identifier of ["ARM-1", "ARM-999", issueId]) {
+        const res = await request(createApp(actor)).post(
+          `/api/companies/${companyId}/issues/${identifier}/attachments`,
+        );
+        expect(res.status, `${identifier}: ${JSON.stringify(res.body)}`).toBe(expectedStatus);
+      }
+
+      expect(mockIssueService.getByIdentifierInCompany).not.toHaveBeenCalled();
+      expect(mockIssueService.getById).not.toHaveBeenCalled();
+      expect(mockIssueService.createAttachment).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe("POST /issues/:id/comments-with-attachments", () => {

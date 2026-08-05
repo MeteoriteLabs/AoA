@@ -74,7 +74,10 @@ vi.mock("../services/live-events.js", () => ({
   publishLiveEvent: vi.fn(),
 }));
 
-import { materializeCompanyProfileFromGlobal } from "../services/team.js";
+import {
+  ensureCompanyProfileFromGlobal,
+  materializeCompanyProfileFromGlobal,
+} from "../services/team.js";
 
 type MockRow = Record<string, unknown>;
 
@@ -83,6 +86,7 @@ function createSequenceDb(config: { inserts?: MockRow[][] } = {}) {
   const inserts = config.inserts ?? [];
   const insertValues: unknown[] = [];
   const conflictUpdates: Record<string, unknown>[] = [];
+  let conflictDoNothingCalls = 0;
 
   function makeChain(getResult: () => MockRow[]) {
     const chain: Record<string, unknown> = {};
@@ -96,6 +100,10 @@ function createSequenceDb(config: { inserts?: MockRow[][] } = {}) {
     chain.set = (..._args: unknown[]) => chain;
     chain.onConflictDoUpdate = (value: { set?: Record<string, unknown> }) => {
       if (value?.set) conflictUpdates.push(value.set);
+      return chain;
+    };
+    chain.onConflictDoNothing = () => {
+      conflictDoNothingCalls += 1;
       return chain;
     };
     chain.returning = () => chain;
@@ -113,6 +121,7 @@ function createSequenceDb(config: { inserts?: MockRow[][] } = {}) {
     },
     _insertValues: insertValues,
     _conflictUpdates: conflictUpdates,
+    _conflictDoNothingCalls: () => conflictDoNothingCalls,
   };
   return db;
 }
@@ -206,5 +215,32 @@ describe("materializeCompanyProfileFromGlobal", () => {
     await expect(
       materializeCompanyProfileFromGlobal(db as any, "company-1", "user-1", "attrib-1"),
     ).rejects.toThrow("boom");
+  });
+});
+
+describe("ensureCompanyProfileFromGlobal", () => {
+  it("uses insert-on-conflict-do-nothing so replay cannot clobber later company edits", async () => {
+    getUserProfileMock.mockReset();
+    getUserProfileMock.mockResolvedValue({
+      userId: "user-1",
+      displayName: "Global Name",
+      title: "Global Title",
+      bio: null,
+      timezone: "UTC",
+      socialLinks: [],
+    });
+    const db = createSequenceDb();
+
+    await ensureCompanyProfileFromGlobal(db as any, "company-1", "user-1", "attrib-1");
+
+    expect(db._insertValues[0]).toMatchObject({
+      companyId: "company-1",
+      userId: "user-1",
+      displayName: "Global Name",
+      title: "Global Title",
+      updatedByUserId: "attrib-1",
+    });
+    expect(db._conflictUpdates).toEqual([]);
+    expect(db._conflictDoNothingCalls()).toBe(1);
   });
 });

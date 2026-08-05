@@ -3,6 +3,25 @@ import { readFile } from "node:fs/promises";
 import { resolveRunScopedModel } from "../services/heartbeat-provider-resolution.js";
 import { applyModelResolutionToConfig } from "../services/internal-agent/aoa-agents/runner-model-resolution.js";
 import { DEFAULT_CODEX_CHAT_MODEL } from "../services/internal-agent/codex-model.js";
+import { applyResolvedCredential } from "../services/provider-resolution.js";
+
+// Phase 4 (Task 12) helper contract: the org heartbeat merges the resolved
+// credential onto the 3-scope resolvedEnv via applyResolvedCredential. A legacy
+// company-key patch must merge WITHOUT dropping model/cwd or the other scopes.
+describe("heartbeat resolver merge preserves 3-scope env", () => {
+  it("legacy company-key patch merges without dropping model/cwd", () => {
+    const cfg = { env: { PROJECT_KEY: "p" }, model: "opus", cwd: "/w" };
+    const out = applyResolvedCredential(cfg, {
+      source: "legacy",
+      envPatch: { ANTHROPIC_API_KEY: "sk-co" },
+    });
+    expect(out).toEqual({
+      env: { PROJECT_KEY: "p", ANTHROPIC_API_KEY: "sk-co" },
+      model: "opus",
+      cwd: "/w",
+    });
+  });
+});
 
 const chatgpt = { adapterType: "codex_local", installed: true, authenticated: true, authMode: "chatgpt" as const, defaultModelResolved: "gpt-5.5" };
 
@@ -13,7 +32,7 @@ describe("resolveRunScopedModel (heartbeat/org path)", () => {
   });
   it("EDGE #5: resolves the budget-SWAPPED model, not the original (operates on the passed config only)", () => {
     // The seam is config-only and pure; the ordering guarantee (resolve AFTER the
-    // cheap-model swap, BEFORE resolveAdapterExecutionContext) lives in the caller
+    // cheap-model swap, BEFORE resolveGuardedAdapterExecutionContext) lives in the caller
     // and is proven by the "heartbeat wiring — edge #5 source-order guard" describe
     // below.
     const swapped = { model: "gpt-5.3-codex", env: {} };
@@ -57,7 +76,7 @@ describe("resolveRunScopedModel (heartbeat/org path)", () => {
 //   (a) Driving the real heartbeat `executeRun` is infeasible in this harness —
 //       it is a deeply-nested private closure requiring the full run lifecycle,
 //       adapter registry, and CLI binaries.
-//   (b) Spying on `resolveAdapterExecutionContext` is also infeasible: it is
+//   (b) Spying on `resolveAdapterExecutionContextUnguarded` is also infeasible: it is
 //       called SAME-MODULE inside heartbeat.ts, so an external `vi.spyOn` cannot
 //       intercept the internal call (ES-module live binding, no proxy).
 //   So we verify the critical ordering invariant structurally from source —
@@ -67,7 +86,7 @@ describe("resolveRunScopedModel (heartbeat/org path)", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("heartbeat wiring — edge #5 source-order guard", () => {
-  it("resolveRunScopedModel is called AFTER cheap-model swap and BEFORE resolveAdapterExecutionContext", async () => {
+  it("resolveRunScopedModel is called AFTER cheap-model swap and BEFORE resolveGuardedAdapterExecutionContext", async () => {
     const src = await readFile(new URL("../services/heartbeat.ts", import.meta.url), "utf8");
 
     // Anchor 1: cheap-model swap (budget-based model override)
@@ -76,12 +95,15 @@ describe("heartbeat wiring — edge #5 source-order guard", () => {
     const iResolve = src.indexOf("runScopedConfig = resolveRunScopedModel(");
     // Anchor 3: adapter execution-context build (must come AFTER resolution)
     // Use the destructure form to target the CALL SITE, not the exported function definition.
-    const iContext = src.indexOf("const { executionTarget, runtimeCommandSpec } = resolveAdapterExecutionContext(");
+    // D1: the org-agent dispatch now routes through the guarded combinator
+    // (resolveGuardedAdapterExecutionContext) which internally calls
+    // resolveAdapterExecutionContextUnguarded + the unsandboxed multi-tenant gate.
+    const iContext = src.indexOf("const { executionTarget, runtimeCommandSpec } = resolveGuardedAdapterExecutionContext(");
 
     // Each anchor must exist verbatim — fail loudly if any moved (wiring was refactored)
     expect(iCheapSwap, "anchor 'cheap-model swap' not found in heartbeat.ts — wiring may have changed; update this guard").toBeGreaterThan(-1);
     expect(iResolve, "anchor 'resolveRunScopedModel call' not found in heartbeat.ts — wiring may have changed; update this guard").toBeGreaterThan(-1);
-    expect(iContext, "anchor 'resolveAdapterExecutionContext destructure call' not found in heartbeat.ts — wiring may have changed; update this guard").toBeGreaterThan(-1);
+    expect(iContext, "anchor 'resolveGuardedAdapterExecutionContext destructure call' not found in heartbeat.ts — wiring may have changed; update this guard").toBeGreaterThan(-1);
 
     // Edge #5 ordering: cheap-swap < resolve < context-build
     expect(iResolve).toBeGreaterThan(iCheapSwap);

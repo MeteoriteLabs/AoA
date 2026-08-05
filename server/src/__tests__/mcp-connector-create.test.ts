@@ -38,12 +38,19 @@ const deps = { svc, secretsSvc, approvalsSvc, withInsertTransaction, logActivity
  * Per deployment mode, the status a connector that NEEDS a secret but has none
  * must land in. Neither is "active" — that is the point — but they differ in
  * WHY: local_trusted clears governance on the loopback trust boundary and is
- * held back purely by credentials, while authenticated fails the governance
- * axis first and never reaches the credential check.
+ * held back purely by credentials, while authenticated and cloud_auth fail the
+ * governance axis first and never reach the credential check. cloud_auth is a
+ * hosted, authenticated multi-tenant mode (Phase 1 multi-tenant cloud) — it is
+ * mapped identically to authenticated here: `resolveConnectorStatus`'s
+ * governance axis only special-cases `local_trusted` (the loopback trust
+ * boundary), so any other mode — including cloud_auth — requires approval.
+ * That is at least as restrictive as authenticated, which is the deliberate
+ * choice for a hosted multi-tenant deployment.
  */
 const EXPECTED_UNCREDENTIALED_STATUS: Record<string, string> = {
   local_trusted: "needs_credentials",
   authenticated: "pending_approval",
+  cloud_auth: "pending_approval",
 };
 
 const httpInput = {
@@ -209,8 +216,9 @@ describe("createConnector — deployment mode, status, approval", () => {
   // Iterates the REAL mode list rather than a hand-written one, so this stays
   // honest if a deployment mode is ever added — a new mode with no expected
   // status mapped below fails the test instead of silently going uncovered.
-  // (An earlier version of this loop included "cloud_auth", which is not a
-  // deployment mode at all and read as coverage that did not exist.)
+  // (Phase 1 multi-tenant cloud added "cloud_auth" as a real third deployment
+  // mode — it is now mapped in EXPECTED_UNCREDENTIALED_STATUS above, same as
+  // authenticated.)
   it.each([...DEPLOYMENT_MODES])(
     "%s: a requiresSecret connector with no bound secret gets its mode's non-active status",
     async (deploymentMode) => {

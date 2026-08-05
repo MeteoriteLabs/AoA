@@ -106,6 +106,7 @@ function createSequenceDb(selectQueue: any[][]) {
 // ── Import the service under test ─────────────────────────────────────────────
 
 import { executionWorkspaceService, toWorkspaceRuntimeService } from "../services/execution-workspaces.js";
+import { resolveRuntimeProcessOwnerId } from "../services/runtime-process-owner.js";
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
@@ -226,6 +227,25 @@ describe("executionWorkspaceService", () => {
 });
 
 describe("toWorkspaceRuntimeService", () => {
+  it("suppresses loopback preview details for a foreign-owner local process", () => {
+    const service = toWorkspaceRuntimeService({
+      id: "svc-foreign",
+      companyId: "company-1",
+      projectWorkspaceId: "workspace-1",
+      executionWorkspaceId: null,
+      provider: "local_process",
+      processOwnerId: "foreign-owner",
+      status: "running",
+      healthStatus: "healthy",
+      url: "http://127.0.0.1:5173",
+    } as any);
+
+    expect(service.url).toBeNull();
+    expect(service.previewUrl).toBeNull();
+    expect(service.previewAccess).toBeNull();
+    expect(service.localTargetUrl).toBeNull();
+  });
+
   it("builds preview URLs for healthy project-scoped runtime services", () => {
     const now = new Date("2026-05-25T10:00:00.000Z");
 
@@ -248,6 +268,7 @@ describe("toWorkspaceRuntimeService", () => {
       url: "http://127.0.0.1:5173",
       provider: "local_process",
       providerRef: "12345",
+      processOwnerId: resolveRuntimeProcessOwnerId(),
       ownerAgentId: null,
       startedByRunId: null,
       lastUsedAt: now,

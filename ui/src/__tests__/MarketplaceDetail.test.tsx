@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import MarketplaceDetail from "@/pages/MarketplaceDetail";
 import { marketplaceApi } from "@/api/marketplace";
-import { pluginsApi } from "@/api/plugins";
+import { listCompanyPlugins } from "@/api/plugins";
 import { FULL_CATALOG } from "@/__tests__/__fixtures__/marketplace-catalog";
 import { ToastProvider } from "@/context/ToastContext";
 import { InstallToastProvider } from "@/components/marketplace/toast/ToastProvider";
@@ -21,10 +21,7 @@ vi.mock("@/api/plugins", async () => {
   const actual = await vi.importActual<typeof import("@/api/plugins")>("@/api/plugins");
   return {
     ...actual,
-    pluginsApi: {
-      ...(actual as any).pluginsApi,
-      list: vi.fn(),
-    },
+    listCompanyPlugins: vi.fn(),
   };
 });
 
@@ -70,7 +67,7 @@ function wrap(initialPath: string) {
 describe("MarketplaceDetail", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(pluginsApi.list).mockResolvedValue([]);
+    vi.mocked(listCompanyPlugins).mockResolvedValue([]);
     vi.mocked(marketplaceApi.getPackages).mockResolvedValue([]);
   });
 
@@ -312,22 +309,26 @@ describe("MarketplaceDetail", () => {
   it("shows Installed badge instead of Install button when plugin is already installed", async () => {
     vi.mocked(marketplaceApi.getCatalog).mockResolvedValueOnce(FULL_CATALOG);
     // aoa-plugin-slack's packageName from the fixture
-    vi.mocked(pluginsApi.list).mockResolvedValueOnce([
+    vi.mocked(listCompanyPlugins).mockResolvedValueOnce([
       {
         id: "plugin-1",
+        companyId: "c1",
+        catalogItemId: null,
         packageName: "aoa-plugin-slack",
         pluginKey: "aoa.plugin-slack",
         version: "1.0.0",
         status: "ready",
         categories: [],
-        manifestJson: {} as any,
-        apiVersion: 1,
-        companyId: "c1",
-        installOrder: 1,
-        packagePath: null,
+        manifest: {
+          displayName: "Slack",
+          description: "Slack plugin",
+          capabilities: [],
+        },
         lastError: null,
-        installedAt: new Date().toISOString() as any,
-        updatedAt: new Date().toISOString() as any,
+        installedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        enabled: true,
+        configJson: {},
       },
     ]);
 
@@ -345,7 +346,7 @@ describe("MarketplaceDetail", () => {
 
   it("shows Install button when plugin is not installed", async () => {
     vi.mocked(marketplaceApi.getCatalog).mockResolvedValueOnce(FULL_CATALOG);
-    vi.mocked(pluginsApi.list).mockResolvedValueOnce([]);
+    vi.mocked(listCompanyPlugins).mockResolvedValueOnce([]);
 
     wrap("/marketplace/plugin/aoa-curated/aoa-plugin-slack");
 

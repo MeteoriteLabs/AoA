@@ -110,6 +110,7 @@ vi.mock("../middleware/validate.js", () => ({
 
 vi.mock("../middleware/rbac.js", () => ({
   assertRole: vi.fn().mockResolvedValue(undefined),
+  assertHumanRole: vi.fn().mockResolvedValue(undefined),
   assertDepartmentAccess: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -175,12 +176,12 @@ vi.mock("../routes/issues-planning-mode-dispatch.js", () => ({
 
 // ── Import routes + rbac mock after all vi.mock declarations ──────────────────
 import { discussionRoutes } from "../routes/discussions.js";
-import { assertRole } from "../middleware/rbac.js";
+import { assertHumanRole } from "../middleware/rbac.js";
 import { permissionService as mockedPermissionServiceFactory } from "../services/permissions.js";
 import express from "express";
 import request from "supertest";
 
-const mockedAssertRole = vi.mocked(assertRole);
+const mockedAssertHumanRole = vi.mocked(assertHumanRole);
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
 const CO_ID = "aaaaaaaa-0000-4000-8000-aaaaaaaaaaaa";
@@ -899,7 +900,7 @@ function makeApp() {
 describe("route integration: POST …/proposals/:proposalEntryId/approve", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockedAssertRole.mockResolvedValue(undefined);
+    mockedAssertHumanRole.mockResolvedValue(undefined);
   });
 
   it("happy path: returns 201 with tasksCreated", async () => {
@@ -925,7 +926,7 @@ describe("route integration: POST …/proposals/:proposalEntryId/approve", () =>
   it("unauthorized (team_member): 403 — approveProposal NOT called, NO tasks created", async () => {
     // assertRole throws forbidden() (status 403) for a team_member — the route's
     // top-level await rejects and Express forwards to the error handler.
-    mockedAssertRole.mockRejectedValue(
+    mockedAssertHumanRole.mockRejectedValue(
       Object.assign(new Error("Requires one of: founder, team_lead"), { status: 403 }),
     );
 

@@ -11,7 +11,7 @@ export function contextPackagingRoutes(db: Db) {
     "/companies/:companyId/issues/:issueId/context-package",
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
 
       const issueId = req.params.issueId as string;
 

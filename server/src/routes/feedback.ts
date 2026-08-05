@@ -11,6 +11,7 @@ import { logger } from "../middleware/logger.js";
 import { validate } from "../middleware/validate.js";
 import { assertCanManageInstanceSettings, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { registerIssueParamNormalizer } from "./issue-param-normalizer.js";
+import { tenantIsolationEnforced } from "../config/deployment-mode.js";
 
 export function feedbackRoutes(db: Db) {
   const router = Router();
@@ -58,7 +59,7 @@ export function feedbackRoutes(db: Db) {
         res.status(404).json({ error: "Issue not found" });
         return;
       }
-      assertCompanyAccess(req, issue.companyId);
+      await assertCompanyAccess(db, req, issue.companyId);
       if (req.actor.type !== "board") {
         res.status(403).json({ error: "Only board users can vote on AI feedback" });
         return;
@@ -106,7 +107,7 @@ export function feedbackRoutes(db: Db) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(db, req, issue.companyId);
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Only board users can view feedback votes" });
       return;
@@ -128,7 +129,7 @@ export function feedbackRoutes(db: Db) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(db, req, issue.companyId);
 
     const targetTypeRaw = typeof req.query.targetType === "string" ? req.query.targetType : null;
     const targetId = typeof req.query.targetId === "string" ? req.query.targetId : null;
@@ -156,6 +157,12 @@ export function feedbackRoutes(db: Db) {
   // section. Caller can pass ?limit=N (clamped to [1, 50], default 10).
   router.get("/feedback/exports", async (req, res) => {
     assertCanManageInstanceSettings(req);
+    if (tenantIsolationEnforced()) {
+      res.status(403).json({
+        error: "Global feedback export history is unavailable in multi-tenant deployments",
+      });
+      return;
+    }
 
     const limitRaw = typeof req.query.limit === "string" ? parseInt(req.query.limit, 10) : undefined;
     const limit = Number.isFinite(limitRaw) ? (limitRaw as number) : undefined;
@@ -177,7 +184,7 @@ export function feedbackRoutes(db: Db) {
       res.status(404).json({ error: "Feedback vote not found" });
       return;
     }
-    assertCompanyAccess(req, vote.companyId);
+    await assertCompanyAccess(db, req, vote.companyId);
 
     const authorUserId = req.actor.userId ?? "local-board";
     await votes.dismissVote(voteId, authorUserId);

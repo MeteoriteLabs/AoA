@@ -75,7 +75,9 @@ function LobbyNavRow({ icon: Icon, label, active, collapsed, onClick }: LobbyNav
   return (
     <Tooltip>
       <TooltipTrigger asChild>{button}</TooltipTrigger>
-      <TooltipContent side="right" sideOffset={8}>{label}</TooltipContent>
+      <TooltipContent side="right" sideOffset={8}>
+        {label}
+      </TooltipContent>
     </Tooltip>
   );
 }
@@ -187,7 +189,7 @@ export function LobbySidebar({
     queryFn: () => profileApi.get(),
     staleTime: 60_000,
   });
-  const showInstanceSettings = profile?.isInstanceAdmin === true;
+  const showInstanceSettings = profile?.canManageInstanceSettings === true;
 
   const navTo = (path: string) => {
     navigate(path);
@@ -239,13 +241,15 @@ export function LobbySidebar({
                 <Button
                   size="icon"
                   onClick={create}
-                  aria-label="New organization"
+                  aria-label="New company"
                   className="size-9 mx-auto"
                 >
                   <Plus />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent side="right" sideOffset={8}>New organization</TooltipContent>
+              <TooltipContent side="right" sideOffset={8}>
+                New company
+              </TooltipContent>
             </Tooltip>
           ) : (
             <DropdownMenu>
@@ -258,12 +262,12 @@ export function LobbySidebar({
                   className="flex-1 justify-center gap-1.5 rounded-r-none"
                 >
                   <Plus />
-                  New organization
+                  New company
                 </Button>
                 <DropdownMenuTrigger asChild>
                   <Button
                     size="default"
-                    aria-label="More organization options"
+                    aria-label="More company options"
                     className="rounded-l-none border-l border-l-black/20 px-2 data-[state=open]:[&_svg]:rotate-180"
                   >
                     <ChevronDown className="size-4 transition-transform" />
@@ -273,7 +277,7 @@ export function LobbySidebar({
               <DropdownMenuContent align="end" sideOffset={6} className="min-w-[200px]">
                 <DropdownMenuItem onSelect={() => navTo("/import")}>
                   <Upload />
-                  Import organization
+                  Import company
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -284,7 +288,7 @@ export function LobbySidebar({
         <nav className="flex flex-1 flex-col gap-0.5 p-2">
           <LobbyNavRow
             icon={Building2}
-            label="Organizations"
+            label="Companies"
             active={activeItem === "organizations"}
             collapsed={collapsed}
             onClick={() => navTo("/")}

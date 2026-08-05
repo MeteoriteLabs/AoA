@@ -17,9 +17,12 @@ export type FlowProgress = { completedStates: OnboardingState[] };
 
 /**
  * The engine only READS progress. Steps perform their own data write + state
- * advance (via the onboarding API) — this keeps the two-layer / org-create
- * handshake correct: the org-create step advances ORGANIZATION_CREATED on the
+ * advance (via the onboarding API) — this keeps the two-layer / company-create
+ * handshake correct: the company-create step advances COMPANY_CREATED on the
  * NEW company's layer and sets the selected company, and the engine re-reads.
+ * (Phase 2 Task 12: the preceding organization-create step is a third,
+ * ephemeral layer — see `organizationId` state below — that isn't read back
+ * from the server at all.)
  */
 export type FlowEngineApi = {
   getProgress: (companyId: string | null) => Promise<FlowProgress | null>;
@@ -29,6 +32,7 @@ export type FlowEngineProps = {
   userId: string;
   companyId: string | null;
   journey: OnboardingJourney;
+  deploymentMode?: "local_trusted" | "authenticated" | "cloud_auth";
   api: FlowEngineApi;
   registry?: StepDefinition[];
   onFinished?: () => void;
@@ -81,6 +85,7 @@ export function FlowEngine({
   userId,
   companyId,
   journey,
+  deploymentMode,
   api,
   registry = ONBOARDING_REGISTRY,
   onFinished,
@@ -88,6 +93,13 @@ export function FlowEngine({
 }: FlowEngineProps) {
   const [completed, setCompleted] = useState<OnboardingState[] | null>(null);
   const [backStepId, setBackStepId] = useState<string | null>(null);
+  // Phase 2 Task 12: the Organization created by CreateOrganizationStep is
+  // NOT part of onboarding_progress (Organizations sit above the per-company
+  // progress row) — the engine holds it as ordinary React state, alongside
+  // `completed`, and threads it into ctx for every step. Intentionally NOT
+  // reset by the `completed`-reload effect below (org creation precedes and
+  // survives the company-layer switch triggered by the company step).
+  const [organizationId, setOrganizationId] = useState<string | null>(null);
   const finishedRef = useRef(false);
   const companyIdRef = useRef(companyId);
   companyIdRef.current = companyId;
@@ -107,7 +119,9 @@ export function FlowEngine({
   }, [load]);
 
   const ctx: StepContext | null =
-    completed === null ? null : { userId, companyId, journey, completedStates: completed };
+    completed === null
+      ? null
+      : { userId, companyId, journey, completedStates: completed, deploymentMode, organizationId, setOrganizationId };
   const applicableSteps = ctx
     ? registry
         .filter((candidate) => candidate.journeys.includes(ctx.journey))

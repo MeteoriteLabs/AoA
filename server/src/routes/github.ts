@@ -39,6 +39,7 @@ import {
 } from "../services/github-app.js";
 import { emitPullRequestTaskOutput } from "../services/task-output-emitters.js";
 import { resolveGitRoot, runGit, push } from "../services/git.js";
+import { assertLocalWorkspaceCommandAllowed } from "../services/local-workspace-command-guard.js";
 const setPatSchema = z.object({ pat: z.string().min(1) });
 const syncPrBodySchema = z.object({ force: z.boolean().optional().default(false) });
 const createPrBodySchema = z.object({
@@ -127,7 +128,7 @@ export function githubRoutes(db: Db) {
   router.post("/companies/:companyId/github/pat", async (req, res) => {
     assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     const parsed = setPatSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -176,7 +177,7 @@ export function githubRoutes(db: Db) {
   router.delete("/companies/:companyId/github/pat", async (req, res) => {
     assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     const existing = await svc.getByName(companyId, GITHUB_PAT_SECRET_NAME);
     if (!existing) {
@@ -202,7 +203,7 @@ export function githubRoutes(db: Db) {
   router.get("/companies/:companyId/github/pat/status", async (req, res) => {
     assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     const row = await svc.getByName(companyId, GITHUB_PAT_SECRET_NAME);
     if (!row || row.status !== "active") {
@@ -239,7 +240,7 @@ export function githubRoutes(db: Db) {
       res.status(404).json({ error: "Workspace not found" });
       return;
     }
-    assertCompanyAccess(req, ws.companyId);
+    await assertCompanyAccess(db, req, ws.companyId);
 
     if (!ws.repoUrl) {
       res.status(400).json({ error: "Workspace missing repoUrl - cannot sync PR" });
@@ -364,7 +365,7 @@ export function githubRoutes(db: Db) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(db, req, issue.companyId);
 
     const wsSvc = executionWorkspaceService(db);
     const ws = await wsSvc.getById(parsed.data.workspaceId);
@@ -381,9 +382,21 @@ export function githubRoutes(db: Db) {
       return;
     }
 
-    // Resolve head branch: client-provided > DB record > live git detection
+    // Resolve head branch: client-provided > DB record > live git detection.
+    // In cloud_auth, keep API-only PR creation available while skipping every
+    // local Git subprocess unless the operator explicitly enabled the unsafe
+    // process-wide override.
+    let localGitAllowed = false;
+    if (ws.cwd) {
+      try {
+        assertLocalWorkspaceCommandAllowed("GitHub PR workspace Git command");
+        localGitAllowed = true;
+      } catch {
+        localGitAllowed = false;
+      }
+    }
     let headBranch = parsed.data.head ?? ws.branchName ?? null;
-    if (!headBranch && ws.cwd) {
+    if (!headBranch && ws.cwd && localGitAllowed) {
       try {
         const gitRoot = await resolveGitRoot(ws.cwd);
         if (gitRoot) {
@@ -402,7 +415,7 @@ export function githubRoutes(db: Db) {
 
     // Auto-push: ensure the branch exists on the remote before creating the PR.
     // Without this, GitHub returns 422 ("head sha can't be blank").
-    if (ws.cwd) {
+    if (ws.cwd && localGitAllowed) {
       try {
         const gitRoot = await resolveGitRoot(ws.cwd);
         if (gitRoot) {
@@ -522,7 +535,7 @@ export function githubRoutes(db: Db) {
     assertBoard(req);
     const ws = await executionWorkspaceService(db).getById(req.params.id);
     if (!ws) { res.status(404).json({ error: "Workspace not found" }); return; }
-    assertCompanyAccess(req, ws.companyId);
+    await assertCompanyAccess(db, req, ws.companyId);
     if (!ws.repoUrl) { res.status(400).json({ error: "Workspace missing repoUrl" }); return; }
 
     try {
@@ -542,7 +555,7 @@ export function githubRoutes(db: Db) {
     assertBoard(req);
     const ws = await executionWorkspaceService(db).getById(req.params.id);
     if (!ws) { res.status(404).json({ error: "Workspace not found" }); return; }
-    assertCompanyAccess(req, ws.companyId);
+    await assertCompanyAccess(db, req, ws.companyId);
     if (!ws.repoUrl) { res.status(400).json({ error: "Workspace missing repoUrl" }); return; }
 
     try {
@@ -562,7 +575,7 @@ export function githubRoutes(db: Db) {
     assertBoard(req);
     const ws = await executionWorkspaceService(db).getById(req.params.id);
     if (!ws) { res.status(404).json({ error: "Workspace not found" }); return; }
-    assertCompanyAccess(req, ws.companyId);
+    await assertCompanyAccess(db, req, ws.companyId);
     if (!ws.repoUrl) { res.status(400).json({ error: "Workspace missing repoUrl" }); return; }
 
     try {
@@ -589,7 +602,7 @@ export function githubRoutes(db: Db) {
     assertBoard(req);
     const ws = await executionWorkspaceService(db).getById(req.params.id);
     if (!ws) { res.status(404).json({ error: "Workspace not found" }); return; }
-    assertCompanyAccess(req, ws.companyId);
+    await assertCompanyAccess(db, req, ws.companyId);
     if (!ws.repoUrl) { res.status(400).json({ error: "Workspace missing repoUrl" }); return; }
 
     try {
@@ -617,7 +630,7 @@ export function githubRoutes(db: Db) {
     const wsSvc = executionWorkspaceService(db);
     const ws = await wsSvc.getById(req.params.id);
     if (!ws) { res.status(404).json({ error: "Workspace not found" }); return; }
-    assertCompanyAccess(req, ws.companyId);
+    await assertCompanyAccess(db, req, ws.companyId);
 
     const meta = (ws.metadata as Record<string, unknown> | null) ?? {};
     const pr = readGitHubPrMetadata(meta.pr);
@@ -650,7 +663,7 @@ export function githubRoutes(db: Db) {
     const wsSvc = executionWorkspaceService(db);
     const ws = await wsSvc.getById(req.params.id);
     if (!ws) { res.status(404).json({ error: "Workspace not found" }); return; }
-    assertCompanyAccess(req, ws.companyId);
+    await assertCompanyAccess(db, req, ws.companyId);
 
     const meta = (ws.metadata as Record<string, unknown> | null) ?? {};
     const pr = readGitHubPrMetadata(meta.pr);
@@ -682,7 +695,7 @@ export function githubRoutes(db: Db) {
     const wsSvc = executionWorkspaceService(db);
     const ws = await wsSvc.getById(req.params.id);
     if (!ws) { res.status(404).json({ error: "Workspace not found" }); return; }
-    assertCompanyAccess(req, ws.companyId);
+    await assertCompanyAccess(db, req, ws.companyId);
 
     const meta = (ws.metadata as Record<string, unknown> | null) ?? {};
     const pr = readGitHubPrMetadata(meta.pr);
@@ -716,7 +729,7 @@ export function githubRoutes(db: Db) {
 
     const ws = await executionWorkspaceService(db).getById(req.params.id);
     if (!ws) { res.status(404).json({ error: "Workspace not found" }); return; }
-    assertCompanyAccess(req, ws.companyId);
+    await assertCompanyAccess(db, req, ws.companyId);
 
     const meta = (ws.metadata as Record<string, unknown> | null) ?? {};
     const pr = readGitHubPrMetadata(meta.pr);
@@ -736,9 +749,9 @@ export function githubRoutes(db: Db) {
   // GitHub App auth — install URL, OAuth callback, disconnect, status
   // ---------------------------------------------------------------------------
 
-  router.get("/companies/:companyId/github/app/install-url", (req, res) => {
+  router.get("/companies/:companyId/github/app/install-url", async (req, res) => {
     assertBoard(req);
-    assertCompanyAccess(req, req.params.companyId);
+    await assertCompanyAccess(db, req, req.params.companyId);
     try {
       // `return` is a caller-supplied hint, but it is only ever used to pick a
       // key out of the fixed ONBOARDING_RETURN_PATHS allowlist — an
@@ -818,14 +831,14 @@ export function githubRoutes(db: Db) {
 
   router.delete("/companies/:companyId/github/app", async (req, res) => {
     assertBoard(req);
-    assertCompanyAccess(req, req.params.companyId);
+    await assertCompanyAccess(db, req, req.params.companyId);
     await removeInstallation(db, req.params.companyId);
     res.json({ removed: true });
   });
 
   router.get("/companies/:companyId/github/app/status", async (req, res) => {
     assertBoard(req);
-    assertCompanyAccess(req, req.params.companyId);
+    await assertCompanyAccess(db, req, req.params.companyId);
     const installation = await getInstallation(db, req.params.companyId);
     if (!installation) {
       res.json({ installed: false });
@@ -845,7 +858,7 @@ export function githubRoutes(db: Db) {
    */
   router.get("/companies/:companyId/github/app/repositories", async (req, res) => {
     assertBoard(req);
-    assertCompanyAccess(req, req.params.companyId);
+    await assertCompanyAccess(db, req, req.params.companyId);
     try {
       const repos = await listInstallationRepositories(db, req.params.companyId);
       res.json(repos);

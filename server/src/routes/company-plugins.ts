@@ -12,7 +12,7 @@
  * - Toggle plugin enabled/disabled for this company
  */
 import { Router } from "express";
-import { eq, and, desc } from "drizzle-orm";
+import { eq, and, desc, ne } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   plugins,
@@ -20,14 +20,25 @@ import {
   pluginCompanySettings,
   pluginVersionSnapshots,
 } from "@armyofagents/db";
-import { assertBoard, assertCanManageInstanceSettings, assertCompanyAccess } from "./authz.js";
+import {
+  assertBoard,
+  assertCanManageInstanceSettings,
+  assertCompanyAccess,
+} from "./authz.js";
 import type { PluginLifecycleManager } from "../services/plugin-lifecycle.js";
 import type { PluginLoader } from "../services/plugin-loader.js";
+import {
+  CloudPluginExecutionBlockedError,
+  cloudPluginExecutionBlockedEnvelope,
+  isCloudPluginExecutionBlocked,
+  projectCloudPluginPolicyState,
+  recordCloudPluginBlock,
+} from "../services/cloud-plugin-execution.js";
 
 export function companyPluginRoutes(
   db: Db,
   lifecycle: PluginLifecycleManager,
-  loader: PluginLoader,
+  loader: PluginLoader
 ) {
   const router = Router({ mergeParams: true });
 
@@ -37,43 +48,45 @@ export function companyPluginRoutes(
     assertBoard(req);
     const params = req.params as Record<string, string>;
     const companyId = params.companyId;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
-    const [installed, settings, configs] = await Promise.all([
+    const [installed, settings] = await Promise.all([
       db
         .select()
         .from(plugins)
-        .where(eq(plugins.companyId, companyId))
+        .where(
+          and(
+            eq(plugins.companyId, companyId),
+            ne(plugins.status, "uninstalled")
+          )
+        )
         .orderBy(plugins.installedAt),
       db
         .select()
         .from(pluginCompanySettings)
         .where(eq(pluginCompanySettings.companyId, companyId)),
-      db
-        .select()
-        .from(pluginConfig)
-        .where(eq(pluginConfig.companyId, companyId)),
     ]);
 
     const settingsMap = new Map(settings.map((s) => [s.pluginId, s]));
-    const configMap = new Map(configs.map((c) => [c.pluginId, c]));
 
-    const result = installed.map((plugin) => ({
-      id: plugin.id,
-      companyId: plugin.companyId,
-      catalogItemId: plugin.catalogItemId,
-      pluginKey: plugin.pluginKey,
-      packageName: plugin.packageName,
-      version: plugin.version,
-      status: plugin.status,
-      categories: plugin.categories,
-      manifest: plugin.manifestJson,
-      lastError: plugin.lastError,
-      installedAt: plugin.installedAt,
-      updatedAt: plugin.updatedAt,
-      enabled: settingsMap.get(plugin.id)?.enabled ?? true,
-      configJson: configMap.get(plugin.id)?.configJson ?? {},
-    }));
+    const result = installed.map((plugin) =>
+      projectCloudPluginPolicyState({
+        id: plugin.id,
+        companyId: plugin.companyId,
+        catalogItemId: plugin.catalogItemId,
+        pluginKey: plugin.pluginKey,
+        packageName: plugin.packageName,
+        version: plugin.version,
+        status: plugin.status,
+        statusReasonCode: plugin.statusReasonCode,
+        categories: plugin.categories,
+        manifest: plugin.manifestJson,
+        lastError: plugin.lastError,
+        installedAt: plugin.installedAt,
+        updatedAt: plugin.updatedAt,
+        enabled: settingsMap.get(plugin.id)?.enabled ?? true,
+      })
+    );
 
     res.json(result);
   });
@@ -81,13 +94,31 @@ export function companyPluginRoutes(
   // ── GET /api/companies/:companyId/plugins/:pluginId/config ───────────────
   router.get("/:pluginId/config", async (req, res) => {
     assertBoard(req);
-    const { companyId, pluginId } = req.params as { companyId: string; pluginId: string };
-    assertCompanyAccess(req, companyId);
+    const { companyId, pluginId } = req.params as {
+      companyId: string;
+      pluginId: string;
+    };
+    await assertCompanyAccess(db, req, companyId);
+    assertCanManageInstanceSettings(req);
+
+    const [ownedPlugin] = await db
+      .select({ id: plugins.id, status: plugins.status })
+      .from(plugins)
+      .where(and(eq(plugins.companyId, companyId), eq(plugins.id, pluginId)));
+    if (!ownedPlugin) {
+      res.status(404).json({ error: "Plugin not found" });
+      return;
+    }
 
     const [config] = await db
       .select()
       .from(pluginConfig)
-      .where(and(eq(pluginConfig.companyId, companyId), eq(pluginConfig.pluginId, pluginId)));
+      .where(
+        and(
+          eq(pluginConfig.companyId, companyId),
+          eq(pluginConfig.pluginId, pluginId)
+        )
+      );
 
     res.json({ configJson: config?.configJson ?? {} });
   });
@@ -96,8 +127,11 @@ export function companyPluginRoutes(
   // Upsert per-company plugin config.
   router.post("/:pluginId/config", async (req, res) => {
     assertBoard(req);
-    const { companyId, pluginId } = req.params as { companyId: string; pluginId: string };
-    assertCompanyAccess(req, companyId);
+    const { companyId, pluginId } = req.params as {
+      companyId: string;
+      pluginId: string;
+    };
+    await assertCompanyAccess(db, req, companyId);
     // H9: plugin config rewrite (incl. secret-ref bindings / devUiUrl) is a
     // host-trust operation — gate it to instance admins, matching the
     // instance-scoped plugin routes (plugins.ts). In authenticated mode any
@@ -126,7 +160,12 @@ export function companyPluginRoutes(
     const [existing] = await db
       .select()
       .from(pluginConfig)
-      .where(and(eq(pluginConfig.companyId, companyId), eq(pluginConfig.pluginId, pluginId)));
+      .where(
+        and(
+          eq(pluginConfig.companyId, companyId),
+          eq(pluginConfig.pluginId, pluginId)
+        )
+      );
 
     if (existing) {
       const [updated] = await db
@@ -150,8 +189,11 @@ export function companyPluginRoutes(
   // Note: lifecycle.upgrade() saves the rollback snapshot internally.
   router.post("/:pluginId/upgrade", async (req, res) => {
     assertBoard(req);
-    const { companyId, pluginId } = req.params as { companyId: string; pluginId: string };
-    assertCompanyAccess(req, companyId);
+    const { companyId, pluginId } = req.params as {
+      companyId: string;
+      pluginId: string;
+    };
+    await assertCompanyAccess(db, req, companyId);
     // H9: drives host-side `npm install <version>` of the plugin package —
     // instance-admin only, matching the instance-scoped routes.
     assertCanManageInstanceSettings(req);
@@ -174,9 +216,16 @@ export function companyPluginRoutes(
     }
 
     try {
+      // Reconcile the durable cloud denial before status validation or any
+      // auto-rollback path can perform package work.
+      await lifecycle.blockActivationInCloud(plugin.id, "direct");
       const result = await lifecycle.upgrade(plugin.id, version);
       res.json(result);
     } catch (err) {
+      if (err instanceof CloudPluginExecutionBlockedError) {
+        res.status(503).json(cloudPluginExecutionBlockedEnvelope());
+        return;
+      }
       // Auto-rollback: find the most recent snapshot and reinstall
       const [snapshot] = await db
         .select()
@@ -184,18 +233,17 @@ export function companyPluginRoutes(
         .where(
           and(
             eq(pluginVersionSnapshots.companyId, companyId),
-            eq(pluginVersionSnapshots.pluginId, pluginId),
-          ),
+            eq(pluginVersionSnapshots.pluginId, pluginId)
+          )
         )
         .orderBy(desc(pluginVersionSnapshots.createdAt))
         .limit(1);
 
       if (snapshot) {
         try {
-          await loader.installPlugin({
+          await loader.upgradePlugin(plugin.id, {
             packageName: snapshot.packageName,
             version: snapshot.version,
-            companyId,
           });
           await lifecycle.load(plugin.id);
           await db
@@ -216,8 +264,11 @@ export function companyPluginRoutes(
   // Approve new capabilities and transition upgrade_pending → ready.
   router.post("/:pluginId/upgrade/approve", async (req, res) => {
     assertBoard(req);
-    const { companyId, pluginId } = req.params as { companyId: string; pluginId: string };
-    assertCompanyAccess(req, companyId);
+    const { companyId, pluginId } = req.params as {
+      companyId: string;
+      pluginId: string;
+    };
+    await assertCompanyAccess(db, req, companyId);
     // H9: transitions upgrade_pending -> ready, approving NEWLY-ESCALATED plugin
     // capabilities before the worker restarts with the more-powerful manifest.
     // This is the human-in-the-loop operator gate — instance-admin only.
@@ -232,21 +283,59 @@ export function companyPluginRoutes(
       res.status(404).json({ error: "Plugin not found for this company" });
       return;
     }
+
+    try {
+      // Cloud policy must win over lifecycle-state validation so callers get
+      // the canonical typed denial even after boot reconciles the row to error.
+      await lifecycle.blockActivationInCloud(plugin.id, "direct");
+    } catch (err) {
+      if (err instanceof CloudPluginExecutionBlockedError) {
+        res.status(503).json(cloudPluginExecutionBlockedEnvelope());
+        return;
+      }
+      throw err;
+    }
+
     if (plugin.status !== "upgrade_pending") {
-      res.status(400).json({ error: `Plugin is not in upgrade_pending state (current: ${plugin.status})` });
+      res.status(400).json({
+        error: `Plugin is not in upgrade_pending state (current: ${plugin.status})`,
+      });
       return;
     }
 
-    await lifecycle.load(plugin.id); // transitions upgrade_pending → ready, starts worker
-    res.json({ status: "ready" });
+    try {
+      await lifecycle.load(plugin.id);
+      res.json({ status: "ready" });
+    } catch (err) {
+      if (err instanceof CloudPluginExecutionBlockedError) {
+        res.status(503).json(cloudPluginExecutionBlockedEnvelope());
+        return;
+      }
+      throw err;
+    }
   });
 
   // ── POST /api/companies/:companyId/plugins/:pluginId/upgrade/rollback ────
   // Cancel upgrade — restore from snapshot, transition back to ready.
   router.post("/:pluginId/upgrade/rollback", async (req, res) => {
     assertBoard(req);
-    const { companyId, pluginId } = req.params as { companyId: string; pluginId: string };
-    assertCompanyAccess(req, companyId);
+    const { companyId, pluginId } = req.params as {
+      companyId: string;
+      pluginId: string;
+    };
+
+    if (isCloudPluginExecutionBlocked()) {
+      recordCloudPluginBlock({
+        pluginId,
+        companyId,
+        source: "direct",
+        sink: "loader",
+      });
+      res.status(503).json(cloudPluginExecutionBlockedEnvelope());
+      return;
+    }
+
+    await assertCompanyAccess(db, req, companyId);
     // H9: rolls the plugin back to a prior version (host-side) — instance-admin only.
     assertCanManageInstanceSettings(req);
 
@@ -266,22 +355,23 @@ export function companyPluginRoutes(
       .where(
         and(
           eq(pluginVersionSnapshots.companyId, companyId),
-          eq(pluginVersionSnapshots.pluginId, pluginId),
-        ),
+          eq(pluginVersionSnapshots.pluginId, pluginId)
+        )
       )
       .orderBy(desc(pluginVersionSnapshots.createdAt))
       .limit(1);
 
     if (!snapshot) {
-      res.status(404).json({ error: "No rollback snapshot found for this plugin" });
+      res
+        .status(404)
+        .json({ error: "No rollback snapshot found for this plugin" });
       return;
     }
 
     try {
-      await loader.installPlugin({
+      await loader.upgradePlugin(plugin.id, {
         packageName: snapshot.packageName,
         version: snapshot.version,
-        companyId,
       });
 
       const [updatedPlugin] = await db
@@ -293,6 +383,10 @@ export function companyPluginRoutes(
 
       res.json({ status: "ready", version: snapshot.version });
     } catch (err) {
+      if (err instanceof CloudPluginExecutionBlockedError) {
+        res.status(503).json(cloudPluginExecutionBlockedEnvelope());
+        return;
+      }
       const message = err instanceof Error ? err.message : String(err);
       res.status(400).json({ error: message });
     }
@@ -302,8 +396,11 @@ export function companyPluginRoutes(
   // Toggle enabled/disabled for this company.
   router.patch("/:pluginId/settings", async (req, res) => {
     assertBoard(req);
-    const { companyId, pluginId } = req.params as { companyId: string; pluginId: string };
-    assertCompanyAccess(req, companyId);
+    const { companyId, pluginId } = req.params as {
+      companyId: string;
+      pluginId: string;
+    };
+    await assertCompanyAccess(db, req, companyId);
     // H9: enabling/disabling a plugin for the company is an operator decision —
     // instance-admin only, matching PUT /companies/:cid/plugin-settings/:pid.
     assertCanManageInstanceSettings(req);
@@ -314,30 +411,70 @@ export function companyPluginRoutes(
       return;
     }
 
+    const [ownedPlugin] = await db
+      .select({ id: plugins.id, status: plugins.status })
+      .from(plugins)
+      .where(and(eq(plugins.companyId, companyId), eq(plugins.id, pluginId)));
+    if (!ownedPlugin) {
+      res.status(404).json({ error: "Plugin not found" });
+      return;
+    }
+
+    if (enabled) {
+      try {
+        await lifecycle.blockActivationInCloud(ownedPlugin.id, "direct");
+      } catch (err) {
+        if (err instanceof CloudPluginExecutionBlockedError) {
+          res.status(503).json(cloudPluginExecutionBlockedEnvelope());
+          return;
+        }
+        throw err;
+      }
+    }
+
     const [existing] = await db
       .select()
       .from(pluginCompanySettings)
       .where(
         and(
           eq(pluginCompanySettings.companyId, companyId),
-          eq(pluginCompanySettings.pluginId, pluginId),
-        ),
+          eq(pluginCompanySettings.pluginId, pluginId)
+        )
       );
 
+    let savedEnabled: boolean;
     if (existing) {
       const [updated] = await db
         .update(pluginCompanySettings)
         .set({ enabled, updatedAt: new Date() })
         .where(eq(pluginCompanySettings.id, existing.id))
         .returning();
-      res.json({ enabled: updated.enabled });
+      savedEnabled = updated.enabled;
     } else {
       const [inserted] = await db
         .insert(pluginCompanySettings)
         .values({ companyId, pluginId, enabled })
         .returning();
-      res.json({ enabled: inserted.enabled });
+      savedEnabled = inserted.enabled;
     }
+
+    // Revocation is persisted before touching the in-memory runtime. On disable,
+    // route/host gates are therefore closed even if teardown fails. On enable,
+    // a failed activation leaves the lifecycle non-ready and still blocked.
+    try {
+      if (!enabled && ownedPlugin.status === "ready") {
+        await lifecycle.disable(pluginId, "Disabled for company");
+      } else if (enabled && ownedPlugin.status === "disabled") {
+        await lifecycle.enable(pluginId);
+      }
+    } catch (err) {
+      if (err instanceof CloudPluginExecutionBlockedError) {
+        res.status(503).json(cloudPluginExecutionBlockedEnvelope());
+        return;
+      }
+      throw err;
+    }
+    res.json({ enabled: savedEnabled });
   });
 
   return router;

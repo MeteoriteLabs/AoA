@@ -129,7 +129,11 @@ vi.mock("../services/internal-agent/cli-mode.js", () => ({
 }));
 
 vi.mock("../services/heartbeat.js", () => ({
-  resolveAdapterExecutionContext: vi.fn(() => ({
+  resolveAdapterExecutionContextUnguarded: vi.fn(() => ({
+    executionTarget: {},
+    runtimeCommandSpec: {},
+  })),
+  resolveGuardedAdapterExecutionContext: vi.fn(() => ({
     executionTarget: {},
     runtimeCommandSpec: {},
   })),
@@ -143,6 +147,18 @@ vi.mock("../services/instance-settings.js", () => ({
   instanceSettingsService: vi.fn(() => ({
     getExperimental: vi.fn().mockResolvedValue({ enableIsolatedWorkspaces: true }),
   })),
+}));
+
+// Phase 4: the crew runner routes through the unified provider resolver before
+// provider-status detection. A self-hosted miss returns host_login_fallback in
+// production (never throws); the proxy-table mock db here can't serve the
+// resolver's provider_connections/provider_assignments query, so stub it to a
+// passthrough (agent_env_override ⇒ applyResolvedCredential is a no-op). Masks
+// no real bug — it only replaces a query the mock DB cannot answer.
+vi.mock("../services/provider-resolution.js", () => ({
+  resolveProviderCredential: vi.fn(async () => ({ source: "agent_env_override" })),
+  applyResolvedCredential: (config: unknown) => config,
+  toExecutionTargetHint: () => ({ credentialKind: null, executionTargetSlug: null }),
 }));
 
 vi.mock("../services/run-log-store.js", () => ({

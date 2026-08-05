@@ -4,6 +4,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import {
   orderedStatesFor,
   FIRST_RUN_PERSONAS,
+  normalizeLegacyOnboardingState,
   type OnboardingJourney,
   type OnboardingState,
   type FirstRunPersona,
@@ -60,8 +61,31 @@ export function computeAdvance(
   return { kind: "advance", newCurrent, newCompleted };
 }
 
-function mapRow(row: any): ProgressRow {
+/**
+ * Phase 2 Task 2 (naming-collision fix): normalizes the retired
+ * "ORGANIZATION_CREATED" state name (legacy rows written before the rename)
+ * to its replacement "COMPANY_CREATED" on `currentState` and within
+ * `completedStates` (deduped, since a legacy row could in principle carry
+ * both names post-migration). Every other state passes through unchanged.
+ * Exported standalone (pure, no db) so it can be unit-tested directly and
+ * reused by every read path that returns a `ProgressRow`-shaped value.
+ */
+export function normalizeProgressRow<T extends { currentState: any; completedStates: any[] }>(row: T): T {
   return {
+    ...row,
+    currentState: normalizeLegacyOnboardingState(row.currentState),
+    completedStates: Array.from(
+      new Set((row.completedStates ?? []).map((s: any) => normalizeLegacyOnboardingState(s))),
+    ),
+  };
+}
+
+function mapRow(row: any): ProgressRow {
+  // Normalize at the single chokepoint every read path (getProgress,
+  // ensureProgress, advanceState, setFirstRunProgress) funnels through, so
+  // legacy ORGANIZATION_CREATED rows are corrected before they ever reach
+  // computeAdvance's ordered-sequence comparisons.
+  return normalizeProgressRow({
     id: row.id,
     userId: row.userId,
     companyId: row.companyId ?? null,
@@ -71,7 +95,7 @@ function mapRow(row: any): ProgressRow {
     version: row.version ?? 0,
     firstRunCompletedAt: row.firstRunCompletedAt ?? null,
     firstRunPersona: row.firstRunPersona ?? null,
-  };
+  });
 }
 
 export async function getProgress(
@@ -146,6 +170,9 @@ export async function advanceState(
     requestedState: OnboardingState;
   },
 ): Promise<AdvanceResult> {
+  // Accept the retired wire value as a compatibility alias. Read-time
+  // normalization alone is insufficient because older clients still PATCH it.
+  const requestedState = normalizeLegacyOnboardingState(args.requestedState);
   for (let attempt = 0; attempt < 3; attempt++) {
     const row = await ensureProgress(db, {
       userId: args.userId,
@@ -153,7 +180,7 @@ export async function advanceState(
       journey: args.journey,
     });
     const order = orderedStatesFor(row.journey);
-    const decision = computeAdvance(order, row.currentState, row.completedStates, args.requestedState);
+    const decision = computeAdvance(order, row.currentState, row.completedStates, requestedState);
     if (decision.kind === "noop") return { status: "ok", row };
     if (decision.kind === "illegal") return { status: "illegal", reason: decision.reason };
 

@@ -49,10 +49,24 @@ const projectWorkspaceFields = {
   metadata: z.record(z.unknown()).optional().nullable(),
 };
 
+function rejectReservedRuntimeMetadata(
+  value: { metadata?: Record<string, unknown> | null },
+  ctx: z.RefinementCtx,
+): void {
+  if (value.metadata && Object.prototype.hasOwnProperty.call(value.metadata, "runtimeConfig")) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "metadata.runtimeConfig is server-reserved; use workspace runtime controls",
+      path: ["metadata", "runtimeConfig"],
+    });
+  }
+}
+
 export const createProjectWorkspaceSchema = z.object({
   ...projectWorkspaceFields,
   isPrimary: z.boolean().optional().default(false),
 }).superRefine((value, ctx) => {
+  rejectReservedRuntimeMetadata(value, ctx);
   const hasCwd = typeof value.cwd === "string" && value.cwd.trim().length > 0;
   const hasRepo = typeof value.repoUrl === "string" && value.repoUrl.trim().length > 0;
   if (!hasCwd && !hasRepo) {
@@ -69,7 +83,7 @@ export type CreateProjectWorkspace = z.infer<typeof createProjectWorkspaceSchema
 export const updateProjectWorkspaceSchema = z.object({
   ...projectWorkspaceFields,
   isPrimary: z.boolean().optional(),
-}).partial();
+}).partial().superRefine(rejectReservedRuntimeMetadata);
 
 export type UpdateProjectWorkspace = z.infer<typeof updateProjectWorkspaceSchema>;
 

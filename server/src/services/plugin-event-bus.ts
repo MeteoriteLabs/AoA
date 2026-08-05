@@ -37,6 +37,8 @@ interface Subscription {
   filter: EventFilter | null;
   /** Async handler to invoke when a matching event passes the filter. */
   handler: (event: PluginEvent) => Promise<void>;
+  /** Owning company for tenant delivery isolation. */
+  companyId: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -92,9 +94,12 @@ function passesFilter(event: PluginEvent, filter: EventFilter | null): boolean {
   const payload = event.payload as Record<string, unknown> | null;
 
   if (filter.projectId !== undefined) {
-    const projectId = event.entityType === "project"
-      ? event.entityId
-      : (typeof payload?.projectId === "string" ? payload.projectId : undefined);
+    const projectId =
+      event.entityType === "project"
+        ? event.entityId
+        : typeof payload?.projectId === "string"
+        ? payload.projectId
+        : undefined;
     if (projectId !== filter.projectId) return false;
   }
 
@@ -103,9 +108,12 @@ function passesFilter(event: PluginEvent, filter: EventFilter | null): boolean {
   }
 
   if (filter.agentId !== undefined) {
-    const agentId = event.entityType === "agent"
-      ? event.entityId
-      : (typeof payload?.agentId === "string" ? payload.agentId : undefined);
+    const agentId =
+      event.entityType === "agent"
+        ? event.entityId
+        : typeof payload?.agentId === "string"
+        ? payload.agentId
+        : undefined;
     if (agentId !== filter.agentId) return false;
   }
 
@@ -177,6 +185,8 @@ export function createPluginEventBus(): PluginEventBus {
       for (const sub of subs) {
         if (!matchesPattern(event.eventType, sub.eventPattern)) continue;
         if (!passesFilter(event, sub.filter)) continue;
+        if (sub.companyId !== null && event.companyId !== sub.companyId)
+          continue;
 
         // Use Promise.resolve().then() so that synchronous throws from handlers
         // are also caught inside the promise chain. Calling
@@ -186,9 +196,11 @@ export function createPluginEventBus(): PluginEventBus {
         // exceptions become rejections. Each .catch() swallows the rejection
         // and records it — the promise always resolves, so Promise.all never rejects.
         promises.push(
-          Promise.resolve().then(() => sub.handler(event)).catch((error: unknown) => {
-            errors.push({ pluginId, error });
-          }),
+          Promise.resolve()
+            .then(() => sub.handler(event))
+            .catch((error: unknown) => {
+              errors.push({ pluginId, error });
+            })
         );
       }
     }
@@ -208,7 +220,11 @@ export function createPluginEventBus(): PluginEventBus {
    * Return a scoped handle for a specific plugin. The handle exposes only the
    * plugin's own subscription list and enforces the plugin namespace on `emit`.
    */
-  function forPlugin(pluginId: string): ScopedPluginEventBus {
+  function forPlugin(
+    pluginId: string,
+    pluginKey: string = pluginId,
+    companyId: string | null = null
+  ): ScopedPluginEventBus {
     return {
       /**
        * Subscribe to a core domain event or a plugin-namespaced event.
@@ -222,7 +238,7 @@ export function createPluginEventBus(): PluginEventBus {
       subscribe(
         eventPattern: PluginEventType | `plugin.${string}`,
         fnOrFilter: EventFilter | ((event: PluginEvent) => Promise<void>),
-        maybeFn?: (event: PluginEvent) => Promise<void>,
+        maybeFn?: (event: PluginEvent) => Promise<void>
       ): void {
         let filter: EventFilter | null = null;
         let handler: (event: PluginEvent) => Promise<void>;
@@ -231,11 +247,14 @@ export function createPluginEventBus(): PluginEventBus {
           handler = fnOrFilter;
         } else {
           filter = fnOrFilter;
-          if (!maybeFn) throw new Error("Handler function is required when a filter is provided");
+          if (!maybeFn)
+            throw new Error(
+              "Handler function is required when a filter is provided"
+            );
           handler = maybeFn;
         }
 
-        subsFor(pluginId).push({ eventPattern, filter, handler });
+        subsFor(pluginId).push({ eventPattern, filter, handler, companyId });
       },
 
       /**
@@ -248,30 +267,38 @@ export function createPluginEventBus(): PluginEventBus {
        * @throws {Error} if `name` already contains the `plugin.` prefix
        *   (prevents cross-namespace spoofing).
        */
-      async emit(name: string, companyId: string, payload: unknown): Promise<PluginEventBusEmitResult> {
+      async emit(
+        name: string,
+        companyId: string,
+        payload: unknown
+      ): Promise<PluginEventBusEmitResult> {
         if (!name || name.trim() === "") {
-          throw new Error(`Plugin "${pluginId}" must provide a non-empty event name.`);
+          throw new Error(
+            `Plugin "${pluginId}" must provide a non-empty event name.`
+          );
         }
 
         if (!companyId || companyId.trim() === "") {
-          throw new Error(`Plugin "${pluginId}" must provide a companyId when emitting events.`);
+          throw new Error(
+            `Plugin "${pluginId}" must provide a companyId when emitting events.`
+          );
         }
 
         if (name.startsWith("plugin.")) {
           throw new Error(
             `Plugin "${pluginId}" must not include the "plugin." prefix when emitting events. ` +
-            `Emit the bare event name (e.g. "sync-done") and the bus will namespace it automatically.`,
+              `Emit the bare event name (e.g. "sync-done") and the bus will namespace it automatically.`
           );
         }
 
-        const eventType = `plugin.${pluginId}.${name}` as const;
+        const eventType = `plugin.${pluginKey}.${name}` as const;
         const event: PluginEvent = {
           eventId: crypto.randomUUID(),
           eventType,
           companyId,
           occurredAt: new Date().toISOString(),
           actorType: "plugin",
-          actorId: pluginId,
+          actorId: pluginKey,
           payload,
         };
 
@@ -335,7 +362,11 @@ export interface PluginEventBus {
    * The scoped handle isolates the plugin's subscriptions and enforces the
    * plugin namespace on outbound events.
    */
-  forPlugin(pluginId: string): ScopedPluginEventBus;
+  forPlugin(
+    pluginId: string,
+    pluginKey?: string,
+    companyId?: string | null
+  ): ScopedPluginEventBus;
 
   /**
    * Remove all subscriptions for a plugin (called on worker shutdown/uninstall).
@@ -382,12 +413,12 @@ export interface ScopedPluginEventBus {
    */
   subscribe(
     eventPattern: PluginEventType | `plugin.${string}`,
-    fn: (event: PluginEvent) => Promise<void>,
+    fn: (event: PluginEvent) => Promise<void>
   ): void;
   subscribe(
     eventPattern: PluginEventType | `plugin.${string}`,
     filter: EventFilter,
-    fn: (event: PluginEvent) => Promise<void>,
+    fn: (event: PluginEvent) => Promise<void>
   ): void;
 
   /**
@@ -403,7 +434,11 @@ export interface ScopedPluginEventBus {
    * @throws {Error} if `name` is empty or whitespace-only.
    * @throws {Error} if `name` starts with `"plugin."` (namespace spoofing guard).
    */
-  emit(name: string, companyId: string, payload: unknown): Promise<PluginEventBusEmitResult>;
+  emit(
+    name: string,
+    companyId: string,
+    payload: unknown
+  ): Promise<PluginEventBusEmitResult>;
 
   /**
    * Remove all subscriptions registered by this plugin.

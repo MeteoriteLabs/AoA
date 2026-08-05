@@ -107,6 +107,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { companySkills, marketplacePendingUpdates } from "@armyofagents/db";
 import type { CatalogItem } from "@armyofagents/shared";
+import { fetchCatalogResource } from "./fetch-resource.js";
 import { computeSectionDiff, mergeSkillDocument } from "../marketplace-merge.js";
 import {
   managedCatalogSkillDir,
@@ -305,19 +306,11 @@ export async function mergeSkillUpdate(
  * review did would let a decision land content that was never on screen.
  */
 async function fetchUpstreamSkillMarkdown(catalogItem: CatalogItem): Promise<string> {
-  if (!catalogItem.resourceUrl) {
-    throw new SkillMergeUpstreamError("Catalog resource URL not available");
-  }
-  let response: Awaited<ReturnType<typeof fetch>>;
   try {
-    response = await fetch(catalogItem.resourceUrl, { signal: AbortSignal.timeout(15000) });
+    return await fetchCatalogResource(catalogItem, "skill update merge");
   } catch (err) {
     throw new SkillMergeUpstreamError(
       `Failed to fetch upstream content: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
-  if (!response.ok) {
-    throw new SkillMergeUpstreamError("Failed to fetch upstream content");
-  }
-  return response.text();
 }

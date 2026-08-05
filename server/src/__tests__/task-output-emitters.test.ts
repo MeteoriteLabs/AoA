@@ -78,6 +78,27 @@ describe("task output emitters", () => {
     }));
   });
 
+  it("clears stale preview URLs when a runtime service becomes terminal", async () => {
+    await emitRuntimeServiceTaskOutput({} as never, {
+      id: "runtime-stopped",
+      companyId: "company-1",
+      issueId: "issue-1",
+      executionWorkspaceId: "workspace-1",
+      serviceName: "dev server",
+      provider: "local_process",
+      status: "stopped",
+      healthStatus: "unknown",
+      url: "http://127.0.0.1:3100",
+      providerRef: null,
+    });
+
+    expect(upsertForIssue).toHaveBeenCalledWith("company-1", "issue-1", expect.objectContaining({
+      type: "runtime_service",
+      status: "stopped",
+      url: null,
+    }));
+  });
+
   it("upserts branch outputs for task-owned workspaces", async () => {
     await emitBranchTaskOutput({} as never, {
       id: "workspace-1",

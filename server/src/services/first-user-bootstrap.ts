@@ -1,6 +1,7 @@
 import type { Db } from "@armyofagents/db";
 import { instanceUserRoles } from "@armyofagents/db";
 import { and, eq, sql } from "drizzle-orm";
+import type { DeploymentMode } from "@armyofagents/shared";
 
 const LOCAL_BOARD_USER_ID = "local-board";
 
@@ -70,4 +71,26 @@ export async function promoteFirstUserToInstanceAdmin(
     if (syntheticAdminExists) await removeSyntheticAdmin();
     return true;
   });
+}
+
+/**
+ * Single chokepoint gating EVERY instance_admin promotion path. `cloud_auth`
+ * (hosted multi-tenant beta) mints zero runtime instance_admins — the platform
+ * operator is provisioned out-of-band; instance_admin is self-hosted/break-glass
+ * only. Self-hosted local_trusted/authenticated keep the first-user bootstrap.
+ */
+export function instanceAdminBootstrapEnabled(mode: DeploymentMode): boolean {
+  return mode !== "cloud_auth";
+}
+
+/** Boot-time invariant: cloud_auth must never have a runtime promotion path enabled. */
+export function assertInstanceAdminBootstrapInvariant(
+  config: { deploymentMode: DeploymentMode },
+  resolver: (mode: DeploymentMode) => boolean = instanceAdminBootstrapEnabled,
+): void {
+  if (config.deploymentMode === "cloud_auth" && resolver(config.deploymentMode)) {
+    throw new Error(
+      "Startup invariant violated: cloud_auth must not mint runtime instance_admin.",
+    );
+  }
 }

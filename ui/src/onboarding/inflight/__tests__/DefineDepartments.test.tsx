@@ -249,9 +249,17 @@ describe("DefineDepartments (WS4 — In-flight standalone surface)", () => {
     list.mockResolvedValue([{ id: "existing", type: "department", name: "Software" }]);
     const onDone = vi.fn();
     render(<DefineDepartments companyId="c1" onDone={onDone} />);
-    await waitFor(() => expect(screen.getByDisplayValue("/home/ada/AoA/software")).toBeTruthy());
+    // Gate on the rootFolder-driven prefill so the department row is fully
+    // hydrated (name "Software" + nested localPath) before we submit — the
+    // localPath is what `createWorkspace` is asserted with below. `findBy*`
+    // has a built-in `waitFor`; once the committed DOM shows the prefilled
+    // path, the component's render-time `departmentsRef` mirror is guaranteed
+    // in sync too (it used to lag behind a passive effect — see the ref-sync
+    // note in DefineDepartments.tsx).
+    await screen.findByDisplayValue("/home/ada/AoA/software");
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     await waitFor(() => expect(onDone).toHaveBeenCalled());
+    // Reuse proven: the existing project id was used and NO second create ran.
     expect(create).not.toHaveBeenCalled();
     expect(createWorkspace).toHaveBeenCalledWith(
       "existing",

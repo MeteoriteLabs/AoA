@@ -183,9 +183,17 @@ const heartbeatSrc = readFileSync(
 );
 
 describe("heartbeat wiring", () => {
-  it("builds resolvedConfig FROM the company-key fallback", () => {
+  it("builds resolvedConfig FROM the unified resolver whose legacy fallback IS the company-key fallback", () => {
+    // Phase 4: the org heartbeat now routes the company-key fallback THROUGH the
+    // unified provider resolver (STRANGLER). resolvedConfig is the resolver's
+    // applied credential, and the company-key fallback is bound as the resolver's
+    // `legacyResolveConfig` — so an unmigrated company's behaviour is byte-identical.
+    // P5 Task 9 changed `const` -> `let` so the routing step can reassign
+    // resolvedConfig with the credential-appropriate executionTarget; the P4 intent
+    // (resolvedConfig is built FROM applyResolvedCredential) is unchanged.
+    expect(heartbeatSrc).toMatch(/\b(?:const|let) resolvedConfig = applyResolvedCredential\(/);
     expect(heartbeatSrc).toMatch(
-      /const resolvedConfig = \(await secretsSvc\.applyCompanyKeyFallbackForRuntime\(/,
+      /legacyResolveConfig:[\s\S]*?secretsSvc\.applyCompanyKeyFallbackForRuntime\(/,
     );
   });
 

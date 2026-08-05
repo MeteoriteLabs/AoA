@@ -30,7 +30,7 @@ import { testSupportRoutes } from "../routes/test-support.js";
 function makeApp(
   db: unknown,
   actor: Record<string, unknown> = { type: "board", userId: "local-board" },
-  deploymentMode: "local_trusted" | "authenticated" = "local_trusted",
+  deploymentMode: "local_trusted" | "authenticated" | "cloud_auth" = "local_trusted",
 ) {
   const app = express();
   app.use(express.json());
@@ -108,20 +108,29 @@ describe("POST /api/test-support/session (e2e second-identity mint)", () => {
   const SECRET_ENV = "BETTER_AUTH_SECRET";
   const FALLBACK_ENV = "AOA_AGENT_JWT_SECRET";
   const HATCH_ENV = "AOA_DEV_LOCAL_IDENTITY";
+  const E2E_ENV = "AOA_E2E_TEST_SUPPORT";
+  const E2E_TOKEN_ENV = "AOA_E2E_TEST_SUPPORT_TOKEN";
+  const E2E_TOKEN = "test-support-token-32-bytes-long";
   let savedSecret: string | undefined;
   let savedFallback: string | undefined;
   let savedHatch: string | undefined;
+  let savedE2e: string | undefined;
+  let savedE2eToken: string | undefined;
 
   beforeEach(() => {
     savedSecret = process.env[SECRET_ENV];
     savedFallback = process.env[FALLBACK_ENV];
     savedHatch = process.env[HATCH_ENV];
+    savedE2e = process.env[E2E_ENV];
+    savedE2eToken = process.env[E2E_TOKEN_ENV];
     // Pin the signing secret so the route and the verifying better-auth
     // instance below provably share it.
     process.env[SECRET_ENV] = "unit-mint-secret";
     delete process.env[FALLBACK_ENV];
     // The in-handler defense-in-depth gate requires the dev escape hatch.
     process.env[HATCH_ENV] = "1";
+    delete process.env[E2E_ENV];
+    delete process.env[E2E_TOKEN_ENV];
   });
   afterEach(() => {
     if (savedSecret === undefined) delete process.env[SECRET_ENV];
@@ -130,6 +139,10 @@ describe("POST /api/test-support/session (e2e second-identity mint)", () => {
     else process.env[FALLBACK_ENV] = savedFallback;
     if (savedHatch === undefined) delete process.env[HATCH_ENV];
     else process.env[HATCH_ENV] = savedHatch;
+    if (savedE2e === undefined) delete process.env[E2E_ENV];
+    else process.env[E2E_ENV] = savedE2e;
+    if (savedE2eToken === undefined) delete process.env[E2E_TOKEN_ENV];
+    else process.env[E2E_TOKEN_ENV] = savedE2eToken;
   });
 
   it("404 when the deployment mode is not local_trusted (in-handler gate)", async () => {
@@ -159,6 +172,37 @@ describe("POST /api/test-support/session (e2e second-identity mint)", () => {
       .post("/api/test-support/session")
       .send({ email: "a@b.test" });
     expect(res.status).toBe(401);
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["incorrect", "wrong-test-support-token"],
+  ])("denies a cloud_auth mint with a %s bearer token before database writes", async (_label, token) => {
+    delete process.env[HATCH_ENV];
+    process.env[E2E_ENV] = "1";
+    process.env[E2E_TOKEN_ENV] = E2E_TOKEN;
+    const { db, users, sessions } = makeMintDb();
+    const pending = request(makeApp(db, { type: "none" }, "cloud_auth"))
+      .post("/api/test-support/session");
+    const res = await (token ? pending.set("Authorization", `Bearer ${token}`) : pending)
+      .send({ email: "founder@example.com" });
+    expect(res.status).toBe(401);
+    expect(users).toHaveLength(0);
+    expect(sessions).toHaveLength(0);
+  });
+
+  it("mints the first cloud_auth identity with the dedicated e2e bearer token", async () => {
+    delete process.env[HATCH_ENV];
+    process.env[E2E_ENV] = "1";
+    process.env[E2E_TOKEN_ENV] = E2E_TOKEN;
+    const { db, users, sessions } = makeMintDb();
+    const res = await request(makeApp(db, { type: "none" }, "cloud_auth"))
+      .post("/api/test-support/session")
+      .set("Authorization", `Bearer ${E2E_TOKEN}`)
+      .send({ email: "cloud@example.com" });
+    expect(res.status).toBe(200);
+    expect(users).toHaveLength(1);
+    expect(sessions).toHaveLength(1);
   });
 
   it("400 without a valid email", async () => {

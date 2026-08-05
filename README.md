@@ -256,7 +256,7 @@ pnpm build            # Build all
 pnpm typecheck        # Type checking
 pnpm test:run         # Run tests
 pnpm db:generate      # Generate DB migration
-pnpm db:migrate       # Apply migrations
+AOA_DEPLOYMENT_MODE=local_trusted pnpm db:migrate  # Apply migrations
 ```
 
 <br/>

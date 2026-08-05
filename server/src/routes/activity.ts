@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { Db } from "@armyofagents/db";
 import { validate } from "../middleware/validate.js";
 import { activityService } from "../services/activity.js";
-import { assertBoard, assertCompanyAccess } from "./authz.js";
+import { accessibleCompanyIdsForActor, assertBoard, assertCompanyAccess } from "./authz.js";
 import { issueService } from "../services/index.js";
 import { sanitizeRecord } from "../redaction.js";
 import {
@@ -41,7 +41,7 @@ export function activityRoutes(db: Db) {
 
   router.get("/companies/:companyId/activity", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     const filters = {
       companyId,
@@ -58,7 +58,7 @@ export function activityRoutes(db: Db) {
   router.post("/companies/:companyId/activity", validate(createActivitySchema), async (req, res) => {
     assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const event = await svc.create({
       companyId,
       ...req.body,
@@ -71,7 +71,7 @@ export function activityRoutes(db: Db) {
   router.param("id", async (req, res, next, rawId) => {
     try {
       if (/^[A-Z]+-\d+$/i.test(rawId)) {
-        const issue = await issueSvc.getByIdentifier(rawId);
+        const issue = await issueSvc.getByIdentifier(rawId, accessibleCompanyIdsForActor(req.actor));
         if (issue) {
           req.params.id = issue.id;
         }
@@ -89,7 +89,7 @@ export function activityRoutes(db: Db) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(db, req, issue.companyId);
     const result = await svc.forIssue(id);
     res.json(result);
   });
@@ -101,13 +101,19 @@ export function activityRoutes(db: Db) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(db, req, issue.companyId);
     const result = await svc.runsForIssue(issue.companyId, id);
     res.json(result);
   });
 
   router.get("/heartbeat-runs/:runId/issues", async (req, res) => {
     const runId = req.params.runId as string;
+    const companyId = await svc.companyIdForRun(runId);
+    if (!companyId) {
+      res.status(404).json({ error: "Run not found" });
+      return;
+    }
+    await assertCompanyAccess(db, req, companyId);
     const result = await svc.issuesForRun(runId);
     res.json(result);
   });

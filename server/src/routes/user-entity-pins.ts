@@ -21,7 +21,7 @@ export function userEntityPinRoutes(db: Db) {
 
   router.get("/companies/:companyId/pins", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const userId = requireBoardUserId(req, res);
     const pins = await svc.list(userId, companyId);
     res.json(pins);
@@ -32,7 +32,7 @@ export function userEntityPinRoutes(db: Db) {
     validate(createUserEntityPinSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const userId = requireBoardUserId(req, res);
       const { entityType, entityId } = req.body as { entityType: string; entityId: string };
       const exists = await svc.entityExistsInCompany(companyId, entityType, entityId);
@@ -48,7 +48,7 @@ export function userEntityPinRoutes(db: Db) {
     "/companies/:companyId/pins/:entityType/:entityId",
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       const userId = requireBoardUserId(req, res);
       const entityType = req.params.entityType as string;
       const entityId = req.params.entityId as string;

@@ -68,21 +68,30 @@ const TELEMETRY_EVENT_NAME_REGEX = /^[a-z0-9][a-z0-9_-]*$/;
 async function executePinnedHttpRequest(
   target: ValidatedFetchTarget,
   init: RequestInit | undefined,
-  signal: AbortSignal,
-): Promise<{ status: number; statusText: string; headers: Record<string, string>; body: string }> {
-  return executePinnedRequest(target, init, signal, { maxBodyBytes: PLUGIN_RESPONSE_BODY_BYTES });
+  signal: AbortSignal
+): Promise<{
+  status: number;
+  statusText: string;
+  headers: Record<string, string>;
+  body: string;
+}> {
+  return executePinnedRequest(target, init, signal, {
+    maxBodyBytes: PLUGIN_RESPONSE_BODY_BYTES,
+  });
 }
 
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PATH_LIKE_PATTERN = /[\\/]/;
 const WINDOWS_DRIVE_PATH_PATTERN = /^[A-Za-z]:[\\/]/;
 
 function looksLikePath(value: string): boolean {
   const normalized = value.trim();
   return (
-    PATH_LIKE_PATTERN.test(normalized)
-    || WINDOWS_DRIVE_PATH_PATTERN.test(normalized)
-  ) && !UUID_PATTERN.test(normalized);
+    (PATH_LIKE_PATTERN.test(normalized) ||
+      WINDOWS_DRIVE_PATH_PATTERN.test(normalized)) &&
+    !UUID_PATTERN.test(normalized)
+  );
 }
 
 function sanitizeWorkspaceText(value: string): string {
@@ -142,7 +151,9 @@ function truncStr(s: string, max: number): string {
 }
 
 /** Sanitise a plugin-supplied meta object: enforce size limit and strip reserved keys. */
-function sanitiseMeta(meta: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
+function sanitiseMeta(
+  meta: Record<string, unknown> | null | undefined
+): Record<string, unknown> | null {
   if (meta == null) return null;
   // Strip pino reserved keys
   const cleaned: Record<string, unknown> = {};
@@ -159,7 +170,10 @@ function sanitiseMeta(meta: Record<string, unknown> | null | undefined): Record<
     return { _sanitised: true, _error: "meta was not JSON-serialisable" };
   }
   if (json.length > MAX_LOG_META_JSON_LENGTH) {
-    return { _sanitised: true, _error: `meta exceeded ${MAX_LOG_META_JSON_LENGTH} chars` };
+    return {
+      _sanitised: true,
+      _error: `meta exceeded ${MAX_LOG_META_JSON_LENGTH} chars`,
+    };
   }
   return cleaned;
 }
@@ -207,7 +221,10 @@ export async function flushPluginLogBuffer(): Promise<void> {
       await dbInstance.insert(pluginLogs).values(values);
     } catch (err) {
       try {
-        logger.warn({ err, count: values.length }, "Failed to batch-persist plugin logs to DB");
+        logger.warn(
+          { err, count: values.length },
+          "Failed to batch-persist plugin logs to DB"
+        );
       } catch {
         console.error("[plugin-host-services] Batch log flush failed:", err);
       }
@@ -246,7 +263,7 @@ export function buildHostServices(
   pluginId: string,
   pluginKey: string,
   eventBus: PluginEventBus,
-  notifyWorker?: (method: string, params: unknown) => void,
+  notifyWorker?: (method: string, params: unknown) => void
 ): HostServices & { dispose(): void } {
   const registry = pluginRegistryService(db);
   const stateStore = pluginStateStore(db);
@@ -261,11 +278,18 @@ export function buildHostServices(
   const activity = activityService(db);
   const costs = costService(db);
   const assets = assetService(db);
-  const scopedBus = eventBus.forPlugin(pluginKey);
+  const scopedBus = eventBus.forPlugin(pluginId, pluginKey);
 
   // Track active session event subscriptions for cleanup
-  const activeSubscriptions = new Set<{ unsubscribe: () => void; timer: ReturnType<typeof setTimeout> }>();
-  let disposed = false;
+  const activeSubscriptions = new Set<{
+    unsubscribe: () => void;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
+  // Incremented whenever the worker lifecycle releases host-side resources.
+  // A single HostServices instance is reused by the worker manager across an
+  // automatic crash/restart, so disposal must cancel work from the previous
+  // generation without permanently disabling future calls.
+  let lifecycleGeneration = 0;
 
   const ensureCompanyId = (companyId?: string) => {
     if (!companyId) throw new Error("companyId is required for this operation");
@@ -285,7 +309,10 @@ export function buildHostServices(
     return null;
   };
 
-  const applyWindow = <T>(rows: T[], params?: { limit?: unknown; offset?: unknown }): T[] => {
+  const applyWindow = <T>(
+    rows: T[],
+    params?: { limit?: unknown; offset?: unknown }
+  ): T[] => {
     const offset = parseWindowValue(params?.offset) ?? 0;
     const limit = parseWindowValue(params?.limit);
     if (limit == null) return rows.slice(offset);
@@ -313,12 +340,32 @@ export function buildHostServices(
    *    fail-closed on a missing row, or every plugin without a settings row
    *    would be wrongly blocked.
    */
+  /**
+   * Resolve the plugin's OWNING company id from the `plugins` row (per-company,
+   * `companyId` NOT NULL). Derived server-side from `pluginId` — never trust a
+   * worker-supplied companyId. Used to scope `companies.list` so a single plugin
+   * worker can no longer enumerate every tenant's companies.
+   */
+  const resolveOwningCompanyId = async (): Promise<string | null> => {
+    const row = await db
+      .select({ companyId: pluginsTable.companyId })
+      .from(pluginsTable)
+      .where(eq(pluginsTable.id, pluginId))
+      .then((r) => r[0] ?? null);
+    return row?.companyId ?? null;
+  };
+
   const ensurePluginAvailableForCompany = async (companyId: string) => {
     // 1. Ownership / existence (plugins is per-company).
     const pluginRow = await db
       .select()
       .from(pluginsTable)
-      .where(and(eq(pluginsTable.id, pluginId), eq(pluginsTable.companyId, companyId)))
+      .where(
+        and(
+          eq(pluginsTable.id, pluginId),
+          eq(pluginsTable.companyId, companyId)
+        )
+      )
       .then((rows) => rows[0] ?? null);
     if (!pluginRow) {
       throw new Error("Plugin is not available for this company");
@@ -331,8 +378,8 @@ export function buildHostServices(
       .where(
         and(
           eq(pluginCompanySettings.pluginId, pluginId),
-          eq(pluginCompanySettings.companyId, companyId),
-        ),
+          eq(pluginCompanySettings.companyId, companyId)
+        )
       )
       .then((rows) => rows[0] ?? null);
     if (settingsRow && settingsRow.enabled === false) {
@@ -342,13 +389,13 @@ export function buildHostServices(
 
   const inCompany = <T extends { companyId: string | null | undefined }>(
     record: T | null | undefined,
-    companyId: string,
+    companyId: string
   ): record is T => Boolean(record && record.companyId === companyId);
 
   const requireInCompany = <T extends { companyId: string | null | undefined }>(
     entityName: string,
     record: T | null | undefined,
-    companyId: string,
+    companyId: string
   ): T => {
     if (!inCompany(record, companyId)) {
       throw new Error(`${entityName} not found`);
@@ -366,10 +413,15 @@ export function buildHostServices(
 
     state: {
       async get(params) {
-        return stateStore.get(pluginId, params.scopeKind as any, params.stateKey, {
-          scopeId: params.scopeId,
-          namespace: params.namespace,
-        });
+        return stateStore.get(
+          pluginId,
+          params.scopeKind as any,
+          params.stateKey,
+          {
+            scopeId: params.scopeId,
+            namespace: params.namespace,
+          }
+        );
       },
       async set(params) {
         await stateStore.set(pluginId, {
@@ -381,10 +433,15 @@ export function buildHostServices(
         });
       },
       async delete(params) {
-        await stateStore.delete(pluginId, params.scopeKind as any, params.stateKey, {
-          scopeId: params.scopeId,
-          namespace: params.namespace,
-        });
+        await stateStore.delete(
+          pluginId,
+          params.scopeKind as any,
+          params.stateKey,
+          {
+            scopeId: params.scopeId,
+            namespace: params.namespace,
+          }
+        );
       },
     },
 
@@ -404,14 +461,42 @@ export function buildHostServices(
         }
         await scopedBus.emit(params.name, params.companyId, params.payload);
       },
-      async subscribe(params: { eventPattern: string; filter?: Record<string, unknown> | null }) {
-        const handler = async (event: import("@armyofagents/plugin-sdk").PluginEvent) => {
+      async subscribe(params: {
+        eventPattern: string;
+        filter?: Record<string, unknown> | null;
+      }) {
+        const owningCompanyId = await resolveOwningCompanyId();
+        if (!owningCompanyId) {
+          throw new Error("Plugin owning company could not be resolved");
+        }
+        const handler = async (
+          event: import("@armyofagents/plugin-sdk").PluginEvent
+        ) => {
+          if (event.companyId !== owningCompanyId) return;
+          // Ownership is derived above from the plugin row. Re-check only the
+          // mutable company override at delivery time so mid-session disable
+          // revokes an already-registered subscription.
+          const settingsRow = await db
+            .select({ enabled: pluginCompanySettings.enabled })
+            .from(pluginCompanySettings)
+            .where(
+              and(
+                eq(pluginCompanySettings.pluginId, pluginId),
+                eq(pluginCompanySettings.companyId, owningCompanyId)
+              )
+            )
+            .then((rows) => rows[0] ?? null);
+          if (settingsRow?.enabled === false) return;
           if (notifyWorker) {
             notifyWorker("onEvent", { event });
           }
         };
         if (params.filter) {
-          scopedBus.subscribe(params.eventPattern as any, params.filter as any, handler);
+          scopedBus.subscribe(
+            params.eventPattern as any,
+            params.filter as any,
+            handler
+          );
         } else {
           scopedBus.subscribe(params.eventPattern as any, handler);
         }
@@ -425,11 +510,18 @@ export function buildHostServices(
         const target = await validateAndResolveFetchUrl(params.url);
 
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), PLUGIN_FETCH_TIMEOUT_MS);
+        const timeout = setTimeout(
+          () => controller.abort(),
+          PLUGIN_FETCH_TIMEOUT_MS
+        );
 
         try {
           const init = params.init as RequestInit | undefined;
-          return await executePinnedHttpRequest(target, init, controller.signal);
+          return await executePinnedHttpRequest(
+            target,
+            init,
+            controller.signal
+          );
         } finally {
           clearTimeout(timeout);
         }
@@ -460,8 +552,14 @@ export function buildHostServices(
 
     metrics: {
       async write(params) {
-        const safeName = truncStr(String(params.name ?? ""), MAX_METRIC_NAME_LENGTH);
-        logger.debug({ pluginId, name: safeName, value: params.value, tags: params.tags }, "Plugin metric write");
+        const safeName = truncStr(
+          String(params.name ?? ""),
+          MAX_METRIC_NAME_LENGTH
+        );
+        logger.debug(
+          { pluginId, name: safeName, value: params.value, tags: params.tags },
+          "Plugin metric write"
+        );
 
         // Persist metrics to plugin_logs via the batch buffer (same path as
         // logger.log) so they benefit from batched writes and are flushed
@@ -472,11 +570,17 @@ export function buildHostServices(
           pluginId,
           level: "metric",
           message: safeName,
-          meta: sanitiseMeta({ value: params.value, tags: params.tags ?? null }),
+          meta: sanitiseMeta({
+            value: params.value,
+            tags: params.tags ?? null,
+          }),
         });
         if (_logBuffer.length >= LOG_BUFFER_FLUSH_SIZE) {
           flushPluginLogBuffer().catch((err) => {
-            console.error("[plugin-host-services] Triggered metric flush failed:", err);
+            console.error(
+              "[plugin-host-services] Triggered metric flush failed:",
+              err
+            );
           });
         }
       },
@@ -487,7 +591,7 @@ export function buildHostServices(
         const eventName = String(params.eventName ?? "").trim();
         if (!TELEMETRY_EVENT_NAME_REGEX.test(eventName)) {
           throw new Error(
-            'Plugin telemetry event names must be lowercase slugs using letters, numbers, "_" or "-".',
+            'Plugin telemetry event names must be lowercase slugs using letters, numbers, "_" or "-".'
           );
         }
         // Phase I.2 Task 11 (PF.2): hand off to the env-gated transmission
@@ -498,7 +602,7 @@ export function buildHostServices(
         await transmitPluginTelemetry(eventName, params.dimensions);
         logger.debug(
           { pluginId, pluginKey, eventName, dimensions: params.dimensions },
-          "Plugin telemetry event (transmitted if AOA_FEEDBACK_ENDPOINT set)",
+          "Plugin telemetry event (transmitted if AOA_FEEDBACK_ENDPOINT set)"
         );
       },
     },
@@ -506,18 +610,27 @@ export function buildHostServices(
     logger: {
       async log(params) {
         const { level, meta } = params;
-        const safeMessage = truncStr(String(params.message ?? ""), MAX_LOG_MESSAGE_LENGTH);
+        const safeMessage = truncStr(
+          String(params.message ?? ""),
+          MAX_LOG_MESSAGE_LENGTH
+        );
         const safeMeta = sanitiseMeta(meta);
-        const pluginLogger = logger.child({ service: "plugin-worker", pluginId });
+        const pluginLogger = logger.child({
+          service: "plugin-worker",
+          pluginId,
+        });
         const logFields = {
           ...safeMeta,
           pluginLogLevel: level,
           pluginTimestamp: new Date().toISOString(),
         };
 
-        if (level === "error") pluginLogger.error(logFields, `[plugin] ${safeMessage}`);
-        else if (level === "warn") pluginLogger.warn(logFields, `[plugin] ${safeMessage}`);
-        else if (level === "debug") pluginLogger.debug(logFields, `[plugin] ${safeMessage}`);
+        if (level === "error")
+          pluginLogger.error(logFields, `[plugin] ${safeMessage}`);
+        else if (level === "warn")
+          pluginLogger.warn(logFields, `[plugin] ${safeMessage}`);
+        else if (level === "debug")
+          pluginLogger.debug(logFields, `[plugin] ${safeMessage}`);
         else pluginLogger.info(logFields, `[plugin] ${safeMessage}`);
 
         // Persist to plugin_logs table via the module-level batch buffer (§26.1).
@@ -531,7 +644,10 @@ export function buildHostServices(
         });
         if (_logBuffer.length >= LOG_BUFFER_FLUSH_SIZE) {
           flushPluginLogBuffer().catch((err) => {
-            console.error("[plugin-host-services] Triggered log flush failed:", err);
+            console.error(
+              "[plugin-host-services] Triggered log flush failed:",
+              err
+            );
           });
         }
       },
@@ -539,7 +655,15 @@ export function buildHostServices(
 
     companies: {
       async list(params) {
-        return applyWindow((await companies.list()) as Company[], params);
+        // Scope to the plugin's owning company (derived server-side from pluginId).
+        // companyService.list([id]) filters via inArray; [] degrades to none (safe).
+        const owningCompanyId = await resolveOwningCompanyId();
+        return applyWindow(
+          (await companies.list(
+            owningCompanyId ? [owningCompanyId] : []
+          )) as Company[],
+          params
+        );
       },
       async get(params) {
         await ensurePluginAvailableForCompany(params.companyId);
@@ -551,13 +675,18 @@ export function buildHostServices(
       async list(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        return applyWindow((await projects.list(companyId)) as Project[], params);
+        return applyWindow(
+          (await projects.list(companyId)) as Project[],
+          params
+        );
       },
       async get(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         const project = await projects.getById(params.projectId);
-        return (inCompany(project, companyId) ? project : null) as Project | null;
+        return (
+          inCompany(project, companyId) ? project : null
+        ) as Project | null;
       },
       async listWorkspaces(params) {
         const companyId = ensureCompanyId(params.companyId);
@@ -586,7 +715,9 @@ export function buildHostServices(
         if (!inCompany(project, companyId)) return null;
         const row = project.primaryWorkspace;
         // TODO: AoA does not have project.codebase — adapt when workspace paths are ported
-        const path = sanitizeWorkspacePath((project as any).codebase?.effectiveLocalFolder ?? "");
+        const path = sanitizeWorkspacePath(
+          (project as any).codebase?.effectiveLocalFolder ?? ""
+        );
         const name = sanitizeWorkspaceName(row?.name ?? project.name, path);
         return {
           id: row?.id ?? `${project.id}:managed`,
@@ -604,13 +735,17 @@ export function buildHostServices(
         await ensurePluginAvailableForCompany(companyId);
         const issue = await issues.getById(params.issueId);
         if (!inCompany(issue, companyId)) return null;
-        const projectId = (issue as Record<string, unknown>).projectId as string | null;
+        const projectId = (issue as Record<string, unknown>).projectId as
+          | string
+          | null;
         if (!projectId) return null;
         const project = await projects.getById(projectId);
         if (!inCompany(project, companyId)) return null;
         const row = project.primaryWorkspace;
         // TODO: AoA does not have project.codebase — adapt when workspace paths are ported
-        const path = sanitizeWorkspacePath((project as any).codebase?.effectiveLocalFolder ?? "");
+        const path = sanitizeWorkspacePath(
+          (project as any).codebase?.effectiveLocalFolder ?? ""
+        );
         const name = sanitizeWorkspaceName(row?.name ?? project.name, path);
         return {
           id: row?.id ?? `${project.id}:managed`,
@@ -628,7 +763,10 @@ export function buildHostServices(
       async list(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        return applyWindow((await issues.list(companyId, params as any)) as Issue[], params);
+        return applyWindow(
+          (await issues.list(companyId, params as any)) as Issue[],
+          params
+        );
       },
       async get(params) {
         const companyId = ensureCompanyId(params.companyId);
@@ -644,23 +782,35 @@ export function buildHostServices(
       async update(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        requireInCompany("Issue", await issues.getById(params.issueId), companyId);
-        return (await issues.update(params.issueId, params.patch as any)) as Issue;
+        requireInCompany(
+          "Issue",
+          await issues.getById(params.issueId),
+          companyId
+        );
+        return (await issues.update(
+          params.issueId,
+          params.patch as any
+        )) as Issue;
       },
       async listComments(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        if (!inCompany(await issues.getById(params.issueId), companyId)) return [];
+        if (!inCompany(await issues.getById(params.issueId), companyId))
+          return [];
         return (await issues.listComments(params.issueId)) as IssueComment[];
       },
       async createComment(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        requireInCompany(
+          "Issue",
+          await issues.getById(params.issueId),
+          companyId
+        );
         return (await issues.addComment(
           params.issueId,
           params.body,
-          {},
+          {}
         )) as IssueComment;
       },
     },
@@ -669,21 +819,36 @@ export function buildHostServices(
       async list(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        requireInCompany(
+          "Issue",
+          await issues.getById(params.issueId),
+          companyId
+        );
         const rows = await documents.listIssueDocuments(params.issueId);
         return rows as any;
       },
       async get(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        requireInCompany("Issue", await issues.getById(params.issueId), companyId);
-        const doc = await documents.getIssueDocumentByKey(params.issueId, params.key);
+        requireInCompany(
+          "Issue",
+          await issues.getById(params.issueId),
+          companyId
+        );
+        const doc = await documents.getIssueDocumentByKey(
+          params.issueId,
+          params.key
+        );
         return (doc ?? null) as any;
       },
       async upsert(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        requireInCompany(
+          "Issue",
+          await issues.getById(params.issueId),
+          companyId
+        );
         const result = await documents.upsertIssueDocument({
           issueId: params.issueId,
           key: params.key,
@@ -697,7 +862,11 @@ export function buildHostServices(
       async delete(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        requireInCompany(
+          "Issue",
+          await issues.getById(params.issueId),
+          companyId
+        );
         await documents.deleteIssueDocument(params.issueId, params.key);
       },
     },
@@ -708,8 +877,10 @@ export function buildHostServices(
         await ensurePluginAvailableForCompany(companyId);
         const rows = await agents.list(companyId);
         return applyWindow(
-          rows.filter((agent) => !params.status || agent.status === params.status) as Agent[],
-          params,
+          rows.filter(
+            (agent) => !params.status || agent.status === params.status
+          ) as Agent[],
+          params
         );
       },
       async get(params) {
@@ -745,7 +916,8 @@ export function buildHostServices(
           requestedByActorType: "system",
           requestedByActorId: pluginId,
         });
-        if (!run) throw new Error("Agent wakeup was skipped by heartbeat policy");
+        if (!run)
+          throw new Error("Agent wakeup was skipped by heartbeat policy");
         return { runId: run.id };
       },
     },
@@ -756,11 +928,12 @@ export function buildHostServices(
         await ensurePluginAvailableForCompany(companyId);
         const rows = await goals.list(companyId);
         return applyWindow(
-          rows.filter((goal) =>
-            (!params.level || goal.level === params.level) &&
-            (!params.status || goal.status === params.status),
+          rows.filter(
+            (goal) =>
+              (!params.level || goal.level === params.level) &&
+              (!params.status || goal.status === params.status)
           ) as Goal[],
-          params,
+          params
         );
       },
       async get(params) {
@@ -795,7 +968,8 @@ export function buildHostServices(
         await ensurePluginAvailableForCompany(companyId);
         const agent = await agents.getById(params.agentId);
         requireInCompany("Agent", agent, companyId);
-        const taskKey = params.taskKey ?? `plugin:${pluginKey}:session:${randomUUID()}`;
+        const taskKey =
+          params.taskKey ?? `plugin:${pluginKey}:session:${randomUUID()}`;
 
         const row = await db
           .insert(agentTaskSessionsTable)
@@ -831,8 +1005,11 @@ export function buildHostServices(
             and(
               eq(agentTaskSessionsTable.agentId, params.agentId),
               eq(agentTaskSessionsTable.companyId, companyId),
-              like(agentTaskSessionsTable.taskKey, `plugin:${pluginKey}:session:%`),
-            ),
+              like(
+                agentTaskSessionsTable.taskKey,
+                `plugin:${pluginKey}:session:%`
+              )
+            )
           )
           .orderBy(desc(agentTaskSessionsTable.createdAt));
 
@@ -846,9 +1023,7 @@ export function buildHostServices(
       },
 
       async sendMessage(params) {
-        if (disposed) {
-          throw new Error("Host services have been disposed");
-        }
+        const callGeneration = lifecycleGeneration;
 
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
@@ -861,8 +1036,11 @@ export function buildHostServices(
             and(
               eq(agentTaskSessionsTable.id, params.sessionId),
               eq(agentTaskSessionsTable.companyId, companyId),
-              like(agentTaskSessionsTable.taskKey, `plugin:${pluginKey}:session:%`),
-            ),
+              like(
+                agentTaskSessionsTable.taskKey,
+                `plugin:${pluginKey}:session:%`
+              )
+            )
           )
           .then((rows) => rows[0] ?? null);
         if (!session) throw new Error(`Session not found: ${params.sessionId}`);
@@ -880,13 +1058,26 @@ export function buildHostServices(
           requestedByActorType: "system",
           requestedByActorId: pluginId,
         });
-        if (!run) throw new Error("Agent wakeup was skipped by heartbeat policy");
+        if (!run)
+          throw new Error("Agent wakeup was skipped by heartbeat policy");
+
+        // The worker may have crashed or been stopped while heartbeat.wakeup()
+        // was in flight. Return the already-created run, but do not attach a
+        // listener that belongs to the now-ended worker generation.
+        if (callGeneration !== lifecycleGeneration) {
+          return { runId: run.id };
+        }
 
         // Subscribe to live events and forward to the plugin worker as notifications.
         // Track the subscription so it can be cleaned up on dispose() if the run
         // never reaches a terminal status (hang, crash, network partition).
         if (notifyWorker) {
-          const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
+          const TERMINAL_STATUSES = new Set([
+            "succeeded",
+            "failed",
+            "cancelled",
+            "timed_out",
+          ]);
 
           const cleanup = () => {
             unsubscribe();
@@ -895,17 +1086,25 @@ export function buildHostServices(
           };
 
           const unsubscribe = subscribeCompanyLiveEvents(companyId, (event) => {
-            const payload = event.payload as Record<string, unknown> | undefined;
+            const payload = event.payload as
+              | Record<string, unknown>
+              | undefined;
             if (!payload || payload.runId !== run.id) return;
 
-            if (event.type === "heartbeat.run.log" || event.type === "heartbeat.run.event") {
+            if (
+              event.type === "heartbeat.run.log" ||
+              event.type === "heartbeat.run.event"
+            ) {
               notifyWorker("agents.sessions.event", {
                 sessionId: params.sessionId,
                 runId: run.id,
                 seq: (payload.seq as number) ?? 0,
                 eventType: "chunk",
                 stream: (payload.stream as string) ?? null,
-                message: (payload.chunk as string) ?? (payload.message as string) ?? null,
+                message:
+                  (payload.chunk as string) ??
+                  (payload.message as string) ??
+                  null,
                 payload: payload,
               });
             } else if (event.type === "heartbeat.run.status") {
@@ -917,7 +1116,8 @@ export function buildHostServices(
                   seq: 0,
                   eventType: status === "succeeded" ? "done" : "error",
                   stream: "system",
-                  message: status === "succeeded" ? "Run completed" : `Run ${status}`,
+                  message:
+                    status === "succeeded" ? "Run completed" : `Run ${status}`,
                   payload: payload,
                 });
                 cleanup();
@@ -940,7 +1140,7 @@ export function buildHostServices(
           const timeoutTimer = setTimeout(() => {
             logger.warn(
               { pluginId, pluginKey, runId: run.id },
-              "session event subscription timed out — forcing cleanup",
+              "session event subscription timed out — forcing cleanup"
             );
             cleanup();
           }, SESSION_EVENT_SUBSCRIPTION_TIMEOUT_MS);
@@ -961,12 +1161,16 @@ export function buildHostServices(
             and(
               eq(agentTaskSessionsTable.id, params.sessionId),
               eq(agentTaskSessionsTable.companyId, companyId),
-              like(agentTaskSessionsTable.taskKey, `plugin:${pluginKey}:session:%`),
-            ),
+              like(
+                agentTaskSessionsTable.taskKey,
+                `plugin:${pluginKey}:session:%`
+              )
+            )
           )
           .returning()
           .then((rows) => rows.length);
-        if (deleted === 0) throw new Error(`Session not found: ${params.sessionId}`);
+        if (deleted === 0)
+          throw new Error(`Session not found: ${params.sessionId}`);
       },
     },
 
@@ -976,7 +1180,7 @@ export function buildHostServices(
      * or unloaded to prevent leaked listeners and lost log entries.
      */
     dispose() {
-      disposed = true;
+      lifecycleGeneration += 1;
 
       // Clear event bus subscriptions to prevent accumulation on worker restart.
       // Without this, each crash/restart cycle adds duplicate subscriptions.
@@ -993,7 +1197,10 @@ export function buildHostServices(
 
       // Flush any buffered log entries synchronously-as-possible on dispose.
       flushPluginLogBuffer().catch((err) => {
-        console.error("[plugin-host-services] dispose() log flush failed:", err);
+        console.error(
+          "[plugin-host-services] dispose() log flush failed:",
+          err
+        );
       });
     },
   };

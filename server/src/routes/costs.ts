@@ -15,7 +15,7 @@ export function costRoutes(db: Db) {
 
   router.post("/companies/:companyId/cost-events", validate(createCostEventSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     if (req.actor.type === "agent" && req.actor.agentId !== req.body.agentId) {
       res.status(403).json({ error: "Agent can only report its own costs" });
@@ -51,7 +51,7 @@ export function costRoutes(db: Db) {
 
   router.get("/companies/:companyId/costs/summary", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const range = parseDateRange(req.query);
     const summary = await costs.summary(companyId, range);
     res.json(summary);
@@ -59,7 +59,7 @@ export function costRoutes(db: Db) {
 
   router.get("/companies/:companyId/costs/by-agent", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const range = parseDateRange(req.query);
     const rows = await costs.byAgent(companyId, range);
     res.json(rows);
@@ -67,7 +67,7 @@ export function costRoutes(db: Db) {
 
   router.get("/companies/:companyId/costs/by-project", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const range = parseDateRange(req.query);
     const rows = await costs.byProject(companyId, range);
     res.json(rows);
@@ -75,7 +75,7 @@ export function costRoutes(db: Db) {
 
   router.get("/companies/:companyId/costs/by-model", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const range = parseDateRange(req.query);
     const rows = await costs.byModel(companyId, range);
     res.json(rows);
@@ -83,7 +83,7 @@ export function costRoutes(db: Db) {
 
   router.get("/companies/:companyId/costs/by-biller", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const range = parseDateRange(req.query);
     const rows = await costs.byBiller(companyId, range);
     res.json(rows);
@@ -92,7 +92,7 @@ export function costRoutes(db: Db) {
   router.patch("/companies/:companyId/budgets", validate(updateBudgetSchema), async (req, res) => {
     assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const company = await companies.update(companyId, { budgetMonthlyCents: req.body.budgetMonthlyCents });
     if (!company) {
       res.status(404).json({ error: "Company not found" });
@@ -144,7 +144,7 @@ export function costRoutes(db: Db) {
       // assertBoard rejects non-board bearer tokens, assertCompanyAccess rejects
       // foreign companies. Mirrors the sibling PATCH /companies/:cid/budgets gate.
       assertBoard(req);
-      assertCompanyAccess(req, agent.companyId);
+      await assertCompanyAccess(db, req, agent.companyId);
     }
 
     const updated = await agents.update(agentId, { budgetMonthlyCents: req.body.budgetMonthlyCents });
@@ -179,7 +179,7 @@ export function costRoutes(db: Db) {
 
   router.get("/companies/:companyId/budgets/overview", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const [policies, openIncidents] = await Promise.all([
       budgets.listPolicies(companyId),
       budgets.listOpenIncidents(companyId),
@@ -190,7 +190,7 @@ export function costRoutes(db: Db) {
   router.post("/companies/:companyId/budgets/policies", validate(upsertBudgetPolicySchema), async (req, res) => {
     assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const policy = await budgets.upsertPolicy(companyId, req.body);
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -211,7 +211,7 @@ export function costRoutes(db: Db) {
     assertBoard(req);
     const companyId = req.params.companyId as string;
     const policyId = req.params.policyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const deleted = await budgets.deletePolicy(companyId, policyId);
     if (!deleted) {
       res.status(404).json({ error: "Budget policy not found" });
@@ -236,7 +236,7 @@ export function costRoutes(db: Db) {
     assertBoard(req);
     const companyId = req.params.companyId as string;
     const incidentId = req.params.incidentId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     await budgets.resolveIncident(incidentId, companyId, req.body);
     const actor = getActorInfo(req);
     await logActivity(db, {

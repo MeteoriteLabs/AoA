@@ -59,6 +59,10 @@ vi.mock("../../../api/commander-auth", () => ({
   submitCommanderLoginCode,
   getCommanderAuthCapabilities,
 }));
+const getHealth = vi.hoisted(() =>
+  vi.fn(async () => ({ status: "ok", deploymentMode: "local_trusted" })),
+);
+vi.mock("../../../api/health", () => ({ healthApi: { get: getHealth } }));
 
 import { advanceOnboarding } from "../../../api/onboarding";
 
@@ -84,6 +88,13 @@ describe("VerifyStep (Stage C / order 5, blocking)", () => {
   it("renders no step-local Back control (the FlowEngine chrome owns the shared Back affordance)", () => {
     render(<VerifyStep ctx={ctx} onComplete={vi.fn()} onBack={vi.fn()} />);
     expect(screen.queryByRole("button", { name: /back/i })).toBeNull();
+  });
+
+  it("shows the cloud provider-key notice in cloud_auth", async () => {
+    getHealth.mockResolvedValueOnce({ status: "ok", deploymentMode: "cloud_auth" });
+    render(<VerifyStep ctx={ctx} onComplete={vi.fn()} onBack={() => {}} />);
+    const link = await screen.findByRole("link", { name: /providers/i });
+    expect(link.getAttribute("href")).toBe("/settings?tab=providers");
   });
 
   it("advances COMMANDER_VERIFIED and completes when verified", async () => {

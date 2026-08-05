@@ -16,6 +16,7 @@ interface PrivacyTabProps {
   bundleHistory?: FeedbackExportSummary[];
   bundleHistoryLoading?: boolean;
   bundleHistoryError?: unknown;
+  showBundleHistory?: boolean;
 }
 
 function formatBundleTimestamp(iso: string): string {
@@ -70,6 +71,7 @@ export function PrivacyTab({
   bundleHistory,
   bundleHistoryLoading = false,
   bundleHistoryError,
+  showBundleHistory = true,
 }: PrivacyTabProps) {
   if (isLoading) {
     return <div className="text-sm text-muted-foreground">Loading privacy settings...</div>;
@@ -137,7 +139,7 @@ export function PrivacyTab({
         </div>
       </section>
 
-      <section
+      {showBundleHistory && <section
         aria-labelledby="recent-shared-bundles-heading"
         className="rounded-xl border border-border bg-card p-5"
       >
@@ -184,7 +186,7 @@ export function PrivacyTab({
             </ul>
           )}
         </div>
-      </section>
+      </section>}
     </div>
   );
 }

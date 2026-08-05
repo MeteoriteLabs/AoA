@@ -6,6 +6,7 @@ import { useNavigate } from "@/lib/router";
 import { accessApi } from "../../api/access";
 import { teamApi } from "../../api/team";
 import { projectsApi } from "../../api/projects";
+import { healthApi } from "../../api/health";
 import { useCompany } from "../../context/CompanyContext";
 import { useToast } from "../../context/ToastContext";
 import { queryKeys } from "../../lib/queryKeys";
@@ -434,6 +435,15 @@ export function HumansTab({ teamSummary, permissions, isSystemAdmin, onMutationS
     enabled: Boolean(selectedCompanyId),
   });
 
+  // Fix 1: cloud_auth admits humans invite-only (direct-add is server-rejected
+  // because it never writes the org membership). Reuse the app-level health
+  // query cache (same key) — no extra network round-trip.
+  const { data: health } = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => healthApi.get(),
+  });
+  const inviteOnly = health?.deploymentMode === "cloud_auth";
+
   const joinRequestsQuery = useQuery({
     queryKey: selectedCompanyId
       ? queryKeys.access.joinRequests(selectedCompanyId)
@@ -744,6 +754,7 @@ export function HumansTab({ teamSummary, permissions, isSystemAdmin, onMutationS
           departments={departments}
           members={members}
           isSystemAdmin={isSystemAdmin}
+          inviteOnly={inviteOnly}
           open={addMemberOpen}
           onOpenChange={setAddMemberOpen}
         />

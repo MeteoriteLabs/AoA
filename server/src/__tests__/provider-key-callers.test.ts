@@ -88,6 +88,12 @@ const EXPECTED: Array<{ file: string; adapterTypeArgs: string[] }> = [
   { file: "routes/providers.ts", adapterTypeArgs: ["descriptor.adapterType"] },
   { file: "services/company-skills.ts", adapterTypeArgs: ["adapterType"] },
   {
+    // ONE site since the crew provider-precedence fix: the `legacyResolveConfig`
+    // strangler-fallback closure bound into the unified provider resolver (crew's
+    // Step-4 company-key fallback). The former up-front base-config resolution was
+    // replaced by `resolveEnvBindings` (agent env only) so the legacy company key
+    // no longer pre-injects into currentEnv and mask provider_assignments. Threads
+    // `agent.adapterType` second.
     file: "services/internal-agent/aoa-agents/runner.ts",
     adapterTypeArgs: ["agent.adapterType"],
   },
@@ -116,7 +122,7 @@ function sourceFiles(dir = serverSrc, out: string[] = []): string[] {
 describe("repo-wide inventory of runtime config resolution", () => {
   const files = sourceFiles();
 
-  it("resolveAdapterConfigForRuntime is called from exactly the seven known sites", () => {
+  it("resolveAdapterConfigForRuntime is called from exactly the six known sites", () => {
     const found: Record<string, number> = {};
     for (const file of files) {
       const n = readFileSync(file, "utf8").split(CALL).length - 1;
@@ -128,6 +134,10 @@ describe("repo-wide inventory of runtime config resolution", () => {
       "routes/providers.ts": 1,
       "services/commander-verify.ts": 1,
       "services/company-skills.ts": 1,
+      // ONE call since the crew provider-precedence fix: the legacyResolveConfig
+      // strangler-fallback closure inside the unified provider resolver. The
+      // former up-front base-config resolution was replaced by resolveEnvBindings
+      // (agent env only) so the legacy company key no longer masks assignments.
       "services/internal-agent/aoa-agents/runner.ts": 1,
       // The declaration itself, not a call — a call from here would recurse.
       "services/secrets.ts": 1,

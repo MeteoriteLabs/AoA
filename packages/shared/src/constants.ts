@@ -15,7 +15,9 @@ export const COMPOSER_ATTACHMENT_CONTENT_TYPES = [
   "application/json",
 ] as const;
 
-export const DEPLOYMENT_MODES = ["local_trusted", "authenticated"] as const;
+// cloud_auth = network-private controlled-beta multi-tenant cloud (Phase 1, Decision 2).
+// Self-hosted local_trusted / authenticated behavior is unchanged.
+export const DEPLOYMENT_MODES = ["local_trusted", "authenticated", "cloud_auth"] as const;
 export type DeploymentMode = (typeof DEPLOYMENT_MODES)[number];
 
 export const DEPLOYMENT_EXPOSURES = ["private", "public"] as const;
@@ -384,6 +386,26 @@ export type PrincipalType = (typeof PRINCIPAL_TYPES)[number];
 export const MEMBERSHIP_STATUSES = ["pending", "active", "suspended"] as const;
 export type MembershipStatus = (typeof MEMBERSHIP_STATUSES)[number];
 
+export const ORGANIZATION_STATUSES = ["active", "suspended", "archived"] as const;
+export type OrganizationStatus = (typeof ORGANIZATION_STATUSES)[number];
+
+export const ORGANIZATION_ROLES = ["owner", "admin", "member", "billing"] as const;
+export type OrganizationRole = (typeof ORGANIZATION_ROLES)[number];
+
+export const ORGANIZATION_INVITATION_STATUSES = [
+  "pending",
+  "accepted",
+  "revoked",
+  "expired",
+] as const;
+export type OrganizationInvitationStatus =
+  (typeof ORGANIZATION_INVITATION_STATUSES)[number];
+
+// Sentinel Organization that owns every company on self-hosted single-tenant
+// installs and every pre-existing company after the Phase 1 backfill.
+export const DEFAULT_ORGANIZATION_ID = "00000000-0000-0000-0000-000000000001";
+export const DEFAULT_ORGANIZATION_SLUG = "default";
+
 export const INSTANCE_USER_ROLES = ["instance_admin"] as const;
 export type InstanceUserRole = (typeof INSTANCE_USER_ROLES)[number];
 
@@ -406,6 +428,29 @@ export type JoinRequestApprovalSource = (typeof JOIN_REQUEST_APPROVAL_SOURCES)[n
 
 export const ENVIRONMENT_DRIVERS = ["local", "ssh", "sandbox", "plugin"] as const;
 export type EnvironmentDriver = (typeof ENVIRONMENT_DRIVERS)[number];
+
+export const EXECUTION_TARGET_KINDS = [
+  "pooled_gvisor",
+  "dedicated_worker",
+  "e2b",
+  "local_host",
+  "desktop",
+] as const;
+export type ExecutionTargetKind = (typeof EXECUTION_TARGET_KINDS)[number];
+
+export const EXECUTION_TARGET_TRUST_CLASSES = [
+  "shared_multitenant",
+  "dedicated_tenant",
+  "local_trusted",
+] as const;
+export type ExecutionTargetTrustClass = (typeof EXECUTION_TARGET_TRUST_CLASSES)[number];
+
+export const EXECUTION_TARGET_STATUSES = ["active", "draining", "offline", "disabled"] as const;
+export type ExecutionTargetStatus = (typeof EXECUTION_TARGET_STATUSES)[number];
+
+// Per-Organization concurrency clamp — mirrors HEARTBEAT_MAX_CONCURRENT_RUNS_*.
+export const ORG_MAX_CONCURRENT_RUNS_DEFAULT = 8;
+export const ORG_MAX_CONCURRENT_RUNS_MAX = 200;
 
 export const ENVIRONMENT_STATUSES = ["active", "archived"] as const;
 export type EnvironmentStatus = (typeof ENVIRONMENT_STATUSES)[number];
@@ -1214,6 +1259,15 @@ export const PLUGIN_STATUSES = [
   "uninstalled",
 ] as const;
 export type PluginStatus = (typeof PLUGIN_STATUSES)[number];
+
+/** Stable, machine-readable reasons for a plugin lifecycle status. */
+export const PLUGIN_WORKER_BLOCKED_IN_CLOUD_REASON =
+  "PLUGIN_WORKER_BLOCKED_IN_CLOUD" as const;
+export const PLUGIN_STATUS_REASON_CODES = [
+  PLUGIN_WORKER_BLOCKED_IN_CLOUD_REASON,
+] as const;
+export type PluginStatusReasonCode =
+  (typeof PLUGIN_STATUS_REASON_CODES)[number];
 
 export const PLUGIN_CATEGORIES = [
   "connector",

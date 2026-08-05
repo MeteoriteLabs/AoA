@@ -34,8 +34,40 @@ import { redactSecretsInString } from "../../redaction.js";
 import { resolveAgentConnectors } from "../mcp-connectors-loader.js";
 import { buildScrubbedCliEnv } from "../cli-spawn-safety.js";
 import { mergeConnectorEnv } from "../mcp-connectors-env.js";
+import { tenantIsolationEnforced } from "../../config/deployment-mode.js";
+import { assertUnsandboxedMultitenantAllowed } from "../unsandboxed-multitenant-guard.js";
 
 const require = createRequire(import.meta.url);
+
+/**
+ * Decide what to do when Commander's per-session provider-credential resolution
+ * throws. Pure (matches the repo's pure-function test pattern) so the fail-closed
+ * decision can be unit-tested directly.
+ *
+ * Returns `{}` (degrade to the operator's ambient host login) ONLY on a
+ * self-hosted single-tenant install. Throws (fail closed) when:
+ *   - tenant isolation is enforced (cloud_auth / multi_tenant) — EVERY error
+ *     rethrows so Commander NEVER borrows the operator's `~/.claude` / `~/.codex`
+ *     login on a shared host; or
+ *   - the error is `provider_unavailable` — self-hosted still surfaces an explicit
+ *     provider-unavailable failure rather than silently borrowing the host login.
+ *
+ * The caller logs the "using host login" warning only on the return-`{}` path
+ * (this helper rethrows before that point on the fail-closed path).
+ */
+export function handleCommanderResolveError(
+  err: unknown,
+  opts: { tenantIsolationEnforced: boolean },
+): Record<string, string> {
+  const isProviderUnavailable =
+    !!err &&
+    typeof err === "object" &&
+    (err as { code?: string }).code === "provider_unavailable";
+  if (opts.tenantIsolationEnforced || isProviderUnavailable) {
+    throw err;
+  }
+  return {};
+}
 
 /** claude CLI: pass --model only for a shell-safe non-empty model; else nothing,
  *  so the default path's argv stays byte-identical. */
@@ -648,6 +680,104 @@ export function cliModeService(db: Db) {
     return resolve(thisDir, "mcp-bridge.ts");
   }
 
+  // ── #310 MERGE NOTE ─────────────────────────────────────────────────────────
+  // #310 introduces commander-runtime-auth.ts (assertCommanderSubscriptionAgent /
+  // subscription_commander_only) which does NOT exist on this branch. At merge,
+  // that Commander-only gate MUST be expressed as this resolver's owner_only
+  // sharingPolicy (connection.ownerUserId === acting user) — NOT as a parallel
+  // Commander credential path. Do not reintroduce a second resolution site.
+  //
+  // Phase 4: resolve the Commander per-session provider credential through the ONE
+  // unified resolver and return the env PATCH to overlay onto the spawn env (before
+  // the codex CODEX_HOME / claude CLAUDE_CONFIG_DIR overlay is finalized). Commander
+  // has no company-secret key path — it runs on the operator's ambient CLI login —
+  // so the legacy fallbacks are inert (identity legacyResolveConfig ⇒ empty patch ⇒
+  // host_login_fallback = today's ambient login; the managed CODEX_HOME/auth
+  // provisioning stays in resolveCliInvocation ⇒ legacySubscriptionEnv null). An
+  // unmigrated company's spawn env is therefore byte-identical. When a founder
+  // creates a verified provider_connection + assignment, its patch overlays the
+  // spawn env. Cloud (multi_tenant) resolution fails closed (ProviderUnavailableError
+  // is re-thrown); every other error degrades to the host login (Commander is
+  // always-on). agentId is null here: internal_agent_config.agentId is not threaded
+  // into cli-mode's config/params, so agent_override assignments do not target
+  // Commander (company_default + personal_execution_default still resolve; owner_only
+  // isolation uses the acting user via actorType:"user"). Threading the real
+  // internal_agent_config.agentId is a follow-up.
+  async function resolveCommanderSpawnEnvPatch(
+    companyId: string,
+    userId: string,
+    cliTool: string,
+  ): Promise<Record<string, string>> {
+    const providerId =
+      cliTool === "codex" ? "openai" : cliTool === "claude_cli" ? "anthropic" : null;
+    const adapterType =
+      cliTool === "codex" ? "codex_local" : cliTool === "claude_cli" ? "claude_local" : null;
+    if (!providerId || !adapterType) return {};
+    try {
+      const { resolveProviderCredential, applyResolvedCredential } = await import(
+        "../provider-resolution.js"
+      );
+      const { buildResolveDeps } = await import("../provider-resolution-deps.js");
+      const { resolveCliAuthTopology } = await import("../cli-auth-topology.js");
+      const { loadConfig } = await import("../../config.js");
+      const deployConfig = loadConfig();
+      const topology = resolveCliAuthTopology({
+        deploymentMode: deployConfig.deploymentMode,
+        deploymentExposure: deployConfig.deploymentExposure,
+      });
+      const deps = {
+        ...buildResolveDeps(db, topology),
+        // Commander has no company-secret key path; ambient login is the default.
+        legacyResolveConfig: async (cfg: Record<string, unknown>) => cfg,
+        // Managed CODEX_HOME/auth provisioning stays in resolveCliInvocation.
+        legacySubscriptionEnv: async () => null,
+      };
+      const resolved = await resolveProviderCredential(
+        db,
+        {
+          organizationId: null,
+          companyId,
+          agentId: null, // internal_agent_config.agentId not threaded here (follow-up)
+          actorKind: "commander",
+          adapterType,
+          provider: providerId,
+          executionTargetId: process.env.AOA_EXECUTION_TARGET_ID?.trim() || "control-plane",
+          // NOT process.env: the server process legitimately carries the ambient
+          // embeddings OPENAI_API_KEY (and possibly ANTHROPIC_API_KEY). Passing it
+          // as currentEnv would trip Step-0 agent_env_override, which (a) defeats the
+          // multi_tenant fail-closed throw (Commander would silently spawn against the
+          // operator's shared account) and (b) shadows a founder-configured connection.
+          // Commander declares no per-agent key here, so the correct currentEnv is
+          // empty; self-hosted still lands on host_login_fallback and uses the ambient
+          // login at spawn time exactly as before.
+          currentEnv: {},
+          context: {
+            consumerType: "system",
+            consumerId: userId,
+            actorType: "user",
+            actorId: userId,
+          },
+        },
+        deps,
+      );
+      const patched = applyResolvedCredential({ env: {} }, resolved) as {
+        env?: Record<string, string>;
+      };
+      return patched.env ?? {};
+    } catch (err) {
+      // Fail closed on cloud (multi_tenant / cloud_auth): the helper rethrows
+      // EVERY error when tenant isolation is enforced, so Commander never borrows
+      // the operator's ambient host login on a shared host. It also rethrows
+      // provider_unavailable everywhere. Only the self-hosted degrade path falls
+      // through to the warning + host-login ({}) below.
+      const patch = handleCommanderResolveError(err, {
+        tenantIsolationEnforced: tenantIsolationEnforced(),
+      });
+      logger.warn({ err, companyId }, "Commander provider resolution failed; using host login");
+      return patch;
+    }
+  }
+
   return {
     async *chat(
       params: ChatInput,
@@ -659,6 +789,31 @@ export function cliModeService(db: Db) {
         model?: string | null;
       },
     ): AsyncGenerator<AgentStreamChunk> {
+      // ── D1: multi-tenant unsandboxed execution gate ──────────────────────
+      // Commander always spawns its CLI directly on the control-plane host —
+      // there is no execution-target sandbox for a Commander turn. When tenant
+      // isolation is enforced (cloud_auth) that is an unsandboxed shared-host run,
+      // which must be an explicit operator opt-in. Read the module-level
+      // tenantIsolationEnforced() (cheap; no per-turn loadConfig/topology) and
+      // REFUSE the turn (loud error chunk) unless AOA_ALLOW_UNSANDBOXED_MULTITENANT
+      // is set. No-op on every self-hosted deployment (local_trusted / authenticated
+      // single-tenant) → byte-identical for local/self-hosted installs. The
+      // try/catch is NARROW — it wraps only the guard's refusal so a real infra
+      // fault does not get reshaped into a refusal-looking error chunk (the guard
+      // + deployment-mode reader are imported statically at the top of the file).
+      try {
+        assertUnsandboxedMultitenantAllowed(
+          { type: "local" },
+          { tenantIsolationEnforced: tenantIsolationEnforced(), sink: "Commander" },
+        );
+      } catch (guardErr) {
+        yield {
+          type: "error",
+          message: guardErr instanceof Error ? guardErr.message : String(guardErr),
+        };
+        return;
+      }
+
       // 1. Validate CLI tool config
       if (!config.cliTool) {
         yield {
@@ -748,9 +903,19 @@ export function cliModeService(db: Db) {
 
           if (session) session.lastMessageAt = new Date();
 
+          // Phase 4 (Task 13): resolve the Commander provider credential and hand
+          // its env patch to the codex spawn (overlaid onto CODEX_HOME below).
+          // Inert ({}) for unmigrated companies → spawn env byte-identical.
+          const codexCredentialEnv = await resolveCommanderSpawnEnvPatch(
+            params.companyId,
+            params.userId,
+            "codex",
+          );
+
           for await (const chunk of runCodexTurn({
             mcpParams,
             connectorEnv,
+            credentialEnv: codexCredentialEnv,
             prompt: params.content,
             isWin,
             resumeSessionId: session?.codexSessionId ?? null,
@@ -914,6 +1079,19 @@ export function cliModeService(db: Db) {
                 "opencode is not yet supported for the Commander chat (MCP wiring pending — MX-followup). Use claude or codex.",
             };
             return;
+          }
+
+          // Phase 4 (Task 13): overlay the resolved Commander provider credential
+          // onto invocation.spawnEnv BEFORE the cliEnv overlay is finalized below.
+          // Inert ({}) for unmigrated companies (host login) → spawn env unchanged.
+          // See the #310 MERGE NOTE + resolveCommanderSpawnEnvPatch above.
+          const commanderCredentialEnv = await resolveCommanderSpawnEnvPatch(
+            params.companyId,
+            params.userId,
+            config.cliTool,
+          );
+          if (Object.keys(commanderCredentialEnv).length > 0) {
+            invocation.spawnEnv = { ...(invocation.spawnEnv ?? {}), ...commanderCredentialEnv };
           }
 
           // Merge the real connector secrets into the spawn env (NOT the config
@@ -1290,6 +1468,15 @@ interface RunCodexTurnArgs {
    * inherits DATABASE_URL / the embeddings key / the secrets master key / etc.
    */
   connectorEnv: Record<string, string>;
+  /**
+   * Phase 4 (Task 13): the resolved Commander provider-credential env patch
+   * (api-key value / gateway / subscription home). Empty ⇒ host login (byte-
+   * identical spawn env). Overlaid LAST so a configured connection wins over the
+   * ambient login. NOTE: for a personal_subscription this carries CODEX_HOME (the
+   * scoped auth home) which shadows the managed MCP CODEX_HOME from
+   * resolveCliInvocation — a known beta limitation for codex + subscription.
+   */
+  credentialEnv?: Record<string, string>;
   prompt: string;
   isWin: boolean;
   resumeSessionId: string | null;
@@ -1356,12 +1543,16 @@ async function* runCodexTurn(
     // connectorEnv would skip this scrub and leak AoA's ambient secrets into that
     // connector's stdio child. Presence of ANY external spec means "scrub".
     const connectorsPresent = Object.keys(args.mcpParams.extraMcpServers ?? {}).length > 0;
+    // Phase 4 (Task 13): the resolved Commander credential patch overlays LAST so a
+    // configured provider_connection wins over the ambient login. Empty ⇒ no-op.
+    const credentialEnv = args.credentialEnv ?? {};
     const spawnEnv = connectorsPresent
       ? {
           ...mergeConnectorEnv(buildScrubbedCliEnv(), args.connectorEnv),
           ...(invocation.spawnEnv ?? {}),
+          ...credentialEnv,
         }
-      : { ...process.env, ...invocation.spawnEnv };
+      : { ...process.env, ...invocation.spawnEnv, ...credentialEnv };
     const proc = spawn(invocation.binary, invocation.args, {
       stdio: ["pipe", "pipe", "pipe"],
       env: spawnEnv,

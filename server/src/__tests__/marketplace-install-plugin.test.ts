@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 
 vi.mock("@armyofagents/db", () => {
   const tableProxy = new Proxy({}, { get: () => Symbol("col") });
@@ -11,6 +11,10 @@ vi.mock("drizzle-orm", () => ({
 
 import { installMarketplacePlugin } from "../services/marketplace-install/plugin-installer.js";
 import type { CatalogItem } from "@armyofagents/shared";
+import { setDeploymentMode } from "../config/deployment-mode.js";
+import { CloudPluginExecutionBlockedError } from "../services/cloud-plugin-execution.js";
+
+afterEach(() => setDeploymentMode("local_trusted"));
 
 const PLUGIN: CatalogItem = {
   id: "plugin:aoa-curated/aoa-plugin-slack",
@@ -99,6 +103,124 @@ describe("installMarketplacePlugin", () => {
     expect(lifecycleLoadMock).not.toHaveBeenCalled();
     expect(result.alreadyInstalled).toBe(true);
     expect(result.pluginId).toBe("existing-plug");
+  });
+
+  it("reconciles an existing cloud row and returns the typed denial without package work", async () => {
+    setDeploymentMode("cloud_auth");
+    const blockActivationInCloud = vi
+      .fn()
+      .mockRejectedValue(new CloudPluginExecutionBlockedError());
+    const lifecycleLoadMock = vi.fn();
+    const installPluginMock = vi.fn();
+    const mockDb = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: () =>
+              Promise.resolve([
+                {
+                  id: "existing-plug",
+                  packageName: "aoa-plugin-slack",
+                  version: "1.0.0",
+                  status: "ready",
+                },
+              ]),
+          }),
+        }),
+      }),
+    };
+
+    await expect(
+      installMarketplacePlugin({
+        catalogItem: PLUGIN,
+        companyId: "c1",
+        db: mockDb as any,
+        pluginLoader: {
+          installPlugin: installPluginMock,
+          registry: { getByKeyScoped: vi.fn() },
+          lifecycle: { load: lifecycleLoadMock, blockActivationInCloud },
+        } as any,
+      }),
+    ).rejects.toBeInstanceOf(CloudPluginExecutionBlockedError);
+    expect(blockActivationInCloud).toHaveBeenCalledWith("existing-plug", "marketplace");
+    expect(installPluginMock).not.toHaveBeenCalled();
+    expect(lifecycleLoadMock).not.toHaveBeenCalled();
+  });
+
+  it("reinstalls a soft-uninstalled same-version plugin instead of reporting it installed", async () => {
+    const installPluginMock = vi.fn(async () => DISCOVERED);
+    const lifecycleLoadMock = vi.fn(async () => {});
+    const getByKeyScopedMock = vi.fn(async () => ({
+      id: "existing-plug",
+      pluginKey: "aoa.slack",
+    }));
+    const mockDb = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: () => Promise.resolve([{
+              id: "existing-plug",
+              packageName: "aoa-plugin-slack",
+              version: "1.0.0",
+              status: "uninstalled",
+            }]),
+          }),
+        }),
+      }),
+    };
+
+    const result = await installMarketplacePlugin({
+      catalogItem: PLUGIN,
+      companyId: "c1",
+      db: mockDb as any,
+      pluginLoader: {
+        installPlugin: installPluginMock,
+        registry: { getByKeyScoped: getByKeyScopedMock },
+        lifecycle: { load: lifecycleLoadMock },
+      } as any,
+    });
+
+    expect(installPluginMock).toHaveBeenCalledOnce();
+    expect(lifecycleLoadMock).toHaveBeenCalledWith("existing-plug");
+    expect(result).toEqual({ pluginId: "existing-plug", alreadyInstalled: false });
+  });
+
+  it("denies a soft-uninstalled cloud plugin before reinstall or lifecycle work", async () => {
+    setDeploymentMode("cloud_auth");
+    const installPluginMock = vi.fn(async () => DISCOVERED);
+    const lifecycleLoadMock = vi.fn();
+    const blockActivationInCloud = vi.fn();
+    const mockDb = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: () => Promise.resolve([{
+              id: "existing-plug",
+              packageName: "aoa-plugin-slack",
+              version: "1.0.0",
+              status: "uninstalled",
+            }]),
+          }),
+        }),
+      }),
+    };
+
+    await expect(installMarketplacePlugin({
+      catalogItem: PLUGIN,
+      companyId: "c1",
+      db: mockDb as any,
+      pluginLoader: {
+        installPlugin: installPluginMock,
+        registry: {
+          getByKeyScoped: vi.fn(async () => ({ id: "existing-plug", pluginKey: "aoa.slack" })),
+        },
+        lifecycle: { load: lifecycleLoadMock, blockActivationInCloud },
+      } as any,
+    })).rejects.toBeInstanceOf(CloudPluginExecutionBlockedError);
+
+    expect(installPluginMock).not.toHaveBeenCalled();
+    expect(lifecycleLoadMock).not.toHaveBeenCalled();
+    expect(blockActivationInCloud).not.toHaveBeenCalled();
   });
 
   it("throws if catalog item missing npm field", async () => {

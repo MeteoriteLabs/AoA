@@ -25,7 +25,14 @@
  * @see PLUGIN_SPEC.md §19.7 — Error Propagation Through The Bridge
  */
 
-import { createContext, useCallback, useContext, useRef, useState, useEffect } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useRef,
+  useState,
+  useEffect,
+} from "react";
 import type {
   PluginBridgeErrorCode,
   PluginLauncherBounds,
@@ -68,6 +75,8 @@ export type PluginToastFn = (input: PluginToastInput) => string | null;
 // ---------------------------------------------------------------------------
 
 export interface PluginHostContext {
+  /** Tenant-specific installed plugin UUID (`plugins.id`). */
+  pluginInstallationId: string;
   companyId: string | null;
   companyPrefix: string | null;
   projectId: string | null;
@@ -100,7 +109,7 @@ export interface PluginRenderCloseEvent {
 }
 
 export type PluginRenderCloseHandler = (
-  event: PluginRenderCloseEvent,
+  event: PluginRenderCloseEvent
 ) => void | Promise<void>;
 
 export interface PluginRenderCloseLifecycle {
@@ -144,7 +153,7 @@ function usePluginBridgeContext(): PluginBridgeContextValue {
   if (!ctx) {
     throw new Error(
       "Plugin bridge hook called outside of a <PluginBridgeContext.Provider>. " +
-        "Ensure the plugin component is rendered within a PluginBridgeScope.",
+        "Ensure the plugin component is rendered within a PluginBridgeScope."
     );
   }
   return ctx;
@@ -204,7 +213,7 @@ function serializeParams(params?: Record<string, unknown>): string {
 }
 
 function serializeRenderEnvironment(
-  renderEnvironment?: PluginRenderEnvironmentContext | null,
+  renderEnvironment?: PluginRenderEnvironmentContext | null
 ): PluginLauncherRenderContextSnapshot | null {
   if (!renderEnvironment) return null;
   return {
@@ -215,7 +224,7 @@ function serializeRenderEnvironment(
 }
 
 function serializeRenderEnvironmentSnapshot(
-  snapshot: PluginLauncherRenderContextSnapshot | null,
+  snapshot: PluginLauncherRenderContextSnapshot | null
 ): string {
   return snapshot ? JSON.stringify(snapshot) : "";
 }
@@ -231,12 +240,16 @@ function serializeRenderEnvironmentSnapshot(
  */
 export function usePluginData<T = unknown>(
   key: string,
-  params?: Record<string, unknown>,
+  params?: Record<string, unknown>
 ): PluginDataResult<T> {
   const { pluginId, hostContext } = usePluginBridgeContext();
   const companyId = hostContext.companyId;
-  const renderEnvironmentSnapshot = serializeRenderEnvironment(hostContext.renderEnvironment);
-  const renderEnvironmentKey = serializeRenderEnvironmentSnapshot(renderEnvironmentSnapshot);
+  const renderEnvironmentSnapshot = serializeRenderEnvironment(
+    hostContext.renderEnvironment
+  );
+  const renderEnvironmentKey = serializeRenderEnvironmentSnapshot(
+    renderEnvironmentSnapshot
+  );
 
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(true);
@@ -251,8 +264,20 @@ export function usePluginData<T = unknown>(
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let retryCount = 0;
     const maxRetryCount = 2;
-    const retryableCodes: PluginBridgeErrorCode[] = ["WORKER_UNAVAILABLE", "TIMEOUT"];
+    const retryableCodes: PluginBridgeErrorCode[] = [
+      "WORKER_UNAVAILABLE",
+      "TIMEOUT",
+    ];
     setLoading(true);
+    if (!companyId) {
+      setData(null);
+      setError({
+        code: "VALIDATION_ERROR",
+        message: "Plugin bridge calls require a company context",
+      });
+      setLoading(false);
+      return;
+    }
     const request = () => {
       pluginsApi
         .bridgeGetData(
@@ -260,7 +285,7 @@ export function usePluginData<T = unknown>(
           key,
           params,
           companyId,
-          renderEnvironmentSnapshot,
+          renderEnvironmentSnapshot
         )
         .then((response) => {
           if (!cancelled) {
@@ -273,7 +298,10 @@ export function usePluginData<T = unknown>(
           if (cancelled) return;
 
           const bridgeError = extractBridgeError(err);
-          if (retryableCodes.includes(bridgeError.code) && retryCount < maxRetryCount) {
+          if (
+            retryableCodes.includes(bridgeError.code) &&
+            retryCount < maxRetryCount
+          ) {
             retryCount += 1;
             retryTimer = setTimeout(() => {
               retryTimer = null;
@@ -295,7 +323,14 @@ export function usePluginData<T = unknown>(
       if (retryTimer) clearTimeout(retryTimer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pluginId, key, paramsKey, refreshCounter, companyId, renderEnvironmentKey]);
+  }, [
+    pluginId,
+    key,
+    paramsKey,
+    refreshCounter,
+    companyId,
+    renderEnvironmentKey,
+  ]);
 
   const refresh = useCallback(() => {
     setRefreshCounter((c) => c + 1);
@@ -311,7 +346,9 @@ export function usePluginData<T = unknown>(
 /**
  * Action function type matching the SDK's `PluginActionFn`.
  */
-export type PluginActionFn = (params?: Record<string, unknown>) => Promise<unknown>;
+export type PluginActionFn = (
+  params?: Record<string, unknown>
+) => Promise<unknown>;
 
 /**
  * Concrete implementation of `usePluginAction(key)`.
@@ -330,7 +367,16 @@ export function usePluginAction(key: string): PluginActionFn {
     async (params?: Record<string, unknown>): Promise<unknown> => {
       const { pluginId, hostContext } = contextRef.current;
       const companyId = hostContext.companyId;
-      const renderEnvironment = serializeRenderEnvironment(hostContext.renderEnvironment);
+      const renderEnvironment = serializeRenderEnvironment(
+        hostContext.renderEnvironment
+      );
+
+      if (!companyId) {
+        throw {
+          code: "VALIDATION_ERROR",
+          message: "Plugin bridge calls require a company context",
+        } satisfies PluginBridgeError;
+      }
 
       try {
         const response = await pluginsApi.bridgePerformAction(
@@ -338,14 +384,14 @@ export function usePluginAction(key: string): PluginActionFn {
           key,
           params,
           companyId,
-          renderEnvironment,
+          renderEnvironment
         );
         return response.data;
       } catch (err) {
         throw extractBridgeError(err);
       }
     },
-    [key],
+    [key]
   );
 }
 
@@ -372,7 +418,7 @@ export function usePluginToast(): PluginToastFn {
   const { pushToast } = useToast();
   return useCallback(
     (input: PluginToastInput) => pushToast(input),
-    [pushToast],
+    [pushToast]
   );
 }
 
@@ -391,13 +437,16 @@ export interface PluginStreamResult<T = unknown> {
 
 export function usePluginStream<T = unknown>(
   channel: string,
-  options?: { companyId?: string },
+  options?: { companyId?: string }
 ): PluginStreamResult<T> {
   const { pluginId, hostContext } = usePluginBridgeContext();
-  const effectiveCompanyId = options?.companyId ?? hostContext.companyId ?? undefined;
+  const effectiveCompanyId =
+    options?.companyId ?? hostContext.companyId ?? undefined;
   const [events, setEvents] = useState<T[]>([]);
   const [lastEvent, setLastEvent] = useState<T | null>(null);
-  const [connecting, setConnecting] = useState<boolean>(Boolean(effectiveCompanyId));
+  const [connecting, setConnecting] = useState<boolean>(
+    Boolean(effectiveCompanyId)
+  );
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<Error | null>(null);
   const sourceRef = useRef<EventSource | null>(null);
@@ -421,8 +470,10 @@ export function usePluginStream<T = unknown>(
 
     const params = new URLSearchParams({ companyId: effectiveCompanyId });
     const source = new EventSource(
-      `/api/plugins/${encodeURIComponent(pluginId)}/bridge/stream/${encodeURIComponent(channel)}?${params.toString()}`,
-      { withCredentials: true },
+      `/api/plugins/${encodeURIComponent(
+        pluginId
+      )}/bridge/stream/${encodeURIComponent(channel)}?${params.toString()}`,
+      { withCredentials: true }
     );
     sourceRef.current = source;
     setConnecting(true);
@@ -440,7 +491,9 @@ export function usePluginStream<T = unknown>(
         setEvents((current) => [...current, parsed]);
         setLastEvent(parsed);
       } catch (nextError) {
-        setError(nextError instanceof Error ? nextError : new Error(String(nextError)));
+        setError(
+          nextError instanceof Error ? nextError : new Error(String(nextError))
+        );
       }
     };
 

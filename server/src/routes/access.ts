@@ -65,6 +65,16 @@ import {
   grantsFromDefaults,
   inviteConfersPrivilegedAuthority,
 } from "../services/join-approval.js";
+import { instanceAdminBootstrapEnabled } from "../services/first-user-bootstrap.js";
+
+/**
+ * Task 7 (Phase 2 lockout cluster) — gate the `bootstrap_ceo` invite
+ * promotion through the single chokepoint. `cloud_auth` mints zero runtime
+ * instance_admins; self-hosted local_trusted/authenticated are unaffected.
+ */
+export function bootstrapCeoPromotionAllowed(mode: DeploymentMode): boolean {
+  return instanceAdminBootstrapEnabled(mode);
+}
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -1579,6 +1589,12 @@ export function accessRoutes(
     if (!allowed) throw forbidden("Instance admin required");
   }
 
+  function assertAdminUserManagementAvailable() {
+    if (opts.deploymentMode === "cloud_auth") {
+      throw forbidden("Instance-wide user administration is unavailable in cloud mode");
+    }
+  }
+
   router.get("/board-claim/:token", async (req, res) => {
     const token = (req.params.token as string).trim();
     const code =
@@ -1607,7 +1623,8 @@ export function accessRoutes(
     const claimed = await claimBoardOwnership(db, {
       token,
       code,
-      userId: req.actor.userId
+      userId: req.actor.userId,
+      deploymentMode: opts.deploymentMode
     });
 
     if (claimed.status === "invalid")
@@ -1632,7 +1649,7 @@ export function accessRoutes(
     companyId: string,
     permissionKey: any
   ) {
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     if (req.actor.type === "agent") {
       if (!req.actor.agentId) throw forbidden();
       const allowed = await access.hasPermission(
@@ -2037,9 +2054,13 @@ export function accessRoutes(
           );
         }
         const userId = req.actor.userId ?? "local-board";
-        const existingAdmin = await access.isInstanceAdmin(userId);
-        if (!existingAdmin) {
-          await access.promoteInstanceAdmin(userId);
+        if (bootstrapCeoPromotionAllowed(opts.deploymentMode)) {
+          const existingAdmin = await access.isInstanceAdmin(userId);
+          if (!existingAdmin) {
+            await access.promoteInstanceAdmin(userId);
+          }
+        } else {
+          throw forbidden("Bootstrap CEO promotion is disabled in this deployment mode");
         }
         const updatedInvite = await db
           .update(invites)
@@ -2901,6 +2922,7 @@ export function accessRoutes(
   router.post(
     "/admin/users/:userId/promote-instance-admin",
     async (req, res) => {
+      assertAdminUserManagementAvailable();
       await assertInstanceAdmin(req);
       const userId = req.params.userId as string;
       const result = await access.promoteInstanceAdmin(userId);
@@ -2909,6 +2931,7 @@ export function accessRoutes(
   );
 
   router.get("/admin/users", async (req, res) => {
+    assertAdminUserManagementAvailable();
     await assertInstanceAdmin(req);
     const query = searchAdminUsersQuerySchema.parse(req.query);
     const needle = query.query.trim().toLowerCase();
@@ -2971,6 +2994,7 @@ export function accessRoutes(
   router.post(
     "/admin/users/:userId/demote-instance-admin",
     async (req, res) => {
+      assertAdminUserManagementAvailable();
       await assertInstanceAdmin(req);
       const userId = req.params.userId as string;
       const removed = await access.demoteInstanceAdmin(userId);
@@ -2980,6 +3004,7 @@ export function accessRoutes(
   );
 
   router.get("/admin/users/:userId/company-access", async (req, res) => {
+    assertAdminUserManagementAvailable();
     await assertInstanceAdmin(req);
     const userId = req.params.userId as string;
     res.json(await loadUserCompanyAccessResponse(db, access, userId));
@@ -2989,6 +3014,7 @@ export function accessRoutes(
     "/admin/users/:userId/company-access",
     validate(updateUserCompanyAccessSchema),
     async (req, res) => {
+      assertAdminUserManagementAvailable();
       await assertInstanceAdmin(req);
       const userId = req.params.userId as string;
       await access.setUserCompanyAccess(

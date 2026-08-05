@@ -18,7 +18,10 @@
 // X-Forwarded-For spoofing on directly-exposed deployments.
 
 import type { Request, RequestHandler, Response } from "express";
-import { rateLimit, type Options as RateLimitLibOptions } from "express-rate-limit";
+import {
+  rateLimit,
+  type Options as RateLimitLibOptions,
+} from "express-rate-limit";
 
 /**
  * The kind of key used to bucket requests for rate limiting.
@@ -89,8 +92,7 @@ function ipKey(req: Request): string {
  * gets its own (empty) bucket.
  */
 export function createRateLimiter(opts: RateLimitOptions): RequestHandler {
-  const keyGenerator =
-    opts.keyBy === "ip" ? ipKey : actorKey;
+  const keyGenerator = opts.keyBy === "ip" ? ipKey : actorKey;
 
   // Body type isn't strictly required for express-rate-limit but we want
   // to lock the response shape so downstream consumers (UI, CLI clients)
@@ -119,7 +121,10 @@ export function createRateLimiter(opts: RateLimitOptions): RequestHandler {
                 .resetTime as Date
             ).getTime()
           : Math.floor(Date.now() / 1000) * 1000 + opts.windowMs;
-      const retryAfterSec = Math.max(1, Math.ceil((resetMs - Date.now()) / 1000));
+      const retryAfterSec = Math.max(
+        1,
+        Math.ceil((resetMs - Date.now()) / 1000)
+      );
       res.status(429).json({
         ...body,
         retryAfter: retryAfterSec,
@@ -185,6 +190,19 @@ export const cliAuthChallengeLimiter: RequestHandler = createRateLimiter({
   max: 5,
   keyBy: "ip",
   message: "Too many CLI auth challenge requests; try again shortly",
+});
+
+/**
+ * Public plugin webhooks. 300 requests per minute per source IP. Webhook
+ * handlers are intentionally unauthenticated, persist an audit row, and wake a
+ * plugin worker, so the host must bound abuse before UUID lookup or any DB/RPC
+ * work. Signature verification remains the individual plugin's responsibility.
+ */
+export const pluginWebhookLimiter: RequestHandler = createRateLimiter({
+  windowMs: ONE_MINUTE,
+  max: 300,
+  keyBy: "ip",
+  message: "Plugin webhook rate limit exceeded; try again shortly",
 });
 
 /**

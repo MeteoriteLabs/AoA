@@ -28,7 +28,11 @@ const nonAdminBoard = {
   companyIds: ["company-A"],
   isInstanceAdmin: false,
 };
-const instanceAdmin = { ...nonAdminBoard, isInstanceAdmin: true };
+// Phase 3 repointed instance-wide admin gates from `isInstanceAdmin` to the
+// `operator` plane (canManageInstanceSettings reads `operator`; isInstanceAdmin is
+// clamped in cloud_auth). Adapter install is instance-wide infra, so it is
+// operator-gated — a real instance admin carries `operator: true`.
+const instanceAdmin = { ...nonAdminBoard, isInstanceAdmin: true, operator: true };
 const localImplicit = { ...nonAdminBoard, source: "local_implicit" };
 
 let tmpHome: string;

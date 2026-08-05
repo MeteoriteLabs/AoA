@@ -10,7 +10,7 @@ export function trustScoreRoutes(db: Db) {
   // GET /companies/:companyId/trust-scores — list all agent scores for company
   router.get("/companies/:companyId/trust-scores", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const scores = await svc.listScores(companyId);
     res.json(scores);
   });
@@ -19,7 +19,7 @@ export function trustScoreRoutes(db: Db) {
   router.get("/companies/:companyId/agents/:agentId/trust-score", async (req, res) => {
     const companyId = req.params.companyId as string;
     const agentId = req.params.agentId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const score = await svc.getScore(companyId, agentId);
     if (!score) {
       res.json(null);

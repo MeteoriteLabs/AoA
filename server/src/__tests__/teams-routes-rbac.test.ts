@@ -68,13 +68,13 @@ vi.mock("../services/index.js", () => ({
   logActivity: mockLogActivity,
 }));
 
-const mockAssertRole = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const mockAssertHumanRole = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const mockAssertDepartmentAccess = vi.hoisted(() =>
   vi.fn().mockResolvedValue(undefined),
 );
 
 vi.mock("../middleware/rbac.js", () => ({
-  assertRole: mockAssertRole,
+  assertHumanRole: mockAssertHumanRole,
   assertDepartmentAccess: mockAssertDepartmentAccess,
 }));
 
@@ -152,7 +152,7 @@ describe("Teams routes -- RBAC dept-scope (P1-A)", () => {
       .send({ name: "New Team", slug: "new-team", parentProjectId: DEPT_A });
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
-    expect(mockAssertRole).toHaveBeenCalledWith(
+    expect(mockAssertHumanRole).toHaveBeenCalledWith(
       expect.anything(),
       expect.anything(),
       COMPANY_ID,

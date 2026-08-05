@@ -88,7 +88,7 @@ describe("memory-assets routes", () => {
     const res = await request(app).get("/companies/co-1/memory/assets/a-1/content");
     expect(res.status).toBe(200);
     expect(res.headers["content-type"]).toContain("application/pdf");
-    expect(storage.getObject).toHaveBeenCalledWith("co-1", "co-1/file-imports/abc-rfc.pdf");
+    expect(storage.getObject).toHaveBeenCalledWith(null, "co-1", "co-1/file-imports/abc-rfc.pdf");
   });
 
   it("PATCH /assets/:id updates fileName + folderPath", async () => {

@@ -128,7 +128,9 @@ describe("assembled registry includes the terminal step", () => {
   it("passes the guard and registers SETUP_COMPLETE as the last founder step, gated on COMMANDER_VERIFIED", () => {
     expect(validateRegistry(ONBOARDING_STEPS)).toEqual([]);
     const founderSteps = ONBOARDING_STEPS.filter((s) => s.journeys.includes("founder"));
-    expect(founderSteps).toHaveLength(6);
+    // Phase 2 Task 3/12 added CreateOrganizationStep (id "organization") ahead
+    // of the company step, so the founder spine grew from 6 to 7 steps.
+    expect(founderSteps).toHaveLength(7);
     const terminal = founderSteps[founderSteps.length - 1];
     expect(terminal.state).toBe("SETUP_COMPLETE");
     expect(terminal.dependsOn).toEqual(["COMMANDER_VERIFIED"]);

@@ -64,9 +64,14 @@ import {
   mergeSkillUpdate,
   skillMergeSnapshotToken,
 } from "../services/marketplace-install/skill-update-merge.js";
+import { fetchCatalogResource } from "../services/marketplace-install/fetch-resource.js";
 import type { AgentInstructionsServiceLike } from "../services/marketplace-install/agent-create.js";
 import { SKILL_CUSTOMIZED_ERROR_CODE, type MarketplaceCatalogFile } from "@armyofagents/shared";
 import type { PluginLifecycleManager } from "../services/plugin-lifecycle.js";
+import {
+  CloudPluginExecutionBlockedError,
+  cloudPluginExecutionBlockedEnvelope,
+} from "../services/cloud-plugin-execution.js";
 
 export interface MarketplaceCompanyRoutesDeps {
   db: Db;
@@ -188,7 +193,7 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
   router.get("/settings", async (req, res) => {
     assertBoard(req);
     const companyId = (req.params as Record<string, string>).companyId;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     const settings = await svc.get(companyId);
     res.json(settings);
@@ -197,7 +202,8 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
   router.patch("/settings", async (req, res) => {
     assertBoard(req);
     const companyId = (req.params as Record<string, string>).companyId;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
+    await assertRole(db, req, companyId, "founder");
 
     const parsed = MarketplaceSettingsPatchSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -214,7 +220,7 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
   router.get("/updates", async (req, res) => {
     assertBoard(req);
     const companyId = (req.params as Record<string, string>).companyId;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     const typeFilter = req.query.type as string | undefined;
     const conditions = [
@@ -234,7 +240,8 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
   router.post("/updates/:id/dismiss", async (req, res) => {
     assertBoard(req);
     const companyId = (req.params as Record<string, string>).companyId;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
+    await assertRole(db, req, companyId, "founder");
 
     const { id } = req.params as { id: string };
     await db
@@ -253,7 +260,8 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
   router.post("/updates/:id/apply", async (req, res) => {
     assertBoard(req);
     const companyId = (req.params as Record<string, string>).companyId;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
+    await assertRole(db, req, companyId, "founder");
 
     const { id } = req.params as { id: string };
     const [update] = await db
@@ -320,8 +328,17 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
 
       let result: Awaited<ReturnType<PluginLifecycleManager["upgrade"]>>;
       try {
+        // Persist cloud policy state before lifecycle status validation. This
+        // also prevents a policy denial from being misclassified for rollback.
+        await deps.pluginLifecycle.blockActivationInCloud(plugin.id, "marketplace");
         result = await deps.pluginLifecycle.upgrade(plugin.id, update.latestVersion);
       } catch (err) {
+        // A cloud policy denial occurs before an upgrade mutates package state.
+        // Preserve the canonical contract and never manufacture rollback work.
+        if (err instanceof CloudPluginExecutionBlockedError) {
+          res.status(503).json(cloudPluginExecutionBlockedEnvelope());
+          return;
+        }
         const rollbackTarget = await deps.pluginRollback
           ?.getRollbackTarget(plugin.id)
           .catch(() => null);
@@ -455,7 +472,7 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
   router.get("/updates/:id/diff", async (req, res) => {
     assertBoard(req);
     const companyId = (req.params as Record<string, string>).companyId;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     const { id } = req.params as { id: string };
     const [update] = await db
@@ -537,11 +554,7 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
       return;
     }
     try {
-      const upstreamRes = await fetch(catalogItem.resourceUrl as string, {
-        signal: AbortSignal.timeout(15000),
-      });
-      if (!upstreamRes.ok) throw new Error(`Fetch failed: ${upstreamRes.status}`);
-      const upstreamContent = await upstreamRes.text();
+      const upstreamContent = await fetchCatalogResource(catalogItem, "skill update diff");
 
       const diff = computeSectionDiff(skill.markdown ?? "", upstreamContent);
       res.json({
@@ -564,7 +577,8 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
   router.post("/updates/:id/merge", async (req, res) => {
     assertBoard(req);
     const companyId = (req.params as Record<string, string>).companyId;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
+    await assertRole(db, req, companyId, "founder");
 
     const { id } = req.params as { id: string };
     const { decisions, snapshotToken } = req.body as {
@@ -743,7 +757,7 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
   router.post("/crew/repair", async (req, res) => {
     assertBoard(req);
     const companyId = (req.params as Record<string, string>).companyId;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     await assertRole(db, req, companyId, "founder");
 
     const catalog = await deps.catalogService.readCache();
@@ -780,7 +794,7 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
   router.post("/request-install", async (req, res) => {
     assertBoard(req);
     const companyId = (req.params as Record<string, string>).companyId;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     const { catalogItemId } = req.body as { catalogItemId?: string };
     if (!catalogItemId) {

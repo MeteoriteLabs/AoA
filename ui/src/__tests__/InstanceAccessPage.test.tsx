@@ -14,6 +14,7 @@ function renderAccess() {
     <Routes>
       <Route element={<Outlet context={{ setSecondarySidebar: () => {} }} />}>
         <Route path="/instance/access" element={<InstanceAccessPage />} />
+        <Route path="/instance/settings" element={<div>General settings destination</div>} />
       </Route>
     </Routes>,
     { initialEntries: ["/instance/access"] },
@@ -25,6 +26,13 @@ const mockGetUserCompanyAccess = vi.fn();
 const mockSetUserCompanyAccess = vi.fn();
 const mockPromoteInstanceAdmin = vi.fn();
 const mockDemoteInstanceAdmin = vi.fn();
+const mockGetHealth = vi.fn();
+
+vi.mock("../api/health", () => ({
+  healthApi: {
+    get: (...args: unknown[]) => mockGetHealth(...args),
+  },
+}));
 
 vi.mock("../api/access", () => ({
   accessApi: {
@@ -49,8 +57,16 @@ vi.mock("@/components/LobbyShell", () => ({
   ),
 }));
 
-const company1 = makeCompany({ id: "comp-1", name: "Acme", issuePrefix: "ACM" });
-const company2 = makeCompany({ id: "comp-2", name: "Globex", issuePrefix: "GBX" });
+const company1 = makeCompany({
+  id: "comp-1",
+  name: "Acme",
+  issuePrefix: "ACM",
+});
+const company2 = makeCompany({
+  id: "comp-2",
+  name: "Globex",
+  issuePrefix: "GBX",
+});
 
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => ({
@@ -114,16 +130,26 @@ describe("InstanceAccessPage", () => {
     mockSearchAdminUsers.mockResolvedValue([alice, bob]);
     mockGetUserCompanyAccess.mockResolvedValue(makeAccessResponse(alice.id, ["comp-1"]));
     mockSetUserCompanyAccess.mockResolvedValue(makeAccessResponse(alice.id, ["comp-1", "comp-2"]));
-    mockPromoteInstanceAdmin.mockResolvedValue({ id: "role-1", userId: alice.id, role: "instance_admin" });
-    mockDemoteInstanceAdmin.mockResolvedValue({ id: "role-1", userId: bob.id, role: "instance_admin" });
+    mockPromoteInstanceAdmin.mockResolvedValue({
+      id: "role-1",
+      userId: alice.id,
+      role: "instance_admin",
+    });
+    mockDemoteInstanceAdmin.mockResolvedValue({
+      id: "role-1",
+      userId: bob.id,
+      role: "instance_admin",
+    });
+    mockGetHealth.mockResolvedValue({
+      status: "ok",
+      deploymentMode: "authenticated",
+    });
   });
 
   it("renders header + search input", async () => {
     renderAccess();
-    expect(
-      screen.getByRole("heading", { name: /instance access/i }),
-    ).toBeInTheDocument();
-    expect(screen.getByPlaceholderText("Search by name or email")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /instance access/i })).toBeInTheDocument();
+    expect(await screen.findByPlaceholderText("Search by name or email")).toBeInTheDocument();
   });
 
   it("calls searchAdminUsers on mount and renders the user list", async () => {
@@ -164,21 +190,19 @@ describe("InstanceAccessPage", () => {
   it("shows admin-required error on 403", async () => {
     mockSearchAdminUsers.mockRejectedValue(new ApiError("Forbidden", 403, null));
     renderAccess();
-    expect(
-      await screen.findByText(/Instance admin access is required/i),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/Instance admin access is required/i)).toBeInTheDocument();
   });
 
   it("opens AlertDialog confirmation when promoting a user", async () => {
     const user = userEvent.setup();
     renderAccess();
 
-    await user.click(
-      await screen.findByRole("button", { name: /promote to instance admin/i }),
-    );
+    await user.click(await screen.findByRole("button", { name: /promote to instance admin/i }));
 
     expect(
-      await screen.findByRole("alertdialog", { name: /promote to instance admin/i }),
+      await screen.findByRole("alertdialog", {
+        name: /promote to instance admin/i,
+      }),
     ).toBeInTheDocument();
     expect(mockPromoteInstanceAdmin).not.toHaveBeenCalled();
   });
@@ -187,9 +211,7 @@ describe("InstanceAccessPage", () => {
     const user = userEvent.setup();
     renderAccess();
 
-    await user.click(
-      await screen.findByRole("button", { name: /promote to instance admin/i }),
-    );
+    await user.click(await screen.findByRole("button", { name: /promote to instance admin/i }));
     await screen.findByRole("alertdialog");
     await user.click(screen.getByRole("button", { name: /^promote$/i }));
 
@@ -207,9 +229,7 @@ describe("InstanceAccessPage", () => {
       expect(mockGetUserCompanyAccess).toHaveBeenCalledWith(bob.id);
     });
 
-    await user.click(
-      await screen.findByRole("button", { name: /remove instance admin/i }),
-    );
+    await user.click(await screen.findByRole("button", { name: /remove instance admin/i }));
     await screen.findByRole("alertdialog");
     await user.click(screen.getByRole("button", { name: /remove admin/i }));
 
@@ -222,9 +242,7 @@ describe("InstanceAccessPage", () => {
     const user = userEvent.setup();
     renderAccess();
 
-    await user.click(
-      await screen.findByRole("button", { name: /save company access/i }),
-    );
+    await user.click(await screen.findByRole("button", { name: /save company access/i }));
 
     await waitFor(() => {
       expect(mockSetUserCompanyAccess).toHaveBeenCalledWith(
@@ -232,5 +250,63 @@ describe("InstanceAccessPage", () => {
         expect.arrayContaining(["comp-1"]),
       );
     });
+  });
+
+  it("fails closed on a cloud deep link without querying admin users", async () => {
+    mockGetHealth.mockResolvedValue({
+      status: "ok",
+      deploymentMode: "cloud_auth",
+    });
+    const user = userEvent.setup();
+    renderAccess();
+
+    const heading = await screen.findByRole("heading", {
+      name: /access is unavailable on aoa cloud/i,
+    });
+    expect(document.activeElement).toBe(heading);
+    expect(mockSearchAdminUsers).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: /^access$/i })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /back to general/i }));
+    expect(await screen.findByText("General settings destination")).toBeInTheDocument();
+  });
+
+  it("keeps access closed while deployment health is still loading", async () => {
+    mockGetHealth.mockReturnValue(new Promise(() => {}));
+    renderAccess();
+
+    expect(
+      await screen.findByRole("heading", {
+        name: /checking access availability/i,
+      }),
+    ).toBeInTheDocument();
+    expect(mockSearchAdminUsers).not.toHaveBeenCalled();
+    expect(mockGetUserCompanyAccess).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: /^access$/i })).not.toBeInTheDocument();
+  });
+
+  it("fails closed and supports retry when deployment health is unavailable", async () => {
+    mockGetHealth.mockRejectedValueOnce(new Error("offline"));
+    mockGetHealth.mockResolvedValueOnce({
+      status: "ok",
+      deploymentMode: "cloud_auth",
+    });
+    const user = userEvent.setup();
+    renderAccess();
+
+    expect(
+      await screen.findByRole("heading", {
+        name: /couldn't verify access availability/i,
+      }),
+    ).toBeInTheDocument();
+    expect(mockSearchAdminUsers).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: /retry deployment check/i }));
+    expect(
+      await screen.findByRole("heading", {
+        name: /access is unavailable on aoa cloud/i,
+      }),
+    ).toBeInTheDocument();
+    expect(mockGetHealth).toHaveBeenCalledTimes(2);
   });
 });

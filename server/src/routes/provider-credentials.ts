@@ -22,7 +22,7 @@ export function providerCredentialRoutes(db: Db): Router {
       return;
     }
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     await assertRole(db, req, companyId, "founder");
     const rows = await db
       .select({
@@ -51,7 +51,7 @@ export function providerCredentialRoutes(db: Db): Router {
       }
       const companyId = req.params.companyId as string;
       const agentId = req.params.agentId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       await assertRole(db, req, companyId, "founder");
 
       const [agent] = await db
@@ -108,7 +108,7 @@ export function providerCredentialRoutes(db: Db): Router {
         res.status(400).json({ error: "credentialId is required" });
         return;
       }
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       await assertRole(db, req, companyId, "founder");
 
       const bindingId = await db.transaction(async (tx) => {
@@ -228,7 +228,7 @@ export function providerCredentialRoutes(db: Db): Router {
       const companyId = req.params.companyId as string;
       const agentId = req.params.agentId as string;
       const bindingId = req.params.bindingId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       await assertRole(db, req, companyId, "founder");
       const revoked = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
@@ -282,7 +282,7 @@ export function providerCredentialRoutes(db: Db): Router {
         res.status(400).json({ error: "confirmation must exactly match credentialId" });
         return;
       }
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       await assertRole(db, req, companyId, "founder");
 
       const [credential] = await db

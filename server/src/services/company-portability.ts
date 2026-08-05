@@ -166,6 +166,19 @@ type ImportAuthorizationContext = {
   changesCompletionPolicy: boolean;
   requiresTaskAssignmentPermission: boolean;
   importsWorkflowTemplates: boolean;
+  // D2/H2: an existing-company agent import is a company-structure mutation and
+  // must require founder/team_lead. Surfaced so the route can gate it; the
+  // service no longer re-owns the caller via ensureRealOperator.
+  importsAgents: boolean;
+  // D2 (privilege-escalation hardening): the two founder-PLANE sections. Surfaced
+  // so POST /import can require FOUNDER (not merely founder/team_lead) for them.
+  // internal_agent_config carries crewAutonomyLevel / budgetMonthlyCents /
+  // enabledCapabilities; budget_policies carries hardStopEnabled. Both are
+  // company-governance controls a team_lead has no business overwriting via a
+  // bundle. These fire exactly when the corresponding writes fire (same
+  // normalized `plan.include` object + manifest section presence).
+  importsInternalAgentConfig: boolean;
+  importsBudgetPolicies: boolean;
 };
 
 function getImportAuthorizationContext(plan: ImportPlanInternal): ImportAuthorizationContext {
@@ -222,6 +235,11 @@ function getImportAuthorizationContext(plan: ImportPlanInternal): ImportAuthoriz
       changesCompletionPolicy || mutableRoutines.length > 0 || importsAssignedIssues,
     importsWorkflowTemplates:
       plan.include.workflowTemplates === true && (manifest.workflowTemplates?.length ?? 0) > 0,
+    importsAgents: plan.include.agents === true && plan.selectedAgents.length > 0,
+    importsInternalAgentConfig:
+      plan.include.internalAgentConfig === true && !!manifest.internalAgentConfig,
+    importsBudgetPolicies:
+      plan.include.budgetPolicies === true && (manifest.budgetPolicies?.length ?? 0) > 0,
   };
 }
 
@@ -1017,7 +1035,11 @@ async function readAgentInstructions(agent: AgentLike): Promise<{ body: string; 
 export function companyPortabilityService(db: Db) {
   const companies = companyService(db);
   const agents = agentService(db);
-  const access = accessService(db);
+  // P3: the former `access` service handle held ONLY the now-removed
+  // `ensureRealOperator` call — company + founder membership are now written
+  // atomically inside `companies.createWithOperator`, which takes a tx-bound
+  // `accessService` factory directly. `accessService` stays imported for that
+  // factory below.
   const projects = projectService(db);
   const issues = issueService(db);
   const skills = companySkillService(db);
@@ -2118,6 +2140,7 @@ export function companyPortabilityService(db: Db) {
     input: CompanyPortabilityImport,
     actorUserId: string | null | undefined,
     authorize?: (context: ImportAuthorizationContext) => Promise<void>,
+    opts?: { organizationId?: string | null },
   ): Promise<CompanyPortabilityImportResult> {
     const plan = await buildPreview(input);
     if (plan.preview.errors.length > 0) {
@@ -2157,7 +2180,21 @@ export function companyPortabilityService(db: Db) {
       //
       // Latency is bounded by CREW_INSTALL_DEADLINE_MS + the catalog budget
       // (~42s worst case); import is already a long-running operation.
-      const created = await companies.create({
+      // P3 (mirrors Fix 5): the company row AND the importer's founder
+      // membership/role/org membership are written atomically inside ONE
+      // transaction (`createWithOperator`), so a transient fault mid-import can
+      // never commit an orphan company with no membership for anyone. This
+      // REPLACES the previous non-atomic `create` + separate `ensureRealOperator`
+      // pair. `buildAccess` is bound to the tx handle so the operator writes join
+      // it. Group A (operator-independent seeders) runs best-effort post-commit
+      // inside createWithOperator; Group B (route-only, operator-dependent) is
+      // deliberately NOT run on the import path.
+      //
+      // D2/H2 + no-self-lockout: seeding the IMPORTER as a genuine founder
+      // (company owner membership + founder role + org owner membership) also
+      // guarantees a real human founder for the agent-restoration parenting
+      // below. Replaces the old bare "board" company-only membership.
+      const created = await companies.createWithOperator({
         name: companyName,
         description: include.company ? (sourceManifest.company?.description ?? null) : null,
         brandColor: include.company ? (sourceManifest.company?.brandColor ?? null) : null,
@@ -2170,9 +2207,12 @@ export function companyPortabilityService(db: Db) {
         agentCompletionReviewGuardrail: include.company
           ? (sourceManifest.company?.agentCompletionReviewGuardrail ?? false)
           : false,
-      }, { requestedByUserId: actorUserId ?? null });
-      await access.ensureMembership(created.id, "user", actorUserId ?? "board", "owner", "active");
-      targetCompany = created;
+        // D2/H3: the owning Organization is server-resolved + authorized in the
+        // route (mirrors POST /). undefined -> createWithOperator falls back to
+        // the DEFAULT sentinel (self-hosted single-tenant), unchanged.
+        organizationId: opts?.organizationId ?? undefined,
+      }, { requestedByUserId: actorUserId ?? null }, actorUserId, (tx) => accessService(tx));
+      targetCompany = created.company;
       companyAction = "created";
     } else {
       targetCompany = await companies.getById(input.target.companyId);
@@ -2202,17 +2242,14 @@ export function companyPortabilityService(db: Db) {
 
     if (!targetCompany) throw notFound("Target company not found");
 
-    // W6 human-at-top invariant. Import builds the company via the service layer,
-    // bypassing the company-create route's operator seeding — so a freshly created
-    // company has no real human founder. If we restored agents now, agentService
-    // .create() would either throw ("no human founder exists") or auto-parent them
-    // to a non-user owner principal (e.g. the synthetic "board" actor when
-    // actorUserId is null). Seed a real operator FIRST so agent restoration parents
-    // every org agent to a genuine human. Idempotent: returns the existing founder
-    // when one is already present, so it is safe for the existing-company path too.
-    if (include.agents) {
-      await access.ensureRealOperator(targetCompany.id, actorUserId);
-    }
+    // D2/H2: NO ensureRealOperator here. Operator provisioning is a NEW-company
+    // concern only and now happens in the new_company branch above (seeding the
+    // importer as founder). For an EXISTING company we must never re-own the
+    // caller: agentService.create parents restored org agents to the company's
+    // pre-existing human founder (orgHierarchy.getFounderUserId), and the route
+    // separately requires founder/team_lead to import agents (importsAgents gate).
+    // A company with no human founder correctly hard-fails in agentService.create
+    // ("no human founder exists") rather than silently promoting the caller.
 
     const resultAgents: CompanyPortabilityImportResult["agents"] = [];
     const importedSlugToAgentId = new Map<string, string>();
@@ -3468,8 +3505,9 @@ export function companyPortabilityService(db: Db) {
     ]);
 
     // W6 human-at-top invariant (safety net): re-parent any org agent that still
-    // landed rootless up to the founder. ensureRealOperator already ran above
-    // (before agent restoration), so a founder is guaranteed to exist here.
+    // landed rootless up to the founder. A founder is guaranteed here — either
+    // seeded by the new_company branch (ensureRealOperator) or already present on
+    // the existing company (route-gated founder/team_lead + getFounderUserId).
     if (include.agents) {
       await agents.backfillHumanAtTop(targetCompany.id);
     }

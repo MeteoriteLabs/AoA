@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setDeploymentMode } from "../config/deployment-mode.js";
 
 // Capture every spawn() invocation made by the workspace-runtime module so we
 // can assert that runWorkspaceCommand (reached via the no-recorder branch of
@@ -52,9 +53,13 @@ function findShellSpawnCall(command: string): SpawnCall | undefined {
 beforeEach(() => {
   spawnCalls.length = 0;
   delete process.env.SHELL;
+  delete process.env.AOA_ALLOW_UNSANDBOXED_MULTITENANT;
+  setDeploymentMode("local_trusted");
 });
 
 afterEach(() => {
+  setDeploymentMode("local_trusted");
+  delete process.env.AOA_ALLOW_UNSANDBOXED_MULTITENANT;
   Object.defineProperty(process, "platform", {
     value: ORIGINAL_PLATFORM,
     configurable: true,
@@ -71,11 +76,11 @@ afterEach(() => {
 // cleanupExecutionWorkspaceArtifacts → recordWorkspaceCommandOperation(null, …)
 // → runWorkspaceCommand. A non-git, non-local_fs providerType isolates the
 // shell-command path from any git/fs side-effects.
-async function runCleanupCommand(cleanupCommand: string): Promise<void> {
+async function runCleanupCommand(cleanupCommand: string) {
   const { cleanupExecutionWorkspaceArtifacts } = await import(
     "../services/workspace-runtime.ts"
   );
-  await cleanupExecutionWorkspaceArtifacts({
+  return cleanupExecutionWorkspaceArtifacts({
     workspace: {
       id: "ws-am13",
       cwd: process.cwd(),
@@ -95,6 +100,14 @@ async function runCleanupCommand(cleanupCommand: string): Promise<void> {
 }
 
 describe("runWorkspaceCommand — platform shell (A-M13)", () => {
+  it("refuses persisted cleanup commands in cloud_auth before spawning a shell", async () => {
+    setDeploymentMode("cloud_auth");
+
+    const result = await runCleanupCommand("echo persisted-legacy-command");
+    expect(result.warnings.join("\n")).toMatch(/AOA_ALLOW_UNSANDBOXED_MULTITENANT/);
+    expect(spawnCalls).toHaveLength(0);
+  });
+
   it("uses powershell.exe with -Command on win32 when SHELL is unset", async () => {
     setPlatform("win32");
     const cmd = "echo am13-windows-marker";

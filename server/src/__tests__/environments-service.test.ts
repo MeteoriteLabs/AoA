@@ -26,13 +26,18 @@ vi.mock("@armyofagents/db", () => {
     });
   };
   return {
+    companies: makeTable("companies"),
     environments: makeTable("environments"),
     environmentLeases: makeTable("environment_leases"),
+    executionTargets: makeTable("execution_targets"),
   };
 });
 
-import { environmentService } from "../services/environments.js";
-import { environmentLeases, environments } from "@armyofagents/db";
+import {
+  environmentService,
+  mayCompanyPinExecutionTarget,
+} from "../services/environments.js";
+import { companies, environmentLeases, environments, executionTargets } from "@armyofagents/db";
 
 type MockRow = Record<string, unknown>;
 
@@ -63,6 +68,7 @@ function createSequenceDb(
       "set",
       "onConflictDoUpdate",
       "orderBy",
+      "for",
     ]) {
       chain[m] = (..._args: unknown[]) => chain;
     }
@@ -80,6 +86,9 @@ function createSequenceDb(
 }
 
 const COMPANY = "00000000-0000-0000-0000-000000000001";
+const ORG = "00000000-0000-0000-0000-000000000011";
+const OTHER_ORG = "00000000-0000-0000-0000-000000000012";
+const TARGET = "00000000-0000-0000-0000-000000000021";
 
 function makeEnv(overrides: Partial<MockRow> = {}): MockRow {
   return {
@@ -129,6 +138,61 @@ describe("environmentService", () => {
   beforeEach(() => {
     mockEq.mockClear();
     mockAnd.mockClear();
+  });
+
+  describe("execution-target ownership", () => {
+    it("allows system targets and same-Organization targets only", () => {
+      expect(mayCompanyPinExecutionTarget(ORG, null)).toBe(true);
+      expect(mayCompanyPinExecutionTarget(ORG, ORG)).toBe(true);
+      expect(mayCompanyPinExecutionTarget(ORG, OTHER_ORG)).toBe(false);
+      expect(mayCompanyPinExecutionTarget(null, ORG)).toBe(false);
+    });
+
+    it("creates with a same-Organization execution target", async () => {
+      const env = makeEnv({ executionTargetId: TARGET });
+      const db = createSequenceDb({
+        selects: [[{ organizationId: ORG }], [{ organizationId: ORG }]],
+        inserts: [[env]],
+      });
+
+      const result = await environmentService(db).create(COMPANY, {
+        name: "production",
+        executionTargetId: TARGET,
+      });
+
+      expect(result).toEqual(env);
+      expect(mockEq).toHaveBeenCalledWith(companies.id, COMPANY);
+      expect(mockEq).toHaveBeenCalledWith(executionTargets.id, TARGET);
+    });
+
+    it("uses the same non-enumerating 422 for missing and cross-Organization targets", async () => {
+      const crossOrgDb = createSequenceDb({
+        selects: [[{ organizationId: ORG }], [{ organizationId: OTHER_ORG }]],
+      });
+      const missingDb = createSequenceDb({
+        selects: [[{ organizationId: ORG }], []],
+      });
+
+      for (const db of [crossOrgDb, missingDb]) {
+        await expect(environmentService(db).create(COMPANY, {
+          name: "production",
+          executionTargetId: TARGET,
+        })).rejects.toMatchObject({
+          status: 422,
+          message: "Execution target is unavailable for this company",
+        });
+      }
+    });
+
+    it("preserves omitted updates and permits an explicit null clear without ownership reads", async () => {
+      const omitted = makeEnv({ name: "renamed", executionTargetId: TARGET });
+      const cleared = makeEnv({ executionTargetId: null });
+      const db = createSequenceDb({ updates: [[omitted], [cleared]] });
+      const svc = environmentService(db);
+
+      expect(await svc.update(COMPANY, "e1", { name: "renamed" })).toEqual(omitted);
+      expect(await svc.update(COMPANY, "e1", { executionTargetId: null })).toEqual(cleared);
+    });
   });
 
   describe("list", () => {

@@ -29,7 +29,7 @@ export function onboardingRoutes(db: Db): Router {
     }
     const raw = req.query.companyId;
     const companyId = typeof raw === "string" && raw.length > 0 ? raw : null;
-    if (companyId) assertCompanyAccess(req, companyId);
+    if (companyId) await assertCompanyAccess(db, req, companyId);
     const progress = await getProgress(db, actor.userId, companyId);
     res.json({ progress });
   });
@@ -52,7 +52,7 @@ export function onboardingRoutes(db: Db): Router {
       return;
     }
     const companyId = typeof body.companyId === "string" && body.companyId.length > 0 ? body.companyId : null;
-    if (companyId) assertCompanyAccess(req, companyId);
+    if (companyId) await assertCompanyAccess(db, req, companyId);
     const result = await advanceState(db, { userId: actor.userId, companyId, journey, requestedState });
     if (result.status === "illegal") {
       res.status(409).json({ error: "illegal transition", reason: result.reason });
@@ -90,7 +90,7 @@ export function onboardingRoutes(db: Db): Router {
       res.status(400).json({ error: "companyId is required" });
       return;
     }
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     let persona: FirstRunPersona | undefined;
     if (body.firstRunPersona !== undefined && body.firstRunPersona !== null) {

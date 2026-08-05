@@ -80,13 +80,14 @@ export async function emitPullRequestTaskOutput(db: Db, input: PullRequestInput)
 export async function emitRuntimeServiceTaskOutput(db: Db, row: RuntimeServiceInput) {
   if (!row.issueId) return null;
   try {
+    const active = row.status === "running" || row.status === "starting";
     return await taskOutputService(db).upsertForIssue(row.companyId, row.issueId, {
-      type: row.url ? "preview_url" : "runtime_service",
+      type: active && row.url ? "preview_url" : "runtime_service",
       provider: row.provider,
       externalId: `runtime-service:${row.id}`,
       executionWorkspaceId: row.executionWorkspaceId ?? null,
       runtimeServiceId: row.id,
-      url: row.url ?? null,
+      url: active ? row.url ?? null : null,
       title: row.serviceName,
       status: runtimeTaskOutputStatus(row.status),
       reviewState: "none",

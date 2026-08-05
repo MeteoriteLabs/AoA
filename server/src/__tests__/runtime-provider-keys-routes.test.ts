@@ -73,7 +73,7 @@ describe("runtime provider key routes", () => {
     const res = await request(app()).get(`/companies/${companyId}/runtime-provider-keys`);
 
     expect(res.status).toBe(200);
-    expect(mocks.assertCompanyAccess).toHaveBeenCalledWith(expect.anything(), companyId);
+    expect(mocks.assertCompanyAccess).toHaveBeenCalledWith(expect.anything(), expect.anything(), companyId);
     expect(mocks.list).toHaveBeenCalledWith(companyId);
   });
 
@@ -133,7 +133,7 @@ describe("runtime provider key routes", () => {
       .send({ displayName: "Team E2B" });
 
     expect(res.status).toBe(200);
-    expect(mocks.assertCompanyAccess).toHaveBeenCalledWith(expect.anything(), companyId);
+    expect(mocks.assertCompanyAccess).toHaveBeenCalledWith(expect.anything(), expect.anything(), companyId);
     expect(mocks.update).toHaveBeenCalledWith("key-1", { displayName: "Team E2B" });
     expect(mocks.logActivity).toHaveBeenCalledWith(
       expect.anything(),

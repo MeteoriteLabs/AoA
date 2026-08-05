@@ -3,6 +3,15 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { FirstRunHome } from "../FirstRunHome";
 
+const deploymentMode = vi.hoisted(() => ({ value: "local_trusted" as string }));
+vi.mock("@tanstack/react-query", async () => {
+  const actual = await vi.importActual<typeof import("@tanstack/react-query")>("@tanstack/react-query");
+  return {
+    ...actual,
+    useQuery: () => ({ data: { deploymentMode: deploymentMode.value } }),
+  };
+});
+
 const getFirstRunProgress = vi.hoisted(() =>
   vi.fn(async () => ({ firstRunPersona: null as string | null, firstRunCompleted: false })),
 );
@@ -15,14 +24,15 @@ vi.mock("../../api/onboarding", () => ({
 }));
 
 vi.mock("../inflight/InFlightFlow", () => ({
-  InFlightFlow: ({ onDone }: { onDone: () => void }) => (
-    <button onClick={onDone}>finish-in-flight</button>
+  InFlightFlow: ({ onDone, deploymentMode: mode }: { onDone: () => void; deploymentMode?: string }) => (
+    <button onClick={onDone}>finish-in-flight:{mode ?? "unknown"}</button>
   ),
 }));
 
 describe("FirstRunHome (WS9)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    deploymentMode.value = "local_trusted";
     getFirstRunProgress.mockResolvedValue({ firstRunPersona: null, firstRunCompleted: false });
     setFirstRunPersona.mockResolvedValue(undefined);
     setFirstRunCompleted.mockResolvedValue(undefined);
@@ -42,7 +52,7 @@ describe("FirstRunHome (WS9)", () => {
 
     await waitFor(() => expect(onComplete).toHaveBeenCalled());
     expect(screen.queryByRole("button", { name: /bring a project in motion/i })).not.toBeInTheDocument();
-    expect(screen.queryByText("finish-in-flight")).not.toBeInTheDocument();
+    expect(screen.queryByText(/finish-in-flight/)).not.toBeInTheDocument();
   });
 
   it("picking In-flight writes the persona, then routes into InFlightFlow", async () => {
@@ -52,7 +62,7 @@ describe("FirstRunHome (WS9)", () => {
     await user.click(await screen.findByRole("button", { name: /bring a project in motion/i }));
 
     await waitFor(() => expect(setFirstRunPersona).toHaveBeenCalledWith("co-1", "in_flight"));
-    expect(await screen.findByText("finish-in-flight")).toBeInTheDocument();
+    expect(await screen.findByText("finish-in-flight:local_trusted")).toBeInTheDocument();
     expect(setFirstRunCompleted).not.toHaveBeenCalled();
   });
 
@@ -72,7 +82,7 @@ describe("FirstRunHome (WS9)", () => {
     getFirstRunProgress.mockResolvedValue({ firstRunPersona: "in_flight", firstRunCompleted: false });
     render(<FirstRunHome companyId="co-1" />);
 
-    expect(await screen.findByText("finish-in-flight")).toBeInTheDocument();
+    expect(await screen.findByText("finish-in-flight:local_trusted")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /bring a project in motion/i })).toBeNull();
   });
 
@@ -82,8 +92,17 @@ describe("FirstRunHome (WS9)", () => {
     const onComplete = vi.fn();
     render(<FirstRunHome companyId="co-1" onComplete={onComplete} />);
 
-    await user.click(await screen.findByText("finish-in-flight"));
+    await user.click(await screen.findByText("finish-in-flight:local_trusted"));
     expect(onComplete).toHaveBeenCalled();
+  });
+
+  it("threads cloud deployment mode into the in-flight execution boundary", async () => {
+    deploymentMode.value = "cloud_auth";
+    getFirstRunProgress.mockResolvedValue({ firstRunPersona: "in_flight", firstRunCompleted: false });
+
+    render(<FirstRunHome companyId="co-1" />);
+
+    expect(await screen.findByText("finish-in-flight:cloud_auth")).toBeInTheDocument();
   });
 
   it("code-review fix: a failed progress read shows a retry state, NOT the door band", async () => {

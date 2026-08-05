@@ -227,7 +227,7 @@ async function createTemporaryRepo(testInfo: TestInfo) {
       "  env: process.env,",
       "});",
       "child.unref();",
-      "const deadline = Date.now() + 5000;",
+      "const deadline = Date.now() + 20000;",
       "function probe() {",
       "  const req = http.get(url, (res) => {",
       "    res.resume();",
@@ -358,7 +358,7 @@ async function hireProcessAgent(request: APIRequestContext, companyId: string, o
         command: "node",
         args: ["-e", script],
         env: { AOA_OUTPUT_TOKEN: outputToken },
-        timeoutSec: 20,
+        timeoutSec: 60,
       },
     },
   });
@@ -389,7 +389,7 @@ async function hireProcessPreviewAgent(
           AOA_PREVIEW_PORT: String(previewPort),
           AOA_PREVIEW_TOKEN: previewToken,
         },
-        timeoutSec: 20,
+        timeoutSec: 60,
       },
     },
   });

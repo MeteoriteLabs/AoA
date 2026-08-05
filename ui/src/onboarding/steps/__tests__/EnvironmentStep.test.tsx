@@ -159,6 +159,6 @@ describe("assembled registry includes the environment step", () => {
     expect(env).toBeTruthy();
     expect(env?.order).toBe(3);
     expect(env?.journeys).toEqual(["founder"]);
-    expect(env?.dependsOn).toEqual(["ORGANIZATION_CREATED"]);
+    expect(env?.dependsOn).toEqual(["COMPANY_CREATED"]);
   });
 });

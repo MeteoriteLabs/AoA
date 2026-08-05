@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
+import { setDeploymentMode } from "../config/deployment-mode.js";
 
 // ── child_process.spawn mock ────────────────────────────────────────────────
 //
@@ -458,5 +459,55 @@ describe("extractViaCli — codex", () => {
 
     const call = spawnCalls.find((c) => c.command === "codex");
     expect(call!.killCount).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ── extractViaCli — cloud_auth fail-closed ───────────────────────────────────
+//
+// On multi-tenant AoA Cloud (cloud_auth) there is no per-tenant isolated
+// extraction path yet, and the shared host's CLI login belongs to the OPERATOR.
+// extractViaCli is the single universal chokepoint for all four extraction
+// sinks (discussion / debrief-push / file-import / crew memory-extract), so the
+// guard lives here and every caller already catches CliExtractionError. The
+// guard must throw BEFORE any subprocess spawn.
+
+describe("extractViaCli — cloud_auth fail-closed", () => {
+  afterEach(() => setDeploymentMode("local_trusted"));
+
+  it("refuses extraction on cloud_auth without spawning a CLI", async () => {
+    setDeploymentMode("cloud_auth");
+    const { extractViaCli } = await import("../services/extraction-cli.ts");
+    await expect(extractViaCli("claude", "sys", "content")).rejects.toMatchObject({
+      name: "CliExtractionError",
+      kind: "not_authed",
+    });
+    // No subprocess may be spawned on the refusal path.
+    expect(spawnCalls).toHaveLength(0);
+  });
+
+  it("refuses codex extraction on cloud_auth too", async () => {
+    setDeploymentMode("cloud_auth");
+    const { extractViaCli } = await import("../services/extraction-cli.ts");
+    await expect(extractViaCli("codex", "sys", "content")).rejects.toMatchObject({
+      name: "CliExtractionError",
+      kind: "not_authed",
+    });
+    expect(spawnCalls).toHaveLength(0);
+  });
+
+  it("does NOT refuse off-cloud — the guard is a no-op on self-hosted (HERMETIC, no spawn)", async () => {
+    setDeploymentMode("local_trusted");
+    const { extractViaCli } = await import("../services/extraction-cli.ts");
+    // Unsupported tool → the synchronous "Unsupported CLI tool" throw
+    // (extraction-cli.ts ~:165), NOT the cloud refusal, and NO subprocess spawn.
+    let caught: unknown;
+    try {
+      await extractViaCli("bogus-tool", "sys", "content");
+    } catch (e) {
+      caught = e;
+    }
+    expect((caught as Error)?.name).toBe("CliExtractionError");
+    expect(String((caught as Error)?.message)).not.toContain("AoA Cloud");
+    expect(spawnCalls).toHaveLength(0);
   });
 });

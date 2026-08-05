@@ -37,6 +37,16 @@ vi.mock("../services/index.js", () => ({
   logActivity: vi.fn(),
 }));
 
+// The D2 hardening gates the WHOLE existing-company import on founder/team_lead
+// via assertRole -> permissionService(db).getEffectiveRole. db is {} here, so
+// mock the permission service the rbac middleware imports and resolve a founder:
+// these tests assert the completion-policy (tasks:assign) gates, not the role
+// gate, so a founder lets the blanket role gate pass and preserves every
+// tasks:assign assertion below.
+vi.mock("../services/permissions.js", () => ({
+  permissionService: () => ({ getEffectiveRole: vi.fn(async () => "founder") }),
+}));
+
 function createApp(actorOverrides: Record<string, unknown> = {}) {
   const app = express();
   app.use(express.json());

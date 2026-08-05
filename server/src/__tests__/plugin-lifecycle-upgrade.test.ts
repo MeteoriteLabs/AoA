@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { afterEach, describe, it, expect, vi, beforeEach } from "vitest";
 
 // ── Hoisted mock state (vi.mock factories are hoisted before imports) ─────────
 
@@ -15,6 +15,7 @@ const { mockSaveSnapshot, mockGetById, mockUpdateStatus } = vi.hoisted(() => {
     apiVersion: "1.0",
     categories: [],
     lastError: null,
+    statusReasonCode: null,
     installedAt: new Date(),
     updatedAt: new Date(),
     catalogItemId: null,
@@ -22,9 +23,14 @@ const { mockSaveSnapshot, mockGetById, mockUpdateStatus } = vi.hoisted(() => {
   };
   const mockSaveSnapshot = vi.fn().mockResolvedValue(undefined);
   const mockGetById = vi.fn().mockResolvedValue(basePlugin);
-  const mockUpdateStatus = vi.fn().mockImplementation(
-    async (_id: string, { status }: { status: string }) => ({ ...basePlugin, status }),
-  );
+  const mockUpdateStatus = vi
+    .fn()
+    .mockImplementation(
+      async (_id: string, { status }: { status: string }) => ({
+        ...basePlugin,
+        status,
+      })
+    );
   return { mockSaveSnapshot, mockGetById, mockUpdateStatus };
 });
 
@@ -47,13 +53,85 @@ vi.mock("../services/plugin-registry.js", () => ({
   }),
 }));
 vi.mock("../services/plugin-loader.js", () => ({ pluginLoader: vi.fn() }));
-vi.mock("../middleware/logger.js", () => ({
-  logger: {
-    child: vi.fn(() => ({ info: vi.fn(), error: vi.fn(), warn: vi.fn() })),
-  },
-}));
+vi.mock("../middleware/logger.js", () => {
+  const logger = {
+    info: vi.fn(),
+    error: vi.fn(),
+    warn: vi.fn(),
+    child: vi.fn(),
+  };
+  logger.child.mockReturnValue(logger);
+  return { logger };
+});
 
-import { diffCapabilities, pluginLifecycleManager } from "../services/plugin-lifecycle.js";
+import {
+  diffCapabilities,
+  pluginLifecycleManager,
+} from "../services/plugin-lifecycle.js";
+import { createPluginHostServiceCleanup } from "../services/plugin-host-service-cleanup.js";
+import { setDeploymentMode } from "../config/deployment-mode.js";
+import {
+  CLOUD_PLUGIN_BLOCK_MESSAGE,
+  CloudPluginExecutionBlockedError,
+  PLUGIN_WORKER_BLOCKED_IN_CLOUD,
+} from "../services/cloud-plugin-execution.js";
+
+afterEach(() => setDeploymentMode("local_trusted"));
+
+describe("cloud plugin lifecycle policy", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUpdateStatus.mockImplementation(
+      async (
+        _id: string,
+        input: {
+          status: string;
+          lastError?: string | null;
+          statusReasonCode?: string | null;
+        }
+      ) => ({
+        id: "plugin-1",
+        pluginKey: "test.plugin",
+        companyId: "co-a",
+        status: input.status,
+        lastError: input.lastError ?? null,
+        statusReasonCode: input.statusReasonCode ?? null,
+      })
+    );
+  });
+
+  it("atomically persists the typed blocked state before activation", async () => {
+    setDeploymentMode("cloud_auth");
+    const loadSingle = vi.fn();
+    const lifecycle = pluginLifecycleManager({} as any, {
+      loader: { hasRuntimeServices: () => true, loadSingle } as any,
+    });
+
+    await expect(lifecycle.load("plugin-1")).rejects.toBeInstanceOf(
+      CloudPluginExecutionBlockedError
+    );
+    expect(mockUpdateStatus).toHaveBeenCalledWith("plugin-1", {
+      status: "error",
+      lastError: CLOUD_PLUGIN_BLOCK_MESSAGE,
+      statusReasonCode: PLUGIN_WORKER_BLOCKED_IN_CLOUD,
+    });
+    expect(loadSingle).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when persisting the blocked state fails", async () => {
+    setDeploymentMode("cloud_auth");
+    mockUpdateStatus.mockRejectedValueOnce(new Error("database unavailable"));
+    const loadSingle = vi.fn();
+    const lifecycle = pluginLifecycleManager({} as any, {
+      loader: { hasRuntimeServices: () => true, loadSingle } as any,
+    });
+
+    await expect(lifecycle.load("plugin-1")).rejects.toThrow(
+      "database unavailable"
+    );
+    expect(loadSingle).not.toHaveBeenCalled();
+  });
+});
 
 // ── diffCapabilities (pure function, no DB) ───────────────────────────────────
 
@@ -61,7 +139,7 @@ describe("plugin lifecycle upgrade helpers", () => {
   it("detects no new capabilities when sets are equal", () => {
     const delta = diffCapabilities(
       ["tools.register", "http.outbound"],
-      ["tools.register", "http.outbound"],
+      ["tools.register", "http.outbound"]
     );
     expect(delta).toEqual([]);
   });
@@ -69,7 +147,7 @@ describe("plugin lifecycle upgrade helpers", () => {
   it("detects newly added capabilities", () => {
     const delta = diffCapabilities(
       ["tools.register", "http.outbound"],
-      ["tools.register", "http.outbound", "jobs.create"],
+      ["tools.register", "http.outbound", "jobs.create"]
     );
     expect(delta).toEqual(["jobs.create"]);
   });
@@ -77,7 +155,7 @@ describe("plugin lifecycle upgrade helpers", () => {
   it("does not flag removed capabilities (backward compat is OK)", () => {
     const delta = diffCapabilities(
       ["tools.register", "http.outbound"],
-      ["tools.register"],
+      ["tools.register"]
     );
     expect(delta).toEqual([]);
   });
@@ -96,7 +174,9 @@ describe("upgrade() state machine", () => {
         discovered: { version: "2.0.0" },
       }),
     };
-    const lifecycle = pluginLifecycleManager({} as any, { loader: mockLoader as any });
+    const lifecycle = pluginLifecycleManager({} as any, {
+      loader: mockLoader as any,
+    });
     await lifecycle.upgrade("plugin-1");
 
     expect(mockSaveSnapshot).toHaveBeenCalledOnce();
@@ -105,7 +185,7 @@ describe("upgrade() state machine", () => {
       "co-a",
       "1.0.0",
       "@test/plugin",
-      { capabilities: ["tools.register"] },
+      { capabilities: ["tools.register"] }
     );
   });
 
@@ -117,7 +197,9 @@ describe("upgrade() state machine", () => {
         discovered: { version: "2.0.0" },
       }),
     };
-    const lifecycle = pluginLifecycleManager({} as any, { loader: mockLoader as any });
+    const lifecycle = pluginLifecycleManager({} as any, {
+      loader: mockLoader as any,
+    });
     const result = await lifecycle.upgrade("plugin-1");
     expect(result).toEqual({ version: "2.0.0", status: "ready" });
   });
@@ -133,12 +215,100 @@ describe("upgrade() state machine", () => {
         discovered: { version: "2.0.0" },
       }),
     };
-    const lifecycle = pluginLifecycleManager({} as any, { loader: mockLoader as any });
+    const lifecycle = pluginLifecycleManager({} as any, {
+      loader: mockLoader as any,
+    });
     const result = await lifecycle.upgrade("plugin-1");
     expect(result).toEqual({
       version: "2.0.0",
       status: "upgrade_pending",
       delta: ["jobs.create"],
     });
+  });
+});
+
+describe("runtime loader binding", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("uses the bound runtime loader for activation and deactivation", async () => {
+    const runtimeLoader = {
+      hasRuntimeServices: vi.fn(() => true),
+      loadSingle: vi.fn().mockResolvedValue({
+        success: true,
+        plugin: await mockGetById("plugin-1"),
+      }),
+      unloadSingle: vi.fn().mockResolvedValue(undefined),
+    };
+    const lifecycle = pluginLifecycleManager({} as any, {
+      loader: {} as any,
+    });
+    lifecycle.bindLoader(runtimeLoader as any);
+
+    await lifecycle.load("plugin-1");
+    expect(runtimeLoader.loadSingle).toHaveBeenCalledWith("plugin-1");
+
+    await lifecycle.disable("plugin-1", "test");
+    expect(runtimeLoader.unloadSingle).toHaveBeenCalledWith(
+      "plugin-1",
+      "test.plugin"
+    );
+  });
+
+  it("does not transition or activate an explicitly disabled upgrade", async () => {
+    mockGetById.mockResolvedValueOnce({
+      ...(await mockGetById("plugin-1")),
+      status: "upgrade_pending",
+    });
+    const runtimeLoader = {
+      isCompanyEnabled: vi.fn().mockResolvedValue(false),
+      hasRuntimeServices: vi.fn(() => true),
+      loadSingle: vi.fn(),
+      unloadSingle: vi.fn(),
+    };
+    const lifecycle = pluginLifecycleManager({} as any, {
+      loader: runtimeLoader as any,
+    });
+
+    await expect(lifecycle.enable("plugin-1")).rejects.toThrow(/disabled/);
+    expect(mockUpdateStatus).not.toHaveBeenCalled();
+    expect(runtimeLoader.loadSingle).not.toHaveBeenCalled();
+  });
+});
+
+describe("worker restart cleanup ordering", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("disposes the stopped generation before replacement setup, not after it", async () => {
+    const order: string[] = [];
+    let activeSubscriptions = 1;
+    const handle = {
+      stop: vi.fn(async () => {
+        order.push("stop");
+      }),
+      start: vi.fn(async () => {
+        order.push("start/setup");
+        activeSubscriptions = 1;
+      }),
+    };
+    const workerManager = {
+      getWorker: vi.fn(() => handle),
+    };
+    const lifecycle = pluginLifecycleManager({} as any, {
+      workerManager: workerManager as any,
+    });
+    const cleanup = createPluginHostServiceCleanup(lifecycle, new Map());
+    cleanup.replace("plugin-1", () => {
+      order.push("dispose");
+      activeSubscriptions = 0;
+    });
+    lifecycle.on("plugin.worker_started", () => order.push("started"));
+
+    await lifecycle.restartWorker("plugin-1");
+
+    expect(order).toEqual(["stop", "dispose", "start/setup", "started"]);
+    expect(activeSubscriptions).toBe(1);
+    expect(handle.stop).toHaveBeenCalledOnce();
+    expect(handle.start).toHaveBeenCalledOnce();
+    cleanup.teardown();
   });
 });

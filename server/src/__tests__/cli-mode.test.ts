@@ -1886,3 +1886,79 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
     }
   });
 });
+
+describe("cliModeService.chat — D1 multi-tenant unsandboxed gate", () => {
+  const OPT_IN = "AOA_ALLOW_UNSANDBOXED_MULTITENANT";
+  let savedOptIn: string | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.resetModules();
+    savedOptIn = process.env[OPT_IN];
+    delete process.env[OPT_IN];
+  });
+  afterEach(() => {
+    if (savedOptIn === undefined) delete process.env[OPT_IN];
+    else process.env[OPT_IN] = savedOptIn;
+  });
+
+  // cliTool:null makes the turn deterministic — the D1 gate runs FIRST; if it
+  // passes, the very next chunk is the "No CLI tool configured" error. No CLI
+  // detection, no spawn, no provider resolution, no hang. The deployment mode is
+  // set on the SAME freshly-reset module graph the gate will import.
+  async function firstError(
+    deploymentMode: "cloud_auth" | "local_trusted" | "authenticated",
+    configOverride: Record<string, unknown> = {},
+  ) {
+    const { setDeploymentMode } = await import("../config/deployment-mode.js");
+    setDeploymentMode(deploymentMode);
+    const { cliModeService } = await import("../services/internal-agent/cli-mode.js");
+    const service = cliModeService({} as any);
+    const chunks: any[] = [];
+    for await (const chunk of service.chat(
+      {
+        companyId: "comp1",
+        userId: "user1",
+        userRole: "founder",
+        content: "hi",
+        enabledCapabilities: [],
+        conversationId: "conv-a",
+      } as any,
+      { cliTool: null, executionMode: "cli", ...configOverride } as any,
+    )) {
+      chunks.push(chunk);
+      if (chunk.type === "error") break;
+    }
+    return chunks.find((c) => c.type === "error");
+  }
+
+  it("refuses a Commander turn on cloud_auth without the opt-in", async () => {
+    const err = await firstError("cloud_auth");
+    expect(err).toBeDefined();
+    expect(err.message).toContain(OPT_IN);
+    expect(err.message).toContain("Commander");
+  });
+
+  it("proceeds past the gate when the opt-in is set (falls through to the config check)", async () => {
+    process.env[OPT_IN] = "1";
+    const err = await firstError("cloud_auth");
+    expect(err).toBeDefined();
+    expect(err.message).not.toContain(OPT_IN);
+    expect(err.message).toContain("No CLI tool configured");
+  });
+
+  it("is a no-op on a self-hosted (local_trusted) install", async () => {
+    const err = await firstError("local_trusted");
+    expect(err).toBeDefined();
+    expect(err.message).not.toContain(OPT_IN);
+    expect(err.message).toContain("No CLI tool configured");
+  });
+
+  it("is a no-op on a self-hosted authenticated (single-tenant) install", async () => {
+    // ★ authenticated is NOT cloud_auth → tenantIsolationEnforced() false → no gate.
+    const err = await firstError("authenticated");
+    expect(err).toBeDefined();
+    expect(err.message).not.toContain(OPT_IN);
+    expect(err.message).toContain("No CLI tool configured");
+  });
+});

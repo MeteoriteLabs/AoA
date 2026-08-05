@@ -8,6 +8,7 @@ import type { DetectedOutput } from "@armyofagents/shared";
 import { logger } from "../middleware/logger.js";
 import { getStorageService } from "../storage/index.js";
 import { getContentType } from "../mime-types.js";
+import { assertLocalWorkspaceCommandAllowed } from "./local-workspace-command-guard.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -284,6 +285,7 @@ async function detectAndCaptureImpl(
   const isGit = await isGitRepo(cwd);
   if (isGit) {
     try {
+      assertLocalWorkspaceCommandAllowed("output-detection Git command");
       const gitPaths = await detectChangedFilesGit(cwd);
       detectedPaths = await filterPathsChangedSince(cwd, gitPaths, startedAt);
     } catch (err) {

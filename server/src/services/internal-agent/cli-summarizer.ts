@@ -1,5 +1,7 @@
 ﻿import { spawn } from "node:child_process";
-import { platform } from "node:os";
+import { platform, tmpdir } from "node:os";
+
+import { tenantIsolationEnforced } from "../../config/deployment-mode.js";
 
 interface SummarizeArgs {
   cliTool: string;
@@ -17,6 +19,17 @@ const PROMPT_PREFIX =
  * any failure as "skip compaction this turn").
  */
 export async function summarizeViaCli(args: SummarizeArgs): Promise<string> {
+  // Fail closed on AoA Cloud (cloud_auth): compaction must not summarize tenant
+  // transcripts through the shared host's operator login (the same class as the
+  // extraction fail-closed guard). The single caller (agent-loop.ts) treats any
+  // throw as "skip compaction this turn", so context simply isn't compacted on
+  // cloud until a per-tenant isolated summarization path exists.
+  if (tenantIsolationEnforced()) {
+    throw new Error(
+      "Compaction is unavailable on AoA Cloud (cloud_auth): no per-tenant isolated summarization path yet.",
+    );
+  }
+
   const isWin = platform() === "win32";
   const prompt = PROMPT_PREFIX + args.transcript;
   let bin: string;
@@ -45,6 +58,7 @@ export async function summarizeViaCli(args: SummarizeArgs): Promise<string> {
     const child = spawn(bin, argv, {
       stdio: ["pipe", "pipe", "pipe"],
       shell: isWin,
+      cwd: tmpdir(),
     });
 
     let out = "";

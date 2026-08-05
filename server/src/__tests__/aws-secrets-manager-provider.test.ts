@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createAwsSecretsManagerProvider, type AwsSecretsManagerGateway } from "../secrets/aws-secrets-manager-provider.js";
+import { SecretCandidateUnavailableError } from "../secrets/secret-candidate-errors.js";
 
 function config(extra: Record<string, unknown> = {}) {
   return {
@@ -101,5 +102,43 @@ describe("aws secrets manager provider", () => {
       externalRef: "arn:secret",
       providerConfig: config(),
     })).rejects.not.toThrow(/sk-live-secret|AKIA1234567890ABCDEF/);
+  });
+
+  it("types only AWS resource-not-found as candidate unavailable", async () => {
+    const missing = Object.assign(new Error("arn:aws:secretsmanager:secret:private-name"), {
+      name: "ResourceNotFoundException",
+    });
+    const { g } = gateway({ async getSecretValue() { throw missing; } });
+    const provider = createAwsSecretsManagerProvider({ gatewayFactory: () => g });
+    const resolution = provider.resolveVersion({
+      material: { scheme: "aws_secrets_manager_v1", externalRef: "arn:secret" },
+      externalRef: "arn:secret",
+      providerConfig: config(),
+    });
+
+    await expect(resolution).rejects.toBeInstanceOf(SecretCandidateUnavailableError);
+    await expect(resolution).rejects.toMatchObject({ code: "aws_secret_not_found" });
+    await expect(resolution).rejects.not.toThrow(/private-name/);
+  });
+
+  it("keeps non-not-found AWS failures systemic after sanitization", async () => {
+    const throttled = Object.assign(new Error("Authorization: signed SecretString=sk-private"), {
+      name: "ThrottlingException",
+    });
+    const { g } = gateway({ async getSecretValue() { throw throttled; } });
+    const provider = createAwsSecretsManagerProvider({ gatewayFactory: () => g });
+
+    try {
+      await provider.resolveVersion({
+        material: { scheme: "aws_secrets_manager_v1", externalRef: "arn:secret" },
+        externalRef: "arn:secret",
+        providerConfig: config(),
+      });
+      expect.fail("expected resolveVersion to reject");
+    } catch (error) {
+      expect(error).not.toBeInstanceOf(SecretCandidateUnavailableError);
+      expect(error).toMatchObject({ status: 422 });
+      expect(String(error)).not.toContain("sk-private");
+    }
   });
 });

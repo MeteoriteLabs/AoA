@@ -51,6 +51,11 @@ export function computeFounderMapBase(
     companyId,
     journey: "founder",
     completedStates: FOUNDER_PHASE1_STATES,
+    // No live organizationId here (post-spine, synthetic fully-complete
+    // context) — harmless: countVisibleSpineSteps/computeOnboardingBase only
+    // filter on journeys/shouldInclude, never isComplete, so this field isn't
+    // read for the count.
+    organizationId: null,
   };
   return computeOnboardingBase(registry, ctx);
 }

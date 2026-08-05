@@ -493,7 +493,7 @@ export function mcpConnectorRoutes(db: Db, opts: McpConnectorRouteOptions = {}) 
   router.get("/companies/:companyId/mcp-connectors", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertBoard(req);
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const rows = await svc.list(companyId);
     res.json(rows);
   });
@@ -526,7 +526,7 @@ export function mcpConnectorRoutes(db: Db, opts: McpConnectorRouteOptions = {}) 
   router.get("/companies/:companyId/mcp-connectors/catalog", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertBoard(req);
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     await assertRole(db, req, companyId, "founder");
 
     const nowMs = Date.now();
@@ -674,7 +674,7 @@ export function mcpConnectorRoutes(db: Db, opts: McpConnectorRouteOptions = {}) 
     async (req, res) => {
       const companyId = req.params.companyId as string;
       assertBoard(req);
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       await assertRole(db, req, companyId, "founder");
 
       const { entryId, consentToken } = req.body as z.infer<typeof installFromCatalogSchema>;
@@ -760,7 +760,7 @@ export function mcpConnectorRoutes(db: Db, opts: McpConnectorRouteOptions = {}) 
     async (req, res) => {
       const companyId = req.params.companyId as string;
       assertBoard(req);
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       await assertRole(db, req, companyId, "founder");
 
       const body = req.body as z.infer<typeof createConnectorSchema>;
@@ -845,7 +845,7 @@ export function mcpConnectorRoutes(db: Db, opts: McpConnectorRouteOptions = {}) 
       const companyId = req.params.companyId as string;
       const id = req.params.id as string;
       assertBoard(req);
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       await assertRole(db, req, companyId, "founder");
 
       const existing = await svc.getById(id);
@@ -948,7 +948,7 @@ export function mcpConnectorRoutes(db: Db, opts: McpConnectorRouteOptions = {}) 
       const companyId = req.params.companyId as string;
       const id = req.params.id as string;
       assertBoard(req);
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       await assertRole(db, req, companyId, "founder");
 
       const existing = await svc.getById(id);
@@ -1051,7 +1051,7 @@ export function mcpConnectorRoutes(db: Db, opts: McpConnectorRouteOptions = {}) 
     const companyId = req.params.companyId as string;
     const id = req.params.id as string;
     assertBoard(req);
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     await assertRole(db, req, companyId, "founder");
 
     const existing = await svc.getById(id);
@@ -1089,7 +1089,7 @@ export function mcpConnectorRoutes(db: Db, opts: McpConnectorRouteOptions = {}) 
       const companyId = req.params.companyId as string;
       const id = req.params.id as string;
       assertBoard(req);
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       await assertRole(db, req, companyId, "founder");
 
       const existing = await svc.getById(id);

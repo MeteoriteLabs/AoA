@@ -64,6 +64,7 @@ vi.mock("../services/threads.js", () => ({
 // assertRole (rbac middleware) — the create route awaits it. No-op (allow).
 vi.mock("../middleware/rbac.js", () => ({
   assertRole: vi.fn().mockResolvedValue(undefined),
+  assertHumanRole: vi.fn().mockResolvedValue(undefined),
 }));
 
 import { discussionRoutes } from "../routes/discussions.js";

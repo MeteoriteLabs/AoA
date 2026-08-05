@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Sidebar } from "@/components/Sidebar";
 import { SidebarProvider } from "@/context/SidebarContext";
 import { DialogProvider } from "@/context/DialogContext";
+import { pluginsApi } from "@/api/plugins";
 
 // Mock APIs the sidebar pulls from
 vi.mock("@/api/sidebarBadges", () => ({
@@ -58,12 +59,21 @@ function renderSidebar() {
 }
 
 beforeEach(() => {
+  vi.mocked(pluginsApi.listUiContributions).mockClear();
   // Force desktop dimensions for these tests
   Object.defineProperty(window, "innerWidth", { writable: true, configurable: true, value: 1280 });
   window.dispatchEvent(new Event("resize"));
 });
 
 describe("Sidebar — Phase E chrome", () => {
+  it("discovers plugin pages only for the selected company", async () => {
+    renderSidebar();
+
+    await waitFor(() => {
+      expect(pluginsApi.listUiContributions).toHaveBeenCalledWith("c1");
+    });
+  });
+
   it("does not render Marketplace nav item", () => {
     renderSidebar();
     expect(screen.queryByText("Marketplace")).toBeNull();

@@ -181,14 +181,17 @@ export interface PluginDefinition {
    * @param config - The configuration to validate
    * @see PLUGIN_SPEC.md §13.3 — `validateConfig`
    */
-  onValidateConfig?(config: Record<string, unknown>): Promise<PluginConfigValidationResult>;
+  onValidateConfig?(
+    config: Record<string, unknown>
+  ): Promise<PluginConfigValidationResult>;
 
   /**
    * Called to handle an inbound webhook delivery.
    *
    * The host routes `POST /api/plugins/:pluginId/webhooks/:endpointKey` to
-   * this handler. The plugin is responsible for signature verification using
-   * a resolved secret ref.
+   * this handler. `:pluginId` is the installed row UUID exposed as
+   * `PluginHostContext.pluginInstallationId`, not the manifest ID/key. The
+   * plugin is responsible for signature verification using a resolved secret ref.
    *
    * If not implemented but webhooks are declared in the manifest, the host
    * returns HTTP 501 for webhook deliveries.

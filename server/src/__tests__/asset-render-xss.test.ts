@@ -169,7 +169,7 @@ describe("GET /assets/:assetId/render (generic DOCX render + XSS sanitization)",
 
     expect(res.status).toBe(200);
     expect(mockService.getById).toHaveBeenCalledWith(assetId);
-    expect(storage.getObject).toHaveBeenCalledWith(companyId, "objects/asset-1.docx");
+    expect(storage.getObject).toHaveBeenCalledWith(null, companyId, "objects/asset-1.docx");
   });
 
   it("rejects a non-DOCX asset with 415 and never attempts conversion", async () => {

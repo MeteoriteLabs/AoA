@@ -27,7 +27,7 @@ export function memorySettingsRoutes(db: Db) {
 
   router.get("/companies/:companyId/memory-settings", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     res.json(await svc.list(companyId));
   });
 
@@ -36,7 +36,7 @@ export function memorySettingsRoutes(db: Db) {
     validate(upsertSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       assertBoard(req);
       await assertRole(db, req, companyId, "founder", "team_lead");
       const { departmentId, ...patch } = req.body as z.infer<typeof upsertSchema>;
@@ -69,7 +69,7 @@ export function memorySettingsRoutes(db: Db) {
       if (!z.string().uuid().safeParse(departmentId).success) {
         throw badRequest("Invalid departmentId");
       }
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(db, req, companyId);
       assertBoard(req);
       await assertRole(db, req, companyId, "founder", "team_lead");
       if (!(await svc.getDepartment(companyId, departmentId))) {

@@ -4,27 +4,42 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@armyofagents/db";
-import type { DeploymentExposure, DeploymentMode, PaperclipPluginManifestV1 } from "@armyofagents/shared";
+import type {
+  DeploymentExposure,
+  DeploymentMode,
+  PaperclipPluginManifestV1,
+} from "@armyofagents/shared";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
+import { tenantContextMiddleware } from "./middleware/tenant-context.js";
+import { setDeploymentMode } from "./config/deployment-mode.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
-import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
+import {
+  privateHostnameGuard,
+  resolvePrivateHostnameAllowSet,
+} from "./middleware/private-hostname-guard.js";
 import { buildHelmetOptions } from "./services/helmet-options.js";
 import { extractInlineScriptHashes } from "./services/csp-script-hashes.js";
 import { healthRoutes } from "./routes/health.js";
 import { onboardingJourneyRoutes } from "./routes/onboarding-journey.js";
 import { onboardingRoutes } from "./routes/onboarding.js";
 import { onboardingJoinRoutes } from "./routes/onboarding-join.js";
-import { testSupportRoutes } from "./routes/test-support.js";
+import {
+  testSupportEnabled,
+  testSupportRoutes,
+} from "./routes/test-support.js";
 import { onboardingEnvironmentRoutes } from "./routes/onboarding-environment.js";
 import { commanderVerifyRoutes } from "./routes/commander-verify.js";
 import { commanderKeyRoutes } from "./routes/commander-key.js";
 import { commanderLoginRoutes } from "./routes/commander-login.js";
 import { providerCredentialRoutes } from "./routes/provider-credentials.js";
+import { providerConnectionRoutes } from "./routes/provider-connections.js";
+import { resolveCliAuthTopology } from "./services/cli-auth-topology.js";
 import { userProfileRoutes } from "./routes/user-profiles.js";
 import { operationsHealthRoutes } from "./routes/operations-health.js";
 import { companyRoutes } from "./routes/companies.js";
+import { organizationRoutes } from "./routes/organizations.js";
 import { agentRoutes } from "./routes/agents.js";
 import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
@@ -94,6 +109,8 @@ import { instanceSettingsRoutes } from "./routes/instance-settings.js";
 import { cliAuthRoutes } from "./routes/cli-auth.js";
 import { authProfileRoutes } from "./routes/auth-profile.js";
 import { environmentRoutes } from "./routes/environments.js";
+import { orgSpendRoutes } from "./routes/org-spend.js";
+import { executionTargetRoutes } from "./routes/execution-targets.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { workspaceGitRoutes } from "./routes/workspace-git.js";
 import { filesystemRoutes } from "./routes/filesystem.js";
@@ -109,7 +126,10 @@ import { createAdminMarketplaceRouter } from "./routes/admin-marketplace.js";
 import { createMarketplaceInstallRouter } from "./routes/marketplace-installs.js";
 import { createMarketplaceCompanyRouter } from "./routes/marketplace-company.js";
 import { providerRoutes } from "./routes/providers.js";
-import { MarketplaceCatalogService, registerMarketplaceCatalogService } from "./services/aoa-marketplace.js";
+import {
+  MarketplaceCatalogService,
+  registerMarketplaceCatalogService,
+} from "./services/aoa-marketplace.js";
 import {
   inspectMarketplaceReconciliation,
   runMarketplaceReconciliation,
@@ -126,7 +146,12 @@ import { pluginJobStore } from "./services/plugin-job-store.js";
 import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js";
 import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
 import { buildHostServices } from "./services/plugin-host-services.js";
-import { SPA_FALLBACK_ROUTE, spaFallbackHandler } from "./services/spa-fallback.js";
+import { createPluginHostServiceCleanup } from "./services/plugin-host-service-cleanup.js";
+import { guardPluginHostHandlers } from "./services/plugin-availability.js";
+import {
+  SPA_FALLBACK_ROUTE,
+  spaFallbackHandler,
+} from "./services/spa-fallback.js";
 import { createHostClientHandlers } from "@armyofagents/plugin-sdk";
 import { resolveAoaInstanceId } from "./home-paths.js";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
@@ -144,7 +169,9 @@ const SERVER_VERSION = (() => {
     ];
     for (const p of candidates) {
       if (fs.existsSync(p)) {
-        const pkg = JSON.parse(fs.readFileSync(p, "utf-8")) as { version?: string };
+        const pkg = JSON.parse(fs.readFileSync(p, "utf-8")) as {
+          version?: string;
+        };
         if (pkg.version) return pkg.version;
       }
     }
@@ -170,10 +197,17 @@ export async function createApp(
     companyDeletionEnabled: boolean;
     trustProxy: boolean | number | string[];
     betterAuthHandler?: express.RequestHandler;
-    resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
+    resolveSession?: (
+      req: ExpressRequest
+    ) => Promise<BetterAuthSessionResult | null>;
     devLocalIdentity?: boolean;
-  },
+  }
 ) {
+  // Pin the STATIC deployment-mode enforcement source once at boot, before any
+  // router mounts. tenantIsolationEnforced() reads this — never req.tenant —
+  // so authz/rbac/access fail closed even if per-request middleware is skipped.
+  setDeploymentMode(opts.deploymentMode);
+
   const app = express();
   app.set("trust proxy", opts.trustProxy);
 
@@ -204,7 +238,7 @@ export async function createApp(
   const captureRawBody = (
     req: express.Request,
     _res: express.Response,
-    buf: Buffer,
+    buf: Buffer
   ) => {
     if (buf && buf.length > 0) {
       (req as unknown as { rawBody?: Buffer }).rawBody = buf;
@@ -218,21 +252,26 @@ export async function createApp(
   // express.json() ensures it wins on the matching paths.
   app.use(
     ["/api/companies/import", "/api/companies/import/preview"],
-    express.json({ limit: "20mb", verify: captureRawBody }),
+    express.json({ limit: "20mb", verify: captureRawBody })
   );
   app.use(httpLogger);
   // Strict CSP + tightened cross-origin policies in production deployment
   // modes. Vite-HMR dev (local_trusted + non-production node env) skips CSP
   // because HMR's runtime needs inline scripts + WebSocket + eval.
   // See `services/helmet-options.ts` for the full directive set.
-  app.use(helmet(buildHelmetOptions({
-    deploymentMode: opts.deploymentMode,
-    uiMode: opts.uiMode,
-    nodeEnv: process.env.NODE_ENV,
-    inlineScriptHashes,
-  })));
+  app.use(
+    helmet(
+      buildHelmetOptions({
+        deploymentMode: opts.deploymentMode,
+        uiMode: opts.uiMode,
+        nodeEnv: process.env.NODE_ENV,
+        inlineScriptHashes,
+      })
+    )
+  );
   const privateHostnameGateEnabled =
-    opts.deploymentMode === "authenticated" && opts.deploymentExposure === "private";
+    opts.deploymentMode === "authenticated" &&
+    opts.deploymentExposure === "private";
   const privateHostnameAllowSet = resolvePrivateHostnameAllowSet({
     allowedHostnames: opts.allowedHostnames,
     bindHost: opts.bindHost,
@@ -242,15 +281,19 @@ export async function createApp(
       enabled: privateHostnameGateEnabled,
       allowedHostnames: opts.allowedHostnames,
       bindHost: opts.bindHost,
-    }),
+    })
   );
   app.use(
     actorMiddleware(db, {
       deploymentMode: opts.deploymentMode,
       devLocalIdentity: opts.devLocalIdentity,
       resolveSession: opts.resolveSession,
-    }),
+    })
   );
+  // Reserved per-request tenant hint (req.tenant). NOT the enforcement source —
+  // isolation is driven by the static tenantIsolationEnforced(). Mounted after
+  // actorMiddleware (needs the actor) and before boardMutationGuard.
+  app.use(tenantContextMiddleware());
   // Runtime previews are a streaming proxy, not JSON API routes. Mount before
   // the global body parser so POST/PUT/uploads reach the upstream unchanged.
   app.use("/preview", createPreviewRouter(db));
@@ -264,16 +307,28 @@ export async function createApp(
   app.use("/api", onboardingJourneyRoutes(db));
   app.use("/api", onboardingRoutes(db));
   app.use("/api", onboardingJoinRoutes(db));
-  // Test-only e2e support — fail-closed: local_trusted + the e2e escape hatch
-  // only, never in authenticated mode.
-  if (opts.deploymentMode === "local_trusted" && process.env.AOA_DEV_LOCAL_IDENTITY === "1") {
-    app.use("/api", testSupportRoutes(db, { deploymentMode: opts.deploymentMode }));
+  // Test-only e2e support. Dedicated cloud-mode support is fail-closed at
+  // startup; local_trusted retains its developer-identity escape hatch.
+  if (testSupportEnabled(opts.deploymentMode)) {
+    app.use(
+      "/api",
+      testSupportRoutes(db, { deploymentMode: opts.deploymentMode })
+    );
   }
   app.use("/api", onboardingEnvironmentRoutes(db));
   app.use("/api", commanderVerifyRoutes(db));
   app.use("/api", commanderKeyRoutes(db));
   app.use("/api", commanderLoginRoutes(db));
   app.use("/api", providerCredentialRoutes(db));
+  // Phase 4: founder REST for provider_connections. No CliAuthTopology instance is
+  // in scope at this mount, so resolve it once from the same deployment axes the
+  // rest of app.ts threads (mirrors how other routes consume opts.deploymentMode /
+  // deploymentExposure). Reused by the connection service's cloud_auth gate.
+  const cliAuthTopology = resolveCliAuthTopology({
+    deploymentMode: opts.deploymentMode,
+    deploymentExposure: opts.deploymentExposure,
+  });
+  app.use("/api", providerConnectionRoutes(db, cliAuthTopology));
   app.use("/api", userProfileRoutes(db));
   // Email/password auth is removed — Google is the only provider (see
   // buildBetterAuthConfig). The dedicated /sign-in/email, /sign-up/email and
@@ -294,7 +349,7 @@ export async function createApp(
       deploymentExposure: opts.deploymentExposure,
       authReady: opts.authReady,
       companyDeletionEnabled: opts.companyDeletionEnabled,
-    }),
+    })
   );
   api.use(
     operationsHealthRoutes(db, {
@@ -304,9 +359,13 @@ export async function createApp(
       companyDeletionEnabled: opts.companyDeletionEnabled,
       bindHost: opts.bindHost,
       allowedHostnames: opts.allowedHostnames,
-    }),
+    })
   );
-  api.use("/companies", companyRoutes(db, { deploymentMode: opts.deploymentMode }));
+  api.use(
+    "/companies",
+    companyRoutes(db, { deploymentMode: opts.deploymentMode })
+  );
+  api.use("/organizations", organizationRoutes(db));
   // Settings -> Providers. Path-mounted (mergeParams) so the provider endpoints
   // share one /companies/:companyId/providers prefix.
   api.use("/companies/:companyId/providers", providerRoutes(db));
@@ -330,7 +389,9 @@ export async function createApp(
   // as a UUID and 500ing).
   api.use(memoryFoldersRoutes({ db }));
   api.use(memoryAssetsRoutes({ db, storageService: opts.storageService }));
-  api.use(memoryAssetsUploadRoutes({ db, storageService: opts.storageService }));
+  api.use(
+    memoryAssetsUploadRoutes({ db, storageService: opts.storageService })
+  );
   api.use(memoryAssetRenderRoutes({ db, storageService: opts.storageService }));
   api.use(memoryRoutes(db));
   api.use(memorySettingsRoutes(db));
@@ -377,14 +438,17 @@ export async function createApp(
   api.use(instanceSettingsRoutes(db));
   api.use(cliAuthRoutes(db));
   api.use(environmentRoutes({ db }));
+  api.use(orgSpendRoutes({ db }));
+  api.use(executionTargetRoutes({ db }));
   api.use(executionWorkspaceRoutes(db));
   api.use(workspaceGitRoutes(db));
   api.use(filesystemRoutes());
   api.use(
     companyWorkspaceFsRoutes({
+      db,
       deploymentMode: opts.deploymentMode,
       companyWorkspaceBaseDir: opts.companyWorkspaceBaseDir,
-    }),
+    })
   );
   api.use(adapterRoutes());
   api.use(activityRoutes(db));
@@ -403,11 +467,17 @@ export async function createApp(
       deploymentExposure: opts.deploymentExposure,
       bindHost: opts.bindHost,
       allowedHostnames: opts.allowedHostnames,
-    }),
+    })
   );
 
   // Plugin subsystem initialization
-  const workerMgr = createPluginWorkerManager();
+  const hostServiceDisposers = new Map<string, () => void>();
+  let hostServiceCleanup:
+    | ReturnType<typeof createPluginHostServiceCleanup>
+    | undefined;
+  const workerMgr = createPluginWorkerManager({
+    onWorkerEvent: (event) => hostServiceCleanup?.handleWorkerEvent(event),
+  });
   const eventBus = createPluginEventBus();
   const streamBus = createPluginStreamBus();
   const jobStoreInst = pluginJobStore(db);
@@ -423,6 +493,10 @@ export async function createApp(
   const lifecycleMgr = pluginLifecycleManager(db, {
     workerManager: workerMgr,
   });
+  hostServiceCleanup = createPluginHostServiceCleanup(
+    lifecycleMgr,
+    hostServiceDisposers
+  );
   const jobCoordinatorInst = createPluginJobCoordinator({
     db,
     lifecycle: lifecycleMgr,
@@ -439,39 +513,75 @@ export async function createApp(
     jobScheduler: jobSchedulerInst,
     jobStore: jobStoreInst,
     toolDispatcher: toolDispatcherInst,
+    streamBus,
     lifecycleManager: lifecycleMgr,
-    buildHostHandlers: (pluginId: string, manifest: PaperclipPluginManifestV1) => {
-      const services = buildHostServices(db, pluginId, manifest.id, eventBus);
-      return createHostClientHandlers({
+    buildHostHandlers: (
+      pluginId: string,
+      manifest: PaperclipPluginManifestV1
+    ) => {
+      // A manual reload may create a fresh service bundle for the same row.
+      // Dispose the previous generation before replacing its disposer.
+      const services = buildHostServices(
+        db,
         pluginId,
-        capabilities: manifest.capabilities ?? [],
-        services,
-      });
+        manifest.id,
+        eventBus,
+        (method, params) =>
+          workerMgr.getWorker(pluginId)?.notify(method, params)
+      );
+      hostServiceCleanup?.replace(pluginId, () => services.dispose());
+      return guardPluginHostHandlers(
+        db,
+        pluginId,
+        createHostClientHandlers({
+          pluginId,
+          capabilities: manifest.capabilities ?? [],
+          services,
+        })
+      );
     },
+    disposeHostServices: (pluginId: string) =>
+      hostServiceCleanup?.disposePlugin(pluginId),
+    disposeAllHostServices: () => hostServiceCleanup?.disposeAll(),
     instanceInfo: {
       instanceId: resolveAoaInstanceId(),
       hostVersion: SERVER_VERSION,
     },
   };
   const loaderInst = pluginLoader(db, {}, pluginRuntimeServices);
+  // The plugin loader and lifecycle manager depend on each other. Bind the
+  // runtime-aware loader once composition is complete so every route and
+  // marketplace path activates/deactivates the same workers, jobs, events,
+  // and tools instead of using the lifecycle's construction-time fallback.
+  lifecycleMgr.bindLoader(loaderInst);
 
-  api.use(pluginRoutes(db, loaderInst, {
-    scheduler: jobSchedulerInst,
-    jobStore: jobStoreInst,
-  }, {
-    workerManager: workerMgr,
-  }, {
-    toolDispatcher: toolDispatcherInst,
-  }, {
-    workerManager: workerMgr,
-    streamBus,
-  }));
-  api.use(pluginCompanySettingsRoutes(db));
+  api.use(
+    pluginRoutes(
+      db,
+      loaderInst,
+      {
+        scheduler: jobSchedulerInst,
+        jobStore: jobStoreInst,
+      },
+      {
+        workerManager: workerMgr,
+      },
+      {
+        toolDispatcher: toolDispatcherInst,
+      },
+      {
+        workerManager: workerMgr,
+        streamBus,
+      },
+      lifecycleMgr
+    )
+  );
+  api.use(pluginCompanySettingsRoutes(db, lifecycleMgr));
 
   // Company-scoped plugin management (M.4)
   api.use(
     "/companies/:companyId/plugins",
-    companyPluginRoutes(db, lifecycleMgr, loaderInst),
+    companyPluginRoutes(db, lifecycleMgr, loaderInst)
   );
 
   // Marketplace catalog service + routes
@@ -490,7 +600,9 @@ export async function createApp(
       try {
         const snapshotPath = "../../ui/src/aoa-marketplace-snapshot.json";
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const snapshot = (await import(snapshotPath, { with: { type: "json" } })) as { default: unknown };
+        const snapshot = (await import(snapshotPath, {
+          with: { type: "json" },
+        })) as { default: unknown };
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         return snapshot.default as any;
       } catch {
@@ -503,7 +615,10 @@ export async function createApp(
   // catalog on a cold cache rather than race the fire-and-forget boot sync.
   registerMarketplaceCatalogService(marketplaceCatalogService);
   marketplaceCatalogService.startSyncLoop();
-  api.use("/marketplace", createMarketplaceRouter({ service: marketplaceCatalogService }));
+  api.use(
+    "/marketplace",
+    createMarketplaceRouter({ service: marketplaceCatalogService })
+  );
   api.use(
     "/admin/marketplace",
     createAdminMarketplaceRouter({
@@ -517,7 +632,7 @@ export async function createApp(
         }),
       inspect: (operationId, isActive) =>
         inspectMarketplaceReconciliation({ db, operationId, isActive }),
-    }),
+    })
   );
 
   // Marketplace install routes (per-company, M.2.G).
@@ -545,12 +660,18 @@ export async function createApp(
             packageName: discovered.packageName,
             version: discovered.version,
             source: discovered.source,
-            manifest: discovered.manifest as { id: string; [key: string]: unknown } | null,
+            manifest: discovered.manifest as {
+              id: string;
+              [key: string]: unknown;
+            } | null,
           };
         },
         registry: {
           getByKeyScoped: async (pluginKey, companyId) => {
-            const row = await marketplacePluginRegistry.getByKeyScoped(pluginKey, companyId);
+            const row = await marketplacePluginRegistry.getByKeyScoped(
+              pluginKey,
+              companyId
+            );
             return row ? { id: row.id, pluginKey: row.pluginKey } : null;
           },
         },
@@ -558,9 +679,12 @@ export async function createApp(
           load: async (pluginId) => {
             await lifecycleMgr.load(pluginId);
           },
+          blockActivationInCloud: async (pluginId, source) => {
+            await lifecycleMgr.blockActivationInCloud(pluginId, source);
+          },
         },
       },
-    }),
+    })
   );
   api.use(
     "/companies/:companyId/marketplace",
@@ -574,7 +698,7 @@ export async function createApp(
         },
       },
       pluginRollback: pluginRollbackService(db),
-    }),
+    })
   );
 
   // Catch-all 404 for unmatched /api/* routes. Without this, requests like
@@ -596,7 +720,12 @@ export async function createApp(
 
   // Plugin UI static assets (outside /api prefix)
   const pluginDir = path.resolve(
-    process.env.AOA_PLUGIN_DIR ?? path.join(process.env.HOME ?? process.env.USERPROFILE ?? ".", ".aoa", "plugins"),
+    process.env.AOA_PLUGIN_DIR ??
+      path.join(
+        process.env.HOME ?? process.env.USERPROFILE ?? ".",
+        ".aoa",
+        "plugins"
+      )
   );
   app.use("/_plugins", pluginUiStaticRoutes(db, { localPluginDir: pluginDir }));
 
@@ -614,6 +743,7 @@ export async function createApp(
     jobCoordinator: jobCoordinatorInst,
     lifecycle: lifecycleMgr,
     loader: loaderInst,
+    hostServiceCleanup,
   };
 
   if (opts.uiMode === "static") {
@@ -636,8 +766,13 @@ export async function createApp(
       appType: "spa",
       server: {
         middlewareMode: true,
-        hmr: Number.isFinite(viteHmrPort) && viteHmrPort > 0 ? { port: viteHmrPort } : undefined,
-        allowedHosts: privateHostnameGateEnabled ? Array.from(privateHostnameAllowSet) : undefined,
+        hmr:
+          Number.isFinite(viteHmrPort) && viteHmrPort > 0
+            ? { port: viteHmrPort }
+            : undefined,
+        allowedHosts: privateHostnameGateEnabled
+          ? Array.from(privateHostnameAllowSet)
+          : undefined,
       },
     });
 

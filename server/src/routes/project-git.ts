@@ -37,6 +37,7 @@ import { secretService } from "../services/secrets.js";
 import { getBranches, getCommitGraph, resolveGitRoot } from "../services/git.js";
 import { enrichBranchPr, GitHubPrError, parseGitHubRepoUrl, resolveGitHubAuth } from "../services/github-pr.js";
 import { getInstallation } from "../services/github-app.js";
+import { assertLocalWorkspaceCommandAllowed } from "../services/local-workspace-command-guard.js";
 import {
   graphCache,
   enrichCache,
@@ -70,7 +71,7 @@ export function projectGitRoutes(db: Db) {
 
   router.get("/companies/:companyId/projects/:projectId/git/graph", async (req, res) => {
     const { companyId, projectId } = req.params as { companyId: string; projectId: string };
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     const cacheKey = projectGitCacheKey(companyId, projectId);
     const cached = graphCache.get(cacheKey);
@@ -112,6 +113,7 @@ export function projectGitRoutes(db: Db) {
         return;
       }
 
+      assertLocalWorkspaceCommandAllowed("project Git graph command");
       const gitRoot = await resolveGitRoot(primaryWs.cwd);
       if (!gitRoot) {
         const empty: GitProjectGraphResponse = {
@@ -262,7 +264,7 @@ export function projectGitRoutes(db: Db) {
 
   router.get("/companies/:companyId/projects/:projectId/git/enrich", async (req, res) => {
     const { companyId, projectId } = req.params as { companyId: string; projectId: string };
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     const cacheKey = projectGitCacheKey(companyId, projectId);
     const cached = enrichCache.get(cacheKey);
@@ -321,7 +323,16 @@ export function projectGitRoutes(db: Db) {
       }
 
       // 3. Get branch names from git (fast call)
-      const gitRoot = primaryWs.cwd
+      let localGitAllowed = false;
+      if (primaryWs.cwd) {
+        try {
+          assertLocalWorkspaceCommandAllowed("project Git enrichment command");
+          localGitAllowed = true;
+        } catch {
+          localGitAllowed = false;
+        }
+      }
+      const gitRoot = primaryWs.cwd && localGitAllowed
         ? await resolveGitRoot(primaryWs.cwd)
         : null;
 

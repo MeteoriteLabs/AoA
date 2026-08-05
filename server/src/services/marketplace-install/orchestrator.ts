@@ -41,6 +41,11 @@ import { resolveAgentNameConflict } from "./conflict-resolver.js";
 import { marketplaceNotifications } from "../marketplace-notifications.js";
 import { PackageInstallError } from "./package-installer.js";
 import type { installSkillPackage as defaultInstallSkillPackage } from "./package-installer.js";
+import {
+  CLOUD_PLUGIN_EXECUTION_DOC_PATH,
+  CloudPluginExecutionBlockedError,
+  PLUGIN_WORKER_BLOCKED_IN_CLOUD,
+} from "../cloud-plugin-execution.js";
 
 export interface Installers {
   installSkill: (opts: InstallSkillOpts) => Promise<InstallSkillResult>;
@@ -285,12 +290,17 @@ export async function dispatchInstall(opts: DispatchInstallOpts): Promise<void> 
       .catch((err) => logger.error({ err }, "marketplace notification failed"));
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    const cloudPluginBlocked = err instanceof CloudPluginExecutionBlockedError;
     logger.error(
       { operationId: operation.id, catalogItemId: catalogItem.id, err: message },
       "marketplace install dispatch failed",
     );
     await updateFn(operation.id, {
-      status: "failure", errorMessage: message, completedAt: new Date(),
+      status: "failure",
+      errorMessage: message,
+      errorCode: cloudPluginBlocked ? PLUGIN_WORKER_BLOCKED_IN_CLOUD : null,
+      errorDocs: cloudPluginBlocked ? CLOUD_PLUGIN_EXECUTION_DOC_PATH : null,
+      completedAt: new Date(),
     });
     publishLiveEvent({
       companyId: operation.companyId,

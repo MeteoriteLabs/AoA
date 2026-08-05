@@ -382,6 +382,12 @@ export const portabilityTargetSchema = z.discriminatedUnion("mode", [
   z.object({
     mode: z.literal("new_company"),
     newCompanyName: z.string().min(1).optional().nullable(),
+    // Multi-tenant (cloud_auth): the owning Organization a bundle-imported
+    // company is created under. Server-authorized in POST /import exactly like
+    // POST / (resolveCompanyOrganizationId + assertCompanyCreateAuthorized).
+    // Omit -> the actor's single org is auto-picked (cloud) or the DEFAULT
+    // sentinel is used (self-hosted).
+    organizationId: z.string().uuid().optional().nullable(),
   }),
   z.object({
     mode: z.literal("existing_company"),

@@ -14,7 +14,7 @@ export function debriefRoutes(db: Db) {
   router.get("/companies/:companyId/debriefs", async (req, res) => {
     res.set("X-Deprecated", "Use /discussions instead");
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const { status, departmentId, inputType } = req.query as Record<string, string | undefined>;
     const result = await svc.list(companyId, { status, departmentId, inputType });
     res.json(result);
@@ -24,7 +24,7 @@ export function debriefRoutes(db: Db) {
     res.set("X-Deprecated", "Use /discussions instead");
     const companyId = req.params.companyId as string;
     const id = req.params.id as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const debrief = await svc.getById(companyId, id);
     if (!debrief) {
       res.status(404).json({ error: "Debrief not found" });
@@ -36,7 +36,7 @@ export function debriefRoutes(db: Db) {
   router.post("/companies/:companyId/debriefs", validate(createDebriefSchema), async (req, res) => {
     res.set("X-Deprecated", "Use /discussions instead");
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const actor = getActorInfo(req);
     const debrief = await svc.create(companyId, {
       ...req.body,
@@ -66,7 +66,7 @@ export function debriefRoutes(db: Db) {
   router.post("/companies/:companyId/debriefs/mcp", validate(mcpDebriefSchema), async (req, res) => {
     res.set("X-Deprecated", "Use /discussions instead");
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const actor = getActorInfo(req);
 
     const { content, title, departmentId, projectId, source } = req.body;
@@ -111,7 +111,7 @@ export function debriefRoutes(db: Db) {
     res.set("X-Deprecated", "Use /discussions instead");
     const companyId = req.params.companyId as string;
     const id = req.params.id as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const existing = await svc.getById(companyId, id);
     if (!existing) {
       res.status(404).json({ error: "Debrief not found" });

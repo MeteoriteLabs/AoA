@@ -28,7 +28,7 @@ export function commanderLoginRoutes(db: Db): Router {
       res.status(401).json({ error: "authentication required" });
       return false;
     }
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     await assertRole(db, req, companyId, "founder");
     return true;
   }

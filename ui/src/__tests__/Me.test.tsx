@@ -38,6 +38,8 @@ function editableProfile() {
     email: "alice@example.com",
     displayName: "Alice",
     avatarUrl: null,
+    canManageInstanceSettings: false,
+    isInstanceAdmin: false,
   };
 }
 
@@ -62,7 +64,10 @@ describe("Me page", () => {
 
   it("submits updated displayName via profileApi.update", async () => {
     const user = userEvent.setup();
-    profileUpdate.mockResolvedValue({ ...editableProfile(), displayName: "Alicia" });
+    profileUpdate.mockResolvedValue({
+      ...editableProfile(),
+      displayName: "Alicia",
+    });
     renderWithProviders(<Me />);
     const input = await screen.findByLabelText(/display name/i);
     await user.clear(input);
@@ -70,7 +75,9 @@ describe("Me page", () => {
     const saveBtn = screen.getByRole("button", { name: /save changes/i });
     await user.click(saveBtn);
     await waitFor(() =>
-      expect(profileUpdate).toHaveBeenCalledWith(expect.objectContaining({ displayName: "Alicia" })),
+      expect(profileUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({ displayName: "Alicia" }),
+      ),
     );
     await waitFor(() =>
       expect(pushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: "success" })),
@@ -83,6 +90,8 @@ describe("Me page", () => {
       email: null,
       displayName: "Local Board",
       avatarUrl: null,
+      canManageInstanceSettings: true,
+      isInstanceAdmin: true,
     });
     renderWithProviders(<Me />);
     expect(await screen.findByText(/read-only/i)).toBeInTheDocument();
@@ -94,7 +103,11 @@ describe("Me page", () => {
 
   describe("instance settings gear", () => {
     it("hides the gear for non-instance-admins", async () => {
-      profileGet.mockResolvedValue({ ...editableProfile(), isInstanceAdmin: false });
+      profileGet.mockResolvedValue({
+        ...editableProfile(),
+        canManageInstanceSettings: false,
+        isInstanceAdmin: false,
+      });
       renderWithProviders(<Me />);
       // Post-settle marker: the form only renders once the profile resolved.
       await screen.findByDisplayValue("Alice");
@@ -109,9 +122,15 @@ describe("Me page", () => {
 
     it("shows the gear for instance admins and navigates to /instance/settings", async () => {
       const user = userEvent.setup();
-      profileGet.mockResolvedValue({ ...editableProfile(), isInstanceAdmin: true });
+      profileGet.mockResolvedValue({
+        ...editableProfile(),
+        canManageInstanceSettings: true,
+        isInstanceAdmin: true,
+      });
       renderWithProviders(<Me />);
-      const gear = await screen.findByRole("button", { name: /instance settings/i });
+      const gear = await screen.findByRole("button", {
+        name: /instance settings/i,
+      });
       await user.click(gear);
       expect(mockNavigate).toHaveBeenCalledWith("/instance/settings", undefined);
     });

@@ -38,6 +38,9 @@ const boardActor: Actor = {
   type: "board",
   userId: "user-1",
   source: "session",
+  // Operator-plane authority — actorMiddleware mints this alongside
+  // isInstanceAdmin for a genuine operator; the operator-plane routes here read it.
+  operator: true,
   isInstanceAdmin: true,
   companyIds: [],
 };

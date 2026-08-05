@@ -27,6 +27,17 @@ interface CompanyContextValue {
   reloadCompanies: () => Promise<void>;
   createCompany: (data: {
     name: string;
+    // Phase 2 Task 12: the founder wizard's org-first sequence creates the
+    // tenant Organization (CreateOrganizationStep) before OrgStep calls this.
+    // Optional because the value is threaded through from onboarding. In
+    // cloud_auth it is always an explicit create-capable org id — the standalone
+    // "create another company" surface (`/onboarding?new=1`) resolves it via
+    // CreateAnotherCompany before calling createCompany, since the server 403s
+    // an omitted id for a founder in >=2 orgs and never guesses. It is omitted
+    // only on the self-hosted path, where resolveCompanyOrganizationId derives
+    // DEFAULT_ORGANIZATION_ID. See OrgStep.tsx's submit().
+    organizationId?: string;
+    creationRequestId?: string;
     description?: string | null;
     budgetMonthlyCents?: number;
   }) => Promise<Company>;
@@ -122,7 +133,7 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
   }, [queryClient]);
 
   const createMutation = useMutation({
-    mutationFn: (data: { name: string; description?: string | null; budgetMonthlyCents?: number }) =>
+    mutationFn: (data: { name: string; organizationId?: string; creationRequestId?: string; description?: string | null; budgetMonthlyCents?: number }) =>
       companiesApi.create(data),
     onSuccess: (company) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
@@ -131,7 +142,7 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
   });
 
   const createCompany = useCallback(
-    async (data: { name: string; description?: string | null; budgetMonthlyCents?: number }) => {
+    async (data: { name: string; organizationId?: string; creationRequestId?: string; description?: string | null; budgetMonthlyCents?: number }) => {
       return createMutation.mutateAsync(data);
     },
     [createMutation],

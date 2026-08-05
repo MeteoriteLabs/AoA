@@ -13,12 +13,15 @@ const addDependencySchema = z.object({
 export function dependencyRoutes(db: Db) {
   const router = Router();
   const deps = dependencyService(db);
-  registerIssueParamNormalizer(router, db, ["issueId"]);
+  // Company-scoped route (`/companies/:companyId/issues/:issueId/…`): resolve
+  // the identifier within :companyId so `ACM-1` never crosses to another org's
+  // same-prefix task.
+  registerIssueParamNormalizer(router, db, ["issueId"], "companyId");
 
   // GET /companies/:companyId/issues/:issueId/dependencies
   router.get("/companies/:companyId/issues/:issueId/dependencies", async (req, res) => {
     const { companyId, issueId } = req.params;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     const [upstream, downstream] = await Promise.all([
       deps.getDependencies(companyId, issueId),
@@ -32,7 +35,7 @@ export function dependencyRoutes(db: Db) {
   router.post("/companies/:companyId/issues/:issueId/dependencies", validate(addDependencySchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     const issueId = req.params.issueId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     const { dependencyIssueId } = req.body;
 
@@ -57,7 +60,7 @@ export function dependencyRoutes(db: Db) {
   // DELETE /companies/:companyId/issues/:issueId/dependencies/:dependencyIssueId
   router.delete("/companies/:companyId/issues/:issueId/dependencies/:dependencyIssueId", async (req, res) => {
     const { companyId, issueId, dependencyIssueId } = req.params;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
 
     const deleted = await deps.removeDependency(companyId, issueId, dependencyIssueId);
 

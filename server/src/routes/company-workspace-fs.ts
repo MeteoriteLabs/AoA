@@ -1,6 +1,7 @@
 import { Router } from "express";
 import fs from "node:fs/promises";
 import path from "node:path";
+import type { Db } from "@armyofagents/db";
 import type { DeploymentMode } from "@armyofagents/shared";
 import { assertCompanyAccess } from "./authz.js";
 import { resolveCompanyWorkspaceRoot } from "../services/company-workspace-root.js";
@@ -27,10 +28,12 @@ import { SKIP_DIRS, checkGitRepo, isAbsolutePath } from "./filesystem.js";
  * Department onboarding steps without needing instance-admin rights.
  */
 export function companyWorkspaceFsRoutes(opts: {
+  db: Db;
   deploymentMode: DeploymentMode;
   companyWorkspaceBaseDir: string;
 }) {
   const router = Router();
+  const db = opts.db;
 
   function resolveRoot(companyId: string) {
     return resolveCompanyWorkspaceRoot(companyId, opts.deploymentMode, {
@@ -41,7 +44,7 @@ export function companyWorkspaceFsRoutes(opts: {
   // Get the workspace home dir (jail root when jailed; real home otherwise).
   router.get("/companies/:cid/workspace-fs/home", async (req, res) => {
     const companyId = req.params.cid as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const root = resolveRoot(companyId);
 
     if (root.jailed) {
@@ -62,7 +65,7 @@ export function companyWorkspaceFsRoutes(opts: {
   // List available drives — empty/hidden when jailed.
   router.get("/companies/:cid/workspace-fs/drives", async (req, res) => {
     const companyId = req.params.cid as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const root = resolveRoot(companyId);
 
     if (root.jailed) {
@@ -98,7 +101,7 @@ export function companyWorkspaceFsRoutes(opts: {
   // Browse directory contents, confined to the resolved workspace root when jailed.
   router.get("/companies/:cid/workspace-fs/browse", async (req, res) => {
     const companyId = req.params.cid as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const root = resolveRoot(companyId);
 
     const rawPath = (req.query.path as string) || root.baseDir;
@@ -214,7 +217,7 @@ export function companyWorkspaceFsRoutes(opts: {
   // Create a directory, confined to the resolved workspace root when jailed.
   router.post("/companies/:cid/workspace-fs/mkdir", async (req, res) => {
     const companyId = req.params.cid as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(db, req, companyId);
     const root = resolveRoot(companyId);
     const { path: dirPath } = req.body as { path?: string };
 
