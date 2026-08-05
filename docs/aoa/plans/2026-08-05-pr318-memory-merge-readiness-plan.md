@@ -32,7 +32,7 @@ Merge outcome verified by `git merge-tree --write-tree origin/main HEAD` (2026-0
 | `server/src/app.ts` | +2 (route import+mount) | +253 | auto-merge → verify (Task 1.2) |
 | `server/src/services/internal-agent/aoa-agents/runner.ts` | +5 (bundle params) | +117 | auto-merge → verify (Task 1.2) |
 
-> The code blocks in Tasks 1.2, 1.5, 1.6 double as **"what the auto-merged file must contain"** — for an auto-merged file you *verify* the block is present (and no #316 line was dropped); you only hand-edit if the merge actually conflicted or dropped something. `mcp/server.ts` + `heartbeat.ts` get a **mandated full human diff read** in Tasks 1.5 & 1.6 (Step 3) regardless — grep is insufficient for the security gate.
+> The code blocks in Tasks 1.2, 1.5, 1.6 double as **"what the auto-merged file must contain"** — for an auto-merged file you *verify* the block is present (and no #316 line was dropped); you only hand-edit if the merge actually conflicted or dropped something. `mcp/server.ts` + `heartbeat.ts` get a **mandated full human diff read** (Task 1.5 Step 4 / Task 1.6 Step 5) regardless — grep is insufficient for the security gate.
 
 **New files my branch adds (no conflict — #316 did not touch them; referenced by the call-site edits):**
 `server/src/services/memory-access-sql.ts` (`actorForAgentRun`, `actorForMcp`, `memoryAccessConditions`), `server/src/services/memory-access.ts` (`filterMemoryForActor`), `server/src/services/memory-run-scope.ts` (`resolveRunMemoryScope`), `server/src/services/memory-core-block.ts` (`buildAlwaysOnCore`), `server/src/services/identity-backfill.ts` (`backfillIdentityMemory`, `backfillAllCompaniesIdentityMemory`), `server/src/routes/memory-settings.ts` (`memorySettingsRoutes`), `packages/db/src/schema/memory_settings.ts` (`memorySettings`).
@@ -53,7 +53,7 @@ git -C "C:/Users/TK/.aoa/wt/mem" status --short
 git -C "C:/Users/TK/.aoa/wt/mem" rev-parse --abbrev-ref HEAD
 git -C "C:/Users/TK/.aoa/wt/mem" log --oneline -1
 ```
-Expected: empty status; branch `claude/memory-enterprise-build`; HEAD `29dc4a713` (the spec/plan commits) or `5d23895a3` if plan not yet committed here.
+Expected: empty status; branch `claude/memory-enterprise-build`; HEAD `d7d285d88` (the latest docs commit — spec + plan) atop `5d23895a3` (the review-hardening).
 
 - [ ] **Step 2: Fetch and re-confirm main's tip + migration ceiling (guards against main moving again)**
 
@@ -315,7 +315,7 @@ Run:
 ```bash
 git -C "C:/Users/TK/.aoa/wt/mem" diff --no-color origin/main -- server/src/mcp/server.ts
 ```
-Read the ENTIRE diff. Confirm: (a) the ONLY removed (`-`) lines are the intended `filterMemoryForScope` import **plus the two old calls it replaced** — `getById(companyId, resource.id)` → 3-arg with `memoryAccess`, and `list(companyId, { status: "approved" })` → `{ status, accessConditions }`; (b) `actorForMcp`, `memoryAccessConditions`, `filterMemoryForActor` are present in the `memory` resource block; (c) `protocolActor` + `scope` are the identifiers #316 uses there; (d) NO other #316 line was dropped. Any unexpected `-` line = a semantic drop — fix before staging.
+Read the ENTIRE diff. Confirm: (a) the ONLY removed (`-`) lines are the intended `filterMemoryForScope` import **plus the two old calls it replaced** — `getById(companyId, resource.id)` → 3-arg with `memoryAccess`, and `list(companyId, { status: "approved" })` → `{ status, accessConditions }`; (b) `actorForMcp`, `memoryAccessConditions`, `filterMemoryForActor` are present in the `memory` resource block; (c) `protocolActor` + `scope` are the identifiers #316 uses there; (d) NO other #316 line was dropped. **If a #316 line was genuinely dropped:** hand-restore that exact line, or `git merge --abort` and restart the merge (rerere replays your prior resolutions) — do not stage over a drop.
 
 - [ ] **Step 5: Stage**
 
@@ -426,7 +426,7 @@ Run:
 ```bash
 git -C "C:/Users/TK/.aoa/wt/mem" diff --no-color origin/main -- server/src/services/heartbeat.ts
 ```
-Read the ENTIRE diff. Confirm: (a) the only removed (`-`) lines are the OLD plain retrieval this legitimately replaces — the `.select({ title: issues.title, description: issues.description })` and the unscoped `.searchMultiPath(companyId, issueText ?? "", { limit: itemLimit })` (+ its one-line comment); (b) my four blocks are present (the 4 imports, the scope-joined select, the actor/scope gate + `rawItems`→`items` filter, and `goalTitle` on the return + `context.memory_core = buildAlwaysOnCore(...)`); (c) `and`/`eq`/`projects`/`goals` resolve (imported); (d) NO other #316 line was dropped. Any unexpected `-` line = a semantic drop (e.g. #316 retrieval logic clobbered) — fix before staging.
+Read the ENTIRE diff. Confirm: (a) the only removed (`-`) lines are the OLD plain retrieval this legitimately replaces — the `.select({ title: issues.title, description: issues.description })` and the unscoped `.searchMultiPath(companyId, issueText ?? "", { limit: itemLimit })` (+ its one-line comment); (b) my four blocks are present (the 4 imports, the scope-joined select, the actor/scope gate + `rawItems`→`items` filter, and `goalTitle` on the return + `context.memory_core = buildAlwaysOnCore(...)`); (c) `and`/`eq`/`projects`/`goals` resolve (imported); (d) NO other #316 line was dropped. **If a #316 line was genuinely dropped** (e.g. its retrieval logic clobbered): hand-restore that exact line, or `git merge --abort` and restart (rerere replays prior resolutions) — do not stage over a drop.
 
 - [ ] **Step 6: Stage**
 
@@ -480,7 +480,7 @@ chk(){ c=$(grep -c "$1" "$2"); [ "$c" -ge "$3" ] || { echo "MISS: '$1' in $2 (go
 chk "memorySettings" packages/db/src/schema/index.ts 1
 chk "memorySettingsRoutes" server/src/app.ts 2
 chk "backfillIdentityMemory" server/src/routes/companies.ts 2
-chk "agentRole" server/src/services/internal-agent/aoa-agents/runner.ts 1
+chk "agentRole: agent.role" server/src/services/internal-agent/aoa-agents/runner.ts 1
 chk "AOA_STRIP_CC_ENV" server/src/index.ts 1
 chk "backfillAllCompaniesIdentityMemory" server/src/index.ts 1
 chk "actorForMcp" server/src/mcp/server.ts 1
@@ -504,13 +504,15 @@ done
 ```
 Expected: all 5 print `add-only ✓`. Any `UNEXPECTED DELETIONS` = a #316 line dropped during resolution — fix before committing. (`mcp/server.ts` + `heartbeat.ts` are intentionally excluded here; their replacement deletions were verified in Tasks 1.5/1.6.)
 
-- [ ] **Step 4: Typecheck the merged tree**
+- [ ] **Step 4: Sync deps + build, THEN typecheck the merged tree**
+
+#316 changed `pnpm-lock.yaml` + `server/package.json` and rewrote db/server sources, so after the merge `node_modules` is out of sync and the workspace `dist/` that `server` typecheck resolves `@armyofagents/*` against (via `.d.ts` — there is no tsconfig `paths` mapping) is pre-#316-stale. Install + build BEFORE typechecking, or you get spurious `no exported member` errors or, worse, silently mask a real #316 type break. (`pnpm db:generate` is exempt — it self-compiles the schema.)
 
 Run:
 ```bash
-cd "C:/Users/TK/.aoa/wt/mem" && pnpm typecheck
+cd "C:/Users/TK/.aoa/wt/mem" && pnpm install && pnpm build && pnpm typecheck
 ```
-Expected: PASS (0 errors). A type error here usually means a call-site drifted from a #316 signature — fix in the offending file, re-stage, re-run.
+Expected: PASS (0 errors). A type error that survives a clean build means a call-site drifted from a #316 signature — fix in the offending file, re-stage, re-run.
 
 ### Task 1.9: Commit the merge
 
@@ -629,11 +631,11 @@ Expected: commit created.
 
 **Files:** none (validation)
 
-- [ ] **Step 1: Typecheck the whole workspace**
+- [ ] **Step 1: (Re)sync deps + build, then typecheck the whole workspace**
 
-Run:
+Run (install+build are idempotent — fast if Task 1.8 Step 4 already ran them; re-run because Phase 2 committed a new migration/snapshot):
 ```bash
-cd "C:/Users/TK/.aoa/wt/mem" && pnpm typecheck
+cd "C:/Users/TK/.aoa/wt/mem" && pnpm install && pnpm build && pnpm typecheck
 ```
 Expected: PASS.
 
@@ -643,7 +645,15 @@ Run:
 ```bash
 cd "C:/Users/TK/.aoa/wt/mem" && pnpm test:run
 ```
-Expected: PASS. Pay attention to the memory suites (`memory-qa`, `identity-backfill`, `memory-insert-no-pgvector`, and the RBAC/actor gate tests). **Windows note:** local runs skip integration + e2e (that is expected — Linux CI in Phase 4 is authoritative). A failure in a memory suite is a real finding — fix and re-run.
+Expected: PASS — especially the memory suites (`memory-qa`, `identity-backfill`, `memory-insert-no-pgvector`, tier-policy / access-conditions / run-scope / core-block, and the RBAC/actor gate unit tests). A failure in a memory suite is a real finding — fix and re-run.
+
+- [ ] **Step 2b: Run the two RBAC INTEGRATION tests (they skip by default on Windows — the highest-rigor gate must not)**
+
+`memory-rbac-leakage.integration.test.ts` (run-path cross-scope leakage proof) and `mcp-memory-read-rbac.integration.test.ts` (MCP-path) are guarded by `describe.skipIf(win32 && AOA_RUN_WIN_INTEGRATION !== "1")`, so a plain `pnpm test:run` on Windows **skips** them — omitting the actual leakage proof from the gate. Run them explicitly against embedded-pg:
+```bash
+cd "C:/Users/TK/.aoa/wt/mem" && AOA_RUN_WIN_INTEGRATION=1 pnpm --filter @armyofagents/server exec vitest run src/__tests__/memory-rbac-leakage.integration.test.ts src/__tests__/mcp-memory-read-rbac.integration.test.ts
+```
+Expected: both GREEN (10 tests, zero cross-scope leak). The retrieval e2e (pgvector) is NOT locally runnable — it is the Phase 4 `e2e-pgvector` CI lane (Task 4.3). **Do not declare the gate passed until that lane is green** (gate-back in Task 4.4).
 
 - [ ] **Step 3: Generated-artifact drift checks (cheap, catches tool/skill manifest drift)**
 
@@ -661,7 +671,7 @@ Expected: PASS (no drift). `gen:skills:check` matters because the memory work to
 
 Use the `superpowers:code-reviewer` agent (or `/code-review`). Give it the diff `git diff origin/main...HEAD` and this mandate — instruct it to try to REFUTE safety, defaulting to "flag if uncertain":
 
-1. `--allowedTools mcp__aoa` **breadth** (`packages/adapters/claude-local/src/server/execute.ts`) — does it expose anything beyond `mcp__aoa__*` read/query memory tools? Any write/escalation surface? How does it compose with `--dangerously-skip-permissions`?
+1. `--allowedTools mcp__aoa` **breadth** (`packages/adapters/claude-local/src/server/execute.ts`) — it is a **server-wide** grant, so "memory-only?" is the WRONG trip-wire (the ORG `ORG_HEARTBEAT_TOOL_ALLOWLIST` in `heartbeat-mcp.ts` legitimately includes mutation tools — `set_task_status`, `post_task_comment`, `ask_human`). Ask instead: (a) is it unreachable without `--strict-mcp-config`/`--mcp-config`, so exposure is bounded to what `buildMcpConfig` writes (verified true today)? (b) enumerate the *actual* auto-approved set per run-type (ORG/Commander/crew) and confirm the server-wide grant stays bounded by the per-run `toolAllowlist → buildMcpConfig` coupling; (c) **did #318 WIDEN the auto-approved set vs pre-#318 behavior?** (d) how does it compose with `--dangerously-skip-permissions`?
 2. **Actor-aware identity visibility** (`memory-policy.ts` `canSeeDurableMemory`, `memory-access.ts` `filterMemoryForActor`) — agents get identity; confirm NO path leaks non-identity layers cross-scope, and humans below team-lead are unchanged.
 3. **MCP actor gate** (`mcp/server.ts` post-merge) — no new unauth'd path to memory in `authenticated`/`cloud_auth`; `actorForMcp` resolves the same protocol actor #316 intends; `local_trusted` still behaves.
 4. **Crew fail-closed** on missing identity (D7/D8) holds post-rebase.
@@ -671,25 +681,31 @@ Use the `superpowers:code-reviewer` agent (or `/code-review`). Give it the diff 
 
 For each finding: fix in the relevant file, re-stage, re-run Task 3.1 Step 1–2, and record the resolution. Re-dispatch the reviewer on the fixed diff if any P1/P2 was material. Only proceed when no unresolved correctness/security finding remains.
 
-### Task 3.3: Crew full end-to-end LLM run (lifts crew to full-LLM parity)
+### Task 3.3: Crew full end-to-end LLM run (lifts crew to full-LLM parity — must be NON-VACUOUS)
 
 **Files:** none (live verification in the `mem-inst` sandbox)
 
+Crew delivers memory by **prompt injection** into the run's `## Context` (not a `query_memory` tool call), so "the output mentions the vision" is near-trivial — the LLM just read its own prompt, and `AcmeMem`'s real vision is guessable/leakable via the task text. This task only means something if it (a) uses a non-guessable nonce, (b) asserts on the RENDERED run prompt, and (c) has a negative control.
+
 - [ ] **Step 1: Boot the instance with the memory prereqs**
 
-Start `mem-inst` (:3130 per handoff) with:
-```bash
-AOA_STRIP_CC_ENV=1 AOA_RUNTIME_DECISION_ROUTING=1  # + the instance's AOA_HOME/PORT/PG envs
-```
-Company `AcmeMem` `febba560-8625-4aa1-b61b-2207f76faef5`; crew agent `MemCrew` `3d0795bb`. Confirm the agent has `runtimeConfig.runtimeDecisionRoutingEnabled=true`.
+Start `mem-inst` (:3130 per handoff) with `AOA_STRIP_CC_ENV=1 AOA_RUNTIME_DECISION_ROUTING=1` + the instance's `AOA_HOME`/`PORT`/`PG` envs. Company `AcmeMem` `febba560-8625-4aa1-b61b-2207f76faef5`; crew agent `MemCrew` `3d0795bb`; confirm `runtimeConfig.runtimeDecisionRoutingEnabled=true`. **Retrieval note:** the always-on core (Vision/Mission/Values) is injected WITHOUT a vector, so the core-block assertion works with no embedder. To also exercise `searchMultiPath` (vector) retrieval, set `AOA_E2E_FAKE_EMBEDDER=1` (hash embedder) or a real `OPENAI_API_KEY`; otherwise retrieval degrades to keyword and this task proves the CORE path only — call that out in the evidence.
 
-- [ ] **Step 2: Dispatch a real crew task that requires company memory**
+- [ ] **Step 2: Seed a NON-GUESSABLE nonce into memory**
 
-Create a task assigned to `MemCrew` whose acceptance requires the company vision (e.g. "State our company vision and one value, and cite where you got them"), then dispatch it (thread autonomy Drive, or approve the `crew_dispatch`). Watch the run.
+Add an approved company memory item carrying a token the LLM cannot confabulate — e.g. `POST /api/companies/:cid/memory` (then approve) an identity/value item whose content includes `codeword: TANGERINE-7F` (pick a fresh token per run). This is what makes the test non-vacuous.
 
-- [ ] **Step 3: Confirm the run OUTPUT reflects retrieved memory (not just a rendered bundle)**
+- [ ] **Step 3: Dispatch a real crew task whose acceptance requires the nonce**
 
-Expected: the crew run's result text contains the seeded vision ("Be the memory layer every founder trusts") / values, proving the `## Context` memory was actually consumed by the LLM end-to-end. Capture the run id + transcript for the PR evidence comment. A miss here is a real finding (crew delivery gap the bundle-check masked) — investigate before landing.
+Create a task assigned to `MemCrew` — e.g. "Report our company's stored codeword exactly." Dispatch it (thread autonomy Drive, or approve the `crew_dispatch`). Watch the run.
+
+- [ ] **Step 4: PRIMARY assertion — the dispatched run's RENDERED prompt contained the memory**
+
+Fetch the rendered prompt/context for THIS run and confirm its `## Context` block actually contained the seeded lines (incl. the nonce). This is the meaningful integration proof: thread-orchestration → crew dispatch wired the RBAC-gated bundle into the prompt (not that the LLM parroted it). SECONDARY: the run OUTPUT emits `TANGERINE-7F`. Capture run id + the `## Context` excerpt + output for the PR evidence comment.
+
+- [ ] **Step 5: NEGATIVE CONTROL — a memory-absent run must NOT emit the nonce**
+
+Dispatch the same ask to a crew agent scoped where that item is out of scope (different department, or item archived/unapproved). Expected: the nonce is ABSENT from both the rendered `## Context` and the output. If it appears without being in scope, the RBAC gate or bundle is leaking — a real finding. A miss in Step 4 or a leak in Step 5 blocks the crew-parity claim; investigate before landing.
 
 ---
 
@@ -697,7 +713,17 @@ Expected: the crew run's result text contains the seeded vision ("Be the memory 
 
 ### Task 4.1: Push the integrated branch
 
-- [ ] **Step 1: Push with lease (backup + tag already exist)**
+- [ ] **Step 1: Freshness re-check — did `main` move during Phases 1–3?**
+
+Run:
+```bash
+git -C "C:/Users/TK/.aoa/wt/mem" fetch origin
+git -C "C:/Users/TK/.aoa/wt/mem" log --oneline -1 origin/main
+git -C "C:/Users/TK/.aoa/wt/mem" ls-tree -r --name-only origin/main packages/db/src/migrations | grep -E '/[0-9]{4}_.*\.sql$' | sort | tail -1
+```
+Expected: `origin/main` still `c1fe2e733` and the migration ceiling still `0201`. **If `main` advanced:** with a merge (not a rebase) you must `git merge origin/main` AGAIN and re-resolve; if the new head added a migration, redo Task 1.7 + Phase 2 for the new ceiling (e.g. `0203`) and re-run the Phase 3 gate. Do not push a stale merge.
+
+- [ ] **Step 2: Push with lease (backup + tag already exist)**
 
 Run:
 ```bash
@@ -705,7 +731,7 @@ git -C "C:/Users/TK/.aoa/wt/mem" push --force-with-lease origin claude/memory-en
 ```
 Expected: branch updated on origin; PR #318 recomputes and shows **no conflicts**.
 
-- [ ] **Step 2: Confirm GitHub shows mergeable**
+- [ ] **Step 3: Confirm GitHub shows mergeable**
 
 Run:
 ```bash
@@ -721,7 +747,7 @@ Run:
 ```bash
 gh pr ready 318 --repo MeteoriteLabs/AoA
 ```
-Expected: PR flips to Ready; `pr.yml` jobs start (`verify`, `e2e`, `migrations`, `policy`, `brand-check`) across Linux (required lane) / macOS / Windows, plus the `ci-required` aggregator.
+Expected: PR flips to Ready; `pr.yml` jobs start (`verify`, `e2e`, **`e2e-pgvector`**, `migrations`, `policy`, `brand-check`) across Linux (required lane) / macOS / Windows, plus the `ci-required` aggregator. **`e2e-pgvector` is the memory feature's key lane** — it runs the embedding WRITE + RETRIEVAL e2e against a pgvector DB (the validation the local gate can't do) and feeds `ci-required`.
 
 ### Task 4.3: Drive CI green
 
@@ -731,7 +757,7 @@ Run:
 ```bash
 gh pr checks 318 --repo MeteoriteLabs/AoA --watch
 ```
-Expected: the Linux jobs pass ⇒ `ci-required` goes green. macOS advisory-green; Windows advisory (4 skips / e2e skipped) — non-blocking.
+Expected: the Linux jobs pass ⇒ `ci-required` goes green. **Watch `e2e-pgvector` specifically** — it is the authoritative memory write/retrieval proof the local gate couldn't run (Task 3.1 Step 2b covered only the RBAC integration tests). macOS advisory-green; Windows advisory (4 skips / e2e skipped) — non-blocking.
 
 - [ ] **Step 2: Triage any red Linux job**
 
@@ -749,16 +775,32 @@ Expected: `llm-eval NOT in required checks (advisory ✓)`. If it IS required, t
 
 ### Task 4.4: Assemble evidence and hand to the founder
 
-- [ ] **Step 1: Post the evidence summary as a PR comment**
+- [ ] **Step 1: Gate-back — confirm the CI-only proofs are green before declaring the gate passed**
 
-Include: typecheck+suite result, the adversarial-review findings + resolutions, and the crew full-LLM run id + quoted output. Run:
+The Phase 3 local gate could NOT run `e2e-pgvector` (retrieval). Before hand-off, confirm on the green run:
+```bash
+gh pr checks 318 --repo MeteoriteLabs/AoA | grep -E 'e2e-pgvector|migrations|verify|e2e'
+```
+Expected: `e2e-pgvector` + `migrations` + `verify` + `e2e` all pass — these close the memory-retrieval + RBAC + migration proofs the local gate deferred. A red here **reopens** the evidence gate.
+
+- [ ] **Step 2: Write the migration regen recipe into the PR DESCRIPTION (survives the next main-merge re-collision)**
+
+Run:
+```bash
+gh pr edit 318 --repo MeteoriteLabs/AoA --body-file <pr-body.md>
+```
+The body must include the recurring-collision recipe (delete my migration `.sql`, take main's meta, `pnpm db:generate` → next number) so whoever rebases after the next `main` merge doesn't rediscover it. (Design §4 mandates this in the description, not just a comment.)
+
+- [ ] **Step 3: Post the evidence summary as a PR comment**
+
+Include: typecheck + full-suite result (incl. the `AOA_RUN_WIN_INTEGRATION=1` RBAC run), the adversarial-review findings + resolutions, the `e2e-pgvector` result, and the crew full-LLM run id + the `## Context` excerpt + nonce output (Task 3.3). Run:
 ```bash
 gh pr comment 318 --repo MeteoriteLabs/AoA --body-file <evidence.md>
 ```
 
-- [ ] **Step 2: Hand off — do NOT merge**
+- [ ] **Step 4: Hand off — do NOT merge**
 
-Report to the founder: `ci-required` green, mergeable, evidence posted. **Merging is the founder's click** (this plan stops at "green + reviewed + ready"). Do not run `gh pr merge`.
+Report to the founder: `ci-required` green (incl. `e2e-pgvector`), mergeable, evidence posted. **Merging is the founder's click** (this plan stops at "green + reviewed + ready"). Do not run `gh pr merge`.
 
 ---
 
@@ -774,7 +816,7 @@ git -C "C:/Users/TK/.aoa/wt/mem" fetch origin && git -C "C:/Users/TK/.aoa/wt/mem
 
 - [ ] **Step 2: Write the fix's spec + plan (own cycle)**
 
-Problem: the `claude_local` `testEnvironment` probe reports `needs_auth` on a healthy, logged-in agent because it runs under the default `~/.claude` config + hooks instead of the D9-isolated run path. Fix direction: make the probe construct the SAME `CLAUDE_CONFIG_DIR` (copying only `.credentials.json`) that a real run uses, so the probe's auth check matches run reality. Start from `packages/adapters/claude-local/src/server/execute.ts` (`buildClaudeArgs` and the probe/testEnvironment entrypoint). TDD: write a failing test asserting the probe uses the isolated config path → fix → pass. Gate: typecheck + adapter tests + a manual Settings-probe check against a known-good agent. Founder merges.
+Problem: the `claude_local` `testEnvironment` probe reports `needs_auth` on a healthy, logged-in agent because it does NOT copy-and-isolate the config the way a real (D9) run does. **Entry points (verify before designing):** `testEnvironment` lives in `packages/adapters/claude-local/src/server/test.ts`; the auth probe in `auth-status.ts`; the copy-isolate machinery a real run uses (`provisionClaudeConfigHome` / `createIsolatedClaudeConfigDir`, copying only `.credentials.json`) is in `execute.ts` (~L456–530). **Reconcile with existing intent:** `test.ts` currently *documents* that it deliberately does not copy-isolate — it keeps `CLAUDE_CONFIG_DIR` and strips only the ambient auth key so the probe reads the very file T3 would copy. So the fix is a deliberate trade-off (make the probe copy-isolate like the run), NOT an oversight to paper over; the new spec must decide it explicitly and must not regress the ambient-strip logic. TDD: failing test asserting the probe reflects a healthy isolated-config agent → fix → pass. Gate: typecheck + adapter tests + a manual Settings-probe check against a known-good agent. Founder merges.
 
 ---
 
@@ -793,9 +835,23 @@ An independent subagent reviewed this plan against the live branch (via `git mer
 2. **[MAJOR, fixed]** The conflict surface was inverted — `git merge-tree` shows only **4 files conflict** (`companies.ts`, `index.ts`, 2 meta); the two "careful" security files (`mcp/server.ts`, `heartbeat.ts`) **auto-merge**, and Task 1.1 said "skip auto-merged." Reframed: File-map + Task 1.1 relabelled (4 conflict / 5 auto-merge); Tasks 1.2/1.5/1.6 are now verification; the two security files get a **mandated full human diff read** (Task 1.5 Step 4, Task 1.6 Step 5). The auto-merges were verified semantically correct.
 3. **[MAJOR, fixed]** Task 1.8 Step 3's add-only battery false-alarmed on `heartbeat.ts` (legit replacement deletions). Now excludes the 2 security files (covered by their diff reads) and checks only the 5 purely-additive files.
 4. **[MAJOR, fixed]** Task 2.3 Step 2 `pnpm db:migrate` throws without `DATABASE_URL` (custom runner, no embedded PG). Now defers to the Linux `migrations` CI lane, with an explicit optional local path.
-5. **[MINOR, fixed]** Task 1.3 anchor named the exact `router.patch("/:companyId", validate(updateCompanySchema))` handler + `company.updated` `logActivity` (#316 has 4 `logActivity` calls).
+5. **[MINOR, fixed]** Task 1.3 anchor named the exact `router.patch("/:companyId", validate(updateCompanySchema))` handler + `company.updated` `logActivity` (#316 has 5 `logActivity` calls).
 6. **[MINOR, fixed]** Task 3.1 Step 3 added `pnpm gen:skills:check`.
 7. **[NIT, fixed]** Design §5(b) `pnpm test` → `pnpm test:run` (watch-mode hang).
 8. **[NIT, fixed]** Task 1.8 Step 2 now asserts exact grep counts (≥2 for import+mount / import+call) instead of `grep -c` passing on ≥1.
 
 Verified SOUND by the reviewer: both-sides set is exactly 9 files; `0202` is the correct target; `drizzle.config.ts` globs `dist/schema/*.js` (not the barrel) so a botched `schema/index.ts` merge cannot emit `DROP TABLE`; the auto-merges are semantically correct (`protocolActor`/`scope` wired; heartbeat imports resolve); ordering/safety (tag before merge, force-with-lease with backup) is fine.
+
+## Second review round — engineering plan review, 2 independent outside voices (2026-08-05)
+
+A `superpowers:code-reviewer` agent (eng-soundness lens on Phases 3-5 + design decisions) and a second `general-purpose` reviewer (completeness / risk / consistency, verifying the 8 first-round fixes). No BLOCKER; both confirmed the merge mechanics + merge-vs-rebase call are sound (the verification battery survives a merge commit; `e2e-pgvector`/`llm-eval` reasoning validated). The gaps were in the **evidence gate not meeting its own "highest rigor" bar** + one consistency bug from the first-round edits. All fixed inline:
+
+1. **[MAJOR, fixed]** Task 3.3 crew run was **vacuous** — crew delivers memory via prompt-injection, and `AcmeMem`'s vision is guessable, so "output mentions vision" proved nothing. Rewrote to seed a **non-guessable nonce**, assert on the **rendered run `## Context`**, add a **memory-absent negative control**, and note the embedder prereq for the retrieval (vs core) path.
+2. **[MAJOR, fixed]** Phase 3 skipped the two **RBAC integration tests** on Windows (`skipIf(win32 && !AOA_RUN_WIN_INTEGRATION)`). Added Task 3.1 **Step 2b** to run them via `AOA_RUN_WIN_INTEGRATION=1` + embedded-pg.
+3. **[MAJOR, fixed]** Phase 4 never named **`e2e-pgvector`** (the memory write/retrieval required lane in `ci-required.needs`). Added it to the job list (Task 4.2/4.3) + a **gate-back** (Task 4.4 Step 1) making it + integration green mandatory before hand-off.
+4. **[MAJOR, fixed]** No **`pnpm install && pnpm build`** before the local typecheck — after merging #316's lockfile+source changes the gate would run on stale `dist`/`node_modules`. Added to Task 1.8 Step 4 + Task 3.1 Step 1.
+5. **[MAJOR, fixed]** Task 3.2's `--allowedTools` review mandate used a wrong baseline ("memory-only?"). Reframed to "did #318 widen the auto-approved set?" + acknowledge the ORG allowlist's mutation tools + the `--strict-mcp-config` bound.
+6. **[MINOR, fixed]** Consistency bug from round 1: File-map note said the security diff reads were "(Step 3)" — corrected to Task 1.5 Step 4 / Task 1.6 Step 5.
+7. **[MINOR, fixed]** Phase 5 pointed at the wrong file (`execute.ts`) for the probe — corrected to `test.ts` + `auth-status.ts`, and flagged that the probe's non-isolation is *deliberate* (the fix is a conscious trade-off, not an oversight).
+8. **[MINOR, fixed]** Added a pre-un-draft **freshness re-check** (Task 4.1 Step 1) for `main` moving mid-execution; the **regen recipe into the PR description** (Task 4.4 Step 2); an explicit **`git merge --abort`/restore** recovery path in the two security diff reads.
+9. **[NIT, fixed]** Stale expected-HEAD → `d7d285d88`; `chk "agentRole"` tightened to `"agentRole: agent.role"` (it appeared 4× independently); `logActivity` miscount 4 → 5.

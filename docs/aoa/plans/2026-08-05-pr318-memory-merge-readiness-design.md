@@ -67,7 +67,9 @@ The "`query_memory`-Commander fix" is a **phantom** and is explicitly out of sco
 
 ## 4. Rebase, conflict resolution & migration regeneration
 
-**Rebase:** replay `0ebe2ba5d..5d23895a3` (27 commits) onto `origin/main` (`c1fe2e733`). Preserve the existing backup; take a fresh safety branch immediately before starting.
+> **Superseded by the plan's integration decision:** the implementation plan uses `git merge origin/main` instead of a rebase (lower-risk for a squash-merged PR — each conflict resolved once with both sides visible; the `git diff origin/main` verification battery is identical either way). The per-file resolutions and migration regen below are unchanged; read "rebase"/"replay 27 commits"/"pre-rebase" in this section as the equivalent one-shot merge. See the plan header for the rationale.
+
+**Integrate main:** bring `origin/main` (`c1fe2e733`) into the branch (plan: one `git merge`; this section's per-file resolutions apply either way). Preserve the existing backup; take a fresh safety tag immediately before starting.
 
 **Conflict-candidate set (files touched by BOTH sides — the real risk surface):**
 
