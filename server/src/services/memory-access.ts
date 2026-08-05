@@ -65,16 +65,16 @@ export function canActorSee(item: AccessibleMemoryRow, actor: MemoryActor): bool
   const ids = actor.departmentIds;
   if (item.departmentId != null && ids.includes(item.departmentId)) return true;
   if (item.projectId != null && ids.includes(item.projectId)) return true;
-  // Goal-/task-only-scoped rows can't be resolved to a project without a DB join.
-  // As a post-fetch safety net over the SQL gate (memoryAccessConditions), which
-  // already admits only accessible goal/task rows, pass them through rather than
-  // strip what the query legitimately returned.
-  if (
-    item.departmentId == null &&
-    item.projectId == null &&
-    (item.goalId != null || item.taskId != null)
-  ) {
-    return true;
+  if (item.departmentId == null && item.projectId == null) {
+    // Goal-/task-only-scoped rows can't be resolved to a project without a DB join.
+    // As a post-fetch safety net over the SQL gate (memoryAccessConditions), which
+    // already admits only accessible goal/task rows, pass them through rather than
+    // strip what the query legitimately returned.
+    if (item.goalId != null || item.taskId != null) return true;
+    // Fully-unscoped, non-private memory (no dept/project/goal/task) is ambient
+    // company-level knowledge — visible to every internal member, NOT external MCP
+    // keys (Decision #119). Discussion-extracted memory is created this way.
+    return !isExternalKey;
   }
   return false;
 }

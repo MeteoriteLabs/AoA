@@ -348,6 +348,52 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect(bundle).not.toContain("NONCE-OTHERDEPT");
     });
 
+    it("unscoped memory (Decision #119): a fully-unscoped non-identity row is retrieved by agents + members, NOT external keys; identity stays hidden from team_member", async () => {
+      assertSetupOk();
+      // Fully-unscoped, non-private, non-identity (discussion-extracted style: dept/project/goal/task all null).
+      await db.execute(sql`
+        INSERT INTO memory_items
+          (id, company_id, title, content, category, source, status, created_by, layer, visibility, department_id, project_id, goal_id)
+        VALUES (gen_random_uuid(), ${co}, 'Ambient company note', 'ambientmarker body', 'reference', 'founder', 'approved', 'itest',
+                'domain', 'scoped', NULL, NULL, NULL)`);
+
+      // An agent scoped to dept A retrieves the ambient (unscoped) note — the e2e regression fix.
+      expect((await visibleTitlesForAgent(agA)).has("Ambient company note")).toBe(true);
+
+      // #3: the run-path SCOPE FILTER (departmentId) must not exclude unscoped memory —
+      // a dept-A-scoped keyword search still returns the ambient note (dept OR NULL).
+      const actorA = await actorForAgentRun(db, co, agA);
+      const scopedRaw = await memoryService(db).searchMultiPath(co, "ambientmarker", {
+        departmentId: deptA,
+        accessConditions: memoryAccessConditions(db, actorA),
+        limit: 100,
+      });
+      const scopedTitles = new Set(filterMemoryForActor(scopedRaw, actorA).map((r) => r.title));
+      expect(scopedTitles.has("Ambient company note")).toBe(true); // survives the dept-A scope filter
+
+      // A team_member human sees it too...
+      const member: MemoryActor = {
+        kind: "team_member",
+        userId: "33333333-3333-3333-3333-333333333333",
+        departmentIds: [deptA],
+      };
+      const memberTitles = await visibleTitlesForActor(member);
+      expect(memberTitles.has("Ambient company note")).toBe(true);
+      // ...but the identity row (also fully-unscoped) stays hidden from the team_member (Decision #118 guard).
+      expect(memberTitles.has("Company identity")).toBe(false);
+
+      // An external MCP key sees neither the ambient note nor identity.
+      const external: MemoryActor = {
+        kind: "team_member",
+        userId: "44444444-4444-4444-4444-444444444444",
+        departmentIds: [deptA],
+        external: true,
+      };
+      const extTitles = await visibleTitlesForActor(external);
+      expect(extTitles.has("Ambient company note")).toBe(false);
+      expect(extTitles.has("Company identity")).toBe(false);
+    });
+
     it("the gate is meaningful, not vacuous: WITHOUT accessConditions the dept-B row DOES come back", async () => {
       assertSetupOk();
       const raw = await memoryService(db).searchMultiPath(co, "", { limit: 100 });

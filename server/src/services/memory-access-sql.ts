@@ -145,7 +145,25 @@ export function memoryAccessConditions(db: Db, actor: MemoryActor): SQL[] {
   const isExternalKey = actor.kind === "team_member" && actor.external === true;
   const visibleParts: SQL[] = [scopeMatch];
   if (seesIdentity) visibleParts.push(eq(memoryItems.layer, "identity"));
-  if (!isExternalKey) visibleParts.push(eq(memoryItems.visibility, "company"));
+  if (!isExternalKey) {
+    visibleParts.push(eq(memoryItems.visibility, "company"));
+    // Fully-unscoped, non-private memory (no dept/project/goal/task) is ambient
+    // company-level knowledge — visible to every internal member (Decision #119).
+    // Mirrors canActorSee in memory-access.ts. Discussion-extracted memory is
+    // created this way (departmentId null), so agents must still retrieve it.
+    // MUST exclude the identity layer: identity rows are also fully-unscoped, and
+    // this is an OR-branch (unlike canActorSee's sequential check), so without the
+    // guard a team_member would see identity here, re-opening Decision #118.
+    visibleParts.push(
+      and(
+        isNull(memoryItems.departmentId),
+        isNull(memoryItems.projectId),
+        isNull(memoryItems.goalId),
+        isNull(memoryItems.taskId),
+        sql`${memoryItems.layer} IS DISTINCT FROM 'identity'`,
+      )!,
+    );
+  }
   const visibleNonPrivate = and(nonPrivate, or(...visibleParts)!)!;
 
   if (actor.kind === "agent") {

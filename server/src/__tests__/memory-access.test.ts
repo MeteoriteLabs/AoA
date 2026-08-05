@@ -60,6 +60,19 @@ describe("filterMemoryForActor", () => {
     expect(filterMemoryForActor(items, externalKey)).toHaveLength(0); // external key excluded
   });
 
+  it("fully-unscoped non-private memory is ambient company-level — members + agents see it, external keys don't; identity is NOT re-exposed", () => {
+    // No dept/project/goal/task at all (discussion-extracted memory is created this way).
+    const unscoped = row({ layer: "domain", visibility: "scoped", departmentId: null, projectId: null });
+    expect(filterMemoryForActor([unscoped], agentB)).toHaveLength(1); // agent (any dept) sees it
+    expect(filterMemoryForActor([unscoped], memberA)).toHaveLength(1); // team_member sees it
+    expect(filterMemoryForActor([unscoped], founder)).toHaveLength(1); // founder sees it
+    expect(filterMemoryForActor([unscoped], externalKey)).toHaveLength(0); // external key excluded
+    // Guard (Decision #118 stands): an identity row is ALSO fully-unscoped, but must
+    // NOT reach a team_member via the unscoped path.
+    const identity = row({ layer: "identity", visibility: "scoped", departmentId: null, projectId: null });
+    expect(filterMemoryForActor([identity], memberA)).toHaveLength(0);
+  });
+
   it("agent-private memory is visible only to the owning agent", () => {
     const items = [row({ ownerType: "agent", ownerId: "ag1", agentId: "ag1", departmentId: null })];
     expect(filterMemoryForActor(items, agentA)).toHaveLength(1);

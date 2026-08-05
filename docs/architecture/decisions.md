@@ -1852,3 +1852,20 @@ server-reserved `runtimeConfig` auto-start envelope.
 **Do NOT** re-broaden identity/company to team_member humans or external MCP keys without a successor decision — the founder is the identity-layer gatekeeper (Decisions #15, #6, Rule #6). Company-wide *employee* readability of identity (Model B — readable by all members, gated from external keys, with a separate confidential tier so founders don't silently leak) was considered and deferred as a larger change.
 
 **Key files:** `server/src/services/memory-access.ts` (`canActorSee`, `MemoryActor.external`), `server/src/services/memory-access-sql.ts` (`actorForMcp`, `memoryAccessConditions`), `server/src/services/internal-agent/memory-policy.ts` (`canSeeDurableMemory`). Tests: `memory-access.test.ts`, `memory-actor-resolver.test.ts`, `memory-rbac-leakage.integration.test.ts` (tier case).
+
+## Decision #119 — Fully-unscoped memory is ambient company-level (internal members + agents see it; not external keys) (2026-08-05)
+
+**Status:** Locked 2026-08-05 (PR #318). Follow-up to Decision #118, surfaced by the first Linux CI run of the enterprise-memory branch.
+
+**Problem.** The P1 RBAC gate + run-path scope filter both require a memory row to match a scope (dept/project/goal/task) to be visible to a scoped actor. But a large class of memory — notably **discussion-extracted memory** (`thread-scope-versions.ts` `buildMemoryCandidateCreateInput` sets `departmentId` from `payload.departmentId ?? null`) — is created **fully unscoped** (all scope columns NULL, `visibility='scoped'`). Under the P1 gate this became **founder-only**, so ORG/crew agents stopped retrieving discussion memory (the pre-existing `full-discussion-to-workspace-cycle.spec.ts` e2e caught it). Before #318 the ungated retrieval showed it to any agent.
+
+**Decision.** Memory with **no scope of any kind** (`departmentId`/`projectId`/`goalId`/`taskId` all NULL), non-private, non-identity, is **ambient company-level** knowledge: visible to every INTERNAL member (agents + founder/team_lead + team_member humans), **NOT external MCP keys** (mirrors #118's `visibility='company'` tier). It is NOT identity — identity stays team-lead+/agents (#118).
+
+**Three consistent touches:**
+1. `memory-access.ts` `canActorSee`: fully-unscoped non-private non-identity row → `!isExternalKey`. (Identity is handled by the earlier sequential `layer === 'identity'` check, so it never reaches this branch.)
+2. `memory-access-sql.ts` `memoryAccessConditions`: adds a fully-unscoped OR-branch, **guarded with `layer IS DISTINCT FROM 'identity'`** — the SQL gate is an OR (unlike canActorSee's sequential check), so without the guard a team_member would see identity here, re-opening #118.
+3. `memory.ts` `searchMultiPath` scope block: run-path `departmentId`/`projectId`/`goalId` filters become `= scope OR IS NULL`, so a scoped retrieval (ORG heartbeat / crew bundle / `query_memory`) never *excludes* company-wide/unscoped memory — company memory is relevant to every scope.
+
+**Follow-up (not this PR):** stamp discussion-extracted memory with its thread's department at creation, so it's properly dept-scoped rather than relying on the ambient tier. Tracked.
+
+**Key files/tests:** the three files above; `memory-access.test.ts` (unscoped tier + identity guard), `memory-rbac-leakage.integration.test.ts` (real-pg unscoped case + scope-filter check + identity guard).

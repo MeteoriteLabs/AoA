@@ -623,9 +623,16 @@ export function memoryService(db: Db) {
         ];
         if (filters.layer) conds.push(eq(memoryItems.layer, filters.layer));
         if (filters.category) conds.push(eq(memoryItems.category, filters.category));
-        if (filters.departmentId) conds.push(eq(memoryItems.departmentId, filters.departmentId));
-        if (filters.projectId) conds.push(eq(memoryItems.projectId, filters.projectId));
-        if (filters.goalId) conds.push(eq(memoryItems.goalId, filters.goalId));
+        // Scope filters narrow to the run's dept/project/goal, but company-wide /
+        // fully-unscoped memory (the scope column IS NULL) is always relevant and must
+        // never be excluded by a scope filter (Decision #119). So each scope match is
+        // "= the run's scope OR the row is unscoped on that column".
+        if (filters.departmentId)
+          conds.push(or(eq(memoryItems.departmentId, filters.departmentId), isNull(memoryItems.departmentId))!);
+        if (filters.projectId)
+          conds.push(or(eq(memoryItems.projectId, filters.projectId), isNull(memoryItems.projectId))!);
+        if (filters.goalId)
+          conds.push(or(eq(memoryItems.goalId, filters.goalId), isNull(memoryItems.goalId))!);
         // RBAC gate (P1-T2): AND the actor's access conditions into every pathway.
         if (filters.accessConditions?.length) conds.push(...filters.accessConditions);
         return conds;
