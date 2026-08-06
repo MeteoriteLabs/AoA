@@ -51,8 +51,9 @@ import {
   resolveCompanyOrganizationId,
   runClaimMirrorsBestEffort,
 } from "./org-concurrency.js";
-import { environmentRunOrchestrator, type EnvironmentAcquisitionResult } from "./environment-run-orchestrator.js";
+import type { EnvironmentAcquisitionResult } from "./environment-run-orchestrator.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
+import { acquireExecutionContext } from "./acquire-execution-context.js";
 import { conflict, notFound, HttpError } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent, threadWorkingAgents, broadcastThreadPresence } from "./live-events.js";
@@ -4208,24 +4209,40 @@ export function heartbeatService(db: Db) {
       }
 
       // ── Runtime services (ensureRuntimeServicesForRun) — gated ─────
+      // U4: delegates to the shared acquireExecutionContext helper INSIDE the
+      // existing environmentRuntime.environmentId gate — no behavior change.
+      // environmentRuntime.environmentId is non-null here, so acquireForRun
+      // resolves it directly (never the null -> platform-default branch; that
+      // branch is exercised only by crew/Commander's null environmentId, U1/S1).
+      // orgAcquired is captured for U4b to read (mcpParams.brokered) before
+      // prepareHeartbeatMcpDelivery.
       let resolvedConfigWithEnvironmentAcquisition = resolvedConfig;
+      let orgAcquired: Awaited<ReturnType<typeof acquireExecutionContext>> | null = null;
       if (environmentRuntime.environmentId) {
-        const environmentAcquisition = await environmentRunOrchestrator(db).acquireForRun({
-          companyId: agent.companyId,
-          environmentId: environmentRuntime.environmentId,
-          adapterType: agent.adapterType,
+        orgAcquired = await acquireExecutionContext(db, {
+          runIdentity: {
+            companyId: agent.companyId,
+            agentId: agent.id,
+            runId: run.id,
+            adapterType: agent.adapterType,
+          },
+          // functionType is a projects.functionType field, not carried on the
+          // trimmed issueRef projection used here; unused today (ephemeral-only,
+          // U7 seam) so null is behavior-neutral.
+          functionType: null,
+          warmPreference: "auto",
+          worktree: persistedExecutionWorkspace
+            ? { id: persistedExecutionWorkspace.id, mode: persistedExecutionWorkspace.mode }
+            : null,
+          environmentId: environmentRuntime.environmentId, // still the pin — non-null here
           issueId,
           heartbeatRunId: run.id,
-          persistedExecutionWorkspace: persistedExecutionWorkspace
-            ? {
-                id: persistedExecutionWorkspace.id,
-                mode: persistedExecutionWorkspace.mode,
-              }
-            : null,
         });
+        // U4b sets brokered here (heartbeatMcpParams.brokered from orgAcquired,
+        // before prepareHeartbeatMcpDelivery).
         resolvedConfigWithEnvironmentAcquisition = applyEnvironmentAcquisitionConfig(
           resolvedConfig,
-          environmentAcquisition,
+          orgAcquired.sandbox,
         );
       }
 

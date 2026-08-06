@@ -11,8 +11,9 @@ import { stripUserMcpArgs } from "../../mcp-arg-sanitize.js";
 import { resolveAgentConnectors } from "../../mcp-connectors-loader.js";
 import { adapterSupportsConnectors } from "../../mcp-connectors.js";
 import type { McpServerSpec } from "@armyofagents/adapter-utils";
-import { resolveGuardedAdapterExecutionContext } from "../../heartbeat.js";
+import { resolveGuardedAdapterExecutionContext, applyEnvironmentAcquisitionConfig } from "../../heartbeat.js";
 import { tenantIsolationEnforced } from "../../../config/deployment-mode.js";
+import { acquireExecutionContext } from "../../acquire-execution-context.js";
 import { createLocalAgentJwt } from "../../../agent-auth-jwt.js";
 import { resolveBridgeEntrypoint } from "./bridge-path.js";
 import { publishLiveEvent, publishIssueStatusChanged, threadWorkingAgents, broadcastThreadPresence } from "../../live-events.js";
@@ -433,6 +434,24 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       connectorEnv = resolved.connectorEnv;
     }
 
+    // U4: acquire the sandbox lease ONCE, immediately BEFORE buildMcpConfig so
+    // U4b can set mcpParams.brokered/apiBaseUrl on the SAME mcpParams before the
+    // MCP config file / bridge spec are built. R1/Q1: crew is ALWAYS ephemeral,
+    // never warm. `worktree: null` — crew has no host worktree (A+ model, U6).
+    // environmentId comes from the agent's own defaultEnvironmentId column
+    // (agents.default_environment_id — NOT adapterConfig, which has no such
+    // field); null flows straight through to the orchestrator, which resolves
+    // the platform default on cloud (U1) or throws environment_not_found on
+    // desktop (caught below -> sandbox:null, local path unchanged).
+    const acquired = await acquireExecutionContext(db, {
+      runIdentity: { companyId: agent.companyId, agentId: agent.id, runId: runId ?? `aoa-${agentId}`, adapterType: agent.adapterType },
+      functionType: null,
+      warmPreference: "ephemeral",
+      worktree: null,
+      environmentId: agent.defaultEnvironmentId ?? null,
+    });
+    // U4b sets mcpParams.brokered / mcpParams.apiBaseUrl from `acquired` HERE.
+
     const mcp = buildMcpConfig({ ...mcpParams, extraMcpServers });
     cfgPath = join(tmpdir(), `aoa-mcp-${agentId}-${runId ?? "x"}.json`);
     await writeFile(cfgPath, JSON.stringify(mcp, null, 2));
@@ -682,11 +701,17 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     const config = isClaudeFamily
       ? { ...resolvedBaseConfig, promptTemplate: triggerPrompt, ...connectorEnvMerge, [argKey]: ["--mcp-config", cfgPath, "--strict-mcp-config", ...stripUserMcpArgs(userTail)] }
       : { ...resolvedBaseConfig, promptTemplate: triggerPrompt, ...connectorEnvMerge };
+    // U4: fold the U4-acquired sandbox's configPatch (executionTarget etc.) over
+    // `config` BEFORE the guarded-context resolution below. No-ops (returns
+    // `config` unchanged) when `acquired.sandbox` is null (desktop/local_trusted
+    // — environment_not_found) or carries an empty patch, so the local path
+    // stays byte-identical.
+    const configWithSandbox = applyEnvironmentAcquisitionConfig(config, acquired.sandbox);
     // Sink-level multi_tenant hardening (trustBoundary) + D1 unsandboxed gate
     // (cloud_auth) for CREW runs. `topology` is already resolved above (:544);
     // tenantIsolationEnforced() is the cloud_auth signal.
     const { executionTarget, runtimeCommandSpec } = resolveGuardedAdapterExecutionContext(
-      config,
+      configWithSandbox,
       adapter,
       {
         trustBoundary: topology.trustBoundary,
@@ -965,7 +990,7 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         runId: runId ?? `aoa-${agentId}`,
         agent,
         runtime: agent.runtimeConfig ?? {},
-        config,
+        config: configWithSandbox,
         context: executionContext,
         executionTarget, runtimeCommandSpec,
         mcpBridge: bridgeSpec,

@@ -36,6 +36,7 @@ import { buildScrubbedCliEnv } from "../cli-spawn-safety.js";
 import { mergeConnectorEnv } from "../mcp-connectors-env.js";
 import { tenantIsolationEnforced } from "../../config/deployment-mode.js";
 import { assertUnsandboxedMultitenantAllowed } from "../unsandboxed-multitenant-guard.js";
+import { acquireExecutionContext } from "../acquire-execution-context.js";
 
 const require = createRequire(import.meta.url);
 
@@ -920,6 +921,39 @@ export function cliModeService(db: Db) {
             );
           }
 
+          // U4: acquire an ephemeral sandbox once per turn, BEFORE the
+          // McpConfigParams are built, so U4b can set brokered/apiBaseUrl on
+          // the SAME mcpParams. Commander has no company/agent environment
+          // pin (environmentId: null — always the platform default on cloud,
+          // U1/S1) and is always ephemeral (functionType: null, no worktree).
+          // On desktop/local_trusted (no platform default) acquireForRun
+          // throws environment_not_found -> {sandbox:null}, matching today's
+          // byte-identical local spawn below.
+          const acquired = await acquireExecutionContext(db, {
+            runIdentity: {
+              companyId: params.companyId,
+              agentId: null,
+              runId: params.runId ?? `commander-${Date.now()}`,
+              adapterType: "codex_local",
+            },
+            functionType: null,
+            warmPreference: "ephemeral",
+            worktree: null,
+            environmentId: null,
+          });
+          // U4b sets mcpParams.brokered / mcpParams.apiBaseUrl from `acquired` HERE.
+          //
+          // NOTE (U4 scope decision, see task report): `acquired` is intentionally
+          // NOT threaded into the actual codex spawn (spawnAndCollect, module-level
+          // below) in this task. Rerouting that spawn through
+          // runAdapterExecutionTargetProcess is architecturally sound in principle
+          // (codex is already a one-shot, buffer-to-completion turn) but requires
+          // inventing timeoutSec/graceSec values with no grounding in this codebase
+          // and cannot be exercised without real E2B credentials — deferred rather
+          // than guessed. `acquired.sandbox` is null on every reachable desktop/
+          // local_trusted test path (no E2B_API_KEY / not cloud_auth), so the spawn
+          // below stays byte-identical regardless.
+
           const mcpParams: McpConfigParams = {
             companyId: params.companyId,
             userId: params.userId,
@@ -1081,6 +1115,27 @@ export function cliModeService(db: Db) {
               );
             }
           }
+
+          // U4: acquire an ephemeral sandbox once per turn, BEFORE the
+          // McpConfigParams-shaped object below is built, so U4b can set
+          // brokered/apiBaseUrl on it. Same rationale as the codex branch
+          // above — see the NOTE there on the deferred spawn-routing (the
+          // spawn at cliProcess = spawn(...) a few lines down stays
+          // byte-identical; only `acquired` is captured here for U4b/U5).
+          const claudeAcquired = await acquireExecutionContext(db, {
+            runIdentity: {
+              companyId: params.companyId,
+              agentId: null,
+              runId: params.runId ?? `commander-${Date.now()}`,
+              adapterType: config.cliTool === "codex" ? "codex_local" : "claude_local",
+            },
+            functionType: null,
+            warmPreference: "ephemeral",
+            worktree: null,
+            environmentId: null,
+          });
+          // U4b sets brokered / apiBaseUrl on the McpConfigParams object below
+          // from `claudeAcquired` HERE.
 
           const invocation = await resolveCliInvocation(
             config.cliTool,

@@ -156,6 +156,14 @@ vi.mock("../services/heartbeat.js", () => ({
     executionTarget: {},
     runtimeCommandSpec: {},
   })),
+  applyEnvironmentAcquisitionConfig: (config: unknown) => config,
+}));
+
+// U4: crew acquires a sandbox lease before buildMcpConfig — stub the desktop/
+// local no-sandbox return shape so this suite stays on its existing byte-
+// identical local path.
+vi.mock("../services/acquire-execution-context.js", () => ({
+  acquireExecutionContext: vi.fn().mockResolvedValue({ sandbox: null, lease: null, warmResolved: false }),
 }));
 
 vi.mock("../services/internal-agent/aoa-agents/bridge-path.js", () => ({

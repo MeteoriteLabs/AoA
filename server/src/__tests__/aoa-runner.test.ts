@@ -44,7 +44,14 @@ vi.mock("@armyofagents/db", () => { const t=(n:string)=>new Proxy({},{get:(_x,p)
 vi.mock("../adapters/registry.js", () => ({ getServerAdapter: () => ({ execute: execMock, getRuntimeCommandSpec: () => ({}) }) }));
 vi.mock("../services/costs.js", () => ({ costService: () => ({ createEvent: createEventMock }) }));
 vi.mock("../services/internal-agent/cli-mode.js", () => ({ buildMcpConfig: buildMcpMock, buildMcpBridgeSpec: buildBridgeSpecMock }));
-vi.mock("../services/heartbeat.js", () => ({ resolveAdapterExecutionContextUnguarded: () => ({ executionTarget:{}, runtimeCommandSpec:{} }), resolveGuardedAdapterExecutionContext: () => ({ executionTarget:{}, runtimeCommandSpec:{} }) }));
+vi.mock("../services/heartbeat.js", () => ({ resolveAdapterExecutionContextUnguarded: () => ({ executionTarget:{}, runtimeCommandSpec:{} }), resolveGuardedAdapterExecutionContext: () => ({ executionTarget:{}, runtimeCommandSpec:{} }), applyEnvironmentAcquisitionConfig: (config: unknown) => config }));
+// U4: crew now acquires a sandbox lease before buildMcpConfig. These tests
+// exercise the desktop/local no-sandbox path (byte-identical), so the helper
+// is stubbed to the real no-environment return shape rather than exercising
+// the real orchestrator against this file's Proxy-mocked db.
+vi.mock("../services/acquire-execution-context.js", () => ({
+  acquireExecutionContext: vi.fn().mockResolvedValue({ sandbox: null, lease: null, warmResolved: false }),
+}));
 vi.mock("../services/internal-agent/aoa-agents/bridge-path.js", () => ({ resolveBridgeEntrypoint: () => "/x/mcp-bridge.js" }));
 // T5: the runner now resolves an execution workspace before adapter.execute,
 // which mkdir's the per-agent home and stat's candidate cwds through this same
