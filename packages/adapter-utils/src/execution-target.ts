@@ -205,12 +205,18 @@ export interface AdapterTargetProcessOptions {
   /** Key PREFIXES to strip from the inherited parent env at spawn (unless `env` set them). */
   unsetEnvPrefixes?: string[];
   /**
-   * U5 — resolved provider name (`"anthropic"` | `"openai"` | `"gemini"`),
-   * used ONLY by the sandbox branches (`provider-sandbox` / `sandbox-docker`)
-   * of `runAdapterExecutionTargetProcess` to select which provider auth key
-   * `buildSandboxEnvAllowlist` admits. Local targets ignore it. Defaults to
-   * `""` — no provider auth key admitted — so an un-updated caller fails
-   * closed rather than silently widening the allowlist.
+   * U5 — resolved provider name (one of `PROVIDER_AUTH_KEYS`' keys in
+   * `sandbox-env-allowlist.ts` — currently `"anthropic"` | `"openai"` |
+   * `"gemini"` | `"xai"` | `"cursor"`), used ONLY by the sandbox branches
+   * (`provider-sandbox` / `sandbox-docker`) of `runAdapterExecutionTargetProcess`
+   * to select which provider auth key `buildSandboxEnvAllowlist` admits.
+   * Local targets ignore it. Defaults to `""` — no provider auth key admitted
+   * — so an un-updated caller fails closed rather than silently widening the
+   * allowlist. EVERY adapter's `execute()` must pass its actual resolved
+   * provider here (a fixed-provider adapter passes its family constant; a
+   * multi-provider adapter — opencode-local, pi-local — resolves it from the
+   * configured `provider/model` id at the same spawn site) — see the Wave 2
+   * review fix (U5 regression) that added the four non-claude/codex adapters.
    */
   sandboxProvider?: string;
 }

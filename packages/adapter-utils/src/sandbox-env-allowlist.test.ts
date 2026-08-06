@@ -40,4 +40,56 @@ describe("buildSandboxEnvAllowlist", () => {
     expect(out.AOA_MCP_NOTION_REFRESH).toBeUndefined();   // not on the *_TOKEN allowlist tail
     expect(out["mcp:oauth:notion"]).toBeUndefined();       // invalid env name + not allowed
   });
+
+  // Wave 2 review (U5 regression): gemini-local passed NO sandboxProvider at
+  // all pre-fix, so provider:"" dropped GEMINI_API_KEY/GOOGLE_API_KEY on every
+  // sandboxed gemini run. This directly covers the reviewer's requested case.
+  it("gemini provider: keeps GEMINI_API_KEY + GOOGLE_API_KEY, drops DATABASE_URL", () => {
+    const out = buildSandboxEnvAllowlist(
+      { GEMINI_API_KEY: "g", GOOGLE_API_KEY: "g2", DATABASE_URL: "LEAK" },
+      { provider: "gemini" },
+    );
+    expect(out.GEMINI_API_KEY).toBe("g");
+    expect(out.GOOGLE_API_KEY).toBe("g2");
+    expect(out.DATABASE_URL).toBeUndefined();
+  });
+
+  // grok-local (and opencode-local/pi-local when their configured model's
+  // provider prefix is "xai", e.g. pi-local's own documented "xai/grok-4"
+  // example) — same regression class as gemini: no sandboxProvider meant
+  // XAI_API_KEY was dropped in a sandbox.
+  it("xai provider: keeps XAI_API_KEY, drops DATABASE_URL and other providers' keys", () => {
+    const out = buildSandboxEnvAllowlist(
+      { XAI_API_KEY: "x", ANTHROPIC_API_KEY: "should-not-cross", DATABASE_URL: "LEAK" },
+      { provider: "xai" },
+    );
+    expect(out.XAI_API_KEY).toBe("x");
+    expect(out.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(out.DATABASE_URL).toBeUndefined();
+  });
+
+  // cursor-local authenticates with its OWN account key (CURSOR_API_KEY)
+  // regardless of the underlying model — see cursor-local's execute.ts
+  // sandboxProvider comment. Its billing-type heuristic also treats
+  // OPENAI_API_KEY as valid Cursor BYOK auth, so it stays admissible too,
+  // gated to "cursor" runs only (never widens what an anthropic/gemini run
+  // can carry — see the disambiguation test above).
+  it("cursor provider: keeps CURSOR_API_KEY + OPENAI_API_KEY, drops DATABASE_URL", () => {
+    const out = buildSandboxEnvAllowlist(
+      { CURSOR_API_KEY: "c", OPENAI_API_KEY: "byok", DATABASE_URL: "LEAK" },
+      { provider: "cursor" },
+    );
+    expect(out.CURSOR_API_KEY).toBe("c");
+    expect(out.OPENAI_API_KEY).toBe("byok");
+    expect(out.DATABASE_URL).toBeUndefined();
+  });
+
+  it("an unmapped provider string still fails closed (no provider auth key admitted)", () => {
+    const out = buildSandboxEnvAllowlist(
+      { GOOGLE_CLOUD_API_KEY: "should-not-cross", AOA_API_KEY: "jwt" },
+      { provider: "some-unmapped-provider" },
+    );
+    expect(out.GOOGLE_CLOUD_API_KEY).toBeUndefined();
+    expect(out.AOA_API_KEY).toBe("jwt");
+  });
 });

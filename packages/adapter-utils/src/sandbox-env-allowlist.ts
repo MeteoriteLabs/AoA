@@ -13,11 +13,28 @@ import { foldEnvKey } from "./server-utils.js";
 /** Provider auth env names, keyed by the resolved provider. The embeddings
  *  OPENAI_API_KEY is host-side only and never appears in a run overlay — so
  *  OPENAI_API_KEY is admissible ONLY for an openai-provider run (the agent's
- *  own resolved key), never for a claude run. */
+ *  own resolved key), never for a claude run.
+ *
+ *  Wave 2 review (U5 regression fix): every CLI adapter must resolve a
+ *  non-empty `sandboxProvider` at its `runAdapterExecutionTargetProcess` call
+ *  site, or its own provider key gets silently stripped in a sandbox — see
+ *  each adapter's execute.ts for the `sandboxProvider:` comment explaining
+ *  its choice. `xai` (grok-local; also a real `provider/model` prefix for
+ *  opencode-local/pi-local's model-catalog format, e.g. "xai/grok-4" per
+ *  pi-local's own docs) and `cursor` (cursor-local — cursor-agent
+ *  authenticates with ITS OWN account key regardless of which underlying
+ *  model is selected; see cursor-local's `test.ts` readiness probe, which
+ *  treats CURSOR_API_KEY as the sole canonical auth signal) were added here.
+ *  cursor-local's billing-type heuristic also treats an operator-configured
+ *  OPENAI_API_KEY as valid Cursor auth (BYOK), so it stays admissible for
+ *  `cursor` too — gated to cursor runs only, never widening what an
+ *  anthropic/gemini run can carry. */
 const PROVIDER_AUTH_KEYS: Record<string, string[]> = {
   anthropic: ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL"],
   openai: ["OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL"],
   gemini: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+  xai: ["XAI_API_KEY"],
+  cursor: ["CURSOR_API_KEY", "OPENAI_API_KEY"],
 };
 
 /** Run-identity + control-plane credential env that MAY cross (§9). */

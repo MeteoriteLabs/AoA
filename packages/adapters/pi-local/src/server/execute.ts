@@ -675,6 +675,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       graceSec,
       onSpawn,
       onLog: bufferedOnLog,
+      // U5 fix (Wave 2 review): pi is genuinely multi-provider — `model` is
+      // required in `provider/model` format (index.ts doc example:
+      // "xai/grok-4") and `provider` above (parseModelProvider(model)) is
+      // already threaded to the CLI's own --provider flag and the result's
+      // `provider` field. Thread the same value here so the sandbox spawn
+      // admits the correct provider auth key instead of dropping it
+      // (pre-fix, no sandboxProvider was passed at all).
+      sandboxProvider: provider ?? "",
     });
 
     // Flush any remaining buffer content

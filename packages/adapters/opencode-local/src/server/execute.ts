@@ -381,6 +381,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
   const prompt = `${instructionsPrefix}${renderedPrompt}`;
 
+  // U5 fix (Wave 2 review): opencode is genuinely multi-provider — `model` is
+  // required in `provider/model` format (see index.ts's doc + models.ts's
+  // requireOpenCodeModelId) and toResult below already derives the run's
+  // `provider` field the same way. Resolve it HERE too so the sandbox spawn
+  // admits the correct provider auth key instead of dropping it (pre-fix, no
+  // sandboxProvider was passed at all → provider:"" → every key stripped).
+  const resolvedModelProvider = parseModelProvider(model || null);
+
   const buildArgs = (resumeSessionId: string | null) => {
     const args = ["run", "--format", "json"];
     if (resumeSessionId) args.push("--session", resumeSessionId);
@@ -420,6 +428,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       graceSec,
       onLog,
       onSpawn,
+      // U5 fix (Wave 2 review) — see resolvedModelProvider comment above.
+      // "" (unresolved) still fails closed, matching the documented default.
+      sandboxProvider: resolvedModelProvider ?? "",
     });
     return {
       proc,
