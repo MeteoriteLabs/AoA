@@ -77,12 +77,19 @@ jobs:
           node-version: 24
           cache: pnpm
 
+      # F5 (PR#319 review): replaced the non-existent `database-ci/setup-postgres@v1`
+      # (which would fail this step) with the maintained cross-platform action, pinned
+      # to a commit SHA to match this repo's action-pinning convention.
       - name: Setup PostgreSQL (Windows)
+        id: setup-postgres
         if: matrix.os == 'windows-latest'
-        uses: database-ci/setup-postgres@v1
+        uses: ikalnytskyi/action-setup-postgres@c4dda34aae1c821e3a771b68b73b13af3198a7ee # v8
         with:
+          username: postgres
+          password: postgres
+          database: aoa
+          port: '5432'
           postgres-version: '16'
-          postgres-db: aoa
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -117,11 +124,20 @@ jobs:
           }
           CONF
 
+      # F5 (PR#319 review): export DATABASE_URL from the action's connection-uri on
+      # Windows ONLY. The previous step-level `${{ … || '' }}` set a present-but-empty
+      # DATABASE_URL on the macOS lane, which config.ts reads with `??` (empty string
+      # survives) — a latent break. Windows-only $GITHUB_ENV keeps non-Windows unset so
+      # embedded-postgres is used there.
+      - name: Export DATABASE_URL (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: echo "DATABASE_URL=${{ steps.setup-postgres.outputs.connection-uri }}" >> "$GITHUB_ENV"
+
       - name: Run e2e tests
         if: steps.install-playwright.outcome == 'success'
         env:
           AOA_E2E_SKIP_LLM: "true"
-          DATABASE_URL: ${{ matrix.os == 'windows-latest' && 'postgres://postgres:postgres@localhost:5432/aoa' || '' }}
         run: pnpm run test:e2e
 
       - name: Upload Playwright report
