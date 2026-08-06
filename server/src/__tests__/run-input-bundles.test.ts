@@ -4,6 +4,7 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import { afterEach } from "vitest";
 import { describe, expect, it } from "vitest";
+import { PgDialect } from "drizzle-orm/pg-core";
 import { buildRunInputBundle } from "../services/run-input-bundles.js";
 
 type MockRow = Record<string, unknown>;
@@ -226,6 +227,58 @@ describe("run input bundles", () => {
     expect(bundle.inputs[0].localPath).toBeDefined();
     const content = await fs.readFile(path.join(cwd, bundle.inputs[0].localPath!), "utf8");
     expect(content).toBe("# Pinned Content v1");
+  });
+
+  it("scopes the pinned artifact-version lookup to its artifact (F1 tenant isolation)", async () => {
+    // targetVersionId comes from agent-influenceable item.metadata. The version query
+    // MUST be scoped to the resolved (company-scoped) artifact so a version UUID from
+    // another artifact/tenant cannot be loaded. Assert the artifactVersions lookup
+    // filters by artifact_id, not by version id alone. (A sequence mock ignores WHERE,
+    // so we inspect the emitted SQL predicate directly — this catches the F1 regression,
+    // where the old query filtered by `id` only.)
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-run-inputs-scope-"));
+    tempDirsToCleanup.add(cwd);
+
+    const sequence: MockRow[][] = [
+      [{ id: "bundle-1", brief: null, sourceIssueId: "parent-1" }],
+      [
+        {
+          id: "item-artifact-pinned",
+          itemType: "artifact",
+          sourceId: "artifact-1",
+          label: null,
+          metadata: { artifactVersionId: "version-from-a-different-artifact" },
+        },
+      ],
+      [{ id: "artifact-1", title: "Architecture Spec", type: "markdown", currentVersionId: "version-latest-999" }],
+      [{ content: "# Should only load if scoped correctly", fileUrl: null }],
+    ];
+
+    const whereSqls: string[] = [];
+    const dialect = new PgDialect();
+    let idx = 0;
+    const db = {
+      select: () => {
+        const result = sequence[idx++] ?? [];
+        const chain: Record<string, unknown> = {};
+        for (const m of ["from", "innerJoin"]) chain[m] = () => chain;
+        chain.where = (cond: unknown) => {
+          try {
+            whereSqls.push(dialect.sqlToQuery(cond as never).sql);
+          } catch {
+            /* not an SQL condition — ignore */
+          }
+          return chain;
+        };
+        chain.then = (resolve: (v: MockRow[]) => unknown) => Promise.resolve(resolve(result));
+        return chain;
+      },
+    };
+
+    await buildRunInputBundle({ db: db as never, companyId: "company-1", issueId: "child-1", cwd });
+
+    const versionWhere = whereSqls.find((s) => s.includes("artifact_id"));
+    expect(versionWhere, "pinned artifact-version query must filter by artifact_id").toBeDefined();
   });
 
   it("resolves pinned artifact version when versionId fallback is in metadata", async () => {
