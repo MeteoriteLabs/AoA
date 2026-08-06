@@ -45,6 +45,7 @@ import { agents, threadOrchestrationState, discussionEntries, discussions, inter
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { preflightCrewDispatch } from "./crew-budget.js";
+import { isUniqueViolation } from "./db-errors.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -1020,36 +1021,80 @@ export function threadOrchestrationService(db: Db) {
       // this entry (QA-BUG-011 loop-guard: the entry must NOT re-fire the
       // orchestration controller).
       const now = new Date();
-      const { entry, companyId } = await db.transaction(async (tx) => {
-        const [{ entrySeq, companyId: cid }] = await tx
-          .update(discussions)
-          .set({
-            entrySeq: sql`${discussions.entrySeq} + 1`,
-            entryCount: sql`${discussions.entryCount} + 1`,
-            updatedAt: now,
-          })
-          .where(eq(discussions.id, threadId))
-          .returning({
-            entrySeq: discussions.entrySeq,
-            companyId: discussions.companyId,
-          });
+      // F6 (PR#319 review): the entry insert carries source_action_id, guarded by the
+      // partial unique index `discussion_entries_source_action_uq`. A genuinely concurrent
+      // re-drain that passed the Step-1 dedup pre-check can still lose the race here — the
+      // whole transaction then aborts with SQLSTATE 23505. Handle it OUTSIDE the tx (an
+      // aborted tx cannot be reused): return the winner's entry as the dedup result rather
+      // than surfacing a 500. Wrapping the tx (not using onConflictDoNothing) is required so
+      // the entrySeq/entryCount bump rolls back with the aborted insert — no counter drift.
+      const txResult = await db
+        .transaction(async (tx) => {
+          const [{ entrySeq, companyId: cid }] = await tx
+            .update(discussions)
+            .set({
+              entrySeq: sql`${discussions.entrySeq} + 1`,
+              entryCount: sql`${discussions.entryCount} + 1`,
+              updatedAt: now,
+            })
+            .where(eq(discussions.id, threadId))
+            .returning({
+              entrySeq: discussions.entrySeq,
+              companyId: discussions.companyId,
+            });
 
-        const [inserted] = await tx
-          .insert(discussionEntries)
-          .values({
-            discussionId: threadId,
-            inputType: "agent",
-            rawContent: output,
-            authorAgentId: params.agentId,
-            extractionStatus: "skipped",
-            seq: entrySeq,
-            createdBy: actorId,
-            sourceActionId: opts.outboxRowId ?? null,
-          })
-          .returning();
+          const [inserted] = await tx
+            .insert(discussionEntries)
+            .values({
+              discussionId: threadId,
+              inputType: "agent",
+              rawContent: output,
+              authorAgentId: params.agentId,
+              extractionStatus: "skipped",
+              seq: entrySeq,
+              createdBy: actorId,
+              sourceActionId: opts.outboxRowId ?? null,
+            })
+            .returning();
 
-        return { entry: inserted, companyId: cid };
-      });
+          return { entry: inserted, companyId: cid };
+        })
+        .catch((err: unknown) => {
+          if (opts.outboxRowId && isUniqueViolation(err, "discussion_entries_source_action_uq")) {
+            return { dedupConflict: true as const, err };
+          }
+          throw err;
+        });
+
+      if ("dedupConflict" in txResult) {
+        // Concurrent winner already inserted + published this entry. Reconcile to it.
+        if (opts.outboxRowId) {
+          const [existingEntry] = await db
+            .select({ id: discussionEntries.id })
+            .from(discussionEntries)
+            .where(
+              and(
+                eq(discussionEntries.discussionId, threadId),
+                eq(discussionEntries.sourceActionId, opts.outboxRowId),
+              ),
+            )
+            .limit(1);
+          if (existingEntry) {
+            log.info(
+              { threadId, agentId: params.agentId, outboxRowId: opts.outboxRowId, existingEntryId: existingEntry.id },
+              "requestParticipation: lost dedup race (unique violation) — returning existing entry",
+            );
+            // Use the post-incrementHop `hopCount` (incrementHop already ran above),
+            // consistent with the normal success return below.
+            return { spawned: true, hopCount, entryId: existingEntry.id };
+          }
+        }
+        // Unique violation but the winning row is gone (deleted between abort and re-select):
+        // nothing to reconcile to, so surface the original error.
+        throw txResult.err;
+      }
+
+      const { entry, companyId } = txResult;
 
       // Replicate addEntry's two publishLiveEvent calls so the participation
       // comment appears in real-time in the chat UI (WebSocket fan-out).
