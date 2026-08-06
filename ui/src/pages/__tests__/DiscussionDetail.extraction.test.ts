@@ -103,6 +103,39 @@ describe("extractionFailureMessage", () => {
     });
   });
 
+  describe("CLI kind: sandbox_unavailable (U13.3)", () => {
+    it("returns cloud copy pointing at provider key/config in Settings, and NEVER 'install'", () => {
+      const result = extractionFailureMessage("sandbox_unavailable", null);
+      expect(result.primary).toMatch(/provider key/i);
+      expect(result.primary).toMatch(/Settings/);
+      expect(result.primary.toLowerCase()).not.toContain("install");
+      expect(result.showSettings).toBe(true);
+    });
+
+    it("prefers the server's message when present, still never 'install'", () => {
+      const result = extractionFailureMessage(
+        "sandbox_unavailable",
+        "Extraction could not run: no isolated sandbox was available. Check your provider key and execution environment in Settings.",
+      );
+      expect(result.primary).toBe(
+        "Extraction could not run: no isolated sandbox was available. Check your provider key and execution environment in Settings.",
+      );
+      expect(result.primary.toLowerCase()).not.toContain("install");
+      expect(result.showSettings).toBe(true);
+    });
+
+    it("multiTenant does NOT rewrite sandbox_unavailable — the stale not_authed/not_installed 'unavailable on AoA Cloud yet' override must not catch it", () => {
+      const result = extractionFailureMessage(
+        "sandbox_unavailable",
+        "Extraction could not run: no isolated sandbox was available. Check your provider key and execution environment in Settings.",
+        { multiTenant: true },
+      );
+      expect(result.primary).not.toMatch(/isn't available on AoA Cloud yet/);
+      expect(result.primary).toMatch(/provider key/i);
+      expect(result.showSettings).toBe(true);
+    });
+  });
+
   describe("cloud (multiTenant) credential-shaped failures", () => {
     // NOTE: This INVERTS the earlier D3/#27 "point cloud founders at
     // Settings → Providers" copy. That copy was built on the wrong premise that

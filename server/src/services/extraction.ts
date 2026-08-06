@@ -1,4 +1,5 @@
 import { eq, and, desc, gt, gte, sql, ne, isNull, asc, inArray } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
 import type { Db } from "@armyofagents/db";
 import { debriefs, briefs, briefItems, projects, discussions, discussionEntries, discussionExtractedItems, internalAgentConfig, threadScopeVersions } from "@armyofagents/db";
 import { logger } from "../middleware/logger.js";
@@ -12,12 +13,26 @@ import {
   type CompanyProviderCredential,
 } from "./one-shot-provider-credential.js";
 import type { OneShotSandboxHandle } from "./one-shot-sandbox-cli.js";
+import { acquireExecutionContext } from "./acquire-execution-context.js";
+import { resolveRuntimeProviderConfig } from "./environment-runtime.js";
+import { sandboxProviderRuntime } from "./sandbox-provider-runtime.js";
+import { runtimeProviderKeyService } from "./runtime-provider-keys.js";
 import {
   buildDiscussionPendingHubEmit,
   buildExtractionFailedHubEmit,
   emitHubItem,
 } from "./hub-source-producers.js";
 import { hubItemsService } from "./hub-items.js";
+
+function readObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function readString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
 
 // Re-export pure parser symbols so existing importers (`from "./extraction.js"`)
 // continue to work unchanged after the move to extraction-parser.ts.
@@ -350,11 +365,13 @@ export function extractionService(db: Db) {
     extractFromDiscussionEntry: async (
       companyId: string,
       entryId: string,
-      /** U13.2: pre-acquired batch sandbox lease (U13.3 supplies this — one
-       *  sandbox reused across a whole extract-then-scope pass). Plumbed
-       *  through here inert for now: when omitted, the cloud path (via
-       *  `extractViaCli` -> `runOneShotCliInSandbox`) self-acquires its own
-       *  ephemeral sandbox per entry. */
+      /** U13.2/U13.3: pre-acquired batch sandbox lease — one sandbox reused
+       *  across a whole extract-then-scope pass, supplied by
+       *  `extractThreadEntriesAwait`'s batch acquire (U13.3). When omitted
+       *  (direct call, e.g. reprocess-single-entry, or the batch acquire
+       *  itself failed), the cloud path (via `extractViaCli` ->
+       *  `runOneShotCliInSandbox`) self-acquires its own ephemeral sandbox
+       *  for just this one entry. */
       sandboxHandle?: OneShotSandboxHandle,
     ) => {
       const log = logger.child({ service: "extraction", entryId, companyId });
@@ -518,7 +535,10 @@ export function extractionService(db: Db) {
 
         // Bounded retry for transient timeout failures (up to 3 attempts total).
         // Only `timeout` errors are retried — structural errors (not_installed,
-        // not_authed, nonzero_exit, unparseable) terminalize immediately.
+        // not_authed, nonzero_exit, unparseable, sandbox_unavailable) terminalize
+        // immediately (U13.3: a missing/unavailable sandbox is a structural
+        // condition, not a transient one — retrying would just re-fail the
+        // same way and burn the per-entry timeout budget three times over).
         const MAX_CLI_ATTEMPTS = 3;
         const CLI_RETRY_DELAY_MS = 500;
         let lastCliErr: CliExtractionError | undefined;
@@ -542,7 +562,8 @@ export function extractionService(db: Db) {
 
             if (cliErr.kind !== "timeout") {
               // Structural failure (not_installed, not_authed, nonzero_exit,
-              // unparseable) — no point retrying, terminalize immediately.
+              // unparseable, sandbox_unavailable) — no point retrying,
+              // terminalize immediately.
               lastCliErr = cliErr;
               break;
             }
@@ -714,9 +735,12 @@ export function extractionService(db: Db) {
       opts?: {
         /** Injectable extractor (tests). Defaults to the sibling
          *  extractFromDiscussionEntry. The third param is the U13.2/U13.3
-         *  pre-acquired batch sandbox handle — plumbed through the type here
-         *  so the signature is ready for U13.3's batch acquire; THIS task
-         *  never supplies it (the loop below still calls extractOne 2-arg). */
+         *  pre-acquired batch sandbox handle — on cloud (`tenantIsolationEnforced()`),
+         *  this method acquires ONE sandbox for the whole pass (before the
+         *  deadline clock starts) and passes it to every extractOne call
+         *  (U13.3); on desktop, or if the batch acquire fails, it stays
+         *  `undefined` and each entry self-acquires via `extractFromDiscussionEntry`
+         *  -> `extractViaCli` -> `runOneShotCliInSandbox`. */
         extractOne?: (
           companyId: string,
           entryId: string,
@@ -747,6 +771,77 @@ export function extractionService(db: Db) {
         ((c: string, e: string, h?: OneShotSandboxHandle) =>
           extractionService(db).extractFromDiscussionEntry(c, e, h));
       const now = opts?.now ?? Date.now;
+
+      // U13.3: acquire ONE sandbox for the WHOLE batch, BEFORE the deadline
+      // clock (`startedAt`) starts — acquire latency must never eat into the
+      // per-entry EXTRACT_SCOPE_DEADLINE_MS budget. Cloud-only
+      // (`tenantIsolationEnforced()`); desktop/self-hosted extraction never
+      // needs a sandbox. Best-effort: an acquire failure is swallowed here
+      // (logged) rather than aborting the pass — `sandboxHandle` stays
+      // `undefined`, and every entry's own `extractFromDiscussionEntry` ->
+      // `extractViaCli` -> `runOneShotCliInSandbox` self-acquires (U13.1/
+      // U13.2 self-acquire fallback), hitting the SAME unavailability and
+      // surfacing its own `sandbox_unavailable` failure per entry — the
+      // `rangeEndCap` invariant still holds because a failed entry caps the
+      // draft range before it (round-6 P2).
+      let sandboxHandle: OneShotSandboxHandle | undefined;
+      let releaseSandboxHandle: (() => Promise<unknown>) | undefined;
+      if (tenantIsolationEnforced()) {
+        try {
+          const cliTool = await resolveCompanyCliTool(db, companyId);
+          const acquisition = await acquireExecutionContext(db, {
+            runIdentity: {
+              companyId,
+              agentId: null,
+              runId: randomUUID(),
+              adapterType: cliTool === "codex" ? "codex_local" : "claude_local",
+            },
+            functionType: null, // one-shot batch CLI extraction has no functionType — always ephemeral
+            warmPreference: "ephemeral",
+            worktree: null,
+            environmentId: null, // no pin -> platform-default resolution (U1)
+            issueId: null,
+            heartbeatRunId: null,
+          });
+          const lease = acquisition.lease;
+          if (acquisition.sandbox?.environment.driver === "sandbox" && lease) {
+            const provider = readString(lease.provider);
+            if (provider) {
+              const providerMetadata = readObject(readObject(lease.metadata).providerMetadata);
+              const providerConfig = await resolveRuntimeProviderConfig({
+                companyId,
+                provider,
+                config: readObject(acquisition.sandbox.environment.config),
+                runtimeProviderKeys: runtimeProviderKeyService(db),
+                issueId: null,
+                heartbeatRunId: null,
+              });
+              sandboxHandle = { environment: acquisition.sandbox.environment, lease, providerConfig };
+              releaseSandboxHandle = () =>
+                sandboxProviderRuntime().releaseLease(provider, {
+                  providerLeaseId: readString(lease.providerLeaseId),
+                  leaseMetadata: providerMetadata,
+                  config: { ...providerConfig, reuseLease: false },
+                });
+            } else {
+              log.warn(
+                { leaseId: lease.id },
+                "extract-then-scope: batch sandbox lease missing provider — entries will self-acquire",
+              );
+            }
+          } else {
+            log.warn(
+              "extract-then-scope: no sandbox environment resolved for batch — entries will self-acquire",
+            );
+          }
+        } catch (err) {
+          log.warn(
+            { err },
+            "extract-then-scope: batch sandbox acquire failed — entries will self-acquire and surface sandbox_unavailable",
+          );
+        }
+      }
+
       const startedAt = now();
       try {
         // Codex #270 P1 (round 4): bound the selection to the UNSCOPED source range.
@@ -880,7 +975,15 @@ export function extractionService(db: Db) {
             }
             attempted += 1;
             lastAttemptedSeq = row.seq;
-            await extractOne(companyId, row.id);
+            // Call 2-arg when there is no batch handle (desktop, or the batch
+            // acquire failed) — keeps call-shape byte-identical to pre-U13.3
+            // for every existing 2-arg extractOne test double; 3-arg only
+            // when a real batch sandboxHandle was acquired.
+            if (sandboxHandle) {
+              await extractOne(companyId, row.id, sandboxHandle);
+            } else {
+              await extractOne(companyId, row.id);
+            }
             // Codex #270 P2 (round 6): extractFromDiscussionEntry handles its own
             // errors internally (marks the entry failed/skipped and RESOLVES), so a
             // clean await is not success. Re-read the outcome: anything other than
@@ -927,6 +1030,17 @@ export function extractionService(db: Db) {
       } catch (err) {
         log.warn({ err }, "extract-then-scope selection failed (best-effort) — compiling without");
         return { attempted: 0, failed: 0, truncated: false, deadlineHit: false, lastAttemptedSeq: null, rangeEndCap: null };
+      } finally {
+        // U13.3: release the BATCH lease exactly ONCE, after the whole pass
+        // (loop + selection), win or lose — ephemeral teardown (kill, never
+        // pause). A `finally` on the outer try/catch runs after either return
+        // path above, so this fires exactly once per extractThreadEntriesAwait
+        // call regardless of how many entries were attempted.
+        if (releaseSandboxHandle) {
+          await releaseSandboxHandle().catch((err) => {
+            log.warn({ err }, "extract-then-scope: batch sandbox release failed (best-effort)");
+          });
+        }
       }
     },
 

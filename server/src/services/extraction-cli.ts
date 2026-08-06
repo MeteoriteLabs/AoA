@@ -52,7 +52,15 @@ export type CliErrorKind =
   | "not_authed"
   | "timeout"
   | "nonzero_exit"
-  | "unparseable";
+  | "unparseable"
+  /** U13.3 — no isolated sandbox was available for a cloud (`cloud_auth`)
+   *  extraction spawn: acquire failure, a resolved-but-non-sandbox driver, or
+   *  a lease missing its provider/providerLeaseId (see `OneShotSandboxError`,
+   *  one-shot-sandbox-cli.ts). Deliberately its OWN kind, not `not_authed` —
+   *  DiscussionDetail's `multiTenant && kind === "not_authed"` override would
+   *  otherwise show the stale pre-U13 "extraction isn't available on AoA
+   *  Cloud" copy, which is wrong now that cloud extraction exists. */
+  | "sandbox_unavailable";
 
 export class CliExtractionError extends Error {
   readonly kind: CliErrorKind;
@@ -224,9 +232,9 @@ export async function extractViaCli(
 }
 
 /**
- * U13.2 — route a one-shot CLI extraction through the ephemeral sandbox on
- * AoA Cloud (`cloud_auth` / tenant isolation) instead of the ambient host CLI
- * login (the operator-cred sink the desktop branch below relies on).
+ * U13.2/U13.3 — route a one-shot CLI extraction through the ephemeral sandbox
+ * on AoA Cloud (`cloud_auth` / tenant isolation) instead of the ambient host
+ * CLI login (the operator-cred sink the desktop branch below relies on).
  * Authenticates with the COMPANY's own resolved provider key (U13.0) via the
  * shared sandbox seam (U13.1, `runOneShotCliInSandbox`) — this branch NEVER
  * calls `buildScrubbedCliEnv`; that KEEP-list (`ANTHROPIC_API_KEY`,
@@ -246,8 +254,9 @@ export async function extractViaCli(
  * — the same "no separate system channel" pattern the desktop codex path
  * already uses. Staging the USER content as a VM file instead of stdin is
  * U13.5; the batch sandbox handle that lets a whole extract-then-scope pass
- * reuse one lease is U13.3 (`sandboxHandle` is plumbed here, inert, until
- * that task's batch acquire supplies it).
+ * reuse one lease is U13.3's `sandboxHandle` — supplied by
+ * `extractThreadEntriesAwait`'s batch acquire (`extraction.ts`) and forwarded
+ * here verbatim; a `sandboxHandle`-less call still self-acquires per entry.
  */
 async function extractViaCliSandbox(
   binary: string,
@@ -270,14 +279,18 @@ async function extractViaCliSandbox(
   // sandbox — fail closed rather than call runOneShotCliInSandbox with a
   // missing companyId/db.
   //
-  // Kind mapping is TEMPORARY: U13.3 adds a dedicated `sandbox_unavailable`
-  // CliErrorKind + cloud-pointing failure copy (see plan U13.3). Deliberately
-  // NOT "not_authed" here — DiscussionDetail.extractionFailureMessage has a
-  // `multiTenant && kind === "not_authed"` branch that OVERRIDES the message
-  // with a hardcoded pre-U13 "extraction isn't available on AoA Cloud yet"
-  // copy, which would be actively wrong now that cloud extraction exists.
-  // "nonzero_exit" surfaces this error's own real message via the generic
-  // "Extraction failed — try Reprocess. <message>" copy instead.
+  // This is a programming/config-wiring error (a caller that skipped the
+  // credential-resolution gate), NOT the U13.3 "no sandbox available" class —
+  // deliberately kept as "nonzero_exit", not "sandbox_unavailable": a real
+  // sandbox-acquire failure downstream (missing key, no environment resolved)
+  // IS `sandbox_unavailable` (see the catch below), but this guard fires
+  // before any acquire is even attempted. Also deliberately NOT "not_authed"
+  // — DiscussionDetail.extractionFailureMessage has a `multiTenant && kind
+  // === "not_authed"` branch that OVERRIDES the message with the stale
+  // pre-U13 "extraction isn't available on AoA Cloud yet" copy, which is
+  // wrong now that cloud extraction exists. "nonzero_exit" surfaces this
+  // error's own real message via the generic "Extraction failed — try
+  // Reprocess. <message>" copy instead.
   if (!opts.credential || !opts.companyId || !opts.db) {
     throw new CliExtractionError(
       "Extraction on AoA Cloud requires a resolved company provider key (Settings → Providers) and company context.",
@@ -315,11 +328,27 @@ async function extractViaCliSandbox(
     });
   } catch (err) {
     if (err instanceof OneShotSandboxError) {
-      // TEMPORARY kind mapping (see comment above) — timeout maps exactly;
-      // sandbox_unavailable/nonzero_exit both fall to nonzero_exit pending
-      // U13.3's dedicated classification + copy.
-      const kind: CliErrorKind = err.kind === "timeout" ? "timeout" : "nonzero_exit";
-      throw new CliExtractionError(err.message, kind);
+      // U13.3: the FINAL kind mapping — sandbox_unavailable/timeout/
+      // nonzero_exit each carry their own CliErrorKind now (no more
+      // temporary collapse into nonzero_exit). sandbox_unavailable gets the
+      // dedicated cloud copy (provider-key/config guidance, never "install a
+      // CLI" — there is no CLI to install on a sandboxed spawn); timeout and
+      // nonzero_exit keep OneShotSandboxError's own message (already
+      // specific: "One-shot CLI timed out inside the sandbox." / "One-shot
+      // CLI exited with code N.").
+      const kind: CliErrorKind =
+        err.kind === "timeout"
+          ? "timeout"
+          : err.kind === "sandbox_unavailable"
+            ? "sandbox_unavailable"
+            : "nonzero_exit";
+      const message =
+        kind === "sandbox_unavailable"
+          ? binary === "codex"
+            ? codexFailureMessage(kind, err.exitCode, err.stderr)
+            : claudeFailureMessage(kind, err.exitCode, err.stderr)
+          : err.message;
+      throw new CliExtractionError(message, kind);
     }
     throw err;
   }
@@ -522,6 +551,8 @@ function claudeFailureMessage(
       return "claude CLI is not authenticated. Run the CLI's login flow, then retry.";
     case "timeout":
       return "claude CLI extraction timed out.";
+    case "sandbox_unavailable":
+      return "Extraction could not run: no isolated sandbox was available. Check your provider key and execution environment in Settings.";
     default:
       return `claude CLI exited with code ${exitCode ?? -1}${
         stderr.trim() ? `: ${stderr.trim().slice(0, 500)}` : ""
@@ -541,6 +572,8 @@ function codexFailureMessage(
       return "codex CLI is not authenticated. Run `codex login`, then retry.";
     case "timeout":
       return "codex CLI extraction timed out.";
+    case "sandbox_unavailable":
+      return "Extraction could not run: no isolated sandbox was available. Check your provider key and execution environment in Settings.";
     default:
       return `codex CLI exited with code ${exitCode ?? -1}${
         stderr.trim() ? `: ${stderr.trim().slice(0, 500)}` : ""

@@ -95,7 +95,11 @@ type CliExtractionErrorKind =
   | "not_authed"
   | "timeout"
   | "nonzero_exit"
-  | "unparseable";
+  | "unparseable"
+  /** U13.3: no isolated sandbox was available for a cloud (`cloud_auth`)
+   *  extraction spawn — a provider-key/config problem, never a "missing
+   *  local CLI" problem. See extraction-cli.ts's CliErrorKind. */
+  | "sandbox_unavailable";
 
 const CLI_ERROR_KINDS = new Set<string>([
   "not_installed",
@@ -103,6 +107,7 @@ const CLI_ERROR_KINDS = new Set<string>([
   "timeout",
   "nonzero_exit",
   "unparseable",
+  "sandbox_unavailable",
 ]);
 
 /**
@@ -193,6 +198,20 @@ export function extractionFailureMessage(
       return {
         primary: `Extraction failed — try Reprocess.${message ? ` ${message}` : ""}`,
         showSettings: false,
+      };
+    case "sandbox_unavailable":
+      // U13.3: unlike not_authed/not_installed (a missing LOCAL CLI login —
+      // never actionable on cloud, see the multiTenant override above),
+      // sandbox_unavailable IS actionable: extraction on cloud runs inside an
+      // ephemeral sandbox authenticated with the company's own provider key,
+      // so a missing/invalid key or execution-environment config is exactly
+      // what Settings → Providers fixes. Never "install a CLI" copy — there
+      // is no local CLI on a sandboxed spawn.
+      return {
+        primary:
+          message ??
+          "Extraction could not run: no isolated sandbox was available. Check your provider key and execution environment in Settings.",
+        showSettings: true,
       };
     default: {
       // Legacy/unknown kind. Extraction is CLI-only (Decision #104, amended
