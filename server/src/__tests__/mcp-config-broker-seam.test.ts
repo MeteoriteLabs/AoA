@@ -27,7 +27,11 @@
 
 import { describe, it, expect } from "vitest";
 import type { McpConfigParams } from "../services/internal-agent/cli-mode.js";
-import { buildMcpConfig } from "../services/internal-agent/cli-mode.js";
+import {
+  buildMcpConfig,
+  buildCodexAoaMcpSpec,
+  buildMcpBridgeSpec,
+} from "../services/internal-agent/cli-mode.js";
 
 function baseParams(): McpConfigParams {
   return {
@@ -92,5 +96,60 @@ describe("buildMcpConfig — broker seam (U2d)", () => {
     const config = buildMcpConfig({ ...baseParams(), apiBaseUrl: "https://cp.example" });
     expect(config.mcpServers.aoa.command).toBe("node");
     expect(config.mcpServers.aoa.type).toBeUndefined();
+  });
+});
+
+/**
+ * U2d-bridge — the deferred codex half. codex has no `--mcp-config` flag (it
+ * reads `$CODEX_HOME/config.toml`), so the reserved `aoa` server for codex
+ * travels through `buildCodexAoaMcpSpec` + `writeCodexMcpConfigToml`, not
+ * `buildMcpConfig`. Pure — same no-fs guarantee as buildMcpConfig itself
+ * (buildMcpBridgeSpec's dev-mode tsx resolution only triggers for a `.ts`
+ * bridgeEntrypoint, so baseParams() uses a `.js` one, matching the sibling
+ * suite above).
+ */
+describe("buildCodexAoaMcpSpec — codex broker seam (U2d-bridge)", () => {
+  it("brokered:true returns an McpHttpServerSpec at the broker URL with authTokenEnvVar=AOA_API_KEY, no DATABASE_URL anywhere", () => {
+    const original = process.env.DATABASE_URL;
+    process.env.DATABASE_URL = "postgres://should-not-leak:5432/db";
+    try {
+      const spec = buildCodexAoaMcpSpec({
+        ...baseParams(),
+        brokered: true,
+        apiBaseUrl: "https://cp.example",
+        companyId: "co-1",
+      });
+
+      expect(spec).toEqual({
+        kind: "http",
+        url: "https://cp.example/companies/co-1/mcp",
+        headers: {},
+        authTokenEnvVar: "AOA_API_KEY",
+      });
+      expect(JSON.stringify(spec)).not.toContain("DATABASE_URL");
+      expect(JSON.stringify(spec)).not.toContain("postgres://");
+    } finally {
+      process.env.DATABASE_URL = original;
+    }
+  });
+
+  it("brokered:false (explicit) returns the exact same stdio spec as buildMcpBridgeSpec", () => {
+    const params: McpConfigParams = { ...baseParams(), brokered: false };
+    expect(buildCodexAoaMcpSpec(params)).toEqual(buildMcpBridgeSpec(params));
+  });
+
+  it("brokered unset (default) is byte-identical to the pre-existing stdio spec", () => {
+    const params = baseParams();
+    const withoutFlag = buildCodexAoaMcpSpec(params);
+    const withExplicitFalse = buildCodexAoaMcpSpec({ ...params, brokered: false });
+    expect(withoutFlag).toEqual(withExplicitFalse);
+    expect(withoutFlag).toEqual(buildMcpBridgeSpec(params));
+    expect((withoutFlag as { kind?: string }).kind).toBeUndefined();
+  });
+
+  it("desktop (non-brokered) spec is unaffected by apiBaseUrl being present but brokered unset", () => {
+    const spec = buildCodexAoaMcpSpec({ ...baseParams(), apiBaseUrl: "https://cp.example" });
+    expect((spec as { command?: string }).command).toBe("node");
+    expect((spec as { kind?: string }).kind).toBeUndefined();
   });
 });

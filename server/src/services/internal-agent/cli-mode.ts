@@ -12,6 +12,7 @@ import {
   mergeExternalMcpServers,
   withSynthesizedBearerHeader,
   aoaSecretPlaceholderFor,
+  type McpHttpServerSpec,
   type McpServerSpec,
 } from "@armyofagents/adapter-utils";
 import type { AgentTool } from "./types.js";
@@ -356,6 +357,39 @@ export function buildMcpConfig(params: McpConfigParams): McpConfig {
   return { mcpServers };
 }
 
+/**
+ * U2d-bridge: the codex-shaped counterpart of {@link buildMcpConfig}'s
+ * brokered `aoa` branch. codex has no `--mcp-config` flag — it discovers MCP
+ * servers from `$CODEX_HOME/config.toml` — so the reserved `aoa` server
+ * cannot travel through `buildMcpConfig`'s JSON envelope. This returns the
+ * SAME logical decision in the shape `writeCodexMcpConfigToml` already
+ * understands: brokered → an `McpHttpServerSpec` pointed at the control-plane
+ * broker (U2c) with NO `DATABASE_URL` (the writer renders it through its
+ * existing external-connector HTTP path — `url` + `bearer_token_env_var`,
+ * mirroring the codex `bearer_token_env_var` convention connectors already
+ * use); non-brokered (the default) → the unchanged stdio
+ * `buildMcpBridgeSpec` bridge, byte-identical to before this wave.
+ *
+ * Pure — no fs/child_process access, same as `buildMcpConfig`.
+ */
+export function buildCodexAoaMcpSpec(
+  params: McpConfigParams,
+): McpBridgeSpec | McpHttpServerSpec {
+  if (!params.brokered) return buildMcpBridgeSpec(params);
+  return {
+    kind: "http",
+    url: `${params.apiBaseUrl}/companies/${params.companyId}/mcp`,
+    // No headers: the env-var-NAME indirection below (authTokenEnvVar) is
+    // codex's own mechanism for expressing "read the bearer token from this
+    // env var" — codex does not expand `${VAR}` placeholders inside header
+    // values the way claude does, so a placeholder header here would be
+    // written to disk as an inert literal string instead of triggering
+    // `bearer_token_env_var`. See renderExternalMcpBlock's `authVar` fallback.
+    headers: {},
+    authTokenEnvVar: "AOA_API_KEY",
+  };
+}
+
 export function toolToMcpFormat(tool: AgentTool) {
   return {
     name: tool.name,
@@ -639,7 +673,10 @@ export async function resolveCliInvocation(
       // limit (a stdio connector carrying a secret is undeliverable — FU-5) is
       // handled INSIDE the writer, which SKIPS those with a reason; we pass all
       // resolved specs and let it filter.
-      await writeCodexMcpConfigToml(codexHomeDir, buildMcpBridgeSpec(params), {
+      // U2d-bridge: brokered (E2B-sandboxed) runs get an HTTP-shaped aoa spec
+      // (no DATABASE_URL) instead of the stdio buildMcpBridgeSpec bridge —
+      // see buildCodexAoaMcpSpec. Non-brokered runs are byte-identical.
+      await writeCodexMcpConfigToml(codexHomeDir, buildCodexAoaMcpSpec(params), {
         externalServers: params.extraMcpServers ?? {},
       });
       // MX-chatauth: the per-session CODEX_HOME has config.toml but no
