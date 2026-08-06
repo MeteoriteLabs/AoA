@@ -206,7 +206,16 @@ describe("heartbeat wiring", () => {
   it("still feeds resolvedConfig into the adapter execution config", () => {
     // If a refactor ever detaches these, the fallback would be computed and
     // then thrown away — the exact failure mode C1 describes.
-    expect(heartbeatSrc).toMatch(/resolvedConfigWithEnvironmentAcquisition = resolvedConfig/);
+    // R3 (Wave 2 review): acquireExecutionContext + applyEnvironmentAcquisitionConfig
+    // are now called unconditionally (previously gated behind a pinned-env
+    // `if`, whose now-removed fallback branch used to read literally
+    // `resolvedConfigWithEnvironmentAcquisition = resolvedConfig`) — the
+    // invariant this test protects (resolvedConfig feeds the adapter
+    // execution config, never computed-then-discarded) is unchanged; it's
+    // threaded through applyEnvironmentAcquisitionConfig's first argument.
+    expect(heartbeatSrc).toMatch(
+      /resolvedConfigWithEnvironmentAcquisition = applyEnvironmentAcquisitionConfig\(\s*resolvedConfig,/,
+    );
     expect(heartbeatSrc).toMatch(/config: resolvedConfigWithEnvironmentAcquisition/);
   });
 });

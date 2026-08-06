@@ -4208,44 +4208,73 @@ export function heartbeatService(db: Db) {
         await onLog("stderr", `[aoa] ${warning}\n`);
       }
 
-      // ── Runtime services (ensureRuntimeServicesForRun) — gated ─────
-      // U4: delegates to the shared acquireExecutionContext helper INSIDE the
-      // existing environmentRuntime.environmentId gate — no behavior change.
-      // environmentRuntime.environmentId is non-null here, so acquireForRun
-      // resolves it directly (never the null -> platform-default branch; that
-      // branch is exercised only by crew/Commander's null environmentId, U1/S1).
+      // ── Runtime services (ensureRuntimeServicesForRun) ──────────────
+      // R3 (Wave 2 review): acquireExecutionContext is now called
+      // UNCONDITIONALLY for every org run, mirroring crew's runner.ts
+      // pattern (`environmentId: agent.defaultEnvironmentId ?? null`)
+      // exactly. It used to be gated INSIDE `if (environmentRuntime
+      // .environmentId)` (true only for a PINNED task/agent env) — an org
+      // agent with NO pinned env never reached this call, never resolved
+      // the U1 platform default, and ran UNSANDBOXED on the host, which the
+      // U8 D1 guard then refuses on cloud_auth. Passing
+      // `environmentRuntime.environmentId ?? null` keeps the pinned path
+      // byte-identical (non-null -> acquireForRun resolves that pin
+      // directly, same as before) and adds the unpinned path: null ->
+      // acquireForRun's orchestrator resolves the materialized
+      // platform-default E2B sandbox on cloud_auth (S1/U1b), or throws
+      // `environment_not_found` on desktop/local_trusted, which
+      // acquireExecutionContext catches and returns `{ sandbox: null }` —
+      // byte-identical to today's local/desktop behavior (see the S1
+      // contract doc-comment on acquire-execution-context.ts). The lease is
+      // still tagged `heartbeatRunId: run.id`, so the existing org reaper
+      // (`environmentRuntimeService(db).releaseRunLeases(run.id)` in the
+      // run's `finally`, unconditional regardless of pinned/platform-default)
+      // reaps a platform-default lease exactly like a pinned one — no leak.
       // orgAcquired is captured for U4b to read (mcpParams.brokered) before
       // prepareHeartbeatMcpDelivery.
-      let resolvedConfigWithEnvironmentAcquisition = resolvedConfig;
-      let orgAcquired: Awaited<ReturnType<typeof acquireExecutionContext>> | null = null;
-      if (environmentRuntime.environmentId) {
-        orgAcquired = await acquireExecutionContext(db, {
-          runIdentity: {
-            companyId: agent.companyId,
-            agentId: agent.id,
-            runId: run.id,
-            adapterType: agent.adapterType,
-          },
-          // functionType is a projects.functionType field, not carried on the
-          // trimmed issueRef projection used here; unused today (ephemeral-only,
-          // U7 seam) so null is behavior-neutral.
-          functionType: null,
-          warmPreference: "auto",
-          worktree: persistedExecutionWorkspace
-            ? { id: persistedExecutionWorkspace.id, mode: persistedExecutionWorkspace.mode }
-            : null,
-          environmentId: environmentRuntime.environmentId, // still the pin — non-null here
-          issueId,
-          heartbeatRunId: run.id,
-        });
-        // U4b: heartbeatMcpParams.brokered (built further below, before
-        // prepareHeartbeatMcpDelivery) reads orgAcquired.sandbox?.environment
-        // .driver captured here.
-        resolvedConfigWithEnvironmentAcquisition = applyEnvironmentAcquisitionConfig(
-          resolvedConfig,
-          orgAcquired.sandbox,
-        );
-      }
+      const orgAcquired = await acquireExecutionContext(db, {
+        runIdentity: {
+          companyId: agent.companyId,
+          agentId: agent.id,
+          runId: run.id,
+          adapterType: agent.adapterType,
+        },
+        // functionType is a projects.functionType field, not carried on the
+        // trimmed issueRef projection used here; unused today (ephemeral-only,
+        // U7 seam) so null is behavior-neutral.
+        functionType: null,
+        warmPreference: "auto",
+        worktree: persistedExecutionWorkspace
+          ? { id: persistedExecutionWorkspace.id, mode: persistedExecutionWorkspace.mode }
+          : null,
+        environmentId: environmentRuntime.environmentId ?? null, // pinned env, or null -> platform default (R3)
+        issueId,
+        heartbeatRunId: run.id,
+      });
+      // U4b: heartbeatMcpParams.brokered (built further below, before
+      // prepareHeartbeatMcpDelivery) reads orgAcquired.sandbox?.environment
+      // .driver captured here.
+      //
+      // R3: applyEnvironmentAcquisitionConfig is now unconditional too — it
+      // is a documented no-op (returns `resolvedConfig` by the SAME
+      // reference, unchanged) when `orgAcquired.sandbox` is null, which is
+      // exactly the desktop/local_trusted case, so that path stays
+      // byte-identical. When `orgAcquired.sandbox` IS non-null (pinned OR
+      // platform-default), its configPatch is spread here LAST — after
+      // `mergedConfigWithEnvironmentTarget`'s `environmentRuntime.target`
+      // (pinned-env only, applied far above) and after the P5 shared-pool
+      // `routedExecutionTarget` (`mergeResolvedExecutionTarget`, also
+      // applied above) — so the acquired sandbox's executionTarget is
+      // always the authoritative, LAST-applied one; a pinned env's
+      // `environmentRuntime.target` and `orgAcquired.sandbox`'s configPatch
+      // both derive from the SAME resolved environment row so they already
+      // agree there. This last-applied-wins ordering is unchanged from
+      // before R3 (it applied whenever the old gate was true) — it is just
+      // no longer conditional on a pin existing.
+      const resolvedConfigWithEnvironmentAcquisition = applyEnvironmentAcquisitionConfig(
+        resolvedConfig,
+        orgAcquired.sandbox,
+      );
 
       const adapterEnv = Object.fromEntries(
         Object.entries(parseObject(resolvedConfigWithEnvironmentAcquisition.env)).filter(
@@ -4625,14 +4654,18 @@ export function heartbeatService(db: Db) {
         humanQuestionCapabilities: adapter.humanQuestionCapabilities,
         effectiveAutonomy,
         // U4b (S7 blocker): a resolved provider-sandbox lease (orgAcquired,
-        // captured above inside the environmentRuntime.environmentId gate)
-        // means this heartbeat run's CLI executes inside an E2B VM — the `aoa`
-        // MCP server MUST ride the brokered HTTP transport there, never the
-        // stdio bridge (whose env carries DATABASE_URL). orgAcquired is null
-        // outside that gate (no environment pinned) and its `.sandbox` is null
-        // on desktop/local_trusted, so `brokered` is false and
+        // now acquired UNCONDITIONALLY for every org run — R3, no longer
+        // gated on a pinned environment) means this heartbeat run's CLI
+        // executes inside an E2B VM — the `aoa` MCP server MUST ride the
+        // brokered HTTP transport there, never the stdio bridge (whose env
+        // carries DATABASE_URL). `orgAcquired.sandbox` is null on
+        // desktop/local_trusted regardless of whether an env is pinned
+        // (acquireExecutionContext's S1 contract: environment_not_found ->
+        // `{sandbox:null}`), so `brokered` is false there and
         // prepareHeartbeatMcpDelivery's stdio delivery stays byte-identical.
-        brokered: orgAcquired?.sandbox?.environment.driver === "sandbox",
+        // On cloud_auth it now fires for BOTH a pinned env and an unpinned
+        // run resolving the platform default (R3).
+        brokered: orgAcquired.sandbox?.environment.driver === "sandbox",
         // The control plane's own address is the platform's, not the
         // tenant's — read it off the resolved adapter env first (mirrors the
         // runtime-hook-bridge base-URL resolution just below), falling back to
