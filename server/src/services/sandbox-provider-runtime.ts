@@ -37,6 +37,15 @@ export interface SandboxProviderExecuteInput {
   cwd?: string | null;
   env?: Record<string, string>;
   stdin?: string | null;
+  /** U13.5 — deliver `content` into the VM as a NAMED file at `remotePath`
+   *  (chosen by the caller, e.g. one-shot-sandbox-cli.ts) instead of
+   *  anonymous stdin. Written BEFORE the command runs, via the SAME internal
+   *  file-staging mechanism `stdin` already relies on (there is no separate
+   *  top-level `files.write` operation on this interface — see the E2B
+   *  `execute()` implementation below). Mutually exclusive with `stdin` in
+   *  practice: callers pass one or the other, never both (when both are
+   *  present this field wins — see `execute()`). */
+  stagedFile?: { remotePath: string; content: string } | null;
   timeoutMs?: number | null;
 }
 
@@ -493,13 +502,31 @@ export function createE2bSandboxRuntimeProvider(
       await sandbox.setTimeout?.(config.timeoutMs).catch(() => undefined);
 
       let stagedStdinPath: string | null = null;
+      let stagedFilePath: string | null = null;
       const baseCommand = buildE2bLoginShellScript({
         command: input.command,
         args: input.args ?? [],
         env: input.env,
       });
       let command = baseCommand;
-      if (input.stdin != null) {
+      if (input.stagedFile) {
+        // U13.5 — file-import: the CALLER (one-shot-sandbox-cli.ts) supplies
+        // a persistent, meaningful remote path (unlike the auto-generated
+        // `aoa-stdin-*` path below) and its content. Written into the VM
+        // BEFORE the command runs — the same `sandbox.files.write`
+        // mechanism `stdin` already uses internally — then redirected into
+        // the CLI's stdin. Neither claude nor codex has a "read prompt
+        // content from an arbitrary file path" CLI flag (verified against
+        // `claude --help` / `codex exec --help`: the only file-path flags
+        // are claude's `--system-prompt-file`, SYSTEM channel only, and
+        // codex's `-i/--image`, images only) — both DO read piped stdin, so
+        // that remains the real delivery mechanism; only the SOURCE changes
+        // from an anonymous in-memory string to a named staged file.
+        if (!sandbox.files) throw new Error("E2B sandbox file API is required to stage a file.");
+        stagedFilePath = input.stagedFile.remotePath;
+        await sandbox.files.write(stagedFilePath, input.stagedFile.content);
+        command = `${baseCommand} < ${shellQuote(stagedFilePath)}`;
+      } else if (input.stdin != null) {
         if (!sandbox.files) throw new Error("E2B sandbox file API is required to pass stdin.");
         stagedStdinPath = `/tmp/aoa-stdin-${sanitizeProviderLeasePart(randomId())}`;
         await sandbox.files.write(stagedStdinPath, input.stdin);
@@ -542,6 +569,9 @@ export function createE2bSandboxRuntimeProvider(
       } finally {
         if (stagedStdinPath && sandbox.files) {
           await sandbox.files.remove(stagedStdinPath).catch(() => undefined);
+        }
+        if (stagedFilePath && sandbox.files) {
+          await sandbox.files.remove(stagedFilePath).catch(() => undefined);
         }
       }
     },

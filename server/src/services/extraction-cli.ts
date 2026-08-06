@@ -131,6 +131,17 @@ export interface ExtractViaCliOptions {
    *  inert: when omitted, the cloud path self-acquires its own ephemeral
    *  sandbox per call via `runOneShotCliInSandbox`. */
   sandboxHandle?: OneShotSandboxHandle;
+  /**
+   * U13.5 — file-import (`extractFromRawText`, extraction.ts) supplies this
+   * on cloud so the uploaded file's content is staged into the sandbox VM as
+   * a named file (`runOneShotCliInSandbox`'s `files.write`-before-execute
+   * seam, one-shot-sandbox-cli.ts) instead of being concatenated into
+   * `stdinContent`. Only consulted by the sandbox branch below; the desktop
+   * spawn never reads it. When set, `content` is ignored for the sandbox
+   * call's `stdinContent` (the staged file supersedes it) but the caller
+   * still passes it positionally for desktop-branch parity.
+   */
+  stagedFile?: { remotePath: string; content: string };
 }
 
 /**
@@ -149,7 +160,7 @@ export async function extractViaCli(
   content: string,
   options: ExtractViaCliOptions = {},
 ): Promise<ExtractedItem[]> {
-  const { timeoutMs = 60_000, codexModel = null, credential = null, companyId, db, sandboxHandle } = options;
+  const { timeoutMs = 60_000, codexModel = null, credential = null, companyId, db, sandboxHandle, stagedFile } = options;
   const binary = CLI_BINARY_MAP[cliTool];
 
   if (!binary) {
@@ -175,6 +186,7 @@ export async function extractViaCli(
       companyId,
       db,
       sandboxHandle,
+      stagedFile,
     });
   }
 
@@ -246,15 +258,30 @@ export async function extractViaCli(
  *
  * Command/args mirror the desktop spawn's INTENT (claude one-shot
  * text-generation-only / codex `exec --json`), but neither binary can rely on
- * a LOCAL temp file inside the remote sandbox VM: no `--system-prompt-file`
- * (that file lives on THIS host, not the sandbox) and no per-run CODEX_HOME
+ * a LOCAL temp file inside the remote sandbox VM: no per-run CODEX_HOME
  * auth-copy (codex's ChatGPT-subscription home-dir dance is a desktop-only
  * concept — the sandbox authenticates via the injected env-var API key, S14).
- * Both the system prompt and the entry content ride over stdin, concatenated
- * — the same "no separate system channel" pattern the desktop codex path
- * already uses. Staging the USER content as a VM file instead of stdin is
- * U13.5; the batch sandbox handle that lets a whole extract-then-scope pass
- * reuse one lease is U13.3's `sandboxHandle` — supplied by
+ *
+ * By default (no `stagedFile`) the system prompt and the entry content ride
+ * over stdin, concatenated — the same "no separate system channel" pattern
+ * the desktop codex path already uses. When the caller supplies `stagedFile`
+ * (U13.5 — file-import's `extractFromRawText`, extraction.ts), the CONTENT
+ * instead rides as a named file staged into the sandbox VM
+ * (`runOneShotCliInSandbox`'s `files.write`-before-execute seam) and the
+ * SYSTEM PROMPT moves onto its own argv value: claude via the real
+ * `--system-prompt <text>` flag (verified against `claude --help` — neither
+ * CLI has a "read prompt content from an arbitrary file path" flag; only
+ * `--system-prompt-file` exists, and only for the SYSTEM channel), codex via
+ * its own documented PROMPT-arg-plus-piped-stdin shape ("If stdin is piped
+ * and a prompt is also provided, stdin is appended as a `<stdin>` block" —
+ * verified against `codex exec --help`). The staged file's content still
+ * physically arrives over the CLI's stdin (there is no other delivery
+ * mechanism for arbitrary-length content on either CLI) — only the SOURCE
+ * changes, from an anonymous in-memory string to a named VM file the
+ * provider stages before running the command.
+ *
+ * The batch sandbox handle that lets a whole extract-then-scope pass reuse
+ * one lease is U13.3's `sandboxHandle` — supplied by
  * `extractThreadEntriesAwait`'s batch acquire (`extraction.ts`) and forwarded
  * here verbatim; a `sandboxHandle`-less call still self-acquires per entry.
  */
@@ -269,6 +296,7 @@ async function extractViaCliSandbox(
     companyId?: string;
     db?: Db;
     sandboxHandle?: OneShotSandboxHandle;
+    stagedFile?: { remotePath: string; content: string };
   },
 ): Promise<ExtractedItem[]> {
   // Structural guard: every production caller threads credential+companyId+db
@@ -298,9 +326,26 @@ async function extractViaCliSandbox(
     );
   }
 
-  const stdinContent = `${systemPrompt}\n\n${content}`;
-  const args =
-    binary === "codex"
+  const stagedFile = opts.stagedFile;
+  const stdinContent = stagedFile ? undefined : `${systemPrompt}\n\n${content}`;
+  const args = stagedFile
+    ? // U13.5: content rides as the staged file (read into the CLI's stdin
+      // by the provider before it runs); the system prompt moves onto its
+      // own argv value instead of being concatenated into stdinContent.
+      binary === "codex"
+      ? [
+          "exec",
+          "--json",
+          "--sandbox",
+          "read-only",
+          "--ask-for-approval",
+          "never",
+          "--model",
+          opts.credential.model,
+          systemPrompt,
+        ]
+      : ["--print", "--tools", "", "--strict-mcp-config", "--system-prompt", systemPrompt, "--output-format", "text"]
+    : binary === "codex"
       ? [
           "exec",
           "--json",
@@ -323,6 +368,7 @@ async function extractViaCliSandbox(
       command: binary,
       args,
       stdinContent,
+      stagedFile,
       timeoutMs: opts.timeoutMs,
       sandboxHandle: opts.sandboxHandle,
       source: "extraction",

@@ -386,6 +386,87 @@ describe("sandboxProviderRuntime", () => {
     expect(result.stdout).toContain("codex");
   });
 
+  it("executes E2B commands with a staged file (U13.5): writes it into the VM at the caller-supplied path BEFORE running the command, and redirects it into the CLI's stdin", async () => {
+    const writeOrder: string[] = [];
+    const commandsRun = vi.fn(async (command: string, options?: Record<string, unknown>) => {
+      // The write must already have happened by the time the command runs —
+      // proves the write-before-execute ordering, not just that both happened.
+      writeOrder.push("run");
+      return { exitCode: 0, stdout: `ran:${command}`, stderr: JSON.stringify(options ?? {}) };
+    });
+    const sandbox = {
+      commands: { run: commandsRun },
+      files: {
+        write: vi.fn(async () => {
+          writeOrder.push("write");
+        }),
+        remove: vi.fn(async () => undefined),
+      },
+      setTimeout: vi.fn(async () => undefined),
+    };
+    const connect = vi.fn(async () => sandbox);
+    const provider = createE2bSandboxRuntimeProvider({
+      importE2b: async () => ({ Sandbox: { create: vi.fn(), connect } }),
+      env: { E2B_API_KEY: "key-from-env" },
+    });
+
+    const result = await provider.execute({
+      providerLeaseId: "e2b-sandbox-1",
+      leaseMetadata: { template: "base", timeoutMs: 30_000, remoteCwd: "/workspace" },
+      config: { template: "base", apiKey: "key-from-config", timeoutMs: 30_000 },
+      command: "claude",
+      args: ["--print", "--system-prompt", "sys"],
+      cwd: "/workspace",
+      env: { AOA: "1" },
+      stdin: undefined,
+      stagedFile: { remotePath: "/tmp/aoa-file-import-xyz.txt", content: "uploaded file text" },
+      timeoutMs: 5_000,
+    });
+
+    expect(sandbox.files.write).toHaveBeenCalledWith(
+      "/tmp/aoa-file-import-xyz.txt",
+      "uploaded file text",
+    );
+    expect(writeOrder).toEqual(["write", "run"]);
+    expect(commandsRun).toHaveBeenCalledWith(
+      expect.stringContaining("< '/tmp/aoa-file-import-xyz.txt'"),
+      { cwd: "/workspace", timeoutMs: 5_000 },
+    );
+    expect(sandbox.files.remove).toHaveBeenCalledWith("/tmp/aoa-file-import-xyz.txt");
+    expect(result.exitCode).toBe(0);
+    expect(result.timedOut).toBe(false);
+  });
+
+  it("stagedFile takes priority over stdin when both are somehow present (defensive)", async () => {
+    const commandsRun = vi.fn(async (command: string) => ({ exitCode: 0, stdout: command, stderr: "" }));
+    const sandbox = {
+      commands: { run: commandsRun },
+      files: { write: vi.fn(async () => undefined), remove: vi.fn(async () => undefined) },
+      setTimeout: vi.fn(async () => undefined),
+    };
+    const connect = vi.fn(async () => sandbox);
+    const provider = createE2bSandboxRuntimeProvider({
+      importE2b: async () => ({ Sandbox: { create: vi.fn(), connect } }),
+      env: { E2B_API_KEY: "key-from-env" },
+      randomId: () => "should-not-be-used",
+    });
+
+    await provider.execute({
+      providerLeaseId: "e2b-sandbox-1",
+      leaseMetadata: { template: "base", timeoutMs: 30_000, remoteCwd: "/workspace" },
+      config: { template: "base", apiKey: "key-from-config", timeoutMs: 30_000 },
+      command: "codex",
+      args: ["exec"],
+      env: {},
+      stdin: "should be ignored",
+      stagedFile: { remotePath: "/tmp/aoa-priority.txt", content: "wins" },
+      timeoutMs: 5_000,
+    });
+
+    expect(sandbox.files.write).toHaveBeenCalledTimes(1);
+    expect(sandbox.files.write).toHaveBeenCalledWith("/tmp/aoa-priority.txt", "wins");
+  });
+
   it("creates CODEX_HOME before executing E2B commands that need it", async () => {
     const commandsRun = vi.fn(async (command: string, options?: Record<string, unknown>) => ({
       exitCode: 0,

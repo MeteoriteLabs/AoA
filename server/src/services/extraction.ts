@@ -1066,11 +1066,20 @@ export function extractionService(db: Db) {
           db,
           companyId,
         );
+        // U13.5 — on cloud, stage the uploaded file's content into the
+        // sandbox VM as a named file (extractViaCli's sandbox branch,
+        // extraction-cli.ts) instead of concatenating it into stdinContent.
+        // Desktop/self-hosted is unaffected — extractViaCli's local spawn
+        // never reads `stagedFile`.
+        const stagedFile = tenantIsolationEnforced()
+          ? { remotePath: `/tmp/aoa-file-import-${randomUUID()}.txt`, content: rawText }
+          : undefined;
         return await extractViaCli(cliTool, systemPrompt, rawText, {
           codexModel,
           credential,
           companyId,
           db,
+          stagedFile,
         });
       } catch (err) {
         // CLI unavailable/unauth or timeout — caller falls back to paragraph chunking

@@ -237,9 +237,10 @@ export async function runOneShotCliInSandbox(input: RunOneShotCliInput): Promise
       command: input.command,
       args: input.args,
       env,
-      // U13.5 lands the files.write-before-execute staging; for now just
-      // route stdin off when a staged file is requested.
+      // U13.5: when a staged file is requested, content flows via the file
+      // staged into the VM (below), not anonymous stdin.
       stdin: input.stagedFile ? undefined : input.stdinContent,
+      stagedFile: input.stagedFile,
       providerLeaseId,
       leaseMetadata: providerMetadata,
       config: providerConfig,

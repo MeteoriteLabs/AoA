@@ -190,12 +190,25 @@ describe("runOneShotCliInSandbox (U13.1)", () => {
     expect(execInput.stdin).toBe("extraction prompt content");
   });
 
-  it("when stagedFile is passed instead of stdinContent, execute receives stdin:undefined", async () => {
+  it("when stagedFile is passed instead of stdinContent, execute receives stdin:undefined AND stagedFile verbatim (U13.5)", async () => {
+    const stagedFile = { remotePath: "/tmp/x.txt", content: "file content" };
     await runOneShotCliInSandbox(
-      baseInput({ deps: deps(), stdinContent: undefined, stagedFile: { remotePath: "/tmp/x.txt", content: "file content" } }),
+      baseInput({ deps: deps(), stdinContent: undefined, stagedFile }),
     );
     const [, execInput] = execute.mock.calls[0];
     expect(execInput.stdin).toBeUndefined();
+    // U13.5: the sandbox provider's execute() is the seam that actually
+    // stages the file into the VM (mirrors how it already stages `stdin`
+    // internally) — runOneShotCliInSandbox must forward stagedFile through,
+    // not just null out stdin.
+    expect(execInput.stagedFile).toEqual(stagedFile);
+  });
+
+  it("when stdinContent is passed (no stagedFile), execute receives stagedFile:undefined", async () => {
+    await runOneShotCliInSandbox(baseInput({ deps: deps(), stdinContent: "plain stdin" }));
+    const [, execInput] = execute.mock.calls[0];
+    expect(execInput.stdin).toBe("plain stdin");
+    expect(execInput.stagedFile).toBeUndefined();
   });
 
   it("maps execute {timedOut:true} to OneShotSandboxError kind:timeout", async () => {
