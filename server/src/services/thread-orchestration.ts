@@ -153,6 +153,13 @@ export interface RequestParticipationOpts {
    * Defaults to the agentId from the params.
    */
   actorId?: string;
+  /**
+   * Optional outbox row ID used for deduplication (Issue #293).
+   * When provided, if a discussion_entries row already exists with
+   * source_action_id = outboxRowId, requestParticipation skips incrementHop
+   * and runner execution, returning early with the existing entry details.
+   */
+  outboxRowId?: string;
 }
 
 /** Options accepted by `runController`. */
@@ -852,9 +859,43 @@ export function threadOrchestrationService(db: Db) {
         return { spawned: false, atCap: false, hopCount: 0, blockedReason: "company_paused" };
       }
 
-      // ── Step 1: Cap check — read current hopCount ──────────────────────────
+      // ── Step 1: Deduplication check & Cap check ──────────────────────────────
       // ensureController first so the row always exists.
       await threadOrchestrationService(db).ensureController(threadId);
+
+      if (opts.outboxRowId) {
+        const [existingEntry] = await db
+          .select({ id: discussionEntries.id })
+          .from(discussionEntries)
+          .where(
+            and(
+              eq(discussionEntries.discussionId, threadId),
+              eq(discussionEntries.sourceActionId, opts.outboxRowId),
+            ),
+          )
+          .limit(1);
+
+        if (existingEntry) {
+          const [current] = await db
+            .select({ hopCount: threadOrchestrationState.hopCount })
+            .from(threadOrchestrationState)
+            .where(eq(threadOrchestrationState.threadId, threadId));
+
+          const currentHopCount = current?.hopCount ?? 0;
+
+          log.info(
+            {
+              threadId,
+              agentId: params.agentId,
+              outboxRowId: opts.outboxRowId,
+              existingEntryId: existingEntry.id,
+            },
+            "requestParticipation: entry with outboxRowId already exists — skipping execution (deduplicated)",
+          );
+
+          return { spawned: true, hopCount: currentHopCount, entryId: existingEntry.id };
+        }
+      }
 
       const [current] = await db
         .select({ hopCount: threadOrchestrationState.hopCount })
@@ -1003,6 +1044,7 @@ export function threadOrchestrationService(db: Db) {
             extractionStatus: "skipped",
             seq: entrySeq,
             createdBy: actorId,
+            sourceActionId: opts.outboxRowId ?? null,
           })
           .returning();
 

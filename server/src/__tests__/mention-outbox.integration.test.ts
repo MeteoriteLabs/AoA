@@ -7,6 +7,7 @@ import { applyPendingMigrations, createDb, type Db } from "@armyofagents/db";
 import { drainMentionOutbox, enqueueMentionOutbox, heartbeatClaim } from "../services/mention-outbox.js";
 import { discussionService } from "../services/discussions.js";
 import { resolveMentionTargets } from "../services/threads.js";
+import { threadOrchestrationService } from "../services/thread-orchestration.js";
 
 // PR #291 round-6 (#3) — the transactional @mention outbox must guarantee the
 // summon survives a post-commit failure and a same-key replay, and fire the
@@ -447,6 +448,40 @@ describe.skipIf(process.platform === "win32")("mention outbox (real DB)", () => 
     const second = await drainMentionOutbox(db, { runMentions, maxAttempts: 2 });
     expect(second.failed).toBe(1);
     expect(await outboxStatus(entryId)).toBe("failed");
+  });
+
+  it("invoking requestParticipation a second time with the same outboxRowId skips incrementHop and does not spawn a duplicate CLI agent run (#293)", async () => {
+    const outboxRowId = "33333333-3333-4333-8333-333333333333";
+    const fakeRunner = vi.fn(async () => "Agent response");
+
+    const firstResult = await threadOrchestrationService(db).requestParticipation(
+      discussionId,
+      { agentId: "agent-scout-1", prompt: "First run prompt" },
+      { participantRunner: fakeRunner, outboxRowId },
+    );
+
+    expect(firstResult.spawned).toBe(true);
+    if (!firstResult.spawned) throw new Error("unreachable");
+    expect(firstResult.entryId).toBeTruthy();
+    expect(fakeRunner).toHaveBeenCalledTimes(1);
+
+    const initialHopCount = firstResult.hopCount;
+
+    // Second call with the SAME outboxRowId
+    const secondResult = await threadOrchestrationService(db).requestParticipation(
+      discussionId,
+      { agentId: "agent-scout-1", prompt: "Duplicate run prompt" },
+      { participantRunner: fakeRunner, outboxRowId },
+    );
+
+    expect(secondResult.spawned).toBe(true);
+    if (!secondResult.spawned) throw new Error("unreachable");
+    // skips incrementHop (hopCount matches initialHopCount)
+    expect(secondResult.hopCount).toBe(initialHopCount);
+    // returns existing entryId
+    expect(secondResult.entryId).toBe(firstResult.entryId);
+    // does NOT spawn a duplicate CLI agent run
+    expect(fakeRunner).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -139,6 +139,7 @@ interface PostedEntry {
   extractionStatus: string;
   seq: number;
   createdBy: string;
+  sourceActionId?: string | null;
 }
 
 /**
@@ -239,6 +240,7 @@ function makeParticipationDb(
               extractionStatus: (vals.extractionStatus as string) ?? "skipped",
               seq: vals.seq as number,
               createdBy: vals.createdBy as string,
+              sourceActionId: (vals.sourceActionId as string | null) ?? null,
             };
             postedEntries.push(entry);
             return [entry];
@@ -322,6 +324,8 @@ function makeParticipationDb(
               hopCount: controller.hopCount,
               runEpoch: controller.runEpoch,
             }];
+          } else if (isDeTable(table)) {
+            rows = postedEntries.map((e) => ({ ...e, sourceActionId: e.sourceActionId ?? null }));
           } else if (
             isDiscussionsTable(table) &&
             projection &&
@@ -1143,5 +1147,59 @@ describe("requestParticipation - adjutant opt-out semantics", () => {
     expect(runner).not.toHaveBeenCalled();
     expect(controller.hopCount).toBe(0);
     expect(postedEntries).toHaveLength(0);
+  });
+});
+
+describe("requestParticipation — outboxRowId deduplication (Issue #293)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockPublishLiveEvent.mockReset();
+  });
+
+  it("skips incrementHop and CLI runner execution when an entry with outboxRowId already exists", async () => {
+    const controller: ControllerState = {
+      threadId: "thread-dedup-1",
+      runEpoch: 1,
+      pendingRun: false,
+      hopCount: 0,
+      lastProcessedEntryId: null,
+      lastError: null,
+    };
+    const { db, postedEntries } = makeParticipationDb(controller);
+    const svc = threadOrchestrationService(db);
+    const outboxRowId = "outbox-row-uuid-123";
+
+    const runner = vi.fn(async () => "Scout reply output");
+
+    // First invocation with outboxRowId
+    const firstResult = await svc.requestParticipation(
+      "thread-dedup-1",
+      { agentId: "agent-scout-1", prompt: "First run" },
+      { participantRunner: runner, outboxRowId },
+    );
+
+    expect(firstResult.spawned).toBe(true);
+    if (!firstResult.spawned) throw new Error("unreachable");
+    expect(firstResult.hopCount).toBe(1);
+    expect(firstResult.entryId).toBeTruthy();
+    expect(runner).toHaveBeenCalledTimes(1);
+    expect(controller.hopCount).toBe(1);
+    expect(postedEntries).toHaveLength(1);
+    expect(postedEntries[0].sourceActionId).toBe(outboxRowId);
+
+    // Second invocation with the SAME outboxRowId
+    const secondResult = await svc.requestParticipation(
+      "thread-dedup-1",
+      { agentId: "agent-scout-1", prompt: "Second run (replay)" },
+      { participantRunner: runner, outboxRowId },
+    );
+
+    expect(secondResult.spawned).toBe(true);
+    if (!secondResult.spawned) throw new Error("unreachable");
+    expect(secondResult.hopCount).toBe(1); // hopCount NOT incremented
+    expect(secondResult.entryId).toBe(firstResult.entryId); // returns existing entryId
+    expect(runner).toHaveBeenCalledTimes(1); // runner NOT invoked again
+    expect(controller.hopCount).toBe(1); // controller state unchanged
+    expect(postedEntries).toHaveLength(1); // no duplicate entry inserted
   });
 });

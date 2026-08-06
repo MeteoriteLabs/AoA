@@ -28,7 +28,7 @@ export type RunMentionsFn = (
   discussionId: string,
   entryId: string,
   mentions: OutboxMention[],
-  opts?: { hopCount?: number },
+  opts?: { hopCount?: number; outboxRowId?: string },
 ) => Promise<void>;
 
 /**
@@ -207,7 +207,10 @@ export async function drainMentionOutbox(db: Db, opts: DrainOpts = {}): Promise<
     }, heartbeatMs);
     if (typeof (hb as { unref?: () => void }).unref === "function") (hb as { unref: () => void }).unref();
     try {
-      await runMentions(db, row.companyId, row.discussionId, row.entryId, row.mentions, { hopCount: row.hopCount });
+      await runMentions(db, row.companyId, row.discussionId, row.entryId, row.mentions, {
+        hopCount: row.hopCount,
+        outboxRowId: row.id,
+      });
       clearInterval(hb);
       // Owner-guarded terminal write (round-9 #1): only mark done if we still own
       // the claim, so a reclaimed original worker can't clobber the new owner.

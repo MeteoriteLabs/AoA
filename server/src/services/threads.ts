@@ -271,7 +271,7 @@ export async function processMentions(
   threadId: string,
   entryId: string,
   mentions: Array<{ raw: string; name: string }>,
-  opts?: { hopCount?: number },
+  opts?: { hopCount?: number; outboxRowId?: string },
 ): Promise<void> {
   // Fetch the thread row to learn whether it's controller-path, and the inviting
   // entry's text to use as the participation prompt. Both are per-call.
@@ -323,7 +323,7 @@ export async function processMentions(
           threadOrchestrationService(db).requestParticipation(
             threadId,
             { agentId: agentRows[0].id, prompt: entryPrompt },
-            {},
+            { outboxRowId: opts?.outboxRowId },
           ),
         );
         continue;
