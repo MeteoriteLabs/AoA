@@ -13,6 +13,7 @@ import { adapterSupportsConnectors } from "../../mcp-connectors.js";
 import type { McpServerSpec } from "@armyofagents/adapter-utils";
 import { resolveGuardedAdapterExecutionContext } from "../../heartbeat.js";
 import { tenantIsolationEnforced } from "../../../config/deployment-mode.js";
+import { createLocalAgentJwt } from "../../../agent-auth-jwt.js";
 import { resolveBridgeEntrypoint } from "./bridge-path.js";
 import { publishLiveEvent, publishIssueStatusChanged, threadWorkingAgents, broadcastThreadPresence } from "../../live-events.js";
 import { logger } from "../../../middleware/logger.js";
@@ -944,6 +945,22 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         executionContext.skills = agentSkills;
       }
 
+      // U3: mint a per-run run-JWT so the crew CLI has a networked identity
+      // (mirrors the org/heartbeat mint at heartbeat.ts:4276-4279). Gated on
+      // the adapter flag + a real runId — a fake-crew turn never reaches this
+      // branch, and codex/opencode/etc. that don't support the local-agent
+      // JWT simply get `null` (behavior-safe: the token is unused until the
+      // broker lands in later Wave-1 tasks).
+      const crewAuthToken = adapter.supportsLocalAgentJwt && runId
+        ? createLocalAgentJwt(agent.id, agent.companyId, agent.adapterType, runId)
+        : null;
+      if (adapter.supportsLocalAgentJwt && runId && !crewAuthToken) {
+        log.warn(
+          { companyId: agent.companyId, agentId: agent.id, runId, adapterType: agent.adapterType },
+          "crew local agent jwt secret missing; running without injected AOA_API_KEY",
+        );
+      }
+
       adapterResult = await adapter.execute({
         runId: runId ?? `aoa-${agentId}`,
         agent,
@@ -972,7 +989,7 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         // sink callbacks swallow store failures internally.
         onLog: crewLogSink ? crewLogSink.onLog : async () => {},
         onMeta: crewLogSink ? crewLogSink.onMeta : async () => {},
-        authToken: undefined, onSpawn: () => {},
+        authToken: crewAuthToken ?? undefined, onSpawn: () => {},
       });
     }
 
