@@ -136,6 +136,88 @@ describe("sandboxProviderRuntime", () => {
     });
   });
 
+  it("threads E2B_DOMAIN into create for self-hosted", async () => {
+    const commandsRun = vi.fn(async (command: string) => ({
+      exitCode: 0,
+      stdout: command === "pwd" ? "/home/user\n" : "",
+      stderr: "",
+    }));
+    const sandbox = {
+      sandboxId: "e2b-sandbox-1",
+      sandboxDomain: "sandbox.example",
+      commands: { run: commandsRun },
+      setTimeout: vi.fn(async () => undefined),
+      kill: vi.fn(async () => undefined),
+    };
+    const create = vi.fn(async () => sandbox);
+    const provider = createE2bSandboxRuntimeProvider({
+      importE2b: async () => ({ Sandbox: { create, connect: vi.fn() } }),
+      env: { E2B_API_KEY: "key-from-env", E2B_DOMAIN: "e2b.aoa.internal" },
+    });
+
+    await provider.acquireLease({
+      companyId: "company-1",
+      environmentId: "env-1",
+      issueId: null,
+      heartbeatRunId: "run-1",
+      config: { provider: "e2b", template: "base", timeoutMs: 60_000, reuseLease: true },
+      workspaceMode: null,
+    });
+
+    expect(create).toHaveBeenCalledWith("base", expect.objectContaining({ domain: "e2b.aoa.internal" }));
+  });
+
+  it("prefers config.domain over env.E2B_DOMAIN via resolveE2bDomain precedence", async () => {
+    const commandsRun = vi.fn(async (command: string) => ({
+      exitCode: 0,
+      stdout: command === "pwd" ? "/home/user\n" : "",
+      stderr: "",
+    }));
+    const sandbox = {
+      sandboxId: "e2b-sandbox-1",
+      sandboxDomain: "sandbox.example",
+      commands: { run: commandsRun },
+      setTimeout: vi.fn(async () => undefined),
+      kill: vi.fn(async () => undefined),
+    };
+    const create = vi.fn(async () => sandbox);
+    const provider = createE2bSandboxRuntimeProvider({
+      importE2b: async () => ({ Sandbox: { create, connect: vi.fn() } }),
+      env: { E2B_API_KEY: "key-from-env", E2B_DOMAIN: "env-domain.example" },
+    });
+
+    await provider.acquireLease({
+      companyId: "company-1",
+      environmentId: "env-1",
+      issueId: null,
+      heartbeatRunId: "run-1",
+      config: { provider: "e2b", template: "base", timeoutMs: 60_000, reuseLease: true, domain: "config-domain.example" },
+      workspaceMode: null,
+    });
+
+    expect(create).toHaveBeenCalledWith("base", expect.objectContaining({ domain: "config-domain.example" }));
+  });
+
+  it("re-uses the lease-persisted domain on connect() for release", async () => {
+    const sandbox = {
+      commands: { run: vi.fn(async () => ({ exitCode: 0, stdout: "", stderr: "" })) },
+      setTimeout: vi.fn(async () => undefined),
+      kill: vi.fn(async () => undefined),
+    };
+    const connect = vi.fn(async () => sandbox);
+    const provider = createE2bSandboxRuntimeProvider({
+      importE2b: async () => ({ Sandbox: { create: vi.fn(), connect }, SandboxNotFoundError: class extends Error {} }),
+      env: { E2B_API_KEY: "key-from-env" },
+    });
+
+    await provider.releaseLease({
+      providerLeaseId: "e2b-sandbox-1",
+      leaseMetadata: { provider: "e2b", template: "base", timeoutMs: 60_000, reuseLease: false, domain: "e2b.aoa.internal" },
+    });
+
+    expect(connect).toHaveBeenCalledWith("e2b-sandbox-1", expect.objectContaining({ domain: "e2b.aoa.internal" }));
+  });
+
   it("validates E2B config without exposing API keys", async () => {
     const provider = createE2bSandboxRuntimeProvider({
       importE2b: async () => ({ Sandbox: { create: vi.fn(), connect: vi.fn() } }),
@@ -156,6 +238,7 @@ describe("sandboxProviderRuntime", () => {
         timeoutMs: 60_000,
         reuseLease: false,
         hasApiKey: true,
+        selfHosted: false,
       },
     });
   });
@@ -180,6 +263,7 @@ describe("sandboxProviderRuntime", () => {
         timeoutMs: 60_000,
         reuseLease: false,
         hasApiKey: true,
+        selfHosted: false,
       },
     });
   });
@@ -203,6 +287,7 @@ describe("sandboxProviderRuntime", () => {
         timeoutMs: 3_600_000,
         reuseLease: false,
         hasApiKey: false,
+        selfHosted: false,
       },
     });
   });

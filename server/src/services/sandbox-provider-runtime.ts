@@ -182,6 +182,7 @@ type E2bModule = {
 interface E2bDriverConfig {
   template: string;
   apiKey: string | null;
+  domain: string | null;
   timeoutMs: number;
   reuseLease: boolean;
 }
@@ -197,6 +198,7 @@ function parseE2bDriverConfig(raw: Record<string, unknown>): E2bDriverConfig {
   return {
     template: readString(raw.template) ?? "base",
     apiKey: readString(raw.resolvedApiKey) ?? readString(raw.apiKey),
+    domain: readString(raw.domain),
     timeoutMs,
     reuseLease: raw.reuseLease === true,
   };
@@ -209,6 +211,7 @@ function sanitizedE2bConfig(config: E2bDriverConfig, env: Record<string, string 
     timeoutMs: config.timeoutMs,
     reuseLease: config.reuseLease,
     hasApiKey: Boolean(config.apiKey ?? readString(env.E2B_API_KEY)),
+    selfHosted: Boolean(config.domain ?? readString(env.E2B_DOMAIN)),
   };
 }
 
@@ -240,6 +243,14 @@ function resolveE2bApiKey(config: E2bDriverConfig, env: Record<string, string | 
   return apiKey;
 }
 
+function resolveE2bDomain(config: E2bDriverConfig, env: Record<string, string | undefined>): string | null {
+  return config.domain ?? readString(env.E2B_DOMAIN);
+}
+
+function e2bDomainOption(domain: string | null): { domain: string } | Record<string, never> {
+  return domain ? { domain } : {};
+}
+
 function defaultImportE2b(): Promise<E2bModule> {
   return import("e2b") as Promise<E2bModule>;
 }
@@ -259,6 +270,7 @@ function buildE2bLeaseMetadata(input: {
   sandbox: E2bSandbox;
   remoteCwd: string;
   workspaceMode: string | null;
+  resolvedDomain: string | null;
 }) {
   return {
     provider: "e2b",
@@ -270,6 +282,7 @@ function buildE2bLeaseMetadata(input: {
     remoteCwd: input.remoteCwd,
     shellCommand: "bash",
     workspaceMode: input.workspaceMode,
+    ...(input.resolvedDomain ? { domain: input.resolvedDomain } : {}),
   };
 }
 
@@ -320,6 +333,7 @@ function configFromE2bLease(input: {
     reuseLease: config.reuseLease ?? metadata.reuseLease,
     resolvedApiKey: config.resolvedApiKey,
     apiKey: config.apiKey,
+    domain: config.domain ?? metadata.domain,
   });
 }
 
@@ -349,6 +363,7 @@ export function createE2bSandboxRuntimeProvider(
     return await e2b.Sandbox.connect(providerLeaseId, {
       apiKey: resolveE2bApiKey(config, env),
       timeoutMs: config.timeoutMs,
+      ...e2bDomainOption(resolveE2bDomain(config, env)),
     });
   }
 
@@ -376,6 +391,7 @@ export function createE2bSandboxRuntimeProvider(
       const sandbox = await e2b.Sandbox.create(config.template, {
         apiKey: resolveE2bApiKey(config, env),
         timeoutMs: config.timeoutMs,
+        ...e2bDomainOption(resolveE2bDomain(config, env)),
         metadata: {
           aoaProvider: "e2b",
           companyId: input.companyId,
@@ -405,10 +421,12 @@ export function createE2bSandboxRuntimeProvider(
 
     async acquireLease(input) {
       const config = parseE2bDriverConfig(input.config);
+      const resolvedDomain = resolveE2bDomain(config, env);
       const e2b = await importE2b();
       const sandbox = await e2b.Sandbox.create(config.template, {
         apiKey: resolveE2bApiKey(config, env),
         timeoutMs: config.timeoutMs,
+        ...e2bDomainOption(resolvedDomain),
         metadata: {
           aoaProvider: "e2b",
           companyId: input.companyId,
@@ -426,6 +444,7 @@ export function createE2bSandboxRuntimeProvider(
             sandbox,
             remoteCwd,
             workspaceMode: input.workspaceMode,
+            resolvedDomain,
           }),
         };
       } catch (error) {
