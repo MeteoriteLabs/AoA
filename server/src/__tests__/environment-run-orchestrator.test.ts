@@ -304,9 +304,24 @@ describe("environmentRunOrchestrator", () => {
       leaseContext: { executionWorkspaceId: null, executionWorkspaceMode: null },
     }));
     const getEnv = vi.fn();
+    // U1b: resolving the null-environmentId branch now materializes a real
+    // persisted `environments` row (ensurePlatformDefaultEnvironmentRow),
+    // which needs a real db. This is a pure unit test with `db = {} as
+    // never`, so inject a fake via the DI seam instead — mirrors the
+    // `environments`/`environmentRuntime` DI already used throughout this
+    // file. The real materialize path is proven for real against a real db
+    // in platform-default-environment-materialization.integration.test.ts.
+    const ensurePlatformDefault = vi.fn(async () =>
+      makeEnvironment({
+        id: "platform-default-e2b",
+        driver: "sandbox",
+        config: { provider: "e2b", template: "base", timeoutMs: 3_600_000, reuseLease: false },
+      }),
+    );
     const orchestrator = environmentRunOrchestrator({} as never, {
       environments: { get: getEnv },
       environmentRuntime: { acquireRunLease },
+      ensurePlatformDefault,
     });
 
     const result = await orchestrator.acquireForRun({
@@ -318,6 +333,7 @@ describe("environmentRunOrchestrator", () => {
       persistedExecutionWorkspace: null,
     });
 
+    expect(ensurePlatformDefault).toHaveBeenCalledWith({ companyId: COMPANY, deploymentMode: "cloud_auth" });
     expect(getEnv).not.toHaveBeenCalled();
     expect(acquireRunLease).toHaveBeenCalledWith(
       expect.objectContaining({

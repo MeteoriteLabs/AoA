@@ -17,24 +17,24 @@
  * "e2b" key there requires ZERO production code changes (unlike importE2b,
  * which needs mocking the "e2b" npm package). This test uses that seam.
  *
- * A SECOND, genuine finding surfaced while building this test: the S1
- * "null environmentId -> platform default" path
- * (platform-default-environment.ts's PLATFORM_DEFAULT_ENVIRONMENT_ID =
- * "platform-default-e2b") is a synthetic, NEVER-PERSISTED id (the module's
- * own comment: "no routable sentinel id for it"). `environments.id` is a
- * Postgres `uuid` column and `environment_leases.environment_id` is a
- * NOT NULL FK to it — so a REAL `environmentsSvc.acquireLease()` call
- * against the platform-default id can NEVER succeed against a real
- * `environments` table (it fails the row lookup with "Environment not
- * found for company" before even reaching the uuid/FK mismatch). This is a
- * genuine gap in the already-committed U1 platform-default work, not
- * something introduced or fixable by U4 (out of this task's file scope) —
- * some later wave (or a fast-follow) needs to either special-case the
- * platform-default lease-persistence path or mint a real `environments` row
- * for it. The null-env case below therefore ALSO fakes the `environments`
- * lease-persistence leaf (in-memory) — proving the S1 null-through +
- * orchestrator wiring end-to-end, while documenting why the DB write itself
- * cannot be exercised for THIS specific (synthetic-id) path today. The
+ * A SECOND, genuine finding surfaced while building this test (U4): the S1
+ * "null environmentId -> platform default" path used to resolve a synthetic,
+ * NEVER-PERSISTED id (PLATFORM_DEFAULT_ENVIRONMENT_ID = "platform-default-e2b").
+ * `environments.id` is a Postgres `uuid` column and
+ * `environment_leases.environment_id` is a NOT NULL FK to it — so a REAL
+ * `environmentsSvc.acquireLease()` call against that synthetic id could NEVER
+ * succeed against a real `environments` table. That gap is FIXED (U1b,
+ * platform-default-environment-materialization.integration.test.ts):
+ * `environmentRunOrchestrator.resolveEnvironment({environmentId: null})` now
+ * calls `ensurePlatformDefaultEnvironmentRow`, which lazily materializes a
+ * REAL `environments` row keyed by a deterministic uuid derived from
+ * companyId (idempotent via `onConflictDoNothing` on the PK — no migration).
+ * The null-env case below still fakes the `environments` lease-persistence
+ * leaf (in-memory) — that remains a valid, narrower way to prove the S1
+ * null-through + orchestrator wiring without depending on U1b's materialize
+ * step — but it is no longer the ONLY way to exercise this path for real; see
+ * the U1b integration test for the genuine end-to-end DB proof (materialize +
+ * real lease acquisition, no fakes on the environments leaf). The
  * PINNED-environment-id case below (test 2) hits the real `environments`
  * table with no such fake, proving a genuine DB round trip for S5/S6.
  *

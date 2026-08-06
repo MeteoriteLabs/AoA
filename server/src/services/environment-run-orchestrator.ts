@@ -1,5 +1,5 @@
 import type { Db } from "@armyofagents/db";
-import type { Environment, EnvironmentDriver, EnvironmentStatus } from "@armyofagents/shared";
+import type { DeploymentMode, Environment, EnvironmentDriver, EnvironmentStatus } from "@armyofagents/shared";
 import type { AdapterProviderSandboxRunner } from "@armyofagents/adapter-utils";
 import { environmentService, type EnvironmentService } from "./environments.js";
 import {
@@ -10,7 +10,7 @@ import {
 import { resolveEnvironmentExecutionTargetConfigPatch } from "./environment-execution-target.js";
 import { getDeploymentMode } from "../config/deployment-mode.js";
 import { assertEnvironmentRuntimeSupportedForDeployment } from "./cloud-environment-policy.js";
-import { resolvePlatformDefaultEnvironment } from "./platform-default-environment.js";
+import { ensurePlatformDefaultEnvironmentRow } from "./platform-default-environment.js";
 
 export type EnvironmentErrorCode =
   | "environment_not_found"
@@ -88,10 +88,18 @@ export function environmentRunOrchestrator(
   options: {
     environments?: EnvironmentLookup;
     environmentRuntime?: Pick<EnvironmentRuntimeService, "acquireRunLease"> & Partial<Pick<EnvironmentRuntimeService, "executeRunLeaseCommand">>;
+    // DI seam mirroring `environments`/`environmentRuntime` above: pure unit
+    // tests can inject a fake here instead of needing a real `db` just to
+    // exercise the null-environmentId (platform-default) branch. Defaults to
+    // the real materialize-a-persisted-row implementation (U1b).
+    ensurePlatformDefault?: (input: { companyId: string; deploymentMode: DeploymentMode }) => Promise<Environment | null>;
   } = {},
 ) {
   const environmentsSvc = options.environments ?? environmentService(db);
   const runtime = options.environmentRuntime ?? environmentRuntimeService(db);
+  const ensurePlatformDefault = options.ensurePlatformDefault
+    ?? ((input: { companyId: string; deploymentMode: DeploymentMode }) =>
+      ensurePlatformDefaultEnvironmentRow(db, input.companyId, input.deploymentMode));
 
   // Deployment-mode-aware gVisor hardening (P5 SSRF residual). Resolve the trust
   // boundary ONCE per env run and thread it to BOTH the lease-metadata path
@@ -122,7 +130,14 @@ export function environmentRunOrchestrator(
     environmentId: string | null;
   }): Promise<Environment> {
     if (!input.environmentId) {
-      const platformDefault = resolvePlatformDefaultEnvironment({
+      // Lazily materialize the PLATFORM layer as a REAL, persisted
+      // `environments` row (deterministic id, idempotent insert) instead of
+      // a purely synthetic object — `environment_leases.environment_id` is a
+      // NOT NULL FK to `environments.id`, so a lease can never be acquired
+      // against a non-persisted id. Returns null in exactly the same cases
+      // the old synthetic resolver did (off-cloud, or on-cloud with no
+      // operator E2B_API_KEY) — WITHOUT touching the database in either case.
+      const platformDefault = await ensurePlatformDefault({
         companyId: input.companyId,
         deploymentMode: getDeploymentMode(),
       });
