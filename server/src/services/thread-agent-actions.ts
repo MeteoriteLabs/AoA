@@ -1620,6 +1620,32 @@ export async function gcOrphanedProposedActions(
       .where(inArray(threadOrchestrationState.threadId, resealedThreadIds));
   }
 
+  // F3 (PR#319 review): terminalize sealed `ready` rows stranded on a TERMINAL
+  // (`phase='done'`) discussion. runControllerSweep drives only threads with
+  // phase!='done', so a `done` thread is never re-swept — its `ready` rows (and the
+  // stale-`ready` backstop's perpetual pendingRun re-arm below) would leak forever.
+  // Paused threads are deliberately NOT touched: they resume (crewPaused flips false)
+  // and the backstop's re-arm makes the next sweep drain them. This INTENTIONALLY drops
+  // sealed-but-uncommitted actions (e.g. a create_task) on a finished discussion — a
+  // deliberate choice, since a `done` thread should not spawn new side effects. Distinct
+  // blockedReason ('thread_done') so the Step-2 re-seal (which recovers only
+  // 'run_not_sealed') never resurrects them. Placed BEFORE the stale-`ready` backstop so
+  // these terminalized rows aren't re-selected there and don't re-arm the done thread.
+  // Accepted irreversibility: if a founder later reopens a `done` thread (canAdvancePhase
+  // permits done→assign), any rows already terminalized here are NOT recovered — the
+  // reopened thread starts clean rather than replaying stale pre-close actions.
+  const doneReadyCutoff = new Date(now.getTime() - STALE_COMMITTING_TTL_MS);
+  await gcDb
+    .update(threadAgentActions)
+    .set({ status: "blocked_policy", blockedReason: "thread_done", updatedAt: now })
+    .where(
+      and(
+        eq(threadAgentActions.status, "ready"),
+        lt(threadAgentActions.updatedAt, doneReadyCutoff),
+        sql`${threadAgentActions.threadId} IN (SELECT id FROM discussions WHERE phase = 'done')`,
+      ),
+    );
+
   // Crash-window backstop (Codex round-8): a run that sealed its rows (→ready) IN-BAND then crashed
   // before its commit leaves them `ready` on a pendingRun=false thread — the sweep visits only pending
   // threads, and the re-arm above covers only rows THIS GC re-sealed. Re-arm any thread holding `ready`
