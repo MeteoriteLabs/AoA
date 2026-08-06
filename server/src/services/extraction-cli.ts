@@ -28,6 +28,7 @@ import { writeFile, rm } from "node:fs/promises";
 import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import type { Db } from "@armyofagents/db";
 import { parseExtractedItems, type ExtractedItem } from "./extraction-parser.js";
 import { runCodexExecJson } from "./internal-agent/codex-exec.js";
 import { tenantIsolationEnforced } from "../config/deployment-mode.js";
@@ -38,6 +39,13 @@ import {
   MAX_CLI_STDOUT_BYTES,
   newCappedBuffer,
 } from "./cli-spawn-safety.js";
+import type { CompanyProviderCredential } from "./one-shot-provider-credential.js";
+import {
+  runOneShotCliInSandbox,
+  OneShotSandboxError,
+  type OneShotSandboxHandle,
+  type OneShotCliResult,
+} from "./one-shot-sandbox-cli.js";
 
 export type CliErrorKind =
   | "not_installed"
@@ -98,6 +106,23 @@ export interface ExtractViaCliOptions {
   timeoutMs?: number;
   /** internal_agent_config.model — forwarded to the codex model resolver. */
   codexModel?: string | null;
+  /**
+   * The company's own resolved model-provider credential (U13.0). Required
+   * (alongside `companyId` + `db`) to route this spawn through the ephemeral
+   * sandbox on `cloud_auth` (U13.2) — unused on desktop, where extraction
+   * runs via the ambient host CLI login. Callers resolve this via
+   * `resolveCliExtractionContext` / the sibling gate in extraction.ts.
+   */
+  credential?: CompanyProviderCredential | null;
+  /** Required alongside `credential`/`db` on cloud — forwarded to
+   *  `runOneShotCliInSandbox`. */
+  companyId?: string;
+  db?: Db;
+  /** Pre-acquired batch sandbox lease (U13.3 supplies this so a whole
+   *  extract-then-scope pass reuses one sandbox). U13.2 plumbs this through
+   *  inert: when omitted, the cloud path self-acquires its own ephemeral
+   *  sandbox per call via `runOneShotCliInSandbox`. */
+  sandboxHandle?: OneShotSandboxHandle;
 }
 
 /**
@@ -116,23 +141,34 @@ export async function extractViaCli(
   content: string,
   options: ExtractViaCliOptions = {},
 ): Promise<ExtractedItem[]> {
-  // Fail closed on AoA Cloud (cloud_auth): there is no per-tenant isolated
-  // extraction path yet, and the shared host's CLI login belongs to the
-  // OPERATOR — running tenant content through it would generate under the
-  // operator credential (the 4th unsandboxed sink; the other three are refused
-  // by the D1 guard). This is the single chokepoint for all four extraction
-  // sinks (discussion / debrief-push / file-import / crew memory-extract).
-  // `not_authed` maps to the "unavailable on AoA Cloud" copy in
-  // DiscussionDetail.extractionFailureMessage.
-  if (tenantIsolationEnforced()) {
+  const { timeoutMs = 60_000, codexModel = null, credential = null, companyId, db, sandboxHandle } = options;
+  const binary = CLI_BINARY_MAP[cliTool];
+
+  if (!binary) {
     throw new CliExtractionError(
-      "Extraction is unavailable on AoA Cloud (cloud_auth): there is no per-tenant isolated extraction path yet.",
-      "not_authed",
+      `Unsupported CLI tool for extraction: '${cliTool}'. Supported: claude, codex.`,
+      "not_installed",
     );
   }
 
-  const { timeoutMs = 60_000, codexModel = null } = options;
-  const binary = CLI_BINARY_MAP[cliTool];
+  // On AoA Cloud (cloud_auth): the shared host's CLI login belongs to the
+  // OPERATOR — running tenant content through it would generate under the
+  // operator credential (the 4th unsandboxed sink; the other three are refused
+  // by the D1 guard). U13 (this wave) fixes that: route the spawn through an
+  // EPHEMERAL sandbox authenticated with the COMPANY's own resolved provider
+  // key (U13.0/U13.1) instead of refusing outright. This is the single
+  // chokepoint for all four extraction sinks (discussion / debrief-push /
+  // file-import / crew memory-extract) — every caller now threads
+  // `credential`/`companyId`/`db` (extraction.ts, U13.2).
+  if (tenantIsolationEnforced()) {
+    return extractViaCliSandbox(binary, cliTool, systemPrompt, content, {
+      timeoutMs,
+      credential,
+      companyId,
+      db,
+      sandboxHandle,
+    });
+  }
 
   if (binary === "codex") {
     // codex one-shot has no separate system channel — prepend the system prompt.
@@ -178,10 +214,143 @@ export async function extractViaCli(
     return extractViaClaude(systemPrompt, content, timeoutMs);
   }
 
+  // Unreachable: `binary` was validated against CLI_BINARY_MAP above (only
+  // "claude"/"codex" values exist in that map), but TS can't narrow that
+  // statically — keep a defensive fallback so every path returns/throws.
   throw new CliExtractionError(
     `Unsupported CLI tool for extraction: '${cliTool}'. Supported: claude, codex.`,
     "not_installed",
   );
+}
+
+/**
+ * U13.2 — route a one-shot CLI extraction through the ephemeral sandbox on
+ * AoA Cloud (`cloud_auth` / tenant isolation) instead of the ambient host CLI
+ * login (the operator-cred sink the desktop branch below relies on).
+ * Authenticates with the COMPANY's own resolved provider key (U13.0) via the
+ * shared sandbox seam (U13.1, `runOneShotCliInSandbox`) — this branch NEVER
+ * calls `buildScrubbedCliEnv`; that KEEP-list (`ANTHROPIC_API_KEY`,
+ * `CLAUDE_CODE_OAUTH_TOKEN`) is legitimate only for the desktop/local spawn
+ * below, where the ambient host login IS the intended auth. The sandbox's env
+ * is built entirely inside `runOneShotCliInSandbox` from the company
+ * credential + the U5 allowlist — no operator/local credential ever reaches
+ * the child.
+ *
+ * Command/args mirror the desktop spawn's INTENT (claude one-shot
+ * text-generation-only / codex `exec --json`), but neither binary can rely on
+ * a LOCAL temp file inside the remote sandbox VM: no `--system-prompt-file`
+ * (that file lives on THIS host, not the sandbox) and no per-run CODEX_HOME
+ * auth-copy (codex's ChatGPT-subscription home-dir dance is a desktop-only
+ * concept — the sandbox authenticates via the injected env-var API key, S14).
+ * Both the system prompt and the entry content ride over stdin, concatenated
+ * — the same "no separate system channel" pattern the desktop codex path
+ * already uses. Staging the USER content as a VM file instead of stdin is
+ * U13.5; the batch sandbox handle that lets a whole extract-then-scope pass
+ * reuse one lease is U13.3 (`sandboxHandle` is plumbed here, inert, until
+ * that task's batch acquire supplies it).
+ */
+async function extractViaCliSandbox(
+  binary: string,
+  cliTool: string,
+  systemPrompt: string,
+  content: string,
+  opts: {
+    timeoutMs: number;
+    credential: CompanyProviderCredential | null;
+    companyId?: string;
+    db?: Db;
+    sandboxHandle?: OneShotSandboxHandle;
+  },
+): Promise<ExtractedItem[]> {
+  // Structural guard: every production caller threads credential+companyId+db
+  // together (extraction.ts's resolveCliExtractionContext /
+  // resolveCliCredentialIfCloud gate feeding extractFromDiscussionEntry,
+  // extractFromDebrief, extractFromRawText, extractMemoryCandidates). A
+  // direct call missing one of these on cloud cannot route through the
+  // sandbox — fail closed rather than call runOneShotCliInSandbox with a
+  // missing companyId/db.
+  //
+  // Kind mapping is TEMPORARY: U13.3 adds a dedicated `sandbox_unavailable`
+  // CliErrorKind + cloud-pointing failure copy (see plan U13.3). Deliberately
+  // NOT "not_authed" here — DiscussionDetail.extractionFailureMessage has a
+  // `multiTenant && kind === "not_authed"` branch that OVERRIDES the message
+  // with a hardcoded pre-U13 "extraction isn't available on AoA Cloud yet"
+  // copy, which would be actively wrong now that cloud extraction exists.
+  // "nonzero_exit" surfaces this error's own real message via the generic
+  // "Extraction failed — try Reprocess. <message>" copy instead.
+  if (!opts.credential || !opts.companyId || !opts.db) {
+    throw new CliExtractionError(
+      "Extraction on AoA Cloud requires a resolved company provider key (Settings → Providers) and company context.",
+      "nonzero_exit",
+    );
+  }
+
+  const stdinContent = `${systemPrompt}\n\n${content}`;
+  const args =
+    binary === "codex"
+      ? [
+          "exec",
+          "--json",
+          "--sandbox",
+          "read-only",
+          "--ask-for-approval",
+          "never",
+          "--model",
+          opts.credential.model,
+          "-",
+        ]
+      : ["--print", "--tools", "", "--strict-mcp-config", "--output-format", "text"];
+
+  let result: OneShotCliResult;
+  try {
+    result = await runOneShotCliInSandbox({
+      db: opts.db,
+      companyId: opts.companyId,
+      cliTool,
+      command: binary,
+      args,
+      stdinContent,
+      timeoutMs: opts.timeoutMs,
+      sandboxHandle: opts.sandboxHandle,
+    });
+  } catch (err) {
+    if (err instanceof OneShotSandboxError) {
+      // TEMPORARY kind mapping (see comment above) — timeout maps exactly;
+      // sandbox_unavailable/nonzero_exit both fall to nonzero_exit pending
+      // U13.3's dedicated classification + copy.
+      const kind: CliErrorKind = err.kind === "timeout" ? "timeout" : "nonzero_exit";
+      throw new CliExtractionError(err.message, kind);
+    }
+    throw err;
+  }
+
+  // codex's `--json` output is a JSONL event stream, not the plain-text model
+  // reply — extract the final assistant message the same way the desktop
+  // codex path does (runCodexExecJson -> parseCodexJsonl) before parsing it
+  // as the extracted-items JSON array. claude's `--output-format text` stdout
+  // IS the model's reply already.
+  const outputText =
+    binary === "codex" ? await extractCodexJsonlSummary(result.stdout) : result.stdout;
+
+  try {
+    return parseExtractedItems(outputText);
+  } catch (err) {
+    throw new CliExtractionError(
+      `${binary} extraction (sandbox) output was not parseable: ${(err as Error)?.message ?? "unknown"}`,
+      "unparseable",
+    );
+  }
+}
+
+/**
+ * Extract the final assistant text from a codex `--json` JSONL stream.
+ * Reuses the real parser (`parseCodexJsonl`) the desktop codex path already
+ * depends on (`codex-exec.ts`) — dynamically imported to match that module's
+ * existing lazy-load pattern for the adapter-codex-local package.
+ */
+async function extractCodexJsonlSummary(stdout: string): Promise<string> {
+  const { parseCodexJsonl } = await import("@armyofagents/adapter-codex-local/server");
+  return parseCodexJsonl(stdout).summary ?? "";
 }
 
 /**
