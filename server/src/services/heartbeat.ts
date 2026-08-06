@@ -200,6 +200,37 @@ import {
 } from "@armyofagents/adapter-utils";
 import { resolveRuntimeDecisionRoutingEnabled } from "./runtime-decision-routing-flag.js";
 
+/**
+ * Resolve the base URL the claude_local PreToolUse runtime-permission hook
+ * (W5c HTTP hook bridge) uses to call back into the control plane.
+ *
+ * Host-local (unsandboxed) runs can reach the control plane over loopback, so
+ * the `http://127.0.0.1:${port}` fallback is preserved exactly when `apiUrl`
+ * is empty — this keeps desktop behavior unchanged.
+ *
+ * Brokered (sandboxed, e.g. E2B) runs execute inside a VM that cannot reach
+ * the host's loopback interface — for those, a routable `AOA_API_URL` is
+ * REQUIRED. Rather than silently minting an unreachable loopback URL, this
+ * throws (fail-before-spend).
+ *
+ * `apiUrl` is expected to already be `.trim()`ed by the caller (mirrors the
+ * existing inlined `process.env.AOA_API_URL?.trim() || ...` call sites).
+ */
+export function resolveRuntimeHookBaseUrl(input: {
+  apiUrl: string;
+  port: string;
+  brokered: boolean;
+}): string {
+  const { apiUrl, port, brokered } = input;
+  if (brokered) {
+    if (!apiUrl) {
+      throw new Error("AOA_API_URL required for sandboxed runtime hook");
+    }
+    return apiUrl;
+  }
+  return apiUrl || `http://127.0.0.1:${port}`;
+}
+
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 export {
   HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT,
@@ -4839,9 +4870,11 @@ export function heartbeatService(db: Db) {
 
       let runtimeHookToken: string | undefined;
       if (usesHttpHookBridge) {
-        const selfBaseUrl =
-          process.env.AOA_API_URL?.trim() ||
-          `http://127.0.0.1:${process.env.PORT ?? "3100"}`;
+        const selfBaseUrl = resolveRuntimeHookBaseUrl({
+          apiUrl: process.env.AOA_API_URL?.trim() ?? "",
+          port: process.env.PORT ?? "3100",
+          brokered: executionTarget.type !== "local",
+        });
         runtimeHookToken = mintRuntimeHookToken();
         // TTL is a leaked-entry backstop only — the primary cleanup is `deregisterRuntimeHook`
         // in the finally block below. The TTL must cover the entire possible run duration so
@@ -4888,9 +4921,11 @@ export function heartbeatService(db: Db) {
             ? {
                 runtimeHookBridge: {
                   enabled: true,
-                  selfBaseUrl:
-                    process.env.AOA_API_URL?.trim() ||
-                    `http://127.0.0.1:${process.env.PORT ?? "3100"}`,
+                  selfBaseUrl: resolveRuntimeHookBaseUrl({
+                    apiUrl: process.env.AOA_API_URL?.trim() ?? "",
+                    port: process.env.PORT ?? "3100",
+                    brokered: executionTarget.type !== "local",
+                  }),
                   path: RUNTIME_HOOK_PATH,
                   timeoutSec: RUNTIME_HOOK_BLOCK_TIMEOUT_SEC,
                 },
