@@ -274,7 +274,7 @@ function isDockerSandboxProvider(provider: string): boolean {
 
 type RuntimeProviderKeyResolver = Pick<ReturnType<typeof runtimeProviderKeyService>, "resolveCredential">;
 
-async function resolveRuntimeProviderConfig(input: {
+export async function resolveRuntimeProviderConfig(input: {
   companyId: string;
   provider: string;
   config: Record<string, unknown>;
