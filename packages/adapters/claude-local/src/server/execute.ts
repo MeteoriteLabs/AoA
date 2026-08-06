@@ -833,6 +833,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         onSpawn,
         unsetEnvKeys,
         ...(unsetEnvPrefixes ? { unsetEnvPrefixes } : {}),
+        // U5 — resolved provider for the sandbox env allowlist: claude-local
+        // always runs against Anthropic, so ANTHROPIC_API_KEY/BASE_URL/MODEL
+        // are the only provider auth keys admissible in a sandboxed run.
+        sandboxProvider: "anthropic",
       });
 
       const parsedStream = parseClaudeStreamJson(proc.stdout);

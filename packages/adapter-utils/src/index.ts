@@ -100,6 +100,7 @@ export {
   startAdapterExecutionTargetPaperclipBridge,
 } from "./execution-target.js";
 export { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
+export { buildSandboxEnvAllowlist } from "./sandbox-env-allowlist.js";
 export {
   isAoaAmbientSecretEnvKey,
   aoaAmbientSecretEnvKeys,

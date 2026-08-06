@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
+import { buildSandboxEnvAllowlist } from "./sandbox-env-allowlist.js";
 import { preferredShellForSandbox } from "./sandbox-shell.js";
 import {
   asBoolean,
@@ -203,6 +204,15 @@ export interface AdapterTargetProcessOptions {
   unsetEnvKeys?: string[];
   /** Key PREFIXES to strip from the inherited parent env at spawn (unless `env` set them). */
   unsetEnvPrefixes?: string[];
+  /**
+   * U5 — resolved provider name (`"anthropic"` | `"openai"` | `"gemini"`),
+   * used ONLY by the sandbox branches (`provider-sandbox` / `sandbox-docker`)
+   * of `runAdapterExecutionTargetProcess` to select which provider auth key
+   * `buildSandboxEnvAllowlist` admits. Local targets ignore it. Defaults to
+   * `""` — no provider auth key admitted — so an un-updated caller fails
+   * closed rather than silently widening the allowlist.
+   */
+  sandboxProvider?: string;
 }
 
 type ChildProcessRunner = typeof runChildProcess;
@@ -661,7 +671,10 @@ export async function runAdapterExecutionTargetProcess(
     });
     const env = sanitizeRemoteExecutionEnv(
       shapeAoaWorkspaceEnvForExecution({
-        env: { ...(target.env ?? {}), ...opts.env },
+        env: buildSandboxEnvAllowlist(
+          { ...(target.env ?? {}), ...opts.env },
+          { provider: opts.sandboxProvider ?? "" },
+        ),
         targetType: "sandbox-docker",
         localCwd: workspace.localCwd,
         executionCwd: workspace.executionCwd,
@@ -696,7 +709,10 @@ export async function runAdapterExecutionTargetProcess(
   try {
     let env = sanitizeRemoteExecutionEnv(
       shapeAoaWorkspaceEnvForExecution({
-        env: { ...(target.env ?? {}), ...opts.env },
+        env: buildSandboxEnvAllowlist(
+          { ...(target.env ?? {}), ...opts.env },
+          { provider: opts.sandboxProvider ?? "" },
+        ),
         targetType: "sandbox-docker",
         localCwd: workspace.localCwd,
         executionCwd: workspace.executionCwd,

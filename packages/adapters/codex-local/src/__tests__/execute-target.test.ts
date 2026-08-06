@@ -348,7 +348,11 @@ describe("codex execute target", () => {
       expect(providerInput).toBeDefined();
       expect(providerInput!.env.CODEX_HOME).toBe("/home/user/aoa-workspace/.aoa-codex-home");
       expect(providerInput!.env.CODEX_HOME).not.toContain(hostCodexHome);
-      expect(providerInput!.env.CUSTOM_ENV).toBe("custom-value");
+      // U5: the sandbox env allowlist is a from-scratch positive list — an
+      // arbitrary configured env var with no allowlisted meaning (run-identity,
+      // provider auth, connector token, managed home) does NOT cross into a
+      // sandboxed run, even though it would reach a local-target run unchanged.
+      expect(providerInput!.env.CUSTOM_ENV).toBeUndefined();
       expect(providerInput!.command).toBe("bash");
       expect(providerInput!.args[1]).toContain('mkdir -p "/home/user/aoa-workspace/.aoa-codex-home"');
       expect(providerInput!.args[1]).toContain("codex login --with-api-key");

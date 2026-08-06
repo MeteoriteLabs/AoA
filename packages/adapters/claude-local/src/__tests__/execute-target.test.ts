@@ -465,6 +465,10 @@ describe("claude execute target", () => {
       cwd: "/home/user/aoa-workspace",
     });
     expect(providerInput!.env.ANTHROPIC_API_KEY).toBe("test-anthropic-key");
-    expect(providerInput!.env.CUSTOM_ENV).toBe("custom-value");
+    // U5: the sandbox env allowlist is a from-scratch positive list — an
+    // arbitrary configured env var with no allowlisted meaning (run-identity,
+    // provider auth, connector token, managed home) does NOT cross into a
+    // sandboxed run, even though it would reach a local-target run unchanged.
+    expect(providerInput!.env.CUSTOM_ENV).toBeUndefined();
   });
 });

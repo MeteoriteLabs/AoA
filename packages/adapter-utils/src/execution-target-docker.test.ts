@@ -165,17 +165,24 @@ describe("buildDockerRunArgs", () => {
 
 describe("runAdapterExecutionTargetProcess sandbox-docker", () => {
   it("runs docker with target env below runtime env and Docker-shaped workspace env", async () => {
+    // U5: the merge-order + workspace-cwd-rewrite probes below use ALLOWLISTED
+    // key names (AOA_EXECUTION_TARGET_ID / AOA_RUNTIME_HOOK_TOKEN /
+    // AOA_WORKSPACE_CWD / AOA_WORKSPACES_JSON) — buildSandboxEnvAllowlist now
+    // runs ahead of shapeAoaWorkspaceEnvForExecution in this chokepoint, so an
+    // arbitrary non-allowlisted key (the old "SHARED"/"TARGET_ONLY" synthetic
+    // names) would be dropped before the merge/rewrite logic under test ever
+    // sees it.
     const run = vi.fn().mockResolvedValue(okResult);
     const result = await runAdapterExecutionTargetProcess(
       {
         type: "sandbox-docker",
         image: "node:22",
-        env: { SHARED: "target", TARGET_ONLY: "yes" },
+        env: { AOA_EXECUTION_TARGET_ID: "target", AOA_RUNTIME_HOOK_TOKEN: "yes" },
       },
       baseOpts({
         cwd: "/host/repo",
         env: {
-          SHARED: "runtime",
+          AOA_EXECUTION_TARGET_ID: "runtime",
           AOA_WORKSPACE_CWD: "/host/repo",
           AOA_WORKSPACES_JSON: JSON.stringify([
             { id: "current", cwd: "/host/repo" },
@@ -192,9 +199,9 @@ describe("runAdapterExecutionTargetProcess sandbox-docker", () => {
       "docker",
       expect.arrayContaining([
         "--env",
-        "SHARED=runtime",
+        "AOA_EXECUTION_TARGET_ID=runtime",
         "--env",
-        "TARGET_ONLY=yes",
+        "AOA_RUNTIME_HOOK_TOKEN=yes",
         "--env",
         "AOA_WORKSPACE_CWD=/workspace",
         "--env",

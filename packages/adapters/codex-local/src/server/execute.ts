@@ -603,6 +603,10 @@ export async function execute(
         await onLog(stream, cleaned);
       },
       onSpawn,
+      // U5 — resolved provider for the sandbox env allowlist: codex-local
+      // always runs against OpenAI, so OPENAI_API_KEY/BASE_URL/MODEL are the
+      // only provider auth keys admissible in a sandboxed run.
+      sandboxProvider: "openai",
     });
     const cleanedStderr = stripCodexRolloutNoise(proc.stderr);
     return {

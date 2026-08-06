@@ -81,14 +81,17 @@ describe("provider-sandbox execution target", () => {
   });
 
   it("runs adapter commands through the provider runner", async () => {
-    const target = providerTarget();
+    // U5: "BASE"/"RUN" were arbitrary synthetic keys — under the from-scratch
+    // sandbox allowlist a non-allowlisted key is dropped, so this now proves
+    // the target-env-below-runtime-env merge with ALLOWLISTED names instead.
+    const target = providerTarget({ env: { AOA_EXECUTION_TARGET_ID: "target-1" } });
 
     const result = await runAdapterExecutionTargetProcess(target, {
       runId: "run-1",
       command: "codex",
       args: ["--json"],
       cwd: "/local/repo",
-      env: { RUN: "1" },
+      env: { AOA_RUNTIME_HOOK_TOKEN: "hook-1" },
       stdin: "prompt",
       timeoutSec: 30,
       graceSec: 2,
@@ -103,7 +106,7 @@ describe("provider-sandbox execution target", () => {
       command: "codex",
       args: ["--json"],
       cwd: "/workspace/app",
-      env: { BASE: "1", RUN: "1" },
+      env: { AOA_EXECUTION_TARGET_ID: "target-1", AOA_RUNTIME_HOOK_TOKEN: "hook-1" },
       stdin: "prompt",
       timeoutSec: 30,
       graceSec: 2,
