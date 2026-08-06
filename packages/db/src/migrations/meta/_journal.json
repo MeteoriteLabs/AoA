@@ -1429,6 +1429,13 @@
       "when": 1785938924435,
       "tag": "0203_pink_scarlet_spider",
       "breakpoints": true
+    },
+    {
+      "idx": 204,
+      "version": "7",
+      "when": 1785994319527,
+      "tag": "0204_new_sumo",
+      "breakpoints": true
     }
   ]
 }

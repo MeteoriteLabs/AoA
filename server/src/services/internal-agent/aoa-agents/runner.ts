@@ -944,6 +944,24 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         executionContext.skills = agentSkills;
       }
 
+      // 30-second in-memory throttle for idle heartbeat updating last_event_at
+      let lastHeartbeatAt = 0;
+      const maybeHeartbeat = async () => {
+        if (!runId) return;
+        const now = Date.now();
+        if (now - lastHeartbeatAt > 30000) {
+          lastHeartbeatAt = now;
+          try {
+            await db
+              .update(internalAgentRuns)
+              .set({ lastEventAt: new Date() })
+              .where(eq(internalAgentRuns.id, runId));
+          } catch {
+            /* best-effort heartbeat */
+          }
+        }
+      };
+
       adapterResult = await adapter.execute({
         runId: runId ?? `aoa-${agentId}`,
         agent,
@@ -970,8 +988,14 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         // T1: stream the CLI transcript + one redacted adapter.invoke event into
         // the run log (was: two literal no-ops that discarded everything). Both
         // sink callbacks swallow store failures internally.
-        onLog: crewLogSink ? crewLogSink.onLog : async () => {},
-        onMeta: crewLogSink ? crewLogSink.onMeta : async () => {},
+        onLog: async (stream, chunk) => {
+          await maybeHeartbeat();
+          if (crewLogSink) await crewLogSink.onLog(stream, chunk);
+        },
+        onMeta: async (meta) => {
+          await maybeHeartbeat();
+          if (crewLogSink) await crewLogSink.onMeta(meta);
+        },
         authToken: undefined, onSpawn: () => {},
       });
     }

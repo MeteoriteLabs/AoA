@@ -1409,7 +1409,7 @@ export const STALE_COMMITTING_TTL_MS = 10 * 60 * 1000;
  * delay). A true idle-lease (heartbeat column) that avoids the false-reap entirely is a tracked
  * follow-up. 2h is ≫ any realistic coordinator-run duration, so the false-reap is rare in practice.
  */
-export const ZOMBIE_RUN_TTL_MS = 2 * 60 * 60 * 1000;
+export const ZOMBIE_RUN_TTL_MS = 35 * 60 * 1000;
 
 export interface ReapStaleThreadAgentActionsResult {
   reaped: number;
@@ -1537,7 +1537,7 @@ export async function gcOrphanedProposedActions(
     .where(
       and(
         eq(internalAgentRuns.status, "running"),
-        lt(internalAgentRuns.createdAt, zombieCutoff),
+        lt(sql`coalesce(${internalAgentRuns.lastEventAt}, ${internalAgentRuns.createdAt})`, zombieCutoff),
         sql`${internalAgentRuns.id} IN (SELECT run_id FROM thread_agent_actions WHERE status = 'proposed' AND run_id IS NOT NULL)`,
       ),
     )

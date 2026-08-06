@@ -396,6 +396,7 @@ export const internalAgentRuns = pgTable(
       .notNull()
       .defaultNow(),
     completedAt: timestamp("completed_at", { withTimezone: true }),
+    lastEventAt: timestamp("last_event_at", { withTimezone: true }),
   },
   (table) => ({
     companyIdx: index("ia_runs_company_idx").on(table.companyId),
