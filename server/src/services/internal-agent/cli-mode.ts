@@ -167,6 +167,22 @@ export interface McpConfigParams {
   contextScope?: NormalizedCommanderContextScope | null;
   /** External connectors, keyed by server name. Reserved names are filtered. */
   extraMcpServers?: Record<string, McpServerSpec>;
+  /**
+   * U2d: when true, the reserved `aoa` entry in `buildMcpConfig` is an HTTP
+   * entry pointing at the control-plane broker (U2c) instead of the stdio
+   * `buildMcpBridgeSpec` bridge. A brokered (E2B-sandboxed) run's CLI must
+   * reach the DB ONLY through that HTTP broker — the stdio bridge injects
+   * `DATABASE_URL` into the subprocess env, a secret that must never enter
+   * the VM. Defaults to false (desktop/unsandboxed stdio bridge, unchanged).
+   * This wave only plumbs the flag; no call site sets it yet (S7/U4).
+   */
+  brokered?: boolean;
+  /**
+   * U2d: control-plane base URL the brokered `aoa` HTTP entry is built
+   * against (`${apiBaseUrl}/companies/${companyId}/mcp`). Only consulted
+   * when `brokered` is true.
+   */
+  apiBaseUrl?: string;
 }
 
 /**
@@ -283,7 +299,22 @@ export function buildMcpBridgeSpec(params: McpConfigParams): McpBridgeSpec {
 }
 
 export function buildMcpConfig(params: McpConfigParams): McpConfig {
-  const reserved: Record<string, McpConfigServerEntry> = { aoa: buildMcpBridgeSpec(params) };
+  // U2d: a brokered (E2B-sandboxed) run's `aoa` entry is HTTP, pointed at the
+  // control-plane broker (U2c) — mirroring the exact HTTP shape
+  // mergeExternalMcpServers/withSynthesizedBearerHeader already emit for
+  // external connectors below (${VAR} placeholder in the file, real value
+  // via spawn env only). It carries NO `DATABASE_URL` — that stays confined
+  // to the stdio buildMcpBridgeSpec() bridge, which never runs in a brokered
+  // config. Falls back to the unchanged stdio bridge when `brokered` is
+  // falsy (the default — desktop/unsandboxed runs are byte-identical).
+  const aoaEntry: McpConfigServerEntry = params.brokered
+    ? {
+        type: "http",
+        url: `${params.apiBaseUrl}/companies/${params.companyId}/mcp`,
+        headers: { Authorization: `Bearer ${aoaSecretPlaceholderFor("AOA_API_KEY")}` },
+      }
+    : buildMcpBridgeSpec(params);
+  const reserved: Record<string, McpConfigServerEntry> = { aoa: aoaEntry };
   if (params.enabledCapabilities?.includes("browser_use")) {
     reserved.playwright = {
       command: "npx",
