@@ -600,7 +600,16 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
         // filtered to what this specific agent may see. Non-agent sources
         // (mcp/board) keep the existing outbound TOOL_DEFINITIONS list
         // UNCHANGED.
-        if (protocolActor.source === "agent") {
+        //
+        // Gated on a present runId: the broker is run-scoped by construction
+        // (resolveBrokerToolContext requires one, and every genuine crew/org/
+        // sandboxed run-JWT actor always carries one — agent-auth-jwt.ts's
+        // run_id claim is mandatory). An agent-API-key actor (auth.ts
+        // source:"agent_key") is ALSO source==="agent" but has no runId
+        // unless the caller sends x-aoa-run-id — a standalone, non-run
+        // identity that predates U2c and must keep seeing the outbound
+        // TOOL_DEFINITIONS list, not a 403 from the run-scoped broker.
+        if (protocolActor.source === "agent" && protocolActor.runId) {
           const brokerCtx = await resolveAgentBrokerContext();
           res.json(
             jsonRpcResult(requestBody.id ?? null, {
@@ -644,7 +653,13 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
         // remapped to -32601, or a legitimate denial would look like "method
         // not found" to the caller and break gating parity with the stdio
         // bridge.
-        if (protocolActor.source === "agent") {
+        //
+        // Gated on a present runId (same rationale as the tools/list branch
+        // above): an agent-API-key actor with no runId is not a run at all,
+        // so it skips the run-scoped broker entirely and falls straight
+        // through to the pre-existing outbound path below — unchanged
+        // behavior for that caller class.
+        if (protocolActor.source === "agent" && protocolActor.runId) {
           if (brokerRegistry.some((tool) => tool.name === params.name)) {
             const brokerCtx = await resolveAgentBrokerContext();
             const handleBrokerToolCall = createToolCallHandler({

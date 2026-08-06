@@ -41,6 +41,13 @@
  *        "aoa", never `heartbeat_runs`) returns `isError:true` with
  *        `ASK_HUMAN_FAILED` — an in-band refusal, not a thrown/unhandled error.
  *      Both come back as `result` (isError content), never JSON-RPC `error`.
+ *   5. Regression guard (U2c follow-up): a `source==="agent"` actor with NO
+ *      runId — a standalone agent-API-key caller (auth.ts `source:"agent_key"`,
+ *      populated only when the caller sends `x-aoa-run-id`, unlike the run-JWT
+ *      path's mandatory `run_id` claim) — is NOT routed into the run-scoped
+ *      broker. `tools/list` still returns the outbound `TOOL_DEFINITIONS`
+ *      (not a 403 from `resolveBrokerToolContext`'s missing-runId guard), and
+ *      `tools/call` for an outbound tool (`memory.get`) still dispatches.
  *
  * Skipped on Windows (embedded-postgres can't start on this platform's CI
  * runner — Issue #114); Linux CI `push` is the authoritative gate for this
@@ -52,7 +59,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { sql } from "drizzle-orm";
@@ -351,6 +358,73 @@ describe.skipIf(process.platform === "win32")(
       const payload = JSON.parse(res.body.result.content[0].text);
       expect(payload.success).toBe(false);
       expect(payload.error).toBe("ASK_HUMAN_FAILED");
+    });
+
+    it("U2c follow-up regression guard: an agent-API-key actor with NO runId (source:'agent_key', no x-aoa-run-id header) is NOT run-scoped into the broker — tools/list still returns the outbound TOOL_DEFINITIONS (not a 403), and tools/call for an outbound tool still works", async () => {
+      assertSetupOk();
+
+      // A standalone agent-API-key identity (auth.ts source:"agent_key") —
+      // distinct from the run-JWT (source:"agent_jwt") path every other test
+      // in this file uses. This is the ONLY way to get a real, middleware-
+      // verified req.actor with type:"agent" and runId undefined: the JWT
+      // claims always carry a mandatory run_id, but an agent API key's runId
+      // is populated ONLY from an optional x-aoa-run-id header — omitted here
+      // on purpose. Before U2c this caller's tools/list returned the outbound
+      // TOOL_DEFINITIONS; the (now-fixed) regression made it 403 by
+      // unconditionally routing every source:"agent" actor into the run-scoped
+      // resolveAgentBrokerContext(), which throws when runId is missing.
+      const keyAgentId = firstId(
+        await db.execute<{ id: string }>(sql`
+          INSERT INTO agents (id, company_id, name, kind, status, skill_keys, runtime_config)
+          VALUES (gen_random_uuid(), ${co}, 'Runless Key Agent', 'org', 'idle', '[]'::jsonb, '{}'::jsonb)
+          RETURNING id`),
+      );
+      const rawKey = `test-agent-key-${randomUUID()}`;
+      const keyHash = createHash("sha256").update(rawKey).digest("hex");
+      await db.execute(sql`
+        INSERT INTO agent_api_keys (id, agent_id, company_id, name, key_hash)
+        VALUES (gen_random_uuid(), ${keyAgentId}, ${co}, 'test key', ${keyHash})`);
+
+      const app = buildApp();
+
+      // tools/list: no x-aoa-run-id header sent -> req.actor.runId is
+      // undefined -> the `protocolActor.source === "agent" && protocolActor.runId`
+      // guard is false -> falls through to the outbound TOOL_DEFINITIONS list.
+      const listRes = await request(app)
+        .post(`/api/companies/${co}/mcp`)
+        .set("Authorization", `Bearer ${rawKey}`)
+        .send({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
+
+      expect(listRes.status).toBe(200);
+      expect(listRes.body.error).toBeUndefined();
+      const listNames = listRes.body.result.tools.map((t: { name: string }) => t.name);
+      // Outbound registry tool, present (proves the fallback list, not a 403).
+      expect(listNames).toContain("memory.get");
+      // Internal-registry-only tool name, must NOT appear — this is the
+      // outbound TOOL_DEFINITIONS list, not the broker's filtered internal list.
+      expect(listNames).not.toContain("query_memory");
+
+      // tools/call: an outbound tool must still work for this runless actor —
+      // proves the fall-through preserves pre-existing agent-key behavior on
+      // the call path too (this side already worked pre-fix via the additive
+      // fallthrough; asserted here for completeness alongside the list fix).
+      const callRes = await request(app)
+        .post(`/api/companies/${co}/mcp`)
+        .set("Authorization", `Bearer ${rawKey}`)
+        .send({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name: "memory.get", arguments: { id: randomUUID() } },
+        });
+
+      // Reaches the real outbound memory.get handler (read-tools.ts
+      // handleMemoryGet -> notFoundResult -> err(404, -32004, ...)) for a
+      // lookup miss on a random id — proves dispatch actually happened, not
+      // a -32601 "unknown tool" / 403 "missing run identity" short-circuit.
+      expect(callRes.status).toBe(404);
+      expect(callRes.body.error?.code).toBe(-32004);
+      expect(callRes.body.error?.message).toBe("Memory item not found");
     });
 
     it("cross-tenant guard: a run-JWT whose company_id does not match the URL company is rejected before reaching the broker", async () => {
