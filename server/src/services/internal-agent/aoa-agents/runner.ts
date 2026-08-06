@@ -6,7 +6,7 @@ import type { Db } from "@armyofagents/db";
 import { agents, internalAgentRuns, discussionEntries, issues, threadOrchestrationState, workQuestions } from "@armyofagents/db";
 import { getServerAdapter } from "../../../adapters/registry.js";
 import { costService } from "../../costs.js";
-import { buildMcpConfig, buildMcpBridgeSpec } from "../cli-mode.js";
+import { buildMcpConfig, buildCodexAoaMcpSpec, type McpConfigParams } from "../cli-mode.js";
 import { stripUserMcpArgs } from "../../mcp-arg-sanitize.js";
 import { resolveAgentConnectors } from "../../mcp-connectors-loader.js";
 import { adapterSupportsConnectors } from "../../mcp-connectors.js";
@@ -375,8 +375,11 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     const adapter = getServerAdapter(agent.adapterType);
 
     // MX2: the bridge params are identical for both the claude {mcpServers}
-    // envelope and the provider-neutral spec — build them once.
-    const mcpParams = {
+    // envelope and the provider-neutral spec — build them once. Explicit
+    // McpConfigParams annotation (rather than the previous inferred literal
+    // type) so U4b can assign `.brokered`/`.apiBaseUrl` onto this SAME object
+    // after the sandbox lease is acquired below, instead of rebuilding it.
+    const mcpParams: McpConfigParams = {
       companyId: payload.companyId,
       userId: SUBAGENT_SESSION_USER_ID,
       userRole: SUBAGENT_SESSION_USER_ROLE,
@@ -450,7 +453,19 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       worktree: null,
       environmentId: agent.defaultEnvironmentId ?? null,
     });
-    // U4b sets mcpParams.brokered / mcpParams.apiBaseUrl from `acquired` HERE.
+    // U4b (S7 blocker): a resolved provider-sandbox lease means this run's CLI
+    // will execute inside an E2B VM — the `aoa` MCP server MUST ride the
+    // brokered HTTP transport there, never the stdio bridge (whose env carries
+    // DATABASE_URL, cli-mode.ts's buildMcpBridgeSpec). `acquired.sandbox` is
+    // null on desktop/local_trusted (acquireExecutionContext's S1 contract),
+    // so `brokered` is false there and delivery stays byte-identical.
+    mcpParams.brokered = acquired.sandbox?.environment.driver === "sandbox";
+    // No per-run "resolved" control-plane URL exists on the crew path (unlike
+    // the agent's OWN provider env, resolved further below as `resolvedEnv` —
+    // AOA_API_URL is never part of that agent-configured env). The control
+    // plane's own address is the platform's, not the tenant's, so read it
+    // directly off the server process env (only consulted when brokered).
+    mcpParams.apiBaseUrl = process.env.AOA_API_URL ?? undefined;
 
     const mcp = buildMcpConfig({ ...mcpParams, extraMcpServers });
     cfgPath = join(tmpdir(), `aoa-mcp-${agentId}-${runId ?? "x"}.json`);
@@ -460,7 +475,13 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     // a later milestone (MX3); claude keeps its own --mcp-config delivery
     // below. Building it unconditionally is cheap and keeps the contract
     // uniform across adapters.
-    const bridgeSpec = buildMcpBridgeSpec(mcpParams);
+    //
+    // U4b: buildCodexAoaMcpSpec is the brokered-aware selector — despite the
+    // name, it is provider-neutral (codex/opencode/gemini all consume the
+    // same McpBridgeSpec | McpHttpServerSpec union via ctx.mcpBridge). A
+    // brokered run gets the HTTP form here (no DATABASE_URL); non-brokered
+    // falls through to the unchanged buildMcpBridgeSpec stdio bridge.
+    const bridgeSpec = buildCodexAoaMcpSpec(mcpParams);
 
     const baseConfig = { ...(agent.adapterConfig ?? {}) } as Record<string, unknown>;
     const prevArgs = Array.isArray(baseConfig.args) ? (baseConfig.args as string[]) : [];

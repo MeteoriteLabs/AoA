@@ -222,4 +222,60 @@ describe("writeOpenCodeMcpConfigJson (T2.1)", () => {
       expect(tempFiles).toEqual([]);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // U4b (S7): the reserved `aoa` server itself, rendered as a `type:"remote"`
+  // (HTTP) entry for a brokered (E2B-sandboxed) run. Reuses the exact
+  // toOpenCodeEntry HTTP path external connectors already use below — NOT a
+  // second hand-rolled JSON HTTP emitter. Security invariant: NO
+  // `environment` block, NO `command`, and therefore no DATABASE_URL for a
+  // brokered spec.
+  // -------------------------------------------------------------------------
+  describe("reserved aoa server as HTTP (U4b — brokered/E2B runs)", () => {
+    it("renders mcp.aoa as type:remote + url + synthesized Bearer header, with NO command/environment and NO DATABASE_URL", async () => {
+      await writeOpenCodeMcpConfigJson(tmpDir, {
+        kind: "http",
+        url: "https://cp.example/companies/co-1/mcp",
+        headers: {},
+        authTokenEnvVar: "AOA_API_KEY",
+      });
+
+      const raw = await fs.readFile(path.join(tmpDir, "opencode.json"), "utf8");
+      const written = JSON.parse(raw);
+
+      expect(written.mcp.aoa.type).toBe("remote");
+      expect(written.mcp.aoa.url).toBe("https://cp.example/companies/co-1/mcp");
+      // opencode's own interpolation syntax ({env:VAR}), synthesized by
+      // withSynthesizedBearerHeader — same mechanism external HTTP connectors use.
+      expect(written.mcp.aoa.headers).toEqual({ Authorization: "Bearer {env:AOA_API_KEY}" });
+      expect(written.mcp.aoa.command).toBeUndefined();
+      expect(written.mcp.aoa.environment).toBeUndefined();
+
+      // CRITICAL security invariant: a brokered run's config must never carry
+      // the control-plane DB credential — that would ride into the VM.
+      expect(raw).not.toContain("DATABASE_URL");
+      expect(raw).not.toContain("postgres://");
+    });
+
+    it("a non-brokered (stdio) aoa spec still renders type:local with command/environment and DATABASE_URL — byte-identical to today", async () => {
+      await writeOpenCodeMcpConfigJson(tmpDir, {
+        command: "node",
+        args: ["/bridge.js"],
+        env: {
+          AOA_SESSION_COMPANY_ID: "c",
+          DATABASE_URL: "postgres://should-be-present:5432/db",
+        },
+      });
+
+      const raw = await fs.readFile(path.join(tmpDir, "opencode.json"), "utf8");
+      const written = JSON.parse(raw);
+
+      expect(written.mcp.aoa.type).toBe("local");
+      expect(written.mcp.aoa.command).toEqual(["node", "/bridge.js"]);
+      expect(written.mcp.aoa.environment.DATABASE_URL).toBe(
+        "postgres://should-be-present:5432/db",
+      );
+      expect(written.mcp.aoa.url).toBeUndefined();
+    });
+  });
 });

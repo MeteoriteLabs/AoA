@@ -521,3 +521,109 @@ describe("heartbeat MCP delivery to NON-claude adapters (Plan 2b Task 3)", () =>
     await delivery.cleanup();
   });
 });
+
+// ---------------------------------------------------------------------------
+// U4b (S7 blocker): org heartbeat's brokered MCP delivery. heartbeat.ts sets
+// `heartbeatMcpParams.brokered` from the run's acquired sandbox lease
+// (`orgAcquired.sandbox?.environment.driver === "sandbox"`) BEFORE calling
+// prepareHeartbeatMcpDelivery — these tests exercise THAT function directly
+// with brokered params (the real "org honoring" boundary: this same function
+// call is the one heartbeat.ts makes), proving neither the staged claude
+// `--mcp-config` file NOR the non-claude `ctx.mcpBridge` ever carries
+// DATABASE_URL for a brokered run, while a non-brokered (desktop) run stays
+// byte-identical to every test above.
+// ---------------------------------------------------------------------------
+describe("heartbeat MCP delivery: brokered org sandbox dispatch (U4b, S7)", () => {
+  const brokeredParams = {
+    ...params,
+    brokered: true,
+    apiBaseUrl: "https://cp.example.test",
+  } as const;
+
+  it("claude_local: the staged --mcp-config file carries an HTTP aoa entry, no DATABASE_URL, no postgres://", async () => {
+    const delivery = await prepareHeartbeatMcpDelivery({
+      adapterType: "claude_local",
+      agentId: "agent-1",
+      runId: "run-1",
+      config: { args: ["--existing"] },
+      params: brokeredParams,
+    });
+
+    const written = lastWrittenMcpConfig();
+    expect(written.mcpServers.aoa).toMatchObject({
+      type: "http",
+      url: "https://cp.example.test/companies/company-1/mcp",
+    });
+    expect((written.mcpServers.aoa as { command?: unknown }).command).toBeUndefined();
+    const raw = JSON.stringify(written);
+    expect(raw).not.toContain("DATABASE_URL");
+    expect(raw).not.toMatch(/postgres(ql)?:\/\//);
+
+    // The non-claude carrier (delivery.mcpBridge) is ALSO brokered-shaped —
+    // heartbeat.ts hands this straight to ctx.mcpBridge for every adapter.
+    expect(delivery.mcpBridge).toMatchObject({
+      kind: "http",
+      url: "https://cp.example.test/companies/company-1/mcp",
+      authTokenEnvVar: "AOA_API_KEY",
+    });
+    expect(JSON.stringify(delivery.mcpBridge)).not.toContain("DATABASE_URL");
+
+    await delivery.cleanup();
+  });
+
+  it("codex_local (non-claude): ctx.mcpBridge is the HTTP spec, no config file written, no DATABASE_URL anywhere", async () => {
+    const delivery = await prepareHeartbeatMcpDelivery({
+      adapterType: "codex_local",
+      agentId: "agent-1",
+      runId: "run-1",
+      config: { args: ["--existing"] },
+      params: brokeredParams,
+    });
+
+    expect(delivery.mcpBridge).toEqual({
+      kind: "http",
+      url: "https://cp.example.test/companies/company-1/mcp",
+      headers: {},
+      authTokenEnvVar: "AOA_API_KEY",
+    });
+    expect(JSON.stringify(delivery.mcpBridge)).not.toContain("DATABASE_URL");
+    // Non-claude branch never writes a config file — confirm no leak there either.
+    expect(delivery.config).toEqual({ args: ["--existing"] });
+  });
+
+  it("desktop (brokered:false / omitted): stdio delivery is byte-identical — DATABASE_URL still present when set", async () => {
+    const savedDbUrl = process.env.DATABASE_URL;
+    process.env.DATABASE_URL = "postgres://should-be-present:5432/db";
+    try {
+      const claudeDelivery = await prepareHeartbeatMcpDelivery({
+        adapterType: "claude_local",
+        agentId: "agent-1",
+        runId: "run-1",
+        config: { args: ["--existing"] },
+        params, // no `brokered` field — undefined/falsy, exactly today's shape
+      });
+      const written = lastWrittenMcpConfig();
+      expect(written.mcpServers.aoa).toMatchObject({
+        command: "node",
+        env: expect.objectContaining({ DATABASE_URL: "postgres://should-be-present:5432/db" }),
+      });
+      expect((written.mcpServers.aoa as { type?: unknown }).type).toBeUndefined();
+      await claudeDelivery.cleanup();
+
+      const codexDelivery = await prepareHeartbeatMcpDelivery({
+        adapterType: "codex_local",
+        agentId: "agent-1",
+        runId: "run-1",
+        config: {},
+        params,
+      });
+      expect(codexDelivery.mcpBridge).toMatchObject({
+        command: "node",
+        env: expect.objectContaining({ DATABASE_URL: "postgres://should-be-present:5432/db" }),
+      });
+    } finally {
+      if (savedDbUrl === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = savedDbUrl;
+    }
+  });
+});

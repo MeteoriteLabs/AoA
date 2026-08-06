@@ -43,7 +43,13 @@ vi.mock("drizzle-orm", () => ({ and:(...a:unknown[])=>({and:a}), eq:(a:unknown,b
 vi.mock("@armyofagents/db", () => { const t=(n:string)=>new Proxy({},{get:(_x,p)=>typeof p==="string"?Symbol(`${n}.${p}`):undefined}); return { agents:t("a"), internalAgentRuns:t("iar"), discussionEntries:t("de"), memoryItems:t("mi"), discussions:t("disc"), discussionExtractedItems:t("dei"), embeddingQueue:t("eq"), memoryItemVersions:t("miv"), memoryRetrievals:t("mr"), suggestions:t("sug"), companySecrets:t("cs"), companySecretVersions:t("csv"), companySecretBindings:t("csb"), companySecretProviderConfigs:t("cspc"), runtimeProviderKeys:t("rpk"), secretAccessEvents:t("sae") }; });
 vi.mock("../adapters/registry.js", () => ({ getServerAdapter: () => ({ execute: execMock, getRuntimeCommandSpec: () => ({}) }) }));
 vi.mock("../services/costs.js", () => ({ costService: () => ({ createEvent: createEventMock }) }));
-vi.mock("../services/internal-agent/cli-mode.js", () => ({ buildMcpConfig: buildMcpMock, buildMcpBridgeSpec: buildBridgeSpecMock }));
+// U4b: buildCodexAoaMcpSpec is the brokered-aware selector runner.ts now calls
+// for ctx.mcpBridge. This suite exercises the desktop/non-sandbox path
+// (acquireExecutionContext mocked to sandbox:null -> brokered:false), where
+// buildCodexAoaMcpSpec falls through to plain buildMcpBridgeSpec — so the
+// SAME mock produces byte-identical output. (brokered-mcp-no-db-url covers
+// the brokered:true branch for real.)
+vi.mock("../services/internal-agent/cli-mode.js", () => ({ buildMcpConfig: buildMcpMock, buildMcpBridgeSpec: buildBridgeSpecMock, buildCodexAoaMcpSpec: buildBridgeSpecMock }));
 vi.mock("../services/heartbeat.js", () => ({ resolveAdapterExecutionContextUnguarded: () => ({ executionTarget:{}, runtimeCommandSpec:{} }), resolveGuardedAdapterExecutionContext: () => ({ executionTarget:{}, runtimeCommandSpec:{} }), applyEnvironmentAcquisitionConfig: (config: unknown) => config }));
 // U4: crew now acquires a sandbox lease before buildMcpConfig. These tests
 // exercise the desktop/local no-sandbox path (byte-identical), so the helper

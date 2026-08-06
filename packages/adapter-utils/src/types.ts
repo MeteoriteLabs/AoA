@@ -3,7 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import type { AdapterModelProfile } from "./model-profiles.js";
-import type { McpServerSpec } from "./mcp-server-spec.js";
+import type { McpHttpServerSpec, McpServerSpec } from "./mcp-server-spec.js";
 
 export interface AdapterAgent {
   id: string;
@@ -319,10 +319,19 @@ export interface AdapterExecutionContext {
    * spawn this MCP server instead of building its own. Unset → adapter falls
    * back to existing behavior. Wired by a later milestone.
    *
+   * U4b (S7): a brokered (E2B-sandboxed) run's `aoa` server is an
+   * {@link McpHttpServerSpec} instead of the stdio {@link McpBridgeSpec} — the
+   * stdio shape's `env` carries `DATABASE_URL`, which must never be staged
+   * into a sandboxed VM's config file. The caller (runner.ts/heartbeat.ts)
+   * selects the shape; adapters that understand only stdio (codex/opencode/
+   * gemini writers) branch on `isHttpServerSpec` and render the HTTP form
+   * through their existing external-connector HTTP path. Non-brokered runs
+   * keep the unchanged stdio shape — byte-identical.
+   *
    * External connectors travel separately on `mcpServers` below — this field
    * never carries them.
    */
-  mcpBridge?: McpBridgeSpec;
+  mcpBridge?: McpBridgeSpec | McpHttpServerSpec;
   /**
    * Optional external MCP servers (connectors), keyed by server name. Delivered
    * ALONGSIDE `mcpBridge` — `mcpBridge` remains AoA's own loopback server and is

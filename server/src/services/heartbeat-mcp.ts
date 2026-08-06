@@ -1,13 +1,24 @@
 import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { McpServerSpec } from "@armyofagents/adapter-utils";
-import { buildMcpBridgeSpec, buildMcpConfig, type McpBridgeSpec, type McpConfigParams } from "./internal-agent/cli-mode.js";
+import type { McpHttpServerSpec, McpServerSpec } from "@armyofagents/adapter-utils";
+import {
+  buildCodexAoaMcpSpec,
+  buildMcpConfig,
+  type McpBridgeSpec,
+  type McpConfigParams,
+} from "./internal-agent/cli-mode.js";
 import { stripUserMcpArgs } from "./mcp-arg-sanitize.js";
 
 export interface HeartbeatMcpDelivery {
   config: Record<string, unknown>;
-  mcpBridge: McpBridgeSpec;
+  /**
+   * U4b (S7): brokered (E2B-sandboxed) org heartbeat runs get the HTTP-shaped
+   * `aoa` server (no DATABASE_URL) here instead of the stdio
+   * `McpBridgeSpec` — see `buildCodexAoaMcpSpec`. Non-brokered runs are
+   * byte-identical to before.
+   */
+  mcpBridge: McpBridgeSpec | McpHttpServerSpec;
   /**
    * The resolved connector specs, echoed back for the caller to hand to the
    * adapter on `AdapterExecutionContext.mcpServers`. `claude_local` does NOT
@@ -116,7 +127,14 @@ export async function prepareHeartbeatMcpDelivery(input: {
    */
   connectorEnv?: Record<string, string>;
 }): Promise<HeartbeatMcpDelivery> {
-  const mcpBridge = buildMcpBridgeSpec(input.params);
+  // U4b: buildCodexAoaMcpSpec is the brokered-aware selector (despite the
+  // name, provider-neutral — see its JSDoc). `input.params.brokered` is set
+  // by the heartbeat call site from the org run's acquired sandbox lease
+  // (heartbeat.ts). A brokered run gets the HTTP `aoa` spec (no
+  // DATABASE_URL) here for every non-claude adapter's `ctx.mcpBridge`;
+  // non-brokered falls through to the unchanged stdio buildMcpBridgeSpec
+  // bridge, byte-identical to before this wave.
+  const mcpBridge = buildCodexAoaMcpSpec(input.params);
   if (input.adapterType !== "claude_local") {
     // Non-`claude_local` path. These adapters do NOT understand claude's
     // `--mcp-config <file>`, so no config file is written and argv is left

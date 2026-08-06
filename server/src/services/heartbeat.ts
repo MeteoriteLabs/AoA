@@ -4238,8 +4238,9 @@ export function heartbeatService(db: Db) {
           issueId,
           heartbeatRunId: run.id,
         });
-        // U4b sets brokered here (heartbeatMcpParams.brokered from orgAcquired,
-        // before prepareHeartbeatMcpDelivery).
+        // U4b: heartbeatMcpParams.brokered (built further below, before
+        // prepareHeartbeatMcpDelivery) reads orgAcquired.sandbox?.environment
+        // .driver captured here.
         resolvedConfigWithEnvironmentAcquisition = applyEnvironmentAcquisitionConfig(
           resolvedConfig,
           orgAcquired.sandbox,
@@ -4623,6 +4624,20 @@ export function heartbeatService(db: Db) {
         runId: run.id,
         humanQuestionCapabilities: adapter.humanQuestionCapabilities,
         effectiveAutonomy,
+        // U4b (S7 blocker): a resolved provider-sandbox lease (orgAcquired,
+        // captured above inside the environmentRuntime.environmentId gate)
+        // means this heartbeat run's CLI executes inside an E2B VM — the `aoa`
+        // MCP server MUST ride the brokered HTTP transport there, never the
+        // stdio bridge (whose env carries DATABASE_URL). orgAcquired is null
+        // outside that gate (no environment pinned) and its `.sandbox` is null
+        // on desktop/local_trusted, so `brokered` is false and
+        // prepareHeartbeatMcpDelivery's stdio delivery stays byte-identical.
+        brokered: orgAcquired?.sandbox?.environment.driver === "sandbox",
+        // The control plane's own address is the platform's, not the
+        // tenant's — read it off the resolved adapter env first (mirrors the
+        // runtime-hook-bridge base-URL resolution just below), falling back to
+        // the server process env. Only consulted when brokered is true.
+        apiBaseUrl: adapterEnv.AOA_API_URL ?? process.env.AOA_API_URL ?? undefined,
       } as const;
 
       // MCP connectors: resolve the company's enabled connectors for THIS

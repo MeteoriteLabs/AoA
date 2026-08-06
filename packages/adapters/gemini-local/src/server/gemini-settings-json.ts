@@ -11,6 +11,7 @@ import {
   sweepAoaManagedEntries,
   tryWriteAoaManagedServerNames,
   withSynthesizedBearerHeader,
+  type McpHttpServerSpec,
   type McpServerSpec,
   type McpWriterResult,
   type McpWriterSkip,
@@ -142,10 +143,18 @@ export interface WriteGeminiMcpSettingsOptions {
  *
  * `spec` may be null: a run with connectors but no bridge still writes — and
  * therefore still cleans — the file.
+ *
+ * U4b (S7): `spec` may also be an {@link McpHttpServerSpec} — a brokered
+ * (E2B-sandboxed) run's `aoa` server, pointed at the control-plane broker
+ * instead of a locally-spawned stdio process. gemini's `mcpServers.<name>`
+ * entry already supports an `httpUrl` (HTTP) form for external connectors
+ * (see `toGeminiEntry`) — the brokered aoa server is rendered through that
+ * SAME path, so it carries no `command`/`env` and therefore no
+ * `DATABASE_URL`. Non-brokered (stdio) specs are unchanged.
  */
 export async function writeGeminiMcpSettingsJson(
   cwd: string,
-  spec: GeminiMcpBridgeSpec | null | undefined,
+  spec: GeminiMcpBridgeSpec | McpHttpServerSpec | null | undefined,
   options: WriteGeminiMcpSettingsOptions = {},
 ): Promise<McpWriterResult> {
   const serverName = options.serverName ?? "aoa";
@@ -215,13 +224,19 @@ export async function writeGeminiMcpSettingsJson(
 
   const bridge: Record<string, GeminiMcpEntry> = Object.create(null);
   if (spec) {
-    bridge[serverName] = {
-      // Claude-shape: command as string, args as string[]. (opencode's "command
-      // as combined array" shape is the OTHER convention — easy to confuse.)
-      command: spec.command,
-      args: [...spec.args],
-      env: { ...spec.env },
-    };
+    // U4b (S7): a brokered spec is HTTP-shaped — render it through the SAME
+    // httpUrl path external HTTP connectors use (toGeminiEntry), so it
+    // carries no `command`/`env` block and therefore no DATABASE_URL.
+    // Non-brokered (stdio) specs keep the original claude-shaped entry.
+    bridge[serverName] = isHttpServerSpec(spec)
+      ? toGeminiEntry(spec)
+      : {
+          // Claude-shape: command as string, args as string[]. (opencode's
+          // "command as combined array" shape is the OTHER convention.)
+          command: spec.command,
+          args: [...spec.args],
+          env: { ...spec.env },
+        };
   }
 
   // mergeExternalMcpServers is the ONLY safe merge: reserved-name filtering and
