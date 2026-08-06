@@ -51,8 +51,8 @@ jobs:
       - name: Build
         run: pnpm build
 
-  # macOS runs the browser suite. Windows performs setup/build parity only
-  # until its hosted runner can use an external/containerized PostgreSQL.
+  # Cross-platform E2E suite. macOS uses embedded-postgres; Windows uses
+  # an external PostgreSQL runner service via setup-postgres.
   e2e-cross-platform:
     strategy:
       fail-fast: false
@@ -76,6 +76,13 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+
+      - name: Setup PostgreSQL (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: database-ci/setup-postgres@v1
+        with:
+          postgres-version: '16'
+          postgres-db: aoa
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -111,15 +118,14 @@ jobs:
           CONF
 
       - name: Run e2e tests
-        # Windows runner can't start embedded-postgres because its runneradmin
-        # account is rejected by PostgreSQL. Keep setup/build parity there.
-        if: steps.install-playwright.outcome == 'success' && matrix.os != 'windows-latest'
+        if: steps.install-playwright.outcome == 'success'
         env:
           AOA_E2E_SKIP_LLM: "true"
+          DATABASE_URL: ${{ matrix.os == 'windows-latest' && 'postgres://postgres:postgres@localhost:5432/aoa' || '' }}
         run: pnpm run test:e2e
 
       - name: Upload Playwright report
-        if: steps.install-playwright.outcome == 'success' && matrix.os != 'windows-latest'
+        if: steps.install-playwright.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: playwright-report-${{ matrix.os }}
