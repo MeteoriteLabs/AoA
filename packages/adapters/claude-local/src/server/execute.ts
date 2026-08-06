@@ -454,6 +454,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // a loud throw rather than a silent no-op, and the crew integration test
     // asserts the child actually SEES the credential.
     const operatorConfigHome = isolateAmbientConfig ? resolveClaudeConfigHome(process.env) : null;
+    // U12: the operator ~/.claude provisioning below must NEVER run for a
+    // sandbox (cloud) target — the operator login is the platform's, not the
+    // tenant's. `isolateAmbientConfig` is already forced false for a remote
+    // target (`&& !isRemoteExecutionTarget` above), so `operatorConfigHome` is
+    // null and `provisionClaudeConfigHome` (below) never runs. Assert it so a
+    // future edit to that line cannot silently re-open the path. No throw in
+    // the normal path — a remote target legitimately authenticates via the
+    // injected provider key from U5's allowlist, never the operator's CLI login.
+    if (isRemoteExecutionTarget && operatorConfigHome !== null) {
+      throw new Error("invariant: operator ~/.claude provisioning must be disabled for a remote/sandbox target");
+    }
     if (isolateAmbientConfig && !configuredConfigDirKey) {
       // Only mint a per-run dir when the agent did NOT configure one. An operator
       // pointing crew at a dedicated, already-logged-in config home via

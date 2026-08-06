@@ -122,6 +122,21 @@ vi.mock("../services/costs.js", () => ({
   costService: vi.fn(() => ({ createEvent: createEventMock })),
 }));
 
+// U12 (real-shape drift fix, runner.ts): resolveProviderCredential now runs
+// BEFORE the U4 sandbox acquire (previously the acquire+cfgPath write ran
+// first, so this suite's F4 hygiene assertions incidentally passed even
+// though the REAL resolveProviderCredential was throwing — this file's
+// @armyofagents/db mock never exported `providerConnections`, which the real
+// provider-resolution.ts needs). Mock it like every sibling runner suite
+// (aoa-runner-loopback.test.ts / aoa-runner-brokered-mcp.test.ts / etc.) so
+// this test reaches adapter.execute — and therefore cfgPath — the way its own
+// docstring assumes.
+vi.mock("../services/provider-resolution.js", () => ({
+  resolveProviderCredential: vi.fn(async () => ({ source: "agent_env_override" })),
+  applyResolvedCredential: (config: unknown) => config,
+  toExecutionTargetHint: () => ({ credentialKind: null, executionTargetSlug: null }),
+}));
+
 vi.mock("../middleware/logger.js", () => {
   function makeLogger(): any {
     const l: any = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
