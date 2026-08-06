@@ -150,6 +150,72 @@ describe("U2a — find_similar_memory RBAC gate wiring", () => {
   });
 });
 
+// Wave 1 review, FIX B: U2a switched find_similar_memory from searchSemantic
+// to searchMultiPath. searchMultiPath's TEMPORAL pathway (memory.ts
+// runTemporal) has no query-text predicate — with enableTemporal left at its
+// default (true), find_similar_memory would return up to `limit`
+// recent/most-validated approved rows regardless of whether they match the
+// query, for EVERY actor (this is independent of the agent-only RBAC gate
+// proven above). These tests prove the tool now passes `enableTemporal:
+// false` into every searchMultiPath call, disabling that pathway while
+// leaving the query-gated semantic + keyword pathways (and the RBAC gate)
+// intact.
+describe("Wave 1 review, FIX B — find_similar_memory drops the query-independent temporal pathway", () => {
+  const tool = createMemoryTools().find((t) => t.name === "find_similar_memory")!;
+
+  it("passes enableTemporal:false for the agent actor (alongside the RBAC accessConditions gate)", async () => {
+    actorForAgentRunMock.mockClear();
+    memoryAccessConditionsMock.mockClear();
+    const searchMultiPath = vi.fn(async () => []);
+    const ctx = baseCtx({
+      actorType: "agent",
+      agentId: "agent-D2",
+      services: { memory: { searchMultiPath } } as unknown as ToolContext["services"],
+    });
+
+    await tool.execute({ query: "a query that matches nothing" }, ctx);
+
+    const filters = searchMultiPath.mock.calls[0]![2] as Record<string, unknown>;
+    expect(filters.enableTemporal).toBe(false);
+    // The RBAC gate must still be intact alongside the temporal fix.
+    expect(filters.accessConditions).toEqual([SENTINEL_GATE_CONDITION]);
+  });
+
+  it("passes enableTemporal:false for the board actor too (not scoped to the agent-only RBAC gate)", async () => {
+    const searchMultiPath = vi.fn(async () => []);
+    const ctx = baseCtx({
+      actorType: "board",
+      services: { memory: { searchMultiPath } } as unknown as ToolContext["services"],
+    });
+
+    await tool.execute({ query: "a query that matches nothing" }, ctx);
+
+    const filters = searchMultiPath.mock.calls[0]![2] as Record<string, unknown>;
+    expect(filters.enableTemporal).toBe(false);
+    expect(filters).not.toHaveProperty("accessConditions");
+  });
+
+  it("a non-matching query returns [] when the underlying searchMultiPath honors enableTemporal:false (no unrelated temporal rows)", async () => {
+    // Simulates the real memory.ts behavior: with enableTemporal:false and a
+    // query that matches nothing in the semantic/keyword pathways, the merged
+    // result is empty — this is the "[] when nothing matches" contract FIX B
+    // restores. (memory.ts's own pathway logic is covered elsewhere; this
+    // asserts the tool surfaces that empty result correctly end-to-end.)
+    const searchMultiPath = vi.fn(async (_companyId: string, _query: string, filters: Record<string, unknown>) =>
+      filters.enableTemporal === false ? [] : [{ id: "unrelated-recent-item", title: "Unrelated" }],
+    );
+    const ctx = baseCtx({
+      actorType: "board",
+      services: { memory: { searchMultiPath } } as unknown as ToolContext["services"],
+    });
+
+    const result = await tool.execute({ query: "a query that matches nothing" }, ctx);
+
+    expect(result.success).toBe(true);
+    expect(result.data).toEqual([]);
+  });
+});
+
 describe("U2a — detect_conflicts RBAC gate wiring", () => {
   const tool = createMemoryTools().find((t) => t.name === "detect_conflicts")!;
 
