@@ -962,7 +962,19 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         }
       };
 
-      adapterResult = await adapter.execute({
+      // F2 (PR#319 review): wall-clock heartbeat so a live-but-silent run (a long
+      // tool call that emits no stream events) still advances last_event_at and is
+      // not false-reaped by the 35-min zombie TTL. Shares maybeHeartbeat's 30s
+      // throttle, so timer + stream events never double-write. unref() so it never
+      // keeps the process alive; cleared in finally so it stops the instant the run
+      // ends (a stray post-run tick only touches last_event_at, which the reaper
+      // ignores for terminal runs — harmless).
+      const heartbeatTimer = setInterval(() => { void maybeHeartbeat(); }, 30_000);
+      if (typeof (heartbeatTimer as { unref?: () => void }).unref === "function") {
+        (heartbeatTimer as { unref: () => void }).unref();
+      }
+      try {
+        adapterResult = await adapter.execute({
         runId: runId ?? `aoa-${agentId}`,
         agent,
         runtime: agent.runtimeConfig ?? {},
@@ -997,7 +1009,10 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
           if (crewLogSink) await crewLogSink.onMeta(meta);
         },
         authToken: undefined, onSpawn: () => {},
-      });
+        });
+      } finally {
+        clearInterval(heartbeatTimer);
+      }
     }
 
     // Silent-failure guard: a CLI agent can finish its run WITHOUT calling
