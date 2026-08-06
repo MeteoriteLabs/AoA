@@ -293,4 +293,78 @@ describe("environmentRunOrchestrator", () => {
     })).rejects.toBeInstanceOf(EnvironmentRunError);
     expect(runtime.acquireRunLease).not.toHaveBeenCalled();
   });
+
+  it("resolves the platform-default e2b environment when environmentId is null on cloud", async () => {
+    setDeploymentMode("cloud_auth");
+    process.env.E2B_API_KEY = "op-key";
+    const lease = makeLease({ provider: "e2b" });
+    const acquireRunLease = vi.fn(async ({ environment }: { environment: Environment }) => ({
+      environment,
+      lease,
+      leaseContext: { executionWorkspaceId: null, executionWorkspaceMode: null },
+    }));
+    const getEnv = vi.fn();
+    const orchestrator = environmentRunOrchestrator({} as never, {
+      environments: { get: getEnv },
+      environmentRuntime: { acquireRunLease },
+    });
+
+    const result = await orchestrator.acquireForRun({
+      companyId: COMPANY,
+      environmentId: null,
+      adapterType: "claude_local",
+      issueId: null,
+      heartbeatRunId: RUN_ID,
+      persistedExecutionWorkspace: null,
+    });
+
+    expect(getEnv).not.toHaveBeenCalled();
+    expect(acquireRunLease).toHaveBeenCalledWith(
+      expect.objectContaining({
+        environment: expect.objectContaining({
+          driver: "sandbox",
+          config: expect.objectContaining({ provider: "e2b" }),
+        }),
+      }),
+    );
+    expect(result.environment.driver).toBe("sandbox");
+    expect(result.adapterType).toBe("claude_local");
+
+    delete process.env.E2B_API_KEY;
+  });
+
+  it("still throws environment_not_found for null environmentId off-cloud", async () => {
+    setDeploymentMode("local_trusted");
+    const orchestrator = environmentRunOrchestrator({} as never, {
+      environments: { get: vi.fn() },
+      environmentRuntime: { acquireRunLease: vi.fn() },
+    });
+
+    await expect(orchestrator.acquireForRun({
+      companyId: COMPANY,
+      environmentId: null,
+      adapterType: "claude_local",
+      issueId: null,
+      heartbeatRunId: RUN_ID,
+      persistedExecutionWorkspace: null,
+    })).rejects.toMatchObject({ code: "environment_not_found" });
+  });
+
+  it("throws environment_not_found for null environmentId on cloud with no operator key", async () => {
+    setDeploymentMode("cloud_auth");
+    delete process.env.E2B_API_KEY;
+    const orchestrator = environmentRunOrchestrator({} as never, {
+      environments: { get: vi.fn() },
+      environmentRuntime: { acquireRunLease: vi.fn() },
+    });
+
+    await expect(orchestrator.acquireForRun({
+      companyId: COMPANY,
+      environmentId: null,
+      adapterType: "claude_local",
+      issueId: null,
+      heartbeatRunId: RUN_ID,
+      persistedExecutionWorkspace: null,
+    })).rejects.toMatchObject({ code: "environment_not_found" });
+  });
 });

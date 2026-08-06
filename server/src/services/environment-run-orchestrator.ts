@@ -10,6 +10,7 @@ import {
 import { resolveEnvironmentExecutionTargetConfigPatch } from "./environment-execution-target.js";
 import { getDeploymentMode } from "../config/deployment-mode.js";
 import { assertEnvironmentRuntimeSupportedForDeployment } from "./cloud-environment-policy.js";
+import { resolvePlatformDefaultEnvironment } from "./platform-default-environment.js";
 
 export type EnvironmentErrorCode =
   | "environment_not_found"
@@ -121,7 +122,15 @@ export function environmentRunOrchestrator(
     environmentId: string | null;
   }): Promise<Environment> {
     if (!input.environmentId) {
-      throw new EnvironmentRunError("environment_not_found", "No environment selected.");
+      const platformDefault = resolvePlatformDefaultEnvironment({
+        companyId: input.companyId,
+        deploymentMode: getDeploymentMode(),
+      });
+      if (!platformDefault) {
+        throw new EnvironmentRunError("environment_not_found", "No environment selected.");
+      }
+      assertEnvironmentRuntimeSupportedForDeployment(getDeploymentMode(), platformDefault);
+      return platformDefault;
     }
 
     const environmentRow = await environmentsSvc.get(input.companyId, input.environmentId);
