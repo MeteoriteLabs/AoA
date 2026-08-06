@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
 import {
+  ORG_HEARTBEAT_ENABLED_CAPABILITIES,
   ORG_HEARTBEAT_TOOL_ALLOWLIST,
   prepareHeartbeatMcpDelivery,
   resolveHeartbeatEffectiveAutonomy,
@@ -72,6 +73,18 @@ describe("heartbeat MCP delivery", () => {
       "update_task",
       "create_approval",
     ]));
+  });
+
+  // Wave 1 review, FIX A: this constant was extracted from an inline literal
+  // in heartbeat.ts's `heartbeatMcpParams` so the broker's ToolContext
+  // resolver (broker-tool-context.ts) can import the SAME set instead of
+  // hardcoding a second copy that could drift.
+  it("exposes the organization-agent coarse capability gate (discussion_processing/system_actions/memory_management)", () => {
+    expect(ORG_HEARTBEAT_ENABLED_CAPABILITIES).toEqual([
+      "discussion_processing",
+      "system_actions",
+      "memory_management",
+    ]);
   });
 
   it("passes a provider-neutral bridge to Codex without Claude-only arguments", async () => {

@@ -68,6 +68,22 @@ export const ORG_HEARTBEAT_TOOL_ALLOWLIST = [
   "query_memory",
 ] as const;
 
+/**
+ * Coarse capability gate for organization-agent heartbeat runs. Paired with
+ * `ORG_HEARTBEAT_TOOL_ALLOWLIST` above — the allowlist is the fine per-tool
+ * gate, this is the second-line-of-defense category gate
+ * (`authorize-tool.ts` `CAPABILITY_TO_CATEGORY`). Extracted to a named export
+ * (Wave 1 E2B broker review, FIX A) so the broker's ToolContext resolver
+ * (`server/src/mcp/broker-tool-context.ts`) can import the SAME set an org
+ * agent gets on the stdio heartbeat path instead of re-deriving or
+ * hardcoding a second copy.
+ */
+export const ORG_HEARTBEAT_ENABLED_CAPABILITIES = [
+  "discussion_processing",
+  "system_actions",
+  "memory_management",
+] as const;
+
 export function resolveHeartbeatEffectiveAutonomy(input: {
   companyAutonomyLevel: number | null | undefined;
   discussionAutonomyLevel: number | null | undefined;

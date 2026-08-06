@@ -16,14 +16,20 @@
 // (agentId/companyId/runId) and the control-plane `db` — never a
 // client-supplied companyId. `agentId`/`companyId` are compared against the
 // `agents` row to assert the run cannot widen its own tenant.
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { agents, internalAgentConfig } from "@armyofagents/db";
+import { agents, discussions, heartbeatRuns, internalAgentConfig, issues } from "@armyofagents/db";
 import { forbidden } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 import type { ToolContext } from "../services/internal-agent/types.js";
 import { createServiceContainer } from "../services/internal-agent/service-container.js";
 import { createToolRegistry } from "../services/internal-agent/tool-registry.js";
 import { deriveEnabledCapabilities } from "../services/internal-agent/aoa-agents/derive-capabilities.js";
+import {
+  ORG_HEARTBEAT_ENABLED_CAPABILITIES,
+  ORG_HEARTBEAT_TOOL_ALLOWLIST,
+  resolveHeartbeatEffectiveAutonomy,
+} from "../services/heartbeat-mcp.js";
 
 // Mirrors the crew subagent session identity contract in
 // `aoa-agents/runner.ts` (SUBAGENT_SESSION_USER_ID / SUBAGENT_SESSION_USER_ROLE
@@ -33,7 +39,12 @@ import { deriveEnabledCapabilities } from "../services/internal-agent/aoa-agents
 // it reuses the identical placeholder session identity rather than inventing
 // a second one. Not exported from runner.ts, so re-declared here verbatim.
 const BROKER_SESSION_USER_ID = "aoa-subagent";
-const BROKER_SESSION_USER_ROLE = "founder";
+const CREW_SESSION_USER_ROLE = "founder";
+// Mirrors the ORG heartbeat stdio path's `heartbeatMcpParams.userRole`
+// (`heartbeat.ts` ~4598) — org agents run as `team_member`, never `founder`.
+// Using the crew (founder-session) role here would be a latent privilege
+// elevation for org runs (Wave 1 review, FIX A).
+const ORG_SESSION_USER_ROLE = "team_member";
 
 // Built once at module load — the SAME call `aoa-agents/runner.ts` makes
 // (`TOOL_REGISTRY_FOR_CAPABILITY_DERIVATION = createToolRegistry()`).
@@ -50,6 +61,58 @@ export interface ResolveBrokerToolContextInput {
 }
 
 /**
+ * Best-effort lookup of the source-Discussion autonomy override for an ORG
+ * heartbeat run, reproducing the stdio path's query chain (`heartbeat.ts`
+ * ~4572-4593): `heartbeat_runs.context_snapshot.issueId` -> `issues.
+ * source_discussion_id` -> `discussions.autonomy_level`. Every hop is
+ * company-scoped (mirrors the stdio path's `eq(discussions.companyId, ...)`
+ * guard) so a run can never read another tenant's discussion dial.
+ *
+ * Returns `undefined` (== "no override, fall back to the company dial") when
+ * any hop is missing OR the lookup itself fails — this is enrichment for a
+ * more accurate `effectiveAutonomy`, not a security boundary, so a DB hiccup
+ * here must never fail the whole broker request.
+ */
+async function resolveOrgDiscussionAutonomyOverride(
+  db: Db,
+  companyId: string,
+  runId: string,
+): Promise<number | null | undefined> {
+  try {
+    const [runRow] = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId)))
+      .limit(1);
+    const contextSnapshot = (runRow?.contextSnapshot ?? {}) as Record<string, unknown>;
+    const issueId = typeof contextSnapshot.issueId === "string" && contextSnapshot.issueId.trim()
+      ? contextSnapshot.issueId
+      : null;
+    if (!issueId) return undefined;
+
+    const [issueRow] = await db
+      .select({ sourceDiscussionId: issues.sourceDiscussionId })
+      .from(issues)
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
+      .limit(1);
+    if (!issueRow?.sourceDiscussionId) return undefined;
+
+    const [discussionRow] = await db
+      .select({ autonomyLevel: discussions.autonomyLevel })
+      .from(discussions)
+      .where(and(eq(discussions.id, issueRow.sourceDiscussionId), eq(discussions.companyId, companyId)))
+      .limit(1);
+    return discussionRow?.autonomyLevel;
+  } catch (err) {
+    logger.warn(
+      { err, companyId, runId },
+      "[broker-tool-context] failed to resolve source-Discussion autonomy override for an org run — falling back to the company dial",
+    );
+    return undefined;
+  }
+}
+
+/**
  * Build the internal-agent `ToolContext` for a sandboxed (E2B) agent run.
  *
  * - Loads the `agents` row for `agentId` and asserts `agent.companyId ===
@@ -59,22 +122,45 @@ export interface ResolveBrokerToolContextInput {
  *   `CROSS_COMPANY_FORBIDDEN` convention in `tools/agent-dispatch.ts` and the
  *   cross-tenant backstop already in `aoa-agents/runner.ts` (`agent.companyId
  *   !== payload.companyId`).
- * - `effectiveAutonomy` reads `internal_agent_config.crewAutonomyLevel` — the
- *   D18-split AGENT-WORK dial. Deliberately NEVER `autonomyLevel` (the
- *   Commander-only dial; see CLAUDE.md D18 note and the column comments in
- *   `packages/db/src/schema/internal_agent.ts`). Falls back to `0` (Manual)
- *   when the company has no config row yet, matching the same `?? 0`
- *   fallback used by `dispatcher.ts` / `controller-adjutant-runner.ts`.
- * - `toolAllowlist` + `enabledCapabilities` reuse the EXACT derivation
- *   `runAoaAgent` (`aoa-agents/runner.ts`) feeds into `buildMcpBridgeSpec`:
- *   `toolAllowlist` comes straight off `agent.runtimeConfig.aoa.toolAllowlist`
- *   (the per-agent allowlist seeded by the `ensure-*` crew-role files), and
- *   `deriveEnabledCapabilities` (`aoa-agents/derive-capabilities.ts`) turns
- *   that allowlist into the coarse capability set against the SAME tool
- *   registry the crew path uses. `resolveCrewRole` (`resolve-crew-role.ts`)
- *   is a DIFFERENT helper — it resolves a trigger's `config.role` for the
- *   autonomy min-role gate (`autonomy.ts` ROLE_MIN_AUTONOMY) and plays no
- *   part in allowlist/capability derivation, so it is not used here.
+ * - Branches on `agentRow.kind` — the broker serves exactly the two run
+ *   kinds that ever execute over it (Wave 1 review, FIX A):
+ *     - `"aoa"` (crew): UNCHANGED from before this fix. `toolAllowlist` +
+ *       `enabledCapabilities` reuse the EXACT derivation `runAoaAgent`
+ *       (`aoa-agents/runner.ts`) feeds into `buildMcpBridgeSpec`:
+ *       `toolAllowlist` comes straight off `agent.runtimeConfig.aoa.
+ *       toolAllowlist` (the per-agent allowlist seeded by the `ensure-*`
+ *       crew-role files), and `deriveEnabledCapabilities`
+ *       (`aoa-agents/derive-capabilities.ts`) turns that allowlist into the
+ *       coarse capability set against the SAME tool registry the crew path
+ *       uses. `userRole` is the founder-session placeholder
+ *       (`SUBAGENT_SESSION_USER_ROLE` in `runner.ts`, re-declared here as
+ *       `CREW_SESSION_USER_ROLE`). `effectiveAutonomy` reads
+ *       `internal_agent_config.crewAutonomyLevel` directly, falling back to
+ *       `0` (Manual) — matching the same `?? 0` fallback used by
+ *       `dispatcher.ts` / `controller-adjutant-runner.ts`.
+ *     - `"org"`: reproduces the ORG heartbeat stdio path's authz
+ *       (`heartbeat.ts` `heartbeatMcpParams`, ~4595-4612) instead of the crew
+ *       derivation above — an org agent has no `runtimeConfig.aoa`, so
+ *       running it through the crew branch would silently allowlist zero
+ *       tools. `userRole:"team_member"` (never founder), `toolAllowlist` =
+ *       the imported `ORG_HEARTBEAT_TOOL_ALLOWLIST`, `enabledCapabilities` =
+ *       the imported `ORG_HEARTBEAT_ENABLED_CAPABILITIES`, and
+ *       `effectiveAutonomy` via the SAME `resolveHeartbeatEffectiveAutonomy`
+ *       helper the stdio path calls, fed the company dial
+ *       (`crewAutonomyLevel`) plus the source-Discussion override resolved
+ *       by `resolveOrgDiscussionAutonomyOverride` above (best-effort; a
+ *       missing/failed lookup just falls back to the company dial, same as
+ *       the stdio path's `?? 0` chain when there's no source Discussion).
+ *     - any other kind (e.g. `"platform"`, which never dispatches through
+ *       heartbeat or the crew runner — see `aoa-heartbeat-kind-guard.test.ts`)
+ *       — throws `forbidden(...)`, failing closed. This also closes a second
+ *       hole: `authorize-tool.ts`'s allowlist gate only activates for
+ *       `agentKind` `"aoa"`/`"org"`, so any other kind previously reached
+ *       tool dispatch with NO allowlist check at all.
+ * - `resolveCrewRole` (`resolve-crew-role.ts`) is a DIFFERENT helper — it
+ *   resolves a trigger's `config.role` for the autonomy min-role gate
+ *   (`autonomy.ts` ROLE_MIN_AUTONOMY) and plays no part in allowlist/
+ *   capability derivation for either branch, so it is not used here.
  * - Sets `actorType:"agent"` (never `"commander"`) and leaves
  *   `commanderToolPermissions` / `runtimeApprovalsEnabled` unset —
  *   `mcp-bridge.ts` gates those fields exclusively on
@@ -91,13 +177,46 @@ export async function resolveBrokerToolContext(
     throw forbidden("Broker run identity does not match the requesting company");
   }
 
+  if (agentRow.kind !== "aoa" && agentRow.kind !== "org") {
+    // Fail closed: the broker only serves crew ('aoa') and org runs. Any
+    // other kind (platform, or a future kind this resolver hasn't been
+    // taught about) never legitimately reaches the broker, and letting it
+    // through would skip authorize-tool.ts's allowlist gate entirely (that
+    // gate only checks agentKind "aoa"/"org" — see the doc comment above).
+    throw forbidden(`Broker does not serve agent kind '${agentRow.kind}'`);
+  }
+
   const [configRow] = await db
     .select({ crewAutonomyLevel: internalAgentConfig.crewAutonomyLevel })
     .from(internalAgentConfig)
     .where(eq(internalAgentConfig.companyId, companyId))
     .limit(1);
-  const effectiveAutonomy = configRow?.crewAutonomyLevel ?? 0;
+  const companyAutonomyLevel = configRow?.crewAutonomyLevel ?? 0;
 
+  if (agentRow.kind === "org") {
+    const discussionAutonomyLevel = await resolveOrgDiscussionAutonomyOverride(db, companyId, runId);
+    const effectiveAutonomy = resolveHeartbeatEffectiveAutonomy({
+      companyAutonomyLevel,
+      discussionAutonomyLevel,
+    });
+
+    return {
+      companyId,
+      userId: BROKER_SESSION_USER_ID,
+      userRole: ORG_SESSION_USER_ROLE,
+      enabledCapabilities: [...ORG_HEARTBEAT_ENABLED_CAPABILITIES],
+      agentKind: "org",
+      toolAllowlist: [...ORG_HEARTBEAT_TOOL_ALLOWLIST],
+      actorType: "agent",
+      agentId,
+      effectiveAutonomy,
+      runId,
+      db,
+      services: createServiceContainer(db),
+    };
+  }
+
+  // agentRow.kind === "aoa" (crew) — unchanged from before this fix.
   const runtimeConfig = (agentRow.runtimeConfig ?? {}) as Record<string, unknown>;
   const aoaConfig = (runtimeConfig.aoa ?? {}) as Record<string, unknown>;
   const toolAllowlist = Array.isArray(aoaConfig.toolAllowlist)
@@ -111,13 +230,13 @@ export async function resolveBrokerToolContext(
   return {
     companyId,
     userId: BROKER_SESSION_USER_ID,
-    userRole: BROKER_SESSION_USER_ROLE,
+    userRole: CREW_SESSION_USER_ROLE,
     enabledCapabilities,
-    agentKind: agentRow.kind,
+    agentKind: "aoa",
     toolAllowlist,
     actorType: "agent",
     agentId,
-    effectiveAutonomy,
+    effectiveAutonomy: companyAutonomyLevel,
     runId,
     db,
     services: createServiceContainer(db),

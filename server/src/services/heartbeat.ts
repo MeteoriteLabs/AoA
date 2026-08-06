@@ -113,6 +113,7 @@ import {
 } from "./agent-runtime-decisions.js";
 import { resolveBridgeEntrypoint } from "./internal-agent/aoa-agents/bridge-path.js";
 import {
+  ORG_HEARTBEAT_ENABLED_CAPABILITIES,
   ORG_HEARTBEAT_TOOL_ALLOWLIST,
   prepareHeartbeatMcpDelivery,
   resolveHeartbeatEffectiveAutonomy,
@@ -4596,11 +4597,7 @@ export function heartbeatService(db: Db) {
         companyId: agent.companyId,
         userId: agent.id,
         userRole: "team_member",
-        enabledCapabilities: [
-          "discussion_processing",
-          "system_actions",
-          "memory_management",
-        ],
+        enabledCapabilities: [...ORG_HEARTBEAT_ENABLED_CAPABILITIES],
         bridgeEntrypoint: resolveBridgeEntrypoint(),
         agentKind: agent.kind,
         toolAllowlist: [...ORG_HEARTBEAT_TOOL_ALLOWLIST],

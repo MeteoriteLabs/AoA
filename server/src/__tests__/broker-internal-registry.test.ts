@@ -68,6 +68,7 @@ import { actorMiddleware } from "../middleware/auth.js";
 import { mcpServerRoutes } from "../mcp/server.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { allocateEmbeddedPgPort } from "./helpers/embedded-pg-port.js";
+import { ORG_HEARTBEAT_TOOL_ALLOWLIST } from "../services/heartbeat-mcp.js";
 
 type EmbeddedPostgresInstance = {
   initialise(): Promise<void>;
@@ -425,6 +426,83 @@ describe.skipIf(process.platform === "win32")(
       expect(callRes.status).toBe(404);
       expect(callRes.body.error?.code).toBe(-32004);
       expect(callRes.body.error?.message).toBe("Memory item not found");
+    });
+
+    it("Wave 1 review, FIX A: an org run-JWT's tools/list returns the org 8-tool set (NOT empty), and tools/call for one of them (query_memory) succeeds through the broker", async () => {
+      assertSetupOk();
+
+      const orgAgentId = firstId(
+        await db.execute<{ id: string }>(sql`
+          INSERT INTO agents (id, company_id, name, kind, status, runtime_config)
+          VALUES (gen_random_uuid(), ${co}, 'Broker Org Agent', 'org', 'idle', '{}'::jsonb)
+          RETURNING id`),
+      );
+      const orgRunId = randomUUID();
+      await db.execute(sql`
+        INSERT INTO heartbeat_runs (id, company_id, agent_id)
+        VALUES (${orgRunId}, ${co}, ${orgAgentId})`);
+      const orgJwt = createLocalAgentJwt(orgAgentId, co, "claude_local", orgRunId) ?? "";
+      expect(orgJwt).not.toBe("");
+
+      const app = buildApp();
+
+      const listRes = await request(app)
+        .post(`/api/companies/${co}/mcp`)
+        .set("Authorization", `Bearer ${orgJwt}`)
+        .send({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
+
+      expect(listRes.status).toBe(200);
+      expect(listRes.body.error).toBeUndefined();
+      const orgNames = listRes.body.result.tools.map((t: { name: string }) => t.name);
+      // Pre-fix this was empty (agentKind:'org' fell through the crew-only
+      // toolAllowlist derivation, which reads agent.runtimeConfig.aoa —
+      // absent on an org agent — producing toolAllowlist:[] and default-deny).
+      expect(orgNames.length).toBeGreaterThan(0);
+      expect(orgNames).toEqual(expect.arrayContaining([...ORG_HEARTBEAT_TOOL_ALLOWLIST]));
+      // Crew-only tools must NOT leak into the org set.
+      expect(orgNames).not.toContain("create_task");
+      expect(orgNames).not.toContain("write_memory");
+
+      const callRes = await request(app)
+        .post(`/api/companies/${co}/mcp`)
+        .set("Authorization", `Bearer ${orgJwt}`)
+        .send({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name: "query_memory", arguments: { query: "org broker probe" } },
+        });
+
+      expect(callRes.status).toBe(200);
+      expect(callRes.body.error).toBeUndefined();
+      expect(callRes.body.result?.isError).not.toBe(true);
+      const payload = JSON.parse(callRes.body.result.content[0].text);
+      expect(payload.success).toBe(true);
+    });
+
+    it("Wave 1 review, FIX A: an unsupported agent kind ('platform') is refused with a 403 before reaching tool dispatch", async () => {
+      assertSetupOk();
+
+      const platformAgentId = firstId(
+        await db.execute<{ id: string }>(sql`
+          INSERT INTO agents (id, company_id, name, kind, status, runtime_config)
+          VALUES (gen_random_uuid(), ${co}, 'Broker Platform Agent', 'platform', 'idle', '{}'::jsonb)
+          RETURNING id`),
+      );
+      const platformRunId = randomUUID();
+      await db.execute(sql`
+        INSERT INTO heartbeat_runs (id, company_id, agent_id)
+        VALUES (${platformRunId}, ${co}, ${platformAgentId})`);
+      const platformJwt = createLocalAgentJwt(platformAgentId, co, "claude_local", platformRunId) ?? "";
+      expect(platformJwt).not.toBe("");
+
+      const app = buildApp();
+      const res = await request(app)
+        .post(`/api/companies/${co}/mcp`)
+        .set("Authorization", `Bearer ${platformJwt}`)
+        .send({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
+
+      expect(res.status).toBe(403);
     });
 
     it("cross-tenant guard: a run-JWT whose company_id does not match the URL company is rejected before reaching the broker", async () => {
