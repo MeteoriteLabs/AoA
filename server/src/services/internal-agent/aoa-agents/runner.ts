@@ -14,6 +14,7 @@ import type { McpServerSpec } from "@armyofagents/adapter-utils";
 import { resolveGuardedAdapterExecutionContext, applyEnvironmentAcquisitionConfig } from "../../heartbeat.js";
 import { tenantIsolationEnforced } from "../../../config/deployment-mode.js";
 import { acquireExecutionContext } from "../../acquire-execution-context.js";
+import { environmentRuntimeService } from "../../environment-runtime.js";
 import { createLocalAgentJwt } from "../../../agent-auth-jwt.js";
 import { resolveBridgeEntrypoint } from "./bridge-path.js";
 import { publishLiveEvent, publishIssueStatusChanged, threadWorkingAgents, broadcastThreadPresence } from "../../live-events.js";
@@ -178,6 +179,15 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
   // inside the try and out of scope in the catch — same pattern as
   // outcomeAgentName/outcomeAgentRuntimeConfig above (the P1 fix).
   let outcomeProviderId: string | null = null;
+  // FIX 1 (Wave 2 adversarial review, HIGH — cloud VM/lease leak): the U4
+  // sandbox-lease acquire result, captured at FUNCTION scope so the `finally`
+  // below can see it and release the lease on every exit. The `acquired` const
+  // at the acquire call site (below) is block-scoped inside the try — same
+  // problem the P1 fix (outcomeAgentName/outcomeAgentRuntimeConfig) already
+  // solved for the catch block; this solves it for the finally block. Stays
+  // null on every early-return path that never reaches the acquire call, so
+  // the finally's release is correctly a no-op for those.
+  let acquiredContext: Awaited<ReturnType<typeof acquireExecutionContext>> | null = null;
   try {
     const agent = await db.select().from(agents).where(eq(agents.id, agentId)).then((r: any[]) => r[0] ?? null);
     if (!agent) {
@@ -722,6 +732,10 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       worktree: null,
       environmentId: agent.defaultEnvironmentId ?? null,
     });
+    // FIX 1: mirror into the function-scoped local the `finally` release reads.
+    // Assigned unconditionally (including the sandbox:null desktop/local_trusted
+    // case) so the finally's `acquiredContext?.sandbox` check is always accurate.
+    acquiredContext = acquired;
     // U4b (S7 blocker): a resolved provider-sandbox lease means this run's CLI
     // will execute inside an E2B VM — the `aoa` MCP server MUST ride the
     // brokered HTTP transport there, never the stdio bridge (whose env carries
@@ -1638,6 +1652,35 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         log.info({ runId, logRef: runLogHandle.logRef, bytes: summary.bytes }, "aoa-runner: run transcript finalized");
       } catch (finalizeErr) {
         log.warn({ err: finalizeErr, runId }, "aoa-runner: failed to finalize run transcript (best-effort, ignored)");
+      }
+    }
+    // FIX 1 (Wave 2 adversarial review, HIGH — cloud VM/lease leak): release the
+    // crew sandbox lease acquired above (U4) on EVERY exit — success, adapter-
+    // reported failure, AND thrown failure alike. `finally` GUARANTEES this runs
+    // exactly once regardless of which path the run took, mirroring the
+    // transcript-finalize / presence-clear / cfgPath-unlink cleanups around it.
+    //
+    // Keyed on the LEASE RECORD itself (environment + lease), NOT
+    // heartbeatRunId: crew acquires with no heartbeatRunId (see the U4 acquire
+    // call above — crew never sets `runIdentity`'s heartbeatRunId field), so the
+    // org-only reaper (`environmentRuntimeService(db).releaseRunLeases(run.id)`,
+    // which lists leases `WHERE heartbeat_run_id = <id>`) can never find or
+    // reap a crew lease — this per-lease `releaseRunLease` is the ONLY release
+    // path for crew. `acquiredContext?.sandbox` is null on desktop/
+    // local_trusted (U4's S1 contract) and on every early-return that never
+    // reached the acquire call, so this is correctly a no-op there.
+    //
+    // Best-effort: a release failure must NEVER fail the run or mask its
+    // already-decided outcome (the run row was written success/failed above).
+    if (acquiredContext?.sandbox) {
+      try {
+        await environmentRuntimeService(db).releaseRunLease({
+          environment: acquiredContext.sandbox.environment,
+          lease: acquiredContext.sandbox.lease,
+          status: "released",
+        });
+      } catch (releaseErr) {
+        log.warn({ err: releaseErr, runId }, "crew sandbox lease release failed (best-effort)");
       }
     }
     // Phase 5 (Tasks 5.1/5.2): clear this agent's thread working-presence (run
