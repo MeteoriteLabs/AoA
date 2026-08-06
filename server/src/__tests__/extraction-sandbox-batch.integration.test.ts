@@ -118,6 +118,13 @@ vi.mock("../services/sandbox-provider-runtime.js", async (importOriginal) => {
 
 import { companyService } from "../services/companies.js";
 import { extractionService } from "../services/extraction.js";
+// U13.4: NOT mocked (unlike one-shot-sandbox-cli.js above) — this test proves
+// the REAL recordOneShotCliCost path against real Postgres. The fake
+// runOneShotCliInSandbox below stands in for "spawn a CLI in a sandbox" but
+// still performs the "record cost" side effect the real implementation would
+// perform on a successful run (one-shot-sandbox-cli.ts, U13.4), since that
+// whole module is mocked away for this file's sandbox-batch assertions.
+import { recordOneShotCliCost } from "../services/one-shot-cli-budget.js";
 
 type EmbeddedPostgresInstance = { initialise(): Promise<void>; start(): Promise<void>; stop(): Promise<void> };
 type EmbeddedPostgresCtor = new (opts: {
@@ -299,12 +306,28 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       ]);
 
       mockAcquireExecutionContext.mockResolvedValueOnce(fakeAcquisition("lease-batch-once"));
-      mockRunOneShotCliInSandbox.mockImplementation(async () => ({
-        stdout: JSON.stringify([{ type: "task", title: "Extracted task" }]),
-        stderr: "",
-        exitCode: 0,
-        durationMs: 5,
-      }));
+      // U13.4: the fake also performs the REAL cost-recording side effect a
+      // successful runOneShotCliInSandbox call would perform, so this test
+      // can prove the cost_events row lands end-to-end (real Postgres,
+      // agentId:null, company rollup) once per entry (3 calls -> 3 rows) —
+      // the sandbox-spawn itself is faked, but billing is not.
+      mockRunOneShotCliInSandbox.mockImplementation(async (input: unknown) => {
+        const { companyId: costCompanyId } = input as { companyId: string };
+        await recordOneShotCliCost(db, {
+          companyId: costCompanyId,
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+          inputTokens: 500,
+          outputTokens: 120,
+          source: "extraction",
+        });
+        return {
+          stdout: JSON.stringify([{ type: "task", title: "Extracted task" }]),
+          stderr: "",
+          exitCode: 0,
+          durationMs: 5,
+        };
+      });
 
       const result = await extractionService(db).extractThreadEntriesAwait(companyId, threadId);
 
@@ -353,6 +376,24 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect(releaseProvider).toBe("e2b");
       expect(releaseInput.providerLeaseId).toBe("plid-lease-batch-once");
       expect(releaseInput.config).toMatchObject({ reuseLease: false });
+
+      // (5) U13.4: a cost_events row lands per successful one-shot CLI call
+      // (one per entry, 3 entries -> 3 rows) — agentId:null (nullable
+      // migration), company-scoped, billingType carries the "extraction"
+      // source label.
+      const costRows = rowsOf(
+        await db.execute(sql`
+          SELECT agent_id, company_id, billing_type, cost_cents, provider, model
+          FROM cost_events WHERE company_id = ${companyId}
+        `),
+      );
+      expect(costRows).toHaveLength(3);
+      for (const row of costRows) {
+        expect(row.agent_id).toBeNull();
+        expect(String(row.company_id)).toBe(companyId);
+        expect(row.billing_type).toBe("extraction");
+        expect(Number(row.cost_cents)).toBeGreaterThanOrEqual(0);
+      }
     }, 120_000);
 
     it("the batch acquire happens BEFORE the deadline clock: a slow (250s) acquire does not eat into any entry's per-entry deadline budget", async () => {

@@ -43,6 +43,12 @@ import { resolveRuntimeProviderConfig as defaultResolveRuntimeProviderConfig } f
 import { sandboxProviderRuntime as defaultSandboxProviderRuntime } from "./sandbox-provider-runtime.js";
 import { runtimeProviderKeyService as defaultRuntimeProviderKeyService } from "./runtime-provider-keys.js";
 import { resolveCompanyProviderCredential as defaultResolveCompanyProviderCredential } from "./one-shot-provider-credential.js";
+import {
+  preflightOneShotCliSpend as defaultPreflightOneShotCliSpend,
+  recordOneShotCliCost as defaultRecordOneShotCliCost,
+  type OneShotCliCostSource,
+} from "./one-shot-cli-budget.js";
+import { logger } from "../middleware/logger.js";
 
 export type OneShotSandboxErrorKind = "sandbox_unavailable" | "timeout" | "nonzero_exit";
 
@@ -79,6 +85,8 @@ export interface OneShotDeps {
   resolveRuntimeProviderConfig: typeof defaultResolveRuntimeProviderConfig;
   resolveCompanyProviderCredential: typeof defaultResolveCompanyProviderCredential;
   runtimeProviderKeyService: typeof defaultRuntimeProviderKeyService;
+  preflightOneShotCliSpend: typeof defaultPreflightOneShotCliSpend;
+  recordOneShotCliCost: typeof defaultRecordOneShotCliCost;
 }
 
 const DEFAULT_DEPS: OneShotDeps = {
@@ -87,6 +95,8 @@ const DEFAULT_DEPS: OneShotDeps = {
   resolveRuntimeProviderConfig: defaultResolveRuntimeProviderConfig,
   resolveCompanyProviderCredential: defaultResolveCompanyProviderCredential,
   runtimeProviderKeyService: defaultRuntimeProviderKeyService,
+  preflightOneShotCliSpend: defaultPreflightOneShotCliSpend,
+  recordOneShotCliCost: defaultRecordOneShotCliCost,
 };
 
 export interface RunOneShotCliInput {
@@ -99,7 +109,18 @@ export interface RunOneShotCliInput {
   stagedFile?: { remotePath: string; content: string }; // U13.5 file-import (plumbed only; files.write lands in U13.5)
   timeoutMs: number;
   sandboxHandle?: OneShotSandboxHandle; // U13.3 pre-acquired batch lease (skip own acquire + release)
+  /** U13.4 — which one-shot CLI family incurred this spend; becomes
+   *  `cost_events.billing_type` on the row recorded after a successful run. */
+  source: OneShotCliCostSource;
   deps?: Partial<OneShotDeps>; // test injection
+}
+
+/** U13.4 — matches the codebase's existing char/4 estimate heuristic
+ *  (context-assembly.ts, crew-context-bundle.ts): neither the sandbox
+ *  runtime (`SandboxProviderExecuteResult`) nor the CLI wrapper report real
+ *  token usage today, so this is the best available estimate at this seam. */
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
 }
 
 function readObject(value: unknown): Record<string, unknown> {
@@ -115,6 +136,21 @@ function readString(value: unknown): string | null {
 export async function runOneShotCliInSandbox(input: RunOneShotCliInput): Promise<OneShotCliResult> {
   const deps: OneShotDeps = { ...DEFAULT_DEPS, ...input.deps };
   const startedAt = Date.now();
+
+  // U13.4: fail BEFORE any spend — credential resolve, sandbox acquire, and
+  // execute all cost something (a DB round-trip at minimum, real sandbox
+  // compute/model tokens at most). Runs unconditionally, even when a
+  // pre-acquired `sandboxHandle` is supplied (batch reuse, U13.3): there's
+  // no acquire step to gate in that branch, but THIS CALL still spends model
+  // tokens via `execute`, so the gate must still run per-call, not just
+  // per-batch-acquire.
+  const preflight = await deps.preflightOneShotCliSpend(input.db, { companyId: input.companyId });
+  if (!preflight.allowed) {
+    throw new OneShotSandboxError(
+      `One-shot CLI spawn blocked before any sandbox spend: ${preflight.reason}`,
+      "sandbox_unavailable",
+    );
+  }
 
   // S3: the company's own model-provider key — never the host process env.
   const credential = await deps.resolveCompanyProviderCredential(input.db, input.companyId, {
@@ -220,6 +256,27 @@ export async function runOneShotCliInSandbox(input: RunOneShotCliInput): Promise
     if (exitCode !== 0) {
       throw new OneShotSandboxError(`One-shot CLI exited with code ${exitCode}.`, "nonzero_exit", exitCode, result.stderr);
     }
+
+    // U13.4: record spend on a genuinely successful run only (exit 0, past
+    // every OneShotSandboxError throw above). Priced against the COMPANY's
+    // own resolved credential (provider+model) — the actual thing being
+    // billed — never a generic per-cliTool rate table. Best-effort: a
+    // cost-recording failure must never fail an otherwise-successful CLI
+    // call (mirrors the codebase's other best-effort post-success side
+    // effects, e.g. postRunSummaryComment).
+    try {
+      await deps.recordOneShotCliCost(input.db, {
+        companyId: input.companyId,
+        provider: credential.provider,
+        model: credential.model,
+        inputTokens: estimateTokens(input.stdinContent ?? input.stagedFile?.content ?? ""),
+        outputTokens: estimateTokens(result.stdout),
+        source: input.source,
+      });
+    } catch (err) {
+      logger.error({ err }, "recordOneShotCliCost failed after a successful one-shot CLI run");
+    }
+
     return {
       stdout: result.stdout,
       stderr: result.stderr,

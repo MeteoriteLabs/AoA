@@ -73,6 +73,7 @@ function baseInput(overrides: Record<string, unknown> = {}) {
     args: ["-p", "extract"],
     stdinContent: "user content to extract",
     timeoutMs: 30_000,
+    source: "extraction",
     ...overrides,
   };
 }
@@ -85,6 +86,8 @@ describe("runOneShotCliInSandbox (U13.1)", () => {
   let resolveRuntimeProviderConfig: ReturnType<typeof vi.fn>;
   let resolveCompanyProviderCredential: ReturnType<typeof vi.fn>;
   let runtimeProviderKeyService: ReturnType<typeof vi.fn>;
+  let preflightOneShotCliSpend: ReturnType<typeof vi.fn>;
+  let recordOneShotCliCost: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     acquireExecutionContext = vi.fn().mockResolvedValue(fakeAcquiredSandbox());
@@ -94,6 +97,10 @@ describe("runOneShotCliInSandbox (U13.1)", () => {
     resolveRuntimeProviderConfig = vi.fn().mockResolvedValue({ provider: "e2b", resolvedApiKey: "e2b-key" });
     resolveCompanyProviderCredential = vi.fn().mockResolvedValue(fakeCredential());
     runtimeProviderKeyService = vi.fn(() => ({ resolveCredential: vi.fn() }));
+    // U13.4: default green path for both budget deps — most tests below
+    // aren't about budget/cost at all, so they should never observe these.
+    preflightOneShotCliSpend = vi.fn().mockResolvedValue({ allowed: true });
+    recordOneShotCliCost = vi.fn().mockResolvedValue({ id: "cost-1" });
   });
 
   function deps() {
@@ -103,6 +110,8 @@ describe("runOneShotCliInSandbox (U13.1)", () => {
       resolveRuntimeProviderConfig,
       resolveCompanyProviderCredential,
       runtimeProviderKeyService,
+      preflightOneShotCliSpend,
+      recordOneShotCliCost,
     };
   }
 
@@ -266,5 +275,91 @@ describe("runOneShotCliInSandbox (U13.1)", () => {
     expect(execInput.config).toEqual({ provider: "e2b", resolvedApiKey: "batch-key" });
     expect(releaseLease).not.toHaveBeenCalled(); // batch caller owns teardown, not this call
     expect(result.stdout).toBe("ok");
+  });
+
+  // ── U13.4: budget preflight + cost recording ──────────────────────────────
+
+  it("U13.4: throws sandbox_unavailable WITHOUT calling acquireExecutionContext, resolveCompanyProviderCredential, or execute when preflight blocks (fail-before-spend)", async () => {
+    preflightOneShotCliSpend.mockResolvedValue({
+      allowed: false,
+      reason: "One-shot CLI budget reached for company co-1 (spend: 10500, cap: 10000)",
+      reasonCode: "budget_exhausted",
+    });
+
+    await expect(runOneShotCliInSandbox(baseInput({ deps: deps() }))).rejects.toMatchObject({
+      name: "OneShotSandboxError",
+      kind: "sandbox_unavailable",
+    });
+
+    expect(preflightOneShotCliSpend).toHaveBeenCalledTimes(1);
+    expect(preflightOneShotCliSpend).toHaveBeenCalledWith({}, { companyId: COMPANY_ID });
+    expect(resolveCompanyProviderCredential).not.toHaveBeenCalled();
+    expect(acquireExecutionContext).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+    expect(recordOneShotCliCost).not.toHaveBeenCalled();
+  });
+
+  it("U13.4: preflight still runs (and can still block) when a sandboxHandle is supplied — there's no acquire to gate, but the call itself still spends", async () => {
+    preflightOneShotCliSpend.mockResolvedValue({
+      allowed: false,
+      reason: "over budget",
+      reasonCode: "budget_exhausted",
+    });
+    const handle: OneShotSandboxHandle = {
+      environment: { id: "env-plat", companyId: COMPANY_ID, driver: "sandbox", config: { provider: "e2b" } } as never,
+      lease: { id: "lease-batch", provider: "e2b", providerLeaseId: "plid-batch", metadata: {} } as never,
+      providerConfig: { provider: "e2b" },
+    };
+
+    await expect(
+      runOneShotCliInSandbox(baseInput({ deps: deps(), sandboxHandle: handle })),
+    ).rejects.toMatchObject({ name: "OneShotSandboxError", kind: "sandbox_unavailable" });
+
+    expect(preflightOneShotCliSpend).toHaveBeenCalledTimes(1);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("U13.4: on a successful run, records cost priced against the resolved credential's OWN provider+model, with estimated tokens and the input's source as billingType", async () => {
+    execute.mockResolvedValue({ exitCode: 0, signal: null, timedOut: false, stdout: "0123456789", stderr: "" });
+
+    await runOneShotCliInSandbox(
+      baseInput({ deps: deps(), stdinContent: "0123456789012345", source: "compaction" }),
+    );
+
+    expect(recordOneShotCliCost).toHaveBeenCalledTimes(1);
+    const [, recordInput] = recordOneShotCliCost.mock.calls[0];
+    expect(recordInput).toEqual({
+      companyId: COMPANY_ID,
+      provider: "anthropic", // credential.provider — fakeCredential(), not a generic cliTool rate table
+      model: "claude-sonnet-4-6", // credential.model
+      inputTokens: Math.ceil("0123456789012345".length / 4), // 4
+      outputTokens: Math.ceil("0123456789".length / 4), // 3
+      source: "compaction",
+    });
+  });
+
+  it("U13.4: recordOneShotCliCost is called with source:'extraction' for baseInput's default", async () => {
+    await runOneShotCliInSandbox(baseInput({ deps: deps() }));
+    expect(recordOneShotCliCost).toHaveBeenCalledTimes(1);
+    const [, recordInput] = recordOneShotCliCost.mock.calls[0];
+    expect(recordInput.source).toBe("extraction");
+  });
+
+  it("U13.4: a recordOneShotCliCost failure is best-effort — the call still succeeds and returns the CLI result", async () => {
+    recordOneShotCliCost.mockRejectedValue(new Error("insert failed"));
+
+    const result = await runOneShotCliInSandbox(baseInput({ deps: deps() }));
+
+    expect(result).toEqual({ stdout: "ok", stderr: "", exitCode: 0, durationMs: expect.any(Number) });
+  });
+
+  it("U13.4: cost is NOT recorded on a failed run (nonzero exit)", async () => {
+    execute.mockResolvedValue({ exitCode: 2, signal: null, timedOut: false, stdout: "", stderr: "boom" });
+
+    await expect(runOneShotCliInSandbox(baseInput({ deps: deps() }))).rejects.toMatchObject({
+      kind: "nonzero_exit",
+    });
+
+    expect(recordOneShotCliCost).not.toHaveBeenCalled();
   });
 });

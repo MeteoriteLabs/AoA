@@ -325,6 +325,7 @@ async function extractViaCliSandbox(
       stdinContent,
       timeoutMs: opts.timeoutMs,
       sandboxHandle: opts.sandboxHandle,
+      source: "extraction",
     });
   } catch (err) {
     if (err instanceof OneShotSandboxError) {
