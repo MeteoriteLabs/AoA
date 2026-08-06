@@ -8,17 +8,17 @@ import type { LLMProvider } from "./types.js";
 export type { LLMProvider, ChatParams, ChatStreamChunk, ProviderToolDef, ChatMessage } from "./types.js";
 
 /** Env var key per provider */
-const PROVIDER_ENV_KEYS: Record<string, string> = {
-  anthropic: "ANTHROPIC_API_KEY",
-  openai: "OPENAI_API_KEY",
-  google: "GOOGLE_AI_API_KEY",
+const PROVIDER_ENV_KEYS: Record<string, string[]> = {
+  anthropic: ["ANTHROPIC_API_KEY"],
+  openai: ["OPENAI_API_KEY"],
+  google: ["GOOGLE_AI_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY"],
 };
 
 /** Secret names used by the UI's LLM Providers settings */
 export const PROVIDER_SECRET_NAMES: Record<string, string[]> = {
   anthropic: ["llm:anthropic", "ANTHROPIC_API_KEY"],
   openai: ["llm:openai", "OPENAI_API_KEY"],
-  google: ["llm:google", "GOOGLE_AI_API_KEY"],
+  google: ["llm:google", "GOOGLE_AI_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY"],
 };
 
 /**
@@ -51,15 +51,19 @@ export async function getProviderApiKey(
   }
 
   // Fallback to env var
-  const envKey = PROVIDER_ENV_KEYS[provider] ?? `${provider.toUpperCase()}_API_KEY`;
-  const envValue = process.env[envKey];
-  if (!envValue) {
-    throw new Error(
-      `No API key configured for provider "${provider}". ` +
-      `Set it in Settings → LLM Providers or as the ${envKey} environment variable.`,
-    );
+  const envKeys = PROVIDER_ENV_KEYS[provider] ?? [`${provider.toUpperCase()}_API_KEY`];
+  for (const envKey of envKeys) {
+    const envValue = process.env[envKey];
+    if (envValue) {
+      return envValue;
+    }
   }
-  return envValue;
+
+  const primaryEnvKey = envKeys[0];
+  throw new Error(
+    `No API key configured for provider "${provider}". ` +
+      `Set it in Settings → LLM Providers or as the ${primaryEnvKey} environment variable.`,
+  );
 }
 
 /**
@@ -88,8 +92,8 @@ export async function hasProviderKey(
     // query embedding + the worker cannot actually use.
     if (row && row.status === "active") return true;
   }
-  const envKey = PROVIDER_ENV_KEYS[provider] ?? `${provider.toUpperCase()}_API_KEY`;
-  return Boolean(process.env[envKey]);
+  const envKeys = PROVIDER_ENV_KEYS[provider] ?? [`${provider.toUpperCase()}_API_KEY`];
+  return envKeys.some((envKey) => Boolean(process.env[envKey]));
 }
 
 /** Default model per provider — used when falling back to a provider the caller

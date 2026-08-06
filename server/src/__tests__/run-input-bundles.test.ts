@@ -182,4 +182,135 @@ describe("run input bundles", () => {
     expect(await fs.readFile(path.join(cwd, localPaths[0]!), "utf8")).toBe("first");
     expect(await fs.readFile(path.join(cwd, localPaths[1]!), "utf8")).toBe("second");
   });
+
+  it("resolves pinned artifact version when artifactVersionId or versionId is in metadata", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-run-inputs-pinned-"));
+    tempDirsToCleanup.add(cwd);
+
+    const db = createSequenceDb([
+      [{ id: "bundle-1", brief: null, sourceIssueId: "parent-1" }],
+      [
+        {
+          id: "item-artifact-pinned",
+          itemType: "artifact",
+          sourceId: "artifact-1",
+          label: null,
+          metadata: { artifactVersionId: "version-pinned-123" },
+        },
+      ],
+      [
+        {
+          id: "artifact-1",
+          title: "Architecture Spec",
+          type: "markdown",
+          currentVersionId: "version-latest-999",
+        },
+      ],
+      [
+        {
+          content: "# Pinned Content v1",
+          fileUrl: null,
+        },
+      ],
+    ]);
+
+    const bundle = await buildRunInputBundle({
+      db: db as never,
+      companyId: "company-1",
+      issueId: "child-1",
+      cwd,
+    });
+
+    expect(bundle.inputs).toHaveLength(1);
+    expect(bundle.inputs[0].label).toBe("Architecture Spec");
+    expect(bundle.inputs[0].localPath).toBeDefined();
+    const content = await fs.readFile(path.join(cwd, bundle.inputs[0].localPath!), "utf8");
+    expect(content).toBe("# Pinned Content v1");
+  });
+
+  it("resolves pinned artifact version when versionId fallback is in metadata", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-run-inputs-pinned2-"));
+    tempDirsToCleanup.add(cwd);
+
+    const db = createSequenceDb([
+      [{ id: "bundle-1", brief: null, sourceIssueId: "parent-1" }],
+      [
+        {
+          id: "item-artifact-pinned",
+          itemType: "artifact",
+          sourceId: "artifact-1",
+          label: null,
+          metadata: { versionId: "version-pinned-456" },
+        },
+      ],
+      [
+        {
+          id: "artifact-1",
+          title: "Architecture Spec",
+          type: "markdown",
+          currentVersionId: "version-latest-999",
+        },
+      ],
+      [
+        {
+          content: "# Pinned Content v2",
+          fileUrl: null,
+        },
+      ],
+    ]);
+
+    const bundle = await buildRunInputBundle({
+      db: db as never,
+      companyId: "company-1",
+      issueId: "child-1",
+      cwd,
+    });
+
+    expect(bundle.inputs[0].localPath).toBeDefined();
+    const content = await fs.readFile(path.join(cwd, bundle.inputs[0].localPath!), "utf8");
+    expect(content).toBe("# Pinned Content v2");
+  });
+
+  it("falls back to currentVersionId when no pinned version is in metadata", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-run-inputs-current-"));
+    tempDirsToCleanup.add(cwd);
+
+    const db = createSequenceDb([
+      [{ id: "bundle-1", brief: null, sourceIssueId: "parent-1" }],
+      [
+        {
+          id: "item-artifact-latest",
+          itemType: "artifact",
+          sourceId: "artifact-1",
+          label: null,
+          metadata: null,
+        },
+      ],
+      [
+        {
+          id: "artifact-1",
+          title: "Architecture Spec",
+          type: "markdown",
+          currentVersionId: "version-latest-999",
+        },
+      ],
+      [
+        {
+          content: "# Latest Content v999",
+          fileUrl: null,
+        },
+      ],
+    ]);
+
+    const bundle = await buildRunInputBundle({
+      db: db as never,
+      companyId: "company-1",
+      issueId: "child-1",
+      cwd,
+    });
+
+    expect(bundle.inputs[0].localPath).toBeDefined();
+    const content = await fs.readFile(path.join(cwd, bundle.inputs[0].localPath!), "utf8");
+    expect(content).toBe("# Latest Content v999");
+  });
 });

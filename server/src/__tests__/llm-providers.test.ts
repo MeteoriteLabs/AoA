@@ -434,6 +434,43 @@ describe("getProviderApiKey", () => {
       }
     }
   });
+
+  it("resolves Google API key from GOOGLE_API_KEY or GEMINI_API_KEY env vars when GOOGLE_AI_API_KEY is unset", async () => {
+    mockSecretServiceInstance.resolveByName.mockRejectedValue(new Error("Secret not found"));
+
+    const savedKeys = {
+      GOOGLE_AI_API_KEY: process.env.GOOGLE_AI_API_KEY,
+      GOOGLE_API_KEY: process.env.GOOGLE_API_KEY,
+      GEMINI_API_KEY: process.env.GEMINI_API_KEY,
+    };
+    delete process.env.GOOGLE_AI_API_KEY;
+    delete process.env.GOOGLE_API_KEY;
+    delete process.env.GEMINI_API_KEY;
+
+    try {
+      // 1. Try GOOGLE_API_KEY fallback
+      process.env.GOOGLE_API_KEY = "key-from-google-api-key";
+      let key = await getProviderApiKey(mockDb, "c1", "google");
+      expect(key).toBe("key-from-google-api-key");
+
+      // 2. Try GEMINI_API_KEY fallback
+      delete process.env.GOOGLE_API_KEY;
+      process.env.GEMINI_API_KEY = "key-from-gemini-api-key";
+      key = await getProviderApiKey(mockDb, "c1", "google");
+      expect(key).toBe("key-from-gemini-api-key");
+
+      // 3. Verify precedence: GOOGLE_AI_API_KEY > GOOGLE_API_KEY > GEMINI_API_KEY
+      process.env.GOOGLE_AI_API_KEY = "key-from-google-ai-api-key";
+      process.env.GOOGLE_API_KEY = "key-from-google-api-key";
+      key = await getProviderApiKey(mockDb, "c1", "google");
+      expect(key).toBe("key-from-google-ai-api-key");
+    } finally {
+      for (const [k, v] of Object.entries(savedKeys)) {
+        if (v !== undefined) process.env[k] = v;
+        else delete process.env[k];
+      }
+    }
+  });
 });
 
 /* ================================================================== */

@@ -318,11 +318,15 @@ export async function buildRunInputBundle(input: {
           continue;
         }
         let localPath: string | null = null;
-        if (input.cwd && artifact.currentVersionId) {
+        const targetVersionId =
+          metadataString(item.metadata, "artifactVersionId") ??
+          metadataString(item.metadata, "versionId") ??
+          artifact.currentVersionId;
+        if (input.cwd && targetVersionId) {
           const version = await input.db
             .select({ content: artifactVersions.content, fileUrl: artifactVersions.fileUrl })
             .from(artifactVersions)
-            .where(eq(artifactVersions.id, artifact.currentVersionId))
+            .where(eq(artifactVersions.id, targetVersionId))
             .then((rows) => rows[0] ?? null);
           if (version?.content) {
             localPath = await writeRunInputFile({
