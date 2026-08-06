@@ -294,6 +294,18 @@ export function artifactService(db: Db) {
 
       if (!existing) return null;
 
+      await db.transaction(async (tx) => {
+        await tx
+          .update(artifacts)
+          .set({ currentVersionId: null })
+          .where(eq(artifacts.id, artifactId));
+        await tx
+          .delete(artifacts)
+          .where(and(eq(artifacts.id, artifactId), eq(artifacts.companyId, companyId)));
+      });
+
+      // F4 (PR#319 review): log the deletion AFTER the transaction commits so a
+      // rolled-back tx never records a delete_artifact that did not happen.
       await logActivity(db, {
         companyId,
         actorType: actor.actorType,
@@ -304,16 +316,6 @@ export function artifactService(db: Db) {
         entityType: "artifact",
         entityId: artifactId,
         details: { title: existing.title },
-      });
-
-      await db.transaction(async (tx) => {
-        await tx
-          .update(artifacts)
-          .set({ currentVersionId: null })
-          .where(eq(artifacts.id, artifactId));
-        await tx
-          .delete(artifacts)
-          .where(and(eq(artifacts.id, artifactId), eq(artifacts.companyId, companyId)));
       });
 
       return existing;
