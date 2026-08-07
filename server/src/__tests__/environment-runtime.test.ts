@@ -473,6 +473,56 @@ describe("environmentRuntimeService", () => {
     }));
   });
 
+  it("executeRunLeaseCommand forwards onStdout/onStderr to the provider and returns the buffered result", async () => {
+    const captured: any[] = [];
+    const streamed: string[] = [];
+    const providerExecute = vi.fn(async (input: any) => {
+      captured.push(input);
+      input.onStdout?.("live-chunk");
+      return { exitCode: 0, signal: null, timedOut: false, stdout: "buffered", stderr: "" };
+    });
+    const runtime = environmentRuntimeService({} as never, {
+      environments: {
+        acquireLease: vi.fn(),
+        releaseLease: vi.fn(),
+        releaseLeasesForRun: vi.fn(),
+      },
+      sandboxProviders: [{
+        provider: "e2b",
+        acquireLease: vi.fn(),
+        releaseLease: vi.fn(),
+        execute: providerExecute,
+      }],
+      runtimeProviderKeys: { resolveCredential: vi.fn(async () => "sk-e2b") } as never,
+    } as never);
+    const environment = makeEnvironment({
+      driver: "sandbox",
+      config: { provider: "e2b", credentialRef: "default", template: "base" },
+    });
+    const lease = makeLease({
+      provider: "e2b",
+      providerLeaseId: "e2b-lease-1",
+      metadata: { providerMetadata: { remoteCwd: "/home/user" } },
+    });
+
+    const result = await runtime.executeRunLeaseCommand({
+      environment,
+      lease,
+      command: "claude",
+      args: ["--print"],
+      cwd: "/home/user",
+      env: {},
+      timeoutSec: 60,
+      onStdout: (c: string) => streamed.push(c),
+      onStderr: () => {},
+    });
+
+    expect(captured[0].onStdout).toBeTypeOf("function");
+    expect(captured[0].onStderr).toBeTypeOf("function");
+    expect(streamed).toEqual(["live-chunk"]);
+    expect(result.stdout).toBe("buffered"); // buffered result still returned
+  });
+
   it("executes commands through fake provider sandbox leases", async () => {
     const runtime = environmentRuntimeService({} as never, {
       environments: {

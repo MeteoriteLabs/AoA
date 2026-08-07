@@ -85,6 +85,10 @@ export interface EnvironmentDriverExecuteInput {
   env: Record<string, string>;
   stdin?: string;
   timeoutSec: number;
+  /** U7.5b — optional live-output callbacks, forwarded to the provider's
+   *  execute (E2B commands.run). Omitted ⇒ buffered-only, byte-identical. */
+  onStdout?: (chunk: string) => void;
+  onStderr?: (chunk: string) => void;
 }
 
 // U6.2 — file-movement seam (mirrors EnvironmentDriverExecuteInput's shape:
@@ -774,6 +778,11 @@ export function environmentRuntimeService(
         env: input.env,
         stdin: input.stdin,
         timeoutMs: input.timeoutSec > 0 ? input.timeoutSec * 1000 : null,
+        // U7.5b — thread live-output callbacks to the provider execute seam.
+        // Undefined ⇒ the provider leaves the E2B commands.run callback keys
+        // unset (buffered-only, byte-identical to today).
+        onStdout: input.onStdout,
+        onStderr: input.onStderr,
       });
     },
 

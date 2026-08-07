@@ -81,6 +81,12 @@ export interface SandboxProviderExecuteInput {
    *  present this field wins — see `execute()`). */
   stagedFile?: { remotePath: string; content: string } | null;
   timeoutMs?: number | null;
+  /** U7.5b — optional live-output callbacks. When set, the provider forwards
+   *  incremental stdout/stderr chunks to them (E2B `commands.run` callbacks) in
+   *  addition to returning the final buffered result. Omitted ⇒ byte-identical
+   *  to the buffered-only path (org/crew today). */
+  onStdout?: (chunk: string) => void;
+  onStderr?: (chunk: string) => void;
 }
 
 export interface SandboxProviderExecuteResult {
@@ -923,6 +929,14 @@ export function createE2bSandboxRuntimeProvider(
         const result = await sandbox.commands.run(command, {
           cwd: input.cwd ?? readString(input.leaseMetadata?.remoteCwd) ?? undefined,
           timeoutMs: input.timeoutMs ?? config.timeoutMs,
+          // U7.5b — forward incremental stdout/stderr to the caller's callbacks
+          // (E2B `commands.run` `onStdout`/`onStderr`, real SDK shape
+          // `(data: string) => void`). Keys stay UNSET when the callbacks are
+          // absent so the options object is byte-identical to the buffered-only
+          // path (org/crew today). The buffered `result` below is unchanged and
+          // remains the source of truth for cost/usage accounting.
+          ...(input.onStdout ? { onStdout: input.onStdout } : {}),
+          ...(input.onStderr ? { onStderr: input.onStderr } : {}),
         });
         return {
           exitCode: typeof result.exitCode === "number" ? result.exitCode : 0,

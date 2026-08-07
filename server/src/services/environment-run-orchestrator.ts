@@ -26,6 +26,26 @@ export interface SandboxFileMovementProviderRunner extends AdapterProviderSandbo
   resolveHost?(input: { port: number }): Promise<string>;
 }
 
+/**
+ * U7.5b — translate the adapter framework's single `onLog(stream, chunk)`
+ * callback (AdapterProviderSandboxRunInput.onLog) into the provider execute
+ * seam's `onStdout`/`onStderr` pair. This is what gives a provider-sandbox run
+ * the SAME live-log delivery the docker-sandbox path already has
+ * (`execution-target.ts:764` forwards onLog to `run(..., { onLog })`). Returns
+ * `undefined` callbacks when `onLog` is absent so the buffered-only path stays
+ * byte-identical. Fire-and-forget: onLog is async but the provider callbacks
+ * are sync; a throwing/slow onLog must not stall the stream (best-effort).
+ */
+export function mapProviderRunnerCallbacks(
+  onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void> | void,
+): { onStdout?: (chunk: string) => void; onStderr?: (chunk: string) => void } {
+  if (!onLog) return {};
+  return {
+    onStdout: (chunk: string) => { void onLog("stdout", chunk); },
+    onStderr: (chunk: string) => { void onLog("stderr", chunk); },
+  };
+}
+
 export type EnvironmentErrorCode =
   | "environment_not_found"
   | "environment_inactive"
@@ -209,6 +229,14 @@ export function environmentRunOrchestrator(
     }
     return {
       execute(input) {
+        // U7.5b — map the adapter's onLog(stream, chunk) into the execute
+        // seam's onStdout/onStderr, bringing E2B provider-sandbox runs to the
+        // same incremental live-log delivery docker-sandbox already has
+        // (execution-target.ts forwards onLog directly). onLog is required on
+        // AdapterProviderSandboxRunInput, so org/crew runs now stream instead
+        // of dropping the callback here; the final buffered result + cost
+        // accounting are unchanged.
+        const { onStdout, onStderr } = mapProviderRunnerCallbacks(input.onLog);
         return runtime.executeRunLeaseCommand!({
           environment: leaseRecord.environment,
           lease: leaseRecord.lease,
@@ -218,6 +246,8 @@ export function environmentRunOrchestrator(
           env: input.env,
           stdin: input.stdin,
           timeoutSec: input.timeoutSec,
+          onStdout,
+          onStderr,
         });
       },
       // U6.2 — surfaced only when the underlying runtime actually implements

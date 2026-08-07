@@ -289,6 +289,10 @@ describe("environmentRunOrchestrator", () => {
       env: { A: "1" },
       stdin: undefined,
       timeoutSec: 30,
+      // U7.5b — buildProviderRunner now maps the adapter's onLog into the
+      // execute seam's onStdout/onStderr (E2B live-log parity with docker).
+      onStdout: expect.any(Function),
+      onStderr: expect.any(Function),
     });
   });
 
