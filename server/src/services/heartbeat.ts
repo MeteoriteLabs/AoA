@@ -146,6 +146,7 @@ import {
   resolveAgentSubscriptionEnvironment,
 } from "./provider-credential-bindings.js";
 import { postRunSummaryComment } from "./run-summary-comment.js";
+import { emitSandboxPreviewTaskOutput } from "./task-output-emitters.js";
 import {
   buildWorkspaceReadyComment,
   cleanupExecutionWorkspaceArtifacts,
@@ -5012,6 +5013,84 @@ export function heartbeatService(db: Db) {
         adapterResult,
       });
       await persistDetectedPreviewServices(previewDetectionText, "final");
+
+      // ── U6.6: sandbox preview URL (provider-sandbox getHost(port)) ──
+      // persistDetectedPreviewServices (above) verifies a candidate preview
+      // URL by `fetch`-probing it from THIS process (probePreviewUrl) before
+      // ever persisting it — the host-loopback path. For a sandboxed run
+      // that probe can never succeed: the VM's "localhost" (what the agent's
+      // own AOA_PREVIEW_URL=... report necessarily says, from inside the
+      // VM) is not reachable from the control plane, so
+      // persistDetectedPreviewServices silently no-ops for cloud runs today.
+      // Reuse the SAME text-based port discovery (extractLoopbackPreviewUrls
+      // over the agent's own report, already scanned above into
+      // previewDetectionText) but skip the host probe entirely and resolve
+      // the preview URL via the sandbox's own getHost(port) mapping instead
+      // (resolveSandboxPreviewUrl, sandbox-file-movement.ts, U6.6). Gated
+      // identically to the U6.3 in-VM diff / U6.5 crew capture sandbox
+      // dual-check (orgAcquired.sandbox?.environment.driver === "sandbox" +
+      // executionTarget.type === "provider-sandbox", S5) plus issueId !=
+      // null. orgAcquired.sandbox is null on desktop/local_trusted (the
+      // documented S1 contract on acquire-execution-context.ts), so this
+      // block is a pure no-op there — the existing host-loopback preview
+      // path above is completely unchanged. Best-effort throughout:
+      // emitSandboxPreviewTaskOutput never throws, and this block is
+      // additionally try/catched so a resolveHost failure can never fail
+      // the run.
+      if (issueId) {
+        const previewSandboxExecutionTarget = orgAcquired.sandbox?.configPatch.executionTarget;
+        if (
+          orgAcquired.sandbox?.environment.driver === "sandbox" &&
+          previewSandboxExecutionTarget?.type === "provider-sandbox"
+        ) {
+          try {
+            const candidatePorts = Array.from(
+              new Set(
+                extractLoopbackPreviewUrls(previewDetectionText, {
+                  excludedOrigins: previewExcludedOrigins,
+                })
+                  .map((url) => {
+                    try {
+                      return new URL(url).port;
+                    } catch {
+                      return "";
+                    }
+                  })
+                  .filter((port) => port.length > 0)
+                  .map((port) => Number(port)),
+              ),
+            );
+            for (const port of candidatePorts) {
+              await emitSandboxPreviewTaskOutput(db, {
+                companyId: agent.companyId,
+                issueId,
+                executionWorkspaceId:
+                  persistedExecutionWorkspace?.id ?? issueRef?.executionWorkspaceId ?? null,
+                // Cast rationale identical to U6.3's collectSandboxDiff call
+                // (output-detection block, below): AdapterExecutionTarget's
+                // "provider-sandbox" variant types `runner` as the
+                // execute-only AdapterProviderSandboxRunner, but the object
+                // actually built here is environment-run-orchestrator.ts's
+                // buildProviderRunner output — a strict superset (writeFiles/
+                // readFiles/resolveHost included whenever the underlying
+                // provider implements them, true for every non-docker
+                // provider sandbox, the only case this type-narrowed branch
+                // is reached). Runtime-safe.
+                runner: previewSandboxExecutionTarget.runner as unknown as SandboxFileMovementRunner,
+                port,
+                createdByRunId: run.id,
+                createdByAgentId: agent.id,
+              });
+            }
+          } catch (previewErr) {
+            logger.warn(
+              { err: previewErr, runId: run.id, issueId },
+              "U6.6: sandbox preview URL emission failed (non-fatal)",
+            );
+          }
+        }
+      }
+
       const runtimeServiceReports = mergeAdapterRuntimeServiceReports({
         adapterReports: adapterResult.runtimeServices ?? [],
         detectedReports: [],

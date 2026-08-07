@@ -233,3 +233,40 @@ export async function collectSandboxDiff(input: {
   }
   return results;
 }
+
+// ---------------------------------------------------------------------------
+// U6.6 — preview URLs via E2B `getHost(port)`.
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolves a public preview URL for a port the sandboxed dev server is
+ * listening on, via the provider's `resolveHost` (E2B `getHost(port)`).
+ *
+ * `getHost` returns the routable HOST ONLY — no scheme (e.g.
+ * `"3000-fakesandbox.e2b.app"`) — so `https://` is prefixed here. The result
+ * is derived SOLELY from `runner.resolveHost` (the provider's own
+ * port -> public-host mapping): never from the control-plane's own
+ * host/port, and never a `localhost`/`127.0.0.1`/internal address — that is
+ * the whole point of this seam (in-VM dev servers fail the host-loopback
+ * preview path on cloud; this is the fix).
+ *
+ * `resolveHost` is OPTIONAL on `SandboxFileMovementRunner` (a bare
+ * `execute`-only runner, or a non-provider/local lease, may not implement
+ * it) — throws a clear, named error rather than silently falling back to a
+ * host-loopback URL, so a caller's best-effort wrapper (e.g.
+ * `emitSandboxPreviewTaskOutput`, task-output-emitters.ts) can log-and-skip
+ * instead of persisting a broken preview link.
+ */
+export async function resolveSandboxPreviewUrl(input: {
+  runner: SandboxFileMovementRunner;
+  port: number;
+}): Promise<string> {
+  if (typeof input.runner.resolveHost !== "function") {
+    throw new Error(
+      "resolveSandboxPreviewUrl: runner does not support resolveHost " +
+        "(not a provider-sandbox runner, or this provider does not implement port -> host resolution)",
+    );
+  }
+  const host = await input.runner.resolveHost({ port: input.port });
+  return `https://${host}`;
+}
