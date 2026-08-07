@@ -76,26 +76,51 @@ describe("resolveWarmSandboxPreference", () => {
     expect(r.reason).toBe("crew_always_ephemeral");
   });
 
-  it("Commander is always ephemeral", () => {
+  it("Commander is warm when warmCommanderConversations is true (default)", () => {
     expect(
       resolveWarmSandboxPreference({
-        ...base,
         runType: "commander",
         functionType: null,
         agentWarmOverride: null,
-      }).warm,
-    ).toBe(false);
+        instanceDefaultWarmForSoftwareDev: true,
+        warmCommanderConversations: true,
+      }),
+    ).toEqual({ warm: true, reason: "commander_warm_conversation" });
   });
 
-  it("Commander override cannot flip it warm either", () => {
-    const r = resolveWarmSandboxPreference({
-      ...base,
-      runType: "commander",
-      functionType: null,
-      agentWarmOverride: true,
-    });
-    expect(r.warm).toBe(false);
-    expect(r.reason).toBe("commander_always_ephemeral");
+  it("Commander is warm by default when the toggle is omitted (default-true on cloud)", () => {
+    expect(
+      resolveWarmSandboxPreference({
+        runType: "commander",
+        functionType: null,
+        agentWarmOverride: null,
+        instanceDefaultWarmForSoftwareDev: true,
+      }).warm,
+    ).toBe(true);
+  });
+
+  it("Commander is ephemeral when warmCommanderConversations is false", () => {
+    expect(
+      resolveWarmSandboxPreference({
+        runType: "commander",
+        functionType: null,
+        agentWarmOverride: null,
+        instanceDefaultWarmForSoftwareDev: true,
+        warmCommanderConversations: false,
+      }),
+    ).toEqual({ warm: false, reason: "commander_warm_disabled" });
+  });
+
+  it("CREW stays ALWAYS ephemeral — the commander toggle cannot flip it", () => {
+    expect(
+      resolveWarmSandboxPreference({
+        runType: "crew",
+        functionType: "software_development",
+        agentWarmOverride: true,
+        instanceDefaultWarmForSoftwareDev: true,
+        warmCommanderConversations: true,
+      }),
+    ).toEqual({ warm: false, reason: "crew_always_ephemeral" });
   });
 });
 
