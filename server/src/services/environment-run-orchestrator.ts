@@ -12,6 +12,20 @@ import { getDeploymentMode } from "../config/deployment-mode.js";
 import { assertEnvironmentRuntimeSupportedForDeployment } from "./cloud-environment-policy.js";
 import { ensurePlatformDefaultEnvironmentRow } from "./platform-default-environment.js";
 
+// U6.2 — file-movement seam. A superset of AdapterProviderSandboxRunner (the
+// adapter-facing execute-only contract in @armyofagents/adapter-utils, used
+// by claude-local/codex-local etc.). Kept local rather than widening the
+// shared package type: only the sandbox-file-movement seam (org stage-in,
+// U6.3 in-VM diff, U6.6 preview URLs) needs writeFiles/readFiles/resolveHost,
+// and every method is OPTIONAL so a runner without them (or a non-provider
+// lease, which yields `providerRunner: null`) is unaffected. Structurally
+// assignable wherever `AdapterProviderSandboxRunner` is expected.
+export interface SandboxFileMovementProviderRunner extends AdapterProviderSandboxRunner {
+  writeFiles?(files: Array<{ path: string; content: Buffer }>): Promise<void>;
+  readFiles?(input: { paths: string[] }): Promise<Array<{ path: string; content: Buffer }>>;
+  resolveHost?(input: { port: number }): Promise<string>;
+}
+
 export type EnvironmentErrorCode =
   | "environment_not_found"
   | "environment_inactive"
@@ -87,7 +101,7 @@ export function environmentRunOrchestrator(
   db: Db,
   options: {
     environments?: EnvironmentLookup;
-    environmentRuntime?: Pick<EnvironmentRuntimeService, "acquireRunLease"> & Partial<Pick<EnvironmentRuntimeService, "executeRunLeaseCommand">>;
+    environmentRuntime?: Pick<EnvironmentRuntimeService, "acquireRunLease"> & Partial<Pick<EnvironmentRuntimeService, "executeRunLeaseCommand" | "writeFiles" | "readFiles" | "resolveHost">>;
     // DI seam mirroring `environments`/`environmentRuntime` above: pure unit
     // tests can inject a fake here instead of needing a real `db` just to
     // exercise the null-environmentId (platform-default) branch. Defaults to
@@ -189,7 +203,7 @@ export function environmentRunOrchestrator(
     return !!provider && provider !== "sandbox-docker" && provider !== "docker" && provider !== "local-docker";
   }
 
-  function buildProviderRunner(leaseRecord: EnvironmentRuntimeLeaseRecord): AdapterProviderSandboxRunner | null {
+  function buildProviderRunner(leaseRecord: EnvironmentRuntimeLeaseRecord): SandboxFileMovementProviderRunner | null {
     if (!isProviderSandboxLease(leaseRecord.lease) || typeof runtime.executeRunLeaseCommand !== "function") {
       return null;
     }
@@ -206,6 +220,40 @@ export function environmentRunOrchestrator(
           timeoutSec: input.timeoutSec,
         });
       },
+      // U6.2 — surfaced only when the underlying runtime actually implements
+      // them (mirrors the executeRunLeaseCommand guard above), so a DI'd
+      // test double or a future non-file-movement-capable runtime yields a
+      // runner without these keys rather than ones that throw when called.
+      ...(typeof runtime.writeFiles === "function"
+        ? {
+            writeFiles: (files: Array<{ path: string; content: Buffer }>) =>
+              runtime.writeFiles!({
+                environment: leaseRecord.environment,
+                lease: leaseRecord.lease,
+                files,
+              }),
+          }
+        : {}),
+      ...(typeof runtime.readFiles === "function"
+        ? {
+            readFiles: (input: { paths: string[] }) =>
+              runtime.readFiles!({
+                environment: leaseRecord.environment,
+                lease: leaseRecord.lease,
+                paths: input.paths,
+              }),
+          }
+        : {}),
+      ...(typeof runtime.resolveHost === "function"
+        ? {
+            resolveHost: (input: { port: number }) =>
+              runtime.resolveHost!({
+                environment: leaseRecord.environment,
+                lease: leaseRecord.lease,
+                port: input.port,
+              }),
+          }
+        : {}),
     };
   }
 
@@ -234,6 +282,10 @@ export function environmentRunOrchestrator(
           heartbeatRunId: input.heartbeatRunId,
           persistedExecutionWorkspace: input.persistedExecutionWorkspace,
           multiTenant,
+          // S4 — placeholder wiring so the field reaches the provider
+          // acquire call end-to-end; U11 populates it with connector hosts +
+          // npm. Harmless for the local driver (ignored).
+          egressAllowlist: [],
         });
         return {
           ...leaseRecord,

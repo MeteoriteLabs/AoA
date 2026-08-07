@@ -9,6 +9,17 @@ export interface SandboxProviderAcquireInput {
   heartbeatRunId: string | null;
   config: Record<string, unknown>;
   workspaceMode: string | null;
+  /**
+   * S4 — best-effort egress allowlist for this sandbox. Recorded verbatim in
+   * `SandboxProviderLease.metadata.egressAllowlist` when provided; omitted
+   * entirely (not defaulted to `[]`) when absent, so existing exact-shape
+   * lease-metadata assertions in `sandbox-provider-runtime.test.ts` stay
+   * green. Managed E2B cannot fully enforce this (§11/§12 of the spec) — the
+   * provider records it for best-effort/managed recording and MUST NOT throw
+   * when it cannot lock egress down. U11 unions connector hosts + npm into
+   * this array at the acquire call site.
+   */
+  egressAllowlist?: string[];
 }
 
 export interface SandboxProviderLease {
@@ -58,6 +69,27 @@ export interface SandboxProviderExecuteResult {
   metadata?: Record<string, unknown>;
 }
 
+export interface SandboxProviderWriteFilesInput {
+  providerLeaseId: string;
+  leaseMetadata: Record<string, unknown> | null;
+  config?: Record<string, unknown> | null;
+  files: Array<{ path: string; content: Buffer }>;
+}
+
+export interface SandboxProviderReadFilesInput {
+  providerLeaseId: string;
+  leaseMetadata: Record<string, unknown> | null;
+  config?: Record<string, unknown> | null;
+  paths: string[];
+}
+
+export interface SandboxProviderResolveHostInput {
+  providerLeaseId: string;
+  leaseMetadata: Record<string, unknown> | null;
+  config?: Record<string, unknown> | null;
+  port: number;
+}
+
 export interface SandboxProviderConfigValidationResult {
   ok: boolean;
   provider: string;
@@ -86,6 +118,16 @@ export interface SandboxRuntimeProvider {
   acquireLease(input: SandboxProviderAcquireInput): Promise<SandboxProviderLease>;
   releaseLease(input: SandboxProviderReleaseInput): Promise<SandboxProviderReleaseResult>;
   execute(input: SandboxProviderExecuteInput): Promise<SandboxProviderExecuteResult>;
+  /**
+   * U6.2 — file-movement seam. OPTIONAL so providers that don't (yet) support
+   * staging files in/out (e.g. a future docker/self-hosted driver) don't have
+   * to implement a no-op. Implemented today by the fake provider (in-memory
+   * `Map`) and the E2B provider (`sandbox.files.write`/`.read` via connect()).
+   */
+  writeFiles?(input: SandboxProviderWriteFilesInput): Promise<void>;
+  readFiles?(input: SandboxProviderReadFilesInput): Promise<Array<{ path: string; content: Buffer }>>;
+  /** Resolve a public/preview host for a port exposed inside the sandbox (E2B `getHost`). */
+  resolveHost?(input: SandboxProviderResolveHostInput): Promise<string>;
 }
 
 function readString(value: unknown): string | null {
@@ -110,7 +152,177 @@ function isValidShellEnvKey(value: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
 }
 
+// ---------------------------------------------------------------------------
+// Fake provider in-memory FS + minimal ustar/shell emulation (U6.2).
+//
+// The fake provider is the CI stand-in for a real sandbox (mirrors the
+// AOA_E2E_FAKE_EMBEDDER pattern, spec §10): `writeFiles`/`readFiles` are the
+// source of truth over an in-memory `Map<string, Buffer>`, and `execute`
+// additionally interprets the small, fixed set of `sh -c "..."` shell
+// scripts AoA's own orchestration code emits (`mkdir -p`, `tar -xf … -C …`,
+// `rm -f`, `ls -a`, `test -d`) so a real `stageRepoIntoSandbox` round-trips
+// against it without needing a live VM. This is NOT a general shell/tar
+// implementation — unrecognized commands fall back to the pre-existing
+// generic "fake: <cmd>" stub.
+// ---------------------------------------------------------------------------
+
+interface FakeSandboxFs {
+  files: Map<string, Buffer>;
+  dirs: Set<string>;
+}
+
+function fakePosixNormalize(p: string): string {
+  const normalized = path.posix.normalize(p);
+  return normalized.length > 1 ? normalized.replace(/\/+$/, "") : normalized;
+}
+
+function fakeMarkDir(fs: FakeSandboxFs, dirPath: string): void {
+  let current = fakePosixNormalize(dirPath);
+  while (true) {
+    fs.dirs.add(current);
+    const parent = path.posix.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+}
+
+function fakeWriteFile(fs: FakeSandboxFs, filePath: string, content: Buffer): void {
+  const normalized = fakePosixNormalize(filePath);
+  fs.files.set(normalized, content);
+  fakeMarkDir(fs, path.posix.dirname(normalized));
+}
+
+/** Minimal POSIX ustar reader: enough for a repo tar of regular files + dirs. */
+function parseUstarBuffer(buf: Buffer): Array<{ name: string; type: "file" | "dir"; data: Buffer }> {
+  const entries: Array<{ name: string; type: "file" | "dir"; data: Buffer }> = [];
+  const BLOCK = 512;
+
+  function readCString(header: Buffer, start: number, len: number): string {
+    const slice = header.subarray(start, start + len);
+    const nul = slice.indexOf(0);
+    return (nul === -1 ? slice : slice.subarray(0, nul)).toString("utf8");
+  }
+  function readOctal(header: Buffer, start: number, len: number): number {
+    const raw = readCString(header, start, len).trim();
+    return raw.length > 0 ? parseInt(raw, 8) || 0 : 0;
+  }
+
+  let offset = 0;
+  while (offset + BLOCK <= buf.length) {
+    const header = buf.subarray(offset, offset + BLOCK);
+    if (header.every((b) => b === 0)) break; // end-of-archive marker
+    const name = readCString(header, 0, 100);
+    const prefix = readCString(header, 345, 155);
+    const size = readOctal(header, 124, 12);
+    const typeflag = String.fromCharCode(header[156] ?? 0);
+    const fullName = prefix ? `${prefix}/${name}` : name;
+    offset += BLOCK;
+    const data = buf.subarray(offset, offset + size);
+    offset += Math.ceil(size / BLOCK) * BLOCK;
+    if (!fullName) continue;
+    if (typeflag === "5" || fullName.endsWith("/")) {
+      entries.push({ name: fullName.replace(/\/+$/, ""), type: "dir", data: Buffer.alloc(0) });
+    } else if (typeflag === "0" || typeflag === "\0" || typeflag === "") {
+      entries.push({ name: fullName, type: "file", data: Buffer.from(data) });
+    }
+    // Other typeflags (symlinks, PAX/GNU-longname extensions, …) are outside
+    // this minimal reader's scope — `stageRepoIntoSandbox` writes with
+    // `--format=ustar` on the host precisely to avoid emitting them.
+  }
+  return entries;
+}
+
+/**
+ * Splits a `&&`-segment into shell words, unquoting simple single-quoted
+ * tokens (what this file's own `shellQuote()` produces for plain paths).
+ * Not a general shell parser — sufficient for the fixed command shapes
+ * `stageRepoIntoSandbox`/the stage-in test emit.
+ */
+function tokenizeShellSegment(segment: string): string[] {
+  const tokens: string[] = [];
+  const re = /'([^']*)'|(\S+)/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(segment.trim())) !== null) {
+    tokens.push(match[1] !== undefined ? match[1] : match[2]);
+  }
+  return tokens;
+}
+
+/** Runs one `&&`-chained `sh -c "…"` script against the fake in-memory FS. */
+function runFakeShellScript(script: string, fs: FakeSandboxFs): SandboxProviderExecuteResult {
+  const segments = script.split(" && ").map((s) => s.trim()).filter(Boolean);
+  let lastStdout = "";
+  for (const segment of segments) {
+    const tokens = tokenizeShellSegment(segment);
+    const [cmd, ...rest] = tokens;
+    if (cmd === "mkdir" && rest.includes("-p")) {
+      const target = rest.filter((t) => t !== "-p")[0];
+      if (target) fakeMarkDir(fs, target);
+      lastStdout = "";
+      continue;
+    }
+    if (cmd === "tar") {
+      const xIdx = rest.indexOf("-xf");
+      const cIdx = rest.indexOf("-C");
+      const tarPath = xIdx >= 0 ? rest[xIdx + 1] : undefined;
+      const destDir = cIdx >= 0 ? rest[cIdx + 1] : undefined;
+      if (!tarPath || !destDir) {
+        return { exitCode: 1, signal: null, timedOut: false, stdout: "", stderr: `tar: missing -xf/-C in "${segment}"` };
+      }
+      const archive = fs.files.get(fakePosixNormalize(tarPath));
+      if (!archive) {
+        return { exitCode: 1, signal: null, timedOut: false, stdout: "", stderr: `tar: cannot open '${tarPath}'` };
+      }
+      fakeMarkDir(fs, destDir);
+      for (const entry of parseUstarBuffer(archive)) {
+        const target = path.posix.join(destDir, entry.name);
+        if (entry.type === "dir") fakeMarkDir(fs, target);
+        else fakeWriteFile(fs, target, entry.data);
+      }
+      lastStdout = "";
+      continue;
+    }
+    if (cmd === "rm") {
+      const target = rest.filter((t) => t !== "-f" && t !== "-r" && t !== "-rf").pop();
+      if (target) fs.files.delete(fakePosixNormalize(target));
+      lastStdout = "";
+      continue;
+    }
+    if (cmd === "ls") {
+      const target = rest.filter((t) => t !== "-a" && t !== "-l" && t !== "-la" && t !== "-al").pop();
+      const normalized = target ? fakePosixNormalize(target) : ".";
+      const exists = fs.dirs.has(normalized) || [...fs.files.keys()].some((f) => f.startsWith(`${normalized}/`));
+      if (!exists) {
+        return { exitCode: 1, signal: null, timedOut: false, stdout: "", stderr: `ls: cannot access '${target}': No such file or directory` };
+      }
+      const names = new Set<string>();
+      for (const d of fs.dirs) {
+        if (path.posix.dirname(d) === normalized) names.add(path.posix.basename(d));
+      }
+      for (const f of fs.files.keys()) {
+        if (path.posix.dirname(f) === normalized) names.add(path.posix.basename(f));
+      }
+      lastStdout = [".", "..", ...names].join("\n");
+      continue;
+    }
+    if (cmd === "test" && rest[0] === "-d") {
+      const target = rest[1] ? fakePosixNormalize(rest[1]) : "";
+      if (!fs.dirs.has(target)) {
+        return { exitCode: 1, signal: null, timedOut: false, stdout: "", stderr: "" };
+      }
+      lastStdout = "";
+      continue;
+    }
+    // Unrecognized command inside the script — fall back to the generic stub
+    // rather than failing the whole chain (keeps this a minimal emulation).
+    lastStdout = `fake: ${tokens.join(" ")}`.trim();
+  }
+  return { exitCode: 0, signal: null, timedOut: false, stdout: lastStdout, stderr: "" };
+}
+
 export function createFakeSandboxRuntimeProvider(): SandboxRuntimeProvider {
+  const fs: FakeSandboxFs = { files: new Map(), dirs: new Set(["/", "."]) };
+
   return {
     provider: "fake",
 
@@ -118,6 +330,7 @@ export function createFakeSandboxRuntimeProvider(): SandboxRuntimeProvider {
       const remoteCwd = readString(input.config.remoteCwd) ?? "/workspace";
       const shellCommand = readString(input.config.shellCommand) === "bash" ? "bash" : "sh";
       const timeoutMs = readPositiveInteger(input.config.timeoutMs);
+      fakeMarkDir(fs, remoteCwd);
       return {
         providerLeaseId: `fake-sandbox-${sanitizeProviderLeasePart(input.environmentId)}-${sanitizeProviderLeasePart(input.heartbeatRunId ?? "test")}`,
         metadata: {
@@ -126,6 +339,10 @@ export function createFakeSandboxRuntimeProvider(): SandboxRuntimeProvider {
           shellCommand,
           timeoutMs,
           workspaceMode: input.workspaceMode,
+          // S4 — verbatim when provided; omitted (not `[]`) when absent, so
+          // the pre-existing exact-shape metadata assertion in
+          // sandbox-provider-runtime.test.ts keeps passing unchanged.
+          ...(input.egressAllowlist !== undefined ? { egressAllowlist: input.egressAllowlist } : {}),
         },
       };
     },
@@ -141,6 +358,17 @@ export function createFakeSandboxRuntimeProvider(): SandboxRuntimeProvider {
 
     async execute(input) {
       const args = input.args ?? [];
+      if (input.command === "sh" && args[0] === "-c" && typeof args[1] === "string") {
+        const result = runFakeShellScript(args[1], fs);
+        return {
+          ...result,
+          metadata: {
+            cwd: input.cwd ?? readString(input.leaseMetadata?.remoteCwd) ?? null,
+            envKeys: Object.keys(input.env ?? {}).sort(),
+            providerLeaseId: input.providerLeaseId,
+          },
+        };
+      }
       return {
         exitCode: 0,
         signal: null,
@@ -153,6 +381,23 @@ export function createFakeSandboxRuntimeProvider(): SandboxRuntimeProvider {
           providerLeaseId: input.providerLeaseId,
         },
       };
+    },
+
+    async writeFiles(input) {
+      for (const file of input.files) {
+        fakeWriteFile(fs, file.path, file.content);
+      }
+    },
+
+    async readFiles(input) {
+      return input.paths.map((p) => ({
+        path: p,
+        content: fs.files.get(fakePosixNormalize(p)) ?? Buffer.alloc(0),
+      }));
+    },
+
+    async resolveHost(input) {
+      return `${input.port}-fakesandbox.e2b.app`;
     },
   };
 }
@@ -170,9 +415,17 @@ type E2bSandbox = {
     run(command: string, options?: Record<string, unknown>): Promise<E2bCommandResult>;
   };
   files?: {
-    write(path: string, content: string): Promise<void>;
+    write(path: string, content: string | Buffer): Promise<void>;
     remove(path: string): Promise<void>;
+    // U6.2 — optional (not on the SDK surface before this wave; existing test
+    // doubles that stub `files: { write, remove }` without `read` must stay
+    // valid, so this is NOT a required member).
+    read?(path: string): Promise<Uint8Array | string>;
   };
+  // U6.2 — resolve a public host for a port exposed inside the sandbox
+  // (real E2B SDK: `sandbox.getHost(port)`). Optional — absent on the SDK
+  // surface used before this wave and on any provider that doesn't expose it.
+  getHost?(port: number): Promise<string> | string;
   setTimeout?(timeoutMs: number): Promise<void>;
   kill?(): Promise<void>;
   pause?(): Promise<void>;
@@ -280,6 +533,10 @@ function buildE2bLeaseMetadata(input: {
   remoteCwd: string;
   workspaceMode: string | null;
   resolvedDomain: string | null;
+  /** S4 — verbatim when provided; omitted (not `[]`) when absent so the
+   *  pre-existing exact-shape `toEqual(lease)` assertions in
+   *  sandbox-provider-runtime.test.ts keep passing unchanged. */
+  egressAllowlist?: string[];
 }) {
   return {
     provider: "e2b",
@@ -292,6 +549,7 @@ function buildE2bLeaseMetadata(input: {
     shellCommand: "bash",
     workspaceMode: input.workspaceMode,
     ...(input.resolvedDomain ? { domain: input.resolvedDomain } : {}),
+    ...(input.egressAllowlist !== undefined ? { egressAllowlist: input.egressAllowlist } : {}),
   };
 }
 
@@ -440,6 +698,13 @@ export function createE2bSandboxRuntimeProvider(
           aoaProvider: "e2b",
           companyId: input.companyId,
           environmentId: input.environmentId,
+          // S4 — best-effort managed recording only (§11/§12: managed E2B
+          // egress is not fully lockable). Omitted entirely when no
+          // allowlist was supplied, so the pre-existing exact `create(...)`
+          // call assertions in sandbox-provider-runtime.test.ts stay green.
+          ...(input.egressAllowlist && input.egressAllowlist.length > 0
+            ? { egressAllowlist: input.egressAllowlist.join(",") }
+            : {}),
         },
       });
 
@@ -454,6 +719,7 @@ export function createE2bSandboxRuntimeProvider(
             remoteCwd,
             workspaceMode: input.workspaceMode,
             resolvedDomain,
+            egressAllowlist: input.egressAllowlist,
           }),
         };
       } catch (error) {
@@ -575,6 +841,42 @@ export function createE2bSandboxRuntimeProvider(
         }
       }
     },
+
+    // U6.2 — file-movement seam. Same reconnect pattern as `execute()` above
+    // (connect() to the already-created sandbox by providerLeaseId, do not
+    // re-`Sandbox.create`).
+    async writeFiles(input) {
+      const config = configFromE2bLease({ leaseMetadata: input.leaseMetadata, config: input.config, env });
+      const sandbox = await connect(config, input.providerLeaseId);
+      if (!sandbox.files) throw new Error("E2B sandbox file API is required to write files.");
+      for (const file of input.files) {
+        await sandbox.files.write(file.path, file.content);
+      }
+    },
+
+    async readFiles(input) {
+      const config = configFromE2bLease({ leaseMetadata: input.leaseMetadata, config: input.config, env });
+      const sandbox = await connect(config, input.providerLeaseId);
+      if (!sandbox.files?.read) throw new Error("E2B sandbox file API is required to read files.");
+      const results: Array<{ path: string; content: Buffer }> = [];
+      for (const filePath of input.paths) {
+        const raw = await sandbox.files.read(filePath);
+        results.push({
+          path: filePath,
+          content: typeof raw === "string" ? Buffer.from(raw, "utf8") : Buffer.from(raw),
+        });
+      }
+      return results;
+    },
+
+    async resolveHost(input) {
+      const config = configFromE2bLease({ leaseMetadata: input.leaseMetadata, config: input.config, env });
+      const sandbox = await connect(config, input.providerLeaseId);
+      if (typeof sandbox.getHost !== "function") {
+        throw new Error("E2B sandbox does not support host resolution (getHost).");
+      }
+      return await sandbox.getHost(input.port);
+    },
   };
 }
 
@@ -617,6 +919,30 @@ export function sandboxProviderRuntime(
 
     execute(providerKey: string, input: SandboxProviderExecuteInput) {
       return requireProvider(providerKey).execute(input);
+    },
+
+    writeFiles(providerKey: string, input: SandboxProviderWriteFilesInput): Promise<void> {
+      const provider = requireProvider(providerKey);
+      if (typeof provider.writeFiles !== "function") {
+        throw new Error(`Sandbox provider "${providerKey}" does not support file writes.`);
+      }
+      return provider.writeFiles(input);
+    },
+
+    readFiles(providerKey: string, input: SandboxProviderReadFilesInput): Promise<Array<{ path: string; content: Buffer }>> {
+      const provider = requireProvider(providerKey);
+      if (typeof provider.readFiles !== "function") {
+        throw new Error(`Sandbox provider "${providerKey}" does not support file reads.`);
+      }
+      return provider.readFiles(input);
+    },
+
+    resolveHost(providerKey: string, input: SandboxProviderResolveHostInput): Promise<string> {
+      const provider = requireProvider(providerKey);
+      if (typeof provider.resolveHost !== "function") {
+        throw new Error(`Sandbox provider "${providerKey}" does not support host resolution.`);
+      }
+      return provider.resolveHost(input);
     },
 
     validateConfig(providerKey: string, config: Record<string, unknown>): Promise<SandboxProviderConfigValidationResult> {

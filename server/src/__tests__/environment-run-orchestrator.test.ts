@@ -95,6 +95,8 @@ describe("environmentRunOrchestrator", () => {
       heartbeatRunId: RUN_ID,
       persistedExecutionWorkspace: { id: "workspace-1", mode: "per_task" },
       multiTenant: false,
+      // S4 — placeholder threaded from acquireForRun; U11 populates it.
+      egressAllowlist: [],
     });
   });
 

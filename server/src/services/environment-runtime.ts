@@ -41,6 +41,13 @@ export interface EnvironmentDriverAcquireInput {
   // not weaken the sandbox; on self-hosted it is honored. Resolved once by the
   // orchestrator; defaults to fail-closed hardening when absent.
   multiTenant?: boolean;
+  /**
+   * S4 — best-effort egress allowlist, threaded to `providerRuntime.acquireLease`
+   * for provider-sandbox leases only (ignored by the local driver). U6.2
+   * introduces the param wired end-to-end with an empty placeholder from the
+   * orchestrator; U11 populates it with connector hosts + npm.
+   */
+  egressAllowlist?: string[];
 }
 
 export interface EnvironmentDriverReleaseInput {
@@ -58,6 +65,26 @@ export interface EnvironmentDriverExecuteInput {
   env: Record<string, string>;
   stdin?: string;
   timeoutSec: number;
+}
+
+// U6.2 — file-movement seam (mirrors EnvironmentDriverExecuteInput's shape:
+// bind environment + lease, forward the provider-facing payload).
+export interface EnvironmentDriverWriteFilesInput {
+  environment: Environment;
+  lease: EnvironmentLease;
+  files: Array<{ path: string; content: Buffer }>;
+}
+
+export interface EnvironmentDriverReadFilesInput {
+  environment: Environment;
+  lease: EnvironmentLease;
+  paths: string[];
+}
+
+export interface EnvironmentDriverResolveHostInput {
+  environment: Environment;
+  lease: EnvironmentLease;
+  port: number;
 }
 
 export interface EnvironmentRuntimeLeaseRecord {
@@ -142,6 +169,12 @@ export interface EnvironmentRuntimeService {
   releaseRunLease(input: EnvironmentDriverReleaseInput): Promise<EnvironmentLease | null>;
   releaseRunLeases(heartbeatRunId: string): Promise<EnvironmentLease[]>;
   executeRunLeaseCommand(input: EnvironmentDriverExecuteInput): Promise<SandboxProviderExecuteResult>;
+  // U6.2 — file-movement seam, mirrors executeRunLeaseCommand's provider-resolution
+  // shape. Provider-sandbox leases only; docker/local leases throw (same posture
+  // as executeRunLeaseCommand today).
+  writeFiles(input: EnvironmentDriverWriteFilesInput): Promise<void>;
+  readFiles(input: EnvironmentDriverReadFilesInput): Promise<Array<{ path: string; content: Buffer }>>;
+  resolveHost(input: EnvironmentDriverResolveHostInput): Promise<string>;
 }
 
 function createLocalEnvironmentDriver(environmentsSvc: EnvironmentService): EnvironmentRuntimeDriver {
@@ -340,6 +373,9 @@ function createSandboxDockerEnvironmentDriver(
           heartbeatRunId: input.heartbeatRunId,
           config: providerConfig,
           workspaceMode: leaseContext.executionWorkspaceMode,
+          // S4 — threaded straight through; undefined for callers that
+          // haven't been updated yet (byte-identical acquire call for them).
+          egressAllowlist: input.egressAllowlist,
         });
         try {
           return normalizeEnvironmentLease(await environmentsSvc.acquireLease({
@@ -538,6 +574,91 @@ export function environmentRuntimeService(
         env: input.env,
         stdin: input.stdin,
         timeoutMs: input.timeoutSec > 0 ? input.timeoutSec * 1000 : null,
+      });
+    },
+
+    // U6.2 — file-movement seam. Same provider-resolution shape as
+    // executeRunLeaseCommand above (left untouched to avoid any risk to its
+    // existing test coverage); duplicated rather than factored out so this
+    // addition is a pure addition, not a refactor of working code.
+    async writeFiles(input) {
+      const provider = readString(input.lease.provider);
+      if (!provider || isDockerSandboxProvider(provider)) {
+        throw new Error(`Lease provider "${provider ?? "unknown"}" does not support provider file writes.`);
+      }
+      const providerLeaseId = readString(input.lease.providerLeaseId);
+      if (!providerLeaseId) {
+        throw new Error(`Lease "${input.lease.id}" is missing providerLeaseId.`);
+      }
+      const metadata = readObject(input.lease.metadata);
+      const providerMetadata = readObject(metadata.providerMetadata);
+      const providerConfig = await resolveRuntimeProviderConfig({
+        companyId: input.lease.companyId,
+        provider,
+        config: readObject(input.environment.config),
+        runtimeProviderKeys,
+        issueId: input.lease.issueId,
+        heartbeatRunId: input.lease.heartbeatRunId,
+      });
+      await providerRuntime.writeFiles(provider, {
+        providerLeaseId,
+        leaseMetadata: providerMetadata,
+        config: providerConfig,
+        files: input.files,
+      });
+    },
+
+    async readFiles(input) {
+      const provider = readString(input.lease.provider);
+      if (!provider || isDockerSandboxProvider(provider)) {
+        throw new Error(`Lease provider "${provider ?? "unknown"}" does not support provider file reads.`);
+      }
+      const providerLeaseId = readString(input.lease.providerLeaseId);
+      if (!providerLeaseId) {
+        throw new Error(`Lease "${input.lease.id}" is missing providerLeaseId.`);
+      }
+      const metadata = readObject(input.lease.metadata);
+      const providerMetadata = readObject(metadata.providerMetadata);
+      const providerConfig = await resolveRuntimeProviderConfig({
+        companyId: input.lease.companyId,
+        provider,
+        config: readObject(input.environment.config),
+        runtimeProviderKeys,
+        issueId: input.lease.issueId,
+        heartbeatRunId: input.lease.heartbeatRunId,
+      });
+      return providerRuntime.readFiles(provider, {
+        providerLeaseId,
+        leaseMetadata: providerMetadata,
+        config: providerConfig,
+        paths: input.paths,
+      });
+    },
+
+    async resolveHost(input) {
+      const provider = readString(input.lease.provider);
+      if (!provider || isDockerSandboxProvider(provider)) {
+        throw new Error(`Lease provider "${provider ?? "unknown"}" does not support host resolution.`);
+      }
+      const providerLeaseId = readString(input.lease.providerLeaseId);
+      if (!providerLeaseId) {
+        throw new Error(`Lease "${input.lease.id}" is missing providerLeaseId.`);
+      }
+      const metadata = readObject(input.lease.metadata);
+      const providerMetadata = readObject(metadata.providerMetadata);
+      const providerConfig = await resolveRuntimeProviderConfig({
+        companyId: input.lease.companyId,
+        provider,
+        config: readObject(input.environment.config),
+        runtimeProviderKeys,
+        issueId: input.lease.issueId,
+        heartbeatRunId: input.lease.heartbeatRunId,
+      });
+      return providerRuntime.resolveHost(provider, {
+        providerLeaseId,
+        leaseMetadata: providerMetadata,
+        config: providerConfig,
+        port: input.port,
       });
     },
   };
