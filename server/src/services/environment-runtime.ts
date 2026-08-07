@@ -146,6 +146,7 @@ export function normalizeEnvironmentLease(row: unknown): EnvironmentLease {
     executionWorkspaceId: typeof record.executionWorkspaceId === "string" ? record.executionWorkspaceId : null,
     issueId: typeof record.issueId === "string" ? record.issueId : null,
     heartbeatRunId: typeof record.heartbeatRunId === "string" ? record.heartbeatRunId : null,
+    agentId: typeof record.agentId === "string" ? record.agentId : null,
     status: (typeof record.status === "string" ? record.status : "active") as EnvironmentLeaseStatus,
     leasePolicy: (typeof record.leasePolicy === "string" ? record.leasePolicy : "ephemeral") as EnvironmentLeasePolicy,
     provider: typeof record.provider === "string" ? record.provider : null,
@@ -154,6 +155,7 @@ export function normalizeEnvironmentLease(row: unknown): EnvironmentLease {
     lastUsedAt: toIsoString(record.lastUsedAt),
     expiresAt: toNullableIsoString(record.expiresAt),
     releasedAt: toNullableIsoString(record.releasedAt),
+    pausedAt: toNullableIsoString(record.pausedAt),
     failureReason: typeof record.failureReason === "string" ? record.failureReason : null,
     cleanupStatus: (typeof record.cleanupStatus === "string" ? record.cleanupStatus : null) as EnvironmentLeaseCleanupStatus | null,
     metadata: record.metadata && typeof record.metadata === "object" && !Array.isArray(record.metadata)

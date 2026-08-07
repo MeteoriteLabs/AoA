@@ -1,4 +1,5 @@
 import { index, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { agents } from "./agents.js";
 import { companies } from "./companies.js";
 import { environments } from "./environments.js";
 import { executionWorkspaces } from "./execution_workspaces.js";
@@ -14,6 +15,9 @@ export const environmentLeases = pgTable(
     executionWorkspaceId: uuid("execution_workspace_id").references(() => executionWorkspaces.id, { onDelete: "set null" }),
     issueId: uuid("issue_id").references(() => issues.id, { onDelete: "set null" }),
     heartbeatRunId: uuid("heartbeat_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
+    // Warm-reuse (Wave 6 / U7.1): the org agent this lease is held warm for.
+    // Only set on `reuse_by_agent` leases — ephemeral leases leave this NULL.
+    agentId: uuid("agent_id").references(() => agents.id, { onDelete: "set null" }),
     status: text("status").notNull().default("active"),
     leasePolicy: text("lease_policy").notNull().default("ephemeral"),
     provider: text("provider"),
@@ -22,6 +26,9 @@ export const environmentLeases = pgTable(
     lastUsedAt: timestamp("last_used_at", { withTimezone: true }).notNull().defaultNow(),
     expiresAt: timestamp("expires_at", { withTimezone: true }),
     releasedAt: timestamp("released_at", { withTimezone: true }),
+    // Set when a `reuse_by_agent` lease is paused (E2B snapshot) at run end
+    // instead of killed. `releasedAt` stays NULL while paused.
+    pausedAt: timestamp("paused_at", { withTimezone: true }),
     failureReason: text("failure_reason"),
     cleanupStatus: text("cleanup_status"),
     metadata: jsonb("metadata").$type<Record<string, unknown>>(),
@@ -42,5 +49,14 @@ export const environmentLeases = pgTable(
     heartbeatRunIdx: index("environment_leases_heartbeat_run_idx").on(table.heartbeatRunId),
     companyLastUsedIdx: index("environment_leases_company_last_used_idx").on(table.companyId, table.lastUsedAt),
     providerLeaseIdx: index("environment_leases_provider_lease_idx").on(table.providerLeaseId),
+    // Warm-resume lookup: find an agent's paused lease for a given environment.
+    companyAgentEnvironmentStatusIdx: index("environment_leases_company_agent_environment_status_idx").on(
+      table.companyId,
+      table.agentId,
+      table.environmentId,
+      table.status,
+    ),
+    // Idle reaper scan: sweep paused leases past the TTL.
+    pausedReaperIdx: index("environment_leases_paused_reaper_idx").on(table.status, table.pausedAt),
   }),
 );

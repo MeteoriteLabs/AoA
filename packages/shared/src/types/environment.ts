@@ -34,6 +34,7 @@ export interface EnvironmentLease {
   executionWorkspaceId: string | null;
   issueId: string | null;
   heartbeatRunId: string | null;
+  agentId: string | null;
   status: EnvironmentLeaseStatus;
   leasePolicy: EnvironmentLeasePolicy;
   provider: string | null;
@@ -42,6 +43,7 @@ export interface EnvironmentLease {
   lastUsedAt: string;
   expiresAt: string | null;
   releasedAt: string | null;
+  pausedAt: string | null;
   failureReason: string | null;
   cleanupStatus: EnvironmentLeaseCleanupStatus | null;
   metadata: Record<string, unknown> | null;
