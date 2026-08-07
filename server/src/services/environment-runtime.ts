@@ -365,6 +365,59 @@ function sanitizeProviderMetadata(metadata: Record<string, unknown>): Record<str
   return sanitized;
 }
 
+/**
+ * U7.7 — OAuth connector token re-resolution on warm resume (SECURITY invariant).
+ *
+ * A paused E2B snapshot's env can hold a STALE, bounded-TTL connector token (an
+ * `AOA_MCP_*_TOKEN` minted per #317 OAuth broker) baked into a `metadata.env` /
+ * `metadata.providerMetadata.env` map at pause time. On warm RESUME that stale
+ * token must NEVER travel forward on the lease record the caller stages the run
+ * with: the run's env is re-resolved + re-injected FRESH at EVERY stage-in —
+ * including on warm `resume()` — by the connector token resolver
+ * (`resolveAgentConnectors`, which runs on every org run regardless of
+ * create-vs-resume; see heartbeat.ts) and never reads the lease's baked env.
+ * Only the minted short-lived access token ever crosses into the VM; the
+ * refresh token / signed bundle stay host-side (spec §7 + §9).
+ *
+ * This is DEFENSE-IN-DEPTH on the lease record itself: `reactivatePausedLease`
+ * does an `UPDATE … RETURNING *`, so the returned row still carries whatever
+ * `metadata` was persisted at create/pause time — potentially a stale token.
+ * Strip any `env` off both the top-level `metadata` and the nested
+ * `metadata.providerMetadata` before the lease reaches the caller, so a stale
+ * token can never ride forward — even for a stage-in that (now or in future)
+ * naively seeded env from the resumed snapshot's baked provider env. Surgical:
+ * ONLY the env maps are removed; the provider identity + sandbox reconnect
+ * handle the resume needs (provider, providerLeaseId, providerMetadata.remoteCwd,
+ * reuseLease, …) are preserved untouched.
+ */
+export function stripStaleLeaseEnv(lease: EnvironmentLease): EnvironmentLease {
+  const metadata = lease.metadata;
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return lease;
+
+  let mutated = false;
+  const nextMetadata: Record<string, unknown> = { ...(metadata as Record<string, unknown>) };
+
+  if ("env" in nextMetadata) {
+    delete nextMetadata.env;
+    mutated = true;
+  }
+
+  const providerMetadata = nextMetadata.providerMetadata;
+  if (
+    providerMetadata &&
+    typeof providerMetadata === "object" &&
+    !Array.isArray(providerMetadata) &&
+    "env" in (providerMetadata as Record<string, unknown>)
+  ) {
+    const nextProviderMetadata = { ...(providerMetadata as Record<string, unknown>) };
+    delete nextProviderMetadata.env;
+    nextMetadata.providerMetadata = nextProviderMetadata;
+    mutated = true;
+  }
+
+  return mutated ? { ...lease, metadata: nextMetadata } : lease;
+}
+
 function createSandboxDockerEnvironmentDriver(
   db: Db,
   environmentsSvc: EnvironmentService,
@@ -434,7 +487,11 @@ function createSandboxDockerEnvironmentDriver(
               // The `AND status='paused'` guard means a concurrent run may have
               // already claimed this lease (no row returned) — fall through to
               // create-fresh in that case rather than double-booking the VM.
-              if (reactivated) return normalizeEnvironmentLease(reactivated);
+              // U7.7 — strip any stale connector token baked into the resumed
+              // lease's metadata (spec §7/§9): the run's env is re-resolved
+              // FRESH at stage-in, so the paused snapshot's token must never
+              // ride forward on the lease record.
+              if (reactivated) return stripStaleLeaseEnv(normalizeEnvironmentLease(reactivated));
             } else {
               // Dead/GC'd snapshot (resumed:false): retire the stale paused row
               // so it is never resumed again. Best-effort — must never block
