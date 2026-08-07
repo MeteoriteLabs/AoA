@@ -14,7 +14,13 @@ const handleIpcErr = (reason: any) => {
 process.on("unhandledRejection", handleIpcErr);
 process.on("uncaughtException", handleIpcErr);
 
-// 2. Prevent embedded-postgres async-exit-hook from attaching process signal / exit hooks
+// 2. Prevent third-party packages (e.g. embedded-postgres / async-exit-hook) from calling process.exit()
+// which terminates the Vitest worker process prematurely and breaks tinypool IPC channel communication.
+process.exit = function () {
+  return undefined as never;
+} as typeof process.exit;
+
+// 3. Prevent embedded-postgres async-exit-hook from attaching process signal / exit hooks
 // that hijack Vitest tinypool worker teardown and close worker IPC channels.
 const origOn = process.on.bind(process);
 const origAddListener = process.addListener.bind(process);
