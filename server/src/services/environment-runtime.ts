@@ -60,6 +60,10 @@ export interface EnvironmentDriverAcquireInput {
   /** U7.5 — the org agent to hold/resume a warm lease for. Persisted on the
    *  lease (agent_id) so `findResumablePausedLease` can match it next run. */
   agentId?: string | null;
+  /** W7.5c — Commander conversation warm key (Commander has no agentId). When
+   *  set with warmPreference, the acquire path resumes/creates a
+   *  conversation-keyed warm lease. */
+  commanderConversationId?: string | null;
 }
 
 export interface EnvironmentDriverReleaseInput {
@@ -447,22 +451,31 @@ function createSandboxDockerEnvironmentDriver(
           heartbeatRunId: input.heartbeatRunId,
         });
 
-        // U7.5 — warm reuse: only when the caller both prefers warm AND names
-        // the agent to key the lease on (crew/Commander pass warmPreference
-        // false; the resolver already forces them ephemeral). The query methods
-        // are Partial on the DI seam, so a test double without them falls
-        // straight through to the ephemeral create path below.
-        const warm = input.warmPreference === true
-          && !!input.agentId
+        // U7.5 / W7.5c — warm reuse for BOTH org agents (agentId) and Commander
+        // (commanderConversationId). Only when the caller prefers warm AND names
+        // exactly one warm key; crew/Commander-off pass warmPreference false (the
+        // resolver already forces them ephemeral). The query methods are Partial
+        // on the DI seam, so a test double without them falls straight through to
+        // the ephemeral create path below.
+        const warmByAgent = !!input.agentId
           && typeof environmentsSvc.findResumablePausedLease === "function";
+        const warmByConversation = !!input.commanderConversationId
+          && typeof environmentsSvc.findResumableCommanderPausedLease === "function";
+        const warm = input.warmPreference === true && (warmByAgent || warmByConversation);
 
-        // ── Warm resume: reconnect to this agent's paused sandbox, if any ──
+        // ── Warm resume: reconnect to the paused sandbox for this key, if any ──
         if (warm) {
-          const paused = await environmentsSvc.findResumablePausedLease!({
-            companyId: input.companyId,
-            agentId: input.agentId!,
-            environmentId: input.environment.id,
-          });
+          const paused = warmByAgent
+            ? await environmentsSvc.findResumablePausedLease!({
+                companyId: input.companyId,
+                agentId: input.agentId!,
+                environmentId: input.environment.id,
+              })
+            : await environmentsSvc.findResumableCommanderPausedLease!({
+                companyId: input.companyId,
+                conversationId: input.commanderConversationId!,
+                environmentId: input.environment.id,
+              });
           if (paused?.providerLeaseId) {
             const pausedProviderMetadata = readObject(readObject(paused.metadata).providerMetadata);
             let resume: Awaited<ReturnType<typeof providerRuntime.resumeLease>> | null = null;
@@ -550,7 +563,12 @@ function createSandboxDockerEnvironmentDriver(
             issueId: input.issueId,
             heartbeatRunId: input.heartbeatRunId,
             leasePolicy: warm ? "reuse_by_agent" : "ephemeral",
-            ...(warm ? { agentId: input.agentId } : {}),
+            // Tag the fresh warm lease with whichever key is populated — org
+            // agents by agentId, Commander by commanderConversationId. The
+            // reused `reuse_by_agent` policy literal keeps release + reaper
+            // unchanged; the resume KEY is the populated column (W7.5c).
+            ...(warm && input.agentId ? { agentId: input.agentId } : {}),
+            ...(warm && input.commanderConversationId ? { commanderConversationId: input.commanderConversationId } : {}),
             provider,
             providerLeaseId: providerLease.providerLeaseId,
             expiresAt: providerLease.expiresAt ? new Date(providerLease.expiresAt) : null,
@@ -672,6 +690,7 @@ export function environmentRuntimeService(
         | "get"
         | "listActiveLeasesForRun"
         | "findResumablePausedLease"
+        | "findResumableCommanderPausedLease"
         | "reactivatePausedLease"
         | "markLeasePaused"
         | "listLiveAndPausedProviderLeasesForCompany"

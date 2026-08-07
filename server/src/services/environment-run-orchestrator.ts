@@ -302,10 +302,13 @@ export function environmentRunOrchestrator(
       egressAllowlist?: string[];
       /** U7.5 — warm-reuse preference + the agent to key a warm lease on.
        *  Resolved by the org call site (`resolveWarmSandboxPreference`);
-       *  crew/Commander always pass `warmPreference: false`. Forwarded verbatim
-       *  into `runtime.acquireRunLease`; absent ⇒ ephemeral (byte-identical). */
+       *  crew always passes `warmPreference: false`. Forwarded verbatim into
+       *  `runtime.acquireRunLease`; absent ⇒ ephemeral (byte-identical). */
       warmPreference?: boolean;
       agentId?: string | null;
+      /** W7.5c — Commander's warm key (agentId is null for Commander). Forwarded
+       *  to the driver's resume/create path; org/crew leave it undefined. */
+      commanderConversationId?: string | null;
     }): Promise<EnvironmentAcquisitionResult> {
       const environment = await resolveEnvironment({
         companyId: input.companyId,
@@ -326,10 +329,12 @@ export function environmentRunOrchestrator(
           // when the caller passes nothing, preserving the pre-U11 placeholder
           // wiring. Harmless for the local driver (ignored).
           egressAllowlist: input.egressAllowlist ?? [],
-          // U7.5 — warm-reuse decision + agent key, forwarded to the driver's
-          // resume-or-create path. Absent ⇒ ephemeral (byte-identical).
+          // U7.5 / W7.5c — warm-reuse decision + the warm key, forwarded to the
+          // driver's resume-or-create path. Org agents key on agentId, Commander
+          // on commanderConversationId. Absent ⇒ ephemeral (byte-identical).
           warmPreference: input.warmPreference ?? false,
           agentId: input.agentId ?? null,
+          commanderConversationId: input.commanderConversationId ?? null,
         });
         return {
           ...leaseRecord,

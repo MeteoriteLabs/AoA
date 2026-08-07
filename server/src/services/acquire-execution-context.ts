@@ -13,6 +13,10 @@ export interface AcquireExecutionContextInput {
   // (they can never be warm — spec §7). Forwarded, with `runIdentity.agentId`,
   // into the orchestrator's acquire so the driver can resume/create a warm lease.
   warmPreference: boolean;
+  /** W7.5c — Commander's warm key. Commander passes this (agentId is null); the
+   *  driver resumes/creates a conversation-keyed warm lease when warmPreference
+   *  is also set. Org/crew leave it undefined ⇒ byte-identical. */
+  commanderConversationId?: string | null;
   worktree: { id: string; mode: string } | null;
   environmentId: string | null;                 // pinned task/agent/company env, else null → platform default (U1)
   issueId?: string | null;
@@ -70,11 +74,14 @@ export async function acquireExecutionContext(
       heartbeatRunId: input.heartbeatRunId ?? null,
       persistedExecutionWorkspace: input.worktree,
       egressAllowlist: input.egressAllowlist,
-      // U7.5 — forward the resolved warm decision + the agent key. The driver's
-      // acquire path only resumes/creates a warm lease when BOTH are set; crew/
-      // Commander pass warmPreference:false so they can never resume a warm VM.
+      // U7.5 / W7.5c — forward the resolved warm decision + the warm key. The
+      // driver's acquire path only resumes/creates a warm lease when
+      // warmPreference AND a key are set; org agents key on agentId, Commander
+      // on commanderConversationId. Crew passes warmPreference:false so it can
+      // never resume a warm VM.
       warmPreference: input.warmPreference,
       agentId: input.runIdentity.agentId,
+      commanderConversationId: input.commanderConversationId ?? null,
     });
   } catch (err) {
     if (err instanceof EnvironmentRunError && err.code === "environment_not_found") {

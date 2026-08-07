@@ -782,4 +782,108 @@ describe("environmentRuntimeService", () => {
     expect(markLeasePaused).not.toHaveBeenCalled();
     expect(released?.status).toBe("released");
   });
+
+  // ── W7.5c — warm reuse keyed on the Commander conversation ───────────────
+  it("W7.5c: resumes a Commander conversation's paused lease when warmPreference + commanderConversationId are set", async () => {
+    const pausedLease = makeLease({
+      id: "conv-paused-1",
+      provider: "e2b",
+      providerLeaseId: "e2b-conv-paused-1",
+      status: "paused",
+      leasePolicy: "reuse_by_agent", // shared policy literal — resume KEY is the conversation column
+      agentId: null,
+      metadata: { provider: "e2b", providerMetadata: { remoteCwd: "/workspace", reuseLease: true } },
+    });
+    const reactivatedLease = makeLease({
+      id: "conv-paused-1",
+      provider: "e2b",
+      providerLeaseId: "e2b-conv-paused-1",
+      status: "active",
+      leasePolicy: "reuse_by_agent",
+      agentId: null,
+      pausedAt: null,
+    });
+    const createSpy = vi.fn(); // provider.acquireLease — must NOT run
+    const dbAcquireSpy = vi.fn(); // env DB create — must NOT run
+    const resumeSpy = vi.fn(async () => ({ resumed: true, providerLeaseId: "e2b-conv-paused-1", metadata: { provider: "e2b" } }));
+    const findResumableCommanderPausedLease = vi.fn(async () => pausedLease);
+    const reactivatePausedLease = vi.fn(async () => reactivatedLease);
+    const runtime = environmentRuntimeService({} as never, {
+      environments: {
+        acquireLease: dbAcquireSpy,
+        releaseLease: vi.fn(),
+        releaseLeasesForRun: vi.fn(),
+        findResumablePausedLease: vi.fn(), // agent path — must NOT match (agentId null)
+        findResumableCommanderPausedLease,
+        reactivatePausedLease,
+        markLeasePaused: vi.fn(),
+        listLiveAndPausedProviderLeasesForCompany: vi.fn(),
+      },
+      sandboxProviders: [{ provider: "e2b", acquireLease: createSpy, releaseLease: vi.fn(), resumeLease: resumeSpy, execute: vi.fn() }],
+      runtimeProviderKeys: warmRuntimeProviderKeys() as never,
+    } as never);
+
+    const rec = await runtime.acquireRunLease({
+      companyId: COMPANY,
+      environment: warmSandboxEnv(),
+      issueId: null,
+      heartbeatRunId: null,
+      persistedExecutionWorkspace: null,
+      warmPreference: true,
+      agentId: null, // Commander has no agent row
+      commanderConversationId: "conv1",
+    });
+
+    expect(findResumableCommanderPausedLease).toHaveBeenCalledWith({
+      companyId: COMPANY,
+      conversationId: "conv1",
+      environmentId: makeEnvironment().id,
+    });
+    expect(resumeSpy).toHaveBeenCalled();
+    expect(reactivatePausedLease).toHaveBeenCalledWith("conv-paused-1", expect.any(Object));
+    expect(createSpy).not.toHaveBeenCalled();
+    expect(dbAcquireSpy).not.toHaveBeenCalled();
+    expect(rec.lease.leasePolicy).toBe("reuse_by_agent");
+    expect(rec.lease.status).toBe("active");
+  });
+
+  it("W7.5c: crew (agentId null, no commanderConversationId, warmPreference false) never resumes — creates ephemeral", async () => {
+    const resumeSpy = vi.fn();
+    const findResumablePausedLease = vi.fn();
+    const findResumableCommanderPausedLease = vi.fn();
+    const createSpy = vi.fn(async () => ({ providerLeaseId: "e2b-eph-fresh", metadata: { provider: "e2b", remoteCwd: "/workspace" } }));
+    const ephemeralLease = makeLease({ id: "eph-1", provider: "e2b", providerLeaseId: "e2b-eph-fresh", status: "active", leasePolicy: "ephemeral", agentId: null });
+    const dbAcquireSpy = vi.fn(async () => ephemeralLease);
+    const runtime = environmentRuntimeService({} as never, {
+      environments: {
+        acquireLease: dbAcquireSpy,
+        releaseLease: vi.fn(),
+        releaseLeasesForRun: vi.fn(),
+        findResumablePausedLease,
+        findResumableCommanderPausedLease,
+        reactivatePausedLease: vi.fn(),
+        markLeasePaused: vi.fn(),
+        listLiveAndPausedProviderLeasesForCompany: vi.fn(),
+      },
+      sandboxProviders: [{ provider: "e2b", acquireLease: createSpy, releaseLease: vi.fn(), resumeLease: resumeSpy, execute: vi.fn() }],
+      runtimeProviderKeys: warmRuntimeProviderKeys() as never,
+    } as never);
+
+    const rec = await runtime.acquireRunLease({
+      companyId: COMPANY,
+      environment: warmSandboxEnv(),
+      issueId: null,
+      heartbeatRunId: null,
+      persistedExecutionWorkspace: null,
+      warmPreference: false,
+      agentId: null,
+    });
+
+    expect(resumeSpy).not.toHaveBeenCalled();
+    expect(findResumablePausedLease).not.toHaveBeenCalled();
+    expect(findResumableCommanderPausedLease).not.toHaveBeenCalled();
+    expect(createSpy).toHaveBeenCalled();
+    expect(dbAcquireSpy).toHaveBeenCalledWith(expect.objectContaining({ leasePolicy: "ephemeral" }));
+    expect(rec.lease.leasePolicy).toBe("ephemeral");
+  });
 });
