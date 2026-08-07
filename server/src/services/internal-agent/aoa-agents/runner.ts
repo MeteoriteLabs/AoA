@@ -1042,6 +1042,42 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         executionContext.skills = agentSkills;
       }
 
+      // U6.7 (S5): explicitly stage the agent's own resolved skill bundles
+      // into the sandbox for provider-sandbox targets. `claude-local` (and
+      // `cursor-local`) already satisfy this via their own adapter-internal
+      // `context.skills` staging (execute.ts's buildSkillsDir + the remote
+      // sync at :628) — this is REDUNDANT-but-harmless for those adapters
+      // (same destination, same bytes, idempotent overwrite) and is the ONLY
+      // delivery path for every other adapter (codex_local/opencode_local/
+      // gemini_local/…), which never reads `context.skills` at all. Same
+      // dual-check as U6.5's captureCrewOutputs / U6.6's preview emission:
+      // BOTH the acquisition driver AND the resolved executionTarget must
+      // agree it's a provider sandbox. Best-effort — stageAgentSkillsIntoSandbox
+      // never throws on its own, but this call is still wrapped so a
+      // defensive future change there can never fail an otherwise-successful
+      // run.
+      if (
+        agentSkills.length > 0 &&
+        acquired.sandbox?.environment.driver === "sandbox" &&
+        executionTarget.type === "provider-sandbox"
+      ) {
+        try {
+          const { stageAgentSkillsIntoSandbox } = await import("./sandbox-skill-staging.js");
+          await stageAgentSkillsIntoSandbox({
+            runId: runId ?? `aoa-${agentId}`,
+            target: executionTarget,
+            remoteCwd: executionTarget.remoteCwd,
+            skills: agentSkills,
+            onLog: crewLogSink ? crewLogSink.onLog : undefined,
+          });
+        } catch (skillStageErr) {
+          log.warn(
+            { err: skillStageErr, runId, agentId, companyId: agent.companyId },
+            "aoa-runner: sandbox skill staging failed (best-effort, ignored)",
+          );
+        }
+      }
+
       // U3: mint a per-run run-JWT so the crew CLI has a networked identity
       // (mirrors the org/heartbeat mint at heartbeat.ts:4276-4279). Gated on
       // the adapter flag + a real runId — a fake-crew turn never reaches this
