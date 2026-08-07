@@ -22,7 +22,7 @@
 - Do not add job tables, worker routes, provider implementations, or execution calls in E0.
 - Do not add dependencies. `pnpm-lock.yaml` must remain unchanged in this epic.
 - Every task must pass `pnpm check:distributed-foundation`; code tasks additionally run focused Vitest and affected-package typecheck.
-- Source design: `docs/replatform/program-design.md`, tickets FND-001 through FND-005.
+- Source design: `docs/replatform/program-design.md`, tickets FND-001 through FND-008.
 - Every completed ticket writes `docs/replatform/epics/E0-foundation/tickets/<TICKET-ID>-result.md` using `docs/replatform/templates/ticket-result-template.md`.
 - Every integration or repository-wide test campaign writes an immutable record under `docs/replatform/epics/E0-foundation/qa/` using the QA template.
 - New decisions and findings are recorded in the epic-local ledgers before cross-epic promotion or follow-up tickets.
@@ -40,7 +40,9 @@
 | `docs/architecture/distributed-execution-threat-model.md` | Trust boundaries, threats, required controls, residual risk, and ticket ownership. |
 | `docs/architecture/distributed-execution-threat-controls.json` | Machine-readable crossing/control ownership and release-test traceability. |
 | `docs/architecture/distributed-execution-delivery-policy.md` | Custodian roles, merge gates, flags, evidence, and parallel-agent rules. |
-| `docs/architecture/decisions.md` | Decision #120 summary and links to the four focused records; existing Decisions #118/#119 remain unchanged. |
+| `docs/architecture/distributed-execution-legacy-parity.json` | Machine-readable execution-source and current control-invariant matrix. |
+| `docs/replatform/current-main-crosswalk.md` | Stable PR #320 sink IDs with cutover/disable owners and evidence. |
+| `docs/architecture/decisions.md` | Decision #121 summary and links to the lifecycle, authority, threat/control, delivery, parity, and current-main records; existing Decisions #103/#117–#120 remain authoritative except where #121 explicitly supersedes named behavior. |
 | `tests/fixtures/distributed-execution/*.json` | Deterministic golden journeys and failure scenarios consumed by later protocol/provider suites. |
 | `tests/fixtures/distributed-execution/schema-v1.json` | Strict schema for tenant, identity, inputs, events, cost, cancellation, cleanup, and forbidden effects. |
 | `scripts/check-distributed-execution-foundation.mjs` | Dependency-free structural checker used locally and in the always-on policy job. |
@@ -77,18 +79,35 @@ This section is normative and replaces any narrower checker, lifecycle, trust-ta
 ### FND-004 strict fixture corpus
 
 - Create `schema-v1.json` and validate each fixture against it without adding a new dependency. The validator checks types, formats, uniqueness, referential consistency, and bounded values—not only field presence.
-- Every fixture includes Organization/Company/actor/owner identity; placement/target policy; immutable input/workspace base; job/attempt/lease/fence; ordered expected events and `eventDigest` values computed over the constrained RFC 8785 canonical immutable-event contract locked here and reused by PRT-004; artifacts; cost/usage bounds; cancellation/approval points; cleanup; timing; audit actions; and forbidden effects.
+- Every fixture includes Organization/Company, typed requester/executor, and one strict `task_run | commander_turn | crew_run | one_shot | browser_request | service_reconcile` source; only task-run sources carry required run/issue identity. It also includes placement/target policy; immutable input/workspace base; job/attempt/lease/fence; ordered expected events and `eventDigest` values computed over the constrained RFC 8785 canonical immutable-event contract locked here and reused by PRT-004; artifacts; cost/usage bounds; cancellation/product-approval/runtime-decision points; cleanup; timing; audit actions; and forbidden effects.
 - In addition to the six original journeys, add `service-provider-pause-resume.json`, `late-output-quarantine.json`, and `plaintext-secret-in-argv-rejected.json`.
 - `late-output-quarantine` proves the separate device-authenticated prefix/operation cannot update the old attempt or select a checkpoint. `service-provider-pause-resume` spans replacement instances and does not claim one uninterrupted E2B process.
 
 ### FND-005 gates and evidence integrity
 
 - Link the delivery policy to [`../../test-gates.md`](../../test-gates.md) and make D0–D6 plus `blocked_external` valid QA lanes/decisions.
-- Flags resolve deployment → Organization → workload, with hard-negative controls for public ingress, cloud plugins, and the hosted unsafe override.
+- Flags resolve deployment → Organization → workload, with hard-negative controls for public ingress, the reserved distributed plugin surface, and the hosted unsafe override; FND-006/FND-008 enforce the actual current plugin exclusion.
 - Include two-replica/shared-admission configuration ownership, named protocol/migration/security custodians, and the `E6-D1-FOUNDATION` handoff.
-- Record a start SHA before Task 1. Integration diff/commit verification uses that SHA and the five recorded ticket commits, never `HEAD~5`.
+- Record a start SHA before Task 1. Integration diff/commit verification uses that SHA and the eight recorded ticket commits, never a commit-distance assumption.
 - QA names are `<date>-<lane>-<scope>-<sha12>-a<attempt>.md`; reruns always increment attempt and never overwrite evidence.
 - A hard-invariant or required repository failure keeps E0 in `gate_review`. A focused pass or “baseline issue” note cannot convert it to completion; this program has no baseline-failure waiver path.
+- Split intentional catalog/connector refresh from root build. `pnpm build` must consume pinned checked-in inputs, perform no network fetch and leave tracked bytes unchanged; a hash-verified refresh command remains explicit. Update root scripts, AGENTS, and every required CI caller together. The D0 rollup runs both authoritative root `pnpm build` and same-revision `pnpm -r build`; neither silently substitutes for the other before that change lands.
+- Gate/evidence checking enforces the exact 40-character revision, named gate owner, stable requirement IDs, REQUIRED/HARD/INITIAL/OBSERVED values, D4/D6 frozen schedule and sample fields, ticket-result blob pins, append-only ticket review attempts, and immutable QA/handoff attempts with `Supersedes`.
+
+### FND-006 plugin process composition
+
+- Treat Decision #103 as authority and the PR #320 plugin allowlist as the defect under repair. In `cloud_auth`, block all six typed sinks (`worker-manager`, `worker-fork`, `lifecycle`, `loader`, `loader-import`, `ui-static`) and ensure the parent process cannot gain authority from `AOA_PLUGIN_WORKER_PROCESS=1`.
+- Do not construct/start plugin worker, lifecycle, or loader execution machinery in the hosted parent. Reconcile stale ready rows to blocked metadata-only state. Preserve self-hosted behavior and prove both sides through the real app composition.
+
+### FND-007 current-main and parity authority
+
+- Create `distributed-execution-legacy-parity.json` with the six execution-source kinds and dimensions for checkout/assignment, capacity claim/release/wakeup, product/runtime approvals, budgets, audit, cost, output/run summary, completion/cancel/retry, plus justified `not_applicable` values.
+- Parse the stable `CM-*`/`CP-*` rows in [`../../current-main-crosswalk.md`](../../current-main-crosswalk.md), require explicit ticket IDs and all shadow/cutover/drain/rollback/evidence fields, and cross-check owners against the program backlog. Mutation tests remove and corrupt each row/source/parity dimension.
+
+### FND-008 plugin runtime and browser surfaces
+
+- In `cloud_auth`, block plugin install/reinstall/upgrade/uninstall, executable manifest import, tools, jobs, webhooks, MCP bridge/RPC, streams/events, UI/static contributions, and background activation before I/O/import/dispatch/process/browser-code effects.
+- Preserve the already fail-closed external-adapter install/load/reload/UI-parser boundary. Metadata-only reads use persisted validated data. Self-hosted behavior remains unchanged.
 
 ---
 
@@ -100,11 +119,11 @@ This section is normative and replaces any narrower checker, lifecycle, trust-ta
 - Modify: `package.json`
 - Create: `docs/architecture/distributed-execution-lifecycles.md`
 - Create: `docs/architecture/distributed-execution-lifecycles.json`
-- Modify: `docs/architecture/decisions.md` after Decision #119
+- Modify: `docs/architecture/decisions.md` after Decision #120
 
 **Interfaces:**
 - Consumes: approved workload names `batch`, `browser_session`, `service` and the program design’s lifecycle rules.
-- Produces: `pnpm check:distributed-foundation`; Decision #120; machine-readable and human-readable job/attempt/lease/workload transition authority consumed by E1 `states.ts`.
+- Produces: `pnpm check:distributed-foundation`; Decision #121; machine-readable and human-readable job/attempt/lease/workload transition authority consumed by E1 `states.ts`.
 
 - [ ] **Step 1: Add a failing foundation checker and package script**
 
@@ -156,7 +175,7 @@ await requireFile("docs/architecture/distributed-execution-lifecycles.md", [
   "service",
 ]);
 await requireFile("docs/architecture/decisions.md", [
-  "## Decision #120 — Cloud control plane uses a fenced outbound worker protocol",
+  "## Decision #121 — Cloud control plane uses a fenced outbound worker protocol",
   "distributed-execution-lifecycles.md",
 ]);
 
@@ -180,7 +199,7 @@ Run:
 pnpm check:distributed-foundation
 ```
 
-Expected: exit 1 with both `docs/architecture/distributed-execution-lifecycles.md: missing` and `docs/architecture/decisions.md: missing "## Decision #120 — Cloud control plane uses a fenced outbound worker protocol"`.
+Expected: exit 1 with both `docs/architecture/distributed-execution-lifecycles.md: missing` and `docs/architecture/decisions.md: missing "## Decision #121 — Cloud control plane uses a fenced outbound worker protocol"`.
 
 - [ ] **Step 3: Write the lifecycle record**
 
@@ -191,7 +210,7 @@ Create `docs/architecture/distributed-execution-lifecycles.md` with these exact 
 
 ## Shared identity and ownership
 
-Every execution is identified by Organization, Company, run, job, attempt, lease, and sandbox/service-instance identity. Delivery is at least once. Only the active lease fence may emit accepted events, fetch secrets, commit artifacts, or complete an attempt.
+Every execution is identified by Organization, Company, discriminated execution source, job, attempt, lease, and sandbox/service-instance identity. Only `task_run` requires run and issue identity; Commander, crew, one-shot, browser, and service sources use their own typed provenance and opaque principal IDs. Delivery is at least once. Only the active lease fence may emit accepted events, fetch secrets, commit artifacts, or complete an attempt.
 
 ## Job lifecycle
 
@@ -250,16 +269,22 @@ The command accepts an optional `--root <fixture-directory>` only for its depend
 
 Create `docs/architecture/distributed-execution-lifecycles.json` from the same state sets and transitions, including guarded edge reasons, terminal sets, and forbidden cross-lifecycle edges. Add `## Lifecycle diagrams`, `## Worked journeys`, `## Deadlines and provider interruption`, and `## Legacy concept mapping` to the Markdown; cover batch, browser, service, cancellation/fence/quarantine/cleanup, E2B pause-or-replacement, and current heartbeat/Commander/crew/run concepts. Extend the checker to parse both files, validate reachability/guarded edges/terminal immutability, and compare the rendered Markdown tables to the JSON authority. Extend the mutation tests to delete an allowed edge, add a terminal outgoing edge, remove a guard, and drift a Markdown row; every mutation must fail.
 
-Append Decision #120 to `docs/architecture/decisions.md` after the existing memory Decisions #118 and #119:
+Before appending, parse every `## Decision #<n>` heading in `docs/architecture/decisions.md`, require that #120 is the current highest locked number and that its title is the Commander warm-E2B decision, and require #121 is unused. If main has advanced, stop, record an E0 finding, allocate the next unused number through an approved plan amendment, and update every checker/ledger/reference consistently; never overwrite or duplicate a locked decision number.
+
+Append Decision #121 to `docs/architecture/decisions.md` after the existing Decision #120:
 
 ```markdown
-## Decision #120 — Cloud control plane uses a fenced outbound worker protocol with distinct batch, browser-session, and service lifecycles (2026-08-07)
+## Decision #121 — Cloud control plane uses a fenced outbound worker protocol with distinct batch, browser-session, and service lifecycles (2026-08-08)
 
 **Status:** Locked for the re-platform program. Implementation is phased and default-off.
 
 AoA retains its product/domain model but moves hosted execution behind a separately deployable worker protocol. PostgreSQL remains authoritative for policy and execution state. Workers lease work outbound and may mutate the control plane only through an active attempt/lease fence. `batch`, `browser_session`, and `service` are distinct workload classes; a service is desired state plus reconciled instances, not an infinitely renewed batch job.
 
-The canonical lifecycle status sets, allowed transitions, cancellation behavior, and lease-loss rules are in [`distributed-execution-lifecycles.md`](distributed-execution-lifecycles.md) and its machine-readable peer `distributed-execution-lifecycles.json`. This decision extends Decision #117; it does not make the deferred gVisor pool implemented and does not permit execution on the hosted control-plane process.
+The canonical lifecycle status sets, allowed transitions, cancellation behavior, and lease-loss rules are in [`distributed-execution-lifecycles.md`](distributed-execution-lifecycles.md) and its machine-readable peer `distributed-execution-lifecycles.json`.
+
+This decision extends Decision #117 by treating its target registry, route-by-credential policy, and provider seams as migration inputs to one authoritative placement and fenced worker protocol. Once FND-005 lands, it supersedes Decision #117 only where that decision permits `AOA_ALLOW_UNSANDBOXED_MULTITENANT` in `cloud_auth`: hosted startup must reject that escape hatch, and it is never a distributed fallback. It does not make the deferred gVisor pool implemented.
+
+Decision #120 remains authoritative for current Commander warm-E2B behavior until MIG-005 completes its shadow, drain, cutover, and rollback contract; this decision neither silently disables nor dual-runs that path. Decision #103 remains authoritative for plugins: `cloud_auth` executes no host-resident plugin worker unless a later locked decision supplies a separately isolated plugin-worker architecture and its release evidence.
 ```
 
 - [ ] **Step 4: Run the checker and verify GREEN**
@@ -275,7 +300,7 @@ Expected: exit 0 and `distributed execution foundation: PASS`.
 
 - [ ] **Step 5: Commit FND-001**
 
-Before staging, update the existing `FND-001-result.md` to status `gate_review` without changing its captured Start SHA. List the lifecycle document, Decision #120, checker, and package script; record both the intentional RED run and final GREEN run; set deviations/findings/follow-ups to `None` unless an epic finding or approved decision exists.
+Before staging, update the existing `FND-001-result.md` to status `gate_review` without changing its captured Start SHA. List the lifecycle document, Decision #121, checker, and package script; record both the intentional RED run and final GREEN run; set deviations/findings/follow-ups to `None` unless an epic finding or approved decision exists.
 
 ```powershell
 git add package.json scripts/check-distributed-execution-foundation.mjs scripts/check-distributed-execution-foundation.test.mjs docs/architecture/distributed-execution-lifecycles.md docs/architecture/distributed-execution-lifecycles.json docs/architecture/decisions.md docs/replatform/epics/E0-foundation/tickets/FND-001-result.md
@@ -289,8 +314,19 @@ git commit -m "docs: lock distributed workload lifecycles"
 **Files:**
 - Modify: `scripts/check-distributed-execution-foundation.mjs`
 - Modify: `scripts/check-distributed-execution-foundation.test.mjs`
+- Create: `docs/replatform/epics/E0-foundation/tickets/FND-006-result.md`
+- Modify: `package.json`
+- Modify: `scripts/fetch-bundled-catalog.ts`
+- Modify: `scripts/fetch-bundled-connectors.ts`
+- Create: `scripts/check-bundled-snapshot-inputs.mjs`
+- Create: `scripts/check-bundled-snapshot-inputs.test.mjs`
+- Modify: `AGENTS.md`
+- Modify: `docs/replatform/artifact-policy.md`
+- Modify: `docs/replatform/templates/qa-result-template.md`
+- Modify: `docs/replatform/templates/handoff-template.md`
+- Modify: `docs/replatform/templates/ticket-result-template.md`
 - Create: `docs/architecture/distributed-execution-authority.md`
-- Modify: `docs/architecture/decisions.md` Decision #120
+- Modify: `docs/architecture/decisions.md` Decision #121
 
 **Interfaces:**
 - Consumes: lifecycle identity chain from Task 1 and current AoA/PostgreSQL/Git/object-storage behavior.
@@ -312,11 +348,11 @@ await requireFile("docs/architecture/distributed-execution-authority.md", [
 ]);
 ```
 
-Also require the new link in Decision #120:
+Also require the new link in Decision #121:
 
 ```js
 await requireFile("docs/architecture/decisions.md", [
-  "## Decision #120 — Cloud control plane uses a fenced outbound worker protocol",
+  "## Decision #121 — Cloud control plane uses a fenced outbound worker protocol",
   "distributed-execution-lifecycles.md",
   "distributed-execution-authority.md",
 ]);
@@ -366,7 +402,7 @@ Inputs use immutable manifests with base hashes. Large bytes move directly throu
 Expired or replaced attempts cannot update authoritative state. A late patch, trace, or checkpoint may be uploaded only to a quarantine prefix and surfaced for human reconciliation. It is never auto-applied or selected as the service recovery checkpoint.
 ```
 
-Add this paragraph to Decision #120 after the lifecycle link:
+Add this paragraph to Decision #121 after the lifecycle link:
 
 ```markdown
 Authority, synchronization, single-writer cutover, and late-result quarantine are locked in [`distributed-execution-authority.md`](distributed-execution-authority.md). No desktop or worker database is a peer replica of the hosted control plane.
@@ -399,7 +435,7 @@ git commit -m "docs: lock distributed state authority"
 - Modify: `scripts/check-distributed-execution-foundation.test.mjs`
 - Create: `docs/architecture/distributed-execution-threat-model.md`
 - Create: `docs/architecture/distributed-execution-threat-controls.json`
-- Modify: `docs/architecture/decisions.md` Decision #120
+- Modify: `docs/architecture/decisions.md` Decision #121
 
 **Interfaces:**
 - Consumes: lifecycle and authority records; existing Decision #103 plugin boundary and Decision #117 execution-target/gVisor boundary.
@@ -469,14 +505,14 @@ Start with these rows, then add the placement, desktop, HA, provider-isolation, 
 | DE-13 | Noisy-neighbor starvation | High | per-Organization quotas/fair scheduling | multi-tenant load | JOB-007/REL-002 |
 | DE-14 | Unsafe hosted fallback | Critical | startup rejects process-wide unsafe override | configuration test | FND-005 |
 | DE-15 | Supply-chain image compromise | Critical | pinned digest, scan, signature, kill switch | release gate | REL-004 |
-| DE-16 | Cloud plugin code escape | Critical | cloud plugins remain disabled pending separate worker | startup/policy tests | REL-005 |
+| DE-16 | Cloud plugin code escape | Critical | cloud plugins remain disabled pending separate worker | process/composition plus route/dispatcher/UI negatives and release regression | FND-006/FND-008/REL-005 |
 | DE-17 | Cleanup is blocked after fence loss or cleanup authority is escalated | Critical | separate resource-bound monotonic cleanup authority with effect operations unrepresentable | post-fence cleanup, cross-resource denial, and escalation corpus | WRK-004/DEP-008/CLI-004/REL-004 |
 
 Add a `## Residual risks and release exclusions` section that explicitly excludes public service ingress, cloud plugins, unvalidated gVisor bridge egress, active-active multi-region writes, and unattended orphan-output application.
 
 The JSON validator enumerates every crossing/control object and requires the exact fields from the amendment, unique stable IDs, known severity/lane values, non-empty owner-ticket arrays whose IDs exist in `program-design.md`, and a release test for every Critical/High entry. It compares the complete JSON ID set and crossing names to the Markdown render. Extend the mutation corpus to remove each required field in turn, duplicate an ID, invent an owner ticket, omit a Markdown ID, and remove a Critical/High release test; all cases must fail before the valid corpus passes.
 
-- [ ] **Step 4: Link the threat model from Decision #120 and verify**
+- [ ] **Step 4: Link the threat model from Decision #121 and verify**
 
 Add:
 
@@ -789,7 +825,7 @@ git commit -m "test: add distributed execution golden journeys"
 - Modify: `server/src/__tests__/config.test.ts`
 - Modify: `server/src/services/unsandboxed-multitenant-guard.ts:1-6`
 - Create: `docs/architecture/distributed-execution-delivery-policy.md`
-- Modify: `docs/architecture/decisions.md` Decision #120
+- Modify: `docs/architecture/decisions.md` Decision #121
 - Modify: `docs/deploy/environment-variables.md`
 - Modify: `scripts/check-distributed-execution-foundation.mjs`
 - Modify: `scripts/check-distributed-execution-foundation.test.mjs`
@@ -1032,9 +1068,9 @@ const distributedExecutionEnabled = readDistributedExecutionDeploymentFlag(proce
 assertHostedExecutionStartupSafe({ deploymentMode, env: process.env });
 ```
 
-Return `distributedExecutionEnabled` next to `deploymentMode`. Do not expose config booleans for either excluded distributed surface and do not call any scheduler, adapter, distributed route registration, distributed plugin runner, or worker code. A truthy excluded flag must stop startup; absence/false must leave the corresponding distributed route/runner unregistered. Existing legacy plugin behavior governed by Decision #103 is not silently removed or broadened by this ticket.
+Return `distributedExecutionEnabled` next to `deploymentMode`. Do not expose config booleans for either excluded distributed surface and do not call any scheduler, adapter, distributed route registration, distributed plugin runner, or worker code. A truthy excluded flag must stop startup; absence/false must leave the corresponding reserved distributed route/runner unregistered. FND-006 and FND-008 separately enforce Decision #103 across the actual current plugin process, route, dispatcher, and UI surfaces before E0 may pass.
 
-Create `server/src/__tests__/distributed-execution-exclusions.test.ts` through the real `createApp()` path. With the ordinary distributed flag both false and true, `/api/distributed-execution/public-services` and `/api/distributed-execution/cloud-plugins` return the normal not-found response. With either exclusion sentinel truthy, `loadConfig()` fails before app construction. This is an executable absence/startup test for the reserved paths, not a ban on unrelated legacy routes.
+Create `server/src/__tests__/distributed-execution-exclusions.test.ts` through the real `createApp()` path. With the ordinary distributed flag both false and true, `/api/distributed-execution/public-services` and `/api/distributed-execution/cloud-plugins` return the normal not-found response. With either exclusion sentinel truthy, `loadConfig()` fails before app construction. This proves the reserved distributed paths; the actual current plugin exclusion is owned by FND-006/FND-008 and is part of the E0 integration gate.
 
 Extend `scripts/check-distributed-execution-foundation.mjs` with a source-boundary rule over `server/src/app.ts` and the actual startup/route registry: reject any import from a reserved distributed public-ingress or cloud-plugin-runner module and any registration of the two reserved path prefixes. Extend the dependency-free mutation test with temporary source trees that add each forbidden import/registration and assert an exact failure. Do not claim an injected registration spy or seam that the repository does not expose.
 
@@ -1062,7 +1098,7 @@ Create `docs/architecture/distributed-execution-delivery-policy.md` with:
 - a statement that feature-flagged code still requires tests;
 - a statement that the control plane never receives a Docker socket and workers never receive database credentials.
 - a link to `docs/replatform/test-gates.md`, the `E6-D1-FOUNDATION` partial gate, and the rule that HARD failures are non-waivable;
-- executable hard-negative controls for public service ingress and cloud plugin execution: both default absent/off, truthy values stop startup in every deployment mode, real-app requests prove the reserved paths are 404, and the source-boundary checker rejects their imports/registration;
+- executable hard-negative controls for public service ingress and the reserved distributed cloud-plugin surface: both default absent/off, truthy values stop startup in every deployment mode, real-app requests prove the reserved paths are 404, and the source-boundary checker rejects their imports/registration; FND-006/FND-008 own the actual current plugin surfaces required by Decision #103;
 - shared two-replica admission/rate-limit ownership outside process memory;
 - immutable QA naming and `pass | fail | blocked_external` decisions.
 
@@ -1083,7 +1119,7 @@ await requireFile("docs/architecture/distributed-execution-delivery-policy.md", 
 
 Document all four environment variables in `docs/deploy/environment-variables.md`: distributed execution defaults off; enabling it creates no worker by itself; Organization rollout remains separately required; the unsafe override is rejected in `cloud_auth` and is self-hosted emergency compatibility only; the public-ingress and cloud-plugin names are reserved hard-negative sentinels whose truthy values reject startup rather than enable a feature.
 
-Add delivery-policy and threat-model links to Decision #120.
+Add delivery-policy and threat-model links to Decision #121.
 
 - [ ] **Step 7: Make the foundation checker an always-on policy gate**
 
@@ -1096,7 +1132,15 @@ In `.github/workflows/pr.yml`, after `Setup Node.js` in the `policy` job, add:
 
 This job deliberately uses only Node standard-library APIs because `policy` does not install dependencies.
 
-- [ ] **Step 8: Run the complete E0 verification gate**
+- [ ] **Step 8: Make the authoritative root build reproducible and enforce evidence records**
+
+Remove catalog/connector network refresh from the `prebuild` lifecycle. Keep `pnpm build` as the repository/CI authority, but make it consume only checked-in snapshots whose source URL/version/digest are recorded in a committed manifest and verified by `check-bundled-snapshot-inputs.mjs`. Add an explicit operator command such as `pnpm refresh:bundled-snapshots` for intentional network refresh; it rewrites snapshots and the manifest together and is never invoked by build or test. The mutation test changes each snapshot, digest, source, and ordering and requires verification failure.
+
+Update `AGENTS.md`, every required `.github/workflows/pr.yml` build caller, and the delivery policy in the same commit. They must all run authoritative `pnpm build`; D0 also records `pnpm -r build` as the direct same-revision package build. Both commands must leave a clean worktree.
+
+Extend the foundation checker and its mutation corpus to validate the artifact policy and templates: exact revision and named owner fields, stable requirement IDs with REQUIRED/HARD/INITIAL/OBSERVED values, D4/D6 schedule hash and expected/observed/missing sample fields, ticket-result blob pins, append-only review history, immutable QA/handoff banner, and `Supersedes`. Given a base revision, the checker rejects modification/deletion/rename of an existing QA/handoff record and permits a new higher attempt.
+
+- [ ] **Step 9: Run the complete FND-005 verification gate**
 
 Run:
 
@@ -1105,6 +1149,11 @@ pnpm check:distributed-foundation
 node --test scripts/check-distributed-execution-foundation.test.mjs
 pnpm exec vitest run server/src/__tests__/distributed-execution-policy.test.ts server/src/__tests__/distributed-execution-exclusions.test.ts server/src/__tests__/config.test.ts server/src/__tests__/unsandboxed-multitenant-guard.test.ts
 pnpm --filter @armyofagents/server typecheck
+pnpm --filter @armyofagents/server build
+node --test scripts/check-bundled-snapshot-inputs.test.mjs
+node scripts/check-bundled-snapshot-inputs.mjs
+pnpm -r build
+pnpm build
 git diff --check
 git diff -- pnpm-lock.yaml
 ```
@@ -1113,30 +1162,211 @@ Expected:
 
 - foundation checker exits 0;
 - focused tests pass;
-- server typecheck exits 0;
+- server typecheck/build, snapshot checker/mutation tests, recursive build, and authoritative root build exit 0 without network access or tracked-byte changes;
 - `git diff --check` exits 0;
 - `git diff -- pnpm-lock.yaml` prints nothing.
 
-- [ ] **Step 9: Commit FND-005**
+- [ ] **Step 10: Commit FND-005**
 
-Create `docs/replatform/epics/E0-foundation/tickets/FND-005-result.md`. Record the rollout-policy test counts, server typecheck, hosted unsafe-override denial, both excluded-surface startup denials, real-app 404 evidence, source-boundary import/registration mutation assertions, CI policy step, documentation, and confirmation that no scheduler/provider path was enabled.
+Create `docs/replatform/epics/E0-foundation/tickets/FND-005-result.md`. Record the rollout-policy test counts, server typecheck/build, hosted unsafe-override denial, both reserved-surface startup denials, real-app 404 evidence, source-boundary import/registration mutation assertions, snapshot manifest/mutation evidence, both build commands and clean-tree result, evidence-template/immutability mutations, CI/AGENTS command parity, documentation, and confirmation that no scheduler/provider path was enabled.
 
 ```powershell
-git add server/src/config/distributed-execution.ts server/src/__tests__/distributed-execution-policy.test.ts server/src/__tests__/distributed-execution-exclusions.test.ts server/src/config.ts server/src/__tests__/config.test.ts server/src/services/unsandboxed-multitenant-guard.ts docs/architecture/distributed-execution-delivery-policy.md docs/architecture/decisions.md docs/deploy/environment-variables.md scripts/check-distributed-execution-foundation.mjs scripts/check-distributed-execution-foundation.test.mjs .github/workflows/pr.yml docs/replatform/epics/E0-foundation/tickets/FND-005-result.md
+git add package.json AGENTS.md server/src/config/distributed-execution.ts server/src/__tests__/distributed-execution-policy.test.ts server/src/__tests__/distributed-execution-exclusions.test.ts server/src/config.ts server/src/__tests__/config.test.ts server/src/services/unsandboxed-multitenant-guard.ts docs/architecture/distributed-execution-delivery-policy.md docs/architecture/decisions.md docs/deploy/environment-variables.md docs/replatform/artifact-policy.md docs/replatform/templates scripts/fetch-bundled-catalog.ts scripts/fetch-bundled-connectors.ts scripts/check-bundled-snapshot-inputs.mjs scripts/check-bundled-snapshot-inputs.test.mjs scripts/check-distributed-execution-foundation.mjs scripts/check-distributed-execution-foundation.test.mjs .github/workflows/pr.yml docs/replatform/epics/E0-foundation/tickets/FND-005-result.md
 git commit -m "feat: gate distributed execution rollout"
 ```
 
 ---
 
-### Task 6: E0 Integration Gate and Handoff
+### Task 6: FND-006 — Disable Cloud Plugin Process Composition
 
 **Files:**
-- Read: all files changed by Tasks 1–5
+- Modify: `server/src/services/cloud-plugin-execution.ts`
+- Modify: `server/src/services/plugin-worker-manager.ts`
+- Modify: `server/src/services/plugin-lifecycle.ts`
+- Modify: `server/src/app.ts`
+- Modify: `server/src/index.ts`
+- Modify: `server/src/__tests__/cloud-plugin-execution.test.ts`
+- Modify: `server/src/__tests__/plugin-broker-cloud.integration.test.ts`
+- Create: `server/src/__tests__/cloud-plugin-process-composition.test.ts`
+- Modify: `scripts/check-distributed-execution-foundation.mjs`
+- Modify: `scripts/check-distributed-execution-foundation.test.mjs`
+
+**Interfaces:**
+- Consumes: Decision #103, deployment mode, all six `PluginCloudExecutionSink` values, and the FND-005 hosted safety config.
+- Produces: one parent-process rule: `cloud_auth` cannot construct, fork, start, resume, or dispatch a plugin worker, and `AOA_PLUGIN_WORKER_PROCESS=1` is never parent authority.
+
+- [ ] **Step 1: Capture the ticket identity and write the mixed RED/characterization matrix**
+
+Create `FND-006-result.md` from the ticket template and record the exact Start SHA. Through real `createApp()`/startup, make the four currently allowlisted sinks (`worker-manager`, `worker-fork`, `lifecycle`, `loader`) and the parent-marker-bypassed `loader-import` the intentional RED cases. Keep the already unconditionally blocked `ui-static` case as passing current-state characterization; do not require a false RED. Install construction, spawn, child-I/O, import, and dispatch sentinels before app creation.
+
+```powershell
+pnpm --filter @armyofagents/server exec vitest run src/__tests__/cloud-plugin-execution.test.ts src/__tests__/plugin-broker-cloud.integration.test.ts src/__tests__/cloud-plugin-process-composition.test.ts
+```
+
+Expected RED: the four allowlisted sinks and `AOA_PLUGIN_WORKER_PROCESS=1`/`loader-import` path demonstrate reachable hosted composition or dispatch; the `ui-static` characterization and existing self-hosted positives pass.
+
+- [ ] **Step 2: Enforce the parent-process and composition boundary**
+
+Make the cloud policy fail closed for all six sinks in the parent. Gate plugin worker/lifecycle/loader construction at composition, not only downstream routes. A genuine child marker is accepted only inside a worker child launched by the self-hosted manager's explicit minimal environment; hosted parent startup rejects or strips it before composition. Reconcile stale `ready` rows to `status="error"`, `statusReasonCode="PLUGIN_WORKER_BLOCKED_IN_CLOUD"`, and the documented actionable `lastError`.
+
+For a rolling multi-replica upgrade, first deny new plugin activations/dispatch, then idempotently mark queued work blocked, request cancellation of running plugin jobs, stop stream/bridge delivery, terminate every child, and require a zero-process/zero-running-job reconciliation on every replica before the deployment advances. Rollback must retain the Decision #103 denial through a compatible guard/config or keep the hosted service unavailable; it may never roll back to a state that re-enables cloud plugin execution.
+
+- [ ] **Step 3: Preserve self-hosted behavior and harden the checker**
+
+Preserve `local_trusted` and single-tenant `authenticated` worker lifecycle positives. Add source-boundary mutations that restore a cloud allowlist entry, unguarded construction, or parent-marker bypass and require failure.
+
+- [ ] **Step 4: Verify GREEN and affected-package gates**
+
+```powershell
+pnpm --filter @armyofagents/server exec vitest run src/__tests__/cloud-plugin-execution.test.ts src/__tests__/plugin-broker-cloud.integration.test.ts src/__tests__/cloud-plugin-process-composition.test.ts
+pnpm --filter @armyofagents/server typecheck
+pnpm --filter @armyofagents/server build
+pnpm check:distributed-foundation
+node --test scripts/check-distributed-execution-foundation.test.mjs
+git diff --check
+```
+
+Expected: every command exits 0; all six parent sink cases deny before effect, the marker bypass fails, rolling-drain reconciliation reaches zero, and self-hosted positives remain green.
+
+- [ ] **Step 5: Record and commit FND-006**
+
+Record commands/exit codes, the five intentional RED cases, `ui-static` characterization, all six GREEN results, startup/process evidence, multi-replica drain, stale-row reconciliation, safe rollback, self-hosted positives, and no-escape-hatch result.
+
+```powershell
+git add server/src/services/cloud-plugin-execution.ts server/src/services/plugin-worker-manager.ts server/src/services/plugin-lifecycle.ts server/src/app.ts server/src/index.ts server/src/__tests__/cloud-plugin-execution.test.ts server/src/__tests__/plugin-broker-cloud.integration.test.ts server/src/__tests__/cloud-plugin-process-composition.test.ts scripts/check-distributed-execution-foundation.mjs scripts/check-distributed-execution-foundation.test.mjs docs/replatform/epics/E0-foundation/tickets/FND-006-result.md
+git commit -m "fix: disable hosted plugin process composition"
+```
+
+---
+
+### Task 7: FND-007 — Freeze Execution Sources and Legacy Parity
+
+**Files:**
+- Create: `docs/architecture/distributed-execution-legacy-parity.json`
+- Modify: `docs/replatform/current-main-crosswalk.md`
+- Modify: `tests/fixtures/distributed-execution/schema-v1.json`
+- Modify: all nine `tests/fixtures/distributed-execution/*.json` journey files
+- Modify: `scripts/check-distributed-execution-foundation.mjs`
+- Modify: `scripts/check-distributed-execution-foundation.test.mjs`
+- Modify: `docs/architecture/decisions.md` Decision #121
+- Create: `docs/replatform/epics/E0-foundation/tickets/FND-007-result.md`
+
+**Interfaces:**
+- Consumes: stable `CM-*`/`CP-*` crosswalk rows, FND-002 authority, FND-004 fixtures, and the current checkout/approval/budget/audit/cost/output contracts.
+- Produces: the exact six-kind `ExecutionSourceV1` authority and parity matrix consumed by PRT-002/003/006/007, TEN-006, JOB-010/011/012/013/014, CLI-005, and MIG-005/006/007.
+
+- [ ] **Step 1: Capture the ticket identity and extend the checker RED surface**
+
+Create `FND-007-result.md` and record the Start SHA. Add expected files/rows/source kinds/parity dimensions and one mutation per rule before creating the JSON or fixture fields.
+
+```powershell
+node --test scripts/check-distributed-execution-foundation.test.mjs
+pnpm check:distributed-foundation
+```
+
+Expected RED: the legacy-parity authority and fixture source fields are missing, and mutations for a removed/corrupt CM/CP row, owner, capacity dimension, source kind, or unjustified `not_applicable` are not yet rejected.
+
+- [ ] **Step 2: Implement the source/parity/crosswalk authority**
+
+Define strict JSON for `task_run`, `commander_turn`, `crew_run`, `one_shot`, `browser_request`, and `service_reconcile`. Each kind declares required/forbidden fields, opaque requester/executor principal kinds, and checkout/assignment, capacity claim/release/wakeup, product/runtime approval, budget, audit, cost, output/run-summary, completion/cancel/retry behavior or a justified `not_applicable`. Only `task_run` requires `runId`/`issueId`.
+
+Parse the crosswalk as structured tables. Require unique contiguous stable IDs, exact ticket IDs present in `program-design.md`, explicit current/target authority, disposition, shadow, active-work drain, rollback, and hard-negative evidence. Cross-check every PR #320 sink, the post-PR #320 migration-0188 snapshot/marker seam, and every parity owner; prose ranges are invalid. Extend all fixtures with strict source/principal fields and add fabricated provenance, identity mismatch, missing row/owner/dimension, unknown ticket, missing or auto-bypassed migration snapshot/marker evidence, sentinel Organization, and Markdown/JSON-drift mutations. Link both authorities from Decision #121.
+
+- [ ] **Step 3: Verify GREEN**
+
+```powershell
+node --test scripts/check-distributed-execution-foundation.test.mjs
+pnpm check:distributed-foundation
+git diff --check
+```
+
+Expected: every command exits 0; the record includes six source kinds, contiguous CM/CP counts, exact owner IDs, every parity dimension, nine schema-valid journeys, and every mutation observed failing before the valid corpus passes.
+
+- [ ] **Step 4: Record and commit FND-007**
+
+```powershell
+git add docs/architecture/distributed-execution-legacy-parity.json docs/replatform/current-main-crosswalk.md tests/fixtures/distributed-execution docs/architecture/decisions.md scripts/check-distributed-execution-foundation.mjs scripts/check-distributed-execution-foundation.test.mjs docs/replatform/epics/E0-foundation/tickets/FND-007-result.md
+git commit -m "docs: freeze execution source and legacy parity"
+```
+
+---
+
+### Task 8: FND-008 — Disable Cloud Plugin Runtime and Browser Surfaces
+
+**Files:**
+- Modify: `server/src/app.ts`
+- Modify: `server/src/routes/plugins.ts`
+- Modify: `server/src/services/plugin-loader.ts`
+- Modify: `server/src/routes/plugin-ui-static.ts`
+- Modify: `server/src/mcp/tools/plugin-broker-tools.ts`
+- Read/verify: `server/src/adapters/plugin-loader.ts`
+- Read/verify: `server/src/routes/adapters.ts`
+- Create: `server/src/__tests__/cloud-plugin-runtime-exclusions.test.ts`
+- Modify: `server/src/__tests__/cloud-external-adapter-execution.test.ts`
+- Modify: `server/src/__tests__/plugin-ui-static-tenant-scope.test.ts`
+- Modify: `scripts/check-distributed-execution-foundation.mjs`
+- Modify: `scripts/check-distributed-execution-foundation.test.mjs`
+- Read/verify: `server/src/services/plugin-job-scheduler.ts`
+- Read/verify: `server/src/services/plugin-job-coordinator.ts`
+- Read/verify: `server/src/services/plugin-tool-dispatcher.ts`
+- Read/verify: `server/src/services/plugin-event-bus.ts`
+- Read/verify: `server/src/services/plugin-stream-bus.ts`
+- Modify: `server/src/routes/company-plugins.ts`
+- Create: `docs/replatform/epics/E0-foundation/tickets/FND-008-result.md`
+
+**Interfaces:**
+- Consumes: FND-006 process-composition denial and Decision #103.
+- Produces: complete `cloud_auth` denial for plugin package/import, tool/job/webhook/MCP/bridge/stream/event, UI/static, and background surfaces while preserving existing external-adapter denial and self-hosted behavior.
+
+- [ ] **Step 1: Capture the ticket identity and write RED/characterization tests**
+
+Create `FND-008-result.md` and record the Start SHA. Build a matrix for install/reinstall/upgrade/uninstall, executable manifest import, tool dispatch, scheduled job, webhook, MCP broker call, bridge/RPC, stream/event, UI/static/cached contribution, startup/background activation, marketplace operation, and stale ready/running/queued rows. Install I/O/import/dispatch/spawn/static-byte sentinels. Treat already-correct `ui-static` and external-adapter denials as passing characterization; the live runtime/route/dispatcher effects are the intentional RED cases.
+
+```powershell
+pnpm --filter @armyofagents/server exec vitest run src/__tests__/cloud-plugin-runtime-exclusions.test.ts src/__tests__/cloud-external-adapter-execution.test.ts src/__tests__/plugin-ui-static-tenant-scope.test.ts
+```
+
+Expected RED: at least one tool/job/webhook/MCP/bridge/stream/event/install/background case reaches registration or an effect on the PR #320 baseline; existing external-adapter and unconditional UI-static blocks remain green.
+
+- [ ] **Step 2: Preserve the stable denial contract and close runtime effects**
+
+In `cloud_auth`, keep registered plugin HTTP surfaces as denial stubs returning exact status `503` and the Decision #103 envelope (`error`, `code="PLUGIN_WORKER_BLOCKED_IN_CLOUD"`, `docs="/docs/guides/cloud-plugin-execution"`). Persist `status="error"`, the same `statusReasonCode`, and actionable `lastError`; preserve marketplace `errorCode`/`errorDocs`. Non-HTTP dispatchers return their typed equivalent before effect. Metadata-only reads use persisted validated data and never evaluate manifest JavaScript. Do not weaken external-adapter install/load/reload/UI-parser denials. Preserve self-hosted positives.
+
+During a rolling upgrade, deny new triggers first, idempotently block queued work, cancel/fence running jobs, close bridge/stream subscriptions, reconcile stale rows, and prove every replica has zero runnable plugin work. Rollback retains the cloud deny stub/status contract and never re-enables hosted plugin execution.
+
+- [ ] **Step 3: Harden mutations and verify GREEN**
+
+Extend source-boundary mutations to re-register each effectful route/dispatcher, change the 503/code/docs contract, bypass FND-006, or restore a background starter.
+
+```powershell
+pnpm --filter @armyofagents/server exec vitest run src/__tests__/cloud-plugin-runtime-exclusions.test.ts src/__tests__/cloud-external-adapter-execution.test.ts src/__tests__/plugin-ui-static-tenant-scope.test.ts
+pnpm --filter @armyofagents/server typecheck
+pnpm --filter @armyofagents/server build
+pnpm check:distributed-foundation
+node --test scripts/check-distributed-execution-foundation.test.mjs
+git diff --check
+```
+
+Expected: every command exits 0; every CP row denies with the exact stable contract before effect, queued/running work drains safely across replicas, and self-hosted positives remain green.
+
+- [ ] **Step 4: Record and commit FND-008**
+
+```powershell
+git add server/src/app.ts server/src/routes/plugins.ts server/src/routes/company-plugins.ts server/src/services/plugin-loader.ts server/src/routes/plugin-ui-static.ts server/src/mcp/tools/plugin-broker-tools.ts server/src/__tests__/cloud-plugin-runtime-exclusions.test.ts server/src/__tests__/cloud-external-adapter-execution.test.ts server/src/__tests__/plugin-ui-static-tenant-scope.test.ts scripts/check-distributed-execution-foundation.mjs scripts/check-distributed-execution-foundation.test.mjs docs/replatform/epics/E0-foundation/tickets/FND-008-result.md
+git commit -m "fix: disable hosted plugin runtime surfaces"
+```
+
+---
+
+### Task 9: E0 Integration Gate and Handoff
+
+**Files:**
+- Read: all files changed by Tasks 1–8
 - Modify only if verification exposes a scoped defect
 
 **Interfaces:**
-- Consumes: FND-001 through FND-005 commits.
-- Produces: evidence that E1 may rely on immutable workload names, authority rules, threat control IDs, fixtures, rollout policy, and CI gate.
+- Consumes: FND-001 through FND-008 commits.
+- Produces: evidence that E1 may rely on immutable workload/source names, authority/parity rules, current-main sink ownership, threat control IDs, fixtures, actual hosted plugin exclusion, rollout/build/evidence policy, and CI gate.
 
 - [ ] **Step 1: Verify commit and file boundaries**
 
@@ -1154,9 +1384,9 @@ if ($LASTEXITCODE -ne 0) { throw 'E0 start SHA is not a commit' }
 git merge-base --is-ancestor $e0StartSha HEAD
 if ($LASTEXITCODE -ne 0) { throw 'E0 start SHA is not an ancestor of HEAD' }
 $ticketResults = Get-ChildItem docs/replatform/epics/E0-foundation/tickets/FND-*-result.md
-$expectedNames = 1..5 | ForEach-Object { "FND-{0:D3}-result.md" -f $_ }
+$expectedNames = 1..8 | ForEach-Object { "FND-{0:D3}-result.md" -f $_ }
 $actualNames = @($ticketResults.Name | Sort-Object)
-if (Compare-Object $expectedNames $actualNames) { throw "E0 ticket-result filename set is not FND-001 through FND-005" }
+if (Compare-Object $expectedNames $actualNames) { throw "E0 ticket-result filename set is not FND-001 through FND-008" }
 foreach ($result in $ticketResults) {
   $body = Get-Content -LiteralPath $result.FullName -Raw
   if ($body -notmatch '(?m)^\*\*Status:\*\*\s*`complete`\s*$' -or
@@ -1186,7 +1416,7 @@ git diff --exit-code $e0StartSha HEAD -- pnpm-lock.yaml
 if ($LASTEXITCODE -ne 0) { throw 'E0 changed pnpm-lock.yaml across committed work' }
 ```
 
-Verify all five ticket results have `**Status:** \`complete\`` and `**Disposition:** \`approved\`` with a distinct reviewer and reviewed revision. Expected: clean worktree; five scoped E0 implementation commits plus their review-disposition commits; no whitespace errors; every ticket independently approved.
+Verify all eight ticket results have `**Status:** \`complete\`` and `**Disposition:** \`approved\`` with a distinct reviewer, reviewed revision, and append-only review history. Expected: clean worktree; eight scoped E0 implementation commits plus their review-disposition commits; no whitespace errors; every ticket independently approved.
 
 - [ ] **Step 2: Run the required repository checks for the E0 code diff**
 
@@ -1201,11 +1431,12 @@ function Invoke-NativeGate([string]$label, [scriptblock]$command) {
 
 Invoke-NativeGate 'repository typecheck' { pnpm -r typecheck }
 Invoke-NativeGate 'repository test suite' { pnpm test:run }
-Invoke-NativeGate 'offline recursive build' { pnpm -r build }
+Invoke-NativeGate 'same-revision recursive build' { pnpm -r build }
+Invoke-NativeGate 'authoritative repository build' { pnpm build }
 1..3 | ForEach-Object {
   Invoke-NativeGate "D0 critical foundation run $_" { pnpm check:distributed-foundation }
   Invoke-NativeGate "D0 foundation mutation run $_" { node --test scripts/check-distributed-execution-foundation.test.mjs }
-  Invoke-NativeGate "D0 critical focused run $_" { pnpm exec vitest run server/src/__tests__/distributed-execution-policy.test.ts server/src/__tests__/distributed-execution-exclusions.test.ts server/src/__tests__/config.test.ts server/src/__tests__/unsandboxed-multitenant-guard.test.ts }
+  Invoke-NativeGate "D0 critical focused run $_" { pnpm exec vitest run server/src/__tests__/distributed-execution-policy.test.ts server/src/__tests__/distributed-execution-exclusions.test.ts server/src/__tests__/config.test.ts server/src/__tests__/unsandboxed-multitenant-guard.test.ts server/src/__tests__/cloud-plugin-execution.test.ts server/src/__tests__/plugin-broker-cloud.integration.test.ts server/src/__tests__/cloud-plugin-process-composition.test.ts server/src/__tests__/cloud-plugin-runtime-exclusions.test.ts server/src/__tests__/cloud-external-adapter-execution.test.ts server/src/__tests__/plugin-ui-static-tenant-scope.test.ts }
 }
 $dirtyAfterGate = git status --porcelain
 if ($LASTEXITCODE -ne 0) { throw 'git status failed after E0 gate' }
@@ -1213,39 +1444,64 @@ if ($dirtyAfterGate) { throw "E0 gate changed the worktree: $dirtyAfterGate" }
 Invoke-NativeGate 'final E0 tracked diff check' { git diff --exit-code }
 ```
 
-Use `pnpm -r build`, not root `pnpm build`: the root lifecycle runs mutable catalog-fetch prebuild scripts and is not a same-revision evidence command. The recursive package build consumes the checked-in snapshots. Expected: all commands exit 0 and the worktree remains byte-clean. Preserve and classify any pre-existing failure, but do not pass E0 on focused evidence alone. Any required repository failure keeps the handoff at `fail` and E0 in `gate_review`; there is no baseline-failure waiver.
+FND-005 makes root `pnpm build` deterministic and keeps it aligned with AGENTS/CI; `pnpm -r build` remains the direct same-revision package evidence. Both are required and both must leave the worktree byte-clean. Expected: all commands exit 0. Preserve and classify any pre-existing failure, but do not pass E0 on focused evidence alone. Any required repository failure keeps the handoff at `fail` and E0 in `gate_review`; there is no baseline-failure waiver.
 
 - [ ] **Step 3: Record E0 evidence**
 
 Create the QA record path produced by this command from the QA-result template:
 
 ```powershell
+$repoRoot = (git rev-parse --show-toplevel).Trim()
 $utcDate = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd')
 $sha12 = (git rev-parse HEAD).Substring(0, 12)
-$attempt = 1
-do {
-  $selectedAttempt = $attempt
-  $qaRecord = "docs/replatform/epics/E0-foundation/qa/$utcDate-d0-e0-completion-$sha12-a$selectedAttempt.md"
-  $handoffRecord = "docs/replatform/epics/E0-foundation/handoffs/$utcDate-epic-completion-$sha12-a$selectedAttempt.md"
-  $attempt += 1
-} while ((Test-Path -LiteralPath $qaRecord) -or (Test-Path -LiteralPath $handoffRecord))
+$qaDir = "docs/replatform/epics/E0-foundation/qa"
+$handoffDir = "docs/replatform/epics/E0-foundation/handoffs"
+
+function Get-E0RecordAttempts([string]$directory, [string]$namePattern) {
+  if (-not (Test-Path -LiteralPath $directory)) { return @() }
+  return @(Get-ChildItem -LiteralPath $directory -File | ForEach-Object {
+    if ($_.Name -match $namePattern) {
+      [pscustomobject]@{
+        Attempt = [int]$Matches['attempt']
+        Path = $_.FullName.Substring($repoRoot.Length + 1).Replace('\', '/')
+      }
+    }
+  } | Sort-Object Attempt, Path)
+}
+
+# Attempts are monotonic for the stable lane/scope and gate slug across every
+# date and revision, not merely collision-free for today's SHA.
+$qaPrior = @(Get-E0RecordAttempts $qaDir '^\d{4}-\d{2}-\d{2}-d0-e0-completion-[0-9a-f]{12}-a(?<attempt>\d+)\.md$')
+$handoffPrior = @(Get-E0RecordAttempts $handoffDir '^\d{4}-\d{2}-\d{2}-epic-completion-[0-9a-f]{12}-a(?<attempt>\d+)\.md$')
+$priorAttempts = @($qaPrior | ForEach-Object Attempt) + @($handoffPrior | ForEach-Object Attempt)
+$selectedAttempt = if ($priorAttempts.Count -eq 0) { 1 } else { [int](($priorAttempts | Measure-Object -Maximum).Maximum) + 1 }
+$qaRecord = "$qaDir/$utcDate-d0-e0-completion-$sha12-a$selectedAttempt.md"
+$handoffRecord = "$handoffDir/$utcDate-epic-completion-$sha12-a$selectedAttempt.md"
+$qaSupersedes = if ($qaPrior.Count -eq 0) { 'none' } else { $qaPrior[-1].Path }
+$handoffSupersedes = if ($handoffPrior.Count -eq 0) { 'none' } else { $handoffPrior[-1].Path }
 $qaRecord
 $handoffRecord
+$qaSupersedes
+$handoffSupersedes
 ```
 
 Record:
 
-- commit IDs for FND-001 through FND-005;
+- commit IDs for FND-001 through FND-008;
 - exact commands and exit codes;
 - ticket IDs covered;
 - confirmation that `pnpm-lock.yaml` did not change;
 - confirmation that distributed execution remains default-off;
-- three consecutive same-revision critical-suite passes and both excluded-surface negative tests;
-- confirmation that no job, worker, provider, or database schema code was added.
+- three consecutive same-revision critical-suite passes, both reserved-surface negatives, every `CP-*` plugin/external-adapter negative, and self-hosted positives;
+- crosswalk/parity row/source/dimension counts and mutation evidence;
+- both build commands, pinned snapshot manifest hashes, clean-tree result, and every applicable REQUIRED/HARD/INITIAL/OBSERVED value;
+- confirmation that no distributed job, worker, provider, or database schema code was added; scoped plugin exclusion changes are the only existing runtime behavior changed.
 
-Create `$handoffRecord` from the handoff template. Link FND-001 through FND-005 results and `$qaRecord`. Set the decision to `pass` only if every applicable REQUIRED condition and every HARD/INITIAL D0 threshold passed on the same revision, including the three consecutive critical-suite runs; otherwise use `fail` or `blocked_external` as defined by `test-gates.md` and keep E0 in `gate_review`.
+Populate the QA and handoff `Supersedes` fields with `$qaSupersedes` and `$handoffSupersedes`. A failed, blocked, corrected, later-date, or later-revision campaign therefore advances the same monotonic attempt sequence and never creates another `a1`.
 
-Ticket owners move E0 from `planned` to `in_progress` when execution starts; the Integration Gate Owner moves it to `gate_review` only after all five result records are independently reviewed with status `complete` and disposition `approved`. Change E0 from `gate_review` to `complete` in `docs/replatform/epics/E0-foundation/README.md` and `docs/replatform/epics/README.md` only for a passing handoff. Commit these evidence files separately:
+Create `$handoffRecord` from the handoff template. Pin FND-001 through FND-008 result blob SHAs, their reviewed implementation SHAs, and `$qaRecord`. Set the decision to `pass` only if every applicable REQUIRED condition and every HARD/INITIAL D0 threshold passed on the same revision, every OBSERVED value is recorded, and the three consecutive critical-suite runs are green; otherwise use `fail` or `blocked_external` as defined by `test-gates.md` and keep E0 in `gate_review`.
+
+Ticket owners move E0 from `planned` to `in_progress` when execution starts; the Integration Gate Owner moves it to `gate_review` only after all eight result records are independently reviewed with status `complete` and disposition `approved`. Change E0 from `gate_review` to `complete` in `docs/replatform/epics/E0-foundation/README.md` and `docs/replatform/epics/README.md` only for a passing handoff. Commit these evidence files separately:
 
 ```powershell
 git add docs/replatform/epics/E0-foundation docs/replatform/epics/README.md
@@ -1257,7 +1513,7 @@ git commit -m "docs: record E0 completion evidence"
 E1 may begin only when:
 
 - `pnpm check:distributed-foundation` is green on main;
-- Decision #120 and all four architecture records are merged;
+- Decision #121, lifecycle/authority/threat/delivery/parity records, and the current-main crosswalk are merged;
 - all nine fixtures and the strict schema are merged;
-- the unsafe hosted override regression test is green;
+- the unsafe hosted override regression and every Decision #103 `CP-*` exclusion are green;
 - the worktree is clean.

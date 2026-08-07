@@ -912,7 +912,29 @@ Refs: `packages/shared/src/validators/agent.ts`, `server/src/services/agents.ts`
 
 ## Decision #104 — Keyless-except-embeddings: selectable extraction engine + embedding resilience (2026-06-26)
 
-**Status:** Locked 2026-06-26. **Amended 2026-06-27 (extraction is CLI-only; hosted-API fallback removed).**
+**Status:** Locked 2026-06-26. **Amended 2026-06-27 (extraction is CLI-only; hosted-API fallback removed) and 2026-08-08 (PR #320 `cloud_auth` sandbox credential alignment).**
+
+**Amendment (2026-08-08):** The 2026-06-27 amendment's CLI-only rule remains
+controlling, but its keyless wording is narrowed by the shipped multi-tenant
+isolation boundary. In self-hosted modes, extraction still uses the installed
+CLI login and reads no hosted model-provider key. In `cloud_auth`, extraction
+is still a CLI invocation rather than an `api` engine: the control plane
+resolves the Company's configured model-provider credential and adapter
+configuration, acquires an isolated E2B environment, and materializes that
+credential only for the sandbox-local CLI execution through
+`one-shot-sandbox-cli.ts`. It does not execute model output on the shared host,
+use the shared host's CLI login, or restore `callLLM` / `callAnthropic` /
+`callOpenAI` as an extraction fallback. The credential must not appear in the
+prompt, argv, protocol, events, logs, artifacts, or evidence, and missing
+Company/provider/environment context fails closed.
+
+The earlier statements that embeddings are the only hosted runtime key and
+that no extraction path ever reads a provider key are therefore superseded for
+`cloud_auth` only. Failure guidance is mode/cause specific: a missing local CLI
+or login points to CLI installation/authentication, while a cloud
+`sandbox_unavailable` failure may point to the Company's provider-key and
+execution-environment settings. There is still no selectable/direct-API
+extraction engine or silent host fallback.
 
 **Amendment (2026-06-27):** The founder overrode the original "selectable engine"
 ruling below. Discussion extraction (and every other extraction entry point —
@@ -932,7 +954,7 @@ at the local CLI, never at a key. See `docs/aoa/plans/2026-06-27-decouple-extrac
 and the matching PLAN. The original (now-superseded) selectable-engine ruling is
 preserved below for history.
 
-**Principle:** The only hosted API key AoA needs at runtime is for **embeddings** (`text-embedding-3-small` via OpenAI). Every other runtime operation — agent execution, Commander, and **discussion extraction** — runs keyless through the user's locally-installed CLI (Claude Code / Codex / Gemini CLI), authenticating against the subscription the user already has.
+**Original principle (superseded for `cloud_auth` by the 2026-08-08 amendment):** The only hosted API key AoA needs at runtime is for **embeddings** (`text-embedding-3-small` via OpenAI). Every other runtime operation — agent execution, Commander, and **discussion extraction** — runs keyless through the user's locally-installed CLI (Claude Code / Codex / Gemini CLI), authenticating against the subscription the user already has.
 
 ### Extraction: selectable engine ~~(SUPERSEDED 2026-06-27 — extraction is CLI-only, see amendment above)~~
 

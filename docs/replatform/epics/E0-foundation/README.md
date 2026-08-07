@@ -2,12 +2,12 @@
 
 **Status:** `planning`
 **Depends on:** approved [`program-design.md`](../../program-design.md)
-**Tickets:** FND-001 through FND-005
+**Tickets:** FND-001 through FND-008
 **Implementation plan:** [`implementation-plan.md`](implementation-plan.md)
 
 ## Outcome
 
-Lock workload lifecycles, state authority, security controls, golden journeys, rollout policy, merge gates, and custodian roles before protocol implementation.
+Lock workload lifecycles and sources, state authority, current-main cutover/parity ownership, security controls, actual hosted plugin exclusion, golden journeys, rollout/build/evidence policy, merge gates, and custodian roles before protocol implementation.
 
 ## Exit gate
 
@@ -15,8 +15,9 @@ Lock workload lifecycles, state authority, security controls, golden journeys, r
 - Hosted unsafe override regression passes.
 - All nine deterministic golden fixtures and their strict schema are committed.
 - Every trust crossing has complete control fields and every Critical/High item owns a release test.
+- Every `CM-*`/`CP-*` current-main sink and legacy parity dimension has a checked owner; Decision #103 plugin process/runtime/UI exclusions pass in the real `cloud_auth` app, while self-hosted positives remain green.
 - Every applicable D0 REQUIRED condition plus HARD/INITIAL threshold in `test-gates.md` passes on one revision.
-- Repository typecheck, tests, and build pass. A failure outside the changed paths still blocks completion; a focused pass or baseline-failure note is evidence, not a waiver or pass.
+- Repository typecheck, tests, same-revision recursive build, and authoritative deterministic root build pass. A failure outside the changed paths still blocks completion; a focused pass or baseline-failure note is evidence, not a waiver or pass.
 - Completion handoff links every ticket result and QA run.
 
 ## Records

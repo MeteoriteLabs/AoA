@@ -1,3 +1,3 @@
 # E0 Handoffs
 
-Record merge-train or completion handoffs from the handoff template. The E0 completion handoff must link FND-001–FND-005 results and the final QA revision.
+Record immutable merge-train or completion handoffs from the handoff template. The E0 completion handoff must pin FND-001–FND-008 result blobs/reviewed revisions and the final QA revision.

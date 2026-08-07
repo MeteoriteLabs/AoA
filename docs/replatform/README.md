@@ -6,22 +6,24 @@ The program is a selective re-platform, not a blank-slate product rewrite. The e
 
 ## Start here
 
-1. [`program-design.md`](program-design.md) — approved architecture, 81-ticket backlog, dependency graph, and delivery waves.
-2. [`accepted-caveats.md`](accepted-caveats.md) — approved E2B limitations, the Firecracker exclusion, and the non-waivable invariants around them.
-3. [`test-gates.md`](test-gates.md) — quantitative D0–D6 and desktop release gates.
-4. [`artifact-policy.md`](artifact-policy.md) — where plans, results, decisions, findings, QA evidence, and handoffs belong.
-5. [`agent-execution-guide.md`](agent-execution-guide.md) — assignment preconditions, cross-cutting rules, and copy-ready prompts for agents.
-6. [`epics/README.md`](epics/README.md) — live epic status and navigation.
-7. [`templates/`](templates/) — mandatory formats for execution records.
+1. [`program-design.md`](program-design.md) — approved architecture, 94-ticket backlog, dependency graph, and delivery waves.
+2. [`current-main-crosswalk.md`](current-main-crosswalk.md) — frozen PR #320 execution sinks and their bridge/cutover/disable owners.
+3. [`accepted-caveats.md`](accepted-caveats.md) — approved E2B limitations, the Firecracker exclusion, and the non-waivable invariants around them.
+4. [`test-gates.md`](test-gates.md) — quantitative D0–D6, named partial, and desktop release gates.
+5. [`artifact-policy.md`](artifact-policy.md) — where plans, results, decisions, findings, QA evidence, and handoffs belong.
+6. [`agent-execution-guide.md`](agent-execution-guide.md) — assignment preconditions, cross-cutting rules, and copy-ready prompts for agents.
+7. [`epics/README.md`](epics/README.md) — live epic status and navigation.
+8. [`templates/`](templates/) — mandatory formats for execution records.
 
 ## Source-of-truth hierarchy
 
 1. Locked product-wide decisions: `docs/architecture/decisions.md`.
 2. Approved re-platform architecture: `docs/replatform/program-design.md`.
-3. Approved caveats and normative gates: `docs/replatform/accepted-caveats.md` and `docs/replatform/test-gates.md`.
-4. Epic implementation contract: `docs/replatform/epics/<epic>/implementation-plan.md`.
-5. Epic-local decisions and findings: the epic’s `decisions.md` and `findings.md`.
-6. Execution evidence: ticket results, QA results, and handoffs inside the epic folder.
+3. Frozen observed migration baseline: `docs/replatform/current-main-crosswalk.md`; it describes current behavior but cannot override items 1–2.
+4. Approved caveats and normative gates: `docs/replatform/accepted-caveats.md` and `docs/replatform/test-gates.md`.
+5. Epic implementation contract: `docs/replatform/epics/<epic>/implementation-plan.md`.
+6. Epic-local decisions and findings: the epic’s `decisions.md` and `findings.md`.
+7. Execution evidence: ticket results, QA results, and handoffs inside the epic folder.
 
 If two artifacts disagree, the higher item wins until an explicit decision updates it.
 
@@ -49,10 +51,10 @@ The program can continue in the same agent conversation or in a fresh one. This 
    3. E6 `E6-D1-FOUNDATION` through DEP-004.
    4. E3 Job control and E4 Worker daemon remainder.
    5. E5 Workspaces/secrets.
-   6. E6 remaining deployment/test work, MIG-003 durable realtime, and the E10 desktop-foundation tickets whose dependencies are green.
-   7. E7 Coding/E2B and, when desktop is in the advertised beta matrix, E10 desktop distribution; CLI-006 waits for MIG-003 in every case.
-   8. E8 Browser automation and E9 Service agents.
-   9. E10 target-migration and handoff remainder only for capabilities intended for the advertised matrix; otherwise keep their flags hard off and retain the conditional backlog.
+   6. E6 remaining deployment/test work, MIG-003 plus the named `E10-REALTIME-FOUNDATION` gate, and the E10 desktop-foundation tickets whose dependencies are green.
+   7. E7 Coding/E2B and, when desktop is in the advertised beta matrix, E10 desktop distribution; CLI-006 waits for the passing `E10-REALTIME-FOUNDATION` handoff in every case.
+   8. E8 Browser automation and E9 Service agents; both are mandatory for private beta and proceed in parallel after E7.
+   9. E10 current-path/target migration and handoff remainder. Commander, crew, one-shot, lease/resource, and enabled-workload cutovers are mandatory; only desktop and cross-target mobility may remain hard off with conditional negative evidence.
    10. E11 Hardening/release.
 4. Execute a plan only when every dependency gate named in the program design is green on main.
 

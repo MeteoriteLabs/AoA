@@ -1,3 +1,3 @@
 # E0 Decisions
 
-No epic-local decisions have been recorded. Decision #120 in `docs/architecture/decisions.md` becomes the promoted foundation decision when FND-001–FND-003 execute. Decisions #118 and #119 remain the existing enterprise-memory visibility decisions.
+No epic-local decisions have been recorded. Proposed Decision #121 becomes the promoted foundation decision when FND-001–FND-003 execute; Decision #120 is already locked for Commander warm E2B sandboxes and must not be reused. Decisions #103, #117, #118, #119, and #120 remain controlling until Decision #121 explicitly extends or supersedes the named behavior.

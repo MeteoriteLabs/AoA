@@ -12,11 +12,11 @@
 
 - E0 must be complete on main before E1 begins.
 - Canonical source design: `docs/replatform/program-design.md`, tickets PRT-001 through PRT-007.
-- Canonical lifecycle values come from `docs/architecture/distributed-execution-lifecycles.json` and its Markdown peer; do not rename or add states without an E1 decision and Decision #120 update.
+- Canonical lifecycle values come from `docs/architecture/distributed-execution-lifecycles.json` and its Markdown peer; do not rename or add states without an E1 decision and Decision #121 update.
 - Decisions #118/#119 govern enterprise-memory visibility. Protocol envelopes may carry authorized context artifact references, but never memory-table credentials, unscoped memory dumps, or a replacement memory-visibility model.
 - The existing MCP OAuth broker owns connector discovery, refresh leases, token bundles, rotation, and revocation. Protocol envelopes carry opaque secret handles only and never OAuth access or refresh tokens.
 - Protocol v1 supports `batch`, `browser_session`, and `service`; provider implementations remain out of scope.
-- Every envelope includes Organization, Company, run, job, attempt, lease/fence identity as appropriate.
+- Every envelope includes Organization, Company, a discriminated execution source, job, attempt, and lease/fence identity as appropriate. `runId` and `issueId` are mandatory only for `task_run`; no workload fabricates them.
 - Platform-managed secrets appear only as opaque handles; reserved credential-bearing keys are rejected recursively. This does not claim that arbitrary user-provided strings can never contain a secret. Every producer must scan all string values against registered secret canaries before persistence/dispatch.
 - Unknown enum/state/control/error/policy values fail closed. Safe additions are bounded namespaced extensions with explicit `critical`/`mustUnderstand` behavior.
 - Runtime source under `packages/worker-protocol/src/` excluding `*.test.ts` may import only `zod` and relative modules.
@@ -32,9 +32,10 @@
 
 | File | Responsibility |
 |---|---|
-| `packages/worker-protocol/src/ids.ts` | Branded UUIDs, attempt/sequence integers, fence token, SHA-256 digest. |
+| `packages/worker-protocol/src/ids.ts` | Branded UUID domain IDs, opaque principal IDs, attempt/sequence integers, fence token, SHA-256 digest. |
 | `packages/worker-protocol/src/states.ts` | Workload/state constants and legal transition predicates. |
 | `packages/worker-protocol/src/wire-safety.ts` | Recursive rejection of plaintext-credential-bearing keys. |
+| `packages/worker-protocol/src/source.ts` | Typed principals and the strict discriminated execution-source provenance union. |
 | `packages/worker-protocol/src/job.ts` | V1 workload-specific job and lease wire envelopes. |
 | `packages/worker-protocol/src/canonical-json.ts` | Dependency-free RFC 8785 canonical JSON used to derive immutable event digest input. |
 | `packages/worker-protocol/src/events.ts` | V1 event discriminated union, contiguous batches, cumulative ACK. |
@@ -62,6 +63,7 @@ This section is normative and replaces any conflicting passthrough, state, dupli
 - Export distinct `JobStatus`, `AttemptStatus`, and `LeaseStatus` plus browser/service state. `dead_letter` belongs only to job policy exhaustion. Retry creates a new attempt. Service-instance `healthy|stopped|lost` never enters generic attempt terminal payloads.
 - Job transitions carry `reason: normal | cancel | non_retryable_failure | policy_exhausted`; only `policy_exhausted` permits `dead_letter`, and only `non_retryable_failure` permits aggregate `failed`. The E0 JSON owns these edge conditions, not only the from/to pairs.
 - Exhaustively test every from/to/reason combination and every forbidden cross-lifecycle mapping.
+- Brand Better Auth and other principal identifiers as opaque non-empty text, not UUID-only. Reject leading or trailing whitespace and preserve accepted bytes exactly; do not trim, normalize, or otherwise rewrite an identity. Domain row identifiers that are actually UUIDs remain separately UUID-branded; do not make one parser stand in for both kinds.
 
 ### PRT-003 — honest envelope and extension safety
 
@@ -69,7 +71,10 @@ This section is normative and replaces any conflicting passthrough, state, dupli
 - Additive data uses `{ namespace, schemaVersion, critical, value }`. V1 permits at most 16 extensions; namespace is lowercase reverse-DNS plus optional slash name, 1–100 UTF-8 bytes; schema version is 1–1,000,000; each value has at most 8 container levels, 128 array items, 64 object keys, 100 UTF-8 bytes per key, and 16,384 RFC-8785-canonical UTF-8 bytes; the combined canonical value budget is 65,536 bytes. Boundary counting occurs after UTF-8 encoding, not JavaScript code-unit length. Unknown `critical: true` fails closed; safe optional extensions may be preserved byte-semantically.
 - Workload commands/arguments remain bounded literals, but the plan does not call arbitrary plaintext secrets “unrepresentable.” Export a pure recursive string visitor/canary-match helper so control-plane producers can reject known secret values before persistence/dispatch.
 - Export one canonical target-requirements schema and embed it in every job envelope. Lock V1 enums: target class `managed_cloud | organization_dedicated | owner_desktop`; target scope `platform | organization | owner`; trust class `shared_isolated | organization_isolated | owner_local_trusted`; credential kind `none | platform_brokered | organization_brokered | owner_bound`; locality `transfer_allowed | organization_target_only | owner_device_only`; fallback mode `forbidden | ordered_explicit`. Compatibility is an explicit matrix, never ordinal string comparison.
-- Carry actor/principal identity plus authoritative placement-policy and provider-constraint references and the canonical target requirements. Dynamic WorkerHello facts cannot set trust/owner/provider/credential/locality ceilings.
+- Add a strict `ExecutionSourceV1` discriminated union for `task_run`, `commander_turn`, `crew_run`, `one_shot`, `browser_request`, and `service_reconcile`. Only `task_run` contains mandatory `runId` and `issueId`; one-shot includes `extraction | compaction | readiness_probe`; service includes service/generation/reconciliation identity. Every variant carries a typed requester principal and, where applicable, the authoritative assignee/executor identity. Unknown source kinds fail closed.
+- Carry typed requester/executor principal identity plus authoritative placement-policy and provider-constraint references and the canonical target requirements. Principal types are `user | agent | service | system`, and IDs are opaque branded text. Dynamic WorkerHello facts cannot set trust/owner/provider/credential/locality ceilings.
+- Freeze valid and invalid structural provenance vectors for every source kind, including missing/extra `runId`/`issueId`, task execution-principal/assignee mismatch, unsupported readiness kind, and fabricated task provenance. Requester authorization and equality to the authenticated/domain authority are context-dependent checks owned by JOB-001/JOB-010, not claims made by the context-free wire schema. The same source object is retained in job audit/cost/output projections; events need only echo the job delivery identity because the authoritative job owns immutable provenance.
+- Treat worker usage as metering evidence, never an authoritative charge. The `usage` event carries bounded non-negative token/runtime quantities only; provider, model, biller, billing type, rate/version, rounding, and authoritative cost remain control-plane registry/policy facts projected by JOB-012. Reject worker-supplied pricing or charge fields.
 - Workload-supplied workspace paths are branded sandbox-relative paths. The only sandbox-absolute path form is the typed `file` secret-materialization target under `/run/aoa-secrets/`. Both reject Windows/POSIX host paths and all escape forms.
 - The strict PRT-003 lease objects are domain payloads. `LeaseRenewResponseV1` echoes `protocolVersion`, `workerId`, `jobId`, `attempt`, `leaseId`, and `fenceToken`, plus expiry/cancel fields. PRT-007 nests these payloads in distinct operation envelopes; the bare payload is never sent as an authenticated request.
 
@@ -406,8 +411,8 @@ git commit -m "feat: scaffold worker protocol package"
 - Modify: `packages/worker-protocol/src/index.ts`
 
 **Interfaces:**
-- Consumes: E0 lifecycle status sets.
-- Produces: branded ID schemas/types, `attemptNumberSchema`, `eventSequenceSchema`, `fenceTokenSchema`, `sha256DigestSchema`, workload/status schemas, and `canTransition*` functions.
+- Consumes: E0 lifecycle status sets and FND-007 source/principal authority.
+- Produces: branded UUID domain IDs, opaque `PrincipalId`, source-specific ID schemas/types, `attemptNumberSchema`, `eventSequenceSchema`, `fenceTokenSchema`, `sha256DigestSchema`, workload/status schemas, and `canTransition*` functions.
 
 - [ ] **Step 1: Write failing identity tests**
 
@@ -530,16 +535,31 @@ Expected: FAIL because identity and state modules do not exist.
 
 - [ ] **Step 4: Implement branded identities**
 
-Create `ids.ts` with a shared UUID schema and these exact exports:
+Create `ids.ts` with separate UUID-domain and opaque-principal schemas and these exact exports:
 
 ```ts
 import { z } from "zod";
 
 const uuidSchema = z.string().uuid();
+const opaquePrincipalTextSchema = z.string().min(1).superRefine((value, ctx) => {
+  if (value !== value.trim()) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "principal ID must not contain leading or trailing whitespace" });
+  }
+  if (new TextEncoder().encode(value).byteLength > 200) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "principal ID exceeds 200 UTF-8 bytes" });
+  }
+});
 export const organizationIdSchema = uuidSchema.brand<"OrganizationId">();
 export const companyIdSchema = uuidSchema.brand<"CompanyId">();
+export const agentIdSchema = uuidSchema.brand<"AgentId">();
 export const runIdSchema = uuidSchema.brand<"RunId">();
 export const issueIdSchema = uuidSchema.brand<"IssueId">();
+export const internalAgentRunIdSchema = uuidSchema.brand<"InternalAgentRunId">();
+export const conversationIdSchema = uuidSchema.brand<"ConversationId">();
+export const crewRunIdSchema = uuidSchema.brand<"CrewRunId">();
+export const oneShotOperationIdSchema = uuidSchema.brand<"OneShotOperationId">();
+export const browserRequestIdSchema = uuidSchema.brand<"BrowserRequestId">();
+export const reconciliationIdSchema = uuidSchema.brand<"ReconciliationId">();
 export const jobIdSchema = uuidSchema.brand<"JobId">();
 export const workerIdSchema = uuidSchema.brand<"WorkerId">();
 export const targetIdSchema = uuidSchema.brand<"TargetId">();
@@ -549,6 +569,7 @@ export const artifactIdSchema = uuidSchema.brand<"ArtifactId">();
 export const secretHandleIdSchema = uuidSchema.brand<"SecretHandleId">();
 export const serviceIdSchema = uuidSchema.brand<"ServiceId">();
 export const serviceInstanceIdSchema = uuidSchema.brand<"ServiceInstanceId">();
+export const principalIdSchema = opaquePrincipalTextSchema.brand<"PrincipalId">();
 export const sandboxIdSchema = z.string().min(1).max(200).brand<"SandboxId">();
 export const attemptNumberSchema = z.number().int().positive().max(1_000_000);
 export const eventSequenceSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
@@ -557,8 +578,15 @@ export const sha256DigestSchema = z.string().regex(/^[a-f0-9]{64}$/).brand<"Sha2
 
 export type OrganizationId = z.infer<typeof organizationIdSchema>;
 export type CompanyId = z.infer<typeof companyIdSchema>;
+export type AgentId = z.infer<typeof agentIdSchema>;
 export type RunId = z.infer<typeof runIdSchema>;
 export type IssueId = z.infer<typeof issueIdSchema>;
+export type InternalAgentRunId = z.infer<typeof internalAgentRunIdSchema>;
+export type ConversationId = z.infer<typeof conversationIdSchema>;
+export type CrewRunId = z.infer<typeof crewRunIdSchema>;
+export type OneShotOperationId = z.infer<typeof oneShotOperationIdSchema>;
+export type BrowserRequestId = z.infer<typeof browserRequestIdSchema>;
+export type ReconciliationId = z.infer<typeof reconciliationIdSchema>;
 export type JobId = z.infer<typeof jobIdSchema>;
 export type WorkerId = z.infer<typeof workerIdSchema>;
 export type TargetId = z.infer<typeof targetIdSchema>;
@@ -568,6 +596,7 @@ export type ArtifactId = z.infer<typeof artifactIdSchema>;
 export type SecretHandleId = z.infer<typeof secretHandleIdSchema>;
 export type ServiceId = z.infer<typeof serviceIdSchema>;
 export type ServiceInstanceId = z.infer<typeof serviceInstanceIdSchema>;
+export type PrincipalId = z.infer<typeof principalIdSchema>;
 export type SandboxId = z.infer<typeof sandboxIdSchema>;
 export type FenceToken = z.infer<typeof fenceTokenSchema>;
 export type Sha256Digest = z.infer<typeof sha256DigestSchema>;
@@ -608,6 +637,7 @@ Export every schema, constant, predicate, and type from `index.ts`. Run:
 ```powershell
 pnpm --filter @armyofagents/worker-protocol exec vitest run src/ids.test.ts src/states.test.ts
 pnpm --filter @armyofagents/worker-protocol typecheck
+pnpm --filter @armyofagents/worker-protocol build
 pnpm check:worker-protocol-boundary
 ```
 
@@ -627,13 +657,15 @@ git commit -m "feat: define worker protocol identities and states"
 **Files:**
 - Create: `packages/worker-protocol/src/wire-safety.ts`
 - Create: `packages/worker-protocol/src/wire-safety.test.ts`
+- Create: `packages/worker-protocol/src/source.ts`
+- Create: `packages/worker-protocol/src/source.test.ts`
 - Create: `packages/worker-protocol/src/job.ts`
 - Create: `packages/worker-protocol/src/job.test.ts`
 - Modify: `packages/worker-protocol/src/index.ts`
 
 **Interfaces:**
-- Consumes: protocol version, branded IDs, workload type.
-- Produces: `jobEnvelopeV1Schema`, workload-specific envelopes, strict lease-offer/ACK/renew domain payload schemas, and inferred payload types later nested in PRT-007 operation envelopes.
+- Consumes: protocol version, branded IDs, FND-007 execution-source/parity authority, workload type.
+- Produces: `principalV1Schema`, `executionSourceV1Schema`, `jobEnvelopeV1Schema`, workload-specific envelopes, strict lease-offer/ACK/renew domain payload schemas, and inferred payload types later nested in PRT-007 operation envelopes.
 
 - [ ] **Step 1: Write failing recursive wire-safety tests**
 
@@ -686,6 +718,10 @@ Create `job.test.ts` with one valid envelope per workload. Use fixed UUIDs, RFC3
 - lease ACK/renew messages require the same job/attempt/lease/fence identity shape;
 - ACK deadline must precede lease expiry;
 - renewal response contains server-selected `expiresAt` and durable cancellation state.
+- every execution-source variant round-trips with a typed requester and execution principal; only `task_run` accepts/requires `runId` and `issueId`;
+- task assignee and execution principal must match; fabricated run/issue fields on Commander, crew, one-shot, browser, or service sources fail;
+- opaque Better Auth-style principal IDs pass, blank/oversized IDs fail, and `system` is a valid principal kind;
+- one-shot operation kind is exactly `extraction | compaction | readiness_probe`; unknown source and operation kinds fail closed;
 - a seeded deterministic generator covers at least 10,000 recursive string values across argv, URLs, headers, nested arrays, and extensions; registered canaries always fail and the seed/count are recorded. PRT-005 owns the separate 10,000-case canonical path corpus.
 
 Use this valid batch fixture in the test:
@@ -697,9 +733,14 @@ const batchJob = {
   attempt: 1,
   organizationId: "00000000-0000-4000-8000-000000000011",
   companyId: "00000000-0000-4000-8000-000000000012",
-  runId: "00000000-0000-4000-8000-000000000013",
-  issueId: "00000000-0000-4000-8000-000000000014",
-  actor: { principalType: "user", principalId: "00000000-0000-4000-8000-000000000017", ownerPrincipalId: "00000000-0000-4000-8000-000000000017" },
+  source: {
+    kind: "task_run",
+    runId: "00000000-0000-4000-8000-000000000013",
+    issueId: "00000000-0000-4000-8000-000000000014",
+    requestedBy: { principalType: "user", principalId: "better-auth-user-17" },
+    executionPrincipal: { principalType: "agent", principalId: "00000000-0000-4000-8000-000000000017" },
+    assigneeAgentId: "00000000-0000-4000-8000-000000000017",
+  },
   createdAt: "2026-08-07T00:00:00.000Z",
   notBefore: null,
   deadline: "2026-08-07T01:00:00.000Z",
@@ -747,7 +788,7 @@ const batchJob = {
 Run:
 
 ```powershell
-pnpm --filter @armyofagents/worker-protocol exec vitest run src/wire-safety.test.ts src/job.test.ts
+pnpm --filter @armyofagents/worker-protocol exec vitest run src/wire-safety.test.ts src/source.test.ts src/job.test.ts
 ```
 
 Expected: FAIL because the modules do not exist.
@@ -766,14 +807,29 @@ export function addForbiddenWireKeyIssues(value: unknown, ctx: z.RefinementCtx):
 
 Traverse plain objects and arrays, sort object keys for deterministic output, compare normalized keys against the exact Step 1 set, and report `z.ZodIssueCode.custom` at the offending path. Also export the pure recursive string visitor/canary matcher and dependency-free seeded generator required by the hardening amendment; producer tests inspect every string value and record 10,000-case seeds/counts. Do not reject the known key `secretHandleIds`.
 
-- [ ] **Step 5: Implement workload-specific job envelopes**
+- [ ] **Step 5: Implement principals, execution sources, and workload-specific job envelopes**
+
+Create `source.ts` with a strict principal schema `{ principalType: "user" | "agent" | "service" | "system", principalId: PrincipalId }` and a strict `z.discriminatedUnion("kind", ...)` with these variants:
+
+```ts
+task_run: { runId, issueId, requestedBy, executionPrincipal, assigneeAgentId: AgentId }
+commander_turn: { internalAgentRunId, conversationId, requestedBy, executionPrincipal }
+crew_run: { crewRunId, requestedBy, executionPrincipal }
+one_shot: { operationId, operationKind: "extraction" | "compaction" | "readiness_probe", requestedBy, executionPrincipal }
+browser_request: { browserRequestId, parentJobId nullable, requestedBy, executionPrincipal }
+service_reconcile: { serviceId, generation positive, reconciliationId, requestedBy, executionPrincipal }
+```
+
+Extend this test with `principalIdSchema`: accept representative Better Auth text IDs and UUID-shaped agent IDs; reject empty, whitespace-only, leading/trailing-whitespace, over-200-UTF-8-byte, or non-string values. Include 200/201-byte ASCII and multibyte boundary cases so JavaScript code-unit length cannot become the frozen cross-language rule. Assert that accepted principal IDs round-trip byte-for-byte without normalization or trimming. Assert every source-specific domain ID uses its declared UUID brand and cannot be substituted for `PrincipalId` at the TypeScript boundary.
+
+Every variant includes its literal `kind`. Reject unknown keys. For `task_run`, require an agent execution principal whose opaque principal ID has byte-for-byte string-value equality with the UUID-branded `assigneeAgentId`. Do not add optional `runId` or `issueId` to the common envelope or any non-task variant. The source object is immutable provenance, not authorization by itself; JOB-001 validates `requestedBy` against authenticated/domain authority and JOB-010 through JOB-014 revalidate current domain policy.
 
 In `job.ts`, define strict common security-critical schemas plus the bounded namespaced extension container from the hardening amendment for:
 
 ```ts
 timestamp: RFC3339 with offset
 adapter: { type: non-empty max 100, version: non-empty max 100, configArtifactId: ArtifactId | null }
-actor: { principalType: "user" | "agent" | "service", principalId, ownerPrincipalId nullable }
+source: ExecutionSourceV1
 targetRequirements: { allowedTargetClasses, allowedTrustClasses, requiredOwnerPrincipalId nullable, credentialKind, dataLocality, fallback: { mode, orderedTargetClasses }, providerConstraints: { profileId, version, digest } }
 placement: { policyId, version, digest, targetRequirements }
 workspace: { manifestArtifactId: ArtifactId, base: { kind: "git_commit" | "content_manifest", algorithm: "git_sha1" | "git_sha256" | "sha256", revision with matching 40/64 format }, manifestHash: Sha256Digest, mode: "read_only" | "read_write" } | null
@@ -790,7 +846,7 @@ browser workload: { engine: "chromium", viewport width/height, locale, timezone,
 service workload: { serviceId, serviceInstanceId, generation positive, command, args max 256, checkpointArtifactId nullable, gracefulStopSeconds 1–300 }
 ```
 
-The common envelope contains every field in `batchJob` above. Add a final `superRefine` that:
+The common envelope contains every field in `batchJob` above. It has no common `runId`, `issueId`, or free-standing `actor` field. Add a final `superRefine` that:
 
 - calls `addForbiddenWireKeyIssues`;
 - rejects `deadline <= createdAt`;
@@ -820,14 +876,15 @@ LeaseRenewResponseV1 = { protocolVersion: 1, workerId, jobId, attempt, leaseId, 
 Run:
 
 ```powershell
-pnpm --filter @armyofagents/worker-protocol exec vitest run src/wire-safety.test.ts src/job.test.ts
+pnpm --filter @armyofagents/worker-protocol exec vitest run src/wire-safety.test.ts src/source.test.ts src/job.test.ts
 pnpm --filter @armyofagents/worker-protocol typecheck
+pnpm --filter @armyofagents/worker-protocol build
 pnpm check:worker-protocol-boundary
 ```
 
 Expected: PASS.
 
-Create `docs/replatform/epics/E1-worker-protocol/tickets/PRT-003-result.md`, recording safe additive-field preservation, exact extension boundary±1 results, placement-matrix coverage, the 10,000-case secret-canary generator seed/count, and every forbidden credential-key/canary test.
+Create `docs/replatform/epics/E1-worker-protocol/tickets/PRT-003-result.md`, recording every source-kind valid/invalid vector, opaque principal coverage, task-only run/issue enforcement, task execution-principal/assignee mismatch denial, and the explicit handoff of requester authorization to JOB-001/JOB-010; also record safe additive-field preservation, exact extension boundary±1 results, placement-matrix coverage, the 10,000-case secret-canary generator seed/count, and every forbidden credential-key/canary test.
 
 ```powershell
 git add packages/worker-protocol/src docs/replatform/epics/E1-worker-protocol/tickets/PRT-003-result.md
@@ -904,10 +961,11 @@ Define a strict base with `protocolVersion`, `eventId`, `organizationId`, `compa
 attempt_started: { sandboxId }
 log: { stream: "stdout" | "stderr" | "system", level: "debug" | "info" | "warn" | "error", message: string max 65536 }
 progress: { message: string max 2000, percent: number 0–100 nullable }
-usage: { inputTokens, outputTokens, cachedInputTokens, costMicros; all non-negative integers }
+usage: { inputTokens, outputTokens, cachedInputTokens, runtimeMillis; all non-negative integers }
 artifact_prepared: { artifactId, kind: artifact-kind string }
 browser_observation: { artifactIds, url nullable max 4096, title nullable max 1000 }
 browser_approval_requested: { approvalId UUID, action max 200, summary max 4000 }
+runtime_decision_requested: PermissionRuntimeDecisionRequestV1 | WorkQuestionRuntimeDecisionRequestV1
 service_instance_started: { serviceId, serviceInstanceId, generation positive, providerResourceId }
 service_health: { serviceId, serviceInstanceId, generation positive, status: "healthy" | "unhealthy", detail nullable max 4000 }
 service_checkpoint_prepared: { artifactId, serviceId, serviceInstanceId, generation positive }
@@ -924,6 +982,18 @@ terminal: { status: "succeeded" | "failed" | "cancelled" | "expired", exitCode n
 Add the service-instance transition and provider interruption/resume event payloads in the approved hardening amendment; do not encode `healthy`, `stopped`, or `lost` in `terminal`.
 
 Combine them with `z.discriminatedUnion("eventType", ...)`. Apply recursive wire-safety refinement to every event.
+
+Keep `usage` explicitly evidentiary: its strict payload rejects `costMicros`, provider, model, biller, billing type, rate/version, and rounding fields. JOB-012 joins the accepted event to immutable job/adapter/provider-registry facts and creates the idempotent authoritative charge server-side.
+
+`runtime_decision_requested` is the request side of PRT-007's durable control. Define a strict union discriminated by `decisionKind`:
+
+```ts
+common: { requestId, nonce max 200 UTF-8 bytes, requestDigest: Sha256Digest, schemaVersion positive, sourceRevision non-negative safe integer, expiresAt, title max 500, summary nullable max 4000 }
+permission: common & { decisionKind: "permission", timeoutPolicy: "deny" | "cancel_run" | "park_run" | "continue_with_default" | "escalate", defaultDecision: "allow_once" | "allow_run" | "deny" | null, toolName/command/cwd/path/networkTarget/riskClass nullable and individually bounded }
+work_question: common & { decisionKind: "work_question", timeoutPolicy: "cancel_run" | "park_run" | "continue_with_default" | "escalate", promptText max 8000, options: max 32 strict { optionId max 200 UTF-8 bytes, label max 1000 UTF-8 bytes, value bounded JSON with canonical UTF-8 bytes <= 16 KiB and depth <= 8, isDefault boolean } }
+```
+
+The control plane stores and authorizes the request before returning `runtime_decision_result`; request ID, kind, nonce, digest, schema version, source revision, timeout policy, expiry, and any bound default must match exactly. For permission, `continue_with_default` requires non-null `defaultDecision`, every other timeout policy requires null, and `allow_always` is never a timeout default. For a work question, `continue_with_default` requires exactly one `isDefault: true` option; every other policy requires zero defaults. The default option's bounded `value` is the answer payload on timeout. The browser-specific product-approval event cannot substitute for this generic runtime-decision round trip. Reject unknown kinds, extra cross-kind fields, invalid timeout/default combinations, missing or multiple defaults, over-limit options, and digest reuse after any bound field changes. Permission `deny` and all non-default timeout paths fail closed before the governed effect.
 
 - [ ] **Step 4: Implement batch and ACK constraints**
 
@@ -967,6 +1037,7 @@ Run:
 ```powershell
 pnpm --filter @armyofagents/worker-protocol exec vitest run src/canonical-json.test.ts src/events.test.ts
 pnpm --filter @armyofagents/worker-protocol typecheck
+pnpm --filter @armyofagents/worker-protocol build
 pnpm check:worker-protocol-boundary
 ```
 
@@ -1123,6 +1194,7 @@ Run:
 ```powershell
 pnpm --filter @armyofagents/worker-protocol exec vitest run src/job.test.ts src/policy.test.ts src/artifacts.test.ts
 pnpm --filter @armyofagents/worker-protocol typecheck
+pnpm --filter @armyofagents/worker-protocol build
 pnpm check:worker-protocol-boundary
 ```
 
@@ -1249,18 +1321,22 @@ Before creating any contract bytes, add `docs/contracts/worker-protocol/v1/** te
 
 Create `docs/contracts/worker-protocol/v1/conformance.json` with `contractVersion: "1.0.0"` and these named cases:
 
-1. `valid batch job` — full final PRT-005 batch envelope, accepted by `jobEnvelopeV1Schema`.
-2. `valid browser job with safe optional extension` — accepted, and `extensions[{namespace:"aoa.example", critical:false}]` remains in parsed output.
-3. `valid service job` — accepted with service/generation/checkpoint fields.
-4. `reject unknown workload` — `workloadType: "daemon"`, rejected.
-5. `reject nested plaintext api key and known secret canary` — reserved key is rejected by schema and a canary inside argv is rejected by the producer-safety helper.
-6. `valid lease offer` — matching offer/job identity and ACK-before-expiry, accepted.
-7. `reject inverted lease times` — ACK deadline equal to or later than expiry, rejected.
-8. `valid contiguous event batch` — sequences 1 and 2, accepted.
-9. `reject event sequence gap` — sequences 1 and 3, rejected.
-10. `valid registered target plus worker hello intersection` — batch/provider-lifecycle/filesystem-isolation/filtered-egress/direct-upload/proxy capabilities are inside the server ceiling and one batch slot is reported; provider identity remains registry-side.
-11. `reject unknown job terminal state vector` — a terminal event with status `done`, rejected.
-
+1. `valid task-run batch job` — full final PRT-005 batch envelope with task-only run/issue and matching assignee, accepted by `jobEnvelopeV1Schema`.
+2. `valid Commander-turn batch job` — conversation/internal-run provenance with no issue/run fields, accepted.
+3. `valid crew-run batch job` — crew provenance with typed requester/executor, accepted.
+4. `valid one-shot extraction job` — operation provenance with no fabricated issue/run, accepted.
+5. `valid browser-request job with safe optional extension` — accepted, and `extensions[{namespace:"aoa.example", critical:false}]` remains in parsed output.
+6. `valid service-reconcile job` — service/generation/reconciliation provenance plus workload fields, accepted.
+7. `reject fabricated non-task run and issue` — extra task-only identity on a non-task source, rejected.
+8. `reject task executor or assignee mismatch` — an agent execution principal whose string value differs from the UUID-branded assignee is rejected; authenticated/domain requester authorization is exercised later by JOB-001/JOB-010.
+9. `reject unknown source or workload` — unknown discriminants, rejected.
+10. `reject nested plaintext api key and known secret canary` — reserved key is rejected by schema and a canary inside argv is rejected by the producer-safety helper.
+11. `valid lease offer` — matching offer/job identity and ACK-before-expiry, accepted.
+12. `reject inverted lease times` — ACK deadline equal to or later than expiry, rejected.
+13. `valid contiguous event batch` — sequences 1 and 2, accepted.
+14. `reject event sequence gap` — sequences 1 and 3, rejected.
+15. `valid registered target plus worker hello intersection` — batch/provider-lifecycle/filesystem-isolation/filtered-egress/direct-upload/proxy capabilities are inside the server ceiling and one batch slot is reported; provider identity remains registry-side.
+16. `reject unknown job terminal state vector` — a terminal event with status `done`, rejected.
 Each case has:
 
 ```ts
@@ -1274,6 +1350,8 @@ Each case has:
 ```
 
 Use the fixed UUID/timestamp/hash/fence values from PRT-003 and PRT-004 tests. Do not use real credentials or URLs.
+
+The syntax schema deliberately accepts any well-formed Organization UUID; it cannot know whether an ID is reserved, mapped, or authorized. Do not add a false sentinel-rejection case to this four-schema corpus. TEN-006 removes and backfills the sentinel default, and JOB-001/JOB-010 own policy conformance that rejects sentinel/unmapped admission and requester-authority mismatch before job creation.
 
 Create `docs/contracts/worker-protocol/v1/README.md` documenting additive-only v1 evolution, unknown enum rejection, manifest regeneration, and Protocol Custodian approval for byte changes.
 
@@ -1292,6 +1370,7 @@ Create `golden-journeys.test.ts` using `Ajv2020` from `ajv/dist/2020.js` plus `a
 - schemaVersion is 1;
 - ID matches filename;
 - workload type parses through `workloadTypeSchema`;
+- source parses through `executionSourceV1Schema`, uses the fixture's declared source kind, and satisfies the FND-007 parity reference;
 - every `emits` value parses as a known worker event type;
 - expected terminal state belongs to the relevant batch/browser/service terminal/status set;
 - forbidden effects and audit actions are non-empty.
@@ -1417,7 +1496,7 @@ ArtifactTransferGrantOperationRequestV1(body: ArtifactTransferGrantRequestV1) / 
 ArtifactCommitOperationRequestV1(body: ArtifactCommitPayloadV1) / ArtifactCommitOperationResponseV1 = committed | rejected
 QuarantineGrantOperationRequestV1(body: QuarantineGrantPayloadV1) / QuarantineGrantOperationResponseV1 = quarantine_upload_granted | rejected
 QuarantineFinalizeOperationRequestV1(body: QuarantineFinalizePayloadV1) / QuarantineFinalizeOperationResponseV1 = quarantined(receipt) | rejected
-ControlCommandV1 = cancel | approval_result | checkpoint | graceful_stop | drain
+ControlCommandV1 = cancel | product_approval_result | runtime_decision_result | checkpoint | graceful_stop | drain
 ControlCommandAckV1
 ControlReceiverStateV1 / ControlReceiverDecisionV1 = accept | replay | gap | conflict | stale
 EventReceiverStateV1 / EventReceiverDecisionV1 = accept | replay | gap | hash_mismatch | stale_fence | terminal
@@ -1426,7 +1505,9 @@ ProtocolErrorV1
 
 Every operation request/response wrapper includes `protocolVersion`, correlation ID, idempotency key where mutation can be retried, and the full delivery identity applicable to the operation. Its `body` is the strict domain payload owned by PRT-003/004/005; payloads are never transmitted bare and are not structurally spread/extended. Enrollment and polling include audience and target/device generation. Mutating requests include a bounded anti-replay timestamp and nonce. `no_work`, throttling, and retryable errors carry bounded `retryAfterMs` and `serverTime`.
 
-Export pure receiver-decision functions taking prior accepted sequence plus bounded command/event ID and idempotency records. Assert command sequence is monotonic; the same ID/key/body returns `replay`, changed body returns `conflict`, a skipped sequence returns `gap`, and ACK echoes command ID/sequence plus `accepted | completed | rejected | stale`. Event decision first recomputes `eventDigest`, then applies fence/terminal/sequence/idempotency rules; the same ID/digest replays and a changed digest is `hash_mismatch`. These functions specify receiver behavior for later transactional implementations; Zod alone is not claimed to remember prior state. Cancellation, approval, checkpoint, graceful stop, and drain are durable controls; a lost response can be retried without duplicating the effect.
+Export pure receiver-decision functions taking prior accepted sequence plus bounded command/event ID and idempotency records. Assert command sequence is monotonic; the same ID/key/body returns `replay`, changed body returns `conflict`, a skipped sequence returns `gap`, and ACK echoes command ID/sequence plus `accepted | completed | rejected | stale`. Event decision first recomputes `eventDigest`, then applies fence/terminal/sequence/idempotency rules; the same ID/digest replays and a changed digest is `hash_mismatch`. These functions specify receiver behavior for later transactional implementations; Zod alone is not claimed to remember prior state. Cancellation, product approval, runtime decision, checkpoint, graceful stop, and drain are durable controls; a lost response can be retried without duplicating the effect.
+
+Keep product approvals and runtime decisions separate. `product_approval_result` carries the durable approval ID, approval kind/version, `approved | rejected | expired`, typed deciding principal, decision timestamp, and idempotency identity; it cannot authorize a different governed action. `runtime_decision_result` answers a previously accepted `runtime_decision_requested` event and repeats the bound request ID, kind, nonce, request digest, schema version, source revision, expiry, timeout policy, typed deciding principal, decision timestamp, and idempotency identity. It is a strict kind union: permission carries exactly `allow_once | allow_run | allow_always | deny | expired | cancelled`; work-question carries `answered | expired | cancelled` and a required answer only for `answered`, bounded to canonical UTF-8 bytes <= 16 KiB and depth <= 8. The control plane owns run-scoped and persistent trust-grant effects of `allow_run`/`allow_always`; the worker receives the exact decision but gains no authority beyond the current fenced command. Missing request state, cross-kind fields, source-revision/nonce/digest/version/timeout mismatch, over-limit answer, or a late answer fails closed. The worker may request a runtime decision but cannot create the authoritative decision or self-approve it. Neither control overrides budget/completion policy or treats an ACK as product authorization.
 
 Operation pairing is closed: ordinary commit can return only `committed | rejected`; device-authenticated quarantine grant can return only an exact short-lived PUT grant or rejection, and finalize can return only its verified receipt or rejection; no stale ordinary commit is automatically converted to quarantine. Ordinary transfer grants require a current fence and return exactly the matching GET/PUT grant or rejection. Quarantine wrappers use a device-session audience/target generation, exact idempotency, a separate prefix, and no live-lease claim; finalize verifies stored hash/size/prefix before receipt.
 
@@ -1457,7 +1538,7 @@ Create `operations.md` with one row per operation: request, success/no-work resp
 
 - [ ] **Step 4: Complete and commit the v1 source surface**
 
-Add valid/invalid vectors for no-work, retry-after/server-time, lost response/replay/conflict, command/ACK, transfer-grant operation mismatch, quarantine grant/finalize pairing, commit-versus-quarantine separation, revocation, stale fence, gap, event hash mismatch, oversized payload, and unknown code. Explicitly export `transport` and `errors` from `index.ts`; update operation/conformance manifest inputs. Retain the PRT-006 contract LF rule and add `tests/fixtures/worker-protocol-consumers/v1/** text eol=lf` before generating frozen bytes.
+Add valid/invalid vectors for no-work, retry-after/server-time, lost response/replay/conflict, every execution-source variant, product-approval versus runtime-decision separation, permission and work-question request/result round trips, all four permission decisions, bounded work-question answers/options, every timeout policy, valid permission/work-question defaults, missing/multiple/invalid defaults, forbidden `allow_always` timeout default, initial `sourceRevision=0`, stale/wrong revision, absent runtime-decision request, cross-kind/nonce/digest/version/TTL/default mismatch, command/ACK, transfer-grant operation mismatch, quarantine grant/finalize pairing, commit-versus-quarantine separation, revocation, stale fence, gap, event hash mismatch, oversized payload, and unknown code. Explicitly export `transport` and `errors` from `index.ts`; update operation/conformance manifest inputs. Retain the PRT-006 contract LF rule and add `tests/fixtures/worker-protocol-consumers/v1/** text eol=lf` before generating frozen bytes.
 
 Create two dependency-pinned commands in root `package.json`:
 
@@ -1517,7 +1598,7 @@ The generated baseline includes the exact Zod runtime used at that revision, its
 
 - [ ] **Step 6: Add bidirectional tests and finalize conformance hashes**
 
-`cross-version.test.ts` imports the current consumer and frozen consumer independently and covers current producer→frozen consumer plus frozen producer→current consumer for jobs, lease offer/ACK/renew, events and service events, artifacts, quarantine, secret/policy refs, registered target/worker capabilities, every control, and every error.
+`cross-version.test.ts` imports the current consumer and frozen consumer independently and covers current producer→frozen consumer plus frozen producer→current consumer for every execution-source/job combination, lease offer/ACK/renew, events and service events, artifacts, quarantine, secret/policy refs, registered target/worker capabilities, product approvals, runtime decisions, every other control, and every error.
 
 Prove safe optional extension preservation, unknown critical-extension rejection, unknown state/control/error rejection, renewal identity echo, duplicate ID+same digest idempotency, duplicate ID+different digest failure, source independence, and exact manifest hashes. On the first v1 freeze the two consumers intentionally implement the same contract, so the QA result is `baseline_established`. On the first and every subsequent contract change, these same tests must use non-identical current and frozen builds and classify each vector as common-and-accepted, safely additive-and-preserved, or unsupported-critical-and-rejected during negotiation.
 
@@ -1643,7 +1724,8 @@ Invoke-NativeGate 'frozen-consumer integrity check' { pnpm check:frozen-worker-p
 Invoke-NativeGate 'frozen lockfile install' { pnpm install --frozen-lockfile }
 Invoke-NativeGate 'repository typecheck' { pnpm -r typecheck }
 Invoke-NativeGate 'repository test suite' { pnpm test:run }
-Invoke-NativeGate 'offline recursive build' { pnpm -r build }
+Invoke-NativeGate 'same-revision recursive build' { pnpm -r build }
+Invoke-NativeGate 'authoritative repository build' { pnpm build }
 Invoke-NativeGate 'whitespace check' { git diff --check }
 1..3 | ForEach-Object {
   Invoke-NativeGate "D0 worker-protocol boundary run $_" { pnpm check:worker-protocol-boundary }
@@ -1657,25 +1739,44 @@ if ($dirtyAfterGate) { throw "E1 gate changed the worktree: $dirtyAfterGate" }
 Invoke-NativeGate 'final E1 tracked diff check' { git diff --exit-code }
 ```
 
-Use `pnpm -r build`, not root `pnpm build`: the root lifecycle fetches mutable catalog snapshots and cannot prove the recorded revision. Expected: all commands exit 0 and the tracked/untracked worktree remains clean after the gate. Any repository-baseline failure is recorded without weakening protocol checks or changing the E1 completion decision to pass.
+E1 starts only after FND-005 makes authoritative root `pnpm build` deterministic and aligns it with AGENTS/CI; `pnpm -r build` remains direct same-revision package evidence. Both are required. Expected: all commands exit 0 and the tracked/untracked worktree remains clean after the gate. Any repository-baseline failure is recorded without weakening protocol checks or changing the E1 completion decision to pass.
 
 - [ ] **Step 3: Create immutable QA and handoff records**
 
 Create paths with:
 
 ```powershell
+$repoRoot = (git rev-parse --show-toplevel).Trim()
 $utcDate = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd')
 $sha12 = (git rev-parse HEAD).Substring(0, 12)
-$attempt = 1
-do {
-  $selectedAttempt = $attempt
-  $qaRecord = "docs/replatform/epics/E1-worker-protocol/qa/$utcDate-d0-e1-completion-$sha12-a$selectedAttempt.md"
-  $handoffRecord = "docs/replatform/epics/E1-worker-protocol/handoffs/$utcDate-epic-completion-$sha12-a$selectedAttempt.md"
-  $attempt += 1
-} while ((Test-Path -LiteralPath $qaRecord) -or (Test-Path -LiteralPath $handoffRecord))
+$qaDir = "docs/replatform/epics/E1-worker-protocol/qa"
+$handoffDir = "docs/replatform/epics/E1-worker-protocol/handoffs"
+
+function Get-E1RecordAttempts([string]$directory, [string]$namePattern) {
+  if (-not (Test-Path -LiteralPath $directory)) { return @() }
+  return @(Get-ChildItem -LiteralPath $directory -File | ForEach-Object {
+    if ($_.Name -match $namePattern) {
+      [pscustomobject]@{
+        Attempt = [int]$Matches['attempt']
+        Path = $_.FullName.Substring($repoRoot.Length + 1).Replace('\', '/')
+      }
+    }
+  } | Sort-Object Attempt, Path)
+}
+
+# Attempts are monotonic for the stable lane/scope and gate slug across every
+# date and revision, not merely collision-free for today's SHA.
+$qaPrior = @(Get-E1RecordAttempts $qaDir '^\d{4}-\d{2}-\d{2}-d0-e1-completion-[0-9a-f]{12}-a(?<attempt>\d+)\.md$')
+$handoffPrior = @(Get-E1RecordAttempts $handoffDir '^\d{4}-\d{2}-\d{2}-epic-completion-[0-9a-f]{12}-a(?<attempt>\d+)\.md$')
+$priorAttempts = @($qaPrior | ForEach-Object Attempt) + @($handoffPrior | ForEach-Object Attempt)
+$selectedAttempt = if ($priorAttempts.Count -eq 0) { 1 } else { [int](($priorAttempts | Measure-Object -Maximum).Maximum) + 1 }
+$qaRecord = "$qaDir/$utcDate-d0-e1-completion-$sha12-a$selectedAttempt.md"
+$handoffRecord = "$handoffDir/$utcDate-epic-completion-$sha12-a$selectedAttempt.md"
+$qaSupersedes = if ($qaPrior.Count -eq 0) { 'none' } else { $qaPrior[-1].Path }
+$handoffSupersedes = if ($handoffPrior.Count -eq 0) { 'none' } else { $handoffPrior[-1].Path }
 ```
 
-Populate `$qaRecord` from the QA template with the exact revision, commands, exit codes, test counts, current/frozen contract hashes, cross-version directions, boundary result, and three consecutive same-revision critical-suite passes. Populate `$handoffRecord` from the handoff template, linking all seven ticket results and `$qaRecord`.
+Populate `$qaRecord` from the QA template with its immutable path/attempt fields, `Supersedes: $qaSupersedes`, exact 40-character revision, commands, exit codes, test counts, current/frozen contract hashes, every execution-source direction, product/runtime approval vectors, cross-version directions, boundary result, both build commands, every applicable REQUIRED/HARD/INITIAL/OBSERVED value, and three consecutive same-revision critical-suite passes. Populate `$handoffRecord` from the handoff template with `Supersedes: $handoffSupersedes`, pinning all seven ticket-result blob and reviewed implementation SHAs plus `$qaRecord`. Failed, blocked, corrected, later-date, and later-revision campaigns advance the same monotonic attempt sequence and never create another `a1`.
 
 Set the handoff decision to `pass` only if Step 2 and every applicable D0 REQUIRED condition plus HARD/INITIAL threshold passed on the recorded revision. Otherwise set it to `fail` or `blocked_external` under `test-gates.md`, keep the epic in `gate_review`, and create stable finding IDs for every blocker.
 
