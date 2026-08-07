@@ -1,5 +1,5 @@
 diff --git a/dist/index.js b/dist/index.js
-index ccfe17a82f4879bf20cc345c579a987d9eba5309..3ffd32d44cf2e0f23012e868e5f356d2fc57142b 100644
+index ccfe17a82f4879bf20cc345c579a987d9eba5309..a6242f19301333b1461b172750080d3985044dd0 100644
 --- a/dist/index.js
 +++ b/dist/index.js
 @@ -23,7 +23,7 @@ const { Client } = pg;
@@ -29,7 +29,28 @@ index ccfe17a82f4879bf20cc345c579a987d9eba5309..3ffd32d44cf2e0f23012e868e5f356d2
                  // Connect to stderr, as that is where the messages get sent
                  (_a = this.process.stderr) === null || _a === void 0 ? void 0 : _a.on('data', (chunk) => {
                      // Parse the data as a string and log it
-@@ -222,8 +222,12 @@ class EmbeddedPostgres {
+@@ -209,21 +209,29 @@ class EmbeddedPostgres {
+             }
+             // Kill the existing postgres process
+             yield new Promise((resolve) => {
+-                var _a, _b, _c;
+-                // Register a handler for when the process finally exists
+-                (_a = this.process) === null || _a === void 0 ? void 0 : _a.on('exit', resolve);
++                var _b, _c;
++                if (!this.process || this.process.exitCode !== null) return resolve();
++                const timer = setTimeout(resolve, 2000);
++                this.process.on('exit', () => {
++                    clearTimeout(timer);
++                    resolve();
++                });
+                 // GUARD: Check if we're on Windows, since Windows doesn't support SIGINT
+                 if (platform() === 'win32') {
+                     // GUARD: Double check the pid is there to keep TypeScript happy
+                     if (!((_b = this.process) === null || _b === void 0 ? void 0 : _b.pid)) {
+-                        throw new Error('Could not find process PID');
++                        return resolve();
+                     }
+                     // Actually kill the process using the Windows taskkill command
                      spawn('taskkill', ['/pid', this.process.pid.toString(), '/f', '/t']);
                  }
                  else {
@@ -44,7 +65,7 @@ index ccfe17a82f4879bf20cc345c579a987d9eba5309..3ffd32d44cf2e0f23012e868e5f356d2
                  }
              });
              // Clean up process
-@@ -362,5 +366,5 @@ function gracefulShutdown(done) {
+@@ -362,5 +370,5 @@ function gracefulShutdown(done) {
      });
  }
  // Register graceful shutdown function
