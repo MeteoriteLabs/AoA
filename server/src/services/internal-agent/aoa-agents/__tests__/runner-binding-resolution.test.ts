@@ -128,7 +128,7 @@ describe("crew runner releases a checked-out task on a mid-run failure (Codex P2
   // A throw between issueService.checkout and adapter.execute (e.g. secret
   // resolution failure) must not strand the task 'in_progress'. The outer catch
   // must release the lock back to 'todo', guarded by executionRunId===runId.
-  const iCatch = src.indexOf("} catch (err) {");
+  const iCatch = src.indexOf("} catch (err) {", src.indexOf("aoa run failed (isolated)") - 50);
   const iFinally = src.indexOf("} finally {", iCatch);
   const catchBlock = iCatch > -1 && iFinally > iCatch ? src.slice(iCatch, iFinally) : "";
 
