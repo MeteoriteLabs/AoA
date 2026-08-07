@@ -4,6 +4,7 @@ import { companies } from "./companies.js";
 import { environments } from "./environments.js";
 import { executionWorkspaces } from "./execution_workspaces.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
+import { internalAgentConversations } from "./internal_agent.js";
 import { issues } from "./issues.js";
 
 export const environmentLeases = pgTable(
@@ -18,6 +19,14 @@ export const environmentLeases = pgTable(
     // Warm-reuse (Wave 6 / U7.1): the org agent this lease is held warm for.
     // Only set on `reuse_by_agent` leases — ephemeral leases leave this NULL.
     agentId: uuid("agent_id").references(() => agents.id, { onDelete: "set null" }),
+    // Warm-reuse (W7.5c): the Commander conversation this lease is held warm
+    // for. Commander has no agent row, so it keys its warm lease on the
+    // conversation instead of `agentId`. Only set on Commander `reuse_by_agent`
+    // leases; org/crew/ephemeral leave it NULL.
+    commanderConversationId: uuid("commander_conversation_id").references(
+      () => internalAgentConversations.id,
+      { onDelete: "set null" },
+    ),
     status: text("status").notNull().default("active"),
     leasePolicy: text("lease_policy").notNull().default("ephemeral"),
     provider: text("provider"),
@@ -56,6 +65,10 @@ export const environmentLeases = pgTable(
       table.environmentId,
       table.status,
     ),
+    // Warm-resume lookup for Commander: find a conversation's paused lease.
+    companyCommanderConvEnvironmentStatusIdx: index(
+      "environment_leases_company_commander_conv_environment_status_idx",
+    ).on(table.companyId, table.commanderConversationId, table.environmentId, table.status),
     // Idle reaper scan: sweep paused leases past the TTL.
     pausedReaperIdx: index("environment_leases_paused_reaper_idx").on(table.status, table.pausedAt),
   }),
