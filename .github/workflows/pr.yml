@@ -387,6 +387,7 @@ jobs:
         run: pnpm -r typecheck
 
       - name: Run tests
+        # Trigger full CI run for tinypool Node 24 IPC patch
         env:
           NODE_OPTIONS: "--max-old-space-size=4096"
         run: pnpm test:run --pool=forks
