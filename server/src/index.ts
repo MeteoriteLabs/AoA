@@ -53,6 +53,7 @@ import {
 } from "./services/workspace-runtime.js";
 import { handlePreviewProxyUpgrade } from "./services/preview-proxy.js";
 import { scheduleTtlSweeper } from "./services/workspace-ttl-sweeper.js";
+import { scheduleWarmSandboxReaper } from "./services/warm-sandbox-reaper.js";
 import { scheduleCleanupRetrySweeper } from "./services/workspace-cleanup-retry-sweeper.js";
 import { scheduleClaudeConfigDirSweeper } from "./services/claude-config-dir-sweeper.js";
 import { registerHeartbeatWatchdogSweeper } from "./services/heartbeat-watchdog.js";
@@ -829,6 +830,11 @@ if (config.heartbeatSchedulerEnabled) {
   // Periodic sweep: mark stale workspaces as cleanup-eligible based on project TTL.
   // Sweeper no-ops when the instance-level experimental flag is off.
   scheduleTtlSweeper(db as any);
+
+  // Periodic reap: destroy warm (reuse_by_agent) E2B snapshots left idle past
+  // the instance TTL (~30 min). No-ops when `enableWarmSandboxReaper` is off,
+  // exactly like the TTL sweeper above.
+  scheduleWarmSandboxReaper(db as any);
 
   // Retry filesystem cleanup for workspaces stuck in `cleanup_failed` (Windows
   // file-handle races). Runs every 60s; promotes to `archived` once rm succeeds.

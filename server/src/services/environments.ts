@@ -1,4 +1,4 @@
-import { eq, and, desc, isNotNull, inArray, notInArray, sql } from "drizzle-orm";
+import { eq, and, desc, isNotNull, inArray, notInArray, lt, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { companies, environmentLeases, environments, executionTargets } from "@armyofagents/db";
 import type {
@@ -306,6 +306,24 @@ export function environmentService(db: Db) {
           ),
         )
         .orderBy(sql`${environmentLeases.pausedAt} asc nulls last`);
+    },
+
+    // Idle reaper (U7.6) scan: paused external-provider sandboxes whose pausedAt
+    // is older than the cutoff. Non-null providerLeaseId only — a paused row
+    // must have a sandbox to destroy. Uses the pausedReaperIdx (status,pausedAt).
+    listPausedLeasesOlderThan: async (cutoff: Date) => {
+      return db
+        .select()
+        .from(environmentLeases)
+        .where(
+          and(
+            eq(environmentLeases.status, "paused"),
+            lt(environmentLeases.pausedAt, cutoff),
+            isNotNull(environmentLeases.providerLeaseId),
+            notInArray(environmentLeases.provider, NON_SANDBOX_LEASE_PROVIDERS),
+          ),
+        )
+        .orderBy(desc(environmentLeases.pausedAt));
     },
   };
 }

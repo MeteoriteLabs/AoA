@@ -14,6 +14,7 @@ import {
   type SandboxRuntimeProvider,
 } from "./sandbox-provider-runtime.js";
 import { runtimeProviderKeyService } from "./runtime-provider-keys.js";
+import { WARM_SANDBOX_MAX_PER_COMPANY_DEFAULT } from "./warm-sandbox-constants.js";
 import { logger } from "../middleware/logger.js";
 
 type PersistedExecutionWorkspaceRef = {
@@ -65,6 +66,14 @@ export interface EnvironmentDriverReleaseInput {
   environment: Environment;
   lease: EnvironmentLease;
   status: Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed" | "retained">;
+  /**
+   * U7.6 — force-destroy. When true the release ALWAYS kills the sandbox,
+   * ignoring `leasePolicy`: a reaped (idle-TTL) or evicted (over-cap) warm lease
+   * must be killed, never re-paused. Mirror-image of U7.5's reuse pause branch —
+   * it forces `reuseLease: false` into the provider config so the E2B provider
+   * kills instead of pausing. Used by the warm-sandbox reaper / evict path.
+   */
+  forceDestroy?: boolean;
 }
 
 export interface EnvironmentDriverExecuteInput {
@@ -357,6 +366,7 @@ function sanitizeProviderMetadata(metadata: Record<string, unknown>): Record<str
 }
 
 function createSandboxDockerEnvironmentDriver(
+  db: Db,
   environmentsSvc: EnvironmentService,
   providerRuntime: SandboxProviderRuntime,
   runtimeProviderKeys: RuntimeProviderKeyResolver | null,
@@ -432,6 +442,27 @@ function createSandboxDockerEnvironmentDriver(
               await environmentsSvc.releaseLease(paused.id, "expired", { cleanupStatus: "success" })
                 .catch(() => undefined);
             }
+          }
+        }
+
+        // U7.6 — per-company cap: before minting a fresh WARM sandbox, bound
+        // accumulation of live+paused provider sandboxes. Over the cap, evict
+        // the oldest PAUSED sandbox (never block the run; if all are active the
+        // cap is a soft ceiling and we proceed anyway). Best-effort — a failure
+        // here must never fail the acquire. `evictOldestPausedSandbox` is
+        // dynamically imported to break the environment-runtime ↔ reaper cycle.
+        if (warm && typeof environmentsSvc.listLiveAndPausedProviderLeasesForCompany === "function") {
+          try {
+            const live = await environmentsSvc.listLiveAndPausedProviderLeasesForCompany(input.companyId);
+            if (live.length >= WARM_SANDBOX_MAX_PER_COMPANY_DEFAULT) {
+              const { evictOldestPausedSandbox } = await import("./warm-sandbox-reaper.js");
+              await evictOldestPausedSandbox(db, input.companyId, { environments: environmentsSvc });
+            }
+          } catch (capErr) {
+            logger.warn(
+              { err: capErr, companyId: input.companyId, environmentId: input.environment.id },
+              "environment runtime: warm per-company cap eviction failed (best-effort)",
+            );
           }
         }
 
@@ -531,7 +562,9 @@ function createSandboxDockerEnvironmentDriver(
           const isReuse =
             readString(input.lease.leasePolicy) === "reuse_by_agent" ||
             readObject(input.lease.metadata).reuseLease === true;
-          if (isReuse && typeof environmentsSvc.markLeasePaused === "function") {
+          // forceDestroy (U7.6) takes precedence: a reaped/evicted lease is
+          // killed, never re-paused — so the pause branch is gated on it.
+          if (isReuse && input.forceDestroy !== true && typeof environmentsSvc.markLeasePaused === "function") {
             const released = await providerRuntime.releaseLease(provider, {
               providerLeaseId: input.lease.providerLeaseId,
               leaseMetadata: input.lease.metadata,
@@ -543,10 +576,13 @@ function createSandboxDockerEnvironmentDriver(
             return row ? normalizeEnvironmentLease(row) : null;
           }
 
+          // Ephemeral kill, or forceDestroy kill of a warm lease. forceDestroy
+          // explicitly forces reuseLease:false so a warm lease (whose metadata
+          // carries reuseLease under providerMetadata) is killed, not paused.
           const released = await providerRuntime.releaseLease(provider, {
             providerLeaseId: input.lease.providerLeaseId,
             leaseMetadata: input.lease.metadata,
-            config: providerConfig,
+            config: input.forceDestroy === true ? { ...providerConfig, reuseLease: false } : providerConfig,
           });
           const row = await environmentsSvc.releaseLease(input.lease.id, input.status, {
             cleanupStatus: released.cleanupStatus,
@@ -588,6 +624,7 @@ export function environmentRuntimeService(
   const runtimeProviderKeys = options.runtimeProviderKeys ?? runtimeProviderKeyService(db);
   const localDriver = createLocalEnvironmentDriver(environmentsSvc);
   const sandboxDriver = createSandboxDockerEnvironmentDriver(
+    db,
     environmentsSvc,
     providerRuntime,
     runtimeProviderKeys,

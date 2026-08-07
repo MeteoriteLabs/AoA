@@ -1,0 +1,162 @@
+import { describe, expect, it, vi } from "vitest";
+import type { EnvironmentService } from "../services/environments.js";
+import { sweepIdleWarmSandboxes, evictOldestPausedSandbox } from "../services/warm-sandbox-reaper.js";
+
+const CO = "00000000-0000-0000-0000-000000000001";
+const ENV = "00000000-0000-0000-0000-000000000010";
+
+// A raw environment_leases row (camelCase — normalizeEnvironmentLease reads
+// these keys). Only the fields the reaper/destroy path touches are set.
+function pausedRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "lease-paused",
+    companyId: CO,
+    environmentId: ENV,
+    provider: "e2b",
+    providerLeaseId: "e2b-paused",
+    status: "paused",
+    leasePolicy: "reuse_by_agent",
+    pausedAt: new Date(Date.now() - 45 * 60 * 1000).toISOString(),
+    releasedAt: null,
+    metadata: { provider: "e2b", providerMetadata: { remoteCwd: "/workspace" } },
+    ...overrides,
+  };
+}
+
+function e2bEnvRow() {
+  return { id: ENV, companyId: CO, name: "warm", driver: "sandbox", config: { provider: "e2b", template: "base" } };
+}
+
+function fakeProviderKeys() {
+  return { resolveCredential: vi.fn(async () => "sk-e2b") };
+}
+
+describe("warm-sandbox reaper (U7.6)", () => {
+  it("destroys sandboxes paused longer than the idle TTL (provider kill, reuseLease:false; row → expired)", async () => {
+    const paused = pausedRow();
+    const releaseProviderSpy = vi.fn(async () => ({ cleanupStatus: "success" as const }));
+    const releaseLease = vi.fn(async () => ({ ...paused, status: "expired" }));
+    const listPausedLeasesOlderThan = vi.fn(async () => [paused]);
+    const environments = {
+      get: vi.fn(async () => e2bEnvRow()),
+      releaseLease,
+      listPausedLeasesOlderThan,
+      listLiveAndPausedProviderLeasesForCompany: vi.fn(),
+      acquireLease: vi.fn(),
+      releaseLeasesForRun: vi.fn(),
+    } as unknown as EnvironmentService;
+
+    const res = await sweepIdleWarmSandboxes({} as never, {
+      environments,
+      sandboxProviders: [{ provider: "e2b", acquireLease: vi.fn(), releaseLease: releaseProviderSpy, execute: vi.fn() }],
+      runtimeProviderKeys: fakeProviderKeys(),
+      getExperimental: async () => ({ enableWarmSandboxReaper: true, warmSandboxIdleTtlMinutes: 30 }),
+    });
+
+    expect(res).toEqual({ scanned: 1, reaped: 1 });
+    // Reaped lease is KILLED (reuseLease:false), never re-paused.
+    expect(releaseProviderSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ providerLeaseId: "e2b-paused", config: expect.objectContaining({ reuseLease: false }) }),
+    );
+    // DB row retired to expired.
+    expect(releaseLease).toHaveBeenCalledWith("lease-paused", "expired", expect.objectContaining({ cleanupStatus: "success" }));
+  });
+
+  it("leaves sandboxes paused within the TTL untouched (and scans with a cutoff ≈ TTL ago)", async () => {
+    // The real query filters by cutoff; here the stub returns [] to model that.
+    const listPausedLeasesOlderThan = vi.fn(async () => []);
+    const releaseProviderSpy = vi.fn(async () => ({ cleanupStatus: "success" as const }));
+    const environments = {
+      get: vi.fn(),
+      releaseLease: vi.fn(),
+      listPausedLeasesOlderThan,
+      listLiveAndPausedProviderLeasesForCompany: vi.fn(),
+      acquireLease: vi.fn(),
+      releaseLeasesForRun: vi.fn(),
+    } as unknown as EnvironmentService;
+
+    const res = await sweepIdleWarmSandboxes({} as never, {
+      environments,
+      sandboxProviders: [{ provider: "e2b", acquireLease: vi.fn(), releaseLease: releaseProviderSpy, execute: vi.fn() }],
+      runtimeProviderKeys: fakeProviderKeys(),
+      getExperimental: async () => ({ enableWarmSandboxReaper: true, warmSandboxIdleTtlMinutes: 30 }),
+    });
+
+    expect(res.reaped).toBe(0);
+    expect(releaseProviderSpy).not.toHaveBeenCalled();
+    const cutoffArg = listPausedLeasesOlderThan.mock.calls[0]?.[0] as Date;
+    const ageMs = Date.now() - cutoffArg.getTime();
+    expect(ageMs).toBeGreaterThanOrEqual(29 * 60 * 1000);
+    expect(ageMs).toBeLessThanOrEqual(31 * 60 * 1000);
+  });
+
+  it("no-ops when the reaper flag is off (never scans)", async () => {
+    const listPausedLeasesOlderThan = vi.fn();
+    const environments = {
+      get: vi.fn(),
+      releaseLease: vi.fn(),
+      listPausedLeasesOlderThan,
+      listLiveAndPausedProviderLeasesForCompany: vi.fn(),
+      acquireLease: vi.fn(),
+      releaseLeasesForRun: vi.fn(),
+    } as unknown as EnvironmentService;
+
+    const res = await sweepIdleWarmSandboxes({} as never, {
+      environments,
+      getExperimental: async () => ({ enableWarmSandboxReaper: false, warmSandboxIdleTtlMinutes: 30 }),
+    });
+
+    expect(res).toEqual({ scanned: 0, reaped: 0 });
+    expect(listPausedLeasesOlderThan).not.toHaveBeenCalled();
+  });
+
+  it("evictOldestPausedSandbox destroys the oldest paused lease and never touches active ones", async () => {
+    // Query returns `pausedAt asc nulls last` → oldest paused first, active last.
+    const oldestPaused = pausedRow({ id: "old", providerLeaseId: "e2b-old", pausedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString() });
+    const activeLease = pausedRow({ id: "act", providerLeaseId: "e2b-act", status: "active", pausedAt: null });
+    const releaseProviderSpy = vi.fn(async () => ({ cleanupStatus: "success" as const }));
+    const releaseLease = vi.fn(async () => ({ ...oldestPaused, status: "expired" }));
+    const environments = {
+      get: vi.fn(async () => e2bEnvRow()),
+      releaseLease,
+      listPausedLeasesOlderThan: vi.fn(),
+      listLiveAndPausedProviderLeasesForCompany: vi.fn(async () => [oldestPaused, activeLease]),
+      acquireLease: vi.fn(),
+      releaseLeasesForRun: vi.fn(),
+    } as unknown as EnvironmentService;
+
+    const evicted = await evictOldestPausedSandbox({} as never, CO, {
+      environments,
+      sandboxProviders: [{ provider: "e2b", acquireLease: vi.fn(), releaseLease: releaseProviderSpy, execute: vi.fn() }],
+      runtimeProviderKeys: fakeProviderKeys(),
+    });
+
+    expect(evicted?.id).toBe("old");
+    expect(releaseProviderSpy).toHaveBeenCalledWith(expect.objectContaining({ providerLeaseId: "e2b-old" }));
+    // The active lease is never killed.
+    expect(releaseProviderSpy).not.toHaveBeenCalledWith(expect.objectContaining({ providerLeaseId: "e2b-act" }));
+    expect(releaseLease).toHaveBeenCalledWith("old", "expired", expect.anything());
+  });
+
+  it("evictOldestPausedSandbox returns null when nothing is paused (all active)", async () => {
+    const activeLease = pausedRow({ id: "act", providerLeaseId: "e2b-act", status: "active", pausedAt: null });
+    const releaseProviderSpy = vi.fn(async () => ({ cleanupStatus: "success" as const }));
+    const environments = {
+      get: vi.fn(),
+      releaseLease: vi.fn(),
+      listPausedLeasesOlderThan: vi.fn(),
+      listLiveAndPausedProviderLeasesForCompany: vi.fn(async () => [activeLease]),
+      acquireLease: vi.fn(),
+      releaseLeasesForRun: vi.fn(),
+    } as unknown as EnvironmentService;
+
+    const evicted = await evictOldestPausedSandbox({} as never, CO, {
+      environments,
+      sandboxProviders: [{ provider: "e2b", acquireLease: vi.fn(), releaseLease: releaseProviderSpy, execute: vi.fn() }],
+      runtimeProviderKeys: fakeProviderKeys(),
+    });
+
+    expect(evicted).toBeNull();
+    expect(releaseProviderSpy).not.toHaveBeenCalled();
+  });
+});
