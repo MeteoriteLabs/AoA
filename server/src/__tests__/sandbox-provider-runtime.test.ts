@@ -535,6 +535,86 @@ describe("sandboxProviderRuntime", () => {
     });
   });
 
+  describe("E2B readFiles/writeFiles binary round-trip (RW4)", () => {
+    // The real E2B SDK's `sandbox.files.read` returns a UTF-8-**decoded
+    // string** by default (or with `format: "text"`) — lossy for non-UTF-8
+    // bytes, each such byte substituted with U+FFFD — and only returns the
+    // raw `Uint8Array` when called with `{ format: "bytes" }` (verified
+    // against `node_modules/e2b/dist/index.d.ts` read overloads ~4185/4199).
+    // This mock reproduces that exact behavior. The fake in-memory provider
+    // used elsewhere in this suite round-trips a stored `Buffer` verbatim
+    // regardless of format, so it CANNOT catch this class of bug — only a
+    // mock that performs the real lossy UTF-8 decode on the non-bytes path
+    // can prove the provider actually requests bytes.
+    const PNG_HEADER = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0x00]);
+
+    function makeRealisticReadMock(bytes: Buffer) {
+      return vi.fn(async (_path: string, opts?: { format?: string }) => {
+        if (opts?.format === "bytes") {
+          return new Uint8Array(bytes);
+        }
+        // Real SDK behavior: UTF-8-decode server-side. `TextDecoder`
+        // without `fatal: true` substitutes U+FFFD for invalid byte
+        // sequences — lossy, does not round-trip.
+        return new TextDecoder("utf-8").decode(bytes);
+      });
+    }
+
+    it('requests { format: "bytes" } and returns the exact original bytes for a binary fixture', async () => {
+      const read = makeRealisticReadMock(PNG_HEADER);
+      const sandbox = {
+        commands: { run: vi.fn() },
+        files: { write: vi.fn(async () => undefined), remove: vi.fn(async () => undefined), read },
+        setTimeout: vi.fn(async () => undefined),
+      };
+      const connect = vi.fn(async () => sandbox);
+      const provider = createE2bSandboxRuntimeProvider({
+        importE2b: async () => ({ Sandbox: { create: vi.fn(), connect } }),
+        env: { E2B_API_KEY: "key-from-env" },
+      });
+
+      const results = await provider.readFiles!({
+        providerLeaseId: "e2b-sandbox-1",
+        leaseMetadata: { template: "base", timeoutMs: 30_000 },
+        paths: ["/workspace/logo.png"],
+      });
+
+      // The crux of RW4: without `{ format: "bytes" }` this call returns a
+      // lossy UTF-8 string and the assertion below fails.
+      expect(read).toHaveBeenCalledWith("/workspace/logo.png", { format: "bytes" });
+      expect(results).toHaveLength(1);
+      expect(results[0].path).toBe("/workspace/logo.png");
+      expect(Buffer.compare(results[0].content, PNG_HEADER)).toBe(0);
+    });
+
+    it("writeFiles never passes a raw Node Buffer to sandbox.files.write (SDK-accepted ArrayBuffer only)", async () => {
+      const write = vi.fn(async () => undefined);
+      const sandbox = {
+        commands: { run: vi.fn() },
+        files: { write, remove: vi.fn(async () => undefined) },
+        setTimeout: vi.fn(async () => undefined),
+      };
+      const connect = vi.fn(async () => sandbox);
+      const provider = createE2bSandboxRuntimeProvider({
+        importE2b: async () => ({ Sandbox: { create: vi.fn(), connect } }),
+        env: { E2B_API_KEY: "key-from-env" },
+      });
+
+      await provider.writeFiles!({
+        providerLeaseId: "e2b-sandbox-1",
+        leaseMetadata: { template: "base", timeoutMs: 30_000 },
+        files: [{ path: "/workspace/logo.png", content: PNG_HEADER }],
+      });
+
+      expect(write).toHaveBeenCalledTimes(1);
+      const [writtenPath, writtenContent] = write.mock.calls[0] as [string, unknown];
+      expect(writtenPath).toBe("/workspace/logo.png");
+      expect(Buffer.isBuffer(writtenContent)).toBe(false);
+      expect(writtenContent).toBeInstanceOf(ArrayBuffer);
+      expect(Buffer.compare(Buffer.from(writtenContent as ArrayBuffer), PNG_HEADER)).toBe(0);
+    });
+  });
+
   it("registers fake and E2B providers by default", () => {
     const runtime = sandboxProviderRuntime();
     expect(runtime.getProvider("fake")).not.toBeNull();

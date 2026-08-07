@@ -192,6 +192,34 @@ describe("finalizeSandboxOrgWorkspace (U6.4)", () => {
     expect(await fs.readFile(path.join(cwd, "ok.txt"), "utf8")).toBe("fine");
   });
 
+  it("(g) rejects pulled files that target .git/ inside the clone (RW4 defense-in-depth)", async () => {
+    const cwd = await makeTempClone();
+    const { runner } = makeRecordingGitRunner();
+    createPullRequest.mockResolvedValue({
+      url: "https://github.com/acme/widget/pull/10",
+      number: 10,
+      state: "open",
+      draft: false,
+    });
+
+    const result = await finalizeSandboxOrgWorkspace({
+      db: {} as never,
+      ...BASE,
+      hostClonePath: cwd,
+      files: [
+        { path: ".git/hooks/pre-commit", content: Buffer.from("#!/bin/sh\necho pwned\n") },
+        { path: ".git/config", content: Buffer.from("[core]\n\tfoo = bar\n") },
+        { path: "ok.txt", content: Buffer.from("fine") },
+      ],
+      gitRunner: runner,
+    });
+
+    expect(result.rejectedFiles).toEqual([".git/hooks/pre-commit", ".git/config"]);
+    await expect(fs.stat(path.join(cwd, ".git", "hooks", "pre-commit"))).rejects.toThrow();
+    await expect(fs.stat(path.join(cwd, ".git", "config"))).rejects.toThrow();
+    expect(await fs.readFile(path.join(cwd, "ok.txt"), "utf8")).toBe("fine");
+  });
+
   it("(f) on createPullRequest failure, still reports the pushed branch (partial-success)", async () => {
     const cwd = await makeTempClone();
     const { runner } = makeRecordingGitRunner();

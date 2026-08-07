@@ -415,12 +415,29 @@ type E2bSandbox = {
     run(command: string, options?: Record<string, unknown>): Promise<E2bCommandResult>;
   };
   files?: {
-    write(path: string, content: string | Buffer): Promise<void>;
+    // RW4 — real SDK signature is `write(path, data: string | ArrayBuffer |
+    // Blob | ReadableStream)` (verified against
+    // `node_modules/e2b/dist/index.d.ts:4251`). A raw Node `Buffer` is NOT
+    // in that union — it is a `Uint8Array` view, not an `ArrayBuffer` — so
+    // callers must convert (see `bufferToArrayBuffer` below) rather than
+    // pass a `Buffer` straight through.
+    write(path: string, content: string | ArrayBuffer): Promise<void>;
     remove(path: string): Promise<void>;
     // U6.2 — optional (not on the SDK surface before this wave; existing test
     // doubles that stub `files: { write, remove }` without `read` must stay
     // valid, so this is NOT a required member).
-    read?(path: string): Promise<Uint8Array | string>;
+    //
+    // RW4 — the real SDK overloads `read` on `opts.format` (verified against
+    // `node_modules/e2b/dist/index.d.ts:4185`/`:4199`): no `format` (or
+    // `format: "text"`) returns a UTF-8-**decoded string** (lossy for
+    // non-UTF-8 bytes — every non-UTF-8 byte becomes U+FFFD and does not
+    // round-trip); only `{ format: "bytes" }` returns the raw `Uint8Array`.
+    // Modeled here as two call signatures so callers requesting bytes get a
+    // `Uint8Array` back at the type level, not `Uint8Array | string`.
+    read?: {
+      (path: string, opts: { format: "bytes" }): Promise<Uint8Array>;
+      (path: string, opts?: { format?: "text" }): Promise<string>;
+    };
   };
   // U6.2 — resolve a public host for a port exposed inside the sandbox
   // (real E2B SDK: `sandbox.getHost(port)`). Optional — absent on the SDK
@@ -606,6 +623,19 @@ function configFromE2bLease(input: {
 
 function isInstanceOf(error: unknown, ctor: unknown): boolean {
   return typeof ctor === "function" && error instanceof ctor;
+}
+
+/**
+ * RW4 — converts a Node `Buffer` to the exact `ArrayBuffer` slice backing
+ * it. NOT simply `buffer.buffer`: Node pools small allocations, so a
+ * `Buffer`'s underlying `ArrayBuffer` is frequently larger than (and offset
+ * from) the buffer's own bytes — passing `buffer.buffer` directly would ship
+ * neighboring pooled bytes (or the wrong bytes entirely) to the sandbox.
+ * `.slice(byteOffset, byteOffset + byteLength)` copies out exactly this
+ * buffer's own bytes.
+ */
+function bufferToArrayBuffer(buffer: Buffer): ArrayBuffer {
+  return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer;
 }
 
 function readErrorStream(error: unknown, key: "stdout" | "stderr"): string {
@@ -850,7 +880,12 @@ export function createE2bSandboxRuntimeProvider(
       const sandbox = await connect(config, input.providerLeaseId);
       if (!sandbox.files) throw new Error("E2B sandbox file API is required to write files.");
       for (const file of input.files) {
-        await sandbox.files.write(file.path, file.content);
+        // RW4 — the real SDK's `write` accepts `string | ArrayBuffer | Blob
+        // | ReadableStream`, NOT a Node `Buffer` (verified against
+        // `node_modules/e2b/dist/index.d.ts:4251`). Convert via
+        // `bufferToArrayBuffer` (not `file.content.buffer`) so binary
+        // content round-trips regardless of Node's buffer-pooling.
+        await sandbox.files.write(file.path, bufferToArrayBuffer(file.content));
       }
     },
 
@@ -860,10 +895,16 @@ export function createE2bSandboxRuntimeProvider(
       if (!sandbox.files?.read) throw new Error("E2B sandbox file API is required to read files.");
       const results: Array<{ path: string; content: Buffer }> = [];
       for (const filePath of input.paths) {
-        const raw = await sandbox.files.read(filePath);
+        // RW4 — MUST request `{ format: "bytes" }`. The real SDK defaults to
+        // `format: "text"`, which UTF-8-decodes the response server-side —
+        // lossy (U+FFFD) for any non-UTF-8 byte, e.g. a PNG's `0x89` lead
+        // byte — and does not round-trip. Only `{ format: "bytes" }` returns
+        // the raw `Uint8Array` (verified against
+        // `node_modules/e2b/dist/index.d.ts:4185`/`:4199`).
+        const raw = await sandbox.files.read(filePath, { format: "bytes" });
         results.push({
           path: filePath,
-          content: typeof raw === "string" ? Buffer.from(raw, "utf8") : Buffer.from(raw),
+          content: Buffer.from(raw),
         });
       }
       return results;

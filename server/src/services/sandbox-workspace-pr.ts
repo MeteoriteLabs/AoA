@@ -80,10 +80,28 @@ function isInsideClone(cloneRoot: string, absPath: string): boolean {
 }
 
 /**
+ * RW4 (defense-in-depth) — reject any pulled file that resolves inside a
+ * `.git/` directory anywhere under the clone. The current diff/pull path
+ * (`collectSandboxDiff`, U6.3) never lists `.git/`-prefixed paths, but a
+ * pulled `.git/hooks/pre-commit` or `.git/config` written into the clone
+ * could execute (or alter git's own behavior, e.g. `core.hooksPath`) on the
+ * HOST at commit time — a host-RCE-class footgun this closes for any future
+ * source of pulled files, in addition to the existing `isInsideClone`
+ * escape guard above.
+ */
+function targetsGitDir(cloneRoot: string, absPath: string): boolean {
+  const resolvedRoot = path.resolve(cloneRoot);
+  const relative = path.relative(resolvedRoot, absPath);
+  return relative.split(path.sep).includes(".git");
+}
+
+/**
  * Writes each pulled `{path, content}` entry into `hostClonePath`. Any entry
  * whose resolved path escapes the clone root (e.g. `../evil.txt`, or an
  * absolute path outside the clone) is rejected — never written anywhere —
  * and reported back via `rejected` instead of aborting the whole batch.
+ * (RW4: an entry that resolves inside a `.git/` directory of the clone is
+ * rejected the same way — see `targetsGitDir` above.)
  */
 async function writePulledFiles(
   hostClonePath: string,
@@ -95,7 +113,7 @@ async function writePulledFiles(
 
   for (const file of files) {
     const target = path.resolve(resolvedRoot, file.path);
-    if (!isInsideClone(resolvedRoot, target)) {
+    if (!isInsideClone(resolvedRoot, target) || targetsGitDir(resolvedRoot, target)) {
       rejected.push(file.path);
       continue;
     }
