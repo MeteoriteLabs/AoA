@@ -387,6 +387,8 @@ jobs:
         run: pnpm -r typecheck
 
       - name: Run tests
+        env:
+          NODE_OPTIONS: "--max-old-space-size=4096"
         run: pnpm test:run
 
       - name: Build
