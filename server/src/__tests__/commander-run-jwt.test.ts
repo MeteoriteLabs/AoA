@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, vi } from "vitest";
 import {
   createCommanderRunJwt,
   verifyCommanderRunJwt,
@@ -62,15 +62,23 @@ describe("Commander run-JWT", () => {
     expect(verifyCommanderRunJwt(forged)).toBeNull();
   });
 
-  it("an expired commander token fails verification", () => {
+  it("an expired commander token is rejected by verifyCommanderRunJwt", () => {
     const prev = process.env.AOA_COMMANDER_JWT_TTL_SECONDS;
     process.env.AOA_COMMANDER_JWT_TTL_SECONDS = "1";
+    vi.useFakeTimers();
     try {
+      vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
       const token = createCommanderRunJwt(base)!;
-      const claims = verifyCommanderRunJwt(token);
-      // Sanity: the short TTL is honored (exp is ~1s past iat).
-      expect(claims!.exp - claims!.iat).toBe(1);
+      // Sanity: the short TTL is honored (exp is 1s past iat) and the token
+      // verifies while still inside its window.
+      const fresh = verifyCommanderRunJwt(token);
+      expect(fresh).not.toBeNull();
+      expect(fresh!.exp - fresh!.iat).toBe(1);
+      // Advance the clock past exp → the `exp < now` guard must reject it.
+      vi.setSystemTime(new Date("2026-01-01T00:00:05Z"));
+      expect(verifyCommanderRunJwt(token)).toBeNull();
     } finally {
+      vi.useRealTimers();
       if (prev === undefined) delete process.env.AOA_COMMANDER_JWT_TTL_SECONDS;
       else process.env.AOA_COMMANDER_JWT_TTL_SECONDS = prev;
     }
