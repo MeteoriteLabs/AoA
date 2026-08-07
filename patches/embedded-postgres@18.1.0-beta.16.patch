@@ -28,3 +28,6 @@ diff --git a/dist/index.js b/dist/index.js
                  // Connect to stderr, as that is where the messages get sent
                  (_a = this.process.stderr) === null || _a === void 0 ? void 0 : _a.on('data', (chunk) => {
                      // Parse the data as a string and log it
+@@ -365,1 +365,1 @@
+-AsyncExitHook(gracefulShutdown);
++// AsyncExitHook(gracefulShutdown);
