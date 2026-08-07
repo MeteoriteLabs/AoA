@@ -117,6 +117,12 @@ export function environmentService(db: Db) {
       // `findResumablePausedLease`, keyed on agentId, can never match an
       // ephemeral lease). Byte-identical to today for every ephemeral caller.
       agentId?: string | null;
+      // Warm-reuse (W7.5c): the Commander conversation this lease is held warm
+      // for. Commander has no agent row, so it keys its warm lease on the
+      // conversation. Set only on Commander `reuse_by_agent` leases; org/crew/
+      // ephemeral callers omit it → NULL (so `findResumableCommanderPausedLease`
+      // can never match a non-Commander lease).
+      commanderConversationId?: string | null;
       leasePolicy?: EnvironmentLeasePolicy;
       provider?: string | null;
       providerLeaseId?: string | null;
@@ -141,6 +147,7 @@ export function environmentService(db: Db) {
           issueId: input.issueId ?? null,
           heartbeatRunId: input.heartbeatRunId ?? null,
           agentId: input.agentId ?? null,
+          commanderConversationId: input.commanderConversationId ?? null,
           status: "active",
           leasePolicy: input.leasePolicy ?? "ephemeral",
           provider: input.provider ?? null,
@@ -227,6 +234,31 @@ export function environmentService(db: Db) {
           and(
             eq(environmentLeases.companyId, input.companyId),
             eq(environmentLeases.agentId, input.agentId),
+            eq(environmentLeases.environmentId, input.environmentId),
+            eq(environmentLeases.status, "paused"),
+            isNotNull(environmentLeases.providerLeaseId),
+          ),
+        )
+        .orderBy(desc(environmentLeases.pausedAt))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    // Warm reuse (W7.5c) — Commander's conversation-keyed analogue of
+    // findResumablePausedLease. Only `paused` rows with a non-null
+    // providerLeaseId are resumable candidates.
+    findResumableCommanderPausedLease: async (input: {
+      companyId: string;
+      conversationId: string;
+      environmentId: string;
+    }) => {
+      const rows = await db
+        .select()
+        .from(environmentLeases)
+        .where(
+          and(
+            eq(environmentLeases.companyId, input.companyId),
+            eq(environmentLeases.commanderConversationId, input.conversationId),
             eq(environmentLeases.environmentId, input.environmentId),
             eq(environmentLeases.status, "paused"),
             isNotNull(environmentLeases.providerLeaseId),
