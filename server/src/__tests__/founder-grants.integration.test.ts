@@ -186,4 +186,34 @@ describe.skipIf(process.platform !== "linux")("founder permission grants (real P
       .where(grantWhere);
     expect(after.length).toBe(before.length);
   });
+
+  it("backfillFounderGrants does NOT re-grant an offboarded founder (inactive membership)", async () => {
+    const companyId = await insertCompany(`Offboarded ${randomUUID()}`);
+    const userId = await insertFounderUser();
+
+    // A deliberately-offboarded founder: founder role row lingers but membership
+    // is inactive. hasPermission gates on active membership, so re-seeding grants
+    // here would be dead rows / a latent re-arm — the backfill must skip them.
+    await db.insert(userRoles).values({ companyId, userId, role: "founder" });
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: userId,
+      status: "suspended",
+      membershipRole: "owner",
+    });
+
+    await backfillFounderGrants(db);
+
+    const grants = await db
+      .select({ id: principalPermissionGrants.id })
+      .from(principalPermissionGrants)
+      .where(
+        and(
+          eq(principalPermissionGrants.companyId, companyId),
+          eq(principalPermissionGrants.principalId, userId),
+        ),
+      );
+    expect(grants).toHaveLength(0);
+  });
 });

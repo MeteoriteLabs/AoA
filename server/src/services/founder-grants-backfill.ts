@@ -20,17 +20,32 @@
  * blocks startup.
  */
 import type { Db } from "@armyofagents/db";
-import { principalPermissionGrants, userRoles } from "@armyofagents/db";
-import { eq } from "drizzle-orm";
+import { companyMemberships, principalPermissionGrants, userRoles } from "@armyofagents/db";
+import { and, eq } from "drizzle-orm";
 import { PERMISSION_KEYS } from "@armyofagents/shared";
 import { logger } from "../middleware/logger.js";
 
 const log = logger.child({ service: "founder-grants-backfill" });
 
 export async function backfillFounderGrants(db: Db): Promise<{ founders: number; granted: number }> {
+  // Only reconcile founders who still have an ACTIVE company membership.
+  // hasPermission() gates on membership.status='active' anyway, so seeding grants
+  // for a founder whose membership was deactivated (deliberate offboarding) would
+  // be dead rows AND would wrongly re-arm access if that membership were ever
+  // reactivated — so we must NOT re-grant an offboarded founder. This inner join
+  // also keeps the `granted` count honest (only real heals are counted).
   const founders = await db
     .select({ companyId: userRoles.companyId, userId: userRoles.userId })
     .from(userRoles)
+    .innerJoin(
+      companyMemberships,
+      and(
+        eq(companyMemberships.companyId, userRoles.companyId),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, userRoles.userId),
+        eq(companyMemberships.status, "active"),
+      ),
+    )
     .where(eq(userRoles.role, "founder"));
 
   let granted = 0;
