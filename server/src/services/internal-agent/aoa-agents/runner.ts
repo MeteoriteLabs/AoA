@@ -438,24 +438,17 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     // delivered `config.env` (merged below for every adapter), never in the
     // config FILE, which holds `${AOA_MCP_*_TOKEN}` placeholders.
     //
-    // Gated on CONNECTOR-CAPABLE adapters (Plan 2b Task 3, widened from
-    // claude_local-only) using the same shared predicate as the heartbeat site:
-    // the four CLI adapters can host external MCP servers — claude consumes
-    // them via `--mcp-config`, the rest via `ctx.mcpServers` — while
-    // `process`/`http`/`cursor`/`hermes_local` have no MCP client at all and
-    // must not pay for the DB read.
+    // U11 (real-shape drift fix): the actual resolve call is DEFERRED to just
+    // after the U4/U12 sandbox acquire further below. `sandboxTarget` — whether
+    // a stdio connector is admissible in-VM (S5) — can only be known from
+    // `acquired.sandbox?.environment.driver === "sandbox"`, and U12 already
+    // relocated the acquire to run AFTER provider-credential resolution
+    // succeeds (so a cloud run with no company key fails before any sandbox —
+    // now also any connector DB read — is spent). Declared here so both are in
+    // scope for `connectorEnvMerge` / `buildMcpConfig` / `adapter.execute`'s
+    // `mcpServers` below.
     let extraMcpServers: Record<string, McpServerSpec> | undefined;
     let connectorEnv: Record<string, string> = {};
-    if (adapterSupportsConnectors(agent.adapterType)) {
-      const resolved = await resolveAgentConnectors(db, {
-        companyId: agent.companyId,
-        agentId,
-        runId: runId ?? undefined,
-        logger: log,
-      });
-      extraMcpServers = resolved.extraMcpServers;
-      connectorEnv = resolved.connectorEnv;
-    }
 
     // U12 (real-shape drift fix): the U4 sandbox acquire used to sit HERE,
     // immediately after connector resolution and before provider-credential
@@ -693,26 +686,6 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     const userTail = Array.isArray(resolvedConfigRecord[argKey])
       ? (resolvedConfigRecord[argKey] as unknown[]).filter((v): v is string => typeof v === "string")
       : prevArgs;
-    // A29 — do NOT scrub: connector tokens merge ON TOP of the already
-    // secret-bound env. `resolvedBaseConfig` is post provider-credential
-    // resolution (resolveEnvBindings + resolveProviderCredential) +
-    // applyModelResolutionToConfig (i.e. post-secret-binding), so merging here
-    // is not re-scrubbed downstream. Only add the env override when connectors
-    // actually exist so the no-connector case is byte-identical to the pre-task
-    // delivery. `...connectorEnvMerge` is placed AFTER `...resolvedBaseConfig` (a
-    // connector token wins over a same-named base key) but BEFORE `[argKey]`
-    // (AoA's own args still override).
-    //
-    // Plan 2b Task 3: hoisted OUT of the claude branch. Every connector-capable
-    // adapter copies `config.env` into its child's spawn env, so this one merge
-    // is the whole secret-delivery path for codex/opencode/gemini too — the
-    // matching specs travel structurally on `ctx.mcpServers` below. Only the
-    // `--mcp-config` argv injection stays claude-only (the other CLIs would
-    // reject the flag).
-    const connectorEnvMerge =
-      Object.keys(connectorEnv).length > 0
-        ? { env: { ...(resolvedConfigRecord.env as Record<string, string> | undefined), ...connectorEnv } }
-        : {};
 
     // U4 (relocated by U12 — see the note above baseConfig): acquire the
     // sandbox lease immediately BEFORE buildMcpConfig so U4b can set
@@ -753,6 +726,57 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     // plane's own address is the platform's, not the tenant's, so read it
     // directly off the server process env (only consulted when brokered).
     mcpParams.apiBaseUrl = process.env.AOA_API_URL ?? undefined;
+
+    // MCP connectors: resolve THIS agent's enabled company connectors — per-
+    // agent opt-in, so the REAL `agentId` (never null) — into adapter specs +
+    // the env map carrying the real secrets. Secrets ride ONLY in the
+    // delivered `config.env` (merged below for every adapter), never in the
+    // config FILE, which holds `${AOA_MCP_*_TOKEN}` placeholders.
+    //
+    // Gated on CONNECTOR-CAPABLE adapters (Plan 2b Task 3, widened from
+    // claude_local-only) using the same shared predicate as the heartbeat site:
+    // the four CLI adapters can host external MCP servers — claude consumes
+    // them via `--mcp-config`, the rest via `ctx.mcpServers` — while
+    // `process`/`http`/`cursor`/`hermes_local` have no MCP client at all and
+    // must not pay for the DB read.
+    //
+    // U11: sourced from THIS run's just-acquired execution context —
+    // `acquired.sandbox?.environment.driver === "sandbox"` (S5, the SAME
+    // predicate `mcpParams.brokered` above uses, never a top-level
+    // `acquired.driver`) — so a stdio connector is delivered in-VM but still
+    // dropped on an unsandboxed host.
+    if (adapterSupportsConnectors(agent.adapterType)) {
+      const resolved = await resolveAgentConnectors(db, {
+        companyId: agent.companyId,
+        agentId,
+        runId: runId ?? undefined,
+        logger: log,
+        sandboxTarget: acquired.sandbox?.environment.driver === "sandbox",
+      });
+      extraMcpServers = resolved.extraMcpServers;
+      connectorEnv = resolved.connectorEnv;
+    }
+
+    // A29 — do NOT scrub: connector tokens merge ON TOP of the already
+    // secret-bound env. `resolvedBaseConfig` is post provider-credential
+    // resolution (resolveEnvBindings + resolveProviderCredential) +
+    // applyModelResolutionToConfig (i.e. post-secret-binding), so merging here
+    // is not re-scrubbed downstream. Only add the env override when connectors
+    // actually exist so the no-connector case is byte-identical to the pre-task
+    // delivery. `...connectorEnvMerge` is placed AFTER `...resolvedBaseConfig` (a
+    // connector token wins over a same-named base key) but BEFORE `[argKey]`
+    // (AoA's own args still override).
+    //
+    // Plan 2b Task 3: hoisted OUT of the claude branch. Every connector-capable
+    // adapter copies `config.env` into its child's spawn env, so this one merge
+    // is the whole secret-delivery path for codex/opencode/gemini too — the
+    // matching specs travel structurally on `ctx.mcpServers` below. Only the
+    // `--mcp-config` argv injection stays claude-only (the other CLIs would
+    // reject the flag).
+    const connectorEnvMerge =
+      Object.keys(connectorEnv).length > 0
+        ? { env: { ...(resolvedConfigRecord.env as Record<string, string> | undefined), ...connectorEnv } }
+        : {};
 
     const mcp = buildMcpConfig({ ...mcpParams, extraMcpServers });
     cfgPath = join(tmpdir(), `aoa-mcp-${agentId}-${runId ?? "x"}.json`);

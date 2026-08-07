@@ -144,6 +144,12 @@ describe("U4b: crew sets brokered from acquired.sandbox?.environment.driver (S7)
       // The acquire call resolved for real — confirm the caller read the S5 field.
       expect(acquireExecutionContextMock).toHaveBeenCalledTimes(1);
 
+      // U11: the connector delivery selector reads the SAME S5 acquisition
+      // signal as mcpParams.brokered — a brokered run's stdio connectors are
+      // admissible in-VM.
+      const connectorsCallBrokered = resolveConnectorsMock.mock.calls.at(-1)![1] as { sandboxTarget?: boolean };
+      expect(connectorsCallBrokered.sandboxTarget).toBe(true);
+
       // The staged claude --mcp-config file (written before adapter.execute).
       const written = writeFileMock.mock.calls.find(([path]: [string]) => String(path).includes("aoa-mcp-cl-brokered"));
       expect(written).toBeTruthy();
@@ -199,6 +205,10 @@ describe("U4b: crew sets brokered from acquired.sandbox?.environment.driver (S7)
       expect(JSON.stringify(execArg.mcpBridge)).not.toContain("DATABASE_URL");
       expect(execArg.config.args ?? []).not.toContain("--mcp-config");
       expect(execArg.config.extraArgs ?? []).not.toContain("--mcp-config");
+
+      // U11: codex is also connector-capable — same S5 signal, sandboxTarget true.
+      const connectorsCallCodex = resolveConnectorsMock.mock.calls.at(-1)![1] as { sandboxTarget?: boolean };
+      expect(connectorsCallCodex.sandboxTarget).toBe(true);
     } finally {
       if (savedApiUrl === undefined) delete process.env.AOA_API_URL; else process.env.AOA_API_URL = savedApiUrl;
       if (savedDbUrl === undefined) delete process.env.DATABASE_URL; else process.env.DATABASE_URL = savedDbUrl;
@@ -232,6 +242,11 @@ describe("U4b: crew sets brokered from acquired.sandbox?.environment.driver (S7)
       const execArg = execMock.mock.calls.at(-1)![0];
       expect(execArg.mcpBridge.command).toBe("node");
       expect(execArg.mcpBridge.env.DATABASE_URL).toBe("postgres://should-be-present:5432/db");
+
+      // U11: unsandboxed (sandbox:null) run — sandboxTarget must be false,
+      // additive/strictly-off, mirroring `brokered`'s own byte-identical claim.
+      const connectorsCallDesktop = resolveConnectorsMock.mock.calls.at(-1)![1] as { sandboxTarget?: boolean };
+      expect(connectorsCallDesktop.sandboxTarget).toBe(false);
     } finally {
       if (savedDbUrl === undefined) delete process.env.DATABASE_URL; else process.env.DATABASE_URL = savedDbUrl;
     }

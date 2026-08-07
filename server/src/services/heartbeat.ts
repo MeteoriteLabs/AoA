@@ -4642,6 +4642,12 @@ export function heartbeatService(db: Db) {
         companyAutonomyLevel: companyAutonomyRow?.autonomyLevel,
         discussionAutonomyLevel: discussionAutonomyRow?.autonomyLevel,
       });
+      // U11: sourced ONCE here (S5 — `orgAcquired.sandbox?.environment.driver
+      // === "sandbox"`, never a top-level `orgAcquired.driver`) and reused for
+      // both the MCP-bridge `brokered` flag below AND the connector delivery
+      // `sandboxTarget` — the SAME "does this run execute inside an E2B VM"
+      // question, so one boolean answers both.
+      const runTargetsSandbox = orgAcquired.sandbox?.environment.driver === "sandbox";
       const heartbeatMcpParams = {
         companyId: agent.companyId,
         userId: agent.id,
@@ -4667,7 +4673,7 @@ export function heartbeatService(db: Db) {
         // prepareHeartbeatMcpDelivery's stdio delivery stays byte-identical.
         // On cloud_auth it now fires for BOTH a pinned env and an unpinned
         // run resolving the platform default (R3).
-        brokered: orgAcquired.sandbox?.environment.driver === "sandbox",
+        brokered: runTargetsSandbox,
         // The control plane's own address is the platform's, not the
         // tenant's — read it off the resolved adapter env first (mirrors the
         // runtime-hook-bridge base-URL resolution just below), falling back to
@@ -4697,6 +4703,10 @@ export function heartbeatService(db: Db) {
           agentId: agent.id,
           runId: run.id,
           logger,
+          // U11: a stdio connector is admissible in-VM but still dropped on an
+          // unsandboxed host — sourced from the same S5 acquisition signal as
+          // `brokered` above.
+          sandboxTarget: runTargetsSandbox,
         });
         extraMcpServers = resolved.extraMcpServers;
         connectorEnv = resolved.connectorEnv;

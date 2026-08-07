@@ -1,4 +1,7 @@
 import fs from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   ORG_HEARTBEAT_ENABLED_CAPABILITIES,
@@ -625,5 +628,51 @@ describe("heartbeat MCP delivery: brokered org sandbox dispatch (U4b, S7)", () =
       if (savedDbUrl === undefined) delete process.env.DATABASE_URL;
       else process.env.DATABASE_URL = savedDbUrl;
     }
+  });
+});
+
+// U11 (Wave 5 task 3): org heartbeat's `resolveAgentConnectors` call must read
+// `sandboxTarget` from the SAME S5 acquisition signal `mcpParams.brokered`
+// already uses (`orgAcquired.sandbox?.environment.driver === "sandbox"` —
+// never a top-level `orgAcquired.driver`, which is undefined on the real
+// `EnvironmentAcquisitionResult` shape).
+//
+// Structural pinning (reading the source), NOT a driven end-to-end run: this
+// repo's established pattern for a caller with no unit harness (see
+// provider-key-callers.test.ts and services/internal-agent/aoa-agents/
+// __tests__/runner-binding-resolution.test.ts) — heartbeat.ts's org `wakeup()`
+// is 5000+ lines and spawns a real adapter subprocess; no existing suite
+// drives it end-to-end (every heartbeat*.test.ts here tests pure extracted
+// helpers). The crew equivalent (`aoa-runner-brokered-mcp.test.ts`) DOES have
+// a harness and asserts the same claim behaviourally, since `runAoaAgent` is
+// small enough to mock end-to-end.
+describe("U11: org heartbeat sources sandboxTarget from the resolved run driver (S5)", () => {
+  const heartbeatSrc = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "..", "services", "heartbeat.ts"),
+    "utf8",
+  );
+
+  it("derives runTargetsSandbox from orgAcquired.sandbox?.environment.driver (never a top-level orgAcquired.driver)", () => {
+    expect(heartbeatSrc).toContain(
+      'const runTargetsSandbox = orgAcquired.sandbox?.environment.driver === "sandbox";',
+    );
+    // S5 anti-drift: a top-level `orgAcquired.driver` READ (as executable
+    // code, not prose in a comment) would silently always be undefined (the
+    // field lives on `.sandbox.environment`, not the acquisition result
+    // itself) and sandboxTarget would be permanently false.
+    expect(heartbeatSrc).not.toMatch(/orgAcquired\.driver\s*===/);
+  });
+
+  it("threads that SAME variable into the resolveAgentConnectors call's sandboxTarget (not a stray literal)", () => {
+    const callIndex = heartbeatSrc.indexOf("const resolved = await resolveAgentConnectors(db, {");
+    expect(callIndex).toBeGreaterThan(-1);
+    const callEnd = heartbeatSrc.indexOf("});", callIndex);
+    expect(callEnd).toBeGreaterThan(callIndex);
+    const callBlock = heartbeatSrc.slice(callIndex, callEnd);
+    expect(callBlock).toContain("sandboxTarget: runTargetsSandbox,");
+  });
+
+  it("mcpParams.brokered (the proven U4b signal) reads the exact same variable — brokered and connector delivery cannot drift apart", () => {
+    expect(heartbeatSrc).toContain("brokered: runTargetsSandbox,");
   });
 });

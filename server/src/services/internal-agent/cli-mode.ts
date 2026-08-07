@@ -947,6 +947,18 @@ export function cliModeService(db: Db) {
               companyId: params.companyId,
               agentId: null, // Commander = all active company connectors (D3)
               logger,
+              // U11: Commander never resolves a sandbox execution target — the
+              // D1 gate above (assertUnsandboxedMultitenantAllowed) documents
+              // that a Commander turn always spawns its CLI directly on the
+              // control-plane host (the Wave 2 adversarial review deleted the
+              // dead `acquireExecutionContext` call that used to sit here,
+              // enforced by cli-mode-no-sandbox-acquire.test.ts). So
+              // sandboxTarget is ALWAYS false for Commander today — explicit,
+              // not omitted, so a future reader does not mistake this for an
+              // oversight. Revisit only alongside a real Commander-in-sandbox
+              // wiring decision (S5: sourced from an actual acquisition, never
+              // guessed).
+              sandboxTarget: false,
             });
             connectorSpecs = resolved.extraMcpServers;
             connectorEnv = resolved.connectorEnv;
@@ -1118,6 +1130,10 @@ export function cliModeService(db: Db) {
                 companyId: params.companyId,
                 agentId: null, // Commander = all active company connectors (D3)
                 logger,
+                // U11: same D1/FIX-2 reasoning as the codex branch above —
+                // Commander has no sandbox execution target on this path, so
+                // sandboxTarget is explicitly false rather than omitted.
+                sandboxTarget: false,
               });
               connectorSpecs = resolved.extraMcpServers;
               connectorEnv = resolved.connectorEnv;
