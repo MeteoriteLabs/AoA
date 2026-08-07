@@ -113,6 +113,43 @@ describe("assertUnsandboxedMultitenantAllowed (D1)", () => {
     expect(log.warn).not.toHaveBeenCalled();
   });
 
+  it("permits the provider-sandbox target for the crew + Commander sinks too (all three run types flip, not only org)", () => {
+    // The org-agent case is covered by the runsc test above; pin crew + Commander
+    // here so the three-way D1 flip is anchored in the guard's canonical suite.
+    // Commander (W7.5d/W7.5f) is the third run sink passing a resolved
+    // provider-sandbox target — it must be permitted exactly like org/crew.
+    const log = { warn: vi.fn() };
+    for (const sink of ["crew agent", "Commander"]) {
+      expect(() =>
+        assertUnsandboxedMultitenantAllowed(providerSandbox, { tenantIsolationEnforced: true, sink, env: noEnv, log }),
+      ).not.toThrow();
+    }
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  it("permits a future tenant-operated isolated runner on cloud_auth (Scenario 2 seam — closed refuse-enumeration)", () => {
+    // Not local, not a docker-family type → must be allowed, so adding Scenario 2
+    // later is a NEW target category, not a carve-out of `local`. This locks that
+    // the guard never inverts to an allow-list of only provider-sandbox.
+    const remoteRunner = { type: "remote-tenant-runner" } as never;
+    expect(() =>
+      assertUnsandboxedMultitenantAllowed(remoteRunner, { tenantIsolationEnforced: true, sink: "org agent", env: noEnv }),
+    ).not.toThrow();
+  });
+
+  it("tenant workspace-command sink STILL refuses a local target on cloud_auth (U6 owns host-orchestration git; the commander branch must not neutralize it)", () => {
+    // The untouched tenant shell-command guards must keep failing closed — the
+    // commander additions (W7.5a-f) added a new run sink, they did not weaken the
+    // workspace-command refusal.
+    expect(() =>
+      assertUnsandboxedMultitenantAllowed({ type: "local" }, {
+        tenantIsolationEnforced: true,
+        sink: "workspace command configuration",
+        env: noEnv,
+      }),
+    ).toThrow(/AOA_ALLOW_UNSANDBOXED_MULTITENANT/);
+  });
+
   it("isUnsandboxedLocalTarget classifies targets", () => {
     expect(isUnsandboxedLocalTarget(local)).toBe(true);
     expect(isUnsandboxedLocalTarget(null)).toBe(true);

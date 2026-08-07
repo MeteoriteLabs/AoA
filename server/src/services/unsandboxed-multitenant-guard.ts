@@ -39,6 +39,20 @@ export function isHostOrchestrationGitTarget(
  * refused just like the control-plane host. Provider sandboxes establish their
  * boundary outside this local dispatch path and are allowed. Host-orchestration
  * git (U6.1) is likewise carved out — it is AoA's own code, not tenant input.
+ *
+ * EXTENSIBILITY (Scenario 2 — tenant-operated isolated runner, spec §13 hook #2):
+ * this predicate is a CLOSED REFUSE-ENUMERATION — it refuses ONLY local (via
+ * `isUnsandboxedLocalTarget`) + the docker-family types (`DOCKER_FAMILY_TARGET_TYPES`)
+ * and PERMITS everything else. A future `remote-tenant-runner` execution-target
+ * type is therefore an ALLOWED category BY CONSTRUCTION — do NOT invert this to
+ * an allow-list of only `provider-sandbox`, which would refuse the future remote
+ * runner. This mirrors the acquisition-level isolation seam (S5): a
+ * `type:"provider-sandbox"` target is exactly what the orchestrator emits when
+ * `acquisition.environment.driver === "sandbox"` + `isProviderSandboxLease(lease)`
+ * (`environment-run-orchestrator.ts:163`); the reserved driver name for that
+ * future category is `RESERVED_TENANT_RUNNER_DRIVER` (`cloud-environment-policy.ts`).
+ * Commander is just another sink passing a resolved `provider-sandbox` target
+ * through this same enumeration (W7.5d/W7.5f) — it neither widens nor narrows it.
  */
 function requiresSandboxRefusal(
   target: AdapterExecutionTarget | null | undefined,

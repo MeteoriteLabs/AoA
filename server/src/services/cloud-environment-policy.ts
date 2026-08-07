@@ -3,6 +3,16 @@ import { unprocessable } from "../errors.js";
 
 export const CLOUD_ENVIRONMENT_TARGET_UNAVAILABLE = "cloud_environment_target_unavailable";
 
+/**
+ * Reserved for Scenario 2 (a tenant-operated, tenant-hosted isolated runner —
+ * spec §14 `tenant_hosted`). This driver name is DOCUMENTED and reserved so a
+ * future runner plane is a NEW clearly-labelled allowed cloud shape, never a
+ * carve-out of the existing E2B check. It is intentionally NOT admitted in v1:
+ * an environment whose `driver === RESERVED_TENANT_RUNNER_DRIVER` still rejects
+ * on cloud today (allow-check byte-identical to before this constant existed).
+ */
+export const RESERVED_TENANT_RUNNER_DRIVER = "remote-runner";
+
 type EnvironmentRuntimeShape = {
   driver?: unknown;
   config?: unknown;
@@ -18,11 +28,17 @@ export function assertEnvironmentRuntimeSupportedForDeployment(
   const config = input.config && typeof input.config === "object" && !Array.isArray(input.config)
     ? input.config as Record<string, unknown>
     : null;
-  const supported = input.driver === "sandbox"
+  // Allowed cloud shape #1 (v1): an unpinned managed/self-hosted E2B sandbox.
+  const isE2b = input.driver === "sandbox"
     && config?.provider === "e2b"
     && input.target == null
     && input.executionTargetId == null;
-  if (supported) return;
+  // Allowed cloud shape #2 (RESERVED, Scenario 2 — see spec §14 `tenant_hosted`):
+  // `driver === RESERVED_TENANT_RUNNER_DRIVER`. A comment + exported constant
+  // only — intentionally NOT admitted in v1, so this stays byte-identical: a
+  // `remote-runner` env falls through and rejects below exactly like any other
+  // non-E2B shape until the isolated worker plane ships.
+  if (isE2b) return;
 
   throw unprocessable(
     "AoA Cloud currently supports E2B environments without raw targets or execution-target pins. " +
