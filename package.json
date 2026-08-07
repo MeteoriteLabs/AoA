@@ -1,7 +1,7 @@
 {
   "name": "aoa",
   "version": "0.1.0",
-  "description": "AoA Hybrid Workforce Operating System v2",
+  "description": "AoA Hybrid Workforce Operating System v3",
   "private": true,
   "type": "module",
   "scripts": {

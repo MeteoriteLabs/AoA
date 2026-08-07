@@ -1,15 +1,29 @@
 diff --git a/dist/index.js b/dist/index.js
-index ccabbe78b68e1bb57a10cfd89219b3bc4489d963..db539b678ea64bef43da28826b3ba9828b85bf8b 100644
+index ccabbe78b68e1bb57a10cfd89219b3bc4489d963..d71b8b2252af020552374322137797169e7f1de9 100644
 --- a/dist/index.js
 +++ b/dist/index.js
-@@ -137,7 +137,22 @@ var ProcessWorker = class {
+@@ -137,7 +137,36 @@ var ProcessWorker = class {
  		});
  	}
  	send(message) {
 -		if (!this.isTerminating) this.process.send(message);
 +		if (!this.isTerminating) {
 +			try {
-+				this.process.send(message);
++				this.process.send(message, (err) => {
++					if (err) {
++						const code = err?.code;
++						const msg = String(err?.message ?? err ?? "");
++						if (
++							code !== 'ERR_IPC_CHANNEL_CLOSED' &&
++							code !== 'ERR_IPC_DISCONNECTED' &&
++							!msg.includes('Channel closed') &&
++							!msg.includes('channel closed')
++						) {
++							// eslint-disable-next-line no-console
++							console.error("[tinypool] process.send callback error:", err);
++						}
++					}
++				});
 +			} catch (err) {
 +				const code = err?.code;
 +				const msg = String(err?.message ?? err ?? "");
