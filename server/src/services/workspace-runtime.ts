@@ -24,7 +24,10 @@ import { isApprovedRuntimeWorkspacePath } from "./runtime-workspace-path-policy.
 import { probePreviewUrl } from "./runtime-service-preview-detection.js";
 import { emitRuntimeServiceTaskOutput } from "./task-output-emitters.js";
 import { tenantIsolationEnforced } from "../config/deployment-mode.js";
-import { assertLocalWorkspaceCommandAllowed } from "./local-workspace-command-guard.js";
+import {
+  assertHostOrchestrationGitAllowed,
+  assertLocalWorkspaceCommandAllowed,
+} from "./local-workspace-command-guard.js";
 import {
   inspectProcessStartIdentity,
   terminateByPid,
@@ -515,17 +518,33 @@ function formatCommandForDisplay(command: string, args: string[]) {
     .join(" ");
 }
 
-async function executeProcess(input: {
+export async function executeProcess(input: {
   command: string;
   args: string[];
   cwd: string;
   env?: NodeJS.ProcessEnv;
+  /**
+   * "tenant" (default) — unchanged behavior: refused on cloud via
+   * `assertLocalWorkspaceCommandAllowed` (tenant-controlled workspace
+   * command, no genuine per-tenant isolation yet).
+   * "host" — AoA-authored git against a HOST-side clone (U6.4's
+   * `sandbox-workspace-pr.ts`), never a tenant CLI shell. Routed through the
+   * distinct `assertHostOrchestrationGitAllowed` sink instead, which is
+   * permitted on cloud_auth (U6.1's carve-out, spec §9 blast-radius reframe).
+   * Existing callers never pass this, so they keep today's tenant refusal
+   * byte-for-byte.
+   */
+  orchestration?: "host" | "tenant";
 }): Promise<{ stdout: string; stderr: string; code: number | null }> {
   // Some callers record Git operations by invoking this process helper
   // directly, so the shared spawn chokepoint—not only runGit—must enforce the
   // cloud boundary before repository config can launch helpers or hooks.
   if (input.command === "git") {
-    assertLocalWorkspaceCommandAllowed("workspace Git command");
+    if (input.orchestration === "host") {
+      assertHostOrchestrationGitAllowed("host-orchestration Git command");
+    } else {
+      assertLocalWorkspaceCommandAllowed("workspace Git command");
+    }
   }
   const proc = await new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve, reject) => {
     const child = spawn(input.command, input.args, {
