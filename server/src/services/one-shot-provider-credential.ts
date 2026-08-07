@@ -22,7 +22,7 @@ import { resolveProviderCredential, ProviderUnavailableError } from "./provider-
 import { buildResolveDeps } from "./provider-resolution-deps.js";
 import { resolveCliAuthTopology } from "./cli-auth-topology.js";
 import { loadConfig } from "../config.js";
-import { DEFAULT_CODEX_CHAT_MODEL } from "./internal-agent/codex-model.js";
+import { DEFAULT_CODEX_CHAT_MODEL, resolveCodexChatModel } from "./internal-agent/codex-model.js";
 
 export interface CompanyProviderCredential {
   envName: string;
@@ -101,7 +101,20 @@ export async function resolveCompanyProviderCredential(
     .select({ model: internalAgentConfig.model })
     .from(internalAgentConfig)
     .where(eq(internalAgentConfig.companyId, companyId));
-  const model = row?.model ?? providerDefaultModel(provider);
+
+  // RW3-B (Wave 3 adversarial review, CONFIRMED HIGH): internal_agent_config.model
+  // DEFAULTS to a claude model string for EVERY company (it's a separate column
+  // from cliTool), so for a codex one-shot that default (or any other
+  // non-codex-compatible value) must never be handed to `codex --model` as-is —
+  // mirror the desktop safeguard (resolveCodexChatModel) so all three sinks
+  // (extraction/compaction/readiness) inherit it. No `~/.codex/config.toml`
+  // layer exists for a one-shot sandbox spawn, so sharedModel is always null.
+  // The anthropic/claude branch is UNCHANGED — internal_agent_config.model is
+  // already the correct model family there.
+  const model =
+    provider === "openai"
+      ? resolveCodexChatModel(row?.model, null)
+      : (row?.model ?? providerDefaultModel(provider));
 
   return { envName, value, provider, model };
 }
