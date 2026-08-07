@@ -48,7 +48,7 @@ import {
   filterAuthorizedToolsForContext,
 } from "../services/internal-agent/mcp-bridge.js";
 import { executeTool } from "../services/internal-agent/tool-registry.js";
-import { resolveBrokerToolContext } from "./broker-tool-context.js";
+import { resolveBrokerToolContext, resolveCommanderBrokerToolContext } from "./broker-tool-context.js";
 // U2c: the array construction lives in a standalone module (not inlined here)
 // so it can be imported without pulling in server.ts's `../services/index.js`
 // → plugin-worker-manager.ts → `@armyofagents/plugin-sdk` chain (that
@@ -219,6 +219,21 @@ function protocolAuthActor(req: Request) {
       source: "agent" as const,
       agentId,
       runId: req.actor.runId ?? null,
+    };
+  }
+  if (req.actor.type === "commander") {
+    // W7.5a / SC3: a sandboxed Commander turn reaches the broker on a
+    // per-turn run-JWT (no agents row). The conversation id doubles as the
+    // broker run key (`runId`) — the commander broker context is resolved
+    // from it downstream. `userRole` is carried on `req.actor` (read directly
+    // in the route closure, not on ProtocolActor).
+    return {
+      userId: req.actor.userId ?? "commander-unknown",
+      companyId: req.actor.companyId ?? null,
+      keyId: null,
+      source: "commander" as const,
+      agentId: null,
+      runId: req.actor.conversationId ?? null,
     };
   }
   return null;
@@ -437,7 +452,22 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
       // `sub`/`run_id` claims are required — see agent-auth-jwt.ts), but the
       // ProtocolActor type carries them as nullable, so this fails closed with
       // a 403 rather than passing a non-null-asserted null through.
-      const resolveAgentBrokerContext = () => {
+      const resolveBrokerContextForActor = () => {
+        if (protocolActor.source === "commander") {
+          // W7.5a / SC3: company scope is already enforced by
+          // ensureProtocolAccess (assertCompanyAccess's commander branch:
+          // actor.companyId === :companyId) above. No agents-row lookup.
+          // protocolActor.runId is the Commander conversation id (set in
+          // protocolAuthActor). userRole is carried on req.actor (not on
+          // ProtocolActor) — read it directly off the actor here.
+          return resolveCommanderBrokerToolContext({
+            db,
+            companyId,
+            userId: protocolActor.userId,
+            userRole: (req.actor.userRole as string | undefined) ?? "team_member",
+            conversationId: protocolActor.runId ?? "",
+          });
+        }
         if (!protocolActor.agentId || !protocolActor.runId) {
           throw forbidden("Agent actor is missing a run identity for the tool broker");
         }
@@ -612,8 +642,11 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
         // unless the caller sends x-aoa-run-id — a standalone, non-run
         // identity that predates U2c and must keep seeing the outbound
         // TOOL_DEFINITIONS list, not a 403 from the run-scoped broker.
-        if (protocolActor.source === "agent" && protocolActor.runId) {
-          const brokerCtx = await resolveAgentBrokerContext();
+        if (
+          (protocolActor.source === "agent" && protocolActor.runId) ||
+          protocolActor.source === "commander"
+        ) {
+          const brokerCtx = await resolveBrokerContextForActor();
           // U10: plugin tools are host-resident (reached only through this
           // broker) and agent-only, so they're appended here — the same
           // run-scoped branch that already serves the internal tool
@@ -709,9 +742,12 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
         // so it skips the run-scoped broker entirely and falls straight
         // through to the pre-existing outbound path below — unchanged
         // behavior for that caller class.
-        if (protocolActor.source === "agent" && protocolActor.runId) {
+        if (
+          (protocolActor.source === "agent" && protocolActor.runId) ||
+          protocolActor.source === "commander"
+        ) {
           if (brokerRegistry.some((tool) => tool.name === params.name)) {
-            const brokerCtx = await resolveAgentBrokerContext();
+            const brokerCtx = await resolveBrokerContextForActor();
             const handleBrokerToolCall = createToolCallHandler({
               tools: brokerRegistry,
               executeTool,
