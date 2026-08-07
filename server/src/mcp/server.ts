@@ -26,6 +26,8 @@ import {
   toolHandlers,
   toolAllowedActors,
   readPluginToolDefinitions,
+  isPluginToolName,
+  dispatchPluginToolCall,
   type McpUserScope,
   type ToolContext,
   type ToolServices,
@@ -639,6 +641,42 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
       if (method === "tools/call") {
         const params = callToolSchema.parse(requestBody.params);
         const args = params.arguments ?? {};
+
+        // U10: plugin tools (host-resident worker, dispatched via the
+        // company-scoped registry) are checked FIRST — before the U2c
+        // agent-broker-registry branch below and its own inner `-32601`
+        // check, and before the outbound `toolHandlers` fallthrough. A
+        // plugin tool name is guaranteed to be in NEITHER `brokerRegistry`
+        // NOR `toolHandlers`, so without this early check every plugin tool
+        // call would dead-end at one of those two `-32601` paths instead of
+        // reaching the host-resident worker. Composes cleanly with U2c:
+        // this branch returns before that branch's own logic ever runs, and
+        // does not alter its behavior for non-plugin tool names.
+        if (isPluginToolName(params.name)) {
+          const outcome = await dispatchPluginToolCall({
+            db,
+            companyId,
+            actorSource: protocolActor.source,
+            agentId: protocolActor.agentId,
+            runId: protocolActor.runId,
+            name: params.name,
+            args,
+          });
+          if (outcome.kind === "forbidden") {
+            res
+              .status(403)
+              .json(jsonRpcError(requestBody.id ?? null, -32003, outcome.message));
+            return;
+          }
+          if (outcome.kind === "not_found") {
+            res
+              .status(404)
+              .json(jsonRpcError(requestBody.id ?? null, -32004, outcome.message));
+            return;
+          }
+          res.json(jsonRpcResult(requestBody.id ?? null, asToolContent(outcome.result.result)));
+          return;
+        }
 
         // U2c: agent actors get first crack at the internal tool registry —
         // the SAME array the desktop stdio bridge dispatches against (guarded

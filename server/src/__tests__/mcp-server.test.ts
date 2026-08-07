@@ -548,3 +548,169 @@ describe("U10: plugin tool descriptors over the broker tools/list", () => {
     expect(Array.isArray(res.body.result.tools)).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// U10-c — plugin tool dispatch over the broker tools/call
+// ---------------------------------------------------------------------------
+
+describe("U10: plugin tool dispatch over the broker tools/call", () => {
+  afterEach(() => {
+    delete (globalThis as any).__paperclipPluginToolDispatcher;
+  });
+
+  function stubDispatcher(overrides: { getTool?: ReturnType<typeof vi.fn>; executeTool?: ReturnType<typeof vi.fn> } = {}) {
+    const executeTool =
+      overrides.executeTool ??
+      vi.fn().mockResolvedValue({
+        pluginId: "plugin-1",
+        toolName: "search",
+        result: { content: "ok" },
+      });
+    // getTool is ALREADY company-scoped (plugin-tool-dispatcher.ts ->
+    // plugin-tool-registry.ts) — only the exact (name, companyId) pair a
+    // real registration would produce resolves; anything else (a foreign
+    // tool name, or the same name under a different company) is null,
+    // exactly like a real scoped Map lookup.
+    const getTool =
+      overrides.getTool ??
+      vi.fn((name: string, companyId: string) =>
+        name === "acme.linear:search" && companyId === "c1"
+          ? { pluginDbId: "plugin-1", companyId: "c1" }
+          : null,
+      );
+    const dispatcher = { listToolsForAgent: () => [], getTool, executeTool };
+    (globalThis as any).__paperclipPluginToolDispatcher = dispatcher;
+    return dispatcher;
+  }
+
+  function callAsAgent(
+    companyId: string,
+    name: string,
+    args: Record<string, unknown> = {},
+    actorOverrides: Record<string, unknown> = {},
+  ) {
+    const app = buildAgentApp({
+      actor: {
+        type: "agent",
+        source: "agent_jwt",
+        companyId,
+        agentId: "agent-a",
+        runId: "run-r",
+        ...actorOverrides,
+      },
+      db: makeAgentBrokerDb({
+        agentRows: [{ id: "agent-a", companyId, kind: "aoa", runtimeConfig: {} }],
+      }),
+    });
+    return request(app)
+      .post(`/api/companies/${companyId}/mcp`)
+      .send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } });
+  }
+
+  function callAsNonAgent(actorType: "mcp" | "board", companyId: string, name: string, args: Record<string, unknown> = {}) {
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      (req as any).actor =
+        actorType === "mcp"
+          ? { type: "mcp", source: "mcp_key", userId: "user-1", companyId, keyId: "key-1" }
+          : {
+              type: "board",
+              source: "session",
+              userId: "user-1",
+              isInstanceAdmin: true,
+              companyIds: [companyId],
+            };
+      next();
+    });
+    app.use(
+      "/api",
+      mcpServerRoutes({} as any, {
+        companiesSvc: {
+          getById: vi.fn().mockResolvedValue({ id: companyId, mcpEnabled: true }),
+          update: vi.fn(),
+        } as any,
+        mcpSvc: {
+          touchClient: vi.fn().mockResolvedValue(null),
+          getStatus: vi.fn(),
+          listKeys: vi.fn(),
+          createKey: vi.fn(),
+          requireOwnedKey: vi.fn(),
+          revokeKey: vi.fn(),
+          listClients: vi.fn(),
+        } as any,
+        resolveScope: async (_c, actor) => ({ kind: "founder" as const, userId: actor.userId }),
+      }),
+    );
+    return request(app)
+      .post(`/api/companies/${companyId}/mcp`)
+      .send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } });
+  }
+
+  it("routes a plugin tool call to the host dispatcher with the run's verified identity", async () => {
+    const dispatcher = stubDispatcher();
+
+    const res = await callAsAgent("c1", "acme.linear:search", { query: "auth" });
+
+    expect(res.status).toBe(200);
+    expect(dispatcher.getTool).toHaveBeenCalledWith("acme.linear:search", "c1");
+    // companyId + agentId + runId come from the VERIFIED JWT context, never
+    // the request body.
+    expect(dispatcher.executeTool).toHaveBeenCalledWith(
+      "acme.linear:search",
+      { query: "auth" },
+      expect.objectContaining({ companyId: "c1", agentId: "agent-a", runId: "run-r" }),
+    );
+    // The worker runs host-side; only the JSON result crosses the broker.
+    expect(JSON.parse(res.body.result.content[0].text)).toEqual({ content: "ok" });
+  });
+
+  it("an UNPORTED/unknown tool over the broker is an explicit MCP error, never a silent no-op", async () => {
+    stubDispatcher();
+    const res = await callAsAgent("c1", "nonexistent_tool_xyz", {});
+    expect(res.body.error?.code).toBe(-32601);
+  });
+
+  it("a plugin tool is agent-only over the broker — mcp actor gets 403", async () => {
+    const dispatcher = stubDispatcher();
+    const res = await callAsNonAgent("mcp", "c1", "acme.linear:search", {});
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe(-32003);
+    expect(dispatcher.executeTool).not.toHaveBeenCalled();
+  });
+
+  it("a plugin tool is agent-only over the broker — board actor gets 403", async () => {
+    const dispatcher = stubDispatcher();
+    const res = await callAsNonAgent("board", "c1", "acme.linear:search", {});
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe(-32003);
+    expect(dispatcher.executeTool).not.toHaveBeenCalled();
+  });
+
+  it("cross-company plugin tool call 404s (getTool is company-scoped -> null for a tool not owned by this company)", async () => {
+    const dispatcher = stubDispatcher();
+    const res = await callAsAgent("c1", "acme.other:tool", {});
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe(-32004);
+    expect(dispatcher.executeTool).not.toHaveBeenCalled();
+  });
+
+  it("belt-and-suspenders: a getTool result whose companyId mismatches the caller still 404s", async () => {
+    // Simulates a registry lookup that (hypothetically) returned a foreign
+    // row despite the scoped key — the explicit `registered.companyId !==
+    // companyId` assertion must still fail closed, never trusting getTool's
+    // scoping alone.
+    const dispatcher = stubDispatcher({
+      getTool: vi.fn(() => ({ pluginDbId: "plugin-1", companyId: "c2" })),
+    });
+    const res = await callAsAgent("c1", "acme.linear:search", {});
+    expect(res.status).toBe(404);
+    expect(dispatcher.executeTool).not.toHaveBeenCalled();
+  });
+
+  it("an agent actor without a run (no runId) cannot call plugin tools", async () => {
+    stubDispatcher();
+    const res = await callAsAgent("c1", "acme.linear:search", {}, { runId: undefined });
+    expect(res.status).toBe(403);
+  });
+});
