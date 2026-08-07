@@ -94,6 +94,17 @@ vi.mock("../services/environment-runtime.js", () => ({
   })),
 }));
 
+// U13.7: this suite never exercises cloud_auth, so the sandbox-readiness-probe
+// branch is never taken at runtime — but agents.ts now statically imports it,
+// and that module's own import of one-shot-sandbox-cli.js needs
+// environment-runtime.js's resolveRuntimeProviderConfig, which the mock above
+// does not provide. Mock the seam directly (never called here) rather than
+// widening the environment-runtime.js mock for an unrelated code path.
+vi.mock("../services/sandbox-readiness-probe.js", () => ({
+  probeReadinessInSandbox: vi.fn(),
+  cliToolForSandboxReadinessProbe: () => null,
+}));
+
 vi.mock("@armyofagents/adapter-claude-local/server", () => ({
   runClaudeLogin: vi.fn(),
 }));

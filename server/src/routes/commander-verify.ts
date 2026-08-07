@@ -18,6 +18,11 @@ import { redactChecks } from "../services/providers/readiness.js";
 import { verifyAndBindCommanderSubscriptionCredential } from "../services/provider-credentials.js";
 import { assertUnsandboxedMultitenantAllowed } from "../services/unsandboxed-multitenant-guard.js";
 import { tenantIsolationEnforced } from "../config/deployment-mode.js";
+import {
+  cliToolForSandboxReadinessProbe,
+  probeReadinessInSandbox,
+} from "../services/sandbox-readiness-probe.js";
+import { mapCloudProviderKeyError } from "../services/internal-agent/require-cloud-provider-key.js";
 
 /**
  * Commander verify (Stage C / C7-C8, revA R14). Drives the SAME adapter
@@ -71,6 +76,52 @@ export function commanderVerifyRoutes(db: Db): Router {
           sink: "adapter readiness probe",
         });
       } catch {
+        // U13.7: the guard refused the direct on-host probe. Restore BYO-key
+        // verify for the two adapter types with a company-key mapping
+        // (`resolveCompanyProviderCredential`: codex_local -> openai,
+        // claude_local -> anthropic) by routing the hello-probe through an
+        // ephemeral sandbox instead of failing closed outright. The sandbox
+        // path always authenticates with the COMPANY's own resolved provider
+        // key — NEVER a subscription login — so
+        // verifyAndBindCommanderSubscriptionCredential must NEVER be called
+        // for it (only the direct on-host probe below, which can genuinely
+        // observe a subscription-login success, calls it). opencode_local
+        // (Commander's third supported cliTool) has no company-key mapping
+        // and keeps the unconditional blocking result.
+        const cliTool = cliToolForSandboxReadinessProbe(adapterType);
+        if (cliTool) {
+          try {
+            const sandboxResult = await probeReadinessInSandbox({
+              db,
+              companyId,
+              cliTool,
+              adapterType,
+            });
+            const safeResult = { ...sandboxResult, checks: redactChecks(sandboxResult.checks) };
+            const classified = classifyCommanderProbe(safeResult);
+            res.status(classified.outcome === "verified" ? 200 : 422).json(classified);
+            return;
+          } catch (err) {
+            const mapped = mapCloudProviderKeyError(err, {
+              tenantIsolationEnforced: true,
+              provider: cliTool === "codex" ? "openai" : "anthropic",
+              sink: "adapter readiness probe",
+            });
+            if (!mapped) throw err;
+            res.status(422).json({
+              outcome: "failed" as const,
+              result: {
+                adapterType,
+                status: "fail" as const,
+                checks: [
+                  { code: "readiness_unavailable_on_cloud", level: "error" as const, message: mapped.message },
+                ],
+                testedAt: new Date().toISOString(),
+              },
+            });
+            return;
+          }
+        }
         res.status(422).json({
           outcome: "failed" as const,
           result: {

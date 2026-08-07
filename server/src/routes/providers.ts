@@ -204,6 +204,11 @@ import { assertCompanyAccess } from "./authz.js";
 import { assertRole } from "../middleware/rbac.js";
 import { assertUnsandboxedMultitenantAllowed } from "../services/unsandboxed-multitenant-guard.js";
 import { tenantIsolationEnforced } from "../config/deployment-mode.js";
+import {
+  cliToolForSandboxReadinessProbe,
+  probeReadinessInSandbox,
+} from "../services/sandbox-readiness-probe.js";
+import { mapCloudProviderKeyError } from "../services/internal-agent/require-cloud-provider-key.js";
 import { HttpError, forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 
@@ -562,6 +567,20 @@ export function providerRoutes(db: Db): Router {
       // run under the OPERATOR's login on the shared host. Refuse before spawning
       // (no-op on every self-hosted deployment). Record `failed` so a prior
       // `verified` row cannot survive and keep rendering the provider Ready.
+      const recordCloudBlocked = async (message: string) => {
+        const cloudChecks: AdapterEnvironmentCheck[] = [
+          { code: "readiness_unavailable_on_cloud", level: "error", message },
+        ];
+        await recordReadiness(db, {
+          companyId,
+          providerId: descriptor.id,
+          scope,
+          outcome: "failed",
+          checks: cloudChecks,
+          testedByUserId: req.actor.type === "board" ? (req.actor.userId ?? null) : null,
+        });
+        return { outcome: "failed" as const, checks: cloudChecks, testedAt: new Date().toISOString() };
+      };
       if (tenantIsolationEnforced()) {
         try {
           assertUnsandboxedMultitenantAllowed(null, {
@@ -569,23 +588,50 @@ export function providerRoutes(db: Db): Router {
             sink: "adapter readiness probe",
           });
         } catch {
-          const cloudChecks: AdapterEnvironmentCheck[] = [
-            {
-              code: "readiness_unavailable_on_cloud",
-              level: "error",
-              message:
-                "Provider readiness testing is unavailable on AoA Cloud (a local probe would run on the shared host).",
-            },
-          ];
-          await recordReadiness(db, {
-            companyId,
-            providerId: descriptor.id,
-            scope,
-            outcome: "failed",
-            checks: cloudChecks,
-            testedByUserId: req.actor.type === "board" ? (req.actor.userId ?? null) : null,
-          });
-          return { outcome: "failed", checks: cloudChecks, testedAt: new Date().toISOString() };
+          // U13.7: the guard refused the direct on-host probe. Restore BYO-key
+          // verify for the two adapter types with a company-key mapping
+          // (`resolveCompanyProviderCredential`: codex_local -> openai,
+          // claude_local -> anthropic) by routing the hello-probe through an
+          // ephemeral sandbox instead of failing closed outright. Every other
+          // adapter type keeps the unconditional blocking result.
+          const cliTool = cliToolForSandboxReadinessProbe(descriptor.adapterType);
+          if (!cliTool) {
+            return await recordCloudBlocked(
+              "Provider readiness testing is unavailable on AoA Cloud (a local probe would run on the shared host).",
+            );
+          }
+          try {
+            const sandboxResult = await probeReadinessInSandbox({
+              db,
+              companyId,
+              cliTool,
+              adapterType: descriptor.adapterType,
+            });
+            const classified = classifyProbeOutcome(sandboxResult);
+            const recorded = await recordReadiness(db, {
+              companyId,
+              providerId: descriptor.id,
+              scope,
+              outcome: classified.outcome,
+              checks: sandboxResult.checks,
+              testedByUserId: req.actor.type === "board" ? (req.actor.userId ?? null) : null,
+            });
+            return {
+              outcome: classified.outcome,
+              checks: redactChecks(sandboxResult.checks) as unknown as AdapterEnvironmentCheck[],
+              testedAt:
+                toIso((recorded as { testedAt?: Date | string } | undefined)?.testedAt) ??
+                new Date().toISOString(),
+            };
+          } catch (err) {
+            const mapped = mapCloudProviderKeyError(err, {
+              tenantIsolationEnforced: true,
+              provider: cliTool === "codex" ? "openai" : "anthropic",
+              sink: "adapter readiness probe",
+            });
+            if (!mapped) throw err;
+            return await recordCloudBlocked(mapped.message);
+          }
         }
       }
       let result: AdapterEnvironmentTestResult;

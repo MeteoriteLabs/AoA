@@ -20,6 +20,7 @@ import {
   updateAgentSchema,
   adapterModelFamilyMismatch,
   isShellSafeModelId,
+  type AdapterEnvironmentTestResult,
   type InstanceSchedulerHeartbeatAgent,
   type WakeAgent,
 } from "@armyofagents/shared";
@@ -62,6 +63,11 @@ import { environmentRunOrchestrator } from "../services/environment-run-orchestr
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { assertUnsandboxedMultitenantAllowed } from "../services/unsandboxed-multitenant-guard.js";
 import { tenantIsolationEnforced } from "../config/deployment-mode.js";
+import {
+  cliToolForSandboxReadinessProbe,
+  probeReadinessInSandbox,
+} from "../services/sandbox-readiness-probe.js";
+import { mapCloudProviderKeyError } from "../services/internal-agent/require-cloud-provider-key.js";
 import { buildApprovalHubEmit, emitHubItem } from "../services/hub-source-producers.js";
 import { logger } from "../middleware/logger.js";
 import { liveRunsForCompany, liveRunsForIssue } from "./agents-live-runs.js";
@@ -684,6 +690,21 @@ export function agentRoutes(db: Db) {
             })
           : null;
 
+        // Unit D (Part C): redact any secrets that leaked into check messages
+        // before returning a probe result to the client. Shared by both the
+        // real local/remote-target probe below and the U13.7 sandboxed probe.
+        const respondWithRedactedResult = (result: AdapterEnvironmentTestResult) => {
+          res.json({
+            ...result,
+            checks: result.checks.map((c) => ({
+              ...c,
+              message: typeof c.message === "string" ? redactSecretsInString(c.message) : c.message,
+              ...(typeof c.detail === "string" ? { detail: redactSecretsInString(c.detail) } : {}),
+              ...(typeof c.hint === "string" ? { hint: redactSecretsInString(c.hint) } : {}),
+            })),
+          });
+        };
+
         try {
           // D1 (cloud isolation): the probe spawns a REAL `claude --print` /
           // `codex exec` generation. For a local/null target on `cloud_auth` it
@@ -697,6 +718,45 @@ export function agentRoutes(db: Db) {
               { tenantIsolationEnforced: tenantIsolationEnforced(), sink: "adapter readiness probe" },
             );
           } catch {
+            // U13.7: the guard refused the direct on-host probe (cloud_auth,
+            // local/null target, no AOA_ALLOW_UNSANDBOXED_MULTITENANT opt-in).
+            // Restore BYO-key verify for the two adapter types with a
+            // company-key mapping (`resolveCompanyProviderCredential`:
+            // codex_local -> openai, claude_local -> anthropic) by routing the
+            // hello-probe through an ephemeral sandbox instead of failing
+            // closed outright. Every other adapter type (gemini_local, cursor,
+            // opencode_local, grok_local, pi_local, process, …) has no
+            // sandboxed company-key equivalent yet and keeps the unconditional
+            // blocking result below.
+            const cliTool = cliToolForSandboxReadinessProbe(type);
+            if (cliTool) {
+              try {
+                const sandboxResult = await probeReadinessInSandbox({
+                  db,
+                  companyId,
+                  cliTool,
+                  adapterType: type,
+                });
+                respondWithRedactedResult(sandboxResult);
+                return;
+              } catch (err) {
+                const mapped = mapCloudProviderKeyError(err, {
+                  tenantIsolationEnforced: true,
+                  provider: cliTool === "codex" ? "openai" : "anthropic",
+                  sink: "adapter readiness probe",
+                });
+                if (!mapped) throw err;
+                res.json({
+                  adapterType: type,
+                  status: "fail" as const,
+                  checks: [
+                    { code: "readiness_unavailable_on_cloud", level: "error" as const, message: mapped.message },
+                  ],
+                  testedAt: new Date().toISOString(),
+                });
+                return;
+              }
+            }
             res.json({
               adapterType: type,
               status: "fail" as const,
@@ -720,18 +780,7 @@ export function agentRoutes(db: Db) {
             environmentName: acquiredEnvironment?.environment.name ?? null,
           });
 
-          // Unit D (Part C): redact any secrets that leaked into check messages
-          // before returning the result to the client.
-          const redactedResult = {
-            ...result,
-            checks: result.checks.map((c) => ({
-              ...c,
-              message: typeof c.message === "string" ? redactSecretsInString(c.message) : c.message,
-              ...(typeof c.detail === "string" ? { detail: redactSecretsInString(c.detail) } : {}),
-              ...(typeof c.hint === "string" ? { hint: redactSecretsInString(c.hint) } : {}),
-            })),
-          };
-          res.json(redactedResult);
+          respondWithRedactedResult(result);
         } finally {
           if (acquiredEnvironment) {
             await environmentRuntime.releaseRunLease({
