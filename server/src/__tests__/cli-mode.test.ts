@@ -608,6 +608,8 @@ describe("cliModeService", () => {
       userId: "user1",
       userRole: "founder",
       content: "hello",
+      // conversationId is required (W7.5d checks it before the host CLI probe).
+      conversationId: "conv-a",
     };
 
     const chunks: any[] = [];
@@ -1907,10 +1909,13 @@ describe("cliModeService.chat — D1 multi-tenant unsandboxed gate", () => {
     else process.env[OPT_IN] = savedOptIn;
   });
 
-  // cliTool:null makes the turn deterministic — the D1 gate runs FIRST; if it
-  // passes, the very next chunk is the "No CLI tool configured" error. No CLI
-  // detection, no spawn, no provider resolution, no hang. The deployment mode is
-  // set on the SAME freshly-reset module graph the gate will import.
+  // W7.5d — the D1 gate now runs AFTER the cliTool + conversationId early-returns
+  // and the sandbox resolve (but BEFORE the host CLI probe). For the pass-through
+  // cases cliTool:null makes the FIRST error the "No CLI tool configured" check
+  // (the guard, reached only with a valid cliTool + conversationId, is a no-op /
+  // permits and never fires OPT_IN). The "refuses" case passes a valid cliTool +
+  // conversationId (and no runId → null target) so the guard IS reached and
+  // refuses. No CLI detection, no spawn, no resolve on any of these paths.
   async function firstError(
     deploymentMode: "cloud_auth" | "local_trusted" | "authenticated",
     configOverride: Record<string, unknown> = {},
@@ -1938,7 +1943,9 @@ describe("cliModeService.chat — D1 multi-tenant unsandboxed gate", () => {
   }
 
   it("refuses a Commander turn on cloud_auth without the opt-in", async () => {
-    const err = await firstError("cloud_auth");
+    // A valid cliTool + conversationId + no runId → the guard is reached with a
+    // null (unsandboxed) target on cloud → refuses.
+    const err = await firstError("cloud_auth", { cliTool: "claude_cli" });
     expect(err).toBeDefined();
     expect(err.message).toContain(OPT_IN);
     expect(err.message).toContain("Commander");

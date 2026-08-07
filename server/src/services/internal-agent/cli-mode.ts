@@ -37,8 +37,35 @@ import { buildScrubbedCliEnv } from "../cli-spawn-safety.js";
 import { mergeConnectorEnv } from "../mcp-connectors-env.js";
 import { tenantIsolationEnforced } from "../../config/deployment-mode.js";
 import { assertUnsandboxedMultitenantAllowed } from "../unsandboxed-multitenant-guard.js";
+import { getServerAdapter } from "../../adapters/registry.js";
+import { instanceSettingsService } from "../instance-settings.js";
+import { resolveCommanderSandboxContext, runCommanderAdapterTurn } from "./commander-sandbox.js";
+import type { CommanderSandboxContext } from "./commander-sandbox.js";
 
 const require = createRequire(import.meta.url);
+
+/** Control-plane base URL the brokered `aoa` HTTP entry is built against inside
+ *  a Commander sandbox VM. The control plane's own address is the platform's,
+ *  read straight off the server process env (mirrors the crew runner's
+ *  `mcpParams.apiBaseUrl = process.env.AOA_API_URL`). */
+function resolveCommanderApiBaseUrl(): string {
+  return process.env.AOA_API_URL ?? "";
+}
+
+/** The single-`done` fallback chunk used when a rerouted sandbox turn produced
+ *  no real `done` (mirrors the inline host-path fallbacks). */
+function commanderDoneFallback(): AgentStreamChunk {
+  return {
+    type: "done",
+    summary: {
+      runId: "",
+      toolsCalled: [],
+      durationMs: 0,
+      costCents: 0,
+      tokenUsage: { inputTokens: 0, outputTokens: 0 },
+    },
+  };
+}
 
 /**
  * Decide what to do when Commander's per-session provider-credential resolution
@@ -857,32 +884,12 @@ export function cliModeService(db: Db) {
         model?: string | null;
       },
     ): AsyncGenerator<AgentStreamChunk> {
-      // ── D1: multi-tenant unsandboxed execution gate ──────────────────────
-      // Commander always spawns its CLI directly on the control-plane host —
-      // there is no execution-target sandbox for a Commander turn. When tenant
-      // isolation is enforced (cloud_auth) that is an unsandboxed shared-host run,
-      // which must be an explicit operator opt-in. Read the module-level
-      // tenantIsolationEnforced() (cheap; no per-turn loadConfig/topology) and
-      // REFUSE the turn (loud error chunk) unless AOA_ALLOW_UNSANDBOXED_MULTITENANT
-      // is set. No-op on every self-hosted deployment (local_trusted / authenticated
-      // single-tenant) → byte-identical for local/self-hosted installs. The
-      // try/catch is NARROW — it wraps only the guard's refusal so a real infra
-      // fault does not get reshaped into a refusal-looking error chunk (the guard
-      // + deployment-mode reader are imported statically at the top of the file).
-      try {
-        assertUnsandboxedMultitenantAllowed(
-          { type: "local" },
-          { tenantIsolationEnforced: tenantIsolationEnforced(), sink: "Commander" },
-        );
-      } catch (guardErr) {
-        yield {
-          type: "error",
-          message: guardErr instanceof Error ? guardErr.message : String(guardErr),
-        };
-        return;
-      }
+      // ── W7.5d: acquire-after-early-returns + host-detect bypass + D1 flip ──
+      // ORDER MATTERS (F2): the cheap config-validation early-returns run BEFORE
+      // the sandbox acquire, so a missing cliTool / conversationId can NEVER
+      // orphan a warm VM. The acquire happens only after both pass.
 
-      // 1. Validate CLI tool config
+      // 1. Validate CLI tool config (FIRST — before any acquire).
       if (!config.cliTool) {
         yield {
           type: "error",
@@ -891,13 +898,7 @@ export function cliModeService(db: Db) {
         return;
       }
 
-      // 2. Detect CLI availability
-      const detection = await detectCliTool(config.cliTool);
-      if (!detection.available) {
-        yield { type: "error", message: detection.error! };
-        return;
-      }
-
+      // 2. Conversation context is required (still before any acquire).
       // Provider sessions must follow the persisted Commander conversation.
       // Keying only by company + user resumes the previous provider thread
       // after the user switches conversations, leaking context across chats.
@@ -910,11 +911,168 @@ export function cliModeService(db: Db) {
         };
         return;
       }
+
+      // 3. Resolve the warm sandbox — cloud only (null on self-hosted, where the
+      //    D1 guard is a no-op and Commander spawns host-direct exactly as today).
+      //    The acquire happens HERE — AFTER the cheap early-returns above (F2) — so
+      //    no early bail can leak a VM. A missing JWT secret (or an acquire fault)
+      //    throws from the resolver AFTER it has released any lease it took; surface
+      //    it as a clean error chunk and never spawn.
+      let commanderSandbox: CommanderSandboxContext | null = null;
+      if (params.runId) {
+        try {
+          commanderSandbox = await resolveCommanderSandboxContext(db, {
+            companyId: params.companyId,
+            userId: params.userId,
+            userRole: params.userRole,
+            conversationId,
+            turnId: params.runId,
+            apiBaseUrl: resolveCommanderApiBaseUrl(),
+            adapterType: config.cliTool === "codex" ? "codex_local" : "claude_local",
+            getExperimental: () => instanceSettingsService(db).getExperimental(),
+          });
+        } catch (resolveErr) {
+          yield {
+            type: "error",
+            message: resolveErr instanceof Error ? resolveErr.message : String(resolveErr),
+          };
+          return;
+        }
+      }
+
+      // 4. D1 multi-tenant unsandboxed execution gate — flipped to the RESOLVED
+      //    target, and run BEFORE the host probe so an unsandboxed cloud turn is
+      //    refused without wasting a host binary probe. On cloud a provider-sandbox
+      //    target is permitted; a null target on cloud still REFUSES (correct when
+      //    no platform default resolved). On self-hosted tenantIsolationEnforced()
+      //    is false → no-op → byte-identical. The try/catch is NARROW (only the
+      //    refusal). Release the lease if the guard throws so a just-acquired VM
+      //    never leaks.
+      try {
+        assertUnsandboxedMultitenantAllowed(
+          commanderSandbox?.executionTarget ?? { type: "local" },
+          { tenantIsolationEnforced: tenantIsolationEnforced(), sink: "Commander" },
+        );
+      } catch (guardErr) {
+        if (commanderSandbox) await commanderSandbox.release().catch(() => undefined);
+        yield {
+          type: "error",
+          message: guardErr instanceof Error ? guardErr.message : String(guardErr),
+        };
+        return;
+      }
+
+      // 5. Host CLI availability — HOST PATH ONLY. On the sandbox path the VM
+      //    image provides the CLI; probing the host binary is both wrong and, on a
+      //    failed probe, would abort a turn that would run fine in the VM (F2).
+      if (!commanderSandbox) {
+        const detection = await detectCliTool(config.cliTool);
+        if (!detection.available) {
+          yield { type: "error", message: detection.error! };
+          return;
+        }
+      }
+
       const sessionKey = `${params.companyId}:${params.userId}:${conversationId}`;
       let session = sessionStore.get(sessionKey);
 
       try {
         let sawRealDone = false;
+
+        // ── W7.5d: cloud sandbox reroute ─────────────────────────────────────
+        // On cloud, delegate the in-sandbox CLI (claude AND codex) to the SAME
+        // adapter.execute path org/crew use — spawn-per-turn in the warm VM, NO
+        // persistent host process, NO host spawn. Every host branch below is
+        // reached ONLY when commanderSandbox is null (this block returns first on
+        // the cloud path), so self-hosted stays BYTE-IDENTICAL. The `finally`
+        // below releases/pauses the warm lease on EVERY exit.
+        if (commanderSandbox) {
+          const bridgePath = getBridgeEntrypoint();
+
+          // MCP connectors (best-effort; parity with the host branches). The CLI
+          // runs inside the provider sandbox, so resolve for a sandbox target.
+          let connectorSpecs: Record<string, McpServerSpec> = {};
+          let connectorEnv: Record<string, string> = {};
+          try {
+            const resolved = await resolveAgentConnectors(db, {
+              companyId: params.companyId,
+              agentId: null, // Commander = all active company connectors (D3)
+              logger,
+              sandboxTarget: true,
+            });
+            connectorSpecs = resolved.extraMcpServers;
+            connectorEnv = resolved.connectorEnv;
+          } catch (err) {
+            logger.warn(
+              { err, companyId: params.companyId },
+              "Commander MCP connector resolution failed; proceeding without connectors",
+            );
+          }
+
+          if (config.cliTool !== "codex" && config.cliTool !== "claude_cli") {
+            // opencode-in-sandbox is out of scope; refuse (the finally still
+            // releases the lease — no VM leak).
+            yield {
+              type: "error",
+              message:
+                "opencode is not yet supported for the Commander chat (MCP wiring pending — MX-followup). Use claude or codex.",
+            };
+            return;
+          }
+
+          const adapterType = config.cliTool === "codex" ? "codex_local" : "claude_local";
+          const mcpParams: McpConfigParams = {
+            companyId: params.companyId,
+            userId: params.userId,
+            userRole: params.userRole,
+            enabledCapabilities: params.enabledCapabilities,
+            bridgeEntrypoint: bridgePath,
+            actorType: "commander",
+            runId: params.runId ?? null,
+            contextScope: normalizeCliContextScope(params.contextScope),
+            extraMcpServers: connectorSpecs,
+            // U2d: the sandboxed CLI reaches the DB ONLY through the HTTP broker —
+            // never the stdio bridge (which injects DATABASE_URL). buildMcpConfig /
+            // buildCodexAoaMcpSpec emit the HTTP form when brokered.
+            brokered: true,
+            apiBaseUrl: commanderSandbox.apiBaseUrl,
+          };
+
+          const adapter = getServerAdapter(adapterType);
+          for await (const ev of runCommanderAdapterTurn(adapter, {
+            adapterType,
+            executionTarget: commanderSandbox.executionTarget,
+            companyId: params.companyId,
+            userId: params.userId,
+            userRole: params.userRole,
+            conversationId,
+            turnId: params.runId!,
+            authToken: commanderSandbox.authToken,
+            apiBaseUrl: commanderSandbox.apiBaseUrl,
+            // Deliver the raw user message as the prompt and the assembled system
+            // context (WITH conversation history) as the instructions file — mirrors
+            // the host claude split. Fall back to full content when assembly failed.
+            content: params.rawContent ?? params.content,
+            systemContext: params.systemContext ?? null,
+            model: config.model ?? null,
+            mcpParams,
+            connectorSpecs,
+            connectorEnv,
+            useStreamJson: config.cliTool === "claude_cli",
+          })) {
+            if (ev.kind === "chunk") {
+              if (ev.chunk.type === "done") sawRealDone = true;
+              yield ev.chunk;
+            }
+            // ev.kind === "result": buffered AdapterExecutionResult (cost/session
+            // continuity). Commander delivers full conversation history in the
+            // system context each turn, so no CLI-level session resume is needed;
+            // the result is consumed here (no persistent session to update).
+          }
+          if (!sawRealDone) yield commanderDoneFallback();
+          return; // the `finally` releases/pauses the warm lease
+        }
+
         if (config.cliTool === "codex") {
           // ── codex: ONE-SHOT per turn + resume continuity ──────────────
           // codex `exec` is one-shot (runs the turn, exits). So there is
@@ -1369,6 +1527,15 @@ export function cliModeService(db: Db) {
           type: "error",
           message: `CLI mode error: ${err?.message ?? "Unknown error"}`,
         };
+      } finally {
+        // ATOMIC triad tail (F2): release/pause the acquired warm lease on EVERY
+        // exit of the turn body — normal completion, early return, thrown error,
+        // and generator abandonment (consumer break → .return()). No-op when
+        // commanderSandbox is null (self-hosted / host fallback), so the host path
+        // stays byte-identical. Best-effort — a release failure never masks the
+        // turn's own outcome. The guard-refuse early-return above releases before
+        // it returns (outside this try), so there is no double-release.
+        if (commanderSandbox) await commanderSandbox.release().catch(() => undefined);
       }
     },
 
