@@ -1,7 +1,5 @@
-import { afterAll } from "vitest";
-
 // Global test setup for server test suite
-// Suppress transient Node 24 IPC worker process teardown rejections from embedded-postgres child process cleanup
+// 1. Suppress transient Node 24 IPC worker process teardown rejections from embedded-postgres child process cleanup
 const handleIpcErr = (reason: any) => {
   if (
     reason?.code === "ERR_IPC_CHANNEL_CLOSED" ||
@@ -16,23 +14,30 @@ const handleIpcErr = (reason: any) => {
 process.on("unhandledRejection", handleIpcErr);
 process.on("uncaughtException", handleIpcErr);
 
-// Remove async-exit-hook listeners added by embedded-postgres import that prevent clean tinypool worker exits
-afterAll(() => {
-  const events: Array<NodeJS.Signals | "uncaughtException" | "unhandledRejection"> = [
-    "SIGINT",
-    "SIGTERM",
-    "SIGHUP",
-  ];
-  for (const event of events) {
-    const listeners = process.listeners(event);
-    for (const listener of listeners) {
-      if (
-        listener.name === "uncaughtHandler" ||
-        listener.toString().includes("gracefulShutdown") ||
-        listener.toString().includes("exitHook")
-      ) {
-        process.removeListener(event, listener);
-      }
-    }
+// 2. Prevent embedded-postgres async-exit-hook from attaching process signal / exit hooks
+// that hijack Vitest tinypool worker teardown and close worker IPC channels.
+const origOn = process.on.bind(process);
+const origAddListener = process.addListener.bind(process);
+
+function isExitHookListener(listener: any): boolean {
+  const fnStr = String(listener ?? "");
+  return (
+    listener?.name === "uncaughtHandler" ||
+    fnStr.includes("gracefulShutdown") ||
+    fnStr.includes("exitHook")
+  );
+}
+
+process.on = function (event: any, listener: any) {
+  if (isExitHookListener(listener)) {
+    return process;
   }
-});
+  return origOn(event, listener);
+} as typeof process.on;
+
+process.addListener = function (event: any, listener: any) {
+  if (isExitHookListener(listener)) {
+    return process;
+  }
+  return origAddListener(event, listener);
+} as typeof process.addListener;
