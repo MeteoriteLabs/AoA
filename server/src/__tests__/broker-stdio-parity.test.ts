@@ -41,8 +41,12 @@
  * needed or used here.
  */
 import { describe, expect, it } from "vitest";
-import { createToolRegistry } from "../services/internal-agent/tool-registry.js";
+import {
+  createToolRegistry,
+  filterAuthorizedToolsForContext,
+} from "../services/internal-agent/tool-registry.js";
 import { brokerRegistry } from "../mcp/broker-registry.js";
+import type { ToolContext } from "../services/internal-agent/types.js";
 
 describe("broker/stdio tool-registry parity (U2c)", () => {
   it("brokerRegistry (the array the HTTP broker actually dispatches against) is a superset of a fresh stdio createToolRegistry()", () => {
@@ -62,5 +66,37 @@ describe("broker/stdio tool-registry parity (U2c)", () => {
   it("brokerRegistry has no duplicate tool names (a well-formed registry, not an accidental concat)", () => {
     const names = brokerRegistry.map((t) => t.name);
     expect(new Set(names).size).toBe(names.length);
+  });
+
+  // W7.5f Task 4 — commander-actor superset-parity anti-drift (spec §4 caveat c,
+  // §13 anti-drift). This differs from commander-broker-parity.test.ts (which
+  // filters a FRESH createToolRegistry() for the resolver-output shape): here we
+  // filter the SAME `brokerRegistry` object the broker actually dispatches
+  // `tools/call` / `tools/list` against, for a commander context, and assert it
+  // equals the in-process commander surface. If a future edit narrows
+  // `brokerRegistry` for the commander path, this goes red — not merely a
+  // resolver unit test.
+  it("the commander-visible broker surface == the in-process commander surface (spec §4 caveat c, §13 anti-drift)", () => {
+    const commanderCtx: ToolContext = {
+      companyId: "c1",
+      userId: "u1",
+      userRole: "founder",
+      enabledCapabilities: ["system_actions", "memory_management", "discussion_processing"],
+      agentKind: undefined,
+      toolAllowlist: [],
+      actorType: "commander",
+      commanderToolPermissions: {},
+      runtimeApprovalsEnabled: true,
+      db: {} as never,
+      services: {} as never,
+    };
+    const brokerNames = filterAuthorizedToolsForContext(brokerRegistry, commanderCtx)
+      .map((t) => t.name)
+      .sort();
+    const inProcNames = filterAuthorizedToolsForContext(createToolRegistry(), commanderCtx)
+      .map((t) => t.name)
+      .sort();
+    expect(brokerNames).toEqual(inProcNames);
+    expect(brokerNames.length).toBeGreaterThan(0);
   });
 });
