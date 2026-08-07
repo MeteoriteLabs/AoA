@@ -384,5 +384,31 @@ describe("environmentService", () => {
       expect(result).toEqual(failed);
       expect(mockEq).toHaveBeenCalledWith(environmentLeases.id, "lease-1");
     });
+
+    // TOCTOU CAS: the warm reaper / cap-evictor claims a paused lease with a
+    // status-guarded compare-and-swap BEFORE force-killing its VM, so a
+    // concurrent resume (reactivatePausedLease, WHERE status='paused') and a
+    // destroy can never both win the same row.
+    it("expireLeaseIfPaused returns the row and sets status=expired when the lease is still paused", async () => {
+      const expired = makeLease({
+        status: "expired",
+        releasedAt: new Date("2026-01-01T00:02:00Z"),
+        cleanupStatus: "success",
+      });
+      const db = createSequenceDb({ updates: [[expired]] });
+      const svc = environmentService(db);
+      const result = await svc.expireLeaseIfPaused("lease-1", { cleanupStatus: "success" });
+      expect(result).toEqual(expired);
+      // The status guard is the concurrency latch: WHERE id = ? AND status = 'paused'.
+      expect(mockEq).toHaveBeenCalledWith(environmentLeases.id, "lease-1");
+      expect(mockEq).toHaveBeenCalledWith(environmentLeases.status, "paused");
+    });
+
+    it("expireLeaseIfPaused returns null when 0 rows match (lease was resumed/claimed since the scan)", async () => {
+      const db = createSequenceDb({ updates: [[]] });
+      const svc = environmentService(db);
+      const result = await svc.expireLeaseIfPaused("lease-1");
+      expect(result).toBeNull();
+    });
   });
 });

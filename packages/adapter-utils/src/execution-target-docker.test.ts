@@ -165,13 +165,13 @@ describe("buildDockerRunArgs", () => {
 
 describe("runAdapterExecutionTargetProcess sandbox-docker", () => {
   it("runs docker with target env below runtime env and Docker-shaped workspace env", async () => {
-    // U5: the merge-order + workspace-cwd-rewrite probes below use ALLOWLISTED
+    // The merge-order + workspace-cwd-rewrite probes below use AOA_* runtime
     // key names (AOA_EXECUTION_TARGET_ID / AOA_RUNTIME_HOOK_TOKEN /
-    // AOA_WORKSPACE_CWD / AOA_WORKSPACES_JSON) — buildSandboxEnvAllowlist now
-    // runs ahead of shapeAoaWorkspaceEnvForExecution in this chokepoint, so an
-    // arbitrary non-allowlisted key (the old "SHARED"/"TARGET_ONLY" synthetic
-    // names) would be dropped before the merge/rewrite logic under test ever
-    // sees it.
+    // AOA_WORKSPACE_CWD / AOA_WORKSPACES_JSON). The sandbox-docker branch does
+    // NOT apply the cloud provider-sandbox env allowlist (self-hosted honors the
+    // founder's authored env — see the proxy/CA test above); these AOA_* keys
+    // survive because nothing strips them, and the assertion under test is the
+    // target-env-below-runtime-env merge + local→execution cwd rewrite.
     const run = vi.fn().mockResolvedValue(okResult);
     const result = await runAdapterExecutionTargetProcess(
       {
@@ -215,6 +215,30 @@ describe("runAdapterExecutionTargetProcess sandbox-docker", () => {
     );
     // No bridge started here → host-gateway must not be injected by default.
     expect(run.mock.calls[0]![2] as string[]).not.toContain("--add-host");
+  });
+
+  it("preserves a founder's custom env (proxy / CA bundle) through a self-hosted docker run", async () => {
+    // Self-hosted regression guard: the sandbox env ALLOWLIST is the cloud
+    // provider-sandbox isolation boundary ONLY. The sandbox-docker branch is
+    // reachable self-hosted (pooled_gvisor / dedicated_worker, multiTenant=false)
+    // and must honor the founder's authored target/run env — a corporate proxy
+    // or private CA bundle is not a host secret to strip. Only host-identity
+    // leakage (sanitizeRemoteExecutionEnv, e.g. matching PATH) is removed.
+    const run = vi.fn().mockResolvedValue(okResult);
+    await runAdapterExecutionTargetProcess(
+      {
+        type: "sandbox-docker",
+        image: "node:22",
+        env: { HTTPS_PROXY: "http://corp-proxy:8080", NODE_EXTRA_CA_CERTS: "/etc/ssl/corp-ca.pem" },
+      },
+      baseOpts({ env: { HTTP_PROXY: "http://corp-proxy:8080", AOA_RUN_ID: "run_1" } }),
+      { run },
+    );
+
+    const dockerArgs = run.mock.calls[0]![2] as string[];
+    expect(dockerArgs).toContain("HTTPS_PROXY=http://corp-proxy:8080");
+    expect(dockerArgs).toContain("NODE_EXTRA_CA_CERTS=/etc/ssl/corp-ca.pem");
+    expect(dockerArgs).toContain("HTTP_PROXY=http://corp-proxy:8080");
   });
 
   it("strips matching host identity env before Docker spawn", async () => {

@@ -713,12 +713,16 @@ export async function runAdapterExecutionTargetProcess(
   let bridge: SandboxCallbackBridgeServer | null = null;
 
   try {
+    // Self-hosted sandbox-docker branch (pooled_gvisor / dedicated_worker,
+    // multiTenant=false). The from-scratch env ALLOWLIST is the CLOUD
+    // provider-sandbox isolation boundary ONLY — applying it here would silently
+    // strip a self-hosted founder's authored env (HTTPS_PROXY / NODE_EXTRA_CA_CERTS
+    // / custom base URLs / non-AOA_MCP_* tokens), breaking proxied/corporate
+    // deployments and contradicting the resolver's "honor the founder's config"
+    // contract. Host-identity leakage is still removed by sanitizeRemoteExecutionEnv.
     let env = sanitizeRemoteExecutionEnv(
       shapeAoaWorkspaceEnvForExecution({
-        env: buildSandboxEnvAllowlist(
-          { ...(target.env ?? {}), ...opts.env },
-          { provider: opts.sandboxProvider ?? "" },
-        ),
+        env: { ...(target.env ?? {}), ...opts.env },
         targetType: "sandbox-docker",
         localCwd: workspace.localCwd,
         executionCwd: workspace.executionCwd,

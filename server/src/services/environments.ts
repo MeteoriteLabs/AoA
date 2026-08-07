@@ -299,6 +299,33 @@ export function environmentService(db: Db) {
       return lease ?? null;
     },
 
+    // Retire a paused lease (paused → expired) with a status-guarded compare-
+    // and-swap. This is the DESTROY-side latch that mirrors reactivatePausedLease
+    // (resume-side, paused → active): the `AND status='paused'` guard means a
+    // reaper/cap-evictor and a concurrent resume can never both win the same row.
+    // If a resume flipped the lease to `active` between the reaper's scan and the
+    // kill, this UPDATE matches 0 rows → returns null → the caller MUST skip the
+    // provider force-kill (the sandbox is now live). Exactly one of {resume,
+    // destroy} wins. Claim BEFORE any provider kill.
+    expireLeaseIfPaused: async (
+      id: string,
+      options?: { cleanupStatus?: EnvironmentLeaseCleanupStatus },
+    ) => {
+      const now = new Date();
+      const [lease] = await db
+        .update(environmentLeases)
+        .set({
+          status: "expired",
+          releasedAt: now,
+          lastUsedAt: now,
+          updatedAt: now,
+          ...(options?.cleanupStatus !== undefined ? { cleanupStatus: options.cleanupStatus } : {}),
+        })
+        .where(and(eq(environmentLeases.id, id), eq(environmentLeases.status, "paused")))
+        .returning();
+      return lease ?? null;
+    },
+
     // Pause (E2B snapshot) a reuse_by_agent lease at run end instead of killing
     // it. `releasedAt` stays NULL so the warm lookup + idle reaper (both keyed
     // off status) can still find it.

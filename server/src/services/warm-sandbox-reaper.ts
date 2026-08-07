@@ -49,14 +49,33 @@ function resolveDeps(db: Db, deps: WarmReaperDeps): {
 
 /** Force-kill (never re-pause) a single paused lease's sandbox and retire its
  *  DB row (status → expired). Best-effort: the environment may be gone, in which
- *  case we still retire the row so it stops being counted/resumed. */
+ *  case we still retire the row so it stops being counted/resumed.
+ *
+ *  TOCTOU guard: the row is CLAIMED via a status-guarded compare-and-swap
+ *  (`expireLeaseIfPaused`, paused → expired) BEFORE any provider kill. If a
+ *  concurrent org/Commander run resumed the lease (paused → active) between the
+ *  caller's scan and this destroy, the CAS matches 0 rows → returns null → we
+ *  SKIP the kill and leave the now-LIVE sandbox untouched. Returns
+ *  `{ destroyed }`: false = we lost the race to a concurrent resume (or a
+ *  co-running destroyer), true = we own the row and killed it. */
 async function destroyPausedLease(
   lease: EnvironmentLease,
   ctx: {
-    environments: Pick<EnvironmentService, "get" | "releaseLease">;
+    environments: Pick<EnvironmentService, "get" | "releaseLease" | "expireLeaseIfPaused">;
     runtime: Pick<EnvironmentRuntimeService, "releaseRunLease">;
   },
-): Promise<void> {
+): Promise<{ destroyed: boolean }> {
+  // Claim the row FIRST. Losing this CAS means someone else (a resume, or the
+  // sibling over-cap evictor) already owns it — never force-kill in that case.
+  const claimed = await ctx.environments.expireLeaseIfPaused(lease.id);
+  if (!claimed) {
+    logger.info(
+      { leaseId: lease.id, environmentId: lease.environmentId },
+      "warm-sandbox reaper: lease no longer paused (concurrent resume/evict won the CAS) — skipping destroy",
+    );
+    return { destroyed: false };
+  }
+
   const envRow = typeof ctx.environments.get === "function"
     ? await ctx.environments.get(lease.companyId, lease.environmentId)
     : null;
@@ -65,16 +84,18 @@ async function destroyPausedLease(
       cleanupStatus: "failed",
       failureReason: "environment missing during warm reap",
     });
-    return;
+    return { destroyed: true };
   }
   // releaseRunLease(forceDestroy) kills the provider sandbox AND flips the row
-  // to `expired` (status passed here), so no separate DB update is needed.
+  // to `expired` (status passed here). We already set `expired` above via the
+  // CAS; re-setting it here is idempotent/harmless.
   await ctx.runtime.releaseRunLease({
     environment: envRow as unknown as Environment,
     lease,
     status: "expired",
     forceDestroy: true,
   });
+  return { destroyed: true };
 }
 
 /**
@@ -101,8 +122,10 @@ export async function sweepIdleWarmSandboxes(
   for (const row of stale) {
     const lease = normalizeEnvironmentLease(row);
     try {
-      await destroyPausedLease(lease, { environments, runtime });
-      reaped++;
+      const outcome = await destroyPausedLease(lease, { environments, runtime });
+      // A skipped destroy (lost the CAS to a concurrent resume) is not a reap —
+      // the live sandbox is intact and stays counted until its own run ends.
+      if (outcome.destroyed) reaped++;
     } catch (err) {
       logger.warn(
         { err, leaseId: lease.id, environmentId: lease.environmentId },
@@ -133,8 +156,11 @@ export async function evictOldestPausedSandbox(
   const oldestPaused = live.find((row) => normalizeEnvironmentLease(row).status === "paused");
   if (!oldestPaused) return null;
   const lease = normalizeEnvironmentLease(oldestPaused);
-  await destroyPausedLease(lease, { environments, runtime });
-  return lease;
+  // Lost the CAS (a concurrent resume or a sibling over-cap evictor claimed this
+  // same oldest-paused row first) → nothing was actually evicted; return null so
+  // the double-evict collapses to a single winner and no live VM is double-killed.
+  const outcome = await destroyPausedLease(lease, { environments, runtime });
+  return outcome.destroyed ? lease : null;
 }
 
 /**

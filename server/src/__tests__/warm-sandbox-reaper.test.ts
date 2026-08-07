@@ -36,10 +36,13 @@ describe("warm-sandbox reaper (U7.6)", () => {
     const paused = pausedRow();
     const releaseProviderSpy = vi.fn(async () => ({ cleanupStatus: "success" as const }));
     const releaseLease = vi.fn(async () => ({ ...paused, status: "expired" }));
+    // CAS latch: the lease is still paused, so the claim wins (returns the row).
+    const expireLeaseIfPaused = vi.fn(async () => ({ ...paused, status: "expired" }));
     const listPausedLeasesOlderThan = vi.fn(async () => [paused]);
     const environments = {
       get: vi.fn(async () => e2bEnvRow()),
       releaseLease,
+      expireLeaseIfPaused,
       listPausedLeasesOlderThan,
       listLiveAndPausedProviderLeasesForCompany: vi.fn(),
       acquireLease: vi.fn(),
@@ -53,6 +56,8 @@ describe("warm-sandbox reaper (U7.6)", () => {
       getExperimental: async () => ({ enableWarmSandboxReaper: true, warmSandboxIdleTtlMinutes: 30 }),
     });
 
+    // The CAS claim ran (paused→expired) BEFORE the provider kill.
+    expect(expireLeaseIfPaused).toHaveBeenCalledWith("lease-paused");
     expect(res).toEqual({ scanned: 1, reaped: 1 });
     // Reaped lease is KILLED (reuseLease:false), never re-paused.
     expect(releaseProviderSpy).toHaveBeenCalledWith(
@@ -116,9 +121,11 @@ describe("warm-sandbox reaper (U7.6)", () => {
     const activeLease = pausedRow({ id: "act", providerLeaseId: "e2b-act", status: "active", pausedAt: null });
     const releaseProviderSpy = vi.fn(async () => ({ cleanupStatus: "success" as const }));
     const releaseLease = vi.fn(async () => ({ ...oldestPaused, status: "expired" }));
+    const expireLeaseIfPaused = vi.fn(async () => ({ ...oldestPaused, status: "expired" }));
     const environments = {
       get: vi.fn(async () => e2bEnvRow()),
       releaseLease,
+      expireLeaseIfPaused,
       listPausedLeasesOlderThan: vi.fn(),
       listLiveAndPausedProviderLeasesForCompany: vi.fn(async () => [oldestPaused, activeLease]),
       acquireLease: vi.fn(),
@@ -131,6 +138,7 @@ describe("warm-sandbox reaper (U7.6)", () => {
       runtimeProviderKeys: fakeProviderKeys(),
     });
 
+    expect(expireLeaseIfPaused).toHaveBeenCalledWith("old");
     expect(evicted?.id).toBe("old");
     expect(releaseProviderSpy).toHaveBeenCalledWith(expect.objectContaining({ providerLeaseId: "e2b-old" }));
     // The active lease is never killed.
@@ -158,5 +166,69 @@ describe("warm-sandbox reaper (U7.6)", () => {
 
     expect(evicted).toBeNull();
     expect(releaseProviderSpy).not.toHaveBeenCalled();
+  });
+
+  it("sweep SKIPS the provider kill when a concurrent resume claimed the lease between list and destroy (CAS → null)", async () => {
+    // The lease was listed as paused, but a concurrent org/Commander run resumed
+    // it (paused→active) before the destroy. The paused→expired CAS now matches
+    // 0 rows (returns null) → the destroyer must NOT force-kill the now-LIVE VM
+    // and must leave the lease untouched.
+    const paused = pausedRow();
+    const releaseProviderSpy = vi.fn(async () => ({ cleanupStatus: "success" as const }));
+    const releaseLease = vi.fn();
+    const expireLeaseIfPaused = vi.fn(async () => null); // lost the race
+    const environments = {
+      get: vi.fn(async () => e2bEnvRow()),
+      releaseLease,
+      expireLeaseIfPaused,
+      listPausedLeasesOlderThan: vi.fn(async () => [paused]),
+      listLiveAndPausedProviderLeasesForCompany: vi.fn(),
+      acquireLease: vi.fn(),
+      releaseLeasesForRun: vi.fn(),
+    } as unknown as EnvironmentService;
+
+    const res = await sweepIdleWarmSandboxes({} as never, {
+      environments,
+      sandboxProviders: [{ provider: "e2b", acquireLease: vi.fn(), releaseLease: releaseProviderSpy, execute: vi.fn() }],
+      runtimeProviderKeys: fakeProviderKeys(),
+      getExperimental: async () => ({ enableWarmSandboxReaper: true, warmSandboxIdleTtlMinutes: 30 }),
+    });
+
+    // The claim was attempted and lost — nothing killed, nothing else mutated.
+    expect(expireLeaseIfPaused).toHaveBeenCalledWith("lease-paused");
+    expect(releaseProviderSpy).not.toHaveBeenCalled();
+    expect(releaseLease).not.toHaveBeenCalled();
+    // The live lease is NOT counted as reaped.
+    expect(res).toEqual({ scanned: 1, reaped: 0 });
+  });
+
+  it("evict SKIPS the provider kill on a lost CAS (double-evict collapses to one winner) and returns null", async () => {
+    // Two over-cap acquires both pick the same oldest-paused row; the first CAS
+    // wins and kills, the second sees the row is no longer paused (null) → it
+    // must NOT double-kill the VM the first evict already retired.
+    const oldestPaused = pausedRow({ id: "old", providerLeaseId: "e2b-old" });
+    const releaseProviderSpy = vi.fn(async () => ({ cleanupStatus: "success" as const }));
+    const releaseLease = vi.fn();
+    const expireLeaseIfPaused = vi.fn(async () => null); // the losing evictor
+    const environments = {
+      get: vi.fn(async () => e2bEnvRow()),
+      releaseLease,
+      expireLeaseIfPaused,
+      listPausedLeasesOlderThan: vi.fn(),
+      listLiveAndPausedProviderLeasesForCompany: vi.fn(async () => [oldestPaused]),
+      acquireLease: vi.fn(),
+      releaseLeasesForRun: vi.fn(),
+    } as unknown as EnvironmentService;
+
+    const evicted = await evictOldestPausedSandbox({} as never, CO, {
+      environments,
+      sandboxProviders: [{ provider: "e2b", acquireLease: vi.fn(), releaseLease: releaseProviderSpy, execute: vi.fn() }],
+      runtimeProviderKeys: fakeProviderKeys(),
+    });
+
+    expect(expireLeaseIfPaused).toHaveBeenCalledWith("old");
+    expect(releaseProviderSpy).not.toHaveBeenCalled();
+    expect(releaseLease).not.toHaveBeenCalled();
+    expect(evicted).toBeNull();
   });
 });
