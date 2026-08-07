@@ -88,7 +88,10 @@ vi.mock("../services/provider-resolution.js", () => {
     toExecutionTargetHint: () => ({ credentialKind: null, executionTargetSlug: null }),
   };
 });
-vi.mock("../services/mcp-connectors-loader.js", () => ({ resolveAgentConnectors: resolveConnectorsMock }));
+vi.mock("../services/mcp-connectors-loader.js", () => ({
+  resolveAgentConnectors: resolveConnectorsMock,
+  loadConnectorEgressHosts: vi.fn().mockResolvedValue([]),
+}));
 vi.mock("../services/run-log-store.js", () => ({
   getRunLogStore: () => ({
     begin: vi.fn().mockResolvedValue({ store: "local_file", logRef: "test-run.ndjson" }),

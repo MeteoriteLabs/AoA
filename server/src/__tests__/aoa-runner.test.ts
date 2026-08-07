@@ -83,7 +83,10 @@ vi.mock("../services/provider-resolution.js", () => ({
   applyResolvedCredential: (config: unknown) => config,
   toExecutionTargetHint: () => ({ credentialKind: null, executionTargetSlug: null }),
 }));
-vi.mock("../services/mcp-connectors-loader.js", () => ({ resolveAgentConnectors: resolveConnectorsMock }));
+vi.mock("../services/mcp-connectors-loader.js", () => ({
+  resolveAgentConnectors: resolveConnectorsMock,
+  loadConnectorEgressHosts: vi.fn().mockResolvedValue([]),
+}));
 vi.mock("../services/run-log-store.js", () => ({ getRunLogStore: () => runLogStoreMock }));
 vi.mock("../middleware/logger.js", () => ({ logger:{ child:()=>({info:vi.fn(),warn:vi.fn(),error:vi.fn()}) } }));
 // T5: crew workspace resolution reads the instance experimental flags. Without

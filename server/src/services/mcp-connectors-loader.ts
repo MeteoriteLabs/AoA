@@ -26,6 +26,7 @@ import {
 } from "./mcp-connectors.js";
 import { secretService, type SecretConsumerContext } from "./secrets.js";
 import { logActivity } from "./activity-log.js";
+import { buildConnectorEgressHosts } from "./mcp-connectors-env.js";
 import { loadConfig } from "../config.js";
 import { mcpConnectorService } from "./mcp-connectors-crud.js";
 import {
@@ -484,6 +485,17 @@ export interface ResolveAgentConnectorsInput {
 export interface ResolveAgentConnectorsResult {
   extraMcpServers: Record<string, McpServerSpec>;
   connectorEnv: Record<string, string>;
+  /**
+   * U11: the bare-host egress list for the connectors ACTUALLY delivered by
+   * this call (post real `sandboxTarget`/D7/command-safety gating) — additive,
+   * existing callers ignore it. This is the ACCURATE picture; it is NOT what
+   * feeds the sandbox's own `egressAllowlist` at acquire time, because the
+   * sandbox lease is acquired BEFORE this function can run (its `sandboxTarget`
+   * input itself comes from the already-resolved acquisition — see heartbeat.ts
+   * / runner.ts). The PRE-acquire estimate that actually populates the
+   * provider's `egressAllowlist` is `loadConnectorEgressHosts` below.
+   */
+  egressHosts: string[];
 }
 
 /**
@@ -566,5 +578,80 @@ export async function resolveAgentConnectors(
     }
   }
 
-  return { extraMcpServers: specs, connectorEnv: env };
+  return { extraMcpServers: specs, connectorEnv: env, egressHosts: buildConnectorEgressHosts(rows) };
+}
+
+/**
+ * U11 — PRE-acquire estimate of the external hosts this run's connectors
+ * might need, for populating the sandbox provider's best-effort
+ * `egressAllowlist` (U6.2's `SandboxProviderAcquireInput.egressAllowlist` seam)
+ * at the acquire call itself. Necessary because of a real ordering constraint:
+ * at every current call site (heartbeat.ts, runner.ts), the sandbox is
+ * acquired BEFORE `resolveAgentConnectors` runs — `resolveAgentConnectors`'s
+ * own `sandboxTarget` argument comes FROM that already-resolved acquisition,
+ * so this run's final connector set genuinely cannot be known before the
+ * acquire. Deliberately OPTIMISTIC: computed with `sandboxTarget: true` (we
+ * are estimating hosts for the sandbox we are ABOUT to request), so a stdio
+ * connector that would only become admissible once inside the VM IS counted
+ * here even though the D7 gate has not really cleared it yet. Safe to be
+ * optimistic — this list is advisory/best-effort only (never a security
+ * boundary; `isTransportAllowed`/`isStdioCommandSafe` independently gate the
+ * REAL delivery, unaffected by this estimate) and the U6.2 provider layer
+ * never enforces it strictly (managed E2B "MUST NOT throw when it cannot lock
+ * egress down").
+ *
+ * Deliberately skips secret resolution (unlike `loadEnabledConnectorRows`) —
+ * only `transport`/`url`/`command` are needed to compute hosts, so this reads
+ * the same two tables and reuses the same `selectConnectorRowsForAgent` gate,
+ * but never touches the secrets service. Never throws: a DB hiccup here must
+ * not block the sandbox from being acquired at all — it degrades to an empty
+ * allowlist, which the provider layer already treats as "no restriction
+ * recorded" (harmless).
+ */
+export async function loadConnectorEgressHosts(
+  db: Db,
+  { companyId, agentId }: { companyId: string; agentId: string | null },
+): Promise<string[]> {
+  try {
+    const connectors = await db
+      .select()
+      .from(companyMcpConnectors)
+      .where(eq(companyMcpConnectors.companyId, companyId));
+    if (connectors.length === 0) return [];
+
+    const isCommander = agentId === null;
+    let enabledConnectorIds = new Set<string>();
+    if (agentId !== null) {
+      const links = await db
+        .select()
+        .from(companyMcpConnectorAgents)
+        .where(
+          and(
+            eq(companyMcpConnectorAgents.companyId, companyId),
+            eq(companyMcpConnectorAgents.agentId, agentId),
+          ),
+        );
+      enabledConnectorIds = new Set(links.map((link) => link.connectorId));
+    }
+
+    const deploymentMode = loadConfig().deploymentMode;
+    const selected = selectConnectorRowsForAgent({
+      connectors,
+      enabledConnectorIds,
+      isCommander,
+      deploymentMode,
+      // Optimistic (see doc-comment above): estimating for the sandbox this
+      // run is ABOUT to acquire, not the (not-yet-known) real verdict.
+      sandboxTarget: true,
+    });
+    return buildConnectorEgressHosts(
+      selected as unknown as Array<{ transport: string; url: string | null; command: string | null }>,
+    );
+  } catch (err) {
+    logger.warn(
+      { err, companyId, agentId },
+      "loadConnectorEgressHosts failed (best-effort, sandbox egressAllowlist stays empty)",
+    );
+    return [];
+  }
 }

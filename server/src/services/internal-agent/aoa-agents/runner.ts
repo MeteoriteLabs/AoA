@@ -8,7 +8,7 @@ import { getServerAdapter } from "../../../adapters/registry.js";
 import { costService } from "../../costs.js";
 import { buildMcpConfig, buildCodexAoaMcpSpec, type McpConfigParams } from "../cli-mode.js";
 import { stripUserMcpArgs } from "../../mcp-arg-sanitize.js";
-import { resolveAgentConnectors } from "../../mcp-connectors-loader.js";
+import { loadConnectorEgressHosts, resolveAgentConnectors } from "../../mcp-connectors-loader.js";
 import { adapterSupportsConnectors } from "../../mcp-connectors.js";
 import type { McpServerSpec } from "@armyofagents/adapter-utils";
 import { resolveGuardedAdapterExecutionContext, applyEnvironmentAcquisitionConfig } from "../../heartbeat.js";
@@ -702,12 +702,23 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     // block above, ending at resolvedBaseConfig) — a cloud run with no
     // company key throws ProviderUnavailableError well before this line is
     // ever reached, so no sandbox is leased for a run that is about to fail.
+    //
+    // U11: a PRE-acquire, best-effort estimate of the hosts THIS agent's
+    // connectors might need, fed into the acquire's egressAllowlist. Real
+    // connector resolution happens AFTER this acquire (its own sandboxTarget
+    // input comes FROM `acquired`, per U11's own reorder above), so the
+    // actual delivered set cannot be known yet — deliberately optimistic (see
+    // loadConnectorEgressHosts' doc-comment) and never throws.
+    const crewEgressHosts = adapterSupportsConnectors(agent.adapterType)
+      ? await loadConnectorEgressHosts(db, { companyId: agent.companyId, agentId: agent.id })
+      : [];
     const acquired = await acquireExecutionContext(db, {
       runIdentity: { companyId: agent.companyId, agentId: agent.id, runId: runId ?? `aoa-${agentId}`, adapterType: agent.adapterType },
       functionType: null,
       warmPreference: "ephemeral",
       worktree: null,
       environmentId: agent.defaultEnvironmentId ?? null,
+      egressAllowlist: crewEgressHosts,
     });
     // FIX 1: mirror into the function-scoped local the `finally` release reads.
     // Assigned unconditionally (including the sandbox:null desktop/local_trusted

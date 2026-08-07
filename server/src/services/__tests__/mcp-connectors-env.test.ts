@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildConnectorProcessEnv, mergeConnectorEnv } from "../mcp-connectors-env.js";
+import { buildConnectorEgressHosts, buildConnectorProcessEnv, mergeConnectorEnv } from "../mcp-connectors-env.js";
 
 // mergeConnectorEnv is the PURE half — takes an already-scrubbed base so it can
 // be unit-tested with synthetic input. Real scrubbing is buildScrubbedCliEnv,
@@ -54,5 +54,56 @@ describe("buildConnectorProcessEnv", () => {
       if (savedAoa === undefined) delete process.env.AOA_TEST_SECRET_PROBE;
       else process.env.AOA_TEST_SECRET_PROBE = savedAoa;
     }
+  });
+});
+
+// U11: best-effort VM egress allowlist — bare hosts only, never a
+// scheme/path/wildcard. NOT a security boundary (isTransportAllowed /
+// isStdioCommandSafe still gate real delivery, independently); this only
+// widens what the sandbox's network policy permits the process to reach.
+describe("buildConnectorEgressHosts", () => {
+  it("npm + http connector host, no host for stdio-only", () => {
+    const hosts = buildConnectorEgressHosts([
+      { transport: "http", url: "https://mcp.notion.com/mcp", serverName: "notion" } as any,
+      { transport: "stdio", command: "npx", serverName: "local" } as any,
+    ]);
+    expect(hosts).toContain("mcp.notion.com");        // http connector host
+    expect(hosts).toContain("registry.npmjs.org");    // stdio launcher needs npm
+    // never a bare scheme/path, never a wildcard
+    expect(hosts.every((h) => !h.includes("/") && h !== "*")).toBe(true);
+  });
+
+  it("adds PyPI hosts only when the stdio launcher is uvx (not npx)", () => {
+    const npxOnly = buildConnectorEgressHosts([
+      { transport: "stdio", command: "npx", serverName: "a" } as any,
+    ]);
+    expect(npxOnly).not.toContain("pypi.org");
+    expect(npxOnly).not.toContain("files.pythonhosted.org");
+
+    const uvx = buildConnectorEgressHosts([
+      { transport: "stdio", command: "uvx", serverName: "b" } as any,
+    ]);
+    expect(uvx).toContain("registry.npmjs.org");
+    expect(uvx).toContain("pypi.org");
+    expect(uvx).toContain("files.pythonhosted.org");
+  });
+
+  it("dedupes repeated hosts across multiple connectors", () => {
+    const hosts = buildConnectorEgressHosts([
+      { transport: "http", url: "https://mcp.notion.com/mcp", serverName: "notion" } as any,
+      { transport: "http", url: "https://mcp.notion.com/other", serverName: "notion-2" } as any,
+    ]);
+    expect(hosts.filter((h) => h === "mcp.notion.com")).toHaveLength(1);
+  });
+
+  it("skips a malformed http URL rather than throwing or guessing", () => {
+    expect(() =>
+      buildConnectorEgressHosts([{ transport: "http", url: "not a url", serverName: "bad" } as any]),
+    ).not.toThrow();
+    expect(buildConnectorEgressHosts([{ transport: "http", url: "not a url", serverName: "bad" } as any])).toEqual([]);
+  });
+
+  it("returns an empty array for no rows", () => {
+    expect(buildConnectorEgressHosts([])).toEqual([]);
   });
 });

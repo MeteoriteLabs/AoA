@@ -676,3 +676,34 @@ describe("U11: org heartbeat sources sandboxTarget from the resolved run driver 
     expect(heartbeatSrc).toContain("brokered: runTargetsSandbox,");
   });
 });
+
+// U11 (Wave 5 task 4): the PRE-acquire egress-hosts estimate must be computed
+// and threaded into the SAME acquireExecutionContext call whose result later
+// feeds sandboxTarget — ordering-driven (loadConnectorEgressHosts' own
+// doc-comment): the sandbox is requested before the real, post-acquire
+// resolveAgentConnectors call could ever know the final connector set.
+// Structural pinning — same rationale as the sandboxTarget suite above.
+describe("U11: org heartbeat feeds the pre-acquire egress-hosts estimate into acquireExecutionContext", () => {
+  const heartbeatSrc = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "..", "services", "heartbeat.ts"),
+    "utf8",
+  );
+
+  it("computes orgEgressHosts via loadConnectorEgressHosts, gated on adapterSupportsConnectors", () => {
+    expect(heartbeatSrc).toContain(
+      "const orgEgressHosts = adapterSupportsConnectors(agent.adapterType)",
+    );
+    expect(heartbeatSrc).toContain(
+      "await loadConnectorEgressHosts(db, { companyId: agent.companyId, agentId: agent.id })",
+    );
+  });
+
+  it("threads orgEgressHosts into the acquireExecutionContext call's egressAllowlist", () => {
+    const callIndex = heartbeatSrc.indexOf("const orgAcquired = await acquireExecutionContext(db, {");
+    expect(callIndex).toBeGreaterThan(-1);
+    const callEnd = heartbeatSrc.indexOf("});", callIndex);
+    expect(callEnd).toBeGreaterThan(callIndex);
+    const callBlock = heartbeatSrc.slice(callIndex, callEnd);
+    expect(callBlock).toContain("egressAllowlist: orgEgressHosts,");
+  });
+});

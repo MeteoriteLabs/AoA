@@ -56,7 +56,10 @@ vi.mock("../services/acquire-execution-context.js", () => ({
   acquireExecutionContext: vi.fn().mockResolvedValue({ sandbox: null, lease: null, warmResolved: false }),
 }));
 vi.mock("../services/internal-agent/aoa-agents/bridge-path.js", () => ({ resolveBridgeEntrypoint: () => "/x/mcp-bridge.js" }));
-vi.mock("../services/mcp-connectors-loader.js", () => ({ resolveAgentConnectors: resolveConnectorsMock }));
+vi.mock("../services/mcp-connectors-loader.js", () => ({
+  resolveAgentConnectors: resolveConnectorsMock,
+  loadConnectorEgressHosts: vi.fn().mockResolvedValue([]),
+}));
 // T1: the runner opens a run transcript before adapter.execute. run-log-store
 // imports `node:fs` — a DIFFERENT specifier than the `node:fs/promises` this
 // file mocks — so without this an otherwise fully-mocked suite does REAL

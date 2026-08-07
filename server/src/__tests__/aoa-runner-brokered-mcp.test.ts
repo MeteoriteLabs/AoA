@@ -30,13 +30,17 @@ const {
   createEventMock,
   writeFileMock,
   resolveConnectorsMock,
+  loadConnectorEgressHostsMock,
   runLogStoreMock,
   acquireExecutionContextMock,
 } = vi.hoisted(() => ({
   execMock: vi.fn().mockResolvedValue({ exitCode: 0 }),
   createEventMock: vi.fn().mockResolvedValue(undefined),
   writeFileMock: vi.fn().mockResolvedValue(undefined),
-  resolveConnectorsMock: vi.fn().mockResolvedValue({ extraMcpServers: {}, connectorEnv: {} }),
+  resolveConnectorsMock: vi.fn().mockResolvedValue({ extraMcpServers: {}, connectorEnv: {}, egressHosts: [] }),
+  // U11: the PRE-acquire egress-hosts estimate runner.ts calls before
+  // acquireExecutionContext. Default empty; individual tests override.
+  loadConnectorEgressHostsMock: vi.fn().mockResolvedValue([]),
   runLogStoreMock: {
     begin: vi.fn().mockResolvedValue({ store: "local_file", logRef: "co-1/ext-1/run-1.ndjson" }),
     append: vi.fn().mockResolvedValue(undefined),
@@ -92,7 +96,10 @@ vi.mock("../services/provider-resolution.js", () => ({
   applyResolvedCredential: (config: unknown) => config,
   toExecutionTargetHint: () => ({ credentialKind: null, executionTargetSlug: null }),
 }));
-vi.mock("../services/mcp-connectors-loader.js", () => ({ resolveAgentConnectors: resolveConnectorsMock }));
+vi.mock("../services/mcp-connectors-loader.js", () => ({
+  resolveAgentConnectors: resolveConnectorsMock,
+  loadConnectorEgressHosts: loadConnectorEgressHostsMock,
+}));
 vi.mock("../services/run-log-store.js", () => ({ getRunLogStore: () => runLogStoreMock }));
 vi.mock("../middleware/logger.js", () => ({ logger: { child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }) } }));
 vi.mock("../services/instance-settings.js", () => ({
@@ -250,5 +257,58 @@ describe("U4b: crew sets brokered from acquired.sandbox?.environment.driver (S7)
     } finally {
       if (savedDbUrl === undefined) delete process.env.DATABASE_URL; else process.env.DATABASE_URL = savedDbUrl;
     }
+  });
+});
+
+// U11 (S4 egress seam): the PRE-acquire connector-hosts estimate feeds the
+// sandbox provider's egressAllowlist. Ordering-driven (see the doc-comment on
+// loadConnectorEgressHosts): the estimate MUST be computed and passed into
+// acquireExecutionContext BEFORE the acquire call itself — the real,
+// post-acquire resolveAgentConnectors call is too late to inform the lease
+// that's already been requested.
+describe("U11: crew feeds the pre-acquire egress-hosts estimate into acquireExecutionContext", () => {
+  it("computes loadConnectorEgressHosts for THIS agent and forwards it verbatim as egressAllowlist", async () => {
+    execMock.mockClear();
+    acquireExecutionContextMock.mockClear();
+    loadConnectorEgressHostsMock.mockClear();
+    loadConnectorEgressHostsMock.mockResolvedValueOnce(["mcp.notion.com", "registry.npmjs.org"]);
+    acquireExecutionContextMock.mockResolvedValueOnce({ sandbox: null, lease: null, warmResolved: false });
+
+    const db: any = {
+      select: () => ch([{ id: "cl-egress", companyId: "co-1", name: "Scribe", adapterType: "claude_local", adapterConfig: {}, runtimeConfig: { aoa: { instruction: "do extraction", role: "scribe" } } }]),
+      insert: () => ({ values: () => ({ returning: () => Promise.resolve([{ id: "run-egress" }]) }) }),
+      update: () => ch([{ id: "e1" }]),
+    };
+    const result = await runAoaAgent(db, "cl-egress", { companyId: "co-1", source: "discussion_entry_pending", entryId: "e1" });
+    expect(result.status).toBe("succeeded");
+
+    // Estimate computed for the REAL agent identity.
+    expect(loadConnectorEgressHostsMock).toHaveBeenCalledWith(db, { companyId: "co-1", agentId: "cl-egress" });
+
+    // ...and threaded into the SAME acquireExecutionContext call, BEFORE the
+    // acquire resolves — i.e. this is not the post-acquire connector call.
+    expect(acquireExecutionContextMock).toHaveBeenCalledWith(
+      db,
+      expect.objectContaining({ egressAllowlist: ["mcp.notion.com", "registry.npmjs.org"] }),
+    );
+  });
+
+  it("a non-connector-capable adapter (process) never calls loadConnectorEgressHosts", async () => {
+    loadConnectorEgressHostsMock.mockClear();
+    acquireExecutionContextMock.mockClear();
+    acquireExecutionContextMock.mockResolvedValueOnce({ sandbox: null, lease: null, warmResolved: false });
+
+    const db: any = {
+      select: () => ch([{ id: "proc-egress", companyId: "co-1", name: "Proc", adapterType: "process", adapterConfig: {}, runtimeConfig: { aoa: { instruction: "do extraction", role: "scribe" } } }]),
+      insert: () => ({ values: () => ({ returning: () => Promise.resolve([{ id: "run-proc-egress" }]) }) }),
+      update: () => ch([{ id: "e1" }]),
+    };
+    await runAoaAgent(db, "proc-egress", { companyId: "co-1", source: "discussion_entry_pending", entryId: "e1" });
+
+    expect(loadConnectorEgressHostsMock).not.toHaveBeenCalled();
+    expect(acquireExecutionContextMock).toHaveBeenCalledWith(
+      db,
+      expect.objectContaining({ egressAllowlist: [] }),
+    );
   });
 });

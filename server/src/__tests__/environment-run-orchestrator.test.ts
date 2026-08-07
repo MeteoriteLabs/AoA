@@ -100,6 +100,36 @@ describe("environmentRunOrchestrator", () => {
     });
   });
 
+  it("U11: forwards a caller-supplied egressAllowlist verbatim to runtime.acquireRunLease", async () => {
+    const environment = makeEnvironment();
+    const lease = makeLease();
+    const runtime = {
+      acquireRunLease: vi.fn(async () => ({
+        environment,
+        lease,
+        leaseContext: { executionWorkspaceId: null, executionWorkspaceMode: null },
+      })),
+    };
+    const orchestrator = environmentRunOrchestrator({} as never, {
+      environments: { get: vi.fn(async () => environment) },
+      environmentRuntime: runtime,
+    });
+
+    await orchestrator.acquireForRun({
+      companyId: COMPANY,
+      environmentId: ENVIRONMENT_ID,
+      adapterType: "codex_local",
+      issueId: null,
+      heartbeatRunId: RUN_ID,
+      persistedExecutionWorkspace: null,
+      egressAllowlist: ["mcp.notion.com", "registry.npmjs.org"],
+    });
+
+    expect(runtime.acquireRunLease).toHaveBeenCalledWith(
+      expect.objectContaining({ egressAllowlist: ["mcp.notion.com", "registry.npmjs.org"] }),
+    );
+  });
+
   it("returns a sandbox-docker config patch when the environment has an AoA target", async () => {
     const environment = makeEnvironment({
       target: { type: "sandbox-docker", image: "node:22-bookworm" },

@@ -267,6 +267,9 @@ export function environmentRunOrchestrator(
       issueId: string | null;
       heartbeatRunId: string | null;
       persistedExecutionWorkspace: { id: string; mode: string } | null;
+      /** U11 — see the S4 doc-comment on `runtime.acquireRunLease`'s
+       *  `egressAllowlist` param below; forwarded verbatim. */
+      egressAllowlist?: string[];
     }): Promise<EnvironmentAcquisitionResult> {
       const environment = await resolveEnvironment({
         companyId: input.companyId,
@@ -282,10 +285,11 @@ export function environmentRunOrchestrator(
           heartbeatRunId: input.heartbeatRunId,
           persistedExecutionWorkspace: input.persistedExecutionWorkspace,
           multiTenant,
-          // S4 — placeholder wiring so the field reaches the provider
-          // acquire call end-to-end; U11 populates it with connector hosts +
-          // npm. Harmless for the local driver (ignored).
-          egressAllowlist: [],
+          // S4 — U11 populates this with connector hosts + npm (the caller's
+          // pre-acquire `loadConnectorEgressHosts` estimate). Defaults to `[]`
+          // when the caller passes nothing, preserving the pre-U11 placeholder
+          // wiring. Harmless for the local driver (ignored).
+          egressAllowlist: input.egressAllowlist ?? [],
         });
         return {
           ...leaseRecord,

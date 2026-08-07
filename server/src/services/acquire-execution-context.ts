@@ -13,6 +13,15 @@ export interface AcquireExecutionContextInput {
   environmentId: string | null;                 // pinned task/agent/company env, else null → platform default (U1)
   issueId?: string | null;
   heartbeatRunId?: string | null;
+  /**
+   * U11 (S4 egress seam) — best-effort connector-host egress allowlist for
+   * THIS run, forwarded verbatim to `orchestrator.acquireForRun` ->
+   * `runtime.acquireRunLease` -> the sandbox provider's
+   * `SandboxProviderAcquireInput.egressAllowlist`. Ignored by the local
+   * driver (never reaches a provider). Optional and additive — omitted is
+   * byte-identical to pre-U11 behaviour (an empty allowlist).
+   */
+  egressAllowlist?: string[];
 }
 
 export interface AcquiredExecutionContext {
@@ -56,6 +65,7 @@ export async function acquireExecutionContext(
       issueId: input.issueId ?? null,
       heartbeatRunId: input.heartbeatRunId ?? null,
       persistedExecutionWorkspace: input.worktree,
+      egressAllowlist: input.egressAllowlist,
     });
   } catch (err) {
     if (err instanceof EnvironmentRunError && err.code === "environment_not_found") {

@@ -119,7 +119,7 @@ import {
   prepareHeartbeatMcpDelivery,
   resolveHeartbeatEffectiveAutonomy,
 } from "./heartbeat-mcp.js";
-import { resolveAgentConnectors } from "./mcp-connectors-loader.js";
+import { loadConnectorEgressHosts, resolveAgentConnectors } from "./mcp-connectors-loader.js";
 import { adapterSupportsConnectors } from "./mcp-connectors.js";
 
 export {
@@ -4234,6 +4234,16 @@ export function heartbeatService(db: Db) {
       // reaps a platform-default lease exactly like a pinned one — no leak.
       // orgAcquired is captured for U4b to read (mcpParams.brokered) before
       // prepareHeartbeatMcpDelivery.
+      //
+      // U11: a PRE-acquire, best-effort estimate of the hosts this run's
+      // connectors might need, fed into the acquire's egressAllowlist. Real
+      // connector resolution (further below) happens AFTER this acquire
+      // (its own sandboxTarget input comes FROM orgAcquired), so the actual
+      // delivered set cannot be known yet — this is deliberately optimistic
+      // (see loadConnectorEgressHosts' doc-comment) and never throws.
+      const orgEgressHosts = adapterSupportsConnectors(agent.adapterType)
+        ? await loadConnectorEgressHosts(db, { companyId: agent.companyId, agentId: agent.id })
+        : [];
       const orgAcquired = await acquireExecutionContext(db, {
         runIdentity: {
           companyId: agent.companyId,
@@ -4252,6 +4262,7 @@ export function heartbeatService(db: Db) {
         environmentId: environmentRuntime.environmentId ?? null, // pinned env, or null -> platform default (R3)
         issueId,
         heartbeatRunId: run.id,
+        egressAllowlist: orgEgressHosts,
       });
       // U4b: heartbeatMcpParams.brokered (built further below, before
       // prepareHeartbeatMcpDelivery) reads orgAcquired.sandbox?.environment
