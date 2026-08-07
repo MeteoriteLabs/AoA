@@ -25,6 +25,7 @@ import {
   TOOL_DEFINITIONS,
   toolHandlers,
   toolAllowedActors,
+  readPluginToolDefinitions,
   type McpUserScope,
   type ToolContext,
   type ToolServices,
@@ -611,9 +612,20 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
         // TOOL_DEFINITIONS list, not a 403 from the run-scoped broker.
         if (protocolActor.source === "agent" && protocolActor.runId) {
           const brokerCtx = await resolveAgentBrokerContext();
+          // U10: plugin tools are host-resident (reached only through this
+          // broker) and agent-only, so they're appended here — the same
+          // run-scoped branch that already serves the internal tool
+          // registry to agent-with-runId actors — never to the static
+          // TOOL_DEFINITIONS branch below. Company-scoped: a company with no
+          // ready plugins (or no dispatcher configured) sees [] appended,
+          // never another company's tools.
+          const pluginTools = readPluginToolDefinitions(companyId);
           res.json(
             jsonRpcResult(requestBody.id ?? null, {
-              tools: buildToolListResponse(filterAuthorizedToolsForContext(brokerRegistry, brokerCtx)),
+              tools: [
+                ...buildToolListResponse(filterAuthorizedToolsForContext(brokerRegistry, brokerCtx)),
+                ...pluginTools,
+              ],
             }),
           );
           return;

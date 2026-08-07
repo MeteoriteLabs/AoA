@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 // U2c: server.ts now also imports the internal-agent tool registry
 // (mcp-bridge.ts / tool-registry.js), whose ~90 tools reference many more
@@ -56,6 +56,7 @@ vi.mock("../services/memory-access-sql.js", () => ({
   memoryAccessConditions: vi.fn(() => []),
 }));
 
+import { agents, internalAgentConfig } from "@armyofagents/db";
 import { mcpServerRoutes } from "../mcp/server.js";
 
 function buildApp(options?: {
@@ -355,5 +356,195 @@ describe("mcp server routes", () => {
     expect(res.status).toBe(403);
     expect(res.body.error.message).toBe("Department is outside your scope");
     expect(memoryCreate).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// U10 — plugin tools over the broker (tools/list, U10-b)
+// ---------------------------------------------------------------------------
+//
+// An agent-with-runId actor's tools/list request must succeed through the
+// REAL resolveAgentBrokerContext()/resolveBrokerToolContext() path (it runs
+// unconditionally before the plugin-tools branch appends anything), so
+// these tests provide a minimal but real-shaped `db` — a table-identity-
+// dispatched chain mock — rather than the bare `{}` the rest of this file
+// uses for "mcp"-actor tests that never reach that path. The dedicated
+// embedded-Postgres proof lives in plugin-broker-cloud.integration.test.ts
+// (U10-c); these are fast, isolated unit tests for the wiring itself.
+type Row = Record<string, unknown>;
+
+/** A `Promise` decorated with drizzle's chain methods, all returning itself. */
+function chainRows(rows: Row[]) {
+  const thenable = Promise.resolve(rows) as Promise<Row[]> & Record<string, unknown>;
+  thenable.from = () => thenable;
+  thenable.where = () => thenable;
+  thenable.limit = () => thenable;
+  thenable.orderBy = () => thenable;
+  return thenable;
+}
+
+function makeAgentBrokerDb(overrides: { agentRows?: Row[]; configRows?: Row[] } = {}) {
+  const tableRows = new Map<unknown, Row[]>([
+    [
+      agents,
+      overrides.agentRows ?? [
+        { id: "agent-a", companyId: "c1", kind: "aoa", runtimeConfig: {} },
+      ],
+    ],
+    [internalAgentConfig, overrides.configRows ?? [{ crewAutonomyLevel: 0 }]],
+  ]);
+  return {
+    select: (..._cols: unknown[]) => ({
+      from: (table: unknown) => chainRows(tableRows.get(table) ?? []),
+    }),
+  };
+}
+
+function buildAgentApp(options: {
+  actor: Record<string, unknown>;
+  db?: ReturnType<typeof makeAgentBrokerDb>;
+}) {
+  const app = express();
+  app.use(express.json());
+  app.use((req, _res, next) => {
+    (req as any).actor = options.actor;
+    next();
+  });
+  app.use(
+    "/api",
+    mcpServerRoutes((options.db ?? makeAgentBrokerDb()) as any, {
+      companiesSvc: {
+        getById: vi.fn().mockImplementation(async (id: string) => ({ id, mcpEnabled: true })),
+        update: vi.fn(),
+      } as any,
+      mcpSvc: {
+        touchClient: vi.fn().mockResolvedValue(null),
+        getStatus: vi.fn(),
+        listKeys: vi.fn(),
+        createKey: vi.fn(),
+        requireOwnedKey: vi.fn(),
+        revokeKey: vi.fn(),
+        listClients: vi.fn(),
+      } as any,
+      resolveScope: async (_companyId, actor) => ({ kind: "founder" as const, userId: actor.userId }),
+      resolveRole: async () => "team_member",
+      resolveScopedAgentIds: async () => null,
+    }),
+  );
+  return app;
+}
+
+describe("U10: plugin tool descriptors over the broker tools/list", () => {
+  afterEach(() => {
+    delete (globalThis as any).__paperclipPluginToolDispatcher;
+  });
+
+  it("includes company-scoped plugin tool descriptors for an agent actor", async () => {
+    const listToolsForAgent = vi.fn(({ companyId }: { companyId: string }) =>
+      companyId === "c1"
+        ? [
+            {
+              name: "acme.linear:search-issues",
+              displayName: "Search issues",
+              description: "Search Linear issues",
+              parametersSchema: { type: "object", properties: { query: { type: "string" } } },
+              pluginId: "plugin-1",
+            },
+          ]
+        : [],
+    );
+    (globalThis as any).__paperclipPluginToolDispatcher = { listToolsForAgent };
+
+    const app = buildAgentApp({
+      actor: {
+        type: "agent",
+        source: "agent_jwt",
+        companyId: "c1",
+        agentId: "agent-a",
+        runId: "run-r",
+      },
+    });
+
+    const res = await request(app)
+      .post("/api/companies/c1/mcp")
+      .send({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
+
+    expect(res.status).toBe(200);
+    const names = (res.body.result.tools as Array<{ name: string }>).map((t) => t.name);
+    expect(names).toContain("acme.linear:search-issues");
+    expect(listToolsForAgent).toHaveBeenCalledWith({ companyId: "c1" });
+    // Plugin descriptors are appended alongside the internal registry list,
+    // not a replacement for it.
+    const pluginTool = (res.body.result.tools as Array<{ name: string; inputSchema: unknown }>).find(
+      (t) => t.name === "acme.linear:search-issues",
+    );
+    expect(pluginTool?.inputSchema).toEqual({
+      type: "object",
+      properties: { query: { type: "string" } },
+    });
+  });
+
+  it("is company-scoped — a different company's agent actor does not see it", async () => {
+    const listToolsForAgent = vi.fn(({ companyId }: { companyId: string }) =>
+      companyId === "c1"
+        ? [
+            {
+              name: "acme.linear:search-issues",
+              displayName: "d",
+              description: "d",
+              parametersSchema: {},
+              pluginId: "plugin-1",
+            },
+          ]
+        : [],
+    );
+    (globalThis as any).__paperclipPluginToolDispatcher = { listToolsForAgent };
+
+    const app = buildAgentApp({
+      actor: {
+        type: "agent",
+        source: "agent_jwt",
+        companyId: "c2",
+        agentId: "agent-b",
+        runId: "run-s",
+      },
+      db: makeAgentBrokerDb({
+        agentRows: [{ id: "agent-b", companyId: "c2", kind: "aoa", runtimeConfig: {} }],
+      }),
+    });
+
+    const res = await request(app)
+      .post("/api/companies/c2/mcp")
+      .send({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
+
+    expect(res.status).toBe(200);
+    const names = (res.body.result.tools as Array<{ name: string }>).map((t) => t.name);
+    expect(names).not.toContain("acme.linear:search-issues");
+    expect(listToolsForAgent).toHaveBeenCalledWith({ companyId: "c2" });
+  });
+
+  it("degrades to no plugin tools (never breaks the broker) when the dispatcher throws", async () => {
+    (globalThis as any).__paperclipPluginToolDispatcher = {
+      listToolsForAgent: () => {
+        throw new Error("registry unavailable");
+      },
+    };
+
+    const app = buildAgentApp({
+      actor: {
+        type: "agent",
+        source: "agent_jwt",
+        companyId: "c1",
+        agentId: "agent-a",
+        runId: "run-r",
+      },
+    });
+
+    const res = await request(app)
+      .post("/api/companies/c1/mcp")
+      .send({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
+
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.result.tools)).toBe(true);
   });
 });
