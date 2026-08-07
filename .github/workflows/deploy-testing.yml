@@ -25,6 +25,11 @@ on:
         required: false
         default: false
         type: boolean
+      cleanup_disk:
+        description: Emergency - free disk on the box BEFORE deploying (rm old pg_dump snapshots + prune unused Docker images/build-cache/stopped-containers + old releases; NEVER touches volumes/DB data)
+        required: false
+        default: false
+        type: boolean
 
 permissions: {}
 
@@ -191,6 +196,41 @@ jobs:
             *0188*) echo "OK: 0188 marker present";;
             *) echo "::error::0188 marker not recorded"; exit 1;;
           esac
+
+      - name: Free disk space on the box (emergency, before deploy)
+        if: ${{ inputs.cleanup_disk }}
+        run: |
+          set -euo pipefail
+          # The box filled up (Postgres PANIC "No space left on device" → DB crash-
+          # recovery loop → every auth/login write 500s). Free space WITHOUT ever
+          # touching Docker volumes or the Postgres data dir: remove the one-time
+          # pg_dump snapshots this workflow wrote, prune unused images + build cache
+          # + stopped containers (running aoa-db-1/aoa-server-1 and their volumes are
+          # never pruned), and drop all but the 5 newest release dirs. Runs BEFORE
+          # the deploy step, which then brings the containers up healthy on freed disk.
+          ssh_options=(
+            -p "$DEPLOY_PORT"
+            -i "$DEPLOY_KEY_PATH"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o PreferredAuthentications=publickey
+            -o PasswordAuthentication=no
+            -o KbdInteractiveAuthentication=no
+            -o ForwardAgent=no
+            -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$DEPLOY_KNOWN_HOSTS"
+          )
+          target="$DEPLOY_USER@$DEPLOY_HOST"
+          echo "=== disk BEFORE ==="
+          ssh "${ssh_options[@]}" "$target" "df -h / ; echo '--- top /opt/aoa users ---' ; du -sh $DEPLOY_ROOT/* 2>/dev/null | sort -h | tail -15 ; echo '--- docker df ---' ; docker system df || true"
+          echo "=== freeing space (volume-safe) ==="
+          ssh "${ssh_options[@]}" "$target" "rm -f $DEPLOY_ROOT/pre-0188-snapshot-*.sql 2>/dev/null || true"
+          ssh "${ssh_options[@]}" "$target" "docker container prune -f || true"
+          ssh "${ssh_options[@]}" "$target" "docker image prune -af || true"
+          ssh "${ssh_options[@]}" "$target" "docker builder prune -af || true"
+          ssh "${ssh_options[@]}" "$target" "ls -1dt $DEPLOY_ROOT/releases/*/ 2>/dev/null | tail -n +6 | xargs -r rm -rf || true"
+          echo "=== disk AFTER ==="
+          ssh "${ssh_options[@]}" "$target" "df -h /"
 
       - name: Backfill founder permission grants (one-time RBAC repair)
         if: ${{ inputs.record_founder_grants }}
