@@ -92,7 +92,14 @@ export async function installMarketplacePlugin(
     )
     .limit(1);
 
-  if (isCloudPluginExecutionBlocked()) {
+  // RW5a: "loader" is the install ENTRY boundary (download/write files) and
+  // stays allowed on cloud — the executable manifest import that
+  // `pluginLoader.installPlugin` eventually reaches internally is gated
+  // separately by the "loader-import" sink, which stays blocked on cloud in
+  // the control plane. This block is therefore inert on cloud today; it is
+  // kept so a future sink reclassification (or an off-cloud caller) still
+  // gets the reconcile-then-deny behavior for free.
+  if (isCloudPluginExecutionBlocked("loader")) {
     // A persisted, non-uninstalled row can safely be reconciled from stored
     // manifest JSON. This writes the durable reason before denying. New and
     // soft-uninstalled packages are denied without package I/O or JS import.

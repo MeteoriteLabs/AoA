@@ -11,6 +11,7 @@ import {
   selectBootActivationCandidates,
 } from "../services/plugin-loader.js";
 import { setDeploymentMode } from "../config/deployment-mode.js";
+import { CloudPluginExecutionBlockedError } from "../services/cloud-plugin-execution.js";
 
 afterEach(() => setDeploymentMode("local_trusted"));
 
@@ -92,20 +93,17 @@ describe("plugin-loader companyId scoping", () => {
     ]);
   });
 
-  // U10 SECURITY NOTE: this gate (plugin-loader.ts:1280,
-  // `assertCloudPluginExecutionAllowed` inside `loadManifestFromPath`) is
-  // NOT the worker-fork sink U10 is about — it guards a direct in-process
-  // `import()` of a tenant-authored manifest MODULE (no child-process
-  // isolation at all). isCloudPluginExecutionBlocked() is now unconditionally
-  // false, so this specific protection is lifted along with the worker-fork
-  // block. This differs from U10's stated justification ("the worker is
-  // host-resident ... never enters the VM") — manifest loading never went
-  // through a worker in the first place, so the host-resident-worker
-  // reasoning does not by itself make this sink safe. Flagged verbatim in
-  // the task report for explicit follow-up sign-off; not resolved here since
-  // the plan's grounding note explicitly names plugin-loader.ts as one of
-  // the sinks the blanket predicate change covers.
-  it("U10: no longer blocks an executable manifest module's top-level code from running in cloud (see security note above)", async () => {
+  // RW5a (Wave 5 review — fixes the U10-a regression this test used to
+  // pin): `plugin-loader.ts:1280`'s `assertCloudPluginExecutionAllowed`
+  // inside `loadManifestFromPath` now uses the distinct "loader-import" sink
+  // (not "worker-fork" and not the outer install/upgrade "loader" boundary
+  // sink). It guards a direct in-process `import()` of a tenant-authored
+  // manifest MODULE with no child-process isolation at all, so it stays
+  // blocked on cloud in the control plane even though the worker-fork sink
+  // (what U10 is actually about) and the outer "loader" install boundary are
+  // allowed. See `cloud-plugin-execution.ts`'s `PluginCloudExecutionSink` doc
+  // comment for the full sink taxonomy.
+  it("RW5a: blocks an executable manifest module's top-level code from running in the cloud control plane", async () => {
     setDeploymentMode("cloud_auth");
     // NOTE: unlike the other temp-dir fixtures in this file, this package
     // must live inside the project root (not os.tmpdir()) — vite-node's SSR
@@ -145,8 +143,51 @@ describe("plugin-loader companyId scoping", () => {
       );
 
       const loader = pluginLoader({} as any);
+      await expect(loader.loadManifest(packageDir)).rejects.toBeInstanceOf(
+        CloudPluginExecutionBlockedError,
+      );
+      // The block must fire BEFORE `import()` runs — the malicious
+      // manifest's top-level side effect must never execute.
+      expect(existsSync(markerPath)).toBe(false);
+    } finally {
+      await rm(packageDir, { recursive: true, force: true });
+    }
+  });
+
+  it("RW5a: the same manifest loads (and its top-level code runs) off-cloud, unchanged from before", async () => {
+    setDeploymentMode("local_trusted");
+    const packageDir = await mkdtemp(
+      path.join(import.meta.dirname, "tmp-cloud-manifest-"),
+    );
+    const markerPath = path.join(packageDir, "manifest-executed.txt");
+    try {
+      await writeFile(
+        path.join(packageDir, "package.json"),
+        JSON.stringify({
+          name: "aoa-plugin-benign-test",
+          version: "1.0.0",
+          paperclipPlugin: { manifest: "manifest.mjs" },
+        }),
+      );
+      const validManifest = {
+        id: "benign",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Benign",
+        description: "d",
+        author: "a",
+        categories: ["automation"],
+        capabilities: [],
+        entrypoints: { worker: "worker.js" },
+      };
+      await writeFile(
+        path.join(packageDir, "manifest.mjs"),
+        `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(markerPath)}, "executed");\nexport default ${JSON.stringify(validManifest)};\n`,
+      );
+
+      const loader = pluginLoader({} as any);
       const manifest = await loader.loadManifest(packageDir);
-      expect(manifest).toMatchObject({ id: "malicious", apiVersion: 1 });
+      expect(manifest).toMatchObject({ id: "benign", apiVersion: 1 });
       expect(existsSync(markerPath)).toBe(true);
     } finally {
       await rm(packageDir, { recursive: true, force: true });

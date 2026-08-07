@@ -18,8 +18,10 @@ import {
   assertCloudPluginExecutionAllowed,
   beginCloudPluginBootReconciliation,
   CLOUD_PLUGIN_BLOCK_MESSAGE,
+  CloudPluginExecutionBlockedError,
   getCloudPluginBlockMetrics,
   isCloudPluginExecutionBlocked,
+  PLUGIN_WORKER_PROCESS_ENV_VAR,
   projectCloudPluginPolicyState,
   recordCloudPluginBlock,
   recordCloudPluginBootReconciled,
@@ -161,6 +163,107 @@ describe("cloud plugin execution — host-resident worker model (U10)", () => {
     for (const mode of ["local_trusted", "authenticated", "cloud_auth"] as const) {
       setDeploymentMode(mode);
       expect(isCloudPluginExecutionBlocked()).toBe(false);
+    }
+  });
+});
+
+describe("cloud plugin execution — sink-aware gate (RW5a, fixes the U10-a regression)", () => {
+  afterEach(() => {
+    setDeploymentMode("local_trusted");
+    delete process.env[PLUGIN_WORKER_PROCESS_ENV_VAR];
+  });
+
+  it("allows the worker-fork and worker-manager sinks on cloud (U10's actual justification)", () => {
+    setDeploymentMode("cloud_auth");
+    expect(isCloudPluginExecutionBlocked("worker-fork")).toBe(false);
+    expect(isCloudPluginExecutionBlocked("worker-manager")).toBe(false);
+    expect(() =>
+      assertCloudPluginExecutionAllowed({
+        pluginId: "p1",
+        sink: "worker-fork",
+        source: "direct",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertCloudPluginExecutionAllowed({
+        pluginId: "p1",
+        sink: "worker-manager",
+        source: "direct",
+      }),
+    ).not.toThrow();
+  });
+
+  it("allows the lifecycle sink on cloud (activation reads the already-persisted manifest, never re-imports)", () => {
+    setDeploymentMode("cloud_auth");
+    expect(isCloudPluginExecutionBlocked("lifecycle")).toBe(false);
+  });
+
+  it("allows the loader (install/upgrade ENTRY boundary) sink on cloud — download/write files, no code execution", () => {
+    setDeploymentMode("cloud_auth");
+    expect(isCloudPluginExecutionBlocked("loader")).toBe(false);
+    expect(() =>
+      assertCloudPluginExecutionAllowed({
+        pluginId: "p1",
+        sink: "loader",
+        source: "marketplace",
+      }),
+    ).not.toThrow();
+  });
+
+  it("BLOCKS the loader-import sink on cloud — a direct in-process import() of tenant code in the control plane", () => {
+    setDeploymentMode("cloud_auth");
+    expect(isCloudPluginExecutionBlocked("loader-import")).toBe(true);
+    expect(() =>
+      assertCloudPluginExecutionAllowed({
+        pluginId: "p1",
+        sink: "loader-import",
+        source: "unknown",
+      }),
+    ).toThrow(CloudPluginExecutionBlockedError);
+  });
+
+  it("BLOCKS the ui-static sink on cloud — same-origin executable JS served to the browser", () => {
+    setDeploymentMode("cloud_auth");
+    expect(isCloudPluginExecutionBlocked("ui-static")).toBe(true);
+    expect(() =>
+      assertCloudPluginExecutionAllowed({
+        pluginId: "p1",
+        sink: "ui-static",
+        source: "direct",
+      }),
+    ).toThrow(CloudPluginExecutionBlockedError);
+  });
+
+  it("allows loader-import on cloud FROM INSIDE the worker child (marker set) — the worker's own load is isolated", () => {
+    setDeploymentMode("cloud_auth");
+    process.env[PLUGIN_WORKER_PROCESS_ENV_VAR] = "1";
+    expect(isCloudPluginExecutionBlocked("loader-import")).toBe(false);
+    expect(() =>
+      assertCloudPluginExecutionAllowed({
+        pluginId: "p1",
+        sink: "loader-import",
+        source: "unknown",
+      }),
+    ).not.toThrow();
+  });
+
+  it("does NOT let the worker-child marker unblock ui-static — a browser-trust boundary, not a process one", () => {
+    setDeploymentMode("cloud_auth");
+    process.env[PLUGIN_WORKER_PROCESS_ENV_VAR] = "1";
+    expect(isCloudPluginExecutionBlocked("ui-static")).toBe(true);
+  });
+
+  it("off-cloud (local_trusted): every sink stays allowed, including loader-import and ui-static", () => {
+    setDeploymentMode("local_trusted");
+    for (const sink of [
+      "worker-fork",
+      "worker-manager",
+      "lifecycle",
+      "loader",
+      "loader-import",
+      "ui-static",
+    ] as const) {
+      expect(isCloudPluginExecutionBlocked(sink)).toBe(false);
     }
   });
 });

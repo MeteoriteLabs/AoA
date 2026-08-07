@@ -51,6 +51,7 @@ import type {
 import { logger } from "../middleware/logger.js";
 import {
   assertCloudPluginExecutionAllowed,
+  PLUGIN_WORKER_PROCESS_ENV_VAR,
   type PluginActivationSource,
 } from "./cloud-plugin-execution.js";
 
@@ -632,6 +633,11 @@ export function createPluginWorkerHandle(
       PATH: process.env.PATH ?? "",
       NODE_PATH: process.env.NODE_PATH ?? "",
       AOA_PLUGIN_ID: pluginId,
+      // RW5a: marks the CHILD's own env so `cloud-plugin-execution.ts` can
+      // tell "running inside the isolated worker child" apart from "running
+      // in the control plane" — this process never inherits the parent's
+      // env (see the security note above), so the marker cannot leak back.
+      [PLUGIN_WORKER_PROCESS_ENV_VAR]: "1",
       NODE_ENV: process.env.NODE_ENV ?? "production",
       TZ: process.env.TZ ?? "UTC",
     };

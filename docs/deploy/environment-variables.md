@@ -336,6 +336,7 @@ membership link has been checked.
 | `AOA_OPENCODE_COMMAND` | `opencode` | Override path to the `opencode` CLI binary for the OpenCode Local adapter |
 | `AOA_WORKTREES_DIR` | `<AOA_HOME>/instances/<id>/workspaces` | Where the worktree provisioner places per-task git worktrees |
 | `AOA_ENABLE_COMPANY_DELETION` | `true` (dev), `false` (prod) | Feature flag for the destructive "delete company" action |
+| `AOA_PLUGIN_WORKER_PROCESS` | (unset) | Set to `1` ONLY inside a forked plugin worker child's own environment (`plugin-worker-manager.ts` `spawnProcess()`) — never set on, or inherited by, the host control-plane process. Read by `cloud-plugin-execution.ts` to recognize code running inside the isolated worker child rather than the control plane. Not operator-set. |
 
 ## Marketplace emergency controls
 

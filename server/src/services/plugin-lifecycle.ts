@@ -431,7 +431,10 @@ export function pluginLifecycleManager(
     pluginId: string,
     source: PluginActivationSource = "lifecycle"
   ): Promise<void> {
-    if (!isCloudPluginExecutionBlocked()) return;
+    // RW5a: "lifecycle" (activate/restart/enable) reads the manifest already
+    // validated + persisted to `plugins.manifest_json` at install time — it
+    // never re-imports the plugin module — so it stays allowed on cloud.
+    if (!isCloudPluginExecutionBlocked("lifecycle")) return;
 
     const plugin = await requirePlugin(pluginId);
     recordCloudPluginBlock({

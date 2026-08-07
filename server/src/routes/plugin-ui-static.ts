@@ -267,8 +267,11 @@ export function pluginUiStaticRoutes(
 
     // Same-origin plugin JavaScript is executable tenant code. Gate it by
     // deployment mode independently of persisted lifecycle status so stale
-    // `ready` rows are safe during boot reconciliation.
-    if (isCloudPluginExecutionBlocked()) {
+    // `ready` rows are safe during boot reconciliation. RW5a: "ui-static" is
+    // a same-origin browser-trust boundary, unrelated to the worker's
+    // process/VM isolation — it stays unconditionally blocked on cloud
+    // regardless of any other sink's status.
+    if (isCloudPluginExecutionBlocked("ui-static")) {
       log.warn(
         { pluginId, reasonCode: "PLUGIN_WORKER_BLOCKED_IN_CLOUD" },
         "blocked cloud plugin UI bundle"
