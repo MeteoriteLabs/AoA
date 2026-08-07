@@ -37,6 +37,10 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableIsolatedWorkspaces: z.boolean().default(true),
   autoRestartDevServerWhenIdle: z.boolean().default(false),
   enableWorkspaceTtlSweeper: z.boolean().default(false),
+  // Wave 6 / U7.3 — warm-sandbox operator baseline.
+  warmSandboxDefaultForSoftwareDev: z.boolean().default(true),
+  warmSandboxIdleTtlMinutes: z.number().int().positive().default(30),
+  enableWarmSandboxReaper: z.boolean().default(true),
 }).strict();
 
 export const patchInstanceExperimentalSettingsSchema = instanceExperimentalSettingsSchema.partial();
