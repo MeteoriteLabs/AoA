@@ -3,7 +3,7 @@ import type { Request, RequestHandler } from "express";
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { agentApiKeys, agents, boardApiKeys, companies, companyMemberships, heartbeatRuns, instanceUserRoles, mcpApiKeys, organizationMemberships } from "@armyofagents/db";
-import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
+import { verifyLocalAgentJwt, verifyCommanderRunJwt } from "../agent-auth-jwt.js";
 import { tenantIsolationEnforced } from "../config/deployment-mode.js";
 import type { DeploymentMode } from "@armyofagents/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
@@ -309,6 +309,29 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     }
 
     if (!key) {
+      // Commander run-JWT (W7.5a / SC2): a per-turn, company-bound, user-scoped
+      // token. It has NO agents row — verify it FIRST (the explicit `kind`
+      // claim makes discrimination unambiguous) and set a commander actor with
+      // NO agents-row lookup, so it never reaches the agent gate below at
+      // :318-327 that would reject it for lacking an agents row.
+      const commanderClaims = verifyCommanderRunJwt(token);
+      if (commanderClaims) {
+        req.actor = {
+          type: "commander",
+          source: "commander_jwt",
+          companyId: commanderClaims.company_id,
+          userId: commanderClaims.user_id,
+          userRole: commanderClaims.user_role,
+          conversationId: commanderClaims.conversation_id,
+          turnId: commanderClaims.turn_id,
+          // Keeps existing run-scoped audit/telemetry (getActorInfo) populated
+          // without a separate field.
+          runId: commanderClaims.turn_id,
+        };
+        next();
+        return;
+      }
+
       const claims = verifyLocalAgentJwt(token);
       if (!claims) {
         next();
