@@ -15,8 +15,10 @@
  * stays refused.
  */
 import { execFile } from "node:child_process";
+import path from "node:path";
 import { shellQuote } from "@armyofagents/adapter-utils";
 import { assertHostOrchestrationGitAllowed } from "./local-workspace-command-guard.js";
+import { isNoisePath, MAX_FILES_PER_RUN } from "./output-detection.js";
 
 /** Generous ceiling for a repo working tree tarball (incl. `.git`). */
 const TAR_MAX_BUFFER = 200 * 1024 * 1024;
@@ -124,4 +126,110 @@ export async function stageRepoIntoSandbox(input: {
         `(exit ${result.exitCode ?? "null"}): ${result.stderr || result.stdout}`,
     );
   }
+}
+
+// ---------------------------------------------------------------------------
+// U6.3 — in-VM diff pull-out.
+// ---------------------------------------------------------------------------
+
+const GIT_DIFF_TIMEOUT_SEC = 30;
+
+/**
+ * Runs one hooks-neutralized git command inside the sandbox and returns its
+ * stdout as trimmed, non-empty lines (same shape `execGitCommand` produces
+ * host-side in output-detection.ts).
+ *
+ * `-c core.hooksPath=` is a SECURITY requirement, not a convenience: this
+ * git repo was populated by `stageRepoIntoSandbox` from a host clone (and
+ * ultimately from a pulled/committed tenant repo) — a hook script committed
+ * into that repo must never execute, in-VM or on the host. Built as a single
+ * `sh -c` shell string (mirroring `stageRepoIntoSandbox`'s own script style
+ * in this file) with `remoteCwd` shell-quoted.
+ */
+async function runGitCommand(
+  runner: SandboxFileMovementRunner,
+  remoteCwd: string,
+  gitArgs: string[],
+): Promise<string[]> {
+  // gitArgs are static, hardcoded literals owned by this module (never
+  // caller/tenant-controlled) so, unlike remoteCwd, they don't need
+  // individual shell-quoting.
+  const script = `git -c core.hooksPath= -C ${shellQuote(remoteCwd)} ${gitArgs.join(" ")}`;
+  const result = await runner.execute({
+    command: "sh",
+    args: ["-c", script],
+    cwd: null,
+    env: {},
+    stdin: null,
+    timeoutSec: GIT_DIFF_TIMEOUT_SEC,
+  });
+
+  if (result.exitCode !== 0) {
+    throw new Error(
+      `collectSandboxDiff: "git ${gitArgs.join(" ")}" failed in remoteCwd "${remoteCwd}" ` +
+        `(exit ${result.exitCode ?? "null"}): ${result.stderr || result.stdout}`,
+    );
+  }
+
+  return result.stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+}
+
+/**
+ * Pulls the in-VM working-tree diff out of a staged sandbox repo: modified
+ * tracked files (`git diff --name-only HEAD`) plus untracked files (`git
+ * ls-files --others --exclude-standard`), deduped (same shape as
+ * `detectChangedFilesGit` in output-detection.ts), filtered through the
+ * shared `isNoisePath` and capped at the shared `MAX_FILES_PER_RUN` — both
+ * reused from output-detection.ts so the sandboxed source is filtered
+ * identically to the host path — then read out via `runner.readFiles`.
+ *
+ * Feeds `output-detection.ts`'s `changedFileSource` (U6.3) for org runs that
+ * acquired a provider-sandbox lease (S5: `acquisition.environment.driver
+ * === "sandbox"`).
+ */
+export async function collectSandboxDiff(input: {
+  runner: SandboxFileMovementRunner;
+  remoteCwd: string;
+}): Promise<Array<{ path: string; content: Buffer }>> {
+  // Each command fails independently (mirrors output-detection.ts's own
+  // detectChangedFilesGit) so a failure on one (e.g. `ls-files`) doesn't
+  // zero out the other's results.
+  const [modified, untracked] = await Promise.all([
+    runGitCommand(input.runner, input.remoteCwd, ["diff", "--name-only", "HEAD"]).catch(
+      () => [] as string[],
+    ),
+    runGitCommand(input.runner, input.remoteCwd, ["ls-files", "--others", "--exclude-standard"]).catch(
+      () => [] as string[],
+    ),
+  ]);
+
+  // Dedupe — same shape as output-detection.ts's detectChangedFilesGit.
+  const uniquePaths = Array.from(new Set([...modified, ...untracked]));
+  const candidatePaths = uniquePaths.filter((p) => !isNoisePath(p)).slice(0, MAX_FILES_PER_RUN);
+
+  if (candidatePaths.length === 0) return [];
+
+  if (typeof input.runner.readFiles !== "function") {
+    throw new Error("collectSandboxDiff: runner does not support readFiles");
+  }
+
+  // Read via absolute in-VM paths (relative to remoteCwd, the repo root
+  // stageRepoIntoSandbox extracted into), but key results back by the
+  // ORIGINAL relative path — matching the relative-path convention
+  // output-detection.ts's own DetectedOutput.path uses for the host branch.
+  const relativeByRemotePath = new Map(
+    candidatePaths.map((relativePath) => [path.posix.join(input.remoteCwd, relativePath), relativePath]),
+  );
+  const fetched = await input.runner.readFiles({ paths: [...relativeByRemotePath.keys()] });
+
+  const results: Array<{ path: string; content: Buffer }> = [];
+  for (const file of fetched) {
+    const relativePath = relativeByRemotePath.get(file.path);
+    if (!relativePath) continue;
+    results.push({ path: relativePath, content: file.content });
+  }
+  return results;
 }

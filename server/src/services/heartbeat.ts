@@ -140,6 +140,7 @@ import {
 } from "./workspace-resolution.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import { outputDetectionService } from "./output-detection.js";
+import { collectSandboxDiff, type SandboxFileMovementRunner } from "./sandbox-file-movement.js";
 import {
   mayUseLegacySubscriptionHome,
   resolveAgentSubscriptionEnvironment,
@@ -5280,6 +5281,38 @@ export function heartbeatService(db: Db) {
       }
       if (outcome === "succeeded" && outputDetectionCwd) {
         try {
+          // U6.3 (S5): when this run acquired a provider-sandbox lease,
+          // source changed files from the in-VM `git diff` (collectSandboxDiff)
+          // instead of the host git/mtime scan — outputDetectionCwd on a
+          // sandboxed run is the VM's remoteCwd (e.g.
+          // "/home/user/aoa-workspace"), which never exists on the host
+          // running this service. `orgAcquired` was captured earlier in this
+          // run (unmutated `const`, used above for mcpParams.brokered, U4b)
+          // and is re-read here rather than off `runScopedConfig` (which gets
+          // spread/reassigned repeatedly downstream), so this stays correct
+          // regardless of later config mutations. Desktop/local runs (no
+          // provider-sandbox lease) get `changedFileSource: undefined` and
+          // this call is otherwise byte-identical to before.
+          const sandboxExecutionTarget = orgAcquired.sandbox?.configPatch.executionTarget;
+          const changedFileSource =
+            orgAcquired.sandbox?.environment.driver === "sandbox" &&
+            sandboxExecutionTarget?.type === "provider-sandbox"
+              ? () =>
+                  collectSandboxDiff({
+                    // AdapterExecutionTarget's "provider-sandbox" variant types
+                    // `runner` as the execute-only AdapterProviderSandboxRunner,
+                    // but the object actually built here is
+                    // environment-run-orchestrator.ts's buildProviderRunner
+                    // output — a strict superset (writeFiles/readFiles/
+                    // resolveHost included whenever the underlying runtime
+                    // implements them, which it does for every non-docker
+                    // provider sandbox — the only case this type-narrowed
+                    // branch is reached). Cast is therefore runtime-safe.
+                    runner: sandboxExecutionTarget.runner as unknown as SandboxFileMovementRunner,
+                    remoteCwd: sandboxExecutionTarget.remoteCwd,
+                  })
+              : undefined;
+
           const detected = await outputDetector.detectAndCapture({
             runId: run.id,
             companyId: agent.companyId,
@@ -5289,6 +5322,7 @@ export function heartbeatService(db: Db) {
             adapterType: agent.adapterType,
             adapterHints: adapterResult.outputFiles,
             issueId: readNonEmptyString(context.issueId),
+            changedFileSource,
           });
           if (detected.length > 0) {
             detectedFiles = detected.map((d) => ({

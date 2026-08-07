@@ -14,8 +14,14 @@ import { assertLocalWorkspaceCommandAllowed } from "./local-workspace-command-gu
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Max files to detect per run (prevents runaway storage consumption) */
-const MAX_FILES_PER_RUN = 20;
+/**
+ * Max files to detect per run (prevents runaway storage consumption).
+ * Exported: `collectSandboxDiff` (U6.3, sandbox-file-movement.ts) reuses the
+ * same cap when pulling files out of an in-VM `git diff` so the sandboxed
+ * source is capped identically to the host path before it ever reaches this
+ * module's own `merged.slice(0, MAX_FILES_PER_RUN)` below.
+ */
+export const MAX_FILES_PER_RUN = 20;
 
 /** Max file size to capture for detected outputs. */
 const MAX_FILE_BYTES = 50 * 1024 * 1024;
@@ -89,6 +95,20 @@ export interface OutputDetectionInput {
   adapterType: string | null;
   adapterHints?: Array<{ path: string; label?: string; artifactType?: string }>;
   issueId: string | null;
+  /**
+   * U6.3 (S5) — when present, changed files are sourced from an in-VM `git
+   * diff` (`collectSandboxDiff`, sandbox-file-movement.ts) instead of the
+   * host `isGitRepo`/`detectChangedFilesGit`/mtime scan below. Sandboxed
+   * runs pass a `cwd` that is the VM's `remoteCwd` (e.g.
+   * "/home/user/aoa-workspace"), which never exists on the host running
+   * this service — so when this is set, the initial host cwd-exists guard
+   * and the per-candidate `fs.readFile`/`fs.stat` reads are ALSO bypassed
+   * (bytes come from this source instead). `storage.putFile` + the `assets`
+   * insert + `DetectedOutput` shaping stay byte-identical either way —
+   * outputs remain `status:"pending"` / `confirmedArtifactId:null`
+   * (Decision #67, founder review-gated).
+   */
+  changedFileSource?: () => Promise<Array<{ path: string; content: Buffer }>>;
 }
 
 interface AdapterHint {
@@ -101,7 +121,12 @@ interface AdapterHint {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function isNoisePath(relativePath: string): boolean {
+/**
+ * Exported: reused by `collectSandboxDiff` (U6.3, sandbox-file-movement.ts)
+ * so the in-VM diff filters noise identically to the host path, without
+ * duplicating the pattern lists here and there.
+ */
+export function isNoisePath(relativePath: string): boolean {
   const parts = relativePath.split(/[\\/]/);
 
   // Check directory patterns
@@ -270,30 +295,50 @@ async function detectAndCaptureImpl(
   db: Db,
   input: OutputDetectionInput,
 ): Promise<DetectedOutput[]> {
-  const { runId, companyId, agentId, cwd, startedAt, adapterHints } = input;
+  const { runId, companyId, agentId, cwd, startedAt, adapterHints, changedFileSource } = input;
 
-  // Guard: verify cwd exists
-  try {
-    const stat = await fs.stat(cwd);
-    if (!stat.isDirectory()) return [];
-  } catch {
-    return [];
+  // Guard: verify cwd exists. Only meaningful on the host-fs path — a
+  // sandboxed run's `cwd` is the VM's remoteCwd (S5), which never exists on
+  // the host running this service, so this guard is skipped when a
+  // changedFileSource is supplied (U6.3).
+  if (!changedFileSource) {
+    try {
+      const stat = await fs.stat(cwd);
+      if (!stat.isDirectory()) return [];
+    } catch {
+      return [];
+    }
   }
 
-  // Detect changed files
+  // Detect changed files. On the sandboxed path (S5) a single
+  // changedFileSource() call both discovers AND reads file bytes (in-VM
+  // `git diff` + `readFiles`, collectSandboxDiff) — resolve it once here and
+  // reuse the content map in the capture loop below instead of the host
+  // fs.readFile/fs.stat pass. The host isGitRepo/detectChangedFilesGit/mtime
+  // branch (and the assertLocalWorkspaceCommandAllowed guard inside it) is
+  // untouched and only reached when no changedFileSource is supplied.
   let detectedPaths: string[];
-  const isGit = await isGitRepo(cwd);
-  if (isGit) {
-    try {
-      assertLocalWorkspaceCommandAllowed("output-detection Git command");
-      const gitPaths = await detectChangedFilesGit(cwd);
-      detectedPaths = await filterPathsChangedSince(cwd, gitPaths, startedAt);
-    } catch (err) {
-      logger.warn({ err, cwd }, "git detection failed, falling back to mtime");
+  let sandboxContentByPath: Map<string, Buffer> | null = null;
+  if (changedFileSource) {
+    const sandboxFiles = await changedFileSource();
+    sandboxContentByPath = new Map(
+      sandboxFiles.map((f) => [f.path.replace(/\\/g, "/"), f.content]),
+    );
+    detectedPaths = sandboxFiles.map((f) => f.path);
+  } else {
+    const isGit = await isGitRepo(cwd);
+    if (isGit) {
+      try {
+        assertLocalWorkspaceCommandAllowed("output-detection Git command");
+        const gitPaths = await detectChangedFilesGit(cwd);
+        detectedPaths = await filterPathsChangedSince(cwd, gitPaths, startedAt);
+      } catch (err) {
+        logger.warn({ err, cwd }, "git detection failed, falling back to mtime");
+        detectedPaths = await detectChangedFilesMtime(cwd, startedAt);
+      }
+    } else {
       detectedPaths = await detectChangedFilesMtime(cwd, startedAt);
     }
-  } else {
-    detectedPaths = await detectChangedFilesMtime(cwd, startedAt);
   }
 
   // Build hint map
@@ -377,13 +422,31 @@ async function detectAndCaptureImpl(
         logger.warn({ runId, file: candidate.relativePath }, "path traversal blocked");
         continue;
       }
-      const stat = await fs.stat(absPath);
 
-      if (!stat.isFile()) continue;
-      if (stat.size > MAX_FILE_BYTES) continue;
-      if (stat.size === 0) continue;
+      // U6.3 (S5): source bytes from the sandbox diff's already-fetched
+      // content instead of the host fs.stat/fs.readFile pair. A candidate
+      // with no matching sandbox content (e.g. a hint-only entry that isn't
+      // part of the in-VM diff) is skipped — the sandbox source has no way
+      // to read an arbitrary path we didn't already pull out via
+      // collectSandboxDiff's readFiles call.
+      let buffer: Buffer;
+      let byteSize: number;
+      if (sandboxContentByPath) {
+        const content = sandboxContentByPath.get(candidate.relativePath.replace(/\\/g, "/"));
+        if (content === undefined) continue;
+        if (content.length === 0) continue;
+        if (content.length > MAX_FILE_BYTES) continue;
+        buffer = content;
+        byteSize = content.length;
+      } else {
+        const stat = await fs.stat(absPath);
+        if (!stat.isFile()) continue;
+        if (stat.size > MAX_FILE_BYTES) continue;
+        if (stat.size === 0) continue;
+        buffer = await fs.readFile(absPath);
+        byteSize = stat.size;
+      }
 
-      const buffer = await fs.readFile(absPath);
       const filename = path.basename(candidate.relativePath);
       const contentType = getContentType(filename);
 
@@ -418,7 +481,7 @@ async function detectAndCaptureImpl(
       results.push({
         path: candidate.relativePath,
         filename,
-        byteSize: stat.size,
+        byteSize,
         contentType,
         assetId: asset.id,
         sha256: stored.sha256 ?? sha256,
