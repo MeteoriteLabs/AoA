@@ -2,7 +2,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import { execSync } from "node:child_process";
 
-vi.mock("node:child_process", () => ({
+// importOriginal keeps the real `execFile` export present: cli-mode.ts now
+// transitively imports it (via the E2B one-shot provider-credential chain,
+// U13.x), and the provider resolution it drives fails gracefully to host
+// login in tests. We still override execSync/spawn (test-controlled).
+vi.mock("node:child_process", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:child_process")>()),
   execSync: vi.fn(),
   spawn: vi.fn(),
 }));

@@ -86,6 +86,9 @@ vi.mock("../services/acquire-execution-context.js", () => ({
 // call site (runner.ts) is proven to invoke it with the right args.
 vi.mock("../services/environment-runtime.js", () => ({
   environmentRuntimeService: () => ({ releaseRunLease: releaseRunLeaseMock }),
+  // U13.1 added this export; the one-shot-sandbox-cli chain imports it, so the
+  // mock must expose it or the module-load export check fails.
+  resolveRuntimeProviderConfig: vi.fn().mockResolvedValue({}),
 }));
 vi.mock("../services/internal-agent/aoa-agents/bridge-path.js", () => ({ resolveBridgeEntrypoint: () => "/x/mcp-bridge.js" }));
 vi.mock("node:fs/promises", () => {
