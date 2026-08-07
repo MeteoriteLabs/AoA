@@ -17,10 +17,21 @@
  *      one-shot CLI has no MCP loopback / run identity, so no
  *      AOA_RUN_ID / AOA_API_URL), then filter it through the U5 positive
  *      allowlist (`buildSandboxEnvAllowlist`, S2).
- *   5. run the command, tear the sandbox down (`releaseLease` with
- *      `reuseLease:false` — kill, never pause) ONLY when this call
- *      acquired its own lease (a reused `sandboxHandle` is owned/released
- *      by the batch caller).
+ *   5. run the command, tear the sandbox down ONLY when this call acquired
+ *      its own lease (a reused `sandboxHandle` is owned/released by the
+ *      batch caller) via `environmentRuntimeService(db).releaseRunLease`
+ *      (Wave 3 review, FIX 1) — NOT a raw `sandboxProviderRuntime()
+ *      .releaseLease` call, which kills the VM but never flips the
+ *      `environment_leases` row to 'released', orphaning it (this lease's
+ *      heartbeatRunId is always null, so the org-only
+ *      `releaseLeasesForRun` reaper can never reap it either).
+ *      `releaseRunLease` reads the lease's real environment config
+ *      (platform-default, which bakes `reuseLease:false` in) so this is
+ *      still an ephemeral KILL, never a pause. The release-guarding `try`
+ *      opens immediately after the lease is assigned (before the
+ *      provider/providerLeaseId null-guards and provider-config resolve),
+ *      so any throw between acquire and execute still releases the
+ *      self-acquired VM+lease (orphan-safety).
  *
  * Real-shape note (grounded against acquire-execution-context.ts +
  * acquire-execution-context.test.ts, not the plan doc's simplified
@@ -39,7 +50,10 @@ import {
   type AcquiredExecutionContext,
 } from "./acquire-execution-context.js";
 import type { EnvironmentAcquisitionResult } from "./environment-run-orchestrator.js";
-import { resolveRuntimeProviderConfig as defaultResolveRuntimeProviderConfig } from "./environment-runtime.js";
+import {
+  resolveRuntimeProviderConfig as defaultResolveRuntimeProviderConfig,
+  environmentRuntimeService as defaultEnvironmentRuntimeService,
+} from "./environment-runtime.js";
 import { sandboxProviderRuntime as defaultSandboxProviderRuntime } from "./sandbox-provider-runtime.js";
 import { runtimeProviderKeyService as defaultRuntimeProviderKeyService } from "./runtime-provider-keys.js";
 import { resolveCompanyProviderCredential as defaultResolveCompanyProviderCredential } from "./one-shot-provider-credential.js";
@@ -87,6 +101,8 @@ export interface OneShotDeps {
   runtimeProviderKeyService: typeof defaultRuntimeProviderKeyService;
   preflightOneShotCliSpend: typeof defaultPreflightOneShotCliSpend;
   recordOneShotCliCost: typeof defaultRecordOneShotCliCost;
+  /** Wave 3 review (FIX 1): teardown seam — see the `finally` block below. */
+  environmentRuntimeService: typeof defaultEnvironmentRuntimeService;
 }
 
 const DEFAULT_DEPS: OneShotDeps = {
@@ -97,6 +113,7 @@ const DEFAULT_DEPS: OneShotDeps = {
   runtimeProviderKeyService: defaultRuntimeProviderKeyService,
   preflightOneShotCliSpend: defaultPreflightOneShotCliSpend,
   recordOneShotCliCost: defaultRecordOneShotCliCost,
+  environmentRuntimeService: defaultEnvironmentRuntimeService,
 };
 
 export interface RunOneShotCliInput {
@@ -202,37 +219,46 @@ export async function runOneShotCliInSandbox(input: RunOneShotCliInput): Promise
     lease = acquired.sandbox.lease;
   }
 
-  // S6: resolve provider config EXACTLY the way executeRunLeaseCommand does
-  // (environment-runtime.ts:512-541) — never a hand-built lease shape.
-  const provider = readString(lease.provider);
-  if (!provider) {
-    throw new OneShotSandboxError("Sandbox lease is missing a provider.", "sandbox_unavailable");
-  }
-  const providerLeaseId = readString(lease.providerLeaseId);
-  if (!providerLeaseId) {
-    throw new OneShotSandboxError(`Sandbox lease "${lease.id}" is missing providerLeaseId.`, "sandbox_unavailable");
-  }
-  const providerMetadata = readObject(readObject(lease.metadata).providerMetadata);
-  const providerConfig =
-    handle?.providerConfig ??
-    (await deps.resolveRuntimeProviderConfig({
-      companyId: input.companyId,
-      provider,
-      config: readObject(environment.config),
-      runtimeProviderKeys: deps.runtimeProviderKeyService(input.db),
-      issueId: null,
-      heartbeatRunId: null,
-    }));
-
-  // S2: build the overlay FIRST (only the company's own resolved credential —
-  // no AOA_RUN_ID / AOA_API_URL, this is not an MCP-loopback-capable run),
-  // then filter it through the positive allowlist. Never read process.env.
-  const overlay: Record<string, string> = { [credential.envName]: credential.value };
-  const env = buildSandboxEnvAllowlist(overlay, { provider: credential.provider });
-
-  const runtime = deps.sandboxProviderRuntime();
-
+  // Wave 3 review (FIX 1, orphan-safety, findings 1/2/3/7): the release-
+  // guarding `try` starts HERE — immediately after `lease` is assigned —
+  // not just around `execute`. Once `lease` exists for a self-acquired run,
+  // a REAL VM + `environment_leases` row already exist; a throw from ANY
+  // point below (a lease missing provider/providerLeaseId,
+  // resolveRuntimeProviderConfig failing, or execute itself failing) must
+  // still release it, or the VM+row orphan. A reused `sandboxHandle` is
+  // owned by the batch caller (selfAcquired:false), so the `finally` below
+  // is correctly a no-op for it regardless of where this try starts.
   try {
+    // S6: resolve provider config EXACTLY the way executeRunLeaseCommand does
+    // (environment-runtime.ts:512-541) — never a hand-built lease shape.
+    const provider = readString(lease.provider);
+    if (!provider) {
+      throw new OneShotSandboxError("Sandbox lease is missing a provider.", "sandbox_unavailable");
+    }
+    const providerLeaseId = readString(lease.providerLeaseId);
+    if (!providerLeaseId) {
+      throw new OneShotSandboxError(`Sandbox lease "${lease.id}" is missing providerLeaseId.`, "sandbox_unavailable");
+    }
+    const providerMetadata = readObject(readObject(lease.metadata).providerMetadata);
+    const providerConfig =
+      handle?.providerConfig ??
+      (await deps.resolveRuntimeProviderConfig({
+        companyId: input.companyId,
+        provider,
+        config: readObject(environment.config),
+        runtimeProviderKeys: deps.runtimeProviderKeyService(input.db),
+        issueId: null,
+        heartbeatRunId: null,
+      }));
+
+    // S2: build the overlay FIRST (only the company's own resolved credential —
+    // no AOA_RUN_ID / AOA_API_URL, this is not an MCP-loopback-capable run),
+    // then filter it through the positive allowlist. Never read process.env.
+    const overlay: Record<string, string> = { [credential.envName]: credential.value };
+    const env = buildSandboxEnvAllowlist(overlay, { provider: credential.provider });
+
+    const runtime = deps.sandboxProviderRuntime();
+
     const result = await runtime.execute(provider, {
       command: input.command,
       args: input.args,
@@ -285,15 +311,31 @@ export async function runOneShotCliInSandbox(input: RunOneShotCliInput): Promise
       durationMs: Date.now() - startedAt,
     };
   } finally {
-    // Ephemeral teardown — kill, never pause — ONLY for a lease this call
-    // acquired itself. A reused `sandboxHandle` (batch path, U13.3) is
-    // released once by the batch caller after the whole loop.
+    // Wave 3 review (FIX 1, findings 1/2/3/7): route teardown through
+    // environmentRuntimeService(...).releaseRunLease — mirrors the crew fix
+    // at runner.ts:1677 — instead of calling
+    // sandboxProviderRuntime().releaseLease directly. The raw provider call
+    // only kills the e2b VM; it never flips the `environment_leases` row to
+    // 'released'. Because this lease is acquired with heartbeatRunId:null
+    // (a one-shot CLI has no heartbeat run), the org-only reaper
+    // (`releaseLeasesForRun`, filtered on `heartbeat_run_id`) can never find
+    // or reap it — releaseRunLease's DB-flip is the ONLY release path here,
+    // same as crew. The ephemeral KILL (never pause) still holds:
+    // `environmentId:null` always resolves to the platform-default
+    // environment (platform-default-environment.ts), whose config bakes
+    // `reuseLease:false` in — releaseRunLease reads THAT environment
+    // config (not a hand-built shape), so the e2b provider kills rather
+    // than pausing. ONLY for a lease this call acquired itself — a reused
+    // `sandboxHandle` (batch path, U13.3) is released once by the batch
+    // caller. Best-effort (`.catch`): a release failure must never mask
+    // the already-decided result/error above.
     if (selfAcquired) {
-      await runtime.releaseLease(provider, {
-        providerLeaseId,
-        leaseMetadata: providerMetadata,
-        config: { ...providerConfig, reuseLease: false },
-      });
+      await deps
+        .environmentRuntimeService(input.db)
+        .releaseRunLease({ environment, lease, status: "released" })
+        .catch((err) => {
+          logger.warn({ err }, "one-shot sandbox release failed");
+        });
     }
   }
 }

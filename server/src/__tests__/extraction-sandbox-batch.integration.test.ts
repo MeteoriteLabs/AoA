@@ -96,22 +96,29 @@ vi.mock("../services/acquire-execution-context.js", () => ({
 }));
 
 const mockResolveRuntimeProviderConfig = vi.fn(async () => ({ provider: "e2b", resolvedApiKey: "fake" }));
+// Wave 3 review (FIX 1, findings 1/2/3/7): the batch teardown
+// (extraction.ts's `releaseSandboxHandle`) now routes through
+// `environmentRuntimeService(db).releaseRunLease` instead of calling
+// `sandboxProviderRuntime().releaseLease` directly — the raw provider call
+// only killed the VM, it never flipped the `environment_leases` row to
+// 'released'. This test's OWN job is the batch acquire/release COUNTING +
+// acquire-before-deadline TIMING (see the file header) — the DB-flip
+// mechanics of `releaseRunLease` itself are proven for real against
+// Postgres by crew-lease-release.integration.test.ts (same call shape).
+// So `environmentRuntimeService` is mocked here the same leaf-module way as
+// `resolveRuntimeProviderConfig` above: spy on `releaseRunLease` directly
+// rather than reconstructing a real environment_leases row for a lease
+// object that (per the REAL-SHAPE NOTE above) is entirely synthetic
+// (`fakeAcquisition`'s companyId:"irrelevant", non-persisted lease id).
+const mockReleaseRunLease = vi.fn(async () => null);
 vi.mock("../services/environment-runtime.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../services/environment-runtime.js")>();
   return {
     ...actual,
     resolveRuntimeProviderConfig: (...a: unknown[]) => mockResolveRuntimeProviderConfig(...a),
-  };
-});
-
-const mockReleaseLease = vi.fn(async () => null);
-vi.mock("../services/sandbox-provider-runtime.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../services/sandbox-provider-runtime.js")>();
-  return {
-    ...actual,
-    sandboxProviderRuntime: (...args: unknown[]) => {
-      const real = (actual.sandboxProviderRuntime as (...a: unknown[]) => Record<string, unknown>)(...args);
-      return { ...real, releaseLease: (...a: unknown[]) => mockReleaseLease(...a) };
+    environmentRuntimeService: (...args: unknown[]) => {
+      const real = (actual.environmentRuntimeService as (...a: unknown[]) => Record<string, unknown>)(...args);
+      return { ...real, releaseRunLease: (...a: unknown[]) => mockReleaseRunLease(...a) };
     },
   };
 });
@@ -125,6 +132,19 @@ import { extractionService } from "../services/extraction.js";
 // perform on a successful run (one-shot-sandbox-cli.ts, U13.4), since that
 // whole module is mocked away for this file's sandbox-batch assertions.
 import { recordOneShotCliCost } from "../services/one-shot-cli-budget.js";
+// Wave 3 review (FIX 2, MEDIUM — budget bypass): the batch acquire in
+// extraction.ts is now gated by `preflightOneShotCliSpend` BEFORE it boots
+// a VM. Mocked the same leaf-module way as the others above (spread real +
+// override), so `recordOneShotCliCost` (imported from the SAME module
+// above, real/unmocked) keeps working end-to-end.
+const mockPreflightOneShotCliSpend = vi.fn(async () => ({ allowed: true }) as const);
+vi.mock("../services/one-shot-cli-budget.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/one-shot-cli-budget.js")>();
+  return {
+    ...actual,
+    preflightOneShotCliSpend: (...a: unknown[]) => mockPreflightOneShotCliSpend(...a),
+  };
+});
 
 type EmbeddedPostgresInstance = { initialise(): Promise<void>; start(): Promise<void>; stop(): Promise<void> };
 type EmbeddedPostgresCtor = new (opts: {
@@ -367,15 +387,16 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect(handles[2]).toBe(handles[0]);
 
       // (4) The batch lease is released EXACTLY ONCE, after the whole loop,
-      // with reuseLease:false (ephemeral teardown — kill, never pause).
-      expect(mockReleaseLease).toHaveBeenCalledTimes(1);
-      const [releaseProvider, releaseInput] = mockReleaseLease.mock.calls[0] as [
-        string,
-        { providerLeaseId: string; config: Record<string, unknown> },
+      // via environmentRuntimeService(db).releaseRunLease (Wave 3 review,
+      // FIX 1 — the DB-flip path, not the raw provider releaseLease which
+      // only killed the VM and left the environment_leases row 'active').
+      expect(mockReleaseRunLease).toHaveBeenCalledTimes(1);
+      const [releaseInput] = mockReleaseRunLease.mock.calls[0] as [
+        { environment: { id: string }; lease: { id: string; providerLeaseId: string }; status: string },
       ];
-      expect(releaseProvider).toBe("e2b");
-      expect(releaseInput.providerLeaseId).toBe("plid-lease-batch-once");
-      expect(releaseInput.config).toMatchObject({ reuseLease: false });
+      expect(releaseInput.status).toBe("released");
+      expect(releaseInput.lease.id).toBe("lease-batch-once");
+      expect(releaseInput.lease.providerLeaseId).toBe("plid-lease-batch-once");
 
       // (5) U13.4: a cost_events row lands per successful one-shot CLI call
       // (one per entry, 3 entries -> 3 rows) — agentId:null (nullable
@@ -445,7 +466,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       );
       expect(items).toHaveLength(3);
 
-      expect(mockReleaseLease).toHaveBeenCalledTimes(1);
+      expect(mockReleaseRunLease).toHaveBeenCalledTimes(1);
     }, 120_000);
 
     it("acquire failure: every entry self-acquires (no batch handle) and surfaces its own failure — the pass never throws", async () => {
@@ -481,7 +502,55 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect(result.attempted).toBe(1);
       expect(result.failed).toBe(1);
       // No batch handle was ever built -> nothing to release.
-      expect(mockReleaseLease).not.toHaveBeenCalled();
+      expect(mockReleaseRunLease).not.toHaveBeenCalled();
+    }, 120_000);
+
+    it("Wave 3 review (FIX 2, MEDIUM — budget bypass): an over-budget company skips the batch sandbox acquire entirely — preflightOneShotCliSpend blocks BEFORE acquireExecutionContext, no VM boots", async () => {
+      if (setupError) throw new Error(String(setupError));
+      setDeploymentMode("cloud_auth");
+
+      const { companyId } = await seedCompanyWithFounder("BatchOverBudget");
+      const { threadId } = await seedThreadWithEntries(companyId, [
+        "Only entry: the company is over its monthly one-shot CLI budget cap.",
+      ]);
+
+      mockPreflightOneShotCliSpend.mockResolvedValueOnce({
+        allowed: false,
+        reason: `One-shot CLI budget reached for company ${companyId} (spend: 10500, cap: 10000)`,
+        reasonCode: "budget_exhausted",
+      });
+      // Each entry's own self-acquire preflight (inside the REAL
+      // runOneShotCliInSandbox, mocked away for this file) would ALSO
+      // block on the SAME gate — surfaced here via the mocked
+      // runOneShotCliInSandbox throwing the identical sandbox_unavailable
+      // shape a real per-entry preflight-blocked call throws
+      // (one-shot-sandbox-cli.ts).
+      mockRunOneShotCliInSandbox.mockRejectedValue(
+        Object.assign(
+          new Error("One-shot CLI spawn blocked before any sandbox spend: over budget"),
+          { name: "OneShotSandboxError", kind: "sandbox_unavailable" },
+        ),
+      );
+
+      const result = await extractionService(db).extractThreadEntriesAwait(companyId, threadId);
+
+      expect(mockPreflightOneShotCliSpend).toHaveBeenCalledTimes(1);
+      expect(mockPreflightOneShotCliSpend.mock.calls[0]?.[1]).toMatchObject({ companyId });
+
+      // FIX 2: the batch VM never boots when the company is over budget.
+      expect(mockAcquireExecutionContext).not.toHaveBeenCalled();
+      // Nothing was ever acquired -> nothing to release.
+      expect(mockReleaseRunLease).not.toHaveBeenCalled();
+
+      // The entry still falls through to its own self-acquire attempt
+      // (sandboxHandle undefined) and fails gracefully — the pass itself
+      // never throws.
+      expect(mockRunOneShotCliInSandbox).toHaveBeenCalledTimes(1);
+      const [selfAcquireCall] = mockRunOneShotCliInSandbox.mock.calls[0] as [{ sandboxHandle?: unknown }];
+      expect(selfAcquireCall.sandboxHandle).toBeUndefined();
+
+      expect(result.attempted).toBe(1);
+      expect(result.failed).toBe(1);
     }, 120_000);
   },
 );

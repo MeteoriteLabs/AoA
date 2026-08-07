@@ -88,6 +88,13 @@ describe("runOneShotCliInSandbox (U13.1)", () => {
   let runtimeProviderKeyService: ReturnType<typeof vi.fn>;
   let preflightOneShotCliSpend: ReturnType<typeof vi.fn>;
   let recordOneShotCliCost: ReturnType<typeof vi.fn>;
+  // Wave 3 review (FIX 1): teardown now flips the DB row via
+  // environmentRuntimeService(db).releaseRunLease — NOT the raw provider
+  // releaseLease directly (that only kills the VM, it never flips
+  // `environment_leases` to 'released'). `releaseLease` above stays as a
+  // spy to PROVE it is never called directly by this module anymore.
+  let releaseRunLease: ReturnType<typeof vi.fn>;
+  let environmentRuntimeService: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     acquireExecutionContext = vi.fn().mockResolvedValue(fakeAcquiredSandbox());
@@ -101,6 +108,8 @@ describe("runOneShotCliInSandbox (U13.1)", () => {
     // aren't about budget/cost at all, so they should never observe these.
     preflightOneShotCliSpend = vi.fn().mockResolvedValue({ allowed: true });
     recordOneShotCliCost = vi.fn().mockResolvedValue({ id: "cost-1" });
+    releaseRunLease = vi.fn().mockResolvedValue(null);
+    environmentRuntimeService = vi.fn(() => ({ releaseRunLease }));
   });
 
   function deps() {
@@ -112,11 +121,13 @@ describe("runOneShotCliInSandbox (U13.1)", () => {
       runtimeProviderKeyService,
       preflightOneShotCliSpend,
       recordOneShotCliCost,
+      environmentRuntimeService,
     };
   }
 
-  it("acquires once with environmentId:null, resolves config once, executes once, then releases once with reuseLease:false", async () => {
-    const result = await runOneShotCliInSandbox(baseInput({ deps: deps() }));
+  it("acquires once with environmentId:null, resolves config once, executes once, then releases once via environmentRuntimeService(db).releaseRunLease (Wave 3 review, FIX 1) — NOT the raw provider releaseLease", async () => {
+    const input = baseInput({ deps: deps() });
+    const result = await runOneShotCliInSandbox(input);
 
     expect(acquireExecutionContext).toHaveBeenCalledTimes(1);
     const [, acquireInput] = acquireExecutionContext.mock.calls[0];
@@ -125,10 +136,16 @@ describe("runOneShotCliInSandbox (U13.1)", () => {
 
     expect(resolveRuntimeProviderConfig).toHaveBeenCalledTimes(1);
     expect(execute).toHaveBeenCalledTimes(1);
-    expect(releaseLease).toHaveBeenCalledTimes(1);
-    const [releaseProvider, releaseInput] = releaseLease.mock.calls[0];
-    expect(releaseProvider).toBe("e2b");
-    expect(releaseInput.config).toMatchObject({ reuseLease: false });
+
+    // FIX 1: the DB-flip path, not the raw provider kill-only call.
+    expect(environmentRuntimeService).toHaveBeenCalledTimes(1);
+    expect(environmentRuntimeService).toHaveBeenCalledWith(input.db);
+    expect(releaseRunLease).toHaveBeenCalledTimes(1);
+    const [releaseInput] = releaseRunLease.mock.calls[0];
+    expect(releaseInput.status).toBe("released");
+    expect(releaseInput.lease.id).toBe("lease-1");
+    expect(releaseInput.environment.id).toBe("env-plat");
+    expect(releaseLease).not.toHaveBeenCalled();
 
     expect(result).toEqual({ stdout: "ok", stderr: "", exitCode: 0, durationMs: expect.any(Number) });
   });
@@ -217,17 +234,101 @@ describe("runOneShotCliInSandbox (U13.1)", () => {
       name: "OneShotSandboxError",
       kind: "timeout",
     });
-    // still tears the sandbox down even on failure
-    expect(releaseLease).toHaveBeenCalledTimes(1);
+    // still tears the sandbox down even on failure — via releaseRunLease
+    // (Wave 3 review, FIX 1), never the raw provider releaseLease.
+    expect(releaseRunLease).toHaveBeenCalledTimes(1);
+    expect(releaseLease).not.toHaveBeenCalled();
   });
 
-  it("maps a nonzero exitCode to OneShotSandboxError kind:nonzero_exit carrying exitCode + stderr", async () => {
+  it("maps a nonzero exitCode to OneShotSandboxError kind:nonzero_exit carrying exitCode + stderr, and still releases the self-acquired lease", async () => {
     execute.mockResolvedValue({ exitCode: 2, signal: null, timedOut: false, stdout: "", stderr: "boom" });
     await expect(runOneShotCliInSandbox(baseInput({ deps: deps() }))).rejects.toMatchObject({
       name: "OneShotSandboxError",
       kind: "nonzero_exit",
       exitCode: 2,
       stderr: "boom",
+    });
+    expect(releaseRunLease).toHaveBeenCalledTimes(1);
+    const [releaseInput] = releaseRunLease.mock.calls[0];
+    expect(releaseInput.status).toBe("released");
+  });
+
+  it("Wave 3 review (FIX 1): a THROWN execute() (not just a bad result) still releases the self-acquired lease via releaseRunLease, not the raw provider releaseLease", async () => {
+    execute.mockRejectedValue(new Error("sandbox execute transport failure"));
+
+    await expect(runOneShotCliInSandbox(baseInput({ deps: deps() }))).rejects.toThrow(
+      "sandbox execute transport failure",
+    );
+
+    expect(releaseRunLease).toHaveBeenCalledTimes(1);
+    const [releaseInput] = releaseRunLease.mock.calls[0];
+    expect(releaseInput.status).toBe("released");
+    expect(releaseLease).not.toHaveBeenCalled();
+  });
+
+  // ── Wave 3 review, FIX 1: orphan-safety ────────────────────────────────
+  // A throw ANYWHERE between the lease being acquired and `execute` running
+  // must still release the self-acquired VM+lease — otherwise it orphans
+  // (a real e2b VM keeps running, and its `environment_leases` row stays
+  // 'active' forever, since heartbeatRunId is always null for a one-shot
+  // CLI and the org-only reaper can never find it).
+
+  it("Wave 3 review (FIX 1, orphan-safety): a lease missing `provider` throws BEFORE execute but STILL releases the self-acquired lease", async () => {
+    const acquired = fakeAcquiredSandbox();
+    acquired.sandbox.lease.provider = null as never;
+    acquireExecutionContext.mockResolvedValue(acquired);
+
+    await expect(runOneShotCliInSandbox(baseInput({ deps: deps() }))).rejects.toMatchObject({
+      name: "OneShotSandboxError",
+      kind: "sandbox_unavailable",
+    });
+    expect(execute).not.toHaveBeenCalled();
+    expect(releaseRunLease).toHaveBeenCalledTimes(1);
+    const [releaseInput] = releaseRunLease.mock.calls[0];
+    expect(releaseInput.status).toBe("released");
+    expect(releaseInput.lease.id).toBe("lease-1");
+    expect(releaseLease).not.toHaveBeenCalled();
+  });
+
+  it("Wave 3 review (FIX 1, orphan-safety): a lease missing `providerLeaseId` throws BEFORE execute but STILL releases the self-acquired lease", async () => {
+    const acquired = fakeAcquiredSandbox();
+    acquired.sandbox.lease.providerLeaseId = null as never;
+    acquireExecutionContext.mockResolvedValue(acquired);
+
+    await expect(runOneShotCliInSandbox(baseInput({ deps: deps() }))).rejects.toMatchObject({
+      name: "OneShotSandboxError",
+      kind: "sandbox_unavailable",
+    });
+    expect(execute).not.toHaveBeenCalled();
+    expect(releaseRunLease).toHaveBeenCalledTimes(1);
+  });
+
+  it("Wave 3 review (FIX 1, orphan-safety): resolveRuntimeProviderConfig throwing BEFORE execute STILL releases the self-acquired lease", async () => {
+    resolveRuntimeProviderConfig.mockRejectedValue(new Error("provider config resolve boom"));
+
+    await expect(runOneShotCliInSandbox(baseInput({ deps: deps() }))).rejects.toThrow(
+      "provider config resolve boom",
+    );
+    expect(execute).not.toHaveBeenCalled();
+    expect(releaseRunLease).toHaveBeenCalledTimes(1);
+    const [releaseInput] = releaseRunLease.mock.calls[0];
+    expect(releaseInput.status).toBe("released");
+  });
+
+  // ── Wave 3 review, FIX 1: the release is best-effort ───────────────────
+
+  it("Wave 3 review (FIX 1): a releaseRunLease failure is best-effort — a successful run still returns its result", async () => {
+    releaseRunLease.mockRejectedValue(new Error("release boom"));
+    const result = await runOneShotCliInSandbox(baseInput({ deps: deps() }));
+    expect(result).toEqual({ stdout: "ok", stderr: "", exitCode: 0, durationMs: expect.any(Number) });
+  });
+
+  it("Wave 3 review (FIX 1): a releaseRunLease failure is best-effort — it never masks the REAL thrown error from a failed run", async () => {
+    releaseRunLease.mockRejectedValue(new Error("release boom"));
+    execute.mockResolvedValue({ exitCode: 2, signal: null, timedOut: false, stdout: "", stderr: "boom" });
+    await expect(runOneShotCliInSandbox(baseInput({ deps: deps() }))).rejects.toMatchObject({
+      name: "OneShotSandboxError",
+      kind: "nonzero_exit",
     });
   });
 
@@ -239,6 +340,8 @@ describe("runOneShotCliInSandbox (U13.1)", () => {
     });
     expect(execute).not.toHaveBeenCalled();
     expect(releaseLease).not.toHaveBeenCalled();
+    // Nothing was ever acquired here — no lease exists to release.
+    expect(releaseRunLease).not.toHaveBeenCalled();
   });
 
   it("when acquireExecutionContext resolves {sandbox:null} (desktop/local_trusted signal), throws sandbox_unavailable and never calls execute", async () => {
@@ -248,6 +351,7 @@ describe("runOneShotCliInSandbox (U13.1)", () => {
       kind: "sandbox_unavailable",
     });
     expect(execute).not.toHaveBeenCalled();
+    expect(releaseRunLease).not.toHaveBeenCalled();
   });
 
   it("when sandboxHandle is supplied, SKIPS acquireExecutionContext AND skips releaseLease (batch reuse, U13.3)", async () => {
@@ -286,7 +390,12 @@ describe("runOneShotCliInSandbox (U13.1)", () => {
     expect(execProvider).toBe("e2b");
     expect(execInput.providerLeaseId).toBe("plid-batch");
     expect(execInput.config).toEqual({ provider: "e2b", resolvedApiKey: "batch-key" });
-    expect(releaseLease).not.toHaveBeenCalled(); // batch caller owns teardown, not this call
+    // A `sandboxHandle`-reuse run must NOT release — the batch caller owns
+    // teardown, not this call (neither the raw provider path nor the
+    // Wave 3 review FIX 1 DB-flip path).
+    expect(releaseLease).not.toHaveBeenCalled();
+    expect(environmentRuntimeService).not.toHaveBeenCalled();
+    expect(releaseRunLease).not.toHaveBeenCalled();
     expect(result.stdout).toBe("ok");
   });
 

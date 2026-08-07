@@ -14,9 +14,9 @@ import {
 } from "./one-shot-provider-credential.js";
 import type { OneShotSandboxHandle } from "./one-shot-sandbox-cli.js";
 import { acquireExecutionContext } from "./acquire-execution-context.js";
-import { resolveRuntimeProviderConfig } from "./environment-runtime.js";
-import { sandboxProviderRuntime } from "./sandbox-provider-runtime.js";
+import { resolveRuntimeProviderConfig, environmentRuntimeService } from "./environment-runtime.js";
 import { runtimeProviderKeyService } from "./runtime-provider-keys.js";
+import { preflightOneShotCliSpend, type OneShotBudgetPreflightResult } from "./one-shot-cli-budget.js";
 import {
   buildDiscussionPendingHubEmit,
   buildExtractionFailedHubEmit,
@@ -787,58 +787,96 @@ export function extractionService(db: Db) {
       let sandboxHandle: OneShotSandboxHandle | undefined;
       let releaseSandboxHandle: (() => Promise<unknown>) | undefined;
       if (tenantIsolationEnforced()) {
-        try {
-          const cliTool = await resolveCompanyCliTool(db, companyId);
-          const acquisition = await acquireExecutionContext(db, {
-            runIdentity: {
-              companyId,
-              agentId: null,
-              runId: randomUUID(),
-              adapterType: cliTool === "codex" ? "codex_local" : "claude_local",
-            },
-            functionType: null, // one-shot batch CLI extraction has no functionType — always ephemeral
-            warmPreference: "ephemeral",
-            worktree: null,
-            environmentId: null, // no pin -> platform-default resolution (U1)
-            issueId: null,
-            heartbeatRunId: null,
-          });
-          const lease = acquisition.lease;
-          if (acquisition.sandbox?.environment.driver === "sandbox" && lease) {
-            const provider = readString(lease.provider);
-            if (provider) {
-              const providerMetadata = readObject(readObject(lease.metadata).providerMetadata);
-              const providerConfig = await resolveRuntimeProviderConfig({
+        // Wave 3 review (FIX 2, MEDIUM — budget bypass): gate the batch
+        // acquire on the SAME budget preflight runOneShotCliInSandbox runs
+        // per-entry (one-shot-cli-budget.ts) BEFORE any sandbox is booted —
+        // an over-budget company must never boot (and be billed for) the
+        // batch VM. Skipping the acquire here is safe: every entry falls
+        // through to its own self-acquire attempt
+        // (extractFromDiscussionEntry -> extractViaCli ->
+        // runOneShotCliInSandbox), which re-runs this SAME gate and throws
+        // sandbox_unavailable before spending anything — so no VM boots
+        // either way, and the existing rangeEndCap/best-effort semantics (a
+        // failed entry caps the draft range before it) are unchanged.
+        const budgetPreflight: OneShotBudgetPreflightResult = await preflightOneShotCliSpend(db, { companyId }).catch(
+          (err) => {
+            log.warn(
+              { err },
+              "extract-then-scope: batch budget preflight failed (best-effort) — proceeding to acquire",
+            );
+            return { allowed: true };
+          },
+        );
+        if (!budgetPreflight.allowed) {
+          log.warn(
+            { reason: budgetPreflight.reason },
+            "extract-then-scope: company over budget — skipping batch sandbox acquire; entries will self-acquire and surface sandbox_unavailable",
+          );
+        } else {
+          try {
+            const cliTool = await resolveCompanyCliTool(db, companyId);
+            const acquisition = await acquireExecutionContext(db, {
+              runIdentity: {
                 companyId,
-                provider,
-                config: readObject(acquisition.sandbox.environment.config),
-                runtimeProviderKeys: runtimeProviderKeyService(db),
-                issueId: null,
-                heartbeatRunId: null,
-              });
-              sandboxHandle = { environment: acquisition.sandbox.environment, lease, providerConfig };
+                agentId: null,
+                runId: randomUUID(),
+                adapterType: cliTool === "codex" ? "codex_local" : "claude_local",
+              },
+              functionType: null, // one-shot batch CLI extraction has no functionType — always ephemeral
+              warmPreference: "ephemeral",
+              worktree: null,
+              environmentId: null, // no pin -> platform-default resolution (U1)
+              issueId: null,
+              heartbeatRunId: null,
+            });
+            const lease = acquisition.lease;
+            if (acquisition.sandbox?.environment.driver === "sandbox" && lease) {
+              const environment = acquisition.sandbox.environment;
+              // Wave 3 review (FIX 1, orphan-safety, findings 1/2/3/7): wire
+              // the release closure to the lease IMMEDIATELY — before
+              // resolving provider config below — so a resolve-fault
+              // between here and the sandboxHandle assignment can never
+              // leak the batch VM (previously, a missing `provider` or a
+              // resolveRuntimeProviderConfig throw left the just-acquired
+              // lease with NO release closure at all). Routes through
+              // environmentRuntimeService(...).releaseRunLease (mirrors the
+              // crew fix at runner.ts:1677 and the one-shot self-acquire
+              // fix in one-shot-sandbox-cli.ts) so the DB row actually
+              // flips to 'released' — the raw provider release this
+              // replaced only killed the VM and left an orphaned 'active'
+              // environment_leases row (unreachable by the heartbeat-scoped
+              // reaper, since this lease's heartbeatRunId is always null).
               releaseSandboxHandle = () =>
-                sandboxProviderRuntime().releaseLease(provider, {
-                  providerLeaseId: readString(lease.providerLeaseId),
-                  leaseMetadata: providerMetadata,
-                  config: { ...providerConfig, reuseLease: false },
+                environmentRuntimeService(db).releaseRunLease({ environment, lease, status: "released" });
+
+              const provider = readString(lease.provider);
+              if (provider) {
+                const providerConfig = await resolveRuntimeProviderConfig({
+                  companyId,
+                  provider,
+                  config: readObject(environment.config),
+                  runtimeProviderKeys: runtimeProviderKeyService(db),
+                  issueId: null,
+                  heartbeatRunId: null,
                 });
+                sandboxHandle = { environment, lease, providerConfig };
+              } else {
+                log.warn(
+                  { leaseId: lease.id },
+                  "extract-then-scope: batch sandbox lease missing provider — entries will self-acquire",
+                );
+              }
             } else {
               log.warn(
-                { leaseId: lease.id },
-                "extract-then-scope: batch sandbox lease missing provider — entries will self-acquire",
+                "extract-then-scope: no sandbox environment resolved for batch — entries will self-acquire",
               );
             }
-          } else {
+          } catch (err) {
             log.warn(
-              "extract-then-scope: no sandbox environment resolved for batch — entries will self-acquire",
+              { err },
+              "extract-then-scope: batch sandbox acquire failed — entries will self-acquire and surface sandbox_unavailable",
             );
           }
-        } catch (err) {
-          log.warn(
-            { err },
-            "extract-then-scope: batch sandbox acquire failed — entries will self-acquire and surface sandbox_unavailable",
-          );
         }
       }
 
