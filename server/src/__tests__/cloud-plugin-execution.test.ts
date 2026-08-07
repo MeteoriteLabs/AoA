@@ -15,9 +15,11 @@ vi.mock("../middleware/logger.js", () => ({
 }));
 
 import {
+  assertCloudPluginExecutionAllowed,
   beginCloudPluginBootReconciliation,
   CLOUD_PLUGIN_BLOCK_MESSAGE,
   getCloudPluginBlockMetrics,
+  isCloudPluginExecutionBlocked,
   projectCloudPluginPolicyState,
   recordCloudPluginBlock,
   recordCloudPluginBootReconciled,
@@ -86,20 +88,19 @@ describe("cloud plugin execution observability", () => {
     expect(JSON.stringify(docsConfig.navigation)).toContain("guides/cloud-plugin-execution");
   });
 
-  it("projects every non-uninstalled cloud row as blocked before boot reconciliation", () => {
+  it("U10: leaves every non-blocked-history cloud row untouched (no live block projection)", () => {
     setDeploymentMode("cloud_auth");
     for (const status of ["installed", "disabled", "error", "upgrade_pending"]) {
-      expect(
-        projectCloudPluginPolicyState({
-          id: `plugin-${status}`,
-          status,
-          statusReasonCode: null,
-          lastError: status === "error" ? "generic error" : null,
-        }),
-      ).toMatchObject({
-        status: "error",
-        statusReasonCode: "PLUGIN_WORKER_BLOCKED_IN_CLOUD",
-      });
+      const plugin = {
+        id: `plugin-${status}`,
+        status,
+        statusReasonCode: null,
+        lastError: status === "error" ? "generic error" : null,
+      };
+      // isCloudPluginExecutionBlocked() is always false now (host-resident
+      // worker model), so the live projection is a no-op — the row passes
+      // through byte-identical instead of being rewritten to status: "error".
+      expect(projectCloudPluginPolicyState(plugin)).toBe(plugin);
     }
     expect(
       projectCloudPluginPolicyState({
@@ -134,5 +135,32 @@ describe("cloud plugin execution observability", () => {
       lastError: "worker crashed",
     };
     expect(projectCloudPluginPolicyState(plugin)).toBe(plugin);
+  });
+});
+
+describe("cloud plugin execution — host-resident worker model (U10)", () => {
+  afterEach(() => setDeploymentMode("local_trusted"));
+
+  it("does NOT block plugin worker execution on cloud_auth (host-resident worker, U10)", () => {
+    setDeploymentMode("cloud_auth");
+    expect(isCloudPluginExecutionBlocked()).toBe(false);
+  });
+
+  it("assertCloudPluginExecutionAllowed no longer throws on cloud for a host worker fork", () => {
+    setDeploymentMode("cloud_auth");
+    expect(() =>
+      assertCloudPluginExecutionAllowed({
+        pluginId: "p1",
+        sink: "worker-fork",
+        source: "direct",
+      }),
+    ).not.toThrow();
+  });
+
+  it("stays false on every deployment mode (desktop/local_trusted unchanged, still permissive)", () => {
+    for (const mode of ["local_trusted", "authenticated", "cloud_auth"] as const) {
+      setDeploymentMode(mode);
+      expect(isCloudPluginExecutionBlocked()).toBe(false);
+    }
   });
 });

@@ -96,20 +96,38 @@ beforeEach(() => {
   registry.getConfig.mockResolvedValue(null);
 });
 
+  // U10 SECURITY NOTE: this gate (plugin-ui-static.ts:271,
+  // `isCloudPluginExecutionBlocked()` directly, independent of persisted
+  // lifecycle status) is NOT the worker-fork sink U10 is about — the route's
+  // own comment says "Same-origin plugin JavaScript is executable tenant
+  // code." isCloudPluginExecutionBlocked() is now unconditionally false, so
+  // this specific protection (same-origin JS bundle serving to the browser)
+  // is lifted too, along with the worker-fork block. U10's stated
+  // justification ("the worker is host-resident ... never enters the VM")
+  // does not by itself make this sink safe — static bundle serving never
+  // went through a worker. Flagged verbatim in the task report for explicit
+  // follow-up sign-off; not resolved here since the plan's blanket
+  // `isCloudPluginExecutionBlocked() → false` change covers every call site
+  // of the shared predicate, including this one.
 describe("tenant-scoped plugin UI assets", () => {
-  it("returns the canonical 503 envelope in cloud before registry access", async () => {
+  it("U10: no longer short-circuits with the cloud-blocked envelope at the (now-lifted) block gate", async () => {
     setDeploymentMode("cloud_auth");
-    const response = await appFor(actor([COMPANY_A]))
-      .get(`/_plugins/${PLUGIN_ID}/ui/index.js`)
-      .expect(503);
+    registry.getById.mockResolvedValue(readyPlugin(COMPANY_A));
+    const response = await appFor(actor([COMPANY_A])).get(
+      `/_plugins/${PLUGIN_ID}/ui/index.js`
+    );
 
-    expect(response.body).toEqual({
-      error:
-        "Plugin execution is blocked on AoA Cloud until isolated workers are available",
-      code: "PLUGIN_WORKER_BLOCKED_IN_CLOUD",
-      docs: "/docs/guides/cloud-plugin-execution",
-    });
-    expect(registry.getById).not.toHaveBeenCalled();
+    // isCloudPluginExecutionBlocked() is always false now — the request
+    // proceeds past the (now-inert) gate into the real registry lookup +
+    // tenant-access check instead of short-circuiting at 503 with the
+    // blocked envelope (that envelope is always delivered with status 503
+    // in this codebase, so "not 503" is sufficient to prove it's gone).
+    // This minimal fixture's `db` doesn't wire up full cloud_auth tenant
+    // resolution, so the downstream authz check itself fails closed here —
+    // the U10 invariant under test is that it's no longer the
+    // *cloud-plugin-block* envelope doing the rejecting.
+    expect(response.status).not.toBe(503);
+    expect(registry.getById).toHaveBeenCalled();
   });
 
   it("rejects unauthenticated requests before registry access", async () => {

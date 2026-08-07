@@ -69,24 +69,35 @@ describe("plugin-worker-manager stderr failure context", () => {
   });
 });
 
-describe("cloud plugin worker final sinks", () => {
-  it("rejects before worker handle registration", async () => {
+describe("cloud plugin worker final sinks (U10: host-resident worker — no cloud block)", () => {
+  // Disable auto-restart so a fork failure (this fixture's entrypoint does
+  // not exist on disk) doesn't schedule a background backoff-restart timer
+  // that outlives the test.
+  const noRestartOptions = { ...workerOptions, autoRestart: false };
+
+  it("does not short-circuit with the cloud-block error before attempting to fork", async () => {
     setDeploymentMode("cloud_auth");
     const manager = createPluginWorkerManager();
 
+    // assertCloudPluginExecutionAllowed no longer throws on cloud_auth, so
+    // startWorker proceeds to the real fork attempt — which fails for an
+    // unrelated reason (this fixture's entrypoint doesn't exist), never for
+    // the cloud-block sentinel.
     await expect(
-      manager.startWorker("plugin-a", workerOptions)
-    ).rejects.toBeInstanceOf(CloudPluginExecutionBlockedError);
-    expect(manager.getWorker("plugin-a")).toBeUndefined();
+      manager.startWorker("plugin-a", noRestartOptions)
+    ).rejects.not.toBeInstanceOf(CloudPluginExecutionBlockedError);
+    expect(manager.getWorker("plugin-a")?.status).toBe("crashed");
   });
 
-  it("rejects a direct handle immediately before fork", async () => {
+  it("a direct handle no longer rejects immediately with the cloud-block error before fork", async () => {
     setDeploymentMode("cloud_auth");
-    const handle = createPluginWorkerHandle("plugin-a", workerOptions);
+    const handle = createPluginWorkerHandle("plugin-a", noRestartOptions);
 
-    await expect(handle.start()).rejects.toBeInstanceOf(
+    await expect(handle.start()).rejects.not.toBeInstanceOf(
       CloudPluginExecutionBlockedError
     );
-    expect(handle.status).not.toBe("running");
+    // The fork was actually attempted (and crashed for an unrelated reason),
+    // proving the cloud block no longer short-circuits before fork.
+    expect(handle.status).toBe("crashed");
   });
 });

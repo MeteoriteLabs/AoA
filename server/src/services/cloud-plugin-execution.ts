@@ -2,14 +2,21 @@ import {
   PLUGIN_WORKER_BLOCKED_IN_CLOUD_REASON,
   type PluginStatusReasonCode,
 } from "@armyofagents/shared";
-import { tenantIsolationEnforced } from "../config/deployment-mode.js";
 import { logger } from "../middleware/logger.js";
 
 export const PLUGIN_WORKER_BLOCKED_IN_CLOUD =
   PLUGIN_WORKER_BLOCKED_IN_CLOUD_REASON satisfies PluginStatusReasonCode;
 
+// U10: plugins now run via a host-resident worker process reached through the
+// broker (the worker never enters the tenant VM), so the blanket cloud block
+// below is lifted (`isCloudPluginExecutionBlocked` always returns `false`).
+// This message text is preserved — past tense — because it is still surfaced
+// for historical rows/records that captured a live block before the
+// host-resident-worker model shipped (see `projectCloudPluginPolicyState`'s
+// recoverable-row branch and the persisted `errorCode` envelope in
+// `routes/marketplace-installs.ts`).
 export const CLOUD_PLUGIN_BLOCK_MESSAGE =
-  "Plugin execution is blocked on AoA Cloud until isolated workers are available";
+  "Plugin execution was blocked on AoA Cloud until a host-resident worker was available";
 
 export const CLOUD_PLUGIN_EXECUTION_DOC_PATH =
   "/docs/guides/cloud-plugin-execution";
@@ -69,7 +76,20 @@ const bootReconciledPluginIds = new Set<string>();
 let bootReconciledCount = 0;
 
 export function isCloudPluginExecutionBlocked(): boolean {
-  return tenantIsolationEnforced();
+  // U10: the plugin worker is host-resident (never enters the tenant VM) and
+  // is reached from a sandboxed run only through the broker's authz-gated
+  // tools/call path (company-scoped `getTool` + `registered.companyId`
+  // assertion, agent-actor-only). The worker's own isolation (minimal env,
+  // host-side company-ownership checks) is now the enforced posture, so the
+  // blanket `tenantIsolationEnforced()` cloud block is lifted. Always `false`
+  // — on every deployment mode, including `cloud_auth`.
+  //
+  // The `projectCloudPluginPolicyState` / `recordCloudPluginBlock` / boot
+  // reconciliation machinery below is INTENTIONALLY kept: it is inert now
+  // (this predicate never reports "blocked"), but it still projects/clears
+  // historical rows that persisted a block from before this model shipped,
+  // and `assertCloudPluginExecutionAllowed` remains a no-op-safe backstop.
+  return false;
 }
 
 /**
