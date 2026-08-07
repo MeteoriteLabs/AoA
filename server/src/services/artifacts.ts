@@ -1,7 +1,16 @@
 import { eq, desc, and, ne } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { artifacts, artifactVersions, issues, assets } from "@armyofagents/db";
+import type { ActivityActorType } from "@armyofagents/shared";
 import { badRequest } from "../errors.js";
+import { logActivity } from "./activity-log.js";
+
+export type Actor = {
+  actorType: ActivityActorType;
+  actorId: string;
+  agentId?: string | null;
+  runId?: string | null;
+};
 
 /** Tenant isolation: an asset backing a version must belong to the same company. */
 async function assertAssetOwned(db: Pick<Db, "select">, companyId: string, assetId: string | null | undefined) {
@@ -275,6 +284,41 @@ export function artifactService(db: Db) {
       if (!issue?.artifactId) return null;
 
       return fetchWithVersions(db, issue.artifactId);
+    },
+
+    deleteArtifact: async (companyId: string, artifactId: string, actor: Actor) => {
+      const [existing] = await db
+        .select()
+        .from(artifacts)
+        .where(and(eq(artifacts.id, artifactId), eq(artifacts.companyId, companyId)));
+
+      if (!existing) return null;
+
+      await db.transaction(async (tx) => {
+        await tx
+          .update(artifacts)
+          .set({ currentVersionId: null })
+          .where(eq(artifacts.id, artifactId));
+        await tx
+          .delete(artifacts)
+          .where(and(eq(artifacts.id, artifactId), eq(artifacts.companyId, companyId)));
+      });
+
+      // F4 (PR#319 review): log the deletion AFTER the transaction commits so a
+      // rolled-back tx never records a delete_artifact that did not happen.
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId ?? null,
+        runId: actor.runId ?? null,
+        action: "delete_artifact",
+        entityType: "artifact",
+        entityId: artifactId,
+        details: { title: existing.title },
+      });
+
+      return existing;
     },
   };
 }

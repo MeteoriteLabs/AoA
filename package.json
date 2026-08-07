@@ -1,6 +1,7 @@
 {
   "name": "aoa",
   "version": "0.1.0",
+  "description": "AoA Hybrid Workforce Operating System v4",
   "private": true,
   "type": "module",
   "scripts": {
@@ -75,7 +76,8 @@
   "packageManager": "pnpm@9.15.4",
   "pnpm": {
     "patchedDependencies": {
-      "embedded-postgres@18.1.0-beta.16": "patches/embedded-postgres@18.1.0-beta.16.patch"
+      "embedded-postgres@18.1.0-beta.16": "patches/embedded-postgres@18.1.0-beta.16.patch",
+      "tinypool@1.1.1": "patches/tinypool@1.1.1.patch"
     },
     "overrides": {
       "@cursor/sdk>sqlite3": "-",

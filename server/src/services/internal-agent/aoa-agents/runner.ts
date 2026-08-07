@@ -944,7 +944,37 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         executionContext.skills = agentSkills;
       }
 
-      adapterResult = await adapter.execute({
+      // 30-second in-memory throttle for idle heartbeat updating last_event_at
+      let lastHeartbeatAt = 0;
+      const maybeHeartbeat = async () => {
+        if (!runId) return;
+        const now = Date.now();
+        if (now - lastHeartbeatAt > 30000) {
+          lastHeartbeatAt = now;
+          try {
+            await db
+              .update(internalAgentRuns)
+              .set({ lastEventAt: new Date() })
+              .where(eq(internalAgentRuns.id, runId));
+          } catch {
+            /* best-effort heartbeat */
+          }
+        }
+      };
+
+      // F2 (PR#319 review): wall-clock heartbeat so a live-but-silent run (a long
+      // tool call that emits no stream events) still advances last_event_at and is
+      // not false-reaped by the 35-min zombie TTL. Shares maybeHeartbeat's 30s
+      // throttle, so timer + stream events never double-write. unref() so it never
+      // keeps the process alive; cleared in finally so it stops the instant the run
+      // ends (a stray post-run tick only touches last_event_at, which the reaper
+      // ignores for terminal runs — harmless).
+      const heartbeatTimer = setInterval(() => { void maybeHeartbeat(); }, 30_000);
+      if (typeof (heartbeatTimer as { unref?: () => void }).unref === "function") {
+        (heartbeatTimer as { unref: () => void }).unref();
+      }
+      try {
+        adapterResult = await adapter.execute({
         runId: runId ?? `aoa-${agentId}`,
         agent,
         runtime: agent.runtimeConfig ?? {},
@@ -970,10 +1000,19 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         // T1: stream the CLI transcript + one redacted adapter.invoke event into
         // the run log (was: two literal no-ops that discarded everything). Both
         // sink callbacks swallow store failures internally.
-        onLog: crewLogSink ? crewLogSink.onLog : async () => {},
-        onMeta: crewLogSink ? crewLogSink.onMeta : async () => {},
+        onLog: async (stream, chunk) => {
+          await maybeHeartbeat();
+          if (crewLogSink) await crewLogSink.onLog(stream, chunk);
+        },
+        onMeta: async (meta) => {
+          await maybeHeartbeat();
+          if (crewLogSink) await crewLogSink.onMeta(meta);
+        },
         authToken: undefined, onSpawn: () => {},
-      });
+        });
+      } finally {
+        clearInterval(heartbeatTimer);
+      }
     }
 
     // Silent-failure guard: a CLI agent can finish its run WITHOUT calling
@@ -1125,123 +1164,82 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     // relay), never a `completed` run with orphaned `proposed` rows. A run that did NOT succeed
     // never seals → its proposed rows stay un-committable and are reaped by the GC. The relay
     // then commits only sealed `ready` rows — the failed-run-leak (Codex P1) is structurally gone.
-    if (
-      runResult.status === "succeeded" &&
-      runId &&
-      bridgeThreadId &&
-      discussionRunMode === "controller_action_gate"
-    ) {
-      // Best-effort: a transient seal read/write failure must NOT fail a run that already succeeded
-      // (the agent did its work). On failure the rows stay `proposed`; the sweep GC then RE-SEALS this
-      // completed run's key-set (gcOrphanedProposedActions Step 2, ~2-min cadence), so the actions are
-      // recovered and committed — NOT lost. Far better than flipping a succeeded run to `failed`.
-      // Mirrors the freshness-capture best-effort guard above.
-      try {
-        const { threadAgentActionService } = await import("../../thread-agent-actions.js");
-        const [runRow] = await db
-          .select({ keys: internalAgentRuns.proposedActionKeys })
-          .from(internalAgentRuns)
-          .where(eq(internalAgentRuns.id, runId))
-          .limit(1);
-        const keys = (runRow?.keys ?? []) as string[];
-        if (keys.length > 0) {
-          await threadAgentActionService(db).sealRunActions({
-            companyId: payload.companyId,
-            threadId: bridgeThreadId,
-            idempotencyKeys: keys,
-          });
-        }
-      } catch (sealErr) {
-        log.warn(
-          { err: sealErr, runId, threadId: bridgeThreadId },
-          "aoa-runner: outbox seal failed — actions left unsealed; GC will re-seal this completed run on the next sweep",
-        );
-      }
-    }
-
-    // Thread controller runs commit action-gated side effects in
-    // thread-orchestration.ts after re-checking the controller epoch. Direct
-    // participation / mention / delegated thread runs have no outer controller,
-    // so they must flush their own freshness-checked action queue here (the SEAL
-    // above has already promoted this run's rows to `ready`).
-    if (
-      runResult.status === "succeeded" &&
-      runId &&
-      bridgeThreadId &&
-      discussionRunMode === "controller_action_gate" &&
-      payload.source !== "thread.controller"
-    ) {
-      const { threadAgentActionService } = await import("../../thread-agent-actions.js");
-      const commitResult = await threadAgentActionService(db).commitThreadAgentActions({
-        companyId: payload.companyId,
-        threadId: bridgeThreadId,
-        runId,
-      });
-      // A run whose work was ENTIRELY discarded (nothing committed, yet it
-      // proposed actions that were suppressed/blocked/failed) is otherwise
-      // invisible — the run row still reads "completed". Surface it at warn so a
-      // fully-suppressed run (e.g. all actions stale, or snapshot_unavailable
-      // from a freshness-capture failure above) is operator-visible, not silent.
-      const fullySuppressed =
-        commitResult.committed === 0 &&
-        commitResult.suppressed + commitResult.blocked + commitResult.failed > 0;
-      if (fullySuppressed) {
-        log.warn(
-          { runId, threadId: bridgeThreadId, commitResult },
-          "aoa-runner: discussion run fully suppressed — no actions committed",
-        );
-      } else {
-        log.info(
-          { runId, threadId: bridgeThreadId, commitResult },
-          "aoa-runner: committed direct discussion actions",
-        );
-      }
-
-      // Re-arm the controller if this self-flush left retryable work (Codex round-8). Mirrors the
-      // controller commit (thread-orchestration Step 5 reschedule), the committing reaper, and the GC
-      // re-seal: EVERY commit path that leaves `failed`/lost-race rows must set pendingRun so the next
-      // sweep re-drives them — otherwise a mixed direct flush (one action commits, another hits a
-      // transient error or loses the CAS) strands retryable rows until an unrelated future human entry.
-      // Only ever writes pendingRun=true (safe vs the claim discriminator, which keys on pendingRun===false).
-      if (commitResult.failed > 0 || commitResult.lostRace > 0) {
-        await db
-          .update(threadOrchestrationState)
-          .set({ pendingRun: true, updatedAt: new Date() })
-          .where(eq(threadOrchestrationState.threadId, bridgeThreadId));
-      }
-    }
-
     if (runId) {
+      const targetRunId = runId;
       const activeExecutionMs = Date.now() - startedAt;
-      const terminalRows = await db.update(internalAgentRuns)
-        .set({
-          status: runResult.status === "failed" ? "failed" : "completed",
-          errorMessage: runResult.errorMessage ?? null,
-          tokenUsage: adapterUsage ? {
-            inputTokens: adapterUsage.inputTokens,
-            outputTokens: adapterUsage.outputTokens,
-            ...(typeof adapterUsage.cachedInputTokens === "number"
-              ? { cachedInputTokens: adapterUsage.cachedInputTokens }
-              : {}),
-          } : null,
-          costCents,
-          durationMs: activeExecutionMs,
-          activeExecutionMs,
-          humanQuestionWaitMs: inheritedHumanQuestionWaitMs,
-          totalWallClockMs: activeExecutionMs + inheritedHumanQuestionWaitMs,
-          completedAt: new Date(),
-          // Audit #27: folded here (was a separate update pre-execute). This is
-          // the natural home — one round-trip for the final run-row write.
-          ...(promptSnapshot !== null ? { promptSnapshot } : {}),
-        })
-        .where(and(eq(internalAgentRuns.id, runId), eq(internalAgentRuns.status, "running")))
-        .returning({ status: internalAgentRuns.status, errorMessage: internalAgentRuns.errorMessage });
+      const setPayload = {
+        status: runResult.status === "failed" ? "failed" : "completed",
+        errorMessage: runResult.errorMessage ?? null,
+        tokenUsage: adapterUsage ? {
+          inputTokens: adapterUsage.inputTokens,
+          outputTokens: adapterUsage.outputTokens,
+          ...(typeof adapterUsage.cachedInputTokens === "number"
+            ? { cachedInputTokens: adapterUsage.cachedInputTokens }
+            : {}),
+        } : null,
+        costCents,
+        durationMs: activeExecutionMs,
+        activeExecutionMs,
+        humanQuestionWaitMs: inheritedHumanQuestionWaitMs,
+        totalWallClockMs: activeExecutionMs + inheritedHumanQuestionWaitMs,
+        completedAt: new Date(),
+        // Audit #27: folded here (was a separate update pre-execute). This is
+        // the natural home — one round-trip for the final run-row write.
+        ...(promptSnapshot !== null ? { promptSnapshot } : {}),
+      };
+
+      const shouldSeal =
+        runResult.status === "succeeded" &&
+        bridgeThreadId &&
+        discussionRunMode === "controller_action_gate";
+
+      let terminalRows: Array<{ status: string; errorMessage: string | null }>;
+
+      if (shouldSeal) {
+        const { threadAgentActionService } = await import("../../thread-agent-actions.js");
+        const runTx = typeof db.transaction === "function"
+          ? (cb: (tx: any) => Promise<any>) => db.transaction(cb)
+          : async (cb: (tx: any) => Promise<any>) => cb(db);
+
+        terminalRows = await runTx(async (tx) => {
+          const [runRow] = await tx
+            .select({ keys: internalAgentRuns.proposedActionKeys })
+            .from(internalAgentRuns)
+            .where(eq(internalAgentRuns.id, targetRunId))
+            .limit(1);
+          const keys = (runRow?.keys ?? []) as string[];
+          if (keys.length > 0) {
+            await threadAgentActionService(tx).sealRunActions({
+              companyId: payload.companyId,
+              threadId: bridgeThreadId,
+              idempotencyKeys: keys,
+            });
+          }
+
+          if (payload.source !== "thread.controller") {
+            await tx
+              .update(threadOrchestrationState)
+              .set({ pendingRun: true, updatedAt: new Date() })
+              .where(eq(threadOrchestrationState.threadId, bridgeThreadId));
+          }
+
+          return tx.update(internalAgentRuns)
+            .set(setPayload)
+            .where(and(eq(internalAgentRuns.id, targetRunId), eq(internalAgentRuns.status, "running")))
+            .returning({ status: internalAgentRuns.status, errorMessage: internalAgentRuns.errorMessage });
+        });
+      } else {
+        terminalRows = await db.update(internalAgentRuns)
+          .set(setPayload)
+          .where(and(eq(internalAgentRuns.id, targetRunId), eq(internalAgentRuns.status, "running")))
+          .returning({ status: internalAgentRuns.status, errorMessage: internalAgentRuns.errorMessage });
+      }
       const persistedTerminal = terminalRows[0] ?? await db.select({
         status: internalAgentRuns.status,
         errorMessage: internalAgentRuns.errorMessage,
       }).from(internalAgentRuns).where(and(
         eq(internalAgentRuns.companyId, payload.companyId),
-        eq(internalAgentRuns.id, runId),
+        eq(internalAgentRuns.id, targetRunId),
       )).then((rows) => rows[0] ?? null);
       if (
         continuationIdempotencyKey

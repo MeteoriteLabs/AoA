@@ -208,6 +208,23 @@ export function artifactRoutes(db: Db) {
     res.json(updated);
   });
 
+  // Permanently delete artifact (founder-gated)
+  router.delete("/companies/:companyId/artifacts/:id", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const id = req.params.id as string;
+    await assertCompanyAccess(db, req, companyId);
+    assertBoard(req);
+    await assertRole(db, req, companyId, "founder");
+
+    const actor = getActorInfo(req);
+    const deleted = await svc.deleteArtifact(companyId, id, actor);
+    if (!deleted) {
+      res.status(404).json({ error: "Artifact not found" });
+      return;
+    }
+    res.json(deleted);
+  });
+
   // MCP inbound: push artifact version from external tool (Decision #69, #70)
   router.post(
     "/mcp/artifacts/:id/versions",

@@ -113,7 +113,7 @@ import { threadOrchestrationState } from "@armyofagents/db";
 // Thenable chain stub (mirrors aoa-runner.test.ts).
 function ch(ret: unknown[]) {
   const c: any = {};
-  c.values = () => c; c.set = () => c; c.where = () => c; c.from = () => c;
+  c.values = () => c; c.set = () => c; c.where = () => c; c.from = () => c; c.limit = () => c;
   c.returning = () => Promise.resolve(ret);
   c.then = (r: (v: unknown[]) => unknown) => Promise.resolve(ret).then(r);
   return c;
@@ -205,9 +205,10 @@ describe("runAoaAgent — context bundle wiring (Task 4.3)", () => {
     bundleMock.mockRejectedValue(new Error("bundle exploded"));
 
     const db: any = {
-      select: () => ch([{ id: "scout-1", companyId: "co-1", name: "Scout", adapterType: "claude_local", adapterConfig: {}, runtimeConfig: { aoa: { instruction: "## Persona\nScout.", role: "scout" } } }]),
+      select: () => ch([{ id: "scout-1", companyId: "co-1", name: "Scout", adapterType: "claude_local", adapterConfig: {}, runtimeConfig: { aoa: { instruction: "## Persona\nScout.", role: "scout" } }, status: "completed", keys: [] }]),
       insert: () => ({ values: () => ({ returning: () => Promise.resolve([{ id: "run-x" }]) }) }),
-      update: () => ch([{ id: "x" }]),
+      update: () => ch([{ id: "x", status: "completed", errorMessage: null }]),
+      transaction: (cb: any) => cb(db),
     };
 
     const result = await runAoaAgent(db, "scout-1", {
@@ -227,19 +228,16 @@ describe("runAoaAgent — context bundle wiring (Task 4.3)", () => {
     expect(prompt).not.toContain("## Context");
   });
 
-  // Codex round-8: the direct/mention self-flush must re-arm the controller when it leaves retryable
-  // rows, like every other commit path (controller reschedule / reaper / GC re-seal) — else a mixed
-  // flush strands `failed`/lost-race rows until an unrelated future human entry.
-  it("direct self-flush re-arms pendingRun when the flush leaves retryable rows", async () => {
+  // Issue #205: non-controller runs seal proposed actions and set pendingRun = true for single-consumer sweep drain
+  it("non-controller thread run sets pendingRun = true when sealing proposed actions", async () => {
     bundleMock.mockResolvedValue("ctx");
-    // One action commits, another transiently fails (or loses the CAS) — retryable work is left behind.
-    commitMock.mockResolvedValueOnce({ committed: 1, suppressed: 0, blocked: 0, failed: 1, lostRace: 0 });
 
     const updateTables: unknown[] = [];
     const db: any = {
-      select: () => ch([{ id: "scout-1", companyId: "co-1", name: "Scout", adapterType: "claude_local", adapterConfig: {}, runtimeConfig: { aoa: { instruction: "## Persona\nScout.", role: "scout" } } }]),
+      select: () => ch([{ id: "scout-1", companyId: "co-1", name: "Scout", adapterType: "claude_local", adapterConfig: {}, runtimeConfig: { aoa: { instruction: "## Persona\nScout.", role: "scout" } }, status: "completed", keys: [] }]),
       insert: () => ({ values: () => ({ returning: () => Promise.resolve([{ id: "run-rearm" }]) }) }),
-      update: (table: unknown) => { updateTables.push(table); return ch([{ id: "x" }]); },
+      update: (table: unknown) => { updateTables.push(table); return ch([{ id: "x", status: "completed", errorMessage: null }]); },
+      transaction: (cb: any) => cb(db),
     };
 
     await runAoaAgent(db, "scout-1", {
@@ -250,28 +248,29 @@ describe("runAoaAgent — context bundle wiring (Task 4.3)", () => {
       effectiveAutonomy: 1,
     });
 
-    expect(updateTables).toContain(threadOrchestrationState); // re-armed for the next sweep
+    expect(updateTables).toContain(threadOrchestrationState); // sets pendingRun = true for sweep-controller
   });
 
-  it("direct self-flush does NOT re-arm when the flush left no retryable rows", async () => {
+  it("controller thread run does NOT set pendingRun = true on threadOrchestrationState", async () => {
     bundleMock.mockResolvedValue("ctx");
-    // Default commitMock returns failed:0, lostRace:0 — a clean flush, nothing to re-drive.
 
     const updateTables: unknown[] = [];
     const db: any = {
-      select: () => ch([{ id: "scout-1", companyId: "co-1", name: "Scout", adapterType: "claude_local", adapterConfig: {}, runtimeConfig: { aoa: { instruction: "## Persona\nScout.", role: "scout" } } }]),
+      select: () => ch([{ id: "scout-1", companyId: "co-1", name: "Scout", adapterType: "claude_local", adapterConfig: {}, runtimeConfig: { aoa: { instruction: "## Persona\nScout.", role: "scout" } }, status: "completed", keys: [] }]),
       insert: () => ({ values: () => ({ returning: () => Promise.resolve([{ id: "run-clean" }]) }) }),
-      update: (table: unknown) => { updateTables.push(table); return ch([{ id: "x" }]); },
+      update: (table: unknown) => { updateTables.push(table); return ch([{ id: "x", status: "completed", errorMessage: null }]); },
+      transaction: (cb: any) => cb(db),
     };
 
     await runAoaAgent(db, "scout-1", {
       companyId: "co-1",
-      source: "thread.participation",
+      source: "thread.controller",
       threadId: "thread-clean",
       mention: "@Scout",
       effectiveAutonomy: 1,
     });
 
-    expect(updateTables).not.toContain(threadOrchestrationState); // clean flush → no spurious re-arm
+    expect(updateTables).not.toContain(threadOrchestrationState); // controller runs skip setting pendingRun
   });
 });
+

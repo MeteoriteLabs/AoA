@@ -53,6 +53,10 @@ beforeAll(async () => {
 }, 180_000);
 
 afterAll(async () => {
+  const handleIpcErr = (reason: any) => {
+    if (reason?.code === "ERR_IPC_CHANNEL_CLOSED" || reason?.message === "Channel closed") return;
+  };
+  process.on("unhandledRejection", handleIpcErr);
   try {
     if (pg) await pg.stop();
   } catch {
@@ -63,6 +67,7 @@ afterAll(async () => {
   } catch {
     /* ignore */
   }
+  process.removeListener("unhandledRejection", handleIpcErr);
 }, 60_000);
 
 async function seedCompanyWithFounder(): Promise<{ companyId: string; founderId: string }> {

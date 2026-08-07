@@ -1,7 +1,8 @@
 diff --git a/dist/index.js b/dist/index.js
+index ccfe17a82f4879bf20cc345c579a987d9eba5309..a6242f19301333b1461b172750080d3985044dd0 100644
 --- a/dist/index.js
 +++ b/dist/index.js
-@@ -23,7 +23,7 @@
+@@ -23,7 +23,7 @@ const { Client } = pg;
   * for a particular string, we need to force that string into the right locale.
   * @see https://github.com/leinelissen/embedded-postgres/issues/15
   */
@@ -10,7 +11,7 @@ diff --git a/dist/index.js b/dist/index.js
  // The default configuration options for the class
  const defaults = {
      databaseDir: path.join(process.cwd(), 'data', 'db'),
-@@ -133,7 +133,7 @@
+@@ -133,7 +133,7 @@ class EmbeddedPostgres {
                      `--pwfile=${passwordFile}`,
                      `--lc-messages=${LC_MESSAGES_LOCALE}`,
                      ...this.options.initdbFlags,
@@ -19,7 +20,7 @@ diff --git a/dist/index.js b/dist/index.js
                  // Connect to stderr, as that is where the messages get sent
                  (_a = process.stdout) === null || _a === void 0 ? void 0 : _a.on('data', (chunk) => {
                      // Parse the data as a string and log it
-@@ -177,7 +177,7 @@
+@@ -177,7 +177,7 @@ class EmbeddedPostgres {
                      '-p',
                      this.options.port.toString(),
                      ...this.options.postgresFlags,
@@ -28,3 +29,46 @@ diff --git a/dist/index.js b/dist/index.js
                  // Connect to stderr, as that is where the messages get sent
                  (_a = this.process.stderr) === null || _a === void 0 ? void 0 : _a.on('data', (chunk) => {
                      // Parse the data as a string and log it
+@@ -209,21 +209,29 @@ class EmbeddedPostgres {
+             }
+             // Kill the existing postgres process
+             yield new Promise((resolve) => {
+-                var _a, _b, _c;
+-                // Register a handler for when the process finally exists
+-                (_a = this.process) === null || _a === void 0 ? void 0 : _a.on('exit', resolve);
++                var _b, _c;
++                if (!this.process || this.process.exitCode !== null) return resolve();
++                const timer = setTimeout(resolve, 2000);
++                this.process.on('exit', () => {
++                    clearTimeout(timer);
++                    resolve();
++                });
+                 // GUARD: Check if we're on Windows, since Windows doesn't support SIGINT
+                 if (platform() === 'win32') {
+                     // GUARD: Double check the pid is there to keep TypeScript happy
+                     if (!((_b = this.process) === null || _b === void 0 ? void 0 : _b.pid)) {
+-                        throw new Error('Could not find process PID');
++                        return resolve();
+                     }
+                     // Actually kill the process using the Windows taskkill command
+                     spawn('taskkill', ['/pid', this.process.pid.toString(), '/f', '/t']);
+                 }
+                 else {
+-                    // If on a sane OS, simply kill using SIGINT
+-                    (_c = this.process) === null || _c === void 0 ? void 0 : _c.kill('SIGINT');
++                    // Use pg_ctl stop to gracefully stop PostgreSQL without sending process signals
++                    try {
++                        child_process_1.spawnSync(path_1.default.join(this.options.postgresPath, 'pg_ctl'), ['stop', '-m', 'immediate', '-D', this.options.databaseDir], { stdio: 'ignore' });
++                    } catch (_err) {
++                        (_c = this.process) === null || _c === void 0 ? void 0 : _c.kill('SIGTERM');
++                    }
+                 }
+             });
+             // Clean up process
+@@ -362,5 +370,5 @@ function gracefulShutdown(done) {
+     });
+ }
+ // Register graceful shutdown function
+-AsyncExitHook(gracefulShutdown);
++// AsyncExitHook(gracefulShutdown);
+ export default EmbeddedPostgres;

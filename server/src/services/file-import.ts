@@ -12,8 +12,6 @@
 
 import { and, eq, isNull, lte, or } from "drizzle-orm";
 import type { Readable } from "node:stream";
-import { PDFParse } from "pdf-parse";
-import mammoth from "mammoth";
 import type { Db } from "@armyofagents/db";
 import { fileImportJobs, memoryItems } from "@armyofagents/db";
 import type { StorageService } from "../storage/types.js";
@@ -73,6 +71,7 @@ export async function extractTextFromBuffer(
 
   switch (mimeType) {
     case "application/pdf": {
+      const { PDFParse } = await import("pdf-parse");
       const parser = new PDFParse({ data: buffer });
       const result = await parser.getText();
       return { text: result.text, warnings: [] };
@@ -82,6 +81,7 @@ export async function extractTextFromBuffer(
       // Use convertToHtml (not extractRawText) to preserve heading structure
       // in memory during extraction. HTML is used transiently; only the
       // warning strings are persisted to the job's parserWarnings column.
+      const mammoth = await import("mammoth");
       const result = await mammoth.convertToHtml({ buffer });
       const text = result.value
         .replace(/<[^>]+>/g, "\n")       // strip HTML tags → newlines

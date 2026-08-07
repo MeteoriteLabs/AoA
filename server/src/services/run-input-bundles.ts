@@ -318,11 +318,20 @@ export async function buildRunInputBundle(input: {
           continue;
         }
         let localPath: string | null = null;
-        if (input.cwd && artifact.currentVersionId) {
+        const targetVersionId =
+          metadataString(item.metadata, "artifactVersionId") ??
+          metadataString(item.metadata, "versionId") ??
+          artifact.currentVersionId;
+        if (input.cwd && targetVersionId) {
           const version = await input.db
             .select({ content: artifactVersions.content, fileUrl: artifactVersions.fileUrl })
             .from(artifactVersions)
-            .where(eq(artifactVersions.id, artifact.currentVersionId))
+            // F1 (PR#319 review): scope the pinned-version lookup to THIS artifact.
+            // targetVersionId comes from agent-influenceable item.metadata; without the
+            // artifactId predicate a version UUID belonging to another artifact (or tenant)
+            // would be loaded and written into the run-input file. The enclosing artifact
+            // fetch is company-scoped, so pinning to artifact.id closes the isolation hole.
+            .where(and(eq(artifactVersions.id, targetVersionId), eq(artifactVersions.artifactId, artifact.id)))
             .then((rows) => rows[0] ?? null);
           if (version?.content) {
             localPath = await writeRunInputFile({
