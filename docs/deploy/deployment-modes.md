@@ -83,6 +83,86 @@ pnpm aoa onboard
 # Choose "cloud_auth"
 ```
 
+## Execution Isolation (cloud_auth)
+
+On `cloud_auth`, every agent, crew, and Commander run — plus the host one-shot
+CLIs (extraction, compaction, readiness probes) — executes inside a per-run E2B
+sandbox, reached through the MCP broker. The control-plane host never runs
+tenant model output directly. Self-hosted deployments (`local_trusted` and
+single-tenant `authenticated`) are unchanged: they spawn host-direct with the
+in-process MCP bridge, and the D1 unsandboxed-multitenant guard is a no-op.
+
+### Execution isolation by run kind
+
+| Run kind | `local_trusted` / `authenticated` (self-hosted) | `cloud_auth` (multi-tenant) |
+|----------|--------------------------------------------------|-----------------------------|
+| Org agent | host-direct or docker (operator choice) | ephemeral E2B sandbox via broker |
+| Crew agent | host-direct or docker | ephemeral E2B sandbox via broker (always ephemeral) |
+| **Commander** | **host-direct spawn + in-process bridge (byte-identical)** | **warm per-conversation E2B sandbox via broker (Commander run-JWT); ephemeral-per-turn if `warmCommanderConversations=false`** |
+| Readiness probes / compaction | host-direct | ephemeral one-shot E2B sandbox |
+
+Every real dispatch passes a resolved `provider-sandbox` execution target into
+the D1 guard (`assertUnsandboxedMultitenantAllowed`). A `null`/`local` target
+(acquire failed) still fails closed on `cloud_auth` — there is no silent host
+fallback. The guard is a **closed refuse-enumeration** (refuses local +
+docker-family, permits everything else), so a future tenant-operated
+`remote-tenant-runner` is an allowed category by construction; the reserved
+driver name (`RESERVED_TENANT_RUNNER_DRIVER = "remote-runner"`) is documented
+but not yet admitted in v1.
+
+### Instance experimental settings (Commander warm sandboxes)
+
+These live on the singleton `instance_settings` row (not env vars):
+
+- `warmCommanderConversations` (default `true`) — when true on `cloud_auth`,
+  each active Commander conversation holds a warm (paused/resumed)
+  per-conversation E2B sandbox across turns; the idle reaper + per-company cap
+  bound accumulation. Set `false` to run Commander ephemeral-per-turn
+  (create + destroy each turn), trading warm-disk continuity (codex `resume`
+  via `~/.codex`) for a smaller idle-VM footprint.
+- `enableWarmSandboxReaper` + `warmSandboxIdleTtlMinutes` (default `30`) — the
+  idle reaper destroys warm paused leases older than the TTL and evicts the
+  oldest paused lease when a per-company cap is hit, bounding the per-user
+  idle-VM cost surface the warm model introduces.
+
+### Commander-in-sandbox credential taxonomy
+
+Extends the parent E2B credential taxonomy (cloud-execution-isolation spec §9)
+for the Commander run kind. Same posture org/crew already have — intra-company
+defense-in-depth, not a tenant boundary.
+
+**Never enters the Commander VM** (host-side only): `DATABASE_URL` /
+`DIRECT_DATABASE_URL`, the secrets master key, `GITHUB_PAT`, `BETTER_AUTH_SECRET`
+/ `AOA_AGENT_JWT_SECRET` (the key that **mints** the run-JWT), `REDIS_URL`, the
+embeddings `OPENAI_API_KEY`, the operator `~/.claude` login, and OAuth connector
+refresh tokens / signed bundles (`mcp:oauth:<id>`).
+
+**Enters the Commander VM** (scoped, short-lived): the per-turn Commander
+run-JWT as `AOA_API_KEY` (company-bound, ~10 min TTL, dead after the turn), the
+company's own BYO model-provider API key (cloud shared-pool is API-key-only — no
+subscription creds), and the company's own connector **access** tokens
+(`AOA_MCP_*_TOKEN`, short-lived, re-resolved fresh at every stage-in incl. warm
+resume — never the stale paused-env token). The U5 env allowlist
+(`buildSandboxEnvAllowlist`) is the sink that enforces this, keyed on the
+**model provider family** (`anthropic`/`openai`/…) — not the E2B infra id.
+
+**Blast radius of a fully-compromised Commander turn:** that ONE company's own
+tasks / goals / memory / artifacts (read/write within the driving user's RBAC),
+its own injected model key, its own connector access tokens. **Cannot reach:**
+the control-plane DB, the secrets/signing keys, `GITHUB_PAT`, any other tenant's
+data, the operator login, or OAuth refresh tokens.
+
+**Threat-model notes:**
+
+- **N-1 — the Commander run-JWT is a same-company bearer credential** (parity
+  with the agent run-JWT), so its blast radius is "all same-company
+  `assertCompanyAccess`-gated routes," bounded by the 10-min TTL + per-user +
+  company scope — **not** broker-only. A leaked token is a same-company,
+  time-boxed credential, not a cross-tenant one.
+- **N-2 — the mint site derives `companyId`/`userId`/`userRole` server-side**
+  from the authenticated session, never from client input, so a caller cannot
+  widen its own company/role by crafting the token request.
+
 ## Board Claim Flow
 
 When migrating from `local_trusted` to `authenticated`, set
