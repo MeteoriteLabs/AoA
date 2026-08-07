@@ -1,6 +1,6 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { writeFile } from "node:fs/promises";
+import { writeFile, unlink } from "node:fs/promises";
 import type { Db } from "@armyofagents/db";
 import { showRefSchema, type ShowRef } from "@armyofagents/shared";
 import type {
@@ -107,12 +107,19 @@ export async function resolveCommanderSandboxContext(
     commanderConversationId: input.conversationId,
   });
 
-  if (!acquired.sandbox || !acquired.sandbox.configPatch.executionTarget) {
-    // No platform default (desktop path) or a non-target patch — host fallback.
+  const releaseLease = input.releaseLeaseOverride ?? defaultReleaseLease;
+
+  if (!acquired.sandbox) {
+    // No platform default (desktop path) — nothing was acquired, host fallback.
     return null;
   }
-
-  const releaseLease = input.releaseLeaseOverride ?? defaultReleaseLease;
+  if (!acquired.sandbox.configPatch.executionTarget) {
+    // A lease WAS acquired but yielded no usable execution target (a malformed
+    // platform-default env). Release it so the VM does not leak, then fall back
+    // to the host path. (W7.5d review F1.)
+    await releaseLease(db, acquired).catch(() => undefined);
+    return null;
+  }
 
   // ★ N-2 (security): every JWT claim is derived from the SERVER-SIDE resolved
   // input (the same session-trusted companyId/userId/userRole/conversationId the
@@ -252,7 +259,7 @@ export async function* runCommanderAdapterTurn(
     }
   };
 
-  const { config, mcpBridge, mcpServers } = await buildSandboxAdapterConfig(input);
+  const { config, mcpBridge, mcpServers, tempFiles } = await buildSandboxAdapterConfig(input);
 
   const syntheticAgent = {
     id: input.conversationId, // Commander has no agent row — synthesize (SC6)
@@ -287,27 +294,38 @@ export async function* runCommanderAdapterTurn(
       wake();
     }
   })();
+  // Prevent an unhandled rejection if the consumer abandons this generator
+  // (.return()) before the `await resultPromise` below — the real error still
+  // surfaces via that await on the normal path. (W7.5d review F2.)
+  void resultPromise.catch(() => undefined);
 
   // Consumer loop: yield buffered chunks as they arrive until execute resolves.
-  while (!done || pending.length > 0) {
-    while (pending.length > 0) yield { kind: "chunk", chunk: pending.shift()! };
-    if (done) break;
-    await new Promise<void>((resolve) => {
-      notify = resolve;
-    });
-  }
-
-  const result = await resultPromise;
-
-  if (parser) {
-    for (const c of parser.flush()) yield { kind: "chunk", chunk: c };
-  } else {
-    for (const c of await parseCodexBufferedChunks(codexStdout)) {
-      yield { kind: "chunk", chunk: c };
+  // The `finally` unlinks the host temp files (system-prompt + --mcp-config) that
+  // buildSandboxAdapterConfig wrote — on normal completion, a throw, OR consumer
+  // abandonment (.return()) — so nothing accumulates on the control-plane host. (W7.5d review F3)
+  try {
+    while (!done || pending.length > 0) {
+      while (pending.length > 0) yield { kind: "chunk", chunk: pending.shift()! };
+      if (done) break;
+      await new Promise<void>((resolve) => {
+        notify = resolve;
+      });
     }
-  }
 
-  yield { kind: "result", result };
+    const result = await resultPromise;
+
+    if (parser) {
+      for (const c of parser.flush()) yield { kind: "chunk", chunk: c };
+    } else {
+      for (const c of await parseCodexBufferedChunks(codexStdout)) {
+        yield { kind: "chunk", chunk: c };
+      }
+    }
+
+    yield { kind: "result", result };
+  } finally {
+    for (const f of tempFiles) await unlink(f).catch(() => undefined);
+  }
 }
 
 /**
@@ -374,6 +392,7 @@ async function buildSandboxAdapterConfig(input: RunCommanderAdapterTurnInput): P
   config: Record<string, unknown>;
   mcpBridge: McpBridgeSpec | McpHttpServerSpec | undefined;
   mcpServers: Record<string, McpServerSpec>;
+  tempFiles: string[]; // host temp files the caller must unlink after the turn (F3)
 }> {
   // System context → a HOST temp file passed as config.instructionsFilePath. The
   // adapter reads it, stages it into the VM, and rewrites the arg to the remote
@@ -382,6 +401,7 @@ async function buildSandboxAdapterConfig(input: RunCommanderAdapterTurnInput): P
   // cli-mode path used --system-prompt-file (REPLACE) to shield the user's global
   // CLAUDE.md; in a clean VM there is no user global CLAUDE.md so append is
   // acceptable/safer. [flagged for review]
+  const tempFiles: string[] = [];
   let instructionsFilePath: string | undefined;
   if (input.systemContext && input.systemContext.trim().length > 0) {
     instructionsFilePath = join(
@@ -389,6 +409,7 @@ async function buildSandboxAdapterConfig(input: RunCommanderAdapterTurnInput): P
       `aoa-commander-sys-${sanitize(input.companyId)}-${sanitize(input.turnId)}.md`,
     );
     await writeFile(instructionsFilePath, input.systemContext, "utf8");
+    tempFiles.push(instructionsFilePath);
   }
 
   const baseConfig: Record<string, unknown> = {
@@ -408,7 +429,7 @@ async function buildSandboxAdapterConfig(input: RunCommanderAdapterTurnInput): P
     // codex has no --mcp-config flag; it discovers MCP from CODEX_HOME/config.toml.
     // The adapter writes [mcp_servers.aoa] from ctx.mcpBridge and (W7.4) stages the
     // managed config.toml into the remote CODEX_HOME.
-    return { config: baseConfig, mcpBridge: bridgeSpec, mcpServers: input.connectorSpecs };
+    return { config: baseConfig, mcpBridge: bridgeSpec, mcpServers: input.connectorSpecs, tempFiles };
   }
 
   // claude: write the brokered aoa --mcp-config JSON to a host temp file and inject
@@ -421,6 +442,7 @@ async function buildSandboxAdapterConfig(input: RunCommanderAdapterTurnInput): P
     `aoa-commander-mcp-${sanitize(input.companyId)}-${sanitize(input.turnId)}.json`,
   );
   await writeFile(mcpConfigPath, JSON.stringify(buildMcpConfig(input.mcpParams), null, 2), "utf8");
+  tempFiles.push(mcpConfigPath);
   return {
     config: {
       ...baseConfig,
@@ -435,6 +457,7 @@ async function buildSandboxAdapterConfig(input: RunCommanderAdapterTurnInput): P
     // passed for parity with the crew call site.
     mcpBridge: bridgeSpec,
     mcpServers: input.connectorSpecs,
+    tempFiles,
   };
 }
 

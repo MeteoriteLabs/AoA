@@ -139,4 +139,34 @@ describe("resolveCommanderSandboxContext", () => {
       if (prevAuth) process.env.BETTER_AUTH_SECRET = prevAuth;
     }
   });
+
+  it("cloud with an acquired lease but NO execution target: releases the lease and returns null (W7.5d review F1)", async () => {
+    setDeploymentMode("cloud_auth");
+    const release = vi.fn(async () => {});
+    // A lease WAS acquired (sandbox truthy) but the configPatch yielded no
+    // executionTarget (malformed platform-default env) — must NOT leak the VM.
+    acquireMock.mockResolvedValue({
+      sandbox: {
+        environment: { id: "env1", companyId: "c1", driver: "sandbox" },
+        lease: { id: "l1", companyId: "c1", environmentId: "env1", provider: "e2b", leasePolicy: "reuse_by_agent" },
+        configPatch: { executionTarget: null },
+      },
+      lease: { id: "l1", companyId: "c1", environmentId: "env1", provider: "e2b" },
+      warmResolved: true,
+    });
+    const { resolveCommanderSandboxContext } = await load();
+    const ctx = await resolveCommanderSandboxContext({} as any, {
+      companyId: "c1",
+      userId: "u1",
+      userRole: "founder",
+      conversationId: "conv1",
+      turnId: "run1",
+      apiBaseUrl: "http://api",
+      adapterType: "claude_local",
+      getExperimental: async () => ({ warmCommanderConversations: true }),
+      releaseLeaseOverride: release,
+    } as any);
+    expect(ctx).toBeNull();
+    expect(release).toHaveBeenCalledTimes(1); // released, not leaked
+  });
 });
