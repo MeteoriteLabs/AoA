@@ -43,6 +43,10 @@ import { secretService } from "../../secrets.js";
 // graph (adapter registry + agent/project/secret services) into every consumer
 // of the runner. The value import is dynamic, at the call site below.
 import type { RuntimeSkillEntry } from "../../company-skills.js";
+// Type-only (U6.5): the sandbox-file-movement runner shape captureCrewOutputs
+// expects. The value import (`captureCrewOutputs`) is dynamic, at the call
+// site below, mirroring crew-run-outcome.js's own dynamic-import discipline.
+import type { SandboxFileMovementRunner } from "../../sandbox-file-movement.js";
 import {
   bindInternalAgentWorkQuestionContinuation,
   finalizeInternalAgentWorkQuestionContinuation,
@@ -1395,6 +1399,47 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         const { postCrewRunSuccess, postCrewRunFailure, resolveCrewOutcomeKind } =
           await import("./crew-run-outcome.js");
         if (resolveCrewOutcomeKind(runResult.status) === "success") {
+          // U6.5 (S5): a crew run that targeted a provider sandbox gets its
+          // in-sandbox working-dir diff captured to task_outputs (Decision
+          // #67 — review-gated `detected_file` rows; artifacts stay
+          // founder-gated, never auto-minted here). Mirrors heartbeat.ts's
+          // U6.3 org-path gate: BOTH the acquisition driver AND the resolved
+          // executionTarget must agree it's a provider sandbox. Best-effort —
+          // captureCrewOutputs never throws on its own, but this call is
+          // still wrapped so a defensive future change there can never flip
+          // an already-succeeded run to failed or skip the loopback below.
+          let detectedFiles: Array<{ path: string; type?: string }> = [];
+          if (
+            acquired.sandbox?.environment.driver === "sandbox" &&
+            executionTarget.type === "provider-sandbox"
+          ) {
+            try {
+              const { captureCrewOutputs } = await import("./crew-output-capture.js");
+              detectedFiles = await captureCrewOutputs({
+                db,
+                companyId: payload.companyId,
+                issueId: payload.issueId,
+                agentId,
+                runId,
+                // AdapterExecutionTarget's "provider-sandbox" variant types
+                // `runner` as the execute-only AdapterProviderSandboxRunner,
+                // but the object actually built is
+                // environment-run-orchestrator.ts's buildProviderRunner
+                // output — a strict superset (writeFiles/readFiles/
+                // resolveHost included whenever the underlying runtime
+                // implements them). Cast mirrors heartbeat.ts's identical
+                // U6.3 org-path cast.
+                runner: executionTarget.runner as unknown as SandboxFileMovementRunner,
+                remoteCwd: executionTarget.remoteCwd,
+              });
+            } catch (captureErr) {
+              log.warn(
+                { err: captureErr, issueId: payload.issueId, runId },
+                "aoa-runner: crew output capture failed (best-effort, ignored)",
+              );
+            }
+          }
+
           await postCrewRunSuccess(db, {
             companyId: payload.companyId,
             issueId: payload.issueId,
@@ -1407,6 +1452,7 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
             runId,
             // Task 4: the delivering agent id — provenance for the run-result refs.
             agentId,
+            detectedFiles,
           });
         } else {
           // runResult.status === "failed" WITHOUT a throw — the adapter reported
