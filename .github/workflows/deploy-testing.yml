@@ -15,6 +15,11 @@ on:
         options:
           - authenticated
           - cloud_auth
+      record_0188_marker:
+        description: One-time - snapshot the DB and record the 0188 multi-tenant migration marker before deploying (required the FIRST time you flip a POPULATED instance to cloud_auth)
+        required: false
+        default: false
+        type: boolean
 
 permissions: {}
 
@@ -133,6 +138,54 @@ jobs:
           # this run only. Persistent host-key pinning is intentionally deferred.
           ssh-keyscan -T 10 -p "$DEPLOY_PORT" -H "$DEPLOY_HOST" > "$known_hosts"
           test -s "$known_hosts"
+
+      - name: Record 0188 multi-tenant migration marker (one-time cloud_auth flip)
+        if: ${{ inputs.record_0188_marker }}
+        env:
+          DEPLOY_SHA: ${{ steps.revision.outputs.sha }}
+        run: |
+          set -euo pipefail
+          # One-time operator step for flipping a POPULATED single-tenant instance
+          # to cloud_auth. Migration 0188 is a one-way multi-tenant door: its
+          # snapshot gate refuses to apply until a full DB snapshot has been taken
+          # and "0188" is recorded in instance_settings.general.migrationSnapshots.
+          # This step takes that snapshot and records the marker. It is EXPLICIT
+          # (gated on the record_0188_marker input the operator sets on this one
+          # dispatch) — deliberate, not a silent auto-bypass of the safety gate.
+          ssh_options=(
+            -p "$DEPLOY_PORT"
+            -i "$DEPLOY_KEY_PATH"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o PreferredAuthentications=publickey
+            -o PasswordAuthentication=no
+            -o KbdInteractiveAuthentication=no
+            -o ForwardAgent=no
+            -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$DEPLOY_KNOWN_HOSTS"
+          )
+          target="$DEPLOY_USER@$DEPLOY_HOST"
+          echo "Snapshotting DB before the one-way 0188 marker..."
+          ssh "${ssh_options[@]}" "$target" \
+            "docker exec aoa-db-1 pg_dump -U paperclip paperclip > '$DEPLOY_ROOT/pre-0188-snapshot-$DEPLOY_SHA.sql' && wc -c '$DEPLOY_ROOT/pre-0188-snapshot-$DEPLOY_SHA.sql'"
+          echo "Recording 0188 marker (instance_settings.general.migrationSnapshots += 0188)..."
+          # SQL is base64 to avoid SSH/YAML quoting. Decodes to:
+          #   INSERT INTO instance_settings (singleton_key, general)
+          #   VALUES ('default', '{"migrationSnapshots":["0188"]}'::jsonb)
+          #   ON CONFLICT (singleton_key) DO UPDATE
+          #   SET general = COALESCE(instance_settings.general, '{}'::jsonb)
+          #                 || '{"migrationSnapshots":["0188"]}'::jsonb, updated_at = now();
+          printf '%s' 'SU5TRVJUIElOVE8gaW5zdGFuY2Vfc2V0dGluZ3MgKHNpbmdsZXRvbl9rZXksIGdlbmVyYWwpIFZBTFVFUyAoJ2RlZmF1bHQnLCAneyJtaWdyYXRpb25TbmFwc2hvdHMiOlsiMDE4OCJdfSc6Ompzb25iKSBPTiBDT05GTElDVCAoc2luZ2xldG9uX2tleSkgRE8gVVBEQVRFIFNFVCBnZW5lcmFsID0gQ09BTEVTQ0UoaW5zdGFuY2Vfc2V0dGluZ3MuZ2VuZXJhbCwgJ3t9Jzo6anNvbmIpIHx8ICd7Im1pZ3JhdGlvblNuYXBzaG90cyI6WyIwMTg4Il19Jzo6anNvbmIsIHVwZGF0ZWRfYXQgPSBub3coKTs=' \
+            | base64 -d \
+            | ssh "${ssh_options[@]}" "$target" 'docker exec -i aoa-db-1 psql -U paperclip -d paperclip -v ON_ERROR_STOP=1'
+          echo "Verifying marker contains 0188..."
+          marker="$(ssh "${ssh_options[@]}" "$target" \
+            "docker exec -i aoa-db-1 psql -U paperclip -d paperclip -tAc \"SELECT general->'migrationSnapshots' FROM instance_settings WHERE singleton_key = 'default';\"")"
+          echo "recorded: $marker"
+          case "$marker" in
+            *0188*) echo "OK: 0188 marker present";;
+            *) echo "::error::0188 marker not recorded"; exit 1;;
+          esac
 
       - name: Upload and deploy tested revision
         env:
