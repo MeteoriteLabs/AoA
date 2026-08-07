@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveRuntimeHookBaseUrl } from "../services/heartbeat.js";
+import { resolveRuntimeHookBaseUrl, isLoopbackApiUrl } from "../services/heartbeat.js";
 
 // U2e: the claude_local PreToolUse runtime-permission hook needs a base URL to
 // call back to the control plane. `http://127.0.0.1:${PORT}` is unreachable
@@ -35,5 +35,46 @@ describe("resolveRuntimeHookBaseUrl", () => {
     expect(
       resolveRuntimeHookBaseUrl({ apiUrl: "", port: "4200", brokered: false }),
     ).toBe("http://127.0.0.1:4200");
+  });
+
+  it("sandbox run: THROWS on a loopback AOA_API_URL the VM cannot reach (fail-before-spend, not a silent MCP failure)", () => {
+    for (const url of [
+      "http://localhost:3100",
+      "http://127.0.0.1:3100",
+      "http://[::1]:3100",
+      "http://0.0.0.0:3100",
+    ]) {
+      expect(() =>
+        resolveRuntimeHookBaseUrl({ apiUrl: url, port: "3100", brokered: true }),
+      ).toThrow(/reachable from the sandbox VM/);
+    }
+  });
+
+  it("sandbox run: a public URL is accepted", () => {
+    expect(
+      resolveRuntimeHookBaseUrl({ apiUrl: "https://cp.example.com", port: "3100", brokered: true }),
+    ).toBe("https://cp.example.com");
+  });
+
+  it("host-local run: a loopback AOA_API_URL is NOT rejected (only brokered runs must be routable)", () => {
+    expect(
+      resolveRuntimeHookBaseUrl({ apiUrl: "http://localhost:3100", port: "3100", brokered: false }),
+    ).toBe("http://localhost:3100");
+  });
+});
+
+describe("isLoopbackApiUrl", () => {
+  it.each([
+    ["http://localhost:3100", true],
+    ["http://127.0.0.1:3100", true],
+    ["http://127.5.5.5:3100", true],
+    ["http://[::1]:3100", true],
+    ["http://0.0.0.0:3100", true],
+    ["http://api.localhost:3100", true],
+    ["https://cp.example.com", false],
+    ["https://staging.aoa.dev/companies/x/mcp", false],
+    ["not a url", false],
+  ])("%s → %s", (url, expected) => {
+    expect(isLoopbackApiUrl(url as string)).toBe(expected);
   });
 });

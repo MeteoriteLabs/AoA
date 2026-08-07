@@ -232,9 +232,36 @@ export function resolveRuntimeHookBaseUrl(input: {
     if (!apiUrl) {
       throw new Error("AOA_API_URL required for sandboxed runtime hook");
     }
+    if (isLoopbackApiUrl(apiUrl)) {
+      // A brokered run executes in a VM that cannot reach the host loopback, so a
+      // localhost/127.0.0.1 base URL means the sandbox can NEVER reach the broker.
+      // Fail before spending a sandbox rather than silently failing every MCP call.
+      throw new Error(
+        `AOA_API_URL for a sandboxed (brokered) run must be reachable from the sandbox VM, ` +
+          `but is a loopback URL (${apiUrl}). On cloud_auth set a public AOA_API_URL / auth.publicBaseUrl.`,
+      );
+    }
     return apiUrl;
   }
   return apiUrl || `http://127.0.0.1:${port}`;
+}
+
+/** A brokered sandbox VM cannot reach these hosts on the control plane. */
+export function isLoopbackApiUrl(apiUrl: string): boolean {
+  let host: string;
+  try {
+    host = new URL(apiUrl).hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  } catch {
+    return false; // unparseable → not our job to validate syntax here
+  }
+  return (
+    host === "localhost" ||
+    host === "::1" ||
+    host === "0.0.0.0" ||
+    host === "::" ||
+    host.startsWith("127.") ||
+    host.endsWith(".localhost")
+  );
 }
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
