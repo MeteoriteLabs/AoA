@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { logger } from "../middleware/logger.js";
 import { createGvisorSandboxRuntimeProvider } from "./gvisor-sandbox-provider.js";
 
 export interface SandboxProviderAcquireInput {
@@ -37,6 +38,28 @@ export interface SandboxProviderReleaseInput {
 export interface SandboxProviderReleaseResult {
   cleanupStatus: "success" | "failed";
   metadata?: Record<string, unknown>;
+}
+
+/**
+ * U7.4 — warm-resume input. Mirrors the shape of `SandboxProviderReleaseInput`
+ * (providerLeaseId + persisted lease metadata + optional resolved config) so
+ * callers can resume a previously-paused lease the same way they release one.
+ */
+export interface SandboxProviderResumeInput {
+  providerLeaseId: string;
+  leaseMetadata: Record<string, unknown> | null;
+  config?: Record<string, unknown> | null;
+}
+
+/**
+ * U7.4 — `resumed: false` signals "the paused sandbox is gone, create a
+ * fresh one" — it is NEVER an error path (spec §8 "never error the run").
+ * Callers key off `resumed`, not exceptions.
+ */
+export interface SandboxProviderResumeResult {
+  resumed: boolean;
+  providerLeaseId: string;
+  metadata: Record<string, unknown>;
 }
 
 export interface SandboxProviderExecuteInput {
@@ -117,6 +140,16 @@ export interface SandboxRuntimeProvider {
   probe?(input: SandboxProviderProbeInput): Promise<SandboxProviderProbeResult>;
   acquireLease(input: SandboxProviderAcquireInput): Promise<SandboxProviderLease>;
   releaseLease(input: SandboxProviderReleaseInput): Promise<SandboxProviderReleaseResult>;
+  /**
+   * U7.4 — warm resume. OPTIONAL: providers without warm-pause support (e.g.
+   * gVisor today) simply don't implement it; the `sandboxProviderRuntime`
+   * passthrough below throws a clear "does not support resume" error if a
+   * caller invokes it on such a provider, rather than silently no-oping.
+   * Implementations MUST resolve `{ resumed: false, ... }` instead of
+   * rejecting when the underlying sandbox is gone (dead/GC'd) — never throw
+   * for that case (spec §8 "never error the run").
+   */
+  resumeLease?(input: SandboxProviderResumeInput): Promise<SandboxProviderResumeResult>;
   execute(input: SandboxProviderExecuteInput): Promise<SandboxProviderExecuteResult>;
   /**
    * U6.2 — file-movement seam. OPTIONAL so providers that don't (yet) support
@@ -353,6 +386,18 @@ export function createFakeSandboxRuntimeProvider(): SandboxRuntimeProvider {
         metadata: {
           releasedProviderLeaseId: input.providerLeaseId,
         },
+      };
+    },
+
+    // U7.4 — echoes resumed:true for any lease EXCEPT one whose persisted
+    // metadata carries `__dead: true`, letting higher-level tests simulate a
+    // GC'd/expired sandbox without a real provider round-trip.
+    async resumeLease(input) {
+      const resumed = input.leaseMetadata?.__dead !== true;
+      return {
+        resumed,
+        providerLeaseId: input.providerLeaseId,
+        metadata: { provider: "fake", resumed },
       };
     },
 
@@ -787,6 +832,51 @@ export function createE2bSandboxRuntimeProvider(
       }
     },
 
+    // U7.4 — warm resume. `Sandbox.connect` auto-resumes a paused E2B
+    // snapshot (same reconnect pattern as `execute`/`releaseLease` above).
+    // A dead/GC'd sandbox (SandboxNotFoundError — or ANY other connect
+    // failure, per spec §8 "never error the run") resolves
+    // `{ resumed: false, metadata: { deadOnResume: true } }` rather than
+    // rejecting, so callers can transparently fall back to create-fresh.
+    async resumeLease(input) {
+      const config = configFromE2bLease({
+        leaseMetadata: input.leaseMetadata,
+        config: input.config,
+        env,
+      });
+      try {
+        const sandbox = await connect(config, input.providerLeaseId);
+        await sandbox.setTimeout?.(config.timeoutMs);
+        const resolvedDomain = resolveE2bDomain(config, env);
+        return {
+          resumed: true,
+          providerLeaseId: input.providerLeaseId,
+          metadata: buildE2bLeaseMetadata({
+            config,
+            sandbox,
+            remoteCwd: readString(input.leaseMetadata?.remoteCwd) ?? "/home/user/aoa-workspace",
+            workspaceMode: readString(input.leaseMetadata?.workspaceMode),
+            resolvedDomain,
+            egressAllowlist: Array.isArray(input.leaseMetadata?.egressAllowlist)
+              ? (input.leaseMetadata!.egressAllowlist as string[])
+              : undefined,
+          }),
+        };
+      } catch (error) {
+        // §8 "never error the run" — a dead/GC'd sandbox (SandboxNotFoundError)
+        // OR any other connect failure signals create-fresh, it never rejects.
+        logger.warn(
+          { err: error, providerLeaseId: input.providerLeaseId },
+          "sandbox-provider-runtime: E2B resumeLease found a dead/unresumable sandbox; signaling create-fresh",
+        );
+        return {
+          resumed: false,
+          providerLeaseId: input.providerLeaseId,
+          metadata: { deadOnResume: true },
+        };
+      }
+    },
+
     async execute(input) {
       const config = configFromE2bLease({
         leaseMetadata: input.leaseMetadata,
@@ -956,6 +1046,17 @@ export function sandboxProviderRuntime(
 
     releaseLease(providerKey: string, input: SandboxProviderReleaseInput) {
       return requireProvider(providerKey).releaseLease(input);
+    },
+
+    // U7.4 — mirrors releaseLease's passthrough; guarded (like writeFiles/
+    // readFiles/resolveHost below) so a provider without warm-resume support
+    // fails with a clear message rather than silently no-oping.
+    resumeLease(providerKey: string, input: SandboxProviderResumeInput): Promise<SandboxProviderResumeResult> {
+      const provider = requireProvider(providerKey);
+      if (typeof provider.resumeLease !== "function") {
+        throw new Error(`Sandbox provider "${providerKey}" does not support resume.`);
+      }
+      return provider.resumeLease(input);
     },
 
     execute(providerKey: string, input: SandboxProviderExecuteInput) {

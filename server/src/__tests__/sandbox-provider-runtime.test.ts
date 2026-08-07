@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { createGvisorSandboxRuntimeProvider } from "../services/gvisor-sandbox-provider.js";
 import {
   createE2bSandboxRuntimeProvider,
   createFakeSandboxRuntimeProvider,
@@ -216,6 +217,116 @@ describe("sandboxProviderRuntime", () => {
     });
 
     expect(connect).toHaveBeenCalledWith("e2b-sandbox-1", expect.objectContaining({ domain: "e2b.aoa.internal" }));
+  });
+
+  // U7.4 — provider warm-resume op.
+  it("resumes a paused E2B sandbox by connecting to its id", async () => {
+    const connect = vi.fn(async () => ({
+      sandboxId: "e2b-1",
+      sandboxDomain: "d",
+      commands: { run: vi.fn(async () => ({ exitCode: 0, stdout: "/home/user\n", stderr: "" })) },
+      setTimeout: vi.fn(),
+    }));
+    const provider = createE2bSandboxRuntimeProvider({
+      importE2b: async () => ({ Sandbox: { create: vi.fn(), connect } }),
+      env: { E2B_API_KEY: "k" },
+    });
+
+    const r = await provider.resumeLease!({
+      providerLeaseId: "e2b-1",
+      leaseMetadata: { template: "base", timeoutMs: 60_000, reuseLease: true },
+      config: null,
+    });
+
+    expect(r.resumed).toBe(true);
+    expect(connect).toHaveBeenCalledWith("e2b-1", { apiKey: "k", timeoutMs: 60_000 });
+  });
+
+  it("reports resumed:false (create-fresh) when the paused sandbox is gone — never throws", async () => {
+    class SandboxNotFoundError extends Error {}
+    const connect = vi.fn(async () => {
+      throw new SandboxNotFoundError("gone");
+    });
+    const provider = createE2bSandboxRuntimeProvider({
+      importE2b: async () => ({ Sandbox: { create: vi.fn(), connect }, SandboxNotFoundError }),
+      env: { E2B_API_KEY: "k" },
+    });
+
+    await expect(
+      provider.resumeLease!({ providerLeaseId: "dead", leaseMetadata: { reuseLease: true }, config: null }),
+    ).resolves.toMatchObject({ resumed: false });
+  });
+
+  it("reports resumed:false and never throws when connect fails for a reason OTHER than SandboxNotFoundError", async () => {
+    const connect = vi.fn(async () => {
+      throw new Error("network timeout");
+    });
+    const provider = createE2bSandboxRuntimeProvider({
+      importE2b: async () => ({ Sandbox: { create: vi.fn(), connect }, SandboxNotFoundError: class extends Error {} }),
+      env: { E2B_API_KEY: "k" },
+    });
+
+    await expect(
+      provider.resumeLease!({ providerLeaseId: "dead", leaseMetadata: { reuseLease: true }, config: null }),
+    ).resolves.toEqual({ resumed: false, providerLeaseId: "dead", metadata: { deadOnResume: true } });
+  });
+
+  it("pauses (not kills) on release when reuseLease is true", async () => {
+    const pause = vi.fn(async () => undefined);
+    const kill = vi.fn(async () => undefined);
+    const connect = vi.fn(async () => ({ commands: { run: vi.fn() }, pause, kill }));
+    const provider = createE2bSandboxRuntimeProvider({
+      importE2b: async () => ({ Sandbox: { create: vi.fn(), connect } }),
+      env: { E2B_API_KEY: "k" },
+    });
+
+    await provider.releaseLease({
+      providerLeaseId: "e2b-1",
+      leaseMetadata: { reuseLease: true },
+      config: { reuseLease: true },
+    });
+
+    expect(pause).toHaveBeenCalled();
+    expect(kill).not.toHaveBeenCalled();
+  });
+
+  it("kills (not pauses) on release when reuseLease is false", async () => {
+    const pause = vi.fn(async () => undefined);
+    const kill = vi.fn(async () => undefined);
+    const connect = vi.fn(async () => ({ commands: { run: vi.fn() }, pause, kill }));
+    const provider = createE2bSandboxRuntimeProvider({
+      importE2b: async () => ({ Sandbox: { create: vi.fn(), connect } }),
+      env: { E2B_API_KEY: "k" },
+    });
+
+    await provider.releaseLease({
+      providerLeaseId: "e2b-1",
+      leaseMetadata: { reuseLease: false },
+      config: { reuseLease: false },
+    });
+
+    expect(kill).toHaveBeenCalled();
+    expect(pause).not.toHaveBeenCalled();
+  });
+
+  it("fake provider resumeLease echoes resumed:true unless leaseMetadata.__dead is true", async () => {
+    const provider = createFakeSandboxRuntimeProvider();
+
+    await expect(
+      provider.resumeLease!({ providerLeaseId: "fake-sandbox-1", leaseMetadata: { remoteCwd: "/workspace" }, config: null }),
+    ).resolves.toMatchObject({ resumed: true, providerLeaseId: "fake-sandbox-1" });
+
+    await expect(
+      provider.resumeLease!({ providerLeaseId: "fake-sandbox-1", leaseMetadata: { __dead: true }, config: null }),
+    ).resolves.toMatchObject({ resumed: false, providerLeaseId: "fake-sandbox-1" });
+  });
+
+  it("resumeLease passthrough throws a clear error for a provider that does not implement it", () => {
+    const runtime = sandboxProviderRuntime({ providers: [createGvisorSandboxRuntimeProvider()] });
+
+    expect(() => runtime.resumeLease("gvisor", { providerLeaseId: "x", leaseMetadata: null })).toThrow(
+      /does not support resume/,
+    );
   });
 
   it("validates E2B config without exposing API keys", async () => {
