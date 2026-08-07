@@ -19,6 +19,7 @@
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { agents, discussions, heartbeatRuns, internalAgentConfig, issues } from "@armyofagents/db";
+import type { CommanderToolPermissions } from "@armyofagents/shared";
 import { forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import type { ToolContext } from "../services/internal-agent/types.js";
@@ -238,6 +239,60 @@ export async function resolveBrokerToolContext(
     agentId,
     effectiveAutonomy: companyAutonomyLevel,
     runId,
+    db,
+    services: createServiceContainer(db),
+  };
+}
+
+export interface ResolveCommanderBrokerToolContextInput {
+  db: Db;
+  companyId: string;
+  userId: string;
+  userRole: string;
+  conversationId: string;
+}
+
+/**
+ * Build the internal-agent `ToolContext` for a sandboxed COMMANDER turn from a
+ * verified Commander run-JWT (W7.5a / SC3). Distinct from
+ * `resolveBrokerToolContext`: Commander has NO agents row, so there is NO
+ * agents-row lookup and NO `kind ∈ {aoa,org}` gate. It returns the SAME shape
+ * the in-process stdio bridge builds for `actorType:"commander"`
+ * (`mcp-bridge.ts:357-377`): full tool surface (no allowlist gate — `agentKind`
+ * is undefined, so `authorizeToolInvocation`'s allowlist gate does not fire),
+ * commander policy fields read from `internal_agent_config`.
+ *
+ * Company scope is enforced by the caller (`mcp/server.ts` asserts
+ * `jwt.company_id === :companyId` via `assertCompanyAccess`'s commander branch
+ * before dispatching here) — this resolver trusts the `companyId` it is given.
+ */
+export async function resolveCommanderBrokerToolContext(
+  input: ResolveCommanderBrokerToolContextInput,
+): Promise<ToolContext> {
+  const { db, companyId, userId, userRole, conversationId } = input;
+
+  const [config] = await db
+    .select({
+      enabledCapabilities: internalAgentConfig.enabledCapabilities,
+      commanderToolPermissions: internalAgentConfig.commanderToolPermissions,
+      runtimeApprovalsEnabled: internalAgentConfig.runtimeApprovalsEnabled,
+    })
+    .from(internalAgentConfig)
+    .where(eq(internalAgentConfig.companyId, companyId))
+    .limit(1);
+
+  return {
+    companyId,
+    userId,
+    userRole,
+    enabledCapabilities: (config?.enabledCapabilities as string[] | null) ?? [],
+    agentKind: undefined,
+    toolAllowlist: [],
+    actorType: "commander",
+    conversationId,
+    commanderToolPermissions:
+      (config?.commanderToolPermissions as CommanderToolPermissions | null | undefined) ?? null,
+    runtimeApprovalsEnabled: config?.runtimeApprovalsEnabled ?? true,
     db,
     services: createServiceContainer(db),
   };
