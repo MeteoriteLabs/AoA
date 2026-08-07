@@ -41,6 +41,24 @@ describe("instance settings — warm sandbox fields (U7.3)", () => {
     expect(experimental.enableWarmSandboxReaper).toBe(true);
   });
 
+  it("defaults warmCommanderConversations to true", async () => {
+    const { db } = makeDb({});
+    const exp = await instanceSettingsService(db as never).getExperimental();
+    expect(exp.warmCommanderConversations).toBe(true);
+  });
+
+  it("preserves an explicitly stored warmCommanderConversations override", async () => {
+    const { db } = makeDb({ warmCommanderConversations: false });
+    const exp = await instanceSettingsService(db as never).getExperimental();
+    expect(exp.warmCommanderConversations).toBe(false);
+  });
+
+  it("returns the warmCommanderConversations default on the fallback (invalid stored) branch", async () => {
+    const { db } = makeDb("not-an-object" as unknown as Record<string, unknown>);
+    const exp = await instanceSettingsService(db as never).getExperimental();
+    expect(exp.warmCommanderConversations).toBe(true);
+  });
+
   it("getExperimental() preserves an explicitly stored override", async () => {
     const { db } = makeDb({
       warmSandboxDefaultForSoftwareDev: false,

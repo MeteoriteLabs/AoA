@@ -63,6 +63,7 @@ function normalizeExperimentalSettings(raw: unknown): InstanceExperimentalSettin
       warmSandboxDefaultForSoftwareDev: parsed.data.warmSandboxDefaultForSoftwareDev ?? true,
       warmSandboxIdleTtlMinutes: parsed.data.warmSandboxIdleTtlMinutes ?? 30,
       enableWarmSandboxReaper: parsed.data.enableWarmSandboxReaper ?? true,
+      warmCommanderConversations: parsed.data.warmCommanderConversations ?? true,
     };
   }
   return {
@@ -72,6 +73,7 @@ function normalizeExperimentalSettings(raw: unknown): InstanceExperimentalSettin
     warmSandboxDefaultForSoftwareDev: true,
     warmSandboxIdleTtlMinutes: 30,
     enableWarmSandboxReaper: true,
+    warmCommanderConversations: true,
   };
 }
 

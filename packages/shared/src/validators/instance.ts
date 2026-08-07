@@ -41,6 +41,8 @@ export const instanceExperimentalSettingsSchema = z.object({
   warmSandboxDefaultForSoftwareDev: z.boolean().default(true),
   warmSandboxIdleTtlMinutes: z.number().int().positive().default(30),
   enableWarmSandboxReaper: z.boolean().default(true),
+  // W7.5c — warm per-conversation Commander sandboxes (default-on for cloud).
+  warmCommanderConversations: z.boolean().default(true),
 }).strict();
 
 export const patchInstanceExperimentalSettingsSchema = instanceExperimentalSettingsSchema.partial();
