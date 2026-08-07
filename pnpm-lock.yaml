@@ -30,7 +30,7 @@ overrides:
 
 patchedDependencies:
   embedded-postgres@18.1.0-beta.16:
-    hash: v4hx6rlhru4y2j3qwmdnflk4h4
+    hash: loxzwgaymmfffrzsd4w46ylhp4
     path: patches/embedded-postgres@18.1.0-beta.16.patch
 
 importers:
@@ -347,7 +347,7 @@ importers:
         version: 0.31.10
       embedded-postgres:
         specifier: 18.1.0-beta.16
-        version: 18.1.0-beta.16(patch_hash=v4hx6rlhru4y2j3qwmdnflk4h4)
+        version: 18.1.0-beta.16(patch_hash=loxzwgaymmfffrzsd4w46ylhp4)
       tsx:
         specifier: 4.22.4
         version: 4.22.4
@@ -642,7 +642,7 @@ importers:
         version: 2.30.5
       embedded-postgres:
         specifier: ^18.1.0-beta.16
-        version: 18.1.0-beta.16(patch_hash=v4hx6rlhru4y2j3qwmdnflk4h4)
+        version: 18.1.0-beta.16(patch_hash=loxzwgaymmfffrzsd4w46ylhp4)
       exceljs:
         specifier: ^4.4.0
         version: 4.4.0
@@ -13667,7 +13667,7 @@ snapshots:
 
   electron-to-chromium@1.5.286: {}
 
-  embedded-postgres@18.1.0-beta.16(patch_hash=v4hx6rlhru4y2j3qwmdnflk4h4):
+  embedded-postgres@18.1.0-beta.16(patch_hash=loxzwgaymmfffrzsd4w46ylhp4):
     dependencies:
       async-exit-hook: 2.0.1
       pg: 8.18.0
