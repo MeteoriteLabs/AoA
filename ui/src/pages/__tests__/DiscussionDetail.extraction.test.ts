@@ -103,36 +103,64 @@ describe("extractionFailureMessage", () => {
     });
   });
 
-  describe("cloud (multiTenant) credential-shaped failures", () => {
-    // NOTE: This INVERTS the earlier D3/#27 "point cloud founders at
-    // Settings → Providers" copy. That copy was built on the wrong premise that
-    // a per-company provider key enables extraction. It does not: extraction is
-    // CLI-only (Decision #104 / CLAUDE.md Rule #11) and never reads a provider
-    // key. On the shared cloud host there is no CLI login to run and a provider
-    // key would not help, so a credential-shaped extraction failure means
-    // extraction is simply unavailable there — no actionable Settings path.
-    it("not_authed in cloud says extraction is unavailable, NOT set a provider key", () => {
-      const result = extractionFailureMessage(
-        "not_authed",
-        "claude CLI is not authenticated. Run the CLI's login flow, then retry.",
-        { multiTenant: true },
-      );
-      expect(result.primary).not.toMatch(/Settings\s*→\s*Providers/);
-      expect(result.primary).toMatch(/AoA Cloud/);
-      expect(result.primary).not.toMatch(/login flow|Run the CLI|not logged in/i);
-      expect(result.showSettings).toBe(false);
+  describe("CLI kind: sandbox_unavailable (U13.3)", () => {
+    it("returns cloud copy pointing at provider key/config in Settings, and NEVER 'install'", () => {
+      const result = extractionFailureMessage("sandbox_unavailable", null);
+      expect(result.primary).toMatch(/provider key/i);
+      expect(result.primary).toMatch(/Settings/);
+      expect(result.primary.toLowerCase()).not.toContain("install");
+      expect(result.showSettings).toBe(true);
     });
 
-    it("not_installed in cloud says extraction is unavailable, NOT set a provider key", () => {
+    it("prefers the server's message when present, still never 'install'", () => {
       const result = extractionFailureMessage(
-        "not_installed",
-        "claude CLI not found on PATH. Install the Claude Code CLI and ensure it is on your PATH.",
+        "sandbox_unavailable",
+        "Extraction could not run: no isolated sandbox was available. Check your provider key and execution environment in Settings.",
+      );
+      expect(result.primary).toBe(
+        "Extraction could not run: no isolated sandbox was available. Check your provider key and execution environment in Settings.",
+      );
+      expect(result.primary.toLowerCase()).not.toContain("install");
+      expect(result.showSettings).toBe(true);
+    });
+
+    it("multiTenant does NOT rewrite sandbox_unavailable — the stale not_authed/not_installed 'unavailable on AoA Cloud yet' override must not catch it", () => {
+      const result = extractionFailureMessage(
+        "sandbox_unavailable",
+        "Extraction could not run: no isolated sandbox was available. Check your provider key and execution environment in Settings.",
         { multiTenant: true },
       );
-      expect(result.primary).not.toMatch(/Settings\s*→\s*Providers/);
-      expect(result.primary).toMatch(/AoA Cloud/);
-      expect(result.primary).not.toMatch(/PATH|Install the/i);
-      expect(result.showSettings).toBe(false);
+      expect(result.primary).not.toMatch(/isn't available on AoA Cloud yet/);
+      expect(result.primary).toMatch(/provider key/i);
+      expect(result.showSettings).toBe(true);
+    });
+  });
+
+  describe("cloud (multiTenant) credential-shaped failures", () => {
+    // The earlier D3/#27 cloud override rewrote not_authed/not_installed into an
+    // "Extraction isn't available on AoA Cloud yet" message. That override is
+    // REMOVED (holistic-review finding 3): on cloud, extraction runs inside an
+    // ephemeral sandbox authenticated with the company's own key, so a missing-
+    // LOCAL-CLI failure (not_authed/not_installed) is unreachable — cloud
+    // extraction failures surface as `sandbox_unavailable` (which DOES point at
+    // Settings). multiTenant must therefore no longer special-case any kind;
+    // these tests lock that the flag is inert so the false override can't return.
+    it("not_authed in cloud is NOT rewritten — identical to the self-hosted per-kind copy", () => {
+      const msg = "claude CLI is not authenticated. Run the CLI's login flow, then retry.";
+      const cloud = extractionFailureMessage("not_authed", msg, { multiTenant: true });
+      const selfHosted = extractionFailureMessage("not_authed", msg);
+      expect(cloud).toEqual(selfHosted);
+      expect(cloud.primary).not.toMatch(/AoA Cloud/);
+      expect(cloud.showSettings).toBe(false);
+    });
+
+    it("not_installed in cloud is NOT rewritten — identical to the self-hosted per-kind copy", () => {
+      const msg = "claude CLI not found on PATH. Install the Claude Code CLI and ensure it is on your PATH.";
+      const cloud = extractionFailureMessage("not_installed", msg, { multiTenant: true });
+      const selfHosted = extractionFailureMessage("not_installed", msg);
+      expect(cloud).toEqual(selfHosted);
+      expect(cloud.primary).not.toMatch(/AoA Cloud/);
+      expect(cloud.showSettings).toBe(false);
     });
 
     it("does NOT rewrite non-credential kinds in cloud (timeout/nonzero_exit)", () => {

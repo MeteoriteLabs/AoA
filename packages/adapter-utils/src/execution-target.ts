@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
+import { buildSandboxEnvAllowlist } from "./sandbox-env-allowlist.js";
 import { preferredShellForSandbox } from "./sandbox-shell.js";
 import {
   asBoolean,
@@ -203,6 +204,21 @@ export interface AdapterTargetProcessOptions {
   unsetEnvKeys?: string[];
   /** Key PREFIXES to strip from the inherited parent env at spawn (unless `env` set them). */
   unsetEnvPrefixes?: string[];
+  /**
+   * U5 — resolved provider name (one of `PROVIDER_AUTH_KEYS`' keys in
+   * `sandbox-env-allowlist.ts` — currently `"anthropic"` | `"openai"` |
+   * `"gemini"` | `"xai"` | `"cursor"`), used ONLY by the sandbox branches
+   * (`provider-sandbox` / `sandbox-docker`) of `runAdapterExecutionTargetProcess`
+   * to select which provider auth key `buildSandboxEnvAllowlist` admits.
+   * Local targets ignore it. Defaults to `""` — no provider auth key admitted
+   * — so an un-updated caller fails closed rather than silently widening the
+   * allowlist. EVERY adapter's `execute()` must pass its actual resolved
+   * provider here (a fixed-provider adapter passes its family constant; a
+   * multi-provider adapter — opencode-local, pi-local — resolves it from the
+   * configured `provider/model` id at the same spawn site) — see the Wave 2
+   * review fix (U5 regression) that added the four non-claude/codex adapters.
+   */
+  sandboxProvider?: string;
 }
 
 type ChildProcessRunner = typeof runChildProcess;
@@ -661,7 +677,10 @@ export async function runAdapterExecutionTargetProcess(
     });
     const env = sanitizeRemoteExecutionEnv(
       shapeAoaWorkspaceEnvForExecution({
-        env: { ...(target.env ?? {}), ...opts.env },
+        env: buildSandboxEnvAllowlist(
+          { ...(target.env ?? {}), ...opts.env },
+          { provider: opts.sandboxProvider ?? "" },
+        ),
         targetType: "sandbox-docker",
         localCwd: workspace.localCwd,
         executionCwd: workspace.executionCwd,
@@ -694,6 +713,13 @@ export async function runAdapterExecutionTargetProcess(
   let bridge: SandboxCallbackBridgeServer | null = null;
 
   try {
+    // Self-hosted sandbox-docker branch (pooled_gvisor / dedicated_worker,
+    // multiTenant=false). The from-scratch env ALLOWLIST is the CLOUD
+    // provider-sandbox isolation boundary ONLY — applying it here would silently
+    // strip a self-hosted founder's authored env (HTTPS_PROXY / NODE_EXTRA_CA_CERTS
+    // / custom base URLs / non-AOA_MCP_* tokens), breaking proxied/corporate
+    // deployments and contradicting the resolver's "honor the founder's config"
+    // contract. Host-identity leakage is still removed by sanitizeRemoteExecutionEnv.
     let env = sanitizeRemoteExecutionEnv(
       shapeAoaWorkspaceEnvForExecution({
         env: { ...(target.env ?? {}), ...opts.env },

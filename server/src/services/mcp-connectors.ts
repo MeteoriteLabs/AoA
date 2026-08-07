@@ -213,6 +213,14 @@ export interface ConnectorSelectionInput<T extends { id: string; status: string 
    * behaviour (no re-gate) — callers on the real delivery path always pass it.
    */
   deploymentMode?: string;
+  /**
+   * U11: true when THIS run resolved a per-run E2B sandbox execution target
+   * (`acquisition.environment.driver === "sandbox"`, S5). Passed straight
+   * through to `isTransportAllowed` as the sandbox axis — it relaxes ONLY the
+   * stdio-transport admissibility check, never the command-pinning check
+   * below. Additive: omitted/`false` is byte-identical to pre-U11 behaviour.
+   */
+  sandboxTarget?: boolean;
   /** Sink for connectors dropped by the delivery-time D7 re-gate, so the drop is nameable, not silent. */
   onSkip?: (connector: T, reason: ConnectorSkipReason) => void;
 }
@@ -252,6 +260,7 @@ export function selectConnectorRowsForAgent<T extends { id: string; status: stri
         // Stored column is nullable; the gate takes `string | undefined` and
         // treats a null/missing tier as unverified (fail-closed).
         row.trustTier ?? undefined,
+        input.sandboxTarget ?? false,
       );
       if (!allowed) {
         input.onSkip?.(c, "d7_blocked");

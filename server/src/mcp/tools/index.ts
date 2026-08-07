@@ -15,6 +15,9 @@ export {
   skillToolHandlers,
 };
 export * from "./types.js";
+// U10: plugin tool descriptors for the broker's tools/list (plugin dispatch
+// for tools/call follows in U10-c).
+export * from "./plugin-broker-tools.js";
 
 export const toolHandlers: Record<string, ToolHandler> = {
   ...readToolHandlers,

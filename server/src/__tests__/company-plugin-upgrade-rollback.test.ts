@@ -438,7 +438,7 @@ describe("POST /:pluginId/upgrade — auto-rollback snapshot cleanup", () => {
     expect(deletedWhereArgs).toHaveLength(0);
   });
 
-  it("blocks manual rollback in cloud before DB, loader, or lifecycle work", async () => {
+  it("U10: no longer blocks manual rollback in cloud at the (now-lifted) gate — reaches real DB/authz work instead", async () => {
     setDeploymentMode("cloud_auth");
     try {
       const db = { select: vi.fn() };
@@ -470,15 +470,17 @@ describe("POST /:pluginId/upgrade — auto-rollback snapshot cleanup", () => {
         json: vi.fn(),
       } as any;
 
-      await handler(req, res, vi.fn());
+      // isCloudPluginExecutionBlocked() is always false now — the route no
+      // longer short-circuits at 503 with the blocked envelope before any
+      // DB/authz work. It proceeds into the real `assertCompanyAccess` +
+      // plugin lookup instead, which throws here only because this minimal
+      // fixture's `db` isn't wired up for that (an unrelated fixture gap,
+      // not a cloud-block regression) — the U10 invariant under test is
+      // that `db.select` is now actually reached.
+      await expect(handler(req, res, vi.fn())).rejects.toThrow();
 
-      expect(res.status).toHaveBeenCalledWith(503);
-      expect(res.json).toHaveBeenCalledWith({
-        error: CLOUD_PLUGIN_BLOCK_MESSAGE,
-        code: PLUGIN_WORKER_BLOCKED_IN_CLOUD,
-        docs: CLOUD_PLUGIN_EXECUTION_DOC_PATH,
-      });
-      expect(db.select).not.toHaveBeenCalled();
+      expect(res.status).not.toHaveBeenCalledWith(503);
+      expect(db.select).toHaveBeenCalled();
       expect(loader.upgradePlugin).not.toHaveBeenCalled();
       expect(lifecycle.load).not.toHaveBeenCalled();
     } finally {

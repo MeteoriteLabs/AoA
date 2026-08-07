@@ -126,6 +126,12 @@ vi.mock("../adapters/registry.js", () => ({
 vi.mock("../services/internal-agent/cli-mode.js", () => ({
   buildMcpConfig: buildMcpMock,
   buildMcpBridgeSpec: buildBridgeSpecMock,
+  // U4b: buildCodexAoaMcpSpec is the brokered-aware selector runner.ts now
+  // calls for ctx.mcpBridge. This suite exercises the desktop/non-sandbox
+  // path (acquireExecutionContext mocked to sandbox:null -> brokered:false),
+  // where buildCodexAoaMcpSpec falls through to plain buildMcpBridgeSpec — so
+  // the SAME mock produces byte-identical output.
+  buildCodexAoaMcpSpec: buildBridgeSpecMock,
 }));
 
 vi.mock("../services/heartbeat.js", () => ({
@@ -137,6 +143,14 @@ vi.mock("../services/heartbeat.js", () => ({
     executionTarget: {},
     runtimeCommandSpec: {},
   })),
+  applyEnvironmentAcquisitionConfig: (config: unknown) => config,
+}));
+
+// U4: crew acquires a sandbox lease before buildMcpConfig — stub the desktop/
+// local no-sandbox return shape so this suite stays on its existing byte-
+// identical local path.
+vi.mock("../services/acquire-execution-context.js", () => ({
+  acquireExecutionContext: vi.fn().mockResolvedValue({ sandbox: null, lease: null, warmResolved: false }),
 }));
 
 vi.mock("../services/internal-agent/aoa-agents/bridge-path.js", () => ({

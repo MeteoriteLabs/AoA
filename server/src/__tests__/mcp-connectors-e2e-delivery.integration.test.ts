@@ -30,9 +30,15 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import { applyPendingMigrations, createDb, type Db } from "@armyofagents/db";
 import { mcpConnectorService } from "../services/mcp-connectors-crud.js";
-import { loadEnabledConnectorRows } from "../services/mcp-connectors-loader.js";
+import { loadEnabledConnectorRows, resolveAgentConnectors } from "../services/mcp-connectors-loader.js";
 import { buildConnectorSpecs } from "../services/mcp-connectors.js";
-import { secretService } from "../services/secrets.js";
+import { prepareMcpOAuthSecretVersion, secretService } from "../services/secrets.js";
+import {
+  deriveOAuthBundleKey,
+  encodeOAuthBundle,
+  type OAuthTokenBundle,
+} from "../services/mcp-connector-oauth-bundle.js";
+import { resolveConsentSecret } from "../services/mcp-connector-consent.js";
 import {
   prepareHeartbeatMcpDelivery,
   type HeartbeatMcpDelivery,
@@ -235,6 +241,154 @@ describe.skipIf(process.platform === "win32")("MCP connectors — live end-to-en
       expect(parsed.mcpServers.aoa).toBeDefined();
     } finally {
       await delivery.cleanup();
+    }
+  }, 180_000);
+
+  // U11-e — regression fence (test-only, no code change): the OAuth broker
+  // (#317) connectors are HTTP transport with a host-minted access token.
+  // U11's stdio relaxation must never touch their resolution/refresh, and
+  // they must stay admissible without the sandbox axis. Reproduces the
+  // callback route's real DB writes directly (routes/mcp-connectors.ts
+  // oauth/callback: prepareMcpOAuthSecretVersion -> commitPreparedMcpOAuthSecret
+  // -> updateIfStatus) rather than replaying the full discovery/DCR/PKCE/
+  // callback HTTP dance — that whole flow is already proven end-to-end by
+  // mcp-connector-oauth.integration.test.ts; this test's job is narrower.
+  it("U11-e: an active notion-hosted OAuth (HTTP) connector delivers on cloud_auth with sandboxTarget:false — the bearer lands in connectorEnv, and the signed bundle / refresh token never appear in egressHosts or connectorEnv", async () => {
+    if (setupError) throw setupError;
+
+    const savedDeploymentMode = process.env.AOA_DEPLOYMENT_MODE;
+    const savedAuthSecret = process.env.BETTER_AUTH_SECRET;
+    // Deliberately on cloud_auth: proves this HTTP connector needs NO sandbox
+    // to be admissible — isTransportAllowed's first branch (`transport !==
+    // "stdio"`) already returns true unconditionally, so sandboxTarget:false
+    // must not change anything here.
+    process.env.AOA_DEPLOYMENT_MODE = "cloud_auth";
+    // resolveConsentSecret() (reused to derive the bundle signing key) throws
+    // without one.
+    process.env.BETTER_AUTH_SECRET = "test-secret-for-oauth-fence";
+    try {
+      // Explicit unique issue_prefix — the file's FIRST test already inserted a
+      // company relying on the column's default, and a second default-prefix
+      // row would collide on companies_issue_prefix_idx.
+      const companyId = await firstId(
+        db.execute(sql`
+          INSERT INTO companies (name, issue_prefix)
+          VALUES ('OAuth Fence Co', 'OAF')
+          RETURNING id
+        `),
+      );
+      const agentId = await firstId(
+        db.execute(sql`
+          INSERT INTO agents (company_id, name, adapter_type, status, kind)
+          VALUES (${companyId}, 'Scout', 'claude_local', 'active', 'org')
+          RETURNING id
+        `),
+      );
+
+      // The catalog OAuth-shaped connector row, created directly in
+      // needs_credentials (mirrors the pre-callback state the real install
+      // route lands, per mcp-connector-oauth.integration.test.ts).
+      const svc = mcpConnectorService(db);
+      const connector = await svc.create(companyId, {
+        serverName: "notion",
+        displayName: "Notion (hosted)",
+        transport: "http",
+        url: "https://mcp.notion.com/mcp",
+        headerTemplate: { Authorization: "Bearer ${TOKEN}" },
+        requiresSecret: true,
+        source: "catalog",
+        catalogEntryId: "notion-hosted",
+        oauthPolicyVersion: 1,
+        trustTier: "verified",
+        status: "needs_credentials",
+      });
+      await svc.replaceAgents(companyId, connector.id, [agentId]);
+
+      // The real signed OAuth bundle, committed via the EXACT same service
+      // calls the callback route makes (prepareMcpOAuthSecretVersion ->
+      // commitPreparedMcpOAuthSecret -> updateIfStatus), bypassing only the
+      // HTTP authorize/discovery/DCR round trip.
+      const secretName = `mcp:oauth:${connector.id}`;
+      const bundleKey = deriveOAuthBundleKey(resolveConsentSecret());
+      const ACCESS_TOKEN = "at-do-not-leak-xyz";
+      const REFRESH_TOKEN = "rt-do-not-leak-xyz";
+      const bundle: OAuthTokenBundle = {
+        companyId,
+        connectorId: connector.id,
+        catalogEntryId: "notion-hosted",
+        oauthPolicyVersion: 1,
+        secretName,
+        accessToken: ACCESS_TOKEN,
+        refreshToken: REFRESH_TOKEN,
+        expiresAt: Date.now() + 3_600_000, // far from expiry — no refresh triggered
+        issuer: "https://mcp.notion.com",
+        tokenEndpoint: "https://mcp.notion.com/token",
+        clientId: "dcr-client-1",
+        redirectUri: "https://app.example.test/api/mcp-connectors/oauth/callback",
+        scopes: ["default"],
+        resource: "https://mcp.notion.com/mcp",
+      };
+      const prepared = await prepareMcpOAuthSecretVersion({
+        companyId,
+        value: encodeOAuthBundle(bundle, bundleKey),
+        owner: { connectorId: connector.id, catalogEntryId: "notion-hosted", oauthPolicyVersion: 1 },
+        expectedLatestVersion: 0,
+      });
+      await secretService(db).commitPreparedMcpOAuthSecret(prepared, { userId: null });
+      const bound = await svc.updateIfStatus(connector.id, "needs_credentials", {
+        secretRef: secretName,
+        status: "active",
+      });
+      expect(bound).not.toBeNull();
+
+      // ── The real delivery seam. sandboxTarget is explicit false: this
+      //    connector must never have needed the U11 stdio relaxation. ────────
+      // runId omitted (optional): activity_log.run_id FKs to heartbeat_runs,
+      // which this test never seeds — the delivery audit's own try/catch
+      // already tolerates that (best-effort, never breaks delivery), but
+      // omitting it keeps the run clean rather than relying on that catch.
+      const resolved = await resolveAgentConnectors(db, {
+        companyId,
+        agentId,
+        sandboxTarget: false,
+      });
+
+      // The resolved bearer (the access token alone) lands in connectorEnv,
+      // under the connector's deterministic env var name.
+      const envKeys = Object.keys(resolved.connectorEnv);
+      expect(envKeys).toHaveLength(1);
+      const tokenEnvVar = envKeys[0]!;
+      expect(resolved.connectorEnv[tokenEnvVar]).toBe(ACCESS_TOKEN);
+
+      // The spec itself carries only a placeholder + the env-var-name
+      // indirection — never the raw token.
+      const spec = resolved.extraMcpServers.notion as {
+        headers?: Record<string, string>;
+        authTokenEnvVar?: string;
+      };
+      expect(spec).toBeDefined();
+      expect(spec.authTokenEnvVar).toBe(tokenEnvVar);
+      expect(spec.headers?.Authorization).toBe(`Bearer \${${tokenEnvVar}}`);
+
+      // egressHosts (U11) is bare-host-only, sourced ONLY from the
+      // connector's own URL — the signed bundle / refresh token never reach
+      // it, and no npm/PyPI host is added (this connector is HTTP, not
+      // stdio).
+      expect(resolved.egressHosts).toEqual(["mcp.notion.com"]);
+
+      // Belt-and-suspenders over the whole resolved result: the refresh
+      // token never appears ANYWHERE, and the access token appears EXACTLY
+      // once (the one deliberate connectorEnv slot) — never duplicated into
+      // egressHosts or leaked as a raw header value. Resolution/refresh stay
+      // host-side (§9/§14).
+      const serialized = JSON.stringify(resolved);
+      expect(serialized).not.toContain(REFRESH_TOKEN);
+      expect(serialized.split(ACCESS_TOKEN)).toHaveLength(2); // exactly one occurrence
+    } finally {
+      if (savedDeploymentMode === undefined) delete process.env.AOA_DEPLOYMENT_MODE;
+      else process.env.AOA_DEPLOYMENT_MODE = savedDeploymentMode;
+      if (savedAuthSecret === undefined) delete process.env.BETTER_AUTH_SECRET;
+      else process.env.BETTER_AUTH_SECRET = savedAuthSecret;
     }
   }, 180_000);
 });

@@ -7,6 +7,14 @@ on:
         description: Full reviewed commit SHA from main to deploy or roll back to
         required: true
         type: string
+      deployment_mode:
+        description: Deployment mode (cloud_auth = multi-tenant + E2B sandboxes; authenticated = single-tenant, unchanged)
+        required: false
+        default: authenticated
+        type: choice
+        options:
+          - authenticated
+          - cloud_auth
 
 permissions: {}
 
@@ -85,6 +93,8 @@ jobs:
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
+          AOA_DEPLOYMENT_MODE_OVERRIDE: ${{ inputs.deployment_mode }}
         run: |
           set -euo pipefail
           umask 077

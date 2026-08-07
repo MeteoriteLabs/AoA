@@ -329,7 +329,11 @@ export function pluginRoutes(
       sink?: "worker-manager" | "loader";
     }
   ): boolean {
-    if (!isCloudPluginExecutionBlocked()) return false;
+    // RW5a: forward the caller's sink so the decision is sink-aware — every
+    // sink this helper is called with today ("worker-manager" default or
+    // explicit "loader") stays allowed on cloud.
+    if (!isCloudPluginExecutionBlocked(context.sink ?? "worker-manager"))
+      return false;
     recordCloudPluginBlock({
       ...context,
       source: context.source ?? "direct",
@@ -2073,7 +2077,7 @@ export function pluginRoutes(
       // If it doesn't (METHOD_NOT_IMPLEMENTED), restart the worker so it picks
       // up the new config on re-initialize. If no worker is running, skip.
       if (
-        !isCloudPluginExecutionBlocked() &&
+        !isCloudPluginExecutionBlocked("worker-manager") &&
         bridgeDeps?.workerManager.isRunning(plugin.id)
       ) {
         try {

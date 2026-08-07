@@ -111,6 +111,22 @@ vi.mock("../services/environment-runtime.js", () => ({
   environmentRuntimeService: vi.fn(() => ({ releaseRunLease: vi.fn(async () => undefined) })),
 }));
 
+// U13.7: mock the sandbox-readiness-probe seam directly (rather than its real
+// transitive dependency graph — one-shot-sandbox-cli.ts pulls in
+// environment-runtime.js's resolveRuntimeProviderConfig, acquire-execution-context.js,
+// sandbox-provider-runtime.js, etc., none of which this route-level suite stubs).
+// Mirrors cli-summarizer-sandbox.test.ts's strategy: assert ROUTING (was
+// probeReadinessInSandbox called, with what args, and did the route handle its
+// resolved value / thrown ProviderUnavailableError correctly) without exercising
+// the real acquire/execute/release machinery, which one-shot-sandbox-cli.test.ts
+// and sandbox-readiness-probe.test.ts already cover.
+const mockProbeReadinessInSandbox = vi.hoisted(() => vi.fn());
+vi.mock("../services/sandbox-readiness-probe.js", () => ({
+  probeReadinessInSandbox: (...a: unknown[]) => mockProbeReadinessInSandbox(...a),
+  cliToolForSandboxReadinessProbe: (adapterType: string) =>
+    adapterType === "codex_local" ? "codex" : adapterType === "claude_local" ? "claude" : null,
+}));
+
 // Partial mocks: the providers/commander module graphs pull additional exports
 // (e.g. CLAUDE_CREDENTIAL_FILE_NAME via commander-login-runtime), so keep the
 // real exports and only neuter the side-effectful login/spawn helpers.
@@ -187,6 +203,7 @@ import { providerRoutes } from "../routes/providers.js";
 import { commanderVerifyRoutes } from "../routes/commander-verify.js";
 import { errorHandler } from "../middleware/index.js";
 import { tryAcquireAdapterProbeSlot } from "../services/adapter-probe-concurrency.js";
+import { ProviderUnavailableError } from "../services/provider-resolution.js";
 
 const COMPANY_ID = "11111111-1111-4111-8111-111111111111";
 
@@ -236,6 +253,19 @@ function passingResult(adapterType: string) {
   };
 }
 
+/** U13.7: what `probeReadinessInSandbox` itself returns on a successful
+ *  sandboxed hello-probe (code prefix is the CLI, "claude"/"codex" — NOT the
+ *  full adapterType — matching sandbox-readiness-probe.ts's real shape). */
+function passingSandboxResult(adapterType: string) {
+  const prefix = adapterType === "codex_local" ? "codex" : "claude";
+  return {
+    adapterType,
+    status: "pass" as const,
+    checks: [{ code: `${prefix}_hello_probe_passed`, level: "info" as const, message: "sandbox ok" }],
+    testedAt: "2026-08-02T00:00:00.000Z",
+  };
+}
+
 let savedOptIn: string | undefined;
 
 beforeEach(() => {
@@ -253,6 +283,13 @@ beforeEach(() => {
     ...input,
     testedAt: new Date("2026-08-02T00:00:00.000Z"),
   }));
+  // U13.7 default: no company provider key resolves — reproduces the OLD
+  // unconditional-block behaviour for every existing "refuses" test below
+  // (mapCloudProviderKeyError maps this to the same readiness_unavailable_on_cloud
+  // shape). Individual tests override this to simulate a resolved company key.
+  mockProbeReadinessInSandbox.mockRejectedValue(
+    new ProviderUnavailableError("anthropic", "no_assignment", null),
+  );
 });
 
 afterEach(() => {
@@ -299,6 +336,46 @@ describe("D1 gate — POST /companies/:companyId/adapters/:type/test-environment
     expect(res.body.status).toBe("pass");
     expect(testEnvironment).toHaveBeenCalledTimes(1);
   });
+
+  // U13.7 additions ─────────────────────────────────────────────────────────
+  it("cloud_auth WITH a resolved company provider key: runs the hello-probe through the sandbox and returns verified, never spawning the direct on-host probe", async () => {
+    setDeploymentMode("cloud_auth");
+    const testEnvironment = vi.fn(async () => passingResult("claude_local"));
+    mockFindServerAdapter.mockReturnValue({ type: "claude_local", testEnvironment });
+    mockProbeReadinessInSandbox.mockResolvedValue(passingSandboxResult("claude_local"));
+
+    const res = await request(makeApp(mountAgents))
+      .post(`/api/companies/${COMPANY_ID}/adapters/claude_local/test-environment`)
+      .send({ adapterConfig: {} });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("pass");
+    expect(res.body.checks[0].code).toBe("claude_hello_probe_passed");
+    expect(mockProbeReadinessInSandbox).toHaveBeenCalledTimes(1);
+    expect(mockProbeReadinessInSandbox).toHaveBeenCalledWith(
+      expect.objectContaining({ companyId: COMPANY_ID, cliTool: "claude", adapterType: "claude_local" }),
+    );
+    // The direct on-host probe (operator-login-on-shared-host hazard) must
+    // never run for this path.
+    expect(testEnvironment).not.toHaveBeenCalled();
+  });
+
+  it("cloud_auth WITHOUT a company key (claude_local): still readiness_unavailable_on_cloud via mapCloudProviderKeyError — proven by asserting the sandbox WAS attempted, not skipped because cloud", async () => {
+    setDeploymentMode("cloud_auth");
+    const testEnvironment = vi.fn(async () => passingResult("claude_local"));
+    mockFindServerAdapter.mockReturnValue({ type: "claude_local", testEnvironment });
+    // beforeEach default: mockProbeReadinessInSandbox rejects with ProviderUnavailableError.
+
+    const res = await request(makeApp(mountAgents))
+      .post(`/api/companies/${COMPANY_ID}/adapters/claude_local/test-environment`)
+      .send({ adapterConfig: {} });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("fail");
+    expect(res.body.checks[0].code).toBe("readiness_unavailable_on_cloud");
+    expect(mockProbeReadinessInSandbox).toHaveBeenCalledTimes(1);
+    expect(testEnvironment).not.toHaveBeenCalled();
+  });
 });
 
 /* ── 2. providers.ts probeAndRecord (via POST /:providerId/test) ─────────── */
@@ -307,10 +384,11 @@ describe("D1 gate — POST /companies/:companyId/providers/:providerId/test", ()
     app.use("/api/companies/:companyId/providers", providerRoutes(stubDb()));
   }
 
-  it("refuses on cloud_auth WITHOUT spawning the probe and records outcome=failed", async () => {
+  it("refuses on cloud_auth WITHOUT spawning the probe and records outcome=failed (no company key resolves — mapCloudProviderKeyError, not merely because cloud)", async () => {
     setDeploymentMode("cloud_auth");
     const testEnvironment = vi.fn(async () => passingResult("claude_local"));
     mockFindServerAdapter.mockReturnValue({ type: "claude_local", testEnvironment });
+    // beforeEach default: mockProbeReadinessInSandbox rejects with ProviderUnavailableError.
 
     const res = await request(makeApp(mountProviders))
       .post(`/api/companies/${COMPANY_ID}/providers/anthropic/test`)
@@ -319,6 +397,9 @@ describe("D1 gate — POST /companies/:companyId/providers/:providerId/test", ()
     expect(res.status).toBe(200);
     expect(res.body.outcome).toBe("failed");
     expect(res.body.checks[0].code).toBe("readiness_unavailable_on_cloud");
+    // The sandbox path WAS attempted (claude_local has a company-key mapping)
+    // and is the reason this blocked — not a bare "we're on cloud" skip.
+    expect(mockProbeReadinessInSandbox).toHaveBeenCalledTimes(1);
     expect(testEnvironment).not.toHaveBeenCalled();
     expect(mockRecordReadiness).toHaveBeenCalledWith(
       expect.anything(),
@@ -339,6 +420,50 @@ describe("D1 gate — POST /companies/:companyId/providers/:providerId/test", ()
     expect(res.body.outcome).toBe("verified");
     expect(testEnvironment).toHaveBeenCalledTimes(1);
   });
+
+  // U13.7 additions ─────────────────────────────────────────────────────────
+  it("cloud_auth WITH a resolved company provider key: runs the probe through the sandbox, returns verified, and records it", async () => {
+    setDeploymentMode("cloud_auth");
+    const testEnvironment = vi.fn(async () => passingResult("claude_local"));
+    mockFindServerAdapter.mockReturnValue({ type: "claude_local", testEnvironment });
+    mockProbeReadinessInSandbox.mockResolvedValue(passingSandboxResult("claude_local"));
+
+    const res = await request(makeApp(mountProviders))
+      .post(`/api/companies/${COMPANY_ID}/providers/anthropic/test`)
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body.outcome).toBe("verified");
+    expect(res.body.checks[0].code).toBe("claude_hello_probe_passed");
+    expect(mockProbeReadinessInSandbox).toHaveBeenCalledTimes(1);
+    expect(mockProbeReadinessInSandbox).toHaveBeenCalledWith(
+      expect.objectContaining({ companyId: COMPANY_ID, cliTool: "claude", adapterType: "claude_local" }),
+    );
+    expect(testEnvironment).not.toHaveBeenCalled();
+    expect(mockRecordReadiness).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ providerId: "anthropic", outcome: "verified" }),
+    );
+  });
+
+  it("codex (openai provider): cloud_auth WITH a resolved company key routes through the sandbox with cliTool 'codex'", async () => {
+    setDeploymentMode("cloud_auth");
+    const testEnvironment = vi.fn(async () => passingResult("codex_local"));
+    mockFindServerAdapter.mockReturnValue({ type: "codex_local", testEnvironment });
+    mockProbeReadinessInSandbox.mockResolvedValue(passingSandboxResult("codex_local"));
+
+    const res = await request(makeApp(mountProviders))
+      .post(`/api/companies/${COMPANY_ID}/providers/openai/test`)
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body.outcome).toBe("verified");
+    expect(res.body.checks[0].code).toBe("codex_hello_probe_passed");
+    expect(mockProbeReadinessInSandbox).toHaveBeenCalledWith(
+      expect.objectContaining({ companyId: COMPANY_ID, cliTool: "codex", adapterType: "codex_local" }),
+    );
+    expect(testEnvironment).not.toHaveBeenCalled();
+  });
 });
 
 /* ── 3. commander-verify.ts route ───────────────────────────────────────── */
@@ -347,10 +472,11 @@ describe("D1 gate — POST /companies/:companyId/internal-agent/verify", () => {
     app.use("/api", commanderVerifyRoutes(stubDb()));
   }
 
-  it("refuses on cloud_auth (422 blocking) WITHOUT spawning the probe", async () => {
+  it("refuses on cloud_auth (422 blocking) WITHOUT spawning the probe (no company key resolves — mapCloudProviderKeyError, not merely because cloud)", async () => {
     setDeploymentMode("cloud_auth");
     const testEnvironment = vi.fn(async () => passingResult("claude_local"));
     mockFindAdapterRegistry.mockReturnValue({ testEnvironment });
+    // beforeEach default: mockProbeReadinessInSandbox rejects with ProviderUnavailableError.
 
     const res = await request(makeApp(mountCommander))
       .post(`/api/companies/${COMPANY_ID}/internal-agent/verify`)
@@ -359,6 +485,9 @@ describe("D1 gate — POST /companies/:companyId/internal-agent/verify", () => {
     expect(res.status).toBe(422);
     expect(res.body.result.status).toBe("fail");
     expect(res.body.result.checks[0].code).toBe("readiness_unavailable_on_cloud");
+    // The sandbox path WAS attempted (claude_local has a company-key mapping)
+    // and is the reason this blocked — not a bare "we're on cloud" skip.
+    expect(mockProbeReadinessInSandbox).toHaveBeenCalledTimes(1);
     expect(testEnvironment).not.toHaveBeenCalled();
     expect(mockVerifyAndBindSubscription).not.toHaveBeenCalled();
   });
@@ -375,5 +504,47 @@ describe("D1 gate — POST /companies/:companyId/internal-agent/verify", () => {
     expect(res.status).toBe(200);
     expect(res.body.outcome).toBe("verified");
     expect(testEnvironment).toHaveBeenCalledTimes(1);
+  });
+
+  // U13.7 additions ─────────────────────────────────────────────────────────
+  it("cloud_auth WITH a resolved company provider key: runs the probe through the sandbox, returns 200 verified, and NEVER calls verifyAndBindCommanderSubscriptionCredential", async () => {
+    setDeploymentMode("cloud_auth");
+    const testEnvironment = vi.fn(async () => passingResult("claude_local"));
+    mockFindAdapterRegistry.mockReturnValue({ testEnvironment });
+    mockProbeReadinessInSandbox.mockResolvedValue(passingSandboxResult("claude_local"));
+
+    const res = await request(makeApp(mountCommander))
+      .post(`/api/companies/${COMPANY_ID}/internal-agent/verify`)
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body.outcome).toBe("verified");
+    expect(res.body.result.checks[0].code).toBe("claude_hello_probe_passed");
+    expect(mockProbeReadinessInSandbox).toHaveBeenCalledTimes(1);
+    expect(mockProbeReadinessInSandbox).toHaveBeenCalledWith(
+      expect.objectContaining({ companyId: COMPANY_ID, cliTool: "claude", adapterType: "claude_local" }),
+    );
+    expect(testEnvironment).not.toHaveBeenCalled();
+    // Requirement: the sandbox path authenticates with the COMPANY's own
+    // resolved provider key — NEVER a subscription login — so this must never
+    // be called for it (only the direct on-host probe path can call it).
+    expect(mockVerifyAndBindSubscription).not.toHaveBeenCalled();
+  });
+
+  it("opencode_local (no company-key mapping): stays on the unconditional cloud block even with a key resolved elsewhere", async () => {
+    setDeploymentMode("cloud_auth");
+    mockResolveCommanderType.mockResolvedValue("opencode_local");
+    const testEnvironment = vi.fn(async () => passingResult("opencode_local"));
+    mockFindAdapterRegistry.mockReturnValue({ testEnvironment });
+
+    const res = await request(makeApp(mountCommander))
+      .post(`/api/companies/${COMPANY_ID}/internal-agent/verify`)
+      .send({});
+
+    expect(res.status).toBe(422);
+    expect(res.body.result.checks[0].code).toBe("readiness_unavailable_on_cloud");
+    // opencode_local has no cliTool mapping — the sandbox path is never attempted.
+    expect(mockProbeReadinessInSandbox).not.toHaveBeenCalled();
+    expect(testEnvironment).not.toHaveBeenCalled();
   });
 });

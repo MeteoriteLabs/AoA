@@ -1768,7 +1768,13 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
     if (
       shouldWakeAssigneeOnCheckout({
-        actorType: req.actor.type === "mcp" ? "board" : req.actor.type,
+        // mcp + commander are non-agent, non-board internal actors for the
+        // purpose of assignee-wake — collapse both to "board" (never the
+        // checkout agent).
+        actorType:
+          req.actor.type === "mcp" || req.actor.type === "commander"
+            ? "board"
+            : req.actor.type,
         actorAgentId: req.actor.type === "agent" ? req.actor.agentId ?? null : null,
         checkoutAgentId: req.body.agentId,
         checkoutRunId,

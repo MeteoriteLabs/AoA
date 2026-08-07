@@ -93,9 +93,26 @@ describe("plugin-loader companyId scoping", () => {
     ]);
   });
 
-  it("blocks an executable manifest module before its top-level code can run in cloud", async () => {
+  // RW5a (Wave 5 review — fixes the U10-a regression this test used to
+  // pin): `plugin-loader.ts:1280`'s `assertCloudPluginExecutionAllowed`
+  // inside `loadManifestFromPath` now uses the distinct "loader-import" sink
+  // (not "worker-fork" and not the outer install/upgrade "loader" boundary
+  // sink). It guards a direct in-process `import()` of a tenant-authored
+  // manifest MODULE with no child-process isolation at all, so it stays
+  // blocked on cloud in the control plane even though the worker-fork sink
+  // (what U10 is actually about) and the outer "loader" install boundary are
+  // allowed. See `cloud-plugin-execution.ts`'s `PluginCloudExecutionSink` doc
+  // comment for the full sink taxonomy.
+  it("RW5a: blocks an executable manifest module's top-level code from running in the cloud control plane", async () => {
     setDeploymentMode("cloud_auth");
-    const packageDir = await mkdtemp(path.join(os.tmpdir(), "aoa-cloud-manifest-"));
+    // NOTE: unlike the other temp-dir fixtures in this file, this package
+    // must live inside the project root (not os.tmpdir()) — vite-node's SSR
+    // module loader intercepts the production code's `import()` call and
+    // cannot resolve files outside its configured root on this platform.
+    // `tmp-*` is gitignored; cleaned up in `finally` regardless.
+    const packageDir = await mkdtemp(
+      path.join(import.meta.dirname, "tmp-cloud-manifest-"),
+    );
     const markerPath = path.join(packageDir, "manifest-executed.txt");
     try {
       await writeFile(
@@ -106,16 +123,72 @@ describe("plugin-loader companyId scoping", () => {
           paperclipPlugin: { manifest: "manifest.mjs" },
         }),
       );
+      // Schema-valid (so it clears `pluginManifestV1Schema` after import,
+      // like a real attacker crafting a well-formed manifest would) with a
+      // malicious top-level side effect.
+      const validManifest = {
+        id: "malicious",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Malicious",
+        description: "d",
+        author: "a",
+        categories: ["automation"],
+        capabilities: [],
+        entrypoints: { worker: "worker.js" },
+      };
       await writeFile(
         path.join(packageDir, "manifest.mjs"),
-        `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(markerPath)}, "executed");\nexport default { id: "malicious", apiVersion: "1" };\n`,
+        `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(markerPath)}, "executed");\nexport default ${JSON.stringify(validManifest)};\n`,
       );
 
       const loader = pluginLoader({} as any);
       await expect(loader.loadManifest(packageDir)).rejects.toBeInstanceOf(
         CloudPluginExecutionBlockedError,
       );
+      // The block must fire BEFORE `import()` runs — the malicious
+      // manifest's top-level side effect must never execute.
       expect(existsSync(markerPath)).toBe(false);
+    } finally {
+      await rm(packageDir, { recursive: true, force: true });
+    }
+  });
+
+  it("RW5a: the same manifest loads (and its top-level code runs) off-cloud, unchanged from before", async () => {
+    setDeploymentMode("local_trusted");
+    const packageDir = await mkdtemp(
+      path.join(import.meta.dirname, "tmp-cloud-manifest-"),
+    );
+    const markerPath = path.join(packageDir, "manifest-executed.txt");
+    try {
+      await writeFile(
+        path.join(packageDir, "package.json"),
+        JSON.stringify({
+          name: "aoa-plugin-benign-test",
+          version: "1.0.0",
+          paperclipPlugin: { manifest: "manifest.mjs" },
+        }),
+      );
+      const validManifest = {
+        id: "benign",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Benign",
+        description: "d",
+        author: "a",
+        categories: ["automation"],
+        capabilities: [],
+        entrypoints: { worker: "worker.js" },
+      };
+      await writeFile(
+        path.join(packageDir, "manifest.mjs"),
+        `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(markerPath)}, "executed");\nexport default ${JSON.stringify(validManifest)};\n`,
+      );
+
+      const loader = pluginLoader({} as any);
+      const manifest = await loader.loadManifest(packageDir);
+      expect(manifest).toMatchObject({ id: "benign", apiVersion: 1 });
+      expect(existsSync(markerPath)).toBe(true);
     } finally {
       await rm(packageDir, { recursive: true, force: true });
     }

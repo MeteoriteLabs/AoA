@@ -3,35 +3,29 @@ import request from "supertest";
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { setDeploymentMode } from "../config/deployment-mode.js";
 
-// Break the drizzle-orm ESM cycle (mirrors mcp-server.test.ts).
-vi.mock("@armyofagents/db", () => {
-  const makeTable = () =>
-    new Proxy(
-      {},
-      {
-        get(_target, prop) {
-          if (prop === "$inferSelect" || prop === "$inferInsert") return {};
-          return Symbol(String(prop));
-        },
-      },
-    );
-  return {
-    issues: makeTable(),
-    userRoles: makeTable(),
-    projectGoals: makeTable(),
-    agentProjects: makeTable(),
-    memoryItems: makeTable(),
-    embeddingQueue: makeTable(),
-    discussions: makeTable(),
-    discussionExtractedItems: makeTable(),
-  };
+// U2c: server.ts now also imports the internal-agent tool registry
+// (mcp-bridge.ts / tool-registry.js), whose ~90 tools reference many more
+// schema tables (agents, internalAgentConfig, heartbeatRuns, ...) — several
+// with module-scope `sql` usage (e.g. heartbeat.ts) — than this file's old
+// hand-enumerated table list covered. A hand-enumerated allowlist can't keep
+// up with that surface, and Vitest's `vi.mock` factory validates named
+// exports against the literal keys on the returned object (a dynamic
+// catch-all Proxy doesn't satisfy it — only its OWN enumerable keys count).
+// `../services/index.js` below is already fully mocked with noop factories,
+// which was the actual reason `@armyofagents/db`/`drizzle-orm` needed
+// stubbing (real service construction hitting a real DB pool). With that
+// path cut, passing the REAL `@armyofagents/db` (real Drizzle table defs) and
+// REAL `drizzle-orm` (real query-builder operators) through unmodified is
+// both simpler and correct — this file's fake inline `ctx.db` stub objects
+// only need the operator calls to not throw, and real operators do that job
+// better than hand-rolled ones. Verified: all tests in this file still pass.
+vi.mock("@armyofagents/db", async (importOriginal) => {
+  return await importOriginal<Record<string, unknown>>();
 });
 
-vi.mock("drizzle-orm", () => ({
-  and: (..._args: unknown[]) => "and",
-  eq: (..._args: unknown[]) => "eq",
-  inArray: (..._args: unknown[]) => "inArray",
-}));
+vi.mock("drizzle-orm", async (importOriginal) => {
+  return await importOriginal<Record<string, unknown>>();
+});
 
 vi.mock("../services/index.js", () => {
   const noopFactory = () => ({});

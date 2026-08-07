@@ -43,8 +43,21 @@ vi.mock("drizzle-orm", () => ({ and:(...a:unknown[])=>({and:a}), eq:(a:unknown,b
 vi.mock("@armyofagents/db", () => { const t=(n:string)=>new Proxy({},{get:(_x,p)=>typeof p==="string"?Symbol(`${n}.${p}`):undefined}); return { agents:t("a"), internalAgentRuns:t("iar"), discussionEntries:t("de"), memoryItems:t("mi"), discussions:t("disc"), discussionExtractedItems:t("dei"), embeddingQueue:t("eq"), memoryItemVersions:t("miv"), memoryRetrievals:t("mr"), suggestions:t("sug"), companySecrets:t("cs"), companySecretVersions:t("csv"), companySecretBindings:t("csb"), companySecretProviderConfigs:t("cspc"), runtimeProviderKeys:t("rpk"), secretAccessEvents:t("sae") }; });
 vi.mock("../adapters/registry.js", () => ({ getServerAdapter: () => ({ execute: execMock, getRuntimeCommandSpec: () => ({}) }) }));
 vi.mock("../services/costs.js", () => ({ costService: () => ({ createEvent: createEventMock }) }));
-vi.mock("../services/internal-agent/cli-mode.js", () => ({ buildMcpConfig: buildMcpMock, buildMcpBridgeSpec: buildBridgeSpecMock }));
-vi.mock("../services/heartbeat.js", () => ({ resolveAdapterExecutionContextUnguarded: () => ({ executionTarget:{}, runtimeCommandSpec:{} }), resolveGuardedAdapterExecutionContext: () => ({ executionTarget:{}, runtimeCommandSpec:{} }) }));
+// U4b: buildCodexAoaMcpSpec is the brokered-aware selector runner.ts now calls
+// for ctx.mcpBridge. This suite exercises the desktop/non-sandbox path
+// (acquireExecutionContext mocked to sandbox:null -> brokered:false), where
+// buildCodexAoaMcpSpec falls through to plain buildMcpBridgeSpec — so the
+// SAME mock produces byte-identical output. (brokered-mcp-no-db-url covers
+// the brokered:true branch for real.)
+vi.mock("../services/internal-agent/cli-mode.js", () => ({ buildMcpConfig: buildMcpMock, buildMcpBridgeSpec: buildBridgeSpecMock, buildCodexAoaMcpSpec: buildBridgeSpecMock }));
+vi.mock("../services/heartbeat.js", () => ({ resolveAdapterExecutionContextUnguarded: () => ({ executionTarget:{}, runtimeCommandSpec:{} }), resolveGuardedAdapterExecutionContext: () => ({ executionTarget:{}, runtimeCommandSpec:{} }), applyEnvironmentAcquisitionConfig: (config: unknown) => config }));
+// U4: crew now acquires a sandbox lease before buildMcpConfig. These tests
+// exercise the desktop/local no-sandbox path (byte-identical), so the helper
+// is stubbed to the real no-environment return shape rather than exercising
+// the real orchestrator against this file's Proxy-mocked db.
+vi.mock("../services/acquire-execution-context.js", () => ({
+  acquireExecutionContext: vi.fn().mockResolvedValue({ sandbox: null, lease: null, warmResolved: false }),
+}));
 vi.mock("../services/internal-agent/aoa-agents/bridge-path.js", () => ({ resolveBridgeEntrypoint: () => "/x/mcp-bridge.js" }));
 // T5: the runner now resolves an execution workspace before adapter.execute,
 // which mkdir's the per-agent home and stat's candidate cwds through this same
@@ -70,7 +83,10 @@ vi.mock("../services/provider-resolution.js", () => ({
   applyResolvedCredential: (config: unknown) => config,
   toExecutionTargetHint: () => ({ credentialKind: null, executionTargetSlug: null }),
 }));
-vi.mock("../services/mcp-connectors-loader.js", () => ({ resolveAgentConnectors: resolveConnectorsMock }));
+vi.mock("../services/mcp-connectors-loader.js", () => ({
+  resolveAgentConnectors: resolveConnectorsMock,
+  loadConnectorEgressHosts: vi.fn().mockResolvedValue([]),
+}));
 vi.mock("../services/run-log-store.js", () => ({ getRunLogStore: () => runLogStoreMock }));
 vi.mock("../middleware/logger.js", () => ({ logger:{ child:()=>({info:vi.fn(),warn:vi.fn(),error:vi.fn()}) } }));
 // T5: crew workspace resolution reads the instance experimental flags. Without

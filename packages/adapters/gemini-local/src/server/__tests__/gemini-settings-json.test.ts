@@ -197,4 +197,58 @@ describe("writeGeminiMcpSettingsJson (T2.2)", () => {
       expect(tempFiles).toEqual([]);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // U4b (S7): the reserved `aoa` server itself, rendered as an `httpUrl` entry
+  // for a brokered (E2B-sandboxed) run. Reuses the exact toGeminiEntry HTTP
+  // path external connectors already use below — NOT a second hand-rolled
+  // JSON HTTP emitter. Security invariant: NO `command`/`env` block, and
+  // therefore no DATABASE_URL, for a brokered spec.
+  // -------------------------------------------------------------------------
+  describe("reserved aoa server as HTTP (U4b — brokered/E2B runs)", () => {
+    it("renders mcpServers.aoa as httpUrl + synthesized Bearer header, with NO command/env and NO DATABASE_URL", async () => {
+      await writeGeminiMcpSettingsJson(tmpDir, {
+        kind: "http",
+        url: "https://cp.example/companies/co-1/mcp",
+        headers: {},
+        authTokenEnvVar: "AOA_API_KEY",
+      });
+
+      const raw = await fs.readFile(path.join(tmpDir, ".gemini", "settings.json"), "utf8");
+      const written = JSON.parse(raw);
+
+      expect(written.mcpServers.aoa.httpUrl).toBe("https://cp.example/companies/co-1/mcp");
+      // gemini's native ${VAR} syntax, synthesized by withSynthesizedBearerHeader —
+      // same mechanism external HTTP connectors use.
+      expect(written.mcpServers.aoa.headers).toEqual({ Authorization: "Bearer ${AOA_API_KEY}" });
+      expect(written.mcpServers.aoa.command).toBeUndefined();
+      expect(written.mcpServers.aoa.env).toBeUndefined();
+
+      // CRITICAL security invariant: a brokered run's config must never carry
+      // the control-plane DB credential — that would ride into the VM.
+      expect(raw).not.toContain("DATABASE_URL");
+      expect(raw).not.toContain("postgres://");
+    });
+
+    it("a non-brokered (stdio) aoa spec still renders command/args/env with DATABASE_URL — byte-identical to today", async () => {
+      await writeGeminiMcpSettingsJson(tmpDir, {
+        command: "node",
+        args: ["/bridge.js"],
+        env: {
+          AOA_SESSION_COMPANY_ID: "c",
+          DATABASE_URL: "postgres://should-be-present:5432/db",
+        },
+      });
+
+      const raw = await fs.readFile(path.join(tmpDir, ".gemini", "settings.json"), "utf8");
+      const written = JSON.parse(raw);
+
+      expect(written.mcpServers.aoa.command).toBe("node");
+      expect(written.mcpServers.aoa.args).toEqual(["/bridge.js"]);
+      expect(written.mcpServers.aoa.env.DATABASE_URL).toBe(
+        "postgres://should-be-present:5432/db",
+      );
+      expect(written.mcpServers.aoa.httpUrl).toBeUndefined();
+    });
+  });
 });

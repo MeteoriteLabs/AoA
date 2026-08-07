@@ -68,6 +68,14 @@ export const NOTIFICATION_REGISTRY = {
     semanticType: "legacy_other",
     defaultSourceType: "internal_agent_action",
   },
+  "internal_agent.compaction_failed": {
+    status: "active",
+    type: "internal_agent.compaction_failed",
+    // agent_error -> lane "notifications", authority "owner" (founder-only) —
+    // matches this notification's audience (see hub.ts HUB_AUTHORITY_BY_TYPE).
+    semanticType: "agent_error",
+    defaultSourceType: "internal_agent_conversation",
+  },
   "marketplace.install_completed": {
     status: "active",
     type: "marketplace.install_completed",

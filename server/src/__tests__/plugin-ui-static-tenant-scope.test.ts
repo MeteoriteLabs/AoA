@@ -25,6 +25,7 @@ vi.mock("../services/plugin-registry.js", () => ({
 import { errorHandler } from "../middleware/error-handler.js";
 import { pluginUiStaticRoutes } from "../routes/plugin-ui-static.js";
 import { setDeploymentMode } from "../config/deployment-mode.js";
+import { cloudPluginExecutionBlockedEnvelope } from "../services/cloud-plugin-execution.js";
 
 const PLUGIN_ID = "11111111-1111-4111-8111-111111111111";
 const COMPANY_A = "company-a";
@@ -96,20 +97,38 @@ beforeEach(() => {
   registry.getConfig.mockResolvedValue(null);
 });
 
+  // RW5a (Wave 5 review — fixes the U10-a regression this test used to
+  // pin): `plugin-ui-static.ts:271`'s `isCloudPluginExecutionBlocked()` call
+  // now passes the "ui-static" sink explicitly, and that sink is
+  // unconditionally blocked on cloud regardless of the worker-fork sink U10
+  // is about — the route's own comment says "Same-origin plugin JavaScript
+  // is executable tenant code," a browser-trust boundary the host-resident
+  // worker model does not address. See `cloud-plugin-execution.ts`'s
+  // `PluginCloudExecutionSink` doc comment for the full sink taxonomy.
 describe("tenant-scoped plugin UI assets", () => {
-  it("returns the canonical 503 envelope in cloud before registry access", async () => {
+  it("RW5a: short-circuits with the cloud-blocked envelope before any registry/tenant access", async () => {
     setDeploymentMode("cloud_auth");
-    const response = await appFor(actor([COMPANY_A]))
-      .get(`/_plugins/${PLUGIN_ID}/ui/index.js`)
-      .expect(503);
+    registry.getById.mockResolvedValue(readyPlugin(COMPANY_A));
+    const response = await appFor(actor([COMPANY_A])).get(
+      `/_plugins/${PLUGIN_ID}/ui/index.js`
+    );
 
-    expect(response.body).toEqual({
-      error:
-        "Plugin execution is blocked on AoA Cloud until isolated workers are available",
-      code: "PLUGIN_WORKER_BLOCKED_IN_CLOUD",
-      docs: "/docs/guides/cloud-plugin-execution",
-    });
+    // The "ui-static" sink stays blocked on cloud — the request never
+    // reaches the registry lookup / tenant-access check.
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual(cloudPluginExecutionBlockedEnvelope());
     expect(registry.getById).not.toHaveBeenCalled();
+  });
+
+  it("RW5a: does not block the same request off-cloud", async () => {
+    setDeploymentMode("local_trusted");
+    registry.getById.mockResolvedValue(readyPlugin(COMPANY_A));
+    const response = await appFor(actor([COMPANY_A])).get(
+      `/_plugins/${PLUGIN_ID}/ui/index.js`
+    );
+
+    expect(response.status).not.toBe(503);
+    expect(registry.getById).toHaveBeenCalled();
   });
 
   it("rejects unauthenticated requests before registry access", async () => {

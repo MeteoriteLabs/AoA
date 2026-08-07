@@ -46,10 +46,15 @@ export function isTransportAllowed(
   deploymentMode: string,
   source: string,
   trustTier?: string,
+  sandboxTarget = false,
 ): boolean {
   if (transport !== "stdio") return true; // http is always fine
   if (deploymentMode === "local_trusted") return true; // host is the founder's own machine
   if (source === "catalog" && trustTier === "verified") return true; // verified catalog entries only (C4)
+  // U11: a per-run E2B sandbox IS the containment that makes an npx/uvx stdio
+  // server safe on shared infra. Admissible ONLY when this run resolved a
+  // sandbox execution target — never for an unsandboxed shared-host run.
+  if (sandboxTarget) return true;
   return false;
 }
 
@@ -58,8 +63,9 @@ export function assertTransportAllowed(
   deploymentMode: string,
   source: string,
   trustTier?: string,
+  sandboxTarget = false,
 ): void {
-  if (isTransportAllowed(transport, deploymentMode, source, trustTier)) return;
+  if (isTransportAllowed(transport, deploymentMode, source, trustTier, sandboxTarget)) return;
   throw badRequest(
     "Only remote HTTP connectors can be added in this deployment. stdio connectors run a " +
       "command on the AoA host and are restricted to verified catalog entries.",

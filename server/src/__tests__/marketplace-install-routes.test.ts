@@ -148,7 +148,7 @@ describe("GET /api/companies/:companyId/marketplace/install/:operationId", () =>
     expect(res.status).toBe(503);
     expect(res.body).toEqual({
       error:
-        "Plugin execution is blocked on AoA Cloud until isolated workers are available",
+        "Plugin execution was blocked on AoA Cloud until a host-resident worker was available",
       code: "PLUGIN_WORKER_BLOCKED_IN_CLOUD",
       docs: "/docs/guides/cloud-plugin-execution",
     });

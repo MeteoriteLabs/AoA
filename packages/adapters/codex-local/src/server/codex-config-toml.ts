@@ -9,6 +9,7 @@ import {
   reservedMcpServerNameCollisions,
   stdioSpecCarriesSecretPlaceholder,
   stripReservedMcpServerNames,
+  type McpHttpServerSpec,
   type McpServerSpec,
   type McpWriterResult,
   type McpWriterSkip,
@@ -609,6 +610,14 @@ function fenceAoaManaged(body: string): string {
  * deliberately, not as a convenience. See the single-writer invariant note
  * inside. `spec` may be null: a run with connectors but no bridge still writes
  * (and therefore still cleans) the file.
+ *
+ * `spec` is normally the stdio `CodexMcpBridgeSpec` (command/args/env, with
+ * DATABASE_URL inherited into `.env`). U2d-bridge: a brokered (E2B-sandboxed)
+ * run passes an HTTP-shaped `McpHttpServerSpec` instead — pointed at the
+ * control-plane broker with `authTokenEnvVar` set, so the reserved `aoa`
+ * table renders through the exact same `renderExternalMcpBlock` HTTP path
+ * used for external connectors below (`url` + `bearer_token_env_var`, NO
+ * `command`/`args`/`.env` block, and therefore no DATABASE_URL on disk).
  */
 export interface WriteCodexMcpConfigOptions {
   /**
@@ -629,7 +638,7 @@ export interface WriteCodexMcpConfigOptions {
 
 export async function writeCodexMcpConfigToml(
   managedHomeDir: string,
-  spec: CodexMcpBridgeSpec | null | undefined,
+  spec: CodexMcpBridgeSpec | McpHttpServerSpec | null | undefined,
   options: WriteCodexMcpConfigOptions = {},
 ): Promise<McpWriterResult> {
   const serverName = options.serverName ?? "aoa";
@@ -662,8 +671,25 @@ export async function writeCodexMcpConfigToml(
     const managedServerNames: string[] = [];
     const skipped: McpWriterSkip[] = [];
     if (spec) {
-      blocks.push(renderMcpBlock(spec, serverName));
-      managedServerNames.push(serverName);
+      // U2d-bridge: a brokered (E2B-sandboxed) run's reserved `aoa` server is
+      // HTTP-shaped (points at the control-plane broker, no DATABASE_URL) —
+      // the SAME McpServerSpec shape external connectors use below. Render it
+      // through the identical renderExternalMcpBlock HTTP path (bearer_token_env_var
+      // indirection) rather than hand-rolling a second TOML HTTP emitter.
+      // Non-brokered runs pass the plain stdio CodexMcpBridgeSpec and keep
+      // hitting the original renderMcpBlock path, byte-identical to before.
+      if (isHttpServerSpec(spec)) {
+        const rendered = renderExternalMcpBlock(serverName, spec);
+        if (rendered.block !== null) {
+          blocks.push(rendered.block);
+          managedServerNames.push(serverName);
+        } else {
+          skipped.push({ serverName, reason: rendered.reason });
+        }
+      } else {
+        blocks.push(renderMcpBlock(spec, serverName));
+        managedServerNames.push(serverName);
+      }
     }
     // M2 (B2N10): `serverName` is CONFIGURABLE, so the hardcoded reserved list
     // alone left a hole — a connector sharing the bridge's actual table name

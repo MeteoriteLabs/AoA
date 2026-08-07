@@ -255,6 +255,9 @@ export async function testEnvironment(
           graceSec: 5,
           stdin: "Respond with hello.",
           onLog: async () => {},
+          // U5 — the hello probe must authenticate the SAME way a real claude
+          // run does, so the sandbox env allowlist needs to admit ANTHROPIC_API_KEY.
+          sandboxProvider: "anthropic",
         },
       );
 
@@ -306,6 +309,7 @@ export async function testEnvironment(
                   timeoutSec: 10,
                   graceSec: 2,
                   onLog: async () => {},
+                  sandboxProvider: "anthropic",
                 },
               );
               return parseClaudeAuthStatus(statusProbe.stdout);

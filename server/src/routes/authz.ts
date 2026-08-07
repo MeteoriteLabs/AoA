@@ -47,6 +47,19 @@ export async function assertCompanyAccess(db: Db, req: Request, companyId: strin
     }
     return;
   }
+  if (req.actor.type === "commander") {
+    // F1 (W7.5a): a Commander run-JWT is company-bound by construction (SC2
+    // sets req.actor.companyId = jwt.company_id). It carries NO org/company
+    // membership arrays, so it must NOT reach the cloud board branch below —
+    // that branch would find memberOk === false and 403 EVERY same-company
+    // Commander broker call. `ensureProtocolAccess` calls this for every actor,
+    // so this branch is the ONLY gate that admits a cloud_auth Commander broker
+    // call. Mirrors the agent branch above.
+    if (req.actor.companyId !== companyId) {
+      throw forbidden("Commander JWT cannot access another company");
+    }
+    return;
+  }
   if (req.actor.type === "mcp") {
     if (req.actor.companyId !== companyId) {
       throw forbidden("MCP key cannot access another company");

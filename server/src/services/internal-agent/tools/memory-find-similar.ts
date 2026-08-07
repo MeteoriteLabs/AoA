@@ -19,6 +19,7 @@
 import { sql, eq, and, or, isNull, gt } from "drizzle-orm";
 import { memoryItems } from "@armyofagents/db";
 import type { AgentTool } from "../types.js";
+import { actorForAgentRun, memoryAccessConditions } from "../../memory-access-sql.js";
 
 const DEFAULT_LIMIT = 5;
 const MAX_LIMIT = 25;
@@ -111,6 +112,14 @@ export const findSimilarMemoryHnswTool: AgentTool = {
     ];
     if (layer) {
       conditions.push(eq(memoryItems.layer, layer));
+    }
+    // RBAC gate (U2a): this tool's projection (id/title/content/layer/status/
+    // category) doesn't satisfy AccessibleMemoryRow (no visibility/agentId), so
+    // filterMemoryForActor can't run here. Gate IN-SQL only, agent actor only —
+    // board/Commander stays unfiltered (byte-unchanged behavior).
+    if (ctx.actorType === "agent" && ctx.agentId) {
+      const actor = await actorForAgentRun(ctx.db, ctx.companyId, ctx.agentId);
+      conditions.push(...memoryAccessConditions(ctx.db, actor));
     }
 
     const vectorLiteral = `[${vector.join(",")}]`;

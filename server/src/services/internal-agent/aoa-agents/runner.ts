@@ -6,13 +6,16 @@ import type { Db } from "@armyofagents/db";
 import { agents, internalAgentRuns, discussionEntries, issues, threadOrchestrationState, workQuestions } from "@armyofagents/db";
 import { getServerAdapter } from "../../../adapters/registry.js";
 import { costService } from "../../costs.js";
-import { buildMcpConfig, buildMcpBridgeSpec } from "../cli-mode.js";
+import { buildMcpConfig, buildCodexAoaMcpSpec, type McpConfigParams } from "../cli-mode.js";
 import { stripUserMcpArgs } from "../../mcp-arg-sanitize.js";
-import { resolveAgentConnectors } from "../../mcp-connectors-loader.js";
+import { loadConnectorEgressHosts, resolveAgentConnectors } from "../../mcp-connectors-loader.js";
 import { adapterSupportsConnectors } from "../../mcp-connectors.js";
 import type { McpServerSpec } from "@armyofagents/adapter-utils";
-import { resolveGuardedAdapterExecutionContext } from "../../heartbeat.js";
+import { resolveGuardedAdapterExecutionContext, applyEnvironmentAcquisitionConfig } from "../../heartbeat.js";
 import { tenantIsolationEnforced } from "../../../config/deployment-mode.js";
+import { acquireExecutionContext } from "../../acquire-execution-context.js";
+import { environmentRuntimeService } from "../../environment-runtime.js";
+import { createLocalAgentJwt } from "../../../agent-auth-jwt.js";
 import { resolveBridgeEntrypoint } from "./bridge-path.js";
 import { publishLiveEvent, publishIssueStatusChanged, threadWorkingAgents, broadcastThreadPresence } from "../../live-events.js";
 import { logger } from "../../../middleware/logger.js";
@@ -40,10 +43,15 @@ import { secretService } from "../../secrets.js";
 // graph (adapter registry + agent/project/secret services) into every consumer
 // of the runner. The value import is dynamic, at the call site below.
 import type { RuntimeSkillEntry } from "../../company-skills.js";
+// Type-only (U6.5): the sandbox-file-movement runner shape captureCrewOutputs
+// expects. The value import (`captureCrewOutputs`) is dynamic, at the call
+// site below, mirroring crew-run-outcome.js's own dynamic-import discipline.
+import type { SandboxFileMovementRunner } from "../../sandbox-file-movement.js";
 import {
   bindInternalAgentWorkQuestionContinuation,
   finalizeInternalAgentWorkQuestionContinuation,
 } from "../../work-question-continuation-terminal.js";
+import { mapCloudProviderKeyError } from "../require-cloud-provider-key.js";
 
 export interface AoaTriggerPayload { companyId: string; source: string; entryId?: string; issueId?: string; [k: string]: unknown; }
 
@@ -170,6 +178,20 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
   // widen the `agent` const itself — the success wiring stays in the try scope.
   let outcomeAgentName: string | undefined;
   let outcomeAgentRuntimeConfig: Record<string, unknown> | null | undefined;
+  // U12: capture the resolved provider id for the top-level catch's
+  // mapCloudProviderKeyError call. `providerId` (below) is block-scoped
+  // inside the try and out of scope in the catch — same pattern as
+  // outcomeAgentName/outcomeAgentRuntimeConfig above (the P1 fix).
+  let outcomeProviderId: string | null = null;
+  // FIX 1 (Wave 2 adversarial review, HIGH — cloud VM/lease leak): the U4
+  // sandbox-lease acquire result, captured at FUNCTION scope so the `finally`
+  // below can see it and release the lease on every exit. The `acquired` const
+  // at the acquire call site (below) is block-scoped inside the try — same
+  // problem the P1 fix (outcomeAgentName/outcomeAgentRuntimeConfig) already
+  // solved for the catch block; this solves it for the finally block. Stays
+  // null on every early-return path that never reaches the acquire call, so
+  // the finally's release is correctly a no-op for those.
+  let acquiredContext: Awaited<ReturnType<typeof acquireExecutionContext>> | null = null;
   try {
     const agent = await db.select().from(agents).where(eq(agents.id, agentId)).then((r: any[]) => r[0] ?? null);
     if (!agent) {
@@ -373,8 +395,11 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     const adapter = getServerAdapter(agent.adapterType);
 
     // MX2: the bridge params are identical for both the claude {mcpServers}
-    // envelope and the provider-neutral spec — build them once.
-    const mcpParams = {
+    // envelope and the provider-neutral spec — build them once. Explicit
+    // McpConfigParams annotation (rather than the previous inferred literal
+    // type) so U4b can assign `.brokered`/`.apiBaseUrl` onto this SAME object
+    // after the sandbox lease is acquired below, instead of rebuilding it.
+    const mcpParams: McpConfigParams = {
       companyId: payload.companyId,
       userId: SUBAGENT_SESSION_USER_ID,
       userRole: SUBAGENT_SESSION_USER_ROLE,
@@ -413,35 +438,35 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     // delivered `config.env` (merged below for every adapter), never in the
     // config FILE, which holds `${AOA_MCP_*_TOKEN}` placeholders.
     //
-    // Gated on CONNECTOR-CAPABLE adapters (Plan 2b Task 3, widened from
-    // claude_local-only) using the same shared predicate as the heartbeat site:
-    // the four CLI adapters can host external MCP servers — claude consumes
-    // them via `--mcp-config`, the rest via `ctx.mcpServers` — while
-    // `process`/`http`/`cursor`/`hermes_local` have no MCP client at all and
-    // must not pay for the DB read.
+    // U11 (real-shape drift fix): the actual resolve call is DEFERRED to just
+    // after the U4/U12 sandbox acquire further below. `sandboxTarget` — whether
+    // a stdio connector is admissible in-VM (S5) — can only be known from
+    // `acquired.sandbox?.environment.driver === "sandbox"`, and U12 already
+    // relocated the acquire to run AFTER provider-credential resolution
+    // succeeds (so a cloud run with no company key fails before any sandbox —
+    // now also any connector DB read — is spent). Declared here so both are in
+    // scope for `connectorEnvMerge` / `buildMcpConfig` / `adapter.execute`'s
+    // `mcpServers` below.
     let extraMcpServers: Record<string, McpServerSpec> | undefined;
     let connectorEnv: Record<string, string> = {};
-    if (adapterSupportsConnectors(agent.adapterType)) {
-      const resolved = await resolveAgentConnectors(db, {
-        companyId: agent.companyId,
-        agentId,
-        runId: runId ?? undefined,
-        logger: log,
-      });
-      extraMcpServers = resolved.extraMcpServers;
-      connectorEnv = resolved.connectorEnv;
-    }
 
-    const mcp = buildMcpConfig({ ...mcpParams, extraMcpServers });
-    cfgPath = join(tmpdir(), `aoa-mcp-${agentId}-${runId ?? "x"}.json`);
-    await writeFile(cfgPath, JSON.stringify(mcp, null, 2));
-    // MX2: provider-neutral bridge spec handed to EVERY adapter via
-    // ctx.mcpBridge. Non-claude adapters (codex/opencode/...) consume this in
-    // a later milestone (MX3); claude keeps its own --mcp-config delivery
-    // below. Building it unconditionally is cheap and keeps the contract
-    // uniform across adapters.
-    const bridgeSpec = buildMcpBridgeSpec(mcpParams);
-
+    // U12 (real-shape drift fix): the U4 sandbox acquire used to sit HERE,
+    // immediately after connector resolution and before provider-credential
+    // resolution below. That ordering meant a cloud run with NO company
+    // provider key still leased (and paid for) a sandbox before
+    // resolveProviderCredential got a chance to throw ProviderUnavailableError
+    // — directly contradicting U12's "fail before any sandbox spend"
+    // guarantee (confirmed empirically: aoa-runner-cloud-provider-key.test.ts
+    // observed acquireExecutionContext called even though the credential
+    // resolution rejected). Nothing between here and the acquire's new home
+    // (just before `const config` below) depends on `acquired`/`cfgPath`/
+    // `bridgeSpec`/`mcpParams.brokered` — baseConfig, the context bundle, the
+    // trigger prompt, and the whole credential-resolution block are all
+    // independent of the sandbox lease — so relocating the acquire+MCP-config
+    // block down there (after resolvedBaseConfig is computed, right before
+    // `cfgPath` is first consumed) is a pure reorder: identical outputs on
+    // every path, but now a ProviderUnavailableError throws BEFORE any
+    // sandbox is ever requested.
     const baseConfig = { ...(agent.adapterConfig ?? {}) } as Record<string, unknown>;
     const prevArgs = Array.isArray(baseConfig.args) ? (baseConfig.args as string[]) : [];
 
@@ -566,6 +591,9 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         : agent.adapterType === "claude_local"
           ? "anthropic"
           : agent.adapterType;
+    // U12: capture for the top-level catch's mapCloudProviderKeyError call
+    // (the catch cannot read the block-scoped `providerId` above).
+    outcomeProviderId = providerId;
     const resolveDeps = {
       ...buildResolveDeps(db, topology),
       // Bind the legacy fallback to THIS adapter (deps default is identity).
@@ -658,6 +686,90 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     const userTail = Array.isArray(resolvedConfigRecord[argKey])
       ? (resolvedConfigRecord[argKey] as unknown[]).filter((v): v is string => typeof v === "string")
       : prevArgs;
+
+    // U4 (relocated by U12 — see the note above baseConfig): acquire the
+    // sandbox lease immediately BEFORE buildMcpConfig so U4b can set
+    // mcpParams.brokered/apiBaseUrl on the SAME mcpParams before the MCP
+    // config file / bridge spec are built. R1/Q1: crew is ALWAYS ephemeral,
+    // never warm. `worktree: null` — crew has no host worktree (A+ model, U6).
+    // environmentId comes from the agent's own defaultEnvironmentId column
+    // (agents.default_environment_id — NOT adapterConfig, which has no such
+    // field); null flows straight through to the orchestrator, which resolves
+    // the platform default on cloud (U1) or throws environment_not_found on
+    // desktop (caught below -> sandbox:null, local path unchanged).
+    //
+    // U12: this now runs AFTER provider-credential resolution succeeds (the
+    // block above, ending at resolvedBaseConfig) — a cloud run with no
+    // company key throws ProviderUnavailableError well before this line is
+    // ever reached, so no sandbox is leased for a run that is about to fail.
+    //
+    // U11: a PRE-acquire, best-effort estimate of the hosts THIS agent's
+    // connectors might need, fed into the acquire's egressAllowlist. Real
+    // connector resolution happens AFTER this acquire (its own sandboxTarget
+    // input comes FROM `acquired`, per U11's own reorder above), so the
+    // actual delivered set cannot be known yet — deliberately optimistic (see
+    // loadConnectorEgressHosts' doc-comment) and never throws.
+    const crewEgressHosts = adapterSupportsConnectors(agent.adapterType)
+      ? await loadConnectorEgressHosts(db, { companyId: agent.companyId, agentId: agent.id })
+      : [];
+    const acquired = await acquireExecutionContext(db, {
+      runIdentity: { companyId: agent.companyId, agentId: agent.id, runId: runId ?? `aoa-${agentId}`, adapterType: agent.adapterType },
+      functionType: null,
+      // Crew (`kind='aoa'`) is ALWAYS ephemeral — never warm (spec §7 /
+      // resolveWarmSandboxPreference's crew_always_ephemeral rule, U7.2).
+      warmPreference: false,
+      worktree: null,
+      environmentId: agent.defaultEnvironmentId ?? null,
+      egressAllowlist: crewEgressHosts,
+    });
+    // FIX 1: mirror into the function-scoped local the `finally` release reads.
+    // Assigned unconditionally (including the sandbox:null desktop/local_trusted
+    // case) so the finally's `acquiredContext?.sandbox` check is always accurate.
+    acquiredContext = acquired;
+    // U4b (S7 blocker): a resolved provider-sandbox lease means this run's CLI
+    // will execute inside an E2B VM — the `aoa` MCP server MUST ride the
+    // brokered HTTP transport there, never the stdio bridge (whose env carries
+    // DATABASE_URL, cli-mode.ts's buildMcpBridgeSpec). `acquired.sandbox` is
+    // null on desktop/local_trusted (acquireExecutionContext's S1 contract),
+    // so `brokered` is false there and delivery stays byte-identical.
+    mcpParams.brokered = acquired.sandbox?.environment.driver === "sandbox";
+    // No per-run "resolved" control-plane URL exists on the crew path (unlike
+    // the agent's OWN provider env, resolved further below as `resolvedEnv` —
+    // AOA_API_URL is never part of that agent-configured env). The control
+    // plane's own address is the platform's, not the tenant's, so read it
+    // directly off the server process env (only consulted when brokered).
+    mcpParams.apiBaseUrl = process.env.AOA_API_URL ?? undefined;
+
+    // MCP connectors: resolve THIS agent's enabled company connectors — per-
+    // agent opt-in, so the REAL `agentId` (never null) — into adapter specs +
+    // the env map carrying the real secrets. Secrets ride ONLY in the
+    // delivered `config.env` (merged below for every adapter), never in the
+    // config FILE, which holds `${AOA_MCP_*_TOKEN}` placeholders.
+    //
+    // Gated on CONNECTOR-CAPABLE adapters (Plan 2b Task 3, widened from
+    // claude_local-only) using the same shared predicate as the heartbeat site:
+    // the four CLI adapters can host external MCP servers — claude consumes
+    // them via `--mcp-config`, the rest via `ctx.mcpServers` — while
+    // `process`/`http`/`cursor`/`hermes_local` have no MCP client at all and
+    // must not pay for the DB read.
+    //
+    // U11: sourced from THIS run's just-acquired execution context —
+    // `acquired.sandbox?.environment.driver === "sandbox"` (S5, the SAME
+    // predicate `mcpParams.brokered` above uses, never a top-level
+    // `acquired.driver`) — so a stdio connector is delivered in-VM but still
+    // dropped on an unsandboxed host.
+    if (adapterSupportsConnectors(agent.adapterType)) {
+      const resolved = await resolveAgentConnectors(db, {
+        companyId: agent.companyId,
+        agentId,
+        runId: runId ?? undefined,
+        logger: log,
+        sandboxTarget: acquired.sandbox?.environment.driver === "sandbox",
+      });
+      extraMcpServers = resolved.extraMcpServers;
+      connectorEnv = resolved.connectorEnv;
+    }
+
     // A29 — do NOT scrub: connector tokens merge ON TOP of the already
     // secret-bound env. `resolvedBaseConfig` is post provider-credential
     // resolution (resolveEnvBindings + resolveProviderCredential) +
@@ -678,14 +790,37 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       Object.keys(connectorEnv).length > 0
         ? { env: { ...(resolvedConfigRecord.env as Record<string, string> | undefined), ...connectorEnv } }
         : {};
+
+    const mcp = buildMcpConfig({ ...mcpParams, extraMcpServers });
+    cfgPath = join(tmpdir(), `aoa-mcp-${agentId}-${runId ?? "x"}.json`);
+    await writeFile(cfgPath, JSON.stringify(mcp, null, 2));
+    // MX2: provider-neutral bridge spec handed to EVERY adapter via
+    // ctx.mcpBridge. Non-claude adapters (codex/opencode/...) consume this in
+    // a later milestone (MX3); claude keeps its own --mcp-config delivery
+    // below. Building it unconditionally is cheap and keeps the contract
+    // uniform across adapters.
+    //
+    // U4b: buildCodexAoaMcpSpec is the brokered-aware selector — despite the
+    // name, it is provider-neutral (codex/opencode/gemini all consume the
+    // same McpBridgeSpec | McpHttpServerSpec union via ctx.mcpBridge). A
+    // brokered run gets the HTTP form here (no DATABASE_URL); non-brokered
+    // falls through to the unchanged buildMcpBridgeSpec stdio bridge.
+    const bridgeSpec = buildCodexAoaMcpSpec(mcpParams);
+
     const config = isClaudeFamily
       ? { ...resolvedBaseConfig, promptTemplate: triggerPrompt, ...connectorEnvMerge, [argKey]: ["--mcp-config", cfgPath, "--strict-mcp-config", ...stripUserMcpArgs(userTail)] }
       : { ...resolvedBaseConfig, promptTemplate: triggerPrompt, ...connectorEnvMerge };
+    // U4: fold the U4-acquired sandbox's configPatch (executionTarget etc.) over
+    // `config` BEFORE the guarded-context resolution below. No-ops (returns
+    // `config` unchanged) when `acquired.sandbox` is null (desktop/local_trusted
+    // — environment_not_found) or carries an empty patch, so the local path
+    // stays byte-identical.
+    const configWithSandbox = applyEnvironmentAcquisitionConfig(config, acquired.sandbox);
     // Sink-level multi_tenant hardening (trustBoundary) + D1 unsandboxed gate
     // (cloud_auth) for CREW runs. `topology` is already resolved above (:544);
     // tenantIsolationEnforced() is the cloud_auth signal.
     const { executionTarget, runtimeCommandSpec } = resolveGuardedAdapterExecutionContext(
-      config,
+      configWithSandbox,
       adapter,
       {
         trustBoundary: topology.trustBoundary,
@@ -944,11 +1079,63 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         executionContext.skills = agentSkills;
       }
 
+      // U6.7 (S5): explicitly stage the agent's own resolved skill bundles
+      // into the sandbox for provider-sandbox targets. `claude-local` (and
+      // `cursor-local`) already satisfy this via their own adapter-internal
+      // `context.skills` staging (execute.ts's buildSkillsDir + the remote
+      // sync at :628) — this is REDUNDANT-but-harmless for those adapters
+      // (same destination, same bytes, idempotent overwrite) and is the ONLY
+      // delivery path for every other adapter (codex_local/opencode_local/
+      // gemini_local/…), which never reads `context.skills` at all. Same
+      // dual-check as U6.5's captureCrewOutputs / U6.6's preview emission:
+      // BOTH the acquisition driver AND the resolved executionTarget must
+      // agree it's a provider sandbox. Best-effort — stageAgentSkillsIntoSandbox
+      // never throws on its own, but this call is still wrapped so a
+      // defensive future change there can never fail an otherwise-successful
+      // run.
+      if (
+        agentSkills.length > 0 &&
+        acquired.sandbox?.environment.driver === "sandbox" &&
+        executionTarget.type === "provider-sandbox"
+      ) {
+        try {
+          const { stageAgentSkillsIntoSandbox } = await import("./sandbox-skill-staging.js");
+          await stageAgentSkillsIntoSandbox({
+            runId: runId ?? `aoa-${agentId}`,
+            target: executionTarget,
+            remoteCwd: executionTarget.remoteCwd,
+            skills: agentSkills,
+            onLog: crewLogSink ? crewLogSink.onLog : undefined,
+          });
+        } catch (skillStageErr) {
+          log.warn(
+            { err: skillStageErr, runId, agentId, companyId: agent.companyId },
+            "aoa-runner: sandbox skill staging failed (best-effort, ignored)",
+          );
+        }
+      }
+
+      // U3: mint a per-run run-JWT so the crew CLI has a networked identity
+      // (mirrors the org/heartbeat mint at heartbeat.ts:4276-4279). Gated on
+      // the adapter flag + a real runId — a fake-crew turn never reaches this
+      // branch, and codex/opencode/etc. that don't support the local-agent
+      // JWT simply get `null` (behavior-safe: the token is unused until the
+      // broker lands in later Wave-1 tasks).
+      const crewAuthToken = adapter.supportsLocalAgentJwt && runId
+        ? createLocalAgentJwt(agent.id, agent.companyId, agent.adapterType, runId)
+        : null;
+      if (adapter.supportsLocalAgentJwt && runId && !crewAuthToken) {
+        log.warn(
+          { companyId: agent.companyId, agentId: agent.id, runId, adapterType: agent.adapterType },
+          "crew local agent jwt secret missing; running without injected AOA_API_KEY",
+        );
+      }
+
       adapterResult = await adapter.execute({
         runId: runId ?? `aoa-${agentId}`,
         agent,
         runtime: agent.runtimeConfig ?? {},
-        config,
+        config: configWithSandbox,
         context: executionContext,
         executionTarget, runtimeCommandSpec,
         mcpBridge: bridgeSpec,
@@ -972,7 +1159,7 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         // sink callbacks swallow store failures internally.
         onLog: crewLogSink ? crewLogSink.onLog : async () => {},
         onMeta: crewLogSink ? crewLogSink.onMeta : async () => {},
-        authToken: undefined, onSpawn: () => {},
+        authToken: crewAuthToken ?? undefined, onSpawn: () => {},
       });
     }
 
@@ -1285,6 +1472,47 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         const { postCrewRunSuccess, postCrewRunFailure, resolveCrewOutcomeKind } =
           await import("./crew-run-outcome.js");
         if (resolveCrewOutcomeKind(runResult.status) === "success") {
+          // U6.5 (S5): a crew run that targeted a provider sandbox gets its
+          // in-sandbox working-dir diff captured to task_outputs (Decision
+          // #67 — review-gated `detected_file` rows; artifacts stay
+          // founder-gated, never auto-minted here). Mirrors heartbeat.ts's
+          // U6.3 org-path gate: BOTH the acquisition driver AND the resolved
+          // executionTarget must agree it's a provider sandbox. Best-effort —
+          // captureCrewOutputs never throws on its own, but this call is
+          // still wrapped so a defensive future change there can never flip
+          // an already-succeeded run to failed or skip the loopback below.
+          let detectedFiles: Array<{ path: string; type?: string }> = [];
+          if (
+            acquired.sandbox?.environment.driver === "sandbox" &&
+            executionTarget.type === "provider-sandbox"
+          ) {
+            try {
+              const { captureCrewOutputs } = await import("./crew-output-capture.js");
+              detectedFiles = await captureCrewOutputs({
+                db,
+                companyId: payload.companyId,
+                issueId: payload.issueId,
+                agentId,
+                runId,
+                // AdapterExecutionTarget's "provider-sandbox" variant types
+                // `runner` as the execute-only AdapterProviderSandboxRunner,
+                // but the object actually built is
+                // environment-run-orchestrator.ts's buildProviderRunner
+                // output — a strict superset (writeFiles/readFiles/
+                // resolveHost included whenever the underlying runtime
+                // implements them). Cast mirrors heartbeat.ts's identical
+                // U6.3 org-path cast.
+                runner: executionTarget.runner as unknown as SandboxFileMovementRunner,
+                remoteCwd: executionTarget.remoteCwd,
+              });
+            } catch (captureErr) {
+              log.warn(
+                { err: captureErr, issueId: payload.issueId, runId },
+                "aoa-runner: crew output capture failed (best-effort, ignored)",
+              );
+            }
+          }
+
           await postCrewRunSuccess(db, {
             companyId: payload.companyId,
             issueId: payload.issueId,
@@ -1297,6 +1525,7 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
             runId,
             // Task 4: the delivering agent id — provenance for the run-result refs.
             agentId,
+            detectedFiles,
           });
         } else {
           // runResult.status === "failed" WITHOUT a throw — the adapter reported
@@ -1348,14 +1577,34 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     return { ...runResult, runId };
   } catch (err) {
     log.error({ err }, "aoa run failed (isolated)");
-    const errMessage = err instanceof Error ? err.message : String(err);
+    // U12: on cloud, resolveProviderCredential (above, before the U4 acquire —
+    // see the reorder note at its call site) THROWS ProviderUnavailableError
+    // when no company key is configured — it never returns host_login_fallback
+    // on a shared host (provider-resolution.ts:450). Re-shape THAT throw into
+    // founder-facing guidance, then thread the SAME message into every surface
+    // that reads `errMessage` below (the internalAgentRuns failure row, the
+    // work-question continuation finalize, the postCrewRunFailure card, and
+    // the function's final return). Any non-provider-unavailable error is
+    // untouched (mapper returns null -> surfaced === err).
+    const mappedKeyError = mapCloudProviderKeyError(err, {
+      tenantIsolationEnforced: tenantIsolationEnforced(),
+      provider: outcomeProviderId ?? "provider",
+      sink: "crew agent",
+    });
+    const surfaced = mappedKeyError ?? err;
+    const errMessage = surfaced instanceof Error ? surfaced.message : String(surfaced);
     if (runId) {
       try {
         const activeExecutionMs = Date.now() - startedAt;
         await db.update(internalAgentRuns)
           .set({
             status: "failed",
-            errorMessage: String((err as Error)?.message ?? err),
+            // False-green fix (U12): this used to re-materialize the message
+            // from the RAW `err` (String((err as Error)?.message ?? err)),
+            // bypassing the mapper above — the DB failure row carried the raw
+            // resolver text even when postCrewRunFailure got the guidance.
+            // Now both surfaces read the SAME mapped `errMessage`.
+            errorMessage: errMessage,
             durationMs: activeExecutionMs,
             activeExecutionMs,
             humanQuestionWaitMs: inheritedHumanQuestionWaitMs,
@@ -1522,6 +1771,35 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         log.info({ runId, logRef: runLogHandle.logRef, bytes: summary.bytes }, "aoa-runner: run transcript finalized");
       } catch (finalizeErr) {
         log.warn({ err: finalizeErr, runId }, "aoa-runner: failed to finalize run transcript (best-effort, ignored)");
+      }
+    }
+    // FIX 1 (Wave 2 adversarial review, HIGH — cloud VM/lease leak): release the
+    // crew sandbox lease acquired above (U4) on EVERY exit — success, adapter-
+    // reported failure, AND thrown failure alike. `finally` GUARANTEES this runs
+    // exactly once regardless of which path the run took, mirroring the
+    // transcript-finalize / presence-clear / cfgPath-unlink cleanups around it.
+    //
+    // Keyed on the LEASE RECORD itself (environment + lease), NOT
+    // heartbeatRunId: crew acquires with no heartbeatRunId (see the U4 acquire
+    // call above — crew never sets `runIdentity`'s heartbeatRunId field), so the
+    // org-only reaper (`environmentRuntimeService(db).releaseRunLeases(run.id)`,
+    // which lists leases `WHERE heartbeat_run_id = <id>`) can never find or
+    // reap a crew lease — this per-lease `releaseRunLease` is the ONLY release
+    // path for crew. `acquiredContext?.sandbox` is null on desktop/
+    // local_trusted (U4's S1 contract) and on every early-return that never
+    // reached the acquire call, so this is correctly a no-op there.
+    //
+    // Best-effort: a release failure must NEVER fail the run or mask its
+    // already-decided outcome (the run row was written success/failed above).
+    if (acquiredContext?.sandbox) {
+      try {
+        await environmentRuntimeService(db).releaseRunLease({
+          environment: acquiredContext.sandbox.environment,
+          lease: acquiredContext.sandbox.lease,
+          status: "released",
+        });
+      } catch (releaseErr) {
+        log.warn({ err: releaseErr, runId }, "crew sandbox lease release failed (best-effort)");
       }
     }
     // Phase 5 (Tasks 5.1/5.2): clear this agent's thread working-presence (run

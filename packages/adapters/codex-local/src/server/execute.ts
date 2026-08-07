@@ -6,6 +6,7 @@ import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
   runAdapterExecutionTargetProcess,
+  syncAdapterExecutionTargetFile,
   aoaAmbientSecretEnvKeys,
   stripConnectorRunBearers,
   isStdioServerSpec,
@@ -392,6 +393,34 @@ export async function execute(
           `[aoa] codex MCP connector "${skip.serverName}" skipped: ${skip.reason}\n`,
         );
       }
+      // W7.4 — writeCodexMcpConfigToml wrote config.toml into the HOST
+      // managedCodexHome, but a remote sandbox reads CODEX_HOME=remoteCodexHome
+      // (line ~336) inside the VM, which the install command only `mkdir`s +
+      // `codex login`s — it never receives config.toml. Without staging it, the
+      // in-VM `codex exec` starts with NO [mcp_servers.aoa] and the agent gets
+      // ZERO broker tools (the whole point of the write). Stage the file into
+      // the VM's CODEX_HOME. syncAdapterExecutionTargetFile's remote command is
+      // `mkdir -p "$(dirname <remotePath>)" && base64 -d > <remotePath>`, so it
+      // CREATES remoteCodexHome itself before writing — the dir is guaranteed to
+      // exist regardless of whether the install command's own `mkdir -p` has run
+      // yet (the install runs later, at the exec spawn; its mkdir is idempotent
+      // and `codex login` writes only auth.json, so it never clobbers this
+      // config.toml). sandbox-docker is excluded by the enclosing branch (its
+      // MCP wiring is a separate MX3 follow-up); only provider-sandbox / generic
+      // remote targets stage here.
+      if (isRemoteExecutionTarget) {
+        await syncAdapterExecutionTargetFile({
+          runId: `${runId}-codex-config-toml`,
+          target: executionTarget,
+          localPath: path.join(managedCodexHome, "config.toml"),
+          remotePath: `${remoteCodexHome}/config.toml`,
+          cwd: adapterExecutionTargetRemoteCwd(executionTarget, cwd),
+          env,
+          timeoutSec: 30,
+          graceSec: 5,
+          onLog,
+        });
+      }
     }
   }
 
@@ -603,6 +632,10 @@ export async function execute(
         await onLog(stream, cleaned);
       },
       onSpawn,
+      // U5 — resolved provider for the sandbox env allowlist: codex-local
+      // always runs against OpenAI, so OPENAI_API_KEY/BASE_URL/MODEL are the
+      // only provider auth keys admissible in a sandboxed run.
+      sandboxProvider: "openai",
     });
     const cleanedStderr = stripCodexRolloutNoise(proc.stderr);
     return {

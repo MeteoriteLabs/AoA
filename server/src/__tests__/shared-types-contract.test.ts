@@ -91,13 +91,14 @@ describe("internal agent constants", () => {
     expect(TRIGGER_SOURCES).toHaveLength(6);
   });
 
-  it("NOTIFICATION_TYPES has 16 values", () => {
+  it("NOTIFICATION_TYPES has 17 values", () => {
     // 12 pre-Phase-1 types + 3 remaining thread.* types (Phase E batch 3 / T23
     // added 5; thread.scope_proposal_posted + thread.human_input_needed were
-    // PRUNED in Task 10, 2026-07-04) + work-question SLA breach. Keep this
-    // assertion in sync with
+    // PRUNED in Task 10, 2026-07-04) + work-question SLA breach + the E2B
+    // U13.6 internal_agent.compaction_failed founder-notice (cloud compaction
+    // failure). Keep this assertion in sync with
     // packages/shared/src/constants.ts so changes don't sneak in untested.
-    expect(NOTIFICATION_TYPES).toHaveLength(16);
+    expect(NOTIFICATION_TYPES).toHaveLength(17);
   });
 
   it("NOTIFICATION_TYPES includes the 3 retained Phase 1 thread.* types", () => {

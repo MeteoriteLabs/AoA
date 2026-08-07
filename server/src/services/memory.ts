@@ -56,6 +56,13 @@ export interface FindSimilarScope {
   companyId: string;
   departmentId?: string;
   layer?: string;
+  /**
+   * RBAC WHERE conditions (from `memoryAccessConditions`) AND-ed into both the
+   * semantic and text-overlap-fallback fetches so an agent actor can never see
+   * a candidate row it isn't entitled to (U2a). Empty/undefined leaves the
+   * search unfiltered (board/founder callers, unchanged behavior).
+   */
+  accessConditions?: SQL[];
 }
 
 // Multi-pathway retrieval: combines semantic + keyword + temporal
@@ -904,6 +911,9 @@ export function memoryService(db: Db) {
           if (scope.layer) {
             conditions.push(eq(memoryItems.layer, scope.layer));
           }
+          // RBAC gate (U2a): AND the actor's access conditions into the fetch so
+          // an agent actor's candidate set never includes memory it can't see.
+          if (scope.accessConditions?.length) conditions.push(...scope.accessConditions);
 
           const results = await db
             .select({
@@ -957,6 +967,10 @@ export function memoryService(db: Db) {
       if (scope.layer) {
         conditions.push(eq(memoryItems.layer, scope.layer));
       }
+      // RBAC gate (U2a): AND the actor's access conditions into the fallback
+      // fetch too, so the text-overlap path can't leak what the vector path
+      // gates.
+      if (scope.accessConditions?.length) conditions.push(...scope.accessConditions);
 
       // Find candidates matching any search term
       const termConditions = searchTerms.map((term) =>

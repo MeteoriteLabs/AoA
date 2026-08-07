@@ -95,7 +95,43 @@ describe("environmentRunOrchestrator", () => {
       heartbeatRunId: RUN_ID,
       persistedExecutionWorkspace: { id: "workspace-1", mode: "per_task" },
       multiTenant: false,
+      // S4 — placeholder threaded from acquireForRun; U11 populates it.
+      egressAllowlist: [],
+      // U7.5 / W7.5c — warm decision + warm keys; default ephemeral/null here.
+      warmPreference: false,
+      agentId: null,
+      commanderConversationId: null,
     });
+  });
+
+  it("U11: forwards a caller-supplied egressAllowlist verbatim to runtime.acquireRunLease", async () => {
+    const environment = makeEnvironment();
+    const lease = makeLease();
+    const runtime = {
+      acquireRunLease: vi.fn(async () => ({
+        environment,
+        lease,
+        leaseContext: { executionWorkspaceId: null, executionWorkspaceMode: null },
+      })),
+    };
+    const orchestrator = environmentRunOrchestrator({} as never, {
+      environments: { get: vi.fn(async () => environment) },
+      environmentRuntime: runtime,
+    });
+
+    await orchestrator.acquireForRun({
+      companyId: COMPANY,
+      environmentId: ENVIRONMENT_ID,
+      adapterType: "codex_local",
+      issueId: null,
+      heartbeatRunId: RUN_ID,
+      persistedExecutionWorkspace: null,
+      egressAllowlist: ["mcp.notion.com", "registry.npmjs.org"],
+    });
+
+    expect(runtime.acquireRunLease).toHaveBeenCalledWith(
+      expect.objectContaining({ egressAllowlist: ["mcp.notion.com", "registry.npmjs.org"] }),
+    );
   });
 
   it("returns a sandbox-docker config patch when the environment has an AoA target", async () => {
@@ -254,6 +290,10 @@ describe("environmentRunOrchestrator", () => {
       env: { A: "1" },
       stdin: undefined,
       timeoutSec: 30,
+      // U7.5b — buildProviderRunner now maps the adapter's onLog into the
+      // execute seam's onStdout/onStderr (E2B live-log parity with docker).
+      onStdout: expect.any(Function),
+      onStderr: expect.any(Function),
     });
   });
 
@@ -292,5 +332,95 @@ describe("environmentRunOrchestrator", () => {
       persistedExecutionWorkspace: null,
     })).rejects.toBeInstanceOf(EnvironmentRunError);
     expect(runtime.acquireRunLease).not.toHaveBeenCalled();
+  });
+
+  it("resolves the platform-default e2b environment when environmentId is null on cloud", async () => {
+    setDeploymentMode("cloud_auth");
+    process.env.E2B_API_KEY = "op-key";
+    const lease = makeLease({ provider: "e2b" });
+    const acquireRunLease = vi.fn(async ({ environment }: { environment: Environment }) => ({
+      environment,
+      lease,
+      leaseContext: { executionWorkspaceId: null, executionWorkspaceMode: null },
+    }));
+    const getEnv = vi.fn();
+    // U1b: resolving the null-environmentId branch now materializes a real
+    // persisted `environments` row (ensurePlatformDefaultEnvironmentRow),
+    // which needs a real db. This is a pure unit test with `db = {} as
+    // never`, so inject a fake via the DI seam instead — mirrors the
+    // `environments`/`environmentRuntime` DI already used throughout this
+    // file. The real materialize path is proven for real against a real db
+    // in platform-default-environment-materialization.integration.test.ts.
+    const ensurePlatformDefault = vi.fn(async () =>
+      makeEnvironment({
+        id: "platform-default-e2b",
+        driver: "sandbox",
+        config: { provider: "e2b", template: "base", timeoutMs: 3_600_000, reuseLease: false },
+      }),
+    );
+    const orchestrator = environmentRunOrchestrator({} as never, {
+      environments: { get: getEnv },
+      environmentRuntime: { acquireRunLease },
+      ensurePlatformDefault,
+    });
+
+    const result = await orchestrator.acquireForRun({
+      companyId: COMPANY,
+      environmentId: null,
+      adapterType: "claude_local",
+      issueId: null,
+      heartbeatRunId: RUN_ID,
+      persistedExecutionWorkspace: null,
+    });
+
+    expect(ensurePlatformDefault).toHaveBeenCalledWith({ companyId: COMPANY, deploymentMode: "cloud_auth" });
+    expect(getEnv).not.toHaveBeenCalled();
+    expect(acquireRunLease).toHaveBeenCalledWith(
+      expect.objectContaining({
+        environment: expect.objectContaining({
+          driver: "sandbox",
+          config: expect.objectContaining({ provider: "e2b" }),
+        }),
+      }),
+    );
+    expect(result.environment.driver).toBe("sandbox");
+    expect(result.adapterType).toBe("claude_local");
+
+    delete process.env.E2B_API_KEY;
+  });
+
+  it("still throws environment_not_found for null environmentId off-cloud", async () => {
+    setDeploymentMode("local_trusted");
+    const orchestrator = environmentRunOrchestrator({} as never, {
+      environments: { get: vi.fn() },
+      environmentRuntime: { acquireRunLease: vi.fn() },
+    });
+
+    await expect(orchestrator.acquireForRun({
+      companyId: COMPANY,
+      environmentId: null,
+      adapterType: "claude_local",
+      issueId: null,
+      heartbeatRunId: RUN_ID,
+      persistedExecutionWorkspace: null,
+    })).rejects.toMatchObject({ code: "environment_not_found" });
+  });
+
+  it("throws environment_not_found for null environmentId on cloud with no operator key", async () => {
+    setDeploymentMode("cloud_auth");
+    delete process.env.E2B_API_KEY;
+    const orchestrator = environmentRunOrchestrator({} as never, {
+      environments: { get: vi.fn() },
+      environmentRuntime: { acquireRunLease: vi.fn() },
+    });
+
+    await expect(orchestrator.acquireForRun({
+      companyId: COMPANY,
+      environmentId: null,
+      adapterType: "claude_local",
+      issueId: null,
+      heartbeatRunId: RUN_ID,
+      persistedExecutionWorkspace: null,
+    })).rejects.toMatchObject({ code: "environment_not_found" });
   });
 });

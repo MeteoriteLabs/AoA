@@ -19,14 +19,45 @@ const DOCKER_FAMILY_TARGET_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Sentinel target for AoA-authored git run against a HOST-side clone
+ * (clone/diff-base/commit/push) — never a tenant CLI shell. This is host-
+ * controlled AoA code operating on a host clone, not tenant model output
+ * executing in an unsandboxed context, so it is permitted on cloud_auth
+ * (spec §9 blast-radius reframe). U6.1.
+ */
+export type HostOrchestrationTarget = { type: "host_orchestration_git" };
+
+export function isHostOrchestrationGitTarget(
+  t: AdapterExecutionTarget | HostOrchestrationTarget | null | undefined,
+): boolean {
+  return !!t && (t as { type?: string }).type === "host_orchestration_git";
+}
+
+/**
  * Cloud isolation cannot be established by a tenant-authored `runtime` string.
  * Until the validated worker plane exists, every local Docker-family target is
  * refused just like the control-plane host. Provider sandboxes establish their
- * boundary outside this local dispatch path and are allowed.
+ * boundary outside this local dispatch path and are allowed. Host-orchestration
+ * git (U6.1) is likewise carved out — it is AoA's own code, not tenant input.
+ *
+ * EXTENSIBILITY (Scenario 2 — tenant-operated isolated runner, spec §13 hook #2):
+ * this predicate is a CLOSED REFUSE-ENUMERATION — it refuses ONLY local (via
+ * `isUnsandboxedLocalTarget`) + the docker-family types (`DOCKER_FAMILY_TARGET_TYPES`)
+ * and PERMITS everything else. A future `remote-tenant-runner` execution-target
+ * type is therefore an ALLOWED category BY CONSTRUCTION — do NOT invert this to
+ * an allow-list of only `provider-sandbox`, which would refuse the future remote
+ * runner. This mirrors the acquisition-level isolation seam (S5): a
+ * `type:"provider-sandbox"` target is exactly what the orchestrator emits when
+ * `acquisition.environment.driver === "sandbox"` + `isProviderSandboxLease(lease)`
+ * (`environment-run-orchestrator.ts:163`); the reserved driver name for that
+ * future category is `RESERVED_TENANT_RUNNER_DRIVER` (`cloud-environment-policy.ts`).
+ * Commander is just another sink passing a resolved `provider-sandbox` target
+ * through this same enumeration (W7.5d/W7.5f) — it neither widens nor narrows it.
  */
 function requiresSandboxRefusal(
   target: AdapterExecutionTarget | null | undefined,
 ): boolean {
+  if (isHostOrchestrationGitTarget(target)) return false;
   if (isUnsandboxedLocalTarget(target)) return true;
   return Boolean(target && DOCKER_FAMILY_TARGET_TYPES.has(target.type));
 }

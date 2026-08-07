@@ -11,7 +11,7 @@ import type {
 import { deriveAgentUrlKey } from "@armyofagents/shared";
 
 type Actor = {
-  type: "none" | "board" | "agent" | "mcp";
+  type: "none" | "board" | "agent" | "mcp" | "commander";
   source: string;
   userId?: string;
 };

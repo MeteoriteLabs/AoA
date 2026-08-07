@@ -324,7 +324,11 @@ export function companyPluginRoutes(
       pluginId: string;
     };
 
-    if (isCloudPluginExecutionBlocked()) {
+    // RW5a: rollback's own "loader" gate is the ENTRY boundary — it delegates
+    // to `loader.upgradePlugin`, which stays allowed on cloud; the manifest
+    // re-import that upgrade performs internally is separately gated by
+    // "loader-import" and stays blocked in the control plane.
+    if (isCloudPluginExecutionBlocked("loader")) {
       recordCloudPluginBlock({
         pluginId,
         companyId,

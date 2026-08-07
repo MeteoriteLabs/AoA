@@ -416,6 +416,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       graceSec,
       onLog,
       onSpawn,
+      // U5 fix (Wave 2 review — this adapter was the confirmed regression):
+      // gemini-local always runs against Google, so GEMINI_API_KEY/
+      // GOOGLE_API_KEY are the only provider auth keys admissible in a
+      // sandboxed run. Pre-fix this was omitted entirely, so
+      // buildSandboxEnvAllowlist saw provider:"" and dropped the agent's own
+      // key on every cloud sandbox run.
+      sandboxProvider: "gemini",
     });
     return {
       proc,

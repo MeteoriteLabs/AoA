@@ -11,7 +11,11 @@ export const costEvents = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
-    agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
+    // U13.4: nullable — one-shot CLI spawns (extraction/compaction/readiness,
+    // one-shot-cli-budget.ts) have no owning agent and record cost events
+    // with agentId:null. Every other writer (costService.createEvent,
+    // costs.ts) still requires+validates a real agent and never passes null.
+    agentId: uuid("agent_id").references(() => agents.id, { onDelete: "cascade" }),
     issueId: uuid("issue_id").references(() => issues.id, { onDelete: "set null" }),
     projectId: uuid("project_id").references(() => projects.id, { onDelete: "set null" }),
     goalId: uuid("goal_id").references(() => goals.id, { onDelete: "set null" }),

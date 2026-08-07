@@ -25,6 +25,9 @@ import {
   TOOL_DEFINITIONS,
   toolHandlers,
   toolAllowedActors,
+  readPluginToolDefinitions,
+  isPluginToolName,
+  dispatchPluginToolCall,
   type McpUserScope,
   type ToolContext,
   type ToolServices,
@@ -39,6 +42,21 @@ import {
 } from "./tools/scope.js";
 import { actorForMcp, memoryAccessConditions } from "../services/memory-access-sql.js";
 import { filterMemoryForActor } from "../services/memory-access.js";
+import {
+  createToolCallHandler,
+  buildToolListResponse,
+  filterAuthorizedToolsForContext,
+} from "../services/internal-agent/mcp-bridge.js";
+import { executeTool } from "../services/internal-agent/tool-registry.js";
+import { resolveBrokerToolContext, resolveCommanderBrokerToolContext } from "./broker-tool-context.js";
+// U2c: the array construction lives in a standalone module (not inlined here)
+// so it can be imported without pulling in server.ts's `../services/index.js`
+// → plugin-worker-manager.ts → `@armyofagents/plugin-sdk` chain (that
+// workspace package's `dist/` is not built in every environment — see
+// broker-registry.ts's header for the full rationale). Re-exported below so
+// `brokerRegistry` remains available from `server.js` as originally planned.
+import { brokerRegistry } from "./broker-registry.js";
+export { brokerRegistry };
 
 const JSON_RPC_VERSION = "2.0";
 const MCP_PROTOCOL_VERSION = "2024-11-05";
@@ -201,6 +219,21 @@ function protocolAuthActor(req: Request) {
       source: "agent" as const,
       agentId,
       runId: req.actor.runId ?? null,
+    };
+  }
+  if (req.actor.type === "commander") {
+    // W7.5a / SC3: a sandboxed Commander turn reaches the broker on a
+    // per-turn run-JWT (no agents row). The conversation id doubles as the
+    // broker run key (`runId`) — the commander broker context is resolved
+    // from it downstream. `userRole` is carried on `req.actor` (read directly
+    // in the route closure, not on ProtocolActor).
+    return {
+      userId: req.actor.userId ?? "commander-unknown",
+      companyId: req.actor.companyId ?? null,
+      keyId: null,
+      source: "commander" as const,
+      agentId: null,
+      runId: req.actor.conversationId ?? null,
     };
   }
   return null;
@@ -411,6 +444,40 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
 
     try {
       const { actor: protocolActor, company } = await ensureProtocolAccess(db, req, companyId, companiesSvc);
+      // U2c: builds the internal-agent ToolContext for an `agent`-source actor
+      // (crew/org run — including an E2B-sandboxed run whose ONLY path to the
+      // DB is this broker). Lazy (not called unconditionally per-request):
+      // only the tools/list and tools/call branches below need it. agentId /
+      // runId are guaranteed non-null for a genuine run-JWT actor (the JWT's
+      // `sub`/`run_id` claims are required — see agent-auth-jwt.ts), but the
+      // ProtocolActor type carries them as nullable, so this fails closed with
+      // a 403 rather than passing a non-null-asserted null through.
+      const resolveBrokerContextForActor = () => {
+        if (protocolActor.source === "commander") {
+          // W7.5a / SC3: company scope is already enforced by
+          // ensureProtocolAccess (assertCompanyAccess's commander branch:
+          // actor.companyId === :companyId) above. No agents-row lookup.
+          // protocolActor.runId is the Commander conversation id (set in
+          // protocolAuthActor). userRole is carried on req.actor (not on
+          // ProtocolActor) — read it directly off the actor here.
+          return resolveCommanderBrokerToolContext({
+            db,
+            companyId,
+            userId: protocolActor.userId,
+            userRole: (req.actor.userRole as string | undefined) ?? "team_member",
+            conversationId: protocolActor.runId ?? "",
+          });
+        }
+        if (!protocolActor.agentId || !protocolActor.runId) {
+          throw forbidden("Agent actor is missing a run identity for the tool broker");
+        }
+        return resolveBrokerToolContext({
+          db,
+          companyId,
+          agentId: protocolActor.agentId,
+          runId: protocolActor.runId,
+        });
+      };
       const scopeActor = { source: protocolActor.source, userId: protocolActor.userId };
       const scope = await (deps.resolveScope
         ? deps.resolveScope(companyId, scopeActor)
@@ -560,6 +627,44 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
       }
 
       if (method === "tools/list") {
+        // U2c: agent actors (crew/org runs, including E2B-sandboxed runs whose
+        // sole path to AoA is this broker) list the FULL internal tool
+        // registry — the same registry + gate the desktop stdio bridge uses —
+        // filtered to what this specific agent may see. Non-agent sources
+        // (mcp/board) keep the existing outbound TOOL_DEFINITIONS list
+        // UNCHANGED.
+        //
+        // Gated on a present runId: the broker is run-scoped by construction
+        // (resolveBrokerToolContext requires one, and every genuine crew/org/
+        // sandboxed run-JWT actor always carries one — agent-auth-jwt.ts's
+        // run_id claim is mandatory). An agent-API-key actor (auth.ts
+        // source:"agent_key") is ALSO source==="agent" but has no runId
+        // unless the caller sends x-aoa-run-id — a standalone, non-run
+        // identity that predates U2c and must keep seeing the outbound
+        // TOOL_DEFINITIONS list, not a 403 from the run-scoped broker.
+        if (
+          (protocolActor.source === "agent" && protocolActor.runId) ||
+          protocolActor.source === "commander"
+        ) {
+          const brokerCtx = await resolveBrokerContextForActor();
+          // U10: plugin tools are host-resident (reached only through this
+          // broker) and agent-only, so they're appended here — the same
+          // run-scoped branch that already serves the internal tool
+          // registry to agent-with-runId actors — never to the static
+          // TOOL_DEFINITIONS branch below. Company-scoped: a company with no
+          // ready plugins (or no dispatcher configured) sees [] appended,
+          // never another company's tools.
+          const pluginTools = readPluginToolDefinitions(companyId);
+          res.json(
+            jsonRpcResult(requestBody.id ?? null, {
+              tools: [
+                ...buildToolListResponse(filterAuthorizedToolsForContext(brokerRegistry, brokerCtx)),
+                ...pluginTools,
+              ],
+            }),
+          );
+          return;
+        }
         res.json(
           jsonRpcResult(requestBody.id ?? null, { tools: TOOL_DEFINITIONS }),
         );
@@ -569,6 +674,109 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
       if (method === "tools/call") {
         const params = callToolSchema.parse(requestBody.params);
         const args = params.arguments ?? {};
+
+        // U10: plugin tools (host-resident worker, dispatched via the
+        // company-scoped registry) are checked FIRST — before the U2c
+        // agent-broker-registry branch below and its own inner `-32601`
+        // check, and before the outbound `toolHandlers` fallthrough. A
+        // plugin tool name is guaranteed to be in NEITHER `brokerRegistry`
+        // NOR `toolHandlers`, so without this early check every plugin tool
+        // call would dead-end at one of those two `-32601` paths instead of
+        // reaching the host-resident worker. Composes cleanly with U2c:
+        // this branch returns before that branch's own logic ever runs, and
+        // does not alter its behavior for non-plugin tool names.
+        if (isPluginToolName(params.name)) {
+          const outcome = await dispatchPluginToolCall({
+            db,
+            companyId,
+            actorSource: protocolActor.source,
+            agentId: protocolActor.agentId,
+            runId: protocolActor.runId,
+            name: params.name,
+            args,
+          });
+          if (outcome.kind === "forbidden") {
+            res
+              .status(403)
+              .json(jsonRpcError(requestBody.id ?? null, -32003, outcome.message));
+            return;
+          }
+          if (outcome.kind === "not_found") {
+            res
+              .status(404)
+              .json(jsonRpcError(requestBody.id ?? null, -32004, outcome.message));
+            return;
+          }
+          res.json(jsonRpcResult(requestBody.id ?? null, asToolContent(outcome.result.result)));
+          return;
+        }
+
+        // U2c: agent actors get first crack at the internal tool registry —
+        // the SAME array the desktop stdio bridge dispatches against (guarded
+        // by broker-stdio-parity.test.ts) — via the SHARED
+        // createToolCallHandler (mcp-bridge.ts), for any tool name that
+        // exists there. This is ADDITIVE, not a replacement: an agent actor
+        // calling a name that exists ONLY in the outbound registry below
+        // (e.g. memory.get, memory.retain, create-task — pre-existing tools
+        // already reachable by agent actors, gated by toolAllowedActors) is
+        // NOT handled here and falls through to that unchanged path. A name
+        // present in BOTH registries (ask_human/ask_founder) resolves through
+        // the internal registry — both implementations delegate to the same
+        // askHumanForActiveRun helper (mcp/tools/ask-founder-tool.ts), so this
+        // is a dispatch-path choice, not a behavior difference.
+        //
+        // isError / JSON-RPC mapping contract: ONLY a name unresolved in
+        // BOTH registries is a transport-level -32601 — checked explicitly
+        // against brokerRegistry AND toolHandlers BEFORE any handler runs. A
+        // registered-but-denied broker tool (e.g. use_skill's
+        // NOT_IN_ALLOWLIST / NOT_ENABLED, ask_human's run-gate refusal) is an
+        // in-band `isError:true` jsonRpcResult below — createToolCallHandler
+        // already returns that shape for policy denials AND execute()
+        // failures alike (mcp-bridge.ts ~:149-249); it must never be
+        // remapped to -32601, or a legitimate denial would look like "method
+        // not found" to the caller and break gating parity with the stdio
+        // bridge.
+        //
+        // Gated on a present runId (same rationale as the tools/list branch
+        // above): an agent-API-key actor with no runId is not a run at all,
+        // so it skips the run-scoped broker entirely and falls straight
+        // through to the pre-existing outbound path below — unchanged
+        // behavior for that caller class.
+        if (
+          (protocolActor.source === "agent" && protocolActor.runId) ||
+          protocolActor.source === "commander"
+        ) {
+          if (brokerRegistry.some((tool) => tool.name === params.name)) {
+            const brokerCtx = await resolveBrokerContextForActor();
+            const handleBrokerToolCall = createToolCallHandler({
+              tools: brokerRegistry,
+              executeTool,
+              toolContext: brokerCtx,
+            });
+            const result = await handleBrokerToolCall(
+              params.name,
+              args,
+              `broker:${String(requestBody.id ?? "")}`,
+            );
+            res.json(
+              jsonRpcResult(requestBody.id ?? null, {
+                content: result.content,
+                isError: result.isError ?? false,
+              }),
+            );
+            return;
+          }
+          if (!(params.name in toolHandlers)) {
+            res
+              .status(400)
+              .json(jsonRpcError(requestBody.id ?? null, -32601, `Unknown tool: '${params.name}'`));
+            return;
+          }
+          // Falls through: the name exists in the outbound registry below —
+          // handled by the UNCHANGED code that follows, exactly as it always
+          // has for agent actors.
+        }
+
         const handler = toolHandlers[params.name];
         if (!handler) {
           res.status(400).json(jsonRpcError(requestBody.id ?? null, -32601, "Tool not found"));

@@ -445,6 +445,8 @@ describe("cli-mode-codex-integration — real fake-codex spawn (no child_process
           userRole: "founder",
           content: "hi",
           enabledCapabilities: [],
+          // conversationId is required (W7.5d checks it before the host CLI probe).
+          conversationId: "conversation-unavail",
         } as any,
         { cliTool: "codex", executionMode: "cli" } as any,
       )) {

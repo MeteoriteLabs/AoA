@@ -462,35 +462,45 @@ describe("extractViaCli — codex", () => {
   });
 });
 
-// ── extractViaCli — cloud_auth fail-closed ───────────────────────────────────
+// ── extractViaCli — cloud_auth routes through the sandbox (U13.2) ───────────
 //
-// On multi-tenant AoA Cloud (cloud_auth) there is no per-tenant isolated
-// extraction path yet, and the shared host's CLI login belongs to the OPERATOR.
-// extractViaCli is the single universal chokepoint for all four extraction
-// sinks (discussion / debrief-push / file-import / crew memory-extract), so the
-// guard lives here and every caller already catches CliExtractionError. The
-// guard must throw BEFORE any subprocess spawn.
+// On multi-tenant AoA Cloud (cloud_auth), extraction now routes through an
+// EPHEMERAL sandbox authenticated with the COMPANY's own resolved provider
+// key (U13.0-2) instead of the ambient host CLI login (the operator-cred
+// sink these tests used to prove was refused outright pre-U13). A direct
+// `extractViaCli` call with no `credential`/`companyId`/`db` — as every real
+// production caller now supplies (extraction.ts threads them) — cannot route
+// through the sandbox and fails closed BEFORE any subprocess spawn. The
+// "kind" mapping is TEMPORARY (extraction-cli.ts's extractViaCliSandbox
+// comment): U13.3 adds a dedicated `sandbox_unavailable` CliErrorKind; for
+// now this bucket is `nonzero_exit`, deliberately not `not_authed` (which
+// would trip DiscussionDetail's stale pre-U13 "unavailable on AoA Cloud"
+// override copy). Full sandbox-routing coverage (spy on
+// runOneShotCliInSandbox, env exclusions, batch-handle reuse) lives in
+// extraction-cli-sandbox-env.test.ts.
 
-describe("extractViaCli — cloud_auth fail-closed", () => {
+describe("extractViaCli — cloud_auth routes through the sandbox (U13.2)", () => {
   afterEach(() => setDeploymentMode("local_trusted"));
 
-  it("refuses extraction on cloud_auth without spawning a CLI", async () => {
+  it("without a resolved credential/companyId/db, fails closed before spawning a CLI", async () => {
     setDeploymentMode("cloud_auth");
     const { extractViaCli } = await import("../services/extraction-cli.ts");
     await expect(extractViaCli("claude", "sys", "content")).rejects.toMatchObject({
       name: "CliExtractionError",
-      kind: "not_authed",
+      kind: "nonzero_exit",
     });
-    // No subprocess may be spawned on the refusal path.
+    // No LOCAL subprocess may be spawned on the sandbox-routing path — the
+    // sandbox execution goes through the provider-runtime seam, never
+    // node:child_process.
     expect(spawnCalls).toHaveLength(0);
   });
 
-  it("refuses codex extraction on cloud_auth too", async () => {
+  it("refuses codex extraction on cloud_auth the same way (no credential/companyId/db)", async () => {
     setDeploymentMode("cloud_auth");
     const { extractViaCli } = await import("../services/extraction-cli.ts");
     await expect(extractViaCli("codex", "sys", "content")).rejects.toMatchObject({
       name: "CliExtractionError",
-      kind: "not_authed",
+      kind: "nonzero_exit",
     });
     expect(spawnCalls).toHaveLength(0);
   });

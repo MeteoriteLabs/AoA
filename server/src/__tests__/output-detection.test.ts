@@ -156,4 +156,80 @@ describe("outputDetectionService", () => {
       await fs.rm(cwd, { recursive: true, force: true });
     }
   });
+
+  // U6.3 (S5): sandboxed org runs source changed files from an in-VM diff
+  // (collectSandboxDiff) instead of the host git/mtime scan.
+  it("sources files from changedFileSource instead of the host git scan, even when cwd is a real dirty git repo", async () => {
+    const { outputDetectionService } = await import("../services/output-detection.js");
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-output-sandbox-source-"));
+    try {
+      // A real, dirty git repo with an untracked file the HOST git branch
+      // would normally capture if it ran.
+      await git(cwd, ["init"]);
+      await fs.writeFile(path.join(cwd, "README.md"), "base\n", "utf8");
+      await git(cwd, ["add", "README.md"]);
+      await git(cwd, ["-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-m", "base"]);
+      await fs.writeFile(path.join(cwd, "host-file.md"), "# Should not be captured\n", "utf8");
+
+      let changedFileSourceCalls = 0;
+      const result = await outputDetectionService(buildDb() as never).detectAndCapture({
+        runId: "run-1",
+        companyId: "company-1",
+        agentId: "agent-1",
+        cwd,
+        startedAt: new Date(Date.now() - 1000),
+        adapterType: "codex_local",
+        issueId: "issue-1",
+        changedFileSource: async () => {
+          changedFileSourceCalls += 1;
+          return [{ path: "sandbox-file.md", content: Buffer.from("# From the VM\n", "utf8") }];
+        },
+      });
+
+      expect(changedFileSourceCalls).toBe(1);
+      expect(result).toEqual([
+        expect.objectContaining({
+          path: "sandbox-file.md",
+          filename: "sandbox-file.md",
+          source: "diff",
+          status: "pending",
+          confirmedArtifactId: null,
+        }),
+      ]);
+      expect(result.map((item) => item.path)).not.toContain("host-file.md");
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("works when cwd does not exist on the host at all (VM remoteCwd)", async () => {
+    const { outputDetectionService } = await import("../services/output-detection.js");
+    // A path guaranteed to never exist on the host — mirrors a sandboxed
+    // run's remoteCwd (e.g. "/home/user/aoa-workspace"), which is a path
+    // inside the E2B VM, not on the machine running this service.
+    const cwd = path.join(os.tmpdir(), `aoa-nonexistent-remote-cwd-${Date.now()}`);
+
+    const result = await outputDetectionService(buildDb() as never).detectAndCapture({
+      runId: "run-1",
+      companyId: "company-1",
+      agentId: "agent-1",
+      cwd,
+      startedAt: new Date(Date.now() - 1000),
+      adapterType: "codex_local",
+      issueId: "issue-1",
+      changedFileSource: async () => [
+        { path: "src/a.ts", content: Buffer.from("export const a = 1;\n", "utf8") },
+      ],
+    });
+
+    expect(result).toEqual([
+      expect.objectContaining({
+        path: "src/a.ts",
+        filename: "a.ts",
+        status: "pending",
+        confirmedArtifactId: null,
+        confirmedVersionId: null,
+      }),
+    ]);
+  });
 });

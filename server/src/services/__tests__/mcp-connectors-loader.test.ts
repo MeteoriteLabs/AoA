@@ -58,6 +58,7 @@ vi.mock("../mcp-connectors-crud.js", () => ({
 
 import {
   isConnectorToolAutoAllowed,
+  loadConnectorEgressHosts,
   loadEnabledConnectorRows,
   resolveAgentConnectors,
 } from "../mcp-connectors-loader.js";
@@ -558,6 +559,39 @@ describe("loadEnabledConnectorRows", () => {
     expect(rows).toEqual([]);
     expect(resolveByName).not.toHaveBeenCalled();
   });
+
+  // U11: sandboxTarget is forwarded to selectConnectorRowsForAgent's D7 re-gate.
+  // Force the host's CURRENT deployment mode to cloud_auth (loadConfig() reads
+  // AOA_DEPLOYMENT_MODE with no caching) so the axis is actually exercised.
+  it("threads sandboxTarget into the D7 re-gate: stdio kept on cloud_auth+sandbox, dropped without it", async () => {
+    vi.stubEnv("AOA_DEPLOYMENT_MODE", "cloud_auth");
+    const stdioRow = () =>
+      connectorRow({
+        id: "c-stdio",
+        serverName: "notion-stdio",
+        transport: "stdio",
+        command: "npx",
+        args: ["@notionhq/notion-mcp-server@1.2.3"],
+        source: "byo",
+        secretRef: null,
+      });
+
+    const { db: dbUnsandboxed } = createSequenceDb([[stdioRow()], [{ connectorId: "c-stdio" }]]);
+    const dropped = await loadEnabledConnectorRows(dbUnsandboxed, {
+      companyId: "co-1",
+      agentId: "agent-1",
+      sandboxTarget: false,
+    });
+    expect(dropped).toEqual([]);
+
+    const { db: dbSandboxed } = createSequenceDb([[stdioRow()], [{ connectorId: "c-stdio" }]]);
+    const kept = await loadEnabledConnectorRows(dbSandboxed, {
+      companyId: "co-1",
+      agentId: "agent-1",
+      sandboxTarget: true,
+    });
+    expect(kept.map((r) => r.serverName)).toEqual(["notion-stdio"]);
+  });
 });
 
 describe("resolveAgentConnectors", () => {
@@ -652,5 +686,90 @@ describe("isConnectorToolAutoAllowed emergency policy", () => {
 
     expect(allowed).toBe(false);
     expect(selectedTables).toEqual([]);
+  });
+});
+
+// U11: the PRE-acquire egress-host estimate that populates the sandbox
+// provider's egressAllowlist. Deliberately optimistic (sandboxTarget: true)
+// and deliberately skips secret resolution — only transport/url/command are
+// read, so these tests never touch `resolveByName`.
+describe("loadConnectorEgressHosts (U11 pre-acquire egress estimate)", () => {
+  it("returns the http connector's host plus npm for a stdio connector, without resolving secrets", async () => {
+    const { db } = createSequenceDb([
+      [
+        connectorRow({ id: "c-http", serverName: "notion", transport: "http", url: "https://mcp.notion.com/mcp" }),
+        connectorRow({
+          id: "c-stdio",
+          serverName: "notion-stdio",
+          transport: "stdio",
+          command: "npx",
+          args: ["@notionhq/notion-mcp-server@1.2.3"],
+          source: "byo",
+          secretRef: null,
+        }),
+      ],
+      [{ connectorId: "c-http" }, { connectorId: "c-stdio" }],
+    ]);
+
+    const hosts = await loadConnectorEgressHosts(db, { companyId: "co-1", agentId: "agent-1" });
+
+    expect(hosts).toEqual(expect.arrayContaining(["mcp.notion.com", "registry.npmjs.org"]));
+    expect(resolveByName).not.toHaveBeenCalled();
+  });
+
+  it("is OPTIMISTIC: includes a stdio connector's npm host even under cloud_auth (no sandbox resolved yet)", async () => {
+    vi.stubEnv("AOA_DEPLOYMENT_MODE", "cloud_auth");
+    const { db } = createSequenceDb([
+      [
+        connectorRow({
+          id: "c-stdio",
+          serverName: "notion-stdio",
+          transport: "stdio",
+          command: "npx",
+          args: ["@notionhq/notion-mcp-server@1.2.3"],
+          source: "byo",
+          secretRef: null,
+        }),
+      ],
+      [{ connectorId: "c-stdio" }],
+    ]);
+
+    // Real delivery (loadEnabledConnectorRows, sandboxTarget: false) would DROP
+    // this stdio row on cloud_auth — but the pre-acquire estimate assumes the
+    // sandbox it is computing hosts FOR will actually be granted.
+    const hosts = await loadConnectorEgressHosts(db, { companyId: "co-1", agentId: "agent-1" });
+    expect(hosts).toContain("registry.npmjs.org");
+  });
+
+  it("returns [] for a company with no connectors, without querying the join table", async () => {
+    const { db, selectedTables } = createSequenceDb([[]]);
+
+    const hosts = await loadConnectorEgressHosts(db, { companyId: "co-1", agentId: "agent-1" });
+
+    expect(hosts).toEqual([]);
+    expect(selectedTables).toEqual(["company_mcp_connectors"]);
+  });
+
+  it("never throws: a DB failure degrades to an empty allowlist", async () => {
+    const throwingDb = {
+      select: () => {
+        throw new Error("connection reset");
+      },
+    } as unknown as Parameters<typeof loadConnectorEgressHosts>[0];
+
+    await expect(
+      loadConnectorEgressHosts(throwingDb, { companyId: "co-1", agentId: "agent-1" }),
+    ).resolves.toEqual([]);
+  });
+
+  it("Commander (agentId: null) skips the join-table query, same as loadEnabledConnectorRows", async () => {
+    const { db, selectedTables } = createSequenceDb([
+      [connectorRow({ id: "c1", serverName: "notion", transport: "http", url: "https://mcp.notion.com/mcp" })],
+    ]);
+
+    const hosts = await loadConnectorEgressHosts(db, { companyId: "co-1", agentId: null });
+
+    expect(hosts).toContain("mcp.notion.com");
+    expect(selectedTables).toEqual(["company_mcp_connectors"]);
   });
 });

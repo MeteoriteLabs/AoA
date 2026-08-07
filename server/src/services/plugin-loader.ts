@@ -1277,10 +1277,14 @@ export function pluginLoader(
   ): Promise<PaperclipPluginManifestV1> {
     // JavaScript manifests are executable modules. Cloud must reject before
     // import(), even if a caller bypasses the normal install/lifecycle routes.
+    // RW5a: this is the ONLY sink that actually executes tenant code
+    // in-process in the control plane, so it is deliberately distinct from
+    // the outer "loader" boundary checks in installPlugin/upgradePlugin below
+    // (which stay allowed on cloud — see cloud-plugin-execution.ts).
     assertCloudPluginExecutionAllowed({
       pluginId: "unregistered-plugin",
       source: "unknown",
-      sink: "loader",
+      sink: "loader-import",
     });
     let raw: unknown;
 
@@ -1675,7 +1679,12 @@ export function pluginLoader(
       installOptions: PluginInstallOptions
     ): Promise<DiscoveredPlugin> {
       // Final install boundary: run before registry reads, npm download, local
-      // path inspection, or executable manifest import.
+      // path inspection, or executable manifest import. RW5a: this is the
+      // ENTRY boundary only (download/write files, `--ignore-scripts` npm
+      // install) — always allowed on cloud. The executable manifest import
+      // that follows inside `fetchAndValidate` is separately gated by its
+      // own "loader-import" sink in `loadManifestFromPath`, which stays
+      // blocked on cloud in the control plane.
       assertCloudPluginExecutionAllowed({
         pluginId: "unregistered-plugin",
         companyId: installOptions.companyId,
@@ -1760,7 +1769,10 @@ export function pluginLoader(
       escalatedCaps: string[];
     }> {
       // Defense in depth for callers that reach the loader without lifecycle.
-      // This must precede package lookup/download and manifest import.
+      // This must precede package lookup/download and manifest import. RW5a:
+      // ENTRY boundary only — see the note on installPlugin's identical gate
+      // above; the manifest import itself is gated separately (sink
+      // "loader-import") and stays blocked on cloud.
       assertCloudPluginExecutionAllowed({
         pluginId,
         source: "direct",

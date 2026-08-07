@@ -1254,6 +1254,60 @@ describe("writeCodexMcpConfigToml", () => {
     expect(raw.match(/^\[mcp_servers\.aoa\]$/gm) ?? []).toHaveLength(1);
     expect(raw.match(/^# >>> aoa-managed/gm) ?? []).toHaveLength(1);
   });
+
+  // -------------------------------------------------------------------------
+  // U2d-bridge: the reserved `aoa` server itself, rendered as HTTP for a
+  // brokered (E2B-sandboxed) run. Reuses the exact renderExternalMcpBlock HTTP
+  // path connectors already use below (bearer_token_env_var indirection) —
+  // NOT a second hand-rolled TOML HTTP emitter. Security invariant: NO
+  // DATABASE_URL, no command/args, no `.env` sub-table for a brokered spec.
+  // -------------------------------------------------------------------------
+  describe("reserved aoa server as HTTP (U2d-bridge — brokered/E2B runs)", () => {
+    it("renders [mcp_servers.aoa] as url + bearer_token_env_var, with NO command/args/.env and NO DATABASE_URL", async () => {
+      await writeCodexMcpConfigToml(tmpDir, {
+        kind: "http",
+        url: "https://cp.example/companies/co-1/mcp",
+        headers: {},
+        authTokenEnvVar: "AOA_API_KEY",
+      });
+
+      const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+      const parsed = parseToml(raw);
+
+      expect(parsed["mcp_servers.aoa"].url).toBe("https://cp.example/companies/co-1/mcp");
+      expect(parsed["mcp_servers.aoa"].bearer_token_env_var).toBe("AOA_API_KEY");
+      expect(parsed["mcp_servers.aoa"].command).toBeUndefined();
+      expect(parsed["mcp_servers.aoa"].args).toBeUndefined();
+      expect(raw).not.toContain("[mcp_servers.aoa.env]");
+
+      // CRITICAL security invariant: a brokered run's config.toml must never
+      // carry the control-plane DB credential — that would ride into the VM.
+      expect(raw).not.toContain("DATABASE_URL");
+      expect(raw).not.toContain("postgres://");
+    });
+
+    it("a non-brokered (stdio) aoa spec still renders command/args/.env with DATABASE_URL — byte-identical to today", async () => {
+      await writeCodexMcpConfigToml(tmpDir, {
+        command: "node",
+        args: ["/bridge.js"],
+        env: {
+          AOA_SESSION_COMPANY_ID: "c",
+          DATABASE_URL: "postgres://should-be-present:5432/db",
+        },
+      });
+
+      const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+      const parsed = parseToml(raw);
+
+      expect(parsed["mcp_servers.aoa"].command).toBe("node");
+      expect(parsed["mcp_servers.aoa"].args).toEqual(["/bridge.js"]);
+      expect(parsed["mcp_servers.aoa.env"].DATABASE_URL).toBe(
+        "postgres://should-be-present:5432/db",
+      );
+      expect(raw).not.toContain("bearer_token_env_var");
+      expect(raw).not.toContain("url =");
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

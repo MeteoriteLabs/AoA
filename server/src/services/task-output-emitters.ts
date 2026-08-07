@@ -1,6 +1,7 @@
 import type { Db } from "@armyofagents/db";
 import type { GitHubPrMetadata, TaskOutputStatus } from "@armyofagents/shared";
 import { taskOutputService } from "./task-outputs.js";
+import { resolveSandboxPreviewUrl, type SandboxFileMovementRunner } from "./sandbox-file-movement.js";
 
 type PullRequestInput = {
   companyId: string;
@@ -27,6 +28,16 @@ type RuntimeServiceInput = {
   providerRef?: string | null;
   startedByRunId?: string | null;
   ownerAgentId?: string | null;
+};
+
+type SandboxPreviewInput = {
+  companyId: string;
+  issueId: string | null | undefined;
+  executionWorkspaceId?: string | null;
+  runner: SandboxFileMovementRunner;
+  port: number;
+  createdByRunId?: string | null;
+  createdByAgentId?: string | null;
 };
 
 type BranchWorkspaceInput = {
@@ -101,6 +112,44 @@ export async function emitRuntimeServiceTaskOutput(db: Db, row: RuntimeServiceIn
       },
       createdByRunId: row.startedByRunId ?? null,
       createdByAgentId: row.ownerAgentId ?? null,
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * U6.6 — expose an in-VM dev server as a `preview_url` task_output via the
+ * provider's `getHost(port)` mapping (`resolveSandboxPreviewUrl`,
+ * sandbox-file-movement.ts). Unlike `emitRuntimeServiceTaskOutput` above
+ * (host-loopback `url`, the existing desktop/local runtime-service path,
+ * left unchanged), this NEVER touches a host-reachable URL —
+ * `resolveSandboxPreviewUrl` derives the URL solely from
+ * `runner.resolveHost`.
+ *
+ * Best-effort like every other emitter here: returns `null` on any failure
+ * (missing `resolveHost`, an unresolvable host, a DB error) instead of
+ * throwing, so a caller can call this from a run's hot path without risking
+ * the run's outcome.
+ */
+export async function emitSandboxPreviewTaskOutput(db: Db, input: SandboxPreviewInput) {
+  if (!input.issueId) return null;
+  try {
+    const url = await resolveSandboxPreviewUrl({ runner: input.runner, port: input.port });
+    return await taskOutputService(db).upsertForIssue(input.companyId, input.issueId, {
+      type: "preview_url",
+      provider: "aoa",
+      externalId: `sandbox-preview:${input.port}`,
+      executionWorkspaceId: input.executionWorkspaceId ?? null,
+      url,
+      title: "Preview",
+      status: "active",
+      reviewState: "none",
+      isPrimary: false,
+      healthStatus: "unknown",
+      createdByRunId: input.createdByRunId ?? null,
+      createdByAgentId: input.createdByAgentId ?? null,
+      metadata: { port: input.port },
     });
   } catch {
     return null;

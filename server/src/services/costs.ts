@@ -35,7 +35,17 @@ export function inferBillingType(provider: string): string {
 
 export function costService(db: Db) {
   return {
-    createEvent: async (companyId: string, data: Omit<typeof costEvents.$inferInsert, "companyId">) => {
+    // U13.4: costEvents.agentId is nullable at the schema level (one-shot CLI
+    // spawns record with agentId:null via recordOneShotCliCost,
+    // one-shot-cli-budget.ts — NOT through this function). createEvent stays
+    // the agent-REQUIRED path — it looks up + validates a real agent below
+    // and throws `notFound` when absent — so the param type narrows agentId
+    // back to a required `string` rather than inheriting the table's
+    // nullable insert type.
+    createEvent: async (
+      companyId: string,
+      data: Omit<typeof costEvents.$inferInsert, "companyId" | "agentId"> & { agentId: string },
+    ) => {
       const agent = await db
         .select()
         .from(agents)
@@ -65,7 +75,7 @@ export function costService(db: Db) {
             spentMonthlyCents: sql`${agents.spentMonthlyCents} + ${event.costCents}`,
             updatedAt: new Date(),
           })
-          .where(eq(agents.id, event.agentId));
+          .where(eq(agents.id, agent.id));
 
         await tx
           .update(companies)
@@ -78,7 +88,7 @@ export function costService(db: Db) {
         const updatedAgent = await tx
           .select()
           .from(agents)
-          .where(eq(agents.id, event.agentId))
+          .where(eq(agents.id, agent.id))
           .then((rows) => rows[0] ?? null);
 
         if (
@@ -98,7 +108,7 @@ export function costService(db: Db) {
       });
 
       // Fire-and-forget budget evaluation
-      budgetService(db).evaluateCostEvent(event.agentId, companyId).catch((err) =>
+      budgetService(db).evaluateCostEvent(agent.id, companyId).catch((err) =>
         logger.error({ err }, "budget evaluation failed after cost event")
       );
 
@@ -185,7 +195,11 @@ export function costService(db: Db) {
 
       const runRowsByAgent = new Map(runRows.map((row) => [row.agentId, row]));
       return costRows.map((row) => {
-        const runRow = runRowsByAgent.get(row.agentId);
+        // U13.4: row.agentId is nullable (one-shot CLI cost events have no
+        // agent) — heartbeatRuns.agentId is NOT NULL, so a null cost-event
+        // agentId can never match a run row; skip the lookup rather than
+        // querying the Map<string, ...> with a null key.
+        const runRow = row.agentId ? runRowsByAgent.get(row.agentId) : undefined;
         return {
           ...row,
           apiRunCount: runRow?.apiRunCount ?? 0,

@@ -112,6 +112,7 @@ unsandboxed override disabled until the worker/gVisor runtime lands.
 | `AOA_AGENT_JWT_ISSUER` | `paperclip` (wire-compat default) | JWT `iss` claim. Legacy default kept so existing agents validate |
 | `AOA_AGENT_JWT_AUDIENCE` | `aoa` | JWT `aud` claim |
 | `AOA_AGENT_JWT_TTL_SECONDS` | `300` | Token TTL — keep short; the heartbeat refreshes it on each run |
+| `AOA_COMMANDER_JWT_TTL_SECONDS` | `600` (10 min) | TTL (seconds) for the per-turn Commander run-JWT (`kind:"commander"`) that authenticates a sandboxed Commander turn to the MCP broker on `cloud_auth`. Turn-scoped and minted fresh each turn, so it is short — but longer than the agent token's 300s to cover a full Commander turn. Signed with the SAME secret as agent run-JWTs (`AOA_AGENT_JWT_SECRET` / `BETTER_AUTH_SECRET`); the secret NEVER enters the sandbox — only the minted token crosses as `AOA_API_KEY`. Self-hosted Commander runs host-direct (no broker, no run-JWT) and ignores this. |
 
 ## Secrets
 
@@ -336,6 +337,7 @@ membership link has been checked.
 | `AOA_OPENCODE_COMMAND` | `opencode` | Override path to the `opencode` CLI binary for the OpenCode Local adapter |
 | `AOA_WORKTREES_DIR` | `<AOA_HOME>/instances/<id>/workspaces` | Where the worktree provisioner places per-task git worktrees |
 | `AOA_ENABLE_COMPANY_DELETION` | `true` (dev), `false` (prod) | Feature flag for the destructive "delete company" action |
+| `AOA_PLUGIN_WORKER_PROCESS` | (unset) | Set to `1` ONLY inside a forked plugin worker child's own environment (`plugin-worker-manager.ts` `spawnProcess()`) — never set on, or inherited by, the host control-plane process. Read by `cloud-plugin-execution.ts` to recognize code running inside the isolated worker child rather than the control plane. Not operator-set. |
 
 ## Marketplace emergency controls
 

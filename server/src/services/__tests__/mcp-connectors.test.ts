@@ -391,6 +391,30 @@ describe("selectConnectorRowsForAgent", () => {
     });
     expect(rows.map((r) => r.id)).toEqual(["h1"]);
   });
+
+  // U11: sandboxTarget relaxes ONLY the D7 stdio-transport axis. It is additive
+  // (default false / unset → byte-identical to pre-U11 behaviour) and must not
+  // bypass the mode-independent command-pinning check.
+  it("selectConnectorRowsForAgent: stdio kept on cloud when sandboxTarget, dropped otherwise", () => {
+    const rows = [{ id: "c1", status: "active", transport: "stdio",
+      source: "byo", command: "npx", args: ["@notionhq/notion-mcp-server@1.2.3"] }];
+    const base = { connectors: rows, enabledConnectorIds: new Set(["c1"]),
+      isCommander: false, deploymentMode: "cloud_auth" as const };
+    expect(selectConnectorRowsForAgent({ ...base, sandboxTarget: false })).toHaveLength(0);
+    expect(selectConnectorRowsForAgent({ ...base, sandboxTarget: true })).toHaveLength(1);
+  });
+
+  it("sandboxTarget does NOT bypass command pinning (unsafe_command still drops)", () => {
+    const rows = [{ id: "c1", status: "active", transport: "stdio",
+      source: "byo", command: "npx", args: ["evil@latest"] }]; // unpinned → unsafe
+    const skips: string[] = [];
+    const kept = selectConnectorRowsForAgent({ connectors: rows,
+      enabledConnectorIds: new Set(["c1"]), isCommander: false,
+      deploymentMode: "cloud_auth", sandboxTarget: true,
+      onSkip: (_c, r) => skips.push(r) });
+    expect(kept).toHaveLength(0);
+    expect(skips).toContain("unsafe_command");
+  });
 });
 
 describe("computeConnectorDeliverability (FU-1)", () => {

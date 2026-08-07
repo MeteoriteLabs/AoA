@@ -1,6 +1,10 @@
 import fs from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
+  ORG_HEARTBEAT_ENABLED_CAPABILITIES,
   ORG_HEARTBEAT_TOOL_ALLOWLIST,
   prepareHeartbeatMcpDelivery,
   resolveHeartbeatEffectiveAutonomy,
@@ -72,6 +76,18 @@ describe("heartbeat MCP delivery", () => {
       "update_task",
       "create_approval",
     ]));
+  });
+
+  // Wave 1 review, FIX A: this constant was extracted from an inline literal
+  // in heartbeat.ts's `heartbeatMcpParams` so the broker's ToolContext
+  // resolver (broker-tool-context.ts) can import the SAME set instead of
+  // hardcoding a second copy that could drift.
+  it("exposes the organization-agent coarse capability gate (discussion_processing/system_actions/memory_management)", () => {
+    expect(ORG_HEARTBEAT_ENABLED_CAPABILITIES).toEqual([
+      "discussion_processing",
+      "system_actions",
+      "memory_management",
+    ]);
   });
 
   it("passes a provider-neutral bridge to Codex without Claude-only arguments", async () => {
@@ -506,5 +522,188 @@ describe("heartbeat MCP delivery to NON-claude adapters (Plan 2b Task 3)", () =>
     });
     expect(delivery.extraMcpServers).toEqual(specs);
     await delivery.cleanup();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// U4b (S7 blocker): org heartbeat's brokered MCP delivery. heartbeat.ts sets
+// `heartbeatMcpParams.brokered` from the run's acquired sandbox lease
+// (`orgAcquired.sandbox?.environment.driver === "sandbox"`) BEFORE calling
+// prepareHeartbeatMcpDelivery — these tests exercise THAT function directly
+// with brokered params (the real "org honoring" boundary: this same function
+// call is the one heartbeat.ts makes), proving neither the staged claude
+// `--mcp-config` file NOR the non-claude `ctx.mcpBridge` ever carries
+// DATABASE_URL for a brokered run, while a non-brokered (desktop) run stays
+// byte-identical to every test above.
+// ---------------------------------------------------------------------------
+describe("heartbeat MCP delivery: brokered org sandbox dispatch (U4b, S7)", () => {
+  const brokeredParams = {
+    ...params,
+    brokered: true,
+    apiBaseUrl: "https://cp.example.test",
+  } as const;
+
+  it("claude_local: the staged --mcp-config file carries an HTTP aoa entry, no DATABASE_URL, no postgres://", async () => {
+    const delivery = await prepareHeartbeatMcpDelivery({
+      adapterType: "claude_local",
+      agentId: "agent-1",
+      runId: "run-1",
+      config: { args: ["--existing"] },
+      params: brokeredParams,
+    });
+
+    const written = lastWrittenMcpConfig();
+    expect(written.mcpServers.aoa).toMatchObject({
+      type: "http",
+      url: "https://cp.example.test/companies/company-1/mcp",
+    });
+    expect((written.mcpServers.aoa as { command?: unknown }).command).toBeUndefined();
+    const raw = JSON.stringify(written);
+    expect(raw).not.toContain("DATABASE_URL");
+    expect(raw).not.toMatch(/postgres(ql)?:\/\//);
+
+    // The non-claude carrier (delivery.mcpBridge) is ALSO brokered-shaped —
+    // heartbeat.ts hands this straight to ctx.mcpBridge for every adapter.
+    expect(delivery.mcpBridge).toMatchObject({
+      kind: "http",
+      url: "https://cp.example.test/companies/company-1/mcp",
+      authTokenEnvVar: "AOA_API_KEY",
+    });
+    expect(JSON.stringify(delivery.mcpBridge)).not.toContain("DATABASE_URL");
+
+    await delivery.cleanup();
+  });
+
+  it("codex_local (non-claude): ctx.mcpBridge is the HTTP spec, no config file written, no DATABASE_URL anywhere", async () => {
+    const delivery = await prepareHeartbeatMcpDelivery({
+      adapterType: "codex_local",
+      agentId: "agent-1",
+      runId: "run-1",
+      config: { args: ["--existing"] },
+      params: brokeredParams,
+    });
+
+    expect(delivery.mcpBridge).toEqual({
+      kind: "http",
+      url: "https://cp.example.test/companies/company-1/mcp",
+      headers: {},
+      authTokenEnvVar: "AOA_API_KEY",
+    });
+    expect(JSON.stringify(delivery.mcpBridge)).not.toContain("DATABASE_URL");
+    // Non-claude branch never writes a config file — confirm no leak there either.
+    expect(delivery.config).toEqual({ args: ["--existing"] });
+  });
+
+  it("desktop (brokered:false / omitted): stdio delivery is byte-identical — DATABASE_URL still present when set", async () => {
+    const savedDbUrl = process.env.DATABASE_URL;
+    process.env.DATABASE_URL = "postgres://should-be-present:5432/db";
+    try {
+      const claudeDelivery = await prepareHeartbeatMcpDelivery({
+        adapterType: "claude_local",
+        agentId: "agent-1",
+        runId: "run-1",
+        config: { args: ["--existing"] },
+        params, // no `brokered` field — undefined/falsy, exactly today's shape
+      });
+      const written = lastWrittenMcpConfig();
+      expect(written.mcpServers.aoa).toMatchObject({
+        command: "node",
+        env: expect.objectContaining({ DATABASE_URL: "postgres://should-be-present:5432/db" }),
+      });
+      expect((written.mcpServers.aoa as { type?: unknown }).type).toBeUndefined();
+      await claudeDelivery.cleanup();
+
+      const codexDelivery = await prepareHeartbeatMcpDelivery({
+        adapterType: "codex_local",
+        agentId: "agent-1",
+        runId: "run-1",
+        config: {},
+        params,
+      });
+      expect(codexDelivery.mcpBridge).toMatchObject({
+        command: "node",
+        env: expect.objectContaining({ DATABASE_URL: "postgres://should-be-present:5432/db" }),
+      });
+    } finally {
+      if (savedDbUrl === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = savedDbUrl;
+    }
+  });
+});
+
+// U11 (Wave 5 task 3): org heartbeat's `resolveAgentConnectors` call must read
+// `sandboxTarget` from the SAME S5 acquisition signal `mcpParams.brokered`
+// already uses (`orgAcquired.sandbox?.environment.driver === "sandbox"` —
+// never a top-level `orgAcquired.driver`, which is undefined on the real
+// `EnvironmentAcquisitionResult` shape).
+//
+// Structural pinning (reading the source), NOT a driven end-to-end run: this
+// repo's established pattern for a caller with no unit harness (see
+// provider-key-callers.test.ts and services/internal-agent/aoa-agents/
+// __tests__/runner-binding-resolution.test.ts) — heartbeat.ts's org `wakeup()`
+// is 5000+ lines and spawns a real adapter subprocess; no existing suite
+// drives it end-to-end (every heartbeat*.test.ts here tests pure extracted
+// helpers). The crew equivalent (`aoa-runner-brokered-mcp.test.ts`) DOES have
+// a harness and asserts the same claim behaviourally, since `runAoaAgent` is
+// small enough to mock end-to-end.
+describe("U11: org heartbeat sources sandboxTarget from the resolved run driver (S5)", () => {
+  const heartbeatSrc = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "..", "services", "heartbeat.ts"),
+    "utf8",
+  );
+
+  it("derives runTargetsSandbox from orgAcquired.sandbox?.environment.driver (never a top-level orgAcquired.driver)", () => {
+    expect(heartbeatSrc).toContain(
+      'const runTargetsSandbox = orgAcquired.sandbox?.environment.driver === "sandbox";',
+    );
+    // S5 anti-drift: a top-level `orgAcquired.driver` READ (as executable
+    // code, not prose in a comment) would silently always be undefined (the
+    // field lives on `.sandbox.environment`, not the acquisition result
+    // itself) and sandboxTarget would be permanently false.
+    expect(heartbeatSrc).not.toMatch(/orgAcquired\.driver\s*===/);
+  });
+
+  it("threads that SAME variable into the resolveAgentConnectors call's sandboxTarget (not a stray literal)", () => {
+    const callIndex = heartbeatSrc.indexOf("const resolved = await resolveAgentConnectors(db, {");
+    expect(callIndex).toBeGreaterThan(-1);
+    const callEnd = heartbeatSrc.indexOf("});", callIndex);
+    expect(callEnd).toBeGreaterThan(callIndex);
+    const callBlock = heartbeatSrc.slice(callIndex, callEnd);
+    expect(callBlock).toContain("sandboxTarget: runTargetsSandbox,");
+  });
+
+  it("mcpParams.brokered (the proven U4b signal) reads the exact same variable — brokered and connector delivery cannot drift apart", () => {
+    expect(heartbeatSrc).toContain("brokered: runTargetsSandbox,");
+  });
+});
+
+// U11 (Wave 5 task 4): the PRE-acquire egress-hosts estimate must be computed
+// and threaded into the SAME acquireExecutionContext call whose result later
+// feeds sandboxTarget — ordering-driven (loadConnectorEgressHosts' own
+// doc-comment): the sandbox is requested before the real, post-acquire
+// resolveAgentConnectors call could ever know the final connector set.
+// Structural pinning — same rationale as the sandboxTarget suite above.
+describe("U11: org heartbeat feeds the pre-acquire egress-hosts estimate into acquireExecutionContext", () => {
+  const heartbeatSrc = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "..", "services", "heartbeat.ts"),
+    "utf8",
+  );
+
+  it("computes orgEgressHosts via loadConnectorEgressHosts, gated on adapterSupportsConnectors", () => {
+    expect(heartbeatSrc).toContain(
+      "const orgEgressHosts = adapterSupportsConnectors(agent.adapterType)",
+    );
+    expect(heartbeatSrc).toContain(
+      "await loadConnectorEgressHosts(db, { companyId: agent.companyId, agentId: agent.id })",
+    );
+  });
+
+  it("threads orgEgressHosts into the acquireExecutionContext call's egressAllowlist", () => {
+    const callIndex = heartbeatSrc.indexOf("const orgAcquired = await acquireExecutionContext(db, {");
+    expect(callIndex).toBeGreaterThan(-1);
+    const callEnd = heartbeatSrc.indexOf("});", callIndex);
+    expect(callEnd).toBeGreaterThan(callIndex);
+    const callBlock = heartbeatSrc.slice(callIndex, callEnd);
+    expect(callBlock).toContain("egressAllowlist: orgEgressHosts,");
   });
 });

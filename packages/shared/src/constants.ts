@@ -455,13 +455,18 @@ export const ORG_MAX_CONCURRENT_RUNS_MAX = 200;
 export const ENVIRONMENT_STATUSES = ["active", "archived"] as const;
 export type EnvironmentStatus = (typeof ENVIRONMENT_STATUSES)[number];
 
-export const ENVIRONMENT_LEASE_STATUSES = ["active", "released", "expired", "failed", "retained"] as const;
+// "paused" (Wave 6 / U7.1) = an E2B snapshot held for warm resume. `releasedAt`
+// stays NULL while paused so the warm lookup + idle reaper (keyed off status)
+// can still find the row — distinct from the pre-existing `retained`, which is
+// a terminal "don't reap" marker, not a resumable snapshot.
+export const ENVIRONMENT_LEASE_STATUSES = ["active", "released", "expired", "failed", "retained", "paused"] as const;
 export type EnvironmentLeaseStatus = (typeof ENVIRONMENT_LEASE_STATUSES)[number];
 
 export const ENVIRONMENT_LEASE_POLICIES = [
   "ephemeral",
   "reuse_by_workspace",
   "reuse_by_environment",
+  "reuse_by_agent",
 ] as const;
 export type EnvironmentLeasePolicy = (typeof ENVIRONMENT_LEASE_POLICIES)[number];
 
@@ -1135,6 +1140,11 @@ export const NOTIFICATION_TYPES = [
   "internal_agent.reminder",
   "internal_agent.proactive",
   "internal_agent.action_result",
+  // U13.6 (cloud execution isolation) — raised by agent-loop.ts when
+  // Commander's post-turn history compaction (`summarizeViaCli`) throws on
+  // `cloud_auth`. Compaction stays best-effort (never fails the turn); this
+  // is the founder-visible signal that was previously silently dropped (R3).
+  "internal_agent.compaction_failed",
   "marketplace.install_completed",
   "marketplace.install_failed",
   "marketplace.install_requested",

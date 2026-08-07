@@ -11,6 +11,7 @@ import {
   sweepAoaManagedEntries,
   tryWriteAoaManagedServerNames,
   withSynthesizedBearerHeader,
+  type McpHttpServerSpec,
   type McpServerSpec,
   type McpWriterResult,
   type McpWriterSkip,
@@ -191,10 +192,18 @@ export interface WriteOpenCodeMcpConfigOptions {
  *
  * `spec` may be null: a run with connectors but no bridge still writes — and
  * therefore still cleans — the file.
+ *
+ * U4b (S7): `spec` may also be an {@link McpHttpServerSpec} — a brokered
+ * (E2B-sandboxed) run's `aoa` server, pointed at the control-plane broker
+ * instead of a locally-spawned stdio process. opencode's `mcp.<name>` entry
+ * already supports a `type:"remote"` (HTTP) form for external connectors
+ * (see `toOpenCodeEntry`) — the brokered aoa server is rendered through that
+ * SAME path, so it carries no `command`/`environment` and therefore no
+ * `DATABASE_URL`. Non-brokered (stdio) specs are unchanged.
  */
 export async function writeOpenCodeMcpConfigJson(
   cwd: string,
-  spec: OpenCodeMcpBridgeSpec | null | undefined,
+  spec: OpenCodeMcpBridgeSpec | McpHttpServerSpec | null | undefined,
   options: WriteOpenCodeMcpConfigOptions = {},
 ): Promise<McpWriterResult> {
   const serverName = options.serverName ?? "aoa";
@@ -260,13 +269,19 @@ export async function writeOpenCodeMcpConfigJson(
 
   const bridge: Record<string, OpenCodeMcpEntry> = Object.create(null);
   if (spec) {
-    bridge[serverName] = {
-      type: "local",
-      // opencode wants command + args together as a single array.
-      command: [spec.command, ...spec.args],
-      environment: { ...spec.env },
-      enabled: true,
-    };
+    // U4b (S7): a brokered spec is HTTP-shaped — render it through the SAME
+    // remote-entry path external HTTP connectors use (toOpenCodeEntry), so
+    // it carries no `command`/`environment` block and therefore no
+    // DATABASE_URL. Non-brokered (stdio) specs keep the original local shape.
+    bridge[serverName] = isHttpServerSpec(spec)
+      ? toOpenCodeEntry(spec)
+      : {
+          type: "local",
+          // opencode wants command + args together as a single array.
+          command: [spec.command, ...spec.args],
+          environment: { ...spec.env },
+          enabled: true,
+        };
   }
 
   // mergeExternalMcpServers is the ONLY safe merge: it couples reserved-name

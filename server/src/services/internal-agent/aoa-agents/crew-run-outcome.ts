@@ -71,13 +71,22 @@ export interface CrewRunSuccessInput {
   runId?: string;
   /** The delivering crew agent id (provenance for the run-result refs). */
   agentId?: string | null;
+  /**
+   * U6.5: files captured out of the crew's in-sandbox working dir
+   * (`captureCrewOutputs`, provider-sandbox runs only, S5). `undefined` on
+   * non-sandbox / desktop runs — `resolveCrewRunSummaryArgs` defaults it to
+   * `[]`.
+   */
+  detectedFiles?: Array<{ path: string; type?: string }>;
 }
 
 /**
  * PURE mapper: runner locals → the shared writer's input. Exported so the
  * costCents→USD + null-token mappings are unit-tested independently of the
- * composed side-effect. `detectedFiles` is always [] for crew runs until W3b
- * (workspace diff) lands — formatRunSummary renders an empty list cleanly.
+ * composed side-effect. `detectedFiles` defaults to `[]` for back-compat with
+ * callers that predate capture (e.g. `postCrewRunFailure`, which never
+ * captures — a failed run has no confirmed produced-files set) or a run that
+ * did not target a provider sandbox (U6.5, S5).
  */
 export function resolveCrewRunSummaryArgs(input: {
   companyId: string;
@@ -91,6 +100,7 @@ export function resolveCrewRunSummaryArgs(input: {
   costCents: number | null;
   errorMessage: string | null;
   runId?: string;
+  detectedFiles?: Array<{ path: string; type?: string }>;
 }): PostRunSummaryCommentInput {
   return {
     companyId: input.companyId,
@@ -104,7 +114,7 @@ export function resolveCrewRunSummaryArgs(input: {
     outputTokens: input.adapterUsage?.outputTokens ?? null,
     costUsd: input.costCents != null ? input.costCents / 100 : null,
     errorMessage: input.errorMessage,
-    detectedFiles: [],
+    detectedFiles: input.detectedFiles ?? [],
   };
 }
 
@@ -192,6 +202,7 @@ export async function postCrewRunSuccess(
         costCents: input.costCents,
         errorMessage: null,
         runId: input.runId,
+        detectedFiles: input.detectedFiles,
       }),
     );
     summarized = result.posted;

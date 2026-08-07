@@ -53,6 +53,7 @@ import {
 } from "./services/workspace-runtime.js";
 import { handlePreviewProxyUpgrade } from "./services/preview-proxy.js";
 import { scheduleTtlSweeper } from "./services/workspace-ttl-sweeper.js";
+import { scheduleWarmSandboxReaper } from "./services/warm-sandbox-reaper.js";
 import { scheduleCleanupRetrySweeper } from "./services/workspace-cleanup-retry-sweeper.js";
 import { scheduleClaudeConfigDirSweeper } from "./services/claude-config-dir-sweeper.js";
 import { registerHeartbeatWatchdogSweeper } from "./services/heartbeat-watchdog.js";
@@ -687,7 +688,18 @@ const runtimeApiHost =
     : runtimeListenHost;
 process.env.AOA_LISTEN_HOST = runtimeListenHost;
 process.env.AOA_LISTEN_PORT = String(listenPort);
-process.env.AOA_API_URL = `http://${runtimeApiHost}:${listenPort}`;
+// AOA_API_URL is the control-plane base the runtime hook + the brokered sandbox
+// MCP call back to. A brokered (E2B) run executes in a VM that CANNOT reach the
+// host loopback, so on cloud_auth it MUST be the PUBLIC base URL. Prefer an
+// explicit operator value; else, on cloud_auth, derive it from the required
+// public auth base URL; else fall back to the loopback (self-hosted host-direct
+// — byte-identical to before). Previously this unconditionally clobbered any
+// operator value with the loopback, leaving cloud_auth sandboxes pointed at an
+// unreachable localhost. (E2B cloud_auth broker-reachability fix.)
+process.env.AOA_API_URL =
+  process.env.AOA_API_URL?.trim() ||
+  (config.deploymentMode === "cloud_auth" ? config.authPublicBaseUrl?.trim() || undefined : undefined) ||
+  `http://${runtimeApiHost}:${listenPort}`;
 
 server.on("upgrade", (req, socket, head) => {
   void handlePreviewProxyUpgrade(db as any, req, socket, head, {
@@ -829,6 +841,11 @@ if (config.heartbeatSchedulerEnabled) {
   // Periodic sweep: mark stale workspaces as cleanup-eligible based on project TTL.
   // Sweeper no-ops when the instance-level experimental flag is off.
   scheduleTtlSweeper(db as any);
+
+  // Periodic reap: destroy warm (reuse_by_agent) E2B snapshots left idle past
+  // the instance TTL (~30 min). No-ops when `enableWarmSandboxReaper` is off,
+  // exactly like the TTL sweeper above.
+  scheduleWarmSandboxReaper(db as any);
 
   // Retry filesystem cleanup for workspaces stuck in `cleanup_failed` (Windows
   // file-handle races). Runs every 60s; promotes to `archived` once rm succeeds.

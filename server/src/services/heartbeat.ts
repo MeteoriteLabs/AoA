@@ -51,8 +51,11 @@ import {
   resolveCompanyOrganizationId,
   runClaimMirrorsBestEffort,
 } from "./org-concurrency.js";
-import { environmentRunOrchestrator, type EnvironmentAcquisitionResult } from "./environment-run-orchestrator.js";
+import type { EnvironmentAcquisitionResult } from "./environment-run-orchestrator.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
+import { acquireExecutionContext } from "./acquire-execution-context.js";
+import { instanceSettingsService } from "./instance-settings.js";
+import { resolveWarmSandboxPreference, readAgentWarmOverride } from "./warm-sandbox-policy.js";
 import { conflict, notFound, HttpError } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent, threadWorkingAgents, broadcastThreadPresence } from "./live-events.js";
@@ -113,11 +116,12 @@ import {
 } from "./agent-runtime-decisions.js";
 import { resolveBridgeEntrypoint } from "./internal-agent/aoa-agents/bridge-path.js";
 import {
+  ORG_HEARTBEAT_ENABLED_CAPABILITIES,
   ORG_HEARTBEAT_TOOL_ALLOWLIST,
   prepareHeartbeatMcpDelivery,
   resolveHeartbeatEffectiveAutonomy,
 } from "./heartbeat-mcp.js";
-import { resolveAgentConnectors } from "./mcp-connectors-loader.js";
+import { loadConnectorEgressHosts, resolveAgentConnectors } from "./mcp-connectors-loader.js";
 import { adapterSupportsConnectors } from "./mcp-connectors.js";
 
 export {
@@ -138,11 +142,13 @@ import {
 } from "./workspace-resolution.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import { outputDetectionService } from "./output-detection.js";
+import { collectSandboxDiff, type SandboxFileMovementRunner } from "./sandbox-file-movement.js";
 import {
   mayUseLegacySubscriptionHome,
   resolveAgentSubscriptionEnvironment,
 } from "./provider-credential-bindings.js";
 import { postRunSummaryComment } from "./run-summary-comment.js";
+import { emitSandboxPreviewTaskOutput } from "./task-output-emitters.js";
 import {
   buildWorkspaceReadyComment,
   cleanupExecutionWorkspaceArtifacts,
@@ -199,6 +205,64 @@ import {
   RUNTIME_HOOK_PATH,
 } from "@armyofagents/adapter-utils";
 import { resolveRuntimeDecisionRoutingEnabled } from "./runtime-decision-routing-flag.js";
+
+/**
+ * Resolve the base URL the claude_local PreToolUse runtime-permission hook
+ * (W5c HTTP hook bridge) uses to call back into the control plane.
+ *
+ * Host-local (unsandboxed) runs can reach the control plane over loopback, so
+ * the `http://127.0.0.1:${port}` fallback is preserved exactly when `apiUrl`
+ * is empty — this keeps desktop behavior unchanged.
+ *
+ * Brokered (sandboxed, e.g. E2B) runs execute inside a VM that cannot reach
+ * the host's loopback interface — for those, a routable `AOA_API_URL` is
+ * REQUIRED. Rather than silently minting an unreachable loopback URL, this
+ * throws (fail-before-spend).
+ *
+ * `apiUrl` is expected to already be `.trim()`ed by the caller (mirrors the
+ * existing inlined `process.env.AOA_API_URL?.trim() || ...` call sites).
+ */
+export function resolveRuntimeHookBaseUrl(input: {
+  apiUrl: string;
+  port: string;
+  brokered: boolean;
+}): string {
+  const { apiUrl, port, brokered } = input;
+  if (brokered) {
+    if (!apiUrl) {
+      throw new Error("AOA_API_URL required for sandboxed runtime hook");
+    }
+    if (isLoopbackApiUrl(apiUrl)) {
+      // A brokered run executes in a VM that cannot reach the host loopback, so a
+      // localhost/127.0.0.1 base URL means the sandbox can NEVER reach the broker.
+      // Fail before spending a sandbox rather than silently failing every MCP call.
+      throw new Error(
+        `AOA_API_URL for a sandboxed (brokered) run must be reachable from the sandbox VM, ` +
+          `but is a loopback URL (${apiUrl}). On cloud_auth set a public AOA_API_URL / auth.publicBaseUrl.`,
+      );
+    }
+    return apiUrl;
+  }
+  return apiUrl || `http://127.0.0.1:${port}`;
+}
+
+/** A brokered sandbox VM cannot reach these hosts on the control plane. */
+export function isLoopbackApiUrl(apiUrl: string): boolean {
+  let host: string;
+  try {
+    host = new URL(apiUrl).hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  } catch {
+    return false; // unparseable → not our job to validate syntax here
+  }
+  return (
+    host === "localhost" ||
+    host === "::1" ||
+    host === "0.0.0.0" ||
+    host === "::" ||
+    host.startsWith("127.") ||
+    host.endsWith(".localhost")
+  );
+}
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 export {
@@ -4175,27 +4239,106 @@ export function heartbeatService(db: Db) {
         await onLog("stderr", `[aoa] ${warning}\n`);
       }
 
-      // ── Runtime services (ensureRuntimeServicesForRun) — gated ─────
-      let resolvedConfigWithEnvironmentAcquisition = resolvedConfig;
-      if (environmentRuntime.environmentId) {
-        const environmentAcquisition = await environmentRunOrchestrator(db).acquireForRun({
-          companyId: agent.companyId,
-          environmentId: environmentRuntime.environmentId,
-          adapterType: agent.adapterType,
-          issueId,
-          heartbeatRunId: run.id,
-          persistedExecutionWorkspace: persistedExecutionWorkspace
-            ? {
-                id: persistedExecutionWorkspace.id,
-                mode: persistedExecutionWorkspace.mode,
-              }
-            : null,
-        });
-        resolvedConfigWithEnvironmentAcquisition = applyEnvironmentAcquisitionConfig(
-          resolvedConfig,
-          environmentAcquisition,
-        );
+      // ── Runtime services (ensureRuntimeServicesForRun) ──────────────
+      // R3 (Wave 2 review): acquireExecutionContext is now called
+      // UNCONDITIONALLY for every org run, mirroring crew's runner.ts
+      // pattern (`environmentId: agent.defaultEnvironmentId ?? null`)
+      // exactly. It used to be gated INSIDE `if (environmentRuntime
+      // .environmentId)` (true only for a PINNED task/agent env) — an org
+      // agent with NO pinned env never reached this call, never resolved
+      // the U1 platform default, and ran UNSANDBOXED on the host, which the
+      // U8 D1 guard then refuses on cloud_auth. Passing
+      // `environmentRuntime.environmentId ?? null` keeps the pinned path
+      // byte-identical (non-null -> acquireForRun resolves that pin
+      // directly, same as before) and adds the unpinned path: null ->
+      // acquireForRun's orchestrator resolves the materialized
+      // platform-default E2B sandbox on cloud_auth (S1/U1b), or throws
+      // `environment_not_found` on desktop/local_trusted, which
+      // acquireExecutionContext catches and returns `{ sandbox: null }` —
+      // byte-identical to today's local/desktop behavior (see the S1
+      // contract doc-comment on acquire-execution-context.ts). The lease is
+      // still tagged `heartbeatRunId: run.id`, so the existing org reaper
+      // (`environmentRuntimeService(db).releaseRunLeases(run.id)` in the
+      // run's `finally`, unconditional regardless of pinned/platform-default)
+      // reaps a platform-default lease exactly like a pinned one — no leak.
+      // orgAcquired is captured for U4b to read (mcpParams.brokered) before
+      // prepareHeartbeatMcpDelivery.
+      //
+      // U11: a PRE-acquire, best-effort estimate of the hosts this run's
+      // connectors might need, fed into the acquire's egressAllowlist. Real
+      // connector resolution (further below) happens AFTER this acquire
+      // (its own sandboxTarget input comes FROM orgAcquired), so the actual
+      // delivered set cannot be known yet — this is deliberately optimistic
+      // (see loadConnectorEgressHosts' doc-comment) and never throws.
+      const orgEgressHosts = adapterSupportsConnectors(agent.adapterType)
+        ? await loadConnectorEgressHosts(db, { companyId: agent.companyId, agentId: agent.id })
+        : [];
+      // U7.5 — resolve the warm-reuse decision for this org run. `functionType`
+      // comes from the run's project (`projects.function_type`); warm defaults
+      // on for `software_development` gated by the instance baseline, unless the
+      // per-agent `runtimeConfig.warmWorkspace` override forces it either way.
+      // The pure resolver (`resolveWarmSandboxPreference`, U7.2) is the single
+      // source of truth so org/crew/Commander cannot drift.
+      let orgFunctionType: string | null = null;
+      if (executionProjectId) {
+        const [projectRow] = await db
+          .select({ functionType: projects.functionType })
+          .from(projects)
+          .where(eq(projects.id, executionProjectId))
+          .limit(1);
+        orgFunctionType = projectRow?.functionType ?? null;
       }
+      const orgWarmDecision = resolveWarmSandboxPreference({
+        runType: "org",
+        functionType: orgFunctionType,
+        agentWarmOverride: readAgentWarmOverride(agent.runtimeConfig),
+        instanceDefaultWarmForSoftwareDev:
+          (await instanceSettingsService(db).getExperimental()).warmSandboxDefaultForSoftwareDev,
+      });
+      const orgAcquired = await acquireExecutionContext(db, {
+        runIdentity: {
+          companyId: agent.companyId,
+          agentId: agent.id,
+          runId: run.id,
+          adapterType: agent.adapterType,
+        },
+        // functionType now resolved above for warm; kept on runIdentity's agentId
+        // is the warm key. This field stays null (the resolver already consumed
+        // the real functionType) — behavior-neutral for the acquire itself.
+        functionType: orgFunctionType,
+        warmPreference: orgWarmDecision.warm,
+        worktree: persistedExecutionWorkspace
+          ? { id: persistedExecutionWorkspace.id, mode: persistedExecutionWorkspace.mode }
+          : null,
+        environmentId: environmentRuntime.environmentId ?? null, // pinned env, or null -> platform default (R3)
+        issueId,
+        heartbeatRunId: run.id,
+        egressAllowlist: orgEgressHosts,
+      });
+      // U4b: heartbeatMcpParams.brokered (built further below, before
+      // prepareHeartbeatMcpDelivery) reads orgAcquired.sandbox?.environment
+      // .driver captured here.
+      //
+      // R3: applyEnvironmentAcquisitionConfig is now unconditional too — it
+      // is a documented no-op (returns `resolvedConfig` by the SAME
+      // reference, unchanged) when `orgAcquired.sandbox` is null, which is
+      // exactly the desktop/local_trusted case, so that path stays
+      // byte-identical. When `orgAcquired.sandbox` IS non-null (pinned OR
+      // platform-default), its configPatch is spread here LAST — after
+      // `mergedConfigWithEnvironmentTarget`'s `environmentRuntime.target`
+      // (pinned-env only, applied far above) and after the P5 shared-pool
+      // `routedExecutionTarget` (`mergeResolvedExecutionTarget`, also
+      // applied above) — so the acquired sandbox's executionTarget is
+      // always the authoritative, LAST-applied one; a pinned env's
+      // `environmentRuntime.target` and `orgAcquired.sandbox`'s configPatch
+      // both derive from the SAME resolved environment row so they already
+      // agree there. This last-applied-wins ordering is unchanged from
+      // before R3 (it applied whenever the old gate was true) — it is just
+      // no longer conditional on a pin existing.
+      const resolvedConfigWithEnvironmentAcquisition = applyEnvironmentAcquisitionConfig(
+        resolvedConfig,
+        orgAcquired.sandbox,
+      );
 
       const adapterEnv = Object.fromEntries(
         Object.entries(parseObject(resolvedConfigWithEnvironmentAcquisition.env)).filter(
@@ -4561,15 +4704,17 @@ export function heartbeatService(db: Db) {
         companyAutonomyLevel: companyAutonomyRow?.autonomyLevel,
         discussionAutonomyLevel: discussionAutonomyRow?.autonomyLevel,
       });
+      // U11: sourced ONCE here (S5 — `orgAcquired.sandbox?.environment.driver
+      // === "sandbox"`, never a top-level `orgAcquired.driver`) and reused for
+      // both the MCP-bridge `brokered` flag below AND the connector delivery
+      // `sandboxTarget` — the SAME "does this run execute inside an E2B VM"
+      // question, so one boolean answers both.
+      const runTargetsSandbox = orgAcquired.sandbox?.environment.driver === "sandbox";
       const heartbeatMcpParams = {
         companyId: agent.companyId,
         userId: agent.id,
         userRole: "team_member",
-        enabledCapabilities: [
-          "discussion_processing",
-          "system_actions",
-          "memory_management",
-        ],
+        enabledCapabilities: [...ORG_HEARTBEAT_ENABLED_CAPABILITIES],
         bridgeEntrypoint: resolveBridgeEntrypoint(),
         agentKind: agent.kind,
         toolAllowlist: [...ORG_HEARTBEAT_TOOL_ALLOWLIST],
@@ -4578,6 +4723,24 @@ export function heartbeatService(db: Db) {
         runId: run.id,
         humanQuestionCapabilities: adapter.humanQuestionCapabilities,
         effectiveAutonomy,
+        // U4b (S7 blocker): a resolved provider-sandbox lease (orgAcquired,
+        // now acquired UNCONDITIONALLY for every org run — R3, no longer
+        // gated on a pinned environment) means this heartbeat run's CLI
+        // executes inside an E2B VM — the `aoa` MCP server MUST ride the
+        // brokered HTTP transport there, never the stdio bridge (whose env
+        // carries DATABASE_URL). `orgAcquired.sandbox` is null on
+        // desktop/local_trusted regardless of whether an env is pinned
+        // (acquireExecutionContext's S1 contract: environment_not_found ->
+        // `{sandbox:null}`), so `brokered` is false there and
+        // prepareHeartbeatMcpDelivery's stdio delivery stays byte-identical.
+        // On cloud_auth it now fires for BOTH a pinned env and an unpinned
+        // run resolving the platform default (R3).
+        brokered: runTargetsSandbox,
+        // The control plane's own address is the platform's, not the
+        // tenant's — read it off the resolved adapter env first (mirrors the
+        // runtime-hook-bridge base-URL resolution just below), falling back to
+        // the server process env. Only consulted when brokered is true.
+        apiBaseUrl: adapterEnv.AOA_API_URL ?? process.env.AOA_API_URL ?? undefined,
       } as const;
 
       // MCP connectors: resolve the company's enabled connectors for THIS
@@ -4602,6 +4765,10 @@ export function heartbeatService(db: Db) {
           agentId: agent.id,
           runId: run.id,
           logger,
+          // U11: a stdio connector is admissible in-VM but still dropped on an
+          // unsandboxed host — sourced from the same S5 acquisition signal as
+          // `brokered` above.
+          sandboxTarget: runTargetsSandbox,
         });
         extraMcpServers = resolved.extraMcpServers;
         connectorEnv = resolved.connectorEnv;
@@ -4839,9 +5006,11 @@ export function heartbeatService(db: Db) {
 
       let runtimeHookToken: string | undefined;
       if (usesHttpHookBridge) {
-        const selfBaseUrl =
-          process.env.AOA_API_URL?.trim() ||
-          `http://127.0.0.1:${process.env.PORT ?? "3100"}`;
+        const selfBaseUrl = resolveRuntimeHookBaseUrl({
+          apiUrl: process.env.AOA_API_URL?.trim() ?? "",
+          port: process.env.PORT ?? "3100",
+          brokered: executionTarget.type !== "local",
+        });
         runtimeHookToken = mintRuntimeHookToken();
         // TTL is a leaked-entry backstop only — the primary cleanup is `deregisterRuntimeHook`
         // in the finally block below. The TTL must cover the entire possible run duration so
@@ -4888,9 +5057,11 @@ export function heartbeatService(db: Db) {
             ? {
                 runtimeHookBridge: {
                   enabled: true,
-                  selfBaseUrl:
-                    process.env.AOA_API_URL?.trim() ||
-                    `http://127.0.0.1:${process.env.PORT ?? "3100"}`,
+                  selfBaseUrl: resolveRuntimeHookBaseUrl({
+                    apiUrl: process.env.AOA_API_URL?.trim() ?? "",
+                    port: process.env.PORT ?? "3100",
+                    brokered: executionTarget.type !== "local",
+                  }),
                   path: RUNTIME_HOOK_PATH,
                   timeoutSec: RUNTIME_HOOK_BLOCK_TIMEOUT_SEC,
                 },
@@ -4914,6 +5085,84 @@ export function heartbeatService(db: Db) {
         adapterResult,
       });
       await persistDetectedPreviewServices(previewDetectionText, "final");
+
+      // ── U6.6: sandbox preview URL (provider-sandbox getHost(port)) ──
+      // persistDetectedPreviewServices (above) verifies a candidate preview
+      // URL by `fetch`-probing it from THIS process (probePreviewUrl) before
+      // ever persisting it — the host-loopback path. For a sandboxed run
+      // that probe can never succeed: the VM's "localhost" (what the agent's
+      // own AOA_PREVIEW_URL=... report necessarily says, from inside the
+      // VM) is not reachable from the control plane, so
+      // persistDetectedPreviewServices silently no-ops for cloud runs today.
+      // Reuse the SAME text-based port discovery (extractLoopbackPreviewUrls
+      // over the agent's own report, already scanned above into
+      // previewDetectionText) but skip the host probe entirely and resolve
+      // the preview URL via the sandbox's own getHost(port) mapping instead
+      // (resolveSandboxPreviewUrl, sandbox-file-movement.ts, U6.6). Gated
+      // identically to the U6.3 in-VM diff / U6.5 crew capture sandbox
+      // dual-check (orgAcquired.sandbox?.environment.driver === "sandbox" +
+      // executionTarget.type === "provider-sandbox", S5) plus issueId !=
+      // null. orgAcquired.sandbox is null on desktop/local_trusted (the
+      // documented S1 contract on acquire-execution-context.ts), so this
+      // block is a pure no-op there — the existing host-loopback preview
+      // path above is completely unchanged. Best-effort throughout:
+      // emitSandboxPreviewTaskOutput never throws, and this block is
+      // additionally try/catched so a resolveHost failure can never fail
+      // the run.
+      if (issueId) {
+        const previewSandboxExecutionTarget = orgAcquired.sandbox?.configPatch.executionTarget;
+        if (
+          orgAcquired.sandbox?.environment.driver === "sandbox" &&
+          previewSandboxExecutionTarget?.type === "provider-sandbox"
+        ) {
+          try {
+            const candidatePorts = Array.from(
+              new Set(
+                extractLoopbackPreviewUrls(previewDetectionText, {
+                  excludedOrigins: previewExcludedOrigins,
+                })
+                  .map((url) => {
+                    try {
+                      return new URL(url).port;
+                    } catch {
+                      return "";
+                    }
+                  })
+                  .filter((port) => port.length > 0)
+                  .map((port) => Number(port)),
+              ),
+            );
+            for (const port of candidatePorts) {
+              await emitSandboxPreviewTaskOutput(db, {
+                companyId: agent.companyId,
+                issueId,
+                executionWorkspaceId:
+                  persistedExecutionWorkspace?.id ?? issueRef?.executionWorkspaceId ?? null,
+                // Cast rationale identical to U6.3's collectSandboxDiff call
+                // (output-detection block, below): AdapterExecutionTarget's
+                // "provider-sandbox" variant types `runner` as the
+                // execute-only AdapterProviderSandboxRunner, but the object
+                // actually built here is environment-run-orchestrator.ts's
+                // buildProviderRunner output — a strict superset (writeFiles/
+                // readFiles/resolveHost included whenever the underlying
+                // provider implements them, true for every non-docker
+                // provider sandbox, the only case this type-narrowed branch
+                // is reached). Runtime-safe.
+                runner: previewSandboxExecutionTarget.runner as unknown as SandboxFileMovementRunner,
+                port,
+                createdByRunId: run.id,
+                createdByAgentId: agent.id,
+              });
+            }
+          } catch (previewErr) {
+            logger.warn(
+              { err: previewErr, runId: run.id, issueId },
+              "U6.6: sandbox preview URL emission failed (non-fatal)",
+            );
+          }
+        }
+      }
+
       const runtimeServiceReports = mergeAdapterRuntimeServiceReports({
         adapterReports: adapterResult.runtimeServices ?? [],
         detectedReports: [],
@@ -5183,6 +5432,38 @@ export function heartbeatService(db: Db) {
       }
       if (outcome === "succeeded" && outputDetectionCwd) {
         try {
+          // U6.3 (S5): when this run acquired a provider-sandbox lease,
+          // source changed files from the in-VM `git diff` (collectSandboxDiff)
+          // instead of the host git/mtime scan — outputDetectionCwd on a
+          // sandboxed run is the VM's remoteCwd (e.g.
+          // "/home/user/aoa-workspace"), which never exists on the host
+          // running this service. `orgAcquired` was captured earlier in this
+          // run (unmutated `const`, used above for mcpParams.brokered, U4b)
+          // and is re-read here rather than off `runScopedConfig` (which gets
+          // spread/reassigned repeatedly downstream), so this stays correct
+          // regardless of later config mutations. Desktop/local runs (no
+          // provider-sandbox lease) get `changedFileSource: undefined` and
+          // this call is otherwise byte-identical to before.
+          const sandboxExecutionTarget = orgAcquired.sandbox?.configPatch.executionTarget;
+          const changedFileSource =
+            orgAcquired.sandbox?.environment.driver === "sandbox" &&
+            sandboxExecutionTarget?.type === "provider-sandbox"
+              ? () =>
+                  collectSandboxDiff({
+                    // AdapterExecutionTarget's "provider-sandbox" variant types
+                    // `runner` as the execute-only AdapterProviderSandboxRunner,
+                    // but the object actually built here is
+                    // environment-run-orchestrator.ts's buildProviderRunner
+                    // output — a strict superset (writeFiles/readFiles/
+                    // resolveHost included whenever the underlying runtime
+                    // implements them, which it does for every non-docker
+                    // provider sandbox — the only case this type-narrowed
+                    // branch is reached). Cast is therefore runtime-safe.
+                    runner: sandboxExecutionTarget.runner as unknown as SandboxFileMovementRunner,
+                    remoteCwd: sandboxExecutionTarget.remoteCwd,
+                  })
+              : undefined;
+
           const detected = await outputDetector.detectAndCapture({
             runId: run.id,
             companyId: agent.companyId,
@@ -5192,6 +5473,7 @@ export function heartbeatService(db: Db) {
             adapterType: agent.adapterType,
             adapterHints: adapterResult.outputFiles,
             issueId: readNonEmptyString(context.issueId),
+            changedFileSource,
           });
           if (detected.length > 0) {
             detectedFiles = detected.map((d) => ({

@@ -506,6 +506,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       authToken: env.AOA_API_KEY ?? authToken ?? null,
       apiBaseUrl: env.AOA_API_URL ?? null,
       runtimeCommandSpec: ctx.runtimeCommandSpec ?? null,
+      // U5 fix (Wave 2 review): the cursor-agent CLI authenticates with ITS
+      // OWN account key (CURSOR_API_KEY) regardless of which underlying
+      // model (gpt/opus/sonnet/gemini/grok/kimi — see index.ts's model
+      // catalog) is selected — resolveCursorBillingType above and the
+      // readiness probe (test.ts) both treat CURSOR_API_KEY as the canonical
+      // auth signal, so "cursor" (not a per-model provider) is the correct
+      // sandboxProvider.
+      sandboxProvider: "cursor",
       onLog: async (stream, chunk) => {
         if (stream !== "stdout") {
           await onLog(stream, chunk);

@@ -1,17 +1,38 @@
 import { eq, and, desc, gt, gte, sql, ne, isNull, asc, inArray } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
 import type { Db } from "@armyofagents/db";
 import { debriefs, briefs, briefItems, projects, discussions, discussionEntries, discussionExtractedItems, internalAgentConfig, threadScopeVersions } from "@armyofagents/db";
 import { logger } from "../middleware/logger.js";
+import { tenantIsolationEnforced } from "../config/deployment-mode.js";
 import { publishLiveEvent } from "./live-events.js";
 import { parseExtractedItems, type ExtractedItem, type ExtractedItemType } from "./extraction-parser.js";
 import { resolveExtractionEngine, resolveCompanyCliTool } from "./extraction-engine.js";
 import { extractViaCli, CliExtractionError } from "./extraction-cli.js";
+import {
+  resolveCompanyProviderCredential,
+  type CompanyProviderCredential,
+} from "./one-shot-provider-credential.js";
+import type { OneShotSandboxHandle } from "./one-shot-sandbox-cli.js";
+import { acquireExecutionContext } from "./acquire-execution-context.js";
+import { resolveRuntimeProviderConfig, environmentRuntimeService } from "./environment-runtime.js";
+import { runtimeProviderKeyService } from "./runtime-provider-keys.js";
+import { preflightOneShotCliSpend, type OneShotBudgetPreflightResult } from "./one-shot-cli-budget.js";
 import {
   buildDiscussionPendingHubEmit,
   buildExtractionFailedHubEmit,
   emitHubItem,
 } from "./hub-source-producers.js";
 import { hubItemsService } from "./hub-items.js";
+
+function readObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function readString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
 
 // Re-export pure parser symbols so existing importers (`from "./extraction.js"`)
 // continue to work unchanged after the move to extraction-parser.ts.
@@ -112,21 +133,51 @@ async function buildDepartmentsList(
 }
 
 /**
+ * U13.2: resolve the company's own model-provider credential (U13.0) when
+ * running under tenant isolation (`cloud_auth`) — extraction there must route
+ * through the ephemeral sandbox authenticated with the COMPANY's key, never
+ * the ambient host CLI login (the operator-cred sink). Returns `null` on
+ * desktop/self-hosted deployments, where extraction still uses the ambient
+ * host CLI login and no company key is threaded.
+ *
+ * Factored out (rather than folded into `resolveCliExtractionContext`) so
+ * `extractFromDiscussionEntry` — which resolves `cliTool` via its own
+ * `agentConfig` read, not `resolveCliExtractionContext` — can share the same
+ * one-line gate without re-querying `internal_agent_config` a second time.
+ * `resolveCompanyProviderCredential` throws `ProviderUnavailableError`
+ * UNCHANGED when no company key resolves (U13.0) — this helper does not
+ * catch it; the caller's existing catch-all failure handling terminalizes
+ * the entry the same way any other extraction-setup failure does.
+ */
+async function resolveCliCredentialIfCloud(
+  db: Db,
+  companyId: string,
+  cliTool: string,
+): Promise<CompanyProviderCredential | null> {
+  return tenantIsolationEnforced()
+    ? resolveCompanyProviderCredential(db, companyId, { cliTool })
+    : null;
+}
+
+/**
  * Resolve the keyless-CLI extraction context for a company: the CLI tool to
- * spawn and the codex model hint to forward. Mirrors how the discussion path
- * derives `cliTool` + `codexModel` from `internal_agent_config`. Used by the
- * debrief-push and file-import extraction paths.
+ * spawn, the codex model hint to forward, and (on cloud) the company's own
+ * resolved provider credential (U13.2 — threaded so the sandbox path never
+ * needs the ambient host CLI login). Mirrors how the discussion path derives
+ * `cliTool` + `codexModel` from `internal_agent_config`. Used by the
+ * debrief-push, file-import, and memory-candidate extraction paths.
  */
 async function resolveCliExtractionContext(
   db: Db,
   companyId: string,
-): Promise<{ cliTool: string; codexModel: string | null }> {
+): Promise<{ cliTool: string; codexModel: string | null; credential: CompanyProviderCredential | null }> {
   const cliTool = await resolveCompanyCliTool(db, companyId);
   const [config] = await db
     .select({ model: internalAgentConfig.model })
     .from(internalAgentConfig)
     .where(eq(internalAgentConfig.companyId, companyId));
-  return { cliTool, codexModel: config?.model ?? null };
+  const credential = await resolveCliCredentialIfCloud(db, companyId, cliTool);
+  return { cliTool, codexModel: config?.model ?? null, credential };
 }
 
 // Best-effort extraction_failed hub emit (Task 10, D3). Called at the two
@@ -217,14 +268,18 @@ export function extractionService(db: Db) {
           deptList,
         );
 
-        // 3. Extract via the keyless CLI (no hosted provider key).
-        const { cliTool, codexModel } = await resolveCliExtractionContext(
+        // 3. Extract via the keyless CLI (no hosted provider key) — on cloud,
+        //    `credential` routes the spawn through the ephemeral sandbox (U13.2).
+        const { cliTool, codexModel, credential } = await resolveCliExtractionContext(
           db,
           companyId,
         );
         log.info({ cliTool }, "Starting CLI extraction");
         const extractedItems = await extractViaCli(cliTool, prompt, debrief.rawContent, {
           codexModel,
+          credential,
+          companyId,
+          db,
         });
         log.info({ itemCount: extractedItems.length }, "Extraction complete");
 
@@ -307,7 +362,18 @@ export function extractionService(db: Db) {
       }
     },
 
-    extractFromDiscussionEntry: async (companyId: string, entryId: string) => {
+    extractFromDiscussionEntry: async (
+      companyId: string,
+      entryId: string,
+      /** U13.2/U13.3: pre-acquired batch sandbox lease — one sandbox reused
+       *  across a whole extract-then-scope pass, supplied by
+       *  `extractThreadEntriesAwait`'s batch acquire (U13.3). When omitted
+       *  (direct call, e.g. reprocess-single-entry, or the batch acquire
+       *  itself failed), the cloud path (via `extractViaCli` ->
+       *  `runOneShotCliInSandbox`) self-acquires its own ephemeral sandbox
+       *  for just this one entry. */
+      sandboxHandle?: OneShotSandboxHandle,
+    ) => {
       const log = logger.child({ service: "extraction", entryId, companyId });
       let discussionId = "";
 
@@ -461,9 +527,18 @@ export function extractionService(db: Db) {
         const cliTool = agentConfig?.cliTool ?? (await resolveCompanyCliTool(db, companyId));
         log.info({ cliTool }, "Using CLI engine for extraction (keyless)");
 
+        // U13.2: on cloud, resolve the COMPANY's own provider credential so
+        // extractViaCli routes this spawn through the ephemeral sandbox
+        // instead of the ambient host CLI login (the operator-cred sink).
+        // `null` on desktop/self-hosted — extraction there is unchanged.
+        const credential = await resolveCliCredentialIfCloud(db, companyId, cliTool);
+
         // Bounded retry for transient timeout failures (up to 3 attempts total).
         // Only `timeout` errors are retried — structural errors (not_installed,
-        // not_authed, nonzero_exit, unparseable) terminalize immediately.
+        // not_authed, nonzero_exit, unparseable, sandbox_unavailable) terminalize
+        // immediately (U13.3: a missing/unavailable sandbox is a structural
+        // condition, not a transient one — retrying would just re-fail the
+        // same way and burn the per-entry timeout budget three times over).
         const MAX_CLI_ATTEMPTS = 3;
         const CLI_RETRY_DELAY_MS = 500;
         let lastCliErr: CliExtractionError | undefined;
@@ -472,6 +547,10 @@ export function extractionService(db: Db) {
           try {
             extractedItems = await extractViaCli(cliTool, prompt, userContent, {
               codexModel: agentConfig?.model ?? null,
+              credential,
+              companyId,
+              db,
+              sandboxHandle,
             });
             lastCliErr = undefined; // success — clear any prior transient error
             break; // exit retry loop
@@ -483,7 +562,8 @@ export function extractionService(db: Db) {
 
             if (cliErr.kind !== "timeout") {
               // Structural failure (not_installed, not_authed, nonzero_exit,
-              // unparseable) — no point retrying, terminalize immediately.
+              // unparseable, sandbox_unavailable) — no point retrying,
+              // terminalize immediately.
               lastCliErr = cliErr;
               break;
             }
@@ -653,8 +733,19 @@ export function extractionService(db: Db) {
       companyId: string,
       discussionId: string,
       opts?: {
-        /** Injectable extractor (tests). Defaults to the sibling extractFromDiscussionEntry. */
-        extractOne?: (companyId: string, entryId: string) => Promise<unknown>;
+        /** Injectable extractor (tests). Defaults to the sibling
+         *  extractFromDiscussionEntry. The third param is the U13.2/U13.3
+         *  pre-acquired batch sandbox handle — on cloud (`tenantIsolationEnforced()`),
+         *  this method acquires ONE sandbox for the whole pass (before the
+         *  deadline clock starts) and passes it to every extractOne call
+         *  (U13.3); on desktop, or if the batch acquire fails, it stays
+         *  `undefined` and each entry self-acquires via `extractFromDiscussionEntry`
+         *  -> `extractViaCli` -> `runOneShotCliInSandbox`. */
+        extractOne?: (
+          companyId: string,
+          entryId: string,
+          sandboxHandle?: OneShotSandboxHandle,
+        ) => Promise<unknown>;
         /** Injectable clock for the deadline unit test. Defaults to Date.now. */
         now?: () => number;
       },
@@ -677,8 +768,118 @@ export function extractionService(db: Db) {
       const log = logger.child({ service: "extraction", discussionId, companyId, mode: "scope-await" });
       const extractOne =
         opts?.extractOne ??
-        ((c: string, e: string) => extractionService(db).extractFromDiscussionEntry(c, e));
+        ((c: string, e: string, h?: OneShotSandboxHandle) =>
+          extractionService(db).extractFromDiscussionEntry(c, e, h));
       const now = opts?.now ?? Date.now;
+
+      // U13.3: acquire ONE sandbox for the WHOLE batch, BEFORE the deadline
+      // clock (`startedAt`) starts — acquire latency must never eat into the
+      // per-entry EXTRACT_SCOPE_DEADLINE_MS budget. Cloud-only
+      // (`tenantIsolationEnforced()`); desktop/self-hosted extraction never
+      // needs a sandbox. Best-effort: an acquire failure is swallowed here
+      // (logged) rather than aborting the pass — `sandboxHandle` stays
+      // `undefined`, and every entry's own `extractFromDiscussionEntry` ->
+      // `extractViaCli` -> `runOneShotCliInSandbox` self-acquires (U13.1/
+      // U13.2 self-acquire fallback), hitting the SAME unavailability and
+      // surfacing its own `sandbox_unavailable` failure per entry — the
+      // `rangeEndCap` invariant still holds because a failed entry caps the
+      // draft range before it (round-6 P2).
+      let sandboxHandle: OneShotSandboxHandle | undefined;
+      let releaseSandboxHandle: (() => Promise<unknown>) | undefined;
+      if (tenantIsolationEnforced()) {
+        // Wave 3 review (FIX 2, MEDIUM — budget bypass): gate the batch
+        // acquire on the SAME budget preflight runOneShotCliInSandbox runs
+        // per-entry (one-shot-cli-budget.ts) BEFORE any sandbox is booted —
+        // an over-budget company must never boot (and be billed for) the
+        // batch VM. Skipping the acquire here is safe: every entry falls
+        // through to its own self-acquire attempt
+        // (extractFromDiscussionEntry -> extractViaCli ->
+        // runOneShotCliInSandbox), which re-runs this SAME gate and throws
+        // sandbox_unavailable before spending anything — so no VM boots
+        // either way, and the existing rangeEndCap/best-effort semantics (a
+        // failed entry caps the draft range before it) are unchanged.
+        const budgetPreflight: OneShotBudgetPreflightResult = await preflightOneShotCliSpend(db, { companyId }).catch(
+          (err) => {
+            log.warn(
+              { err },
+              "extract-then-scope: batch budget preflight failed (best-effort) — proceeding to acquire",
+            );
+            return { allowed: true };
+          },
+        );
+        if (!budgetPreflight.allowed) {
+          log.warn(
+            { reason: budgetPreflight.reason },
+            "extract-then-scope: company over budget — skipping batch sandbox acquire; entries will self-acquire and surface sandbox_unavailable",
+          );
+        } else {
+          try {
+            const cliTool = await resolveCompanyCliTool(db, companyId);
+            const acquisition = await acquireExecutionContext(db, {
+              runIdentity: {
+                companyId,
+                agentId: null,
+                runId: randomUUID(),
+                adapterType: cliTool === "codex" ? "codex_local" : "claude_local",
+              },
+              functionType: null, // one-shot batch CLI extraction has no functionType — always ephemeral
+              warmPreference: false, // batch extraction is never warm (U7.5)
+              worktree: null,
+              environmentId: null, // no pin -> platform-default resolution (U1)
+              issueId: null,
+              heartbeatRunId: null,
+            });
+            const lease = acquisition.lease;
+            if (acquisition.sandbox?.environment.driver === "sandbox" && lease) {
+              const environment = acquisition.sandbox.environment;
+              // Wave 3 review (FIX 1, orphan-safety, findings 1/2/3/7): wire
+              // the release closure to the lease IMMEDIATELY — before
+              // resolving provider config below — so a resolve-fault
+              // between here and the sandboxHandle assignment can never
+              // leak the batch VM (previously, a missing `provider` or a
+              // resolveRuntimeProviderConfig throw left the just-acquired
+              // lease with NO release closure at all). Routes through
+              // environmentRuntimeService(...).releaseRunLease (mirrors the
+              // crew fix at runner.ts:1677 and the one-shot self-acquire
+              // fix in one-shot-sandbox-cli.ts) so the DB row actually
+              // flips to 'released' — the raw provider release this
+              // replaced only killed the VM and left an orphaned 'active'
+              // environment_leases row (unreachable by the heartbeat-scoped
+              // reaper, since this lease's heartbeatRunId is always null).
+              releaseSandboxHandle = () =>
+                environmentRuntimeService(db).releaseRunLease({ environment, lease, status: "released" });
+
+              const provider = readString(lease.provider);
+              if (provider) {
+                const providerConfig = await resolveRuntimeProviderConfig({
+                  companyId,
+                  provider,
+                  config: readObject(environment.config),
+                  runtimeProviderKeys: runtimeProviderKeyService(db),
+                  issueId: null,
+                  heartbeatRunId: null,
+                });
+                sandboxHandle = { environment, lease, providerConfig };
+              } else {
+                log.warn(
+                  { leaseId: lease.id },
+                  "extract-then-scope: batch sandbox lease missing provider — entries will self-acquire",
+                );
+              }
+            } else {
+              log.warn(
+                "extract-then-scope: no sandbox environment resolved for batch — entries will self-acquire",
+              );
+            }
+          } catch (err) {
+            log.warn(
+              { err },
+              "extract-then-scope: batch sandbox acquire failed — entries will self-acquire and surface sandbox_unavailable",
+            );
+          }
+        }
+      }
+
       const startedAt = now();
       try {
         // Codex #270 P1 (round 4): bound the selection to the UNSCOPED source range.
@@ -812,7 +1013,15 @@ export function extractionService(db: Db) {
             }
             attempted += 1;
             lastAttemptedSeq = row.seq;
-            await extractOne(companyId, row.id);
+            // Call 2-arg when there is no batch handle (desktop, or the batch
+            // acquire failed) — keeps call-shape byte-identical to pre-U13.3
+            // for every existing 2-arg extractOne test double; 3-arg only
+            // when a real batch sandboxHandle was acquired.
+            if (sandboxHandle) {
+              await extractOne(companyId, row.id, sandboxHandle);
+            } else {
+              await extractOne(companyId, row.id);
+            }
             // Codex #270 P2 (round 6): extractFromDiscussionEntry handles its own
             // errors internally (marks the entry failed/skipped and RESOLVES), so a
             // clean await is not success. Re-read the outcome: anything other than
@@ -859,6 +1068,17 @@ export function extractionService(db: Db) {
       } catch (err) {
         log.warn({ err }, "extract-then-scope selection failed (best-effort) — compiling without");
         return { attempted: 0, failed: 0, truncated: false, deadlineHit: false, lastAttemptedSeq: null, rangeEndCap: null };
+      } finally {
+        // U13.3: release the BATCH lease exactly ONCE, after the whole pass
+        // (loop + selection), win or lose — ephemeral teardown (kill, never
+        // pause). A `finally` on the outer try/catch runs after either return
+        // path above, so this fires exactly once per extractThreadEntriesAwait
+        // call regardless of how many entries were attempted.
+        if (releaseSandboxHandle) {
+          await releaseSandboxHandle().catch((err) => {
+            log.warn({ err }, "extract-then-scope: batch sandbox release failed (best-effort)");
+          });
+        }
       }
     },
 
@@ -880,11 +1100,25 @@ export function extractionService(db: Db) {
           "{{DEPARTMENTS_AND_PROJECTS_LIST}}",
           deptList,
         );
-        const { cliTool, codexModel } = await resolveCliExtractionContext(
+        const { cliTool, codexModel, credential } = await resolveCliExtractionContext(
           db,
           companyId,
         );
-        return await extractViaCli(cliTool, systemPrompt, rawText, { codexModel });
+        // U13.5 — on cloud, stage the uploaded file's content into the
+        // sandbox VM as a named file (extractViaCli's sandbox branch,
+        // extraction-cli.ts) instead of concatenating it into stdinContent.
+        // Desktop/self-hosted is unaffected — extractViaCli's local spawn
+        // never reads `stagedFile`.
+        const stagedFile = tenantIsolationEnforced()
+          ? { remotePath: `/tmp/aoa-file-import-${randomUUID()}.txt`, content: rawText }
+          : undefined;
+        return await extractViaCli(cliTool, systemPrompt, rawText, {
+          codexModel,
+          credential,
+          companyId,
+          db,
+          stagedFile,
+        });
       } catch (err) {
         // CLI unavailable/unauth or timeout — caller falls back to paragraph chunking
         logger.warn({ err, companyId }, "extractFromRawText: CLI extraction failed, falling back to chunking");
@@ -1096,11 +1330,16 @@ export async function extractMemoryCandidates(
     const raw = await llm.generate(systemPrompt, userContent);
     items = parseExtractedItems(raw);
   } else {
-    const { cliTool, codexModel } = await resolveCliExtractionContext(
+    const { cliTool, codexModel, credential } = await resolveCliExtractionContext(
       db,
       params.companyId,
     );
-    items = await extractViaCli(cliTool, systemPrompt, userContent, { codexModel });
+    items = await extractViaCli(cliTool, systemPrompt, userContent, {
+      codexModel,
+      credential,
+      companyId: params.companyId,
+      db,
+    });
   }
 
   log.info({ candidateCount: items.length, entries: entries.length }, "extraction complete");

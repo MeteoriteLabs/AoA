@@ -60,12 +60,20 @@ function normalizeExperimentalSettings(raw: unknown): InstanceExperimentalSettin
       enableIsolatedWorkspaces: parsed.data.enableIsolatedWorkspaces ?? true,
       autoRestartDevServerWhenIdle: parsed.data.autoRestartDevServerWhenIdle ?? false,
       enableWorkspaceTtlSweeper: parsed.data.enableWorkspaceTtlSweeper ?? false,
+      warmSandboxDefaultForSoftwareDev: parsed.data.warmSandboxDefaultForSoftwareDev ?? true,
+      warmSandboxIdleTtlMinutes: parsed.data.warmSandboxIdleTtlMinutes ?? 30,
+      enableWarmSandboxReaper: parsed.data.enableWarmSandboxReaper ?? true,
+      warmCommanderConversations: parsed.data.warmCommanderConversations ?? true,
     };
   }
   return {
     enableIsolatedWorkspaces: true,
     autoRestartDevServerWhenIdle: false,
     enableWorkspaceTtlSweeper: false,
+    warmSandboxDefaultForSoftwareDev: true,
+    warmSandboxIdleTtlMinutes: 30,
+    enableWarmSandboxReaper: true,
+    warmCommanderConversations: true,
   };
 }
 

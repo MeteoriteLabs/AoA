@@ -95,7 +95,11 @@ type CliExtractionErrorKind =
   | "not_authed"
   | "timeout"
   | "nonzero_exit"
-  | "unparseable";
+  | "unparseable"
+  /** U13.3: no isolated sandbox was available for a cloud (`cloud_auth`)
+   *  extraction spawn — a provider-key/config problem, never a "missing
+   *  local CLI" problem. See extraction-cli.ts's CliErrorKind. */
+  | "sandbox_unavailable";
 
 const CLI_ERROR_KINDS = new Set<string>([
   "not_installed",
@@ -103,6 +107,7 @@ const CLI_ERROR_KINDS = new Set<string>([
   "timeout",
   "nonzero_exit",
   "unparseable",
+  "sandbox_unavailable",
 ]);
 
 /**
@@ -147,27 +152,6 @@ export function extractionFailureMessage(
   message: string | null,
   opts: { multiTenant?: boolean } = {},
 ): { primary: string; showSettings: boolean } {
-  // On AoA Cloud (multi-tenant) the shared host has no per-company keyless CLI
-  // login to borrow, and extraction is CLI-only (Decision #104 / CLAUDE.md Rule
-  // #11): a per-company provider key powers agents / Commander / embeddings but
-  // NEVER extraction. So a credential-shaped extraction failure is NOT actionable
-  // on cloud — there is no CLI login the founder can run, and setting a provider
-  // key would not help. Extraction is simply unavailable there, pending the
-  // deferred org-provider extraction sink.
-  //
-  // NOTE: This INTENTIONALLY REVERSES the earlier D3/#27 copy that pointed cloud
-  // founders at Settings → Providers. That copy was built on the wrong premise
-  // that a provider key enables extraction; it does not. The server's
-  // CLI-flavored `message` is intentionally dropped here.
-  if (opts.multiTenant && (kind === "not_authed" || kind === "not_installed")) {
-    return {
-      primary:
-        "Extraction isn't available on AoA Cloud yet. It needs a local CLI login " +
-        "the shared host can't provide, and a provider key doesn't enable extraction. " +
-        "Support is planned.",
-      showSettings: false,
-    };
-  }
   switch (kind) {
     case "not_installed":
       // Prefer the server's CLI-specific message (e.g. "codex CLI not found")
@@ -193,6 +177,20 @@ export function extractionFailureMessage(
       return {
         primary: `Extraction failed — try Reprocess.${message ? ` ${message}` : ""}`,
         showSettings: false,
+      };
+    case "sandbox_unavailable":
+      // U13.3: sandbox_unavailable IS actionable on cloud: extraction there runs
+      // inside an ephemeral sandbox authenticated with the company's own provider
+      // key, so a missing/invalid key or execution-environment config is exactly
+      // what Settings → Providers fixes. This is the ONLY credential-shaped
+      // extraction failure surfaced on cloud — not_authed/not_installed (a
+      // missing LOCAL CLI login) are unreachable when extraction runs in-sandbox.
+      // Never "install a CLI" copy — there is no local CLI on a sandboxed spawn.
+      return {
+        primary:
+          message ??
+          "Extraction could not run: no isolated sandbox was available. Check your provider key and execution environment in Settings.",
+        showSettings: true,
       };
     default: {
       // Legacy/unknown kind. Extraction is CLI-only (Decision #104, amended

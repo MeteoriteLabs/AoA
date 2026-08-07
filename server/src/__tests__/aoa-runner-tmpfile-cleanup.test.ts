@@ -72,6 +72,12 @@ vi.mock("../adapters/registry.js", () => ({
 vi.mock("../services/internal-agent/cli-mode.js", () => ({
   buildMcpConfig: buildMcpMock,
   buildMcpBridgeSpec: buildBridgeSpecMock,
+  // U4b: buildCodexAoaMcpSpec is the brokered-aware selector runner.ts now
+  // calls for ctx.mcpBridge. This suite exercises the desktop/non-sandbox
+  // path (acquireExecutionContext mocked to sandbox:null -> brokered:false),
+  // where buildCodexAoaMcpSpec falls through to plain buildMcpBridgeSpec — so
+  // the SAME mock produces byte-identical output.
+  buildCodexAoaMcpSpec: buildBridgeSpecMock,
 }));
 
 vi.mock("../services/heartbeat.js", () => ({
@@ -83,6 +89,14 @@ vi.mock("../services/heartbeat.js", () => ({
     executionTarget: {},
     runtimeCommandSpec: {},
   })),
+  applyEnvironmentAcquisitionConfig: (config: unknown) => config,
+}));
+
+// U4: crew acquires a sandbox lease before buildMcpConfig — stub the desktop/
+// local no-sandbox return shape so this suite stays on its existing byte-
+// identical local path.
+vi.mock("../services/acquire-execution-context.js", () => ({
+  acquireExecutionContext: vi.fn().mockResolvedValue({ sandbox: null, lease: null, warmResolved: false }),
 }));
 
 vi.mock("../services/internal-agent/aoa-agents/bridge-path.js", () => ({
@@ -106,6 +120,21 @@ vi.mock("../services/run-log-store.js", () => ({
 
 vi.mock("../services/costs.js", () => ({
   costService: vi.fn(() => ({ createEvent: createEventMock })),
+}));
+
+// U12 (real-shape drift fix, runner.ts): resolveProviderCredential now runs
+// BEFORE the U4 sandbox acquire (previously the acquire+cfgPath write ran
+// first, so this suite's F4 hygiene assertions incidentally passed even
+// though the REAL resolveProviderCredential was throwing — this file's
+// @armyofagents/db mock never exported `providerConnections`, which the real
+// provider-resolution.ts needs). Mock it like every sibling runner suite
+// (aoa-runner-loopback.test.ts / aoa-runner-brokered-mcp.test.ts / etc.) so
+// this test reaches adapter.execute — and therefore cfgPath — the way its own
+// docstring assumes.
+vi.mock("../services/provider-resolution.js", () => ({
+  resolveProviderCredential: vi.fn(async () => ({ source: "agent_env_override" })),
+  applyResolvedCredential: (config: unknown) => config,
+  toExecutionTargetHint: () => ({ credentialKind: null, executionTargetSlug: null }),
 }));
 
 vi.mock("../middleware/logger.js", () => {

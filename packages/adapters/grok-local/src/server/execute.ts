@@ -521,6 +521,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         graceSec,
         onSpawn,
         onLog,
+        // U5 fix (Wave 2 review): grok-local always runs against xAI
+        // (resolveBillingType above gates solely on XAI_API_KEY), so
+        // XAI_API_KEY is the only provider auth key admissible in a
+        // sandboxed run.
+        sandboxProvider: "xai",
       });
       return {
         proc,

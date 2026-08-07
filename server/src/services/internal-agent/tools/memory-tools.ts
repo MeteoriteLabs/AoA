@@ -1,9 +1,12 @@
 // server/src/services/internal-agent/tools/memory-tools.ts
+import type { SQL } from "drizzle-orm";
 import type { AgentTool } from "../types.js";
 import { recordMemoryRetrievals } from "../../memory-retrieval-audit.js";
 import { splitCommanderMemoryItems, type CommanderMemoryCandidate } from "../memory-policy.js";
 import { commanderWorkingMemoryService } from "../working-memory.js";
 import type { NormalizedCommanderContextScope } from "../context-scope.js";
+import { actorForAgentRun, memoryAccessConditions } from "../../memory-access-sql.js";
+import { filterMemoryForActor, type MemoryActor } from "../../memory-access.js";
 
 type CommanderMemoryToolCandidate = CommanderMemoryCandidate & { similarity?: number | null };
 
@@ -335,12 +338,40 @@ export function createMemoryTools(): AgentTool[] {
       requiresConfirmation: false,
       execute: async (params: unknown, ctx) => {
         const { query, layer, limit } = (params ?? {}) as Record<string, unknown>;
-        const items = await ctx.services.memory.searchSemantic(ctx.companyId, query as string, {
+        // RBAC gate (U2a): searchSemantic's filter type carries no accessConditions
+        // seam, so this tool goes through searchMultiPath instead (same as
+        // handleMemorySearch in mcp/tools/read-tools.ts) — gate ONLY for the agent
+        // actor; board/Commander stays unfiltered. NOTE this "unfiltered" is about
+        // the RBAC accessConditions seam specifically — it is NOT a claim that the
+        // retrieval algorithm itself is byte-unchanged from pre-U2a (see
+        // enableTemporal below, which applies to every actor).
+        let accessConditions: SQL[] | undefined;
+        let actor: MemoryActor | undefined;
+        if (ctx.actorType === "agent" && ctx.agentId) {
+          actor = await actorForAgentRun(ctx.db, ctx.companyId, ctx.agentId);
+          accessConditions = memoryAccessConditions(ctx.db, actor);
+        }
+        const items = await ctx.services.memory.searchMultiPath(ctx.companyId, query as string, {
           ...(layer ? { layer: layer as string } : {}),
           limit: (limit as number) ?? 5,
+          // Wave 1 review, FIX B: searchMultiPath's TEMPORAL pathway
+          // (memory.ts runTemporal) has no query-text predicate — it ranks by
+          // validation count + recency regardless of `query`. Left enabled,
+          // find_similar_memory ("find SIMILAR items") would return up to
+          // `limit` recent-but-unrelated approved rows even when nothing
+          // actually matches the query, for EVERY actor (this is not part of
+          // the agent-only RBAC gate above). Disabling it here keeps the
+          // semantic + keyword pathways, both of which ARE query-gated, so a
+          // non-matching query still returns `[]` — restoring this tool's
+          // "similar to the query" contract.
+          enableTemporal: false,
+          ...(accessConditions ? { accessConditions } : {}),
         });
-        const count = Array.isArray(items) ? items.length : 0;
-        return { success: true, data: items, summary: `Found ${count} similar memory item(s)` };
+        // Post-fetch safety net mirroring the SQL gate (only when an actor was
+        // resolved — i.e. only for the agent path).
+        const scoped = actor ? filterMemoryForActor(items, actor) : items;
+        const count = Array.isArray(scoped) ? scoped.length : 0;
+        return { success: true, data: scoped, summary: `Found ${count} similar memory item(s)` };
       },
     },
     {
@@ -359,8 +390,19 @@ export function createMemoryTools(): AgentTool[] {
       requiresConfirmation: false,
       execute: async (params: unknown, ctx) => {
         const { proposedContent } = (params ?? {}) as Record<string, unknown>;
+        // RBAC gate (U2a): findSimilarItems' projection is narrower than
+        // AccessibleMemoryRow (no visibility/agentId), so filterMemoryForActor
+        // would not type-check here. Gate IN-SQL only via accessConditions,
+        // which memoryAccessConditions already ANDs invalidatedAt + scope/
+        // identity/private into — that gate is authoritative for this path.
+        let accessConditions: SQL[] | undefined;
+        if (ctx.actorType === "agent" && ctx.agentId) {
+          const actor = await actorForAgentRun(ctx.db, ctx.companyId, ctx.agentId);
+          accessConditions = memoryAccessConditions(ctx.db, actor);
+        }
         const similar = await ctx.services.memory.findSimilarItems(proposedContent as string, {
           companyId: ctx.companyId,
+          ...(accessConditions ? { accessConditions } : {}),
         });
         const conflicts = Array.isArray(similar) ? similar.filter((s: any) => s.similarity > 0.85) : [];
         return {

@@ -137,6 +137,11 @@ describe("runAdapterExecutionTargetProcess — provider-sandbox env (Codex findi
       graceSec: 2,
       onLog: async () => {},
       unsetEnvKeys: ["OPENAI_API_KEY"],
+      // U5: this describe block is codex/OPENAI_API_KEY-specific — without a
+      // resolved provider the sandbox allowlist admits no provider auth key at
+      // all (fail-closed default), which would make the "DOES pass" case below
+      // indistinguishable from the "does not pass" case.
+      sandboxProvider: "openai",
     };
   }
 

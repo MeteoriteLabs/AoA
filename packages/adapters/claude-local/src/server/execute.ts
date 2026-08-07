@@ -454,6 +454,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // a loud throw rather than a silent no-op, and the crew integration test
     // asserts the child actually SEES the credential.
     const operatorConfigHome = isolateAmbientConfig ? resolveClaudeConfigHome(process.env) : null;
+    // U12: the operator ~/.claude provisioning below must NEVER run for a
+    // sandbox (cloud) target — the operator login is the platform's, not the
+    // tenant's. `isolateAmbientConfig` is already forced false for a remote
+    // target (`&& !isRemoteExecutionTarget` above), so `operatorConfigHome` is
+    // null and `provisionClaudeConfigHome` (below) never runs. Assert it so a
+    // future edit to that line cannot silently re-open the path. No throw in
+    // the normal path — a remote target legitimately authenticates via the
+    // injected provider key from U5's allowlist, never the operator's CLI login.
+    if (isRemoteExecutionTarget && operatorConfigHome !== null) {
+      throw new Error("invariant: operator ~/.claude provisioning must be disabled for a remote/sandbox target");
+    }
     if (isolateAmbientConfig && !configuredConfigDirKey) {
       // Only mint a per-run dir when the agent did NOT configure one. An operator
       // pointing crew at a dedicated, already-logged-in config home via
@@ -623,6 +634,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
     let effectiveRemoteInstructionsFilePath: string | null = null;
     let effectiveRemoteSkillsDir: string | null = null;
+    let effectiveRemoteMcpConfigPath: string | null = null;
     if (isRemoteExecutionTarget && runtimeRootDir) {
       effectiveRemoteSkillsDir = `${runtimeRootDir}/.claude/skills`;
       await syncAdapterExecutionTargetDirectory({
@@ -644,6 +656,37 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           target: executionTarget,
           localPath: effectiveInstructionsFilePath,
           remotePath: effectiveRemoteInstructionsFilePath,
+          cwd: executionCwd,
+          env,
+          timeoutSec,
+          graceSec,
+          onLog,
+        });
+      }
+      // W7.4 — stage the brokered `aoa` MCP config into the sandbox VM. The
+      // runner writes it to a HOST tmp path and threads
+      // `--mcp-config <hostPath> --strict-mcp-config` through extraArgs (see
+      // runner.ts / heartbeat-mcp.ts). In a remote sandbox that host path does
+      // not exist, so without this the in-VM `claude --mcp-config <hostPath>`
+      // finds nothing and the agent spawns with ZERO broker tools — the whole
+      // point of the config. Mirror opencode-local: sync the file into the
+      // runtime root, then rewrite the `--mcp-config` value to the remote path
+      // in buildClaudeArgs below. Detection matches the space-separated pair
+      // AoA emits (same form the `hasManagedMcpConfig` check reads). An
+      // unbridged/desktop run carries no such pair → left null → the arg
+      // rewrite is a no-op and the pushed args stay byte-identical.
+      const mcpConfigFlagIndex = extraArgs.indexOf("--mcp-config");
+      const localMcpConfigPath =
+        mcpConfigFlagIndex >= 0 && mcpConfigFlagIndex + 1 < extraArgs.length
+          ? extraArgs[mcpConfigFlagIndex + 1]
+          : null;
+      if (localMcpConfigPath) {
+        effectiveRemoteMcpConfigPath = `${runtimeRootDir}/aoa-mcp-config.json`;
+        await syncAdapterExecutionTargetFile({
+          runId: `${runId}-claude-mcp-config`,
+          target: executionTarget,
+          localPath: localMcpConfigPath,
+          remotePath: effectiveRemoteMcpConfigPath,
           cwd: executionCwd,
           env,
           timeoutSec,
@@ -727,6 +770,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (skillsArg) {
         args.push("--add-dir", skillsArg);
       }
+      // W7.4 — when the mcp-config was staged into the VM (remote target), the
+      // pushed `--mcp-config <hostPath>` must point at the REMOTE copy instead;
+      // otherwise the in-VM claude reads a host path that does not exist there
+      // and loses every broker tool. Applied to WHICHEVER branch pushes the
+      // extra args (bridged filteredArgs OR unbridged extraArgs). Null on a
+      // local/desktop run → identity (byte-identical to before).
+      const rewriteMcpConfigArg = (argList: string[]): string[] => {
+        if (!effectiveRemoteMcpConfigPath) return argList;
+        const idx = argList.indexOf("--mcp-config");
+        if (idx < 0 || idx + 1 >= argList.length) return argList;
+        const rewritten = [...argList];
+        rewritten[idx + 1] = effectiveRemoteMcpConfigPath;
+        return rewritten;
+      };
       if (extraArgs.length > 0) {
         if (hookSettingsFilePath) {
           // Bridged mode: strip bypass flags that defeat the PreToolUse hook.
@@ -774,9 +831,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               `[aoa] WARNING: bridged mode — stripped bypass flag(s) from extraArgs that would defeat the PreToolUse permission hook: ${stripped.join(", ")}\n`,
             );
           }
-          if (filteredArgs.length > 0) args.push(...filteredArgs);
+          if (filteredArgs.length > 0) args.push(...rewriteMcpConfigArg(filteredArgs));
         } else {
-          args.push(...extraArgs);
+          args.push(...rewriteMcpConfigArg(extraArgs));
         }
       }
       return args;
@@ -833,6 +890,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         onSpawn,
         unsetEnvKeys,
         ...(unsetEnvPrefixes ? { unsetEnvPrefixes } : {}),
+        // U5 — resolved provider for the sandbox env allowlist: claude-local
+        // always runs against Anthropic, so ANTHROPIC_API_KEY/BASE_URL/MODEL
+        // are the only provider auth keys admissible in a sandboxed run.
+        sandboxProvider: "anthropic",
       });
 
       const parsedStream = parseClaudeStreamJson(proc.stdout);
