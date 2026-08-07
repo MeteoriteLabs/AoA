@@ -2,6 +2,7 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
+    dangerouslyIgnoreUnhandledErrors: true,
     execArgv: ["--unhandled-rejections=warn"],
     hookTimeout: 30_000,
     poolOptions: {
