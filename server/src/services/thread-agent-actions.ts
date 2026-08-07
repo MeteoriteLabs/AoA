@@ -1537,7 +1537,7 @@ export async function gcOrphanedProposedActions(
     .where(
       and(
         eq(internalAgentRuns.status, "running"),
-        lt(sql`coalesce(${internalAgentRuns.lastEventAt}, ${internalAgentRuns.createdAt})`, zombieCutoff),
+        lt(sql`coalesce(${internalAgentRuns.lastEventAt}, ${internalAgentRuns.createdAt})`, zombieCutoff.toISOString()),
         sql`${internalAgentRuns.id} IN (SELECT run_id FROM thread_agent_actions WHERE status = 'proposed' AND run_id IS NOT NULL)`,
       ),
     )
