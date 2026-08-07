@@ -1,0 +1,21 @@
+diff --git a/dist/index.js b/dist/index.js
+index ccabbe78b68e1bb57a10cfd89219b3bc4489d963..42e4362a7845063f580039d91879abd3d3ac22e0 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -137,7 +137,15 @@ var ProcessWorker = class {
+ 		});
+ 	}
+ 	send(message) {
+-		if (!this.isTerminating) this.process.send(message);
++		if (!this.isTerminating) {
++			try {
++				this.process.send(message);
++			} catch (err) {
++				if (err?.code !== 'ERR_IPC_CHANNEL_CLOSED' && err?.code !== 'ERR_IPC_DISCONNECTED') {
++					throw err;
++				}
++			}
++		}
+ 	}
+ 	postMessage(message, transferListItem) {
+ 		transferListItem?.forEach((item) => {
