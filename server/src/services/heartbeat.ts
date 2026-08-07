@@ -54,6 +54,8 @@ import {
 import type { EnvironmentAcquisitionResult } from "./environment-run-orchestrator.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { acquireExecutionContext } from "./acquire-execution-context.js";
+import { instanceSettingsService } from "./instance-settings.js";
+import { resolveWarmSandboxPreference, readAgentWarmOverride } from "./warm-sandbox-policy.js";
 import { conflict, notFound, HttpError } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent, threadWorkingAgents, broadcastThreadPresence } from "./live-events.js";
@@ -4244,6 +4246,28 @@ export function heartbeatService(db: Db) {
       const orgEgressHosts = adapterSupportsConnectors(agent.adapterType)
         ? await loadConnectorEgressHosts(db, { companyId: agent.companyId, agentId: agent.id })
         : [];
+      // U7.5 — resolve the warm-reuse decision for this org run. `functionType`
+      // comes from the run's project (`projects.function_type`); warm defaults
+      // on for `software_development` gated by the instance baseline, unless the
+      // per-agent `runtimeConfig.warmWorkspace` override forces it either way.
+      // The pure resolver (`resolveWarmSandboxPreference`, U7.2) is the single
+      // source of truth so org/crew/Commander cannot drift.
+      let orgFunctionType: string | null = null;
+      if (executionProjectId) {
+        const [projectRow] = await db
+          .select({ functionType: projects.functionType })
+          .from(projects)
+          .where(eq(projects.id, executionProjectId))
+          .limit(1);
+        orgFunctionType = projectRow?.functionType ?? null;
+      }
+      const orgWarmDecision = resolveWarmSandboxPreference({
+        runType: "org",
+        functionType: orgFunctionType,
+        agentWarmOverride: readAgentWarmOverride(agent.runtimeConfig),
+        instanceDefaultWarmForSoftwareDev:
+          (await instanceSettingsService(db).getExperimental()).warmSandboxDefaultForSoftwareDev,
+      });
       const orgAcquired = await acquireExecutionContext(db, {
         runIdentity: {
           companyId: agent.companyId,
@@ -4251,11 +4275,11 @@ export function heartbeatService(db: Db) {
           runId: run.id,
           adapterType: agent.adapterType,
         },
-        // functionType is a projects.functionType field, not carried on the
-        // trimmed issueRef projection used here; unused today (ephemeral-only,
-        // U7 seam) so null is behavior-neutral.
-        functionType: null,
-        warmPreference: "auto",
+        // functionType now resolved above for warm; kept on runIdentity's agentId
+        // is the warm key. This field stays null (the resolver already consumed
+        // the real functionType) — behavior-neutral for the acquire itself.
+        functionType: orgFunctionType,
+        warmPreference: orgWarmDecision.warm,
         worktree: persistedExecutionWorkspace
           ? { id: persistedExecutionWorkspace.id, mode: persistedExecutionWorkspace.mode }
           : null,

@@ -1,4 +1,4 @@
-import { eq, and } from "drizzle-orm";
+import { eq, and, desc, isNotNull, inArray, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { companies, environmentLeases, environments, executionTargets } from "@armyofagents/db";
 import type {
@@ -13,6 +13,11 @@ import { unprocessable } from "../errors.js";
 export type EnvironmentService = ReturnType<typeof environmentService>;
 
 const EXECUTION_TARGET_UNAVAILABLE = "Execution target is unavailable for this company";
+
+// Providers that are NOT external sandbox VMs (local host + single-box docker
+// transports). The warm per-company cap only counts external provider sandboxes
+// (e2b etc.) — these never accumulate the way a paused snapshot does.
+const NON_SANDBOX_LEASE_PROVIDERS = ["local", "sandbox-docker", "docker", "local-docker", "gvisor"];
 
 /**
  * A company may pin a system/shared target or a target owned by its own
@@ -107,6 +112,11 @@ export function environmentService(db: Db) {
       executionWorkspaceId?: string | null;
       issueId?: string | null;
       heartbeatRunId?: string | null;
+      // Warm-reuse (U7.5): the org agent this lease is held warm for. Set only
+      // on `reuse_by_agent` leases; ephemeral callers omit it → NULL (so
+      // `findResumablePausedLease`, keyed on agentId, can never match an
+      // ephemeral lease). Byte-identical to today for every ephemeral caller.
+      agentId?: string | null;
       leasePolicy?: EnvironmentLeasePolicy;
       provider?: string | null;
       providerLeaseId?: string | null;
@@ -130,6 +140,7 @@ export function environmentService(db: Db) {
           executionWorkspaceId: input.executionWorkspaceId ?? null,
           issueId: input.issueId ?? null,
           heartbeatRunId: input.heartbeatRunId ?? null,
+          agentId: input.agentId ?? null,
           status: "active",
           leasePolicy: input.leasePolicy ?? "ephemeral",
           provider: input.provider ?? null,
@@ -198,6 +209,103 @@ export function environmentService(db: Db) {
         .where(and(eq(environmentLeases.heartbeatRunId, heartbeatRunId), eq(environmentLeases.status, "active")))
         .returning();
       return leases;
+    },
+
+    // ── Warm reuse (U7.5) ────────────────────────────────────────────────
+    // Find this agent's newest resumable paused lease for a given environment.
+    // Only `paused` rows with a non-null providerLeaseId are candidates — a
+    // paused snapshot must have a provider sandbox id to reconnect to.
+    findResumablePausedLease: async (input: {
+      companyId: string;
+      agentId: string;
+      environmentId: string;
+    }) => {
+      const rows = await db
+        .select()
+        .from(environmentLeases)
+        .where(
+          and(
+            eq(environmentLeases.companyId, input.companyId),
+            eq(environmentLeases.agentId, input.agentId),
+            eq(environmentLeases.environmentId, input.environmentId),
+            eq(environmentLeases.status, "paused"),
+            isNotNull(environmentLeases.providerLeaseId),
+          ),
+        )
+        .orderBy(desc(environmentLeases.pausedAt))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    // Flip a paused lease back to active for a new run. The `AND status='paused'`
+    // guard is a concurrency latch: if two runs race to resume the same paused
+    // lease, exactly one UPDATE matches (returns the row); the loser gets no row
+    // back and its caller falls through to create-fresh — never two runs on one
+    // sandbox.
+    reactivatePausedLease: async (
+      id: string,
+      input: {
+        heartbeatRunId?: string | null;
+        issueId?: string | null;
+        executionWorkspaceId?: string | null;
+      },
+    ) => {
+      const now = new Date();
+      const [lease] = await db
+        .update(environmentLeases)
+        .set({
+          status: "active",
+          pausedAt: null,
+          heartbeatRunId: input.heartbeatRunId ?? null,
+          issueId: input.issueId ?? null,
+          executionWorkspaceId: input.executionWorkspaceId ?? null,
+          lastUsedAt: now,
+          updatedAt: now,
+        })
+        .where(and(eq(environmentLeases.id, id), eq(environmentLeases.status, "paused")))
+        .returning();
+      return lease ?? null;
+    },
+
+    // Pause (E2B snapshot) a reuse_by_agent lease at run end instead of killing
+    // it. `releasedAt` stays NULL so the warm lookup + idle reaper (both keyed
+    // off status) can still find it.
+    markLeasePaused: async (
+      id: string,
+      options?: { cleanupStatus?: EnvironmentLeaseCleanupStatus },
+    ) => {
+      const now = new Date();
+      const [lease] = await db
+        .update(environmentLeases)
+        .set({
+          status: "paused",
+          pausedAt: now,
+          releasedAt: null,
+          lastUsedAt: now,
+          updatedAt: now,
+          ...(options?.cleanupStatus !== undefined ? { cleanupStatus: options.cleanupStatus } : {}),
+        })
+        .where(eq(environmentLeases.id, id))
+        .returning();
+      return lease ?? null;
+    },
+
+    // Live+paused EXTERNAL provider sandboxes for a company, oldest-paused first
+    // (`pausedAt asc nulls last` puts active leases — pausedAt NULL — last). Used
+    // by the per-company warm cap and evict-oldest-paused (U7.6).
+    listLiveAndPausedProviderLeasesForCompany: async (companyId: string) => {
+      return db
+        .select()
+        .from(environmentLeases)
+        .where(
+          and(
+            eq(environmentLeases.companyId, companyId),
+            inArray(environmentLeases.status, ["active", "paused"]),
+            isNotNull(environmentLeases.provider),
+            notInArray(environmentLeases.provider, NON_SANDBOX_LEASE_PROVIDERS),
+          ),
+        )
+        .orderBy(sql`${environmentLeases.pausedAt} asc nulls last`);
     },
   };
 }

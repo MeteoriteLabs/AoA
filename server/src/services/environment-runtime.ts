@@ -48,6 +48,17 @@ export interface EnvironmentDriverAcquireInput {
    * orchestrator; U11 populates it with connector hosts + npm.
    */
   egressAllowlist?: string[];
+  /**
+   * U7.5 — warm-reuse preference for THIS run, resolved once by the org call
+   * site via `resolveWarmSandboxPreference` (crew/Commander always pass false).
+   * When true AND `agentId` is set, the acquire path first tries to RESUME this
+   * agent's paused sandbox; otherwise it creates a fresh `reuse_by_agent` lease
+   * so the next run can resume it. Absent/false ⇒ byte-identical ephemeral path.
+   */
+  warmPreference?: boolean;
+  /** U7.5 — the org agent to hold/resume a warm lease for. Persisted on the
+   *  lease (agent_id) so `findResumablePausedLease` can match it next run. */
+  agentId?: string | null;
 }
 
 export interface EnvironmentDriverReleaseInput {
@@ -368,12 +379,72 @@ function createSandboxDockerEnvironmentDriver(
           issueId: input.issueId,
           heartbeatRunId: input.heartbeatRunId,
         });
+
+        // U7.5 — warm reuse: only when the caller both prefers warm AND names
+        // the agent to key the lease on (crew/Commander pass warmPreference
+        // false; the resolver already forces them ephemeral). The query methods
+        // are Partial on the DI seam, so a test double without them falls
+        // straight through to the ephemeral create path below.
+        const warm = input.warmPreference === true
+          && !!input.agentId
+          && typeof environmentsSvc.findResumablePausedLease === "function";
+
+        // ── Warm resume: reconnect to this agent's paused sandbox, if any ──
+        if (warm) {
+          const paused = await environmentsSvc.findResumablePausedLease!({
+            companyId: input.companyId,
+            agentId: input.agentId!,
+            environmentId: input.environment.id,
+          });
+          if (paused?.providerLeaseId) {
+            const pausedProviderMetadata = readObject(readObject(paused.metadata).providerMetadata);
+            let resume: Awaited<ReturnType<typeof providerRuntime.resumeLease>> | null = null;
+            try {
+              resume = await providerRuntime.resumeLease(provider, {
+                providerLeaseId: paused.providerLeaseId,
+                leaseMetadata: pausedProviderMetadata,
+                config: providerConfig,
+              });
+            } catch (resumeErr) {
+              // resumeLease is contractually no-throw (spec §8 "never error the
+              // run"), but stay defensive: any throw is treated as a dead
+              // snapshot → create-fresh below, never surfaced to the run.
+              logger.warn(
+                { err: resumeErr, provider, providerLeaseId: paused.providerLeaseId, environmentId: input.environment.id },
+                "environment runtime: warm resume threw; falling back to create-fresh",
+              );
+              resume = null;
+            }
+            if (resume?.resumed && typeof environmentsSvc.reactivatePausedLease === "function") {
+              const reactivated = await environmentsSvc.reactivatePausedLease(paused.id, {
+                heartbeatRunId: input.heartbeatRunId,
+                issueId: input.issueId,
+                executionWorkspaceId: leaseContext.executionWorkspaceId,
+              });
+              // The `AND status='paused'` guard means a concurrent run may have
+              // already claimed this lease (no row returned) — fall through to
+              // create-fresh in that case rather than double-booking the VM.
+              if (reactivated) return normalizeEnvironmentLease(reactivated);
+            } else {
+              // Dead/GC'd snapshot (resumed:false): retire the stale paused row
+              // so it is never resumed again. Best-effort — must never block
+              // the create-fresh below.
+              await environmentsSvc.releaseLease(paused.id, "expired", { cleanupStatus: "success" })
+                .catch(() => undefined);
+            }
+          }
+        }
+
+        // Create fresh. Warm ⇒ tell the provider to snapshot-on-release
+        // (reuseLease) and tag the DB lease reuse_by_agent + agentId so the
+        // NEXT run can resume it. Ephemeral ⇒ byte-identical to before U7.5.
+        const createProviderConfig = warm ? { ...providerConfig, reuseLease: true } : providerConfig;
         const providerLease = await providerRuntime.acquireLease(provider, {
           companyId: input.companyId,
           environmentId: input.environment.id,
           issueId: input.issueId,
           heartbeatRunId: input.heartbeatRunId,
-          config: providerConfig,
+          config: createProviderConfig,
           workspaceMode: leaseContext.executionWorkspaceMode,
           // S4 — threaded straight through; undefined for callers that
           // haven't been updated yet (byte-identical acquire call for them).
@@ -386,7 +457,8 @@ function createSandboxDockerEnvironmentDriver(
             executionWorkspaceId: leaseContext.executionWorkspaceId,
             issueId: input.issueId,
             heartbeatRunId: input.heartbeatRunId,
-            leasePolicy: "ephemeral",
+            leasePolicy: warm ? "reuse_by_agent" : "ephemeral",
+            ...(warm ? { agentId: input.agentId } : {}),
             provider,
             providerLeaseId: providerLease.providerLeaseId,
             expiresAt: providerLease.expiresAt ? new Date(providerLease.expiresAt) : null,
@@ -447,6 +519,30 @@ function createSandboxDockerEnvironmentDriver(
             issueId: input.lease.issueId,
             heartbeatRunId: input.lease.heartbeatRunId,
           });
+
+          // U7.5 — pause-not-kill for warm (`reuse_by_agent`) leases at run end.
+          // CRITICAL: `providerConfig` is resolved FRESH from the environment
+          // row (the ephemeral base template) and does NOT carry `reuseLease`;
+          // the DB lease metadata nests it under `providerMetadata`, where
+          // `configFromE2bLease` never looks — so without explicitly forcing
+          // `reuseLease: true` here the E2B provider KILLS instead of pauses and
+          // warm reuse is silently dead. (Mirror-image of the U7.6 forceDestroy
+          // path, which forces `reuseLease: false`.)
+          const isReuse =
+            readString(input.lease.leasePolicy) === "reuse_by_agent" ||
+            readObject(input.lease.metadata).reuseLease === true;
+          if (isReuse && typeof environmentsSvc.markLeasePaused === "function") {
+            const released = await providerRuntime.releaseLease(provider, {
+              providerLeaseId: input.lease.providerLeaseId,
+              leaseMetadata: input.lease.metadata,
+              config: { ...providerConfig, reuseLease: true },
+            });
+            const row = await environmentsSvc.markLeasePaused(input.lease.id, {
+              cleanupStatus: released.cleanupStatus,
+            });
+            return row ? normalizeEnvironmentLease(row) : null;
+          }
+
           const released = await providerRuntime.releaseLease(provider, {
             providerLeaseId: input.lease.providerLeaseId,
             leaseMetadata: input.lease.metadata,
@@ -474,7 +570,15 @@ function createSandboxDockerEnvironmentDriver(
 export function environmentRuntimeService(
   db: Db,
   options: {
-    environments?: Pick<EnvironmentService, "acquireLease" | "releaseLease" | "releaseLeasesForRun"> & Partial<Pick<EnvironmentService, "get" | "listActiveLeasesForRun">>;
+    environments?: Pick<EnvironmentService, "acquireLease" | "releaseLease" | "releaseLeasesForRun">
+      & Partial<Pick<EnvironmentService,
+        | "get"
+        | "listActiveLeasesForRun"
+        | "findResumablePausedLease"
+        | "reactivatePausedLease"
+        | "markLeasePaused"
+        | "listLiveAndPausedProviderLeasesForCompany"
+      >>;
     sandboxProviders?: SandboxRuntimeProvider[];
     runtimeProviderKeys?: RuntimeProviderKeyResolver;
   } = {},

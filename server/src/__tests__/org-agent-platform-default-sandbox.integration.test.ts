@@ -191,7 +191,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         {
           runIdentity: { companyId: CO, agentId: orgAgentId, runId: heartbeatRunId, adapterType: "claude_local" },
           functionType: null,
-          warmPreference: "auto",
+          warmPreference: false,
           worktree: null,
           environmentId: null,
           issueId: null,
@@ -251,7 +251,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       const acquired = await acquireExecutionContext(db, {
         runIdentity: { companyId: CO, agentId: orgAgentId, runId: heartbeatRunId, adapterType: "claude_local" },
         functionType: null,
-        warmPreference: "auto",
+        warmPreference: false,
         worktree: null,
         environmentId: null,
         issueId: null,

@@ -823,7 +823,7 @@ export function extractionService(db: Db) {
                 adapterType: cliTool === "codex" ? "codex_local" : "claude_local",
               },
               functionType: null, // one-shot batch CLI extraction has no functionType — always ephemeral
-              warmPreference: "ephemeral",
+              warmPreference: false, // batch extraction is never warm (U7.5)
               worktree: null,
               environmentId: null, // no pin -> platform-default resolution (U1)
               issueId: null,

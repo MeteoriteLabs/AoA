@@ -194,7 +194,7 @@ export async function runOneShotCliInSandbox(input: RunOneShotCliInput): Promise
           adapterType: input.cliTool === "codex" ? "codex_local" : "claude_local",
         },
         functionType: null, // one-shot CLI has no functionType — always ephemeral
-        warmPreference: "ephemeral",
+        warmPreference: false, // one-shot CLI is never warm (U7.5)
         worktree: null,
         environmentId: null, // no pin -> platform-default resolution (U1)
         issueId: null,

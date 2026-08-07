@@ -715,7 +715,9 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     const acquired = await acquireExecutionContext(db, {
       runIdentity: { companyId: agent.companyId, agentId: agent.id, runId: runId ?? `aoa-${agentId}`, adapterType: agent.adapterType },
       functionType: null,
-      warmPreference: "ephemeral",
+      // Crew (`kind='aoa'`) is ALWAYS ephemeral — never warm (spec §7 /
+      // resolveWarmSandboxPreference's crew_always_ephemeral rule, U7.2).
+      warmPreference: false,
       worktree: null,
       environmentId: agent.defaultEnvironmentId ?? null,
       egressAllowlist: crewEgressHosts,

@@ -270,6 +270,12 @@ export function environmentRunOrchestrator(
       /** U11 — see the S4 doc-comment on `runtime.acquireRunLease`'s
        *  `egressAllowlist` param below; forwarded verbatim. */
       egressAllowlist?: string[];
+      /** U7.5 — warm-reuse preference + the agent to key a warm lease on.
+       *  Resolved by the org call site (`resolveWarmSandboxPreference`);
+       *  crew/Commander always pass `warmPreference: false`. Forwarded verbatim
+       *  into `runtime.acquireRunLease`; absent ⇒ ephemeral (byte-identical). */
+      warmPreference?: boolean;
+      agentId?: string | null;
     }): Promise<EnvironmentAcquisitionResult> {
       const environment = await resolveEnvironment({
         companyId: input.companyId,
@@ -290,6 +296,10 @@ export function environmentRunOrchestrator(
           // when the caller passes nothing, preserving the pre-U11 placeholder
           // wiring. Harmless for the local driver (ignored).
           egressAllowlist: input.egressAllowlist ?? [],
+          // U7.5 — warm-reuse decision + agent key, forwarded to the driver's
+          // resume-or-create path. Absent ⇒ ephemeral (byte-identical).
+          warmPreference: input.warmPreference ?? false,
+          agentId: input.agentId ?? null,
         });
         return {
           ...leaseRecord,

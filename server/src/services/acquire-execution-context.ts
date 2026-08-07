@@ -8,7 +8,11 @@ import {
 export interface AcquireExecutionContextInput {
   runIdentity: { companyId: string; agentId: string | null; runId: string; adapterType: string };
   functionType: string | null;                 // null (Commander) → always ephemeral
-  warmPreference: "auto" | "warm" | "ephemeral"; // U7 consumes; here ephemeral-only
+  // U7.5 — resolved warm-reuse decision for THIS run. The org call site computes
+  // it via `resolveWarmSandboxPreference`; crew/Commander ALWAYS pass `false`
+  // (they can never be warm — spec §7). Forwarded, with `runIdentity.agentId`,
+  // into the orchestrator's acquire so the driver can resume/create a warm lease.
+  warmPreference: boolean;
   worktree: { id: string; mode: string } | null;
   environmentId: string | null;                 // pinned task/agent/company env, else null → platform default (U1)
   issueId?: string | null;
@@ -27,7 +31,7 @@ export interface AcquireExecutionContextInput {
 export interface AcquiredExecutionContext {
   sandbox: EnvironmentAcquisitionResult | null;
   lease: EnvironmentAcquisitionResult["lease"] | null; // EnvironmentLease (S6)
-  warmResolved: boolean;                         // always false until U7
+  warmResolved: boolean;                         // U7.5 — mirrors the forwarded warmPreference
 }
 
 interface Deps {
@@ -66,6 +70,11 @@ export async function acquireExecutionContext(
       heartbeatRunId: input.heartbeatRunId ?? null,
       persistedExecutionWorkspace: input.worktree,
       egressAllowlist: input.egressAllowlist,
+      // U7.5 — forward the resolved warm decision + the agent key. The driver's
+      // acquire path only resumes/creates a warm lease when BOTH are set; crew/
+      // Commander pass warmPreference:false so they can never resume a warm VM.
+      warmPreference: input.warmPreference,
+      agentId: input.runIdentity.agentId,
     });
   } catch (err) {
     if (err instanceof EnvironmentRunError && err.code === "environment_not_found") {
@@ -73,5 +82,5 @@ export async function acquireExecutionContext(
     }
     throw err;
   }
-  return { sandbox, lease: sandbox.lease, warmResolved: false };
+  return { sandbox, lease: sandbox.lease, warmResolved: input.warmPreference };
 }

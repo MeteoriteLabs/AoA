@@ -97,6 +97,9 @@ describe("environmentRunOrchestrator", () => {
       multiTenant: false,
       // S4 — placeholder threaded from acquireForRun; U11 populates it.
       egressAllowlist: [],
+      // U7.5 — warm decision + agent key; defaults ephemeral/null here.
+      warmPreference: false,
+      agentId: null,
     });
   });
 

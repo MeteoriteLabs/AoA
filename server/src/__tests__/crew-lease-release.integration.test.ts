@@ -147,7 +147,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         {
           runIdentity: { companyId: CO, agentId: randomUUID(), runId: randomUUID(), adapterType: "claude_local" },
           functionType: null,
-          warmPreference: "ephemeral",
+          warmPreference: false,
           worktree: null,
           environmentId: envRow!.id,
         },

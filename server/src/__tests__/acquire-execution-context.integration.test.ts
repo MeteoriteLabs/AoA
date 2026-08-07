@@ -177,7 +177,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         {
           runIdentity: { companyId: CO, agentId: randomUUID(), runId: randomUUID(), adapterType: "claude_local" },
           functionType: null,
-          warmPreference: "ephemeral",
+          warmPreference: false,
           worktree: null,
           environmentId: null,
         },
@@ -199,7 +199,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         {
           runIdentity: { companyId: CO, agentId: null, runId: randomUUID(), adapterType: "codex_local" },
           functionType: null,
-          warmPreference: "ephemeral",
+          warmPreference: false,
           worktree: null,
           environmentId: null,
         },
@@ -218,7 +218,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       const result = await acquireExecutionContext(db, {
         runIdentity: { companyId: CO, agentId: null, runId: randomUUID(), adapterType: "claude_local" },
         functionType: null,
-        warmPreference: "ephemeral",
+        warmPreference: false,
         worktree: null,
         environmentId: null,
       });
@@ -254,7 +254,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         {
           runIdentity: { companyId: CO, agentId: randomUUID(), runId: randomUUID(), adapterType: "claude_local" },
           functionType: "software_development",
-          warmPreference: "auto",
+          warmPreference: false,
           worktree: null,
           environmentId: envRow!.id,
         },
