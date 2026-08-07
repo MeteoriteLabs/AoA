@@ -471,4 +471,111 @@ describe("claude execute target", () => {
     // sandboxed run, even though it would reach a local-target run unchanged.
     expect(providerInput!.env.CUSTOM_ENV).toBeUndefined();
   });
+
+  it("stages the brokered --mcp-config into the sandbox VM and rewrites the arg to the remote path (W7.4)", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-claude-mcp-stage-"));
+    const workspace = path.join(root, "workspace");
+    const mcpConfigPath = path.join(root, "aoa-mcp-config.host.json");
+    await fs.mkdir(workspace, { recursive: true });
+    // A brokered `aoa` server is HTTP (points at the control-plane broker), so
+    // the config is DB-free by construction — assert that below (defense in
+    // depth: a sandbox VM must never receive DATABASE_URL / postgres:// creds).
+    const brokeredConfig = JSON.stringify({
+      mcpServers: {
+        aoa: {
+          type: "http",
+          url: "https://broker.example/companies/company-1/mcp",
+          headers: { Authorization: "Bearer run-scoped-broker-token" },
+        },
+      },
+    });
+    await fs.writeFile(mcpConfigPath, brokeredConfig, "utf8");
+
+    const providerInputs: AdapterProviderSandboxRunInput[] = [];
+    const providerRunner = {
+      execute: vi.fn(async (input: AdapterProviderSandboxRunInput) => {
+        providerInputs.push(input);
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stderr: "",
+          stdout: [
+            JSON.stringify({ type: "system", subtype: "init", session_id: "claude-session-1", model: "claude-test" }),
+            JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "hello" }] } }),
+            JSON.stringify({
+              type: "result",
+              subtype: "success",
+              session_id: "claude-session-1",
+              result: "ok",
+              usage: { input_tokens: 1, output_tokens: 2, cache_read_input_tokens: 0 },
+              total_cost_usd: 0,
+            }),
+          ].join("\n"),
+        };
+      }),
+    };
+
+    try {
+      const result = await execute({
+        runId: "run-claude-mcp-stage",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Coder",
+          adapterType: "claude_local",
+          adapterConfig: {},
+        },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: "claude",
+          cwd: workspace,
+          env: { ANTHROPIC_API_KEY: "test-anthropic-key" },
+          // AoA's runner injects `--mcp-config <hostPath> --strict-mcp-config`
+          // into the adapter-read args key (space-separated pair).
+          args: ["--mcp-config", mcpConfigPath, "--strict-mcp-config"],
+        },
+        context: {},
+        executionTarget: {
+          type: "provider-sandbox",
+          provider: "e2b",
+          providerLeaseId: "sandbox-1",
+          remoteCwd: "/home/user/aoa-workspace",
+          shell: "bash",
+          runner: providerRunner,
+        },
+        runtimeCommandSpec: { command: "claude", installCommand: "npm install -g @anthropic-ai/claude-code" },
+        authToken: "secret-run-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+
+      const remoteMcpConfigPath = "/home/user/aoa-workspace/.aoa-runtime/claude/aoa-mcp-config.json";
+
+      // (1) DELIVERY: a base64-pipe sync staged the config to the remote path.
+      const stageInput = providerInputs.find((input) =>
+        input.args.some((arg) => arg.includes(remoteMcpConfigPath)) && typeof input.stdin === "string",
+      );
+      expect(stageInput).toBeDefined();
+      // (3) DB-FREE: the bytes actually piped into the VM carry no DB creds.
+      const staged = Buffer.from(stageInput!.stdin!, "base64").toString("utf8");
+      expect(staged).toBe(brokeredConfig);
+      expect(staged).not.toContain("DATABASE_URL");
+      expect(staged).not.toContain("postgres://");
+
+      // (2) ARG REWRITE: the in-VM claude reads the REMOTE path, never the host one.
+      const runInput = providerInputs.find((input) => input.args.includes("--print"));
+      expect(runInput).toBeDefined();
+      const flagIdx = runInput!.args.indexOf("--mcp-config");
+      expect(flagIdx).toBeGreaterThanOrEqual(0);
+      expect(runInput!.args[flagIdx + 1]).toBe(remoteMcpConfigPath);
+      expect(runInput!.args).not.toContain(mcpConfigPath);
+      // The strict flag rides along unchanged so the CLI does not also inherit
+      // host/project MCP servers.
+      expect(runInput!.args).toContain("--strict-mcp-config");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 });

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { execute } from "../server/execute.js";
 import { testEnvironment } from "../server/test.js";
-import type { AdapterInvocationMeta, AdapterProviderSandboxRunInput } from "@armyofagents/adapter-utils";
+import type { AdapterInvocationMeta, AdapterProviderSandboxRunInput, McpHttpServerSpec } from "@armyofagents/adapter-utils";
 
 async function expectSameRealPath(actual: string, expected: string): Promise<void> {
   await expect(fs.realpath(actual)).resolves.toBe(await fs.realpath(expected));
@@ -356,6 +356,104 @@ describe("codex execute target", () => {
       expect(providerInput!.command).toBe("bash");
       expect(providerInput!.args[1]).toContain('mkdir -p "/home/user/aoa-workspace/.aoa-codex-home"');
       expect(providerInput!.args[1]).toContain("codex login --with-api-key");
+    } finally {
+      if (previousCodexHome === undefined) {
+        delete process.env.CODEX_HOME;
+      } else {
+        process.env.CODEX_HOME = previousCodexHome;
+      }
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("stages the managed config.toml into the sandbox VM's CODEX_HOME (W7.4)", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-codex-mcp-stage-"));
+    const hostCodexHome = path.join(root, "host-codex-home");
+    const previousCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = hostCodexHome;
+    const providerInputs: AdapterProviderSandboxRunInput[] = [];
+    const providerRunner = {
+      execute: vi.fn(async (input: AdapterProviderSandboxRunInput) => {
+        providerInputs.push(input);
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stderr: "",
+          stdout: [
+            JSON.stringify({ type: "thread.started", thread_id: "codex-session-1" }),
+            JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "hello" } }),
+            JSON.stringify({
+              type: "turn.completed",
+              usage: { input_tokens: 1, output_tokens: 2, cached_input_tokens: 0 },
+            }),
+          ].join("\n"),
+        };
+      }),
+    };
+
+    // A brokered (E2B-sandboxed) run's `aoa` server is HTTP-shaped: it points at
+    // the control-plane broker with a bearer env-var NAME, so the rendered
+    // config.toml carries NO DATABASE_URL — the stdio bridge's `.env` (which
+    // does carry DB creds) is never selected for a sandbox. Assert DB-free below.
+    const brokerBridge: McpHttpServerSpec = {
+      kind: "http",
+      url: "https://broker.example/companies/company-1/mcp",
+      headers: {},
+      authTokenEnvVar: "AOA_BROKER_TOKEN",
+    };
+
+    try {
+      const result = await execute({
+        runId: "run-codex-mcp-stage",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: "codex",
+          env: {},
+          timeoutSec: 10,
+          graceSec: 1,
+        },
+        context: {},
+        executionTarget: {
+          type: "provider-sandbox",
+          provider: "e2b",
+          providerLeaseId: "sandbox-1",
+          remoteCwd: "/home/user/aoa-workspace",
+          shell: "bash",
+          runner: providerRunner,
+        },
+        runtimeCommandSpec: { command: "codex", installCommand: "npm install -g @openai/codex" },
+        mcpBridge: brokerBridge,
+        authToken: "secret-run-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+
+      const remoteConfigTomlPath = "/home/user/aoa-workspace/.aoa-codex-home/config.toml";
+      // (1) DELIVERY: a base64-pipe sync staged config.toml into the VM's CODEX_HOME.
+      const stageInput = providerInputs.find(
+        (input) => input.args.some((arg) => arg.includes(remoteConfigTomlPath)) && typeof input.stdin === "string",
+      );
+      expect(stageInput).toBeDefined();
+      // The sync's own remote command creates the parent dir before writing, so
+      // remoteCodexHome is guaranteed to exist even before the install `mkdir`.
+      expect(stageInput!.args[1]).toContain('mkdir -p "$(dirname');
+
+      // (2) CONTENT + DB-FREE: the exact bytes piped into the VM.
+      const staged = Buffer.from(stageInput!.stdin!, "base64").toString("utf8");
+      expect(staged).toContain("[mcp_servers.aoa]");
+      expect(staged).toContain('url = "https://broker.example/companies/company-1/mcp"');
+      expect(staged).toContain('bearer_token_env_var = "AOA_BROKER_TOKEN"');
+      expect(staged).not.toContain("DATABASE_URL");
+      expect(staged).not.toContain("postgres://");
     } finally {
       if (previousCodexHome === undefined) {
         delete process.env.CODEX_HOME;
