@@ -19,14 +19,31 @@ const DOCKER_FAMILY_TARGET_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Sentinel target for AoA-authored git run against a HOST-side clone
+ * (clone/diff-base/commit/push) — never a tenant CLI shell. This is host-
+ * controlled AoA code operating on a host clone, not tenant model output
+ * executing in an unsandboxed context, so it is permitted on cloud_auth
+ * (spec §9 blast-radius reframe). U6.1.
+ */
+export type HostOrchestrationTarget = { type: "host_orchestration_git" };
+
+export function isHostOrchestrationGitTarget(
+  t: AdapterExecutionTarget | HostOrchestrationTarget | null | undefined,
+): boolean {
+  return !!t && (t as { type?: string }).type === "host_orchestration_git";
+}
+
+/**
  * Cloud isolation cannot be established by a tenant-authored `runtime` string.
  * Until the validated worker plane exists, every local Docker-family target is
  * refused just like the control-plane host. Provider sandboxes establish their
- * boundary outside this local dispatch path and are allowed.
+ * boundary outside this local dispatch path and are allowed. Host-orchestration
+ * git (U6.1) is likewise carved out — it is AoA's own code, not tenant input.
  */
 function requiresSandboxRefusal(
   target: AdapterExecutionTarget | null | undefined,
 ): boolean {
+  if (isHostOrchestrationGitTarget(target)) return false;
   if (isUnsandboxedLocalTarget(target)) return true;
   return Boolean(target && DOCKER_FAMILY_TARGET_TYPES.has(target.type));
 }
