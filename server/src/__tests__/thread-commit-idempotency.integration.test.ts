@@ -1679,7 +1679,7 @@ describe.skipIf(process.platform === "win32")("thread-commit idempotency (real D
 
     const [liveRun] = rowsOf(await db.execute(sql`
       INSERT INTO internal_agent_runs (id, company_id, trigger_type, trigger_source, status, created_at)
-      VALUES (gen_random_uuid(), ${companyId}, 'event', 'integration-test', 'running', now() - interval '40 minutes')
+      VALUES (gen_random_uuid(), ${companyId}, 'event', 'integration-test', 'running', now() - interval '20 minutes')
       RETURNING id`));
     const rowId = randomUUID();
     await db.execute(sql`
@@ -1688,7 +1688,7 @@ describe.skipIf(process.platform === "win32")("thread-commit idempotency (real D
       VALUES (${rowId}, ${companyId}, ${tLId}, ${String(liveRun.id)}, ${agentId}, 'post_reply', 'proposed',
               ${JSON.stringify({ rawContent: "x" })}::jsonb, ${`k:live:${randomUUID()}`}, '{}'::jsonb)`);
 
-    await gcOrphanedProposedActions(db); // DEFAULT zombie TTL = 2h
+    await gcOrphanedProposedActions(db); // DEFAULT zombie TTL = 35m
 
     const runStatus = String(rowsOf(await db.execute(sql`SELECT status FROM internal_agent_runs WHERE id = ${String(liveRun.id)}`))[0].status);
     const rowStatus = String(rowsOf(await db.execute(sql`SELECT status FROM thread_agent_actions WHERE id = ${rowId}`))[0].status);
