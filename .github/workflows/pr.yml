@@ -389,7 +389,7 @@ jobs:
       - name: Run tests
         env:
           NODE_OPTIONS: "--max-old-space-size=4096"
-        run: pnpm test:run
+        run: pnpm test:run --pool=forks
 
       - name: Build
         run: pnpm build
