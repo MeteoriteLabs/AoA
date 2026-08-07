@@ -1135,6 +1135,11 @@ export const NOTIFICATION_TYPES = [
   "internal_agent.reminder",
   "internal_agent.proactive",
   "internal_agent.action_result",
+  // U13.6 (cloud execution isolation) — raised by agent-loop.ts when
+  // Commander's post-turn history compaction (`summarizeViaCli`) throws on
+  // `cloud_auth`. Compaction stays best-effort (never fails the turn); this
+  // is the founder-visible signal that was previously silently dropped (R3).
+  "internal_agent.compaction_failed",
   "marketplace.install_completed",
   "marketplace.install_failed",
   "marketplace.install_requested",

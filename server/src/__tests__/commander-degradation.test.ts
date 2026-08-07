@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { setDeploymentMode } from "../config/deployment-mode.js";
 
 // Mock drizzle-orm operators
 vi.mock("drizzle-orm", () => ({
@@ -95,12 +96,30 @@ vi.mock("../services/internal-agent/cli-summarizer.js", () => ({
   summarizeViaCli: async () => "summary",
 }));
 
+// U13.6 — the founder-notification surface on a cloud compaction failure.
+// Mocked so these tests assert ROUTING (agent-loop.ts calls this, with what
+// args, ONLY on cloud) without exercising the real userRoles lookup /
+// createNotification hub-emit chain (out of scope here — this file drives
+// agent-loop.ts's degradation behavior with a fully hand-rolled `db` double,
+// same style as every other dependency mocked above).
+const notifyFounderOfCompactionFailureMock = vi.fn(async () => {});
+vi.mock("../services/internal-agent/compaction-failure-notice.js", () => ({
+  notifyFounderOfCompactionFailure: (...a: unknown[]) =>
+    notifyFounderOfCompactionFailureMock(...a),
+}));
+
 import { agentLoopService } from "../services/internal-agent/agent-loop.js";
+
+afterEach(() => {
+  setDeploymentMode("local_trusted");
+});
 
 describe("commander graceful degradation", () => {
   it("missing bundle + no memory key + skill fail + summarize throw → still replies", async () => {
+    setDeploymentMode("local_trusted");
     // Reset the mock before the test
     summarizeIfNeededMock.mockClear();
+    notifyFounderOfCompactionFailureMock.mockClear();
 
     // Mock DB with config and agent rows using a call counter
     let selectCallCount = 0;
@@ -158,5 +177,77 @@ describe("commander graceful degradation", () => {
 
     // Verify summarizeIfNeeded was called (proving the post-turn compaction path was reached)
     expect(summarizeIfNeededMock).toHaveBeenCalled();
+
+    // Desktop (local_trusted): a compaction failure is NOT surfaced as a
+    // founder notification — unchanged pre-U13.6 behavior.
+    expect(notifyFounderOfCompactionFailureMock).not.toHaveBeenCalled();
+  });
+
+  // U13.6 (R3 fix): on cloud, a compaction throw previously degraded
+  // completely silently — the founder had no way to know history had stopped
+  // compacting. Compaction is still best-effort (must never fail the turn),
+  // but the cloud path now raises ONE founder notification per failure.
+  it("cloud_auth + summarize throw → raises ONE founder notification AND the run still completes", async () => {
+    setDeploymentMode("cloud_auth");
+    summarizeIfNeededMock.mockClear();
+    notifyFounderOfCompactionFailureMock.mockClear();
+
+    let selectCallCount = 0;
+    const db: any = {
+      select: () => ({
+        from: (table: any) => ({
+          where: (condition: any) => ({
+            then: (callback: (rows: any[]) => any) => {
+              const callIndex = selectCallCount++;
+              if (callIndex === 0) {
+                return Promise.resolve(
+                  callback([{ cliTool: "claude_cli", contextTokenBudget: 4000 }])
+                );
+              } else if (callIndex === 1) {
+                return Promise.resolve(
+                  callback([
+                    {
+                      id: "agent-123",
+                      companyId: "c1",
+                      name: "Commander",
+                      adapterConfig: null,
+                    },
+                  ])
+                );
+              }
+              return Promise.resolve(callback([]));
+            },
+          }),
+        }),
+      }),
+    };
+
+    const chunks: any[] = [];
+    for await (const c of agentLoopService(db).chat({
+      companyId: "c1",
+      userId: "u1",
+      userRole: "founder",
+      enabledCapabilities: [],
+      content: "q",
+    })) {
+      chunks.push(c);
+    }
+
+    // The Commander run STILL completes — compaction stays best-effort, the
+    // notification surface never blocks/fails the turn.
+    expect(chunks.some((c) => c.type === "text" && c.delta === "reply")).toBe(true);
+    expect(chunks.some((c) => c.type === "error")).toBe(false);
+    expect(summarizeIfNeededMock).toHaveBeenCalled();
+
+    // Exactly ONE founder notification raised for this failure, threaded
+    // with the company + the underlying error + the conversation id.
+    expect(notifyFounderOfCompactionFailureMock).toHaveBeenCalledTimes(1);
+    const [calledDb, calledCompanyId, calledErr, calledConversationId] =
+      notifyFounderOfCompactionFailureMock.mock.calls[0];
+    expect(calledDb).toBe(db);
+    expect(calledCompanyId).toBe("c1");
+    expect(calledErr).toBeInstanceOf(Error);
+    expect((calledErr as Error).message).toBe("sum fail");
+    expect(calledConversationId).toBe("c");
   });
 });

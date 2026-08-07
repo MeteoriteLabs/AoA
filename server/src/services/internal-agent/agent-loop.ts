@@ -10,6 +10,8 @@ import { contextAssemblyService } from "./context-assembly.js";
 import { assembleAgentPersona } from "./commander-context.js";
 import { ensureCommanderAgent } from "./aoa-agents/ensure-commander.js";
 import { summarizeViaCli } from "./cli-summarizer.js";
+import { tenantIsolationEnforced } from "../../config/deployment-mode.js";
+import { notifyFounderOfCompactionFailure } from "./compaction-failure-notice.js";
 import { buildCompactSkillList } from "./commander-skills.js";
 import { companySkillService } from "../company-skills.js";
 import {
@@ -607,15 +609,34 @@ export function agentLoopService(db: Db, storage?: RuntimeAttachmentStorage) {
         await finalizeClaim(turnProducedReply ? "done" : "failed");
 
         // Post-turn compaction (graceful: never blocks/raises into the turn).
+        // U13.6: on AoA Cloud, a compaction throw previously degraded SILENTLY
+        // (R3) — the conversation just kept growing unbounded with no
+        // founder-visible signal. Compaction stays best-effort (a failure
+        // must NEVER fail the turn or the delivered reply); this only ADDS a
+        // founder notification on the cloud path before falling through to
+        // the existing "skip compaction this turn" behavior. Desktop failures
+        // are left unnotified (unchanged) — see compaction-failure-notice.ts.
         try {
           await convService.summarizeIfNeeded(conversation.id, (transcript) =>
             summarizeViaCli({
               cliTool: (config as { cliTool?: string }).cliTool ?? "claude_cli",
               cheapModel: (config as { cheapModel?: string | null }).cheapModel ?? null,
               transcript,
+              db,
+              companyId: params.companyId,
             }),
           );
-        } catch {
+        } catch (compactionErr) {
+          if (tenantIsolationEnforced()) {
+            await notifyFounderOfCompactionFailure(
+              db,
+              params.companyId,
+              compactionErr,
+              conversation.id,
+            ).catch(() => {
+              // best-effort — never let the notification path affect the turn
+            });
+          }
           // swallow — a failed compaction must never affect the delivered reply
         }
       } catch (err: any) {
