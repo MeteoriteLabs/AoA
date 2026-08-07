@@ -11,10 +11,12 @@ Lock workload lifecycles, state authority, security controls, golden journeys, r
 
 ## Exit gate
 
-- Foundation checker passes.
+- Structured lifecycle/authority/threat/fixture foundation checker passes; Markdown and JSON authorities agree.
 - Hosted unsafe override regression passes.
-- All six deterministic golden fixtures are committed.
-- Repository typecheck, tests, and build pass or baseline failures are separately evidenced.
+- All nine deterministic golden fixtures and their strict schema are committed.
+- Every trust crossing has complete control fields and every Critical/High item owns a release test.
+- Every applicable D0 REQUIRED condition plus HARD/INITIAL threshold in `test-gates.md` passes on one revision.
+- Repository typecheck, tests, and build pass. A failure outside the changed paths still blocks completion; a focused pass or baseline-failure note is evidence, not a waiver or pass.
 - Completion handoff links every ticket result and QA run.
 
 ## Records

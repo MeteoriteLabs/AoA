@@ -6,18 +6,22 @@ The program is a selective re-platform, not a blank-slate product rewrite. The e
 
 ## Start here
 
-1. [`program-design.md`](program-design.md) — approved architecture, 72-ticket backlog, dependency graph, deployment progression, and release gates.
-2. [`artifact-policy.md`](artifact-policy.md) — where plans, results, decisions, findings, QA evidence, and handoffs belong.
-3. [`epics/README.md`](epics/README.md) — live epic status and navigation.
-4. [`templates/`](templates/) — mandatory formats for execution records.
+1. [`program-design.md`](program-design.md) — approved architecture, 81-ticket backlog, dependency graph, and delivery waves.
+2. [`accepted-caveats.md`](accepted-caveats.md) — approved E2B limitations, the Firecracker exclusion, and the non-waivable invariants around them.
+3. [`test-gates.md`](test-gates.md) — quantitative D0–D6 and desktop release gates.
+4. [`artifact-policy.md`](artifact-policy.md) — where plans, results, decisions, findings, QA evidence, and handoffs belong.
+5. [`agent-execution-guide.md`](agent-execution-guide.md) — assignment preconditions, cross-cutting rules, and copy-ready prompts for agents.
+6. [`epics/README.md`](epics/README.md) — live epic status and navigation.
+7. [`templates/`](templates/) — mandatory formats for execution records.
 
 ## Source-of-truth hierarchy
 
 1. Locked product-wide decisions: `docs/architecture/decisions.md`.
 2. Approved re-platform architecture: `docs/replatform/program-design.md`.
-3. Epic implementation contract: `docs/replatform/epics/<epic>/implementation-plan.md`.
-4. Epic-local decisions and findings: the epic’s `decisions.md` and `findings.md`.
-5. Execution evidence: ticket results, QA results, and handoffs inside the epic folder.
+3. Approved caveats and normative gates: `docs/replatform/accepted-caveats.md` and `docs/replatform/test-gates.md`.
+4. Epic implementation contract: `docs/replatform/epics/<epic>/implementation-plan.md`.
+5. Epic-local decisions and findings: the epic’s `decisions.md` and `findings.md`.
+6. Execution evidence: ticket results, QA results, and handoffs inside the epic folder.
 
 If two artifacts disagree, the higher item wins until an explicit decision updates it.
 
@@ -38,17 +42,17 @@ The Integration Gate Owner updates [`epics/README.md`](epics/README.md) and the 
 The program can continue in the same agent conversation or in a fresh one. This folder is the durable handoff, so progress must not depend on retained chat context.
 
 1. Execute E0 and commit its ticket results, QA records, decisions, findings, and completion handoff.
-2. Revalidate the E1 implementation plan against the completed E0 evidence, amend it through the decision process if required, and then execute E1.
-3. After both completion gates pass, write and approve the remaining implementation plans in this order:
-   1. E2 Tenant kernel.
-   2. E6 D1 deployment/test foundation.
-   3. E3 Job control.
-   4. E4 Worker daemon.
+2. After E0, revalidate and execute E1 while E2 is planned/executed as an independent lane; neither lane waits for the other unless a newly recorded interface finding requires it.
+3. After E1 and E2 are both green, write and approve just-in-time plan slices in this order:
+   1. Reconcile the completed E1/E2 handoffs and freeze their shared inputs.
+   2. E3/E4 core bootstrap through JOB-003 and WRK-004.
+   3. E6 `E6-D1-FOUNDATION` through DEP-004.
+   4. E3 Job control and E4 Worker daemon remainder.
    5. E5 Workspaces/secrets.
-   6. E7 Coding/E2B.
-   7. E8 Browser automation.
-   8. E9 Service agents.
-   9. E10 Desktop/migration/realtime.
+   6. E6 remaining deployment/test work, MIG-003 durable realtime, and the E10 desktop-foundation tickets whose dependencies are green.
+   7. E7 Coding/E2B and, when desktop is in the advertised beta matrix, E10 desktop distribution; CLI-006 waits for MIG-003 in every case.
+   8. E8 Browser automation and E9 Service agents.
+   9. E10 target-migration and handoff remainder only for capabilities intended for the advertised matrix; otherwise keep their flags hard off and retain the conditional backlog.
    10. E11 Hardening/release.
 4. Execute a plan only when every dependency gate named in the program design is green on main.
 
@@ -56,7 +60,7 @@ Do not fully groom all remaining epics in advance. Findings from E0 and E1—esp
 
 Use this prompt to resume in a fresh agent task:
 
-> Read `docs/replatform/README.md`, `program-design.md`, the E0/E1 completion handoffs, decisions, findings, and QA results. Verify their gates, then produce the implementation plan for the next unblocked epic according to `artifact-policy.md`.
+> Read `docs/replatform/README.md`, `program-design.md`, `accepted-caveats.md`, `test-gates.md`, `agent-execution-guide.md`, the dependency completion handoffs, decisions, findings, and QA results. Verify their gates, then produce the implementation plan for the next unblocked ticket set according to `artifact-policy.md`.
 
 ## Recording rule
 
