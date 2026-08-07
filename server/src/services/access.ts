@@ -13,6 +13,7 @@ import {
   userRoles,
 } from "@armyofagents/db";
 import type { PermissionKey, PrincipalType } from "@armyofagents/shared";
+import { PERMISSION_KEYS } from "@armyofagents/shared";
 import { conflict, notFound } from "../errors.js";
 import { companyInviteExpiresAt } from "../routes/access-helpers.js";
 import { tenantIsolationEnforced } from "../config/deployment-mode.js";
@@ -308,6 +309,30 @@ export function accessService(db: Db) {
     if (!existingRole) {
       await db.insert(userRoles).values({ companyId, userId: operatorId, role: "founder" });
     }
+    // A cloud_auth founder is authorized ENTIRELY through
+    // principal_permission_grants: canUser()/hasPermission() read grant rows, NOT
+    // the userRoles founder row, and isInstanceAdmin() returns false under tenant
+    // isolation (no local_implicit bypass either). Every OTHER role-assignment
+    // path (join-approval, team.updateRole) already seeds the role's grants — this
+    // founder-at-creation path was the one that did NOT, so a cloud_auth founder
+    // was left with a founder role row + owner membership but ZERO grants and got
+    // 403'd on every canUser-gated route (Providers `agents:create`, routines /
+    // projects `tasks:assign`, …). Seed the full founder grant set (all
+    // PERMISSION_KEYS), self-granted, idempotently (ON CONFLICT DO NOTHING on the
+    // unique grant index) so both a fresh create and an idempotent replay are safe.
+    await db
+      .insert(principalPermissionGrants)
+      .values(
+        PERMISSION_KEYS.map((permissionKey) => ({
+          companyId,
+          principalType: "user" as const,
+          principalId: operatorId,
+          permissionKey,
+          scope: null,
+          grantedByUserId: operatorId,
+        })),
+      )
+      .onConflictDoNothing();
     // Task 10 (Phase 2 lockout cluster, ATOMIC cutover): the company's
     // founding operator is ALSO made an owner member of the company's
     // Organization (tenant). This is what lets a cloud_auth org owner who
