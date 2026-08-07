@@ -53,6 +53,12 @@ export interface LoadEnabledConnectorRowsOptions {
    * company connector (D3).
    */
   agentId: string | null;
+  /**
+   * U11: true when THIS run resolved a per-run E2B sandbox execution target.
+   * Forwarded to `selectConnectorRowsForAgent`'s D7 re-gate. Additive —
+   * omitted/`false` is byte-identical to pre-U11 behaviour.
+   */
+  sandboxTarget?: boolean;
 }
 
 /**
@@ -113,7 +119,7 @@ async function mapWithConcurrency<T, R>(
  */
 export async function loadEnabledConnectorRows(
   db: Db,
-  { companyId, agentId, oauthFetch }: LoadEnabledConnectorRowsOptions,
+  { companyId, agentId, oauthFetch, sandboxTarget }: LoadEnabledConnectorRowsOptions,
 ): Promise<LoadedConnectorRow[]> {
   // Fetch ALL of the company's connectors and let the pure selector apply the
   // status rule. Pre-filtering `status = 'active'` in SQL would put a
@@ -153,6 +159,7 @@ export async function loadEnabledConnectorRows(
     enabledConnectorIds,
     isCommander,
     deploymentMode,
+    sandboxTarget,
     onSkip: (connector, reason) => {
       logger.warn(
         {
@@ -375,6 +382,14 @@ export interface ConnectorToolAutoAllowInput {
   adapterType: string | null | undefined;
   /** The raw PreToolUse tool name, expected shape `mcp__<serverName>__<tool>`. */
   toolName: string | null | undefined;
+  /**
+   * U11: true when THIS run resolved a per-run E2B sandbox execution target.
+   * Forwarded to `selectConnectorRowsForAgent` so the auto-allow verdict
+   * agrees with delivery — a stdio connector's tool is only auto-allowed when
+   * the run is sandboxed. Additive — omitted/`false` preserves pre-U11
+   * behaviour.
+   */
+  sandboxTarget?: boolean;
 }
 
 /**
@@ -439,6 +454,7 @@ export async function isConnectorToolAutoAllowed(
     enabledConnectorIds,
     isCommander,
     deploymentMode,
+    sandboxTarget: input.sandboxTarget,
   });
 
   return selected.some((connector) => connector.serverName === serverName);
@@ -455,6 +471,14 @@ export interface ResolveAgentConnectorsInput {
   agentId: string | null;
   runId?: string;
   logger?: ConnectorLogger;
+  /**
+   * U11: true when THIS run resolved a per-run E2B sandbox execution target
+   * (`acquisition.environment.driver === "sandbox"`, S5 — never a top-level
+   * `acquisition.driver`). Forwarded to `loadEnabledConnectorRows` so a stdio
+   * connector is delivered in-VM but still dropped on an unsandboxed host.
+   * Additive — omitted/`false` is byte-identical to pre-U11 behaviour.
+   */
+  sandboxTarget?: boolean;
 }
 
 export interface ResolveAgentConnectorsResult {
@@ -483,6 +507,7 @@ export async function resolveAgentConnectors(
   const rows = await loadEnabledConnectorRows(db, {
     companyId: input.companyId,
     agentId: input.agentId,
+    sandboxTarget: input.sandboxTarget,
   });
   const { specs, env, skipped } = buildConnectorSpecs(rows);
   if (skipped.length > 0 && input.logger) {

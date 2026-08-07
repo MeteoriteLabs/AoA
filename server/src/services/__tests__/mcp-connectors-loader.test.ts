@@ -558,6 +558,39 @@ describe("loadEnabledConnectorRows", () => {
     expect(rows).toEqual([]);
     expect(resolveByName).not.toHaveBeenCalled();
   });
+
+  // U11: sandboxTarget is forwarded to selectConnectorRowsForAgent's D7 re-gate.
+  // Force the host's CURRENT deployment mode to cloud_auth (loadConfig() reads
+  // AOA_DEPLOYMENT_MODE with no caching) so the axis is actually exercised.
+  it("threads sandboxTarget into the D7 re-gate: stdio kept on cloud_auth+sandbox, dropped without it", async () => {
+    vi.stubEnv("AOA_DEPLOYMENT_MODE", "cloud_auth");
+    const stdioRow = () =>
+      connectorRow({
+        id: "c-stdio",
+        serverName: "notion-stdio",
+        transport: "stdio",
+        command: "npx",
+        args: ["@notionhq/notion-mcp-server@1.2.3"],
+        source: "byo",
+        secretRef: null,
+      });
+
+    const { db: dbUnsandboxed } = createSequenceDb([[stdioRow()], [{ connectorId: "c-stdio" }]]);
+    const dropped = await loadEnabledConnectorRows(dbUnsandboxed, {
+      companyId: "co-1",
+      agentId: "agent-1",
+      sandboxTarget: false,
+    });
+    expect(dropped).toEqual([]);
+
+    const { db: dbSandboxed } = createSequenceDb([[stdioRow()], [{ connectorId: "c-stdio" }]]);
+    const kept = await loadEnabledConnectorRows(dbSandboxed, {
+      companyId: "co-1",
+      agentId: "agent-1",
+      sandboxTarget: true,
+    });
+    expect(kept.map((r) => r.serverName)).toEqual(["notion-stdio"]);
+  });
 });
 
 describe("resolveAgentConnectors", () => {
