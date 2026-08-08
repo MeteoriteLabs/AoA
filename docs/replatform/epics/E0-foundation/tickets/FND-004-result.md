@@ -1,6 +1,6 @@
 # FND-004 Result — Golden Journey and Failure Corpus
 
-**Status:** `gate_review`
+**Status:** `complete`
 **Date (UTC):** `2026-08-08`
 **Epic:** `E0-foundation`
 **Plan task:** `Task 4: FND-004 — Golden Journey and Failure Corpus`
@@ -80,10 +80,31 @@ None.
 
 ## Independent review
 
-**Reviewer:** `<pending until first independent review, then agent or human identity; must differ from implementer>`
-**Reviewed revision:** `<pending until first independent review, then 40-character git SHA>`
-**Disposition:** `pending`
-**Review evidence:** `<pending until first independent review, then review record, exact commands/exit codes, or finding links>`
+**Reviewer:** FND-004 independent reviewer subagent (Claude)
+**Reviewed revision:** `3f10606a5c8716515d37df68a806145c39b66552`
+**Disposition:** `approved`
+**Review evidence:**
+
+Reviewed `git diff d6db0f2493d2282ba1ceddef27aab4735cbb0049 3f10606a5` (the checker `.mjs` diff is purely additive — no FND-001/002/003 checker logic removed; the single whole-diff deletion is a benign `import` refactor in `.test.mjs`).
+
+Focused acceptance commands (both green on the reviewed revision):
+
+| Command | Exit | Result |
+|---|---:|---|
+| `pnpm check:distributed-foundation` | `0` | `distributed execution foundation: PASS` |
+| `node --test scripts/check-distributed-execution-foundation.test.mjs` | `0` | `tests 113 / pass 113 / fail 0` |
+| `git diff -- pnpm-lock.yaml` | `0` | empty — no dependency added |
+
+Adversarial correctness verification (canonicalizer/digest is the cross-epic byte-for-byte contract PRT-004 reproduces):
+
+- **Independent digest cross-check.** Wrote a second, independent RFC 8785 subset canonicalizer (independent integer→decimal serialization, an explicit UTF-16 code-unit key comparator, and code-point string iteration) that does **not** import the checker, and recomputed the `eventDigest` of all **50 events across the 9 fixtures**: `checked 50 events, 0 mismatches`. This is a separate corroboration in addition to the controller's separate RFC-8785 impl.
+- **Edge-case byte probe** against the exported `canonicalizeJson`: non-ASCII (`é`→UTF-8 `c3 a9`, not escaped), astral emoji via a valid surrogate pair (`U+1F600`→`f0 9f 98 80`), `U+2028`/`U+2029` emitted literally (not escaped, matching ES `JSON.stringify`), `DEL` (0x7F) emitted literally, control chars escaped, `NUL`→`\u0000`, and UTF-16 code-unit key sort (`A`<`Z`<`a`<astral) — all byte-correct. `canonicalizeJson` equals `JSON.stringify` for non-control strings.
+- **Rejection set confirmed** via unit tests + fixture mutations: floats, unsafe integers (2^53), lone surrogates, duplicate semantic keys, and unsupported values (`undefined`/BigInt) all rejected; `-0`→`0`; `eventDigest` excluded from its own digest input; order-independence and byte-sensitivity proven.
+- **Meta-validator:** strict keyword allowlist rejects any unknown/custom keyword (whitelist ⇒ no false-negative); closed-object (`additionalProperties:false`, `unevaluatedProperties:false` on the composing `Source`), `$comment` syntax, required `$defs`, and local `$ref` resolution enforced. The allowlist is a strict subset of 2020-12 keywords, so anything E0 accepts remains valid 2020-12.
+- **Instance validator:** faithfully enforces type (incl. nullable unions), `const`/`enum`, `minLength`/`maxLength`/`pattern`(u-flag)/`format:date-time`/`aoa:utf8-max-bytes`, numeric bounds, `minItems`/`maxItems`/`uniqueItems` (canonical-JSON keyed), closed objects (declared-prop collection through `allOf`/`if`/`then`/`else`), and the `task_run` `runId`/`issueId` discriminant in both directions (verified against the real non-`task_run` fixtures whose `source` is `{kind}`-only).
+- **E0-F004 resolved:** `threat`/`control`/`verification` are now in `THREAT_CROSSING_REQUIRED_FIELDS` with a field-deletion mutation; all 30 crossings stay green.
+
+No Critical or Important issues. Non-blocking Minor observations (latent; not filed as a finding — the current object-level-only schema does not trigger them, and they do not affect the digest contract): (1) the instance validator evaluates in-place applicators (`allOf`/`anyOf`/`oneOf`/`not`/`if`) only when the instance value is a plain object, so composition applied to a scalar/array instance in a future schema version would be silently skipped — worth a guard as the contract grows; (2) `format:date-time` is a syntactic RFC3339 regex (accepts semantically-invalid dates); semantic ordering separately uses `Date.parse`; (3) `uniqueItems` falls back to order-sensitive `JSON.stringify` only when `canonicalizeJson` throws on an out-of-subset element, which the corpus never hits. Confidence in canonicalizer/digest fidelity for the v1 subset is **very high** (dual independent digest agreement + byte-level edge probes).
 
 For `approved`, verify the result describes the reviewed revision, all focused acceptance evidence passes, and every accepted finding is resolved; then change the top-level `Status` to `complete` and commit this disposition separately. Otherwise leave `Status` as `gate_review` or set `blocked`, and link stable findings.
 
@@ -94,3 +115,4 @@ The implementation author leaves the table body empty; the explicit pending summ
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
 <!-- First independent reviewer appends attempt 1. -->
+| 1 | FND-004 independent reviewer subagent (Claude) | `3f10606a5c8716515d37df68a806145c39b66552` | `approved` | Both focused commands green (`pnpm check:distributed-foundation` exit 0 PASS; `node --test …test.mjs` exit 0, 113/113). Independent second RFC-8785 subset impl recomputed all 50 event digests → 0 mismatches; byte-level edge probes (non-ASCII/astral/U+2028-9/DEL/control/key-sort) correct; rejection set (float/unsafe-int/lone-surrogate/dup-key) confirmed. Meta-validator whitelist + instance-validator + `task_run` discriminant verified. `.mjs` diff additive-only; `pnpm-lock.yaml` unchanged. E0-F004 resolved. No Critical/Important; 3 non-blocking Minor latent notes recorded above (not filed as a finding). |
