@@ -30,6 +30,9 @@ const REL = {
   md: "docs/architecture/distributed-execution-lifecycles.md",
   decisions: "docs/architecture/decisions.md",
   authority: "docs/architecture/distributed-execution-authority.md",
+  threatModel: "docs/architecture/distributed-execution-threat-model.md",
+  threatControls: "docs/architecture/distributed-execution-threat-controls.json",
+  programDesign: "docs/replatform/program-design.md",
 };
 
 function makeFixture(t, mutate) {
@@ -37,17 +40,24 @@ function makeFixture(t, mutate) {
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const archDir = path.join(root, "docs", "architecture");
   fs.mkdirSync(archDir, { recursive: true });
+  fs.mkdirSync(path.join(root, "docs", "replatform"), { recursive: true });
   const files = {
     root,
     jsonPath: path.join(root, REL.json),
     mdPath: path.join(root, REL.md),
     decisionsPath: path.join(root, REL.decisions),
     authorityPath: path.join(root, REL.authority),
+    threatModelPath: path.join(root, REL.threatModel),
+    threatControlsPath: path.join(root, REL.threatControls),
+    programDesignPath: path.join(root, REL.programDesign),
   };
   fs.copyFileSync(path.join(repoRoot, REL.json), files.jsonPath);
   fs.copyFileSync(path.join(repoRoot, REL.md), files.mdPath);
   fs.copyFileSync(path.join(repoRoot, REL.decisions), files.decisionsPath);
   fs.copyFileSync(path.join(repoRoot, REL.authority), files.authorityPath);
+  fs.copyFileSync(path.join(repoRoot, REL.threatModel), files.threatModelPath);
+  fs.copyFileSync(path.join(repoRoot, REL.threatControls), files.threatControlsPath);
+  fs.copyFileSync(path.join(repoRoot, REL.programDesign), files.programDesignPath);
   if (mutate) mutate(files);
   return root;
 }
@@ -380,6 +390,191 @@ test("forbidden edge into a malformed lifecycle pushes a clean error (no TypeErr
   const { errors } = await runCheck(root);
   assert.ok(
     hasError(errors, `forbidden edge "serviceInstance:healthy" references lifecycle "serviceInstance" with a missing or malformed state set`),
+    report(errors),
+  );
+});
+
+// --- FND-003: threat model + control ownership mutation corpus ----------------
+
+const THREAT_REQUIRED_FIELDS = [
+  "id",
+  "trustedSide",
+  "lessTrustedSide",
+  "authentication",
+  "authorization",
+  "confidentiality",
+  "integrity",
+  "revocation",
+  "audit",
+  "failureMode",
+  "severity",
+  "ownerTickets",
+  "verificationLane",
+];
+
+test("missing file: distributed-execution-threat-model.md removed", async (t) => {
+  const root = makeFixture(t, ({ threatModelPath }) => fs.rmSync(threatModelPath));
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, `${REL.threatModel}: missing`), report(errors));
+});
+
+test("missing file: distributed-execution-threat-controls.json removed", async (t) => {
+  const root = makeFixture(t, ({ threatControlsPath }) => fs.rmSync(threatControlsPath));
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, `${REL.threatControls}: missing`), report(errors));
+});
+
+test("threat model: Decision #121 loses the threat-model back-reference", async (t) => {
+  const root = makeFixture(t, ({ decisionsPath }) => {
+    patchText(
+      decisionsPath,
+      "[`distributed-execution-threat-model.md`](distributed-execution-threat-model.md)",
+      "[`the threat model`](removed-by-mutation.md)",
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, `${REL.decisions}: missing reference to "distributed-execution-threat-model.md"`),
+    report(errors),
+  );
+});
+
+// Remove each required field in turn: every one must be independently enforced.
+for (const field of THREAT_REQUIRED_FIELDS) {
+  test(`threat crossing: removing required field "${field}" fails`, async (t) => {
+    const root = makeFixture(t, ({ threatControlsPath }) => {
+      const j = readJson(threatControlsPath);
+      delete j.crossings[0][field];
+      writeJson(threatControlsPath, j);
+    });
+    const { errors } = await runCheck(root);
+    assert.ok(hasError(errors, `is missing required field "${field}"`), report(errors));
+  });
+}
+
+test("threat crossing: a non-empty required field emptied fails", async (t) => {
+  const root = makeFixture(t, ({ threatControlsPath }) => {
+    const j = readJson(threatControlsPath);
+    j.crossings[0].authentication = "   ";
+    writeJson(threatControlsPath, j);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, `field "authentication" must be a non-empty string`), report(errors));
+});
+
+test("threat crossing: a duplicate crossing id fails", async (t) => {
+  const root = makeFixture(t, ({ threatControlsPath }) => {
+    const j = readJson(threatControlsPath);
+    j.crossings[1].id = j.crossings[0].id; // both become "DE-01"
+    writeJson(threatControlsPath, j);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, `duplicate crossing id "DE-01"`), report(errors));
+});
+
+test("threat crossing: an invented owner ticket (not in program-design) fails", async (t) => {
+  const root = makeFixture(t, ({ threatControlsPath }) => {
+    const j = readJson(threatControlsPath);
+    j.crossings[0].ownerTickets = ["ZZZ-999"];
+    writeJson(threatControlsPath, j);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, `references unknown owner ticket "ZZZ-999" (not defined in ${REL.programDesign})`),
+    report(errors),
+  );
+});
+
+test("threat crossing: an empty ownerTickets array fails", async (t) => {
+  const root = makeFixture(t, ({ threatControlsPath }) => {
+    const j = readJson(threatControlsPath);
+    j.crossings[0].ownerTickets = [];
+    writeJson(threatControlsPath, j);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, `must have a non-empty "ownerTickets" array`), report(errors));
+});
+
+test("threat crossing: an unknown severity value fails", async (t) => {
+  const root = makeFixture(t, ({ threatControlsPath }) => {
+    const j = readJson(threatControlsPath);
+    j.crossings[0].severity = "Catastrophic";
+    writeJson(threatControlsPath, j);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, `has unknown severity "Catastrophic"`), report(errors));
+});
+
+test("threat crossing: an unknown verificationLane value fails", async (t) => {
+  const root = makeFixture(t, ({ threatControlsPath }) => {
+    const j = readJson(threatControlsPath);
+    j.crossings[0].verificationLane = "D9";
+    writeJson(threatControlsPath, j);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, `has unknown verificationLane "D9"`), report(errors));
+});
+
+test("threat crossing: removing a Critical/High release test fails", async (t) => {
+  const root = makeFixture(t, ({ threatControlsPath }) => {
+    const j = readJson(threatControlsPath);
+    // DE-14 is Critical with owner FND-005 only; its release test is the
+    // releaseTest field. Removing it leaves no REL-* owner and no releaseTest.
+    const de14 = j.crossings.find((c) => c.id === "DE-14");
+    assert.ok(de14, "fixture must contain DE-14");
+    delete de14.releaseTest;
+    writeJson(threatControlsPath, j);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, `crossing DE-14 is Critical but has no release test`),
+    report(errors),
+  );
+});
+
+test("threat parity: a JSON crossing id omitted from the Markdown register fails", async (t) => {
+  const root = makeFixture(t, ({ threatModelPath }) => {
+    const md = fs.readFileSync(threatModelPath, "utf8");
+    // Drop the entire DE-30 register row from the Markdown render.
+    const stripped = md.replace(/\n\| DE-30 \|[^\n]*\|/, "");
+    assert.notEqual(stripped, md, "mutation did not remove the DE-30 register row");
+    fs.writeFileSync(threatModelPath, stripped, "utf8");
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, `crossing id "DE-30" is present in JSON but not the Markdown register`),
+    report(errors),
+  );
+});
+
+test("threat parity: a drifted Markdown severity fails per-ID parity", async (t) => {
+  const root = makeFixture(t, ({ threatModelPath }) => {
+    patchText(
+      threatModelPath,
+      "| DE-01 | Cross-tenant database access | Critical |",
+      "| DE-01 | Cross-tenant database access | High |",
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, `register severity for "DE-01" is "High" but JSON is "Critical"`),
+    report(errors),
+  );
+});
+
+test("threat parity: an extra Markdown register id absent from JSON fails", async (t) => {
+  const root = makeFixture(t, ({ threatModelPath }) => {
+    const md = fs.readFileSync(threatModelPath, "utf8");
+    const injected = md.replace(
+      "| DE-30 | Malicious capability claim |",
+      "| DE-99 | Fabricated crossing | Critical | none | none | REL-001 |\n| DE-30 | Malicious capability claim |",
+    );
+    assert.notEqual(injected, md, "mutation did not inject a DE-99 register row");
+    fs.writeFileSync(threatModelPath, injected, "utf8");
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, `register id "DE-99" is present in the Markdown register but not JSON`),
     report(errors),
   );
 });

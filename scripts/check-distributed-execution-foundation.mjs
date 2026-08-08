@@ -33,6 +33,23 @@
  *      "no peer replica" database invariant — as structured rules, never bare
  *      substring presence.
  *
+ * FND-003 extends it with the distributed-execution threat model and control
+ * ownership. This checker additionally:
+ *   8. Requires `docs/architecture/distributed-execution-threat-model.md`, its
+ *      required headings/fragments, and the Decision #121 threat-model
+ *      back-reference.
+ *   9. Parses `docs/architecture/distributed-execution-threat-controls.json`
+ *      (the authoritative record) and validates every crossing/control object:
+ *      the exact required field set, non-empty string values, unique stable
+ *      IDs, known severity/verification-lane values, non-empty owner-ticket
+ *      arrays whose IDs all exist as defined backlog tickets in
+ *      `docs/replatform/program-design.md`, and a release test for every
+ *      Critical/High crossing.
+ *  10. Enforces exact JSON<->Markdown register parity: the complete crossing ID
+ *      set (both directions, count included) plus per-ID
+ *      threat/severity/control/verification/owner parity — every control ID,
+ *      not just the first/last — and the residual release-exclusion set.
+ *
  * String-fragment presence alone is never sufficient evidence for this
  * contract; the structured graph/table parity above is the real gate.
  *
@@ -114,6 +131,65 @@ const AUTHORITY_REQUIRED_FRAGMENTS = [
 const AUTHORITY_MATRIX_HEADING = "## Authority matrix";
 const SINGLE_WRITER_HEADING = "## Single-writer cutover";
 const LATE_OUTPUT_HEADING = "## Late and orphan output";
+
+// --- FND-003: distributed-execution threat model + control ownership ---------
+
+const THREAT_MODEL_MD = "docs/architecture/distributed-execution-threat-model.md";
+const THREAT_CONTROLS_JSON = "docs/architecture/distributed-execution-threat-controls.json";
+const PROGRAM_DESIGN_MD = "docs/replatform/program-design.md";
+
+// Step-1 presence gate: the Markdown render must carry these literal fragments.
+const THREAT_MODEL_FRAGMENTS = [
+  "# Distributed Execution Threat Model",
+  "## Trust boundaries",
+  "## Threat and control register",
+  "## Residual risks and release exclusions",
+  "DE-01",
+  "DE-16",
+  "DE-17",
+  "REL-001",
+  "cloud plugins remain disabled",
+];
+
+// Every crossing/control object in the JSON must carry all of these fields; the
+// JSON is authoritative and the Markdown register is a rendered view of them.
+const THREAT_CROSSING_REQUIRED_FIELDS = [
+  "id",
+  "trustedSide",
+  "lessTrustedSide",
+  "authentication",
+  "authorization",
+  "confidentiality",
+  "integrity",
+  "revocation",
+  "audit",
+  "failureMode",
+  "severity",
+  "ownerTickets",
+  "verificationLane",
+];
+
+const THREAT_KNOWN_SEVERITIES = new Set(["Critical", "High", "Medium", "Low"]);
+const THREAT_KNOWN_LANES = new Set(["D0", "D1", "D2", "D3", "D4", "D5", "D6"]);
+// A release test is required for every crossing at these severities.
+const THREAT_RELEASE_SEVERITIES = new Set(["Critical", "High"]);
+const REL_OWNER_RE = /^REL-\d+$/;
+// A backlog ticket ID token (used both to parse program-design.md and owner cells).
+const TICKET_ID_RE = /[A-Z][A-Z0-9]*-\d+/g;
+
+const THREAT_REGISTER_HEADING = "## Threat and control register";
+const THREAT_REGISTER_HEADER = ["ID", "Threat", "Severity", "Required control", "Verification", "Owner"];
+const RESIDUAL_HEADING = "## Residual risks and release exclusions";
+
+// The residual-risk section must explicitly exclude each of these from the
+// shipped surface (the hardening amendment's named release exclusions).
+const RESIDUAL_EXCLUSIONS = [
+  "public service ingress",
+  "cloud plugins",
+  "unvalidated gVisor bridge egress",
+  "active-active multi-region writes",
+  "unattended orphan-output application",
+];
 
 const AUTHORITY_MATRIX_HEADER = ["State", "Authority", "Worker behavior"];
 
@@ -637,6 +713,245 @@ async function validateAuthority(root, errors) {
   requireNegatedMention(content, "peer replica", "peer-replica invariant: no AoA database is a peer replica", errors);
 }
 
+/**
+ * Parse the set of defined backlog ticket IDs from the program design's
+ * `#### <ID> — ...` headings. This is the authoritative allow-list the
+ * threat-model owner-ticket cross-reference validates against; an owner ticket
+ * that is not a defined backlog ticket is rejected as invented.
+ */
+async function parseProgramTicketIds(root, errors) {
+  const content = await readOrError(root, PROGRAM_DESIGN_MD, errors);
+  if (content == null) return null;
+  const ids = new Set();
+  for (const line of content.split(/\r?\n/)) {
+    const m = /^####\s+([A-Z][A-Z0-9]*-\d+)(?:\s|$)/.exec(line);
+    if (m) ids.add(m[1]);
+  }
+  if (ids.size === 0) {
+    errors.push(`${PROGRAM_DESIGN_MD}: parsed no backlog ticket IDs (expected "#### <ID> — ..." headings)`);
+    return null;
+  }
+  return ids;
+}
+
+/** Does a crossing carry a release test (a REL-* owner or a releaseTest field)? */
+function crossingHasReleaseTest(c) {
+  const relOwner = Array.isArray(c.ownerTickets)
+    && c.ownerTickets.some((t) => typeof t === "string" && REL_OWNER_RE.test(t));
+  const releaseField = typeof c.releaseTest === "string" && c.releaseTest.trim() !== "";
+  return relOwner || releaseField;
+}
+
+/**
+ * Validate the threat-controls JSON crossing objects: exact required fields,
+ * non-empty string values, unique stable IDs, known severity/lane values,
+ * non-empty owner-ticket arrays whose IDs all exist in the program backlog, and
+ * a release test for every Critical/High crossing. Returns the set of JSON
+ * crossing IDs (for Markdown parity) or null when the array is unusable.
+ */
+function validateThreatCrossings(crossings, validTicketIds, errors) {
+  const jsonIds = new Set();
+  for (let idx = 0; idx < crossings.length; idx += 1) {
+    const c = crossings[idx];
+    if (c == null || typeof c !== "object" || Array.isArray(c)) {
+      errors.push(`${THREAT_CONTROLS_JSON}: crossing at index ${idx} is not an object`);
+      continue;
+    }
+    const label = typeof c.id === "string" && c.id ? c.id : `index ${idx}`;
+
+    // Exact required-field presence.
+    for (const field of THREAT_CROSSING_REQUIRED_FIELDS) {
+      if (!(field in c)) {
+        errors.push(`${THREAT_CONTROLS_JSON}: crossing ${label} is missing required field "${field}"`);
+      }
+    }
+
+    // Stable unique ID.
+    if (typeof c.id !== "string" || c.id.trim() === "") {
+      errors.push(`${THREAT_CONTROLS_JSON}: crossing ${label} has an empty or non-string "id"`);
+    } else {
+      if (jsonIds.has(c.id)) {
+        errors.push(`${THREAT_CONTROLS_JSON}: duplicate crossing id "${c.id}"`);
+      }
+      jsonIds.add(c.id);
+    }
+
+    // Every required field except ownerTickets must be a non-empty string.
+    for (const field of THREAT_CROSSING_REQUIRED_FIELDS) {
+      if (field === "ownerTickets") continue;
+      if (field in c && (typeof c[field] !== "string" || c[field].trim() === "")) {
+        errors.push(`${THREAT_CONTROLS_JSON}: crossing ${label} field "${field}" must be a non-empty string`);
+      }
+    }
+
+    // Known enumerations.
+    if (typeof c.severity === "string" && !THREAT_KNOWN_SEVERITIES.has(c.severity)) {
+      errors.push(`${THREAT_CONTROLS_JSON}: crossing ${label} has unknown severity "${c.severity}"`);
+    }
+    if (typeof c.verificationLane === "string" && !THREAT_KNOWN_LANES.has(c.verificationLane)) {
+      errors.push(`${THREAT_CONTROLS_JSON}: crossing ${label} has unknown verificationLane "${c.verificationLane}"`);
+    }
+
+    // Non-empty owner-ticket array cross-referenced against the backlog.
+    if (!Array.isArray(c.ownerTickets) || c.ownerTickets.length === 0) {
+      errors.push(`${THREAT_CONTROLS_JSON}: crossing ${label} must have a non-empty "ownerTickets" array`);
+    } else if (validTicketIds != null) {
+      for (const t of c.ownerTickets) {
+        if (typeof t !== "string" || !validTicketIds.has(t)) {
+          errors.push(`${THREAT_CONTROLS_JSON}: crossing ${label} references unknown owner ticket ${JSON.stringify(t)} (not defined in ${PROGRAM_DESIGN_MD})`);
+        }
+      }
+    }
+
+    // Release test for Critical/High.
+    if (typeof c.severity === "string" && THREAT_RELEASE_SEVERITIES.has(c.severity) && !crossingHasReleaseTest(c)) {
+      errors.push(`${THREAT_CONTROLS_JSON}: crossing ${label} is ${c.severity} but has no release test (no REL-* owner ticket and no non-empty "releaseTest" field)`);
+    }
+  }
+  return jsonIds;
+}
+
+/**
+ * Compare the complete JSON crossing ID set and every rendered field to the
+ * Markdown register table (exact set parity in both directions, including
+ * count, plus per-ID threat/severity/control/verification/owner parity). This
+ * validates every control ID, not just the first/last.
+ */
+function validateThreatRegisterParity(md, crossings, jsonIds, errors) {
+  const body = sectionBody(md, THREAT_REGISTER_HEADING);
+  if (body == null) {
+    errors.push(`${THREAT_MODEL_MD}: missing section ${JSON.stringify(THREAT_REGISTER_HEADING)}`);
+    return;
+  }
+  const table = extractTable(body);
+  if (!table) {
+    errors.push(`${THREAT_MODEL_MD}: threat-and-control register has no Markdown table`);
+    return;
+  }
+  if (
+    table.header.length !== THREAT_REGISTER_HEADER.length ||
+    !THREAT_REGISTER_HEADER.every((h, i) => table.header[i] === h)
+  ) {
+    errors.push(
+      `${THREAT_MODEL_MD}: register header must be ${JSON.stringify(THREAT_REGISTER_HEADER)}, found ${JSON.stringify(table.header)}`,
+    );
+  }
+
+  const mdMap = new Map();
+  for (const cells of table.rows) {
+    if (cells.length !== 6) {
+      errors.push(`${THREAT_MODEL_MD}: register row is not six columns: ${JSON.stringify(cells)}`);
+      continue;
+    }
+    const id = cells[0];
+    if (mdMap.has(id)) {
+      errors.push(`${THREAT_MODEL_MD}: duplicate register row for id "${id}"`);
+    }
+    mdMap.set(id, {
+      threat: cells[1],
+      severity: cells[2],
+      control: cells[3],
+      verification: cells[4],
+      owners: cells[5].match(TICKET_ID_RE) || [],
+    });
+  }
+  const mdIds = new Set(mdMap.keys());
+
+  // Exact set parity (count included: any extra on either side is an error).
+  for (const id of jsonIds) {
+    if (!mdIds.has(id)) {
+      errors.push(`${THREAT_MODEL_MD}: crossing id "${id}" is present in JSON but not the Markdown register`);
+    }
+  }
+  for (const id of mdIds) {
+    if (!jsonIds.has(id)) {
+      errors.push(`${THREAT_CONTROLS_JSON}: register id "${id}" is present in the Markdown register but not JSON`);
+    }
+  }
+
+  // Per-ID rendered-field parity for every crossing present on both sides.
+  const byId = new Map();
+  for (const c of crossings) {
+    if (typeof c.id === "string") byId.set(c.id, c);
+  }
+  for (const [id, row] of mdMap) {
+    const c = byId.get(id);
+    if (!c) continue; // already reported as an extra Markdown row
+    if (typeof c.threat === "string" && c.threat !== row.threat) {
+      errors.push(`${THREAT_MODEL_MD}: register threat for "${id}" is ${JSON.stringify(row.threat)} but JSON is ${JSON.stringify(c.threat)}`);
+    }
+    if (typeof c.severity === "string" && c.severity !== row.severity) {
+      errors.push(`${THREAT_MODEL_MD}: register severity for "${id}" is ${JSON.stringify(row.severity)} but JSON is ${JSON.stringify(c.severity)}`);
+    }
+    if (typeof c.control === "string" && c.control !== row.control) {
+      errors.push(`${THREAT_MODEL_MD}: register control for "${id}" is ${JSON.stringify(row.control)} but JSON is ${JSON.stringify(c.control)}`);
+    }
+    if (typeof c.verification === "string" && c.verification !== row.verification) {
+      errors.push(`${THREAT_MODEL_MD}: register verification for "${id}" is ${JSON.stringify(row.verification)} but JSON is ${JSON.stringify(c.verification)}`);
+    }
+    const jsonOwners = Array.isArray(c.ownerTickets) ? c.ownerTickets.filter((t) => typeof t === "string") : [];
+    const mdOwnerSet = new Set(row.owners);
+    const jsonOwnerSet = new Set(jsonOwners);
+    const ownersEqual = mdOwnerSet.size === jsonOwnerSet.size && [...jsonOwnerSet].every((t) => mdOwnerSet.has(t));
+    if (!ownersEqual) {
+      errors.push(`${THREAT_MODEL_MD}: register owners for "${id}" ${JSON.stringify([...mdOwnerSet])} do not match JSON ownerTickets ${JSON.stringify(jsonOwners)}`);
+    }
+  }
+}
+
+/** Orchestrate the FND-003 threat-model + control-ownership contract. */
+async function validateThreatModel(root, errors) {
+  const md = await requireFile(root, THREAT_MODEL_MD, THREAT_MODEL_FRAGMENTS, errors);
+  const rawJson = await readOrError(root, THREAT_CONTROLS_JSON, errors);
+  const validTicketIds = await parseProgramTicketIds(root, errors);
+
+  let controls = null;
+  if (rawJson != null) {
+    try {
+      controls = JSON.parse(rawJson);
+    } catch (err) {
+      errors.push(`${THREAT_CONTROLS_JSON}: invalid JSON (${err.message})`);
+    }
+  }
+
+  let crossings = null;
+  if (controls != null) {
+    if (typeof controls.version !== "number") {
+      errors.push(`${THREAT_CONTROLS_JSON}: missing numeric "version"`);
+    }
+    if (!Array.isArray(controls.crossings)) {
+      errors.push(`${THREAT_CONTROLS_JSON}: missing array "crossings"`);
+    } else if (controls.crossings.length === 0) {
+      errors.push(`${THREAT_CONTROLS_JSON}: "crossings" array is empty`);
+    } else {
+      crossings = controls.crossings;
+    }
+  }
+
+  let jsonIds = null;
+  if (crossings != null) {
+    jsonIds = validateThreatCrossings(crossings, validTicketIds, errors);
+  }
+
+  if (md != null && crossings != null && jsonIds != null) {
+    validateThreatRegisterParity(md, crossings, jsonIds, errors);
+  }
+
+  // Residual-risk release exclusions.
+  if (md != null) {
+    const body = sectionBody(md, RESIDUAL_HEADING);
+    if (body == null) {
+      errors.push(`${THREAT_MODEL_MD}: missing section ${JSON.stringify(RESIDUAL_HEADING)}`);
+    } else {
+      for (const excl of RESIDUAL_EXCLUSIONS) {
+        if (!body.includes(excl)) {
+          errors.push(`${THREAT_MODEL_MD}: residual risks section must explicitly exclude ${JSON.stringify(excl)}`);
+        }
+      }
+    }
+  }
+}
+
 export async function runCheck(root) {
   const errors = [];
 
@@ -675,10 +990,16 @@ export async function runCheck(root) {
     if (!decisions.includes("distributed-execution-authority.md")) {
       errors.push(`${DECISIONS_MD}: missing reference to "distributed-execution-authority.md"`);
     }
+    if (!decisions.includes("distributed-execution-threat-model.md")) {
+      errors.push(`${DECISIONS_MD}: missing reference to "distributed-execution-threat-model.md"`);
+    }
   }
 
   // FND-002 authority contract (independent of the lifecycle JSON/Markdown).
   await validateAuthority(root, errors);
+
+  // FND-003 threat model + control ownership contract.
+  await validateThreatModel(root, errors);
 
   // JSON authority.
   if (rawJson != null) {
