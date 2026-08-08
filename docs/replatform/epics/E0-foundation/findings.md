@@ -33,4 +33,13 @@ New findings use IDs `E0-F001`, `E0-F002`, and so on, and retain their resolutio
   1. **Same-sentence negation smuggle** — `requireNegatedMention` (~`.mjs:521`) tests each sentence for *any* negation word, so an affirmative clause appended to a sentence that already carries a negation is missed (probe: `"No AoA database is a peer replica except the worker SQLite which is a peer replica."` passes). The *separate-sentence* affirmation the FND-002 mutation targets IS caught; this is only the same-sentence variant.
   2. **Added contradictory matrix row not rejected** — `validateAuthorityMatrix` (~`.mjs:559`) pins the 7 required rows but does not assert row *count*, so an *added* contradictory authority row passes (removed/drifted required rows ARE caught).
 - **Affected tickets:** FND-003 (threat-controls JSON + Markdown parity — reuses negation/row-pinning-style validation), FND-007 (crosswalk CM-*/CP-* row pinning), and any later ticket extending the negation/matrix scans.
-- **Disposition:** Open — non-blocking hardening. When FND-003/FND-007 add their own row/ID pinning and invariant scans, tighten these two patterns (per-clause negation scoping; assert exact row/ID set incl. count / reject unknown rows). Not required for E0 gate pass.
+- **Disposition:** Open — non-blocking hardening. When FND-003/FND-007 add their own row/ID pinning and invariant scans, tighten these two patterns (per-clause negation scoping; assert exact row/ID set incl. count / reject unknown rows). Not required for E0 gate pass. FND-003 applied item-2 exact-set parity for its threat register.
+
+## E0-F004 — Threat-controls parity fields not in required-field set (carry into FND-004)
+
+- **Severity:** Minor
+- **Blocks gate:** No.
+- **Discovered during:** FND-003 code-quality review (disposition `approved`).
+- **Evidence:** In `scripts/check-distributed-execution-foundation.mjs` at FND-003 revision `09651fb63`, the JSON crossing fields `threat`/`control`/`verification` are rendered into the Markdown register and value-compared in per-ID parity, but are NOT in `THREAT_CROSSING_REQUIRED_FIELDS`. Because each parity comparison is guarded by `typeof c.<field> === "string"`, **deleting** one of those fields from a JSON crossing yields zero errors (value-drift IS caught; only field-deletion escapes). All 30 crossings already carry these fields, so requiring them keeps the corpus green.
+- **Affected tickets:** FND-004 (next to extend the checker), FND-007 (extends fixtures/parity).
+- **Disposition:** Open — non-blocking. When FND-004 extends the checker, add `threat`/`control`/`verification` to the threat-crossing required-field set (and add a field-deletion mutation) so the parity claim is fully robust. Two smaller notes from the same review (a few mutations cascade rather than isolate; the trust-boundaries table is not parity-checked) are acceptable as-is and need no action.
