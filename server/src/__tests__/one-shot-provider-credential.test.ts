@@ -22,6 +22,8 @@ const resolveCliAuthTopologyMock = vi.hoisted(() => vi.fn(() => ({ trustBoundary
 const loadConfigMock = vi.hoisted(() =>
   vi.fn(() => ({ deploymentMode: "cloud_auth", deploymentExposure: "public" })),
 );
+const secretServiceMock = vi.hoisted(() => vi.fn());
+const resolveAdapterConfigForRuntimeMock = vi.hoisted(() => vi.fn());
 
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((a: unknown, b: unknown) => ({ _tag: "eq", a, b })),
@@ -45,6 +47,8 @@ vi.mock("../services/cli-auth-topology.js", () => ({
 }));
 
 vi.mock("../config.js", () => ({ loadConfig: loadConfigMock }));
+
+vi.mock("../services/secrets.js", () => ({ secretService: secretServiceMock }));
 
 import { resolveCompanyProviderCredential } from "../services/one-shot-provider-credential.js";
 import { ProviderUnavailableError } from "../services/provider-resolution.js";
@@ -80,6 +84,8 @@ describe("resolveCompanyProviderCredential (U13.0)", () => {
     buildResolveDepsMock.mockReturnValue({
       envVarForProvider: (provider: string) => ENV_VAR_FOR_PROVIDER[provider] ?? "ANTHROPIC_API_KEY",
     });
+    resolveAdapterConfigForRuntimeMock.mockResolvedValue({ env: { ANTHROPIC_API_KEY: "sk-legacy-co" } });
+    secretServiceMock.mockReturnValue({ resolveAdapterConfigForRuntime: resolveAdapterConfigForRuntimeMock });
   });
 
   it("maps cliTool 'claude' -> provider 'anthropic' and calls resolveProviderCredential with actorKind:crew, currentEnv:{}, companyId", async () => {
@@ -146,6 +152,35 @@ describe("resolveCompanyProviderCredential (U13.0)", () => {
 
     await expect(resolveCompanyProviderCredential(db, COMPANY_ID, { cliTool: "claude" })).rejects.toBe(
       thrown,
+    );
+  });
+
+  it("REGRESSION: binds resolveProviderCredential's Step-4 legacyResolveConfig to the company-key fallback (identity stub silently dropped the stored provider:<id> key on cloud)", async () => {
+    // The live symptom: a company with a `provider:anthropic` secret saw the
+    // readiness probe (and extraction/compaction) report "no provider key
+    // configured" because this one-shot path used buildResolveDeps' identity
+    // legacyResolveConfig stub — never reading the company key. It must bind the
+    // seam to secretService.resolveAdapterConfigForRuntime, exactly like the crew
+    // runner / org heartbeat run paths.
+    resolveProviderCredentialMock.mockResolvedValue({
+      source: "legacy",
+      envPatch: { ANTHROPIC_API_KEY: "sk-legacy-co" },
+    });
+    const db = fakeDb({ model: "claude-sonnet-4-6" });
+
+    await resolveCompanyProviderCredential(db, COMPANY_ID, { cliTool: "claude" });
+
+    // deps handed to resolveProviderCredential must carry a REAL legacyResolveConfig
+    // (buildResolveDeps' mock returns none — the identity stub), bound to the fallback.
+    const [, , deps] = resolveProviderCredentialMock.mock.calls[0];
+    expect(typeof deps.legacyResolveConfig).toBe("function");
+
+    await deps.legacyResolveConfig({ env: {} });
+    expect(resolveAdapterConfigForRuntimeMock).toHaveBeenCalledWith(
+      COMPANY_ID,
+      "claude_local",
+      { env: {} },
+      { consumerType: "agent", consumerId: COMPANY_ID, actorType: "agent", actorId: COMPANY_ID },
     );
   });
 

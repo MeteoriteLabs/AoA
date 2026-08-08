@@ -68,6 +68,13 @@ if (process.env.E2B_API_KEY) {
   values.set("E2B_API_KEY", process.env.E2B_API_KEY);
 }
 
+// E2B sandbox template alias (e.g. "aoa-base", pre-loaded with the claude/codex
+// CLIs — see e2b/README.md). Optional: platform-default-environment.ts falls back
+// to "base" (bare) when unset. Set it so sandboxed runs/probes start CLI-ready.
+if (process.env.E2B_TEMPLATE) {
+  values.set("E2B_TEMPLATE", process.env.E2B_TEMPLATE);
+}
+
 for (const [name, value] of values) {
   if (value.includes("\r") || value.includes("\n") || value.includes("\0")) {
     console.error(`${name} must be a single-line value`);

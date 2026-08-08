@@ -83,6 +83,7 @@ import { backfillFirstRunCompleted } from "./migrations/backfill-first-run-compl
 import { normalizeLegacyOnboardingState } from "./migrations/normalize-legacy-onboarding-state.js";
 import { backfillCrewTemplateOrigin } from "./services/internal-agent/aoa-agents/backfill-template-origin.js";
 import { backfillAllCompaniesIdentityMemory } from "./services/identity-backfill.js";
+import { backfillFounderGrants } from "./services/founder-grants-backfill.js";
 import { backfillCrewOriginKind } from "./services/internal-agent/aoa-agents/backfill-crew-origin-kind.js";
 import { reconcileAutonomyScale } from "./services/internal-agent/aoa-agents/reconcile-autonomy-scale.js";
 import { runProviderConnectionsBackfill } from "./services/provider-connections-backfill.js";
@@ -979,6 +980,21 @@ void backfillAllCompaniesIdentityMemory(db as any)
     }
   })
   .catch((err: unknown) => logger.warn({ err }, "company identity memory backfill failed"));
+
+// Idempotent backfill: reconcile every founder's fine-grained permission grants.
+// ensureRealOperator historically seeded a founder's role + owner membership
+// WITHOUT principal_permission_grants; on cloud_auth (canUser reads grants,
+// isInstanceAdmin is false) such founders — including every founder on an
+// instance flipped from `authenticated` → `cloud_auth` — get 403'd on every
+// canUser-gated route. Seeds the missing founder grants ON CONFLICT DO NOTHING;
+// second boot inserts 0 rows. Best-effort — never blocks startup.
+void backfillFounderGrants(db as any)
+  .then((res) => {
+    if (res.granted > 0) {
+      logger.info(res, "founder grants backfill complete");
+    }
+  })
+  .catch((err: unknown) => logger.warn({ err }, "founder grants backfill failed"));
 
 // WS0b — idempotent backfill: stamp firstRunCompletedAt=now() onto every
 // onboarding_progress row that is already SETUP_COMPLETE (currentState OR

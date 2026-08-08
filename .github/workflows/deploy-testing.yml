@@ -20,6 +20,21 @@ on:
         required: false
         default: false
         type: boolean
+      record_founder_grants:
+        description: One-time RBAC repair - seed missing principal_permission_grants for active-member founders (heals cloud_auth founders 403'd on Providers / actions before the permanent code fix ships)
+        required: false
+        default: false
+        type: boolean
+      cleanup_disk:
+        description: Emergency - free disk on the box BEFORE deploying (rm old pg_dump snapshots + prune unused Docker images/build-cache/stopped-containers + old releases; NEVER touches volumes/DB data)
+        required: false
+        default: false
+        type: boolean
+      e2b_template:
+        description: E2B sandbox template alias (e.g. "aoa-base", pre-loaded with the claude/codex CLIs). Empty = bare "base" (CLIs installed per-run). See e2b/README.md.
+        required: false
+        default: ""
+        type: string
 
 permissions: {}
 
@@ -99,6 +114,7 @@ jobs:
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
+          E2B_TEMPLATE: ${{ inputs.e2b_template }}
           AOA_DEPLOYMENT_MODE_OVERRIDE: ${{ inputs.deployment_mode }}
         run: |
           set -euo pipefail
@@ -186,6 +202,88 @@ jobs:
             *0188*) echo "OK: 0188 marker present";;
             *) echo "::error::0188 marker not recorded"; exit 1;;
           esac
+
+      - name: Free disk space on the box (emergency, before deploy)
+        if: ${{ inputs.cleanup_disk }}
+        run: |
+          set -euo pipefail
+          # The box filled up (Postgres PANIC "No space left on device" → DB crash-
+          # recovery loop → every auth/login write 500s). Free space WITHOUT ever
+          # touching Docker volumes or the Postgres data dir: remove the one-time
+          # pg_dump snapshots this workflow wrote, prune unused images + build cache
+          # + stopped containers (running aoa-db-1/aoa-server-1 and their volumes are
+          # never pruned), and drop all but the 5 newest release dirs. Runs BEFORE
+          # the deploy step, which then brings the containers up healthy on freed disk.
+          ssh_options=(
+            -p "$DEPLOY_PORT"
+            -i "$DEPLOY_KEY_PATH"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o PreferredAuthentications=publickey
+            -o PasswordAuthentication=no
+            -o KbdInteractiveAuthentication=no
+            -o ForwardAgent=no
+            -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$DEPLOY_KNOWN_HOSTS"
+          )
+          target="$DEPLOY_USER@$DEPLOY_HOST"
+          echo "=== disk BEFORE ==="
+          ssh "${ssh_options[@]}" "$target" "df -h / ; echo '--- top /opt/aoa users ---' ; du -sh $DEPLOY_ROOT/* 2>/dev/null | sort -h | tail -15 ; echo '--- docker df ---' ; docker system df || true"
+          echo "=== freeing space (volume-safe) ==="
+          ssh "${ssh_options[@]}" "$target" "rm -f $DEPLOY_ROOT/pre-0188-snapshot-*.sql 2>/dev/null || true"
+          ssh "${ssh_options[@]}" "$target" "docker container prune -f || true"
+          ssh "${ssh_options[@]}" "$target" "docker image prune -af || true"
+          ssh "${ssh_options[@]}" "$target" "docker builder prune -af || true"
+          ssh "${ssh_options[@]}" "$target" "ls -1dt $DEPLOY_ROOT/releases/*/ 2>/dev/null | tail -n +6 | xargs -r rm -rf || true"
+          echo "=== disk AFTER ==="
+          ssh "${ssh_options[@]}" "$target" "df -h /"
+
+      - name: Backfill founder permission grants (one-time RBAC repair)
+        if: ${{ inputs.record_founder_grants }}
+        run: |
+          set -euo pipefail
+          # Fast unblock for the founder-grants RBAC bug: on cloud_auth a founder
+          # is authorized entirely through principal_permission_grants, but
+          # ensureRealOperator historically seeded the founder role + membership
+          # WITHOUT the grants, so founders 403 on Providers / every action. This
+          # seeds the missing grants for founders WITH an active membership
+          # (idempotent, additive, ON CONFLICT DO NOTHING) so the live instance is
+          # healed immediately while the permanent code fix rides main's CI. The
+          # base64 SQL below decodes to:
+          #   INSERT INTO principal_permission_grants (company_id, principal_type,
+          #     principal_id, permission_key, scope, granted_by_user_id)
+          #   SELECT ur.company_id, 'user', ur.user_id, pk.key, NULL, ur.user_id
+          #   FROM user_roles ur
+          #   JOIN company_memberships cm ON cm.company_id = ur.company_id
+          #     AND cm.principal_type = 'user' AND cm.principal_id = ur.user_id
+          #     AND cm.status = 'active'
+          #   CROSS JOIN (VALUES ('agents:create'),('users:invite'),
+          #     ('users:manage_permissions'),('tasks:assign'),
+          #     ('tasks:assign_scope'),('joins:approve')) AS pk(key)
+          #   WHERE ur.role = 'founder'
+          #   ON CONFLICT (company_id, principal_type, principal_id, permission_key)
+          #     DO NOTHING;
+          ssh_options=(
+            -p "$DEPLOY_PORT"
+            -i "$DEPLOY_KEY_PATH"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o PreferredAuthentications=publickey
+            -o PasswordAuthentication=no
+            -o KbdInteractiveAuthentication=no
+            -o ForwardAgent=no
+            -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$DEPLOY_KNOWN_HOSTS"
+          )
+          target="$DEPLOY_USER@$DEPLOY_HOST"
+          echo "Seeding founder permission grants for active-member founders..."
+          printf '%s' 'SU5TRVJUIElOVE8gcHJpbmNpcGFsX3Blcm1pc3Npb25fZ3JhbnRzIChjb21wYW55X2lkLCBwcmluY2lwYWxfdHlwZSwgcHJpbmNpcGFsX2lkLCBwZXJtaXNzaW9uX2tleSwgc2NvcGUsIGdyYW50ZWRfYnlfdXNlcl9pZCkgU0VMRUNUIHVyLmNvbXBhbnlfaWQsICd1c2VyJywgdXIudXNlcl9pZCwgcGsua2V5LCBOVUxMLCB1ci51c2VyX2lkIEZST00gdXNlcl9yb2xlcyB1ciBKT0lOIGNvbXBhbnlfbWVtYmVyc2hpcHMgY20gT04gY20uY29tcGFueV9pZCA9IHVyLmNvbXBhbnlfaWQgQU5EIGNtLnByaW5jaXBhbF90eXBlID0gJ3VzZXInIEFORCBjbS5wcmluY2lwYWxfaWQgPSB1ci51c2VyX2lkIEFORCBjbS5zdGF0dXMgPSAnYWN0aXZlJyBDUk9TUyBKT0lOIChWQUxVRVMgKCdhZ2VudHM6Y3JlYXRlJyksKCd1c2VyczppbnZpdGUnKSwoJ3VzZXJzOm1hbmFnZV9wZXJtaXNzaW9ucycpLCgndGFza3M6YXNzaWduJyksKCd0YXNrczphc3NpZ25fc2NvcGUnKSwoJ2pvaW5zOmFwcHJvdmUnKSkgQVMgcGsoa2V5KSBXSEVSRSB1ci5yb2xlID0gJ2ZvdW5kZXInIE9OIENPTkZMSUNUIChjb21wYW55X2lkLCBwcmluY2lwYWxfdHlwZSwgcHJpbmNpcGFsX2lkLCBwZXJtaXNzaW9uX2tleSkgRE8gTk9USElORzs=' \
+            | base64 -d \
+            | ssh "${ssh_options[@]}" "$target" 'docker exec -i aoa-db-1 psql -U paperclip -d paperclip -v ON_ERROR_STOP=1'
+          echo "Verifying: number of founders now holding agents:create..."
+          count="$(ssh "${ssh_options[@]}" "$target" \
+            "docker exec -i aoa-db-1 psql -U paperclip -d paperclip -tAc \"SELECT count(*) FROM principal_permission_grants WHERE permission_key = 'agents:create';\"")"
+          echo "founders with agents:create grant: $count"
 
       - name: Upload and deploy tested revision
         env:

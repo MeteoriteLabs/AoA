@@ -61,6 +61,18 @@ x-aoa-env: &aoa-env
   GEMINI_API_KEY: ${GEMINI_API_KEY:-}
   GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
   CURSOR_API_KEY: ${CURSOR_API_KEY:-}
+  # E2B sandbox provider (cloud_auth execution isolation). REQUIRED on cloud_auth:
+  # resolvePlatformDefaultEnvironment returns null without E2B_API_KEY, so every
+  # sandboxed run (agents, readiness probes, discussion/file-import extraction,
+  # Commander compaction) fails with "No isolated sandbox environment is
+  # available." write-compose-env.mjs writes it to the runtime env-file, but a
+  # --env-file var only reaches the container when referenced here. Inert when
+  # empty (self-hosted / authenticated deployments). E2B_DOMAIN/E2B_TEMPLATE are
+  # optional (self-hosted E2B domain / sandbox template; default template "base").
+  E2B_API_KEY: ${E2B_API_KEY:-}
+  E2B_DOMAIN: ${E2B_DOMAIN:-}
+  E2B_TEMPLATE: ${E2B_TEMPLATE:-}
+  E2B_TIMEOUT_MS: ${E2B_TIMEOUT_MS:-}
   GITHUB_APP_ID: ${GITHUB_APP_ID:-}
   GITHUB_APP_SLUG: ${GITHUB_APP_SLUG:-}
   GITHUB_APP_CLIENT_ID: ${GITHUB_APP_CLIENT_ID:-}
