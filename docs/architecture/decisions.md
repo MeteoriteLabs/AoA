@@ -1914,3 +1914,15 @@ server-reserved `runtimeConfig` auto-start envelope.
 - **Self-hosted / local_trusted Commander is byte-identical** (host-direct spawn; D1 guard is a no-op; in-process approval gate). Commander does NOT use `ask_founder`/`ask_human` — the agent-only gate excludes the commander actor by construction; the non-blocking ⚡CONFIRM runtime-approval marker over the broker is Commander's sole human-in-the-loop path.
 
 **Key files/tests:** `mcp/broker-tool-context.ts`, `agent-auth-jwt.ts`, `services/internal-agent/commander-sandbox.ts`, `services/internal-agent/cli-mode.ts`, `services/unsandboxed-multitenant-guard.ts`, `services/cloud-environment-policy.ts`, `services/environment-run-orchestrator.ts`; `commander-broker-fail-closed.test.ts`, `commander-guard-extensibility.test.ts`, `org-crew-streaming-regression.test.ts`, `broker-stdio-parity.test.ts`, `commander-sandbox-env-allowlist.test.ts`, `commander-broker-parity.test.ts`. Deployment matrix + credential taxonomy: `docs/deploy/deployment-modes.md`; env var: `docs/deploy/environment-variables.md` (`AOA_COMMANDER_JWT_TTL_SECONDS`).
+
+## Decision #121 — Cloud control plane uses a fenced outbound worker protocol with distinct batch, browser-session, and service lifecycles (2026-08-08)
+
+**Status:** Locked for the re-platform program. Implementation is phased and default-off.
+
+AoA retains its product/domain model but moves hosted execution behind a separately deployable worker protocol. PostgreSQL remains authoritative for policy and execution state. Workers lease work outbound and may mutate the control plane only through an active attempt/lease fence. `batch`, `browser_session`, and `service` are distinct workload classes; a service is desired state plus reconciled instances, not an infinitely renewed batch job.
+
+The canonical lifecycle status sets, allowed transitions, cancellation behavior, and lease-loss rules are in [`distributed-execution-lifecycles.md`](distributed-execution-lifecycles.md) and its machine-readable peer `distributed-execution-lifecycles.json`.
+
+This decision extends Decision #117 by treating its target registry, route-by-credential policy, and provider seams as migration inputs to one authoritative placement and fenced worker protocol. Once FND-005 lands, it supersedes Decision #117 only where that decision permits `AOA_ALLOW_UNSANDBOXED_MULTITENANT` in `cloud_auth`: hosted startup must reject that escape hatch, and it is never a distributed fallback. It does not make the deferred gVisor pool implemented.
+
+Decision #120 remains authoritative for current Commander warm-E2B behavior until MIG-005 completes its shadow, drain, cutover, and rollback contract; this decision neither silently disables nor dual-runs that path. Decision #103 remains authoritative for plugins: `cloud_auth` executes no host-resident plugin worker unless a later locked decision supplies a separately isolated plugin-worker architecture and its release evidence.
