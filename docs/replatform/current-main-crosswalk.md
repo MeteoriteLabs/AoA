@@ -2,6 +2,8 @@
 
 **Observed current-main baseline:** `003492988269a91eadfadb352bff7f413fa61adb` (includes PR #320 Cloud Execution Isolation at `861134f6e5d8d95de2484a44fadc5818062b2049` and the subsequent explicit migration-0188 deployment marker flow)
 
+**Execution freeze:** This program executes against a **frozen main revision**. Before E0 begins, main is frozen and its exact SHA is recorded here (superseding the observed baseline above if main has advanced). Every gate, crosswalk-row closure, and ticket verifies against that pinned SHA fetched from `origin/main` — never a local checkout, which may lag origin and lack the characterized code. Advancing the frozen SHA is a Migration-Custodian decision recorded with its rationale, and it re-opens any crosswalk row whose characterized code changed.
+
 **Purpose:** Freeze the execution paths that exist before the distributed worker re-platform and assign every path an explicit bridge, cutover, disablement, drain, rollback, and evidence owner. This is an observed migration inventory, not a new architecture authority. Locked decisions and [`program-design.md`](program-design.md) remain controlling.
 
 ## Reading rule

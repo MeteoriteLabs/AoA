@@ -97,6 +97,19 @@ The program selects the following mechanism for v1: a device-authenticated **qua
 
 A stale fence is never accepted by the artifact-commit path. Reconnect first revalidates target status and generation, owner status, protocol compatibility, lease state, and workspace base. A folder grant is permission to read and stage declared content; it is not permission to keep writing directly to a live user folder after lease loss.
 
+## CAV-005 — Legacy tenant tables stay application-layer isolated; no retrofit in this program
+
+The re-platform introduces a non-owner database role and forced RLS **only on the new distributed job, worker, service, and lease tables** (E2 / TEN-001 through TEN-005). The existing product's tenant tables (~129 tables carrying `companyId`, e.g. issues, memory, discussions, agents) continue to rely on the current application-layer boundary — the ~557 `assertCompanyAccess` checks gated on `tenantIsolationEnforced()` — plus the shipped `company_secrets` RLS canary. Converting the entire legacy schema to a non-owner connection with forced RLS is **explicitly out of scope for this program.**
+
+This is an accepted product decision, not an unaddressed gap:
+
+- The distributed path this program builds is DB-enforced-isolated from the start.
+- The legacy product keeps its existing, reviewed application-layer isolation; this program adds no new legacy exposure and moves no legacy table onto a less-safe path.
+- The pervasive "new-path tenant tables" wording in E2 and the security invariants refers to exactly this boundary; E2 does not claim to make the existing product DB-enforced.
+- Accepted for the invite-only / bounded-tenant beta posture. A future full-fleet RLS retrofit of the legacy schema, if pursued, is a **separate initiative** with its own non-owner-role cutover, per-table policy, and adversarial evidence — neither a dependency nor a deliverable of this program.
+
+This caveat narrows the *scope of new DB-level enforcement*; it does not waive tenant isolation. The legacy boundary remains the reviewed `assertCompanyAccess` gate, and any change that would weaken it is a locked-decision matter, not a caveat.
+
 ## Review and change rule
 
 A caveat change that alters authority, placement, fencing, isolation, credential scope, or workspace promotion is a cross-epic architecture decision. It must be recorded through the decision process and reflected in affected plans, conformance vectors, QA matrices, and release evidence.
