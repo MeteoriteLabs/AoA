@@ -2,8 +2,8 @@
 
 **Status:** `backlog`
 **Depends on:** E3 and E4
-**Tickets:** DAT-001 through DAT-006
-**Exit gate:** immutable workspace staging, fenced object commit, patch conflict quarantine, lease-scoped secrets, redaction, and denied egress pass in D1.
+**Tickets:** DAT-001 through DAT-007
+**Exit gate:** immutable workspace staging, fenced object commit, patch conflict quarantine, lease-scoped secrets, redaction, denied egress, and the brokered internal tool surface (DAT-007) pass in D1.
 
 ## Mandatory planning brief
 

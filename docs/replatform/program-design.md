@@ -248,7 +248,7 @@ flowchart TD
   D1 --> E3["E3 D1-bound remainder: JOB-004..008/011..014"]
   P0 --> E3
   D1 --> E4["E4 remainder"]
-  E3 --> E5["E5 incl. DAT-006"]
+  E3 --> E5["E5 incl. DAT-006, DAT-007"]
   E4 --> E5
   E3 --> E6R["E6 remainder incl. DEP-008/009"]
   E4 --> E6R
@@ -301,7 +301,7 @@ A ticket is assignable only when it includes:
 
 ## Groomed backlog
 
-The backlog contains 94 implementation tickets. Sizes are planning estimates: **S** is up to one agent-day, **M** is up to three. Each ticket is independently reviewable. Code-level file lists, signatures, and red/green commands are produced in the implementation plan for that epic.
+The backlog contains 95 implementation tickets. Sizes are planning estimates: **S** is up to one agent-day, **M** is up to three. Each ticket is independently reviewable. Code-level file lists, signatures, and red/green commands are produced in the implementation plan for that epic.
 
 ### E0 — Program foundation
 
@@ -653,10 +653,10 @@ The backlog contains 94 implementation tickets. Sizes are planning estimates: **
 
 #### DAT-007 — Brokered internal tool surface over the worker path (M)
 
-- **Depends on:** DAT-004, JOB-002, CLI-002.
+- **Depends on:** DAT-004, JOB-002.
 - **Outcome:** Relocate #320's in-process brokered internal AoA tool surface (memory, tasks, goals, artifacts, `use_skill`, `ask_human`) so a remote-worker sandbox reaches it as a tenant-scoped control-plane API authenticated by the run-JWT, preserving the per-actor RBAC gate. Do not create a second tool registry, memory store, or task store; the control plane remains the sole executor of tool effects.
 - **Acceptance:** Tool serving enforces Decision #118/#119 visibility for the resolved actor kind (org/crew/Commander), scoped to the job's Organization and Company; the run-JWT audience binds the calling sandbox to its job/attempt/lease/fence; a stale, replaced, or wrong-tenant caller is denied without existence disclosure; the sandbox never receives database or memory-table access; `ask_human` routes through the PRT-007 `work_question` path; unknown tools fail closed. Self-hosted behavior is byte-identical.
-- **Test:** Per-actor RBAC visibility matrix (identity/company/domain tiers), cross-tenant and stale-fence denial, run-JWT audience mismatch, unknown-tool rejection, and a no-DB/no-memory-access assertion — against the fake provider and the D1 topology.
+- **Test:** Per-actor RBAC visibility matrix (identity/company/domain tiers), cross-tenant and stale-fence denial, run-JWT audience mismatch, unknown-tool rejection, and a no-DB/no-memory-access assertion — driven by a stub run-JWT-authenticated caller against the control-plane broker in the D0/D1 harness (no live sandbox required); CLI-002 later exercises it end-to-end. This ticket takes no dependency on E7.
 
 ### E6 — Deployment and distributed test harness
 
@@ -750,7 +750,7 @@ It unblocks JOB-004 through JOB-008, JOB-011 through JOB-014, and WRK-005 onward
 #### CLI-002 — Full workspace staging and adapter execution (M)
 
 - **Depends on:** CLI-001, DAT-002.
-- **Outcome:** Stage a declared snapshot and actor-authorized context bundle, install only approved runtime inputs, run one existing CLI adapter, and record exact adapter/tool/context versions. **v1 sandboxed-coding adapter scope is `claude_local` + `codex_local`** — the two adapters #320 fully wired (provider-key allowlist plus brokered MCP staging into the VM) and that W8 live-validates. `gemini_local` and `opencode_local` are a **tracked follow-up** to be admitted only once their in-VM MCP staging and model→provider mapping are proven against the real provider. Non-CLI adapters (`cursor`, `http`, `hermes_local`, `openclaw`, `process`) are **out of scope for the sandbox path by design** — they do not fit "run a CLI inside a per-run microVM" — and remain on the legacy/self-hosted execution route (see CM-007 for the parallel readiness-probe matrix).
+- **Outcome:** Stage a declared snapshot and actor-authorized context bundle, install only approved runtime inputs, run one existing CLI adapter, and record exact adapter/tool/context versions. **v1 sandboxed-coding adapter scope is `claude_local` + `codex_local`** — the two #320 fully wired (provider-key allowlist plus brokered MCP staged into the VM) and that W8 live-validates. Every registered adapter has an explicit disposition, grounded in the registry (`server/src/adapters/registry.ts` — 12 types) and the sandbox provider-key map (`sandbox-env-allowlist.ts`: anthropic/openai/gemini/xai/cursor), not the CLAUDE.md table (which omits several): **Follow-up** (local CLI with a #320-threaded sandbox provider key; admit once in-VM MCP staging + model→provider mapping are proven) — `gemini_local`, `opencode_local`, `cursor`, `grok_local`, `pi_local`. **Out of scope for the sandbox path in v1** (remain on the legacy/self-hosted route; fail closed under `cloud_auth`) — `acpx_local` and `openclaw` (local CLIs with no sandbox provider-key mapping), `cursor_cloud` (executes on the Cursor cloud service, not a local CLI in the VM), `openclaw_gateway` (gateway transport, not a CLI), and `hermes_local` (PAPERCLIP wire-protocol external-agent runtime). No adapter is left undispositioned. See CM-007 for the parallel readiness-probe matrix.
 - **Acceptance:** The agent sees the expected source, instructions, and memory-derived context allowed by Decisions #118/#119; the worker has no memory/database access; host paths are absent; unsupported files fail before execution. A coding adapter outside the v1 sandboxed scope fails closed with an attributable reason before execution — never a silent host fallback.
 - **Test:** Deterministic fake CLI modifies a known file inside E2B.
 

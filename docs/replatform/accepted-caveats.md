@@ -1,7 +1,7 @@
 # Accepted Re-platform Caveats
 
 **Status:** Approved program constraint
-**Applies to:** E3 through E11
+**Applies to:** E2 through E11 (CAV-005 governs E2; CAV-001–004 apply E3 onward)
 **Authority:** Subordinate to locked product decisions and [`program-design.md`](program-design.md)
 
 ## Purpose
