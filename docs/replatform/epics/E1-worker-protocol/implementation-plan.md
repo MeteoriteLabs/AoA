@@ -962,7 +962,7 @@ Define a strict base with `protocolVersion`, `eventId`, `organizationId`, `compa
 ```ts
 attempt_started: { sandboxId }
 log: { stream: "stdout" | "stderr" | "system", level: "debug" | "info" | "warn" | "error", message: string max 65536 }
-progress: { message: string max 2000, percent: number 0–100 nullable }
+progress: { message: string max 2000, percent: integer 0–100 nullable }  // integer, not float: the FND-004-locked eventDigest canonical subset (finite safe integers only) rejects floats, so a fractional percent would be undigestable / diverge between the two canonicalizers. Widening to a real number requires a Decision #121 change to the locked digest subset, not an E1-local edit.
 usage: { inputTokens, outputTokens, cachedInputTokens, runtimeMillis; all non-negative integers }
 artifact_prepared: { artifactId, kind: artifact-kind string }
 browser_observation: { artifactIds, url nullable max 4096, title nullable max 1000 }

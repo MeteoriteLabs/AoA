@@ -318,19 +318,11 @@ git commit -m "docs: lock distributed workload lifecycles"
 **Files:**
 - Modify: `scripts/check-distributed-execution-foundation.mjs`
 - Modify: `scripts/check-distributed-execution-foundation.test.mjs`
-- Create: `docs/replatform/epics/E0-foundation/tickets/FND-006-result.md`
-- Modify: `package.json`
-- Modify: `scripts/fetch-bundled-catalog.ts`
-- Modify: `scripts/fetch-bundled-connectors.ts`
-- Create: `scripts/check-bundled-snapshot-inputs.mjs`
-- Create: `scripts/check-bundled-snapshot-inputs.test.mjs`
-- Modify: `AGENTS.md`
-- Modify: `docs/replatform/artifact-policy.md`
-- Modify: `docs/replatform/templates/qa-result-template.md`
-- Modify: `docs/replatform/templates/handoff-template.md`
-- Modify: `docs/replatform/templates/ticket-result-template.md`
 - Create: `docs/architecture/distributed-execution-authority.md`
 - Modify: `docs/architecture/decisions.md` Decision #121
+- Create: `docs/replatform/epics/E0-foundation/tickets/FND-002-result.md`
+
+> The build-reproducibility file set (`package.json`, `scripts/fetch-bundled-catalog.ts`, `scripts/fetch-bundled-connectors.ts`, `scripts/check-bundled-snapshot-inputs.mjs`/`.test.mjs`, `AGENTS.md`, `artifact-policy.md`, and the three templates) is **owned and committed by FND-005 (Task 5, Step 8)** — not FND-002. Do not create or stage them here.
 
 **Interfaces:**
 - Consumes: lifecycle identity chain from Task 1 and current AoA/PostgreSQL/Git/object-storage behavior.
@@ -1190,7 +1182,7 @@ git commit -m "feat: gate distributed execution rollout"
 - Modify: `server/src/app.ts`
 - Modify: `server/src/index.ts`
 - Modify: `server/src/__tests__/cloud-plugin-execution.test.ts`
-- Modify: `server/src/__tests__/plugin-broker-cloud.integration.test.ts`
+- Modify: `server/src/__tests__/plugin-broker-cloud.integration.test.ts` — **datastore-backed integration test: requires embedded Postgres and is Linux-CI-authoritative. Windows skips it (Issue #114), so a local Windows run of this focused suite will show it skipped/failed. It is grouped into the FND-006/Task-9 focused hard-invariant gate, but its pass/fail verdict binds on Linux CI only.**
 - Create: `server/src/__tests__/cloud-plugin-process-composition.test.ts`
 - Modify: `scripts/check-distributed-execution-foundation.mjs`
 - Modify: `scripts/check-distributed-execution-foundation.test.mjs`
@@ -1449,7 +1441,7 @@ if ($dirtyAfterGate) { throw "E0 gate changed the worktree: $dirtyAfterGate" }
 Invoke-NativeGate 'final E0 tracked diff check' { git diff --exit-code }
 ```
 
-FND-005 makes root `pnpm build` deterministic and keeps it aligned with AGENTS/CI; `pnpm -r build` remains the direct same-revision package evidence. Both are required and both must leave the worktree byte-clean. Expected: all hard-invariant commands (distributed-foundation checks, D0 critical focused suites over E0-touched code, typecheck, both builds, whitespace/diff checks) exit 0 — these are never waivable. Do not pass E0 on focused evidence alone: the full `pnpm test:run` and `pnpm -r typecheck` still run.
+FND-005 makes root `pnpm build` deterministic and keeps it aligned with AGENTS/CI; `pnpm -r build` remains the direct same-revision package evidence. Both are required and both must leave the worktree byte-clean. Expected: all hard-invariant commands (distributed-foundation checks, D0 critical focused suites over E0-touched code, typecheck, both builds, whitespace/diff checks) exit 0 — these are never waivable. Do not pass E0 on focused evidence alone: the full `pnpm test:run` and `pnpm -r typecheck` still run. Note: the focused set above includes `plugin-broker-cloud.integration.test.ts`, which needs embedded Postgres and only runs on Linux CI (Windows skips it, Issue #114); run this gate in the Linux-CI environment so that test executes for real rather than skipping.
 
 Apply the **pre-existing-failure baseline** (defined in the FND-005 amendment above) to the full-suite result: compare the required-suite failure set against `docs/replatform/epics/E0-foundation/qa/pre-existing-failure-baseline.md`. A failure is waivable only if its test id is in the committed baseline AND it touches no file in the eight FND commits. Any failure that is new since the baseline SHA, or that lands in E0-touched code, is a regression — non-waivable, handoff `fail`, E0 stays `gate_review`. Record every observed waived failure against its baseline row and every non-waivable failure as a blocker in the QA record. The gate passes only when hard-invariants are green and the remaining failures are a proper subset of the baseline with zero E0-touched-file failures; the baseline never silently absorbs an unattributed new failure.
 
