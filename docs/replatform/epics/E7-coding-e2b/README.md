@@ -1,7 +1,7 @@
 # E7 — Coding/CLI on E2B
 
 **Status:** `backlog`
-**Depends on:** E3 through E6; CLI-006 additionally requires MIG-008 and `E10-REALTIME-FOUNDATION`
+**Depends on:** E3 through E6; CLI-006 additionally requires MIG-008 and `E10-REALTIME-FOUNDATION` (a cross-epic canary gate, not a cycle — MIG-008 depends on CLI-001/CLI-004, so the ticket graph stays acyclic: CLI-001/004 → MIG-008 → CLI-006)
 **Tickets:** CLI-001 through CLI-006
 **Exit gate:** one internal/staging canary Organization completes the full coding journey and the real-E2B D2 lane passes cancellation, artifact, and cleanup cases. This rehearsal does not replace the three-Organization D6 external-beta campaign.
 
