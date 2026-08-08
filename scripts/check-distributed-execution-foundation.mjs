@@ -1661,8 +1661,10 @@ function validateFixtureSemantics(rel, name, fixture, lifecycleStates, errors) {
   }
 }
 
-/** Orchestrate the FND-004 golden-journey + failure fixture corpus. */
-async function validateGoldenJourneys(root, errors) {
+/** Orchestrate the FND-004 golden-journey + failure fixture corpus. The
+ * optional `parity` (FND-007 legacy-parity authority) binds each fixture's
+ * source/principal fields to the frozen execution-source contract. */
+async function validateGoldenJourneys(root, errors, parity = null) {
   const schema = await loadAndValidateSchema(root, errors);
 
   // FND-001 lifecycle state union, for the terminalState cross-check.
@@ -1693,6 +1695,7 @@ async function validateGoldenJourneys(root, errors) {
     }
     if (schema) validateInstance(fixture, schema, schema, rel, errors);
     validateFixtureSemantics(rel, name, fixture, lifecycleStates, errors);
+    validateFixtureSourceParity(rel, fixture, parity, errors);
   }
 }
 
@@ -2014,6 +2017,435 @@ export async function checkEvidenceImmutability(baseRoot, candidateRoot) {
   return { errors };
 }
 
+// --- FND-007: execution-source freeze + legacy parity + current-main crosswalk ---
+//
+// This layer freezes, as machine-checkable authorities:
+//   (i)  the six current-main execution-source kinds and their legacy parity
+//        matrix in `distributed-execution-legacy-parity.json`: per kind, the
+//        required/forbidden source fields, opaque requester/executor principal
+//        kinds, the owning crosswalk `CM-*` rows, and a behavior (or a justified
+//        `not_applicable`) for every parity dimension. Only `task_run` requires
+//        `runId`/`issueId`; the other five forbid them. The exact six-kind set is
+//        count-pinned and unknown kinds/dimensions are rejected (E0-F003).
+//   (ii) the current-main crosswalk `current-main-crosswalk.md`: the CM
+//        (execution/lifecycle) and CP (cloud-plugin) tables are parsed as
+//        structured tables with contiguous unique row IDs (CM-001..CM-015,
+//        CP-001..CP-005 — exact set, count-pinned, unknown/extra rejected),
+//        explicit enumerated owner ticket IDs (ranges/prose invalid) that all
+//        exist in program-design.md, non-empty current-authority + disposition
+//        cells, per-CM-row shadow/drain/rollback + hard-negative evidence, and
+//        the CM-015 migration-0188 snapshot/marker seam with a per-clause-negated
+//        no-auto-bypass invariant (E0-F003 per-clause negation scoping).
+//  (iii) the fixture source/principal binding: each golden-journey fixture's
+//        source kind, requester/executor principal kinds, forbidden/required
+//        source fields, and Organization are validated against the authority.
+
+const LEGACY_PARITY_JSON = "docs/architecture/distributed-execution-legacy-parity.json";
+const CROSSWALK_MD = "docs/replatform/current-main-crosswalk.md";
+
+// The exact six execution-source kinds (count-pinned, reject unknown — E0-F003).
+const SOURCE_KINDS = [
+  "task_run",
+  "commander_turn",
+  "crew_run",
+  "one_shot",
+  "browser_request",
+  "service_reconcile",
+];
+
+// Every parity dimension each source kind must declare (behavior or justified
+// not_applicable). Exact set; an unknown dimension is rejected.
+const PARITY_DIMENSIONS = [
+  "checkout_assignment",
+  "capacity_claim_release_wakeup",
+  "product_runtime_approval",
+  "budget",
+  "audit",
+  "cost",
+  "output_run_summary",
+  "completion_cancel_retry",
+];
+
+// Opaque principal kinds (must stay aligned with the fixture schema's
+// Requester.type / Executor.type enums).
+const REQUESTER_PRINCIPAL_KINDS = new Set([
+  "founder", "team_lead", "team_member", "agent", "commander", "mcp_key", "system",
+]);
+const EXECUTOR_PRINCIPAL_KINDS = new Set([
+  "worker", "sandbox", "browser_worker", "service_instance",
+]);
+
+// Contiguous stable crosswalk row-ID sets (exact set + count — E0-F003 item 2).
+function contiguousIds(prefix, count) {
+  return Array.from({ length: count }, (_, i) => `${prefix}-${String(i + 1).padStart(3, "0")}`);
+}
+const EXPECTED_CM_IDS = contiguousIds("CM", 15);
+const EXPECTED_CP_IDS = contiguousIds("CP", 5);
+
+const CROSSWALK_CM_HEADING = "## Execution and lifecycle sinks";
+const CROSSWALK_CP_HEADING = "## Cloud plugin and host-extension sinks";
+const CROSSWALK_CM_HEADER = [
+  "Row ID", "Current sink", "Observed current authority and implementation",
+  "Target disposition", "Owning ticket IDs", "Required cutover and evidence",
+];
+const CROSSWALK_CP_HEADER = [
+  "Row ID", "Current sink family", "Observed current composition",
+  "Required disposition", "Owner and evidence",
+];
+
+// Migration (CM) rows carry the full shadow/drain/rollback contract; the plugin
+// (CP) rows are disable-not-migrate rows (block in cloud, preserve self-hosted)
+// per the crosswalk's own framing, so they are NOT required to carry cutover/
+// drain/rollback tokens — only enumerated owners + a hard-negative.
+const CM_EVIDENCE_TOKENS = ["shadow", "drain", "rollback"];
+const CROSSWALK_HARD_NEGATIVE_RE =
+  /\b(?:no|never|not|cannot|deny|denies|denial|denied|reject|rejects|fail|fails|zero|without|block|blocks|blocked)\b/i;
+
+// CM-015 is the post-PR #320 migration-0188 snapshot/`cloud_auth` flip-marker
+// seam; it must carry the marker write path + snapshot evidence + a no-auto-
+// bypass invariant.
+const CM_MIGRATION_MARKER_ROW = "CM-015";
+const CM_MIGRATION_MARKER_TOKENS = ["record_0188_marker", "snapshot", "marker"];
+
+/** A ticket-ID token appears once; also used to reject range syntax. */
+function cellTicketIds(cell) {
+  return cell.match(TICKET_ID_RE) || [];
+}
+
+/**
+ * True when a cell is a pure enumerated ticket-ID list (comma/"and" separated).
+ * A range (`JOB-010–JOB-014`, `JOB-010..JOB-014`, `… through …`) or free prose
+ * leaves a non-empty residue and is rejected — the crosswalk requires explicit
+ * enumerated IDs, never ranges or prose.
+ */
+function isEnumeratedTicketList(cell) {
+  const residue = cell
+    .replace(TICKET_ID_RE, " ")
+    .replace(/,/g, " ")
+    .replace(/\band\b/gi, " ")
+    .trim();
+  return residue === "";
+}
+
+/** Split a row's text into clauses for per-clause negation scoping (E0-F003). */
+function crosswalkClauses(text) {
+  return text.split(/[;.,|]/).map((c) => c.trim()).filter(Boolean);
+}
+
+/** Extract a section's first table restricted to a Row-ID-led table (CM/CP). */
+function extractCrosswalkTable(md, heading) {
+  const body = sectionBody(md, heading);
+  if (body == null) return null;
+  return extractTable(body);
+}
+
+/**
+ * Validate one crosswalk table (CM or CP) against its expected contiguous ID set
+ * and per-row field requirements. Returns the set of parsed row IDs.
+ */
+function validateCrosswalkTable(table, kind, expectedIds, header, validTicketIds, errors) {
+  const ids = [];
+  const idSet = new Set();
+  if (
+    table.header.length !== header.length ||
+    !header.every((h, i) => table.header[i] === h)
+  ) {
+    errors.push(`${CROSSWALK_MD}: ${kind} table header must be ${JSON.stringify(header)}, found ${JSON.stringify(table.header)}`);
+  }
+  const isCm = kind === "CM";
+  const ownerCol = isCm ? 4 : 4;
+  const authorityCol = 2;
+  const dispositionCol = 3;
+  const evidenceCol = isCm ? 5 : 4;
+
+  for (const cells of table.rows) {
+    const id = cells[0];
+    if (!/^(?:CM|CP)-\d{3}$/.test(id)) {
+      errors.push(`${CROSSWALK_MD}: ${kind} row has an unparseable Row ID ${JSON.stringify(id)}`);
+      continue;
+    }
+    if (idSet.has(id)) errors.push(`${CROSSWALK_MD}: duplicate ${kind} row ${id}`);
+    idSet.add(id);
+    ids.push(id);
+    if (!expectedIds.includes(id)) {
+      errors.push(`${CROSSWALK_MD}: unknown/extra ${kind} row ${id} (expected exactly ${expectedIds[0]}..${expectedIds[expectedIds.length - 1]})`);
+    }
+
+    // Non-empty current-authority + disposition cells.
+    if (!cells[authorityCol] || cells[authorityCol].trim() === "") {
+      errors.push(`${CROSSWALK_MD}: ${id} has an empty current-authority cell`);
+    }
+    if (!cells[dispositionCol] || cells[dispositionCol].trim() === "") {
+      errors.push(`${CROSSWALK_MD}: ${id} has an empty disposition cell`);
+    }
+
+    // Owner ticket IDs: at least one, all defined in program-design.
+    const ownerCell = cells[ownerCol] || "";
+    const ownerIds = cellTicketIds(ownerCell);
+    if (ownerIds.length === 0) {
+      errors.push(`${CROSSWALK_MD}: ${id} has no owner ticket ID`);
+    } else if (validTicketIds != null) {
+      for (const t of ownerIds) {
+        if (!validTicketIds.has(t)) {
+          errors.push(`${CROSSWALK_MD}: ${id} references unknown owner ticket "${t}" (not defined in ${PROGRAM_DESIGN_MD})`);
+        }
+      }
+    }
+    // CM owner cell is a pure enumerated ID list — ranges/prose invalid.
+    if (isCm && ownerCell.trim() !== "" && !isEnumeratedTicketList(ownerCell)) {
+      errors.push(`${CROSSWALK_MD}: ${id} owner cell ${JSON.stringify(ownerCell)} is not an enumerated ticket-ID list (ranges/prose are invalid)`);
+    }
+
+    const rowText = cells.join(" | ");
+    const evidence = cells[evidenceCol] || "";
+    if (isCm) {
+      // Migration rows carry the full shadow/drain/rollback + hard-negative contract.
+      for (const token of CM_EVIDENCE_TOKENS) {
+        if (!evidence.toLowerCase().includes(token)) {
+          errors.push(`${CROSSWALK_MD}: ${id} evidence is missing the "${token}" field`);
+        }
+      }
+      if (!CROSSWALK_HARD_NEGATIVE_RE.test(evidence)) {
+        errors.push(`${CROSSWALK_MD}: ${id} evidence carries no hard-negative`);
+      }
+      if (id === CM_MIGRATION_MARKER_ROW) {
+        for (const token of CM_MIGRATION_MARKER_TOKENS) {
+          if (!rowText.toLowerCase().includes(token.toLowerCase())) {
+            errors.push(`${CROSSWALK_MD}: ${id} is missing the migration-0188 snapshot/marker evidence "${token}"`);
+          }
+        }
+        // No-auto-bypass invariant: every clause mentioning auto-bypass must be
+        // negated in that same clause (per-clause negation scoping — E0-F003).
+        const bypassClauses = crosswalkClauses(rowText).filter((c) => /auto-?bypass/i.test(c));
+        if (bypassClauses.length === 0) {
+          errors.push(`${CROSSWALK_MD}: ${id} must state the migration-0188 gate never auto-bypasses`);
+        }
+        for (const clause of bypassClauses) {
+          if (!CROSSWALK_HARD_NEGATIVE_RE.test(clause)) {
+            errors.push(`${CROSSWALK_MD}: ${id} auto-bypass clause asserted without negation: ${JSON.stringify(clause)}`);
+          }
+        }
+      }
+    } else {
+      // CP disable rows: a hard-negative in the disposition or owner/evidence cell.
+      const cpText = `${cells[dispositionCol] || ""} ${evidence}`;
+      if (!CROSSWALK_HARD_NEGATIVE_RE.test(cpText)) {
+        errors.push(`${CROSSWALK_MD}: ${id} disposition/evidence carries no hard-negative`);
+      }
+    }
+  }
+
+  // Exact set + count parity (missing / extra / gap — E0-F003 item 2).
+  for (const want of expectedIds) {
+    if (!idSet.has(want)) errors.push(`${CROSSWALK_MD}: ${kind} table is missing required row ${want}`);
+  }
+  if (ids.length !== expectedIds.length) {
+    errors.push(`${CROSSWALK_MD}: ${kind} table must have exactly ${expectedIds.length} rows, found ${ids.length}`);
+  }
+  return idSet;
+}
+
+/** Parse + validate the current-main crosswalk. Returns the CM row-ID set. */
+async function validateCrosswalk(root, errors, validTicketIds) {
+  const md = await readOrError(root, CROSSWALK_MD, errors);
+  if (md == null) return null;
+  let cmIds = new Set();
+  const cmTable = extractCrosswalkTable(md, CROSSWALK_CM_HEADING);
+  if (!cmTable) {
+    errors.push(`${CROSSWALK_MD}: missing the execution/lifecycle (CM) sink table under ${JSON.stringify(CROSSWALK_CM_HEADING)}`);
+  } else {
+    cmIds = validateCrosswalkTable(cmTable, "CM", EXPECTED_CM_IDS, CROSSWALK_CM_HEADER, validTicketIds, errors);
+  }
+  const cpTable = extractCrosswalkTable(md, CROSSWALK_CP_HEADING);
+  if (!cpTable) {
+    errors.push(`${CROSSWALK_MD}: missing the cloud-plugin (CP) sink table under ${JSON.stringify(CROSSWALK_CP_HEADING)}`);
+  } else {
+    validateCrosswalkTable(cpTable, "CP", EXPECTED_CP_IDS, CROSSWALK_CP_HEADER, validTicketIds, errors);
+  }
+  return cmIds;
+}
+
+/**
+ * Parse + validate the legacy-parity authority. Returns { byKind, sentinels }
+ * (or null) for the fixture source/principal binding.
+ */
+async function validateLegacyParity(root, errors, crosswalkCmIds) {
+  const raw = await readOrError(root, LEGACY_PARITY_JSON, errors);
+  if (raw == null) return null;
+  let doc;
+  try {
+    doc = parseJsonStrict(raw);
+  } catch (err) {
+    errors.push(`${LEGACY_PARITY_JSON}: invalid JSON (${err.message})`);
+    return null;
+  }
+  if (typeof doc.version !== "number") {
+    errors.push(`${LEGACY_PARITY_JSON}: missing numeric "version"`);
+  }
+  if (!Array.isArray(doc.forbiddenOrganizationSentinels) || doc.forbiddenOrganizationSentinels.length === 0) {
+    errors.push(`${LEGACY_PARITY_JSON}: missing non-empty "forbiddenOrganizationSentinels" array`);
+  }
+  if (!Array.isArray(doc.sources)) {
+    errors.push(`${LEGACY_PARITY_JSON}: missing array "sources"`);
+    return null;
+  }
+
+  const byKind = new Map();
+  const seenKinds = new Set();
+  for (let idx = 0; idx < doc.sources.length; idx += 1) {
+    const s = doc.sources[idx];
+    if (s == null || typeof s !== "object" || Array.isArray(s)) {
+      errors.push(`${LEGACY_PARITY_JSON}: source at index ${idx} is not an object`);
+      continue;
+    }
+    const label = typeof s.kind === "string" && s.kind ? s.kind : `index ${idx}`;
+
+    if (typeof s.kind !== "string" || !SOURCE_KINDS.includes(s.kind)) {
+      errors.push(`${LEGACY_PARITY_JSON}: source ${label} has an unknown or missing source kind`);
+    } else {
+      if (seenKinds.has(s.kind)) errors.push(`${LEGACY_PARITY_JSON}: duplicate source kind "${s.kind}"`);
+      seenKinds.add(s.kind);
+      byKind.set(s.kind, s);
+    }
+
+    for (const f of ["requiredFields", "forbiddenFields", "requesterPrincipalKinds", "executorPrincipalKinds", "crosswalkRows"]) {
+      if (!Array.isArray(s[f])) {
+        errors.push(`${LEGACY_PARITY_JSON}: source ${label} field "${f}" must be an array`);
+      }
+    }
+
+    if (Array.isArray(s.requesterPrincipalKinds)) {
+      if (s.requesterPrincipalKinds.length === 0) {
+        errors.push(`${LEGACY_PARITY_JSON}: source ${label} "requesterPrincipalKinds" must be non-empty`);
+      }
+      for (const p of s.requesterPrincipalKinds) {
+        if (!REQUESTER_PRINCIPAL_KINDS.has(p)) {
+          errors.push(`${LEGACY_PARITY_JSON}: source ${label} requester principal kind ${JSON.stringify(p)} is unknown`);
+        }
+      }
+    }
+    if (Array.isArray(s.executorPrincipalKinds)) {
+      if (s.executorPrincipalKinds.length === 0) {
+        errors.push(`${LEGACY_PARITY_JSON}: source ${label} "executorPrincipalKinds" must be non-empty`);
+      }
+      for (const p of s.executorPrincipalKinds) {
+        if (!EXECUTOR_PRINCIPAL_KINDS.has(p)) {
+          errors.push(`${LEGACY_PARITY_JSON}: source ${label} executor principal kind ${JSON.stringify(p)} is unknown`);
+        }
+      }
+    }
+
+    // Only task_run carries run/issue identity; the other five forbid it.
+    const req = new Set(Array.isArray(s.requiredFields) ? s.requiredFields : []);
+    const forb = new Set(Array.isArray(s.forbiddenFields) ? s.forbiddenFields : []);
+    if (s.kind === "task_run") {
+      for (const f of ["runId", "issueId"]) {
+        if (!req.has(f)) errors.push(`${LEGACY_PARITY_JSON}: source task_run must require "${f}"`);
+        if (forb.has(f)) errors.push(`${LEGACY_PARITY_JSON}: source task_run must not forbid "${f}"`);
+      }
+    } else if (typeof s.kind === "string" && SOURCE_KINDS.includes(s.kind)) {
+      for (const f of ["runId", "issueId"]) {
+        if (!forb.has(f)) errors.push(`${LEGACY_PARITY_JSON}: source ${label} must forbid "${f}" (only task_run carries run/issue identity)`);
+        if (req.has(f)) errors.push(`${LEGACY_PARITY_JSON}: source ${label} must not require "${f}" (only task_run carries run/issue identity)`);
+      }
+    }
+
+    // Crosswalk-row references must exist in the crosswalk CM set (JSON<->MD drift).
+    if (Array.isArray(s.crosswalkRows) && crosswalkCmIds) {
+      for (const cm of s.crosswalkRows) {
+        if (typeof cm !== "string" || !crosswalkCmIds.has(cm)) {
+          errors.push(`${LEGACY_PARITY_JSON}: source ${label} references crosswalk row ${JSON.stringify(cm)} not present in ${CROSSWALK_MD}`);
+        }
+      }
+    }
+
+    // Every parity dimension present as a behavior string or justified not_applicable.
+    const parity = s.parity;
+    if (parity == null || typeof parity !== "object" || Array.isArray(parity)) {
+      errors.push(`${LEGACY_PARITY_JSON}: source ${label} is missing a "parity" object`);
+    } else {
+      for (const dim of PARITY_DIMENSIONS) {
+        if (!(dim in parity)) {
+          errors.push(`${LEGACY_PARITY_JSON}: source ${label} is missing parity dimension "${dim}"`);
+          continue;
+        }
+        const v = parity[dim];
+        if (typeof v === "string") {
+          if (v.trim() === "") {
+            errors.push(`${LEGACY_PARITY_JSON}: source ${label} parity dimension "${dim}" must be a non-empty behavior string`);
+          } else if (v.trim() === "not_applicable") {
+            errors.push(`${LEGACY_PARITY_JSON}: source ${label} parity dimension "${dim}" is a bare "not_applicable" without justification`);
+          }
+        } else if (v != null && typeof v === "object" && !Array.isArray(v)) {
+          if (v.status !== "not_applicable") {
+            errors.push(`${LEGACY_PARITY_JSON}: source ${label} parity dimension "${dim}" object must set status "not_applicable"`);
+          } else if (typeof v.justification !== "string" || v.justification.trim() === "") {
+            errors.push(`${LEGACY_PARITY_JSON}: source ${label} parity dimension "${dim}" is not_applicable without a non-empty justification`);
+          }
+        } else {
+          errors.push(`${LEGACY_PARITY_JSON}: source ${label} parity dimension "${dim}" must be a behavior string or a justified not_applicable object`);
+        }
+      }
+      for (const k of Object.keys(parity)) {
+        if (!PARITY_DIMENSIONS.includes(k)) {
+          errors.push(`${LEGACY_PARITY_JSON}: source ${label} has unknown parity dimension "${k}"`);
+        }
+      }
+    }
+  }
+
+  // Exact six-kind set (missing + count — reject unknown/extra, E0-F003).
+  for (const k of SOURCE_KINDS) {
+    if (!seenKinds.has(k)) errors.push(`${LEGACY_PARITY_JSON}: missing required source kind "${k}"`);
+  }
+  if (doc.sources.length !== SOURCE_KINDS.length) {
+    errors.push(`${LEGACY_PARITY_JSON}: expected exactly ${SOURCE_KINDS.length} source kinds, found ${doc.sources.length}`);
+  }
+
+  return {
+    byKind,
+    sentinels: new Set(Array.isArray(doc.forbiddenOrganizationSentinels) ? doc.forbiddenOrganizationSentinels : []),
+  };
+}
+
+/**
+ * Bind one fixture's source/principal fields to the legacy-parity authority:
+ * requester/executor principal kinds, forbidden/required source fields, and the
+ * sentinel-Organization block. The schema already enforces the source-kind
+ * discriminant; this is the authority-sourced second enforcement.
+ */
+function validateFixtureSourceParity(rel, fixture, parity, errors) {
+  if (!parity || !isPlainObject(fixture)) return;
+
+  // Sentinel-Organization admission (fail-open DEFAULT_ORGANIZATION_ID, TEN-006).
+  const org = fixture.organization;
+  const orgId = isPlainObject(org) ? org.id : undefined;
+  if (typeof orgId === "string" && parity.sentinels.has(orgId)) {
+    errors.push(`${rel}: sentinel Organization admission — organization.id ${JSON.stringify(orgId)} is a forbidden sentinel`);
+  }
+
+  const src = fixture.source;
+  const kind = isPlainObject(src) ? src.kind : undefined;
+  if (typeof kind !== "string") return;
+  const spec = parity.byKind.get(kind);
+  if (!spec) return; // unknown kind already flagged by the schema enum
+
+  const rk = isPlainObject(fixture.requester) ? fixture.requester.type : undefined;
+  const ek = isPlainObject(fixture.executor) ? fixture.executor.type : undefined;
+  if (typeof rk === "string" && Array.isArray(spec.requesterPrincipalKinds) && !spec.requesterPrincipalKinds.includes(rk)) {
+    errors.push(`${rel}: requester principal "${rk}" is not permitted for source kind "${kind}"`);
+  }
+  if (typeof ek === "string" && Array.isArray(spec.executorPrincipalKinds) && !spec.executorPrincipalKinds.includes(ek)) {
+    errors.push(`${rel}: executor principal "${ek}" is not permitted for source kind "${kind}"`);
+  }
+  for (const f of Array.isArray(spec.forbiddenFields) ? spec.forbiddenFields : []) {
+    if (f in src) errors.push(`${rel}: source kind "${kind}" must not carry forbidden field "${f}" (fabricated provenance)`);
+  }
+  for (const f of Array.isArray(spec.requiredFields) ? spec.requiredFields : []) {
+    if (!(f in src)) errors.push(`${rel}: source kind "${kind}" must carry required field "${f}"`);
+  }
+}
+
 export async function runCheck(root) {
   const errors = [];
 
@@ -2058,6 +2490,12 @@ export async function runCheck(root) {
     if (!decisions.includes("distributed-execution-delivery-policy.md")) {
       errors.push(`${DECISIONS_MD}: missing reference to "distributed-execution-delivery-policy.md"`);
     }
+    if (!decisions.includes("distributed-execution-legacy-parity.json")) {
+      errors.push(`${DECISIONS_MD}: missing reference to "distributed-execution-legacy-parity.json"`);
+    }
+    if (!decisions.includes("current-main-crosswalk.md")) {
+      errors.push(`${DECISIONS_MD}: missing reference to "current-main-crosswalk.md"`);
+    }
   }
 
   // FND-002 authority contract (independent of the lifecycle JSON/Markdown).
@@ -2066,8 +2504,14 @@ export async function runCheck(root) {
   // FND-003 threat model + control ownership contract.
   await validateThreatModel(root, errors);
 
-  // FND-004 golden-journey + failure fixture corpus.
-  await validateGoldenJourneys(root, errors);
+  // FND-007 current-main crosswalk + legacy-parity authority (before the
+  // fixtures, so their source/principal fields bind to the frozen contract).
+  const validTicketIds = await parseProgramTicketIds(root, errors);
+  const crosswalkCmIds = await validateCrosswalk(root, errors, validTicketIds);
+  const legacyParity = await validateLegacyParity(root, errors, crosswalkCmIds);
+
+  // FND-004 golden-journey + failure fixture corpus (+ FND-007 source binding).
+  await validateGoldenJourneys(root, errors, legacyParity);
 
   // FND-005 source-boundary + delivery-policy + evidence-integrity contracts.
   await validateAppSourceBoundary(root, errors);

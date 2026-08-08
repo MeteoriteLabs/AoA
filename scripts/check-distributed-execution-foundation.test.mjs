@@ -52,6 +52,9 @@ const REL = {
   ticketTemplate: "docs/replatform/templates/ticket-result-template.md",
   qaTemplate: "docs/replatform/templates/qa-result-template.md",
   handoffTemplate: "docs/replatform/templates/handoff-template.md",
+  // FND-007
+  legacyParity: "docs/architecture/distributed-execution-legacy-parity.json",
+  crosswalk: "docs/replatform/current-main-crosswalk.md",
 };
 
 function makeFixture(t, mutate) {
@@ -84,6 +87,9 @@ function makeFixture(t, mutate) {
     ticketTemplatePath: path.join(root, REL.ticketTemplate),
     qaTemplatePath: path.join(root, REL.qaTemplate),
     handoffTemplatePath: path.join(root, REL.handoffTemplate),
+    // FND-007
+    legacyParityPath: path.join(root, REL.legacyParity),
+    crosswalkPath: path.join(root, REL.crosswalk),
   };
   fs.copyFileSync(path.join(repoRoot, REL.json), files.jsonPath);
   fs.copyFileSync(path.join(repoRoot, REL.md), files.mdPath);
@@ -106,6 +112,9 @@ function makeFixture(t, mutate) {
   fs.copyFileSync(path.join(repoRoot, REL.ticketTemplate), files.ticketTemplatePath);
   fs.copyFileSync(path.join(repoRoot, REL.qaTemplate), files.qaTemplatePath);
   fs.copyFileSync(path.join(repoRoot, REL.handoffTemplate), files.handoffTemplatePath);
+  // FND-007: copy the legacy-parity authority + the current-main crosswalk.
+  fs.copyFileSync(path.join(repoRoot, REL.legacyParity), files.legacyParityPath);
+  fs.copyFileSync(path.join(repoRoot, REL.crosswalk), files.crosswalkPath);
   if (mutate) mutate(files);
   return root;
 }
@@ -1324,4 +1333,326 @@ test("evidence immutability: adding a higher attempt is permitted", async (t) =>
   const cand = makeEvidenceTree(t, { [QA_REL]: "campaign one\n", [QA_REL_A2]: "campaign two\n" });
   const { errors } = await checkEvidenceImmutability(base, cand);
   assert.deepEqual(errors, [], report(errors));
+});
+
+// --- FND-007: execution-source freeze + legacy parity + crosswalk corpus ------
+//
+// The two fabricated-provenance discriminant mutations required by the FND-007
+// corpus (a non-task_run source carrying runId, and a task_run missing runId)
+// are already exercised at the schema layer by the two FND-004 tests
+// "a task_run source missing runId fails the discriminant" and "a non-task_run
+// source carrying runId fails the discriminant"; the tests below add the
+// authority-sourced (legacy-parity) enforcement plus the crosswalk, parity,
+// principal, sentinel, ticket-ID, migration-marker, and Markdown/JSON-drift
+// mutations. The valid corpus (real repo + unmutated fixture copy) already
+// asserts zero errors above, now with legacy-parity.json + the crosswalk copied
+// into the fixture tree.
+
+function readLegacyParity(root) {
+  return JSON.parse(fs.readFileSync(path.join(root, REL.legacyParity), "utf8"));
+}
+function writeLegacyParity(root, obj) {
+  fs.writeFileSync(path.join(root, REL.legacyParity), JSON.stringify(obj, null, 2) + "\n", "utf8");
+}
+const SENTINEL_ORG = `org_${"0".repeat(26)}`;
+
+// -- legacy-parity authority --------------------------------------------------
+
+test("legacy-parity: missing file is named", async (t) => {
+  const root = makeFixture(t, ({ legacyParityPath }) => fs.rmSync(legacyParityPath));
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, `${REL.legacyParity}: missing`), report(errors));
+});
+
+test("legacy-parity: a missing parity dimension fails", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const j = readLegacyParity(r);
+    const task = j.sources.find((s) => s.kind === "task_run");
+    delete task.parity.budget;
+    writeLegacyParity(r, j);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, `source task_run is missing parity dimension "budget"`), report(errors));
+});
+
+test("legacy-parity: a bare unjustified not_applicable fails", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const j = readLegacyParity(r);
+    const task = j.sources.find((s) => s.kind === "task_run");
+    task.parity.audit = "not_applicable";
+    writeLegacyParity(r, j);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, `parity dimension "audit" is a bare "not_applicable" without justification`), report(errors));
+});
+
+test("legacy-parity: a not_applicable object without justification fails", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const j = readLegacyParity(r);
+    const commander = j.sources.find((s) => s.kind === "commander_turn");
+    commander.parity.checkout_assignment = { status: "not_applicable", justification: "  " };
+    writeLegacyParity(r, j);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, `parity dimension "checkout_assignment" is not_applicable without a non-empty justification`), report(errors));
+});
+
+test("legacy-parity: an unknown parity dimension fails", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const j = readLegacyParity(r);
+    const task = j.sources.find((s) => s.kind === "task_run");
+    task.parity.telepathy = "reads the founder's mind";
+    writeLegacyParity(r, j);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, `has unknown parity dimension "telepathy"`), report(errors));
+});
+
+test("legacy-parity: task_run dropping the runId requirement fails (fabricated task provenance)", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const j = readLegacyParity(r);
+    const task = j.sources.find((s) => s.kind === "task_run");
+    task.requiredFields = task.requiredFields.filter((f) => f !== "runId");
+    writeLegacyParity(r, j);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, `source task_run must require "runId"`), report(errors));
+});
+
+test("legacy-parity: a non-task_run requiring runId fails (fabricated task provenance)", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const j = readLegacyParity(r);
+    const commander = j.sources.find((s) => s.kind === "commander_turn");
+    commander.requiredFields = ["runId"];
+    writeLegacyParity(r, j);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, `source commander_turn must not require "runId" (only task_run carries run/issue identity)`), report(errors));
+});
+
+test("legacy-parity: an unknown source kind fails (exact-set)", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const j = readLegacyParity(r);
+    j.sources.find((s) => s.kind === "crew_run").kind = "bogus_kind";
+    writeLegacyParity(r, j);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "has an unknown or missing source kind"), report(errors));
+  assert.ok(hasError(errors, `missing required source kind "crew_run"`), report(errors));
+});
+
+test("legacy-parity: an extra 7th source fails the count pin (reject unknown)", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const j = readLegacyParity(r);
+    j.sources.push({ ...j.sources[0] });
+    writeLegacyParity(r, j);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "expected exactly 6 source kinds, found 7"), report(errors));
+});
+
+test("legacy-parity: an unknown executor principal kind fails", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const j = readLegacyParity(r);
+    const task = j.sources.find((s) => s.kind === "task_run");
+    task.executorPrincipalKinds = ["quantum_worker"];
+    writeLegacyParity(r, j);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, `executor principal kind "quantum_worker" is unknown`), report(errors));
+});
+
+test("legacy-parity/crosswalk drift: a source references a non-existent CM row", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const j = readLegacyParity(r);
+    const task = j.sources.find((s) => s.kind === "task_run");
+    task.crosswalkRows = ["CM-099"];
+    writeLegacyParity(r, j);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, `source task_run references crosswalk row "CM-099" not present in ${REL.crosswalk}`),
+    report(errors),
+  );
+});
+
+// -- current-main crosswalk ---------------------------------------------------
+
+test("crosswalk: removing a CM row fails the contiguous set", async (t) => {
+  const root = makeFixture(t, ({ crosswalkPath }) => {
+    const md = fs.readFileSync(crosswalkPath, "utf8");
+    const stripped = md.replace(/\n\| CM-010 \|[^\n]*\|/, "");
+    assert.notEqual(stripped, md, "mutation did not remove the CM-010 row");
+    fs.writeFileSync(crosswalkPath, stripped, "utf8");
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "CM table is missing required row CM-010"), report(errors));
+});
+
+test("crosswalk: removing a CP row fails the contiguous set", async (t) => {
+  const root = makeFixture(t, ({ crosswalkPath }) => {
+    const md = fs.readFileSync(crosswalkPath, "utf8");
+    const stripped = md.replace(/\n\| CP-003 \|[^\n]*\|/, "");
+    assert.notEqual(stripped, md, "mutation did not remove the CP-003 row");
+    fs.writeFileSync(crosswalkPath, stripped, "utf8");
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "CP table is missing required row CP-003"), report(errors));
+});
+
+test("crosswalk: an extra/unknown CM row is rejected (exact-set)", async (t) => {
+  const root = makeFixture(t, ({ crosswalkPath }) => {
+    const lines = fs.readFileSync(crosswalkPath, "utf8").split(/\r?\n/);
+    const idx = lines.findIndex((l) => /^\| CM-015 \|/.test(l));
+    assert.notEqual(idx, -1, "could not find the CM-015 row");
+    lines.splice(idx + 1, 0, "| CM-016 | extra | extra authority | extra disposition | JOB-001 | effect-free shadow; active-work drain; rollback; no fallback |");
+    fs.writeFileSync(crosswalkPath, lines.join("\n"), "utf8");
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "unknown/extra CM row CM-016"), report(errors));
+});
+
+test("crosswalk: a missing owner ticket ID fails", async (t) => {
+  const root = makeFixture(t, ({ crosswalkPath }) => {
+    patchText(crosswalkPath, "| DEP-003, MIG-002 |", "|  |");
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "CM-015 has no owner ticket ID"), report(errors));
+});
+
+test("crosswalk: an invented owner ticket (not in program-design) fails", async (t) => {
+  const root = makeFixture(t, ({ crosswalkPath }) => {
+    patchText(crosswalkPath, "| DEP-003, MIG-002 |", "| DEP-003, ZZZ-999 |");
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, `CM-015 references unknown owner ticket "ZZZ-999" (not defined in ${REL.programDesign})`),
+    report(errors),
+  );
+});
+
+test("crosswalk: a ticket-ID range (not enumerated) fails", async (t) => {
+  const root = makeFixture(t, ({ crosswalkPath }) => {
+    patchText(
+      crosswalkPath,
+      "JOB-010, JOB-011, JOB-012, JOB-013, JOB-014",
+      "JOB-010..JOB-014",
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "is not an enumerated ticket-ID list (ranges/prose are invalid)"), report(errors));
+});
+
+test("crosswalk: a CM row losing its rollback evidence field fails", async (t) => {
+  const root = makeFixture(t, ({ crosswalkPath }) => {
+    patchText(crosswalkPath, "rollback creates no second attempt", "creates no second attempt");
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, `CM-002 evidence is missing the "rollback" field`), report(errors));
+});
+
+test("crosswalk: removing the migration-0188 marker evidence fails (CM-015)", async (t) => {
+  const root = makeFixture(t, ({ crosswalkPath }) => {
+    patchText(crosswalkPath, "record_0188_marker", "record_marker");
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, `CM-015 is missing the migration-0188 snapshot/marker evidence "record_0188_marker"`),
+    report(errors),
+  );
+});
+
+test("crosswalk: an auto-bypassed migration-0188 gate fails the per-clause negation", async (t) => {
+  const root = makeFixture(t, ({ crosswalkPath }) => {
+    patchText(
+      crosswalkPath,
+      "never silently auto-bypasses the gate",
+      "silently auto-bypasses the gate",
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "CM-015 auto-bypass clause asserted without negation"), report(errors));
+});
+
+// -- fixture source/principal binding -----------------------------------------
+
+test("fixture: a requester principal not permitted for the source kind fails (identity mismatch)", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const fx = readFixture(r, "service-budget-stop.json");
+    fx.requester.type = "founder";
+    writeFixture(r, "service-budget-stop.json", fx);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, `requester principal "founder" is not permitted for source kind "service_reconcile"`),
+    report(errors),
+  );
+});
+
+test("fixture: an executor principal not permitted for the source kind fails (identity mismatch)", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const fx = readFixture(r, "batch-success.json");
+    fx.executor.type = "browser_worker";
+    writeFixture(r, "batch-success.json", fx);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, `executor principal "browser_worker" is not permitted for source kind "task_run"`),
+    report(errors),
+  );
+});
+
+test("fixture: a non-task_run carrying issueId fails the authority forbidden field (fabricated provenance)", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const fx = readFixture(r, "plaintext-secret-in-argv-rejected.json");
+    fx.source.issueId = `issue_${ULID26}`;
+    writeFixture(r, "plaintext-secret-in-argv-rejected.json", fx);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, `source kind "one_shot" must not carry forbidden field "issueId" (fabricated provenance)`),
+    report(errors),
+  );
+});
+
+test("fixture: admitting a sentinel Organization fails", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const fx = readFixture(r, "batch-success.json");
+    fx.organization.id = SENTINEL_ORG;
+    writeFixture(r, "batch-success.json", fx);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "sentinel Organization admission"), report(errors));
+});
+
+// -- Decision #121 back-references --------------------------------------------
+
+test("decisions: Decision #121 loses the legacy-parity back-reference", async (t) => {
+  const root = makeFixture(t, ({ decisionsPath }) => {
+    patchText(
+      decisionsPath,
+      "[`distributed-execution-legacy-parity.json`](distributed-execution-legacy-parity.json)",
+      "[`the legacy parity`](removed-by-mutation.json)",
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, `missing reference to "distributed-execution-legacy-parity.json"`),
+    report(errors),
+  );
+});
+
+test("decisions: Decision #121 loses the current-main crosswalk back-reference", async (t) => {
+  const root = makeFixture(t, ({ decisionsPath }) => {
+    patchText(
+      decisionsPath,
+      "[`../replatform/current-main-crosswalk.md`](../replatform/current-main-crosswalk.md)",
+      "[`the crosswalk`](removed-by-mutation.md)",
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, `missing reference to "current-main-crosswalk.md"`),
+    report(errors),
+  );
 });
