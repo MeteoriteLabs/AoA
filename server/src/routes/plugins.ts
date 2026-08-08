@@ -107,9 +107,12 @@ function cloudPluginDenialProxy<T extends object>(): T {
     {},
     {
       get() {
-        return () => {
-          throw new CloudPluginExecutionBlockedError();
-        };
+        // The real loader/lifecycle methods this backstops are async
+        // (Promise-returning), so reject asynchronously rather than throwing
+        // synchronously: this matches every awaited/`.catch()` call site and
+        // cannot leak a synchronous throw past a non-awaited caller. (E0-F009 —
+        // the FND-008 integration facade test correctly asserts async rejection.)
+        return () => Promise.reject(new CloudPluginExecutionBlockedError());
       },
     }
   ) as unknown as T;

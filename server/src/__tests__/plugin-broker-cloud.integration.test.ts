@@ -335,13 +335,17 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect(String(res.body.error.message)).toMatch(/blocked on AoA Cloud/i);
     });
 
-    it("the same tool called with a c2 JWT 404s (company-scoped getTool yields no tool owned by c2)", async () => {
+    it("the same tool called with a c2 JWT is cloud-blocked (403) before the company-scoped getTool 404 — tenant isolation preserved", async () => {
       assertSetupOk();
       const res = await callTool(c2, jwtC2, TOOL_NAME, { query: "auth" });
 
-      expect(res.status).toBe(404);
+      // FND-008: cloud plugin tool dispatch is blocked (403 / -32003) for every
+      // company BEFORE the company-scoped getTool lookup that would 404. This is
+      // strictly safer than the prior 404 — c2 is denied all plugin dispatch and
+      // the response discloses nothing about whether c1 owns the tool.
+      expect(res.status).toBe(403);
       expect(res.body.error).toBeDefined();
-      expect(res.body.error.code).toBe(-32004);
+      expect(res.body.error.code).toBe(-32003);
     });
 
     it("a board (non-agent) actor cannot call the plugin tool over the broker", async () => {
