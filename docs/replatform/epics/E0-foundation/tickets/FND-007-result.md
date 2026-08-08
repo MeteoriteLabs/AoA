@@ -1,6 +1,6 @@
 # FND-007 Result — Freeze Execution Sources and Legacy Parity
 
-**Status:** `gate_review`
+**Status:** `complete`
 **Date (UTC):** `2026-08-09`
 **Epic:** `E0-foundation`
 **Plan task:** `Task 7: FND-007 — Freeze Execution Sources and Legacy Parity`
@@ -89,12 +89,23 @@ None. (Consumers PRT-002/003/006/007, TEN-006, JOB-010..014, CLI-005, MIG-005/00
 
 ## Independent review
 
-**Reviewer:** `pending until first independent review`
-**Reviewed revision:** `pending until first independent review`
-**Disposition:** `pending`
-**Review evidence:** `pending until first independent review`
+**Reviewer:** FND-007 independent reviewer subagent (Claude)
+**Reviewed revision:** 419400291a0b3e96725b9fc1c5d386d3253fec4a
+**Disposition:** `approved`
+**Review evidence:**
 
-For `approved`, verify the result describes the reviewed revision, all focused acceptance evidence passes, and every accepted finding is resolved; then change the top-level `Status` to `complete` and commit this disposition separately. Otherwise leave `Status` as `gate_review` or set `blocked`, and link stable findings.
+Reviewed `git diff 188cd2a96f86a11622f1b2b4bc20d9d4946fe0b4 419400291a0b3e96725b9fc1c5d386d3253fec4a` (6 files: the new `distributed-execution-legacy-parity.json` authority, the crosswalk evidence-token surfacing, the Decision #121 links, the checker + test extensions, and this ledger). The only code is the `scripts/check-distributed-execution-foundation.mjs` extension; verified by reading + running on Windows, every exit code observed directly. HEAD confirmed `= 419400291…`.
+
+- **Focused commands — both green.**
+  - `pnpm check:distributed-foundation` (= `node scripts/check-distributed-execution-foundation.mjs`) → exit `0` (`distributed execution foundation: PASS`).
+  - `node --test scripts/check-distributed-execution-foundation.test.mjs` → exit `0` (tests 162, pass 162, fail 0; +26 FND-007 mutations over the 136 prior). Each new mutation fires its exact expected error: missing/extra/removed CM+CP rows (contiguous count-pin + exact-set), unknown source kind + 7th-source count pin, bare `not_applicable`, `not_applicable` object without justification, unknown parity dimension, `task_run`-only `runId`/`issueId` (both directions), unknown executor principal, JSON↔CM drift, missing/invented/range owner ticket, missing `rollback` evidence field, CM-015 `record_0188_marker` + per-clause auto-bypass negation, requester + executor identity mismatch, forbidden `issueId` on `one_shot`, sentinel Organization, and both Decision #121 back-references.
+- **Crosswalk structured-table parser — sound, not brittle to the real doc.** Reuses the FND-001/002/003 `sectionBody`/`extractTable`/`splitRow` spine. CM/CP headers, column indices (authority 2 / disposition 3 / owner 4 / evidence CM=5,CP=4), contiguous count-pinned ID sets (`CM-001..015`, `CP-001..005`), the enumerated-owner residue check (ranges/prose rejected on CM), the owner cross-reference against the shared `parseProgramTicketIds(program-design.md)` set (FND-003 parse, reused correctly — CP owners `FND-006`/`FND-008` resolve), per-CM `shadow`/`drain`/`rollback` + hard-negative, and the CM-015 per-clause `auto-bypass` negation all verified correct against the current file. A removed/added/renumbered CM/CP row is caught (missing-required + count-pin + exact-set), and the legitimate crosswalk passes clean.
+- **legacy-parity validator — no observed false-negative.** Enforces the exact six kinds + count pin, per-kind required/forbidden fields with the `task_run`-only `runId`/`issueId` rule (both directions), non-empty opaque requester/executor principal enums, JSON↔crosswalk CM-row existence binding, and every one of the eight parity dimensions present as a non-empty behavior string or a justified `not_applicable` object (bare token rejected; empty/whitespace justification rejected; unknown/duplicate dimension rejected). `parseJsonStrict` independently rejects duplicate keys and trailing content (probed directly), closing the malformed-JSON path.
+- **Migration-0188 no-auto-bypass invariant — robust.** The per-clause split on `[;.,|]` (pipes included, so a negation in a different cell cannot satisfy an affirmative clause) requires every `auto-bypass` clause to carry a negation in that same clause; adding an un-negated affirmative fails even when the negated invariant is still present. No false-positive on the real CM-015 row.
+- **Source/principal fixture binding — genuine.** Each of the nine golden-journey fixtures binds `source.kind` → per-kind principal allow-lists + forbidden/required source fields + the sentinel-Organization block; the fabricated-provenance (forbidden `issueId`), identity-mismatch (requester/executor), and sentinel-Org mutations genuinely fail. No fixture bytes changed (`git diff --stat -- tests/fixtures/distributed-execution` EMPTY); every `eventDigest` intact.
+- **Dependency-free held.** No new imports added to the checker; `git diff -- pnpm-lock.yaml` EMPTY. `git diff --check` clean (only benign LF/CRLF notices).
+
+No Critical or Important issues. Minor, non-blocking (recorded for the shared spine; no fix required for approval): (1) `ownerCol = isCm ? 4 : 4` is a redundant ternary (both branches 4); (2) `parseProgramTicketIds` reads `program-design.md` twice per run (`validateThreatModel` + `runCheck`) — a duplicate "missing" error if that file is ever absent; (3) `validateCrosswalkTable` does not assert per-row cell count == header length, so with the naive `splitRow` pipe split a future inline/escaped `|` inside a cell could silently misalign columns (shared-spine limitation; no impact today — the current tables carry no inline pipes); (4) the bare-`not_applicable` guard matches only the exact token, so authored prose like "not applicable"/"N/A" would pass as a behavior string; (5) `crosswalkRows` binding is existence-only — a source could cite a wrong-but-existing CM row and pass (semantic mapping unenforced, acceptable for a freeze); (6) the Decision #121 reference checks are whole-file substring presence rather than scoped to the #121 section, matching the pre-existing four references. All are consistent with the reviewed FND-001..006 spine and none weaken the freeze.
 
 ## Review attempt history
 
@@ -102,4 +113,5 @@ The implementation author leaves the table body empty; the explicit pending summ
 
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
-<!-- First independent reviewer appends attempt 1. -->
+| 1 | FND-007 independent reviewer subagent (Claude) | 419400291a0b3e96725b9fc1c5d386d3253fec4a | `approved` | `pnpm check:distributed-foundation` exit 0 (`PASS`) + `node --test scripts/check-distributed-execution-foundation.test.mjs` exit 0 (162/162; the 26 FND-007 mutations each fire their exact error). Crosswalk parser + legacy-parity validator + migration-0188 per-clause no-auto-bypass + fixture source/principal binding all verified sound; malformed inputs rejected, legitimate corpus passes. Dependency-free held (`pnpm-lock.yaml` unchanged); no fixture bytes changed. No Critical/Important; 6 Minor spine notes, non-blocking. |
+<!-- Later reviewers append attempt 2+ below without editing attempt 1. -->
