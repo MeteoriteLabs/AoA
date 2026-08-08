@@ -29,10 +29,11 @@ const REL = {
   json: "docs/architecture/distributed-execution-lifecycles.json",
   md: "docs/architecture/distributed-execution-lifecycles.md",
   decisions: "docs/architecture/decisions.md",
+  authority: "docs/architecture/distributed-execution-authority.md",
 };
 
 function makeFixture(t, mutate) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "fnd001-"));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "fnd00x-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const archDir = path.join(root, "docs", "architecture");
   fs.mkdirSync(archDir, { recursive: true });
@@ -41,10 +42,12 @@ function makeFixture(t, mutate) {
     jsonPath: path.join(root, REL.json),
     mdPath: path.join(root, REL.md),
     decisionsPath: path.join(root, REL.decisions),
+    authorityPath: path.join(root, REL.authority),
   };
   fs.copyFileSync(path.join(repoRoot, REL.json), files.jsonPath);
   fs.copyFileSync(path.join(repoRoot, REL.md), files.mdPath);
   fs.copyFileSync(path.join(repoRoot, REL.decisions), files.decisionsPath);
+  fs.copyFileSync(path.join(repoRoot, REL.authority), files.authorityPath);
   if (mutate) mutate(files);
   return root;
 }
@@ -211,4 +214,172 @@ test("missing required Markdown heading: '## Worked journeys' removed", async (t
   });
   const { errors } = await runCheck(root);
   assert.ok(hasError(errors, `missing heading "## Worked journeys"`), report(errors));
+});
+
+// --- FND-002: authority contract mutation corpus ----------------------------
+
+/** Replace the first occurrence of `find` in a text fixture file, asserting it changed. */
+function patchText(p, find, replace) {
+  const src = fs.readFileSync(p, "utf8");
+  const out = src.replace(find, replace);
+  assert.notEqual(out, src, `mutation did not change ${path.basename(p)} (find not present)`);
+  fs.writeFileSync(p, out, "utf8");
+}
+
+test("missing file: distributed-execution-authority.md removed", async (t) => {
+  const root = makeFixture(t, ({ authorityPath }) => fs.rmSync(authorityPath));
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, `${REL.authority}: missing`), report(errors));
+});
+
+test("authority: Decision #121 loses the authority-doc back-reference", async (t) => {
+  const root = makeFixture(t, ({ decisionsPath }) => {
+    patchText(
+      decisionsPath,
+      "[`distributed-execution-authority.md`](distributed-execution-authority.md)",
+      "[`the authority record`](removed-by-mutation.md)",
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, `${REL.decisions}: missing reference to "distributed-execution-authority.md"`),
+    report(errors),
+  );
+});
+
+test("authority mutation: a missing authority-matrix row fails", async (t) => {
+  const root = makeFixture(t, ({ authorityPath }) => {
+    patchText(
+      authorityPath,
+      "| Source history | Customer-declared Git remote/repository | Stage declared base; return patch or commit metadata |\n",
+      "",
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, `authority matrix is missing the required row for state "Source history"`),
+    report(errors),
+  );
+});
+
+test("authority mutation: a worker-database peer-replica claim fails", async (t) => {
+  const root = makeFixture(t, ({ authorityPath }) => {
+    // Keep the negated invariant (so the requireFile fragment still passes) and
+    // add an affirmative peer-replica claim — only the structured negation scan
+    // catches this, proving it is not mere substring presence.
+    patchText(
+      authorityPath,
+      "No AoA database is a peer replica. Desktop and cloud workers",
+      "No AoA database is a peer replica. The worker SQLite database is a peer replica of the control plane. Desktop and cloud workers",
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "peer-replica invariant"), report(errors));
+  assert.ok(hasError(errors, "asserted without negation"), report(errors));
+});
+
+test("authority mutation: a dual-writer cutover enum fails", async (t) => {
+  const root = makeFixture(t, ({ authorityPath }) => {
+    patchText(authorityPath, "ExecutionOwner = legacy | distributed", "ExecutionOwner = legacy & distributed");
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, `ExecutionOwner must be exactly "legacy | distributed"`), report(errors));
+});
+
+test("authority mutation: an ordinary stale commit to authoritative state fails", async (t) => {
+  const root = makeFixture(t, ({ authorityPath }) => {
+    patchText(
+      authorityPath,
+      "Expired or replaced attempts cannot update authoritative state.",
+      "Expired or replaced attempts may update authoritative state.",
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "must not update authoritative state"), report(errors));
+});
+
+test("authority mutation: auto-promoted quarantine output fails", async (t) => {
+  const root = makeFixture(t, ({ authorityPath }) => {
+    patchText(
+      authorityPath,
+      "It is never auto-applied or selected as the service recovery checkpoint.",
+      "It is auto-applied or selected as the service recovery checkpoint.",
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "must never be auto-applied"), report(errors));
+});
+
+// --- E0-F002 item 3: pin the previously unpinned checker branches ------------
+
+test("unreachable state: a state with no incoming edge is flagged", async (t) => {
+  const root = makeFixture(t, ({ jsonPath }) => {
+    const j = readJson(jsonPath);
+    j.lifecycles.job.states.push("island");
+    j.lifecycles.job.allowed.push({ from: "island", to: "succeeded" });
+    writeJson(jsonPath, j);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, `state "island" is unreachable`), report(errors));
+});
+
+test("non-terminal dead-end: a reachable state with no outgoing edge is flagged", async (t) => {
+  const root = makeFixture(t, ({ jsonPath }) => {
+    const j = readJson(jsonPath);
+    j.lifecycles.job.states.push("stuck");
+    j.lifecycles.job.allowed.push({ from: "queued", to: "stuck" });
+    writeJson(jsonPath, j);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, `non-terminal state "stuck" has no outgoing edge`), report(errors));
+});
+
+test("forbidden self-lifecycle edge: same-lifecycle from/to is not cross-lifecycle", async (t) => {
+  const root = makeFixture(t, ({ jsonPath }) => {
+    const j = readJson(jsonPath);
+    j.forbiddenCrossLifecycleEdges.push({ from: "job:queued", to: "job:succeeded", reason: "test" });
+    writeJson(jsonPath, j);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, `forbidden edge job:queued->job:succeeded is not cross-lifecycle`), report(errors));
+});
+
+test("forbidden edge references an unknown lifecycle", async (t) => {
+  const root = makeFixture(t, ({ jsonPath }) => {
+    const j = readJson(jsonPath);
+    j.forbiddenCrossLifecycleEdges.push({ from: "attempt:running", to: "bogus:whatever", reason: "test" });
+    writeJson(jsonPath, j);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, `forbidden edge "bogus:whatever" references unknown lifecycle`), report(errors));
+});
+
+test("reason-only guard drift: Markdown guard reason differs from JSON", async (t) => {
+  const root = makeFixture(t, ({ mdPath }) => {
+    patchText(
+      mdPath,
+      "`dead_letter` (`policy_exhausted`) |",
+      "`dead_letter` (`drifted_reason`) |",
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, `job edge running->dead_letter reason mismatch`), report(errors));
+});
+
+// --- E0-F002 item 2: malformed lifecycle referenced by a forbidden edge -------
+
+test("forbidden edge into a malformed lifecycle pushes a clean error (no TypeError)", async (t) => {
+  const root = makeFixture(t, ({ jsonPath }) => {
+    const j = readJson(jsonPath);
+    // `serviceInstance` is referenced by forbidden edges; drop its state set so
+    // the forbidden-edge check would `.includes` on undefined without the guard.
+    delete j.lifecycles.serviceInstance.states;
+    writeJson(jsonPath, j);
+  });
+  // runCheck must return a structured error rather than throwing.
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, `forbidden edge "serviceInstance:healthy" references lifecycle "serviceInstance" with a missing or malformed state set`),
+    report(errors),
+  );
 });

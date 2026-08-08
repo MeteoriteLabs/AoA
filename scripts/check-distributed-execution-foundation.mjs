@@ -22,6 +22,17 @@
  *   5. Confirms the required Markdown headings, workload-class tokens, and the
  *      Decision #121 record.
  *
+ * FND-002 extends it with the distributed-execution authority contract. This
+ * checker additionally:
+ *   6. Requires `docs/architecture/distributed-execution-authority.md` and its
+ *      Decision #121 back-reference.
+ *   7. Parses the authority matrix and validates every required authority row
+ *      (state -> authority -> worker behavior), the single-writer
+ *      `ExecutionOwner` cutover enum (exactly `legacy | distributed`), the
+ *      late/orphan-output stale-commit and no-auto-promote invariants, and the
+ *      "no peer replica" database invariant — as structured rules, never bare
+ *      substring presence.
+ *
  * String-fragment presence alone is never sufficient evidence for this
  * contract; the structured graph/table parity above is the real gate.
  *
@@ -37,11 +48,12 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 
 const LIFECYCLES_JSON = "docs/architecture/distributed-execution-lifecycles.json";
 const LIFECYCLES_MD = "docs/architecture/distributed-execution-lifecycles.md";
 const DECISIONS_MD = "docs/architecture/decisions.md";
+const AUTHORITY_MD = "docs/architecture/distributed-execution-authority.md";
 
 const REQUIRED_LIFECYCLES = [
   "job",
@@ -86,6 +98,67 @@ const DECISION_121_HEADING =
   "## Decision #121 — Cloud control plane uses a fenced outbound worker protocol";
 
 const FORBIDDEN_TABLE_HEADING = "## Forbidden cross-lifecycle transitions";
+
+// --- FND-002: distributed-execution authority contract -----------------------
+
+const AUTHORITY_REQUIRED_FRAGMENTS = [
+  "# Distributed Execution Authority and Synchronization",
+  "## Authority matrix",
+  "## Single-writer cutover",
+  "## Worker event synchronization",
+  "## Workspace and artifact synchronization",
+  "## Late and orphan output",
+  "No AoA database is a peer replica",
+];
+
+const AUTHORITY_MATRIX_HEADING = "## Authority matrix";
+const SINGLE_WRITER_HEADING = "## Single-writer cutover";
+const LATE_OUTPUT_HEADING = "## Late and orphan output";
+
+const AUTHORITY_MATRIX_HEADER = ["State", "Authority", "Worker behavior"];
+
+// Each authority row is validated verbatim (state -> authority -> worker
+// behavior). A missing or altered row is a structured failure, not a substring.
+const EXPECTED_AUTHORITY_ROWS = [
+  {
+    state: "Organizations, memberships, policy, jobs, leases, costs, audit",
+    authority: "Control-plane PostgreSQL",
+    worker: "Read through scoped envelopes/APIs; append events only",
+  },
+  {
+    state: "Memory items, visibility, retrieval audit, actor scope",
+    authority: "Control-plane PostgreSQL and memory services",
+    worker: "Consume an authorized immutable context input or scoped API; never query memory tables",
+  },
+  {
+    state: "Connector OAuth grants, refresh leases, token bundles",
+    authority: "Control-plane MCP OAuth broker",
+    worker: "Request a lease-scoped opaque handle; never receive refresh-token authority",
+  },
+  {
+    state: "Source history",
+    authority: "Customer-declared Git remote/repository",
+    worker: "Stage declared base; return patch or commit metadata",
+  },
+  {
+    state: "Snapshots, logs, traces, downloads, checkpoints, artifacts",
+    authority: "S3-compatible object storage",
+    worker: "Transfer through short-lived prefix-scoped grants",
+  },
+  {
+    state: "Unacknowledged worker events",
+    authority: "Encrypted worker SQLite outbox",
+    worker: "Retain until cumulative ACK",
+  },
+  {
+    state: "Sandbox filesystem",
+    authority: "Ephemeral cache",
+    worker: "Never authoritative after lease loss or sandbox termination",
+  },
+];
+
+// Words that negate a forbidden assertion in a single sentence.
+const NEGATION_RE = /\b(?:no|not|never|cannot|can\s?not)\b/i;
 
 /** Read a file; classify ENOENT as `missing`, everything else as `unreadable`. */
 async function readOrError(root, relPath, errors) {
@@ -338,6 +411,10 @@ function validateForbiddenEdges(authority, md, errors) {
       const [lc, state] = side.split(":");
       if (!lc || !state || !lifecycles[lc]) {
         errors.push(`${LIFECYCLES_JSON}: forbidden edge "${side}" references unknown lifecycle`);
+      } else if (!Array.isArray(lifecycles[lc].states)) {
+        // Present-but-malformed lifecycle (key exists, `states` missing/non-array):
+        // push a clean error instead of throwing a TypeError on `.includes`.
+        errors.push(`${LIFECYCLES_JSON}: forbidden edge "${side}" references lifecycle "${lc}" with a missing or malformed state set`);
       } else if (!lifecycles[lc].states.includes(state)) {
         errors.push(`${LIFECYCLES_JSON}: forbidden edge "${side}" references unknown state in lifecycle "${lc}"`);
       }
@@ -380,6 +457,186 @@ function validateForbiddenEdges(authority, md, errors) {
   }
 }
 
+/**
+ * Read a required file and confirm each literal fragment is present. Missing
+ * file → a single `missing` error (via readOrError); present-but-incomplete →
+ * one error per absent fragment. This is the presence gate; the structured
+ * authority validation below is the real semantic contract.
+ */
+async function requireFile(root, relPath, fragments, errors) {
+  const content = await readOrError(root, relPath, errors);
+  if (content == null) return null;
+  for (const fragment of fragments) {
+    if (!content.includes(fragment)) {
+      errors.push(`${relPath}: missing required fragment ${JSON.stringify(fragment)}`);
+    }
+  }
+  return content;
+}
+
+/**
+ * Extract the first Markdown table from a section body as
+ * { header: string[], rows: string[][] }. A table is a header line, a
+ * separator row, then data rows. Returns null when no table is present.
+ */
+function extractTable(body) {
+  if (body == null) return null;
+  const lines = body.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i += 1) {
+    if (!isTableLine(lines[i])) continue;
+    const header = splitRow(lines[i]);
+    const j = i + 1;
+    if (j < lines.length && isTableLine(lines[j]) && isSeparatorRow(splitRow(lines[j]))) {
+      const rows = [];
+      for (let k = j + 1; k < lines.length && isTableLine(lines[k]); k += 1) {
+        rows.push(splitRow(lines[k]));
+      }
+      return { header, rows };
+    }
+  }
+  return null;
+}
+
+/**
+ * Split prose into sentences, newline-first so Markdown table rows never merge
+ * with surrounding prose. Used by the negation-scanned invariants.
+ */
+function splitSentences(text) {
+  const out = [];
+  for (const line of text.split(/\r?\n/)) {
+    for (const piece of line.split(/(?<=[.!?])\s+/)) {
+      const t = piece.trim();
+      if (t) out.push(t);
+    }
+  }
+  return out;
+}
+
+/**
+ * Require that `needle` appears at least once and that every sentence mentioning
+ * it carries a negation. This is what makes the invariant structural: dropping
+ * the sentence fails (absence), and adding an affirmative claim fails (a mention
+ * without negation) even when the negated invariant is still present.
+ */
+function requireNegatedMention(text, needle, label, errors) {
+  const lowerNeedle = needle.toLowerCase();
+  const hits = splitSentences(text).filter((s) => s.toLowerCase().includes(lowerNeedle));
+  if (hits.length === 0) {
+    errors.push(`${AUTHORITY_MD}: ${label} (no sentence mentions ${JSON.stringify(needle)})`);
+    return;
+  }
+  for (const s of hits) {
+    if (!NEGATION_RE.test(s)) {
+      errors.push(`${AUTHORITY_MD}: ${label} (asserted without negation: ${JSON.stringify(s)})`);
+    }
+  }
+}
+
+/** Validate the authority matrix table row-by-row against the locked rows. */
+function validateAuthorityMatrix(md, errors) {
+  const body = sectionBody(md, AUTHORITY_MATRIX_HEADING);
+  if (body == null) {
+    errors.push(`${AUTHORITY_MD}: missing section ${JSON.stringify(AUTHORITY_MATRIX_HEADING)}`);
+    return;
+  }
+  const table = extractTable(body);
+  if (!table) {
+    errors.push(`${AUTHORITY_MD}: authority matrix section has no Markdown table`);
+    return;
+  }
+  if (
+    table.header.length !== AUTHORITY_MATRIX_HEADER.length ||
+    !AUTHORITY_MATRIX_HEADER.every((h, i) => table.header[i] === h)
+  ) {
+    errors.push(
+      `${AUTHORITY_MD}: authority matrix header must be ${JSON.stringify(AUTHORITY_MATRIX_HEADER)}, found ${JSON.stringify(table.header)}`,
+    );
+  }
+  const byState = new Map();
+  for (const cells of table.rows) {
+    if (cells.length === 3) byState.set(cells[0], { authority: cells[1], worker: cells[2] });
+  }
+  for (const row of EXPECTED_AUTHORITY_ROWS) {
+    const got = byState.get(row.state);
+    if (!got) {
+      errors.push(`${AUTHORITY_MD}: authority matrix is missing the required row for state ${JSON.stringify(row.state)}`);
+      continue;
+    }
+    if (got.authority !== row.authority) {
+      errors.push(
+        `${AUTHORITY_MD}: authority matrix row ${JSON.stringify(row.state)} must name authority ${JSON.stringify(row.authority)}, found ${JSON.stringify(got.authority)}`,
+      );
+    }
+    if (got.worker !== row.worker) {
+      errors.push(
+        `${AUTHORITY_MD}: authority matrix row ${JSON.stringify(row.state)} must state worker behavior ${JSON.stringify(row.worker)}, found ${JSON.stringify(got.worker)}`,
+      );
+    }
+  }
+}
+
+/** Validate the single-writer cutover: exactly one owner per run, atomic. */
+function validateSingleWriter(md, errors) {
+  const body = sectionBody(md, SINGLE_WRITER_HEADING);
+  if (body == null) {
+    errors.push(`${AUTHORITY_MD}: missing section ${JSON.stringify(SINGLE_WRITER_HEADING)}`);
+    return;
+  }
+  const m = /ExecutionOwner\s*=\s*([^`\n]+)/.exec(body);
+  if (!m) {
+    errors.push(`${AUTHORITY_MD}: single-writer cutover does not declare "ExecutionOwner = legacy | distributed"`);
+  } else {
+    const owners = new Set(m[1].split("|").map((s) => s.trim()).filter(Boolean));
+    const singleWriter = owners.size === 2 && owners.has("legacy") && owners.has("distributed");
+    if (!singleWriter) {
+      errors.push(
+        `${AUTHORITY_MD}: single-writer cutover ExecutionOwner must be exactly "legacy | distributed" (one owner per run), found ${JSON.stringify(m[1].trim())}`,
+      );
+    }
+  }
+  if (!body.includes("selected atomically")) {
+    errors.push(`${AUTHORITY_MD}: single-writer cutover is missing the atomic single-owner selection rule ("selected atomically")`);
+  }
+  if (!body.includes("never silently hands an active run to the other owner")) {
+    errors.push(`${AUTHORITY_MD}: single-writer cutover is missing the rollback rule ("never silently hands an active run to the other owner")`);
+  }
+}
+
+/** Validate the late/orphan-output quarantine: no stale commit, no auto-promote. */
+function validateLateOutput(md, errors) {
+  const body = sectionBody(md, LATE_OUTPUT_HEADING);
+  if (body == null) {
+    errors.push(`${AUTHORITY_MD}: missing section ${JSON.stringify(LATE_OUTPUT_HEADING)}`);
+    return;
+  }
+  requireNegatedMention(
+    body,
+    "authoritative state",
+    "late and orphan output: expired or replaced attempts must not update authoritative state",
+    errors,
+  );
+  requireNegatedMention(
+    body,
+    "auto-applied",
+    "late and orphan output: quarantined late output must never be auto-applied",
+    errors,
+  );
+  if (!body.includes("quarantine prefix")) {
+    errors.push(`${AUTHORITY_MD}: late and orphan output must route late results only to a "quarantine prefix"`);
+  }
+}
+
+/** Orchestrate the FND-002 authority contract validation. */
+async function validateAuthority(root, errors) {
+  const content = await requireFile(root, AUTHORITY_MD, AUTHORITY_REQUIRED_FRAGMENTS, errors);
+  if (content == null) return;
+  validateAuthorityMatrix(content, errors);
+  validateSingleWriter(content, errors);
+  validateLateOutput(content, errors);
+  // Doc-wide invariant: no AoA database is a peer replica.
+  requireNegatedMention(content, "peer replica", "peer-replica invariant: no AoA database is a peer replica", errors);
+}
+
 export async function runCheck(root) {
   const errors = [];
 
@@ -415,7 +672,13 @@ export async function runCheck(root) {
     if (!decisions.includes("distributed-execution-lifecycles.md")) {
       errors.push(`${DECISIONS_MD}: missing reference to "distributed-execution-lifecycles.md"`);
     }
+    if (!decisions.includes("distributed-execution-authority.md")) {
+      errors.push(`${DECISIONS_MD}: missing reference to "distributed-execution-authority.md"`);
+    }
   }
+
+  // FND-002 authority contract (independent of the lifecycle JSON/Markdown).
+  await validateAuthority(root, errors);
 
   // JSON authority.
   if (rawJson != null) {
@@ -513,11 +776,3 @@ if (invokedDirectly) {
     process.exit(1);
   });
 }
-
-// Exported for the node:test harness.
-export const __test = {
-  fileURLToPath,
-  LIFECYCLES_JSON,
-  LIFECYCLES_MD,
-  DECISIONS_MD,
-};
