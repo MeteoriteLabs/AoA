@@ -1,6 +1,6 @@
 # FND-005 Result — Rollout Policy, Hosted Safety, Custodians, and CI Gate
 
-**Status:** `gate_review`
+**Status:** `complete`
 **Date (UTC):** `2026-08-08`
 **Epic:** `E0-foundation`
 **Plan task:** `Task 5: FND-005 — Rollout Policy, Hosted Safety, Custodians, and CI Gate`
@@ -107,10 +107,22 @@ None required for FND-005. Note for the program: `release.yml` / `cross-platform
 
 ## Independent review
 
-**Reviewer:** `<pending until first independent review, then agent or human identity; must differ from implementer>`
-**Reviewed revision:** `<pending until first independent review, then 40-character git SHA>`
-**Disposition:** `pending`
-**Review evidence:** `<pending until first independent review, then review record, exact commands/exit codes, or finding links>`
+**Reviewer:** FND-005 independent reviewer subagent (Claude)
+**Reviewed revision:** 196d66403f6228e746c3145b2199dba8b4041b68
+**Disposition:** `approved`
+**Review evidence:**
+
+Reviewed `git diff 07ddfdb2179793818bc19073e444d10cfefed099 196d66403f6228e746c3145b2199dba8b4041b68` (21 files). Independent verification on Windows, all exit codes observed directly:
+
+- **Build reproducibility (network-free + reproducible — HIGH confidence).** `pnpm build` exit `0`; prebuild ran only `node scripts/check-bundled-snapshot-inputs.mjs` (`bundled snapshot inputs: PASS`), and the full build log contained **zero** `Fetching bundled` / `Wrote bundled` / CDN markers. After the build `git status --porcelain` was empty, `git diff --check` exit `0`, and both snapshot SHA-256 digests were byte-identical to baseline. `pnpm -r build` exit `0` with the same network-free + clean-tree result. `refresh:bundled-snapshots` is the ONLY script that fetches; there is no `pretest`/`postbuild` fetch hook. Confirmed nothing statically imports the snapshots (server does a runtime `import(stringPath)` in a try/catch returning `null`; UI fetches via `/api/marketplace`), so a fresh no-snapshot checkout still builds and the checker verifies manifest shape only.
+- `pnpm check:distributed-foundation` → `0` (`distributed execution foundation: PASS`).
+- `node --test scripts/check-distributed-execution-foundation.test.mjs` → `0` (129/129; incl. source-boundary, delivery-policy, evidence-integrity, bare-Start-SHA, and `checkEvidenceImmutability` modify/delete/rename/higher-attempt cases).
+- `node --test scripts/check-bundled-snapshot-inputs.test.mjs` → `0` (12/12; byte, digest, source, order, missing-field, unpinned, absent-file drift all covered).
+- Focused vitest (`distributed-execution-policy`, `distributed-execution-exclusions`, `config.test`, `unsandboxed-multitenant-guard`, exact file paths) → `46 passed | 2 skipped`; the 2 skips are the real-`createApp` 404 proofs, self-skipped under the documented drizzle `require(esm)` cycle (witnessed firsthand when a broad filter pulled unrelated app-importing suites into the same failure).
+- `git diff -- pnpm-lock.yaml` empty (no new dependency); checkers are stdlib-only (`node:fs`, `node:crypto`).
+- Config code sound: boolean parser throws on ambiguous values; rollout precedence is deployment → organization → workload; `assertHostedExecutionStartupSafe` hard-rejects both excluded surfaces in every mode, rejects the unsandboxed override only in `cloud_auth`, and leaves self-hosted untouched. The AoA env file is loaded into `process.env` before the startup assertion runs, so the override cannot be smuggled in via the env file. `server/src/app.ts` has zero reserved-module imports and zero reserved path registrations (source-boundary reality matches the checker).
+- Ratified deviations **E0-F005** (createApp-404 unit-import skip) and **E0-F006** (digest manifest instead of committed snapshot bytes) assessed **engineering-sound**: the drizzle `require(esm)` cycle genuinely blocks importing the real app under vitest (observed), and the reserved-route 404 is otherwise guaranteed by the source-boundary checker + `loadConfig` hard-reject; the snapshots were already gitignored and are never a static build input, so the network-free tracked-byte-clean build is achieved without committing 1.5 MB of volatile catalog data.
+- **No Critical or Important issues.** Minor/informational only: (1) `deploymentMode` on `DistributedExecutionRolloutInput` is carried but unread by `resolveDistributedExecutionRollout`; (2) the static source-boundary regexes are defense-in-depth (concatenated/template-literal specifiers would evade them, but the config-throw plus module non-existence are the real guarantee); (3) `checkEvidenceImmutability` is exported and unit-tested but consumed by the Task-9 two-root integration gate rather than the single-root `runCheck` (by design). None require a change.
 
 For `approved`, verify the result describes the reviewed revision, all focused acceptance evidence passes, and every accepted finding is resolved; then change the top-level `Status` to `complete` and commit this disposition separately. Otherwise leave `Status` as `gate_review` or set `blocked`, and link stable findings.
 
@@ -120,4 +132,5 @@ The implementation author leaves the table body empty; the explicit pending summ
 
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
+| 1 | FND-005 independent reviewer subagent (Claude) | 196d66403f6228e746c3145b2199dba8b4041b68 | `approved` | Both `pnpm build` and `pnpm -r build` exit 0, network-free (no CDN fetch markers), and leave a byte-identical tree (`git status` clean, `git diff --check` clean). Foundation checker PASS + 129/129 mutation corpus; 12/12 snapshot mutation corpus; 46 vitest passed + 2 documented createApp-404 skips; `pnpm-lock.yaml` byte-unchanged. No Critical/Important issues; ratified deviations E0-F005/E0-F006 assessed engineering-sound. |
 <!-- First independent reviewer appends attempt 1. -->
