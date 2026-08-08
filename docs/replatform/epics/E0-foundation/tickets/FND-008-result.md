@@ -1,6 +1,6 @@
 # FND-008 Result — Disable Cloud Plugin Runtime and Browser Surfaces
 
-**Status:** `gate_review`
+**Status:** `complete`
 **Date (UTC):** `2026-08-09`
 **Epic:** `E0-foundation`
 **Plan task:** `Task 8: FND-008 — Disable Cloud Plugin Runtime and Browser Surfaces`
@@ -127,15 +127,42 @@ None required for E0. Optional 1.1 hardening: mount the marketplace INSTALL rout
 
 ## Independent review
 
-**Reviewer:** `pending until first independent review`
-**Reviewed revision:** `pending until first independent review`
-**Disposition:** `pending`
-**Review evidence:** `pending until first independent review`
+**Reviewer:** FND-008 independent reviewer subagent (Claude)
+**Reviewed revision:** 0f04cc747c7054ba860de2401756430934f5c6c2
+**Disposition:** `approved`
+**Review evidence:**
 
-For `approved`, verify the result describes the reviewed revision, all focused acceptance evidence passes, and every accepted finding is resolved; then change the top-level `Status` to `complete` and commit this disposition separately. Otherwise leave `Status` as `gate_review` or set `blocked`, and link stable findings.
+Independent adversarial code-quality review of `git diff 271deab57..0f04cc747` (13 files). Reviewed revision = repo `HEAD` (`0f04cc747c7054ba860de2401756430934f5c6c2`); tree clean. Implementer role differs from reviewer role.
+
+Commands re-run independently on this Windows box:
+
+| Command | Exit | Result |
+|---|---:|---|
+| `node scripts/check-distributed-execution-foundation.mjs` | `0` | `distributed execution foundation: PASS` |
+| `node --test scripts/check-distributed-execution-foundation.test.mjs` | `0` | tests 169, pass 169, fail 0 — incl. all 7 FND-008 mutation cases (docs-path drift, 503-envelope field drop, MCP broker denial removal, ui-static gate removal, facade-export drop, router-unmount→404, 2nd `__pluginSubsystem` starter) verified failing on mutation |
+| `npx vitest run cloud-plugin-runtime-exclusions.test.ts` | `0` | 8/8 pass (MCP dispatch denial before `executeTool`; envelope; six-sink matrix; metadata-only listing) |
+| `npx vitest run plugin-ui-static-tenant-scope.test.ts cloud-external-adapter-execution.test.ts` | `1` | Windows COLLECTION failure on the pre-existing drizzle-orm `require(esm)` cycle (E0-F005); the cycle-triggering route/app imports are unchanged context lines — not a regression, Linux-CI-authoritative (ratified) |
+| `pnpm --filter @armyofagents/server typecheck` | `0` | `tsc --noEmit` clean — the `ReturnType<typeof pluginLoader>` / `PluginLifecycleManager` facade casts and every route call-site compile |
+
+Code-quality findings — no Critical, no Important.
+
+- **Denial-facade design (robust).** `cloudPluginDenialProxy` returns a throwing function on *every* property access; invocation (not access) throws, so no construction-time throw. `pluginRoutes` passes the facade as `lifecycleOverride` (arg 7), so `pluginLifecycleManager(...)` is never constructed; `registry = pluginRegistryService(db)` uses the real `db`. Verified every `lifecycle.*`/`loader.*` call site in `plugins.ts` (install 982/enable 1724-26/uninstall 1677/disable 1785/upgrade 1964-2006/config restartWorker 2150/rollback 2915-19/PUT settings 3076-3128) and `company-plugins.ts` (upgrade/approve/rollback/PATCH settings) is either behind an entry `rejectBlockedCloudExecution`/`isCloudPluginExecutionBlocked("loader")` gate or a `blockActivationInCloud` facade-throw caught by `respondIfCloudPluginBlocked` → canonical 503, with the facade call the first statement before any DB effect. No metadata-read path (GET list/detail/health/logs/dashboard) touches a facade — they use `db`/registry + `projectCloudPluginPolicyState`. `config` POST's `lifecycle.restartWorker` is guarded by `!isCloudPluginExecutionBlocked("worker-manager")` (false on cloud → never invoked).
+- **Cloud else-branch control flow (clean).** `app.ts` else-branch builds only the two facades + mounts the 3 routers with real `db`; no worker manager / event+stream bus / job store / scheduler / coordinator / tool dispatcher constructed; `__pluginSubsystem` and `__paperclipPluginToolDispatcher` remain assigned exactly once each in the off-cloud `if` branch (checker (i5) pins count===1; grep confirms comment mentions don't match the `\s*=` assignment regex). All three router signatures match the facade arg mapping.
+- **MCP denial ordering (correct).** `dispatchPluginToolCall` returns typed `forbidden` + `CLOUD_PLUGIN_BLOCK_MESSAGE` as the first statement after destructuring — before `readPluginDispatcher()`, `getTool`, `resolvePluginRunProjectId`, and any worker dispatch. `readPluginToolDefinitions` unchanged/metadata-only.
+- **Checker additions (sound).** Static rules are genuine (envelope error/code/docs via `extractFunctionBody`; broker `isCloudPluginExecutionBlocked()` call vs import token; ui-static `("ui-static")`+503; plugins.ts 503-stub + both facade exports; app.ts mount + single-assignment starter guard). All 7 mutations proven to fail; no false-negative path observed. Checker remains dependency-free.
+- **No silent catch-and-ignore.** Every `catch` either matches `CloudPluginExecutionBlockedError` → 503 or re-throws; comment cleanups accurate; no dead code introduced.
+
+Minor observations (non-blocking, not recorded as findings): (M1) on a migrated cloud instance, a company enable/disable settings route could, in the narrow pre-boot-reconciliation window where a row is still persisted `status:"ready"`, return 503 *after* persisting the `enabled=false` metadata write — outcome is safe (disabled, never enabled/run) and self-corrects at boot. (M2) the `enable`/PUT/PATCH routes use the `blockActivationInCloud` facade-throw + catch rather than a pure entry gate — functionally correct (503, no effect leak) but less uniform than the new uninstall/disable entry gates. (M3) `plugin-ui-static.ts:270-273` retains a stale "RW5a" comment (file out of this ticket's modification set; gate itself correct).
+
+Recorded deviation (ratified, not a defect): marketplace INSTALL router stays fail-closed 404 in cloud (deferred 503-stub to 1.1) — acknowledged per the spec-compliance verdict.
+
+Confidence: HIGH on both the denial-facade robustness and the cloud-mount control-flow correctness. Basis: static reading of the actual mount path; the unit-local suite (8/8) proving the MCP dispatch denial + envelope + sink matrix on Windows; the checker + 7 mutations locking the source boundary; clean typecheck confirming the facade types; and the Linux-CI-authoritative route-matrix / broker-flip integration files exercising the real `buildCloudPluginDenial{Loader,Lifecycle}` + `pluginRoutes` mount path. The residual — full HTTP route-matrix runtime behavior on cloud — is the ratified E0-F005 Linux-CI-authoritative split (controller runs it in a short-path embedded-PG worktree before Task 9); source-derived + typecheck-clean give high confidence it passes.
+
+Disposition: `approved`. No Critical/Important issues; all runnable focused commands pass. Status flipped to `complete`.
 
 ## Review attempt history
 
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
 <!-- First independent reviewer appends attempt 1. -->
+| 1 | FND-008 independent reviewer subagent (Claude) | `0f04cc747c7054ba860de2401756430934f5c6c2` | `approved` | Re-ran independently: checker PASS (exit 0); `check-*.test.mjs` 169/169 (7 FND-008 mutations proven); `cloud-plugin-runtime-exclusions.test.ts` 8/8; server typecheck clean (exit 0). The 2 route-importing unit files Windows-collection-fail on the pre-existing E0-F005 drizzle cycle (unchanged imports; Linux-CI-authoritative). Adversarial read confirmed: facade throw-on-every-method robust; every effectful `lifecycle.*`/`loader.*` call site gated-or-caught → canonical 503 before effect; metadata reads use real `db`/registry; MCP denial is the first statement pre-dispatch; cloud else-branch constructs no worker/bus/scheduler/dispatcher and leaves `__pluginSubsystem`/`__paperclipPluginToolDispatcher` unset (single off-cloud assignment). No Critical/Important. Minor (non-blocking): narrow boot-window 503-after-disable-persist (safe); enable/settings routes use facade-throw+catch vs entry gate; residual RW5a comment in out-of-scope `plugin-ui-static.ts`. Marketplace-install 404 acknowledged as ratified deviation. Status flipped to `complete`. |
