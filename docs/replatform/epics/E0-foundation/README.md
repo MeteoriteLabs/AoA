@@ -1,6 +1,6 @@
 # E0 — Program Foundation
 
-**Status:** `planning`
+**Status:** `complete`
 **Depends on:** approved [`program-design.md`](../../program-design.md)
 **Tickets:** FND-001 through FND-008
 **Implementation plan:** [`implementation-plan.md`](implementation-plan.md)

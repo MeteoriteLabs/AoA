@@ -2,7 +2,7 @@
 
 | Epic | Status | Depends on | Ticket range | Exit gate |
 |---|---|---|---|---|
-| [E0 Foundation](E0-foundation/) | `planning` | approved program design | FND-001–FND-008 | foundation checker, current-main crosswalk, cloud-plugin exclusion, focused config tests, repository verification |
+| [E0 Foundation](E0-foundation/) | `complete` | approved program design | FND-001–FND-008 | foundation checker, current-main crosswalk, cloud-plugin exclusion, focused config tests, repository verification |
 | [E1 Worker protocol](E1-worker-protocol/) | `planning` | E0 | PRT-001–PRT-007 | package contract, transport/control semantics, frozen conformance vectors, compatibility and boundary checks |
 | [E2 Tenant kernel](E2-tenant-kernel/) | `backlog` | E0 | TEN-001–TEN-006 | non-owner RLS, sentinel removal, and adversarial tenant suite |
 | [E3 Job control](E3-job-control/) | `backlog` | E1, E2; JOB-004–JOB-008 and JOB-011–JOB-014 require `E6-D1-FOUNDATION` | JOB-001–JOB-014 | authoritative hybrid placement, fenced distributed lifecycle, and bounded legacy-control parity |
