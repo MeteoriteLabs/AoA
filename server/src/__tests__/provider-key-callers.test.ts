@@ -122,7 +122,7 @@ function sourceFiles(dir = serverSrc, out: string[] = []): string[] {
 describe("repo-wide inventory of runtime config resolution", () => {
   const files = sourceFiles();
 
-  it("resolveAdapterConfigForRuntime is called from exactly the six known sites", () => {
+  it("resolveAdapterConfigForRuntime is called from exactly the seven known sites", () => {
     const found: Record<string, number> = {};
     for (const file of files) {
       const n = readFileSync(file, "utf8").split(CALL).length - 1;
@@ -139,6 +139,12 @@ describe("repo-wide inventory of runtime config resolution", () => {
       // former up-front base-config resolution was replaced by resolveEnvBindings
       // (agent env only) so the legacy company key no longer masks assignments.
       "services/internal-agent/aoa-agents/runner.ts": 1,
+      // Cloud one-shot CLIs (readiness probe / discussion+file-import extraction /
+      // Commander compaction): the legacyResolveConfig binding inside
+      // resolveCompanyProviderCredential, so those paths actually read the
+      // company `provider:<id>` key. Was the identity stub → a stored key
+      // resolved to a false "no provider key configured" on cloud_auth.
+      "services/one-shot-provider-credential.ts": 1,
       // The declaration itself, not a call — a call from here would recurse.
       "services/secrets.ts": 1,
     });
