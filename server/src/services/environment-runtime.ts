@@ -346,19 +346,37 @@ export async function resolveRuntimeProviderConfig(input: {
   heartbeatRunId?: string | null;
 }) {
   if (input.provider !== "e2b" || !input.runtimeProviderKeys) return input.config;
-  const resolvedApiKey = await input.runtimeProviderKeys.resolveCredential(
-    input.companyId,
-    "e2b",
-    input.config,
-    {
-      consumerType: "system",
-      consumerId: "runtime-provider-key:e2b",
-      actorType: "system",
-      configPath: "runtimeProviderKeys.e2b.default",
-      issueId: input.issueId ?? null,
-      heartbeatRunId: input.heartbeatRunId ?? null,
-    },
-  );
+  let resolvedApiKey: string;
+  try {
+    resolvedApiKey = await input.runtimeProviderKeys.resolveCredential(
+      input.companyId,
+      "e2b",
+      input.config,
+      {
+        consumerType: "system",
+        consumerId: "runtime-provider-key:e2b",
+        actorType: "system",
+        configPath: "runtimeProviderKeys.e2b.default",
+        issueId: input.issueId ?? null,
+        heartbeatRunId: input.heartbeatRunId ?? null,
+      },
+    );
+  } catch (err) {
+    // Platform-default E2B environments (and any e2b env with no configured
+    // default key) carry NO credentialSecretId/credentialRef, so resolveCredential
+    // hits the "default" branch and throws notFound (HTTP 404) when no
+    // runtime_provider_keys row exists. That is the DESIGNED case: the operator's
+    // env.E2B_API_KEY is the default key, which the E2B provider's resolveE2bApiKey
+    // reads from env at acquire time (platform-default-environment.ts:28-31). Return
+    // the config UNCHANGED so that env fallback fires. Only a MISSING default key
+    // (404) falls back — a bad credentialRef / inactive secret (badRequest 400) or a
+    // decrypt failure still throws loudly, and a real credentialSecretId env is
+    // unaffected (it never hits the default branch).
+    if (err && typeof err === "object" && (err as { status?: number }).status === 404) {
+      return input.config;
+    }
+    throw err;
+  }
   const config: Record<string, unknown> = { ...input.config, resolvedApiKey };
   delete config.apiKey;
   return config;

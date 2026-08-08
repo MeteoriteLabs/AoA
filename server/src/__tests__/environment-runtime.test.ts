@@ -3,6 +3,7 @@ import type { Environment, EnvironmentLease } from "@armyofagents/shared";
 import {
   buildEnvironmentLeaseContext,
   environmentRuntimeService,
+  resolveRuntimeProviderConfig,
 } from "../services/environment-runtime.js";
 
 const COMPANY = "00000000-0000-0000-0000-000000000001";
@@ -308,6 +309,56 @@ describe("environmentRuntimeService", () => {
       metadata: expect.not.objectContaining({ resolvedApiKey: expect.any(String) }),
     }));
     expect(JSON.stringify(acquireLease.mock.calls[0]?.[0]?.metadata)).not.toContain("sk-e2b");
+  });
+
+  it("resolveRuntimeProviderConfig falls back to env.E2B_API_KEY (config unchanged) when no default key row exists (notFound 404)", async () => {
+    // Platform-default E2B env carries no runtime_provider_keys row → resolveCredential
+    // throws notFound(404). The operator env.E2B_API_KEY is the intended default (read
+    // by the E2B provider from env at acquire), so the config is returned UNCHANGED
+    // (no resolvedApiKey), NOT thrown — otherwise every sandboxed run fails with
+    // "No default e2b provider key configured" (live cloud_auth regression).
+    const runtimeProviderKeys = {
+      resolveCredential: vi.fn(async () => {
+        throw Object.assign(new Error("No default e2b provider key configured."), { status: 404 });
+      }),
+    };
+    const config = { provider: "e2b", template: "base" };
+    const result = await resolveRuntimeProviderConfig({
+      companyId: COMPANY,
+      provider: "e2b",
+      config,
+      runtimeProviderKeys: runtimeProviderKeys as never,
+    });
+    expect(result).toEqual(config);
+    expect(result).not.toHaveProperty("resolvedApiKey");
+  });
+
+  it("resolveRuntimeProviderConfig still throws on a non-404 resolveCredential error (e.g. badRequest 400)", async () => {
+    const runtimeProviderKeys = {
+      resolveCredential: vi.fn(async () => {
+        throw Object.assign(new Error('Unsupported credentialRef "weird"'), { status: 400 });
+      }),
+    };
+    await expect(
+      resolveRuntimeProviderConfig({
+        companyId: COMPANY,
+        provider: "e2b",
+        config: { provider: "e2b", credentialRef: "weird" },
+        runtimeProviderKeys: runtimeProviderKeys as never,
+      }),
+    ).rejects.toThrow("Unsupported credentialRef");
+  });
+
+  it("resolveRuntimeProviderConfig injects resolvedApiKey (dropping apiKey) when a default key IS configured", async () => {
+    const runtimeProviderKeys = { resolveCredential: vi.fn(async () => "sk-real") };
+    const result = await resolveRuntimeProviderConfig({
+      companyId: COMPANY,
+      provider: "e2b",
+      config: { provider: "e2b", apiKey: "stale", template: "base" },
+      runtimeProviderKeys: runtimeProviderKeys as never,
+    });
+    expect(result).toMatchObject({ resolvedApiKey: "sk-real" });
+    expect(result).not.toHaveProperty("apiKey");
   });
 
   it("releases all active run leases through their owning provider drivers", async () => {
