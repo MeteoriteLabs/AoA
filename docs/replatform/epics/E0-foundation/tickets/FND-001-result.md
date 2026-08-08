@@ -1,6 +1,6 @@
 # FND-001 Result — Workload Lifecycle Contract
 
-**Status:** `gate_review`
+**Status:** `complete`
 **Date (UTC):** `2026-08-08`
 **Epic:** `E0-foundation`
 **Plan task:** `Task 1: FND-001 — Workload Lifecycle Contract`
@@ -74,10 +74,14 @@ None.
 
 ## Independent review
 
-**Reviewer:** `<pending until first independent review, then agent or human identity; must differ from implementer>`
-**Reviewed revision:** `<pending until first independent review, then 40-character git SHA>`
-**Disposition:** `pending`, `approved`, or `changes_requested`
-**Review evidence:** `<pending until first independent review, then review record, exact commands/exit codes, or finding links>`
+**Reviewer:** FND-001 independent reviewer subagent (Claude)
+**Reviewed revision:** 490049551ef57bc741ec4e0d51238bdb1ce96e69
+**Disposition:** approved
+**Review evidence:**
+- `pnpm check:distributed-foundation` → exit `0` (`distributed execution foundation: PASS`).
+- `node --test scripts/check-distributed-execution-foundation.test.mjs` → exit `0` (`tests 16 / pass 16 / fail 0`).
+- Adversarial code-quality review of the checker, mutation corpus, and both authority documents at the reviewed revision. Verified the structured validation is correct and fail-closed: bidirectional JSON↔Markdown parity catches both edge-presence and guard-reason drift in each direction; BFS reachability, terminal immutability (no outgoing edge from a terminal state), non-terminal dead-end detection, guarded-edge reason enforcement, and forbidden cross-lifecycle edge checks (real lifecycle/state refs + genuinely cross-machine) all hold. `--root` harness with `makeFixture`/`runCheck(root)` is cleanly reusable by later FND tickets; mutations assert exact path/cause, not trivial passes. Dependency-free constraint respected (`pnpm-lock.yaml` byte-unchanged).
+- No Critical or Important issues. Minor, non-blocking observations only: unused `__test` export and its sole-purpose `fileURLToPath` import are dead code; several validation branches are not yet mutation-pinned (reachability, non-terminal dead-end, forbidden self-lifecycle edge, forbidden unknown-lifecycle/state, reason-only drift); the Markdown prose `Statuses:`/terminal-immutability lines are not parity-checked against JSON `states`/`terminal` (within the documented edges+guard-reasons parity scope). These are left for the implementer's later-ticket extension and do not block approval.
 
 For `approved`, verify the result describes the reviewed revision, all focused acceptance evidence passes, and every accepted finding is resolved; then change the top-level `Status` to `complete` and commit this disposition separately. Otherwise leave `Status` as `gate_review` or set `blocked`, and link stable findings.
 
@@ -87,4 +91,5 @@ The implementation author leaves the table body empty; the explicit pending summ
 
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
-<!-- First independent reviewer appends attempt 1. -->
+| 1 | FND-001 independent reviewer subagent (Claude) | `490049551ef57bc741ec4e0d51238bdb1ce96e69` | `approved` | `pnpm check:distributed-foundation` exit `0` (PASS); `node --test scripts/check-distributed-execution-foundation.test.mjs` exit `0` (16/16 pass). Adversarial code-quality review confirmed bidirectional edge+reason parity, BFS reachability, terminal immutability, guarded-edge, and forbidden cross-lifecycle checks are correct and fail-closed. No Critical/Important issues; Minor non-blocking observations only (dead `__test` export/`fileURLToPath` import; unpinned validation branches; prose state-list not parity-checked). |
+<!-- Later reviewers append attempt 2+ below without rewriting attempt 1. -->
