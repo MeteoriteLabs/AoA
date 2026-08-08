@@ -90,7 +90,11 @@ This section is normative and replaces any narrower checker, lifecycle, trust-ta
 - Include two-replica/shared-admission configuration ownership, named protocol/migration/security custodians, and the `E6-D1-FOUNDATION` handoff.
 - Record a start SHA before Task 1. Integration diff/commit verification uses that SHA and the eight recorded ticket commits, never a commit-distance assumption.
 - QA names are `<date>-<lane>-<scope>-<sha12>-a<attempt>.md`; reruns always increment attempt and never overwrite evidence.
-- A hard-invariant or required repository failure keeps E0 in `gate_review`. A focused pass or “baseline issue” note cannot convert it to completion; this program has no baseline-failure waiver path.
+- A hard-invariant failure (any distributed-foundation check, focused test on E0-touched code, typecheck, or build) keeps E0 in `gate_review` and is never waivable. A focused pass alone still cannot convert E0 to completion — the full required repository suite must run.
+- **Pre-existing-failure baseline (makes the full-suite gate satisfiable without weakening the no-regression guarantee).** The repository suite (`pnpm test:run`, `pnpm -r typecheck`) may already have failures on `main` that are unrelated to E0. A blanket "every required repository failure blocks E0" rule is unsatisfiable whenever `main` is not perfectly green (known-flaky suites, `blocked_external` environment gaps, unrelated debt). Resolve this with an immutable, attributed baseline rather than an open-ended waiver:
+  - Before Task 1, capture the failing-test set at the frozen start SHA (see B2 / the recorded Start SHA) and commit it to `docs/replatform/epics/E0-foundation/qa/pre-existing-failure-baseline.md`. The baseline is authoritative only when captured in the **same environment the E0 integration gate runs in** — Linux CI (`pr.yml` lanes). A Windows-local capture is an advisory seed, never the authoritative baseline, because Windows skips integration/e2e/migration lanes (Issue #114) and carries platform-only skips. Each baseline row records: test id/file, failing suite/lane, the exact 40-char SHA it was observed at, a one-line cause, and an attribution (tracked issue id or `unattributed`). The file is immutable and append-only under the same `Supersedes` rule as QA/handoff records.
+  - At the E0 integration gate, a required repository failure is **waivable only if** its test id is present in the committed baseline AND the failing test does not touch any file E0 changed (the eight FND commits). A failure that is new since the baseline SHA, or that lands in E0-touched code, is a **regression**: non-waivable, keeps the handoff `fail` and E0 in `gate_review`.
+  - The gate decision is `pass` only when: every hard-invariant passes, and the set of required-suite failures is a subset of the baseline with zero E0-touched-file failures. If new non-E0 failures appear, they are added to a superseding baseline row with attribution before E0 can pass — the baseline never silently absorbs an unexplained new failure, and E0 never passes on focused evidence alone.
 - Split intentional catalog/connector refresh from root build. `pnpm build` must consume pinned checked-in inputs, perform no network fetch and leave tracked bytes unchanged; a hash-verified refresh command remains explicit. Update root scripts, AGENTS, and every required CI caller together. The D0 rollup runs both authoritative root `pnpm build` and same-revision `pnpm -r build`; neither silently substitutes for the other before that change lands.
 - Gate/evidence checking enforces the exact 40-character revision, named gate owner, stable requirement IDs, REQUIRED/HARD/INITIAL/OBSERVED values, D4/D6 frozen schedule and sample fields, ticket-result blob pins, append-only ticket review attempts, and immutable QA/handoff attempts with `Supersedes`.
 
@@ -1362,7 +1366,8 @@ git commit -m "fix: disable hosted plugin runtime surfaces"
 
 **Files:**
 - Read: all files changed by Tasks 1–8
-- Modify only if verification exposes a scoped defect
+- Read: `docs/replatform/epics/E0-foundation/qa/pre-existing-failure-baseline.md` (the committed baseline the full-suite gate waives against; captured on Linux CI at the frozen Start SHA per the FND-005 amendment)
+- Modify only if verification exposes a scoped defect (baseline updates use a superseding, attributed row — never silent absorption)
 
 **Interfaces:**
 - Consumes: FND-001 through FND-008 commits.
@@ -1444,7 +1449,9 @@ if ($dirtyAfterGate) { throw "E0 gate changed the worktree: $dirtyAfterGate" }
 Invoke-NativeGate 'final E0 tracked diff check' { git diff --exit-code }
 ```
 
-FND-005 makes root `pnpm build` deterministic and keeps it aligned with AGENTS/CI; `pnpm -r build` remains the direct same-revision package evidence. Both are required and both must leave the worktree byte-clean. Expected: all commands exit 0. Preserve and classify any pre-existing failure, but do not pass E0 on focused evidence alone. Any required repository failure keeps the handoff at `fail` and E0 in `gate_review`; there is no baseline-failure waiver.
+FND-005 makes root `pnpm build` deterministic and keeps it aligned with AGENTS/CI; `pnpm -r build` remains the direct same-revision package evidence. Both are required and both must leave the worktree byte-clean. Expected: all hard-invariant commands (distributed-foundation checks, D0 critical focused suites over E0-touched code, typecheck, both builds, whitespace/diff checks) exit 0 — these are never waivable. Do not pass E0 on focused evidence alone: the full `pnpm test:run` and `pnpm -r typecheck` still run.
+
+Apply the **pre-existing-failure baseline** (defined in the FND-005 amendment above) to the full-suite result: compare the required-suite failure set against `docs/replatform/epics/E0-foundation/qa/pre-existing-failure-baseline.md`. A failure is waivable only if its test id is in the committed baseline AND it touches no file in the eight FND commits. Any failure that is new since the baseline SHA, or that lands in E0-touched code, is a regression — non-waivable, handoff `fail`, E0 stays `gate_review`. Record every observed waived failure against its baseline row and every non-waivable failure as a blocker in the QA record. The gate passes only when hard-invariants are green and the remaining failures are a proper subset of the baseline with zero E0-touched-file failures; the baseline never silently absorbs an unattributed new failure.
 
 - [ ] **Step 3: Record E0 evidence**
 

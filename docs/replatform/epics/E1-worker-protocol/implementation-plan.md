@@ -94,6 +94,7 @@ Credential kind identifies who may authorize use; it never authorizes raw creden
 
 - Every event carries `eventDigest`, the lowercase SHA-256 of RFC 8785 canonical JSON for the complete immutable event object with `eventDigest` omitted. Export dependency-free `canonicalizeJsonV1`, `canonicalEventDigestInputV1`, and async `verifyWorkerEventDigestV1(event, sha256Fn)`; producer and receiver inject platform crypto to hash those exact UTF-8 bytes. RFC 8785 does not add Unicode normalization, so code-point content is preserved exactly.
 - A receiver rejects a supplied digest that does not match recomputation before persistence or idempotency handling. Retransmitted previously committed ID+recomputed-digest is idempotent; the same ID with a different recomputed digest is `hash_mismatch`; duplicate IDs inside one submitted batch are invalid.
+- **Cross-implementation digest equivalence (closes the two-canonicalizer seam).** RFC 8785 canonical JSON is implemented twice by hard necessity: the E0 checker `scripts/check-distributed-execution-foundation.mjs` (dependency-free Node, no package import) and this package's `canonical-json.ts` (zero-node-import runtime source). The FND-004 golden fixtures already carry committed `eventDigest` values computed by the E0 implementation. `events.test.ts` MUST load every expected event from `tests/fixtures/distributed-execution/*.json` and assert that this package's `canonicalEventDigestInputV1` + injected Node SHA-256 recomputes each fixture's exact committed `eventDigest`; a single mismatch fails the suite. This is a bidirectional cross-check, not two independent copies of the same vectors: the E0 checker owns the fixtures' bytes, and E1 proves byte-for-byte agreement against them. If the two implementations ever diverge on an edge case (lone surrogates, unsafe-integer boundary, duplicate semantic keys, `-0`), this test fails at PRT-004 rather than silently in production. It is a required PRT-004 acceptance item, not deferred to PRT-006's Ajv golden-journey pass.
 - Add exact event names `service_instance_started`, `service_health`, `service_checkpoint_prepared`, `service_checkpoint_restored`, `service_graceful_stop_observed`, `service_instance_stopped`, `service_instance_lost`, `service_provider_interrupted`, and `service_provider_resumed`. Each carries service ID, instance ID, generation, and delivery identity.
 - Generic attempt terminal payloads remain `succeeded|failed|cancelled|expired`; service `stopped|failed|lost` uses service-instance transition events.
 
@@ -900,6 +901,7 @@ git commit -m "feat: define worker job and lease envelopes"
 - Create: `packages/worker-protocol/src/canonical-json.test.ts`
 - Create: `packages/worker-protocol/src/events.ts`
 - Create: `packages/worker-protocol/src/events.test.ts`
+- Read (E0 fixtures, for cross-implementation digest equivalence): `tests/fixtures/distributed-execution/*.json`
 - Modify: `packages/worker-protocol/src/index.ts`
 
 **Interfaces:**
@@ -935,7 +937,7 @@ Assert:
 - safe additive fields survive parsing;
 - RFC 8785 canonical bytes are stable across object-key insertion order and the required number, escape, and Unicode cases;
 - the test SHA-256 of `canonicalEventDigestInputV1` equals `eventDigest`; changing identity, timestamp, type, payload, or extensions without recomputing fails receiver validation;
-- batch events must be strictly increasing and contiguous;
+- **cross-implementation equivalence with the E0 fixtures (amendment: closes the two-canonicalizer seam):** load every expected event carrying an `eventDigest` from each `tests/fixtures/distributed-execution/*.json` (resolve from the repo root, same pattern PRT-006 `golden-journeys.test.ts` uses to read `schema-v1.json`) and assert this package's `canonicalEventDigestInputV1` + injected Node SHA-256 recomputes each fixture's exact committed digest; any mismatch fails the suite. This proves the E0 checker's `.mjs` canonicalizer and this package's `.ts` canonicalizer agree byte-for-byte on the locked golden vectors (lone surrogates, unsafe-integer boundary, duplicate keys, `-0` are included by FND-004);
 - duplicate sequence/event ID inside one submitted batch fails; a retransmission of an already committed ID plus the same recomputed event digest is idempotent at the receiver;
 - a gap from 1 to 3 fails;
 - cumulative ACK requires `expectedNextSeq = acceptedThroughSeq + 1`;
@@ -1041,7 +1043,7 @@ pnpm --filter @armyofagents/worker-protocol build
 pnpm check:worker-protocol-boundary
 ```
 
-Create `docs/replatform/epics/E1-worker-protocol/tickets/PRT-004-result.md` with RFC 8785 vectors, digest recomputation/mutation, event-type coverage, sequence-gap, duplicate, ACK, additive, and forbidden-key evidence.
+Create `docs/replatform/epics/E1-worker-protocol/tickets/PRT-004-result.md` with RFC 8785 vectors, digest recomputation/mutation, event-type coverage, sequence-gap, duplicate, ACK, additive, forbidden-key, and E0-fixture cross-implementation digest-equivalence evidence (record the fixture count checked and confirm every committed `eventDigest` was reproduced byte-for-byte).
 
 ```powershell
 git add packages/worker-protocol/src docs/replatform/epics/E1-worker-protocol/tickets/PRT-004-result.md
