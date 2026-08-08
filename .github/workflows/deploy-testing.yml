@@ -30,6 +30,11 @@ on:
         required: false
         default: false
         type: boolean
+      e2b_template:
+        description: E2B sandbox template alias (e.g. "aoa-base", pre-loaded with the claude/codex CLIs). Empty = bare "base" (CLIs installed per-run). See e2b/README.md.
+        required: false
+        default: ""
+        type: string
 
 permissions: {}
 
@@ -109,6 +114,7 @@ jobs:
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
+          E2B_TEMPLATE: ${{ inputs.e2b_template }}
           AOA_DEPLOYMENT_MODE_OVERRIDE: ${{ inputs.deployment_mode }}
         run: |
           set -euo pipefail
