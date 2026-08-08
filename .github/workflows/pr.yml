@@ -108,6 +108,9 @@ jobs:
         with:
           node-version: 24
 
+      - name: Distributed execution foundation contracts
+        run: node scripts/check-distributed-execution-foundation.mjs
+
       - name: Validate Dockerfile deps stage
         run: |
           missing=0
@@ -459,11 +462,12 @@ jobs:
         run: pnpm build
 
       - name: Pin marketplace catalog fixture for stable e2e
-        # `pnpm build` ran prebuild → fetched the live CDN catalog, which
-        # evolves independently of this repo. Override with a frozen fixture
-        # so e2e assertions don't depend on whichever items are currently on
-        # the CDN. Server reads the snapshot lazily on first /api/marketplace
-        # request, so overwriting before `Run e2e tests` is sufficient.
+        # Authoritative `pnpm build` is network-free (FND-005): prebuild verifies
+        # the pinned checked-in snapshots instead of fetching the live CDN. Pin
+        # the frozen fixture so e2e assertions don't depend on whichever items are
+        # currently checked in. Server reads the snapshot lazily on first
+        # /api/marketplace request, so overwriting before `Run e2e tests` is
+        # sufficient.
         run: cp tests/e2e/fixtures/marketplace-catalog.json ui/src/aoa-marketplace-snapshot.json
 
       - name: Install Playwright

@@ -177,6 +177,16 @@ pnpm build
 
 If anything cannot be run, explicitly report what was not run and why.
 
+> **Authoritative build (FND-005 / Decision #121).** `pnpm build` is the
+> repository/CI build authority. It is **network-free**: `prebuild` verifies the
+> pinned checked-in snapshot inputs (`scripts/bundled-snapshots.manifest.json`)
+> via `node scripts/check-bundled-snapshot-inputs.mjs` instead of fetching the
+> live catalog/connector CDN, and it must leave tracked bytes unchanged. To
+> intentionally refresh the bundled marketplace/connector snapshots, run the
+> explicit `pnpm refresh:bundled-snapshots` (network) — it re-fetches and re-pins
+> the manifest together, and is never invoked by build or test. See
+> `docs/architecture/distributed-execution-delivery-policy.md`.
+
 > Docs-only PRs (every changed file under `docs/` or a root-level `*.md` like
 > README/CLAUDE/AGENTS) skip the heavy CI suite and pass via the `ci-required`
 > aggregator in ~1 min. Any `.github/**` file, any nested `*.md` (e.g. runtime

@@ -26,6 +26,7 @@ import {
   canonicalizeJson,
   computeEventDigest,
   parseJsonStrict,
+  checkEvidenceImmutability,
 } from "./check-distributed-execution-foundation.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -42,6 +43,13 @@ const REL = {
   programDesign: "docs/replatform/program-design.md",
   fixturesDir: GJ_DIR,
   schema: `${GJ_DIR}/schema-v1.json`,
+  // FND-005
+  app: "server/src/app.ts",
+  deliveryPolicy: "docs/architecture/distributed-execution-delivery-policy.md",
+  artifactPolicy: "docs/replatform/artifact-policy.md",
+  ticketTemplate: "docs/replatform/templates/ticket-result-template.md",
+  qaTemplate: "docs/replatform/templates/qa-result-template.md",
+  handoffTemplate: "docs/replatform/templates/handoff-template.md",
 };
 
 function makeFixture(t, mutate) {
@@ -50,6 +58,8 @@ function makeFixture(t, mutate) {
   const archDir = path.join(root, "docs", "architecture");
   fs.mkdirSync(archDir, { recursive: true });
   fs.mkdirSync(path.join(root, "docs", "replatform"), { recursive: true });
+  fs.mkdirSync(path.join(root, "docs", "replatform", "templates"), { recursive: true });
+  fs.mkdirSync(path.join(root, "server", "src"), { recursive: true });
   const files = {
     root,
     jsonPath: path.join(root, REL.json),
@@ -62,6 +72,13 @@ function makeFixture(t, mutate) {
     fixturesDir: path.join(root, REL.fixturesDir),
     schemaPath: path.join(root, REL.schema),
     fixturePath: (name) => path.join(root, REL.fixturesDir, name),
+    // FND-005
+    appPath: path.join(root, REL.app),
+    deliveryPolicyPath: path.join(root, REL.deliveryPolicy),
+    artifactPolicyPath: path.join(root, REL.artifactPolicy),
+    ticketTemplatePath: path.join(root, REL.ticketTemplate),
+    qaTemplatePath: path.join(root, REL.qaTemplate),
+    handoffTemplatePath: path.join(root, REL.handoffTemplate),
   };
   fs.copyFileSync(path.join(repoRoot, REL.json), files.jsonPath);
   fs.copyFileSync(path.join(repoRoot, REL.md), files.mdPath);
@@ -72,6 +89,13 @@ function makeFixture(t, mutate) {
   fs.copyFileSync(path.join(repoRoot, REL.programDesign), files.programDesignPath);
   // FND-004: copy the whole fixture corpus (schema-v1.json + 9 fixtures + README).
   fs.cpSync(path.join(repoRoot, REL.fixturesDir), files.fixturesDir, { recursive: true });
+  // FND-005: copy the app/route registry + delivery policy + artifact policy + templates.
+  fs.copyFileSync(path.join(repoRoot, REL.app), files.appPath);
+  fs.copyFileSync(path.join(repoRoot, REL.deliveryPolicy), files.deliveryPolicyPath);
+  fs.copyFileSync(path.join(repoRoot, REL.artifactPolicy), files.artifactPolicyPath);
+  fs.copyFileSync(path.join(repoRoot, REL.ticketTemplate), files.ticketTemplatePath);
+  fs.copyFileSync(path.join(repoRoot, REL.qaTemplate), files.qaTemplatePath);
+  fs.copyFileSync(path.join(repoRoot, REL.handoffTemplate), files.handoffTemplatePath);
   if (mutate) mutate(files);
   return root;
 }
@@ -1027,4 +1051,175 @@ test("digest: eventDigest is excluded from the digest input", () => {
 test("parseJsonStrict: rejects duplicate object keys", () => {
   assert.throws(() => parseJsonStrict('{"a":1,"a":2}'), /duplicate object key/);
   assert.deepEqual(parseJsonStrict('{"a":1,"b":2}'), { a: 1, b: 2 });
+});
+
+// --- FND-005: source-boundary + delivery-policy + evidence-integrity corpus ---
+
+test("app source-boundary: forbidden import of a reserved distributed module fails", async (t) => {
+  const root = makeFixture(t, ({ appPath }) => {
+    const src = fs.readFileSync(appPath, "utf8");
+    const out = `import { publicIngress } from "./services/distributed-execution-public-ingress.js";\n${src}`;
+    fs.writeFileSync(appPath, out, "utf8");
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, "forbidden import of a reserved distributed module"),
+    report(errors),
+  );
+});
+
+test("app source-boundary: registering a reserved distributed path prefix fails", async (t) => {
+  const root = makeFixture(t, ({ appPath }) => {
+    const src = fs.readFileSync(appPath, "utf8");
+    const out = `${src}\napi.use("/distributed-execution/public-services", (_req, res) => res.end());\n`;
+    fs.writeFileSync(appPath, out, "utf8");
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, "forbidden registration of a reserved distributed path"),
+    report(errors),
+  );
+});
+
+test("app source-boundary: a cloud-plugins reserved registration fails", async (t) => {
+  const root = makeFixture(t, ({ appPath }) => {
+    const src = fs.readFileSync(appPath, "utf8");
+    const out = `${src}\napi.use("/api/distributed-execution/cloud-plugins", (_req, res) => res.end());\n`;
+    fs.writeFileSync(appPath, out, "utf8");
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "cloud-plugins"), report(errors));
+});
+
+test("missing file: app.ts removed", async (t) => {
+  const root = makeFixture(t, ({ appPath }) => fs.rmSync(appPath));
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, `${REL.app}: missing`), report(errors));
+});
+
+test("delivery policy: missing file fails", async (t) => {
+  const root = makeFixture(t, ({ deliveryPolicyPath }) => fs.rmSync(deliveryPolicyPath));
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, `${REL.deliveryPolicy}: missing`), report(errors));
+});
+
+test("delivery policy: dropping a required custodian role fails", async (t) => {
+  const root = makeFixture(t, ({ deliveryPolicyPath }) => {
+    const src = fs.readFileSync(deliveryPolicyPath, "utf8");
+    const out = src.split("Protocol Custodian").join("Protocol Steward");
+    assert.notEqual(out, src, "mutation did not change the delivery policy");
+    fs.writeFileSync(deliveryPolicyPath, out, "utf8");
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, `missing required fragment "Protocol Custodian"`), report(errors));
+});
+
+test("decisions: Decision #121 loses the delivery-policy back-reference", async (t) => {
+  const root = makeFixture(t, ({ decisionsPath }) => {
+    patchText(
+      decisionsPath,
+      "[`distributed-execution-delivery-policy.md`](distributed-execution-delivery-policy.md)",
+      "[`the delivery policy`](removed-by-mutation.md)",
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, `missing reference to "distributed-execution-delivery-policy.md"`),
+    report(errors),
+  );
+});
+
+test("artifact policy: dropping the immutable-from-first-commit rule fails", async (t) => {
+  const root = makeFixture(t, ({ artifactPolicyPath }) => {
+    patchText(artifactPolicyPath, "immutable from first commit", "editable after first commit");
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, `missing required fragment "immutable from first commit"`), report(errors));
+});
+
+test("ticket template: re-backticking the bare Start SHA example fails (E0-F001 guard)", async (t) => {
+  const root = makeFixture(t, ({ ticketTemplatePath }) => {
+    patchText(
+      ticketTemplatePath,
+      "**Start SHA:** 0000000000000000000000000000000000000000",
+      "**Start SHA:** `0000000000000000000000000000000000000000`",
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "Start SHA example must be a bare 40-lowercase-hex placeholder"), report(errors));
+});
+
+test("qa template: dropping the D4/D6 schedule-manifest hash field fails", async (t) => {
+  const root = makeFixture(t, ({ qaTemplatePath }) => {
+    patchText(qaTemplatePath, "Schedule manifest SHA-256", "Schedule manifest checksum");
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, `missing required fragment "Schedule manifest SHA-256"`), report(errors));
+});
+
+test("handoff template: dropping the named gate-owner role fails", async (t) => {
+  const root = makeFixture(t, ({ handoffTemplatePath }) => {
+    patchText(
+      handoffTemplatePath,
+      "**Gate owner role:** `Integration Gate Owner`",
+      "**Gate owner:** `someone`",
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, 'missing required fragment "**Gate owner role:** `Integration Gate Owner`"'),
+    report(errors),
+  );
+});
+
+// --- Evidence immutability (given a base revision) ---
+
+const QA_REL = "docs/replatform/epics/E0-foundation/qa/2026-08-08-d0-foundation-abcdef012345-a1.md";
+const QA_REL_A2 = "docs/replatform/epics/E0-foundation/qa/2026-08-08-d0-foundation-abcdef012345-a2.md";
+const HANDOFF_REL = "docs/replatform/epics/E0-foundation/handoffs/2026-08-08-epic-completion-abcdef012345-a1.md";
+
+function makeEvidenceTree(t, records) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "fnd005-ev-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  for (const [rel, content] of Object.entries(records)) {
+    const abs = path.join(root, rel);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, content, "utf8");
+  }
+  return root;
+}
+
+test("evidence immutability: an unchanged candidate passes", async (t) => {
+  const base = makeEvidenceTree(t, { [QA_REL]: "campaign one\n", [HANDOFF_REL]: "gate one\n" });
+  const cand = makeEvidenceTree(t, { [QA_REL]: "campaign one\n", [HANDOFF_REL]: "gate one\n" });
+  const { errors } = await checkEvidenceImmutability(base, cand);
+  assert.deepEqual(errors, [], report(errors));
+});
+
+test("evidence immutability: modifying an existing record is rejected", async (t) => {
+  const base = makeEvidenceTree(t, { [QA_REL]: "campaign one\n" });
+  const cand = makeEvidenceTree(t, { [QA_REL]: "campaign one MUTATED\n" });
+  const { errors } = await checkEvidenceImmutability(base, cand);
+  assert.ok(hasError(errors, "was modified after commit"), report(errors));
+});
+
+test("evidence immutability: deleting an existing record is rejected", async (t) => {
+  const base = makeEvidenceTree(t, { [QA_REL]: "campaign one\n" });
+  const cand = makeEvidenceTree(t, {});
+  const { errors } = await checkEvidenceImmutability(base, cand);
+  assert.ok(hasError(errors, "was deleted or renamed after commit"), report(errors));
+});
+
+test("evidence immutability: renaming an existing record is rejected", async (t) => {
+  const base = makeEvidenceTree(t, { [QA_REL]: "campaign one\n" });
+  const cand = makeEvidenceTree(t, { [QA_REL_A2]: "campaign one\n" });
+  const { errors } = await checkEvidenceImmutability(base, cand);
+  assert.ok(hasError(errors, "was deleted or renamed after commit"), report(errors));
+});
+
+test("evidence immutability: adding a higher attempt is permitted", async (t) => {
+  const base = makeEvidenceTree(t, { [QA_REL]: "campaign one\n" });
+  const cand = makeEvidenceTree(t, { [QA_REL]: "campaign one\n", [QA_REL_A2]: "campaign two\n" });
+  const { errors } = await checkEvidenceImmutability(base, cand);
+  assert.deepEqual(errors, [], report(errors));
 });

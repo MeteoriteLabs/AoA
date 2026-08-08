@@ -5,7 +5,13 @@
 **Epic:** `<E#-name>`
 **Plan task:** `<implementation-plan heading>`
 **Implementer:** `<agent or human identity>`
-**Start SHA:** `<40-character implementation-base SHA or not_applicable>`
+**Start SHA:** 0000000000000000000000000000000000000000
+
+The implementer replaces the `Start SHA` value with the exact 40-lowercase-hex
+`git rev-parse HEAD` captured before the first change. Write it **bare** — not
+backtick-wrapped — so the integration-gate parser
+(`^\*\*Start SHA:\*\*\s*([0-9a-f]{40})\s*$`) reads it; leaving it backticked
+makes the gate treat the SHA as missing.
 
 The implementer leaves `Status` at `gate_review`. A separate reviewer completes the section below and is the only role that may change it to `complete`.
 

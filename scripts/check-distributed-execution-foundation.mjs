@@ -62,7 +62,7 @@
  * `process.cwd()` in normal and CI use.
  */
 
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
@@ -1696,6 +1696,198 @@ async function validateGoldenJourneys(root, errors) {
   }
 }
 
+// --- FND-005: rollout policy, hosted safety, custodians, evidence integrity ---
+//
+// This layer adds, on top of FND-001..004:
+//   (d) a source-boundary rule over the real app/route registry (server/src/
+//       app.ts): no import of a reserved distributed public-ingress or
+//       cloud-plugin-runner module and no registration of the two reserved path
+//       prefixes;
+//   (e) the delivery-policy presence contract + its Decision #121 back-reference;
+//   (f) the artifact-policy + evidence-template shape contract (exact-revision +
+//       named-owner fields, REQUIRED/HARD/INITIAL/OBSERVED requirement classes,
+//       D4/D6 schedule-hash + expected/observed/missing sample fields, ticket-
+//       result blob pins, append-only review history, immutable QA/handoff
+//       banner + Supersedes, and a bare 40-hex Start SHA example so the gate
+//       parser reads it); and
+//   (g) an exported evidence-immutability diff (`checkEvidenceImmutability`):
+//       given a base revision, reject modification/deletion/rename of an
+//       existing QA/handoff record and permit a new higher attempt.
+
+const APP_TS = "server/src/app.ts";
+
+// Reserved distributed modules that the real app/route registry must never
+// import (they do not exist; this guards against a future accidental wiring).
+const RESERVED_IMPORT_PATTERNS = [
+  /distributed[-/]?execution[-/]public[-/]?(service[-/]?)?ingress/i,
+  /distributed[-/]public[-/]service[-/]ingress/i,
+  /distributed[-/]?execution[-/]cloud[-/]?plugin[-/]?runner/i,
+  /cloud[-/]plugin[-/]runner/i,
+  /distributed[-/]cloud[-/]plugin/i,
+];
+
+const DELIVERY_POLICY_MD = "docs/architecture/distributed-execution-delivery-policy.md";
+const DELIVERY_POLICY_FRAGMENTS = [
+  "# Distributed Execution Delivery Policy",
+  "Protocol Custodian",
+  "Migration Custodian",
+  "Integration Gate Owner",
+  "Security Gate Owner",
+  "AOA_DISTRIBUTED_EXECUTION_ENABLED",
+  "one ticket",
+  "5–10", // "5–10" (en-dash)
+];
+
+const ARTIFACT_POLICY_MD = "docs/replatform/artifact-policy.md";
+const ARTIFACT_POLICY_FRAGMENTS = [
+  "# Re-platform Artifact Policy",
+  "exact revision",
+  "REQUIRED/HARD/INITIAL/OBSERVED",
+  "append-only review ledger",
+  "immutable from first commit",
+  "Supersedes",
+  "ticket-result blob SHAs",
+  "blocked_external",
+];
+
+const TICKET_TEMPLATE_MD = "docs/replatform/templates/ticket-result-template.md";
+const TICKET_TEMPLATE_FRAGMENTS = [
+  "**Status:**",
+  "**Implementer:**",
+  "**Start SHA:**",
+  "controlled append-only review ledger",
+  "## Review attempt history",
+  "pending",
+];
+// The Start SHA EXAMPLE must be a BARE 40-lowercase-hex placeholder (not
+// backtick-wrapped) so the integration-gate parser
+// (^\*\*Start SHA:\*\*\s*([0-9a-f]{40})\s*$) reads it. E0-F001.
+const TICKET_START_SHA_RE = /^\*\*Start SHA:\*\* [0-9a-f]{40}\s*$/m;
+
+const QA_TEMPLATE_MD = "docs/replatform/templates/qa-result-template.md";
+const QA_TEMPLATE_FRAGMENTS = [
+  "**Revision:**",
+  "immutable from its first commit",
+  "**Supersedes:**",
+  "REQUIRED",
+  "HARD",
+  "INITIAL",
+  "OBSERVED",
+  "Schedule manifest SHA-256",
+  "Expected samples",
+  "Observed samples",
+  "Missing samples",
+  "blocked_external",
+];
+
+const HANDOFF_TEMPLATE_MD = "docs/replatform/templates/handoff-template.md";
+const HANDOFF_TEMPLATE_FRAGMENTS = [
+  "**Reviewed revision:**",
+  "**Gate owner role:** `Integration Gate Owner`",
+  "**Gate owner identity:**",
+  "immutable from its first commit",
+  "**Supersedes:**",
+  "Ticket-result Git blob SHA",
+  "REQUIRED",
+  "HARD",
+  "INITIAL",
+  "OBSERVED",
+  "blocked_external",
+];
+
+/**
+ * (d) Source-boundary over the real app/route registry. Reject any import of a
+ * reserved distributed public-ingress / cloud-plugin-runner module and any
+ * registration of the two reserved distributed path prefixes.
+ */
+async function validateAppSourceBoundary(root, errors) {
+  const content = await readOrError(root, APP_TS, errors);
+  if (content == null) return;
+  // Import specifiers from `from "..."`, `import("...")`, `require("...")`.
+  const specRe = /(?:from\s*|import\s*\(\s*|require\s*\(\s*)["']([^"']+)["']/g;
+  let m;
+  while ((m = specRe.exec(content)) !== null) {
+    const spec = m[1];
+    for (const pat of RESERVED_IMPORT_PATTERNS) {
+      if (pat.test(spec)) {
+        errors.push(`${APP_TS}: forbidden import of a reserved distributed module ${JSON.stringify(spec)}`);
+        break;
+      }
+    }
+  }
+  // Reserved path prefixes as quoted registration literals.
+  const pathRe = /["'`](\/?(?:api\/)?distributed-execution\/(?:public-services|cloud-plugins))["'`]/g;
+  while ((m = pathRe.exec(content)) !== null) {
+    errors.push(`${APP_TS}: forbidden registration of a reserved distributed path ${JSON.stringify(m[1])}`);
+  }
+}
+
+/** (e)+(f) Delivery policy + artifact-policy/evidence-template shape contract. */
+async function validateDeliveryAndEvidence(root, errors) {
+  await requireFile(root, DELIVERY_POLICY_MD, DELIVERY_POLICY_FRAGMENTS, errors);
+  await requireFile(root, ARTIFACT_POLICY_MD, ARTIFACT_POLICY_FRAGMENTS, errors);
+
+  const ticket = await requireFile(root, TICKET_TEMPLATE_MD, TICKET_TEMPLATE_FRAGMENTS, errors);
+  if (ticket != null && !TICKET_START_SHA_RE.test(ticket)) {
+    errors.push(
+      `${TICKET_TEMPLATE_MD}: Start SHA example must be a bare 40-lowercase-hex placeholder (not backtick-wrapped) so the integration-gate parser reads it`,
+    );
+  }
+  await requireFile(root, QA_TEMPLATE_MD, QA_TEMPLATE_FRAGMENTS, errors);
+  await requireFile(root, HANDOFF_TEMPLATE_MD, HANDOFF_TEMPLATE_FRAGMENTS, errors);
+}
+
+/** Collect immutable evidence records (qa/ + handoffs/) under an epic tree. */
+async function collectEvidenceRecords(root) {
+  const map = new Map();
+  const epicsAbs = path.join(root, "docs", "replatform", "epics");
+  let epics;
+  try {
+    epics = await readdir(epicsAbs, { withFileTypes: true });
+  } catch {
+    return map;
+  }
+  for (const epic of epics) {
+    if (!epic.isDirectory()) continue;
+    for (const sub of ["qa", "handoffs"]) {
+      const dirAbs = path.join(epicsAbs, epic.name, sub);
+      let entries;
+      try {
+        entries = await readdir(dirAbs, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const entry of entries) {
+        if (!entry.isFile() || !entry.name.endsWith(".md") || entry.name === "README.md") continue;
+        const rel = `docs/replatform/epics/${epic.name}/${sub}/${entry.name}`;
+        map.set(rel, await readFile(path.join(dirAbs, entry.name), "utf8"));
+      }
+    }
+  }
+  return map;
+}
+
+/**
+ * (g) Evidence immutability. Given a base revision (baseRoot) and a candidate
+ * revision (candidateRoot), reject modification, deletion, or rename of any
+ * existing QA/handoff record, and permit a new higher attempt (a record present
+ * only in the candidate). Exercised by the mutation test with temp fixture
+ * trees; QA/handoff records are write-once per the artifact policy.
+ */
+export async function checkEvidenceImmutability(baseRoot, candidateRoot) {
+  const errors = [];
+  const base = await collectEvidenceRecords(baseRoot);
+  const cand = await collectEvidenceRecords(candidateRoot);
+  for (const [rel, content] of base) {
+    if (!cand.has(rel)) {
+      errors.push(`evidence immutability: base record ${rel} was deleted or renamed after commit`);
+    } else if (cand.get(rel) !== content) {
+      errors.push(`evidence immutability: base record ${rel} was modified after commit`);
+    }
+  }
+  return { errors };
+}
+
 export async function runCheck(root) {
   const errors = [];
 
@@ -1737,6 +1929,9 @@ export async function runCheck(root) {
     if (!decisions.includes("distributed-execution-threat-model.md")) {
       errors.push(`${DECISIONS_MD}: missing reference to "distributed-execution-threat-model.md"`);
     }
+    if (!decisions.includes("distributed-execution-delivery-policy.md")) {
+      errors.push(`${DECISIONS_MD}: missing reference to "distributed-execution-delivery-policy.md"`);
+    }
   }
 
   // FND-002 authority contract (independent of the lifecycle JSON/Markdown).
@@ -1747,6 +1942,10 @@ export async function runCheck(root) {
 
   // FND-004 golden-journey + failure fixture corpus.
   await validateGoldenJourneys(root, errors);
+
+  // FND-005 source-boundary + delivery-policy + evidence-integrity contracts.
+  await validateAppSourceBoundary(root, errors);
+  await validateDeliveryAndEvidence(root, errors);
 
   // JSON authority.
   if (rawJson != null) {
