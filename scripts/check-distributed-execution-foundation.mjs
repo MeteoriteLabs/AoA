@@ -1822,6 +1822,132 @@ async function validateAppSourceBoundary(root, errors) {
   }
 }
 
+// --- FND-006: hosted plugin process-composition boundary ---------------------
+//
+// (h) A source-boundary rule over the real cloud-plugin gate and the app
+//     composition: on `cloud_auth` (Decision #103 amendment) every plugin sink
+//     fails closed, the worker-child marker never grants parent authority, and
+//     the effectful worker/lifecycle/loader construction in `app.ts` is guarded.
+//     Restoring a cloud sink allowlist, a parent-marker bypass in the gate, or
+//     an unguarded construction is a structured failure here — not a runtime
+//     test — because the real app is not importable under vitest (finding
+//     E0-F005), so this static gate is the portable enforcement.
+
+const CLOUD_PLUGIN_EXECUTION_TS = "server/src/services/cloud-plugin-execution.ts";
+const CLOUD_PLUGIN_GATE_FN = "isCloudPluginExecutionBlocked";
+// The effectful plugin worker/lifecycle/loader constructors that must be
+// composed ONLY off cloud (guarded in app.ts).
+const PLUGIN_EFFECTFUL_CONSTRUCTORS = [
+  "createPluginWorkerManager(",
+  "pluginLifecycleManager(",
+  "pluginLoader(",
+];
+
+/** Extract the brace-matched body of `function <name>(...) { ... }`. */
+function extractFunctionBody(src, name) {
+  const sigRe = new RegExp(`function\\s+${name}\\s*\\(`);
+  const m = sigRe.exec(src);
+  if (!m) return null;
+  const open = src.indexOf("{", m.index);
+  if (open === -1) return null;
+  let depth = 0;
+  for (let j = open; j < src.length; j += 1) {
+    const ch = src[j];
+    if (ch === "{") depth += 1;
+    else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) return src.slice(open + 1, j);
+    }
+  }
+  return null;
+}
+
+/** Strip `/* *​/` block and `//` line comments (leaves `://` in strings alone). */
+function stripComments(src) {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+}
+
+/**
+ * (h) FND-006 hosted plugin process-composition boundary.
+ */
+async function validateCloudPluginProcessBoundary(root, errors) {
+  // (h1) The cloud gate must fail closed for every sink, with no allowlist and
+  // no worker-child-marker bypass.
+  const gateSrc = await readOrError(root, CLOUD_PLUGIN_EXECUTION_TS, errors);
+  if (gateSrc != null) {
+    if (gateSrc.includes("CLOUD_SAFE_CONTROL_PLANE_SINKS")) {
+      errors.push(
+        `${CLOUD_PLUGIN_EXECUTION_TS}: forbidden cloud worker-sink allowlist "CLOUD_SAFE_CONTROL_PLANE_SINKS" — all six plugin sinks must fail closed on cloud_auth (Decision #103)`,
+      );
+    }
+    const body = extractFunctionBody(gateSrc, CLOUD_PLUGIN_GATE_FN);
+    if (body == null) {
+      errors.push(`${CLOUD_PLUGIN_EXECUTION_TS}: cannot locate the ${CLOUD_PLUGIN_GATE_FN} function body`);
+    } else {
+      const b = stripComments(body);
+      if (!/tenantIsolationEnforced\s*\(\s*\)/.test(b)) {
+        errors.push(
+          `${CLOUD_PLUGIN_EXECUTION_TS}: ${CLOUD_PLUGIN_GATE_FN} must gate on tenantIsolationEnforced()`,
+        );
+      }
+      // No worker-child-marker bypass: the gate must never consult the marker.
+      if (
+        /process\.env/.test(b) ||
+        /PLUGIN_WORKER_PROCESS_ENV_VAR/.test(b) ||
+        /AOA_PLUGIN_WORKER_PROCESS/.test(b) ||
+        /isRunningInsidePluginWorkerChild/.test(b)
+      ) {
+        errors.push(
+          `${CLOUD_PLUGIN_EXECUTION_TS}: ${CLOUD_PLUGIN_GATE_FN} must not consult the worker-child marker (AOA_PLUGIN_WORKER_PROCESS) — it can never grant the hosted parent authority`,
+        );
+      }
+      // No sink allowlist via set membership.
+      if (/\.has\s*\(/.test(b)) {
+        errors.push(
+          `${CLOUD_PLUGIN_EXECUTION_TS}: ${CLOUD_PLUGIN_GATE_FN} must not allowlist any sink via set membership on cloud_auth`,
+        );
+      }
+      // Fail closed uniformly: no sink-specific return false/true escape.
+      if (/return\s+false/.test(b) || /return\s+true/.test(b)) {
+        errors.push(
+          `${CLOUD_PLUGIN_EXECUTION_TS}: ${CLOUD_PLUGIN_GATE_FN} must fail closed uniformly (no sink-specific "return false"/"return true"); use "return tenantIsolationEnforced()"`,
+        );
+      }
+    }
+  }
+
+  // (h2) app.ts must guard the effectful worker/lifecycle/loader construction
+  // behind the cloud process-disable check.
+  const appSrc = await readOrError(root, APP_TS, errors);
+  if (appSrc != null) {
+    const guardDef =
+      /const\s+hostedPluginProcessDisabled\s*=\s*tenantIsolationEnforced\s*\(\s*\)/;
+    if (!guardDef.test(appSrc)) {
+      errors.push(
+        `${APP_TS}: missing the cloud plugin process-disable guard (const hostedPluginProcessDisabled = tenantIsolationEnforced())`,
+      );
+    }
+    const guardOpen = /if\s*\(\s*!\s*hostedPluginProcessDisabled\b/;
+    const guardMatch = guardOpen.exec(appSrc);
+    if (!guardMatch) {
+      errors.push(
+        `${APP_TS}: plugin worker/lifecycle/loader composition is not guarded by "if (!hostedPluginProcessDisabled)"`,
+      );
+    }
+    const guardIdx = guardMatch ? guardMatch.index : Infinity;
+    for (const ctor of PLUGIN_EFFECTFUL_CONSTRUCTORS) {
+      const idx = appSrc.indexOf(ctor);
+      if (idx !== -1 && idx < guardIdx) {
+        errors.push(
+          `${APP_TS}: unguarded plugin ${ctor.slice(0, -1)} construction — must be inside the !hostedPluginProcessDisabled guard (FND-006)`,
+        );
+      }
+    }
+  }
+}
+
 /** (e)+(f) Delivery policy + artifact-policy/evidence-template shape contract. */
 async function validateDeliveryAndEvidence(root, errors) {
   await requireFile(root, DELIVERY_POLICY_MD, DELIVERY_POLICY_FRAGMENTS, errors);
@@ -1946,6 +2072,9 @@ export async function runCheck(root) {
   // FND-005 source-boundary + delivery-policy + evidence-integrity contracts.
   await validateAppSourceBoundary(root, errors);
   await validateDeliveryAndEvidence(root, errors);
+
+  // FND-006 hosted plugin process-composition boundary.
+  await validateCloudPluginProcessBoundary(root, errors);
 
   // JSON authority.
   if (rawJson != null) {

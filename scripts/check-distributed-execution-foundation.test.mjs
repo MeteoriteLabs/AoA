@@ -45,6 +45,8 @@ const REL = {
   schema: `${GJ_DIR}/schema-v1.json`,
   // FND-005
   app: "server/src/app.ts",
+  // FND-006
+  cloudPluginExecution: "server/src/services/cloud-plugin-execution.ts",
   deliveryPolicy: "docs/architecture/distributed-execution-delivery-policy.md",
   artifactPolicy: "docs/replatform/artifact-policy.md",
   ticketTemplate: "docs/replatform/templates/ticket-result-template.md",
@@ -60,6 +62,7 @@ function makeFixture(t, mutate) {
   fs.mkdirSync(path.join(root, "docs", "replatform"), { recursive: true });
   fs.mkdirSync(path.join(root, "docs", "replatform", "templates"), { recursive: true });
   fs.mkdirSync(path.join(root, "server", "src"), { recursive: true });
+  fs.mkdirSync(path.join(root, "server", "src", "services"), { recursive: true });
   const files = {
     root,
     jsonPath: path.join(root, REL.json),
@@ -74,6 +77,8 @@ function makeFixture(t, mutate) {
     fixturePath: (name) => path.join(root, REL.fixturesDir, name),
     // FND-005
     appPath: path.join(root, REL.app),
+    // FND-006
+    cloudPluginExecutionPath: path.join(root, REL.cloudPluginExecution),
     deliveryPolicyPath: path.join(root, REL.deliveryPolicy),
     artifactPolicyPath: path.join(root, REL.artifactPolicy),
     ticketTemplatePath: path.join(root, REL.ticketTemplate),
@@ -91,6 +96,11 @@ function makeFixture(t, mutate) {
   fs.cpSync(path.join(repoRoot, REL.fixturesDir), files.fixturesDir, { recursive: true });
   // FND-005: copy the app/route registry + delivery policy + artifact policy + templates.
   fs.copyFileSync(path.join(repoRoot, REL.app), files.appPath);
+  // FND-006: copy the cloud-plugin execution gate for the process-boundary check.
+  fs.copyFileSync(
+    path.join(repoRoot, REL.cloudPluginExecution),
+    files.cloudPluginExecutionPath,
+  );
   fs.copyFileSync(path.join(repoRoot, REL.deliveryPolicy), files.deliveryPolicyPath);
   fs.copyFileSync(path.join(repoRoot, REL.artifactPolicy), files.artifactPolicyPath);
   fs.copyFileSync(path.join(repoRoot, REL.ticketTemplate), files.ticketTemplatePath);
@@ -1095,6 +1105,98 @@ test("missing file: app.ts removed", async (t) => {
   const root = makeFixture(t, ({ appPath }) => fs.rmSync(appPath));
   const { errors } = await runCheck(root);
   assert.ok(hasError(errors, `${REL.app}: missing`), report(errors));
+});
+
+// --- FND-006: hosted plugin process-composition boundary mutation corpus ------
+
+test("FND-006: restoring the cloud worker-sink allowlist fails", async (t) => {
+  const root = makeFixture(t, ({ cloudPluginExecutionPath }) => {
+    const src = fs.readFileSync(cloudPluginExecutionPath, "utf8");
+    const out = `const CLOUD_SAFE_CONTROL_PLANE_SINKS = new Set(["worker-fork", "worker-manager", "lifecycle", "loader"]);\n${src}`;
+    fs.writeFileSync(cloudPluginExecutionPath, out, "utf8");
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "CLOUD_SAFE_CONTROL_PLANE_SINKS"), report(errors));
+});
+
+test("FND-006: a parent-marker bypass in the cloud gate fails", async (t) => {
+  const root = makeFixture(t, ({ cloudPluginExecutionPath }) => {
+    patchText(
+      cloudPluginExecutionPath,
+      "return tenantIsolationEnforced();",
+      'if (process.env.AOA_PLUGIN_WORKER_PROCESS === "1") return false;\n  return tenantIsolationEnforced();',
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, "must not consult the worker-child marker"),
+    report(errors),
+  );
+});
+
+test("FND-006: a sink-specific return-false escape in the cloud gate fails", async (t) => {
+  const root = makeFixture(t, ({ cloudPluginExecutionPath }) => {
+    patchText(
+      cloudPluginExecutionPath,
+      "return tenantIsolationEnforced();",
+      'if (_sink === "loader") return false;\n  return tenantIsolationEnforced();',
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "must fail closed uniformly"), report(errors));
+});
+
+test("FND-006: a sink allowlist via set membership in the cloud gate fails", async (t) => {
+  const root = makeFixture(t, ({ cloudPluginExecutionPath }) => {
+    patchText(
+      cloudPluginExecutionPath,
+      "return tenantIsolationEnforced();",
+      'if (new Set(["loader"]).has(_sink)) { /* allow */ }\n  return tenantIsolationEnforced();',
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, "must not allowlist any sink via set membership"),
+    report(errors),
+  );
+});
+
+test("FND-006: removing the app.ts process-disable guard definition fails", async (t) => {
+  const root = makeFixture(t, ({ appPath }) => {
+    patchText(
+      appPath,
+      "const hostedPluginProcessDisabled = tenantIsolationEnforced();",
+      "const hostedPluginProcessDisabled = false;",
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, "missing the cloud plugin process-disable guard"),
+    report(errors),
+  );
+});
+
+test("FND-006: an unguarded worker-manager construction in app.ts fails", async (t) => {
+  const root = makeFixture(t, ({ appPath }) => {
+    patchText(
+      appPath,
+      "const hostedPluginProcessDisabled = tenantIsolationEnforced();",
+      "const __leak = createPluginWorkerManager({});\n  const hostedPluginProcessDisabled = tenantIsolationEnforced();",
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, "unguarded plugin createPluginWorkerManager construction"),
+    report(errors),
+  );
+});
+
+test("FND-006: missing cloud-plugin-execution.ts is named", async (t) => {
+  const root = makeFixture(t, ({ cloudPluginExecutionPath }) =>
+    fs.rmSync(cloudPluginExecutionPath),
+  );
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, `${REL.cloudPluginExecution}: missing`), report(errors));
 });
 
 test("delivery policy: missing file fails", async (t) => {

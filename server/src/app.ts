@@ -13,7 +13,11 @@ import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { tenantContextMiddleware } from "./middleware/tenant-context.js";
-import { setDeploymentMode } from "./config/deployment-mode.js";
+import {
+  setDeploymentMode,
+  tenantIsolationEnforced,
+} from "./config/deployment-mode.js";
+import { stripHostedPluginWorkerMarker } from "./services/cloud-plugin-execution.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import {
   privateHostnameGuard,
@@ -470,119 +474,161 @@ export async function createApp(
     })
   );
 
-  // Plugin subsystem initialization
-  const hostServiceDisposers = new Map<string, () => void>();
-  let hostServiceCleanup:
-    | ReturnType<typeof createPluginHostServiceCleanup>
-    | undefined;
-  const workerMgr = createPluginWorkerManager({
-    onWorkerEvent: (event) => hostServiceCleanup?.handleWorkerEvent(event),
-  });
-  const eventBus = createPluginEventBus();
-  const streamBus = createPluginStreamBus();
-  const jobStoreInst = pluginJobStore(db);
-  const toolDispatcherInst = createPluginToolDispatcher({
-    workerManager: workerMgr,
-    db,
-  });
-  const jobSchedulerInst = createPluginJobScheduler({
-    db,
-    jobStore: jobStoreInst,
-    workerManager: workerMgr,
-  });
-  const lifecycleMgr = pluginLifecycleManager(db, {
-    workerManager: workerMgr,
-  });
-  hostServiceCleanup = createPluginHostServiceCleanup(
-    lifecycleMgr,
-    hostServiceDisposers
-  );
-  const jobCoordinatorInst = createPluginJobCoordinator({
-    db,
-    lifecycle: lifecycleMgr,
-    scheduler: jobSchedulerInst,
-    jobStore: jobStoreInst,
-  });
-  // Compose PluginRuntimeServices from existing subsystems + host services
-  // factory. Without this, pluginLoader.loadAll() throws at startup and no
-  // plugins activate. The loader.loadAll() call happens in index.ts after
-  // the server is listening.
-  const pluginRuntimeServices = {
-    workerManager: workerMgr,
-    eventBus,
-    jobScheduler: jobSchedulerInst,
-    jobStore: jobStoreInst,
-    toolDispatcher: toolDispatcherInst,
-    streamBus,
-    lifecycleManager: lifecycleMgr,
-    buildHostHandlers: (
-      pluginId: string,
-      manifest: PaperclipPluginManifestV1
-    ) => {
-      // A manual reload may create a fresh service bundle for the same row.
-      // Dispose the previous generation before replacing its disposer.
-      const services = buildHostServices(
-        db,
-        pluginId,
-        manifest.id,
-        eventBus,
-        (method, params) =>
-          workerMgr.getWorker(pluginId)?.notify(method, params)
-      );
-      hostServiceCleanup?.replace(pluginId, () => services.dispose());
-      return guardPluginHostHandlers(
-        db,
-        pluginId,
-        createHostClientHandlers({
-          pluginId,
-          capabilities: manifest.capabilities ?? [],
-          services,
-        })
-      );
-    },
-    disposeHostServices: (pluginId: string) =>
-      hostServiceCleanup?.disposePlugin(pluginId),
-    disposeAllHostServices: () => hostServiceCleanup?.disposeAll(),
-    instanceInfo: {
-      instanceId: resolveAoaInstanceId(),
-      hostVersion: SERVER_VERSION,
-    },
-  };
-  const loaderInst = pluginLoader(db, {}, pluginRuntimeServices);
-  // The plugin loader and lifecycle manager depend on each other. Bind the
-  // runtime-aware loader once composition is complete so every route and
-  // marketplace path activates/deactivates the same workers, jobs, events,
-  // and tools instead of using the lifecycle's construction-time fallback.
-  lifecycleMgr.bindLoader(loaderInst);
+  // Plugin subsystem — PROCESS COMPOSITION boundary (FND-006 / Decision #103
+  // cloud-enforcement amendment). On `cloud_auth` (`tenantIsolationEnforced()`)
+  // the hosted control plane must NOT construct, start, or dispatch any plugin
+  // worker process, so the effectful worker/lifecycle/loader machinery below —
+  // and the effectful plugin routes + marketplace-install router that depend on
+  // it — are composed ONLY off cloud. Cloud boot instead performs a
+  // metadata-only reconciliation of stale rows (see `index.ts` →
+  // `reconcileCloudBlockedPlugins`). Self-hosted composition is unchanged.
+  const hostedPluginProcessDisabled = tenantIsolationEnforced();
+  // Harden the hosted parent BEFORE any plugin composition: strip a spoofed
+  // worker-child marker so it can never be mistaken for an isolated child
+  // (no-op off cloud, where the self-hosted worker manager sets it per-child).
+  stripHostedPluginWorkerMarker();
 
-  api.use(
-    pluginRoutes(
+  // Loader + lifecycle are consumed below by the marketplace-install router;
+  // they exist ONLY off cloud. Kept in outer scope so the guarded install-router
+  // block can see them.
+  let loaderInst: ReturnType<typeof pluginLoader> | undefined;
+  let lifecycleMgr: ReturnType<typeof pluginLifecycleManager> | undefined;
+
+  if (!hostedPluginProcessDisabled) {
+    const hostServiceDisposers = new Map<string, () => void>();
+    let hostServiceCleanup:
+      | ReturnType<typeof createPluginHostServiceCleanup>
+      | undefined;
+    const workerMgr = createPluginWorkerManager({
+      onWorkerEvent: (event) => hostServiceCleanup?.handleWorkerEvent(event),
+    });
+    const eventBus = createPluginEventBus();
+    const streamBus = createPluginStreamBus();
+    const jobStoreInst = pluginJobStore(db);
+    const toolDispatcherInst = createPluginToolDispatcher({
+      workerManager: workerMgr,
       db,
-      loaderInst,
-      {
-        scheduler: jobSchedulerInst,
-        jobStore: jobStoreInst,
+    });
+    const jobSchedulerInst = createPluginJobScheduler({
+      db,
+      jobStore: jobStoreInst,
+      workerManager: workerMgr,
+    });
+    lifecycleMgr = pluginLifecycleManager(db, {
+      workerManager: workerMgr,
+    });
+    const lifecycleMgrLocal = lifecycleMgr;
+    hostServiceCleanup = createPluginHostServiceCleanup(
+      lifecycleMgrLocal,
+      hostServiceDisposers
+    );
+    const jobCoordinatorInst = createPluginJobCoordinator({
+      db,
+      lifecycle: lifecycleMgrLocal,
+      scheduler: jobSchedulerInst,
+      jobStore: jobStoreInst,
+    });
+    // Compose PluginRuntimeServices from existing subsystems + host services
+    // factory. Without this, pluginLoader.loadAll() throws at startup and no
+    // plugins activate. The loader.loadAll() call happens in index.ts after
+    // the server is listening.
+    const pluginRuntimeServices = {
+      workerManager: workerMgr,
+      eventBus,
+      jobScheduler: jobSchedulerInst,
+      jobStore: jobStoreInst,
+      toolDispatcher: toolDispatcherInst,
+      streamBus,
+      lifecycleManager: lifecycleMgrLocal,
+      buildHostHandlers: (
+        pluginId: string,
+        manifest: PaperclipPluginManifestV1
+      ) => {
+        // A manual reload may create a fresh service bundle for the same row.
+        // Dispose the previous generation before replacing its disposer.
+        const services = buildHostServices(
+          db,
+          pluginId,
+          manifest.id,
+          eventBus,
+          (method, params) =>
+            workerMgr.getWorker(pluginId)?.notify(method, params)
+        );
+        hostServiceCleanup?.replace(pluginId, () => services.dispose());
+        return guardPluginHostHandlers(
+          db,
+          pluginId,
+          createHostClientHandlers({
+            pluginId,
+            capabilities: manifest.capabilities ?? [],
+            services,
+          })
+        );
       },
-      {
-        workerManager: workerMgr,
+      disposeHostServices: (pluginId: string) =>
+        hostServiceCleanup?.disposePlugin(pluginId),
+      disposeAllHostServices: () => hostServiceCleanup?.disposeAll(),
+      instanceInfo: {
+        instanceId: resolveAoaInstanceId(),
+        hostVersion: SERVER_VERSION,
       },
-      {
-        toolDispatcher: toolDispatcherInst,
-      },
-      {
-        workerManager: workerMgr,
-        streamBus,
-      },
-      lifecycleMgr
-    )
-  );
-  api.use(pluginCompanySettingsRoutes(db, lifecycleMgr));
+    };
+    loaderInst = pluginLoader(db, {}, pluginRuntimeServices);
+    const loaderInstLocal = loaderInst;
+    // The plugin loader and lifecycle manager depend on each other. Bind the
+    // runtime-aware loader once composition is complete so every route and
+    // marketplace path activates/deactivates the same workers, jobs, events,
+    // and tools instead of using the lifecycle's construction-time fallback.
+    lifecycleMgrLocal.bindLoader(loaderInstLocal);
 
-  // Company-scoped plugin management (M.4)
-  api.use(
-    "/companies/:companyId/plugins",
-    companyPluginRoutes(db, lifecycleMgr, loaderInst)
-  );
+    api.use(
+      pluginRoutes(
+        db,
+        loaderInstLocal,
+        {
+          scheduler: jobSchedulerInst,
+          jobStore: jobStoreInst,
+        },
+        {
+          workerManager: workerMgr,
+        },
+        {
+          toolDispatcher: toolDispatcherInst,
+        },
+        {
+          workerManager: workerMgr,
+          streamBus,
+        },
+        lifecycleMgrLocal
+      )
+    );
+    api.use(pluginCompanySettingsRoutes(db, lifecycleMgrLocal));
+
+    // Company-scoped plugin management (M.4)
+    api.use(
+      "/companies/:companyId/plugins",
+      companyPluginRoutes(db, lifecycleMgrLocal, loaderInstLocal)
+    );
+
+    // Expose tool dispatcher globally so heartbeat can inject plugin tools into
+    // agent context (undefined on cloud → consumers inject no plugin tools).
+    (globalThis as any).__paperclipPluginToolDispatcher = toolDispatcherInst;
+
+    // Expose plugin subsystem for startup/shutdown in index.ts. Absent on cloud
+    // so index.ts starts no job scheduler/coordinator and calls no loadAll().
+    (app as any).__pluginSubsystem = {
+      workerManager: workerMgr,
+      eventBus,
+      streamBus,
+      jobStore: jobStoreInst,
+      toolDispatcher: toolDispatcherInst,
+      jobScheduler: jobSchedulerInst,
+      jobCoordinator: jobCoordinatorInst,
+      lifecycle: lifecycleMgrLocal,
+      loader: loaderInstLocal,
+      hostServiceCleanup,
+    };
+  }
 
   // Marketplace catalog service + routes
   const marketplaceCatalogService = new MarketplaceCatalogService({
@@ -646,60 +692,68 @@ export async function createApp(
   // also handles the manifest type widening (PaperclipPluginManifestV1 ->
   // { id; [key: string]: unknown }) and the lifecycle.load return-value shrink
   // (PluginRecord -> void).
-  const marketplacePluginRegistry = pluginRegistryService(db);
-  api.use(
-    "/companies/:companyId/marketplace",
-    createMarketplaceInstallRouter({
-      db,
-      catalogService: marketplaceCatalogService,
-      pluginLoader: {
-        installPlugin: async (opts) => {
-          const discovered = await loaderInst.installPlugin(opts);
-          return {
-            packagePath: discovered.packagePath,
-            packageName: discovered.packageName,
-            version: discovered.version,
-            source: discovered.source,
-            manifest: discovered.manifest as {
-              id: string;
-              [key: string]: unknown;
-            } | null,
-          };
-        },
-        registry: {
-          getByKeyScoped: async (pluginKey, companyId) => {
-            const row = await marketplacePluginRegistry.getByKeyScoped(
-              pluginKey,
-              companyId
-            );
-            return row ? { id: row.id, pluginKey: row.pluginKey } : null;
+  // Marketplace INSTALL routes require the live loader/lifecycle, which are
+  // composed only off cloud (FND-006). On cloud the hosted control plane runs no
+  // plugin install/activation, so these routers are not mounted; browse-only
+  // catalog routes (above) remain available.
+  if (!hostedPluginProcessDisabled && loaderInst && lifecycleMgr) {
+    const installLoader = loaderInst;
+    const installLifecycle = lifecycleMgr;
+    const marketplacePluginRegistry = pluginRegistryService(db);
+    api.use(
+      "/companies/:companyId/marketplace",
+      createMarketplaceInstallRouter({
+        db,
+        catalogService: marketplaceCatalogService,
+        pluginLoader: {
+          installPlugin: async (opts) => {
+            const discovered = await installLoader.installPlugin(opts);
+            return {
+              packagePath: discovered.packagePath,
+              packageName: discovered.packageName,
+              version: discovered.version,
+              source: discovered.source,
+              manifest: discovered.manifest as {
+                id: string;
+                [key: string]: unknown;
+              } | null,
+            };
+          },
+          registry: {
+            getByKeyScoped: async (pluginKey, companyId) => {
+              const row = await marketplacePluginRegistry.getByKeyScoped(
+                pluginKey,
+                companyId
+              );
+              return row ? { id: row.id, pluginKey: row.pluginKey } : null;
+            },
+          },
+          lifecycle: {
+            load: async (pluginId) => {
+              await installLifecycle.load(pluginId);
+            },
+            blockActivationInCloud: async (pluginId, source) => {
+              await installLifecycle.blockActivationInCloud(pluginId, source);
+            },
           },
         },
-        lifecycle: {
-          load: async (pluginId) => {
-            await lifecycleMgr.load(pluginId);
-          },
-          blockActivationInCloud: async (pluginId, source) => {
-            await lifecycleMgr.blockActivationInCloud(pluginId, source);
+      })
+    );
+    api.use(
+      "/companies/:companyId/marketplace",
+      createMarketplaceCompanyRouter({
+        db,
+        catalogService: marketplaceCatalogService,
+        pluginLifecycle: installLifecycle,
+        pluginLoader: {
+          installPlugin: async (opts) => {
+            await installLoader.installPlugin(opts);
           },
         },
-      },
-    })
-  );
-  api.use(
-    "/companies/:companyId/marketplace",
-    createMarketplaceCompanyRouter({
-      db,
-      catalogService: marketplaceCatalogService,
-      pluginLifecycle: lifecycleMgr,
-      pluginLoader: {
-        installPlugin: async (opts) => {
-          await loaderInst.installPlugin(opts);
-        },
-      },
-      pluginRollback: pluginRollbackService(db),
-    })
-  );
+        pluginRollback: pluginRollbackService(db),
+      })
+    );
+  }
 
   // Catch-all 404 for unmatched /api/* routes. Without this, requests like
   // GET /api/foo fall through to express.static / Vite middleware, which
@@ -729,22 +783,10 @@ export async function createApp(
   );
   app.use("/_plugins", pluginUiStaticRoutes(db, { localPluginDir: pluginDir }));
 
-  // Expose tool dispatcher globally so heartbeat can inject plugin tools into agent context
-  (globalThis as any).__paperclipPluginToolDispatcher = toolDispatcherInst;
-
-  // Expose plugin subsystem for startup/shutdown in index.ts
-  (app as any).__pluginSubsystem = {
-    workerManager: workerMgr,
-    eventBus,
-    streamBus,
-    jobStore: jobStoreInst,
-    toolDispatcher: toolDispatcherInst,
-    jobScheduler: jobSchedulerInst,
-    jobCoordinator: jobCoordinatorInst,
-    lifecycle: lifecycleMgr,
-    loader: loaderInst,
-    hostServiceCleanup,
-  };
+  // NOTE: `__paperclipPluginToolDispatcher` and `__pluginSubsystem` are set
+  // inside the off-cloud plugin composition block above (FND-006). On cloud
+  // they remain unset, so heartbeat/context injects no plugin tools and index.ts
+  // starts no plugin background workers.
 
   if (opts.uiMode === "static") {
     if (uiDistDir) {

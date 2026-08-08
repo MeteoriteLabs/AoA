@@ -22,6 +22,8 @@ import {
 } from "@armyofagents/db";
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
+import { tenantIsolationEnforced } from "./config/deployment-mode.js";
+import { reconcileCloudBlockedPlugins } from "./services/plugin-lifecycle.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
@@ -1564,6 +1566,24 @@ server.listen(listenPort, config.host, () => {
       logger.error({ err }, "Plugin loadAll failed at startup");
     });
     logger.info("Plugin subsystem initialized");
+  } else if (tenantIsolationEnforced()) {
+    // FND-006 / Decision #103: on cloud_auth the hosted control plane composes
+    // NO plugin worker subsystem (see app.ts), so no loadAll() runs. Reconcile
+    // any stale non-uninstalled plugin rows to the blocked, metadata-only state
+    // so a stale `ready` row can never appear runnable during boot. Idempotent
+    // and safe to run on every replica during a rolling upgrade.
+    void reconcileCloudBlockedPlugins(db as any)
+      .then((reconciled) => {
+        if (reconciled > 0) {
+          logger.info(
+            { reconciled },
+            "Cloud plugin rows reconciled to blocked at startup"
+          );
+        }
+      })
+      .catch((err: unknown) => {
+        logger.error({ err }, "Cloud plugin reconciliation failed at startup");
+      });
   }
 
   const boardClaimUrl = getBoardClaimWarningUrl(config.host, listenPort);

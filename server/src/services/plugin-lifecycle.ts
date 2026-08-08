@@ -56,8 +56,10 @@ import {
   CLOUD_PLUGIN_BLOCK_MESSAGE,
   CloudPluginExecutionBlockedError,
   PLUGIN_WORKER_BLOCKED_IN_CLOUD,
+  beginCloudPluginBootReconciliation,
   isCloudPluginExecutionBlocked,
   recordCloudPluginBlock,
+  recordCloudPluginBootReconciled,
   type PluginActivationSource,
 } from "./cloud-plugin-execution.js";
 
@@ -75,6 +77,70 @@ export function diffCapabilities(
 ): string[] {
   const oldSet = new Set(oldCaps);
   return newCaps.filter((c) => !oldSet.has(c));
+}
+
+/**
+ * Metadata-only cloud reconciliation (FND-006 / Decision #103 amendment).
+ *
+ * On `cloud_auth` boot the hosted control plane composes NO plugin worker
+ * runtime (see `app.ts`), so no `loadAll()` runs to mark stale rows blocked.
+ * This pass marks every non-uninstalled `plugins` row to the blocked state so a
+ * stale `ready`/`installed` row can never appear runnable during boot
+ * reconciliation. It is a pure status write: it constructs no
+ * worker/loader/lifecycle machinery, forks no process, and evaluates no
+ * manifest JavaScript. Idempotent — rows already carrying the blocked reason
+ * are skipped, so it is safe to run on every replica during a rolling upgrade.
+ * No-op off cloud (`isCloudPluginExecutionBlocked()` is false).
+ *
+ * @returns the number of rows newly reconciled to the blocked state.
+ */
+export async function reconcileCloudBlockedPlugins(db: Db): Promise<number> {
+  if (!isCloudPluginExecutionBlocked()) return 0;
+
+  const registry = pluginRegistryService(db);
+  const log = logger.child({ service: "plugin-lifecycle" });
+  beginCloudPluginBootReconciliation();
+
+  let reconciled = 0;
+  const rows = (await registry.listInstalled()) as PluginRecord[];
+  for (const row of rows) {
+    if (row.status === "uninstalled") continue;
+    if (
+      row.status === "error" &&
+      row.statusReasonCode === PLUGIN_WORKER_BLOCKED_IN_CLOUD
+    ) {
+      // Already reconciled on a previous boot/replica — idempotent no-op.
+      continue;
+    }
+    try {
+      await registry.updateStatus(row.id, {
+        status: "error",
+        lastError: CLOUD_PLUGIN_BLOCK_MESSAGE,
+        statusReasonCode: PLUGIN_WORKER_BLOCKED_IN_CLOUD,
+      });
+      recordCloudPluginBootReconciled({
+        pluginId: row.id,
+        companyId: row.companyId,
+      });
+      reconciled += 1;
+    } catch (err) {
+      log.error(
+        {
+          pluginId: row.id,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        "plugin-lifecycle: cloud reconciliation failed for a plugin row"
+      );
+    }
+  }
+
+  if (reconciled > 0) {
+    log.info(
+      { reconciled },
+      "plugin-lifecycle: reconciled stale cloud plugin rows to blocked"
+    );
+  }
+  return reconciled;
 }
 
 // ---------------------------------------------------------------------------
