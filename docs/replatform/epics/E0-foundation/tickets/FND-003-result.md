@@ -1,6 +1,6 @@
 # FND-003 Result — Threat Model and Control Ownership
 
-**Status:** `gate_review`
+**Status:** `complete`
 **Date (UTC):** `2026-08-08`
 **Epic:** `E0-foundation`
 **Plan task:** `Task 3: FND-003 — Threat Model and Control Ownership`
@@ -75,10 +75,19 @@ None.
 
 ## Independent review
 
-**Reviewer:** `<pending until first independent review, then agent or human identity; must differ from implementer>`
-**Reviewed revision:** `<pending until first independent review, then 40-character git SHA>`
-**Disposition:** `pending`, `approved`, or `changes_requested`
-**Review evidence:** `<pending until first independent review, then review record, exact commands/exit codes, or finding links>`
+**Reviewer:** FND-003 independent reviewer subagent (Claude)
+**Reviewed revision:** 09651fb63ee24c4b14aadabbd30cfa3450f7b696
+**Disposition:** `approved`
+**Review evidence:**
+
+- `pnpm check:distributed-foundation` → exit `0`, prints `distributed execution foundation: PASS`.
+- `node --test scripts/check-distributed-execution-foundation.test.mjs` → exit `0`, `tests 55 / pass 55 / fail 0` (29 retained FND-001/FND-002/E0-F002 cases + 26 new FND-003 cases; both baselines — real repo and unmutated fixture copy — green).
+- `git diff BASE..HEAD -- pnpm-lock.yaml package.json` → empty (dependency-free constraint held; the checker and test import only `node:*` built-ins). Diff touches exactly the six planned files.
+- Code-quality read of the diff: the new units (`parseProgramTicketIds`, `crossingHasReleaseTest`, `validateThreatCrossings`, `validateThreatRegisterParity`, orchestrated by `validateThreatModel`) each carry a single responsibility, reuse the existing `readOrError`/`requireFile`/`sectionBody`/`extractTable` helpers, are cleanly named/decomposed for FND-004..008 to extend, and contain no dead code and no silent catch-and-ignore (the sole `try/catch` is `JSON.parse`, which pushes a classified error; every degraded path null-guards and records a cause).
+- Owner cross-reference verified adversarially: `parseProgramTicketIds` regex `^####\s+([A-Z][A-Z0-9]*-\d+)(?:\s|$)` correctly parses the real backlog heading format (em-dash separator + `(S)`/`(M)` size suffix); all 95 `#### <ID> —` headings parse and all 30 crossings' `ownerTickets` (incl. `REL-*`/`MIG-*`/`SVC-*`/`DSK-*`/`CLI-*`) resolve to defined tickets; an invented owner (`ZZZ-999`) is rejected. No false-positive/false-negative on the real document.
+- Release-test gate verified: for every Critical/High crossing a `REL-*` owner OR a non-empty `releaseTest` field is required; removing DE-14's `releaseTest` (owner `FND-005` only, no `REL-*`) flips exactly that crossing (`crossing DE-14 is Critical but has no release test`) and is not masked by a required-field check (`releaseTest` is intentionally optional). A `REL-*` owner that is itself undefined is still caught by the owner cross-reference — no false pass.
+- Exact-set register parity verified in both directions (JSON→MD omit DE-30; MD→JSON extra DE-99), plus per-ID severity drift (DE-01 Critical→High) and duplicate-row detection; the ID-set + duplicate-row checks enforce count. No false-positive on the valid render (30/30 rows match). Field-removal mutations for all 13 required fields each fail with the exact missing-field cause.
+- Two **Minor** (non-blocking) robustness observations for the spine, neither a plan requirement and neither affecting the current green data: (1) the JSON `threat`/`control`/`verification` fields are rendered register columns and are compared in per-ID parity, yet are absent from `THREAT_CROSSING_REQUIRED_FIELDS`; because parity is guarded by `typeof c.<field> === "string"`, **deleting** one of these from a JSON crossing yields zero errors (verified by an out-of-tree probe dropping `control` → `errors: 0`) — value-drift is still caught, only field-deletion escapes. Recommend adding those three to the required-field set (all 30 crossings already carry them, so the corpus stays green) so the parity claim is fully robust for FND-004..008. (2) A few mutation cases (`id`, `ownerTickets`, and duplicate-`id` removal/collision) produce a cascade of secondary errors rather than a single isolated one; the assertions still target specific substrings, so they remain valid. The Trust-boundaries table is rendered from JSON `boundary`/`trustedSide`/... but is not parity-checked (only the register is) — acceptable, as the register is the authoritative parity target.
 
 For `approved`, verify the result describes the reviewed revision, all focused acceptance evidence passes, and every accepted finding is resolved; then change the top-level `Status` to `complete` and commit this disposition separately. Otherwise leave `Status` as `gate_review` or set `blocked`, and link stable findings.
 
@@ -88,4 +97,5 @@ The implementation author leaves the table body empty; the explicit pending summ
 
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
+| 1 | FND-003 independent reviewer subagent (Claude) | 09651fb63ee24c4b14aadabbd30cfa3450f7b696 | `approved` | `pnpm check:distributed-foundation` exit 0 (PASS); `node --test …test.mjs` exit 0 (55/55; 29 retained + 26 new); `pnpm-lock.yaml`/`package.json` byte-unchanged; diff = the six planned files. Owner cross-reference (regex vs real `#### <ID> —` headings, all 95 parsed, all 30 crossings resolve, invented owner rejected), release-test gate (DE-14 isolation), and exact-set register parity (both directions + count + per-ID severity/owner) all verified adversarially; no false-positive on the valid render. Two Minor non-blocking notes recorded: `threat`/`control`/`verification` not in the required-field set so a JSON field-**deletion** escapes per-ID parity (probe: dropping `control` → 0 errors; value-drift still caught) — recommend adding them to required fields for the spine; and a few mutation cases cascade rather than isolate (assertions still specific). Neither is a plan requirement; the delivered structured parity is stronger than the plan's substring-only gate. |
 <!-- First independent reviewer appends attempt 1. -->
