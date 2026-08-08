@@ -21,9 +21,16 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { runCheck } from "./check-distributed-execution-foundation.mjs";
+import {
+  runCheck,
+  canonicalizeJson,
+  computeEventDigest,
+  parseJsonStrict,
+} from "./check-distributed-execution-foundation.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+const GJ_DIR = "tests/fixtures/distributed-execution";
 
 const REL = {
   json: "docs/architecture/distributed-execution-lifecycles.json",
@@ -33,6 +40,8 @@ const REL = {
   threatModel: "docs/architecture/distributed-execution-threat-model.md",
   threatControls: "docs/architecture/distributed-execution-threat-controls.json",
   programDesign: "docs/replatform/program-design.md",
+  fixturesDir: GJ_DIR,
+  schema: `${GJ_DIR}/schema-v1.json`,
 };
 
 function makeFixture(t, mutate) {
@@ -50,6 +59,9 @@ function makeFixture(t, mutate) {
     threatModelPath: path.join(root, REL.threatModel),
     threatControlsPath: path.join(root, REL.threatControls),
     programDesignPath: path.join(root, REL.programDesign),
+    fixturesDir: path.join(root, REL.fixturesDir),
+    schemaPath: path.join(root, REL.schema),
+    fixturePath: (name) => path.join(root, REL.fixturesDir, name),
   };
   fs.copyFileSync(path.join(repoRoot, REL.json), files.jsonPath);
   fs.copyFileSync(path.join(repoRoot, REL.md), files.mdPath);
@@ -58,6 +70,8 @@ function makeFixture(t, mutate) {
   fs.copyFileSync(path.join(repoRoot, REL.threatModel), files.threatModelPath);
   fs.copyFileSync(path.join(repoRoot, REL.threatControls), files.threatControlsPath);
   fs.copyFileSync(path.join(repoRoot, REL.programDesign), files.programDesignPath);
+  // FND-004: copy the whole fixture corpus (schema-v1.json + 9 fixtures + README).
+  fs.cpSync(path.join(repoRoot, REL.fixturesDir), files.fixturesDir, { recursive: true });
   if (mutate) mutate(files);
   return root;
 }
@@ -396,8 +410,12 @@ test("forbidden edge into a malformed lifecycle pushes a clean error (no TypeErr
 
 // --- FND-003: threat model + control ownership mutation corpus ----------------
 
+// E0-F004: `threat`/`control`/`verification` are now required too, so their
+// field-deletion mutations are exercised by the loop below (all 30 crossings
+// carry them, so the valid corpus stays green).
 const THREAT_REQUIRED_FIELDS = [
   "id",
+  "threat",
   "trustedSide",
   "lessTrustedSide",
   "authentication",
@@ -408,6 +426,8 @@ const THREAT_REQUIRED_FIELDS = [
   "audit",
   "failureMode",
   "severity",
+  "control",
+  "verification",
   "ownerTickets",
   "verificationLane",
 ];
@@ -577,4 +597,434 @@ test("threat parity: an extra Markdown register id absent from JSON fails", asyn
     hasError(errors, `register id "DE-99" is present in the Markdown register but not JSON`),
     report(errors),
   );
+});
+
+// --- FND-004: golden-journey + failure fixture mutation corpus ----------------
+
+function fixtureFile(root, name) {
+  return path.join(root, GJ_DIR, name);
+}
+function readFixture(root, name) {
+  return JSON.parse(fs.readFileSync(fixtureFile(root, name), "utf8"));
+}
+function writeFixture(root, name, obj) {
+  fs.writeFileSync(fixtureFile(root, name), JSON.stringify(obj, null, 2) + "\n", "utf8");
+}
+function schemaFile(root) {
+  return path.join(root, GJ_DIR, "schema-v1.json");
+}
+function readSchema(root) {
+  return JSON.parse(fs.readFileSync(schemaFile(root), "utf8"));
+}
+function writeSchema(root, obj) {
+  fs.writeFileSync(schemaFile(root), JSON.stringify(obj, null, 2) + "\n", "utf8");
+}
+// A different-but-valid 26-char ULID body (Crockford base32, no I/L/O/U).
+const ULID26 = "0123456789ABCDEFGHJKMNPQRS";
+
+test("valid: the fixture corpus passes with zero errors (real repo)", async () => {
+  const { errors } = await runCheck(repoRoot);
+  assert.deepEqual(errors, [], report(errors));
+});
+
+// (1) The eventDigest binds every one of the 14 immutable event fields: changing
+// any single field without recomputing the digest is detected.
+const EVENT_FIELD_MUTATIONS = {
+  protocolVersion: 2,
+  eventId: ULID26,
+  eventType: "changed_type",
+  organizationId: `org_${ULID26}`,
+  companyId: `company_${ULID26}`,
+  workerId: `worker_${ULID26}`,
+  jobId: `job_${ULID26}`,
+  attempt: 7,
+  leaseId: `lease_${ULID26}`,
+  fenceToken: 555,
+  seq: 99,
+  occurredAt: "2027-01-01T00:00:00.000Z",
+  payload: { detail: "changed-payload" },
+  eventDigest: "0".repeat(64),
+};
+for (const [field, newVal] of Object.entries(EVENT_FIELD_MUTATIONS)) {
+  test(`fixture event: mutating "${field}" without re-digesting is rejected`, async (t) => {
+    const root = makeFixture(t, ({ root: r }) => {
+      const fx = readFixture(r, "batch-success.json");
+      fx.expectedEvents[0][field] = newVal;
+      writeFixture(r, "batch-success.json", fx);
+    });
+    const { errors } = await runCheck(root);
+    assert.ok(hasError(errors, "batch-success.json: event[0] eventDigest mismatch"), report(errors));
+  });
+}
+
+test("fixture event: reusing another event's digest fails", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const fx = readFixture(r, "batch-success.json");
+    fx.expectedEvents[1].eventDigest = fx.expectedEvents[0].eventDigest;
+    writeFixture(r, "batch-success.json", fx);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "batch-success.json: event[1] eventDigest mismatch"), report(errors));
+});
+
+test("fixture event: a bad eventId format fails the schema pattern", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const fx = readFixture(r, "batch-success.json");
+    fx.expectedEvents[0].eventId = "not-a-valid-ulid";
+    writeFixture(r, "batch-success.json", fx);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "/expectedEvents/0/eventId does not match pattern"), report(errors));
+});
+
+test("fixture event: a duplicate eventId across events fails", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const fx = readFixture(r, "batch-success.json");
+    fx.expectedEvents[1].eventId = fx.expectedEvents[0].eventId;
+    // Re-digest event[1] so ONLY the duplicate-id rule (not the digest) fires.
+    delete fx.expectedEvents[1].eventDigest;
+    fx.expectedEvents[1].eventDigest = computeEventDigest(fx.expectedEvents[1]);
+    writeFixture(r, "batch-success.json", fx);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "batch-success.json: duplicate eventId"), report(errors));
+});
+
+test("fixture event: a foreign leaseId not in identity.attempts fails referential consistency", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const fx = readFixture(r, "batch-success.json");
+    fx.expectedEvents[0].leaseId = `lease_${ULID26}`;
+    delete fx.expectedEvents[0].eventDigest;
+    fx.expectedEvents[0].eventDigest = computeEventDigest(fx.expectedEvents[0]);
+    writeFixture(r, "batch-success.json", fx);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "does not match any declared identity attempt"), report(errors));
+});
+
+test("fixture event: a cross-tenant organizationId fails", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const fx = readFixture(r, "batch-success.json");
+    fx.expectedEvents[0].organizationId = `org_${ULID26}`;
+    delete fx.expectedEvents[0].eventDigest;
+    fx.expectedEvents[0].eventDigest = computeEventDigest(fx.expectedEvents[0]);
+    writeFixture(r, "batch-success.json", fx);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "event[0] organizationId"), report(errors));
+  assert.ok(hasError(errors, "does not match organization.id"), report(errors));
+});
+
+test("fixture event: an unsafe integer fenceToken is not canonicalizable", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const fx = readFixture(r, "batch-success.json");
+    fx.expectedEvents[0].fenceToken = 9007199254740992; // 2^53, not a safe integer
+    writeFixture(r, "batch-success.json", fx);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "batch-success.json: event[0] is not canonicalizable"), report(errors));
+});
+
+test("fixture event: a float attempt is not canonicalizable", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const fx = readFixture(r, "batch-success.json");
+    fx.expectedEvents[0].attempt = 1.5;
+    writeFixture(r, "batch-success.json", fx);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "batch-success.json: event[0] is not canonicalizable"), report(errors));
+});
+
+test("fixture event: a lone surrogate in a payload string is not canonicalizable", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const fx = readFixture(r, "batch-success.json");
+    fx.expectedEvents[1].payload = { detail: "\uD800" };
+    writeFixture(r, "batch-success.json", fx);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "batch-success.json: event[1] is not canonicalizable"), report(errors));
+});
+
+test("fixture: duplicate semantic keys inside an event are rejected at parse", async (t) => {
+  const root = makeFixture(t, ({ fixturePath }) => {
+    const p = fixturePath("batch-success.json");
+    const src = fs.readFileSync(p, "utf8");
+    const out = src.replace('"seq": 1,', '"seq": 1,\n      "seq": 1,');
+    assert.notEqual(out, src, "mutation did not inject a duplicate key");
+    fs.writeFileSync(p, out, "utf8");
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "duplicate object key"), report(errors));
+});
+
+test("fixture: an extra top-level property fails the closed schema", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const fx = readFixture(r, "batch-success.json");
+    fx.unexpectedField = true;
+    writeFixture(r, "batch-success.json", fx);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "/unexpectedField is not an allowed property"), report(errors));
+});
+
+test("fixture: schemaVersion other than 1 fails", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const fx = readFixture(r, "batch-success.json");
+    fx.schemaVersion = 2;
+    writeFixture(r, "batch-success.json", fx);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "batch-success.json: schemaVersion must be 1"), report(errors));
+});
+
+test("fixture: id not matching the filename fails", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const fx = readFixture(r, "batch-success.json");
+    fx.id = "batch-different";
+    writeFixture(r, "batch-success.json", fx);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "batch-success.json: id must match filename"), report(errors));
+});
+
+test("fixture: an invalid workloadType fails", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const fx = readFixture(r, "batch-success.json");
+    fx.workloadType = "gpu";
+    writeFixture(r, "batch-success.json", fx);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "batch-success.json: invalid workloadType"), report(errors));
+});
+
+test("fixture: empty steps fails", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const fx = readFixture(r, "batch-success.json");
+    fx.steps = [];
+    writeFixture(r, "batch-success.json", fx);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "batch-success.json: steps must be non-empty"), report(errors));
+});
+
+test("fixture: a terminalState outside the allowed set fails", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const fx = readFixture(r, "batch-success.json");
+    fx.expected.terminalState = "annihilated";
+    writeFixture(r, "batch-success.json", fx);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "is not an allowed terminal state"), report(errors));
+});
+
+test("fixture: empty auditActions fails", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const fx = readFixture(r, "batch-success.json");
+    fx.expected.auditActions = [];
+    writeFixture(r, "batch-success.json", fx);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "batch-success.json: expected.auditActions must be non-empty"), report(errors));
+});
+
+test("fixture: empty forbiddenEffects fails", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const fx = readFixture(r, "batch-success.json");
+    fx.expected.forbiddenEffects = [];
+    writeFixture(r, "batch-success.json", fx);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "batch-success.json: expected.forbiddenEffects must be non-empty"), report(errors));
+});
+
+test("fixture: a company that belongs to a different organization fails cross-tenant consistency", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const fx = readFixture(r, "batch-success.json");
+    fx.company.organizationId = `org_${ULID26}`;
+    writeFixture(r, "batch-success.json", fx);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "does not match organization.id"), report(errors));
+});
+
+test("fixture: observed cost above the cap fails the usage bound", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const fx = readFixture(r, "batch-success.json");
+    fx.cost.observedTotalCents = fx.cost.maxTotalCents + 1;
+    writeFixture(r, "batch-success.json", fx);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "cost.observedTotalCents exceeds maxTotalCents"), report(errors));
+});
+
+test("fixture: startedAt after finishedAt fails the timing bound", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const fx = readFixture(r, "batch-success.json");
+    fx.timing.startedAt = "2027-01-01T00:00:00.000Z";
+    writeFixture(r, "batch-success.json", fx);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "timing.startedAt is after finishedAt"), report(errors));
+});
+
+test("fixture: a task_run source missing runId fails the discriminant", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const fx = readFixture(r, "batch-success.json");
+    delete fx.source.runId;
+    writeFixture(r, "batch-success.json", fx);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "/source/runId is required"), report(errors));
+});
+
+test("fixture: a non-task_run source carrying runId fails the discriminant", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const fx = readFixture(r, "browser-approval-download.json");
+    fx.source.runId = `run_${ULID26}`;
+    writeFixture(r, "browser-approval-download.json", fx);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "/source must not match the forbidden subschema"), report(errors));
+});
+
+test("fixture: a duplicate leaseId across identity attempts fails", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const fx = readFixture(r, "service-restart-checkpoint.json");
+    fx.identity.attempts[1].leaseId = fx.identity.attempts[0].leaseId;
+    writeFixture(r, "service-restart-checkpoint.json", fx);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "identity.attempts has a duplicate leaseId"), report(errors));
+});
+
+test("fixture: a non-monotonic fenceToken across attempts fails", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const fx = readFixture(r, "service-restart-checkpoint.json");
+    fx.identity.attempts[1].fenceToken = 50; // < attempt 1's 100
+    writeFixture(r, "service-restart-checkpoint.json", fx);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "identity.attempts fenceToken must strictly increase"), report(errors));
+});
+
+test("fixture: a registered canary token leaking outside its declaration fails", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const fx = readFixture(r, "plaintext-secret-in-argv-rejected.json");
+    // Place the secret where it does not affect any event digest, so ONLY the
+    // canary-leakage rule fires.
+    fx.requester.displayName = `Runner Agent ${fx.canaries[0].token}`;
+    writeFixture(r, "plaintext-secret-in-argv-rejected.json", fx);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "appears 2 time(s)"), report(errors));
+});
+
+test("fixture: a missing fixture file is named", async (t) => {
+  const root = makeFixture(t, ({ fixturePath }) => {
+    fs.rmSync(fixturePath("batch-success.json"));
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, `${GJ_DIR}/batch-success.json: missing`), report(errors));
+});
+
+// --- Schema meta-validator mutations -----------------------------------------
+
+test("schema: an unknown/custom keyword fails E0", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const src = fs.readFileSync(schemaFile(r), "utf8");
+    const out = src.replace('"type": "object",', '"type": "object",\n  "bogusKeyword": true,');
+    assert.notEqual(out, src, "mutation did not inject a custom keyword");
+    fs.writeFileSync(schemaFile(r), out, "utf8");
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, 'unknown/custom schema keyword "bogusKeyword"'), report(errors));
+});
+
+test("schema: a non-closed object (missing additionalProperties:false) fails", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const src = fs.readFileSync(schemaFile(r), "utf8");
+    // Remove the FIRST additionalProperties:false (the root object schema).
+    const out = src.replace('  "additionalProperties": false,\n', "");
+    assert.notEqual(out, src, "mutation did not remove additionalProperties:false");
+    fs.writeFileSync(schemaFile(r), out, "utf8");
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, "object schema at # must set additionalProperties:false"), report(errors));
+});
+
+test("schema: a malformed $comment form fails", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const src = fs.readFileSync(schemaFile(r), "utf8");
+    const out = src.replace('"aoa:utf8-max-bytes=480"', '"aoa:utf8-max-bytes=zero"');
+    assert.notEqual(out, src, "mutation did not corrupt a $comment");
+    fs.writeFileSync(schemaFile(r), out, "utf8");
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, 'aoa:utf8-max-bytes=<positive integer>'), report(errors));
+});
+
+test("schema: a missing required $def fails", async (t) => {
+  const root = makeFixture(t, ({ root: r }) => {
+    const schema = readSchema(r);
+    delete schema.$defs.Event;
+    writeSchema(r, schema);
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(hasError(errors, 'missing required $def "Event"'), report(errors));
+});
+
+// --- Canonicalizer / digest unit contract (imported directly) ----------------
+
+test("canonicalizer: identical objects in different key order produce identical bytes", () => {
+  const a = { b: 1, a: 2, nested: { y: [3, 2, 1], x: true } };
+  const b = { nested: { x: true, y: [3, 2, 1] }, a: 2, b: 1 };
+  assert.equal(canonicalizeJson(a), canonicalizeJson(b));
+  assert.equal(canonicalizeJson(a), '{"a":2,"b":1,"nested":{"x":true,"y":[3,2,1]}}');
+});
+
+test("canonicalizer: keys sort by UTF-16 code units (uppercase before lowercase)", () => {
+  assert.equal(canonicalizeJson({ b: 1, A: 2, a: 3 }), '{"A":2,"a":3,"b":1}');
+});
+
+test("canonicalizer: control characters escape per RFC 8785", () => {
+  assert.equal(canonicalizeJson("a\tb\nc"), '"a\\tb\\nc"');
+});
+
+test("canonicalizer: rejects floats", () => {
+  assert.throws(() => canonicalizeJson(1.5), /float is not allowed/);
+});
+
+test("canonicalizer: rejects unsafe integers", () => {
+  assert.throws(() => canonicalizeJson(9007199254740992), /unsafe integer/);
+});
+
+test("canonicalizer: rejects lone surrogates", () => {
+  assert.throws(() => canonicalizeJson("\uD800"), /lone (high|low) surrogate/);
+});
+
+test("canonicalizer: rejects unsupported values", () => {
+  assert.throws(() => canonicalizeJson(undefined), /unsupported value/);
+  assert.throws(() => canonicalizeJson(10n), /unsupported value/);
+});
+
+test("canonicalizer: -0 normalizes to 0", () => {
+  assert.equal(canonicalizeJson(-0), "0");
+  assert.equal(canonicalizeJson(0), "0");
+});
+
+test("digest: eventDigest is excluded from the digest input", () => {
+  const ev = {
+    protocolVersion: 1, eventId: "01ARZ3NDEKTSV4RRFFQ69G5FAV", eventType: "x",
+    organizationId: "org", companyId: "co", workerId: null, jobId: "j",
+    attempt: 1, leaseId: null, fenceToken: null, seq: 1, occurredAt: "t",
+    payload: {}, eventDigest: "",
+  };
+  const d = computeEventDigest(ev);
+  assert.equal(computeEventDigest({ ...ev, eventDigest: "different" }), d);
+  assert.notEqual(computeEventDigest({ ...ev, seq: 2 }), d);
+});
+
+test("parseJsonStrict: rejects duplicate object keys", () => {
+  assert.throws(() => parseJsonStrict('{"a":1,"a":2}'), /duplicate object key/);
+  assert.deepEqual(parseJsonStrict('{"a":1,"b":2}'), { a: 1, b: 2 });
 });

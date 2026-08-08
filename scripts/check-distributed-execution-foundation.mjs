@@ -66,6 +66,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
+import { createHash } from "node:crypto";
 
 const LIFECYCLES_JSON = "docs/architecture/distributed-execution-lifecycles.json";
 const LIFECYCLES_MD = "docs/architecture/distributed-execution-lifecycles.md";
@@ -153,8 +154,13 @@ const THREAT_MODEL_FRAGMENTS = [
 
 // Every crossing/control object in the JSON must carry all of these fields; the
 // JSON is authoritative and the Markdown register is a rendered view of them.
+// E0-F004: `threat`/`control`/`verification` are rendered into the Markdown
+// register and value-compared in per-ID parity, so they are required here too —
+// otherwise deleting one from a JSON crossing escaped detection (value-drift was
+// caught, field-deletion was not). All 30 crossings already carry them.
 const THREAT_CROSSING_REQUIRED_FIELDS = [
   "id",
+  "threat",
   "trustedSide",
   "lessTrustedSide",
   "authentication",
@@ -165,6 +171,8 @@ const THREAT_CROSSING_REQUIRED_FIELDS = [
   "audit",
   "failureMode",
   "severity",
+  "control",
+  "verification",
   "ownerTickets",
   "verificationLane",
 ];
@@ -952,6 +960,742 @@ async function validateThreatModel(root, errors) {
   }
 }
 
+// --- FND-004: golden-journey + failure fixture corpus ------------------------
+//
+// This layer adds three interlocking contracts on top of FND-001..003:
+//   (a) a strict JSON Schema draft 2020-12 document `schema-v1.json` whose
+//       meta-shape (dialect, $id, keyword allowlist, closed-object rules,
+//       $comment convention, required $defs, resolvable $refs) is validated by a
+//       dependency-free meta-validator — an unknown/custom keyword fails E0;
+//   (b) a dependency-free interpreter for the JSON Schema subset the schema uses,
+//       validating each of the nine fixtures (types, format/pattern, enum,
+//       uniqueItems, numeric + `aoa:utf8-max-bytes` bounds, closed objects, and
+//       the task_run source discriminant) against those exact bytes; and
+//   (c) the locked RFC 8785 canonical-JSON subset + SHA-256 `eventDigest`
+//       contract that PRT-004 reproduces byte-for-byte, plus the semantic
+//       cross-references (identity/tenant consistency, digest recompute, canary
+//       non-leakage) that JSON Schema cannot express.
+
+const GJ_DIR = "tests/fixtures/distributed-execution";
+const GJ_SCHEMA = `${GJ_DIR}/schema-v1.json`;
+const GJ_SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema";
+const GJ_SCHEMA_ID = "https://aoa.dev/contracts/distributed-execution/golden-journey-v1.schema.json";
+
+const GJ_FIXTURES = [
+  "batch-success.json",
+  "batch-cancel-during-execution.json",
+  "browser-approval-download.json",
+  "browser-denied-egress.json",
+  "service-restart-checkpoint.json",
+  "service-budget-stop.json",
+  "service-provider-pause-resume.json",
+  "late-output-quarantine.json",
+  "plaintext-secret-in-argv-rejected.json",
+];
+
+const GJ_ALLOWED_WORKLOADS = new Set(["batch", "browser_session", "service"]);
+// terminalState values used by the corpus. Every value here is also a declared
+// state in the FND-001 lifecycle model (cross-checked at runtime).
+const GJ_TERMINAL_STATES = new Set([
+  "succeeded",
+  "failed",
+  "cancelled",
+  "stopped",
+  "healthy",
+  "expired",
+]);
+
+// The exact JSON Schema 2020-12 keyword allowlist this contract permits. E1
+// compiles the same bytes in Ajv 2020-12 strict mode; a keyword outside this set
+// (a custom/unknown keyword) fails E0 here before it can reach E1.
+const JSON_SCHEMA_KEYWORDS = new Set([
+  "$schema", "$id", "$ref", "$defs", "$comment", "title", "description",
+  "type", "const", "enum", "required",
+  "properties", "additionalProperties", "unevaluatedProperties",
+  "items", "minItems", "maxItems", "uniqueItems",
+  "minimum", "maximum", "minLength", "maxLength", "pattern", "format",
+  "allOf", "anyOf", "oneOf", "not", "if", "then", "else",
+]);
+
+// $defs that must be present for the contract to be usable by E1/PRT-004.
+const GJ_REQUIRED_DEFS = [
+  "Organization", "Company", "Requester", "Executor", "Placement", "InputBase",
+  "AttemptRef", "Identity", "Source", "Step", "FailureInjection", "Event",
+  "EventPayload", "Metrics", "Cost", "Timing", "Cleanup", "Control", "Canary",
+  "Expected",
+];
+
+const RFC3339_DATE_TIME =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+
+// --- (c1) RFC 8785 canonical-JSON subset + SHA-256 eventDigest ---------------
+//
+// The locked v1 subset: null, booleans, strings, arrays, plain objects, and
+// finite safe integers. Floats, unsafe integers, lone surrogates, and any other
+// value are rejected. Object keys sort by UTF-16 code units; string/number
+// serialization follows RFC 8785 (ECMAScript JSON string escaping; integers
+// print with no exponent, no leading zeros, and -0 normalizes to 0). This is the
+// single source of truth for `eventDigest`; PRT-004 imports or byte-for-byte
+// reproduces it.
+
+class CanonicalizationError extends Error {}
+
+/** RFC 8785 string serialization (rejects lone surrogates). */
+function canonicalizeString(str) {
+  let out = '"';
+  for (let i = 0; i < str.length; i += 1) {
+    const code = str.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = i + 1 < str.length ? str.charCodeAt(i + 1) : 0;
+      if (next < 0xdc00 || next > 0xdfff) {
+        throw new CanonicalizationError("lone high surrogate in string");
+      }
+      out += str[i] + str[i + 1];
+      i += 1;
+      continue;
+    }
+    if (code >= 0xdc00 && code <= 0xdfff) {
+      throw new CanonicalizationError("lone low surrogate in string");
+    }
+    if (code === 0x22) out += '\\"';
+    else if (code === 0x5c) out += "\\\\";
+    else if (code === 0x08) out += "\\b";
+    else if (code === 0x09) out += "\\t";
+    else if (code === 0x0a) out += "\\n";
+    else if (code === 0x0c) out += "\\f";
+    else if (code === 0x0d) out += "\\r";
+    else if (code < 0x20) out += "\\u" + code.toString(16).padStart(4, "0");
+    else out += str[i];
+  }
+  return out + '"';
+}
+
+/** RFC 8785 number serialization for the integer-only v1 subset. */
+function canonicalizeNumber(num) {
+  if (!Number.isFinite(num)) {
+    throw new CanonicalizationError("non-finite number is not allowed");
+  }
+  if (!Number.isInteger(num)) {
+    throw new CanonicalizationError("float is not allowed in the v1 subset");
+  }
+  if (!Number.isSafeInteger(num)) {
+    throw new CanonicalizationError("unsafe integer is not allowed");
+  }
+  if (Object.is(num, -0)) return "0";
+  return String(num);
+}
+
+/** Canonicalize a parsed JSON value to its RFC 8785 (subset) string form. */
+export function canonicalizeJson(value) {
+  if (value === null) return "null";
+  const t = typeof value;
+  if (t === "boolean") return value ? "true" : "false";
+  if (t === "number") return canonicalizeNumber(value);
+  if (t === "string") return canonicalizeString(value);
+  if (Array.isArray(value)) {
+    return "[" + value.map((v) => canonicalizeJson(v)).join(",") + "]";
+  }
+  if (t === "object") {
+    // Sort keys by UTF-16 code units (JS default string comparison).
+    const keys = Object.keys(value).sort();
+    const members = keys.map(
+      (k) => canonicalizeString(k) + ":" + canonicalizeJson(value[k]),
+    );
+    return "{" + members.join(",") + "}";
+  }
+  throw new CanonicalizationError(`unsupported value of type ${t}`);
+}
+
+/** SHA-256 (lowercase hex) over the UTF-8 canonical bytes of `event` minus `eventDigest`. */
+export function computeEventDigest(event) {
+  if (event === null || typeof event !== "object" || Array.isArray(event)) {
+    throw new CanonicalizationError("event must be a plain object");
+  }
+  const { eventDigest, ...rest } = event;
+  const canonical = canonicalizeJson(rest);
+  return createHash("sha256").update(Buffer.from(canonical, "utf8")).digest("hex");
+}
+
+// --- (c2) strict JSON parse (rejects duplicate object keys) ------------------
+//
+// JSON.parse silently keeps the last value for a duplicated key; a fixture with
+// duplicate semantic keys is ambiguous, so fixtures load through this parser.
+export function parseJsonStrict(text) {
+  let i = 0;
+  const n = text.length;
+  const isWs = (c) => c === " " || c === "\t" || c === "\n" || c === "\r";
+  const skipWs = () => { while (i < n && isWs(text[i])) i += 1; };
+  const fail = (msg) => { throw new SyntaxError(`${msg} at position ${i}`); };
+
+  function parseString() {
+    i += 1; // opening quote
+    let s = "";
+    for (;;) {
+      if (i >= n) fail("unterminated string");
+      const ch = text[i];
+      if (ch === '"') { i += 1; break; }
+      if (ch === "\\") {
+        i += 1;
+        const e = text[i];
+        if (e === '"') s += '"';
+        else if (e === "\\") s += "\\";
+        else if (e === "/") s += "/";
+        else if (e === "b") s += "\b";
+        else if (e === "f") s += "\f";
+        else if (e === "n") s += "\n";
+        else if (e === "r") s += "\r";
+        else if (e === "t") s += "\t";
+        else if (e === "u") {
+          const hex = text.slice(i + 1, i + 5);
+          if (!/^[0-9a-fA-F]{4}$/.test(hex)) fail("invalid \\u escape");
+          s += String.fromCharCode(parseInt(hex, 16));
+          i += 4;
+        } else fail("invalid escape");
+        i += 1;
+        continue;
+      }
+      if (ch.charCodeAt(0) < 0x20) fail("unescaped control character in string");
+      s += ch;
+      i += 1;
+    }
+    return s;
+  }
+
+  function parseNumber() {
+    const start = i;
+    if (text[i] === "-") i += 1;
+    while (i < n && text[i] >= "0" && text[i] <= "9") i += 1;
+    if (text[i] === ".") { i += 1; while (i < n && text[i] >= "0" && text[i] <= "9") i += 1; }
+    if (text[i] === "e" || text[i] === "E") {
+      i += 1;
+      if (text[i] === "+" || text[i] === "-") i += 1;
+      while (i < n && text[i] >= "0" && text[i] <= "9") i += 1;
+    }
+    const raw = text.slice(start, i);
+    if (!/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(raw)) fail("invalid number");
+    return Number(raw);
+  }
+
+  function parseValue() {
+    skipWs();
+    const c = text[i];
+    if (c === "{") return parseObject();
+    if (c === "[") return parseArray();
+    if (c === '"') return parseString();
+    if (c === "-" || (c >= "0" && c <= "9")) return parseNumber();
+    if (text.startsWith("true", i)) { i += 4; return true; }
+    if (text.startsWith("false", i)) { i += 5; return false; }
+    if (text.startsWith("null", i)) { i += 4; return null; }
+    fail("unexpected token");
+    return undefined;
+  }
+
+  function parseObject() {
+    i += 1; // {
+    const obj = {};
+    const seen = new Set();
+    skipWs();
+    if (text[i] === "}") { i += 1; return obj; }
+    for (;;) {
+      skipWs();
+      if (text[i] !== '"') fail("expected object key");
+      const key = parseString();
+      if (seen.has(key)) throw new SyntaxError(`duplicate object key ${JSON.stringify(key)} at position ${i}`);
+      seen.add(key);
+      skipWs();
+      if (text[i] !== ":") fail("expected ':'");
+      i += 1;
+      obj[key] = parseValue();
+      skipWs();
+      if (text[i] === ",") { i += 1; continue; }
+      if (text[i] === "}") { i += 1; break; }
+      fail("expected ',' or '}'");
+    }
+    return obj;
+  }
+
+  function parseArray() {
+    i += 1; // [
+    const arr = [];
+    skipWs();
+    if (text[i] === "]") { i += 1; return arr; }
+    for (;;) {
+      arr.push(parseValue());
+      skipWs();
+      if (text[i] === ",") { i += 1; continue; }
+      if (text[i] === "]") { i += 1; break; }
+      fail("expected ',' or ']'");
+    }
+    return arr;
+  }
+
+  skipWs();
+  const value = parseValue();
+  skipWs();
+  if (i !== n) fail("trailing content after JSON value");
+  return value;
+}
+
+// --- (a) JSON Schema meta-validator ------------------------------------------
+
+const SUBSCHEMA_KEYS = [
+  "additionalProperties", "unevaluatedProperties", "items", "if", "then",
+  "else", "not", "contains", "propertyNames",
+];
+const SUBSCHEMA_MAP_KEYS = ["properties", "$defs", "patternProperties", "dependentSchemas"];
+const SUBSCHEMA_ARRAY_KEYS = ["allOf", "anyOf", "oneOf", "prefixItems"];
+
+/** True only for schemas that declare `type: "object"` (an object schema that
+ * must be closed). Matcher fragments that use bare `properties`/`required`
+ * inside `if`/`anyOf` are conditional applicators, not object schemas. */
+function declaresObjectType(node) {
+  return node.type === "object"
+    || (Array.isArray(node.type) && node.type.includes("object"));
+}
+
+function composesInPlace(node) {
+  return "allOf" in node || "anyOf" in node || "oneOf" in node
+    || "if" in node || "then" in node || "else" in node;
+}
+
+/** Recursively validate the schema meta-shape. */
+function walkSchema(node, pathStr, defsNames, errors) {
+  if (node === true || node === false) return;
+  if (node === null || typeof node !== "object" || Array.isArray(node)) {
+    errors.push(`${GJ_SCHEMA}: schema node at ${pathStr} must be an object or boolean`);
+    return;
+  }
+  for (const key of Object.keys(node)) {
+    if (!JSON_SCHEMA_KEYWORDS.has(key)) {
+      errors.push(`${GJ_SCHEMA}: unknown/custom schema keyword "${key}" at ${pathStr}`);
+    }
+  }
+  if ("$comment" in node) {
+    const c = node.$comment;
+    if (typeof c !== "string" || !/^aoa:utf8-max-bytes=[1-9][0-9]*$/.test(c)) {
+      errors.push(`${GJ_SCHEMA}: $comment ${JSON.stringify(c)} at ${pathStr} must match "aoa:utf8-max-bytes=<positive integer>"`);
+    }
+  }
+  if ("$ref" in node) {
+    const ref = node.$ref;
+    const m = typeof ref === "string" ? /^#\/\$defs\/([A-Za-z0-9_]+)$/.exec(ref) : null;
+    if (!m) {
+      errors.push(`${GJ_SCHEMA}: $ref ${JSON.stringify(ref)} at ${pathStr} must be a local #/$defs/<Name> reference`);
+    } else if (!defsNames.has(m[1])) {
+      errors.push(`${GJ_SCHEMA}: $ref ${JSON.stringify(ref)} at ${pathStr} does not resolve to a defined $def`);
+    }
+  }
+  if (declaresObjectType(node) && node.additionalProperties !== false) {
+    errors.push(`${GJ_SCHEMA}: object schema at ${pathStr} must set additionalProperties:false`);
+  }
+  if (declaresObjectType(node) && composesInPlace(node) && node.unevaluatedProperties !== false) {
+    errors.push(`${GJ_SCHEMA}: composing object schema at ${pathStr} must also set unevaluatedProperties:false`);
+  }
+  for (const k of SUBSCHEMA_MAP_KEYS) {
+    if (k in node && node[k] && typeof node[k] === "object") {
+      for (const name of Object.keys(node[k])) {
+        walkSchema(node[k][name], `${pathStr}/${k}/${name}`, defsNames, errors);
+      }
+    }
+  }
+  for (const k of SUBSCHEMA_KEYS) {
+    if (k in node) walkSchema(node[k], `${pathStr}/${k}`, defsNames, errors);
+  }
+  for (const k of SUBSCHEMA_ARRAY_KEYS) {
+    if (k in node && Array.isArray(node[k])) {
+      node[k].forEach((s, idx) => walkSchema(s, `${pathStr}/${k}/${idx}`, defsNames, errors));
+    }
+  }
+}
+
+async function loadAndValidateSchema(root, errors) {
+  const raw = await readOrError(root, GJ_SCHEMA, errors);
+  if (raw == null) return null;
+  let schema;
+  try {
+    schema = parseJsonStrict(raw);
+  } catch (err) {
+    errors.push(`${GJ_SCHEMA}: invalid JSON (${err.message})`);
+    return null;
+  }
+  if (schema.$schema !== GJ_SCHEMA_DIALECT) {
+    errors.push(`${GJ_SCHEMA}: $schema must be ${JSON.stringify(GJ_SCHEMA_DIALECT)}`);
+  }
+  if (schema.$id !== GJ_SCHEMA_ID) {
+    errors.push(`${GJ_SCHEMA}: $id must be ${JSON.stringify(GJ_SCHEMA_ID)}`);
+  }
+  if (schema.type !== "object") {
+    errors.push(`${GJ_SCHEMA}: root "type" must be "object"`);
+  }
+  if (!Array.isArray(schema.required) || schema.required.length === 0) {
+    errors.push(`${GJ_SCHEMA}: root must declare a non-empty "required" array`);
+  }
+  const defs = schema.$defs && typeof schema.$defs === "object" ? schema.$defs : {};
+  const defsNames = new Set(Object.keys(defs));
+  for (const name of GJ_REQUIRED_DEFS) {
+    if (!defsNames.has(name)) errors.push(`${GJ_SCHEMA}: missing required $def "${name}"`);
+  }
+  walkSchema(schema, "#", defsNames, errors);
+  return schema;
+}
+
+// --- (b) JSON Schema (subset) instance validator -----------------------------
+
+function derefSchema(schema, root) {
+  let s = schema;
+  let guard = 0;
+  while (s && typeof s === "object" && "$ref" in s) {
+    const m = /^#\/\$defs\/([A-Za-z0-9_]+)$/.exec(s.$ref);
+    if (!m) return s;
+    s = root.$defs ? root.$defs[m[1]] : undefined;
+    if (s === undefined) return {};
+    guard += 1;
+    if (guard > 50) return {};
+  }
+  return s;
+}
+
+function deepEqual(a, b) {
+  if (a === b) return true;
+  if (typeof a !== typeof b) return false;
+  if (a === null || b === null) return a === b;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((x, i) => deepEqual(x, b[i]));
+  }
+  if (typeof a === "object" && typeof b === "object") {
+    const ka = Object.keys(a).sort();
+    const kb = Object.keys(b).sort();
+    return ka.length === kb.length && ka.every((k, i) => k === kb[i] && deepEqual(a[k], b[k]));
+  }
+  return false;
+}
+
+function isPlainObject(v) {
+  return v !== null && typeof v === "object" && !Array.isArray(v);
+}
+
+function matchesType(value, t) {
+  switch (t) {
+    case "string": return typeof value === "string";
+    case "boolean": return typeof value === "boolean";
+    case "null": return value === null;
+    case "array": return Array.isArray(value);
+    case "object": return isPlainObject(value);
+    case "integer":
+      return typeof value === "number" && Number.isInteger(value) && Number.isSafeInteger(value);
+    case "number": return typeof value === "number" && Number.isFinite(value);
+    default: return false;
+  }
+}
+
+function schemaMatches(value, schema, root) {
+  const scratch = [];
+  validateInstance(value, schema, root, "#", scratch);
+  return scratch.length === 0;
+}
+
+/** Property names an object schema (and its in-place applicators) declare. */
+function collectDeclaredProps(schema, value, root, acc) {
+  const s = derefSchema(schema, root);
+  if (!s || typeof s !== "object") return acc;
+  if (s.properties) for (const k of Object.keys(s.properties)) acc.add(k);
+  if (Array.isArray(s.allOf)) for (const sub of s.allOf) collectDeclaredProps(sub, value, root, acc);
+  if (s.if !== undefined) {
+    if (schemaMatches(value, s.if, root)) {
+      if (s.then !== undefined) collectDeclaredProps(s.then, value, root, acc);
+    } else if (s.else !== undefined) {
+      collectDeclaredProps(s.else, value, root, acc);
+    }
+  }
+  return acc;
+}
+
+function validateObject(value, schema, root, pathStr, errors) {
+  for (const r of schema.required || []) {
+    if (!(r in value)) errors.push(`${pathStr}/${r} is required`);
+  }
+  if (schema.properties) {
+    for (const [pname, psub] of Object.entries(schema.properties)) {
+      if (pname in value) {
+        if (psub === false) errors.push(`${pathStr}/${pname} is not allowed here`);
+        else validateInstance(value[pname], psub, root, `${pathStr}/${pname}`, errors);
+      }
+    }
+  }
+  if (Array.isArray(schema.allOf)) {
+    for (const sub of schema.allOf) validateInstance(value, sub, root, pathStr, errors);
+  }
+  if (schema.if !== undefined) {
+    if (schemaMatches(value, schema.if, root)) {
+      if (schema.then !== undefined) validateInstance(value, schema.then, root, pathStr, errors);
+    } else if (schema.else !== undefined) {
+      validateInstance(value, schema.else, root, pathStr, errors);
+    }
+  }
+  if (schema.not !== undefined && schemaMatches(value, schema.not, root)) {
+    errors.push(`${pathStr} must not match the forbidden subschema`);
+  }
+  if (Array.isArray(schema.anyOf) && !schema.anyOf.some((sub) => schemaMatches(value, sub, root))) {
+    errors.push(`${pathStr} does not match any anyOf branch`);
+  }
+  if (Array.isArray(schema.oneOf)) {
+    const matches = schema.oneOf.filter((sub) => schemaMatches(value, sub, root)).length;
+    if (matches !== 1) errors.push(`${pathStr} must match exactly one oneOf branch (matched ${matches})`);
+  }
+  if (schema.additionalProperties === false || schema.unevaluatedProperties === false) {
+    const allowed = collectDeclaredProps(schema, value, root, new Set());
+    for (const k of Object.keys(value)) {
+      if (!allowed.has(k)) errors.push(`${pathStr}/${k} is not an allowed property`);
+    }
+  }
+}
+
+// Validate a value against a (subset) schema. Signature: (value, schema, root,
+// pathStr, errors). Type-specific keywords are gated on the runtime type so a
+// nullable `["string","null"]` value never triggers string/number checks.
+function validateInstance(value, schema, root, pathStr, errors) {
+  const s = derefSchema(schema, root);
+  if (s === true) return;
+  if (s === false) { errors.push(`${pathStr} is not allowed`); return; }
+  if (!s || typeof s !== "object") return;
+
+  if ("type" in s) {
+    const types = Array.isArray(s.type) ? s.type : [s.type];
+    if (!types.some((t) => matchesType(value, t))) {
+      errors.push(`${pathStr} must be of type ${JSON.stringify(s.type)}`);
+      return;
+    }
+  }
+  if ("const" in s && !deepEqual(value, s.const)) {
+    errors.push(`${pathStr} must equal ${JSON.stringify(s.const)}`);
+  }
+  if ("enum" in s && !s.enum.some((e) => deepEqual(value, e))) {
+    errors.push(`${pathStr} must be one of ${JSON.stringify(s.enum)}`);
+  }
+
+  if (typeof value === "string") {
+    if ("minLength" in s && value.length < s.minLength) errors.push(`${pathStr} is shorter than minLength ${s.minLength}`);
+    if ("maxLength" in s && value.length > s.maxLength) errors.push(`${pathStr} is longer than maxLength ${s.maxLength}`);
+    if ("pattern" in s && !new RegExp(s.pattern, "u").test(value)) errors.push(`${pathStr} does not match pattern ${JSON.stringify(s.pattern)}`);
+    if (s.format === "date-time" && !RFC3339_DATE_TIME.test(value)) errors.push(`${pathStr} is not an RFC3339 date-time`);
+    if ("$comment" in s) {
+      const m = /^aoa:utf8-max-bytes=([1-9][0-9]*)$/.exec(s.$comment);
+      if (m && Buffer.byteLength(value, "utf8") > Number(m[1])) {
+        errors.push(`${pathStr} exceeds ${m[1]} UTF-8 bytes`);
+      }
+    }
+  }
+  if (typeof value === "number") {
+    if ("minimum" in s && value < s.minimum) errors.push(`${pathStr} is below minimum ${s.minimum}`);
+    if ("maximum" in s && value > s.maximum) errors.push(`${pathStr} is above maximum ${s.maximum}`);
+  }
+  if (Array.isArray(value)) {
+    if ("minItems" in s && value.length < s.minItems) errors.push(`${pathStr} has fewer than minItems ${s.minItems}`);
+    if ("maxItems" in s && value.length > s.maxItems) errors.push(`${pathStr} has more than maxItems ${s.maxItems}`);
+    if (s.uniqueItems === true) {
+      const seen = new Set();
+      for (const el of value) {
+        let key;
+        try { key = canonicalizeJson(el); } catch { key = JSON.stringify(el); }
+        if (seen.has(key)) { errors.push(`${pathStr} must have unique items`); break; }
+        seen.add(key);
+      }
+    }
+    if (s.items) value.forEach((el, idx) => validateInstance(el, s.items, root, `${pathStr}/${idx}`, errors));
+  }
+  if (isPlainObject(value)) validateObject(value, s, root, pathStr, errors);
+}
+
+// --- (c3) fixture semantic validation ----------------------------------------
+
+/** Stable tuple key for an (attempt, leaseId, fenceToken) triple. */
+function attemptTupleKey(attempt, workerId, leaseId, fenceToken) {
+  const worker = workerId === null || workerId === undefined ? "<null>" : String(workerId);
+  const lease = leaseId === null || leaseId === undefined ? "<null>" : String(leaseId);
+  const fence = fenceToken === null || fenceToken === undefined ? "<null>" : String(fenceToken);
+  return attempt + " | " + worker + " | " + lease + " | " + fence;
+}
+
+function validateFixtureSemantics(rel, name, fixture, lifecycleStates, errors) {
+  const base = name.replace(/\.json$/, "");
+
+  // Plan Step-1 baseline checks (kept verbatim so their causes are stable).
+  if (fixture.schemaVersion !== 1) errors.push(`${rel}: schemaVersion must be 1`);
+  if (fixture.id !== base) errors.push(`${rel}: id must match filename`);
+  if (!GJ_ALLOWED_WORKLOADS.has(fixture.workloadType)) errors.push(`${rel}: invalid workloadType`);
+  if (!Array.isArray(fixture.steps) || fixture.steps.length === 0) errors.push(`${rel}: steps must be non-empty`);
+  if (!fixture.expected || typeof fixture.expected.terminalState !== "string") {
+    errors.push(`${rel}: expected.terminalState is required`);
+  } else {
+    if (!GJ_TERMINAL_STATES.has(fixture.expected.terminalState)) {
+      errors.push(`${rel}: expected.terminalState ${JSON.stringify(fixture.expected.terminalState)} is not an allowed terminal state`);
+    } else if (lifecycleStates && !lifecycleStates.has(fixture.expected.terminalState)) {
+      errors.push(`${rel}: expected.terminalState ${JSON.stringify(fixture.expected.terminalState)} is not a declared FND-001 lifecycle state`);
+    }
+  }
+  if (!fixture.expected || !Array.isArray(fixture.expected.auditActions) || fixture.expected.auditActions.length === 0) {
+    errors.push(`${rel}: expected.auditActions must be non-empty`);
+  }
+  if (!fixture.expected || !Array.isArray(fixture.expected.forbiddenEffects) || fixture.expected.forbiddenEffects.length === 0) {
+    errors.push(`${rel}: expected.forbiddenEffects must be non-empty`);
+  }
+
+  const org = fixture.organization;
+  const company = fixture.company;
+  const identity = fixture.identity;
+
+  // Cross-tenant consistency: company belongs to the organization.
+  if (isPlainObject(org) && isPlainObject(company) && company.organizationId !== org.id) {
+    errors.push(`${rel}: company.organizationId ${JSON.stringify(company.organizationId)} does not match organization.id ${JSON.stringify(org.id)}`);
+  }
+
+  // Identity attempt-set: unique leases, strictly increasing attempt + fence.
+  const attempts = identity && Array.isArray(identity.attempts) ? identity.attempts : [];
+  const attemptKeys = new Set();
+  const leaseIds = [];
+  let prevAttempt = null;
+  let prevFence = null;
+  for (const a of attempts) {
+    if (!isPlainObject(a)) continue;
+    attemptKeys.add(attemptTupleKey(a.attempt, a.workerId, a.leaseId, a.fenceToken));
+    if (a.leaseId !== null && a.leaseId !== undefined) leaseIds.push(a.leaseId);
+    if (typeof a.attempt === "number") {
+      if (prevAttempt !== null && !(a.attempt > prevAttempt)) errors.push(`${rel}: identity.attempts attempt numbers must strictly increase`);
+      prevAttempt = a.attempt;
+    }
+    if (typeof a.fenceToken === "number") {
+      if (prevFence !== null && !(a.fenceToken > prevFence)) errors.push(`${rel}: identity.attempts fenceToken must strictly increase across attempts`);
+      prevFence = a.fenceToken;
+    }
+  }
+  if (new Set(leaseIds).size !== leaseIds.length) errors.push(`${rel}: identity.attempts has a duplicate leaseId`);
+
+  // Events: tenant + identity consistency, uniqueness, ordering, digest.
+  const events = Array.isArray(fixture.expectedEvents) ? fixture.expectedEvents : [];
+  if (events.length === 0) errors.push(`${rel}: expectedEvents must be non-empty`);
+  const eventIds = new Set();
+  let prevSeq = null;
+  let prevAt = null;
+  events.forEach((ev, idx) => {
+    if (!isPlainObject(ev)) return;
+    if (isPlainObject(org) && ev.organizationId !== org.id) {
+      errors.push(`${rel}: event[${idx}] organizationId ${JSON.stringify(ev.organizationId)} does not match organization.id ${JSON.stringify(org.id)}`);
+    }
+    if (isPlainObject(company) && ev.companyId !== company.id) {
+      errors.push(`${rel}: event[${idx}] companyId ${JSON.stringify(ev.companyId)} does not match company.id ${JSON.stringify(company.id)}`);
+    }
+    if (isPlainObject(identity)) {
+      if (ev.jobId !== identity.jobId) {
+        errors.push(`${rel}: event[${idx}] jobId ${JSON.stringify(ev.jobId)} does not match identity.jobId ${JSON.stringify(identity.jobId)}`);
+      }
+      // The (attempt, workerId, leaseId, fenceToken) tuple must exactly match one
+      // declared identity attempt. Service restart/pause-resume and late-output
+      // quarantine legitimately span replacement instances (a second attempt with
+      // its own worker/lease/fence); every event still binds to a declared one.
+      const key = attemptTupleKey(ev.attempt, ev.workerId, ev.leaseId, ev.fenceToken);
+      if (!attemptKeys.has(key)) {
+        errors.push(`${rel}: event[${idx}] (attempt=${ev.attempt}, workerId=${JSON.stringify(ev.workerId)}, leaseId=${JSON.stringify(ev.leaseId)}, fenceToken=${ev.fenceToken}) does not match any declared identity attempt`);
+      }
+    }
+    if (eventIds.has(ev.eventId)) errors.push(`${rel}: duplicate eventId ${JSON.stringify(ev.eventId)}`);
+    eventIds.add(ev.eventId);
+    if (typeof ev.seq === "number") {
+      if (prevSeq !== null && !(ev.seq > prevSeq)) errors.push(`${rel}: event[${idx}] seq must strictly increase`);
+      prevSeq = ev.seq;
+    }
+    if (typeof ev.occurredAt === "string") {
+      const t = Date.parse(ev.occurredAt);
+      if (!Number.isNaN(t)) {
+        if (prevAt !== null && t < prevAt) errors.push(`${rel}: event[${idx}] occurredAt must not move backwards`);
+        prevAt = t;
+      }
+    }
+    try {
+      const computed = computeEventDigest(ev);
+      if (ev.eventDigest !== computed) {
+        errors.push(`${rel}: event[${idx}] eventDigest mismatch (recomputed ${computed}, found ${JSON.stringify(ev.eventDigest)})`);
+      }
+    } catch (err) {
+      errors.push(`${rel}: event[${idx}] is not canonicalizable (${err.message})`);
+    }
+  });
+
+  // Cost / usage bounds.
+  const cost = fixture.cost;
+  if (isPlainObject(cost)) {
+    if (typeof cost.observedTotalCents === "number" && typeof cost.maxTotalCents === "number"
+      && cost.observedTotalCents > cost.maxTotalCents) {
+      errors.push(`${rel}: cost.observedTotalCents exceeds maxTotalCents`);
+    }
+    if (typeof cost.observedTokens === "number" && typeof cost.tokenBudget === "number"
+      && cost.observedTokens > cost.tokenBudget) {
+      errors.push(`${rel}: cost.observedTokens exceeds tokenBudget`);
+    }
+  }
+
+  // Timing bounds.
+  const timing = fixture.timing;
+  if (isPlainObject(timing)) {
+    const q = Date.parse(timing.queuedAt);
+    const s = Date.parse(timing.startedAt);
+    const f = Date.parse(timing.finishedAt);
+    if (!Number.isNaN(q) && !Number.isNaN(s) && q > s) errors.push(`${rel}: timing.queuedAt is after startedAt`);
+    if (!Number.isNaN(s) && !Number.isNaN(f) && s > f) errors.push(`${rel}: timing.startedAt is after finishedAt`);
+    if (typeof timing.observedWallClockMs === "number" && typeof timing.maxWallClockMs === "number"
+      && timing.observedWallClockMs > timing.maxWallClockMs) {
+      errors.push(`${rel}: timing.observedWallClockMs exceeds maxWallClockMs`);
+    }
+  }
+
+  // Canary non-leakage: each registered secret value appears exactly once in the
+  // whole fixture — in its own `canaries[].token` declaration and nowhere else.
+  if (Array.isArray(fixture.canaries)) {
+    const whole = JSON.stringify(fixture);
+    for (const canary of fixture.canaries) {
+      if (!isPlainObject(canary) || typeof canary.token !== "string") continue;
+      const occurrences = whole.split(canary.token).length - 1;
+      if (occurrences !== 1) {
+        errors.push(`${rel}: canary token for ${JSON.stringify(canary.id ?? canary.location)} appears ${occurrences} time(s) (must appear only once, in its own declaration)`);
+      }
+    }
+  }
+}
+
+/** Orchestrate the FND-004 golden-journey + failure fixture corpus. */
+async function validateGoldenJourneys(root, errors) {
+  const schema = await loadAndValidateSchema(root, errors);
+
+  // FND-001 lifecycle state union, for the terminalState cross-check.
+  let lifecycleStates = null;
+  try {
+    const lc = parseJsonStrict(await readFile(path.join(root, LIFECYCLES_JSON), "utf8"));
+    if (lc && lc.lifecycles && typeof lc.lifecycles === "object") {
+      lifecycleStates = new Set();
+      for (const key of Object.keys(lc.lifecycles)) {
+        const st = lc.lifecycles[key] && lc.lifecycles[key].states;
+        if (Array.isArray(st)) for (const s of st) lifecycleStates.add(s);
+      }
+    }
+  } catch {
+    lifecycleStates = null;
+  }
+
+  for (const name of GJ_FIXTURES) {
+    const rel = `${GJ_DIR}/${name}`;
+    const raw = await readOrError(root, rel, errors);
+    if (raw == null) continue;
+    let fixture;
+    try {
+      fixture = parseJsonStrict(raw);
+    } catch (err) {
+      errors.push(`${rel}: ${err.message}`);
+      continue;
+    }
+    if (schema) validateInstance(fixture, schema, schema, rel, errors);
+    validateFixtureSemantics(rel, name, fixture, lifecycleStates, errors);
+  }
+}
+
 export async function runCheck(root) {
   const errors = [];
 
@@ -1000,6 +1744,9 @@ export async function runCheck(root) {
 
   // FND-003 threat model + control ownership contract.
   await validateThreatModel(root, errors);
+
+  // FND-004 golden-journey + failure fixture corpus.
+  await validateGoldenJourneys(root, errors);
 
   // JSON authority.
   if (rawJson != null) {
