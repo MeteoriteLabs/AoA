@@ -5,7 +5,7 @@
 **Epic:** `E0-foundation`
 **Plan task:** `Task 1: FND-001 — Workload Lifecycle Contract`
 **Implementer:** `FND-001 implementer subagent (Claude)`
-**Start SHA:** `c24fc57fff1135f323567a3a38c9ce6d26cf74d3`
+**Start SHA:** c24fc57fff1135f323567a3a38c9ce6d26cf74d3
 
 The implementer leaves `Status` at `gate_review`. A separate reviewer completes the section below and is the only role that may change it to `complete`.
 
@@ -76,7 +76,7 @@ None.
 
 **Reviewer:** FND-001 independent reviewer subagent (Claude)
 **Reviewed revision:** 490049551ef57bc741ec4e0d51238bdb1ce96e69
-**Disposition:** approved
+**Disposition:** `approved`
 **Review evidence:**
 - `pnpm check:distributed-foundation` → exit `0` (`distributed execution foundation: PASS`).
 - `node --test scripts/check-distributed-execution-foundation.test.mjs` → exit `0` (`tests 16 / pass 16 / fail 0`).
