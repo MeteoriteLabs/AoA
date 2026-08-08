@@ -1,6 +1,6 @@
 # FND-002 Result — Authority and Migration Contract
 
-**Status:** `gate_review`
+**Status:** `complete`
 **Date (UTC):** `2026-08-08`
 **Epic:** `E0-foundation`
 **Plan task:** `Task 2: FND-002 — Authority and Migration Contract`
@@ -72,10 +72,18 @@ None.
 
 ## Independent review
 
-**Reviewer:** `<pending until first independent review, then agent or human identity; must differ from implementer>`
-**Reviewed revision:** `<pending until first independent review, then 40-character git SHA>`
-**Disposition:** `pending`
-**Review evidence:** `<pending until first independent review, then review record, exact commands/exit codes, or finding links>`
+**Reviewer:** FND-002 independent reviewer subagent (Claude)
+**Reviewed revision:** f5e45cf2b2a3ddf588307e2cba12ec2d183925f6
+**Disposition:** `approved`
+**Review evidence:**
+
+- `pnpm check:distributed-foundation` → exit `0`, prints `distributed execution foundation: PASS`.
+- `node --test scripts/check-distributed-execution-foundation.test.mjs` → exit `0`, `tests 29 / pass 29 / fail 0` (16 retained FND-001 cases + 13 new FND-002/E0-F002 cases; baseline `valid: the real repository passes with zero errors` green).
+- `git diff BASE..HEAD -- pnpm-lock.yaml package.json` → empty (dependency-free constraint held; checker imports only `node:*` built-ins).
+- Code-quality read of the diff: the new validators (`requireFile`, `extractTable`, `splitSentences`, `requireNegatedMention`, `validateAuthorityMatrix`, `validateSingleWriter`, `validateLateOutput`, orchestrated by `validateAuthority`) each carry a single responsibility, are cleanly named/decomposed for FND-003..008 to extend, and contain no dead code and no silent catch-and-ignore (`readOrError` classifies and pushes every failure).
+- Structured-validation correctness verified adversarially: all seven authority rows are pinned verbatim (state/authority/worker) — a removed or drifted row is caught; the `ExecutionOwner` enum parse rejects dual-writer/extra-owner drift; the negation scan catches an affirmative peer-replica / stale-commit / auto-promote claim added as a **separate sentence** (proven by the mutation corpus and by out-of-tree probes). No false-positive on the real document.
+- E0-F002 items 1–3 confirmed resolved: dead `__test`/`fileURLToPath` pruned (no residual refs in the checker); the forbidden-edge `Array.isArray(states)` guard returns a clean structured error without masking the pre-existing non-array-states error (`runCheck` no longer throws `TypeError`); the five newly-pinned mutations each assert an exact, branch-isolating cause.
+- Two **Minor** (non-blocking) robustness observations for later FND tickets, both inside the checker's accidental-drift threat model and neither a plan requirement: (1) the sentence-level negation scan can miss an affirmative clause smuggled into a sentence that already carries a negation word (same-sentence false-negative); (2) the matrix validator pins the required rows but does not reject an *added* contradictory row. The plan's prescribed substring-only `requireFile` would catch neither; the delivered structured approach is strictly stronger than the plan.
 
 For `approved`, verify the result describes the reviewed revision, all focused acceptance evidence passes, and every accepted finding is resolved; then change the top-level `Status` to `complete` and commit this disposition separately. Otherwise leave `Status` as `gate_review` or set `blocked`, and link stable findings.
 
@@ -85,4 +93,5 @@ The implementation author leaves the table body empty; the explicit pending summ
 
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
+| 1 | FND-002 independent reviewer subagent (Claude) | f5e45cf2b2a3ddf588307e2cba12ec2d183925f6 | `approved` | `pnpm check:distributed-foundation` exit 0 (PASS); `node --test …test.mjs` exit 0 (29/29); `pnpm-lock.yaml`/`package.json` byte-unchanged; all 7 authority rows + `ExecutionOwner` enum + late-output negation scans validated adversarially; E0-F002 items 1–3 resolved (item 4 optional, deferred). Two Minor non-blocking robustness notes recorded (same-sentence negation smuggle; added-row not rejected) — neither a plan requirement, both stronger than the plan's substring-only approach. |
 <!-- First independent reviewer appends attempt 1. -->
