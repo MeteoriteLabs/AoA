@@ -47,6 +47,10 @@ const REL = {
   app: "server/src/app.ts",
   // FND-006
   cloudPluginExecution: "server/src/services/cloud-plugin-execution.ts",
+  // FND-008
+  pluginsRoutes: "server/src/routes/plugins.ts",
+  pluginUiStatic: "server/src/routes/plugin-ui-static.ts",
+  pluginBrokerTools: "server/src/mcp/tools/plugin-broker-tools.ts",
   deliveryPolicy: "docs/architecture/distributed-execution-delivery-policy.md",
   artifactPolicy: "docs/replatform/artifact-policy.md",
   ticketTemplate: "docs/replatform/templates/ticket-result-template.md",
@@ -66,6 +70,10 @@ function makeFixture(t, mutate) {
   fs.mkdirSync(path.join(root, "docs", "replatform", "templates"), { recursive: true });
   fs.mkdirSync(path.join(root, "server", "src"), { recursive: true });
   fs.mkdirSync(path.join(root, "server", "src", "services"), { recursive: true });
+  fs.mkdirSync(path.join(root, "server", "src", "routes"), { recursive: true });
+  fs.mkdirSync(path.join(root, "server", "src", "mcp", "tools"), {
+    recursive: true,
+  });
   const files = {
     root,
     jsonPath: path.join(root, REL.json),
@@ -82,6 +90,10 @@ function makeFixture(t, mutate) {
     appPath: path.join(root, REL.app),
     // FND-006
     cloudPluginExecutionPath: path.join(root, REL.cloudPluginExecution),
+    // FND-008
+    pluginsRoutesPath: path.join(root, REL.pluginsRoutes),
+    pluginUiStaticPath: path.join(root, REL.pluginUiStatic),
+    pluginBrokerToolsPath: path.join(root, REL.pluginBrokerTools),
     deliveryPolicyPath: path.join(root, REL.deliveryPolicy),
     artifactPolicyPath: path.join(root, REL.artifactPolicy),
     ticketTemplatePath: path.join(root, REL.ticketTemplate),
@@ -106,6 +118,17 @@ function makeFixture(t, mutate) {
   fs.copyFileSync(
     path.join(repoRoot, REL.cloudPluginExecution),
     files.cloudPluginExecutionPath,
+  );
+  // FND-008: copy the plugin HTTP routes, the ui-static browser-code route, and
+  // the MCP broker tools for the runtime-surface denial checks.
+  fs.copyFileSync(path.join(repoRoot, REL.pluginsRoutes), files.pluginsRoutesPath);
+  fs.copyFileSync(
+    path.join(repoRoot, REL.pluginUiStatic),
+    files.pluginUiStaticPath,
+  );
+  fs.copyFileSync(
+    path.join(repoRoot, REL.pluginBrokerTools),
+    files.pluginBrokerToolsPath,
   );
   fs.copyFileSync(path.join(repoRoot, REL.deliveryPolicy), files.deliveryPolicyPath);
   fs.copyFileSync(path.join(repoRoot, REL.artifactPolicy), files.artifactPolicyPath);
@@ -1206,6 +1229,113 @@ test("FND-006: missing cloud-plugin-execution.ts is named", async (t) => {
   );
   const { errors } = await runCheck(root);
   assert.ok(hasError(errors, `${REL.cloudPluginExecution}: missing`), report(errors));
+});
+
+// --- FND-008: cloud plugin runtime + browser-surface denial mutation corpus ---
+
+test("FND-008: drifting the Decision #103 docs path fails", async (t) => {
+  const root = makeFixture(t, ({ cloudPluginExecutionPath }) => {
+    patchText(
+      cloudPluginExecutionPath,
+      '"/docs/guides/cloud-plugin-execution"',
+      '"/docs/guides/plugins-in-cloud"',
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, "stable Decision #103 docs path"),
+    report(errors),
+  );
+});
+
+test("FND-008: dropping a field from the 503 envelope fails", async (t) => {
+  const root = makeFixture(t, ({ cloudPluginExecutionPath }) => {
+    patchText(
+      cloudPluginExecutionPath,
+      "docs: CLOUD_PLUGIN_EXECUTION_DOC_PATH,",
+      "",
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, 'cloudPluginExecutionBlockedEnvelope() must return "docs:"'),
+    report(errors),
+  );
+});
+
+test("FND-008: removing the MCP broker cloud denial fails", async (t) => {
+  const root = makeFixture(t, ({ pluginBrokerToolsPath }) => {
+    patchText(
+      pluginBrokerToolsPath,
+      "if (isCloudPluginExecutionBlocked()) {",
+      "if (false) {",
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, "dispatchPluginToolCall must fail closed"),
+    report(errors),
+  );
+});
+
+test("FND-008: removing the ui-static browser-code cloud gate fails", async (t) => {
+  const root = makeFixture(t, ({ pluginUiStaticPath }) => {
+    patchText(
+      pluginUiStaticPath,
+      'isCloudPluginExecutionBlocked("ui-static")',
+      "false",
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, 'browser-code cloud gate isCloudPluginExecutionBlocked("ui-static")'),
+    report(errors),
+  );
+});
+
+test("FND-008: dropping a cloud-denial facade export from plugins.ts fails", async (t) => {
+  const root = makeFixture(t, ({ pluginsRoutesPath }) => {
+    patchText(
+      pluginsRoutesPath,
+      "export function buildCloudPluginDenialLifecycle",
+      "function buildCloudPluginDenialLifecycle",
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, "missing the cloud-denial facade export buildCloudPluginDenialLifecycle"),
+    report(errors),
+  );
+});
+
+test("FND-008: unmounting the plugin routers in cloud (removing the denial mount) fails", async (t) => {
+  const root = makeFixture(t, ({ appPath }) => {
+    patchText(
+      appPath,
+      "const cloudDenialLoader = buildCloudPluginDenialLoader();",
+      "const cloudDenialLoader = undefined;",
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, "must MOUNT the plugin routers as registered 503 denial stubs"),
+    report(errors),
+  );
+});
+
+test("FND-008: restoring a cloud background plugin starter (2nd __pluginSubsystem) fails", async (t) => {
+  const root = makeFixture(t, ({ appPath }) => {
+    patchText(
+      appPath,
+      "const cloudDenialLoader = buildCloudPluginDenialLoader();",
+      "(app).__pluginSubsystem = {};\n    const cloudDenialLoader = buildCloudPluginDenialLoader();",
+    );
+  });
+  const { errors } = await runCheck(root);
+  assert.ok(
+    hasError(errors, "__pluginSubsystem must be assigned exactly once"),
+    report(errors),
+  );
 });
 
 test("delivery policy: missing file fails", async (t) => {

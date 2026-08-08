@@ -1951,6 +1951,150 @@ async function validateCloudPluginProcessBoundary(root, errors) {
   }
 }
 
+// --- FND-008: cloud plugin RUNTIME + browser-surface denial ------------------
+//
+// (i) A source-boundary rule over the cloud plugin HTTP surfaces + the non-HTTP
+//     MCP dispatcher. On `cloud_auth` (Decision #103 amendment) the effectful
+//     plugin worker/lifecycle/loader is NOT composed (FND-006), so the plugin
+//     HTTP surfaces must stay REGISTERED as 503 denial stubs (never unmounted →
+//     404): `app.ts` mounts them via inert cloud-denial facades, `plugins.ts`
+//     exports those facades + returns the exact 503 envelope, `plugin-ui-static.ts`
+//     keeps its 503 browser-code gate, the MCP broker dispatcher fails closed
+//     before dispatch, the Decision #103 envelope (error/code/docs) does not
+//     drift, and no cloud background/startup plugin starter is restored. These
+//     are structured failures here (not runtime tests) because the real app is
+//     not importable under vitest (finding E0-F005), so this static gate is the
+//     portable enforcement, same as the FND-006 boundary above.
+
+const PLUGINS_ROUTES_TS = "server/src/routes/plugins.ts";
+const PLUGIN_UI_STATIC_TS = "server/src/routes/plugin-ui-static.ts";
+const PLUGIN_BROKER_TOOLS_TS = "server/src/mcp/tools/plugin-broker-tools.ts";
+const CLOUD_PLUGIN_DOC_PATH_LITERAL = '"/docs/guides/cloud-plugin-execution"';
+
+/** (i) FND-008 cloud plugin runtime + browser-surface denial boundary. */
+async function validateCloudPluginRuntimeSurfaces(root, errors) {
+  // (i1) The stable Decision #103 denial envelope (error/code/docs) must not drift.
+  const gateSrc = await readOrError(root, CLOUD_PLUGIN_EXECUTION_TS, errors);
+  if (gateSrc != null) {
+    if (!gateSrc.includes(CLOUD_PLUGIN_DOC_PATH_LITERAL)) {
+      errors.push(
+        `${CLOUD_PLUGIN_EXECUTION_TS}: the stable Decision #103 docs path ${CLOUD_PLUGIN_DOC_PATH_LITERAL} is missing (503 envelope contract)`,
+      );
+    }
+    const envBody = extractFunctionBody(
+      gateSrc,
+      "cloudPluginExecutionBlockedEnvelope",
+    );
+    if (envBody == null) {
+      errors.push(
+        `${CLOUD_PLUGIN_EXECUTION_TS}: cannot locate cloudPluginExecutionBlockedEnvelope()`,
+      );
+    } else {
+      for (const field of ["error:", "code:", "docs:"]) {
+        if (!envBody.includes(field)) {
+          errors.push(
+            `${CLOUD_PLUGIN_EXECUTION_TS}: cloudPluginExecutionBlockedEnvelope() must return ${JSON.stringify(field)} (Decision #103 503 contract)`,
+          );
+        }
+      }
+    }
+  }
+
+  // (i2) The MCP broker plugin-tool dispatcher must fail closed with the cloud
+  // gate BEFORE dispatch, carrying the stable block message.
+  const brokerSrc = await readOrError(root, PLUGIN_BROKER_TOOLS_TS, errors);
+  if (brokerSrc != null) {
+    const b = stripComments(brokerSrc);
+    // `isCloudPluginExecutionBlocked()` (bare CALL) only appears at the denial;
+    // the import token is `isCloudPluginExecutionBlocked,` with no `()`.
+    if (!b.includes("isCloudPluginExecutionBlocked()")) {
+      errors.push(
+        `${PLUGIN_BROKER_TOOLS_TS}: dispatchPluginToolCall must fail closed with isCloudPluginExecutionBlocked() before dispatch (FND-008 CP-003)`,
+      );
+    }
+    if (!b.includes("CLOUD_PLUGIN_BLOCK_MESSAGE")) {
+      errors.push(
+        `${PLUGIN_BROKER_TOOLS_TS}: the MCP broker cloud denial must carry the stable CLOUD_PLUGIN_BLOCK_MESSAGE (FND-008 CP-003)`,
+      );
+    }
+  }
+
+  // (i3) The ui-static browser-code surface must stay 503-gated on cloud.
+  const uiStaticSrc = await readOrError(root, PLUGIN_UI_STATIC_TS, errors);
+  if (uiStaticSrc != null) {
+    const s = stripComments(uiStaticSrc);
+    if (
+      !/isCloudPluginExecutionBlocked\s*\(\s*["']ui-static["']\s*\)/.test(s)
+    ) {
+      errors.push(
+        `${PLUGIN_UI_STATIC_TS}: missing the browser-code cloud gate isCloudPluginExecutionBlocked("ui-static") (FND-008 CP-003)`,
+      );
+    }
+    if (!/status\s*\(\s*503\s*\)/.test(s)) {
+      errors.push(
+        `${PLUGIN_UI_STATIC_TS}: the ui-static gate must return 503 (Decision #103 envelope)`,
+      );
+    }
+  }
+
+  // (i4) plugins.ts effectful routes must keep the 503 denial stub + export the
+  // cloud-denial facades that app.ts mounts.
+  const pluginsSrc = await readOrError(root, PLUGINS_ROUTES_TS, errors);
+  if (pluginsSrc != null) {
+    if (
+      !/status\s*\(\s*503\s*\)\s*\.json\s*\(\s*cloudPluginExecutionBlockedEnvelope\s*\(\s*\)/.test(
+        pluginsSrc,
+      )
+    ) {
+      errors.push(
+        `${PLUGINS_ROUTES_TS}: effectful plugin routes must 503 with cloudPluginExecutionBlockedEnvelope() (FND-008 CP-003/CP-004)`,
+      );
+    }
+    for (const fn of [
+      "buildCloudPluginDenialLoader",
+      "buildCloudPluginDenialLifecycle",
+    ]) {
+      if (!pluginsSrc.includes(`export function ${fn}`)) {
+        errors.push(
+          `${PLUGINS_ROUTES_TS}: missing the cloud-denial facade export ${fn}() used to mount registered 503 stubs (FND-008)`,
+        );
+      }
+    }
+  }
+
+  // (i5) app.ts must MOUNT the plugin routers as registered cloud 503 stubs (not
+  // leave them unmounted → 404) and must NOT restore a background/startup plugin
+  // starter: the subsystem + tool-dispatcher globals stay assigned exactly once,
+  // in the off-cloud composition branch only.
+  const appSrc = await readOrError(root, APP_TS, errors);
+  if (appSrc != null) {
+    if (!appSrc.includes("buildCloudPluginDenialLoader(")) {
+      errors.push(
+        `${APP_TS}: cloud_auth must MOUNT the plugin routers as registered 503 denial stubs via buildCloudPluginDenialLoader() (FND-008 — do not leave them unmounted → 404)`,
+      );
+    }
+    if (!appSrc.includes("buildCloudPluginDenialLifecycle(")) {
+      errors.push(
+        `${APP_TS}: the cloud plugin denial mount is missing buildCloudPluginDenialLifecycle() (FND-008)`,
+      );
+    }
+    const subsystemCount = (appSrc.match(/__pluginSubsystem\s*=/g) || []).length;
+    if (subsystemCount !== 1) {
+      errors.push(
+        `${APP_TS}: __pluginSubsystem must be assigned exactly once (off-cloud only); found ${subsystemCount} — a second assignment restores a cloud background plugin starter (FND-008)`,
+      );
+    }
+    const dispatcherCount = (
+      appSrc.match(/__paperclipPluginToolDispatcher\s*=/g) || []
+    ).length;
+    if (dispatcherCount !== 1) {
+      errors.push(
+        `${APP_TS}: __paperclipPluginToolDispatcher must be assigned exactly once (off-cloud only); found ${dispatcherCount} (FND-008 — no cloud plugin-tool injection)`,
+      );
+    }
+  }
+}
+
 /** (e)+(f) Delivery policy + artifact-policy/evidence-template shape contract. */
 async function validateDeliveryAndEvidence(root, errors) {
   await requireFile(root, DELIVERY_POLICY_MD, DELIVERY_POLICY_FRAGMENTS, errors);
@@ -2519,6 +2663,7 @@ export async function runCheck(root) {
 
   // FND-006 hosted plugin process-composition boundary.
   await validateCloudPluginProcessBoundary(root, errors);
+  await validateCloudPluginRuntimeSurfaces(root, errors);
 
   // JSON authority.
   if (rawJson != null) {

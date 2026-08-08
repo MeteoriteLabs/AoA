@@ -122,7 +122,12 @@ import { companyWorkspaceFsRoutes } from "./routes/company-workspace-fs.js";
 import { createPreviewRouter } from "./routes/preview.js";
 import { runtimeHooksRoutes } from "./routes/runtime-hooks.js";
 import { adapterRoutes } from "./routes/adapters.js";
-import { pluginRoutes, pluginCompanySettingsRoutes } from "./routes/plugins.js";
+import {
+  pluginRoutes,
+  pluginCompanySettingsRoutes,
+  buildCloudPluginDenialLoader,
+  buildCloudPluginDenialLifecycle,
+} from "./routes/plugins.js";
 import { companyPluginRoutes } from "./routes/company-plugins.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { createMarketplaceRouter } from "./routes/marketplace.js";
@@ -628,6 +633,42 @@ export async function createApp(
       loader: loaderInstLocal,
       hostServiceCleanup,
     };
+  } else {
+    // FND-008 (Decision #103 CP-003/CP-004): in `cloud_auth` the effectful
+    // plugin worker/lifecycle/loader machinery is NOT composed above (FND-006).
+    // But the plugin HTTP surfaces must still be REGISTERED so a client receives
+    // the stable documented 503 denial envelope (Decision #103) — NOT a 404.
+    // Mount the SAME routers with the effectful runtime deps ABSENT and inert
+    // cloud-denial loader/lifecycle facades: every effectful route short-circuits
+    // to 503 at its `rejectBlockedCloudExecution` / `blockActivationInCloud` gate
+    // BEFORE touching any loader/lifecycle/worker effect, while metadata-only
+    // reads use the real `db`/registry (persisted validated data, never
+    // evaluating manifest JavaScript). No worker manager, event/stream bus, job
+    // store/scheduler/coordinator, or tool dispatcher is constructed, and
+    // `__pluginSubsystem` / `__paperclipPluginToolDispatcher` stay unset so
+    // index.ts starts no plugin background work and heartbeat injects no plugin
+    // tools. The marketplace INSTALL router stays unmounted here (its async
+    // orchestrator already records the `errorCode`/`errorDocs` cloud contract
+    // and is unreachable without the loader) — browse-only catalog routes below
+    // remain available. Self-hosted composition (the `if` branch) is unchanged.
+    const cloudDenialLoader = buildCloudPluginDenialLoader();
+    const cloudDenialLifecycle = buildCloudPluginDenialLifecycle();
+    api.use(
+      pluginRoutes(
+        db,
+        cloudDenialLoader,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        cloudDenialLifecycle
+      )
+    );
+    api.use(pluginCompanySettingsRoutes(db, cloudDenialLifecycle));
+    api.use(
+      "/companies/:companyId/plugins",
+      companyPluginRoutes(db, cloudDenialLifecycle, cloudDenialLoader)
+    );
   }
 
   // Marketplace catalog service + routes

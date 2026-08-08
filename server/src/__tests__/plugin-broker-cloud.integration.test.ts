@@ -17,12 +17,13 @@
  * — the run-JWT is verified for real, and:
  *   - `isCloudPluginExecutionBlocked()` (and every typed sink) is asserted
  *     `true` under `cloud_auth`;
- *   - a plugin `tools/call` cannot reach a worker: no plugin worker may start on
- *     cloud_auth (the real worker manager's denial is proven in
- *     `cloud-plugin-process-composition.test.ts` /
- *     `plugin-worker-manager.test.ts`), so the worker-manager leaf reports NOT
- *     RUNNING and the real registry throws — the broker returns an error, never
- *     a worker result;
+ *   - a plugin `tools/call` is DENIED before dispatch: FND-008 adds the typed
+ *     cloud denial at the top of `dispatchPluginToolCall`, so the broker fails
+ *     closed with `forbidden` (HTTP 403 / JSON-RPC -32003, carrying the stable
+ *     Decision #103 block message) BEFORE resolving the dispatcher or reaching a
+ *     worker — no plugin worker may start on cloud_auth anyway (the real worker
+ *     manager's denial is proven in `cloud-plugin-process-composition.test.ts` /
+ *     `plugin-worker-manager.test.ts`);
  *   - cross-company isolation and the board-actor denial still hold.
  *
  * The worker-manager leaf is imported TYPE-ONLY here (a value import tips this
@@ -317,19 +318,21 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect(names).not.toContain(TOOL_NAME);
     });
 
-    it("tools/call for c1's agent run CANNOT reach a worker on cloud_auth (no worker running) — returns an error", async () => {
+    it("tools/call for c1's agent run is DENIED before dispatch on cloud_auth (FND-008) — the broker never reaches a worker", async () => {
       assertSetupOk();
       const res = await callTool(c1, jwtC1, TOOL_NAME, { query: "auth" });
 
-      // The company-scoped tool resolves (registration is metadata), but the
-      // real registry finds no running worker to dispatch to — because no
-      // worker may start on cloud_auth — so the registry throws "worker ... not
-      // running", which the broker surfaces as a JSON-RPC internal error rather
-      // than a worker result.
+      // FND-008 (Decision #103 CP-003): `dispatchPluginToolCall` fails closed
+      // with the typed cloud denial BEFORE resolving the dispatcher or reaching
+      // any worker — the broker maps `forbidden` to HTTP 403 / JSON-RPC -32003
+      // carrying the stable block message. (Before FND-008 the call fell through
+      // to the registry, which threw "worker not running" as -32000; the denial
+      // now fires strictly earlier, so no worker/registry path is exercised.)
+      expect(res.status).toBe(403);
       expect(res.body.result).toBeUndefined();
       expect(res.body.error).toBeDefined();
-      expect(res.body.error.code).toBe(-32000);
-      expect(String(res.body.error.message)).toMatch(/not running/i);
+      expect(res.body.error.code).toBe(-32003);
+      expect(String(res.body.error.message)).toMatch(/blocked on AoA Cloud/i);
     });
 
     it("the same tool called with a c2 JWT 404s (company-scoped getTool yields no tool owned by c2)", async () => {

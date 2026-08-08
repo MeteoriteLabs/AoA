@@ -23,6 +23,10 @@ import {
   type RegisteredTool,
   type ToolExecutionResult,
 } from "../../services/plugin-tool-registry.js";
+import {
+  CLOUD_PLUGIN_BLOCK_MESSAGE,
+  isCloudPluginExecutionBlocked,
+} from "../../services/cloud-plugin-execution.js";
 import { logger } from "../../middleware/logger.js";
 
 const log = logger.child({ service: "plugin-broker-tools" });
@@ -159,6 +163,19 @@ export async function dispatchPluginToolCall(input: {
   args: unknown;
 }): Promise<PluginToolCallOutcome> {
   const { db, companyId, actorSource, agentId, runId, name, args } = input;
+
+  // FND-008 (Decision #103 CP-003): plugin tools run on a HOST-resident worker,
+  // which is not a tenant boundary. On `cloud_auth` no host-process plugin
+  // worker may run (FND-006 composes none), so the broker must fail closed with
+  // the typed denial BEFORE resolving the dispatcher, reading the registry, or
+  // dispatching to a worker — the earliest possible point, independent of actor.
+  // The broker maps `forbidden` to its JSON-RPC denial (mcp/server.ts: 403 /
+  // -32003); the message is the stable Decision #103 block reason. In the real
+  // hosted parent the dispatcher is also never set, so this is defense-in-depth
+  // that holds even if a stale dispatcher were present.
+  if (isCloudPluginExecutionBlocked()) {
+    return { kind: "forbidden", message: CLOUD_PLUGIN_BLOCK_MESSAGE };
+  }
 
   // Plugin tools are agent-facing only. board/mcp actors over the broker
   // cannot call them. ("commander" never reaches this route as

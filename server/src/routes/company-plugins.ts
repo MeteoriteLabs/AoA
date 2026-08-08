@@ -324,10 +324,11 @@ export function companyPluginRoutes(
       pluginId: string;
     };
 
-    // RW5a: rollback's own "loader" gate is the ENTRY boundary — it delegates
-    // to `loader.upgradePlugin`, which stays allowed on cloud; the manifest
-    // re-import that upgrade performs internally is separately gated by
-    // "loader-import" and stays blocked in the control plane.
+    // FND-006/FND-008 (Decision #103 amendment): the rollback route delegates to
+    // `loader.upgradePlugin` (host package I/O + manifest re-import). The cloud
+    // gate now fails closed for the "loader" sink (as for every sink), so this
+    // entry check short-circuits to the canonical 503 in `cloud_auth` before any
+    // loader/lifecycle effect.
     if (isCloudPluginExecutionBlocked("loader")) {
       recordCloudPluginBlock({
         pluginId,
