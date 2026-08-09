@@ -44,6 +44,7 @@
     "version-packages": "changeset version",
     "check:tokens": "node scripts/check-forbidden-tokens.mjs",
     "check:distributed-foundation": "node scripts/check-distributed-execution-foundation.mjs",
+    "check:worker-protocol-boundary": "node scripts/check-worker-protocol-boundary.mjs",
     "gen:tools": "tsx scripts/generate-tools-manifest.ts",
     "gen:tools:check": "tsx scripts/generate-tools-manifest.ts --check",
     "gen:tools:md": "tsx scripts/generate-tools-md.ts",

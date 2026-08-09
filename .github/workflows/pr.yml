@@ -111,6 +111,11 @@ jobs:
       - name: Distributed execution foundation contracts
         run: node scripts/check-distributed-execution-foundation.mjs
 
+      - name: Worker protocol dependency boundary
+        run: |
+          node scripts/check-worker-protocol-boundary.mjs
+          node --test scripts/check-worker-protocol-boundary.test.mjs
+
       - name: Validate Dockerfile deps stage
         run: |
           missing=0
