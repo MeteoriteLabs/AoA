@@ -14,13 +14,18 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { BUNDLER_OPTIONS, recomputeManifestBytes, verifyFrozenConsumerStatic } from "./check-frozen-worker-protocol-consumer.mjs";
+import * as checker from "./check-frozen-worker-protocol-consumer.mjs";
+
+const { BUNDLER_OPTIONS, recomputeManifestBytes, verifyFrozenConsumerStatic } = checker;
 
 const SOURCE_SHA = "0123456789abcdef0123456789abcdef01234567";
-const CHECKER_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "check-frozen-worker-protocol-consumer.mjs");
-const REAL_FIXTURE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "tests", "fixtures", "worker-protocol-consumers", "v1");
+const REAL_SOURCE_SHA = "b7a842870ce7509d8baa75409e0ab19da375c88a";
+const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(TEST_DIR, "..");
+const CHECKER_PATH = path.join(TEST_DIR, "check-frozen-worker-protocol-consumer.mjs");
+const REAL_FIXTURE = path.join(REPO_ROOT, "tests", "fixtures", "worker-protocol-consumers", "v1");
 const EXPECTED = {
   sourceSha: SOURCE_SHA,
   expectedZodVersion: "3.24.2",
@@ -129,7 +134,7 @@ importers:
 ${extraImporter}`);
 }
 
-function initSourceRepo({ zodVersion = "3.24.2", esbuildVersion = "0.28.1", includeLock = true } = {}) {
+function initSourceRepo({ zodVersion = "3.24.2", esbuildVersion = "0.28.1", includeLock = true, includeSourceTree = true } = {}) {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "frozen-wp-git-"));
   runGit(repoRoot, ["init", "--quiet"]);
   runGit(repoRoot, ["config", "user.email", "frozen-checker@example.invalid"]);
@@ -141,7 +146,7 @@ function initSourceRepo({ zodVersion = "3.24.2", esbuildVersion = "0.28.1", incl
   writeRepoFile(repoRoot, "package.json", rootBytes);
   writeRepoFile(repoRoot, ".gitattributes", "tests/fixtures/worker-protocol-consumers/v1/** text eol=lf\n");
   writeRepoFile(repoRoot, "packages/worker-protocol/package.json", pkgBytes);
-  writeRepoFile(repoRoot, "packages/worker-protocol/src/index.ts", "export const frozen = true;\n");
+  if (includeSourceTree) writeRepoFile(repoRoot, "packages/worker-protocol/src/index.ts", "export const frozen = true;\n");
   if (includeLock) writeRepoFile(repoRoot, "pnpm-lock.yaml", lockBytes);
   runGit(repoRoot, ["add", "."]);
   runGit(repoRoot, ["commit", "--quiet", "-m", "source snapshot"]);
@@ -200,6 +205,48 @@ function withSourceRepo(options, fn) {
   } finally {
     fs.rmSync(repo.repoRoot, { recursive: true, force: true });
   }
+}
+
+function withRealRepoClone(fn, { noLocal = false } = {}) {
+  const cloneRoot = fs.mkdtempSync(path.join(os.tmpdir(), "frozen-wp-real-clone-"));
+  fs.rmSync(cloneRoot, { recursive: true, force: true });
+  try {
+    const cloneMode = noLocal ? "--no-local" : "--shared";
+    const clone = spawnSync("git", ["clone", "--quiet", cloneMode, REPO_ROOT, cloneRoot], { encoding: "utf8" });
+    assert.equal(clone.status, 0, clone.stderr || clone.stdout);
+    runGit(cloneRoot, ["config", "user.email", "frozen-checker@example.invalid"]);
+    runGit(cloneRoot, ["config", "user.name", "Frozen Checker Test"]);
+    fn({ repoRoot: cloneRoot, sourceSha: REAL_SOURCE_SHA, fixtureDir: path.join(cloneRoot, "tests", "fixtures", "worker-protocol-consumers", "v1") });
+  } finally {
+    fs.rmSync(cloneRoot, { recursive: true, force: true });
+  }
+}
+
+function withProcessEnv(overrides, fn) {
+  const previous = new Map(Object.keys(overrides).map((key) => [key, process.env[key]]));
+  try {
+    for (const [key, value] of Object.entries(overrides)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    return fn();
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+function tempEntries(prefix) {
+  return new Set(fs.readdirSync(os.tmpdir()).filter((entry) => entry.startsWith(prefix)));
+}
+
+function removeNewTempEntries(prefix, before) {
+  const after = tempEntries(prefix);
+  const leaked = [...after].filter((entry) => !before.has(entry));
+  for (const entry of leaked) fs.rmSync(path.join(os.tmpdir(), entry), { recursive: true, force: true });
+  return leaked;
 }
 
 test("a good synthetic fixture passes", () => {
@@ -326,23 +373,11 @@ test("a declaration referencing current protocol source fails", () => {
 });
 
 test("a later consumer manifest and lockfile revision cannot invalidate immutable source evidence", () => {
-  withSourceRepo({}, (repo) => {
-    installRealFixture(repo);
+  withRealRepoClone((repo) => {
     writeRepoFile(repo.repoRoot, "server/package.json", '{"dependencies":{"@armyofagents/worker-protocol":"workspace:*"}}\n');
-    const laterLock = sourceLockBytes({
-      zodVersion: repo.zodVersion,
-      esbuildVersion: repo.esbuildVersion,
-      extraImporter: `
-  server:
-    dependencies:
-      '@armyofagents/worker-protocol':
-        specifier: workspace:*
-        version: link:../packages/worker-protocol
-`,
-    });
-    writeRepoFile(repo.repoRoot, "pnpm-lock.yaml", laterLock);
+    fs.appendFileSync(path.join(repo.repoRoot, "pnpm-lock.yaml"), "\n# unrelated later consumer lock revision\n");
     runGit(repo.repoRoot, ["add", "server/package.json", "pnpm-lock.yaml"]);
-    runGit(repo.repoRoot, ["commit", "--quiet", "-m", "later consumer revision"]);
+    runGit(repo.repoRoot, ["commit", "--quiet", "--no-gpg-sign", "-m", "later consumer revision"]);
     provisionInstalledVersions(repo.repoRoot, { zodVersion: "9.9.9", esbuildVersion: "8.8.8" });
 
     const result = runChecker(repo.repoRoot, repo.sourceSha);
@@ -352,10 +387,11 @@ test("a later consumer manifest and lockfile revision cannot invalidate immutabl
 });
 
 test("CRLF working-tree bytes cannot change Git-blob verification", () => {
-  withSourceRepo({}, (repo) => {
-    installRealFixture(repo);
-    writeRepoFile(repo.repoRoot, "packages/worker-protocol/package.json", repo.pkgBytes.toString("utf8").replace(/\n/g, "\r\n"));
-    writeRepoFile(repo.repoRoot, "pnpm-lock.yaml", repo.lockBytes.toString("utf8").replace(/\n/g, "\r\n"));
+  withRealRepoClone((repo) => {
+    for (const relativePath of ["packages/worker-protocol/package.json", "pnpm-lock.yaml"]) {
+      const absolutePath = path.join(repo.repoRoot, relativePath);
+      fs.writeFileSync(absolutePath, fs.readFileSync(absolutePath, "utf8").replace(/\r?\n/g, "\r\n"));
+    }
 
     const result = runChecker(repo.repoRoot, repo.sourceSha);
     assert.equal(result.status, 0, result.stderr || result.stdout);
@@ -381,6 +417,16 @@ test("a missing recorded source blob fails closed with its path", () => {
     const result = runChecker(repo.repoRoot, repo.sourceSha);
     assert.notEqual(result.status, 0, result.stdout);
     assert.match(result.stderr, /recorded source blob .*pnpm-lock\.yaml.* is unavailable/);
+  });
+});
+
+test("a missing recorded source tree fails closed with its path", () => {
+  withSourceRepo({ includeSourceTree: false }, (repo) => {
+    installRealFixture(repo);
+
+    const result = runChecker(repo.repoRoot, repo.sourceSha);
+    assert.notEqual(result.status, 0, result.stdout);
+    assert.match(result.stderr, /recorded source tree .*packages\/worker-protocol\/src.* is unavailable/);
   });
 });
 
@@ -423,24 +469,118 @@ for (const integrityCase of [
   });
 }
 
-test("the checker is deterministic in a clean clone with only the recorded Git object database", () => {
-  withSourceRepo({}, (repo) => {
-    installRealFixture(repo);
-    runGit(repo.repoRoot, ["add", "tests/fixtures/worker-protocol-consumers/v1"]);
-    runGit(repo.repoRoot, ["commit", "--quiet", "-m", "freeze fixture"]);
-    const cloneRoot = fs.mkdtempSync(path.join(os.tmpdir(), "frozen-wp-clone-"));
-    fs.rmSync(cloneRoot, { recursive: true, force: true });
-    try {
-      const clone = spawnSync("git", ["clone", "--quiet", "--no-local", repo.repoRoot, cloneRoot], { encoding: "utf8" });
-      assert.equal(clone.status, 0, clone.stderr || clone.stdout);
-      assert.equal(fs.existsSync(path.join(cloneRoot, "node_modules")), false);
+for (const frozenCase of [
+  { name: "bundle", relativePath: "dist/index.js", suffix: "\nexport const COORDINATED_TAMPER = true;\n" },
+  { name: "schema", relativePath: "dist/index.d.ts", suffix: "\nexport declare const coordinatedTamper: true;\n" },
+]) {
+  test(`a coordinated frozen ${frozenCase.name} and regenerated manifest mutation fails external authentication`, () => {
+    withRealRepoClone((repo) => {
+      const target = path.join(repo.fixtureDir, frozenCase.relativePath);
+      fs.appendFileSync(target, frozenCase.suffix);
+      regenManifest(repo.fixtureDir);
 
-      const first = runChecker(cloneRoot, repo.sourceSha);
-      const second = runChecker(cloneRoot, repo.sourceSha);
-      assert.equal(first.status, 0, first.stderr || first.stdout);
-      assert.deepEqual({ status: first.status, stdout: first.stdout, stderr: first.stderr }, { status: second.status, stdout: second.stdout, stderr: second.stderr });
-    } finally {
-      fs.rmSync(cloneRoot, { recursive: true, force: true });
+      const result = runChecker(repo.repoRoot, repo.sourceSha);
+      assert.notEqual(result.status, 0, result.stdout);
+      assert.match(result.stderr, /does not match immutable freeze anchor/);
+    });
+  });
+}
+
+test("a replacement ref cannot substitute the recorded source commit", () => {
+  withRealRepoClone((repo) => {
+    const originalHead = runGit(repo.repoRoot, ["rev-parse", "HEAD"]);
+    runGit(repo.repoRoot, ["switch", "--quiet", "--detach", repo.sourceSha]);
+    fs.appendFileSync(path.join(repo.repoRoot, "packages", "worker-protocol", "src", "version.ts"), "\nexport const REPLACEMENT_TAMPER = true;\n");
+    runGit(repo.repoRoot, ["add", "packages/worker-protocol/src/version.ts"]);
+    runGit(repo.repoRoot, ["commit", "--quiet", "--no-gpg-sign", "-m", "replacement source"]);
+    const replacementSha = runGit(repo.repoRoot, ["rev-parse", "HEAD"]);
+    runGit(repo.repoRoot, ["switch", "--quiet", "--detach", originalHead]);
+    runGit(repo.repoRoot, ["replace", repo.sourceSha, replacementSha]);
+
+    const replacedTree = runGit(repo.repoRoot, ["rev-parse", `${repo.sourceSha}:packages/worker-protocol/src`]);
+    const rawTree = runGit(repo.repoRoot, ["--no-replace-objects", "rev-parse", `${repo.sourceSha}:packages/worker-protocol/src`]);
+    assert.notEqual(replacedTree, rawTree, "adversarial replacement must change the apparent source tree");
+
+    const result = runChecker(repo.repoRoot, repo.sourceSha);
+    assert.notEqual(result.status, 0, result.stdout);
+    assert.match(result.stderr, /replacement ref exists for recorded source commit/);
+  });
+});
+
+test("invalid frozen code is rejected before its execution sentinel can run", () => {
+  withRealRepoClone((repo) => {
+    const markerPath = path.join(repo.repoRoot, "invalid-fixture-executed.txt");
+    const bundlePath = path.join(repo.fixtureDir, "dist", "index.js");
+    fs.appendFileSync(
+      bundlePath,
+      `\nprocess.getBuiltinModule("node:fs").writeFileSync(${JSON.stringify(markerPath)}, "executed");\n`,
+    );
+    regenManifest(repo.fixtureDir);
+
+    const result = runChecker(repo.repoRoot, repo.sourceSha);
+    assert.notEqual(result.status, 0, result.stdout);
+    assert.equal(fs.existsSync(markerPath), false, result.stderr);
+  });
+});
+
+test("the isolated smoke import terminates a hanging fixture within its timeout", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "frozen-wp-hang-"));
+  try {
+    const modulePath = path.join(dir, "hang.mjs");
+    fs.writeFileSync(modulePath, "await new Promise(() => {});\n");
+    assert.equal(typeof checker.smokeImport, "function", "checker must expose the real bounded smoke helper to the corpus");
+
+    const startedAt = Date.now();
+    const failure = checker.smokeImport("hang", pathToFileURL(modulePath).href, { timeoutMs: 100 });
+    const elapsedMs = Date.now() - startedAt;
+    assert.match(failure, /timed out after 100ms/);
+    assert.ok(elapsedMs < 3000, `hanging smoke exceeded bounded termination window: ${elapsedMs}ms`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("synthetic Git commits ignore inherited commit signing and leave no temp repo", () => {
+  const prefix = "frozen-wp-git-";
+  const before = tempEntries(prefix);
+  let setupError;
+  withProcessEnv({ GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "commit.gpgSign", GIT_CONFIG_VALUE_0: "true" }, () => {
+    try {
+      withSourceRepo({}, () => {});
+    } catch (error) {
+      setupError = error;
     }
   });
+  const leaked = removeNewTempEntries(prefix, before);
+
+  assert.equal(setupError, undefined, setupError?.stack);
+  assert.deepEqual(leaked, []);
+});
+
+test("synthetic Git setup failure cleans its temp repo before the test body", () => {
+  const prefix = "frozen-wp-git-";
+  const before = tempEntries(prefix);
+  let setupError;
+  withProcessEnv({ GIT_AUTHOR_DATE: "not-a-valid-git-date" }, () => {
+    try {
+      withSourceRepo({}, () => assert.fail("test body must not run after setup failure"));
+    } catch (error) {
+      setupError = error;
+    }
+  });
+  const leaked = removeNewTempEntries(prefix, before);
+
+  assert.ok(setupError, "invalid author date must fail synthetic repository setup");
+  assert.deepEqual(leaked, []);
+});
+
+test("the checker is deterministic in a clean clone with only the recorded Git object database", () => {
+  withRealRepoClone((repo) => {
+    assert.equal(fs.existsSync(path.join(repo.repoRoot, "node_modules")), false);
+
+    const first = runChecker(repo.repoRoot, repo.sourceSha);
+    const second = runChecker(repo.repoRoot, repo.sourceSha);
+    assert.equal(first.status, 0, first.stderr || first.stdout);
+    assert.deepEqual({ status: first.status, stdout: first.stdout, stderr: first.stderr }, { status: second.status, stdout: second.stdout, stderr: second.stderr });
+  }, { noLocal: true });
 });
