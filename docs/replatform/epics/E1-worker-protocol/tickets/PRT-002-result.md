@@ -35,7 +35,7 @@ This file is a controlled append-only review ledger until `complete`; do not del
 | `packages/worker-protocol/src/ids.test.ts` | Identity validation: UUID accept/reject, opaque-principal whitespace + 200-UTF-8-byte ceiling (byte-, not code-unit-based), sandbox bounds, counter integer/positivity/ceilings, fence base64url alphabet + 32–256 window, lowercase-64-hex digest. |
 | `packages/worker-protocol/src/states.ts` | Six distinct lifecycle machines: state arrays, enums, types, embedded literal transition maps + job reason guards, six `canTransition*` predicates. |
 | `packages/worker-protocol/src/states.test.ts` | Exhaustive Cartesian assertions for all six machines + terminal immutability + job guard reasons + the E1-D001 byte-for-byte JSON parity cross-check + forbidden-cross-lifecycle-edge rejection + foreign-state closure. |
-| `packages/worker-protocol/src/index.ts` | Public surface: adds `export *` of the new `ids`/`states` modules alongside the version constants. |
+| `packages/worker-protocol/src/index.ts` | Public surface: **explicit named re-exports** of the `ids`/`states` surface — runtime values via `export { … }`, inferred types via `export type { … }` (root `isolatedModules: true`) — alongside the version constants. No `export *` (E1-F003 fix). |
 | `docs/replatform/epics/E1-worker-protocol/tickets/PRT-002-result.md` | This ticket result ledger. |
 
 ## Acceptance evidence
@@ -52,7 +52,7 @@ This file is a controlled append-only review ledger until `complete`; do not del
 | **E1-D001 JSON parity**: for each of the 6 machines the embedded states/edges/guards/terminal EQUAL the JSON `states`/`allowed`/`guards`/`terminal` exactly | `states.test.ts` "lifecycle parity" suite loads `distributed-execution-lifecycles.json` and asserts exact-order states, sorted edge-set equality, reconstructed guards (`{failed:non_retryable_failure, dead_letter:policy_exhausted}` for job, `{}` elsewhere), and reconstructed terminal sets — all 6 machines green | `pass` |
 | Every `forbiddenCrossLifecycleEdges` pair is NOT permitted by the predicates | `states.test.ts` "permits no forbidden cross-lifecycle edge" — all 9 JSON pairs are cross-machine; the from-/to-machine predicate rejects the transition whenever the counterpart state is foreign | `pass` |
 | No machine permits a transition into another lifecycle's exclusive state | `states.test.ts` "never permits a transition into another lifecycle's exclusive state" — every (machine × foreign-state) probe returns false | `pass` |
-| Public surface exports every new schema/constant/predicate/type; internal maps not leaked | `index.ts` `export *`; `typecheck` + `build` clean; consumers can import `canTransition*`/schemas | `pass` |
+| Public surface exports every new schema/constant/predicate/type via **explicit** named re-exports (no `export *`, E1-F003); internal maps not leaked | `index.ts` explicit `export { … }` + `export type { … }`; `typecheck` + `build` clean; the built `dist/index.js` importable-name set is unchanged (50 runtime values; `diff` before/after empty) and `dist/index.d.ts` re-exports all 32 inferred types | `pass` |
 | Runtime boundary stays GREEN (only `zod` + relative; no Node API in runtime source) | `pnpm check:worker-protocol-boundary` → `worker protocol boundary: PASS` (exit 0) | `pass` |
 | Build ships no test file into `dist` | `dist/` = `ids`/`index`/`states`/`version` `.js/.d.ts/.map` only | `pass` |
 
@@ -65,6 +65,17 @@ This file is a controlled append-only review ledger until `complete`; do not del
 | `pnpm --filter @armyofagents/worker-protocol typecheck` (Step 6) | `0` | `tsc --noEmit` clean |
 | `pnpm --filter @armyofagents/worker-protocol build` (Step 6) | `0` | `tsc` emitted `dist/{ids,index,states,version}.{js,d.ts,js.map,d.ts.map}`; no test files in `dist` |
 | `pnpm check:worker-protocol-boundary` (Step 6) | `0` | `worker protocol boundary: PASS` |
+
+### E1-F003 revision re-run (explicit `index.ts` exports)
+
+| Command | Exit code | Result summary |
+|---|---:|---|
+| `pnpm --filter @armyofagents/worker-protocol exec vitest run src/ids.test.ts src/states.test.ts` | `0` | Tests 30 passed (30) — unchanged |
+| `pnpm --filter @armyofagents/worker-protocol typecheck` | `0` | `tsc --noEmit` clean (all 32 re-exported type names resolve) |
+| `pnpm --filter @armyofagents/worker-protocol build` | `0` | `tsc` emitted `dist/index.{js,d.ts}` with explicit re-exports; no test file in `dist` |
+| `pnpm check:worker-protocol-boundary` | `0` | `worker protocol boundary: PASS` |
+
+Surface-membership proof: `Object.keys(import('dist/index.js'))` = **50 runtime values** before and after (`diff` empty, exit 0); `dist/index.d.ts` explicitly re-exports the **26 ids value + 24 ids type + 22 states value + 8 states type** identifiers (+2 version), byte-identical in membership to what `export *` produced. The private transition-map constants (`JOB_TRANSITIONS`/…/`JOB_TERMINAL_REASON_GUARDS`) remain unexported.
 
 ### Exhaustive transition + parity counts
 
@@ -83,7 +94,7 @@ None from the plan's substance. Two implementation notes for the reviewer:
 
 ## Findings
 
-None.
+**E1-F003 (addressed in this revision).** The independent reviewer (attempt 1) required replacing the `export *` in `packages/worker-protocol/src/index.ts` with explicit named re-exports — the epic-wide "Explicit public exports only" constraint (implementation-plan.md line 48) and the "Do not use `export *`" convention (PRT-006 Step 8, line 1435). This revision rewrites `index.ts` to enumerate every public identifier explicitly: 26 ids value + 22 states value + 2 version schemas/constants/predicates via `export { … }`, and 24 ids type + 8 states type aliases via `export type { … }` (required because the root tsconfig sets `isolatedModules: true`). The exported surface membership is byte-identical to what `export *` produced (verified: 50 runtime values, `diff` empty; all 32 inferred types re-exported in `dist/index.d.ts`); no public identifier was added or removed and no transition-map internals leak. Only `index.ts` (+ this ledger) changed; `ids.ts`/`states.ts`/tests are untouched.
 
 ## Follow-up tickets
 
@@ -91,7 +102,7 @@ None. PRT-003 (job/workload/lease envelopes) is the next Epic E1 ticket and is o
 
 ## Gate recommendation
 
-`ready for independent review` — Step-3 RED is recorded (both identity + state modules missing, exit 1, no tests collected), every Step-6 command exits 0 (30/30 tests, typecheck clean, build with no test file in `dist`, boundary PASS), the E1-D001 JSON-parity cross-check passes for all 6 machines, all 9 forbidden cross-lifecycle edges are rejected, and only the planned PRT-002 files (`ids`/`states`/`.test`/`index` + this ledger) are touched (`dist` is gitignored and excluded from the commit).
+`ready for re-review` — the single required change from attempt 1 (E1-F003: `export *` → explicit named re-exports in `index.ts`) is applied in this revision. The exported wire-surface membership is byte-identical (50 runtime values, `diff` empty; all 32 inferred types re-exported in `dist/index.d.ts`), and the four focused acceptance commands re-run at exit 0 (tests 30/30, typecheck clean, build with no test file in `dist`, boundary PASS). All previously-verified evidence is unchanged: Step-3 RED recorded, the E1-D001 JSON-parity cross-check passes for all 6 machines, all 9 forbidden cross-lifecycle edges rejected. Only `index.ts` (+ this ledger) changed since the reviewed revision; `dist` remains gitignored and excluded.
 
 ## Independent review
 
