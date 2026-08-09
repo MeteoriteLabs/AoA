@@ -1,12 +1,12 @@
 # Prerequisite P1 Result — E2 bounded serving/operator-role correction
 
-**Status:** `awaiting_review`
+**Status:** `needs_changes`
 **Date (UTC):** `2026-08-10`
 **Implementer:** `Codex implementer agent (/root/e2_role_correction_impl)`
 **Start SHA:** `2c33cb220a4a3cdcd8423f6018258011a24090d7`
 **RED test commit:** `e3c681421`
 **Implementation revision:** `920e55de5a6557577bed9d228e9a00c4d49beadc`
-**Reviewed revision:** `TBD — distinct prerequisite reviewer must pin a bare 40-hex revision`
+**Reviewed revision:** `ed1887bf29c688a0d0d83018a2f63144fb027041`
 **Scope:** Corrective E2 prerequisite resolving the premises of E3-F001/E3-F002 only. No JOB-001 or other E3 ticket behavior is implemented.
 
 ## Delivered behavior
@@ -51,12 +51,16 @@
 | Tests | `config.test.ts`, `distributed-execution-databases-unit.test.ts`, `distributed-execution-db-startup.integration.test.ts`, `e2-serving-role-correction.integration.test.ts`, `tenant-rls-enforcement-unit.test.ts`, `distributed-execution-exclusions.test.ts` |
 | Decisions/evidence | Decision #123, E2-D10, E2-F014/F015, environment-variable guide, this result, corrective QA and handoff candidates |
 
-## Review placeholder
+## Review attempt 1
 
-**Reviewer:** `TBD (must be distinct from implementer)`
+**Reviewer:** `Codex distinct reviewer (/root/e2_role_correction_review)`
 
-**Reviewed revision:** `TBD`
+**Reviewed revision:** `ed1887bf29c688a0d0d83018a2f63144fb027041`
 
-**Disposition:** `awaiting_review`
+**Disposition:** `needs_changes`
 
-**Required reviewer action:** independently rerun/inspect the prerequisite, then update or supersede the corrective QA/handoff. The implementer does not mark this result `complete` and does not decide the prerequisite gate.
+**Findings:** the traced `aoa_app` matrix does not serve the actual checkout/runtime-decision paths; `aoa_operator` receives table-wide credential/routing/revocation/destructive authority beyond the metadata-only seam; forced RLS can alter the non-superuser-owner flag-off legacy target path; exact-named roles can retain/inherit authority outside the bounded matrices; bounded pools are not awaited by the shared shutdown sequence.
+
+**Verification:** operator-directed Windows embedded-Postgres focused lanes passed (`15/15`, `22/22`, `5/5`, and `21/21`); affected and recursive typecheck/build passed. Repository `pnpm test:run` remained exit `1`: the known Windows worker-protocol transform/collection failure was independently reproduced, and one unrelated opencode environment-scrub test timed out under full-suite load but passed `3/3` immediately in isolation. Linux CI remains the formal DEC-03 authority. Passing focused ACL tests did not override the confirmed service-path/spec findings.
+
+**Required next action:** fix the Important findings without owner fallback or E3 ticket implementation, add real service-path/non-superuser-owner/adversarial-role acceptance coverage, then submit a new exact revision for distinct review. Corrective E2 QA and the superseding completion handoff remain non-passing.
