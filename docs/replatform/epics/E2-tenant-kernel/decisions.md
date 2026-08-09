@@ -462,3 +462,66 @@ empty) and that the integration/idempotency tests apply the chain cleanly. Epic-
 ### Promotion
 
 `epic-local`.
+
+---
+
+## E2-D09 — Close the FK-identity existence oracle at the DB level (drop redundant single-column FKs), not via app-layer normalization
+
+**Date (UTC):** 2026-08-09
+**Status:** `proposed` (finding-driven; ratify at gate)
+**Owner role:** Migration Custodian / Security Gate Owner
+**Affected tickets:** TEN-004 (schema correction), TEN-005 (proof), supersedes the app-layer normalization mechanism named in plan §1 / E2-D04 for THIS leak.
+
+### Context
+
+Finding **E2-F013**: FK referential-integrity checks **bypass RLS**. TEN-004 kept the redundant
+single-column parent FKs (e.g. `jobs.company_id -> companies.id`) alongside the composite tenant
+FKs (`(organization_id, company_id) -> companies(organization_id, id)`) — the schema comment
+called them "redundant but harmless." They are NOT harmless: an `aoa_app` caller in org A inserting
+a job with a `company_id` that exists in **another** org (B) fails the **composite** FK
+(`jobs_org_company_fk`), while an **absent** `company_id` fails the **single-column** FK
+(`jobs_company_id_fkey`). The differing constraint name + message is a **cross-tenant existence
+oracle** — banned by H-01 (HARD). Systemic across all 7 child tables. The plan (§1 / E2-D04) had
+named the tenant repository as the "uniform denial" normalization point, but (a) that only protects
+the repository path — a raw `aoa_app` query still leaks the DB-level oracle — and (b) E2's thesis is
+**DB-enforced** isolation (RLS + FORCE + non-owner role exist precisely so raw queries stay isolated).
+
+### Decision
+
+Close the oracle at the **database level**: **drop the redundant single-column parent FKs** and move
+their `ON DELETE` behavior onto the composite tenant FKs, so a cross-tenant parent id and an absent
+parent id **both** fail the SAME composite FK with an identical constraint name/message. Keep the
+`organization_id -> organizations` single-column FKs (the tenant-key integrity; not an oracle — a
+cross-org value hits RLS `WITH CHECK` (42501) before any FK). Per-table:
+
+| Child | Drop single-col FK (its ON DELETE) | Composite FK gets ON DELETE |
+|---|---|---|
+| jobs | `company_id -> companies` (restrict) | `jobs_org_company_fk` = restrict |
+| job_attempts | `job_id -> jobs` (cascade) | `job_attempts_org_job_fk` = cascade |
+| leases | `attempt_id -> job_attempts` (cascade) | `leases_org_attempt_fk` = cascade |
+| services | `company_id -> companies` (restrict) | `services_org_company_fk` = restrict |
+| service_instances | `service_id -> services` (cascade) | `service_instances_org_service_fk` = cascade |
+| job_artifacts | `job_id -> jobs` (cascade) | `job_artifacts_org_job_fk` = cascade |
+| job_secret_handles | `job_id -> jobs` (cascade) | `job_secret_handles_org_job_fk` = cascade |
+
+Emitted by `pnpm db:generate` (schema edits: drop the inline `.references()` on the parent-id column;
+add `.onDelete(...)` to the composite `foreignKey(...)`), migration `0212`, C14/E2-D08 conventions.
+The app-layer repository normalization remains an OPTIONAL E3 defense-in-depth, not required now.
+
+### Alternatives considered
+
+- **App-layer repository normalization (plan §1 / E2-D04):** catch FK/RLS errors, re-throw a single
+  `TenantDenied` shape. Rejected as the primary fix: it does not close the DB-level oracle for a raw
+  `aoa_app` query (contradicting DB-enforcement), and error-shape normalization is fragile. Kept as
+  optional E3 defense-in-depth.
+
+### Consequences
+
+Removes 7 redundant constraints (net schema simplification); ON DELETE cascade/restrict is preserved
+on the composite FKs (verified by a delete-behavior test). TEN-005 gains the missing own-org
+cross/absent-parent coverage proving identical constraint/message. No change to RLS policies or the
+non-owner role.
+
+### Promotion
+
+`epic-local`.
