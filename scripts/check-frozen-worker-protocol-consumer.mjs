@@ -11,9 +11,9 @@
  * the frozen root in isolated "server" and "worker" smoke child processes.
  *
  * The pure helpers (`recomputeManifestBytes`, `verifyFrozenConsumerStatic`,
- * `listFrozenFiles`, `BUNDLER_OPTIONS`) are exported for the dependency-free
- * `node:test` mutation corpus, which operates on an isolated temp copy and never
- * mutates the checked-in fixture.
+ * `verifyFrozenConsumerSourceSnapshot`, `listFrozenFiles`, `BUNDLER_OPTIONS`)
+ * are exported for the dependency-free `node:test` mutation corpus, which
+ * operates on isolated temp copies and never mutates the checked-in fixture.
  *
  * Usage:
  *   node scripts/check-frozen-worker-protocol-consumer.mjs --source-sha <40-hex>
@@ -22,7 +22,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
-import { createRequire } from "node:module";
 import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
@@ -32,6 +31,10 @@ export const FIXTURE_SEGMENTS = ["tests", "fixtures", "worker-protocol-consumers
 export const MANIFEST_NAME = "manifest.sha256";
 export const LOCK_NAME = "dependency-lock.json";
 export const PACKAGE_NAME = "package.json";
+
+const SOURCE_PACKAGE_PATH = "packages/worker-protocol/package.json";
+const SOURCE_LOCK_PATH = "pnpm-lock.yaml";
+const SOURCE_TREE_PATH = "packages/worker-protocol/src";
 
 /** The FIXED, deterministic esbuild bundler options the freeze uses and the lock
  * records. Any drift here changes the frozen bytes and must mint a new fixture. */
@@ -175,16 +178,16 @@ export function verifyFrozenConsumerStatic({
       if (typeof lock[key] !== "string" || lock[key].length === 0) fail(`${LOCK_NAME}: missing ${key}`);
     }
     if (expectedZodVersion !== undefined && lock.zodVersion !== expectedZodVersion) {
-      fail(`${LOCK_NAME}: recorded zodVersion ${lock.zodVersion} != installed ${expectedZodVersion}`);
+      fail(`${LOCK_NAME}: recorded zodVersion ${lock.zodVersion} != expected ${expectedZodVersion}`);
     }
     if (expectedEsbuildVersion !== undefined && lock.esbuildVersion !== expectedEsbuildVersion) {
-      fail(`${LOCK_NAME}: recorded esbuildVersion ${lock.esbuildVersion} != installed ${expectedEsbuildVersion}`);
+      fail(`${LOCK_NAME}: recorded esbuildVersion ${lock.esbuildVersion} != expected ${expectedEsbuildVersion}`);
     }
     if (expectedLockfileIntegrity !== undefined && lock.lockfileIntegrity !== expectedLockfileIntegrity) {
-      fail(`${LOCK_NAME}: recorded lockfileIntegrity does not match the current pnpm-lock.yaml`);
+      fail(`${LOCK_NAME}: recorded lockfileIntegrity does not match the expected lockfile integrity`);
     }
     if (expectedPackageIntegrity !== undefined && lock.packageIntegrity !== expectedPackageIntegrity) {
-      fail(`${LOCK_NAME}: recorded packageIntegrity does not match the current package.json`);
+      fail(`${LOCK_NAME}: recorded packageIntegrity does not match the expected package integrity`);
     }
   }
 
@@ -246,6 +249,165 @@ export function verifyFrozenConsumerStatic({
   return { errors };
 }
 
+// --- Immutable source-revision verification --------------------------------
+
+function gitObjectExists(repoRoot, objectName) {
+  return spawnSync("git", ["cat-file", "-e", objectName], {
+    cwd: repoRoot,
+    encoding: null,
+    windowsHide: true,
+  }).status === 0;
+}
+
+function readGitBlob(repoRoot, sourceSha, relativePath) {
+  const objectName = `${sourceSha}:${relativePath}`;
+  const result = spawnSync("git", ["cat-file", "blob", objectName], {
+    cwd: repoRoot,
+    encoding: null,
+    windowsHide: true,
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  if (result.status !== 0) {
+    throw new Error(`recorded source blob ${objectName} is unavailable; fetch the E1 source revision and retry`);
+  }
+  return result.stdout;
+}
+
+function yamlScalar(value) {
+  const trimmed = value.trim();
+  if ((trimmed.startsWith("'") && trimmed.endsWith("'")) || (trimmed.startsWith('"') && trimmed.endsWith('"'))) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+function importerDependency(lockText, importerName, sectionName, dependencyName) {
+  const lines = lockText.replace(/\r\n/g, "\n").split("\n");
+  const importersStart = lines.findIndex((line) => line === "importers:");
+  if (importersStart === -1) return null;
+
+  const importerHeader = `  ${importerName}:`;
+  const importerStart = lines.findIndex((line, index) => index > importersStart && line === importerHeader);
+  if (importerStart === -1) return null;
+  let importerEnd = lines.length;
+  for (let index = importerStart + 1; index < lines.length; index += 1) {
+    if (/^\S/.test(lines[index]) || (/^  \S/.test(lines[index]) && !/^    /.test(lines[index]))) {
+      importerEnd = index;
+      break;
+    }
+  }
+
+  const sectionHeader = `    ${sectionName}:`;
+  let sectionStart = -1;
+  for (let index = importerStart + 1; index < importerEnd; index += 1) {
+    if (lines[index] === sectionHeader) {
+      sectionStart = index;
+      break;
+    }
+  }
+  if (sectionStart === -1) return null;
+  let sectionEnd = importerEnd;
+  for (let index = sectionStart + 1; index < importerEnd; index += 1) {
+    if (/^    \S/.test(lines[index]) && !/^      /.test(lines[index])) {
+      sectionEnd = index;
+      break;
+    }
+  }
+
+  const dependencyHeader = `      ${dependencyName}:`;
+  let dependencyStart = -1;
+  for (let index = sectionStart + 1; index < sectionEnd; index += 1) {
+    if (lines[index] === dependencyHeader) {
+      dependencyStart = index;
+      break;
+    }
+  }
+  if (dependencyStart === -1) return null;
+  let dependencyEnd = sectionEnd;
+  for (let index = dependencyStart + 1; index < sectionEnd; index += 1) {
+    if (/^      \S/.test(lines[index]) && !/^        /.test(lines[index])) {
+      dependencyEnd = index;
+      break;
+    }
+  }
+
+  const fields = {};
+  for (let index = dependencyStart + 1; index < dependencyEnd; index += 1) {
+    const match = /^        (specifier|version):\s*(.+)$/.exec(lines[index]);
+    if (match) fields[match[1]] = yamlScalar(match[2]);
+  }
+  return fields.specifier && fields.version ? fields : null;
+}
+
+/** Verify the fixture's dependency evidence against immutable Git objects at
+ * its recorded source revision. This deliberately needs no checkout state and
+ * no installed dependency, so it is deterministic in a clean clone. */
+export function verifyFrozenConsumerSourceSnapshot({ repoRoot, sourceSha, dependencyLock } = {}) {
+  const errors = [];
+  const fail = (message) => errors.push(message);
+  if (!repoRoot || !sourceSha || !dependencyLock) return { errors: ["source snapshot verification inputs are incomplete"] };
+
+  if (!gitObjectExists(repoRoot, `${sourceSha}^{commit}`)) {
+    return {
+      errors: [`recorded source commit ${sourceSha} is unavailable; fetch the E1 source revision and retry`],
+    };
+  }
+  if (!gitObjectExists(repoRoot, `${sourceSha}:${SOURCE_TREE_PATH}`)) {
+    fail(`recorded source tree ${sourceSha}:${SOURCE_TREE_PATH} is unavailable; fetch the E1 source revision and retry`);
+  }
+
+  let packageBytes;
+  let lockBytes;
+  try {
+    packageBytes = readGitBlob(repoRoot, sourceSha, SOURCE_PACKAGE_PATH);
+  } catch (error) {
+    fail(error.message);
+  }
+  try {
+    lockBytes = readGitBlob(repoRoot, sourceSha, SOURCE_LOCK_PATH);
+  } catch (error) {
+    fail(error.message);
+  }
+  if (!packageBytes || !lockBytes) return { errors };
+
+  const sourcePackageIntegrity = createHash("sha256").update(packageBytes).digest("hex");
+  const sourceLockfileIntegrity = createHash("sha256").update(lockBytes).digest("hex");
+  if (dependencyLock.packageIntegrity !== sourcePackageIntegrity) {
+    fail(`${LOCK_NAME}: recorded packageIntegrity does not match source blob ${sourceSha}:${SOURCE_PACKAGE_PATH}`);
+  }
+  if (dependencyLock.lockfileIntegrity !== sourceLockfileIntegrity) {
+    fail(`${LOCK_NAME}: recorded lockfileIntegrity does not match source blob ${sourceSha}:${SOURCE_LOCK_PATH}`);
+  }
+
+  let sourcePackage;
+  try {
+    sourcePackage = JSON.parse(packageBytes.toString("utf8"));
+  } catch (error) {
+    fail(`recorded source blob ${sourceSha}:${SOURCE_PACKAGE_PATH} is not valid JSON: ${error.message}`);
+  }
+  const lockText = lockBytes.toString("utf8");
+  const zod = importerDependency(lockText, "packages/worker-protocol", "dependencies", "zod");
+  const esbuild = importerDependency(lockText, ".", "devDependencies", "esbuild");
+  if (!zod) fail(`recorded source blob ${sourceSha}:${SOURCE_LOCK_PATH} lacks packages/worker-protocol dependencies.zod evidence`);
+  if (!esbuild) fail(`recorded source blob ${sourceSha}:${SOURCE_LOCK_PATH} lacks root devDependencies.esbuild evidence`);
+
+  if (sourcePackage && sourcePackage.dependencies?.zod !== zod?.specifier) {
+    fail(`source package zod specifier ${sourcePackage.dependencies?.zod} != source lock snapshot ${zod?.specifier}`);
+  }
+  if (zod && dependencyLock.zodVersion !== zod.version) {
+    fail(`${LOCK_NAME}: recorded zodVersion ${dependencyLock.zodVersion} != source snapshot ${zod.version}`);
+  }
+  if (esbuild && dependencyLock.esbuildVersion !== esbuild.version) {
+    fail(`${LOCK_NAME}: recorded esbuildVersion ${dependencyLock.esbuildVersion} != source snapshot ${esbuild.version}`);
+  }
+
+  return {
+    errors,
+    zodVersion: zod?.version,
+    esbuildVersion: esbuild?.version,
+  };
+}
+
 // --- Isolated smoke import (CLI only) ----------------------------------------
 
 function smokeImport(role, indexUrl) {
@@ -283,24 +445,21 @@ async function main() {
   }
   const dir = path.join(repoRoot, ...FIXTURE_SEGMENTS);
 
-  const require = createRequire(path.join(repoRoot, "packages", "worker-protocol", PACKAGE_NAME));
-  const rootRequire = createRequire(path.join(repoRoot, PACKAGE_NAME));
-  const expectedZodVersion = JSON.parse(fs.readFileSync(require.resolve("zod/package.json"), "utf8")).version;
-  const expectedEsbuildVersion = JSON.parse(fs.readFileSync(rootRequire.resolve("esbuild/package.json"), "utf8")).version;
-  const expectedLockfileIntegrity = createHash("sha256").update(fs.readFileSync(path.join(repoRoot, "pnpm-lock.yaml"))).digest("hex");
-  const expectedPackageIntegrity = createHash("sha256")
-    .update(fs.readFileSync(path.join(repoRoot, "packages", "worker-protocol", PACKAGE_NAME)))
-    .digest("hex");
-
   const { errors } = verifyFrozenConsumerStatic({
     dir,
     sourceSha,
-    expectedZodVersion,
-    expectedEsbuildVersion,
-    expectedLockfileIntegrity,
-    expectedPackageIntegrity,
     repoRoot,
   });
+  let dependencyLock;
+  try {
+    dependencyLock = JSON.parse(fs.readFileSync(path.join(dir, LOCK_NAME), "utf8"));
+  } catch {
+    // Static verification already reports a missing or malformed lock precisely.
+  }
+  const sourceEvidence = dependencyLock
+    ? verifyFrozenConsumerSourceSnapshot({ repoRoot, sourceSha, dependencyLock })
+    : { errors: [] };
+  errors.push(...sourceEvidence.errors);
 
   const indexUrl = pathToFileURL(path.join(dir, "dist", "index.js")).href;
   for (const role of ["server", "worker"]) {
@@ -313,7 +472,7 @@ async function main() {
     for (const line of errors) console.error(`  ${line}`);
     process.exit(1);
   }
-  console.log(`frozen worker-protocol v1 consumer: OK (sourceSha ${sourceSha}, zod ${expectedZodVersion}, esbuild ${expectedEsbuildVersion})`);
+  console.log(`frozen worker-protocol v1 consumer: OK (sourceSha ${sourceSha}, zod ${sourceEvidence.zodVersion}, esbuild ${sourceEvidence.esbuildVersion})`);
 }
 
 const invokedDirectly = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
