@@ -518,11 +518,13 @@ describe("protocol state machines", () => {
 
 In the same file, add explicit expected maps and Cartesian assertions for:
 
-- attempt: `pending→offered|cancelled`; `offered→leased|cancel_requested|expired`; `leased→running|cancel_requested|expired`; `running→cancel_requested|succeeded|failed|expired`; `cancel_requested→cancelled|failed|expired`; terminals immutable;
+- attempt: `pending→offered|cancelled|expired`; `offered→leased|expired|cancelled`; `leased→running|cancel_requested|expired|cancelled`; `running→cancel_requested|succeeded|failed|expired`; `cancel_requested→cancelled|succeeded|failed|expired`; terminals immutable;
 - lease: `offered→active|expired|revoked`; `active→released|expired|revoked`; terminals immutable;
-- browser: `queued→leased|cancelled`; `leased→starting|cancel_requested|expired`; `starting→active|cancel_requested|failed|expired`; `active→waiting_approval|cancel_requested|succeeded|failed|expired`; `waiting_approval→active|cancel_requested|failed|expired`; `cancel_requested→cancelled|failed|expired`; terminals immutable;
+- browser: `queued→leased|cancelled|expired`; `leased→starting|cancel_requested|cancelled|expired`; `starting→active|cancel_requested|failed|cancelled|expired`; `active→waiting_approval|cancel_requested|succeeded|failed|cancelled|expired`; `waiting_approval→active|cancel_requested|failed|cancelled|expired`; `cancel_requested→cancelled|succeeded|failed|expired`; terminals immutable;
 - service desired: `running→paused|stopped|deleted`; `paused→running|stopped|deleted`; `stopped→running|deleted`; `deleted→[]`;
-- service instance: `pending→leased|stopped|failed`; `leased→starting|stopping|lost`; `starting→healthy|unhealthy|stopping|failed|lost`; `healthy→unhealthy|stopping|failed|lost`; `unhealthy→healthy|stopping|failed|lost`; `stopping→stopped|failed|lost`; terminals `stopped|failed|lost` immutable.
+- service instance: `pending→leased|failed|lost`; `leased→starting|stopping|failed|lost`; `starting→healthy|unhealthy|stopping|failed|lost`; `healthy→unhealthy|stopping|failed|lost`; `unhealthy→healthy|stopping|failed|lost`; `stopping→stopped|failed|lost`; terminals `stopped|failed|lost` immutable.
+
+These maps are illustrative; the machine-readable `docs/architecture/distributed-execution-lifecycles.json` is authoritative (E1-D001). `states.test.ts` MUST additionally load that JSON at test time and assert byte-for-byte semantic parity: for each machine, the embedded `states.ts` transition map (grouped by `from`), reason `guards`, and `terminal` set equal the JSON's `allowed` edges, `guards`, and `terminal` arrays exactly — no missing edge, no extra edge, no mismatched guard. This is the PRT-002 counterpart to PRT-004's canonicalizer cross-check and is a required acceptance item.
 
 - [ ] **Step 3: Run tests and verify RED**
 
@@ -1372,14 +1374,14 @@ Create `golden-journeys.test.ts` using `Ajv2020` from `ajv/dist/2020.js` plus `a
 - schemaVersion is 1;
 - ID matches filename;
 - workload type parses through `workloadTypeSchema`;
-- source parses through `executionSourceV1Schema`, uses the fixture's declared source kind, and satisfies the FND-007 parity reference;
-- every `emits` value parses as a known worker event type;
+- the fixture's declared `source.kind` is a member of the `ExecutionSourceV1` discriminant set and satisfies the FND-007 parity reference (E1-D002). This is kind/enum-membership parity, not a full-object parse: the FND-004 fixture `source` is `{ kind, runId?, issueId? }` with ULID-style IDs and no typed principals, so it deliberately does not round-trip through the full `executionSourceV1Schema`;
+- every `emits` value is a member of the exported known distributed-execution emission vocabulary — the worker-event type union PLUS the frozen non-event operation/receipt emission names present in the FND-004 fixtures: `artifact_transfer_rejected`, `quarantine_grant_issued`, `quarantine_receipt_finalized`, `replacement_lease_activated`. Journey-level `expectedEvents[].eventType` values that are control-plane events rather than worker wire events (`budget_exhausted`, `lease_lost`, `cancel_requested`, `producer_safety_rejected`, `provider_pause_observed`) are NOT forced into the worker-event union;
 - expected terminal state belongs to the relevant batch/browser/service terminal/status set;
 - forbidden effects and audit actions are non-empty.
 
 Run both tests before creating `manifest.sha256`.
 
-Expected: conformance test FAILS because the manifest is missing; golden journeys pass once event-name mapping includes `network_denied`.
+Expected: conformance test FAILS because the manifest is missing; golden journeys pass once the emission vocabulary spans the worker-event union plus the frozen non-event operation/receipt names (`network_denied` is inside the worker-event union; `artifact_transfer_rejected`, `quarantine_grant_issued`, `quarantine_receipt_finalized`, `replacement_lease_activated` are the operation/receipt additions).
 
 - [ ] **Step 7: Add deterministic manifest generation**
 
