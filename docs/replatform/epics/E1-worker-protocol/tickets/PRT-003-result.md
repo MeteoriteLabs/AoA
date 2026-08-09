@@ -1,6 +1,6 @@
 # PRT-003 Result — Job, Workload, and Lease Envelopes
 
-**Status:** `gate_review`
+**Status:** `complete`
 **Date (UTC):** `2026-08-09`
 **Epic:** `E1-worker-protocol`
 **Plan task:** `Task 3: PRT-003 — Job, Workload, and Lease Envelopes`
@@ -142,9 +142,21 @@ None. PRT-004 (sequenced worker events + cumulative ACK) is the next Epic E1 tic
 ## Independent review
 
 **Reviewer:** `PRT-003 independent reviewer subagent (Claude)`
-**Reviewed revision:** `d381a3a46f16f5ef05c26a0b8101be63509f927a`
-**Disposition:** `changes_requested`
+**Reviewed revision:** `e62921b1743f9cbc33e6ecf79348a7f4bf5d5483`
+**Disposition:** `approved`
 **Review evidence:**
+
+**Attempt 2 (`approved`) — re-review of the E1-F004 fix at reviewed revision `e62921b1743f9cbc33e6ecf79348a7f4bf5d5483`** (child of attempt-1's `changes_requested` commit `e9a432150`; `git rev-parse HEAD` confirmed):
+
+- **Fix inspection.** `git diff e9a432150 e62921b17 --stat` touches ONLY `job.ts` (+26), `job.test.ts` (+43), and this ledger — `source.ts`/`wire-safety.ts`/`states.ts`/`ids.ts` and every other test are untouched, so attempt-1's 33/33 adversarial verification (placement matrix, wire-safety, source union, all boundaries, leases, explicit index exports) still holds unchanged. The `job.ts` change makes `canonicalString` throw on a lone high surrogate (not followed by a low) and on a stray low surrogate, and `canonicalJson` throw on `!Number.isInteger` (float) and `!Number.isSafeInteger` — byte-for-byte the E0 authority's `canonicalizeString`/`canonicalizeNumber` reject behavior; the existing `addExtensionArrayIssues` try/catch converts the throw into a fail-closed "not canonicalizable" `custom` issue at the extension value path.
+- **Re-run (reviewed revision, tree clean):** focused `vitest run wire-safety/source/job` → exit `0`, **93 passed** (15 + 18 + **60 job**, +13 E1-F004); full `test:run` → exit `0`, **124 passed** (6 files, no regression); `typecheck` → `0`; `build` → `0` (no `*.test.*` in `dist/`); `pnpm check:worker-protocol-boundary` → `PASS` exit `0`; `git diff --check` clean.
+- **Out-of-subset now REJECTED (independent cross-check vs E0 `canonicalizeJson`, 52/52 probe assertions green).** For each of `1.5`, `9007199254740992` (2⁵³ unsafe int), `"\uD800"` (lone high surrogate), `"\uDC00"` (stray low surrogate), `{ rate: 0.25 }`, `[9007199254740992]`: E0 rejects it, and `jobEnvelopeV1Schema.safeParse` **and** `leaseOfferV1Schema.safeParse` now return `success:false` — verified for the bad value both in a lease's nested job AND in the lease's own `extensions`, with the failing issue path at the extension `value`. The former fail-open gap is closed.
+- **No over-rejection / no regression.** In-subset extension values still PASS (`null`, booleans, integers incl. the largest safe integer `2⁵³−1`, `-0`, ASCII, multibyte `é`, **valid astral emoji pairs** — not falsely flagged as lone surrogates, nested object/array). In-subset canonical output still agrees with E0 **byte-for-byte** (23-case battery, 0 divergences), and the value-budget boundary is still 16,384 pass / 16,385 fail for ASCII and multibyte (`é`).
+- **E1-F004 resolved** at this revision; marked resolved in [findings.md](../findings.md). The long-term unification of the local sizer onto PRT-004's shared `canonical-json.ts` is recorded there as a separate **non-blocking** follow-up so the package ultimately carries a single canonicalizer.
+
+---
+
+**Attempt 1 (`changes_requested`, reviewed revision `d381a3a46f16f5ef05c26a0b8101be63509f927a`) evidence — preserved:**
 
 *Re-run on the reviewed revision (`git rev-parse HEAD` = `d381a3a46f16f5ef05c26a0b8101be63509f927a`; working tree clean):*
 - `vitest run src/wire-safety.test.ts src/source.test.ts src/job.test.ts` → exit `0`, **80 passed** (15 wire-safety + 18 source + 47 job).
@@ -171,4 +183,5 @@ The implementation author leaves the table body empty; the explicit pending summ
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
 | 1 | PRT-003 independent reviewer subagent (Claude) | `d381a3a46f16f5ef05c26a0b8101be63509f927a` | `changes_requested` | Re-run green (focused 80/80, full 111/111, typecheck/build/boundary exit 0, tree clean). Defect: local `job.ts` extension byte-sizer diverges from the E0 RFC-8785 authority — `jobEnvelopeV1Schema` accepts floats / unsafe integers / lone-surrogate strings in extension values (fail-open; non-canonicalizable per E0/amendment line 97; propagates through lease offers; unsafe ints miscount). In-subset 23/23 byte-identical; all other adversarials 33/33 green (boundary±1 incl. exact combined 65,536/65,537, wire-safety, source union, explicit-matrix placement with no ordinal comparison, leases, explicit index exports). See [E1-F004](../findings.md). Fix: reject non-integer/non-safe-integer numbers + lone/broken surrogates in extension values (match E0), add tests. |
-<!-- Later reviewers append attempt 2, 3, … monotonically. -->
+| 2 | PRT-003 independent reviewer subagent (Claude) | `e62921b1743f9cbc33e6ecf79348a7f4bf5d5483` | `approved` | E1-F004 fix verified. Diff scope = only `job.ts` (+26) / `job.test.ts` (+43) / ledger; `source.ts`/`wire-safety.ts`/`states.ts`/`ids.ts` untouched → attempt-1's 33/33 adversarials still hold. `canonicalString`/`canonicalJson` now reject floats, unsafe integers, and lone/broken surrogates byte-for-byte with the E0 authority; independent cross-check (52/52 probe assertions) confirms `1.5`, `9007199254740992`, `"\uD800"`, `"\uDC00"`, `{rate:0.25}`, `[9007199254740992]` now return `success:false` on BOTH `jobEnvelopeV1Schema` and `leaseOfferV1Schema` (nested-job + own-extensions), issue path at the extension value. No over-rejection: in-subset still passes, valid astral emoji pairs pass, 23/23 in-subset byte-identical with E0, value-budget boundary still 16,384/16,385. Re-run exit 0 (focused 93/93, full 124/124, typecheck/build/boundary). [E1-F004](../findings.md) resolved. |
+<!-- Later reviewers append attempt 3, 4, … monotonically. -->
