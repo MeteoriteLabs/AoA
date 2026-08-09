@@ -59,7 +59,13 @@ const batchJob = {
     manifestHash: "f".repeat(64),
     mode: "read_write",
   },
-  secretHandleIds: ["00000000-0000-4000-8000-000000000016"],
+  secretHandles: [
+    {
+      handleId: "00000000-0000-4000-8000-000000000016",
+      materialization: { kind: "proxy" },
+      usePolicy: "fence_proxy",
+    },
+  ],
   resourceLimits: { cpuMillis: 2000, memoryMiB: 4096, pids: 512, diskMiB: 10240 },
   networkPolicy: { policyId: "provider-only", version: 1, digest: "c".repeat(64) },
   offlinePolicy: "cancel",
@@ -187,7 +193,7 @@ describe("job envelope — timestamps and dedupe", () => {
     ).toBe(true);
   });
 
-  it("rejects duplicate requiredCapabilities or secretHandleIds", () => {
+  it("rejects duplicate requiredCapabilities or secretHandles", () => {
     expect(
       jobEnvelopeV1Schema.safeParse({
         ...clone(batchJob),
@@ -197,17 +203,20 @@ describe("job envelope — timestamps and dedupe", () => {
     expect(
       jobEnvelopeV1Schema.safeParse({
         ...clone(batchJob),
-        secretHandleIds: [
-          "00000000-0000-4000-8000-000000000016",
-          "00000000-0000-4000-8000-000000000016",
+        secretHandles: [
+          { handleId: "00000000-0000-4000-8000-000000000016", materialization: { kind: "proxy" }, usePolicy: "fence_proxy" },
+          { handleId: "00000000-0000-4000-8000-000000000016", materialization: { kind: "proxy" }, usePolicy: "fence_proxy" },
         ],
       }).success,
     ).toBe(false);
   });
 
-  it("keeps secretHandleIds opaque — only UUID handle IDs, never plaintext", () => {
+  it("keeps secretHandles opaque — only UUID handle IDs, never plaintext", () => {
     expect(
-      jobEnvelopeV1Schema.safeParse({ ...clone(batchJob), secretHandleIds: ["not-a-handle"] }).success,
+      jobEnvelopeV1Schema.safeParse({
+        ...clone(batchJob),
+        secretHandles: [{ handleId: "not-a-handle", materialization: { kind: "proxy" }, usePolicy: "fence_proxy" }],
+      }).success,
     ).toBe(false);
   });
 });

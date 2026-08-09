@@ -172,10 +172,6 @@ export {
   placementV1Schema,
   adapterRefV1Schema,
   workspaceV1Schema,
-  resourceLimitsV1Schema,
-  networkPolicyRefV1Schema,
-  OFFLINE_POLICIES,
-  offlinePolicySchema,
   batchWorkloadV1Schema,
   browserWorkloadV1Schema,
   serviceWorkloadV1Schema,
@@ -200,9 +196,6 @@ export type {
   PlacementV1,
   AdapterRefV1,
   WorkspaceV1,
-  ResourceLimitsV1,
-  NetworkPolicyRefV1,
-  OfflinePolicy,
   BatchWorkloadV1,
   BrowserWorkloadV1,
   ServiceWorkloadV1,
@@ -224,6 +217,92 @@ export {
 
 // --- extensions.ts: inferred types -------------------------------------------
 export type { WireExtension } from "./extensions.js";
+
+// --- policy.ts: resource/network/secret/retention/offline contracts (values) -
+export {
+  resourceLimitsSchema,
+  networkAllowRuleSchema,
+  networkPolicyV1Schema,
+  networkPolicyRefSchema,
+  SECRET_MATERIALIZATION_KINDS,
+  secretMaterializationSchema,
+  SECRET_USE_POLICIES,
+  secretUsePolicySchema,
+  secretHandleRefSchema,
+  ARTIFACT_RETENTION_CLASSES,
+  artifactRetentionClassSchema,
+  OFFLINE_POLICIES,
+  offlinePolicySchema,
+} from "./policy.js";
+
+// --- policy.ts: inferred types -----------------------------------------------
+export type {
+  ResourceLimits,
+  NetworkAllowRule,
+  NetworkPolicyV1,
+  NetworkPolicyRef,
+  SecretMaterialization,
+  SecretUsePolicy,
+  SecretHandleRef,
+  ArtifactRetentionClass,
+  OfflinePolicy,
+} from "./policy.js";
+
+// --- artifacts.ts: workspace/artifact/transfer/commit/quarantine (values) ----
+export {
+  isSafeWorkspacePath,
+  workspacePathSchema,
+  expectedAttemptObjectPrefix,
+  expectedQuarantineObjectPrefix,
+  workspaceBaseV1Schema,
+  WORKSPACE_ENTRY_KINDS,
+  workspaceEntryKindSchema,
+  WORKSPACE_PROVENANCE,
+  workspaceProvenanceSchema,
+  workspaceEntrySchema,
+  workspaceManifestV1Schema,
+  PATCH_OPERATION_KINDS,
+  patchOperationSchema,
+  workspacePatchManifestV1Schema,
+  ARTIFACT_KINDS,
+  artifactKindSchema,
+  RESTRICTED_ARTIFACT_KINDS,
+  artifactSensitivitySchema,
+  artifactManifestV1Schema,
+  artifactTransferGrantRequestV1Schema,
+  artifactUploadGrantV1Schema,
+  artifactDownloadGrantV1Schema,
+  artifactCommitPayloadV1Schema,
+  QUARANTINE_REASONS,
+  quarantineReasonSchema,
+  quarantineGrantPayloadV1Schema,
+  quarantineUploadGrantV1Schema,
+  quarantineFinalizePayloadV1Schema,
+  quarantineUploadReceiptV1Schema,
+} from "./artifacts.js";
+
+// --- artifacts.ts: inferred types --------------------------------------------
+export type {
+  WorkspaceBaseV1,
+  WorkspaceEntryKind,
+  WorkspaceProvenance,
+  WorkspaceEntry,
+  WorkspaceManifestV1,
+  PatchOperation,
+  WorkspacePatchManifestV1,
+  ArtifactKind,
+  ArtifactSensitivity,
+  ArtifactManifestV1,
+  ArtifactTransferGrantRequestV1,
+  ArtifactUploadGrantV1,
+  ArtifactDownloadGrantV1,
+  ArtifactCommitPayloadV1,
+  QuarantineReason,
+  QuarantineGrantPayloadV1,
+  QuarantineUploadGrantV1,
+  QuarantineFinalizePayloadV1,
+  QuarantineUploadReceiptV1,
+} from "./artifacts.js";
 
 // --- canonical-json.ts: shared RFC 8785 canonicalizer + digest helpers -------
 export {

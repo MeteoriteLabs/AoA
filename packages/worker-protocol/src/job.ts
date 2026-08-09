@@ -8,7 +8,6 @@ import {
   leaseIdSchema,
   organizationIdSchema,
   principalIdSchema,
-  secretHandleIdSchema,
   serviceIdSchema,
   serviceInstanceIdSchema,
   sha256DigestSchema,
@@ -19,6 +18,12 @@ import {
   wireExtensionsArraySchema,
   type WireExtension,
 } from "./extensions.js";
+import {
+  offlinePolicySchema,
+  networkPolicyRefSchema,
+  resourceLimitsSchema,
+  secretHandleRefSchema,
+} from "./policy.js";
 import { executionSourceV1Schema } from "./source.js";
 import { addForbiddenWireKeyIssues } from "./wire-safety.js";
 
@@ -272,24 +277,12 @@ export const workspaceV1Schema = z
   .strict();
 export type WorkspaceV1 = z.infer<typeof workspaceV1Schema>;
 
-export const resourceLimitsV1Schema = z
-  .object({
-    cpuMillis: z.number().int().min(100).max(128_000),
-    memoryMiB: z.number().int().min(128).max(1_048_576),
-    pids: z.number().int().min(16).max(100_000),
-    diskMiB: z.number().int().min(128).max(10_485_760),
-  })
-  .strict();
-export type ResourceLimitsV1 = z.infer<typeof resourceLimitsV1Schema>;
-
-export const networkPolicyRefV1Schema = z
-  .object({ policyId: slugSchema, version: z.number().int().positive(), digest: sha256DigestSchema })
-  .strict();
-export type NetworkPolicyRefV1 = z.infer<typeof networkPolicyRefV1Schema>;
-
-export const OFFLINE_POLICIES = ["cancel", "finish_without_remote_effects", "continue_until_lease_expiry"] as const;
-export const offlinePolicySchema = z.enum(OFFLINE_POLICIES);
-export type OfflinePolicy = (typeof OFFLINE_POLICIES)[number];
+// `resourceLimitsV1Schema`, `networkPolicyRefV1Schema`, and `offlinePolicySchema`
+// were moved to `./policy.js` (PRT-005 Step 6) so the resource/network/offline
+// contracts have a single source of truth shared with the policy surface. This
+// envelope imports them as `resourceLimitsSchema`, `networkPolicyRefSchema`, and
+// `offlinePolicySchema`; `secretHandleIds` (opaque UUIDs) is replaced by
+// `secretHandles` (`secretHandleRefSchema[]`), the richer handle reference.
 
 // --- Workload payloads --------------------------------------------------------
 
@@ -347,9 +340,9 @@ const jobEnvelopeBaseSchema = z.object({
   adapter: adapterRefV1Schema,
   requiredCapabilities: z.array(capabilitySchema).max(128),
   workspace: workspaceV1Schema.nullable(),
-  secretHandleIds: z.array(secretHandleIdSchema).max(64),
-  resourceLimits: resourceLimitsV1Schema,
-  networkPolicy: networkPolicyRefV1Schema,
+  secretHandles: secretHandleRefSchema.array().max(64),
+  resourceLimits: resourceLimitsSchema,
+  networkPolicy: networkPolicyRefSchema,
   offlinePolicy: offlinePolicySchema,
   extensions: wireExtensionsArraySchema,
 });
@@ -388,7 +381,7 @@ export const jobEnvelopeV1Schema = z
     }
 
     addDuplicateIssues(job.requiredCapabilities, ctx, ["requiredCapabilities"], "required capability");
-    addDuplicateIssues(job.secretHandleIds as readonly string[], ctx, ["secretHandleIds"], "secret handle ID");
+    addDuplicateIssues(job.secretHandles.map((handle) => String(handle.handleId)), ctx, ["secretHandles"], "secret handle ID");
 
     addPlacementIssues(job.placement, ctx, ["placement"]);
   });
