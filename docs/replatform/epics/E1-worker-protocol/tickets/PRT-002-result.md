@@ -1,6 +1,6 @@
 # PRT-002 Result — Branded Identities and Lifecycle State Machines
 
-**Status:** `gate_review`
+**Status:** `complete`
 **Date (UTC):** `2026-08-09`
 **Epic:** `E1-worker-protocol`
 **Plan task:** `Task 2: PRT-002 — Branded Identities and Lifecycle State Machines`
@@ -107,9 +107,19 @@ None. PRT-003 (job/workload/lease envelopes) is the next Epic E1 ticket and is o
 ## Independent review
 
 **Reviewer:** `PRT-002 independent reviewer subagent (Claude)`
-**Reviewed revision:** `5288189b73b2fad3709efecf002fef6dcdb24d39`
-**Disposition:** `changes_requested`
-**Review evidence:** Independent reviewer (did not implement). All functional acceptance re-run on the reviewed revision passes; one convention deviation requires a fix before approval — see finding [E1-F003](../findings.md).
+**Reviewed revision:** `26f6f61d921b3185d4b697e09b45dba27eaec688`
+**Disposition:** `approved`
+**Review evidence:** Independent reviewer (did not implement). Attempt 2 re-review of the E1-F003 fix (`26f6f61d9`, child of the attempt-1 `changes_requested` commit): the required change is applied correctly with **no change to the exported wire-surface membership**, and all previously-verified evidence still holds. The attempt-1 record below is preserved unchanged (append-only); the summary fields above mirror the latest (attempt 2) disposition.
+
+**Attempt 2 (approved) — E1-F003 fix verification on `26f6f61d9`:**
+
+- **Explicit exports, no `export *`:** `index.ts` now re-exports via `export { … }` (runtime values) and `export type { … }` (inferred types) plus the explicit `version` export. Independent source scan confirms **no real `export *` statement remains** (the only textual match is the header comment's prose).
+- **Surface membership UNCHANGED (independent, reviewer-authored):** built `dist/index.js` runtime keys = **50**, exactly equal to `keys(version.js) ∪ keys(ids.js) ∪ keys(states.js)` AND byte-identical to the recorded pre-fix 50-name set (no value added/removed); `dist/index.d.ts` re-exports all **32** inferred types, exactly the set declared in `ids.ts`+`states.ts`. No private transition-map/guard/helper internals (`JOB_TRANSITIONS`/…/`JOB_TERMINAL_REASON_GUARDS`/generic `canTransition`) are exported.
+- **Diff scope:** `git diff 07f1881a8 26f6f61d9` touches only `index.ts` + this ledger; `ids.ts`/`states.ts`/`ids.test.ts`/`states.test.ts` are **untouched**, so the attempt-1 parity/identity/mutate-to-catch verification (499 predicate calls + 9 forbidden edges, 0 mismatches; 39/39 ids spot-checks) still holds without re-derivation.
+- **Re-run (reviewed revision `26f6f61d9`, tree clean):** `vitest run src/ids.test.ts src/states.test.ts` exit `0` (30/30); `typecheck` exit `0` (all 32 re-exported type names resolve); `build` exit `0` (no test file in `dist`); `pnpm check:worker-protocol-boundary` → `PASS` exit `0`.
+- **Finding [E1-F003](../findings.md): RESOLVED** in `26f6f61d9`. Deviation (a) remains ACCEPTED. No new findings.
+
+**Attempt 1 (changes_requested) — original review of `5288189b7`:** All functional acceptance re-run on that revision passed; one convention deviation required a fix before approval — finding [E1-F003](../findings.md). Detailed attempt-1 evidence retained below.
 
 - **Re-run (reviewed revision, `git rev-parse HEAD` = `5288189b73b2fad3709efecf002fef6dcdb24d39`, tree clean):** `vitest run src/ids.test.ts src/states.test.ts` exit `0` — 2 files, **30 passed** (11 identity + 19 state); `typecheck` exit `0`; `build` exit `0` (dist = `ids/index/states/version` `.js/.d.ts/.map` only, **no test file**); `pnpm check:worker-protocol-boundary` → `worker protocol boundary: PASS` exit `0`; `git diff --check` clean; `git status --porcelain` empty.
 - **INDEPENDENT parity (reviewer-authored throwaway, imports the BUILT `dist` predicates + status arrays, compares pair-by-pair to `docs/architecture/distributed-execution-lifecycles.json` — did NOT reuse the implementer's `states.test.ts`):** **499 predicate calls + 9 forbidden cross-lifecycle edges → 0 mismatches.** Confirmed independently: enum/`states` order equals JSON for all 6 machines; every Cartesian `(from,to[,×4 reasons])` verdict equals the JSON `allowed`/guard; job `dead_letter` permitted **only** by `policy_exhausted` and aggregate `failed` **only** by `non_retryable_failure` (from every from-state, all other reasons rejected); every JSON `terminal` state has zero outgoing edges; no predicate permits a transition into any foreign state; all 9 `forbiddenCrossLifecycleEdges` are structurally impossible (each predicate is strictly `MachineStatus→MachineStatus`; **no generic cross-machine `canTransition` is exported** — verified against the 50 built exports; the `job:running→attempt:succeeded` / `attempt:succeeded→job:succeeded` pairs cannot be expressed as any single call).
@@ -128,3 +138,4 @@ The implementation author leaves the table body empty; the explicit pending summ
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
 | 1 | PRT-002 independent reviewer subagent (Claude) | `5288189b73b2fad3709efecf002fef6dcdb24d39` | `changes_requested` | Functional acceptance all re-verified GREEN: tests 30/30, typecheck/build/boundary exit 0, tree clean. Independent parity (reviewer-authored, built predicates vs the JSON authority): 499 predicate calls + 9 forbidden edges, **0 mismatches**; job-guard precision, terminal immutability, foreign-state closure, and no-cross-machine-bridge all confirmed. Mutate-to-catch: implementer's `states.test.ts` fails 4 tests on an injected bogus edge + a removed edge (Cartesian + JSON-parity layers). `ids.ts` spot-check 39/39 incl. byte-preservation/no-normalization. Deviation (a) extra reason exports ACCEPTED (public arg contract; no internals leak). **Required change:** deviation (b) — replace `export *` in `index.ts` with explicit named exports (`export type {…}` for types; `isolatedModules`), per plan line 48 + PRT-006 Step 8. Finding [E1-F003](../findings.md). |
+| 2 | PRT-002 independent reviewer subagent (Claude) | `26f6f61d921b3185d4b697e09b45dba27eaec688` | `approved` | E1-F003 fix re-review. `index.ts` now uses explicit `export { … }` + `export type { … }` (no real `export *`; only prose mention remains). Independent surface-membership check (reviewer-authored, built artifacts): runtime keys = **50**, byte-identical to `union(version,ids,states)` and to the recorded pre-fix 50-name set; `dist/index.d.ts` re-exports the same **32** inferred types; no private map/guard/helper internals leak — **no public identifier added or removed**. Diff scope = only `index.ts` + ledger; `ids.ts`/`states.ts`/tests untouched, so attempt-1 parity/identity verification still holds. Re-run on `26f6f61d9`: tests 30/30, typecheck, build (no test file in `dist`), boundary PASS — all exit 0. **E1-F003 RESOLVED**; deviation (a) still accepted; no new findings. |
