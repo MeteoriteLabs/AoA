@@ -1,6 +1,6 @@
 # PRT-005 Result — Workspace, Artifact, Secret, Resource, and Network Contracts
 
-**Status:** `gate_review`
+**Status:** `complete`
 **Date (UTC):** `2026-08-09`
 **Epic:** `E1-worker-protocol`
 **Plan task:** `Task 5: PRT-005 — Workspace, Artifact, Secret, Resource, and Network Contracts`
@@ -112,10 +112,32 @@ None. PRT-006 (registered target + capability negotiation + conformance corpus) 
 
 ## Independent review
 
-**Reviewer:** _pending_
-**Reviewed revision:** _pending_
-**Disposition:** _pending_
-**Review evidence:** _pending_
+**Reviewer:** PRT-005 independent reviewer subagent (Claude)
+**Reviewed revision:** `36d3733e06555ca2b43529734d79f559a4e940a8`
+**Disposition:** `approved`
+**Review evidence:**
+
+**Attempt 1 (`approved`, reviewed revision `36d3733e06555ca2b43529734d79f559a4e940a8`).** Confirmed `git rev-parse HEAD` == the reviewed revision with a clean tree. Every acceptance claim was re-verified against the built package, and I drove the compiled schemas with an independent adversarial probe (not the implementer's tests). No defect found; no finding raised.
+
+- **Re-run on the reviewed revision (all green).** Focused `vitest run src/job.test.ts src/policy.test.ts src/artifacts.test.ts` → exit 0, **148 passed** (60 job + 37 policy + 51 artifacts). Full `test:run` → exit 0, **296 passed** (10 files). `typecheck` (`tsc --noEmit`) → exit 0. `build` (`tsc`) → exit 0. `pnpm check:worker-protocol-boundary` → exit 0 (`worker protocol boundary: PASS`). `git diff --check` → exit 0. `git status --porcelain` → clean.
+
+- **Paths — independent adversarial + different-seed corpus.** Drove `workspaceEntrySchema.path`/`isSafeWorkspacePath` with a fresh battery: `..`, `a/../b`, leading `/`, `C:\x`, `C:/x`, `\\server\share`, backslash segment, `.` segment, `a/.`, trailing `/`, `a//b`, embedded NUL/BEL/DEL/TAB/LF, `a:b` colon, empty string, >4096 length, >255-byte segment — **every one REJECTED**; clean relative POSIX accepted. Unicode-dot lookalikes (`\uFF0E\uFF0E`), percent-encoded `..%2f`/`a/..%2fb`, and Windows device names `CON`/`NUL` are ACCEPTED as **literal filenames** — correct and plan-consistent (the plan's accepted form is relative POSIX with no ASCII `.`/`..`/backslash/absolute/drive/NUL segment; these carry no real traversal segment). Symlink entry kind rejected; duplicate + case-colliding manifest paths rejected. Re-ran the seeded generator with an **independent 14-escape-class generator at three DIFFERENT seeds** (`1234567`, `99887766`, `20260810`; 12,000 cases each = 36,000): `escapesAccepted === 0` and `safeRejected === 0` on all three.
+
+- **Object-key prefix (independent).** `expectedAttemptObjectPrefix` = `organizations/<org>/jobs/<job>/attempts/<n>/`; `expectedQuarantineObjectPrefix` = `quarantine/organizations/<org>/jobs/<job>/attempts/<n>/` — provably distinct roots (neither a prefix of the other). `artifactManifestV1Schema` accepts the correct prefix and REJECTS wrong-org, wrong-job, wrong-attempt, bare-prefix (no suffix), a quarantine-prefixed key, and a `../../../etc/passwd` traversal-after-prefix. All ID fields are UUID-branded, so a `/` cannot be smuggled into a prefix segment. `artifactCommitPayloadV1Schema` binds commit job/attempt to the manifest (mismatch rejected) and REJECTS a payload with `fenceToken`/`leaseId` removed (complete active fence required).
+
+- **Quarantine non-promotion (independent) — matches CAV-004.** Authenticated by `targetId` + `deviceGeneration` (a live-lease `leaseId` field is rejected by strict; `observedLeaseId`/`observedFenceToken` are non-authoritative). All four quarantine schemas REJECT every injected promotion field (`apply`, `promote`, `selectCheckpoint`, `checkpointId`, `mutateAttempt`, `activate`, `commit`, `disposition`) via `.strict()`. Upload grant enforces expiry after issuance and **≤ 5 min** (+4 min accepted, +6 min and expiry-before-issue rejected), rejects an ordinary `operation:"upload"` literal, and requires the `quarantine/` key. Finalize binds manifest sha256/sizeBytes/artifact/org/job/attempt (mismatch rejected) and accepts only a declared reason (`promote` rejected). Receipt `disposition` is only `"quarantined"` (`applied`/`promoted` rejected). Ordinary commit cannot carry a quarantine key and vice-versa (disjoint roots); staleness is left to the receiver, per plan.
+
+- **Secret materialization + network (independent).** `env` target matches `^[A-Z_][A-Z0-9_]*$` (`API_KEY`/`PATH`/`_X` accepted; lowercase, leading-digit, hyphen rejected). `file` target is absolute under `/run/aoa-secrets/` with no `..` (`/etc/passwd`, `..` escape, relative, Windows path, bare-root all rejected). `proxy` carries no target. Use-policy cross-field: `proxy` ⇒ only `fence_proxy` (proxy+sandbox_local_only and proxy+remote_server_fenced rejected); `env`/`file` ⇒ never `fence_proxy` — so **`sandbox_local_only` can never pair with the proxy/network mechanism**. Raw materialization is unrepresentable: a handle or materialization carrying `accessToken`/`refreshToken`/`secretValue`/`credential` is rejected recursively. Network `defaultAction` accepts only `deny`; `denyPrivateNetworks`/`denyMetadata`/`denyControlPlane` must all be `true`; allow rules REJECT IPv4 (`10.0.0.1`, `169.254.169.254`), IPv6 (`::1`, `[::1]`), `http`, uppercase host, port 0, and port > 65535. Ordinary/quarantine grant headers reject `Authorization`/`Cookie`/`x-api-key`/`x-amz-security-token`/`proxy-authorization`/`set-cookie`; grants require `redaction:"secret"`, https url, and method bound to operation by literal.
+
+- **Sensitivity.** `RESTRICTED_ARTIFACT_KINDS === ARTIFACT_KINDS` (same reference). For **all 12** kinds, including `other`, `sensitivity:"restricted"` is accepted and `"normal"`/`"public"` rejected.
+
+- **`workspaceBaseV1Schema` duplication (deviation #1) — verdict: ACCEPTABLE, plan-mandated two distinct shapes.** The plan defines the job-envelope `workspace.base` as the 3-field pointer `{ kind, algorithm, revision }` (line 838) and the artifact capture base as the 7-field `{ kind, algorithm, revision, dirty, caseMode, ignorePolicy, inclusion }` (line 1162). The `job.ts` copy is a **private** `const` (never exported) used only by the `workspaceV1Schema` pointer; the `artifacts.ts` copy is the exported capture base. Genuinely different concepts, no public-name collision — not the same-contract drift class as E1-F004/F005 (both fully enforce their own shape; the `git_commit|content_manifest` kind + `git_sha1`/`git_sha256`/`sha256` algorithm + 40/64-hex-revision matching is enforced in both). The shared 3-field `revision`-format refinement is byte-identical duplicated logic — a minor future-DRY note only, not a defect and not a finding.
+
+- **Job-refactor parity.** `job.ts` imports `resourceLimitsSchema`/`networkPolicyRefSchema`/`offlinePolicySchema`/`secretHandleRefSchema` from `./policy.js` with **no** duplicate definitions (`grep` shows none defined in `job.ts`). `secretHandleIds` is fully replaced by `secretHandles: secretHandleRefSchema.array().max(64)` — the only remaining `secretHandleIds` textual hits are the migration comment in `job.ts` and the `wire-safety.ts`/`wire-safety.test.ts` key-normalization examples (unrelated to the job field). `resourceLimits` bounds are byte-identical to the pre-refactor job schema (`cpuMillis` 100–128,000; `memoryMiB` 128–1,048,576; `pids` 16–100,000; `diskMiB` 128–10,485,760) per the diff; all 60 job tests green with the updated `{ handleId, materialization:{kind:"proxy"}, usePolicy:"fence_proxy" }` fixture; dedupe now keys on `handle.handleId`.
+
+- **Housekeeping.** Runtime source imports only `zod` + relative modules and touches no Node API (no `Buffer`/`from "node:*"` in `policy.ts`/`artifacts.ts`/`job.ts`/`wire-safety.ts`/`ids.ts`; `TextEncoder` is a standard global). Recursive `addForbiddenWireKeyIssues` wire-safety is applied on every policy/artifact/quarantine object. `index.ts` uses explicit named `export { … }` / `export type { … }` (no real `export *`); the exported `workspaceBaseV1Schema` is the `artifacts.ts` capture base (the private job pointer is not re-exported). Ledger conventions match E0-F001 (Status backtick, Start SHA bare, empty pre-review attempt table, pending sentinels), and the changed-files / commands / path-seed (`20260809`/`10,000`) are accurate.
+
+Every accepted-caveat boundary the schema is responsible for (CAV-004 quarantine non-promotion + separate prefix/operation + orphan receipt + device-auth; PRT-003→005 credential and workspace-path boundaries) is enforced fail-closed. No `E1-Fxxx` finding. Changing the top-level `Status` to `complete` and committing this disposition separately.
 
 ## Review attempt history
 
@@ -123,4 +145,4 @@ The implementation author leaves the table body empty; the explicit pending summ
 
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
-<!-- The first independent reviewer appends attempt 1 here. -->
+| 1 | PRT-005 independent reviewer subagent (Claude) | `36d3733e06555ca2b43529734d79f559a4e940a8` | `approved` | Re-ran focused (148/148) + full (296/296) + typecheck/build/boundary/`git diff --check`/`status` all clean. Independent adversarial probes against the built schemas: zero path escapes incl. 3 different-seed corpora (36,000 cases, 14 escape classes); object-key prefix pinned to org/job/attempt (wrong/bare/quarantine/traversal rejected); quarantine device-auth + ≤5-min + NO apply/promote/select-checkpoint/attempt-mutation field + receipt disposition only `quarantined` (matches CAV-004); secret env/file/proxy grammar + use-policy matrix (`sandbox_local_only` cannot reach network, raw materialization unrepresentable, OAuth tokens rejected recursively); network default-deny + no-IP/https-only; every artifact kind incl. `other` requires `restricted`. `workspaceBaseV1Schema` duplication is plan-mandated (3-field job pointer vs 7-field artifact capture base; job copy private/unexported) — acceptable, not a drift defect. Job refactor single-source with `secretHandleIds`→`secretHandles` (byte-identical resource limits, no leftover field). No `E1-Fxxx` finding. |
