@@ -1471,6 +1471,13 @@
       "when": 1786276838702,
       "tag": "0209_tenant_composite_integrity",
       "breakpoints": true
+    },
+    {
+      "idx": 210,
+      "version": "7",
+      "when": 1786283531037,
+      "tag": "0210_drop_sentinel_org_default",
+      "breakpoints": true
     }
   ]
 }
