@@ -6,12 +6,12 @@
 **Implementer:** `Codex implementer agent (/root/e1_checker_correction_impl)`
 **Start SHA:** `baf903bc982c7580b6955b69c624fb6dcab570ae`
 **Candidate code revision:** `4fa9df3f08452509f24c94681df73a8909451684`
-**Reviewed revision:** `c90908281b43ef5e2fba319d828ed1958ca3bb60`
+**Reviewed revision:** `2bf5297b66a314858954dbdd3e53c320fba9af25`
 **Fix-round 1 RED revisions:** `eef4db2588505b61ffee0fc864792e3fd8873fa4`, `193cea335cec8cb9b3ed423bdb62bffb9c638a92`
 **Fix-round 1 candidate code revision:** `127247f54271bc951db04ea50c016cf4d49e0d66`
 **Scope:** Corrective E1 checker/test/evidence work only. No frozen v1 byte, worker-protocol source/schema/bundle, dependency version, or E3 ticket behavior changed.
 
-Distinct review attempt 1 requested changes. P2 is not complete, this record is not a pass, and JOB-001 is not authorized to rely on this correction.
+Distinct review attempts 1 and 2 requested changes. P2 is not complete, this record is not a pass, and JOB-001 is not authorized to rely on this correction.
 
 ## Candidate behavior
 
@@ -149,3 +149,51 @@ dependency manifest/lockfile, freeze script, or E3 ticket implementation changed
 
 Distinct review must inspect the exact evidence revision and issue the only
 authoritative pass/needs-changes decision.
+
+## Review attempt 2 - needs_changes
+
+**Reviewer:** `Codex distinct reviewer (/root/e1_checker_correction_review)`
+**Reviewed revision:** `2bf5297b66a314858954dbdd3e53c320fba9af25`
+**Spec verdict:** `fail`
+**Quality/security verdict:** `fail`
+**Disposition:** `needs_changes`
+
+### Prior-blocker disposition
+
+1. **Coordinated frozen artifact plus manifest self-authentication: resolved.** Freeze anchor `c68053421ac53c5b49066b041c8fbcdd920dad62` is an exact commit with sole parent `b7a842870ce7509d8baa75409e0ab19da375c88a`, and its frozen fixture tree is `e62b3b2977fdd69a20ea62a0be30ecd858aafa20`. An independent clone with coordinated bundle and schema changes plus a regenerated, internally consistent manifest exited `1` with immutable-anchor mismatches for both artifacts and the manifest.
+2. **Replacement-object substitution: resolved.** Independent real `refs/replace` probes targeting the source commit and the freeze anchor each exited `1` with the correct replacement-ref diagnostic. Replacement-disabled object checks preserve both canonical identities.
+3. **Invalid fixture execution and unbounded smoke: resolved for ordering, timeout, and output bound.** The coordinated-mutation sentinel was not created. An infinite-loop module was killed in about `110ms` at a `100ms` test timeout. A module emitting more than the `1 MiB` cap returned a bounded `ENOBUFS` failure in about `41ms`.
+4. **Inherited Git signing and setup-failure leakage: resolved serially.** The complete corpus under inherited `commit.gpgSign=true` passed `30/30`; the forced setup-failure case passed and produced zero new `frozen-wp-git-*` or `frozen-wp-real-clone-*` directories.
+
+### New Important findings
+
+1. **P2 - the promised empty smoke-child environment is not empty on Windows.** `scripts/check-frozen-worker-protocol-consumer.mjs:569-576` passes `env: {}`, but an independently imported valid probe observed eleven child environment keys on this supported Windows lane: `HOMEDRIVE`, `HOMEPATH`, `LOGONSERVER`, `PATH`, `SYSTEMDRIVE`, `SYSTEMROOT`, `TEMP`, `USERDOMAIN`, `USERNAME`, `USERPROFILE`, and `WINDIR`. Arbitrary parent values such as `REVIEW_PARENT_SECRET`, `NODE_OPTIONS`, and `NODE_PATH` were excluded, but the explicit empty-environment guarantee and isolation claim are false. The child wrapper must clear `process.env` before a dynamic import, then test zero keys on Windows.
+2. **P2 - cleanup can delete another concurrent run's live temporary repository.** `scripts/check-frozen-worker-protocol-consumer.test.mjs:249-257` snapshots the shared OS temp namespace, treats every newly observed `frozen-wp-git-*` directory as its own leak, and recursively removes it. Calls at lines 573 and 590 therefore have no ownership boundary. Two staggered parallel targeted corpus processes independently reproduced the race: both reported `EPERM` at line 256 while attempting to remove the other process's live repository, and failed their signing/cleanup cases. Cleanup must be scoped to a unique per-test parent or exact path created by that test.
+
+### Independent focused acceptance
+
+| Command / probe | Outcome |
+|---|---|
+| Exact scoped package `## Diff` vs fresh unified-10 `c90908281..2bf5297b6` diff | byte-identical, SHA-256 `46bcb0057f189a92644de85e979173247ccfc84a6743b9824fbae0c25706092c` |
+| Checker/test `node --check` | both exit `0` |
+| Full focused corpus | exit `0`, `30/30` |
+| Focused corpus with inherited `commit.gpgSign=true` | exit `0`, `30/30`; zero new matching temp directories |
+| Actual checker at recorded source SHA | exit `0`; Zod `3.24.2`, esbuild `0.28.1` |
+| Coordinated bundle + schema + regenerated manifest + sentinel | exit `1`; both artifacts rejected by anchor; sentinel absent |
+| Real source and freeze-anchor replacement refs | both exit `1` with actionable diagnostics |
+| Timeout / output cap | `100ms` hang terminated in about `110ms`; over-cap output failed with bounded `ENOBUFS` diagnostic |
+| Empty child environment | **fails on Windows:** eleven OS/user-path keys present; custom sensitive/test values excluded |
+| Two staggered parallel signing/cleanup cases | **fail:** cross-run `EPERM` removal race at test line 256 |
+| Clean `--no-local` clone | no `node_modules`; deterministic double invocation passes in the 30-case corpus |
+| Boundary Node suite / boundary CLI | exit `0`, `50/50` / exit `0` |
+| Package smoke / contract-manifest check | both exit `0` |
+| Worker-protocol typecheck / build | both exit `0` |
+| Worker-protocol tests | exit `1`; `16` files and `490` tests pass, with only the documented Windows `src/cross-version.test.ts:12` collection SyntaxError |
+| `pnpm -r typecheck` / `pnpm build` | both exit `0`, 24/25 workspace projects |
+| Scoped `git diff --check` | exit `0` |
+
+The protected diff remains empty. Base/head identities are unchanged: worker-protocol tree `73aeaaeebefeabf660bf8e5a5ff809184fe2e33a`, frozen fixture and anchor tree `e62b3b2977fdd69a20ea62a0be30ecd858aafa20`, contract tree `7d895c4cb71e8b45b810b99f09dcc6ce37866a60`, protocol source tree `a932ba4bec9dc7b96dd51b1670de92976ceeee69`, bundle blob `260bf29edefb138a37bdfd28e68ceba95f3fdc38`, package blob `51dc7b2c67a1b60884219144a353b7e14e2162b3`, and lock blob `eed4aa6ac1559fff2b9f0788f735fe2473462df1`.
+
+### Decision
+
+All four attempt-1 blockers are substantively addressed, but the fix round introduces two independently reproduced Important issues within the requested re-review scope. P2 remains `gate_review` / `needs_changes`; E1-F008 remains open; the a4 awaiting-review QA/handoff are not finalized; no pass artifacts or E3 authorization are issued.
