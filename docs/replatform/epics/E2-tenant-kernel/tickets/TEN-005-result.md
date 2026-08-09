@@ -19,6 +19,45 @@ policies + `createTenantAppDb` fail-closed pool + migration `0211`) underpins th
 E2-D04 (surface scope + uniform denial + null-Org read) governs this ticket;
 `AOA_RUN_WIN_INTEGRATION` env-hatch per E2-D05.
 
+## E2-F013 fix (post review attempt 1) — FK-identity existence oracle closed at the DB level (E2-D09)
+
+Review **attempt 1** was `changes_requested` on a REAL, untested H-01 existence
+oracle (**E2-F013**): FK referential-integrity checks **bypass RLS**, and TEN-004 kept
+redundant single-column PARENT FKs alongside the composite tenant FKs. So as `aoa_app`
+in org A, an **own-org** insert (RLS `WITH CHECK` passes) whose composite parent id is a
+**cross-tenant** row failed the COMPOSITE FK (`jobs_org_company_fk`), while an **absent**
+parent id failed the SINGLE-column FK (`jobs_company_id_companies_id_fk`) — a distinct
+`constraint_name` + message = a cross-tenant existence oracle. Systemic across all 7
+child tables. The original suite tested only the cross-ORG insert (uniform 42501) and
+never this own-org write-vs-write axis; the result misclaimed "no leak found."
+
+**Fix (E2-D09 — closed at the DB level, NOT app-layer normalization):** dropped the 7
+redundant single-column PARENT FKs and moved their `ON DELETE` onto the composite tenant
+FKs, so a cross-tenant parent id and an absent parent id now BOTH fail the SAME composite
+FK with an identical constraint/message. The `organization_id → organizations`
+single-column FKs are KEPT (tenant key; a cross-org value hits RLS `WITH CHECK` (42501)
+before any FK — not an oracle). Schema edits in the 7 `packages/db/src/schema/*.ts`
+child modules; migration **`0212_fk_dedup_tenant_oracle.sql`** (`pnpm db:generate`, all
+14 `DROP CONSTRAINT` precede the 7 composite-FK `ADD CONSTRAINT` — DROP-before-ADD holds
+without reorder, E2-D08 N/A; ALTER-only, no CREATE → migration-idempotency unaffected).
+
+**RED→GREEN proof:** on the pre-fix schema (single-col FKs restored, 0212 removed) the
+new oracle-axis assertion FAILS for all 8 seeds — cross parent → `jobs_org_company_fk`,
+absent parent → `jobs_company_id_companies_id_fk` (distinct constraint + message). After
+the fix both are the byte-identical `insert or update on table "jobs" violates foreign
+key constraint "jobs_org_company_fk"` → GREEN.
+
+**New coverage:** `tenant-adversarial.property.integration.test.ts` gains the
+`crossParentVsAbsentUniform` op class (216 ops; own-org insert, cross-tenant vs absent
+parent for `jobs`/`job_attempts`/`services`) asserting identical SQLSTATE (23503) +
+constraint_name + byte-identical deepest DB message. `tenant-graph.ts` exports
+`TENANT_ADVERSARIAL_OP_CLASSES` (the counter set, incl. the oracle axis). New
+`packages/db/src/__tests__/tenant-composite-ondelete.integration.test.ts` proves the ON
+DELETE moved correctly: deleting a job CASCADEs its attempts/artifacts/secret-handles
+(and attempts CASCADE leases), deleting a service CASCADEs its instances, deleting a
+company that owns a job/service is RESTRICTED (`23001` restrict_violation on the
+composite FK — confirming RESTRICT, not NO ACTION). Total ops now **4,460/8 seeds**.
+
 ## Delivered scope
 
 - **`server/src/testing/tenant-graph.ts`** — a deterministic, seed-reproducible tenant
@@ -73,15 +112,19 @@ epics to extend the SAME harness. The **full D1 floor** (`D1-01`: 20 seeds × 10
 **vacuously satisfied** — no audit path is fabricated.
 
 **Non-goals preserved:**
-- **No schema/migration change** — the migration chain still caps at `0211` (`git diff
-  --stat` empty; only 3 new untracked files). **No** route/scheduler wiring.
+- **Schema/migration change (E2-F013 fix only):** migration **`0212`** drops the 7
+  redundant single-column parent FKs + moves ON DELETE onto the composite FKs (per
+  E2-D09; see the E2-F013-fix section). The chain caps at `0212`. This is a TEN-004
+  schema correction riding under E2-F013 (TEN-004's frozen ledger is NOT edited). **No**
+  route/scheduler wiring. *(The original TEN-005 commit `664daadc9` was test-only, chain
+  at 0211; the fix adds the schema correction.)*
 - **No change** to the TEN-002 RLS policies, `rls-tenant.ts`, `runInTenant`,
   `with-tenant-tx.ts`, the tenant repository, `createDb`, `rls-bootstrap.ts`, or
-  `assertCompanyAccess`. **No uniform-denial normalization was added** — the tenant
-  repository accessors are plain RLS-backed `tx.select`/`insert` with NO existence-
-  revealing pre-check and NO catch-and-differentiate (verified by reading
-  `packages/db/src/repositories/tenant/index.ts`), so uniform denial holds NATURALLY
-  (no leak found → no normalization needed; §Deviations).
+  `assertCompanyAccess`. **The FK-identity oracle is closed at the DB level (E2-D09), NOT
+  by app-layer normalization** — the tenant repository accessors stay plain RLS-backed
+  `tx.select`/`insert` with no catch-and-differentiate; the DB-enforced fix means even a
+  raw `aoa_app` query gets the uniform composite-FK denial (app-layer normalization
+  remains an OPTIONAL E3 defense-in-depth per E2-D09).
 - No new dependency; **no `package.json`/`pnpm-lock.yaml` change** (AGENTS §7 N/A).
 - Caveat/credential/target impact: *N/A — E2 introduces no placement, credential,
   provider, or locality logic; CAV-005: no legacy RLS retrofit; provider-neutral seam
@@ -91,19 +134,25 @@ epics to extend the SAME harness. The **full D1 floor** (`D1-01`: 20 seeds × 10
 
 | File | Responsibility |
 |---|---|
-| `server/src/testing/tenant-graph.ts` | **New.** Deterministic seeded generator + hostile corpus + surface registry + SEED set. |
-| `server/src/__tests__/tenant-adversarial.property.integration.test.ts` | **New.** Embedded-PG H-01 adversarial property suite (8 seeds × hundreds of ops). |
-| `server/src/__tests__/tenant-graph-unit.test.ts` | **New.** Windows-visible determinism + corpus/registry shape unit proof. |
+| `server/src/testing/tenant-graph.ts` | **New / updated.** Deterministic seeded generator + hostile corpus + surface registry + SEED set; **E2-F013:** exports `TENANT_ADVERSARIAL_OP_CLASSES` (incl. the `crossParentVsAbsentUniform` oracle axis). |
+| `server/src/__tests__/tenant-adversarial.property.integration.test.ts` | **New / updated.** Embedded-PG H-01 adversarial property suite; **E2-F013:** adds the own-org cross-vs-absent parent oracle axis (identical composite FK + byte-identical message). |
+| `server/src/__tests__/tenant-graph-unit.test.ts` | **New / updated.** Windows-visible determinism + corpus/registry shape; **E2-F013:** asserts the op-class set incl. the oracle axis. |
+| `packages/db/src/schema/{jobs,job_attempts,leases,services,service_instances,job_artifacts,job_secret_handles}.ts` | **E2-F013/E2-D09:** drop the redundant single-column parent FK; move ON DELETE onto the composite FK. `organization_id` FK kept. |
+| `packages/db/src/migrations/0212_fk_dedup_tenant_oracle.sql` (+ `meta/`) | **New.** `db:generate` output: DROP 7 single-col + 7 composite FKs, ADD 7 composite FKs with ON DELETE (DROP-before-ADD). |
+| `packages/db/src/__tests__/tenant-composite-ondelete.integration.test.ts` | **New.** Proves ON DELETE moved correctly to the composite FKs (cascade + restrict). |
 
 ## Acceptance evidence
 
 Property suite `tenant-adversarial.property.integration.test.ts`, embedded-PG,
-`AOA_RUN_WIN_INTEGRATION=1` → **11 passed**. Unit sibling → **10 passed**. Op counts
-(deterministic, identical on re-run): `totalOps=4244`,
+`AOA_RUN_WIN_INTEGRATION=1` → **11 passed**. Unit sibling → **11 passed** (was 10;
++op-class test). **Post-E2-F013 op counts** (deterministic, identical on re-run):
+`totalOps=4460`,
 `perClass={crossRead:2688, absentRead:288, crossList:640, crossInsertReject:72,
 crossUpdateZero:144, crossDeleteZero:144, updateToOtherOrgReject:36, nullOrgReadZero:144,
-nullOrgWriteReject:72, compositeSqlReject:16}`,
-`perSeed={1:647, 7:414, 13:647, 42:647, 101:414, 1337:414, 20260809:414, 2147483647:647}`.
+nullOrgWriteReject:72, compositeSqlReject:16, crossParentVsAbsentUniform:216}`,
+`perSeed={1:677, 7:438, 13:677, 42:677, 101:438, 1337:438, 20260809:438, 2147483647:677}`.
+(The original test-only commit `664daadc9` was `totalOps=4244`; +216 is the new oracle
+axis.)
 
 | Acceptance condition (plan §TEN-005 / E2-D04) | Evidence | Result |
 |---|---|---|
@@ -116,18 +165,29 @@ nullOrgWriteReject:72, compositeSqlReject:16}`,
 | **null-Org read** — no tenant GUC returns a platform (org-NULL) worker (by `IS NULL` filter or by id) | `nullOrgReadZero=144` → all counts 0 | `pass` |
 | **null-Org write** — `aoa_app` cannot INSERT or UPDATE a worker to org NULL → **42501** | `nullOrgWriteReject=72`; `expect(sqlstate).toBe("42501")` | `pass` |
 | **composite_sql** — direct-SQL mixed-tenant construction rejected by the TEN-004 composite FKs → **23503** (`jobs_org_company_fk`, `job_attempts_org_job_fk`) | `compositeSqlReject=16`; `expect(sqlstate).toBe("23503")` + constraint name | `pass` |
-| **Non-vacuous** — ≥2 orgs/seed, non-empty corpus, ≥1 op per class, ≥100 ops/seed | dedicated `it`: every `opCounts[*] > 0`, every `perSeedOpCounts[*] ≥ 100`, total ≥ 800 | `pass` |
+| **FK-oracle axis (E2-F013)** — own-org insert with a CROSS-TENANT parent id vs an ABSENT parent id both fail with the SAME composite FK (`jobs_org_company_fk` / `job_attempts_org_job_fk` / `services_org_company_fk`) + byte-identical deepest DB message → indistinguishable | `crossParentVsAbsentUniform=216`; RED (pre-fix): cross=`jobs_org_company_fk`, absent=`jobs_company_id_companies_id_fk` (distinct) → all 8 seeds FAIL. GREEN (post-0212): both `jobs_org_company_fk`, msg byte-identical (logged) | `pass` |
+| **ON DELETE preserved (E2-D09)** — job delete CASCADEs attempts/artifacts/secret-handles (+ attempts CASCADE leases); service delete CASCADEs instances; company-with-job/service delete RESTRICTED | `tenant-composite-ondelete.integration.test.ts` 4 passed (cascade counts → 0; restrict → `23001` on `jobs_org_company_fk` / `services_org_company_fk`) | `pass` |
+| **Non-vacuous** — ≥2 orgs/seed, non-empty corpus, ≥1 op per class, ≥100 ops/seed | dedicated `it`: every `opCounts[*] > 0` (incl. the oracle axis), every `perSeedOpCounts[*] ≥ 100` | `pass` |
 | **Determinism** — reproducible from the fixed seeds | unit: `JSON.stringify` byte-identical same-seed / differs cross-seed; integration re-run → identical `totalOps=4244` + per-class counts | `pass` |
 | **Serving role is non-owner** (else the whole suite is vacuous) | `assertNonOwnerConnection(appDb)` resolves; `(db)` rejects | `pass` |
 
 **Uniform denial (E2-D04) — how "identical across read/write/absent" is proved:** the
 operationally-precise, load-bearing property is **per-operation-KIND
-indistinguishability of a cross-tenant target from an absent target** — a cross-tenant
-READ ≡ absent READ (both `null`/`[]`), and a cross-tenant WRITE ≡ absent-related WRITE
-(both `42501`, byte-identical DB message). This is exactly "no existence disclosure": the
-caller cannot tell whether an id belongs to another tenant or does not exist. It holds
-naturally because the repository is RLS-backed with no leaky pre-checks (no normalization
-added).
+indistinguishability of a cross-tenant target from an absent target** — proved on BOTH
+axes:
+- **read-vs-read:** cross-tenant READ ≡ absent READ (both `null`/`[]`).
+- **write-vs-write (RLS axis):** cross-ORG WRITE ≡ absent-related WRITE (both `42501`,
+  byte-identical DB message) — RLS `WITH CHECK` fires before any FK.
+- **write-vs-write (FK axis — E2-F013 fix):** own-org WRITE with a cross-tenant PARENT id
+  ≡ own-org WRITE with an absent PARENT id (both the SAME composite FK `23503`,
+  byte-identical DB message). This is the axis review attempt 1 found leaking (distinct
+  single-col vs composite constraint names) and E2-D09 closed at the DB level.
+
+This is exactly "no existence disclosure": the caller cannot tell whether a supplied id
+belongs to another tenant or does not exist, for any operation kind. The read + RLS-write
+axes hold naturally (RLS-backed accessors, no leaky pre-checks); the FK-write axis now
+holds because the redundant single-column FKs (the guard-identity discriminator) are gone
+(migration 0212 / E2-D09).
 
 ## Commands
 
@@ -144,10 +204,26 @@ added).
 | `vitest run integration-test-hygiene.test.ts` | `0` | **2 passed** (my `skipIf` form + comments not flagged) |
 | `AOA_RUN_WIN_INTEGRATION=1 vitest run tenant-rls-enforcement + tenant-tx-context` | `0` | **17 passed** (TEN-002 10 + TEN-003 7 — no regression) |
 
-**Seed count:** 8 (`TENANT_ADVERSARIAL_SEEDS`). **Ops per class (total across 8 seeds):**
-crossRead 2688, absentRead 288, crossList 640, crossInsertReject 72, crossUpdateZero 144,
-crossDeleteZero 144, updateToOtherOrgReject 36, nullOrgReadZero 144, nullOrgWriteReject 72,
-compositeSqlReject 16 → **4244 total**.
+**E2-F013 fix re-run (post-0212):**
+
+| Command | Exit | Result |
+|---|---:|---|
+| `pnpm --filter @armyofagents/db typecheck` + `build` | `0` | clean (`foreignKey().onDelete()` valid) |
+| `cd packages/db && drizzle-kit generate --name=fk_dedup_tenant_oracle` | `0` | `0212_fk_dedup_tenant_oracle.sql` (14 DROP before 7 composite ADD) |
+| **RED** `AOA_RUN_WIN_INTEGRATION=1 vitest run tenant-adversarial…` (pre-fix schema restored, 0212 removed) | `1` | **8 failed** — oracle axis: cross=`jobs_org_company_fk` vs absent=`jobs_company_id_companies_id_fk` (distinct constraint + message) for all 8 seeds |
+| **GREEN** `AOA_RUN_WIN_INTEGRATION=1 vitest run tenant-adversarial…` | `0` | **11 passed**; oracle msg cross==absent==`…"jobs_org_company_fk"`; `totalOps=4460` (identical on determinism re-run) |
+| `vitest run tenant-graph-unit.test.ts` | `0` | **11 passed** (adds op-class-set test) |
+| `AOA_RUN_WIN_INTEGRATION=1 vitest run tenant-composite-ondelete.integration.test.ts` | `0` | **4 passed** (cascade → 0; restrict → `23001` on composite FK) |
+| `cd packages/db && AOA_RUN_WIN_INTEGRATION=1 vitest run tenant-kernel-schema{,-b} + tenant-composite-integrity + tenant-composite-ondelete + migration-idempotency` | `0` | **29 passed** (no regression; TEN-004 composite FKs still reject mixed-tenant) |
+| `AOA_RUN_WIN_INTEGRATION=1 vitest run tenant-rls-enforcement + tenant-tx-context + tenant-adversarial + tenant-graph-unit` | `0` | **39 passed** (no regression) |
+| `vitest run tenant-adversarial…` (NO flag) | `0` | **11 skipped** (env-hatch) |
+| `pnpm --filter @armyofagents/server typecheck` | `2` | **66** (E2-F009 baseline unchanged; zero reference `tenant-graph`/`tenant-adversarial`/the 7 schema files) |
+
+**Seed count:** 8 (`TENANT_ADVERSARIAL_SEEDS`). **Ops per class (post-E2-F013, total across
+8 seeds):** crossRead 2688, absentRead 288, crossList 640, crossInsertReject 72,
+crossUpdateZero 144, crossDeleteZero 144, updateToOtherOrgReject 36, nullOrgReadZero 144,
+nullOrgWriteReject 72, compositeSqlReject 16, **crossParentVsAbsentUniform 216** → **4460
+total**.
 
 ## Deviations
 
@@ -167,14 +243,18 @@ compositeSqlReject 16 → **4244 total**.
    on the raw PostgresError leaf message (`pgDeepestMessage`), which for both the
    real-company and absent-company cross-inserts is the byte-identical RLS text `new row
    violates row-level security policy for table "jobs"` — no ids, no row contents.
-3. **Uniform-denial interpretation (per-KIND indistinguishability).** E2-D04 frames it as
-   "identical across a cross-tenant read, a cross-tenant write, and a truly-absent row." A
-   READ returns `null` while a WRITE throws `42501` — these differ by operation KIND. The
-   security-load-bearing, faithful reading (and what the ticket's own detailed bullets
-   spell out) is that **within each kind** a cross-tenant target is indistinguishable
-   from an absent one — implemented and asserted exactly (READ: null≡null; WRITE:
-   42501≡42501 with identical DB message). Recorded so the reviewer can confirm the
-   framing.
+3. **Uniform-denial interpretation (per-KIND indistinguishability) — CORRECTED after
+   E2-F013.** E2-D04 frames it as "identical across a cross-tenant read, a cross-tenant
+   write, and a truly-absent row." A READ returns `null` while a WRITE throws — these
+   differ by operation KIND, so the load-bearing reading is that **within each kind** a
+   cross-tenant target is indistinguishable from an absent one. Review attempt 1 correctly
+   noted the original result over-narrowed this to the read-vs-RLS-write axes and MISSED
+   the **write-vs-write FK axis** (own-org insert, cross-tenant parent vs absent parent),
+   where the redundant single-column FKs leaked the guard identity (composite vs single
+   constraint name). That axis is now (a) closed at the DB level (drop the single-col FKs,
+   E2-D09 / migration 0212) and (b) explicitly asserted (the `crossParentVsAbsentUniform`
+   op class: same composite FK + byte-identical message). All three write/read axes are
+   proved.
 4. **Malformed uuids kept in the corpus but not used for the indistinguishability core.**
    The corpus includes malformed ids (shape asserted in the unit test), but the property
    suite drives indistinguishability with valid-format **absent** uuids: a malformed uuid
@@ -183,8 +263,12 @@ compositeSqlReject 16 → **4244 total**.
 
 ## Findings
 
-- **None new.** No leak was found in the tenant repository accessors, so no uniform-denial
-  normalization was added (E2-D04 permits it "ONLY IF you find a leak").
+- **E2-F013 (RESOLVED by this fix, per E2-D09)** — the composite-vs-single FK
+  constraint-name existence oracle on the own-org `repos.*.insert` path. **Superseded the
+  original result's incorrect "no leak found" claim.** Closed at the DB level: migration
+  `0212` drops the 7 redundant single-column parent FKs + moves ON DELETE onto the
+  composite FKs; TEN-005 gains the `crossParentVsAbsentUniform` axis (RED on the pre-fix
+  schema for all 8 seeds; GREEN after). See `../findings.md#E2-F013`, `../decisions.md#E2-D09`.
 - **E2-F009 (pre-existing)** re-confirmed unchanged: `pnpm --filter server typecheck`
   exits 2 with 66 errors, ALL `@armyofagents/plugin-sdk` / plugin subsystem; grep for
   `tenant-graph`/`tenant-adversarial` over the error output → none. DEC-03-waivable /
@@ -202,25 +286,25 @@ follow-up.
 
 ## Gate recommendation
 
-`ready for independent review` — the adversarial property suite is proved on real
-embedded-Postgres over the non-owner `aoa_app` pool for all **8 fixed seeds** (4,244
-deterministic ops, identical on re-run): cross-tenant reads are indistinguishable from
-absent reads (null≡null), cross-tenant lists are empty, cross-tenant inserts +
-update-to-other-org fail closed at `42501` **identically whether or not a related row
-exists** (byte-identical RLS DB message, no id echo), cross-tenant UPDATE/DELETE affect 0
-rows, no tenant GUC ever returns a platform null-Org worker and `aoa_app` cannot write one
-(`42501`), and direct-SQL mixed-tenant construction is rejected by the composite FKs
-(`23503`). The serving role is asserted non-owner (else vacuous); every op class ran ≥
-once; the graph/corpus are seeded from a PRNG (no `Math.random`/wall-clock). No schema/
-migration/policy/repository change (`git diff --stat` empty; chain caps at 0211); TEN-002/
-TEN-003 suites do not regress; hygiene green; env-hatch skips cleanly without the flag.
-Reviewer should scrutinize: (1) the per-KIND uniform-denial interpretation + that the
-DEEPEST DB message is truly identical real-vs-absent (Deviations 2/3); (2) that the suite
-is genuinely non-vacuous (op-class counters + the non-owner assertion — remove FORCE/
-policies and the null/0-row assertions would flip); (3) that `withTenantTx`/superuser raw
-SQL for update/delete/null-Org/composite is the same RLS path (Deviation 1); (4) that a
-real Linux run is still owed for H-01 at the E2 gate (E2-D05/E2-F008 — Windows-local
-evidence here).
+`ready for RE-review (E2-F013 fix)` — review attempt 1's blocking finding **E2-F013** is
+resolved. The FK-identity existence oracle is closed at the DB level (E2-D09): migration
+`0212` drops the 7 redundant single-column parent FKs and moves ON DELETE onto the
+composite FKs, so an own-org insert with a cross-tenant parent id and one with an absent
+parent id now BOTH fail the SAME composite FK with a byte-identical message. The suite
+gains the `crossParentVsAbsentUniform` axis proving it (**RED on the pre-fix schema for
+all 8 seeds; GREEN after 0212**), and a new `tenant-composite-ondelete` test proves the ON
+DELETE cascade/restrict moved correctly. All prior coverage stands (reads null≡null,
+cross-writes 42501-uniform, UPDATE/DELETE 0-rows, null-Org denied, composite_sql 23503),
+now **4,460 deterministic ops / 8 seeds** (identical on re-run). Chain caps at `0212`;
+TEN-004 composite-integrity + migration-idempotency + the full tenant chain do not
+regress (29 db + 39 server passed); server typecheck baseline unchanged (66, E2-F009).
+The re-reviewer should scrutinize: (1) the RED→GREEN oracle-axis evidence (constraint
+name cross==absent post-fix) and that migration `0212` is DROP-before-ADD + ALTER-only;
+(2) that the `organization_id → organizations` FKs are KEPT (not part of the drop) and
+`onDelete` moved verbatim per the E2-D09 table; (3) the ON DELETE preservation
+(cascade → 0, restrict → `23001` on the composite FK); (4) that the fix is DB-level (no
+app-layer normalization) so a raw `aoa_app` query is also covered; (5) the still-owed
+real Linux run for H-01 at the E2 gate (E2-D05/E2-F008 — Windows-local evidence here).
 
 ## Independent review
 

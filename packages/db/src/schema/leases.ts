@@ -16,9 +16,11 @@ export const leases = pgTable(
     organizationId: uuid("organization_id")
       .notNull()
       .references(() => organizations.id, { onDelete: "restrict" }),
-    attemptId: uuid("attempt_id")
-      .notNull()
-      .references(() => jobAttempts.id, { onDelete: "cascade" }),
+    // TEN-004/E2-F013: NO single-column FK to job_attempts.id — the composite
+    // `leases_org_attempt_fk` (below) is the SOLE parent FK and carries ON DELETE
+    // CASCADE (E2-D09). A redundant single-column parent FK is a cross-tenant
+    // existence oracle (FK checks bypass RLS). organization_id keeps its FK.
+    attemptId: uuid("attempt_id").notNull(),
     status: text("status").notNull().default("offered"),
     fence: text("fence").notNull(),
     releasedAt: timestamp("released_at", { withTimezone: true }),
@@ -40,7 +42,7 @@ export const leases = pgTable(
       columns: [table.organizationId, table.attemptId],
       foreignColumns: [jobAttempts.organizationId, jobAttempts.id],
       name: "leases_org_attempt_fk",
-    }),
+    }).onDelete("cascade"),
     // TEN-004: "at most one LIVE lease per attempt". A PARTIAL UNIQUE INDEX
     // (Postgres has no partial unique CONSTRAINT; `unique()` cannot express
     // `where`) covering only leases still in a live state — a released/expired/

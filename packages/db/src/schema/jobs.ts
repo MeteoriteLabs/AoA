@@ -16,9 +16,15 @@ export const jobs = pgTable(
     organizationId: uuid("organization_id")
       .notNull()
       .references(() => organizations.id, { onDelete: "restrict" }),
-    companyId: uuid("company_id")
-      .notNull()
-      .references(() => companies.id, { onDelete: "restrict" }),
+    // TEN-004/E2-F013: NO single-column FK to companies.id — a redundant
+    // single-column parent FK is a cross-tenant EXISTENCE ORACLE (FK checks bypass
+    // RLS, so a company_id that exists in ANOTHER org would pass a single-column FK
+    // and fail only the composite FK, while an absent id fails the single-column FK
+    // — the differing constraint name leaks existence, banned by H-01). The
+    // composite `jobs_org_company_fk` (below) is the SOLE parent FK and carries the
+    // ON DELETE (E2-D09). organization_id keeps its single-column FK (tenant key; a
+    // cross-org value hits RLS WITH CHECK (42501) before any FK — not an oracle).
+    companyId: uuid("company_id").notNull(),
     status: text("status").notNull().default("queued"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -46,7 +52,7 @@ export const jobs = pgTable(
       columns: [table.organizationId, table.companyId],
       foreignColumns: [companies.organizationId, companies.id],
       name: "jobs_org_company_fk",
-    }),
+    }).onDelete("restrict"),
   }),
 );
 

@@ -16,9 +16,11 @@ export const jobAttempts = pgTable(
     organizationId: uuid("organization_id")
       .notNull()
       .references(() => organizations.id, { onDelete: "restrict" }),
-    jobId: uuid("job_id")
-      .notNull()
-      .references(() => jobs.id, { onDelete: "cascade" }),
+    // TEN-004/E2-F013: NO single-column FK to jobs.id — the composite
+    // `job_attempts_org_job_fk` (below) is the SOLE parent FK and carries ON DELETE
+    // CASCADE (E2-D09). A redundant single-column parent FK is a cross-tenant
+    // existence oracle (FK checks bypass RLS). organization_id keeps its FK.
+    jobId: uuid("job_id").notNull(),
     attemptNumber: integer("attempt_number").notNull().default(1),
     status: text("status").notNull().default("pending"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -42,7 +44,7 @@ export const jobAttempts = pgTable(
       columns: [table.organizationId, table.jobId],
       foreignColumns: [jobs.organizationId, jobs.id],
       name: "job_attempts_org_job_fk",
-    }),
+    }).onDelete("cascade"),
   }),
 );
 

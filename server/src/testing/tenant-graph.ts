@@ -434,3 +434,28 @@ export const TENANT_ADVERSARIAL_SURFACES: readonly SurfaceRegistryEntry[] = Obje
 export const TENANT_ADVERSARIAL_SEEDS: readonly number[] = Object.freeze([
   1, 7, 13, 42, 101, 1337, 20260809, 2147483647,
 ]);
+
+/**
+ * The op classes the adversarial suite drives — the counter keys it tallies to prove
+ * the run is NON-vacuous (every class > 0). Kept here (not in the test) so the counter
+ * set is a single exported artifact later epics extend alongside the surface registry.
+ *
+ * `crossParentVsAbsentUniform` (E2-F013 / E2-D09) is the FK-oracle axis: an own-org
+ * insert whose composite PARENT id is (i) a cross-tenant row vs (ii) truly absent must
+ * fail with the SAME composite-FK constraint + byte-identical DB message — proving the
+ * redundant single-column parent FKs (the oracle) are gone.
+ */
+export const TENANT_ADVERSARIAL_OP_CLASSES = [
+  "crossRead",
+  "absentRead",
+  "crossList",
+  "crossInsertReject",
+  "crossUpdateZero",
+  "crossDeleteZero",
+  "updateToOtherOrgReject",
+  "nullOrgReadZero",
+  "nullOrgWriteReject",
+  "compositeSqlReject",
+  "crossParentVsAbsentUniform",
+] as const;
+export type TenantAdversarialOpClass = (typeof TENANT_ADVERSARIAL_OP_CLASSES)[number];

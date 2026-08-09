@@ -80,9 +80,11 @@ import { runInTenant } from "../db/tenant-context.js";
 import { TENANT_APP_ROLE, provisionTenantAppRoleLoginSql } from "../db/rls-tenant.js";
 import { allocateEmbeddedPgPort } from "./helpers/embedded-pg-port.js";
 import {
+  TENANT_ADVERSARIAL_OP_CLASSES,
   TENANT_ADVERSARIAL_SEEDS,
   buildHostileCorpus,
   generateTenantGraph,
+  type TenantAdversarialOpClass,
   type TenantGraph,
 } from "../testing/tenant-graph.js";
 
@@ -155,30 +157,25 @@ function count(res: unknown): number {
 }
 
 // ---- op-class counters (proving the suite is NON-vacuous) ------------------------
-type OpClass =
-  | "crossRead" // cross-tenant getById -> null
-  | "absentRead" // absent getById -> null
-  | "crossList" // listFor*(cross) -> []
-  | "crossInsertReject" // insert row of another org -> 42501
-  | "crossUpdateZero" // update cross/absent row by id -> 0 rows
-  | "crossDeleteZero" // delete cross/absent row by id -> 0 rows
-  | "updateToOtherOrgReject" // update own row's org -> 42501
-  | "nullOrgReadZero" // no GUC returns a platform (null-Org) worker
-  | "nullOrgWriteReject" // insert/update a worker to org NULL -> 42501
-  | "compositeSqlReject"; // direct-SQL mixed-tenant construction -> 23503
-const opCounts: Record<OpClass, number> = {
-  crossRead: 0,
-  absentRead: 0,
-  crossList: 0,
-  crossInsertReject: 0,
-  crossUpdateZero: 0,
-  crossDeleteZero: 0,
-  updateToOtherOrgReject: 0,
-  nullOrgReadZero: 0,
-  nullOrgWriteReject: 0,
-  compositeSqlReject: 0,
-};
+// The class set is exported from tenant-graph.ts so later epics extend it; meaning:
+//   crossRead                   cross-tenant getById -> null
+//   absentRead                  absent getById -> null
+//   crossList                   listFor*(cross) -> []
+//   crossInsertReject           insert row of another org -> 42501 (RLS WITH CHECK)
+//   crossUpdateZero             update cross/absent row by id -> 0 rows
+//   crossDeleteZero             delete cross/absent row by id -> 0 rows
+//   updateToOtherOrgReject      update own row's org -> 42501
+//   nullOrgReadZero             no GUC returns a platform (null-Org) worker
+//   nullOrgWriteReject          insert/update a worker to org NULL -> 42501
+//   compositeSqlReject          direct-SQL mixed-tenant construction -> 23503
+//   crossParentVsAbsentUniform  own-org insert, cross-tenant vs absent PARENT id ->
+//                               SAME composite FK + identical message (E2-F013/E2-D09)
+type OpClass = TenantAdversarialOpClass;
+const opCounts: Record<OpClass, number> = Object.fromEntries(
+  TENANT_ADVERSARIAL_OP_CLASSES.map((k) => [k, 0]),
+) as Record<OpClass, number>;
 const perSeedOpCounts: Record<number, number> = {};
+let loggedOracleShape = false;
 
 // Seed a full deterministic graph as the SUPERUSER (RLS-bypassing), typed drizzle
 // inserts with EXPLICIT ids so the hostile corpus can reference them. FK-safe order.
@@ -459,6 +456,87 @@ async function runAdversarialOps(g: TenantGraph): Promise<{ anomalies: string[];
     expect(sqlstate(errUpdateOrg), "update-own-row-to-other-org SQLSTATE").toBe("42501");
     // The write-denial class is uniform: cross-insert and update-to-other-org share it.
     expect(sqlstate(errUpdateOrg)).toBe(sqlstate(errRealCompany));
+
+    // ---- ORACLE AXIS (E2-F013 / E2-D09): the FK-identity existence oracle. An
+    // OWN-org insert (organization_id = actor → RLS WITH CHECK PASSES) whose composite
+    // PARENT id is (i) a CROSS-TENANT row (exists in another org) vs (ii) truly ABSENT
+    // must fail with the SAME composite-FK constraint AND a byte-identical deepest DB
+    // message — so the caller cannot learn whether a supplied uuid is a parent in
+    // another tenant. Before the fix the two diverged (composite FK vs the redundant
+    // single-column FK); the dropped single-column FKs (migration 0212) collapse them.
+    const crossCompany = corpus.crossOrgCompanyIds[0]!; // a company that EXISTS in another org
+    const crossJob = corpus.crossOrgJobIds[0]!; // a job that EXISTS in another org
+    const checkUniformFkDenial = (
+      label: string,
+      expectedConstraint: string,
+      crossErr: unknown,
+      absentErr: unknown,
+      crossParentId: string,
+    ): void => {
+      // both are FK violations (23503), NOT RLS (own-org insert clears WITH CHECK).
+      if (sqlstate(crossErr) !== "23503") anomalies.push(`${label} oracle: cross not 23503 (${String(sqlstate(crossErr))})`);
+      if (sqlstate(absentErr) !== "23503") anomalies.push(`${label} oracle: absent not 23503 (${String(sqlstate(absentErr))})`);
+      // SAME constraint name — the discriminating single-column FK is gone.
+      const cCon = pgField(crossErr, "constraint_name");
+      const aCon = pgField(absentErr, "constraint_name");
+      if (cCon !== expectedConstraint) anomalies.push(`${label} oracle: cross constraint ${String(cCon)} != ${expectedConstraint}`);
+      if (aCon !== expectedConstraint) anomalies.push(`${label} oracle: absent constraint ${String(aCon)} != ${expectedConstraint}`);
+      // Byte-identical deepest DB message (any leak of the parent id would break this).
+      const cMsg = pgDeepestMessage(crossErr) ?? "";
+      const aMsg = pgDeepestMessage(absentErr) ?? "";
+      if (cMsg !== aMsg) anomalies.push(`${label} oracle: DB message differs cross vs absent (existence disclosure): "${cMsg}" != "${aMsg}"`);
+      if (cMsg.includes(crossParentId)) anomalies.push(`${label} oracle: DB message echoed the cross parent id`);
+      if (!loggedOracleShape) {
+        loggedOracleShape = true;
+        // eslint-disable-next-line no-console
+        console.log(`[tenant-adversarial] ${label} oracle msg (cross)="${cMsg}" (absent)="${aMsg}" constraint=${String(cCon)}`);
+      }
+    };
+
+    // jobs ← companies (own-org, cross-company vs absent-company)
+    const oracleJobsCross = await captureReject(() =>
+      runInTenant(appDb, actor.org.id, (repos) =>
+        repos.jobs.insert({ organizationId: actor.org.id, companyId: crossCompany }),
+      ),
+    );
+    bump("crossParentVsAbsentUniform");
+    const oracleJobsAbsent = await captureReject(() =>
+      runInTenant(appDb, actor.org.id, (repos) =>
+        repos.jobs.insert({ organizationId: actor.org.id, companyId: absentA }),
+      ),
+    );
+    bump("crossParentVsAbsentUniform");
+    checkUniformFkDenial("jobs", "jobs_org_company_fk", oracleJobsCross, oracleJobsAbsent, crossCompany);
+
+    // job_attempts ← jobs (own-org, cross-job vs absent-job)
+    const oracleAttemptCross = await captureReject(() =>
+      runInTenant(appDb, actor.org.id, (repos) =>
+        repos.attempts.insert({ organizationId: actor.org.id, jobId: crossJob }),
+      ),
+    );
+    bump("crossParentVsAbsentUniform");
+    const oracleAttemptAbsent = await captureReject(() =>
+      runInTenant(appDb, actor.org.id, (repos) =>
+        repos.attempts.insert({ organizationId: actor.org.id, jobId: absentB }),
+      ),
+    );
+    bump("crossParentVsAbsentUniform");
+    checkUniformFkDenial("job_attempts", "job_attempts_org_job_fk", oracleAttemptCross, oracleAttemptAbsent, crossJob);
+
+    // services ← companies (own-org, cross-company vs absent-company)
+    const oracleServiceCross = await captureReject(() =>
+      runInTenant(appDb, actor.org.id, (repos) =>
+        repos.services.insert({ organizationId: actor.org.id, companyId: crossCompany }),
+      ),
+    );
+    bump("crossParentVsAbsentUniform");
+    const oracleServiceAbsent = await captureReject(() =>
+      runInTenant(appDb, actor.org.id, (repos) =>
+        repos.services.insert({ organizationId: actor.org.id, companyId: absentB }),
+      ),
+    );
+    bump("crossParentVsAbsentUniform");
+    checkUniformFkDenial("services", "services_org_company_fk", oracleServiceCross, oracleServiceAbsent, crossCompany);
 
     // ---- UPDATE/DELETE of a cross-tenant (or absent) row by id → 0 rows affected
     // (RLS USING hides it — indistinguishable from an absent id). No error → batch in

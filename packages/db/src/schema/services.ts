@@ -17,9 +17,11 @@ export const services = pgTable(
     organizationId: uuid("organization_id")
       .notNull()
       .references(() => organizations.id, { onDelete: "restrict" }),
-    companyId: uuid("company_id")
-      .notNull()
-      .references(() => companies.id, { onDelete: "restrict" }),
+    // TEN-004/E2-F013: NO single-column FK to companies.id — the composite
+    // `services_org_company_fk` (below) is the SOLE parent FK and carries ON DELETE
+    // RESTRICT (E2-D09). A redundant single-column parent FK is a cross-tenant
+    // existence oracle (FK checks bypass RLS). organization_id keeps its FK.
+    companyId: uuid("company_id").notNull(),
     desiredState: text("desired_state").notNull().default("running"),
     generation: integer("generation").notNull().default(1),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -46,7 +48,7 @@ export const services = pgTable(
       columns: [table.organizationId, table.companyId],
       foreignColumns: [companies.organizationId, companies.id],
       name: "services_org_company_fk",
-    }),
+    }).onDelete("restrict"),
   }),
 );
 

@@ -11,6 +11,7 @@
 import { describe, expect, it } from "vitest";
 import {
   FORBIDDEN_SENTINEL_ORG_ID,
+  TENANT_ADVERSARIAL_OP_CLASSES,
   TENANT_ADVERSARIAL_SEEDS,
   TENANT_ADVERSARIAL_SURFACES,
   buildHostileCorpus,
@@ -219,5 +220,21 @@ describe("TEN-005 tenant-graph generator (deterministic, seed-reproducible)", ()
     expect(TENANT_ADVERSARIAL_SEEDS.length).toBe(8);
     expect(new Set(TENANT_ADVERSARIAL_SEEDS).size).toBe(8);
     expect(TENANT_ADVERSARIAL_SEEDS.every((s) => Number.isInteger(s))).toBe(true);
+  });
+
+  it("exposes the op-class set including the FK-oracle axis (E2-F013/E2-D09)", () => {
+    expect(new Set(TENANT_ADVERSARIAL_OP_CLASSES).size).toBe(TENANT_ADVERSARIAL_OP_CLASSES.length);
+    // The oracle axis must be a first-class counter so a vacuous run can't hide it.
+    expect(TENANT_ADVERSARIAL_OP_CLASSES).toContain("crossParentVsAbsentUniform");
+    // The read/write/null-Org/composite classes are all present too.
+    for (const k of [
+      "crossRead",
+      "crossInsertReject",
+      "crossUpdateZero",
+      "nullOrgWriteReject",
+      "compositeSqlReject",
+    ] as const) {
+      expect(TENANT_ADVERSARIAL_OP_CLASSES).toContain(k);
+    }
   });
 });
