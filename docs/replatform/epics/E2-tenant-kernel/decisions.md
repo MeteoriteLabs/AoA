@@ -417,3 +417,48 @@ tables) is runtime-enforced, plus the helper's unit proof.
 ### Promotion
 
 `epic-local`.
+
+---
+
+## E2-D08 — A `db:generate` migration may be statement-reordered (verbatim, semantics-preserving) when drizzle-kit emits an unappliable order
+
+**Date (UTC):** 2026-08-09
+**Status:** `proposed` (surfaced by TEN-004; ratify at gate)
+**Owner role:** Migration Custodian
+**Affected tickets:** TEN-004 (and any later composite-FK migration)
+
+### Context
+
+drizzle-kit 0.31.10 emits a composite **FOREIGN KEY** `ADD CONSTRAINT` *before* the
+`(organization_id, id)` **UNIQUE** `ADD CONSTRAINT` it references. Applied in that order Postgres
+raises `42830` ("no unique constraint matching given keys") — the migration cannot apply at all.
+The referenced UNIQUE must exist before the FK. This is a generator ordering limitation, not a
+schema-authoring choice. (Verified in TEN-004's `0209_tenant_composite_integrity.sql`.)
+
+### Decision
+
+When `db:generate` emits statements in an order that fails to apply (the composite-FK-before-its-
+referenced-UNIQUE case being the known instance), the generated statements **may be reordered** in
+the migration file — **without changing any statement's text** — so the chain applies. The edit
+must be documented with an inline header comment stating what was reordered and why, and the
+migration's `information_schema`/behavioral integration test proves it applies cleanly. This is
+distinct from hand-authoring DDL (Rule #1) and from the C14 append exception (idempotency guards +
+backfills): **no DDL text is added or changed; only statement order.** It stays subordinate to
+Decision #19 / Rule #1.
+
+### Alternatives considered
+
+- **Split into two migrations** (UNIQUEs, then FKs) so each is in pure generated order. Rejected as
+  the default: it doubles the migration count for no semantic benefit and drizzle-kit can still
+  misorder within a single generated migration; a documented verbatim reorder is lower-churn and
+  auditable. (The split remains available if a reviewer prefers it for a specific migration.)
+
+### Consequences
+
+Migration reviewers verify the reorder changed no statement text (diff of sorted statements is
+empty) and that the integration/idempotency tests apply the chain cleanly. Epic-local; promote to
+`AGENTS.md`/`docs/architecture/decisions.md` only if the pattern recurs beyond E2.
+
+### Promotion
+
+`epic-local`.
