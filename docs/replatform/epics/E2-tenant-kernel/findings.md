@@ -88,11 +88,12 @@ resolved finding retains its resolution link.
 ## E2-F008 — H-01 (non-waivable) must have ≥1 real Linux execution, not Windows-only console evidence
 
 - **Severity:** Medium (gate-fidelity for the crown-jewel invariant).
-- **Blocks gate:** No — but the E2 gate `pass` requires the Linux run.
+- **Status:** **RESOLVED 2026-08-09** — the operator (TK, Security + Integration Gate Owner) accepted Windows-local evidence for the E2 gate, matching the E0/E1 operator-directed precedent (E2-D05 amendment). The ≥1 real Linux H-01 run is deferred to that precedent and is not required for E2 `pass`.
+- **Blocks gate:** No — resolved (was "gate `pass` requires the Linux run" at a1).
 - **Evidence:** The tenant/company-writer suites are gated so they run on Linux CI + Windows-on-demand, but `pr.yml` does not auto-run on `docs/replatform-program`. Resting the non-waivable H-01 proof on Windows-only console output risks a Linux-only breakage (e.g. a missed company-insert site) passing silently (review R#-05).
 - **Affected tickets:** E2 gate.
-- **Disposition:** **Addressed by revision a2 + E2-D05** — the gate runs the H-01 suites Windows-local **and** obtains at least one real Linux execution (`workflow_dispatch` on `pr.yml` or a scratch PR) pinned as formal evidence. **Requires operator action** to trigger a Linux run (or explicit acceptance of the E0/E1 Windows-local precedent for E2).
-- **Resolution link:** [decisions.md#E2-D05](decisions.md).
+- **Disposition:** **RESOLVED via the E2-D05 amendment (operator-directed, E0/E1 precedent).** The original disposition offered two paths — trigger a real Linux run **or** explicit operator acceptance of the E0/E1 Windows-local precedent for E2. The operator chose the latter on 2026-08-09 after the a1 gate showed every locally-runnable REQUIRED/HARD/INITIAL condition green (a1 was `blocked_external` **solely** on the un-run Linux lane). This is acceptance of Windows-local **evidence for a pass**, never a waiver of a failure — H-01 remains HARD, non-waivable, and **PASSED** (TEN-002/003/004/005 green Windows-local, 3× deterministic). DEC-03 is honored: Linux CI stays the formal authority; a later Linux divergence would create a superseding QA/handoff (`Supersedes`). Gate finalized `pass` in the a2 QA record + handoff.
+- **Resolution link:** [decisions.md#E2-D05](decisions.md) (Amendment 2026-08-09); `qa/2026-08-09-d0-e2-tenant-kernel-9a5455071f8c-a2.md`; `handoffs/2026-08-09-epic-completion-9a5455071f8c-a2.md`.
 
 ---
 

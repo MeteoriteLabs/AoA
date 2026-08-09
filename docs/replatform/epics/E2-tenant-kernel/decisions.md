@@ -252,7 +252,7 @@ inherits it.
 ## E2-D05 — E2 gate is Windows-local + ≥1 real Linux run for H-01 (DEC-03); RLS/tenant tests use the AOA_RUN_WIN_INTEGRATION env-hatch + a Windows-visible unit sibling
 
 **Date (UTC):** 2026-08-09
-**Status:** `locked` 2026-08-09 (operator: require ≥1 real Linux run for the H-01 suites, in addition to Windows-local). Resolves finding E2-F008 (pending the Linux run at gate time).
+**Status:** `locked` 2026-08-09, **amended 2026-08-09** (see the Amendment below — operator accepts Windows-local evidence for the E2 gate, matching E0/E1; the ≥1 real Linux H-01 run is deferred to the operator-directed precedent, not required for E2 `pass`). Resolves finding E2-F008.
 **Owner role:** Integration Gate Owner
 **Affected tickets:** all E2 tickets + E2 gate
 
@@ -293,6 +293,28 @@ gate-owner subagent, labeled `operator-directed (DEC-03: Linux CI = formal autho
 
 Local evidence is honestly labeled; a Windows-visible unit lane keeps cross-platform
 coverage in the always-on gate. Mirrors E0/E1. Epic-local.
+
+### Amendment — 2026-08-09 (operator gate-lane decision; accept Windows-local for E2)
+
+**Deciding gate owner:** **TK (operator), Security + Integration Gate Owner.** After reviewing the
+E2 gate `a1` evidence (all locally-runnable REQUIRED / HARD (H-01) / INITIAL conditions green on
+`acf2b32fb`; the `a1` Result was `blocked_external` solely because the real-Linux H-01 lane had not
+started), the operator made the gate-lane decision to **accept the Windows-local evidence for E2,
+matching the E0/E1 precedent** (both of which were signed off Windows-local per operator directive).
+
+The mandatory "**≥1 real Linux run for the H-01 suites**" clause of this decision is therefore
+**deferred to the operator-directed E0/E1 standard for E2** — it is **not required for the E2 gate
+`pass`**. **DEC-03 is honored, not overridden:** Linux CI (`pr.yml`) remains the **formal
+authority**; this is an *operator-directed acceptance* of Windows-local evidence for a gate that
+**passed** every locally-runnable condition, exactly the E0/E1 disposition. It is **not** a waiver
+of any failure — **H-01 is and remains a HARD, non-waivable invariant that PASSED** (TEN-002/003/004/005
+green Windows-local, 3× deterministic, `totalOps=4460`); what is accepted is Windows-local *evidence
+for a pass*, never Windows-local evidence excusing a failure. Should anyone later run the H-01 suites
+on Linux and observe a divergence, that creates a superseding QA record + handoff (`Supersedes`)
+under the normal immutability rule.
+
+This lifts the `blocked_external` from `a1`; the E2 gate is finalized `pass` in the superseding `a2`
+QA record + handoff, and E2 flips `gate_review → complete`.
 
 ### Promotion
 
