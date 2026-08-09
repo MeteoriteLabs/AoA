@@ -16,6 +16,7 @@
 // (module missing). GREEN (after): exactly one runtime export, a function.
 import { describe, expect, it } from "vitest";
 import * as tenantRepoModule from "../repositories/tenant/index.js";
+import type { Db } from "../client.js";
 
 describe("tenant repository public surface (TEN-001a)", () => {
   it("exports exactly tenantRepositories and no raw unscoped reader", () => {
@@ -24,5 +25,28 @@ describe("tenant repository public surface (TEN-001a)", () => {
 
   it("tenantRepositories is a factory function", () => {
     expect(typeof tenantRepoModule.tenantRepositories).toBe("function");
+  });
+
+  // TEN-001b extends the factory with the worker/service/artifact/secret-handle
+  // accessors. The factory builds its repo object lazily (each method only
+  // touches `tx` when invoked), so a trivial stub tx exercises the shape without
+  // a DB. Guards against a missing accessor group at runtime (the interface
+  // guards it at compile time).
+  it("factory returns every tenant-kernel accessor group (TEN-001a + TEN-001b)", () => {
+    const repos = tenantRepoModule.tenantRepositories({} as unknown as Db);
+    expect(Object.keys(repos).sort()).toEqual([
+      "attempts",
+      "jobArtifacts",
+      "jobSecretHandles",
+      "jobs",
+      "leases",
+      "serviceInstances",
+      "services",
+      "workers",
+    ]);
+    for (const group of Object.values(repos)) {
+      expect(typeof (group as { insert: unknown }).insert).toBe("function");
+      expect(typeof (group as { getById: unknown }).getById).toBe("function");
+    }
   });
 });

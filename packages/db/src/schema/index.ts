@@ -41,6 +41,20 @@ export { goalParents } from "./goal_parents.js";
 export { jobs, type Job, type NewJob } from "./jobs.js";
 export { jobAttempts, type JobAttempt, type NewJobAttempt } from "./job_attempts.js";
 export { leases, type Lease, type NewLease } from "./leases.js";
+// E2 tenant kernel (TEN-001b): worker/service/artifact/secret-handle ownership tables.
+export { workers, type Worker, type NewWorker } from "./workers.js";
+export { services, type Service, type NewService } from "./services.js";
+export {
+  serviceInstances,
+  type ServiceInstance,
+  type NewServiceInstance,
+} from "./service_instances.js";
+export { jobArtifacts, type JobArtifact, type NewJobArtifact } from "./job_artifacts.js";
+export {
+  jobSecretHandles,
+  type JobSecretHandle,
+  type NewJobSecretHandle,
+} from "./job_secret_handles.js";
 export { issues } from "./issues.js";
 export { labels } from "./labels.js";
 export { issueLabels } from "./issue_labels.js";

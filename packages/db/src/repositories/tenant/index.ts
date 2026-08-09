@@ -16,6 +16,19 @@ import type { Db } from "../../client.js";
 import { jobs, type Job, type NewJob } from "../../schema/jobs.js";
 import { jobAttempts, type JobAttempt, type NewJobAttempt } from "../../schema/job_attempts.js";
 import { leases, type Lease, type NewLease } from "../../schema/leases.js";
+import { workers, type Worker, type NewWorker } from "../../schema/workers.js";
+import { services, type Service, type NewService } from "../../schema/services.js";
+import {
+  serviceInstances,
+  type ServiceInstance,
+  type NewServiceInstance,
+} from "../../schema/service_instances.js";
+import { jobArtifacts, type JobArtifact, type NewJobArtifact } from "../../schema/job_artifacts.js";
+import {
+  jobSecretHandles,
+  type JobSecretHandle,
+  type NewJobSecretHandle,
+} from "../../schema/job_secret_handles.js";
 
 export interface JobsRepository {
   insert(values: NewJob): Promise<Job>;
@@ -35,10 +48,45 @@ export interface LeasesRepository {
   listForAttempt(attemptId: string): Promise<Lease[]>;
 }
 
+export interface WorkersRepository {
+  insert(values: NewWorker): Promise<Worker>;
+  getById(id: string): Promise<Worker | null>;
+  listForOrganization(organizationId: string): Promise<Worker[]>;
+}
+
+export interface ServicesRepository {
+  insert(values: NewService): Promise<Service>;
+  getById(id: string): Promise<Service | null>;
+  listForCompany(companyId: string): Promise<Service[]>;
+}
+
+export interface ServiceInstancesRepository {
+  insert(values: NewServiceInstance): Promise<ServiceInstance>;
+  getById(id: string): Promise<ServiceInstance | null>;
+  listForService(serviceId: string): Promise<ServiceInstance[]>;
+}
+
+export interface JobArtifactsRepository {
+  insert(values: NewJobArtifact): Promise<JobArtifact>;
+  getById(id: string): Promise<JobArtifact | null>;
+  listForJob(jobId: string): Promise<JobArtifact[]>;
+}
+
+export interface JobSecretHandlesRepository {
+  insert(values: NewJobSecretHandle): Promise<JobSecretHandle>;
+  getById(id: string): Promise<JobSecretHandle | null>;
+  listForJob(jobId: string): Promise<JobSecretHandle[]>;
+}
+
 export interface TenantRepositories {
   jobs: JobsRepository;
   attempts: JobAttemptsRepository;
   leases: LeasesRepository;
+  workers: WorkersRepository;
+  services: ServicesRepository;
+  serviceInstances: ServiceInstancesRepository;
+  jobArtifacts: JobArtifactsRepository;
+  jobSecretHandles: JobSecretHandlesRepository;
 }
 
 /**
@@ -92,6 +140,86 @@ export function tenantRepositories(tx: Db): TenantRepositories {
       },
       async listForAttempt(attemptId) {
         return tx.select().from(leases).where(eq(leases.attemptId, attemptId));
+      },
+    },
+    workers: {
+      async insert(values) {
+        const [row] = await tx.insert(workers).values(values).returning();
+        return row!;
+      },
+      async getById(id) {
+        const [row] = await tx.select().from(workers).where(eq(workers.id, id)).limit(1);
+        return row ?? null;
+      },
+      async listForOrganization(organizationId) {
+        return tx.select().from(workers).where(eq(workers.organizationId, organizationId));
+      },
+    },
+    services: {
+      async insert(values) {
+        const [row] = await tx.insert(services).values(values).returning();
+        return row!;
+      },
+      async getById(id) {
+        const [row] = await tx.select().from(services).where(eq(services.id, id)).limit(1);
+        return row ?? null;
+      },
+      async listForCompany(companyId) {
+        return tx.select().from(services).where(eq(services.companyId, companyId));
+      },
+    },
+    serviceInstances: {
+      async insert(values) {
+        const [row] = await tx.insert(serviceInstances).values(values).returning();
+        return row!;
+      },
+      async getById(id) {
+        const [row] = await tx
+          .select()
+          .from(serviceInstances)
+          .where(eq(serviceInstances.id, id))
+          .limit(1);
+        return row ?? null;
+      },
+      async listForService(serviceId) {
+        return tx
+          .select()
+          .from(serviceInstances)
+          .where(eq(serviceInstances.serviceId, serviceId));
+      },
+    },
+    jobArtifacts: {
+      async insert(values) {
+        const [row] = await tx.insert(jobArtifacts).values(values).returning();
+        return row!;
+      },
+      async getById(id) {
+        const [row] = await tx
+          .select()
+          .from(jobArtifacts)
+          .where(eq(jobArtifacts.id, id))
+          .limit(1);
+        return row ?? null;
+      },
+      async listForJob(jobId) {
+        return tx.select().from(jobArtifacts).where(eq(jobArtifacts.jobId, jobId));
+      },
+    },
+    jobSecretHandles: {
+      async insert(values) {
+        const [row] = await tx.insert(jobSecretHandles).values(values).returning();
+        return row!;
+      },
+      async getById(id) {
+        const [row] = await tx
+          .select()
+          .from(jobSecretHandles)
+          .where(eq(jobSecretHandles.id, id))
+          .limit(1);
+        return row ?? null;
+      },
+      async listForJob(jobId) {
+        return tx.select().from(jobSecretHandles).where(eq(jobSecretHandles.jobId, jobId));
       },
     },
   };
