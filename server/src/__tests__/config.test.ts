@@ -10,6 +10,8 @@ const EXECUTION_POLICY_ENV_KEYS = [
   "AOA_EMBEDDED_POSTGRES_PORT",
   "AOA_DEPLOYMENT_MODE",
   "AOA_DISTRIBUTED_EXECUTION_ENABLED",
+  "AOA_APP_DATABASE_URL",
+  "AOA_OPERATOR_DATABASE_URL",
   "AOA_DISTRIBUTED_PUBLIC_SERVICE_INGRESS_ENABLED",
   "AOA_DISTRIBUTED_CLOUD_PLUGIN_EXECUTION_ENABLED",
   "AOA_ALLOW_UNSANDBOXED_MULTITENANT",
@@ -98,7 +100,29 @@ describe("loadConfig", () => {
 
     it("parses an explicit deployment enablement", () => {
       process.env.AOA_DISTRIBUTED_EXECUTION_ENABLED = "true";
+      process.env.AOA_APP_DATABASE_URL = "postgres://aoa_app:secret@localhost/aoa";
+      process.env.AOA_OPERATOR_DATABASE_URL = "postgres://aoa_operator:secret@localhost/aoa";
       expect(loadConfig().distributedExecutionEnabled).toBe(true);
+    });
+
+    it.each([
+      ["AOA_APP_DATABASE_URL", "AOA_OPERATOR_DATABASE_URL"],
+      ["AOA_OPERATOR_DATABASE_URL", "AOA_APP_DATABASE_URL"],
+    ])("fails closed when flag-on startup is missing %s", (missing, present) => {
+      process.env.AOA_DISTRIBUTED_EXECUTION_ENABLED = "true";
+      process.env[present] =
+        present === "AOA_APP_DATABASE_URL"
+          ? "postgres://aoa_app:secret@localhost/aoa"
+          : "postgres://aoa_operator:secret@localhost/aoa";
+      delete process.env[missing];
+      expect(() => loadConfig()).toThrow(new RegExp(missing));
+    });
+
+    it("does not require either non-owner URL while the strangler flag is off", () => {
+      process.env.AOA_DISTRIBUTED_EXECUTION_ENABLED = "false";
+      delete process.env.AOA_APP_DATABASE_URL;
+      delete process.env.AOA_OPERATOR_DATABASE_URL;
+      expect(loadConfig().distributedExecutionEnabled).toBe(false);
     });
 
     it("refuses cloud_auth with the unsafe process-wide execution override", () => {
