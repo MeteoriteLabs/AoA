@@ -13,9 +13,13 @@
  *   3. The packed manifest declares exactly one runtime dependency (`zod`) — no
  *      undeclared runtime dependency leaks.
  *   4. The exact tarball is extracted (no package manager, no network) into the
- *      `node_modules` of minimal "server" and "worker" consumer fixtures, which
- *      import ONLY the public root export and confirm private/deep subpaths are
- *      not reachable through the package `exports` map.
+ *      `node_modules` of minimal "server" and "worker" consumer fixtures, and
+ *      the package's ONE declared runtime dependency (`zod`) is provisioned
+ *      alongside it OFFLINE (copied from the monorepo's installed copy, the way
+ *      a real install would materialize it). Each consumer then imports ONLY
+ *      the public root export, exercises a `zod`-backed schema to prove that
+ *      dependency resolves, and confirms private/deep subpaths are not
+ *      reachable through the package `exports` map.
  *
  * Usage: node scripts/check-worker-protocol-package.mjs
  * Run `pnpm --filter @armyofagents/worker-protocol build` first (Step 6 does).
@@ -24,6 +28,7 @@
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,6 +40,18 @@ const fixturesDir = path.join(repoRoot, "tests", "fixtures", "worker-protocol-im
 
 const errors = [];
 const fail = (msg) => errors.push(msg);
+
+// Resolve the package's DECLARED runtime dependency (`zod`) from the monorepo's
+// installed node_modules so it can be provisioned OFFLINE into each temp
+// consumer — exactly what a real `npm install` of the tarball would
+// materialize, but with no network and no package manager. Anchored at the
+// source package.json so it follows the pnpm symlink
+// (`packages/worker-protocol/node_modules/zod` -> `.pnpm/zod@<v>/…`).
+function resolveInstalledZodDir() {
+  const requireFromPackage = createRequire(path.join(packageDir, "package.json"));
+  const zodManifest = requireFromPackage.resolve("zod/package.json");
+  return path.dirname(zodManifest);
+}
 
 function run(command, args, options) {
   return spawnSync(command, args, { encoding: "utf8", ...options });
@@ -151,7 +168,23 @@ function main() {
       fail("extracted package still contains a src directory");
     }
 
-    // 4. Link the exact tarball into each consumer fixture and run it.
+    // 4. Resolve the declared runtime dependency ONCE, failing CLOSED if it is
+    // unavailable: a real dependency install would provide it, so if we cannot
+    // provision it offline the smoke is invalid and must stay RED rather than
+    // silently skip the transitive import it is meant to exercise.
+    let zodDir;
+    try {
+      zodDir = resolveInstalledZodDir();
+    } catch (err) {
+      fail(`cannot resolve the declared runtime dependency "zod" to provision offline: ${err.message}`);
+      return finish();
+    }
+    if (!fs.existsSync(path.join(zodDir, "package.json"))) {
+      fail(`resolved zod directory has no package.json: ${zodDir}`);
+      return finish();
+    }
+
+    // 5. Link the exact tarball into each consumer fixture and run it.
     for (const consumer of ["server-consumer", "worker-consumer"]) {
       const fixture = path.join(fixturesDir, `${consumer}.mjs`);
       if (!fs.existsSync(fixture)) {
@@ -162,6 +195,16 @@ function main() {
       const depDir = path.join(consumerDir, "node_modules", "@armyofagents", "worker-protocol");
       fs.mkdirSync(depDir, { recursive: true });
       fs.cpSync(extractedPackage, depDir, { recursive: true });
+      // Provision the package's DECLARED runtime dependency (`zod`) into the
+      // consumer's node_modules — OFFLINE, by copying the exact installed copy
+      // from the monorepo — so the consumer's transitive `import "zod"`
+      // (reached from the package's `dist/*.js`) resolves. This does NOT weaken
+      // any packaging check: the tarball allow-list above already proved the
+      // package ships only declared metadata + `dist` and declares exactly
+      // ["zod"]; here we merely materialize that one declared dependency the
+      // way a real install would, instead of papering over a resolution error.
+      const zodDest = path.join(consumerDir, "node_modules", "zod");
+      fs.cpSync(zodDir, zodDest, { recursive: true });
       const runFixture = path.join(consumerDir, `${consumer}.mjs`);
       fs.copyFileSync(fixture, runFixture);
       const result = run(process.execPath, [runFixture], { cwd: consumerDir });

@@ -12,13 +12,42 @@ import assert from "node:assert/strict";
 
 import * as protocol from "@armyofagents/worker-protocol";
 
-assert.deepEqual(
-  Object.keys(protocol).sort(),
-  ["MIN_PROTOCOL_VERSION", "PROTOCOL_VERSION"],
-  "public surface must be exactly the version constants",
-);
+// Version constants: the stable wire-contract floor/ceiling.
 assert.equal(protocol.PROTOCOL_VERSION, 1, "PROTOCOL_VERSION must be 1");
 assert.equal(protocol.MIN_PROTOCOL_VERSION, 1, "MIN_PROTOCOL_VERSION must be 1");
+
+// The public surface is large (~275 exports today) and GROWS as the protocol
+// expands, so pinning the exact list is brittle. Instead assert that a stable,
+// load-bearing SAMPLE of the public wire surface is present — enough to prove a
+// real root import resolved, without hard-coding the full surface.
+const sampleExports = [
+  "jobEnvelopeV1Schema",
+  "workerEventV1Schema",
+  "leaseOfferV1Schema",
+  "executionSourceV1Schema",
+  "registeredTargetProfileV1Schema",
+  "controlCommandV1Schema",
+  "canonicalizeJsonV1",
+];
+for (const name of sampleExports) {
+  assert.notEqual(protocol[name], undefined, `expected public export missing: ${name}`);
+}
+
+// Genuinely EXERCISE a zod-backed schema so this smoke proves the package's
+// declared `zod` runtime dependency was actually provisioned into the consumer
+// (not merely that the module namespace loaded). An empty object must fail the
+// strict job envelope, which runs real zod validation.
+assert.equal(
+  typeof protocol.jobEnvelopeV1Schema.safeParse,
+  "function",
+  "jobEnvelopeV1Schema must be a zod schema exposing safeParse",
+);
+const parsed = protocol.jobEnvelopeV1Schema.safeParse({});
+assert.equal(
+  parsed.success,
+  false,
+  "empty object must fail jobEnvelopeV1Schema (exercises zod validation)",
+);
 
 async function importFails(specifier) {
   try {

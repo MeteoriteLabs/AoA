@@ -432,6 +432,14 @@ jobs:
       - name: Build
         run: pnpm build
 
+      # Packs the just-built @armyofagents/worker-protocol, enforces the tarball
+      # allow-list, and import-smokes it (with its declared `zod` dep provisioned
+      # offline) from minimal server + worker consumers. Lives here — after the
+      # workspace build (`pnpm -r build` builds this leaf package) — because it
+      # needs the built `dist`; the dependency-free `policy` job cannot run it.
+      - name: Worker protocol package import smoke
+        run: node scripts/check-worker-protocol-package.mjs
+
       - name: Tool contract freshness
         run: |
           pnpm gen:tools:check
