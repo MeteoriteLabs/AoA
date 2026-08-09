@@ -17,11 +17,10 @@ import {
   workerIdSchema,
 } from "./ids.js";
 import {
-  KNOWN_CRITICAL_EXTENSION_NAMESPACES,
-  timestampV1Schema,
-  wireExtensionSchema,
-  type WireExtension,
-} from "./job.js";
+  addWireExtensionArrayIssues,
+  wireExtensionsArraySchema,
+} from "./extensions.js";
+import { timestampV1Schema } from "./job.js";
 import { addForbiddenWireKeyIssues } from "./wire-safety.js";
 
 // -----------------------------------------------------------------------------
@@ -345,7 +344,7 @@ const eventBaseShape = {
   seq: eventSequenceSchema,
   eventDigest: sha256DigestSchema,
   occurredAt: timestampV1Schema,
-  extensions: z.array(wireExtensionSchema),
+  extensions: wireExtensionsArraySchema,
 } as const;
 
 const eventVariant = <K extends string, P extends z.ZodTypeAny>(eventType: K, payload: P) =>
@@ -375,43 +374,10 @@ export const WORKER_EVENT_TYPES = [
 export const workerEventTypeSchema = z.enum(WORKER_EVENT_TYPES);
 export type WorkerEventType = (typeof WORKER_EVENT_TYPES)[number];
 
-const EVENT_EXTENSION_MAX_COUNT = 16;
-const EVENT_EXTENSION_VALUE_MAX_CANONICAL_BYTES = 16_384;
-
-/** Bound an event's extensions: ≤16, unique namespaces, unknown-critical fails
- * closed, each value canonicalizable and ≤16,384 canonical UTF-8 bytes. */
-function refineEventExtensions(
-  extensions: readonly WireExtension[],
-  ctx: z.RefinementCtx,
-  base: Array<string | number>,
-): void {
-  if (extensions.length > EVENT_EXTENSION_MAX_COUNT) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: base, message: `at most ${EVENT_EXTENSION_MAX_COUNT} extensions are permitted` });
-  }
-  const seenNamespaces = new Set<string>();
-  extensions.forEach((extension, index) => {
-    const path = [...base, index];
-    if (seenNamespaces.has(extension.namespace)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: [...path, "namespace"], message: "duplicate extension namespace" });
-    }
-    seenNamespaces.add(extension.namespace);
-    if (extension.critical === true && !KNOWN_CRITICAL_EXTENSION_NAMESPACES.has(extension.namespace)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: [...path, "critical"], message: "unknown critical extension fails closed" });
-    }
-    try {
-      const bytes = new TextEncoder().encode(canonicalizeJsonV1(extension.value)).byteLength;
-      if (bytes > EVENT_EXTENSION_VALUE_MAX_CANONICAL_BYTES) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, path: [...path, "value"], message: `extension value exceeds ${EVENT_EXTENSION_VALUE_MAX_CANONICAL_BYTES} canonical UTF-8 bytes` });
-      }
-    } catch {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: [...path, "value"], message: "extension value is not canonicalizable" });
-    }
-  });
-}
-
 /** The strict V1 worker-event union, discriminated by `eventType`, with a
- * recursive forbidden-credential-key scan and bounded extensions applied to
- * every event. */
+ * recursive forbidden-credential-key scan and the ONE shared bounded-extension
+ * container (`addWireExtensionArrayIssues`) applied to every event — identical to
+ * job/lease enforcement (E1-F005). */
 export const workerEventV1Schema = z
   .discriminatedUnion("eventType", [
     eventVariant("attempt_started", attemptStartedPayloadV1Schema),
@@ -436,7 +402,7 @@ export const workerEventV1Schema = z
   ])
   .superRefine((event, ctx) => {
     addForbiddenWireKeyIssues(event, ctx);
-    refineEventExtensions(event.extensions, ctx, ["extensions"]);
+    addWireExtensionArrayIssues(event.extensions, ctx, ["extensions"]);
   });
 export type WorkerEventV1 = z.infer<typeof workerEventV1Schema>;
 

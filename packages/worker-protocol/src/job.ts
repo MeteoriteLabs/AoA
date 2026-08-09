@@ -14,7 +14,11 @@ import {
   sha256DigestSchema,
   workerIdSchema,
 } from "./ids.js";
-import { canonicalizeJsonV1 } from "./canonical-json.js";
+import {
+  addWireExtensionArrayIssues,
+  wireExtensionsArraySchema,
+  type WireExtension,
+} from "./extensions.js";
 import { executionSourceV1Schema } from "./source.js";
 import { addForbiddenWireKeyIssues } from "./wire-safety.js";
 
@@ -26,13 +30,6 @@ import { addForbiddenWireKeyIssues } from "./wire-safety.js";
 // placement enums, non-matrix placement combinations, and unknown critical
 // extensions all fail closed.
 // -----------------------------------------------------------------------------
-
-const encoder = new TextEncoder();
-const utf8ByteLength = (value: string): number => encoder.encode(value).length;
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 // --- Small shared field schemas ----------------------------------------------
 
@@ -120,136 +117,13 @@ export function isTargetPlacementAllowed(
   );
 }
 
-// --- Bounded namespaced extension container ----------------------------------
-
-/** V1 recognizes NO critical extension namespaces, so every `critical: true`
- * extension is unknown and fails closed. */
-export const KNOWN_CRITICAL_EXTENSION_NAMESPACES: ReadonlySet<string> = new Set<string>();
-
-const EXTENSION_LIMITS = {
-  maxCount: 16,
-  namespaceMaxBytes: 100,
-  valueMaxContainerDepth: 8,
-  valueMaxArrayItems: 128,
-  valueMaxObjectKeys: 64,
-  valueMaxKeyBytes: 100,
-  valueMaxCanonicalBytes: 16_384,
-  combinedMaxCanonicalBytes: 65_536,
-} as const;
-
-const namespaceLabel = "[a-z0-9](?:[a-z0-9-]*[a-z0-9])?";
-const namespaceName = "[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?";
-const namespaceRegex = new RegExp(`^${namespaceLabel}(?:\\.${namespaceLabel})+(?:/${namespaceName})?$`);
-
-export const wireExtensionSchema = z
-  .object({
-    namespace: z
-      .string()
-      .regex(namespaceRegex, "namespace must be lowercase reverse-DNS with an optional /name")
-      .refine((value) => utf8ByteLength(value) <= EXTENSION_LIMITS.namespaceMaxBytes, {
-        message: `namespace exceeds ${EXTENSION_LIMITS.namespaceMaxBytes} UTF-8 bytes`,
-      }),
-    schemaVersion: z.number().int().min(1).max(1_000_000),
-    critical: z.boolean(),
-    value: z.unknown(),
-  })
-  .strict();
-export type WireExtension = z.infer<typeof wireExtensionSchema>;
-
-// Extension values are sized against the RFC 8785 subset. PRT-004 introduced the
-// shared, dependency-free `canonical-json.ts` (byte-for-byte the E0 authority
-// `scripts/check-distributed-execution-foundation.mjs`), so `job.ts` no longer
-// carries its own canonicalizer — the package has ONE canonicalizer (E1-F004
-// unification). `canonicalizeJsonV1` THROWS on a value with no RFC 8785-subset
-// canonical form (floats, unsafe integers, lone/broken UTF-16 surrogates); the
-// caller's try/catch converts that throw into a fail-closed "not canonicalizable"
-// issue at the extension value path, so an out-of-subset value never bypasses the
-// byte budget at a strict security-critical envelope. Byte budgets are computed
-// after UTF-8 encoding (`TextEncoder`), never JS code-unit length or `Buffer`.
-function canonicalByteLength(value: unknown): number {
-  return utf8ByteLength(canonicalizeJsonV1(value));
-}
-
-/** Recursively validate a single extension value's structural bounds. */
-function addExtensionValueStructureIssues(value: unknown, ctx: z.RefinementCtx, base: Array<string | number>): void {
-  const walk = (node: unknown, containerDepth: number, path: Array<string | number>): void => {
-    if (node === null || typeof node === "boolean" || typeof node === "string") return;
-    if (typeof node === "number") {
-      if (!Number.isFinite(node)) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, path, message: "extension value numbers must be finite" });
-      }
-      return;
-    }
-    if (Array.isArray(node)) {
-      const level = containerDepth + 1;
-      if (level > EXTENSION_LIMITS.valueMaxContainerDepth) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, path, message: `extension value exceeds ${EXTENSION_LIMITS.valueMaxContainerDepth} container levels` });
-        return;
-      }
-      if (node.length > EXTENSION_LIMITS.valueMaxArrayItems) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, path, message: `extension value array exceeds ${EXTENSION_LIMITS.valueMaxArrayItems} items` });
-      }
-      node.forEach((item, index) => walk(item, level, [...path, index]));
-      return;
-    }
-    if (isPlainObject(node)) {
-      const level = containerDepth + 1;
-      if (level > EXTENSION_LIMITS.valueMaxContainerDepth) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, path, message: `extension value exceeds ${EXTENSION_LIMITS.valueMaxContainerDepth} container levels` });
-        return;
-      }
-      const keys = Object.keys(node);
-      if (keys.length > EXTENSION_LIMITS.valueMaxObjectKeys) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, path, message: `extension value object exceeds ${EXTENSION_LIMITS.valueMaxObjectKeys} keys` });
-      }
-      for (const key of keys) {
-        if (utf8ByteLength(key) > EXTENSION_LIMITS.valueMaxKeyBytes) {
-          ctx.addIssue({ code: z.ZodIssueCode.custom, path: [...path, key], message: `extension value key exceeds ${EXTENSION_LIMITS.valueMaxKeyBytes} UTF-8 bytes` });
-        }
-        walk(node[key], level, [...path, key]);
-      }
-      return;
-    }
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path, message: "extension value must be JSON (string/number/boolean/null/array/object)" });
-  };
-  walk(value, 0, base);
-}
-
-/** Enforce every bounded-extension invariant across an extensions array. */
-function addExtensionArrayIssues(extensions: readonly WireExtension[], ctx: z.RefinementCtx, base: Array<string | number>): void {
-  if (extensions.length > EXTENSION_LIMITS.maxCount) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: base, message: `at most ${EXTENSION_LIMITS.maxCount} extensions are permitted` });
-  }
-  const seenNamespaces = new Set<string>();
-  let combinedBytes = 0;
-  extensions.forEach((extension, index) => {
-    const path = [...base, index];
-    if (seenNamespaces.has(extension.namespace)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: [...path, "namespace"], message: "duplicate extension namespace" });
-    }
-    seenNamespaces.add(extension.namespace);
-    if (extension.critical === true && !KNOWN_CRITICAL_EXTENSION_NAMESPACES.has(extension.namespace)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: [...path, "critical"], message: "unknown critical extension fails closed" });
-    }
-    if (extension.value === undefined) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: [...path, "value"], message: "extension value is required" });
-      return;
-    }
-    addExtensionValueStructureIssues(extension.value, ctx, [...path, "value"]);
-    try {
-      const bytes = canonicalByteLength(extension.value);
-      combinedBytes += bytes;
-      if (bytes > EXTENSION_LIMITS.valueMaxCanonicalBytes) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, path: [...path, "value"], message: `extension value exceeds ${EXTENSION_LIMITS.valueMaxCanonicalBytes} canonical UTF-8 bytes` });
-      }
-    } catch {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: [...path, "value"], message: "extension value is not canonicalizable" });
-    }
-  });
-  if (combinedBytes > EXTENSION_LIMITS.combinedMaxCanonicalBytes) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: base, message: `combined extension value budget exceeds ${EXTENSION_LIMITS.combinedMaxCanonicalBytes} canonical UTF-8 bytes` });
-  }
-}
+// The bounded namespaced extension container — its element schema
+// (`wireExtensionSchema`), array schema (`wireExtensionsArraySchema`), and the
+// full refiner (`addWireExtensionArrayIssues`: count ≤16, unique namespace,
+// unknown-critical fail-closed, value structural walk, and byte budgets) — is the
+// single source of truth in `./extensions.js`, shared by job, lease, and event
+// envelopes (E1-F005). Recursive plaintext-credential rejection stays at the
+// envelope level via `addForbiddenWireKeyIssues` below.
 
 function addDuplicateIssues(values: readonly string[], ctx: z.RefinementCtx, path: Array<string | number>, label: string): void {
   if (new Set(values).size !== values.length) {
@@ -477,7 +351,7 @@ const jobEnvelopeBaseSchema = z.object({
   resourceLimits: resourceLimitsV1Schema,
   networkPolicy: networkPolicyRefV1Schema,
   offlinePolicy: offlinePolicySchema,
-  extensions: z.array(wireExtensionSchema),
+  extensions: wireExtensionsArraySchema,
 });
 
 const batchJobEnvelopeSchema = jobEnvelopeBaseSchema
@@ -499,7 +373,7 @@ export const jobEnvelopeV1Schema = z
     // including inside arbitrary extension values.
     addForbiddenWireKeyIssues(job, ctx);
 
-    addExtensionArrayIssues(job.extensions, ctx, ["extensions"]);
+    addWireExtensionArrayIssues(job.extensions, ctx, ["extensions"]);
 
     const created = Date.parse(job.createdAt);
     const deadline = Date.parse(job.deadline);
@@ -525,11 +399,11 @@ export type JobEnvelopeV1 = z.infer<typeof jobEnvelopeV1Schema>;
 // authenticated operation envelopes; the bare payloads are never sent alone.
 // -----------------------------------------------------------------------------
 
-const optionalExtensions = z.array(wireExtensionSchema).optional();
+const optionalExtensions = wireExtensionsArraySchema.optional();
 
 function refineLeaseSafety(message: { extensions?: readonly WireExtension[] }, ctx: z.RefinementCtx): void {
   addForbiddenWireKeyIssues(message, ctx);
-  if (message.extensions) addExtensionArrayIssues(message.extensions, ctx, ["extensions"]);
+  if (message.extensions) addWireExtensionArrayIssues(message.extensions, ctx, ["extensions"]);
 }
 
 export const leaseOfferV1Schema = z

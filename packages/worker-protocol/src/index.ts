@@ -167,8 +167,6 @@ export {
   fallbackModeSchema,
   PLACEMENT_MATRIX,
   isTargetPlacementAllowed,
-  KNOWN_CRITICAL_EXTENSION_NAMESPACES,
-  wireExtensionSchema,
   providerConstraintRefV1Schema,
   targetRequirementsV1Schema,
   placementV1Schema,
@@ -197,7 +195,6 @@ export type {
   CredentialKind,
   DataLocality,
   FallbackMode,
-  WireExtension,
   ProviderConstraintRefV1,
   TargetRequirementsV1,
   PlacementV1,
@@ -215,6 +212,18 @@ export type {
   LeaseRenewRequestV1,
   LeaseRenewResponseV1,
 } from "./job.js";
+
+// --- extensions.ts: the ONE bounded namespaced extension container -----------
+export {
+  KNOWN_CRITICAL_EXTENSION_NAMESPACES,
+  WIRE_EXTENSION_LIMITS,
+  wireExtensionSchema,
+  wireExtensionsArraySchema,
+  addWireExtensionArrayIssues,
+} from "./extensions.js";
+
+// --- extensions.ts: inferred types -------------------------------------------
+export type { WireExtension } from "./extensions.js";
 
 // --- canonical-json.ts: shared RFC 8785 canonicalizer + digest helpers -------
 export {

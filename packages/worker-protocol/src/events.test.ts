@@ -235,6 +235,72 @@ describe("workerEventV1Schema — wire safety and safe additive extensions", () 
   });
 });
 
+// The event schema MUST enforce the ONE shared bounded-extension container
+// identically to jobEnvelopeV1Schema — the value structural walk + combined
+// budget the bespoke event refiner previously dropped (E1-F005).
+describe("workerEventV1Schema — full shared bounded-extension container (E1-F005)", () => {
+  const okExt = { namespace: "com.armyofagents.hint", schemaVersion: 1, critical: false, value: { note: "safe" } };
+  const logExt = (extensions: unknown[]) => workerEventV1Schema.safeParse(evt("log", validPayloads.log, { extensions }));
+  const nest = (depth: number): unknown => (depth <= 0 ? 1 : { k: nest(depth - 1) });
+  // Distribute a target combined-canonical-byte total across 5 bare-string
+  // extension values (canonical bytes per value = len + 2), each well under the
+  // 16,384 per-value cap, so ONLY the combined budget is exercised.
+  const combinedExt = (totalCanonicalBytes: number) => {
+    const sumLen = totalCanonicalBytes - 5 * 2;
+    const per = Math.floor(sumLen / 5);
+    const lens = [sumLen - per * 4, per, per, per, per];
+    return lens.map((len, i) => ({ ...okExt, namespace: `com.x.c${i}`, value: "z".repeat(len) }));
+  };
+
+  it("enforces the value container depth boundary (≤8 levels)", () => {
+    expect(logExt([{ ...okExt, value: nest(8) }]).success).toBe(true);
+    expect(logExt([{ ...okExt, value: nest(9) }]).success).toBe(false);
+  });
+
+  it("enforces the value array-item boundary (≤128 items)", () => {
+    expect(logExt([{ ...okExt, value: { list: Array.from({ length: 128 }, () => 1) } }]).success).toBe(true);
+    expect(logExt([{ ...okExt, value: { list: Array.from({ length: 129 }, () => 1) } }]).success).toBe(false);
+  });
+
+  it("enforces the value object-key boundary (≤64 keys)", () => {
+    const obj = (n: number) => {
+      const value: Record<string, number> = {};
+      for (let i = 0; i < n; i += 1) value[`k${i}`] = i;
+      return [{ ...okExt, value }];
+    };
+    expect(logExt(obj(64)).success).toBe(true);
+    expect(logExt(obj(65)).success).toBe(false);
+  });
+
+  it("enforces the value key-byte boundary (≤100 UTF-8 bytes per key)", () => {
+    expect(logExt([{ ...okExt, value: { ["a".repeat(100)]: 1 } }]).success).toBe(true);
+    expect(logExt([{ ...okExt, value: { ["a".repeat(101)]: 1 } }]).success).toBe(false);
+  });
+
+  it("enforces the per-value canonical byte budget (16,384 bytes)", () => {
+    expect(logExt([{ ...okExt, value: "x".repeat(16_382) }]).success).toBe(true); // 16,384 bytes
+    expect(logExt([{ ...okExt, value: "x".repeat(16_383) }]).success).toBe(false); // 16,385 bytes
+  });
+
+  it("enforces the combined ≤65,536-byte extension budget at the exact boundary", () => {
+    expect(logExt(combinedExt(65_536)).success).toBe(true); // exactly at budget
+    expect(logExt(combinedExt(65_537)).success).toBe(false); // one byte over
+  });
+
+  it("now REJECTS the 5 shapes the bespoke event refiner previously accepted", () => {
+    const violating: Array<[string, unknown[]]> = [
+      ["depth 9", [{ ...okExt, value: nest(9) }]],
+      ["129 array items", [{ ...okExt, value: { list: Array.from({ length: 129 }, () => 1) } }]],
+      ["65 object keys", [(() => { const value: Record<string, number> = {}; for (let i = 0; i < 65; i += 1) value[`k${i}`] = i; return { ...okExt, value }; })()]],
+      ["101-byte key", [{ ...okExt, value: { ["a".repeat(101)]: 1 } }]],
+      ["combined >65,536", combinedExt(65_537)],
+    ];
+    for (const [, extensions] of violating) {
+      expect(logExt(extensions).success).toBe(false);
+    }
+  });
+});
+
 // -----------------------------------------------------------------------------
 // runtime_decision_requested union
 // -----------------------------------------------------------------------------
