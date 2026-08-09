@@ -11,12 +11,20 @@ import type { Db } from "@armyofagents/db";
  * injection-safe writer of that GUC (the organizationId is bound as a query
  * parameter, never string-interpolated).
  *
- * NOTE (M3): this is DEFENSE-IN-DEPTH plumbing only. In production for the beta
- * the runtime app connects as the cluster owner/superuser, which BYPASSES RLS,
- * so the GUC has no filtering effect there. The app-layer tenant gate
- * (`assertCompanyAccess`) is the ONLY live isolation boundary. The GUC path is
- * proven against the non-owner `aoa_app` role in `rls-canary.integration.test.ts`
- * for a later full-fleet follow-up.
+ * NOTE (TEN-002): for the NEW-PATH distributed-execution tables this GUC is now the
+ * LIVE isolation filter, not merely defense-in-depth. Those 8 tables are served by
+ * the non-owner `aoa_app` role (NOSUPERUSER/NOBYPASSRLS) under FORCE ROW LEVEL
+ * SECURITY with per-table policies that read `current_setting('aoa.organization_id',
+ * true)::uuid`, so a query without this GUC set sees zero rows (TEN-002; proved in
+ * `tenant-rls-enforcement.integration.test.ts`). TEN-003's `runInTenant`
+ * (`tenant-context.ts`) is the mandatory wrapper that writes it for new-path
+ * repositories over that non-owner pool.
+ *
+ * The legacy `company_secrets` RLS canary, by contrast, remains owner-exempt / inert
+ * (its policy is un-FORCE'd and the serving pool still connects as the cluster
+ * owner for legacy tables), so on that table this GUC has no filtering effect and
+ * `assertCompanyAccess` stays the live legacy boundary (CAV-005 — no legacy RLS
+ * retrofit).
  */
 export async function withTenantTx<T>(
   db: Db,

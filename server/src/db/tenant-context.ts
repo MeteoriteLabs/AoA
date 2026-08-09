@@ -1,0 +1,50 @@
+import { tenantRepositories, type TenantRepositories, type Db } from "@armyofagents/db";
+import { withTenantTx } from "./with-tenant-tx.js";
+
+/**
+ * THE mandatory Organization context for the new-path (distributed-execution)
+ * repositories (TEN-003, E2-D02).
+ *
+ * Opens a transaction on the caller-supplied NON-OWNER pool (`createTenantAppDb`,
+ * role `aoa_app` — NOSUPERUSER/NOBYPASSRLS), writes the transaction-local
+ * `aoa.organization_id` GUC via the proven `withTenantTx` writer (the org id is
+ * bound as a query PARAMETER, never string-interpolated), builds the tenant
+ * repositories from that transaction handle, and runs `fn` against them. Forced RLS
+ * (TEN-002) then filters every query to the Organization in the GUC — a query with
+ * no context reaches zero new-path rows, so routing through `runInTenant` is
+ * mandatory to touch these tables at all.
+ *
+ * Because the GUC is set `is_local => true`, it is scoped to THIS transaction and
+ * cannot leak across pooled postgres-js connections once the transaction commits or
+ * rolls back — a later borrower of the same physical connection never inherits a
+ * previous tenant's context.
+ *
+ * The transaction handle and the repositories it builds MUST NOT escape `fn`: only
+ * `fn`'s DATA result is returned. `organizationId` must be a non-empty string — an
+ * empty/blank value is rejected up front (fail closed, no DB round-trip) because
+ * `set_config('aoa.organization_id', '')` would make a later `''::uuid` cast throw.
+ *
+ * Scope (E2-D04): at E2 no HTTP / scheduler / reconciliation / worker-event path
+ * calls this yet — those tables are E3/E4 and real entry-point adoption is a forward
+ * declaration that rides E3+. The wrapper plus its pool-reuse / rollback / nested /
+ * background property proofs land now; adoption is E3.
+ *
+ * `appDb` is supplied by the caller (E3 will; the tests do) — this function never
+ * opens its own pool, keeping the fail-closed non-owner-pool contract (E2-F007) with
+ * `createTenantAppDb`.
+ */
+export async function runInTenant<T>(
+  appDb: Db,
+  organizationId: string,
+  fn: (repos: TenantRepositories) => Promise<T>,
+): Promise<T> {
+  if (typeof organizationId !== "string" || organizationId.trim() === "") {
+    throw new Error(
+      "runInTenant requires a non-empty organizationId; an empty/blank Organization is " +
+        "rejected before opening a transaction (set_config('aoa.organization_id', '') would " +
+        "make a later ''::uuid cast throw). New-path repositories must run inside a resolved " +
+        "Organization context.",
+    );
+  }
+  return withTenantTx(appDb, organizationId, (tx) => fn(tenantRepositories(tx)));
+}

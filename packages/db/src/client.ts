@@ -67,15 +67,23 @@ export function createDb(url: string) {
  * (the privileged/owner pool). A silent fallback would run new-path queries as a
  * superuser that BYPASSES RLS entirely — a total H-01 tenant-isolation fail-open.
  * `createDb` is kept unchanged for the privileged/migration path.
+ *
+ * TEN-003: `opts.max` is forwarded to `postgres()` (additive; default behavior
+ * unchanged when omitted). The tenant-context pooled-reuse proof pins `max: 1` so
+ * every query lands on the same physical connection and the transaction-local GUC
+ * no-leak assertion is real rather than vacuous.
  */
-export function createTenantAppDb(url: string) {
+export function createTenantAppDb(url: string, opts?: { max?: number }) {
   if (typeof url !== "string" || url.trim() === "") {
     throw new Error(
       "createTenantAppDb requires a non-owner AOA_APP_DATABASE_URL; it must NEVER fall back to " +
         "the owner/superuser pool (that would bypass RLS - H-01 tenant-isolation fail-open).",
     );
   }
-  const client = postgres(url, { connection: { client_encoding: "UTF8" } });
+  const client = postgres(url, {
+    connection: { client_encoding: "UTF8" },
+    ...(opts?.max !== undefined ? { max: opts.max } : {}),
+  });
   return drizzlePg(client, { schema });
 }
 
