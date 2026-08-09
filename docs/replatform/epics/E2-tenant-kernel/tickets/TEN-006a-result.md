@@ -1,6 +1,6 @@
 # TEN-006a Result — Company-writer sweep (make Organization explicit)
 
-**Status:** `gate_review`
+**Status:** `complete`
 **Date (UTC):** `2026-08-09`
 **Epic:** `E2-tenant-kernel`
 **Plan task:** `TEN-006a — exhaustive Company-writer sweep + fail-closed writers + shared explicit-org test factory (split of TEN-006 per E2-D07)`
@@ -288,9 +288,15 @@ Linux run is a gate action.**
 ## Independent review
 
 **Reviewer:** `claude-opus (independent reviewer — NOT the implementer)`
-**Reviewed revision:** `c4d8756c8a3a256bd4566ae0b9c4b9e47b8da142` (HEAD)
-**Disposition:** `changes_requested`
+**Reviewed revision:** `324e62ca64045c12f0aacba01afe454e6decdb9d` (HEAD; attempt-2 fix commit). Attempt 1 reviewed `c4d8756c8`.
+**Disposition:** `approved` (attempt 2 — E2-F010 resolved; attempt 1 was `changes_requested`).
 **Review evidence:**
+
+**Attempt 2 (focused re-review of the E2-F010 fix at HEAD `324e62ca6`):** fix commit is test + result-doc only — `git show --name-only` confirms NO `services/companies.ts` / `routes/companies.ts` / schema / migrations / `company-writer-fail-closed.test.ts` change. Independent balanced-paren sweep of `server/src/__tests__` → **0** `companyService.create()/createWithOperator()` sites still omit `organizationId` (only the 2 intentional throws in `company-writer-fail-closed.test.ts` remain org-less, correctly); all `.createWithOperator(` calls + the `company-create-atomicity` shared-`input` literal + alias `svc.create(` receivers pass org. `organizations-backfill.integration.test.ts:50` reseeded via raw SQL `INSERT INTO companies (organization_id, …)` with the unused `companyService` import dropped (the semantic flag from attempt 1, handled correctly). Embedded-PG re-runs (`AOA_RUN_WIN_INTEGRATION=1`), each previously RED on the guard, now **GREEN**: `crew-repair`, `crew-marketplace-bootstrap`, `d18-autonomy-dial-split`, `extraction-sandbox-batch` (d18 + extraction each took one re-run past the coordinator-flagged hardcoded-port EACCES socket-bind flake — never reached a test body, no guard error; dynamic-port control `teams-null-parent-cascade` GREEN concurrently confirms the env). `company-writer-fail-closed` **4 passed**; broad `companies-*/company-*/*org*` glob **59 passed / 13 skipped / 2 plugin-sdk fail-to-collect** (E2-F009 baseline, unchanged); `@armyofagents/db` typecheck **0**. My attempt-1 Independent-review block was not edited by the implementer. **E2-F010 resolved; no new regression → APPROVED, ticket complete.**
+
+---
+
+_Attempt 1 evidence (retained):_
 
 Re-run acceptance (C:\e2, `c4d8756c8`, tree clean):
 
@@ -313,4 +319,4 @@ Verify-item results: (1) no schema/migration change, sentinel `.default(…)` in
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
 | 1 | claude-opus (independent) | `c4d8756c8` | `changes_requested` | Fail-closed writers + raw-SQL/factory sweep + source-asserting inversions + self-hosted-resolution-preserved all verified PASS. **Blocking:** service-writer sweep incomplete — 32 `companyService.create()` sites / 14 test files omit `organizationId` → throw the TEN-006a guard (crew-repair 34/37, extraction-sandbox-batch 4/4, d18 6/6 reproduced on embedded PG). See **E2-F010**. |
-<!-- Next reviewer appends attempt 2 after the sweep-completion fix. -->
+| 2 | claude-opus (independent) | `324e62ca6` | `approved` | Focused re-review of the E2-F010 fix (test + result-doc only). Independent sweep: 0 real service-writer sites still omit org (only the 2 intentional throws remain). All 4 previously-RED files GREEN on embedded PG (crew-repair, crew-marketplace-bootstrap, d18, extraction-sandbox; d18+extraction cleared a transient hardcoded-port socket-bind flake on one re-run). `organizations-backfill:50` correctly reseeded via raw SQL. company-writer-fail-closed 4 passed; broad glob 59 passed/13 skipped/2 plugin-sdk baseline; db typecheck 0. **E2-F010 resolved; no new regression.** |
