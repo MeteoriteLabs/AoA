@@ -1,9 +1,11 @@
 # E1 — Versioned Worker Protocol
 
-**Status:** `planning`
+**Status:** `gate_review`
 **Depends on:** E0 completion gate
 **Tickets:** PRT-001 through PRT-007
 **Implementation plan:** `implementation-plan.md` is written and reviewed before E1 execution begins.
+
+**Gate status:** All seven ticket results are `complete`/`approved`, but the Task-8 integration gate on revision `93c5e9f2763a16ce17507fde11b8cac770d5478a` is **`fail`** — the packed-import smoke `scripts/check-worker-protocol-package.mjs` is RED (finding [E1-F007](findings.md)). See QA `qa/2026-08-09-d0-e1-completion-93c5e9f2763a-a1.md` and handoff `handoffs/2026-08-09-epic-completion-93c5e9f2763a-a1.md`. E1 stays `gate_review` until E1-F007 is fixed and the gate is re-run green.
 
 ## Outcome
 
