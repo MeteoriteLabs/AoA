@@ -38,8 +38,9 @@ export const jobAttempts = pgTable(
     orgIdUq: unique("job_attempts_org_id_uq").on(table.organizationId, table.id),
     // TEN-004: composite org-scoped FK — an attempt's (organization_id, job_id)
     // must exist together in jobs(organization_id, id), so an attempt cannot be
-    // stamped with a different tenant than its job. Redundant single-column FKs
-    // kept (harmless).
+    // stamped with a different tenant than its job. The redundant single-column job
+    // FK was DROPPED in E2-F013 (0212) — it bypassed RLS and leaked cross-tenant
+    // existence; this composite is the SOLE job FK, ON DELETE cascade (E2-D09).
     orgJobFk: foreignKey({
       columns: [table.organizationId, table.jobId],
       foreignColumns: [jobs.organizationId, jobs.id],

@@ -46,8 +46,10 @@ export const jobs = pgTable(
     orgIdUq: unique("jobs_org_id_uq").on(table.organizationId, table.id),
     // TEN-004: composite org-scoped FK — a job's (organization_id, company_id)
     // must exist together in companies(organization_id, id). Direct SQL cannot
-    // pair org A with a company owned by org B even though both single-column
-    // FKs individually resolve. Redundant single-column FKs kept (harmless).
+    // pair org A with a company owned by org B. The redundant single-column company
+    // FK was DROPPED in E2-F013 (migration 0212): FK checks bypass RLS, so a
+    // cross-tenant vs absent company id failed a DIFFERENT constraint — a cross-tenant
+    // existence oracle. This composite is the SOLE company FK, ON DELETE restrict (E2-D09).
     orgCompanyFk: foreignKey({
       columns: [table.organizationId, table.companyId],
       foreignColumns: [companies.organizationId, companies.id],

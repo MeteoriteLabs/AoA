@@ -31,8 +31,9 @@ export const jobArtifacts = pgTable(
     jobIdx: index("job_artifacts_job_idx").on(table.jobId),
     // TEN-004: composite org-scoped FK — an artifact's (organization_id, job_id)
     // must exist together in jobs(organization_id, id), so an artifact cannot be
-    // owned by a different tenant than its job. Redundant single-column FKs kept
-    // (harmless).
+    // owned by a different tenant than its job. The redundant single-column job FK was
+    // DROPPED in E2-F013 (0212) — it bypassed RLS and leaked cross-tenant existence;
+    // this composite is the SOLE job FK, ON DELETE cascade (E2-D09).
     orgJobFk: foreignKey({
       columns: [table.organizationId, table.jobId],
       foreignColumns: [jobs.organizationId, jobs.id],

@@ -36,8 +36,9 @@ export const leases = pgTable(
     ),
     // TEN-004: composite org-scoped FK — a lease's (organization_id, attempt_id)
     // must exist together in job_attempts(organization_id, id), so a lease cannot
-    // be stamped with a different tenant than its attempt. Redundant
-    // single-column FKs kept (harmless).
+    // be stamped with a different tenant than its attempt. The redundant single-column
+    // attempt FK was DROPPED in E2-F013 (0212) — it bypassed RLS and leaked cross-tenant
+    // existence; this composite is the SOLE attempt FK, ON DELETE cascade (E2-D09).
     orgAttemptFk: foreignKey({
       columns: [table.organizationId, table.attemptId],
       foreignColumns: [jobAttempts.organizationId, jobAttempts.id],

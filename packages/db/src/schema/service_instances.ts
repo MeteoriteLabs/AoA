@@ -37,8 +37,9 @@ export const serviceInstances = pgTable(
     ),
     // TEN-004: composite org-scoped FK — an instance's (organization_id,
     // service_id) must exist together in services(organization_id, id), so an
-    // instance cannot be stamped with a different tenant than its service.
-    // Redundant single-column FKs kept (harmless).
+    // instance cannot be stamped with a different tenant than its service. The redundant
+    // single-column service FK was DROPPED in E2-F013 (0212) — it bypassed RLS and leaked
+    // cross-tenant existence; this composite is the SOLE service FK, ON DELETE cascade (E2-D09).
     orgServiceFk: foreignKey({
       columns: [table.organizationId, table.serviceId],
       foreignColumns: [services.organizationId, services.id],

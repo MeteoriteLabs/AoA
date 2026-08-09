@@ -42,8 +42,9 @@ export const services = pgTable(
     orgIdUq: unique("services_org_id_uq").on(table.organizationId, table.id),
     // TEN-004: composite org-scoped FK — a service's (organization_id,
     // company_id) must exist together in companies(organization_id, id), so a
-    // service cannot pair org A with a company owned by org B. Redundant
-    // single-column FKs kept (harmless).
+    // service cannot pair org A with a company owned by org B. The redundant single-column
+    // company FK was DROPPED in E2-F013 (0212) — it bypassed RLS and leaked cross-tenant
+    // existence; this composite is the SOLE company FK, ON DELETE restrict (E2-D09).
     orgCompanyFk: foreignKey({
       columns: [table.organizationId, table.companyId],
       foreignColumns: [companies.organizationId, companies.id],
