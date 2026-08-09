@@ -1,6 +1,6 @@
 # TEN-001b Result — New-path tenant schema (workers/services/service_instances/job_artifacts/job_secret_handles) + repository extension
 
-**Status:** `gate_review`
+**Status:** `complete`
 **Date (UTC):** `2026-08-09`
 **Epic:** `E2-tenant-kernel`
 **Plan task:** `TEN-001 — New-path tenant schema and repository boundary (TEN-001b default split, E2-D06)`
@@ -148,15 +148,40 @@ and the server-typecheck delta is subset-of-baseline (E2-F009).
 
 ## Independent review
 
-**Reviewer:** `pending until first independent review, then agent or human identity; must differ from implementer`
-**Reviewed revision:** `pending until first independent review, then 40-character git SHA`
-**Disposition:** `pending`
-**Review evidence:** `pending until first independent review, then review record, exact commands/exit codes, or finding links`
+**Reviewer:** `claude-opus (independent reviewer subagent) — distinct from the implementer subagent`
+**Reviewed revision:** `f9b37cd98e195e57f65eeb9d04f330b933b0dc74`
+**Disposition:** `approved`
+**Review evidence:**
 
-For `approved`, verify the result describes the reviewed revision, all focused acceptance evidence passes, and every accepted finding is resolved; then change the top-level `Status` to `complete` and commit this disposition separately. Otherwise leave `Status` as `gate_review` or set `blocked`, and link stable findings.
+Read-only inspection of the reviewed revision (`git rev-parse HEAD` = `f9b37cd98e195e57f65eeb9d04f330b933b0dc74`, an ancestor of HEAD; `git status --porcelain` clean before the disposition edit). Diff `629439c71..HEAD` touches only the 13 sanctioned files (5 new schema modules, `schema/index.ts`, `repositories/tenant/index.ts`, `0208_*.sql` + `meta/0208_snapshot.json` + `meta/_journal.json`, the two tests, the result ledger) — all additive, no manifest/lock change, no legacy table / `assertCompanyAccess` / `rls-bootstrap.ts` / `with-tenant-tx.ts` touched.
+
+Re-run acceptance (Git Bash, C:\e2):
+- `pnpm --filter @armyofagents/db typecheck` → `0`.
+- `pnpm --filter @armyofagents/db build` → `0`.
+- `AOA_RUN_WIN_INTEGRATION=1 pnpm exec vitest run src/__tests__/tenant-kernel-schema-b.integration.test.ts` → `0` (7 passed).
+- `pnpm exec vitest run src/__tests__/tenant-repository-surface.test.ts` → `0` (3 passed).
+- `AOA_RUN_WIN_INTEGRATION=1 pnpm exec vitest run src/__tests__/tenant-kernel-schema.integration.test.ts` (TEN-001a sibling) → `0` (4 passed — 0208 in chain does not regress TEN-001a).
+- `pnpm exec vitest run src/__tests__/migration-idempotency.test.ts` → `0` (5 passed).
+- Env-hatch: `pnpm exec vitest run src/__tests__/tenant-kernel-schema-b.integration.test.ts` WITHOUT the flag → `0` (7 skipped) — confirms the E2-D05 hatch.
+- `pnpm --filter @armyofagents/server typecheck` → exit `2`, 66 errors, ALL in the plugin subsystem (`plugin-event-bus`/`plugin-host-services`/`plugin-tool-dispatcher`/`plugin-tool-registry`/`plugin-worker-manager`/`routes/plugins.ts`) from the absent `@armyofagents/plugin-sdk`; zero reference any E2 file (`packages/db`/`schema/workers|services|service_instances|job_artifacts|job_secret_handles`/`repositories/tenant`) — E2-F009 baseline holds unchanged.
+
+Per-item verification (file:line):
+1. Five modules mirror TEN-001a house style (cf. `schema/jobs.ts`): `text`+`check` (no `pgEnum`), `.js` imports, `uuid().primaryKey().defaultRandom()`, `withTimezone` timestamps. Shapes match plan §1: `services`/`service_instances`/`job_artifacts`/`job_secret_handles` `organization_id` NOT NULL, no default; `workers.ts:24-26` org nullable + `workers.ts:43-46` `workers_scope_org_check` = `(scope='platform' AND organization_id IS NULL) OR (scope IN ('organization','owner') AND organization_id IS NOT NULL)`; `workers.ts:27` `owner_user_id` present with NO `.references()` (JOB-002 reserve). Status/desired_state/scope check sets match. FKs: org `restrict` everywhere; `service_id`/`job_id` `cascade` (`services.ts:19,22`, `service_instances.ts:19,22`, `job_artifacts.ts:19,22`, `job_secret_handles.ts:20,23`).
+2. NO composite FK / partial-unique / RLS/policy anywhere in the five modules, migration, or repo (grep for `foreignKey|uniqueIndex|.unique(|policy|row level|force|grant|create role|rls|bypassrls` → only comment references). Absence is correct (TEN-004/TEN-002).
+3. `0208_tenant_kernel_services.sql` = pure `drizzle-kit generate` output + C14 `IF NOT EXISTS` on every CREATE TABLE/INDEX; CHECK inline in CREATE TABLE, FK `ADD CONSTRAINT` plain — identical convention to `0207` (header comment lists `0203/0206/0207`). No RLS/role/GRANT/backfill. `meta/_journal.json` idx 208 tag `0208_tenant_kernel_services`; `meta/0208_snapshot.json` contains the 5 tables, all 185 tables `isRLSEnabled:false`, all `policies:{}` empty.
+4. `tenant-kernel-schema-b.integration.test.ts:198-226` seeds a REAL `organizations` row, then asserts: `platform`+null-org insert succeeds; `platform`+non-null-org rejected `/workers_scope_org_check/`; `organization`+null-org rejected `/workers_scope_org_check/`. Postgres DETAIL in the run log confirms both rejections fire on `workers_scope_org_check` (not the FK). Org-NOT-NULL assertions (`:159-189`) check `is_nullable='NO'` AND `column_default IS NULL`; workers nullability (`:191-196`) checks `is_nullable='YES'`.
+5. `repositories/tenant/index.ts` exposes 8 accessor groups on `TenantRepositories` (`:81-90`), every method through `tx`; top-level runtime export set stays exactly `{ tenantRepositories }`. Surface test `:22-24` asserts `Object.keys(...).sort() === ['tenantRepositories']` (core export-set assertion intact + meaningful); `:35-51` factory-shape assertion covers all 8 groups with `insert`/`getById`.
+6. Hygiene: new integration test boots embedded-PG in `beforeAll` with `initdbFlags` UTF8/C, captures `setupError`, re-throws in each `it`; uses `describe.skipIf(...)` (`:147`), not the banned `X ? describe : describe.skip` ternary. No manifest/lock change.
+7. Ledger: bare 40-hex Start SHA (`629439c71…`), accurate evidence table, review block now filled.
+8. E2-F009 baseline confirmed `none` for actual E2 files (the ticket's suggested `grep` also matches the `src/services/` path prefix; refined grep against E2 file basenames returns zero).
+
+Adversarial probes: (a) forced the no-flag path → correctly skipped (hatch not vacuous-on). (b) Confirmed the workers CHECK rejects with a real org seeded so the FK cannot mask it (DETAIL shows `workers_scope_org_check`, non-null org present in the failing row). (c) Verified snapshot carries no non-empty `policies`/`isRLSEnabled:true` (no smuggled RLS). (d) Verified the repo diff is purely additive (no TEN-001a accessor rewritten). No scope error, no unresolved finding.
+
+Disposition: `approved`. Set top-level `Status: complete`.
 
 ## Review attempt history
 
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
-<!-- First independent reviewer appends attempt 1. -->
+| 1 | `claude-opus (independent reviewer subagent)` | `f9b37cd98e195e57f65eeb9d04f330b933b0dc74` | `approved` | Re-run: db typecheck 0, db build 0, schema-b integ 7 pass (flag), surface 3 pass, TEN-001a sibling 4 pass (flag), idempotency 5 pass, no-flag → 7 skipped, server typecheck 66 errors all plugin-sdk (E2-F009), zero E2 files. All 8 verify items pass; no scope error; no new finding. → `Status: complete`. |
+<!-- Subsequent reviewers append attempt N (keep this guidance row). -->
