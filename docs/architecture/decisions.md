@@ -1960,3 +1960,18 @@ A distinct NOSUPERUSER/NOBYPASSRLS `aoa_operator` role and fail-closed database 
 Privileged owner database access remains migration/bootstrap-only for this path. No owner fallback is allowed when the distributed flag is on. When `AOA_DISTRIBUTED_EXECUTION_ENABLED=false`, no new serving/operator pool is required and the current legacy execution path remains authoritative. When true, both explicit non-owner URLs are required and missing/invalid credentials, an unexpected authenticated role, privileged role attributes, or a failed connection aborts startup before E3 routes/work can start.
 
 `runInTenant(appDb, organizationId, fn(repos))` remains the mandatory tenant transaction boundary; no unscoped tenant repository is added. Migration `0213_e2_serving_role_correction.sql` is a delta-free drizzle `--custom` migration under Decision #122/C14, with idempotent role/grant/FORCE-RLS/policy statements and no committed credential. The exact traced legacy operation allowlist is versioned in `server/src/db/job-control-legacy-grants.ts`.
+
+**Implementation clarification (fix round 1, 2026-08-10).** Distinct review of the
+initial candidate found that its synthetic trace omitted real transitive checkout and
+prompt dependencies and that its operator table-wide CRUD exceeded this decision.
+Successor custom migration `0214_e2_serving_role_hardening.sql` preserves option B
+while converging both roles to exact authority: the app allowlist includes operations
+proved by representative real service calls; the current pre-JOB-002 operator seam is
+read-only `SELECT` on named safe worker/target metadata columns; both roles are
+`NOINHERIT`/`NOREPLICATION`, have no memberships or application-object ownership,
+and retain no stale schema/table/column/sequence authority. `execution_targets`
+remains RLS-enabled but is not forced so the flag-off non-superuser-owner legacy path
+remains authoritative, with no `PUBLIC` policy and no owner fallback. Startup audits
+the exact effective posture, and both bounded pools are resources of the single
+awaited shutdown sequence. Candidate code revision `d5abd1a53` awaits distinct
+re-review; this is not a prerequisite pass and grants no JOB-002 authority.

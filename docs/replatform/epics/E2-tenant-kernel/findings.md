@@ -172,6 +172,15 @@ resolved finding retains its resolution link.
 - **Evidence:** The `aoa_app` role from migration 0211 had DML only on the eight E2 new-path tables. The current checkout/heartbeat, approval/runtime-decision, budget/cost/concurrency, and output-summary engines touch a bounded legacy operation set; running those calls under the E3 tenant transaction would otherwise fail with `42501`.
 - **Disposition:** **IMPLEMENTED, AWAITING DISTINCT REVIEW.** E2-D10 / Decision #123 freeze the operation-level trace in `server/src/db/job-control-legacy-grants.ts`; migration 0213 grants exactly that map. Embedded-Postgres tests perform every traced SELECT/INSERT/UPDATE/DELETE privilege and deny `company_secrets`. CAV-005 remains unchanged; no legacy Company RLS retrofit was added.
 - **Implementation revision:** `920e55de5a6557577bed9d228e9a00c4d49beadc`. The reviewer, not the implementer, owns the final disposition.
+- **Fix-round 1 candidate update:** Review attempt 1 found the original synthetic
+  privilege proof circular and the trace incomplete. Candidate revisions
+  `2db268b01` (RED) and `fc32f1d1a` (GREEN) now invoke the real
+  `issueService.checkout` stale-hub reconciliation and real runtime-decision prompt
+  creation through `aoa_app`. Migration 0214 adds only the transitive operations
+  those paths require, including `user_roles`, `company_memberships`, preferences,
+  notifications/digest writes, and hub counter reconciliation. Embedded PostgreSQL
+  observes both representative paths completing and the unapproved secret surface
+  remaining denied. **Still awaiting distinct re-review; not resolved/pass.**
 
 ---
 
@@ -181,3 +190,12 @@ resolved finding retains its resolution link.
 - **Evidence:** E2 described operator-only platform workers, but boot provisioned no `aoa_operator`, opened no operator connection, and did not verify both role identities before startup.
 - **Disposition:** **IMPLEMENTED, AWAITING DISTINCT REVIEW.** Migration 0213 creates a NOSUPERUSER/NOBYPASSRLS `aoa_operator` and forced policies that expose only null-Organization platform workers/targets. Flag-on boot now requires and verifies both explicit roles; bad credentials and valid owner credentials both abort before health can serve. Flag-off allocates neither pool. Tests deny the operator job/attempt/lease/event/artifact/secret access and tenant metadata enumeration/writes.
 - **Implementation revision:** `920e55de5a6557577bed9d228e9a00c4d49beadc`. Corrective QA and handoff remain `awaiting_review`.
+- **Fix-round 1 candidate update:** Migration 0214 replaces table-wide operator CRUD
+  with `SELECT` on named safe metadata columns only; it omits `DELETE`, writes,
+  `owner_user_id`, target `config`, and `worker_token_hash`. It reconciles stale
+  grants/memberships, `NOINHERIT`/`NOREPLICATION`, and application-object ownership,
+  while startup audits the exact effective authority. `execution_targets` is
+  RLS-enabled but not forced, preserving a real flag-off non-superuser-owner server
+  without `PUBLIC` policy or owner fallback. Both bounded pools are awaited and
+  failure-logged in the shared shutdown sequence. Candidate code revision
+  `d5abd1a53` remains **awaiting distinct re-review; not resolved/pass**.

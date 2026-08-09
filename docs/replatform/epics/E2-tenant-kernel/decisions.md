@@ -573,3 +573,30 @@ Migration `0213_e2_serving_role_correction.sql` is delta-free, generated as a dr
 ### Consequences
 
 E3 can begin only after a distinct reviewer accepts the corrective prerequisite evidence and issues the superseding E2 QA/handoff decision. This decision itself does not register E3 routes, start workers, implement JOB-001, or authorize a rollout.
+
+### Fix-round 1 implementation clarification (2026-08-10)
+
+Review attempt 1 showed that the initial `0213` implementation was broader than the
+approved metadata seam and incomplete for the real transitive service paths. The
+successor custom migration `0214_e2_serving_role_hardening.sql` converges both roles
+to the exact option-B posture without editing applied migration 0213:
+
+- `aoa_app` includes the transitive privileges reached by real JOB-010 checkout and
+  JOB-011 runtime-decision prompt creation, including stale hub reconciliation and
+  notification/digest dependencies. The allowlist remains operation-specific.
+- Until JOB-002 is reviewed, `aoa_operator` is read-only and receives `SELECT` only
+  on explicitly named safe metadata columns of `workers` and `execution_targets`.
+  It receives no table-wide DML, `DELETE`, credential hash, routing configuration,
+  owner, enrollment, proof, or revocation authority.
+- `execution_targets` remains RLS-enabled for bounded roles but is no longer forced.
+  This preserves the flag-off non-superuser table-owner path without a permissive
+  `PUBLIC` policy or distributed owner fallback.
+- Both exact-named roles are reconciled to `NOINHERIT` and `NOREPLICATION`, with no
+  memberships, stale grants, or application-object ownership. Startup audits the
+  same effective schema/table/column/sequence authority and fails closed on drift.
+- The two bounded pools participate in the single awaited shutdown sequence before
+  embedded PostgreSQL teardown; failures are logged and do not skip remaining
+  cleanup.
+
+Candidate code revision `d5abd1a53` awaits distinct re-review. This clarification
+does not change option B, authorize JOB-002 authority, or make the prerequisite pass.

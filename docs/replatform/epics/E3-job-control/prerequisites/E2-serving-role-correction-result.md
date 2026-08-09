@@ -7,9 +7,12 @@
 **RED test commit:** `e3c681421`
 **Implementation revision:** `920e55de5a6557577bed9d228e9a00c4d49beadc`
 **Reviewed revision:** `ed1887bf29c688a0d0d83018a2f63144fb027041`
+**Fix-round 1 RED commit:** `2db268b01`
+**Fix-round 1 candidate code revision:** `d5abd1a53`
+**Fix-round 1 review:** `awaiting distinct re-review`
 **Scope:** Corrective E2 prerequisite resolving the premises of E3-F001/E3-F002 only. No JOB-001 or other E3 ticket behavior is implemented.
 
-## Delivered behavior
+## Attempt 1 delivered behavior (superseded by the candidate below)
 
 - `aoa_app` retains the eight E2 new-path DML grants and receives the operation-level legacy table allowlist traced from the current JOB-010–014 checkout/heartbeat, approval/runtime-decision, budget/cost/concurrency, and output-summary engines.
 - `aoa_operator` is a distinct NOSUPERUSER/NOBYPASSRLS role with DML only on `workers` and `execution_targets`; forced policies restrict it to null-Organization platform metadata and prevent tenant-row enumeration/writes.
@@ -64,3 +67,60 @@
 **Verification:** operator-directed Windows embedded-Postgres focused lanes passed (`15/15`, `22/22`, `5/5`, and `21/21`); affected and recursive typecheck/build passed. Repository `pnpm test:run` remained exit `1`: the known Windows worker-protocol transform/collection failure was independently reproduced, and one unrelated opencode environment-scrub test timed out under full-suite load but passed `3/3` immediately in isolation. Linux CI remains the formal DEC-03 authority. Passing focused ACL tests did not override the confirmed service-path/spec findings.
 
 **Required next action:** fix the Important findings without owner fallback or E3 ticket implementation, add real service-path/non-superuser-owner/adversarial-role acceptance coverage, then submit a new exact revision for distinct review. Corrective E2 QA and the superseding completion handoff remain non-passing.
+
+## Fix round 1 candidate
+
+**Disposition:** `needs_changes` pending distinct re-review. This implementer record
+does not pass or complete prerequisite P1.
+
+### Corrected behavior
+
+- Migration `0214_e2_serving_role_hardening.sql` is an additive, idempotent Drizzle
+  `--custom` successor under Decision #122/C14; applied migration 0213 is unchanged.
+- The `aoa_app` operation map includes the real transitive dependencies exercised by
+  checkout stale-hub reconciliation and runtime-decision prompt creation, including
+  owner/membership/preference reads, notification/digest writes, and hub counter
+  reconciliation. It remains bounded and `company_secrets` remains denied.
+- `aoa_operator` receives `SELECT` only on named safe metadata columns of `workers`
+  and `execution_targets`. It receives no writes, `DELETE`, `owner_user_id`, routing
+  `config`, `worker_token_hash`, or future JOB-002 enrollment/proof/revocation power.
+- Both roles converge to NOSUPERUSER/NOBYPASSRLS/NOINHERIT/NOREPLICATION with no
+  inherited roles, stale schema/table/column/sequence grants, or application-object
+  ownership. Migration and startup both fail closed on unreconcilable drift.
+- `execution_targets` remains RLS-enabled but is not forced. A real flag-off server
+  backed by its non-superuser table owner continues to read/write the legacy target
+  route. There is no permissive `PUBLIC` policy and no distributed owner fallback.
+- The app/operator pools close inside the sole awaited shutdown sequence, after
+  plugin/host cleanup and before embedded PostgreSQL; close failures are logged and
+  do not prevent the other pool or remaining cleanup from being attempted.
+
+### Fix-round strict TDD evidence
+
+RED commit `2db268b01` captured all production gaps before correction:
+
+- Real-service/authority lane: exit `1`, `5 failed / 13 passed`; real checkout and
+  prompt creation failed with SQLSTATE `42501`, stale role posture survived reapply,
+  role-owned objects were accepted, and an unsafe operator column was exposed.
+- Startup lane: exit `1`, `5 failed / 4 passed`; the flag-off non-superuser owner
+  failed on forced RLS, while inherited/stale/owned/replication authority passed.
+- Shutdown lane: exit `1`, `2 failed / 1 passed`; bounded pools were neither ordered
+  in the shared shutdown path nor failure-logged.
+
+GREEN candidate `fc32f1d1adc7c5e0688a235b83e3791c6efb7794`, plus test-harness
+cleanup `d5abd1a53`, produced:
+
+- `AOA_RUN_WIN_INTEGRATION=1 pnpm exec vitest run` over the two integration and three
+  focused unit files: exit `0`, 5 files and `49/49` tests passed in 56.51 s. This
+  invokes representative real services, the flag-off real server, adversarial role
+  drift, exact column authority, migration reapplication, and shutdown behavior.
+- A root-invocation hygiene RED first exposed package-cwd-dependent test paths; both
+  touched integration tests now anchor files to `import.meta.url`, and the exact same
+  root command passes.
+
+Migration idempotency passes `5/5`; recursive typecheck (24/25 workspace projects)
+and production build exit `0`. `pnpm test:run` completes exit `1` in 181.9 seconds
+only on the independently reproduced Windows worker-protocol transform/collection
+SyntaxError at `packages/worker-protocol/src/cross-version.test.ts:12`; no P1 lane
+failed, and the repository command is not converted into a pass. Linux CI remains
+formal DEC-03 authority. A distinct reviewer must independently review the final docs
+revision and decide the gate.
