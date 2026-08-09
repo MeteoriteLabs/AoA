@@ -558,7 +558,7 @@ describe.skipIf(
     await service.sync();
     registerMarketplaceCatalogService(service);
 
-    const company = await companyService(db).create({ name: "Stale Crew Catalog Co" } as never);
+    const company = await companyService(db).create({ organizationId: "00000000-0000-0000-0000-000000000001", name: "Stale Crew Catalog Co" } as never);
     const crew = await crewRows(company.id);
     const steward = crew.find((row) => row.name === "Steward");
 
@@ -601,7 +601,7 @@ describe.skipIf(
     await service.sync();
     registerMarketplaceCatalogService(service);
 
-    const company = await companyService(db).create({ name: "Published Bodies Co" } as never);
+    const company = await companyService(db).create({ organizationId: "00000000-0000-0000-0000-000000000001", name: "Published Bodies Co" } as never);
 
     const crew = await crewRows(company.id);
     const marketplaceCrew = crew.filter((r) => r.template_origin?.startsWith("agent:aoa-curated/"));
@@ -714,7 +714,7 @@ describe.skipIf(
     await service.sync();
     registerMarketplaceCatalogService(service);
 
-    const company = await companyService(db).create({ name: "Skill Parity Co" } as never);
+    const company = await companyService(db).create({ organizationId: "00000000-0000-0000-0000-000000000001", name: "Skill Parity Co" } as never);
 
     // The reference: a company whose rows the real installer wrote directly.
     const referenceId = randomUUID();
@@ -788,7 +788,7 @@ describe.skipIf(
     // Proves the catalog really came from the snapshot fallback, not a CDN hit.
     expect(await catalogCacheSource()).toBe("bundled");
 
-    const company = await companyService(db).create({ name: "Offline Crew Co" } as never);
+    const company = await companyService(db).create({ organizationId: "00000000-0000-0000-0000-000000000001", name: "Offline Crew Co" } as never);
     const crew = await crewRows(company.id);
 
     expect(
@@ -816,7 +816,7 @@ describe.skipIf(
       // A create path that merely read the cache would degrade to @legacy here.
       expect(await loadCachedCatalog(db)).toBeNull();
 
-      const company = await companyService(db).create({ name: "Cold Cache Co" } as never);
+      const company = await companyService(db).create({ organizationId: "00000000-0000-0000-0000-000000000001", name: "Cold Cache Co" } as never);
       const crew = await crewRows(company.id);
 
       expect(
@@ -840,7 +840,7 @@ describe.skipIf(
     // starts, phase 1 fails.
     brokenUrls.add(`${FIXTURE_HOST}/teams/default-crew/team.json`);
 
-    const company = await companyService(db).create({ name: "Degraded Crew Co" } as never);
+    const company = await companyService(db).create({ organizationId: "00000000-0000-0000-0000-000000000001", name: "Degraded Crew Co" } as never);
     expect(company.id).toBeTruthy();
 
     const crew = await crewRows(company.id);
@@ -1096,7 +1096,7 @@ describe.skipIf(
     registerMarketplaceCatalogService(service);
     emptyTeamTemplate = true;
 
-    const company = await companyService(db).create({ name: "Empty Team Co" } as never);
+    const company = await companyService(db).create({ organizationId: "00000000-0000-0000-0000-000000000001", name: "Empty Team Co" } as never);
 
     const teamRows = rowsOf<{ n: string }>(
       await db.execute(sql`SELECT count(*)::text AS n FROM teams WHERE company_id = ${company.id}`),
@@ -1155,7 +1155,7 @@ describe.skipIf(
     await service.sync();
     registerMarketplaceCatalogService(service);
 
-    const company = await companyService(db).create({ name: "Idempotent Crew Co" } as never);
+    const company = await companyService(db).create({ organizationId: "00000000-0000-0000-0000-000000000001", name: "Idempotent Crew Co" } as never);
     const before = await crewRows(company.id);
 
     // Call the provisioner directly — company create's own pre-gate would
@@ -1188,7 +1188,7 @@ describe.skipIf(
     await clearCatalogCache();
     registerMarketplaceCatalogService(null);
 
-    const company = await companyService(db).create({ name: "No Service Co" } as never);
+    const company = await companyService(db).create({ organizationId: "00000000-0000-0000-0000-000000000001", name: "No Service Co" } as never);
 
     const crew = await crewRows(company.id);
     expect(crew.some((r) => r.name === "Adjutant")).toBe(true);

@@ -106,14 +106,35 @@ Derived from a fresh exhaustive sweep (`rg "DEFAULT_ORGANIZATION_ID"`,
 - **Factory-converted Drizzle inserts (4 files)** → `insertTestCompany(db, …)`:
   `ask-founder-dogfood` (dropped now-unused `companies` import),
   `home-board-layout`, `mcp-oauth-operator-cli`, `work-questions`.
-- **Service-writer `.create()`/`.createWithOperator()` (15 calls / 9 files)** —
-  added explicit `organizationId` to the create input:
-  `aoa-bootstrap-wiring` (×5, mock db), `aoa-backend`, `aoa-realoutput`,
-  `artifact-add-version-parent`, `broker-tool-context` (×3),
-  `commander-skill-triggering`, `companies-delete-integration`,
-  `companies-prefix-conflict` (mock db), `crew-marketplace-bootstrap`.
-  (`company-create-atomicity` already passed `organizationId: orgId` on all 13 of
-  its `createWithOperator` calls — verified, left unchanged.)
+- **Service-writer `.create()`/`.createWithOperator()` (47 calls that needed org
+  / 22 files)** — added explicit `organizationId` to the create input. **The true
+  population of company-service create calls in the tests is 72**; after this sweep
+  70 pass `organizationId` explicitly and the only 2 org-LESS calls are the
+  intentional fail-closed throw-assertions in `company-writer-fail-closed.test.ts`.
+  - **Initial commit (`c4d8756c8`), 15 calls / 9 files:** `aoa-bootstrap-wiring`
+    (×5, mock db), `aoa-backend`, `aoa-realoutput`, `artifact-add-version-parent`,
+    `broker-tool-context` (×3), `commander-skill-triggering`,
+    `companies-delete-integration`, `companies-prefix-conflict` (mock db),
+    `crew-marketplace-bootstrap` (:490 only).
+  - **E2-F010 follow-up (this fix), 32 calls / 14 files** — the initial commit
+    undercounted this axis (recurrence of the E2-F006 undercount, this time on
+    `.create()`); the reviewer reproduced RED on embedded PG. Swept the remaining
+    31 via explicit-org injection: `crew-marketplace-bootstrap` (×9, the 561/604/
+    717/791/819/843/1099/1158/1191 calls the initial commit missed within that same
+    file), `crew-repair` (×9), `d18-autonomy-dial-split`, `discussion-detail-lasterror`,
+    `extraction-sandbox-batch`, `link-entry-seq`, `thread-commit-idempotency` (×2),
+    `thread-v2-real-e2e` (×2), `w1a-crew-assignment`, `w1b-auto-accept`,
+    `w1c-inbox-dispatch-approval`, `w2-extract-then-scope`, `w3a-crew-loopback`.
+    The 32nd — `organizations-backfill.integration.test.ts:50` — is semantically
+    special (its premise is "a company that lands on the Default Org"): the guarded
+    service can no longer create an org-less company, so it is now seeded via **raw
+    SQL** with the EXPLICIT Default Org (`INSERT INTO companies (organization_id,
+    name, issue_prefix) VALUES (…sentinel…)`), preserving the org-attachment
+    assertion and the unchanged explicit-NULL → 23502 NOT NULL proof; the unused
+    `companyService` import was dropped.
+  - (`company-create-atomicity` already passed `organizationId` on all 13 of its
+    `createWithOperator` calls — 9 inline, 4 via the shared `input` object literal
+    that carries `organizationId: orgId` — verified, left unchanged.)
 - **`importBundle` opts (2 direct non-route callers)** — added
   `{ organizationId }` opts so a direct self-hosted `new_company` import resolves
   the Default Org explicitly (previously leaned on the removed writer fallback):
@@ -192,6 +213,11 @@ already-explicit statements untouched).
 | `AOA_RUN_WIN_INTEGRATION=1 pnpm exec vitest run src/__tests__/teams-null-parent-cascade.integration.test.ts src/__tests__/ask-founder-dogfood.integration.test.ts` | `0` | **6 passed** on embedded PG (raw-SQL sweep + factory both real-PG validated) |
 | `pnpm --filter @armyofagents/db typecheck` | `0` | clean |
 | `pnpm --filter @armyofagents/server typecheck` | `2` | 66 errors, ALL plugin-subsystem (`@armyofagents/plugin-sdk` absent, E2-F009); zero reference any changed file |
+| **E2-F010 fix** `AOA_RUN_WIN_INTEGRATION=1 vitest run crew-repair + extraction-sandbox-batch` | `0` | **41 passed** (crew-repair 37, extraction-sandbox-batch 4) — the reviewer's RED files GREEN |
+| **E2-F010 fix** `AOA_RUN_WIN_INTEGRATION=1 vitest run d18-autonomy-dial-split` | `0` | **6 passed** (attempt 2; attempt 1 hit a transient embedded-PG socket-bind flake on d18's hardcoded 60100–60399 port — its `beforeAll`, before any test body; not the guard) |
+| **E2-F010 fix** `AOA_RUN_WIN_INTEGRATION=1 vitest run crew-marketplace-bootstrap` | `0` | **15 passed** (the file the initial commit swept only partially — now complete) |
+| **E2-F010 fix** `vitest run company-writer-fail-closed + 10 Pattern-A edited files + organizations-backfill` | `0` | **4 passed / 65 skipped** — fail-closed guard intact; all Pattern-A edits collect cleanly (Windows-skip, validated for real on the Linux gate) |
+| **E2-F010 fix** `pnpm --filter @armyofagents/db typecheck` | `0` | clean (no db change) |
 
 ## Deviations
 
@@ -214,6 +240,15 @@ already-explicit statements untouched).
    should confirm this is the correct interpretation (it preserves each test's
    `orgOnCompany === DEFAULT_ORGANIZATION_ID` assertion while making the resolution
    explicit rather than silent).
+4. **E2-F010 (fixed):** the initial commit's `.create()`/`.createWithOperator()`
+   sweep undercounted — 32 calls across 14 files still omitted `organizationId` and
+   regressed on the new fail-closed guard (reviewer reproduced `crew-repair` 34/37,
+   `extraction-sandbox-batch` 4/4, `d18-autonomy-dial-split` 6/6 RED on embedded
+   PG). The follow-up commit re-derived the COMPLETE inventory (all 72 company-
+   service create calls analyzed by receiver + arg), swept the 32 (31 explicit-org
+   injections + `organizations-backfill` raw-SQL reseed), and re-ran the three named
+   files + `crew-marketplace-bootstrap` to GREEN on embedded PG. App-layer only —
+   no schema/migration/production change in the fix. See finding E2-F010.
 
 ## Findings
 
@@ -223,7 +258,13 @@ already-explicit statements untouched).
   zero reference any changed file; the 2 collect-failing suites in the company glob
   (`company-plugin-upgrade-rollback`, `company-portability-preview-export`) fail
   **identically on the clean stash** (proven). DEC-03/E2-F009-waivable; not an
-  epic-touched defect. No new findings.
+  epic-touched defect.
+- `E2-F010` (raised by TEN-006a independent review attempt 1) — **resolved by the
+  follow-up commit**: the incomplete `.create()`/`.createWithOperator()` sweep is
+  now complete (32 sites across 14 files fixed); the three reviewer-reproduced RED
+  files (`crew-repair`, `extraction-sandbox-batch`, `d18-autonomy-dial-split`) plus
+  `crew-marketplace-bootstrap` are GREEN on embedded PG; the fail-closed guard's 2
+  intentional throw-assertions remain org-less. No other new findings.
 
 ## Fail-closed choices to scrutinize
 
