@@ -10,10 +10,10 @@
  * path, embedded build path/timestamp, or test file. The CLI additionally imports
  * the frozen root in isolated "server" and "worker" smoke child processes.
  *
- * The pure helpers (`recomputeManifestBytes`, `verifyFrozenConsumerStatic`,
- * `verifyFrozenConsumerSourceSnapshot`, `listFrozenFiles`, `BUNDLER_OPTIONS`)
- * are exported for the dependency-free `node:test` mutation corpus, which
- * operates on isolated temp copies and never mutates the checked-in fixture.
+ * Verification helpers are exported for the dependency-free `node:test`
+ * mutation corpus, which operates on isolated temp copies and never mutates
+ * the checked-in fixture. Source and anchor verification invoke Git; static
+ * fixture verification and manifest recomputation only read filesystem bytes.
  *
  * Usage:
  *   node scripts/check-frozen-worker-protocol-consumer.mjs --source-sha <40-hex>
@@ -24,7 +24,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 /** The frozen fixture location, relative to the repo root, as POSIX segments. */
 export const FIXTURE_SEGMENTS = ["tests", "fixtures", "worker-protocol-consumers", "v1"];
@@ -35,6 +35,10 @@ export const PACKAGE_NAME = "package.json";
 const SOURCE_PACKAGE_PATH = "packages/worker-protocol/package.json";
 const SOURCE_LOCK_PATH = "pnpm-lock.yaml";
 const SOURCE_TREE_PATH = "packages/worker-protocol/src";
+const FIXTURE_PATH = FIXTURE_SEGMENTS.join("/");
+export const FROZEN_FIXTURE_ANCHOR_SHA = "c68053421ac53c5b49066b041c8fbcdd920dad62";
+const SMOKE_TIMEOUT_MS = 5_000;
+const SMOKE_MAX_OUTPUT_BYTES = 1024 * 1024;
 
 /** The FIXED, deterministic esbuild bundler options the freeze uses and the lock
  * records. Any drift here changes the frozen bytes and must mint a new fixture. */
@@ -251,26 +255,45 @@ export function verifyFrozenConsumerStatic({
 
 // --- Immutable source-revision verification --------------------------------
 
-function gitObjectExists(repoRoot, objectName) {
-  return spawnSync("git", ["cat-file", "-e", objectName], {
+function runVerificationGit(repoRoot, args, { maxBuffer = 16 * 1024 * 1024 } = {}) {
+  return spawnSync("git", ["--no-replace-objects", ...args], {
     cwd: repoRoot,
     encoding: null,
+    env: { ...process.env, GIT_NO_REPLACE_OBJECTS: "1" },
     windowsHide: true,
-  }).status === 0;
+    maxBuffer,
+  });
+}
+
+function gitObjectType(repoRoot, objectName) {
+  const result = runVerificationGit(repoRoot, ["cat-file", "-t", objectName]);
+  return result.status === 0 ? result.stdout.toString("utf8").trim() : null;
+}
+
+function resolveGitObject(repoRoot, objectName) {
+  const result = runVerificationGit(repoRoot, ["rev-parse", "--verify", objectName]);
+  return result.status === 0 ? result.stdout.toString("utf8").trim() : null;
+}
+
+function replacementRefExists(repoRoot, objectId) {
+  const result = runVerificationGit(repoRoot, ["show-ref", "--verify", "--quiet", `refs/replace/${objectId}`]);
+  return result.status === 0;
+}
+
+function readGitObject(repoRoot, type, objectName, unavailableMessage) {
+  const result = runVerificationGit(repoRoot, ["cat-file", type, objectName]);
+  if (result.status !== 0) throw new Error(unavailableMessage);
+  return result.stdout;
 }
 
 function readGitBlob(repoRoot, sourceSha, relativePath) {
   const objectName = `${sourceSha}:${relativePath}`;
-  const result = spawnSync("git", ["cat-file", "blob", objectName], {
-    cwd: repoRoot,
-    encoding: null,
-    windowsHide: true,
-    maxBuffer: 16 * 1024 * 1024,
-  });
-  if (result.status !== 0) {
-    throw new Error(`recorded source blob ${objectName} is unavailable; fetch the E1 source revision and retry`);
-  }
-  return result.stdout;
+  return readGitObject(
+    repoRoot,
+    "blob",
+    objectName,
+    `recorded source blob ${objectName} is unavailable; fetch the E1 source revision and retry`,
+  );
 }
 
 function yamlScalar(value) {
@@ -347,12 +370,24 @@ export function verifyFrozenConsumerSourceSnapshot({ repoRoot, sourceSha, depend
   const fail = (message) => errors.push(message);
   if (!repoRoot || !sourceSha || !dependencyLock) return { errors: ["source snapshot verification inputs are incomplete"] };
 
-  if (!gitObjectExists(repoRoot, `${sourceSha}^{commit}`)) {
+  if (replacementRefExists(repoRoot, sourceSha)) {
     return {
-      errors: [`recorded source commit ${sourceSha} is unavailable; fetch the E1 source revision and retry`],
+      errors: [`replacement ref exists for recorded source commit ${sourceSha}; remove refs/replace/${sourceSha} and retry`],
     };
   }
-  if (!gitObjectExists(repoRoot, `${sourceSha}:${SOURCE_TREE_PATH}`)) {
+
+  const sourceType = gitObjectType(repoRoot, sourceSha);
+  if (sourceType === null) {
+    return { errors: [`recorded source commit ${sourceSha} is unavailable; fetch the E1 source revision and retry`] };
+  }
+  if (sourceType !== "commit") {
+    return { errors: [`recorded source object ${sourceSha} is ${sourceType}; expected commit`] };
+  }
+
+  const sourceTreeObject = `${sourceSha}:${SOURCE_TREE_PATH}`;
+  const sourceTreeType = gitObjectType(repoRoot, sourceTreeObject);
+  const sourceTreeOid = sourceTreeType === "tree" ? resolveGitObject(repoRoot, sourceTreeObject) : null;
+  if (!sourceTreeOid) {
     fail(`recorded source tree ${sourceSha}:${SOURCE_TREE_PATH} is unavailable; fetch the E1 source revision and retry`);
   }
 
@@ -405,12 +440,122 @@ export function verifyFrozenConsumerSourceSnapshot({ repoRoot, sourceSha, depend
     errors,
     zodVersion: zod?.version,
     esbuildVersion: esbuild?.version,
+    sourceTreeOid,
   };
+}
+
+function frozenAnchorEntries(repoRoot, anchorSha) {
+  const result = runVerificationGit(repoRoot, ["ls-tree", "-r", "-z", "--full-tree", anchorSha, "--", FIXTURE_PATH]);
+  if (result.status !== 0) throw new Error(`immutable freeze anchor tree ${anchorSha}:${FIXTURE_PATH} is unavailable`);
+
+  const prefix = `${FIXTURE_PATH}/`;
+  const entries = [];
+  for (const record of result.stdout.toString("utf8").split("\0").filter(Boolean)) {
+    const match = /^(\d+) (\S+) ([0-9a-f]+)\t(.+)$/.exec(record);
+    if (!match || !match[4].startsWith(prefix)) throw new Error(`immutable freeze anchor contains an invalid tree record: ${record}`);
+    if (match[2] !== "blob") throw new Error(`immutable freeze anchor contains non-blob entry: ${match[4]}`);
+    entries.push({ mode: match[1], oid: match[3], rel: match[4].slice(prefix.length) });
+  }
+  entries.sort((a, b) => a.rel.localeCompare(b.rel, "en"));
+  return entries;
+}
+
+/** Authenticate every current frozen fixture byte against the separate E1
+ * freeze commit whose sole parent is the recorded source revision. All Git
+ * lookups ignore replacement objects. */
+export function verifyFrozenConsumerAnchor({
+  repoRoot,
+  dir,
+  sourceSha,
+  anchorSha = FROZEN_FIXTURE_ANCHOR_SHA,
+} = {}) {
+  const errors = [];
+  const fail = (message) => errors.push(message);
+  if (!repoRoot || !dir || !sourceSha || !anchorSha) return { errors: ["freeze anchor verification inputs are incomplete"] };
+
+  if (replacementRefExists(repoRoot, anchorSha)) {
+    return { errors: [`replacement ref exists for immutable freeze anchor commit ${anchorSha}; remove refs/replace/${anchorSha} and retry`] };
+  }
+  const anchorType = gitObjectType(repoRoot, anchorSha);
+  if (anchorType === null) {
+    return { errors: [`immutable freeze anchor commit ${anchorSha} is unavailable; fetch the E1 freeze revision and retry`] };
+  }
+  if (anchorType !== "commit") return { errors: [`immutable freeze anchor object ${anchorSha} is ${anchorType}; expected commit`] };
+
+  let anchorCommitBytes;
+  try {
+    anchorCommitBytes = readGitObject(
+      repoRoot,
+      "commit",
+      anchorSha,
+      `immutable freeze anchor commit ${anchorSha} is unavailable; fetch the E1 freeze revision and retry`,
+    );
+  } catch (error) {
+    return { errors: [error.message] };
+  }
+  const parents = [...anchorCommitBytes.toString("utf8").matchAll(/^parent ([0-9a-f]+)$/gm)].map((match) => match[1]);
+  if (parents.length !== 1 || parents[0] !== sourceSha) {
+    fail(`immutable freeze anchor ${anchorSha} must have recorded source ${sourceSha} as its sole parent`);
+  }
+
+  const anchorFixtureObject = `${anchorSha}:${FIXTURE_PATH}`;
+  const fixtureTreeOid = gitObjectType(repoRoot, anchorFixtureObject) === "tree"
+    ? resolveGitObject(repoRoot, anchorFixtureObject)
+    : null;
+  if (!fixtureTreeOid) {
+    fail(`immutable freeze anchor tree ${anchorFixtureObject} is unavailable`);
+    return { errors };
+  }
+
+  let anchorEntries;
+  try {
+    anchorEntries = frozenAnchorEntries(repoRoot, anchorSha);
+  } catch (error) {
+    fail(error.message);
+    return { errors, fixtureTreeOid };
+  }
+
+  let currentEntries;
+  try {
+    currentEntries = walkPosix(dir, "", []).sort((a, b) => a.rel.localeCompare(b.rel, "en"));
+  } catch (error) {
+    fail(`cannot enumerate frozen fixture for immutable authentication: ${error.message}`);
+    return { errors, fixtureTreeOid };
+  }
+  const anchorPaths = anchorEntries.map((entry) => entry.rel);
+  const currentPaths = currentEntries.map((entry) => entry.rel);
+  if (JSON.stringify(currentPaths) !== JSON.stringify(anchorPaths)) {
+    fail(`frozen fixture path set does not match immutable freeze anchor ${anchorSha}`);
+    return { errors, fixtureTreeOid };
+  }
+
+  for (let index = 0; index < anchorEntries.length; index += 1) {
+    const anchorEntry = anchorEntries[index];
+    if (currentEntries[index].symlink) continue;
+    let anchorBytes;
+    try {
+      anchorBytes = readGitObject(
+        repoRoot,
+        "blob",
+        anchorEntry.oid,
+        `immutable freeze anchor blob ${anchorEntry.oid} for ${anchorEntry.rel} is unavailable`,
+      );
+    } catch (error) {
+      fail(error.message);
+      continue;
+    }
+    const currentBytes = fs.readFileSync(path.join(dir, anchorEntry.rel));
+    if (Buffer.compare(currentBytes, anchorBytes) !== 0) {
+      fail(`frozen fixture ${anchorEntry.rel} does not match immutable freeze anchor ${anchorSha}`);
+    }
+  }
+
+  return { errors, fixtureTreeOid };
 }
 
 // --- Isolated smoke import (CLI only) ----------------------------------------
 
-function smokeImport(role, indexUrl) {
+export function smokeImport(role, indexUrl, { timeoutMs = SMOKE_TIMEOUT_MS } = {}) {
   const code = `
     import * as m from ${JSON.stringify(indexUrl)};
     const required = ["jobEnvelopeV1Schema", "enrollmentRequestV1Schema", "controlCommandV1Schema", "protocolErrorV1Schema", "PROTOCOL_VERSION"];
@@ -421,9 +566,23 @@ function smokeImport(role, indexUrl) {
     if (!parsed.success) { console.error("[${role}] frozen zod runtime failed to parse"); process.exit(3); }
     if (m.PROTOCOL_VERSION !== 1) { console.error("[${role}] unexpected PROTOCOL_VERSION"); process.exit(4); }
   `;
-  const res = spawnSync(process.execPath, ["--input-type=module", "-e", code], { encoding: "utf8" });
+  const res = spawnSync(process.execPath, ["--input-type=module", "-e", code], {
+    cwd: path.dirname(fileURLToPath(indexUrl)),
+    encoding: "utf8",
+    env: {},
+    windowsHide: true,
+    timeout: timeoutMs,
+    killSignal: "SIGKILL",
+    maxBuffer: SMOKE_MAX_OUTPUT_BYTES,
+  });
+  if (res.error?.code === "ETIMEDOUT") {
+    return `[${role}] frozen-root smoke import timed out after ${timeoutMs}ms and was terminated`;
+  }
+  if (res.error) {
+    return `[${role}] frozen-root smoke import could not complete: ${res.error.message}`;
+  }
   if (res.status !== 0) {
-    return `[${role}] frozen-root smoke import failed (exit ${res.status}): ${(res.stderr || res.stdout || "").trim()}`;
+    return `[${role}] frozen-root smoke import failed (exit ${res.status}, signal ${res.signal || "none"}): ${(res.stderr || res.stdout || "").trim()}`;
   }
   return null;
 }
@@ -434,6 +593,12 @@ function parseArgs(argv) {
   const i = argv.indexOf("--source-sha");
   const sourceSha = i !== -1 ? argv[i + 1] : undefined;
   return { sourceSha };
+}
+
+function exitWithFailures(errors) {
+  console.error("frozen worker-protocol v1 consumer verification FAILED:");
+  for (const line of errors) console.error(`  ${line}`);
+  process.exit(1);
 }
 
 async function main() {
@@ -460,6 +625,16 @@ async function main() {
     ? verifyFrozenConsumerSourceSnapshot({ repoRoot, sourceSha, dependencyLock })
     : { errors: [] };
   errors.push(...sourceEvidence.errors);
+  const anchorEvidence = verifyFrozenConsumerAnchor({
+    repoRoot,
+    dir,
+    sourceSha,
+  });
+  errors.push(...anchorEvidence.errors);
+
+  // Never import or execute fixture bytes until every static, dependency,
+  // source-object, and external-anchor check has authenticated them.
+  if (errors.length > 0) exitWithFailures(errors);
 
   const indexUrl = pathToFileURL(path.join(dir, "dist", "index.js")).href;
   for (const role of ["server", "worker"]) {
@@ -467,11 +642,7 @@ async function main() {
     if (err) errors.push(err);
   }
 
-  if (errors.length > 0) {
-    console.error("frozen worker-protocol v1 consumer verification FAILED:");
-    for (const line of errors) console.error(`  ${line}`);
-    process.exit(1);
-  }
+  if (errors.length > 0) exitWithFailures(errors);
   console.log(`frozen worker-protocol v1 consumer: OK (sourceSha ${sourceSha}, zod ${sourceEvidence.zodVersion}, esbuild ${sourceEvidence.esbuildVersion})`);
 }
 

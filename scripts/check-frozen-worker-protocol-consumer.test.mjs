@@ -136,29 +136,35 @@ ${extraImporter}`);
 
 function initSourceRepo({ zodVersion = "3.24.2", esbuildVersion = "0.28.1", includeLock = true, includeSourceTree = true } = {}) {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "frozen-wp-git-"));
-  runGit(repoRoot, ["init", "--quiet"]);
-  runGit(repoRoot, ["config", "user.email", "frozen-checker@example.invalid"]);
-  runGit(repoRoot, ["config", "user.name", "Frozen Checker Test"]);
+  try {
+    runGit(repoRoot, ["init", "--quiet"]);
+    runGit(repoRoot, ["config", "user.email", "frozen-checker@example.invalid"]);
+    runGit(repoRoot, ["config", "user.name", "Frozen Checker Test"]);
+    runGit(repoRoot, ["config", "commit.gpgSign", "false"]);
 
-  const pkgBytes = sourcePackageBytes(zodVersion);
-  const rootBytes = rootPackageBytes(esbuildVersion);
-  const lockBytes = sourceLockBytes({ zodVersion, esbuildVersion });
-  writeRepoFile(repoRoot, "package.json", rootBytes);
-  writeRepoFile(repoRoot, ".gitattributes", "tests/fixtures/worker-protocol-consumers/v1/** text eol=lf\n");
-  writeRepoFile(repoRoot, "packages/worker-protocol/package.json", pkgBytes);
-  if (includeSourceTree) writeRepoFile(repoRoot, "packages/worker-protocol/src/index.ts", "export const frozen = true;\n");
-  if (includeLock) writeRepoFile(repoRoot, "pnpm-lock.yaml", lockBytes);
-  runGit(repoRoot, ["add", "."]);
-  runGit(repoRoot, ["commit", "--quiet", "-m", "source snapshot"]);
+    const pkgBytes = sourcePackageBytes(zodVersion);
+    const rootBytes = rootPackageBytes(esbuildVersion);
+    const lockBytes = sourceLockBytes({ zodVersion, esbuildVersion });
+    writeRepoFile(repoRoot, "package.json", rootBytes);
+    writeRepoFile(repoRoot, ".gitattributes", "tests/fixtures/worker-protocol-consumers/v1/** text eol=lf\n");
+    writeRepoFile(repoRoot, "packages/worker-protocol/package.json", pkgBytes);
+    if (includeSourceTree) writeRepoFile(repoRoot, "packages/worker-protocol/src/index.ts", "export const frozen = true;\n");
+    if (includeLock) writeRepoFile(repoRoot, "pnpm-lock.yaml", lockBytes);
+    runGit(repoRoot, ["add", "."]);
+    runGit(repoRoot, ["commit", "--quiet", "--no-gpg-sign", "-m", "source snapshot"]);
 
-  return {
-    repoRoot,
-    sourceSha: runGit(repoRoot, ["rev-parse", "HEAD"]),
-    pkgBytes,
-    lockBytes,
-    zodVersion,
-    esbuildVersion,
-  };
+    return {
+      repoRoot,
+      sourceSha: runGit(repoRoot, ["rev-parse", "HEAD"]),
+      pkgBytes,
+      lockBytes,
+      zodVersion,
+      esbuildVersion,
+    };
+  } catch (error) {
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 function provisionInstalledVersions(repoRoot, { zodVersion = "3.24.2", esbuildVersion = "0.28.1" } = {}) {
@@ -199,11 +205,12 @@ function runChecker(repoRoot, sourceSha) {
 }
 
 function withSourceRepo(options, fn) {
-  const repo = initSourceRepo(options);
+  let repo;
   try {
+    repo = initSourceRepo(options);
     fn(repo);
   } finally {
-    fs.rmSync(repo.repoRoot, { recursive: true, force: true });
+    if (repo) fs.rmSync(repo.repoRoot, { recursive: true, force: true });
   }
 }
 
@@ -216,6 +223,7 @@ function withRealRepoClone(fn, { noLocal = false } = {}) {
     assert.equal(clone.status, 0, clone.stderr || clone.stdout);
     runGit(cloneRoot, ["config", "user.email", "frozen-checker@example.invalid"]);
     runGit(cloneRoot, ["config", "user.name", "Frozen Checker Test"]);
+    runGit(cloneRoot, ["config", "commit.gpgSign", "false"]);
     fn({ repoRoot: cloneRoot, sourceSha: REAL_SOURCE_SHA, fixtureDir: path.join(cloneRoot, "tests", "fixtures", "worker-protocol-consumers", "v1") });
   } finally {
     fs.rmSync(cloneRoot, { recursive: true, force: true });
@@ -538,7 +546,7 @@ test("the isolated smoke import terminates a hanging fixture within its timeout"
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "frozen-wp-hang-"));
   try {
     const modulePath = path.join(dir, "hang.mjs");
-    fs.writeFileSync(modulePath, "await new Promise(() => {});\n");
+    fs.writeFileSync(modulePath, "while (true) {}\n");
     assert.equal(typeof checker.smokeImport, "function", "checker must expose the real bounded smoke helper to the corpus");
 
     const startedAt = Date.now();
