@@ -1,6 +1,6 @@
 # TEN-006b Result — Drop the fail-open sentinel Organization default + admission-denial helper
 
-**Status:** `gate_review`
+**Status:** `complete`
 **Date (UTC):** `2026-08-09`
 **Epic:** `E2-tenant-kernel`
 **Plan task:** `TEN-006b — drop the schema default (migration 0210) + the sentinel/unmapped admission-denial helper + tests (split of TEN-006 per E2-D07)`
@@ -194,13 +194,77 @@ a gate action.**
 
 ## Independent review
 
-**Reviewer:** `pending`
-**Reviewed revision:** `pending`
-**Disposition:** `pending`
-**Review evidence:** `pending`
+**Reviewer:** `claude-opus (independent reviewer subagent) — NOT the TEN-006b implementer`
+**Reviewed revision:** `a269f8bd2cd15a90c26c61784c473033ab229872` (HEAD; tree clean)
+**Disposition:** `approved → complete`
+**Review evidence:**
+
+Re-ran the full acceptance set from C:\e2 at HEAD; every gate passed and the
+fail-open→fail-closed drop is proven against real embedded PG:
+
+- **Schema (V1):** `companies.ts:20` — `.default(...)` DROPPED; `.notNull()` + the
+  `references(organizations.id, onDelete:"restrict")` FK RETAINED; comment rewritten
+  to the fail-closed / E2-D07 contract ("Do NOT re-add `.default(...)`").
+  `DEFAULT_ORGANIZATION_ID` retained at `constants.ts:406`.
+- **Migration (V2):** `0210_drop_sentinel_org_default.sql` = exactly ONE DDL
+  statement (`ALTER TABLE "companies" ALTER COLUMN "organization_id" DROP DEFAULT;`,
+  verbatim `db:generate`) + a leading C14 header comment only. Snapshot delta
+  `0209→0210` (id/prevId stripped) = **1 line** — the removed
+  `"default": "'00000000-0000-0000-0000-000000000001'"` on
+  `companies.organization_id`, no other drift. `_journal.json` idx 210 contiguous
+  after 209. `migration-idempotency.test.ts` **5 passed** (DROP DEFAULT not flagged;
+  no `IF NOT EXISTS`/`DO $$` needed — naturally idempotent, outside the CREATE-scan).
+- **Fail-closed is genuine (V3):** `AOA_RUN_WIN_INTEGRATION=1 vitest run
+  sentinel-org-removal.integration.test.ts` → **5 passed**; PG server log shows a REAL
+  `ERROR: null value in column "organization_id" of relation "companies" violates
+  not-null constraint` (SQLSTATE 23502) on the org-omitting INSERT — not a
+  mocked/typo failure. Explicit-org INSERT (incl. the Default-Org sentinel) still
+  SUCCEEDS and the sentinel-org row is valid, not deleted. Without the env flag the
+  suite is **5 skipped** (E2-D05 `skipIf` env-hatch, not the banned ternary).
+- **Admission helper (V4):** `FORBIDDEN_ORGANIZATION_SENTINELS` mirrors FND-007
+  `forbiddenOrganizationSentinels` **byte-exact, same order**
+  (`["org_00000000000000000000000000","00000000-0000-0000-0000-000000000001"]`),
+  frozen, cited to `distributed-execution-legacy-parity.json:15-19` (Decision #121).
+  `sentinel-admission-unit.test.ts` **10 passed** — both sentinel forms + padded/upper
+  rejected, real uuid accepted, empty NOT rejected (E3 unmapped concern), typed
+  `ForbiddenOrganizationSentinelError` carries `.organizationId`. Helper is **DORMANT**:
+  grep across `server/src` + `packages` for every export finds NO caller beyond the
+  module + its unit test (unmapped check + submit/place/lease wiring correctly deferred
+  to E3 JOB-001/JOB-010 per E2-D07).
+- **CAV-005 / Rule #1 / hygiene (V5):** commit `a269f8bd2` touches only 8 files
+  (2 modified + 5 new + this ledger); NO RLS / `assertCompanyAccess` / `rls-bootstrap.ts`
+  / `with-tenant-tx.ts` / new-path tenant table touched (the only `services/*` change is
+  the chartered `tenant-admission.ts` helper itself). Sentinel-org rows remain valid at
+  the row level (E2-D07 dual identity). No `package.json` / `pnpm-lock.yaml` change.
+- **E2-F009 baseline (V6):** `server` typecheck grep for
+  `tenant-admission|companies.ts|constants|sentinel` → **none**. Broad regression payoff
+  `companies-*/company-*/*org*` = **59 passed / 13 skipped / 2 fail-to-collect files**
+  (514 tests passed / 62 skipped) — IDENTICAL to the TEN-006a baseline; the only 2
+  failures are `company-plugin-upgrade-rollback` + `company-portability-preview-export`,
+  both the pre-existing `@armyofagents/plugin-sdk`-absent collect failure (E2-F009),
+  neither touching a changed file. Real-PG spot-runs with the default gone:
+  `org-agent-platform-default-sandbox` **2 passed**, `memory-rbac-leakage` **8 passed**
+  — explicit-org company inserts still succeed (no NOT-NULL regression).
+
+**Re-run commands + exit codes:** `db typecheck` 0 · `db build` 0 ·
+`sentinel-org-removal.integration` (flag) 0 / **5 passed** (23502 in PG log) ·
+`sentinel-org-removal.integration` (no flag) 0 / **5 skipped** ·
+`sentinel-admission-unit` 0 / **10 passed** · `migration-idempotency` 0 / **5 passed** ·
+broad `companies-*/company-*/*org*` glob exit 1 (plugin-sdk collect only) / **514 passed
+/ 62 skipped, 2 fail-to-collect** · spot `org-agent-platform-default-sandbox` 0 / 2 ·
+spot `memory-rbac-leakage` 0 / 8.
+
+**Notes (non-blocking):** (1) the plan's TEN-006b owned-files list named
+`company-writer-no-sentinel.integration.test.ts`, which does not exist — the
+writer-fail-closed coverage correctly landed as `company-writer-fail-closed.test.ts`
+under TEN-006a (`c4d8756c8`); this is a benign allocation across the E2-D07 split, and
+TEN-006b's DB-level 23502 proof is present. (2) H-01 formal evidence still owes the
+mandatory ≥1 real Linux CI run across the full swept + new integration surface
+(E2-D05 / E2-F008) — a GATE action, Windows-local per DEC-03 for this ticket review,
+NOT a TEN-006b defect. With TEN-006a already `complete`, this completes **TEN-006 (a+b)**.
 
 ## Review attempt history
 
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
-| — | `pending` | `pending` | `pending` | Awaiting independent review. |
+| 1 | `claude-opus (independent, ≠ implementer)` | `a269f8bd2` | `approved → complete` | All acceptance re-run GREEN: 23502 fail-closed proven in PG log on the org-omitting INSERT; migration = verbatim single DROP DEFAULT + C14 header, snapshot delta 1 line, journal idx 210 contiguous, idempotency 5/5; helper mirrors FND-007 byte-exact + DORMANT (no caller); broad glob 514 passed / 62 skipped / 2 E2-F009 plugin-sdk collect-fails (= TEN-006a baseline); real-PG spot-runs 2+8 GREEN. No new findings. Pending H-01 Linux-CI run is a gate action (E2-D05/F008), not a ticket defect. |
