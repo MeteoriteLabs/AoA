@@ -1,6 +1,6 @@
 # TEN-004 Result — Composite tenant integrity constraints
 
-**Status:** `gate_review`
+**Status:** `complete`
 **Date (UTC):** `2026-08-09`
 **Epic:** `E2-tenant-kernel`
 **Plan task:** `TEN-004 — Composite tenant integrity constraints (M)`
@@ -174,10 +174,29 @@ server-typecheck delta is subset-of-baseline (E2-F009).
 
 ## Independent review
 
-**Reviewer:** `<pending until first independent review, then agent or human identity; must differ from implementer>`
-**Reviewed revision:** `<pending until first independent review, then 40-character git SHA>`
-**Disposition:** `pending`
-**Review evidence:** `<pending until first independent review, then review record, exact commands/exit codes, or finding links>`
+**Reviewer:** `claude-opus (independent reviewer subagent — distinct from the implementer subagent)`
+**Reviewed revision:** `bd4fe0283cce23f3e0983340435c14749a7a0c73`
+**Disposition:** `approved`
+**Review evidence:**
+
+Reviewed at HEAD `bd4fe0283` (TEN-004 code commit `8bb127efa` + the E2-D08 doc `bd4fe0283`; code unchanged between them). Working tree clean before and after review.
+
+*Re-run acceptance (C:\e2\packages\db unless noted):*
+- `pnpm --filter @armyofagents/db typecheck` → exit `0`.
+- `pnpm --filter @armyofagents/db build` → exit `0`.
+- `AOA_RUN_WIN_INTEGRATION=1 pnpm exec vitest run src/__tests__/tenant-composite-integrity.integration.test.ts` → exit `0`, **9 passed**. Postgres server log independently confirms every rejection fires on the INTENDED constraint: `jobs_org_company_fk`, `job_attempts_org_job_fk`, `leases_org_attempt_fk`, `services_org_company_fk`, `service_instances_org_service_fk`, `job_artifacts_org_job_fk`, `job_secret_handles_org_job_fk` (all `23503`), and the dup-active-lease on `leases_active_per_attempt_idx` (`23505`). Positive same-tenant controls all insert cleanly.
+- Same test WITHOUT the flag → **9 skipped** (E2-D05 env-hatch `skipIf`, not the banned ternary).
+- `pnpm exec vitest run src/__tests__/migration-idempotency.test.ts` → exit `0`, 5 passed.
+- `AOA_RUN_WIN_INTEGRATION=1 pnpm exec vitest run src/__tests__/tenant-kernel-schema.integration.test.ts src/__tests__/tenant-kernel-schema-b.integration.test.ts` → exit `0`, **11 passed** (0209 in the chain does not regress TEN-001a/b).
+- `pnpm --filter @armyofagents/server typecheck 2>&1 | grep -iE "…(jobs|attempt|lease|worker|service|artifact|secret_handle|tenant|composite|repositories)" || echo none` → **none** (E2-F009 plugin-sdk baseline holds; zero E2 files in the server error surface).
+
+*Migration reorder verbatim proof (Rule #1 / E2-D08):* Regenerated `0209` from the compiled `dist/schema/*.js` into the tree (journal idx 209 removed + snapshot/sql deleted, `drizzle-kit generate --name=tenant_composite_integrity`), then restored via `git checkout`. Raw drizzle-kit output emits the **7 composite FK `ADD CONSTRAINT`s first**, then the `CREATE UNIQUE INDEX` (WITHOUT `IF NOT EXISTS`), then the **5 FK-target `UNIQUE ADD CONSTRAINT`s last** — an unappliable order (`42830`). Extracting + sorting the DDL statements of the committed `0209` vs the regenerated output (normalizing only the C14 `IF NOT EXISTS`) → **empty diff, 13 == 13 statements identical**. The committed migration's sole non-order hand-edit is the C14 `IF NOT EXISTS` on the one `CREATE UNIQUE INDEX` (0207/0208 convention); no `DO $$`, no backfill, no RLS/GRANT. The reorder is verbatim, semantics-preserving, documented inline, and applies cleanly through the full chain — **acceptable under E2-D08; the two-migration split is NOT required.**
+
+*Structural verification (file:line):* Composite FK-target `unique(organization_id, id)` present on `jobs.ts:37`, `job_attempts.ts:36`, `services.ts:39`, `workers.ts:51`, and additive on `companies.ts:88`; composite `foreignKey()` present for job_attempts→jobs (`job_attempts.ts:38`), leases→job_attempts (`leases.ts:39`), jobs→companies (`jobs.ts:42`), services→companies (`services.ts:42`), service_instances→services (`service_instances.ts:38`), job_artifacts→jobs (`job_artifacts.ts:31`), job_secret_handles→jobs (`job_secret_handles.ts:31`); leases partial `uniqueIndex(...).where(status in ('offered','active'))` at `leases.ts:48`. Pre-existing single-column FKs retained (redundant, harmless). `companies` sentinel `organization_id` default is UNTOUCHED (`companies.ts:21`) — only the additive `companies_org_id_uq` unique was added (CAV-005-safe). No RLS/role/GRANT/policy DDL anywhere in the schema or migration diff; `assertCompanyAccess`/`rls-bootstrap.ts`/`with-tenant-tx.ts` not touched; no `package.json`/`pnpm-lock.yaml` change. Integration test boots embedded-PG in `beforeAll` with `setupError` re-thrown via `guard()` (fail-closed), UTF8/C initdb flags.
+
+*Non-blocking nit (not a defect, no change required):* the `leases.ts` top-of-file narrative comment (lines 6–11) still describes the partial-unique as `WHERE released_at IS NULL` (the TEN-001a placeholder plan text); the actual implemented predicate is the more-correct `status in ('offered','active')`, and the index's own inline comment (lines 44–50) and the test (case 8) match the implementation. Cosmetic doc-comment lag only.
+
+Disposition: **approved** — all focused acceptance passes, the E2-D08 reorder is proven verbatim and accepted, the `companies` touch is additive-only, and no scope/hygiene error. `Status` set to `complete`.
 
 For `approved`, verify the result describes the reviewed revision, all focused acceptance evidence passes, and every accepted finding is resolved; then change the top-level `Status` to `complete` and commit this disposition separately. Otherwise leave `Status` as `gate_review` or set `blocked`, and link stable findings.
 
@@ -188,3 +207,4 @@ The implementation author leaves the table body empty; the explicit pending summ
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
 <!-- First independent reviewer appends attempt 1. -->
+| 1 | `claude-opus (independent reviewer subagent)` | `bd4fe0283cce23f3e0983340435c14749a7a0c73` | `approved` | typecheck/build `0`; composite integ **9 passed** (each rejection on its named `*_fk` / `leases_active_per_attempt_idx`); no-flag **9 skipped**; idempotency 5, TEN-001a/b **11 passed**; E2-F009 grep = none. E2-D08 reorder proven **verbatim** (regenerate → empty sorted-statement diff, 13==13; only order + C14 `IF NOT EXISTS`); `companies` additive-only, sentinel default untouched; no RLS/GRANT, no guarded-file/manifest touch. → `Status: complete`. |
