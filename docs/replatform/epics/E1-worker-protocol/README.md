@@ -1,11 +1,11 @@
 # E1 — Versioned Worker Protocol
 
-**Status:** `gate_review`
+**Status:** `complete`
 **Depends on:** E0 completion gate
 **Tickets:** PRT-001 through PRT-007
 **Implementation plan:** `implementation-plan.md` is written and reviewed before E1 execution begins.
 
-**Gate status:** All seven ticket results are `complete`/`approved`, but the Task-8 integration gate on revision `93c5e9f2763a16ce17507fde11b8cac770d5478a` is **`fail`** — the packed-import smoke `scripts/check-worker-protocol-package.mjs` is RED (finding [E1-F007](findings.md)). See QA `qa/2026-08-09-d0-e1-completion-93c5e9f2763a-a1.md` and handoff `handoffs/2026-08-09-epic-completion-93c5e9f2763a-a1.md`. E1 stays `gate_review` until E1-F007 is fixed and the gate is re-run green.
+**Gate status:** All seven ticket results are `complete`/`approved` and the Task-8 integration gate **passes** (attempt 2) on revision `b03262692882a7ce17834131ad358d3aecf07f5b` — accepted QA `qa/2026-08-09-d0-e1-completion-b03262692882-a2.md` (Result `pass`) and completion handoff `handoffs/2026-08-09-epic-completion-b03262692882-a2.md` (Decision `pass`). Attempt 1 (`93c5e9f2763a…`) was `fail` on finding [E1-F007](findings.md) (packed-import smoke); E1-F007 is now RESOLVED (`233e65b2b`) and the smoke is green (incl. 3× stability) and wired into CI. The a1 `fail` QA + handoff records are retained immutably and superseded by the a2 records. Non-blocking: finding [E1-F006](findings.md) (Step-1-regex vs PRT-004's annotated line) and the DEC-03 Linux-CI formalization recommendation.
 
 ## Outcome
 
