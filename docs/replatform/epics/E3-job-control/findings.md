@@ -74,3 +74,109 @@ with an atomic conditional update plus replay/stale-owner rules.
 single-winner contract is authoritative and the plan must not freeze a stale SQL detail.
 E3 reuses `issueService.checkout` and its current tests/service contract. No program-design
 amendment is required.
+
+## E3-F004 — Frozen-consumer checker pins the mutable repository lockfile
+
+**Date:** 2026-08-10
+**Status:** `blocked_requires_E1_protocol_custodian_correction`
+**Severity:** P1 STOP — frozen dependency gate conflicts with required consumer declaration
+**Affected tickets:** JOB-001 and therefore all downstream E3 tickets
+
+**Finding:** JOB-001 must declare `@armyofagents/worker-protocol: workspace:*` in
+`server/package.json` and regenerate `pnpm-lock.yaml` under AGENTS §7. The as-built
+`scripts/check-frozen-worker-protocol-consumer.mjs` hashes the current whole-repository
+lockfile and compares it with the immutable E1 fixture's `lockfileIntegrity`. A legitimate
+new server importer therefore makes the frozen check fail even though E1 source and frozen
+bundle bytes remain unchanged. The same checker hashes working-tree bytes and currently
+false-fails on a Windows CRLF checkout while the Git blobs still match the recorded hashes.
+
+**Disposition:** STOP. The E1 Protocol/Schema Custodian must keep the frozen fixture
+byte-identical but correct the checker to validate immutable source-SHA blobs or a protocol-
+relevant dependency snapshot, including recorded Zod/esbuild versions instead of current
+installed versions; fail if the source commit is unavailable; retain/extend its mutation
+corpus; make Git-byte verification line-ending safe; and commit superseding QA/handoff
+evidence. Changing the fixture, omitting
+the consumer manifest dependency, or bypassing the check is not authorized.
+
+## E3-F005 — Device proof and worker-to-target binding are not frozen E1 interfaces
+
+**Date:** 2026-08-10
+**Status:** `blocked_requires_operator_security_contract_approval`
+**Severity:** P1 STOP — security contract and schema binding unresolved
+**Affected tickets:** JOB-002, JOB-009, JOB-003 and every governed worker operation
+
+**Finding:** E1's strict enrollment request contains the request envelope and `hello`, but
+no device public key, proof, or returned session field. The prior plan promised a thumbprint-
+bound session without a proof transcript or per-request possession check; a copied bearer
+token would therefore retain authority. The E2 `workers` row also has no target FK and its
+deferred `owner_user_id` is `uuid`, while `authUsers.id` and
+`execution_targets.owner_user_id` are `text`.
+
+**Disposition:** The revised plan proposes, but does not approve, versioned HTTP header
+proof using a device key while leaving E1 JSON unchanged, fresh per-request proof/replay
+enforcement, bootstrap-only treatment of `worker_token_hash`, and a many-logical-workers-to-
+one-execution-target composite `target_authority_key` binding that DB-enforces platform/same-
+Org/same-owner compatibility, plus owner-ID type/FK correction. Durable proof-ID records have
+explicit operator-role ownership, expiry indexes, retention, bounded cleanup, and restart
+coverage. An opaque routing table discovers the candidate shard, while Organization/owner
+code consumption, profile creation, and replay receipt commit in one `runInTenant`; platform
+facts commit in one operator transaction. Unenrolled legacy targets keep
+their current heartbeat credential; enrollment upgrades that target's heartbeat auth without
+transferring execution authority. The operator must ratify that
+threat model and exact binding, or choose an additive versioned E1 change with custodian
+review. Pure bearer sessions are rejected.
+
+## E3-F006 — Lifecycle, fence-time, revocation, and retry allocation were incomplete
+
+**Date:** 2026-08-10
+**Status:** `resolved_in_plan`
+**Severity:** P1 plan correctness
+**Affected tickets:** JOB-003 through JOB-007
+
+**Finding:** The first draft did not atomically name both lease and attempt ACK transitions,
+did not assign the later running transitions, accepted an ambiguous `now`, did not require a
+current target-generation recheck, and had no unique/locked retry-attempt allocation.
+
+**Disposition:** The plan now assigns ACK to lease `offered→active` plus attempt
+`offered→leased`, assigns `attempt_started` to attempt/job running transitions, uses database-
+fresh `clock_timestamp()` inside conditional mutation, makes a globally locked generation
+cutoff immediately invalidate every governed guard, durably fans platform revocation into
+separate `runInTenant` cancellation transactions, and adds a locked unique
+`(organization_id, job_id, attempt_number)` allocator with concurrency/crash tests. Durable
+same-key/same-digest operation receipts make enrollment/ACK/renew lost-response retries replay
+without reapplying; a fresh device proof ID remains mandatory.
+
+## E3-F007 — Evidence commands could false-green and the exit gate depended on E5
+
+**Date:** 2026-08-10
+**Status:** `resolved_in_plan`
+**Severity:** P1 evidence integrity / program DAG
+**Affected tickets:** all ticket ledgers and the E3 integration gate
+
+**Finding:** PowerShell command chains used `;` and cleanup cmdlets, so a later successful
+cmdlet could mask a failed native process. The E3 exit gate also required joined E5 artifact-
+byte evidence even though E5 is a parallel/downstream lane and full D1 promotion occurs only
+after E3/E5/E6 contributions exist.
+
+**Disposition:** Every native process now runs through a fail-fast wrapper that makes errors
+terminating and checks both invocation success and native exit code, with cleanup in
+`finally`; missing-command and nonzero-native probes both propagate. E3 exit proves only E3-owned D1 contributions, including fenced
+artifact authorization/metadata; it explicitly leaves artifact bytes and remaining provider-
+resource proof to the later joined D1 gate.
+
+## E3-F008 — Submission trusted a delivery envelope and publication durability was overstated
+
+**Date:** 2026-08-10
+**Status:** `resolved_in_plan`
+**Severity:** P1 trust boundary / transaction semantics
+**Affected tickets:** JOB-001, JOB-005, JOB-010 through JOB-014
+
+**Finding:** `JobEnvelopeV1` contains server-authoritative delivery identities, hashes,
+policy, and placement facts, so it is unsafe as external submission input. The first draft
+also called existing live publications retryable without naming a durable publication outbox.
+
+**Disposition:** External sources now use a bounded `SubmitJobCommand`; the server derives
+authority and JOB-003 constructs E1 delivery from stored facts. Idempotency is principal/
+source scoped with principal kind+ID in the unique key. Required legacy mutations and receipt state remain atomic, while current live
+publications are explicitly best-effort invalidations; any correctness-critical delivery must
+name a durable outbox.

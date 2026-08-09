@@ -1,7 +1,7 @@
 # E3 — Durable Job Control — Implementation Plan
 
-**Plan status:** `blocked_pending_E2_D03_reconciliation` — independently reviewed STOP;
-implementation is not assignable.
+**Plan status:** `accepted_as_blocked_plan` — independent final re-review found no remaining
+P0/P1/P2 plan defect; implementation is not assignable until the named STOPs are resolved.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use
 > `superpowers:subagent-driven-development` to execute this plan ticket by ticket
@@ -39,27 +39,31 @@ Organization/workload until E10 migration tickets transfer ownership.
 | Item | Recorded value |
 |---|---|
 | Frozen `origin/main` | `003492988269a91eadfadb352bff7f413fa61adb` — present locally and an ancestor of the current `origin/main`; the crosswalk execution freeze is intact. |
-| E3 Start SHA | `8e2faa590d4e97a2cbd250c55f4a2ed81a352a33` — current `origin/docs/replatform-program` and `C:\e3` worktree HEAD. This exact bare 40-hex value is the `Start SHA` in `JOB-001-result.md`. |
+| E3 Start SHA | `8e2faa590d4e97a2cbd250c55f4a2ed81a352a33` — fetched `origin/docs/replatform-program` and the `C:\e3` worktree's initial HEAD before planning commits. This exact bare 40-hex value is the `Start SHA` in `JOB-001-result.md`. |
 | E0 completion | `pass` — `docs/replatform/epics/E0-foundation/handoffs/2026-08-08-epic-completion-3a469b6bec68-a1.md`. |
-| E1 completion | `pass` — `docs/replatform/epics/E1-worker-protocol/handoffs/2026-08-09-epic-completion-b03262692882-a2.md`. |
+| E1 completion | Handoff is `pass`, but E1's frozen-consumer checker pins the whole current `pnpm-lock.yaml`; JOB-001's required declared server dependency changes that file. A protocol-custodian correction and superseding evidence are required before JOB-001 can consume the package without breaking the frozen gate. |
 | E2 completion | Handoff says `pass`, but independent E3 review found its locked E2-D03 serving-role acceptance is not present in the as-built migration/boot path. E3 may not consume that interface until reconciled by an approved correction/amendment and superseding evidence. |
 | `E6-D1-FOUNDATION` | **Not present / not passed at planning time.** It is a named partial gate, never a ticket-result substitute. |
 | Planning worktree | `C:\e3`, branch `codex/epic-e3-job-control`; dependencies installed with `pnpm install --frozen-lockfile`. |
 | Formal test authority | Linux CI under DEC-03. Windows short-path evidence is operator-directed local evidence and must be labeled as such. |
 | Planning baseline smoke | `pnpm build` passed at the Start SHA. After package build, `pnpm test:run` reaches the suite but exits on Windows with the already-recorded E2 `ERR_IPC_CHANNEL_CLOSED` worker-protocol transform artifact; this is planning context only, not E3 gate evidence or a waiver. |
 
-The canonical JOB text and frozen-main crosswalk agree with E1. E2's locked decision and
-completion prose contradict its as-built serving-role interface (STOP below). One separate
+The canonical JOB text and frozen-main crosswalk agree with E1's protocol semantics; E1's
+as-built frozen-consumer verification seam conflicts with the required later consumer
+dependency (STOP below). E2's locked decision and completion prose contradict its as-built
+serving-role interface (STOP below). One separate
 stale implementation shorthand was resolved without amendment: the
 current `issueService.checkout` uses an atomic conditional update, while older prose says
 `SELECT FOR UPDATE NO WAIT`. JOB-010 explicitly makes the observable single-winner
 contract authoritative and forbids freezing a stale SQL detail, so E3 reuses the service
 contract and does not duplicate its SQL.
 
-Planning findings are retained in [`findings.md`](findings.md): blocking E3-F001 records the
-legacy-grant prose/as-built delta, E3-F002 records the deferred platform operator policy,
-and E3-F003 records the checkout shorthand drift. E3-F001 requires an operator-approved
-E2 correction or amendment; E3 may not improvise the role/grant architecture.
+Planning findings are retained in [`findings.md`](findings.md). E3-F001/E3-F002 cover the
+serving/operator-role gaps, E3-F003 records checkout shorthand drift, E3-F004 records the E1
+frozen-consumer checker conflict, and E3-F005 records the unresolved device-proof and
+worker-target binding contract. E3-F006 through E3-F008 record plan defects corrected by
+this revision. E3-F001, E3-F004, and E3-F005 require approved predecessor/contract choices;
+E3 may not improvise them during implementation.
 
 ### STOP — locked E2-D03 is not the as-built flag-on serving path
 
@@ -89,7 +93,9 @@ alternative; no implementer may execute them. Resolution requires one of:
 3. **C — Approve a split-role successor to E2-D03:** use a distinct non-owner `aoa_bridge`
    role/pool for legacy parity bridges while `aoa_app` remains RLS-only for new-path tables;
    update the locked decision and E2 evidence, then run a corrective E2 gate and superseding
-   handoff. This provides stronger privilege separation but adds a credential/pool.
+   handoff. This provides stronger privilege separation but adds a credential/pool. The
+   amendment must also grant/policy `aoa_bridge` into the required new-path receipt/job rows
+   under FORCE RLS; a legacy-only bridge cannot make one atomic new+legacy projection.
 
 If none is acceptable, pause for a dedicated planning-only E2 security/migration audit.
 No option may use an owner-pool bridge or split one parity projection across owner/new-path
@@ -98,11 +104,31 @@ transactions; either would violate the serving-role contract and JOB-013 atomici
 Until the operator chooses and the committed prerequisite evidence exists, this plan's
 role/grant sections are conditional and **all E3 implementation is blocked**.
 
+### STOP — E1's frozen-consumer gate pins a mutable whole-repository lockfile
+
+The frozen v1 bundle and schema are valid and remain immutable. The problem is the as-built
+verification seam: `scripts/check-frozen-worker-protocol-consumer.mjs` hashes the current
+working `pnpm-lock.yaml` and compares it with the E1 fixture's recorded hash. JOB-001 must add
+`@armyofagents/worker-protocol: workspace:*` to `server/package.json` and regenerate that
+lockfile under AGENTS §7, so a legitimate consumer declaration necessarily changes the hash
+and fails `pnpm check:frozen-worker-protocol-v1`. The checker also hashes working-tree bytes,
+which produces a separate CRLF false failure on Windows even when the Git blob is unchanged.
+
+The recommended correction is owned by the E1 Protocol/Schema Custodian: keep the frozen
+fixture byte-identical, but make its dependency proof compare the recorded source-SHA Git
+blobs and protocol-relevant dependency snapshot—including recorded Zod/esbuild versions—
+rather than the mutable current repository lockfile/package or currently installed versions.
+The check fails clearly if the recorded source commit is unavailable, retains the mutation
+corpus, adds LF/CRLF-safe tests, and commits a superseding E1 QA
+record/handoff. Any alternative—including changing the frozen fixture, omitting the server
+manifest dependency, or bypassing the check—is a STOP requiring explicit custodian approval.
+JOB-001 cannot be assigned until the corrected check passes at its assignment revision.
+
 ### Execution boundary
 
 | Boundary | Tickets | Assignment rule |
 |---|---|---|
-| **Pre-D1, planned but blocked on E2-D03 reconciliation** | JOB-001, JOB-002, JOB-009, JOB-003, JOB-010 | After the STOP is resolved and a superseding E2 handoff is committed, respect ticket dependencies; JOB-010 may start after JOB-001. |
+| **Pre-D1, planned but blocked** | JOB-001, JOB-002, JOB-009, JOB-003, JOB-010 | Requires E3-F001/E3-F002 reconciliation, E3-F004's corrected E1 check, and approval of E3-F005's device/binding contract. Then respect ticket dependencies; JOB-010 may start after JOB-001. |
 | **Post-D1, blocked** | JOB-004–JOB-008, JOB-011–JOB-014 | Do not assign until a committed `E6-D1-FOUNDATION` QA record **and passing handoff** cover E6F-00–E6F-08 on one revision. |
 | **E3 exit gate, blocked** | all JOB-001–JOB-014 evidence | Requires every ticket complete and the post-D1 closure. A Windows-local run is not a substitute for the formal Linux lane. |
 
@@ -246,9 +272,14 @@ not fit an existing aggregate:
 | Owner ticket | Schema module | Purpose / key constraints |
 |---|---|---|
 | JOB-001 | `packages/db/src/schema/job_outbox.ts` | Transactional attempt-ready notification. Unique `(organization_id, attempt_id, kind)`; bounded claim/retry metadata; payload contains identifiers only. JOB-006 writes a new row atomically with every retry attempt. |
+| JOB-002 | `packages/db/src/schema/worker_enrollment_code_routes.ts` | Opaque, unguessable locator hash→candidate Organization shard (or platform) for enrollment routing only. Operator-readable; tenant sessions insert only their current-Org rows and operator sessions insert only null-Org platform rows under FORCE RLS. Contains no secret hash/result and is never admission/consumption authority. |
+| JOB-002 | `packages/db/src/schema/worker_enrollment_codes.ts` | FORCE-RLS hashed single-use code authority: Organization/owner rows have non-null Organization and are consumed with worker profile+semantic replay result in one `runInTenant`; platform rows are null-Org and commit with the platform profile in one operator transaction. Same target/key/digest can replay after a lost response; changed digest conflicts. Raw code/session material is never stored. |
+| JOB-002 | `packages/db/src/schema/worker_proof_replays.ts` | Operator metadata anti-replay register keyed by `(device_thumbprint, proof_id)` with issued/expiry timestamps and no request body/tenant payload. Fresh proof IDs are required even when the E1 semantic idempotency key is retried. |
+| JOB-003 | `packages/db/src/schema/worker_operation_receipts.ts` | Tenant RLS receipts for E1 ACK/renew idempotent retry. Unique `(organization_id, company_id, worker_id, operation, idempotency_key)` plus composite lease/attempt FKs, semantic request digest, and bounded response fields; JOB-004 extends it for renew. |
 | JOB-005 | `packages/db/src/schema/job_events.ts` | Immutable accepted event bytes/digest with unique `(organization_id, event_id)` and `(organization_id, attempt_id, sequence)`. |
 | JOB-006 | `packages/db/src/schema/job_control_commands.ts` | Durable cancel/drain/graceful-stop command sequence and worker ACK, unique per lease/command id. |
-| JOB-005 | `packages/db/src/schema/job_projection_receipts.ts` | Idempotency state machine for accepted state projection and later calls into existing approval/budget/audit/output engines. Unique `(organization_id, projection_kind, source_identity)` plus `source_digest`, `job_id`, `attempt_id`, `source_fence`, `status=pending|applied`, `target_aggregate_id`, `created_at`, `applied_at`. Same identity/different digest is a hard conflict; pending is crash-recoverable; applied replays. Prefer an existing legacy unique key when it proves the same authority. |
+| JOB-005 | `packages/db/src/schema/job_projection_receipts.ts` | Idempotency state machine for accepted state projection and later calls into existing approval/budget/audit/output engines. Unique `(organization_id, company_id, projection_kind, source_identity)` plus `source_digest`, `job_id`, `attempt_id`, `source_fence`, `status=pending|applied`, `target_aggregate_id`, `created_at`, `applied_at`. Same identity/different digest is a hard conflict; pending is crash-recoverable; applied replays. Prefer an existing legacy unique key when it proves the same authority. |
+| JOB-007 | `packages/db/src/schema/execution_target_revocations.ts` | Operator-metadata-only durable fanout record for a committed target generation cutoff. Unique `(target_id, revoked_generation)` with bounded scan/retry/cursor state; contains no job/event/secret data and is not lease authority. |
 
 Each new table has non-null Organization identity, Company identity where applicable,
 composite tenant FKs, repository-only access, FORCE RLS, and grants to `aoa_app`. Normal
@@ -258,14 +289,33 @@ Decision #122. Hand-added SQL is limited to C14 idempotency guards and #122 role
 FORCE/POLICY DDL. Expected first migration is `0213`, but execution always uses the next
 unused number produced by drizzle-kit.
 
+The operator-readable enrollment route, platform enrollment rows, proof-replay, and revocation
+metadata are exceptions to ordinary tenant visibility, not to least privilege. Organization/
+owner code authority remains tenant RLS data; `aoa_operator` can read its opaque routing row
+but cannot read/consume its code row. These paths use the E3-F001/E3-F002-approved non-owner
+policies and expose no tenant job/event/secret payload. Proof IDs/operation receipts use
+expiry indexes, bounded batch deletion, and a minimum retention of session expiry plus maximum
+clock skew/retry window; cleanup never removes an unexpired replay defense or an operation
+receipt still needed by a live lease/enrollment response. D1 query-plan and restart tests
+cover replay lookup and cleanup. No in-memory replay cache is correctness authority.
+The raw enrollment code has independent ≥128-bit locator and secret components. Only their
+hashes persist. Issuance inserts route+code atomically in the owning tenant transaction (or
+one platform operator transaction). Enrollment uses the locator row only to choose a candidate
+shard, then `runInTenant` revalidates target/scope/code secret and atomically consumes the code,
+creates/rotates the worker, and records the semantic result. Missing/stale/wrong-shard lookups
+are indistinguishable from an invalid code. Route cleanup cannot precede its authoritative
+code/receipt retention.
+
 Parity bridges require one non-owner transaction to call existing legacy tables. E2's
 current `0211` grants `aoa_app` only the eight new-path tables, despite the locked E2-D03
 contract and handoff prose. E3 therefore never assumes legacy access exists and never falls
 back to the owner pool. The exact serving role and grants below are **conditional on the
 operator's E3-F001 choice**: option A grants the locked full legacy DML surface to `aoa_app`;
-option B grants only the traced tables to `aoa_app`; option C grants those traced tables to
-`aoa_bridge` and passes that non-owner pool through the existing mandatory `runInTenant`
-entry point with identical Organization-setting and fail-closed semantics. JOB-001 needs read access to `organizations`,
+option B grants only the traced tables to `aoa_app`; option C grants those traced legacy
+tables **and** the required new-path receipt/job operations to `aoa_bridge`, adds explicit
+Decision #122 FORCE-RLS policies for that role, and passes that non-owner pool through the
+existing mandatory `runInTenant` entry point with identical Organization-setting and
+fail-closed semantics. JOB-001 needs read access to `organizations`,
 `companies`, `organization_memberships`, and `company_memberships` for admission/
 authorization edge checks; JOB-002/009 need the approved access to both `workers` and
 `execution_targets` for registry/profile resolution and revocation recheck. The traced
@@ -308,19 +358,50 @@ work separately from after-commit effects. Ticket adapters must change existing 
 The existing one-argument `fn(repos)` form stays source-compatible. The additive form is
 conceptually `fn(repos, { tx, afterCommit(effect) })`; the transaction handle/context cannot
 escape. `runInTenant` executes registered publication effects only after `withTenantTx`
-returns successfully. A publication failure is visible/retryable through its existing
-outbox/receipt contract; it never rolls back an already committed mutation or silently marks
-a required projection applied.
+returns successfully. The current live publications are best-effort cache/UI invalidations,
+not a durable correctness channel: failure is logged and metered and clients recover by the
+existing read/refresh path. A ticket that needs guaranteed delivery must name and test a
+durable outbox before implementation; it may not pretend a projection receipt retries an
+unrelated live publication. A receipt may be committed `pending` with its accepted source;
+the later projection transaction locks it, invokes the required legacy mutation, and marks
+it `applied` atomically, so a crash rolls both steps back to pending. If projection is
+synchronous with the source mutation, receipt insert/lock, legacy mutation, and `applied`
+all occur in that one transaction.
 
 ```powershell
-pnpm --filter @armyofagents/db build
+function Invoke-NativeGate([string]$Label, [scriptblock]$Command) {
+  $priorErrorAction = $ErrorActionPreference
+  $ErrorActionPreference = 'Stop'
+  try {
+    $global:LASTEXITCODE = 0
+    & $Command
+    $invocationSucceeded = $?
+    $code = $global:LASTEXITCODE
+  }
+  catch { throw "$Label failed before a valid native exit: $($_.Exception.Message)" }
+  finally { $ErrorActionPreference = $priorErrorAction }
+  if (-not $invocationSucceeded -or $code -ne 0) {
+    throw "$Label failed with native exit $code"
+  }
+}
+
+$migrationSlug = 'job_control_submission' # JOB-001 exact example; use the owner map below.
+Invoke-NativeGate 'db build before generation' { pnpm --filter @armyofagents/db build }
 Push-Location packages/db
-pnpm exec drizzle-kit generate --name=<slug>
-# Add C14 IF NOT EXISTS guards to each generated CREATE TABLE/INDEX.
-pnpm exec drizzle-kit generate --custom --name=<slug>_rls
-# Add only idempotent #122 role/GRANT/ENABLE/FORCE/POLICY statements.
-Pop-Location
+try {
+  Invoke-NativeGate 'Drizzle generated migration' { pnpm exec drizzle-kit generate --name=$migrationSlug }
+  # Add C14 IF NOT EXISTS guards to each generated CREATE TABLE/INDEX.
+  Invoke-NativeGate 'Drizzle custom RLS migration' { pnpm exec drizzle-kit generate --custom --name="${migrationSlug}_rls" }
+  # Add only idempotent #122 role/GRANT/ENABLE/FORCE/POLICY statements.
+}
+finally { Pop-Location }
 ```
+
+Migration slugs are fixed per owner: JOB-001 `job_control_submission`, JOB-002
+`worker_enrollment`, JOB-009 `job_placement`, JOB-003 `job_leasing`, JOB-005 `job_events`,
+JOB-006 `job_controls`, and JOB-007 `job_quotas_revocation`. If drizzle-kit coalesces an
+adjacent schema diff, the ticket ledger records the generated number/name and no later ticket
+regenerates or hand-renumbers it.
 
 JOB-001 adds the existing workspace package `@armyofagents/worker-protocol: workspace:*`
 to `server/package.json`; `server` currently has no declared E1 dependency and must consume
@@ -329,6 +410,14 @@ regenerated `pnpm-lock.yaml` together after `pnpm install --no-frozen-lockfile`,
 `pnpm install --frozen-lockfile` is a no-op. No external dependency is expected. Any other
 dependency is a STOP for controller approval. Schema-only changes commit schema, generated
 migration, migration metadata, and tests; they do not fabricate a lockfile change.
+This manifest change is blocked by E3-F004 until the Protocol/Schema Custodian corrects and
+re-certifies `check:frozen-worker-protocol-v1`; JOB-001 then runs that check against E1's
+recorded source SHA before and after its dependency commit.
+
+```powershell
+Invoke-NativeGate 'regenerate manifest lockfile' { pnpm install --no-frozen-lockfile }
+Invoke-NativeGate 'verify frozen lockfile' { pnpm install --frozen-lockfile }
+```
 
 ### Shared fence authorization
 
@@ -337,15 +426,31 @@ conceptually:
 
 ```ts
 authorizeActiveFence({ organizationId, jobId, attemptId, leaseId, workerId,
-  targetId, targetGeneration, fence, now })
+  targetId, targetGeneration, fence })
 ```
 
 Authorization succeeds only when the same tenant row is the current nonterminal attempt,
-the lease is `active`, unexpired, unrevoked, matches worker/target/generation, and carries
-the exact opaque fence. The check and governed mutation execute in one tenant transaction;
-there is no check-then-write gap. Events, ordinary artifact commit, secret-handle access,
-completion, service health, projection, and control ACK all call this seam. Replacing or
-expiring a lease first makes the old predicate false; no cleanup path revives it.
+the lease is `active`, unexpired, unrevoked, matches worker/target/generation, carries the
+exact opaque fence, and the current worker/target authority still has the same active
+generation. Expiry compares `expires_at > clock_timestamp()` inside the conditional SQL
+mutation; PostgreSQL `now()`/`transaction_timestamp()` and server/worker time are forbidden
+because a transaction may cross the deadline. Worker `observedAt`, `ackedAt`, or event
+timestamps are evidence only and never authorize time. The current-generation recheck locks
+the exact `execution_targets` authority row `FOR SHARE`, and the governed
+mutation executes in the same tenant transaction under the E3-F001/E3-F002-approved role
+model; there is no check-then-write gap. Platform revocation cannot update every tenant RLS
+shard in one transaction. Its operator transaction instead locks that authority row
+`FOR UPDATE`, increments generation/disables the target, and inserts a durable revocation-
+fanout record.
+That commit is the linearization point: a guard that locked first may finish before cutoff;
+one that starts or resumes after waits and fails the new generation/status check. An
+idempotent reconciler then enumerates admitted Organizations and, separately inside each
+`runInTenant`, marks old-generation leases revoked, requests attempt cancellation, and queues
+termination controls. Crash between cutoff and fanout never restores write authority and the
+durable scan resumes to convergence. Organization/owner targets may combine cutoff and their
+single tenant's lease updates only when the approved role can do so in one `runInTenant`
+transaction. Replacing or expiring a lease first makes the old predicate false; no cleanup
+path revives it.
 
 The governed repository surface is closed and enumerated: event acceptance; artifact
 metadata/ordinary-commit authorization; secret-handle read; attempt/job terminal completion;
@@ -369,6 +474,20 @@ stubs, but JOB-004 owns the guard contract before later tickets fill them in.
 - Worker errors use E1 `ProtocolErrorV1`; tenant/operator endpoints use existing
   `400/401/403/404/409/422/500` envelopes. Cross-tenant and absent identities have the same
   response status/body/timing class to the extent testable.
+
+E1 operation idempotency is distinct from device-proof anti-replay. For `enrollment`,
+`lease_ack`, and `lease_renew`, the authenticated scope plus E1 `idempotencyKey` indexes a
+durable semantic receipt. Its request digest covers audience, authenticated worker/target/
+generation, body, and enrollment public-key/binding facts, but excludes correlation ID,
+fresh proof ID/signature, and transport timestamps. Same key+digest with a new valid device
+proof replays the stored E1 outcome/authority without reapplying the effect; changed digest
+returns the operation's allowed generic `malformed` error without an existence signal. A
+retry always uses a fresh proof ID over the same E1 idempotency key. Enrollment stores its
+receipt on the retained hashed-code row and may mint a new equivalent proof-bound session
+header for the same enrolled identity; ACK/renew store bounded response fields in
+`worker_operation_receipts`. Receipts are written atomically only for committed success or
+deterministic rejection outcomes; pre-auth failures and `throttled`/`internal_unavailable`
+leave no misleading receipt. No plaintext token or event/job payload is stored there.
 
 Platform-worker polling never scans tenant job rows globally. Organization/dedicated/owner
 sessions enter their bound Organization directly. For a platform session, an operator-owned
@@ -435,22 +554,50 @@ claim/sweep/list at gate volume and fails on sequential scans of the hot tables.
 Common affected-package commands:
 
 ```powershell
-pnpm --filter @armyofagents/db typecheck
-pnpm --filter @armyofagents/db build
-pnpm --filter @armyofagents/shared typecheck
-pnpm --filter @armyofagents/shared build
-pnpm --filter @armyofagents/server typecheck
-pnpm --filter @armyofagents/server build
-pnpm --filter @armyofagents/ui typecheck
-pnpm --filter @armyofagents/ui build
+function Invoke-NativeGate([string]$Label, [scriptblock]$Command) {
+  $priorErrorAction = $ErrorActionPreference
+  $ErrorActionPreference = 'Stop'
+  try {
+    $global:LASTEXITCODE = 0
+    & $Command
+    $invocationSucceeded = $?
+    $code = $global:LASTEXITCODE
+  }
+  catch { throw "$Label failed before a valid native exit: $($_.Exception.Message)" }
+  finally { $ErrorActionPreference = $priorErrorAction }
+  if (-not $invocationSucceeded -or $code -ne 0) {
+    throw "$Label failed with native exit $code"
+  }
+}
+
+function Invoke-E3Integration([scriptblock]$Body) {
+  $env:AOA_RUN_WIN_INTEGRATION = '1'
+  try { & $Body }
+  finally { Remove-Item Env:AOA_RUN_WIN_INTEGRATION -ErrorAction SilentlyContinue }
+}
+
+Invoke-NativeGate 'db typecheck' { pnpm --filter @armyofagents/db typecheck }
+Invoke-NativeGate 'db build' { pnpm --filter @armyofagents/db build }
+Invoke-NativeGate 'shared typecheck' { pnpm --filter @armyofagents/shared typecheck }
+Invoke-NativeGate 'shared build' { pnpm --filter @armyofagents/shared build }
+Invoke-NativeGate 'server typecheck' { pnpm --filter @armyofagents/server typecheck }
+Invoke-NativeGate 'server build' { pnpm --filter @armyofagents/server build }
+Invoke-NativeGate 'ui typecheck' { pnpm --filter @armyofagents/ui typecheck }
+Invoke-NativeGate 'ui build' { pnpm --filter @armyofagents/ui build }
 
 # Real PostgreSQL lane from short path C:\e3. Each integration file uses
 # describe.skipIf(process.platform === "win32" && AOA_RUN_WIN_INTEGRATION !== "1")
 # and embedded-postgres initdb flags --encoding=UTF8 --locale=C.
-$env:AOA_RUN_WIN_INTEGRATION='1'
-pnpm --filter @armyofagents/server exec vitest run src/__tests__/<suite>.integration.test.ts
-Remove-Item Env:AOA_RUN_WIN_INTEGRATION
+Invoke-E3Integration {
+  Invoke-NativeGate '<suite>' {
+    pnpm --filter @armyofagents/server exec vitest run src/__tests__/<suite>.integration.test.ts
+  }
+}
 ```
+
+Every ledger runs each native process through `Invoke-NativeGate`; cleanup lives only in
+`finally`. A later successful PowerShell cmdlet may never mask a failed test. RED and GREEN
+use the identical helper invocation and record the failing/passing native exit code.
 
 Tests are hermetic: fake clock, deterministic UUID/digest fixtures, embedded PostgreSQL,
 no live provider/network/customer data/credential. Every focused result records command,
@@ -461,20 +608,20 @@ the identical command GREEN; append the affected package typecheck/build command
 
 | Ticket | Exact focused command from `C:\e3` |
 |---|---|
-| JOB-001 | `$env:AOA_RUN_WIN_INTEGRATION='1'; pnpm --filter @armyofagents/db exec vitest run src/__tests__/job-control-schema.integration.test.ts src/__tests__/migration-idempotency.test.ts; pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-submission.integration.test.ts src/__tests__/tenant-app-db-startup.test.ts src/__tests__/job-control-legacy-grants.contract.test.ts src/__tests__/integration-test-hygiene.test.ts; Remove-Item Env:AOA_RUN_WIN_INTEGRATION` |
-| JOB-002 | `$env:AOA_RUN_WIN_INTEGRATION='1'; pnpm --filter @armyofagents/db exec vitest run src/__tests__/worker-operator-policy.integration.test.ts src/__tests__/migration-idempotency.test.ts; pnpm --filter @armyofagents/server exec vitest run src/__tests__/worker-enrollment.integration.test.ts src/__tests__/worker-session-auth.test.ts src/__tests__/job-control-legacy-grants.contract.test.ts; Remove-Item Env:AOA_RUN_WIN_INTEGRATION` |
-| JOB-009 | `$env:AOA_RUN_WIN_INTEGRATION='1'; pnpm --filter @armyofagents/db exec vitest run src/__tests__/migration-idempotency.test.ts; pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-placement.property.test.ts src/__tests__/job-placement.integration.test.ts src/__tests__/job-control-legacy-grants.contract.test.ts; Remove-Item Env:AOA_RUN_WIN_INTEGRATION` |
-| JOB-003 | `$env:AOA_RUN_WIN_INTEGRATION='1'; pnpm --filter @armyofagents/db exec vitest run src/__tests__/migration-idempotency.test.ts; pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-leasing.integration.test.ts src/__tests__/job-leasing-contract.test.ts; Remove-Item Env:AOA_RUN_WIN_INTEGRATION` |
-| JOB-010 | `$env:AOA_RUN_WIN_INTEGRATION='1'; pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-admission-parity.integration.test.ts src/__tests__/job-source-admission-matrix.test.ts src/__tests__/job-control-legacy-grants.contract.test.ts src/__tests__/job-legacy-after-commit.integration.test.ts; Remove-Item Env:AOA_RUN_WIN_INTEGRATION` |
-| JOB-004 | `$env:AOA_RUN_WIN_INTEGRATION='1'; pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-fencing.integration.test.ts src/__tests__/job-fence-surface.contract.test.ts; Remove-Item Env:AOA_RUN_WIN_INTEGRATION` |
-| JOB-005 | `$env:AOA_RUN_WIN_INTEGRATION='1'; pnpm --filter @armyofagents/db exec vitest run src/__tests__/job-events-schema.integration.test.ts src/__tests__/migration-idempotency.test.ts; pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-events.integration.test.ts; Remove-Item Env:AOA_RUN_WIN_INTEGRATION` |
-| JOB-006 | `$env:AOA_RUN_WIN_INTEGRATION='1'; pnpm --filter @armyofagents/db exec vitest run src/__tests__/job-controls-schema.integration.test.ts src/__tests__/migration-idempotency.test.ts; pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-reconciliation.integration.test.ts src/__tests__/job-control-commands.integration.test.ts; Remove-Item Env:AOA_RUN_WIN_INTEGRATION` |
-| JOB-007 | `$env:AOA_RUN_WIN_INTEGRATION='1'; pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-quotas.integration.test.ts src/__tests__/worker-revocation.integration.test.ts src/__tests__/job-control-legacy-grants.contract.test.ts; Remove-Item Env:AOA_RUN_WIN_INTEGRATION` |
-| JOB-008 | `pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-operations-routes.test.ts; pnpm --filter @armyofagents/ui exec vitest run src/__tests__/OperationsSection.test.tsx` |
-| JOB-011 | `$env:AOA_RUN_WIN_INTEGRATION='1'; pnpm --filter @armyofagents/db exec vitest run src/__tests__/migration-idempotency.test.ts; pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-approval-parity.integration.test.ts src/__tests__/job-control-legacy-grants.contract.test.ts src/__tests__/job-legacy-after-commit.integration.test.ts; Remove-Item Env:AOA_RUN_WIN_INTEGRATION` |
-| JOB-012 | `$env:AOA_RUN_WIN_INTEGRATION='1'; pnpm --filter @armyofagents/db exec vitest run src/__tests__/migration-idempotency.test.ts; pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-budget-cost-parity.integration.test.ts src/__tests__/job-control-legacy-grants.contract.test.ts src/__tests__/job-legacy-after-commit.integration.test.ts; Remove-Item Env:AOA_RUN_WIN_INTEGRATION` |
-| JOB-013 | `$env:AOA_RUN_WIN_INTEGRATION='1'; pnpm --filter @armyofagents/db exec vitest run src/__tests__/migration-idempotency.test.ts; pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-audit-parity.integration.test.ts src/__tests__/job-control-legacy-grants.contract.test.ts src/__tests__/job-legacy-after-commit.integration.test.ts; Remove-Item Env:AOA_RUN_WIN_INTEGRATION` |
-| JOB-014 | `$env:AOA_RUN_WIN_INTEGRATION='1'; pnpm --filter @armyofagents/db exec vitest run src/__tests__/migration-idempotency.test.ts; pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-output-parity.integration.test.ts src/__tests__/job-control-legacy-grants.contract.test.ts src/__tests__/job-legacy-after-commit.integration.test.ts; Remove-Item Env:AOA_RUN_WIN_INTEGRATION` |
+| JOB-001 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-001 db' { pnpm --filter @armyofagents/db exec vitest run src/__tests__/job-control-schema.integration.test.ts src/__tests__/migration-idempotency.test.ts }; Invoke-NativeGate 'JOB-001 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-submission.integration.test.ts src/__tests__/tenant-app-db-startup.test.ts src/__tests__/job-control-legacy-grants.contract.test.ts src/__tests__/integration-test-hygiene.test.ts } }; Invoke-NativeGate 'JOB-001 frozen consumer' { pnpm check:frozen-worker-protocol-v1 -- --source-sha b7a842870ce7509d8baa75409e0ab19da375c88a }` |
+| JOB-002 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-002 db' { pnpm --filter @armyofagents/db exec vitest run src/__tests__/worker-enrollment-schema.integration.test.ts src/__tests__/worker-operator-policy.integration.test.ts src/__tests__/migration-idempotency.test.ts }; Invoke-NativeGate 'JOB-002 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/worker-enrollment.integration.test.ts src/__tests__/worker-session-auth.test.ts src/__tests__/job-control-legacy-grants.contract.test.ts } }` |
+| JOB-009 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-009 db' { pnpm --filter @armyofagents/db exec vitest run src/__tests__/migration-idempotency.test.ts }; Invoke-NativeGate 'JOB-009 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-placement.property.test.ts src/__tests__/job-placement.integration.test.ts src/__tests__/job-control-legacy-grants.contract.test.ts } }` |
+| JOB-003 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-003 db' { pnpm --filter @armyofagents/db exec vitest run src/__tests__/job-control-schema.integration.test.ts src/__tests__/worker-operation-receipts-schema.integration.test.ts src/__tests__/migration-idempotency.test.ts }; Invoke-NativeGate 'JOB-003 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-leasing.integration.test.ts src/__tests__/job-leasing-contract.test.ts } }` |
+| JOB-010 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-010 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-admission-parity.integration.test.ts src/__tests__/job-source-admission-matrix.test.ts src/__tests__/job-control-legacy-grants.contract.test.ts src/__tests__/job-legacy-after-commit.integration.test.ts } }` |
+| JOB-004 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-004 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-fencing.integration.test.ts src/__tests__/job-fence-surface.contract.test.ts } }` |
+| JOB-005 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-005 db' { pnpm --filter @armyofagents/db exec vitest run src/__tests__/job-events-schema.integration.test.ts src/__tests__/migration-idempotency.test.ts }; Invoke-NativeGate 'JOB-005 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-events.integration.test.ts } }` |
+| JOB-006 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-006 db' { pnpm --filter @armyofagents/db exec vitest run src/__tests__/job-controls-schema.integration.test.ts src/__tests__/migration-idempotency.test.ts }; Invoke-NativeGate 'JOB-006 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-reconciliation.integration.test.ts src/__tests__/job-control-commands.integration.test.ts } }` |
+| JOB-007 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-007 db' { pnpm --filter @armyofagents/db exec vitest run src/__tests__/execution-target-revocations-schema.integration.test.ts src/__tests__/job-control-schema.integration.test.ts src/__tests__/migration-idempotency.test.ts }; Invoke-NativeGate 'JOB-007 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-quotas.integration.test.ts src/__tests__/worker-revocation.integration.test.ts src/__tests__/job-control-legacy-grants.contract.test.ts } }` |
+| JOB-008 | `Invoke-NativeGate 'JOB-008 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-operations-routes.test.ts }; Invoke-NativeGate 'JOB-008 ui' { pnpm --filter @armyofagents/ui exec vitest run src/__tests__/OperationsSection.test.tsx }` |
+| JOB-011 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-011 db' { pnpm --filter @armyofagents/db exec vitest run src/__tests__/migration-idempotency.test.ts }; Invoke-NativeGate 'JOB-011 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-approval-parity.integration.test.ts src/__tests__/job-control-legacy-grants.contract.test.ts src/__tests__/job-legacy-after-commit.integration.test.ts } }` |
+| JOB-012 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-012 db' { pnpm --filter @armyofagents/db exec vitest run src/__tests__/migration-idempotency.test.ts }; Invoke-NativeGate 'JOB-012 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-budget-cost-parity.integration.test.ts src/__tests__/job-control-legacy-grants.contract.test.ts src/__tests__/job-legacy-after-commit.integration.test.ts } }` |
+| JOB-013 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-013 db' { pnpm --filter @armyofagents/db exec vitest run src/__tests__/migration-idempotency.test.ts }; Invoke-NativeGate 'JOB-013 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-audit-parity.integration.test.ts src/__tests__/job-control-legacy-grants.contract.test.ts src/__tests__/job-legacy-after-commit.integration.test.ts } }` |
+| JOB-014 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-014 db' { pnpm --filter @armyofagents/db exec vitest run src/__tests__/migration-idempotency.test.ts }; Invoke-NativeGate 'JOB-014 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-output-parity.integration.test.ts src/__tests__/job-control-legacy-grants.contract.test.ts src/__tests__/job-legacy-after-commit.integration.test.ts } }` |
 
 ---
 
@@ -509,17 +656,27 @@ legacy cutover, and provider effects.
   `server/src/__tests__/tenant-app-db-startup.test.ts`; create shared
   `server/src/__tests__/job-control-legacy-grants.contract.test.ts`.
 
-**Inputs/outputs:** Input is an authenticated/domain-authorized E1 `JobEnvelopeV1` plus a
-bounded client idempotency key. Output is `{jobId, attemptId, status, replayed}` with no
-worker contact. Persist source kind/identity, requester/executor, canonical input hash,
-policy snapshot/hash, requirements, immutable placement request, priority/availability,
-and the first pending attempt plus attempt-ready outbox row. A unique tenant/company/idempotency constraint returns the
-original identical submission; same key with a different canonical hash is `409`.
+**Inputs/outputs:** External callers send a source-specific `SubmitJobCommand`, not an E1
+`JobEnvelopeV1`. The command contains authenticated source intent and a bounded idempotency
+key; it cannot choose job/attempt IDs, Organization/Company, requester authority, timestamps,
+policy/input hashes, placement authority, or fence data. The server derives those fields
+from the authenticated principal, admitted Organization→Company edge, current policy and
+source engine, then persists the immutable facts. JOB-003 later constructs and validates the
+E1 `JobEnvelopeV1` from those server-owned rows immediately before lease delivery. Output is
+`{jobId, attemptId, status, replayed}` with no worker contact. Persist source kind/identity,
+requester/executor, canonical input hash, policy snapshot/hash, requirements, immutable
+placement request, priority/availability, and the first pending attempt plus attempt-ready
+outbox row. A unique `(organization_id, company_id, authenticated_principal_kind,
+authenticated_principal_id, authenticated_source_kind, authenticated_source_identity,
+idempotency_key)` constraint returns the original identical submission; same scope/key with
+a different canonical command digest is `409`. Two authorized principals using the same
+client key cannot collide or observe one another's replay.
 JOB-001 does not build the global drainer/fair scheduler; JOB-003 consumes the durable row.
 This keeps submission within the ticket bound and ensures the notification's first consumer
 is reviewed alongside atomic leasing.
-`packages/shared` owns only board/operator REST DTOs; it does not duplicate E1 worker wire
-schemas. `server` imports validators/types from the built E1 package root.
+`packages/shared` owns only board/operator/source submission DTOs; it does not duplicate E1
+worker wire schemas. `server` imports validators/types from the built E1 package root only at
+the worker-wire construction/validation boundary.
 
 **Failure behavior:** malformed/protocol-invalid input is `400`; unauthorized requester,
 wrong Company, forbidden sentinel, or unmapped Organization is a uniform denial before
@@ -533,14 +690,16 @@ submission remains authoritative.
 
 **RED → GREEN:**
 - RED `job-submission.integration.test.ts`: duplicate-identical replay, changed-payload
-  conflict, forced outbox insert failure rollback, 32 concurrent same-key submissions,
+  conflict, two principals using the same key, forced outbox insert failure rollback, 32 concurrent same-key submissions,
   all six source variants, requester/assignee mismatch, sentinel and nonexistent Org,
   foreign Company, and assertion that no worker adapter is called.
 - RED startup test: flag on + blank/privileged app URL must fail; flag off must not open a
   serving pool.
 - GREEN schema/repository/config/service/route; generate migrations; run:
-  `$env:AOA_RUN_WIN_INTEGRATION='1'; pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-submission.integration.test.ts src/__tests__/tenant-app-db-startup.test.ts`.
-- Run db/shared/server typecheck+build and protocol-boundary checks. Expected E1 diff: zero.
+  `Invoke-E3Integration { Invoke-NativeGate 'JOB-001 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-submission.integration.test.ts src/__tests__/tenant-app-db-startup.test.ts } }`.
+- Run db/shared/server typecheck+build, protocol-boundary checks, and the corrected
+  `check:frozen-worker-protocol-v1` against source SHA
+  `b7a842870ce7509d8baa75409e0ab19da375c88a`. Expected E1 source/fixture diff: zero.
 
 **Evidence / commit:** `tickets/JOB-001-result.md`; one schema/service commit
 `feat(job-control): submit immutable tenant jobs`. Maps D0-T01/T03/T05, H-01, H-04.
@@ -560,12 +719,16 @@ generation-bound logical worker profiles for platform, Organization, and owner s
 key, or allowing worker-reported capability to change registered trust.
 
 **Files:** modify `packages/db/src/schema/execution_targets.ts`, `workers.ts`,
-`packages/db/src/client.ts`, repository modules; modify
+`packages/db/src/client.ts`, repository modules; create
+`packages/db/src/schema/worker_enrollment_code_routes.ts`,
+`worker_enrollment_codes.ts`, and
+`worker_proof_replays.ts` if E3-F005 selects application-layer proof; modify
 `packages/shared/src/validators/execution-target.ts` and target constants; modify
 `server/src/config.ts`, `server/src/index.ts`, `server/src/db/rls-tenant.ts`,
 `server/src/services/execution-targets.ts`, `routes/execution-targets.ts`; create
 `server/src/services/worker-enrollment.ts`, `routes/worker-control.ts`,
 `middleware/worker-session-auth.ts`; tests
+`packages/db/src/__tests__/worker-enrollment-schema.integration.test.ts`,
 `server/src/__tests__/worker-enrollment.integration.test.ts` and
 `worker-session-auth.test.ts`, plus a generated operator-role/policy custom migration and
 its db/unit enforcement tests.
@@ -575,18 +738,62 @@ the operator-role correction chosen by the E3-F001 amendment; B—single-use enr
 device proof; C—session audience/generation/revocation. Each slice is ≤1 agent-day and no
 slice is independently considered JOB-002 complete.
 
-**Interfaces:** Admin issues one hashed, expiring enrollment code for a registered target;
-the raw code is returned once and never logged. Enrollment consumes E1 target-enrollment
-request/response, proves device possession, creates/rotates the E2 worker logical profile,
-and returns a short-lived signed session bound to audience, worker, target, generation,
-scope, and device thumbprint. One physical device key may back distinct Org-scoped logical
-profiles; it never confers cross-profile authority.
+**Blocking contract decision (E3-F005):** E1's strict enrollment JSON has no device public
+key/proof/session fields. A bearer token that merely contains a thumbprint is not device
+bound. The recommended candidate preserves frozen E1 JSON and puts proof at the authenticated
+HTTP transport boundary: a Node-native Ed25519 device key signs a canonical tuple of method,
+normalized path, body SHA-256, E1 request/correlation identity, issued-at, and unique proof
+ID. Enrollment supplies the public key and proof in versioned `AoA-Device-*` headers, consumes
+the one-time code, and returns the short-lived session in an HTTP header whose claims include
+the key thumbprint. Every poll/ACK/renew/event/control request must present a matching fresh
+signature; the server enforces bounded clock skew and a database-unique proof ID until session
+expiry. Rotation/reinstall increments generation and replaces the key. This candidate needs
+an operator-approved threat model and exact header/canonicalization test vectors before
+assignment. The alternative is an additive, versioned E1 body change, which triggers the
+Protocol/Schema Custodian STOP and D0-T04 corpus. Pure bearer authentication is rejected.
 
-Organization/owner profiles are written through `runInTenant`. **Conditional on the
+**Interfaces:** Admin issues one hashed, expiring enrollment code for a registered target;
+the raw locator+secret code is returned once and never logged. Organization/owner issuance
+commits its route and authoritative code inside `runInTenant`; platform issuance commits both
+with the platform target in one operator transaction. Enrollment uses the locator only to
+discover a candidate shard. For Organization/owner it then consumes the unchanged E1 target-
+enrollment request/response at the body boundary, verifies the approved device proof, and
+atomically consumes code+creates/rotates profile+stores replay result in one `runInTenant`.
+Platform enrollment performs the equivalent work in one operator transaction. It returns a
+short-lived signed proof-bound session
+with audience, worker, target, generation, scope, and device thumbprint. One physical device
+key may back distinct Org-scoped logical profiles; it never confers cross-profile authority.
+The existing `execution_targets.worker_token_hash` is bootstrap-only: successful enrollment
+revokes/clears its worker-session authority, and no poll or governed operation accepts it.
+Unenrolled legacy targets keep their current heartbeat credential; an enrolled target's
+legacy heartbeat endpoint is upgraded to accept the proof-bound session so the authentication
+upgrade does not itself transfer execution authority before E10.
+
+The recommended registry binding is many logical `workers` profiles to one physical
+`execution_targets` row, with database enforcement rather than a single target-ID FK.
+JOB-002 adds explicit target scope plus a non-null, checked `target_authority_key` to the
+registry (`platform`, `organization:<org-id>`, or `owner:<org-id>:<owner-id>`) and a unique
+`(target_authority_key,id)` FK target. Each worker stores the selected authority key and
+`execution_target_id`; a composite FK binds both to the same registry row. Worker CHECKs
+permit only: platform profile→platform target; Organization profile→platform or the same
+Organization target; owner profile→the same Organization+owner target. A foreign-Org target
+therefore produces the same composite-FK failure as a nonexistent target and cannot become
+an existence oracle. Platform targets may back multiple Organization-scoped profiles without
+creating a second catalog. JOB-002 also migrates `workers.owner_user_id` from `uuid` to `text`
+and adds the FK to `authUsers.id`, matching the existing target registry. Partial unique
+constraints enforce one platform profile per target, one Organization profile per
+`(organization,target)`, and one owner profile per `(organization,target,owner)`. This exact
+binding, including safe migration/backfill of pre-E3 rows and database negative tests, must
+be ratified with E3-F005 before assignment.
+
+Organization/owner profiles and authoritative code/receipt rows are written through
+`runInTenant`. **Conditional on the
 E3-F001 operator choice**, the operator-metadata candidate writes/reads platform null-Org profiles
 through a least-privilege `aoa_operator` role and JOB-002 Decision #122 custom policies on
 both `workers` and the existing `execution_targets` registry. It can access only null-Org
-registration/status/profile/enrollment/generation metadata and cannot read jobs, attempts,
+registration/status/profile/enrollment/generation metadata, plus SELECT-only opaque locator→
+candidate-shard rows in `worker_enrollment_code_routes`; it cannot read Organization/owner
+code hashes/results, jobs, attempts,
 leases, events, artifacts, or secret handles. `AOA_OPERATOR_DATABASE_URL` is explicit and
 fail-closed. Tenant `aoa_app` sessions continue to see zero platform worker rows.
 
@@ -599,8 +806,13 @@ row. A signed snapshot alone is never enough to override a later revocation. Tes
 platform revocation against renew/event/completion in two Organizations and require both
 tenant paths to deny the old generation.
 
-**Failure behavior:** replay/expiry/key mismatch/replaced generation/revocation returns the
-closed unauthorized/target-revoked protocol error before profile disclosure; tenant reads
+**Failure behavior:** reused device proof ID/signature, expired code/session, key mismatch,
+replaced generation, or revocation returns the closed unauthorized/target-revoked protocol
+error before profile disclosure. In contrast, a lost-response retry with the same enrollment
+code/authenticated scope/E1 idempotency key/semantic digest and a fresh valid proof replays the
+stored `enrolled` identity without rotating or consuming twice; same key with a changed digest
+is generic `malformed`. Forced worker/profile/receipt failure rolls back code consumption;
+a stale or malicious route cannot select a different authoritative tenant. Tenant reads
 never enumerate null-Org platform targets; owner removal or target transfer revokes refresh
 and increments generation; deletion/reinstall creates new identity and cannot revive the
 old session. Audit records issue/consume/rotate/revoke/transfer-denial without raw code/key.
@@ -610,9 +822,15 @@ Drizzle migration plus the operator-role/policy custom migration required above.
 enrollment route. Revocation remains safe during rollback; never re-enable a revoked
 generation.
 
-**RED → GREEN:** replay, expiry, platform operator auth, cross-tenant enumeration, wrong
-Org/owner, multi-Org profiles, owner membership removal, rotation, reinstall, replacement,
-transfer denial, revocation, wrong audience/target/generation. Run focused embedded-PG suite
+**RED → GREEN:** enrollment same-key/same-digest lost-response replay with fresh proof;
+same-key/changed-digest conflict; consumed code with unrelated key; invalid/missing device
+signature; proof-ID replay across replicas; replay-record expiry/cleanup and restart; clock
+skew; body/path/method tamper; session copied without key; route-insert issuance rollback;
+crash/failure after route lookup and at every code/profile/receipt statement; stale/wrong-shard
+route with uniform denial;
+platform operator auth; cross-tenant enumeration; wrong Org/owner; binding cardinality and
+owner-ID migration; multi-Org profiles; owner membership removal; rotation, reinstall,
+replacement, transfer denial, revocation, and wrong audience/target/generation. Run focused embedded-PG suite
 and db/shared/server typecheck+build. Evidence `tickets/JOB-002-result.md`; commit
 `feat(job-control): enroll device-bound workers`. Maps D0-T01/T03/T05, H-01/H-04.
 
@@ -665,18 +883,27 @@ ACK activates exactly that lease.
 the stored placement decision.
 
 **Files:** modify `job_attempts.ts`, `leases.ts`, tenant job-control repository and worker
-route; create `server/src/services/job-leasing.ts`,
+route; create `packages/db/src/schema/worker_operation_receipts.ts`, its generated/RLS
+migrations, `server/src/services/job-leasing.ts`,
 `server/src/services/job-outbox-worker.ts`, and
 `server/src/services/job-ready-scheduler.ts`; tests
+`packages/db/src/__tests__/worker-operation-receipts-schema.integration.test.ts`,
 `server/src/__tests__/job-leasing.integration.test.ts` and
 `job-leasing-contract.test.ts`.
 
 **Interfaces:** Poll validates E1 worker session/hello/capacity, then in one tenant
 transaction selects the oldest eligible placed attempt with Drizzle's PostgreSQL row-lock
 API (`FOR UPDATE SKIP LOCKED`), rechecks target/profile/generation/capability/capacity, moves
-attempt to offered, and inserts the offered lease with server ACK deadline, expiry, and
-opaque fence. ACK echoes all delivery identity and conditionally moves the same offer to
-active. Incompatible/no-work responses reveal no job IDs/details.
+attempt `pending→offered`, and inserts the `offered` lease with server ACK deadline, expiry,
+and opaque fence. One conditional ACK transaction locks the same identities and moves lease
+`offered→active` plus attempt `offered→leased`; a late/wrong/replayed loser changes neither.
+The transaction also stores the ACK operation receipt. A lost-response retry with the same
+authenticated scope/idempotency key/semantic digest and a fresh device proof returns the
+original `acknowledged` outcome even though the lease is already active; it never reapplies
+the transition. Same key with a changed digest is generic `malformed`.
+The job remains `queued` until JOB-005 accepts the first fence-authorized
+`attempt_started` event, which moves attempt `leased→running` and job `queued→running` in the
+event transaction. Incompatible/no-work responses reveal no job IDs/details.
 The outbox worker enumerates admitted Organization shards, claims rows only inside
 `runInTenant`, and feeds non-authoritative fair-ready hints to the bounded scheduler. Pull
 polling and outbox replay recover hints after restart; hints never bypass the placement/lock
@@ -694,7 +921,10 @@ fence.
 
 **RED → GREEN:** real embedded PostgreSQL barrier tests with ≥100 concurrent claim/ACK races,
 two compatible plus one incompatible worker, oldest-eligible ordering, target/generation
-change, late ACK, rollback after row lock, and no-detail response. Run focused suite three
+change, ACK same-key/same-digest response loss, same-key/changed-digest conflict, fresh proof
+ID on semantic replay, late/wrong ACK, rollback between each lease/attempt update (proving the whole ACK
+transaction rolls back), restart consistency, and no-detail response. JOB-005 later adds the
+started-event job/attempt transition test. Run focused suite three
 times because it is H-03 critical, plus db/server build. Evidence
 `tickets/JOB-003-result.md`; commit `feat(job-control): lease placed jobs atomically`.
 Maps D0-T01/T02/T05, H-01/H-02/H-03, E6F-01/E6F-04 inputs.
@@ -773,14 +1003,22 @@ control, and projection storage behind that already-guarded interface. Wire exis
 `job-fence-surface.contract.test.ts`.
 
 **Interfaces/failure:** server policy supplies lease duration/renew interval; worker cannot
-extend it arbitrarily. Conditional renew matches all authority fields and increments no
-authority. Expired/replaced/revoked/terminal returns stale_fence/target_revoked/
+extend it arbitrarily, and E1 `observedAt` never authorizes expiry. Conditional renew uses a
+fresh SQL `clock_timestamp()` in the mutation (not transaction-start time), matches all lease
+identity plus the current worker/target status and generation, and increments no authority. It stores the renewed
+`expiresAt`/cancel response in the operation receipt atomically. Same scope/idempotency key/
+digest with a fresh proof replays that exact renewal result and cannot extend twice; changed
+digest is generic `malformed`. A new idempotency key is required for a later renewal effect.
+Expired/replaced/revoked/terminal returns stale_fence/target_revoked/
 attempt_terminal. One matrix proves stale fences cannot mutate events, ordinary artifact
 metadata/commit authorization, secret handles, completion, or service health.
 
 **Observability/rollback:** metric by renewal disposition and guard surface, redacted audit
 for rejected stale authority. Flag-off no renew endpoint; rollback stops renewal and fences
-leases by expiry, never extends them. RED boundary/clock/duplicate/revoked/replacement race;
+leases by expiry, never extends them. RED transaction begins before expiry but conditional
+mutation runs after expiry; same-key/same-digest lost-response replay returns the original
+expiry without extending; changed digest conflicts; plus boundary/clock/revoked/replacement
+races;
 GREEN common guard; run critical suite 3×. Evidence `tickets/JOB-004-result.md`; commit
 `feat(job-control): enforce active lease fences`. Maps D0-T01/T02/T05, H-01/H-02/H-03/H-04.
 
@@ -800,9 +1038,11 @@ routes/shared response types and tenant repositories; tests
 `server/src/__tests__/job-events.integration.test.ts`; generated normal + custom RLS
 migrations.
 
-**Interfaces:** Recompute RFC8785 SHA-256 first, then validate authenticated delivery
+**Interfaces:** Import E1 `canonicalEventDigestInputV1` and
+`verifyWorkerEventDigestV1`—do not reimplement RFC8785—then validate authenticated delivery
 identity/current fence, then batch duplicates/gap, then persist events and state projection,
-then cumulative ACK—all inside one tenant transaction. Same event ID+digest/sequence replays
+then cumulative ACK—all inside one tenant transaction. The first valid `attempt_started`
+event owns attempt `leased→running` and job `queued→running`. Same event ID+digest/sequence replays
 the prior ACK; changed digest, in-batch duplicate, gap, or illegal transition is rejected.
 Terminal result wins once.
 
@@ -826,7 +1066,8 @@ winner/new attempt/terminal result.
 **Ticket non-goals:** provider adapter/resource implementation, checkpoint byte handling,
 mobility, or reviving an expired fence.
 
-**Files:** modify `jobs.ts`, `job_attempts.ts`; create
+**Files:** modify `jobs.ts`, `job_attempts.ts` (including unique
+`(organization_id, job_id, attempt_number)`); create
 `schema/job_control_commands.ts`, repository methods,
 `server/src/services/job-reconciliation.ts`, `job-control-sweeper.ts`; extend worker and
 operator routes; tests `server/src/__tests__/job-reconciliation.integration.test.ts` and
@@ -834,12 +1075,14 @@ operator routes; tests `server/src/__tests__/job-reconciliation.integration.test
 
 **Interfaces:** cancellation transaction marks requested state and queues a monotonically
 sequenced E1 cancel command; worker poll/renew returns pending controls until ACK. Reaper
-locks expired offers/leases, permanently revokes their fence, applies server retry policy,
-and either creates attempt N+1 plus its attempt-ready outbox row in the same transaction
+locks the authoritative job/current-attempt row plus expired offer/lease, permanently revokes
+the fence, applies server retry policy, allocates `max(attempt_number)+1` under that lock, and
+either creates the uniquely constrained attempt N+1 plus its attempt-ready outbox row in the same transaction
 with immutable backoff or terminates/dead-letters with explicit reason. Reconciliation finds
 leaked attempts/commands and repeats idempotently.
 
-**Failure behavior:** disconnect before/after ACK, during execution/upload, and after
+**Failure behavior:** two concurrent retry/reconciliation creators produce one N+1 attempt
+and one ready row; the loser idempotently observes it. Disconnect before/after ACK, during execution/upload, and after
 terminal commit converges; late result never overwrites winner; retry exhaustion alone can
 dead-letter; CAV-003 restart always creates a new attempt/fence; CAV-004 offline output is
 quarantine-only. Reaper has bounded batches/backoff and one in-flight tick per process.
@@ -862,24 +1105,35 @@ or fallback beyond the immutable placement policy.
 
 **Files:** modify `server/src/services/org-concurrency.ts`, `execution-targets.ts`,
 `job-leasing.ts`, `job-reconciliation.ts`, budget bridge seam, attempt capacity columns and
-tenant repository; tests `server/src/__tests__/job-quotas.integration.test.ts` and
+tenant repository; create `packages/db/src/schema/execution_target_revocations.ts` plus its
+approved operator-policy migration/repository; tests
+`packages/db/src/__tests__/execution-target-revocations-schema.integration.test.ts`,
+`server/src/__tests__/job-quotas.integration.test.ts` and
 `worker-revocation.integration.test.ts`.
 
 **Interfaces:** Refactor the current advisory-lock capacity transaction to count/claim both
 legacy runs and distributed attempts, keyed by Organization plus workload; claim is stored
 on the attempt and released by one conditional transition. Admission/effect checks call
-existing budget policy. Revocation increments target generation, blocks refresh/new lease,
-marks active leases cancel-requested, enqueues termination control, and wakes queued work
-only when immutable fallback permits.
+existing budget policy. Revocation's operator transaction locks the target, increments its
+generation/disables it, and writes the durable fanout record; it never attempts a cross-Org
+lease transaction. The committed cutoff immediately blocks refresh/new leases and every
+governed guard through the locked current-generation recheck. The fanout worker scans admitted
+Organizations and separately uses `runInTenant` to mark matching old-generation leases
+`revoked`, request attempt cancellation, enqueue termination, and wake queued work only when
+immutable fallback permits.
 
-**Failure behavior:** concurrent claims never exceed cap; retry/reaper/revocation/cost
-exhaustion can race but release once; unavailable shared admission storage fails closed;
-revoked worker cannot renew/read secrets/upload/complete. Metrics: queued/running/reserved,
+**Failure behavior:** crash after global cutoff but before/during any Organization fanout
+still denies all old-generation effects; restart resumes the durable idempotent scan until
+every matching tenant lease converges. Concurrent claims never exceed cap; retry/reaper/
+revocation/cost exhaustion can race but release once; unavailable shared admission storage fails closed;
+revoked worker cannot renew/emit events/read secrets/upload/apply projections/report health/
+ACK control/complete from the instant that transaction commits. Metrics: queued/running/reserved,
 claim/release/reconcile/revocation dispositions, and queue-reason cardinality bounded by code.
 
 **Compatibility/rollback:** extends the existing capacity service, not a new counter. Flag
 off excludes distributed attempts. Revocation is irreversible for old generation. RED
-concurrent quota, mixed legacy/distributed clamp (CM-014), revoke at every lease phase,
+concurrent quota, mixed legacy/distributed clamp (CM-014), authority-row lock ordering,
+crash after cutoff/before fanout, multi-Org platform revoke at every lease phase,
 budget exhaustion, double-release and reconciliation; GREEN 3×. Evidence
 `tickets/JOB-007-result.md`; commit `feat(job-control): enforce shared organization quotas`.
 Maps D0-T01/T05, H-01/H-02/H-03, D1-01/D1-02/D1-07 inputs.
@@ -1089,11 +1343,11 @@ attributable without becoming accepted product actions.
 |---|---|
 | D0-T01 focused acceptance | Every ticket's result ledger and reviewer rerun. |
 | D0-T02 lifecycle ownership | JOB-003/004/005/006/011/014 legal+illegal transition matrices against E1 state functions. |
-| D0-T03 validators | JOB-001/002/005 run 10,000 deterministic vectors for any new auth/idempotency/secret-bearing validator; E1 validators remain unchanged. |
+| D0-T03 validators | JOB-001/002/003/004/005 run 10,000 deterministic vectors for any new auth/idempotency/secret-bearing validator; E1 validators remain unchanged. |
 | D0-T04 protocol ownership | Expected N/A (zero E1 diff). Any additive protocol field triggers custodian review and full affected cross-version corpus. |
 | D0-T05 hermetic inputs | All focused suites use embedded PG/fake clock/fixtures; no provider, customer, network, or live credential. |
-| D0-R01 | Exact gate revision: build workspace packages, then `pnpm -r typecheck`, `pnpm test:run`, `pnpm -r build`; classify only committed DEC-03 baseline failures as pre-existing/not-E3-touched. |
-| D0-R02 | Root `pnpm build`, with no tracked-byte mutation. |
+| D0-R01 | Exact gate revision: through `Invoke-NativeGate`, build workspace packages, then run `pnpm -r typecheck`, `pnpm test:run`, `pnpm -r build`; classify only committed DEC-03 baseline failures as pre-existing/not-E3-touched. |
+| D0-R02 | Root `pnpm build` through `Invoke-NativeGate`, with no tracked-byte mutation. |
 | D0-R03 | JOB-003/004/005/006/007 and the final H-01/H-02/H-03 integration suite pass 3 consecutive times. |
 | D0-R04 / EVID-01–03 | Byte-clean worktree and immutable QA/handoff with exact 40-hex revision, flags/config/protocol hash, commands/counts/durations, requirement IDs. |
 | H-01 tenant isolation | Every ticket; final hostile cross-Org/Company submit/enroll/place/lease/event/control/operator/parity matrix through `runInTenant`. Zero tolerance. |
@@ -1111,10 +1365,10 @@ attributable without becoming accepted product actions.
 | D1-01 INITIAL 20×10k/≥10 Orgs | Final E3 tenant property campaign; focused tickets use smaller deterministic RED/GREEN samples. |
 | D1-02 ≥1,000 lease races | Final claim/ACK/renew/replacement campaign; exactly one winner. |
 | D1-03 ≥100k events + ≥10k each fault class | Final duplicate/gap/out-of-order/lost-ACK/restart/hash campaign. |
-| D1-04 ≥100 lifecycle faults | JOB-006 plus E6 fake-provider/worker harness. |
-| D1-05 cancel ≤30s, cleanup ≤5m | JOB-006/007 full D1 topology measurement. |
-| D1-06 artifact integrity 100% | E3 proves fence authorization/metadata; E5/DAT owns bytes, so E3 gate cites joined current evidence rather than claiming byte storage. |
-| D1-07 zero orphans | Final reconciliation: no active lease, unACKed terminal event, capacity claim, or E6 provider resource. |
+| D1-04 ≥100 lifecycle faults | E3 exit proves job/attempt/lease/control recovery against the E6 foundation fake-worker seam. Provider-resource kill/cleanup remains a later E6 contribution; E3 does not certify it. |
+| D1-05 cancel ≤30s, cleanup ≤5m | E3 measures job/lease/control convergence only. Provider-resource cleanup remains E6's later contribution. |
+| D1-06 artifact integrity 100% | E3 proves fenced artifact metadata/authorization as a non-certifying contribution. E5/DAT owns byte round trips and the later joined D1 gate; no E5 evidence is an E3 exit dependency. |
+| D1-07 zero orphans | E3 exit requires no active E3 lease, unACKed terminal event, or capacity claim. Provider resources remain a later E6 joined-gate contribution. |
 
 ### `E6-D1-FOUNDATION` consumption
 
@@ -1130,29 +1384,37 @@ gate.
 1. Freeze one candidate revision after all fourteen reviewer-completed ledgers.
 2. Build workspace packages before tests. Run focused critical suites 3×, then D0-R01/R02,
    foundation/protocol-boundary/idempotency/integration-hygiene checks, and byte-clean check.
-3. Run the full D1 job-control slices at their INITIAL volumes/topology, retaining seeds and
-   raw-log references. H-01/H-02/H-03 failure is `fail`, never conditional/waived.
+3. Run the E3-owned D1 contributions at their INITIAL volumes/topology, retaining seeds and
+   raw-log references. This is not full D1 promotion: E5 artifact bytes and the remaining E6
+   provider-resource slices are downstream in the program DAG. H-01/H-02/H-03 failure is
+   `fail`, never conditional/waived.
 
    ```powershell
    $env:AOA_RUN_WIN_INTEGRATION='1'
    $env:AOA_D1_TENANT_SEEDS='20'; $env:AOA_D1_OPS_PER_SEED='10000'; $env:AOA_D1_ORGS='10'
    $env:AOA_D1_LEASE_RACES='1000'; $env:AOA_D1_EVENTS='100000'; $env:AOA_D1_EVENT_FAULTS_EACH='10000'
    $env:AOA_D1_LIFECYCLE_FAULTS='100'
-   pnpm --filter @armyofagents/server exec vitest run `
-     src/__tests__/job-control-d1-tenant.property.integration.test.ts `
-     src/__tests__/job-control-d1-leases.load.integration.test.ts `
-     src/__tests__/job-control-d1-events.load.integration.test.ts `
-     src/__tests__/job-control-d1-lifecycle.integration.test.ts `
-     src/__tests__/job-control-d1-artifact-authorization.integration.test.ts `
-     src/__tests__/job-control-d1-reconciliation.integration.test.ts
-   Remove-Item Env:AOA_D1_TENANT_SEEDS,Env:AOA_D1_OPS_PER_SEED,Env:AOA_D1_ORGS,Env:AOA_D1_LEASE_RACES,Env:AOA_D1_EVENTS,Env:AOA_D1_EVENT_FAULTS_EACH,Env:AOA_D1_LIFECYCLE_FAULTS,Env:AOA_RUN_WIN_INTEGRATION
+    try {
+      Invoke-NativeGate 'E3 D1 contributions' {
+        pnpm --filter @armyofagents/server exec vitest run `
+          src/__tests__/job-control-d1-tenant.property.integration.test.ts `
+          src/__tests__/job-control-d1-leases.load.integration.test.ts `
+          src/__tests__/job-control-d1-events.load.integration.test.ts `
+          src/__tests__/job-control-d1-lifecycle.integration.test.ts `
+          src/__tests__/job-control-d1-artifact-authorization.integration.test.ts `
+          src/__tests__/job-control-d1-reconciliation.integration.test.ts
+      }
+    }
+    finally {
+      Remove-Item Env:AOA_D1_TENANT_SEEDS,Env:AOA_D1_OPS_PER_SEED,Env:AOA_D1_ORGS,Env:AOA_D1_LEASE_RACES,Env:AOA_D1_EVENTS,Env:AOA_D1_EVENT_FAULTS_EACH,Env:AOA_D1_LIFECYCLE_FAULTS,Env:AOA_RUN_WIN_INTEGRATION -ErrorAction SilentlyContinue
+    }
    ```
 
    The suites emit the exact ordered seed manifest, expected/observed operation counts,
    cancellation/cleanup timings, query plans, and reconciliation totals. Run the H-01/H-02/
-   H-03 subset three consecutive times on the frozen revision. D1-04 provider-resource
-   fault cases and D1-06 object bytes are joined from the owning current E6/E5 evidence;
-   E3 does not fabricate those results.
+   H-03 subset three consecutive times on the frozen revision. The QA record marks D1-04's
+   provider-resource portion, D1-06 bytes, and provider-resource D1-07 closure as downstream/
+   not certified by E3. Full D1 promotion joins E3, E5, and remaining E6 evidence later.
 4. On Windows local, set `AOA_RUN_WIN_INTEGRATION=1` from `C:\e3` and label the result
    `operator-directed windows-local`. Linux CI is the formal DEC-03 authority.
 5. Gate Owner writes a new immutable
@@ -1223,7 +1485,8 @@ parallel merge repair. Across epics, E4/E6 lanes may run independently according
   stay ≤3 agent-days and parity tickets are explicitly matrix-sized exemptions.
 - JOB-009 precedes JOB-003; no job detail is exposed before tenant-scoped placement/claim.
 - Every E3 entry point, background path, and bridge uses the E2 non-owner
-  `runInTenant` transaction; no NULLIF weakening or raw unscoped repository is planned.
+  `runInTenant` transaction; E2-F012's requested NULLIF hardening is preserved because E3
+  introduces no legitimate unwrapped tenant read and no raw unscoped repository.
 - One conditional fence guard proves H-02 across every governed surface; row locking plus
   partial uniqueness and conditional transitions prove H-03.
 - E1 v1 is consumed without edits and the custodian STOP is explicit.
@@ -1243,7 +1506,7 @@ parallel merge repair. Across epics, E4/E6 lanes may run independently according
 Synthesized from the independent engineering review. Checkbox only after the named outcome
 is committed and independently reviewed; these tasks do not authorize implementation.
 
-- [ ] **T1 (P0, human: ~1 day / agent: ~2h)** — E2 serving role — choose and ratify A, B, or C.
+- [ ] **T1 (P1 STOP, human: ~1 day / agent: ~2h)** — E2 serving role — choose and ratify A, B, or C.
   - Surfaced by: Architecture — locked E2-D03 contradicts migration 0211 and boot wiring.
   - Files: E2 decisions/findings/QA/handoff, migration/schema and startup files selected by the amendment.
   - Verify: corrective E2 security/integration gate and superseding `pass` handoff.
@@ -1283,16 +1546,39 @@ is committed and independently reviewed; these tasks do not authorize implementa
   - Surfaced by: Code Quality — JOB-001/JOB-002 combined too many independent changes.
   - Files: ticket result ledgers and commit sequences defined in JOB-001/JOB-002.
   - Verify: each slice has RED/GREEN evidence; one distinct reviewer certifies the combined ticket revision.
+- [ ] **T11 (P1 STOP, human: ~1 day / agent: ~2h)** — E1 frozen check — decouple immutable fixture proof from the mutable repository lockfile.
+  - Surfaced by: Architecture/Tests — JOB-001's required manifest+lock change otherwise fails the E1 frozen gate.
+  - Files: E1 checker/mutation corpus and superseding E1 QA/handoff; frozen fixture bytes remain unchanged.
+  - Verify: original fixture mutation failures still fail, LF/CRLF-safe Git-byte proof passes, and JOB-001's declared consumer dependency does not invalidate frozen v1.
+- [ ] **T12 (P1 STOP, human: ~2 days / agent: ~4h)** — device proof/binding — ratify and test the JOB-002 threat model and registry relationship.
+  - Surfaced by: Security/Architecture — frozen E1 JSON has no proof field; bearer thumbprint claims and an unlinked worker row are insufficient.
+  - Files: JOB-002 schema, transport-auth middleware, enrollment/session services, threat-model vectors, E2 operator decision.
+  - Verify: copied token without key, proof replay/tamper/skew/cleanup, route-only shard discovery, atomic tenant code+profile+receipt, DB-enforced target authority key, owner-type migration, multi-profile cardinality, rotation and revocation all fail closed.
+- [ ] **T13 (P1, human: ~1 day / agent: ~2h)** — lifecycle authority — make ACK, start, time, generation, and retry allocation explicit.
+  - Surfaced by: Architecture/Tests — independent review found incomplete state transitions and race ownership.
+  - Files: JOB-003–007 plan-owned repositories/services/tests.
+  - Verify: atomic lease+attempt ACK, started-event transition, fresh DB clock at mutation, globally linearized cutoff plus crash-safe tenant fanout, current-generation guard, and one N+1 retry under concurrency.
+- [ ] **T14 (P1, human: ~4h / agent: ~1h)** — evidence/DAG — fail fast and keep E5/E6 remainder out of E3 exit.
+  - Surfaced by: Evidence integrity/Architecture — PowerShell cleanup could mask failure and E5 was an undeclared completion dependency.
+  - Files: focused-command table, E3 gate command, QA requirement map.
+  - Verify: missing command and forced native exit both remain failures after cleanup; E3 QA marks downstream D1 slices not certified.
+- [ ] **T15 (P1, human: ~4h / agent: ~1h)** — trust/transaction boundary — accept source intent and describe publication durability honestly.
+  - Surfaced by: Security/Code Quality — `JobEnvelopeV1` is server-to-worker authority and existing live publications have no durable retry channel.
+  - Files: JOB-001 submission DTO/service tests and JOB-005/010–014 receipt/bridge planning.
+  - Verify: caller cannot choose authoritative delivery facts; principal+source-scoped idempotency, atomic durable projection, and best-effort live invalidation behavior are tested.
+- [ ] **T16 (P1, human: ~1 day / agent: ~2h)** — E1 idempotent retry — persist enrollment/ACK/renew semantic outcomes separately from proof replay.
+  - Surfaced by: Protocol/Tests — frozen E1 marks all three operations `idempotent_retry`.
+  - Files: enrollment-code receipt fields, `worker_operation_receipts.ts`, JOB-002/003/004 services and tests.
+  - Verify: same scope/key/digest plus fresh proof replays the original outcome, changed digest fails, and ACK/renew never reapply or extend twice across response loss/restart.
 
-Review finding counts: 6 architecture issues, 3 code-quality/right-sizing issues, 6 test
-gaps, 3 performance issues, 3 critical silent-failure gaps, 1 true STOP, and 1 unresolved
-decision. The reviewer confirmed the E1/E2/existing-engine reuse direction and the explicit
-E3 non-goals; the required revision is concentrated at the E2 serving-role boundary and the
-transactional safety details above.
-
-After the revisions, the same distinct reviewer re-read both planning artifacts and returned
-`ACCEPTED AS A BLOCKED PLAN`: findings 1–10 are represented, the A/B/C choices remain
-unapproved, no additional P0/P1 defect exists, and implementation is not clear to start.
+Review history is retained rather than overwritten. The first independent reviewer accepted
+the earlier revision as a blocked plan. A fresh second reviewer then read committed revision
+`5b57511e53d42a9c6d11e358379807389a285e87` and returned `REVISE / BLOCKED`: 7 P1 and
+3 P2 findings, including device proof, fence-time/revocation, ACK transitions, retry
+uniqueness, fail-fast evidence, and the E5 gate dependency. Controller verification added
+the E1 lockfile-pinning STOP and the submission trust-boundary correction. After the
+amendments, that fresh reviewer re-ran every affected area and returned
+`ACCEPT AS BLOCKED PLAN` with no remaining P0/P1/P2 plan finding.
 
 ## GSTACK REVIEW REPORT
 
@@ -1300,12 +1586,19 @@ unapproved, no additional P0/P1 defect exists, and implementation is not clear t
 |--------|---------|-----|------|--------|----------|
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | Not run; not required for this backend planning pass. |
 | Codex Review | `/codex review` | Independent 2nd opinion | 0 | — | Not run. |
-| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | `ISSUES OPEN (PLAN)` | 18 categorized findings, 3 critical gaps, 1 true STOP. |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 3 | `ACCEPT AS BLOCKED PLAN` | Fresh reviewer verified every amendment and reported no remaining P0/P1/P2 beyond the named prerequisite/approval STOPs. |
+| Claude Code | `claude -p` | User-requested outside-model review | 0 | `AUTH BLOCKED` | Claude Code 2.1.126 is installed, but `claude auth status` reports `loggedIn: false`; no Claude review occurred. |
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | Not run; E3 operator UI follows existing patterns. |
 | DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | Not run. |
 
-**VERDICT:** ENG REVIEW BLOCKED — E2-D03 reconciliation and corrective E2 evidence are
-required before any E3 ticket can be assigned.
+**VERDICT:** ACCEPT AS BLOCKED PLAN — independently review-complete for operator read-back;
+E2 serving/operator correction, E1 frozen-check correction, and JOB-002 security/binding
+approval remain mandatory before any E3 ticket is assignable.
 
 **UNRESOLVED DECISIONS:**
-- Choose E2-D03 correction/amendment path A, B, or C and commit a corrective E2 gate/handoff.
+- Choose E2-D03 correction/amendment path A, B, or C, ratify E3-F002's null-Org operator
+  policy in the same predecessor correction, and commit a corrective E2 gate/handoff.
+- Approve the E1 custodian correction that preserves frozen fixture bytes while making the
+  consumer check compatible with later repository lockfile changes.
+- Approve JOB-002's transport-header proof plus many-profile→one-target binding, or order an
+  additive versioned E1 design/custodian review instead.
