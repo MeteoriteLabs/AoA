@@ -13,7 +13,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import * as checker from "./check-frozen-worker-protocol-consumer.mjs";
@@ -26,6 +26,34 @@ const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(TEST_DIR, "..");
 const CHECKER_PATH = path.join(TEST_DIR, "check-frozen-worker-protocol-consumer.mjs");
 const REAL_FIXTURE = path.join(REPO_ROOT, "tests", "fixtures", "worker-protocol-consumers", "v1");
+const CORPUS_TEMP_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "frozen-wp-corpus-run-"));
+const COORDINATION_WAIT_MS = 180_000;
+const coordinationWaitArray = new Int32Array(new SharedArrayBuffer(4));
+let ownershipReported = false;
+
+after(() => {
+  fs.rmSync(CORPUS_TEMP_ROOT, { recursive: true, force: true });
+});
+
+function ownedTempDir(prefix) {
+  return fs.mkdtempSync(path.join(CORPUS_TEMP_ROOT, prefix));
+}
+
+function reportOwnedLiveRepository(repoRoot) {
+  const readyPath = process.env.FROZEN_WP_OWNERSHIP_READY;
+  const releasePath = process.env.FROZEN_WP_OWNERSHIP_RELEASE;
+  if (!readyPath && !releasePath) return;
+  assert.ok(readyPath && releasePath, "parallel ownership probe requires both ready and release paths");
+  if (ownershipReported) return;
+  ownershipReported = true;
+  fs.writeFileSync(readyPath, `${JSON.stringify({ parentRoot: CORPUS_TEMP_ROOT, repoRoot })}\n`);
+
+  const startedAt = Date.now();
+  while (!fs.existsSync(releasePath)) {
+    assert.ok(Date.now() - startedAt < COORDINATION_WAIT_MS, `timed out waiting for parallel ownership release ${releasePath}`);
+    Atomics.wait(coordinationWaitArray, 0, 0, 25);
+  }
+}
 const EXPECTED = {
   sourceSha: SOURCE_SHA,
   expectedZodVersion: "3.24.2",
@@ -70,7 +98,7 @@ function regenManifest(dir) {
 }
 
 function withFixture(fn) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "frozen-wp-"));
+  const dir = ownedTempDir("fixture-");
   try {
     buildSynthetic(dir);
     fn(dir);
@@ -135,7 +163,7 @@ ${extraImporter}`);
 }
 
 function initSourceRepo({ zodVersion = "3.24.2", esbuildVersion = "0.28.1", includeLock = true, includeSourceTree = true } = {}) {
-  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "frozen-wp-git-"));
+  const repoRoot = ownedTempDir("git-");
   try {
     runGit(repoRoot, ["init", "--quiet"]);
     runGit(repoRoot, ["config", "user.email", "frozen-checker@example.invalid"]);
@@ -152,6 +180,7 @@ function initSourceRepo({ zodVersion = "3.24.2", esbuildVersion = "0.28.1", incl
     if (includeLock) writeRepoFile(repoRoot, "pnpm-lock.yaml", lockBytes);
     runGit(repoRoot, ["add", "."]);
     runGit(repoRoot, ["commit", "--quiet", "--no-gpg-sign", "-m", "source snapshot"]);
+    reportOwnedLiveRepository(repoRoot);
 
     return {
       repoRoot,
@@ -215,7 +244,7 @@ function withSourceRepo(options, fn) {
 }
 
 function withRealRepoClone(fn, { noLocal = false } = {}) {
-  const cloneRoot = fs.mkdtempSync(path.join(os.tmpdir(), "frozen-wp-real-clone-"));
+  const cloneRoot = ownedTempDir("real-clone-");
   fs.rmSync(cloneRoot, { recursive: true, force: true });
   try {
     const cloneMode = noLocal ? "--no-local" : "--shared";
@@ -246,15 +275,8 @@ function withProcessEnv(overrides, fn) {
   }
 }
 
-function tempEntries(prefix) {
-  return new Set(fs.readdirSync(os.tmpdir()).filter((entry) => entry.startsWith(prefix)));
-}
-
-function removeNewTempEntries(prefix, before) {
-  const after = tempEntries(prefix);
-  const leaked = [...after].filter((entry) => !before.has(entry));
-  for (const entry of leaked) fs.rmSync(path.join(os.tmpdir(), entry), { recursive: true, force: true });
-  return leaked;
+function ownedTempEntries() {
+  return fs.readdirSync(CORPUS_TEMP_ROOT).sort();
 }
 
 test("a good synthetic fixture passes", () => {
@@ -543,7 +565,7 @@ test("invalid frozen code is rejected before its execution sentinel can run", ()
 });
 
 test("the isolated smoke import terminates a hanging fixture within its timeout", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "frozen-wp-hang-"));
+  const dir = ownedTempDir("hang-");
   try {
     const modulePath = path.join(dir, "hang.mjs");
     fs.writeFileSync(modulePath, "while (true) {}\n");
@@ -560,8 +582,7 @@ test("the isolated smoke import terminates a hanging fixture within its timeout"
 });
 
 test("synthetic Git commits ignore inherited commit signing and leave no temp repo", () => {
-  const prefix = "frozen-wp-git-";
-  const before = tempEntries(prefix);
+  const before = ownedTempEntries();
   let setupError;
   withProcessEnv({ GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "commit.gpgSign", GIT_CONFIG_VALUE_0: "true" }, () => {
     try {
@@ -570,15 +591,14 @@ test("synthetic Git commits ignore inherited commit signing and leave no temp re
       setupError = error;
     }
   });
-  const leaked = removeNewTempEntries(prefix, before);
+  const afterEntries = ownedTempEntries();
 
   assert.equal(setupError, undefined, setupError?.stack);
-  assert.deepEqual(leaked, []);
+  assert.deepEqual(afterEntries, before);
 });
 
 test("synthetic Git setup failure cleans its temp repo before the test body", () => {
-  const prefix = "frozen-wp-git-";
-  const before = tempEntries(prefix);
+  const before = ownedTempEntries();
   let setupError;
   withProcessEnv({ GIT_AUTHOR_DATE: "not-a-valid-git-date" }, () => {
     try {
@@ -587,10 +607,10 @@ test("synthetic Git setup failure cleans its temp repo before the test body", ()
       setupError = error;
     }
   });
-  const leaked = removeNewTempEntries(prefix, before);
+  const afterEntries = ownedTempEntries();
 
   assert.ok(setupError, "invalid author date must fail synthetic repository setup");
-  assert.deepEqual(leaked, []);
+  assert.deepEqual(afterEntries, before);
 });
 
 test("the checker is deterministic in a clean clone with only the recorded Git object database", () => {

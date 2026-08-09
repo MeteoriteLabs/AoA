@@ -11,7 +11,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { smokeImport } from "./check-frozen-worker-protocol-consumer.mjs";
@@ -19,6 +19,15 @@ import { smokeImport } from "./check-frozen-worker-protocol-consumer.mjs";
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CORPUS_PATH = path.join(SCRIPT_DIR, "check-frozen-worker-protocol-consumer.test.mjs");
 const WAIT_SLICE_MS = 25;
+const ISOLATION_TEMP_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "frozen-wp-isolation-run-"));
+
+after(() => {
+  fs.rmSync(ISOLATION_TEMP_ROOT, { recursive: true, force: true });
+});
+
+function ownedTempDir(prefix) {
+  return fs.mkdtempSync(path.join(ISOLATION_TEMP_ROOT, prefix));
+}
 
 function withProcessEnv(overrides, fn) {
   const previous = new Map(Object.keys(overrides).map((key) => [key, process.env[key]]));
@@ -81,7 +90,7 @@ async function terminateIfRunning(run, releasePath) {
 }
 
 test("the valid smoke module observes zero JavaScript environment keys", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "frozen-wp-env-probe-"));
+  const dir = ownedTempDir("environment-probe-");
   try {
     const modulePath = path.join(dir, "environment-probe.mjs");
     fs.writeFileSync(modulePath, `
@@ -111,7 +120,7 @@ test("the valid smoke module observes zero JavaScript environment keys", () => {
 });
 
 test("staggered full corpus processes cannot remove each other's owned live repository", { timeout: 240_000 }, async () => {
-  const coordinationRoot = fs.mkdtempSync(path.join(os.tmpdir(), "frozen-wp-parallel-coordination-"));
+  const coordinationRoot = ownedTempDir("parallel-coordination-");
   const firstReady = path.join(coordinationRoot, "first.ready.json");
   const firstRelease = path.join(coordinationRoot, "first.release");
   const secondReady = path.join(coordinationRoot, "second.ready.json");

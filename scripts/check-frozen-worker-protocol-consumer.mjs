@@ -557,7 +557,8 @@ export function verifyFrozenConsumerAnchor({
 
 export function smokeImport(role, indexUrl, { timeoutMs = SMOKE_TIMEOUT_MS } = {}) {
   const code = `
-    import * as m from ${JSON.stringify(indexUrl)};
+    for (const key of Object.keys(process.env)) delete process.env[key];
+    const m = await import(${JSON.stringify(indexUrl)});
     const required = ["jobEnvelopeV1Schema", "enrollmentRequestV1Schema", "controlCommandV1Schema", "protocolErrorV1Schema", "PROTOCOL_VERSION"];
     for (const name of required) {
       if (!(name in m)) { console.error("[${role}] missing export " + name); process.exit(2); }
