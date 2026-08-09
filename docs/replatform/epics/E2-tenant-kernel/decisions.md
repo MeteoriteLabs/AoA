@@ -124,8 +124,6 @@ wrapper transparently governs both the canary and the new tables. Epic-local.
 
 `epic-local`.
 
----
-
 ## E2-D03 — "All application queries run as a non-owner role" reconciled with CAV-005
 
 **Date (UTC):** 2026-08-09
@@ -547,3 +545,31 @@ non-owner role.
 ### Promotion
 
 `epic-local`.
+
+---
+
+## E2-D10 — Option B: bounded `aoa_app` parity grants plus a distinct platform `aoa_operator`
+
+**Date (UTC):** 2026-08-10
+**Status:** `locked` (operator-approved option B; implementation awaiting distinct prerequisite review)
+**Owner role:** Migration + Security Gate Owner
+**Affected work:** corrective E2 prerequisite P1 before E3; resolves the premises of E3-F001/E3-F002 without implementing an E3 ticket
+**Promotion:** global Decision #123
+
+### Context
+
+E2-D03 correctly required a non-owner `aoa_app` pool for new-path RLS, but E3's existing JOB-010–014 engines also touch a bounded legacy parity surface. E2 also described null-Organization platform workers as operator-only without delivering a distinct operator login/pool/policy. Reusing the owner pool would bypass forced RLS; expanding one application role to platform operator authority would erase the intended trust seam.
+
+### Decision
+
+The operator selected option B. `aoa_app` remains the non-owner tenant-serving role for every E3 `runInTenant` transaction. When distributed execution is enabled it keeps the eight E2 grants and receives only the operation-level legacy table privileges proven by tracing the current JOB-010–014 engines. CAV-005 remains authoritative for legacy Company isolation; no legacy Company-table RLS retrofit is introduced.
+
+Create a separate NOSUPERUSER/NOBYPASSRLS `aoa_operator` role for null-Organization platform worker/target metadata. Its current-table DML is limited to `workers` and `execution_targets`, and forced RLS policies restrict visible/writable rows to platform rows with `organization_id IS NULL` (and platform-owned target metadata). It cannot access jobs, attempts, leases, events, artifacts, secrets, or tenant worker/target rows. JOB-002 owns any later enrollment/proof/revocation authority.
+
+The owner connection is migration/bootstrap-only for this path and is never a serving fallback. Flag-off startup allocates neither bounded pool and leaves legacy execution authoritative. Flag-on startup requires explicit `AOA_APP_DATABASE_URL` and `AOA_OPERATOR_DATABASE_URL`, opens both pools, verifies the exact authenticated role plus NOSUPERUSER/NOBYPASSRLS, and aborts before route/work startup on any failure. `runInTenant(appDb, organizationId, fn(repos))` remains mandatory.
+
+Migration `0213_e2_serving_role_correction.sql` is delta-free, generated as a drizzle custom migration, and hand-authors only Decision #122/C14 security DDL. Every statement is commented and idempotent; no credential is committed. The trace is frozen in `server/src/db/job-control-legacy-grants.ts` and applied atomically by the migration transaction.
+
+### Consequences
+
+E3 can begin only after a distinct reviewer accepts the corrective prerequisite evidence and issues the superseding E2 QA/handoff decision. This decision itself does not register E3 routes, start workers, implement JOB-001, or authorize a rollout.

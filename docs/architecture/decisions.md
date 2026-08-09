@@ -1948,3 +1948,15 @@ Decision #120 remains authoritative for current Commander warm-E2B behavior unti
 4. Role names are validated (`assertSafeRoleName`), and no role credential (`LOGIN PASSWORD`) is committed — the role is created `NOLOGIN` and its login credential is provisioned separately from an env/secret at deploy/boot time.
 
 **Consequences.** RLS enforcement is versioned/ordered/auditable in the migration ledger like all other DDL, with one apply path. `db:push` remains absent. This does not authorize hand-authoring any DDL drizzle-kit *can* emit. `CLAUDE.md` Rule #1 and `AGENTS.md` §6 prose carry this cross-reference when TEN-002 lands.
+
+## Decision #123 — Distributed execution uses bounded tenant-serving and platform-operator database roles (2026-08-10)
+
+**Status:** Locked 2026-08-10 (operator-approved option B; corrective successor to E2-D03). Implementation revision `920e55de5a6557577bed9d228e9a00c4d49beadc` awaits the distinct prerequisite reviewer.
+
+**Decision.** `aoa_app` is the non-owner tenant-serving role for every E3 `runInTenant` transaction. Under the distributed-execution flag it has the eight E2 new-path grants plus only the legacy table privileges proven necessary by the traced JOB-010–014 engine calls. Legacy Company isolation remains enforced by existing application checks under CAV-005; this decision adds no legacy Company-table RLS retrofit.
+
+A distinct NOSUPERUSER/NOBYPASSRLS `aoa_operator` role and fail-closed database connection own the null-Organization platform target/worker metadata seam. On current tables it may access only the exact null-Org metadata needed to establish that seam; it receives no access to jobs, attempts, leases, events, artifacts, secrets, or tenant worker/target rows. Future E3 enrollment-route/proof/revocation grants remain owned by JOB-002.
+
+Privileged owner database access remains migration/bootstrap-only for this path. No owner fallback is allowed when the distributed flag is on. When `AOA_DISTRIBUTED_EXECUTION_ENABLED=false`, no new serving/operator pool is required and the current legacy execution path remains authoritative. When true, both explicit non-owner URLs are required and missing/invalid credentials, an unexpected authenticated role, privileged role attributes, or a failed connection aborts startup before E3 routes/work can start.
+
+`runInTenant(appDb, organizationId, fn(repos))` remains the mandatory tenant transaction boundary; no unscoped tenant repository is added. Migration `0213_e2_serving_role_correction.sql` is a delta-free drizzle `--custom` migration under Decision #122/C14, with idempotent role/grant/FORCE-RLS/policy statements and no committed credential. The exact traced legacy operation allowlist is versioned in `server/src/db/job-control-legacy-grants.ts`.
