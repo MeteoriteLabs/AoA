@@ -1,6 +1,6 @@
 # PRT-001 Result — Leaf Protocol Package and Boundary Gate
 
-**Status:** `gate_review`
+**Status:** `complete`
 **Date (UTC):** `2026-08-09`
 **Epic:** `E1-worker-protocol`
 **Plan task:** `Task 1: PRT-001 — Leaf Protocol Package and Boundary Gate`
@@ -107,12 +107,23 @@ None. PRT-002 (branded identities + lifecycle state machines) is the next ticket
 
 ## Independent review
 
-**Reviewer:** `<pending until first independent review, then agent or human identity; must differ from implementer>`
-**Reviewed revision:** `<pending until first independent review, then 40-character git SHA>`
-**Disposition:** `pending`
-**Review evidence:** `<pending until first independent review, then review record, exact commands/exit codes, or finding links>`
+**Reviewer:** `PRT-001 independent reviewer subagent (Claude)`
+**Reviewed revision:** `7e0f37e1b1e78564ddbda9708485b592087a5380`
+**Disposition:** `approved`
+**Review evidence:** Independent re-run on the reviewed revision (`git rev-parse HEAD` = `7e0f37e1b…`; worktree clean before and after). Focused acceptance commands, all exit 0 / green:
 
-For `approved`, verify the result describes the reviewed revision, all focused acceptance evidence passes, and every accepted finding is resolved; then change the top-level `Status` to `complete` and commit this disposition separately. Otherwise leave `Status` as `gate_review` or set `blocked`, and link stable findings.
+- `pnpm check:worker-protocol-boundary` → `worker protocol boundary: PASS` (exit 0).
+- `node --test scripts/check-worker-protocol-boundary.test.mjs` → tests 50 / pass 50 / fail 0 (exit 0).
+- `node scripts/check-worker-protocol-package.mjs` → `worker protocol package: PASS` (exit 0); independent manual `pnpm pack` + `tar -tzf` confirmed the tarball ships ONLY `package/package.json` + `package/dist/**` (index/version `.js/.d.ts/.map`) — no `src`, no `*.test.*`.
+- `pnpm --filter @armyofagents/worker-protocol test:run` → 1 file / 1 test passed (exit 0).
+- `pnpm --filter @armyofagents/worker-protocol typecheck` → `tsc --noEmit` clean (exit 0).
+- `pnpm --filter @armyofagents/worker-protocol build` → clean rebuild after `rm -rf dist` emitted exactly `dist/{index,version}.{js,d.ts,js.map,d.ts.map}` (no test files) (exit 0).
+- `pnpm install --frozen-lockfile` → no-op, "Done in 3.3s" (exit 0) — committed lockfile in sync with manifests (pre-existing plugin-sdk dev-bin WARNs unrelated).
+- `git diff --check` clean (exit 0); `git status --porcelain` empty; `git check-ignore` confirms `packages/worker-protocol/dist` + `node_modules` are gitignored.
+
+Adversarial probing beyond the committed 50-case corpus (28 new fixtures via `runBoundaryCheck(--root)` + direct lib calls, all behaved correctly): multiline/tab-whitespace/no-space `import`/`export … from` specifiers rejected; `import * as fs from "node:fs"` rejected; string-concat dynamic `import('f'+'s')` / `import('z'+'od')` both fail closed (rejected as importing `"f"`/`"z"`, never resolved to an allowed specifier); non-literal template static import → "non-literal static import is forbidden"; TS `import x = require('fs')` caught via `require(`; comment/string/template specifier decoys never trip. Forbidden globals: object-literal key `{process:1}`, TYPE key `type T = { process: number }`, shorthand `{process}`, ternary `cond ? process : x`, and `${process}` interpolation all flagged (fail-closed as designed); `config.process` member access and `process` inside comments/strings NOT flagged. `new TextEncoder()` (used by the planned PRT-002 `ids.ts`) is NOT in the forbidden set and was verified clean. Alt extensions `.mts/.cts/.d.ts/.js/.jsx/.mjs/.cjs` rejected; relative escapes `../../../server/x` and `../../shared/y` rejected; in-`src` relative + `zod` allowed. Symlink-under-`src` rejection is covered by the checker code path + committed synthetic-dirent test (a real-symlink probe SKIPPED only due to Windows EPERM on symlink creation).
+
+Verified: boundary lib `scripts/lib/worker-protocol-boundary.mjs` imports only `node:path` (dependency-free); all package/script/fixture files are newly ADDED in this commit (no pre-existing/required test was weakened — the fail-closed member-access test is part of the new corpus); root `package.json` + `pnpm-lock.yaml` committed together (AGENTS §7 lockfile-not-alone satisfied); the only runtime dependency is `zod@3.24.2`; the "Worker protocol dependency boundary" step sits in the always-on `policy` job immediately after "Distributed execution foundation contracts" and uses only `node`. Fail-closed-globals false-positive risk judged THEORETICAL for this protocol's vocabulary: no enumerated V1 field/key equals a forbidden global, enum values are string literals (never scanned as identifiers), and the one concrete near-miss (`TextEncoder`) is not forbidden. No findings.
 
 ## Review attempt history
 
@@ -121,3 +132,4 @@ The implementation author leaves the table body empty; the explicit pending summ
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
 <!-- First independent reviewer appends attempt 1. -->
+| 1 | PRT-001 independent reviewer subagent (Claude) | `7e0f37e1b1e78564ddbda9708485b592087a5380` | `approved` | Re-ran all focused acceptance commands on the reviewed revision — boundary PASS (exit 0), `node --test` 50/50, pack checker PASS + independent `pnpm pack`/`tar` (dist-only, no src/test), package test:run 1/1, typecheck clean, clean rebuild emits only index/version `.js/.d.ts/.map`, `--frozen-lockfile` no-op, worktree clean. 28 new adversarial boundary probes all correct (specifier obfuscations, string-concat/non-literal dynamic imports, forbidden globals in key/type-key/shorthand/ternary/interpolation positions, alt extensions, relative escapes) + fail-closed-globals verified clean on `TextEncoder`. AGENTS §7 (manifest+lockfile together) and the always-on `policy`-job step both confirmed. No findings. |
