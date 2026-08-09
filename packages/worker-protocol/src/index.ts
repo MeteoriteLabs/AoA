@@ -2,7 +2,8 @@
 // visible in review. Runtime values use `export { … }`; type-only aliases use
 // `export type { … }` (the root tsconfig sets `isolatedModules: true`).
 
-export { MIN_PROTOCOL_VERSION, PROTOCOL_VERSION } from "./version.js";
+export { MIN_PROTOCOL_VERSION, PROTOCOL_VERSION, negotiateProtocolVersion } from "./version.js";
+export type { ProtocolVersionRange } from "./version.js";
 
 // --- ids.ts: branded identity schemas (runtime values) -----------------------
 export {
@@ -356,6 +357,49 @@ export {
   workerEventAckStatusSchema,
   workerEventAckV1Schema,
 } from "./events.js";
+
+// --- capabilities.ts: negotiation vocabulary, profiles, and matching (values) -
+// `targetRequirementsV1Schema` / `TargetRequirementsV1` are re-exported from the
+// job.ts block above (single source of truth) — capabilities.ts imports the same
+// object, so they are intentionally NOT re-listed here.
+export {
+  KNOWN_WORKER_CAPABILITIES,
+  workerCapabilitySchema,
+  NON_EVENT_DISTRIBUTED_EMISSIONS,
+  KNOWN_DISTRIBUTED_EXECUTION_EMISSIONS,
+  workerCapacitySchema,
+  WORKER_OS,
+  WORKER_ARCH,
+  workerPlatformSchema,
+  providerConstraintProfileRefV1Schema,
+  PROVIDER_OPERATIONS,
+  providerOperationSchema,
+  CORE_PROVIDER_OPERATIONS,
+  OPTIONAL_PROVIDER_OPERATIONS,
+  CHECKPOINT_MODES,
+  HEALTH_MODES,
+  providerConstraintProfileV1Schema,
+  canonicalProviderConstraintProfileDigestInputV1,
+  verifyAndBrandProviderConstraintProfileV1,
+  registeredTargetProfileV1Schema,
+  workerHelloV1Schema,
+  jobCapabilityRequirementsSchema,
+  workerSatisfiesRequirements,
+} from "./capabilities.js";
+
+// --- capabilities.ts: inferred types -----------------------------------------
+export type {
+  WorkerCapability,
+  WorkerCapacity,
+  WorkerPlatform,
+  ProviderConstraintProfileRefV1,
+  ProviderOperation,
+  ProviderConstraintProfileV1,
+  VerifiedProviderConstraintProfileV1,
+  RegisteredTargetProfileV1,
+  WorkerHelloV1,
+  JobCapabilityRequirementsV1,
+} from "./capabilities.js";
 
 // --- events.ts: inferred types -----------------------------------------------
 export type {
