@@ -158,10 +158,34 @@ export type WireExtension = z.infer<typeof wireExtensionSchema>;
 // RFC 8785 canonical JSON, implemented locally solely to size extension values.
 // PRT-004 introduces the shared `canonical-json.ts`; the byte budgets here are
 // deliberately computed after UTF-8 encoding, not JS code-unit length.
+//
+// The locked v1 subset is null, booleans, strings, arrays, plain objects, and
+// finite SAFE integers. Floats, unsafe integers, and lone/broken UTF-16
+// surrogates are NON-canonicalizable and are REJECTED (throw) — byte-for-byte
+// with the E0 authority `scripts/check-distributed-execution-foundation.mjs`
+// (`canonicalizeNumber`/`canonicalizeString`). The amendment names lone
+// surrogates + the unsafe-integer boundary as must-not-diverge (E1-F004). The
+// caller's try/catch converts a throw into a fail-closed "not canonicalizable"
+// issue at the extension value path, so an out-of-subset value never bypasses
+// the byte budget at a strict security-critical envelope.
 function canonicalString(value: string): string {
   let out = '"';
   for (let i = 0; i < value.length; i += 1) {
     const code = value.charCodeAt(i);
+    // High surrogate: must be immediately followed by a low surrogate.
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = i + 1 < value.length ? value.charCodeAt(i + 1) : 0;
+      if (next < 0xdc00 || next > 0xdfff) {
+        throw new Error("lone high surrogate is not canonicalizable");
+      }
+      out += value[i] + value[i + 1];
+      i += 1;
+      continue;
+    }
+    // Low surrogate with no preceding high surrogate is lone/broken.
+    if (code >= 0xdc00 && code <= 0xdfff) {
+      throw new Error("lone low surrogate is not canonicalizable");
+    }
     if (code === 0x22) out += '\\"';
     else if (code === 0x5c) out += "\\\\";
     else if (code === 0x08) out += "\\b";
@@ -180,6 +204,8 @@ function canonicalJson(value: unknown): string {
   if (typeof value === "boolean") return value ? "true" : "false";
   if (typeof value === "number") {
     if (!Number.isFinite(value)) throw new Error("non-finite number is not canonicalizable");
+    if (!Number.isInteger(value)) throw new Error("float is not canonicalizable in the v1 subset");
+    if (!Number.isSafeInteger(value)) throw new Error("unsafe integer is not canonicalizable");
     return Object.is(value, -0) ? "0" : String(value);
   }
   if (typeof value === "string") return canonicalString(value);

@@ -328,6 +328,49 @@ describe("job envelope — bounded namespaced extensions", () => {
   });
 });
 
+describe("extension values fail closed on out-of-subset canonical values (E1-F004)", () => {
+  // Values the frozen E0/RFC-8785 subset REJECTS: floats, unsafe integers, and
+  // lone/broken UTF-16 surrogates. A fail-open sizer would let them bypass the
+  // byte budget at a strict security-critical envelope (and miscount unsafe ints).
+  const outOfSubset: Array<readonly [string, unknown]> = [
+    ["float 1.5", 1.5],
+    ["unsafe integer 2^53", 9007199254740992],
+    ["lone high surrogate", "\uD800"],
+    ["broken low surrogate", "\uDC00"],
+    ["nested float", { rate: 0.25 }],
+    ["array with an unsafe integer", [9007199254740992]],
+  ];
+
+  const jobWithValue = (value: unknown) => ({
+    ...clone(batchJob),
+    extensions: [{ ...clone(okExtension), value }],
+  });
+  const offerWithValue = (value: unknown) => ({ ...clone(leaseOffer), job: jobWithValue(value) });
+
+  for (const [label, value] of outOfSubset) {
+    it(`rejects ${label} in a job extension value`, () => {
+      const result = jobEnvelopeV1Schema.safeParse(jobWithValue(value));
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        // The failing issue points at the offending extension value.
+        expect(
+          result.error.issues.some((issue) => issue.path.join(".").startsWith("extensions.0.value")),
+        ).toBe(true);
+      }
+    });
+
+    it(`rejects ${label} in a lease-offer nested job extension value`, () => {
+      expect(leaseOfferV1Schema.safeParse(offerWithValue(value)).success).toBe(false);
+    });
+  }
+
+  it("still accepts a valid in-subset extension value (regression)", () => {
+    const inSubset = { n: 42, s: "ok", b: true, list: [1, 2, 3], nested: { deep: -0 } };
+    expect(jobEnvelopeV1Schema.safeParse(jobWithValue(inSubset)).success).toBe(true);
+    expect(leaseOfferV1Schema.safeParse(offerWithValue({ n: 42 })).success).toBe(true);
+  });
+});
+
 describe("placement compatibility is an explicit matrix (never ordinal)", () => {
   it("exposes the exact closed matrix", () => {
     expect(Object.keys(PLACEMENT_MATRIX).sort()).toEqual(
