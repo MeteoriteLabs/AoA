@@ -6,7 +6,7 @@ resolution changes disposition but does not remove the original evidence.
 ## E3-F001 — E2 legacy-table grant prose is ahead of migration 0211
 
 **Date:** 2026-08-09
-**Status:** `blocked_requires_operator_amendment_or_E2_correction`
+**Status:** `approved_option_B_blocked_on_E2_correction`
 **Severity:** P1 STOP — locked-decision/as-built contradiction
 **Affected tickets:** all E3 execution; directly JOB-001/JOB-010 through JOB-014
 
@@ -32,10 +32,15 @@ non-owner `aoa_bridge` role/pool for legacy bridges while `aoa_app` remains the 
 new-path role. If none is acceptable, order a dedicated E2 security/migration audit rather
 than improvising. No E3 ticket is assignable meanwhile.
 
+**Operator decision (2026-08-10):** Option B is selected. Amend E2-D03 with bounded traced
+legacy-table grants on `aoa_app`, retain application-layer Company isolation for CAV-005,
+and include E3-F002's metadata-only `aoa_operator` role in the same corrective E2 gate and
+superseding handoff. Options A and C are not authorized.
+
 ## E3-F002 — Platform-worker operator policy was described by E2 but not implemented
 
 **Date:** 2026-08-09
-**Status:** `blocked_with_E3-F001`
+**Status:** `approved_blocked_with_E3-F001_correction`
 **Severity:** P1 — expected JOB-002 behavior but role model unresolved
 **Affected tickets:** JOB-002, JOB-009, JOB-003
 
@@ -59,6 +64,12 @@ role and `runInTenant` before reading or leasing a job. The in-transaction fence
 recheck revocation/generation against authority visible through the chosen E3-F001 grant
 model. This candidate is not authorized until the operator resolves E3-F001.
 
+**Operator decision (2026-08-10):** Approve the proposed NOSUPERUSER/NOBYPASSRLS
+`aoa_operator` role and fail-closed pool, limited to null-Organization platform target,
+enrollment-route, device-proof, and revocation metadata. It receives no access to jobs,
+attempts, leases, events, artifacts, or secrets. Implementation remains blocked until the
+combined E2 corrective gate passes.
+
 ## E3-F003 — Current task checkout mechanism differs from historical shorthand
 
 **Date:** 2026-08-09
@@ -78,7 +89,7 @@ amendment is required.
 ## E3-F004 — Frozen-consumer checker pins the mutable repository lockfile
 
 **Date:** 2026-08-10
-**Status:** `blocked_requires_E1_protocol_custodian_correction`
+**Status:** `approved_blocked_on_E1_custodian_correction`
 **Severity:** P1 STOP — frozen dependency gate conflicts with required consumer declaration
 **Affected tickets:** JOB-001 and therefore all downstream E3 tickets
 
@@ -98,10 +109,14 @@ corpus; make Git-byte verification line-ending safe; and commit superseding QA/h
 evidence. Changing the fixture, omitting
 the consumer manifest dependency, or bypassing the check is not authorized.
 
+**Operator decision (2026-08-10):** Approve the checker-only correction exactly as scoped
+above. Frozen protocol/schema/bundle fixture bytes remain unchanged. JOB-001 remains blocked
+until the Protocol/Schema Custodian commits superseding passing E1 QA and handoff evidence.
+
 ## E3-F005 — Device proof and worker-to-target binding are not frozen E1 interfaces
 
 **Date:** 2026-08-10
-**Status:** `blocked_requires_operator_security_contract_approval`
+**Status:** `approved_pending_JOB-002_implementation`
 **Severity:** P1 STOP — security contract and schema binding unresolved
 **Affected tickets:** JOB-002, JOB-009, JOB-003 and every governed worker operation
 
@@ -125,6 +140,11 @@ their current heartbeat credential; enrollment upgrades that target's heartbeat 
 transferring execution authority. The operator must ratify that
 threat model and exact binding, or choose an additive versioned E1 change with custodian
 review. Pure bearer sessions are rejected.
+
+**Operator decision (2026-08-10):** Approve versioned Ed25519 HTTP-header possession proof,
+fresh proof-ID/time-window enforcement, separate durable semantic replay receipts, and the
+database-enforced composite target-authority binding/owner-ID correction. Frozen E1 JSON
+remains unchanged; an additive E1 wire change is not authorized.
 
 ## E3-F006 — Lifecycle, fence-time, revocation, and retry allocation were incomplete
 

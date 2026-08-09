@@ -1,26 +1,31 @@
 # E3 — Durable Job Control — Implementation Plan
 
-**Plan status:** `accepted_as_blocked_plan` — independent final re-review found no remaining
-P0/P1/P2 plan defect; implementation is not assignable until the named STOPs are resolved.
+**Plan status:** `approved_blocked_on_predecessor_corrections` — the operator approved the
+reviewed plan and recommended E2/E1/JOB-002 choices on 2026-08-10. E3 ticket implementation
+is not assignable until the named E2 and E1 corrective gates pass.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use
 > `superpowers:subagent-driven-development` to execute this plan ticket by ticket
 > **only after operator approval**. Every ticket uses a fresh implementer subagent
 > (strict RED → GREEN) and a DISTINCT independent reviewer subagent. A separate
 > Integration Gate Owner, who implemented/reviewed no E3 ticket, owns the epic gate.
-> This session is planning-only; none of the implementation steps below are authorized
-> until the operator explicitly approves the read-back.
+> The operator approved the read-back on 2026-08-10. Only the approved predecessor
+> corrections may execute first; no E3 ticket may be assigned until their committed passing
+> handoffs exist. The ticket-by-ticket subagent/reviewer protocol then applies unchanged.
 
 **Goal:** Build the dormant, durable, tenant-safe control plane for immutable job
 submission, device-bound worker enrollment, authoritative hybrid placement, atomic
 lease/ACK, fencing, ordered events, cancellation/retry/reconciliation, quota/revocation,
 operator controls, and legacy-control parity without creating a second product engine.
 
-**Candidate architecture (not approved while the STOP below is open):** PostgreSQL is the sole job/attempt/lease authority. Every tenant job,
+**Approved architecture (pending predecessor correction):** PostgreSQL is the sole job/attempt/lease authority. Every tenant job,
 poll/lease, event, control, reconciliation, and operator read executes through an
-operator-approved non-owner pool and `runInTenant(appDb, organizationId, fn(repos))`; forced RLS and
-composite tenant FKs remain the defense-in-depth boundary. E1's frozen v1 protocol is
-consumed unchanged. Server-owned placement intersects the registered target profile with
+operator-approved non-owner pool and `runInTenant(appDb, organizationId, fn(repos))`; forced
+RLS and composite tenant FKs remain the defense-in-depth boundary. The approved E2-D03
+successor uses bounded traced legacy grants on `aoa_app` plus a metadata-only
+`aoa_operator` role for null-Organization platform authority. E1's frozen v1 protocol is
+consumed unchanged; device possession travels in versioned HTTP headers. Server-owned
+placement intersects the registered target profile with
 the worker's dynamic report before job details are released. A lease claim and its fence
 are committed atomically, and one shared fence guard authorizes every later governed
 mutation. Legacy task assignment, approvals, runtime decisions, budgets, cost, activity,
@@ -60,12 +65,14 @@ contract and does not duplicate its SQL.
 
 Planning findings are retained in [`findings.md`](findings.md). E3-F001/E3-F002 cover the
 serving/operator-role gaps, E3-F003 records checkout shorthand drift, E3-F004 records the E1
-frozen-consumer checker conflict, and E3-F005 records the unresolved device-proof and
+frozen-consumer checker conflict, and E3-F005 records the approved device-proof and
 worker-target binding contract. E3-F006 through E3-F008 record plan defects corrected by
-this revision. E3-F001, E3-F004, and E3-F005 require approved predecessor/contract choices;
-E3 may not improvise them during implementation.
+this revision. The operator selected bounded-grant E2 option B, approved the E1 checker-only
+correction, and approved E3-F005's HTTP-header proof/composite binding on 2026-08-10.
+E3-F001/E3-F002 and E3-F004 remain execution blockers until their corrective gates and
+superseding handoffs pass; E3 may not improvise beyond the approved contracts.
 
-### STOP — locked E2-D03 is not the as-built flag-on serving path
+### APPROVED CORRECTION REQUIRED — locked E2-D03 is not the as-built serving path
 
 Locked E2-D03 (`docs/replatform/epics/E2-tenant-kernel/decisions.md`) requires one
 non-owner application role for all serving queries, full DML grants on legacy tables, a
@@ -79,17 +86,19 @@ dormant-but-tested. At the branch tip, however:
   says it does not open the serving pool; and
 - no flag-on whole-app switch replaces the owner `db` passed to `createApp`.
 
-The candidate per-ticket grants and split `aoa_operator` pool later in this draft are **not
-authorized decisions**. They remain visible only so the operator can evaluate the reviewed
-alternative; no implementer may execute them. Resolution requires one of:
+The operator selected option B on 2026-08-10. The alternatives remain recorded for review
+provenance, but only B plus the metadata-only operator role is authorized:
 
 1. **A — Correct E2 to its locked contract (review recommendation):** implement the full
    flag-on non-owner serving cutover and legacy grants, reconcile the already-described
    null-Org operator policy, rerun E2's security/integration gate, and commit a superseding
    E2 completion handoff before E3 assignment.
-2. **B — Approve a bounded-grant successor to E2-D03:** permit only the traced parity-table
-   grants on `aoa_app`, retain application-layer Company isolation for CAV-005, update the
-   locked decision and E2 evidence, then run a corrective E2 gate and superseding handoff.
+2. **B — SELECTED: bounded-grant successor to E2-D03:** permit only the traced parity-table
+   grants on `aoa_app`, retain application-layer Company isolation for CAV-005, and add a
+   distinct NOSUPERUSER/NOBYPASSRLS metadata-only `aoa_operator` role for null-Organization
+   platform target/enrollment/proof/revocation authority. `aoa_operator` receives no access
+   to jobs, attempts, leases, events, artifacts, or secrets. Update the locked decision and
+   E2 evidence, then run a corrective E2 gate and superseding handoff.
 3. **C — Approve a split-role successor to E2-D03:** use a distinct non-owner `aoa_bridge`
    role/pool for legacy parity bridges while `aoa_app` remains RLS-only for new-path tables;
    update the locked decision and E2 evidence, then run a corrective E2 gate and superseding
@@ -101,10 +110,9 @@ If none is acceptable, pause for a dedicated planning-only E2 security/migration
 No option may use an owner-pool bridge or split one parity projection across owner/new-path
 transactions; either would violate the serving-role contract and JOB-013 atomicity.
 
-Until the operator chooses and the committed prerequisite evidence exists, this plan's
-role/grant sections are conditional and **all E3 implementation is blocked**.
+Until the committed corrective evidence exists, **all E3 ticket implementation is blocked**.
 
-### STOP — E1's frozen-consumer gate pins a mutable whole-repository lockfile
+### APPROVED CORRECTION REQUIRED — E1's frozen-consumer gate pins a mutable lockfile
 
 The frozen v1 bundle and schema are valid and remain immutable. The problem is the as-built
 verification seam: `scripts/check-frozen-worker-protocol-consumer.mjs` hashes the current
@@ -114,8 +122,9 @@ lockfile under AGENTS §7, so a legitimate consumer declaration necessarily chan
 and fails `pnpm check:frozen-worker-protocol-v1`. The checker also hashes working-tree bytes,
 which produces a separate CRLF false failure on Windows even when the Git blob is unchanged.
 
-The recommended correction is owned by the E1 Protocol/Schema Custodian: keep the frozen
-fixture byte-identical, but make its dependency proof compare the recorded source-SHA Git
+The operator approved this checker-only correction on 2026-08-10; it remains owned by the E1
+Protocol/Schema Custodian. Keep the frozen fixture byte-identical, but make its dependency
+proof compare the recorded source-SHA Git
 blobs and protocol-relevant dependency snapshot—including recorded Zod/esbuild versions—
 rather than the mutable current repository lockfile/package or currently installed versions.
 The check fails clearly if the recorded source commit is unavailable, retains the mutation
@@ -128,7 +137,7 @@ JOB-001 cannot be assigned until the corrected check passes at its assignment re
 
 | Boundary | Tickets | Assignment rule |
 |---|---|---|
-| **Pre-D1, planned but blocked** | JOB-001, JOB-002, JOB-009, JOB-003, JOB-010 | Requires E3-F001/E3-F002 reconciliation, E3-F004's corrected E1 check, and approval of E3-F005's device/binding contract. Then respect ticket dependencies; JOB-010 may start after JOB-001. |
+| **Pre-D1, approved but blocked on corrections** | JOB-001, JOB-002, JOB-009, JOB-003, JOB-010 | Requires committed passing E3-F001/E3-F002 reconciliation and E3-F004 correction handoffs. E3-F005's device/binding contract is approved for JOB-002 implementation. Then respect ticket dependencies; JOB-010 may start after JOB-001. |
 | **Post-D1, blocked** | JOB-004–JOB-008, JOB-011–JOB-014 | Do not assign until a committed `E6-D1-FOUNDATION` QA record **and passing handoff** cover E6F-00–E6F-08 on one revision. |
 | **E3 exit gate, blocked** | all JOB-001–JOB-014 evidence | Requires every ticket complete and the post-D1 closure. A Windows-local run is not a substitute for the formal Linux lane. |
 
@@ -1622,13 +1631,9 @@ split at the named `E6-D1-FOUNDATION` partial gate.
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | Not run; E3 operator UI follows existing patterns. |
 | DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | Not run. |
 
-**VERDICT:** ACCEPT AS BLOCKED PLAN — independently review-complete for operator read-back;
-E2 serving/operator correction, E1 frozen-check correction, and JOB-002 security/binding
-approval remain mandatory before any E3 ticket is assignable.
+**VERDICT:** APPROVED, BLOCKED ON PREDECESSOR CORRECTIONS — independently review-complete;
+the operator selected E2 option B plus the metadata-only operator role, approved the E1
+checker-only correction, and approved JOB-002's HTTP-header proof/composite binding. No E3
+ticket is assignable until the E2 and E1 corrective gates commit passing handoffs.
 
-**UNRESOLVED DECISIONS:**
-- Choose E2-D03 correction/amendment path A, B, or C, ratify E3-F002's null-Org operator
-  policy in the same predecessor correction, and commit a corrective E2 gate/handoff.
-- Approve the E1 custodian correction that preserves frozen fixture bytes while making the
-  consumer check compatible with later repository lockfile changes.
-- Choose JOB-002's proposed header proof and target binding, or order a versioned E1 change.
+NO UNRESOLVED DECISIONS
