@@ -1,6 +1,6 @@
 # TEN-001a Result — New-path tenant schema (jobs/job_attempts/leases) + repository boundary
 
-**Status:** `gate_review`
+**Status:** `complete`
 **Date (UTC):** `2026-08-09`
 **Epic:** `E2-tenant-kernel`
 **Plan task:** `TEN-001 — New-path tenant schema and repository boundary (TEN-001a default split, E2-D06)`
@@ -162,10 +162,72 @@ ancestor); (c) confirm the 66 server errors are pre-existing on a clean baseline
 
 ## Independent review
 
-**Reviewer:** `pending until first independent review, then agent or human identity; must differ from implementer`
-**Reviewed revision:** `pending until first independent review, then 40-character git SHA`
-**Disposition:** `pending`
-**Review evidence:** `pending until first independent review, then review record, exact commands/exit codes, or finding links`
+**Reviewer:** `TEN-001a independent reviewer subagent (Claude) — distinct from the implementer (claude-opus implementer subagent)`
+**Reviewed revision:** `b5a9e8178c4bcc3fb0c72b564a858b06fad1ddc0`
+**Disposition:** `approved`
+**Review evidence:**
+
+Reviewed at HEAD `b5a9e8178c4bcc3fb0c72b564a858b06fad1ddc0` (working tree clean —
+`git status --porcelain` empty). The TEN-001a code is byte-identical to the impl
+commit `34c26e21`; HEAD adds only E2 plan/findings docs (verified: `git show
+--stat b5a9e8178` = `findings.md` + `implementation-plan.md` only). Start SHA
+`243cc6cd2530a546b8aef8e318666b9e98669734` re-verified as a valid bare 40-hex
+ancestor of HEAD (`git merge-base --is-ancestor` → true).
+
+Focused acceptance re-run on the reviewed revision (Git Bash, `C:\e2`):
+
+| Command | Exit | Result |
+|---|---:|---|
+| `pnpm --filter @armyofagents/db typecheck` | `0` | clean (`tsc --noEmit`). |
+| `pnpm --filter @armyofagents/db build` | `0` | clean (`tsc && cp -r src/migrations`). |
+| `pnpm exec vitest run src/__tests__/tenant-repository-surface.test.ts` | `0` | 2 passed. |
+| `AOA_RUN_WIN_INTEGRATION=1 pnpm exec vitest run …/tenant-kernel-schema.integration.test.ts` | `0` | 4 passed (embedded-PG boots; full chain incl. 0207 applies). |
+| `pnpm exec vitest run …/tenant-kernel-schema.integration.test.ts` (no flag) | `0` | 4 **skipped** (env-hatch fails-closed; not silently green-but-run). |
+| `pnpm --filter @armyofagents/server typecheck 2>&1 \| grep -iE "jobs\|attempt\|lease\|tenant\|repositories"` | — | `none` (E2-F009 plugin-sdk baseline unrelated to TEN-001a). |
+
+Verification (file:line evidence):
+- **Schema scope.** `jobs.ts`/`job_attempts.ts`/`leases.ts` mirror `goals.ts` house
+  style (`text`+`check`, no `pgEnum`, `.js` imports, inline org FK). `organization_id`
+  is `uuid NOT NULL` with **no `.default()`** on all three (`jobs.ts:16-18`,
+  `job_attempts.ts:16-18`, `leases.ts:16-18`); the only `.default()` calls are on
+  `status`/`attempt_number` (grep-confirmed). `company_id` NOT NULL on `jobs`
+  (`jobs.ts:19-21`). FKs: org `restrict`, company `restrict`, `job_id` `cascade`,
+  `attempt_id` `cascade`. Status checks match the specified sets — jobs 7 states,
+  job_attempts 9, leases 5. **NO composite FK and NO `leases` partial-unique** present
+  (correctly DEFERRED to TEN-004; the `leases.ts:11` `uniqueIndex` token is a comment).
+- **Migration `0207_tenant_kernel_jobs.sql`.** Pure `drizzle-kit generate` output plus
+  ONLY the sanctioned C14 `IF NOT EXISTS` guard on the 3 CREATE TABLE + 6 CREATE INDEX
+  (`:6,:17,:27,:45-50`); FK `ADD CONSTRAINT` + inline `CHECK` left plain (0206
+  convention). No RLS/role/GRANT/policy/backfill (grep clean — the sole "force" hit is
+  the substring in "enforced"). Integration test asserts `is_nullable='NO'` **AND**
+  `column_default IS NULL` (`:156-157,:164-165,:172-173`). `_journal.json` idx 207 =
+  `0207_tenant_kernel_jobs` (contiguous after 0206); `0207_snapshot.json` carries
+  `public.jobs`/`public.job_attempts`/`public.leases` each with `organization_id`
+  `notNull:true` and no `default` key.
+- **Repository boundary.** `repositories/tenant/index.ts` exports exactly
+  `{ tenantRepositories }` (a factory) + erased TS types; every accessor runs only
+  through the passed `tx` (`:52-98`); no standalone unscoped/raw cross-tenant reader.
+  Surface test asserts the exact key set `Object.keys(module).sort() ===
+  ["tenantRepositories"]` (`:22`), not a weaker check.
+- **Tests honest.** Integration boots embedded-PG in `beforeAll` with
+  `initdbFlags:["--encoding=UTF8","--locale=C"]`, captures `setupError`, re-throws in
+  the first `it` (fail-closed; `:93-122,:146`); gated by
+  `describe.skipIf(process.platform === "win32" && …!== "1")` (`:142`) — the sanctioned
+  form, not the banned `X ? describe : describe.skip` ternary (negative control in
+  `server/src/__tests__/integration-test-hygiene.test.ts:53`). GREEN counts match the
+  ledger (2/2, 4/4). RED evidence (module-missing for surface; tables-absent for
+  integration) is a genuine feature-missing failure consistent with test design.
+- **Rule #1 / CAV-005.** Impl commit `34c26e21` touched exactly 11 files; no legacy
+  table, `assertCompanyAccess`, `rls-bootstrap.ts`, or `with-tenant-tx.ts` touched; no
+  manifest/`pnpm-lock.yaml` change (no new runtime dependency).
+- **Flagged items acceptable.** (a) C14 `IF NOT EXISTS` guard — sanctioned, enforced by
+  `migration-idempotency.test.ts` (checks only CREATE TABLE/INDEX, so plain FK
+  `ADD CONSTRAINT` is correct). (b) `db:generate -- --name=` quirk — cosmetic; output
+  identical (Rule #1 satisfied). (c) plugin-sdk-absent server typecheck failure — E2-F009
+  DEC-03 baseline; zero errors reference TEN-001a artifacts (grep → `none`).
+
+No new findings. No scope errors. All focused acceptance passes on the reviewed
+revision.
 
 For `approved`, verify the result describes the reviewed revision, all focused acceptance evidence passes, and every accepted finding is resolved; then change the top-level `Status` to `complete` and commit this disposition separately. Otherwise leave `Status` as `gate_review` or set `blocked`, and link stable findings.
 
@@ -174,3 +236,4 @@ For `approved`, verify the result describes the reviewed revision, all focused a
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
 <!-- First independent reviewer appends attempt 1. -->
+| 1 | TEN-001a independent reviewer subagent (Claude) | `b5a9e8178c4bcc3fb0c72b564a858b06fad1ddc0` | `approved` | Focused acceptance re-run GREEN (db typecheck 0, build 0, surface 2/2, integration 4/4 with flag, 4 skipped without flag); schema/migration/repo-boundary/tests verified with file:line evidence; no composite FK / no partial-unique (correctly deferred to TEN-004); no forbidden files touched; server typecheck refs to TEN-001a = none (E2-F009 baseline). No new findings. |
