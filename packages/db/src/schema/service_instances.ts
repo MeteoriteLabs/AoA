@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, integer, timestamp, index, check } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, integer, timestamp, index, check, foreignKey } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { organizations } from "./organizations.js";
 import { services } from "./services.js";
@@ -32,6 +32,15 @@ export const serviceInstances = pgTable(
       "service_instances_status_check",
       sql`status IN ('pending', 'healthy', 'stopped', 'lost', 'interrupted')`,
     ),
+    // TEN-004: composite org-scoped FK — an instance's (organization_id,
+    // service_id) must exist together in services(organization_id, id), so an
+    // instance cannot be stamped with a different tenant than its service.
+    // Redundant single-column FKs kept (harmless).
+    orgServiceFk: foreignKey({
+      columns: [table.organizationId, table.serviceId],
+      foreignColumns: [services.organizationId, services.id],
+      name: "service_instances_org_service_fk",
+    }),
   }),
 );
 

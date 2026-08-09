@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, integer, timestamp, index, check } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, integer, timestamp, index, check, unique, foreignKey } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { organizations } from "./organizations.js";
 import { companies } from "./companies.js";
@@ -35,6 +35,18 @@ export const services = pgTable(
       "services_desired_state_check",
       sql`desired_state IN ('running', 'stopped', 'deleted')`,
     ),
+    // TEN-004: FK-target composite unique so `service_instances` can bind
+    // (organization_id, service_id) → services(organization_id, id).
+    orgIdUq: unique("services_org_id_uq").on(table.organizationId, table.id),
+    // TEN-004: composite org-scoped FK — a service's (organization_id,
+    // company_id) must exist together in companies(organization_id, id), so a
+    // service cannot pair org A with a company owned by org B. Redundant
+    // single-column FKs kept (harmless).
+    orgCompanyFk: foreignKey({
+      columns: [table.organizationId, table.companyId],
+      foreignColumns: [companies.organizationId, companies.id],
+      name: "services_org_company_fk",
+    }),
   }),
 );
 

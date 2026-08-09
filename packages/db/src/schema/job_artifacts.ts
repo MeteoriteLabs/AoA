@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, index } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, index, foreignKey } from "drizzle-orm/pg-core";
 import { organizations } from "./organizations.js";
 import { jobs } from "./jobs.js";
 
@@ -27,6 +27,15 @@ export const jobArtifacts = pgTable(
   (table) => ({
     organizationIdx: index("job_artifacts_organization_idx").on(table.organizationId),
     jobIdx: index("job_artifacts_job_idx").on(table.jobId),
+    // TEN-004: composite org-scoped FK — an artifact's (organization_id, job_id)
+    // must exist together in jobs(organization_id, id), so an artifact cannot be
+    // owned by a different tenant than its job. Redundant single-column FKs kept
+    // (harmless).
+    orgJobFk: foreignKey({
+      columns: [table.organizationId, table.jobId],
+      foreignColumns: [jobs.organizationId, jobs.id],
+      name: "job_artifacts_org_job_fk",
+    }),
   }),
 );
 

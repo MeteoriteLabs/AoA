@@ -1464,6 +1464,13 @@
       "when": 1786275474063,
       "tag": "0208_tenant_kernel_services",
       "breakpoints": true
+    },
+    {
+      "idx": 209,
+      "version": "7",
+      "when": 1786276838702,
+      "tag": "0209_tenant_composite_integrity",
+      "breakpoints": true
     }
   ]
 }

@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, integer, timestamp, boolean, uniqueIndex, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, integer, timestamp, boolean, uniqueIndex, unique, jsonb } from "drizzle-orm/pg-core";
 import { organizations } from "./organizations.js";
 
 export const companies = pgTable(
@@ -79,5 +79,12 @@ export const companies = pgTable(
       table.organizationId,
       table.creationRequestId,
     ),
+    // TEN-004 (CAV-005-safe, ADDITIVE ONLY): FK-target composite unique on
+    // (organization_id, id) so the new-path `jobs`/`services` composite
+    // (organization_id, company_id) FKs can bind to companies and prove a
+    // company shares the referencing row's tenant. This is a plain additive
+    // unique — NO RLS, NO other companies column/behavior touched. `id` is the
+    // PK so the pair is trivially unique; this exists solely to be an FK target.
+    organizationIdUq: unique("companies_org_id_uq").on(table.organizationId, table.id),
   }),
 );

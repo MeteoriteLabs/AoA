@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, index, check } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, index, check, unique } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { organizations } from "./organizations.js";
 
@@ -44,6 +44,12 @@ export const workers = pgTable(
       "workers_scope_org_check",
       sql`(scope = 'platform' AND organization_id IS NULL) OR (scope IN ('organization', 'owner') AND organization_id IS NOT NULL)`,
     ),
+    // TEN-004: FK-target composite unique so future org-owned children (JOB-002,
+    // E3) can bind (organization_id, id). organization_id is nullable here
+    // (platform rows), but `id` is the PK so the pair is unique regardless; NULLs
+    // are distinct under the default UNIQUE semantics, so multiple platform
+    // (null-org) workers coexist freely.
+    orgIdUq: unique("workers_org_id_uq").on(table.organizationId, table.id),
   }),
 );
 

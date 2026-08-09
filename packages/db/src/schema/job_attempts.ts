@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, integer, timestamp, index, check } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, integer, timestamp, index, check, unique, foreignKey } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { organizations } from "./organizations.js";
 import { jobs } from "./jobs.js";
@@ -31,6 +31,18 @@ export const jobAttempts = pgTable(
       "job_attempts_status_check",
       sql`status IN ('pending', 'offered', 'leased', 'running', 'cancel_requested', 'succeeded', 'failed', 'cancelled', 'expired')`,
     ),
+    // TEN-004: FK-target composite unique so `leases` can bind (organization_id,
+    // attempt_id) → job_attempts(organization_id, id).
+    orgIdUq: unique("job_attempts_org_id_uq").on(table.organizationId, table.id),
+    // TEN-004: composite org-scoped FK — an attempt's (organization_id, job_id)
+    // must exist together in jobs(organization_id, id), so an attempt cannot be
+    // stamped with a different tenant than its job. Redundant single-column FKs
+    // kept (harmless).
+    orgJobFk: foreignKey({
+      columns: [table.organizationId, table.jobId],
+      foreignColumns: [jobs.organizationId, jobs.id],
+      name: "job_attempts_org_job_fk",
+    }),
   }),
 );
 

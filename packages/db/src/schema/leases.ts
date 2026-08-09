@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, index, check } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, index, check, uniqueIndex, foreignKey } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { organizations } from "./organizations.js";
 import { jobAttempts } from "./job_attempts.js";
@@ -32,6 +32,22 @@ export const leases = pgTable(
       "leases_status_check",
       sql`status IN ('offered', 'active', 'released', 'expired', 'revoked')`,
     ),
+    // TEN-004: composite org-scoped FK — a lease's (organization_id, attempt_id)
+    // must exist together in job_attempts(organization_id, id), so a lease cannot
+    // be stamped with a different tenant than its attempt. Redundant
+    // single-column FKs kept (harmless).
+    orgAttemptFk: foreignKey({
+      columns: [table.organizationId, table.attemptId],
+      foreignColumns: [jobAttempts.organizationId, jobAttempts.id],
+      name: "leases_org_attempt_fk",
+    }),
+    // TEN-004: "at most one LIVE lease per attempt". A PARTIAL UNIQUE INDEX
+    // (Postgres has no partial unique CONSTRAINT; `unique()` cannot express
+    // `where`) covering only leases still in a live state — a released/expired/
+    // revoked lease leaves the index so the attempt can be re-leased.
+    activePerAttempt: uniqueIndex("leases_active_per_attempt_idx")
+      .on(table.attemptId)
+      .where(sql`status in ('offered', 'active')`),
   }),
 );
 

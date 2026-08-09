@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, index, check } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, index, check, unique, foreignKey } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { organizations } from "./organizations.js";
 import { companies } from "./companies.js";
@@ -33,6 +33,20 @@ export const jobs = pgTable(
       "jobs_status_check",
       sql`status IN ('queued', 'running', 'cancel_requested', 'succeeded', 'failed', 'cancelled', 'dead_letter')`,
     ),
+    // TEN-004: FK-target composite unique. A PK on `id` alone cannot be the
+    // target of a composite (organization_id, id) FK — children (job_attempts,
+    // job_artifacts, job_secret_handles) reference EXACTLY this column set to
+    // prove they share the job's tenant.
+    orgIdUq: unique("jobs_org_id_uq").on(table.organizationId, table.id),
+    // TEN-004: composite org-scoped FK — a job's (organization_id, company_id)
+    // must exist together in companies(organization_id, id). Direct SQL cannot
+    // pair org A with a company owned by org B even though both single-column
+    // FKs individually resolve. Redundant single-column FKs kept (harmless).
+    orgCompanyFk: foreignKey({
+      columns: [table.organizationId, table.companyId],
+      foreignColumns: [companies.organizationId, companies.id],
+      name: "jobs_org_company_fk",
+    }),
   }),
 );
 
