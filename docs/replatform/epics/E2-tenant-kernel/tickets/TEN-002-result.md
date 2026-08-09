@@ -1,6 +1,6 @@
 # TEN-002 Result — Non-owner database role and forced RLS harness
 
-**Status:** `gate_review`
+**Status:** `complete`
 **Date (UTC):** `2026-08-09`
 **Epic:** `E2-tenant-kernel`
 **Plan task:** `TEN-002 — Non-owner database role and forced RLS harness (M)`
@@ -212,15 +212,53 @@ gate (E2-D05/E2-F008 — Windows-local evidence here).
 
 ## Independent review
 
-**Reviewer:** `pending`
-**Reviewed revision:** `pending`
-**Disposition:** `pending`
-**Review evidence:** `pending`
+**Reviewer:** `claude-opus (independent reviewer subagent)` — distinct from the implementer (`claude-opus (implementer subagent)`).
+**Reviewed revision:** `0b22d3934396c6c2bb6f3844800696c0fc38f233` (branch HEAD; TEN-002 code from `94da4cda6` is unchanged at HEAD — `0b22d3934` adds only the orthogonal E2-F011 companies-schema source-assert fix).
+**Disposition:** `approved`
 
-For `approved`, verify the result describes the reviewed revision, all focused
-acceptance evidence passes, and every accepted finding is resolved; then change the
-top-level `Status` to `complete` and commit this disposition separately. Otherwise
-leave `Status` as `gate_review` or set `blocked`, and link stable findings.
+**Review evidence (re-run from C:\e2, Git Bash):**
+
+| Check | Command | Exit | Result |
+|---|---|---:|---|
+| db typecheck | `pnpm --filter @armyofagents/db typecheck` | `0` | clean |
+| db build | `pnpm --filter @armyofagents/db build` | `0` | `tsc && cp -r src/migrations dist/migrations` (incl. 0211) |
+| builder ≡ migration | `tsx` compare `buildTenantRlsMigrationSql()` vs committed `0211` body | `0` | **byte-identical** (5665 chars) — no drift possible |
+| snapshot delta-free | JSON compare `0211_snapshot.json` vs `0210` (ignoring id/prevId) | `0` | schema-identical; `0211.prevId === 0210.id` (chain intact) |
+| journal | `_journal.json` idx 211 = `0211_tenant_rls_enforcement` | — | contiguous after 210, file-aligned |
+| unit | `vitest run tenant-rls-enforcement-unit.test.ts` | `0` | **15 passed** |
+| config default-off | `vitest run config.test.ts` (asserts `distributedExecutionEnabled` false→true) | `0` | **15 passed** |
+| rls-canary-unit | `vitest run rls-canary-unit.test.ts` | `0` | **4 passed** (34 server-unit total with the two above) |
+| migration-idempotency | `cd packages/db && vitest run migration-idempotency.test.ts` | `0` | **5 passed** (0211 does not trip the CREATE-without-IF-NOT-EXISTS scan) |
+| **H-01 integration (flag)** | `AOA_RUN_WIN_INTEGRATION=1 vitest run tenant-rls-enforcement.integration.test.ts` | `0` | **10 passed** (a, a2, b, c, d, e, f, g, h, i) |
+| integration (no flag) | `vitest run tenant-rls-enforcement.integration.test.ts` | `0` | **10 skipped** (`describe.skipIf`, not the banned ternary) |
+| db tenant chain (flag) | `AOA_RUN_WIN_INTEGRATION=1 vitest run tenant-kernel-schema{,-b} + tenant-composite-integrity` | `0` | **20 passed** — 0211 in the chain does not regress TEN-001a/b/TEN-004 |
+| rls-canary integration | `AOA_RUN_WIN_INTEGRATION=1 vitest run rls-canary.integration.test.ts` | `0` | **1 skipped** on Windows (`skipIf(process.platform !== "linux")`; Linux-CI-only — cleanly skipped, no error/regression) |
+| E2-F009 baseline | `pnpm --filter @armyofagents/server typecheck` | `2` | 66 errors, **all** `@armyofagents/plugin-sdk`; grep for `rls-tenant`/`client.ts`/`tenant-rls`/`createTenantAppDb`/`assertNonOwnerConnection` → **none**. Subset-of-baseline. |
+| F-1 (ledger) resolved | `cd packages/db && vitest run companies-org-scope-schema.test.ts` | `0` | **2 passed** — the pre-existing TEN-006b failure the ledger flagged is FIXED at HEAD by E2-F011 (`0b22d3934`); no longer an E2-gate risk. |
+
+**Observed real Postgres SQLSTATEs (embedded-PG server log, captured live during the integration run):**
+- `(e)` cross-tenant INSERT (GUC=ORG_A, row=ORG_B): server log `ERROR: new row violates row-level security policy for table "jobs"` on `INSERT INTO jobs (organization_id, company_id) VALUES ($1,$2)` — genuine **42501** WITH CHECK denial (the `(ORG_B, CO_B)` composite is a valid FK, so RLS — not FK 23503 / typo 42703 — is the rejecter). Test pins `sqlstate(err) === "42501"`.
+- `(g)` INSERT platform worker: `ERROR: new row violates row-level security policy for table "workers"` (the `workers_scope_org_check` CHECK is satisfied — platform ⇒ NULL org — so the reject is the RLS WITH CHECK, **42501**, not the check constraint).
+- `(g)` UPDATE owned row to null-Org: `ERROR: new row violates row-level security policy for table "workers"` on `UPDATE workers SET organization_id = NULL … WHERE id = $1` — USING admits the ORG_A row, WITH CHECK on the new (NULL) row rejects (**42501**).
+- The `(a2)` idempotency re-run emits benign `NOTICE: policy "…" does not exist, skipping` (from `DROP POLICY IF EXISTS`) — confirms idempotent re-apply.
+
+**Adversarial fail-open probes (H-01) and outcomes — no vector found:**
+1. **Unset GUC** → `current_setting('aoa.organization_id', true)` returns NULL (missing_ok) → `organization_id = NULL` ⇒ NULL ⇒ row excluded ⇒ **0 rows** on all 8 tables (proved by (b), (h)). Fail-CLOSED default, not all-rows, not an error.
+2. **Empty-string GUC** → the sole GUC writer `with-tenant-tx.ts` binds the org as a query **parameter** (never interpolated) and is not called by any serving pool at E2; a pathological `''` would make `''::uuid` throw 22P02 (fail-CLOSED), never leak. No code path in TEN-002 scope sets an empty string. Not a vector.
+3. **Cross-tenant INSERT / UPDATE-to-NULL** → WITH CHECK 42501 (server-log-confirmed above).
+4. **Cross-tenant UPDATE ORG_A→ORG_B** (not separately asserted): identical WITH CHECK predicate as (e)/(g) — new row org=ORG_B ≠ GUC ORG_A ⇒ 42501. Mechanism proven; not a fail-open gap.
+5. **Cross-tenant DELETE** (not separately asserted): governed by the same USING clause proved to filter SELECT to only GUC-matching rows (b/c/d/h) ⇒ 0 rows affected, no cross-tenant mutation. Not a fail-open gap.
+6. **Policy `FOR` clause** → the policy has **no `FOR`** (verified in `0211` lines 26-28 etc.), so it governs ALL of SELECT/INSERT/UPDATE/DELETE (USING gates read/update/delete, WITH CHECK gates insert/updated-row). No command left ungoverned.
+7. **Null-Org platform rows** unreachable by any tenant GUC (ORG_A/ORG_B/ORG_NONE) → 0 both by aggregate and by-id; superuser confirms the row exists (h). E2-D04 operator-read correctly deferred to E3 (no operator role at E2).
+8. **Fail-closed pool (E2-F007):** `createTenantAppDb("")/("  ")/(undefined)/(null)` all THROW before connecting and never fall back to `createDb` (unit-proven + code `client.ts:71-80`); `createDb` is purely additive-diff unchanged. `assertNonOwnerConnection` throws `/privileged role/` for the superuser, resolves for `aoa_app` (i).
+
+**FORCE-proof verdict (E2-F004) — CORRECT.** The security guarantee is anchored on `aoa_app` being **non-owner + NOSUPERUSER + NOBYPASSRLS** (plain RLS filters it — b–e,g,h,i + the (i) `rolsuper=false, rolbypassrls=false` assertion), NOT on FORCE filtering a superuser. FORCE is proved two independent ways: (a) catalog `pg_class.relforcerowsecurity = true` (and `relrowsecurity`) on all 8, and (f) a purpose-built **non-superuser** owner (`aoa_owner_ns`, LOGIN, made OWNER of `jobs`) filtered to **0 rows** under FORCE with no GUC while the superuser sees 2 — the exact behavioral proof impossible against the embedded-PG superuser owner. The non-superuser-owner test was environmentally feasible (no fallback to catalog-only). Deviation 2 (operator-policy deferral to E3/JOB-002 per E2-D04) is honestly documented and correct.
+
+**Scope / Rule #1 / CAV-005 (#122):** the RLS/role/GRANT/FORCE/POLICY DDL is confined to the delta-free `--custom` `0211` (E2-D01/#122-sanctioned; snapshot proved schema-identical to 0210). Role/table names validated via `assertSafeRoleName` + a local identifier predicate before interpolation (roles cannot be query-bound); unit tests prove injection strings throw. No legacy-table RLS, and `with-tenant-tx.ts` / `rls-bootstrap.ts` / `assertCompanyAccess` are **untouched** by `94da4cda6` (verified via `git show --stat`). `TENANT_RLS_TABLES` is frozen to the 8 new-path tables. No committed credential (`grep` of migrations + `buildTenantRlsMigrationSql()` = no `LOGIN PASSWORD`; the only login SQL is the runtime `provisionTenantAppRoleLoginSql`, escaped, boot-only from `AOA_APP_DB_PASSWORD`). Flag-gating (E2-D03): `maybeProvisionTenantAppRole` is a strict no-op unless `distributedExecutionEnabled` (default false) AND the password env is set; it runs after migrations under the privileged connection and opens no serving pool (that is TEN-003).
+
+**Owed at the E2 gate (not a TEN-002 defect):** a real Linux run for the H-01 integration test (E2-D05/E2-F008) — evidence here is Windows-local via the `AOA_RUN_WIN_INTEGRATION` env-hatch (the sanctioned E2 pattern), plus the Windows-visible unit sibling.
+
+**Disposition rationale:** all focused acceptance passes on real embedded-Postgres; FORCE is correctly proven (catalog + non-superuser-owner behavioral); the non-owner serving pool fails CLOSED; no fail-open read/write/existence vector was found under adversarial probing; the migration is delta-free + idempotent and mirrors the unit-tested builder byte-for-byte; no Rule #1 / CAV-005 / scope violation; the boot hook is dormant-by-default. `Status` set to `complete`; this disposition committed separately.
 
 ## Review attempt history
 
@@ -233,3 +271,4 @@ commit that first contains it.
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
 <!-- First independent reviewer appends attempt 1. -->
+| 1 | claude-opus (independent reviewer subagent) | `0b22d3934` | `approved` | Re-ran full acceptance on embedded-PG: unit 15 + config 15 + rls-canary-unit 4; migration-idempotency 5; **H-01 integration 10 passed** (flag) / 10 skipped (no flag); db tenant chain 20 passed (no 0211 regression). Builder ≡ committed `0211` byte-for-byte (5665 chars); `0211` snapshot delta-free vs `0210` (prevId chains). PG server log confirmed genuine **42501** WITH CHECK denials on (e)/(g). FORCE proven by catalog (a) + non-superuser-owner behavioral (f) — anchored on `aoa_app` non-owner+NOSUPERUSER+NOBYPASSRLS. Fail-closed pool (E2-F007) + `assertNonOwnerConnection` (i) verified. Adversarial probes (unset/empty GUC, cross-tenant UPDATE/DELETE, null-Org rows, policy has no `FOR`) found **no fail-open vector**. CAV-005: `with-tenant-tx.ts`/`rls-bootstrap.ts`/`assertCompanyAccess` untouched; no committed secret; flag dormant-by-default (config default false). E2-F009 typecheck delta = subset of plugin-sdk baseline (0 TEN-002 refs). Ledger F-1 (TEN-006b companies-schema test) now resolved at HEAD by E2-F011. Owed: ≥1 real Linux H-01 run at the E2 gate (E2-D05/E2-F008). |
