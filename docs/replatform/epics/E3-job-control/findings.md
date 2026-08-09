@@ -180,3 +180,31 @@ authority and JOB-003 constructs E1 delivery from stored facts. Idempotency is p
 source scoped with principal kind+ID in the unique key. Required legacy mutations and receipt state remain atomic, while current live
 publications are explicitly best-effort invalidations; any correctness-critical delivery must
 name a durable outbox.
+
+## E3-F009 — External Claude review used the pre-plan shared-branch revision
+
+**Date:** 2026-08-10
+**Status:** `resolved_in_plan`
+**Severity:** P2 review provenance / ticket sizing
+**Affected ticket:** JOB-009; E3 plan review record
+
+**Finding:** The user-provided Claude review inspected
+`origin/docs/replatform-program` at `8e2faa590d4e97a2cbd250c55f4a2ed81a352a33`, where the
+E3 folder still contained only its README. Its statement that E3 had no implementation plan
+was therefore true for that shared revision but did not assess the local plan added by
+`5b57511e5` and hardened by `173b89685`. The review's ordering, E2 RLS/composite-FK/C14,
+and gate-evidence concerns were already closed in the local plan. Every ticket named
+rollback, but JOB-012 through JOB-014 lacked explicit disablement behavior for accepted
+events whose cost/audit/output projection receipt was still pending. Its observation that
+canonical JOB-009 could hide more than three agent-days of work was also actionable.
+
+**Disposition:** Keep JOB-009 as the locked canonical ticket, but divide its execution into
+three explicit internal TDD/commit slices of no more than one agent-day: authority/schema
+normalization, pure deterministic placement policy, and transactional persistence/concurrency.
+Each slice records RED/GREEN evidence; a single distinct reviewer certifies the combined
+ticket revision. For JOB-012 through JOB-014, flag-off first blocks new distributed
+admission/leasing, then permits every already accepted projection to reach a terminal receipt;
+the rollback gate refuses bridge disablement while a receipt is pending. Do not adopt the
+proposed five-ticket-only plan or E6-first reordering: the operator and canonical program
+design require all fourteen E3 tickets to be planned now, while execution stops at the named
+`E6-D1-FOUNDATION` boundary.

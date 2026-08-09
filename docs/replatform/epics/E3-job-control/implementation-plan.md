@@ -873,6 +873,15 @@ deterministic replay. Run suite with 20 deterministic seeds locally (D1 later ow
 then db/shared/server typecheck+build. Evidence `tickets/JOB-009-result.md`; commit
 `feat(job-control): persist authoritative placement`. Maps D0-T01/T05, H-01/H-03/H-04.
 
+**Internal TDD/commit slices (one canonical ticket, one final reviewer):** A—normalize the
+target-authority schema/registry inputs and characterize the existing resolver, including
+composite binding and cross-tenant denial; B—implement the pure deterministic placement
+policy and seeded property matrix with no DB or lease side effects; C—persist the immutable
+decision transactionally and prove concurrency, generation, capacity, shadow, and flag-off
+behavior. Budget each slice at no more than one agent-day. Each slice records its own
+RED/GREEN evidence, but JOB-009 remains `backlog` until one distinct reviewer reruns the
+combined acceptance matrix on the reviewed revision and alone marks the ticket `complete`.
+
 ### JOB-003 — Lease and ACK compatible jobs atomically (M, ≤3 agent-days, PRE-D1)
 
 **Depends on:** JOB-001, JOB-009, PRT-007.
@@ -1225,9 +1234,12 @@ releases reservation/capacity exactly once even under race. Rollback preserves c
 hard-stop and cannot erase charged events.
 
 **Compatibility/rollback:** additive fields/scopes in existing engines, no parallel ledger.
-Legacy callers retain defaults. RED server pricing fixtures, duplicate usage, all scopes,
-warning/incident, concurrent exhaustion, retry attribution, release race, active rollback;
-GREEN existing cost/budget regression suites + focused embedded PG. Evidence
+Legacy callers retain defaults. Flag-off blocks new distributed admission/leasing, but an
+accepted usage event must reach a terminal projection receipt before its bridge may disable;
+the rollback gate fails closed while a cost receipt is pending, so disabling cannot erase or
+skip an authoritative charge. RED server pricing fixtures, duplicate usage, all scopes,
+warning/incident, concurrent exhaustion, retry attribution, pending-receipt flag-off, release
+race, active rollback; GREEN existing cost/budget regression suites + focused embedded PG. Evidence
 `tickets/JOB-012-result.md`; commit `feat(job-control): bridge budget and cost authority`.
 Maps D0-T01/T05, H-01/H-02/H-03/H-10, D1-01/D1-07 inputs.
 
@@ -1252,8 +1264,11 @@ action. Replay/stale/rejected events produce no duplicate/accepted activity; rol
 publishes nothing.
 
 **Compatibility/rollback:** existing activity contract remains source of truth; self-hosted
-callers unchanged. RED per-source accepted/rejected/stale, approval/budget, duplicate,
-rollback, publication-before-commit denial, tenant and actor attribution; GREEN. Evidence
+callers unchanged. Flag-off blocks new distributed admission/leasing, while already accepted
+mutations finish their same-transaction activity insert and terminal receipt; the rollback
+gate refuses bridge disablement while a receipt is pending. RED per-source accepted/rejected/
+stale, approval/budget, duplicate, pending-receipt flag-off, rollback,
+publication-before-commit denial, tenant and actor attribution; GREEN. Evidence
 `tickets/JOB-013-result.md`; commit `feat(job-control): project transactional activity audit`.
 Maps D0-T01/T05, H-01/H-02/H-04/H-10.
 
@@ -1279,9 +1294,12 @@ change terminal state. Commander/crew/one-shot use their applicable output/summa
 without fabricated task IDs.
 
 **Compatibility/rollback:** existing task outputs/comments/status remain authoritative;
-receipt makes fallback safe. RED duplicate provider identity, review/primary, retry/stale
-winner/quarantine, six-source projections, every terminal, and rollback before/after accepted
-artifact; GREEN existing output/comment regressions + focused lane. Evidence
+receipt makes fallback safe. Flag-off blocks new distributed admission/leasing, while an
+accepted terminal/artifact event must finish or resume its idempotent projection before its
+bridge disables; the rollback gate fails closed on pending receipts. RED duplicate provider
+identity, review/primary, retry/stale winner/quarantine, six-source projections, every
+terminal, pending-receipt flag-off, and rollback before/after accepted artifact; GREEN
+existing output/comment regressions + focused lane. Evidence
 `tickets/JOB-014-result.md`; commit `feat(job-control): project outputs and run summaries`.
 Maps D0-T01/T02/T05, H-01/H-02/H-03/H-10, D1-06/D1-07 inputs.
 
@@ -1543,8 +1561,8 @@ is committed and independently reviewed; these tasks do not authorize implementa
   - Files: schema indexes, poll/reconciliation services, operator list routes, D1 load suites.
   - Verify: query-plan assertions at INITIAL volumes, ≤32 Org shards/750 ms poll, cursor default 50/max 200.
 - [ ] **T10 (P2, human: ~4h / agent: ~1h)** — ticket sizing — keep standard tickets within reviewable slices.
-  - Surfaced by: Code Quality — JOB-001/JOB-002 combined too many independent changes.
-  - Files: ticket result ledgers and commit sequences defined in JOB-001/JOB-002.
+  - Surfaced by: Code Quality / external Claude delta review — JOB-001/JOB-002/JOB-009 combine several independently testable changes.
+  - Files: ticket result ledgers and commit sequences defined in JOB-001/JOB-002/JOB-009.
   - Verify: each slice has RED/GREEN evidence; one distinct reviewer certifies the combined ticket revision.
 - [ ] **T11 (P1 STOP, human: ~1 day / agent: ~2h)** — E1 frozen check — decouple immutable fixture proof from the mutable repository lockfile.
   - Surfaced by: Architecture/Tests — JOB-001's required manifest+lock change otherwise fails the E1 frozen gate.
@@ -1580,14 +1598,27 @@ the E1 lockfile-pinning STOP and the submission trust-boundary correction. After
 amendments, that fresh reviewer re-ran every affected area and returned
 `ACCEPT AS BLOCKED PLAN` with no remaining P0/P1/P2 plan finding.
 
+The user-provided Claude review was then provenance-checked. It reviewed the shared branch at
+`8e2faa590d4e97a2cbd250c55f4a2ed81a352a33`, before either local planning commit, so its
+headline that no implementation plan existed was accurate for that remote revision but stale
+for this worktree. Its ordering, RLS/migration, and gate-evidence concerns were already
+explicit here. Every ticket named rollback, but delta checking found that JOB-012–014 still
+needed explicit pending-receipt flag-off semantics; those are now defined. Its JOB-009 sizing
+concern also remained useful; the canonical ticket now has three bounded internal TDD/commit
+slices without changing its locked outcome or number.
+The suggestion to plan only the startable five or build E6 first was not adopted because the
+operator and canonical program design require all of E3 to be planned now, with execution
+split at the named `E6-D1-FOUNDATION` partial gate.
+
 ## GSTACK REVIEW REPORT
 
 | Review | Trigger | Why | Runs | Status | Findings |
 |--------|---------|-----|------|--------|----------|
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | Not run; not required for this backend planning pass. |
 | Codex Review | `/codex review` | Independent 2nd opinion | 0 | — | Not run. |
-| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 3 | `ACCEPT AS BLOCKED PLAN` | Fresh reviewer verified every amendment and reported no remaining P0/P1/P2 beyond the named prerequisite/approval STOPs. |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 4 | `ACCEPT AS BLOCKED PLAN` | Current delta triage confirmed no new P0/P1; JOB-009 received one P2 sizing clarification. |
 | Claude Code | `claude -p` | User-requested outside-model review | 0 | `AUTH BLOCKED` | Claude Code 2.1.126 is installed, but `claude auth status` reports `loggedIn: false`; no Claude review occurred. |
+| Claude (user-provided) | pasted review | External plan delta review | 1 | `TRIAGED — STALE BASE` | Reviewed origin `8e2faa590`, not the local plan; three concerns were already closed, while JOB-009 sizing and explicit JOB-012–014 disablement were valid deltas and are now resolved in plan. |
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | Not run; E3 operator UI follows existing patterns. |
 | DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | Not run. |
 
@@ -1600,5 +1631,4 @@ approval remain mandatory before any E3 ticket is assignable.
   policy in the same predecessor correction, and commit a corrective E2 gate/handoff.
 - Approve the E1 custodian correction that preserves frozen fixture bytes while making the
   consumer check compatible with later repository lockfile changes.
-- Approve JOB-002's transport-header proof plus many-profile→one-target binding, or order an
-  additive versioned E1 design/custodian review instead.
+- Choose JOB-002's proposed header proof and target binding, or order a versioned E1 change.
