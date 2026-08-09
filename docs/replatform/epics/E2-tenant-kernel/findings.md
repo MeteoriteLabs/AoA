@@ -199,3 +199,20 @@ resolved finding retains its resolution link.
   without `PUBLIC` policy or owner fallback. Both bounded pools are awaited and
   failure-logged in the shared shutdown sequence. Candidate code revision
   `d5abd1a53` remains **awaiting distinct re-review; not resolved/pass**.
+
+## Fix-round 2 candidate update (E2-F014 / E2-F015)
+
+- Reviewer attempt 2 found that the current heartbeat pinned-target resolver still
+  failed under `aoa_app`. Candidate revisions `cdeb9caaa` (RED) and `21335854f`
+  (GREEN) exercise the real resolver query under that role. Migration 0215 grants
+  only its seven selected columns and denies `worker_token_hash`, `owner_user_id`,
+  `capabilities`, and `last_seen_at`. This extends E2-F014's exact operation map without
+  widening operator authority.
+- The same revisions bind authenticated and active identities, reject masked
+  owner/superuser startup URLs, and audit all table-like relkinds `r,p,v,m,f` with
+  consistent table/column checks. A granted view over `company_secrets` now aborts
+  startup. Direct accepted bounded sessions prove `SET ROLE NONE` remains bounded;
+  masked privileged sessions demonstrate why the gate rejects them.
+
+Both findings remain **implemented, awaiting distinct re-review**. This candidate
+update is not a resolution/pass and grants no JOB-002 authority.

@@ -1975,3 +1975,17 @@ remains authoritative, with no `PUBLIC` policy and no owner fallback. Startup au
 the exact effective posture, and both bounded pools are resources of the single
 awaited shutdown sequence. Candidate code revision `d5abd1a53` awaits distinct
 re-review; this is not a prerequisite pass and grants no JOB-002 authority.
+
+**Implementation clarification (fix round 2, 2026-08-10).** Startup now binds
+both the authenticated `session_user` and active `current_user` to the exact expected
+bounded role, so an owner/superuser URL cannot mask itself with PostgreSQL startup
+`role` options and later recover broader authority with `SET ROLE NONE`. The exact
+effective-authority audit covers ordinary and partitioned tables, views,
+materialized views, and foreign tables, including column privileges; an adversarial
+view over a secret object therefore aborts startup. Successor custom migration
+`0215_e2_serving_role_audit_completion.sql` grants `aoa_app` `SELECT` only on the
+seven `execution_targets` columns read by the current heartbeat pinned-target
+resolver: `id`, `slug`, `kind`, `trust_class`, `status`, `organization_id`, and
+`config`. It excludes `worker_token_hash`, `owner_user_id`, `capabilities`,
+`last_seen_at`, and all operator writes. Candidate code revision `21335854f` awaits distinct re-review;
+this is not a prerequisite pass and grants no JOB-002 authority.

@@ -163,3 +163,39 @@ green focused suite does not cover the three blocking cases above.
 expected role; audit/reconcile all table-like effective authority; complete the traced
 target-resolver grant under the approved RLS boundary; add adversarial masked-owner,
 view-grant, and real resolver tests; then submit a new exact revision for review.
+
+## Fix round 2 candidate implementation
+
+**Implementer:** `Codex implementation agent (/root/e2_role_correction_impl)`
+
+**RED revision:** `cdeb9caaa51c2d04da57e396bf8f19ae391d7e4a`
+
+**Candidate code revision:** `21335854f1fe33773b1ef70b4b5da9bc8f618f3f`
+
+**Disposition:** `needs_changes` pending distinct re-review. This implementer record
+does not mark prerequisite P1 complete/pass or authorize any E3 ticket.
+
+The candidate addresses only review attempt 2's three Important findings:
+
+- Startup requires both authenticated `session_user` and active `current_user` to
+  equal the expected bounded role. Masked owner/superuser URLs using startup role
+  options are rejected before health; accepted exact-role connections remain bounded
+  after `SET ROLE NONE`.
+- Exact authority audits ordinary/partitioned tables, views, materialized views, and
+  foreign tables (`relkind` `r,p,v,m,f`) with consistent table and column privilege
+  checks. An operator-granted view over `company_secrets` aborts startup.
+- Additive C14 custom migration 0215 grants `aoa_app` `SELECT` only on
+  `execution_targets(id, slug, kind, trust_class, status, organization_id, config)`,
+  the exact columns selected by the real heartbeat pinned-target resolver. Token,
+  `owner_user_id`, `capabilities`, `last_seen_at`, and other unselected columns remain denied; operator
+  authority is unchanged.
+
+Implementer-observed focused acceptance is green at 56/56 and migration idempotency
+is green at 5/5. Recursive typecheck and production build pass. Repository-wide test
+evidence and any Windows-local baseline limitation are recorded in the implementer
+report and the non-passing a5 QA/handoff candidate.
+
+**Required next action:** a distinct reviewer must inspect the exact final revision,
+rerun the adversarial identity/view/resolver cases, classify repository-wide
+verification, and issue the prerequisite decision. Until then, status remains
+`needs_changes` and E3 must not begin from this record.

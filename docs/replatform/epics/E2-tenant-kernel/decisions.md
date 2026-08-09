@@ -600,3 +600,23 @@ to the exact option-B posture without editing applied migration 0213:
 
 Candidate code revision `d5abd1a53` awaits distinct re-review. This clarification
 does not change option B, authorize JOB-002 authority, or make the prerequisite pass.
+
+### Fix-round 2 implementation clarification (2026-08-10)
+
+Review attempt 2 found three remaining fail-open or incomplete edges. The candidate
+closes them without reopening the accepted fix-round-1 scope:
+
+- Both `session_user` and `current_user` must equal the exact expected bounded role.
+  PostgreSQL startup role options can no longer disguise an owner/superuser login;
+  `SET ROLE NONE` cannot restore broader authority from an accepted pool.
+- Exact effective-authority auditing covers `relkind` `r`, `p`, `v`, `m`, and `f`
+  (ordinary tables, partitioned tables, views, materialized views, and foreign
+  tables), with table and column privilege checks using the same object set.
+- Additive custom migration `0215_e2_serving_role_audit_completion.sql` grants
+  `aoa_app` only the seven columns selected by the existing heartbeat pinned-target
+  resolver: `id`, `slug`, `kind`, `trust_class`, `status`, `organization_id`, and
+  `config`. It does not grant `worker_token_hash`, `owner_user_id`, `capabilities`,
+  `last_seen_at`, table-wide target access, or any additional operator authority.
+
+Candidate code revision `21335854f` awaits distinct re-review. This clarification
+does not change option B, authorize JOB-002 authority, or make the prerequisite pass.
