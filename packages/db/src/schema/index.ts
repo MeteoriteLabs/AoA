@@ -37,6 +37,10 @@ export { userEntityFollows } from "./user_entity_follows.js";
 export { userNotes } from "./user_notes.js";
 export { goals } from "./goals.js";
 export { goalParents } from "./goal_parents.js";
+// E2 tenant kernel (TEN-001a): new-path distributed-execution tables.
+export { jobs, type Job, type NewJob } from "./jobs.js";
+export { jobAttempts, type JobAttempt, type NewJobAttempt } from "./job_attempts.js";
+export { leases, type Lease, type NewLease } from "./leases.js";
 export { issues } from "./issues.js";
 export { labels } from "./labels.js";
 export { issueLabels } from "./issue_labels.js";
