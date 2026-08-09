@@ -1,7 +1,6 @@
 import { and, asc, eq, count, inArray, isNull, sql } from "drizzle-orm";
 import { isDeepStrictEqual } from "node:util";
 import type { Db } from "@armyofagents/db";
-import { DEFAULT_ORGANIZATION_ID } from "@armyofagents/shared";
 import { memoryFoldersService, seedCompanyRootFolder } from "./memory-folders.js";
 import { ensureInternalAgentConfig } from "./internal-agent/aoa-agents/ensure-internal-agent-config.js";
 import {
@@ -72,6 +71,34 @@ type CompanyStatsEntry = {
   pendingApprovalCount: number;
   unreadNotificationCount: number;
 };
+
+/**
+ * TEN-006a / E2-D07 — fail-closed Organization resolution for Company writers.
+ *
+ * The Company writers no longer silently bucket an Organization-omitting create
+ * to DEFAULT_ORGANIZATION_ID (the removed fail-OPEN mechanism). The owning
+ * Organization is resolved EXPLICITLY by the caller — the self-hosted Default
+ * Org (`routes/companies.ts` `resolveCompanyOrganizationId`, non-enforced
+ * branch) or the real tenant (cloud_auth) — and passed in. A writer reached
+ * with no resolvable Organization fails CLOSED (throws) rather than fail-OPEN
+ * bucketing to the sentinel.
+ *
+ * DEFAULT_ORGANIZATION_ID itself remains the legitimate single-tenant Default
+ * Organization; a caller may still resolve to it EXPLICITLY. Only the *silent*
+ * `?? DEFAULT_ORGANIZATION_ID` default is removed here — the schema default drop
+ * is TEN-006b.
+ */
+function requireResolvedOrganizationId(data: { organizationId?: string | null }): string {
+  const organizationId = data.organizationId;
+  if (!organizationId) {
+    throw new Error(
+      "Company writer requires an explicitly resolved organizationId (TEN-006a): the caller " +
+        "must resolve the owning Organization (self-hosted Default Org or the real tenant) before " +
+        "writing; silent DEFAULT_ORGANIZATION_ID bucketing was removed (E2-D07).",
+    );
+  }
+  return organizationId;
+}
 
 export interface CreateCompanyOptions {
   /**
@@ -184,7 +211,7 @@ export function companyService(db: Db) {
     data: Omit<typeof companies.$inferInsert, "organizationId"> & { organizationId?: string },
   ) {
     if (!data.creationRequestId) return null;
-    const organizationId = data.organizationId ?? DEFAULT_ORGANIZATION_ID;
+    const organizationId = requireResolvedOrganizationId(data);
     const existing = await handle
       .select()
       .from(companies)
@@ -320,6 +347,10 @@ export function companyService(db: Db) {
     data: Omit<typeof companies.$inferInsert, "organizationId"> & { organizationId?: string },
     opts: CreateCompanyOptions = {},
   ) {
+    // Fail closed (TEN-006a / E2-D07): the caller must have resolved the owning
+    // Organization explicitly (self-hosted Default Org or the real tenant). No
+    // silent sentinel bucketing.
+    const organizationId = requireResolvedOrganizationId(data);
     const base = deriveIssuePrefixBase(data.name);
     let suffix = 1;
     while (suffix < 10000) {
@@ -329,9 +360,7 @@ export function companyService(db: Db) {
           .insert(companies)
           .values({
             ...data,
-            // Self-hosted single-tenant + company-portability import land in the
-            // sentinel Organization unless a real org context is supplied.
-            organizationId: data.organizationId ?? DEFAULT_ORGANIZATION_ID,
+            organizationId,
             issuePrefix: candidate,
           })
           .returning();
@@ -385,6 +414,10 @@ export function companyService(db: Db) {
     created: boolean;
     committedActivity: TActivity | null;
   }> {
+    // Fail closed (TEN-006a / E2-D07) before any read/write: the caller must
+    // have resolved the owning Organization explicitly. No silent sentinel
+    // bucketing on the atomic create or the advisory-lock key.
+    const organizationId = requireResolvedOrganizationId(data);
     const initialReplay = await resolveCompanyCreationReplay(db, data);
     if (initialReplay) {
       // A prior request may have committed immediately before the process died
@@ -411,7 +444,7 @@ export function companyService(db: Db) {
             // Organization may legitimately use the same random UUID because
             // the durable key is the composite (organizationId, requestId).
             await tx.execute(
-              sql`SELECT pg_advisory_xact_lock(hashtext('aoa:company-create'), hashtext(${`${data.organizationId ?? DEFAULT_ORGANIZATION_ID}:${data.creationRequestId}`}))`,
+              sql`SELECT pg_advisory_xact_lock(hashtext('aoa:company-create'), hashtext(${`${organizationId}:${data.creationRequestId}`}))`,
             );
             const replay = await resolveCompanyCreationReplay(tx as unknown as Db, data);
             if (replay) {
@@ -431,7 +464,7 @@ export function companyService(db: Db) {
             .insert(companies)
             .values({
               ...data,
-              organizationId: data.organizationId ?? DEFAULT_ORGANIZATION_ID,
+              organizationId,
               issuePrefix: candidate,
             })
             .returning();

@@ -1526,8 +1526,8 @@ describe.skipIf(
 
     const companyId = randomUUID();
     await db.execute(sql`
-      INSERT INTO companies (id, name, issue_prefix)
-      VALUES (${companyId}, 'Crewless Co', ${nextIssuePrefix()})
+      INSERT INTO companies (organization_id, id, name, issue_prefix)
+      VALUES ('00000000-0000-0000-0000-000000000001', ${companyId}, 'Crewless Co', ${nextIssuePrefix()})
     `);
     await ensureInfrastructureAgents(db, companyId);
     // Production parity, and it is load-bearing: the boot backfill stamps
@@ -1775,8 +1775,8 @@ describe.skipIf(
     await withCatalog();
     const companyId = randomUUID();
     await db.execute(sql`
-      INSERT INTO companies (id, name, issue_prefix)
-      VALUES (${companyId}, 'Ambiguous Co', ${nextIssuePrefix()})
+      INSERT INTO companies (organization_id, id, name, issue_prefix)
+      VALUES ('00000000-0000-0000-0000-000000000001', ${companyId}, 'Ambiguous Co', ${nextIssuePrefix()})
     `);
     await ensureInfrastructureAgents(db, companyId);
     await backfillCrewTemplateOrigin(db);
@@ -1805,8 +1805,8 @@ describe.skipIf(
     await withCatalog();
     const companyId = randomUUID();
     await db.execute(sql`
-      INSERT INTO companies (id, name, issue_prefix)
-      VALUES (${companyId}, 'Retired Role Co', ${nextIssuePrefix()})
+      INSERT INTO companies (organization_id, id, name, issue_prefix)
+      VALUES ('00000000-0000-0000-0000-000000000001', ${companyId}, 'Retired Role Co', ${nextIssuePrefix()})
     `);
     await ensureInfrastructureAgents(db, companyId);
     await db.execute(sql`

@@ -68,8 +68,8 @@ beforeAll(async () => {
     db = createDb(connectionString);
 
     await db.execute(sql`
-      INSERT INTO companies (id, name, issue_prefix)
-      VALUES (${companyId}, 'Agent Concurrency Co', 'ACC')
+      INSERT INTO companies (organization_id, id, name, issue_prefix)
+      VALUES ('00000000-0000-0000-0000-000000000001', ${companyId}, 'Agent Concurrency Co', 'ACC')
     `);
 
     // W6 human-at-top: agentService.create() auto-parents a rootless org agent

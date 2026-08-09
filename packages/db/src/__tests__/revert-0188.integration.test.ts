@@ -211,8 +211,8 @@ beforeAll(async () => {
     // without FIX A's dynamic FK drop.
     const [{ id: orgId }] = await client<{ id: string }[]>`SELECT id FROM organizations LIMIT 1`;
     const [{ id: companyId }] = await client<{ id: string }[]>`
-      INSERT INTO companies (id, name, issue_prefix)
-      VALUES (gen_random_uuid(), 'Revert Co', 'RVT')
+      INSERT INTO companies (organization_id, id, name, issue_prefix)
+      VALUES ('00000000-0000-0000-0000-000000000001', gen_random_uuid(), 'Revert Co', 'RVT')
       RETURNING id`;
     // auth_method 'oauth' satisfies both provider_connections shape CHECKs
     // (neither 'api_key' nor 'personal_subscription') so no secret_ref is needed.

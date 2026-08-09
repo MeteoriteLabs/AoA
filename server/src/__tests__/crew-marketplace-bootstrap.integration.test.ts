@@ -487,7 +487,7 @@ describe.skipIf(
     registerMarketplaceCatalogService(service);
     expect(await catalogCacheSource()).toBe("cdn");
 
-    const company = await companyService(db).create({ name: "Marketplace Crew Co" } as never);
+    const company = await companyService(db).create({ name: "Marketplace Crew Co", organizationId: "00000000-0000-0000-0000-000000000001" } as never);
     const crew = await crewRows(company.id);
 
     const marketplaceCrew = crew.filter((row) => row.template_origin?.startsWith("agent:aoa-curated/"));
@@ -719,8 +719,8 @@ describe.skipIf(
     // The reference: a company whose rows the real installer wrote directly.
     const referenceId = randomUUID();
     await db.execute(sql`
-      INSERT INTO companies (id, name, issue_prefix)
-      VALUES (${referenceId}, 'Skill Reference Co', ${nextIssuePrefix()})
+      INSERT INTO companies (organization_id, id, name, issue_prefix)
+      VALUES ('00000000-0000-0000-0000-000000000001', ${referenceId}, 'Skill Reference Co', ${nextIssuePrefix()})
     `);
     for (const item of FIXTURE_CATALOG.items.filter((i) => i.type === "skill")) {
       await installSkill({ catalogItem: item as CatalogItem, companyId: referenceId, db });
@@ -899,7 +899,7 @@ describe.skipIf(
     // slate exactly as it does inside create().
     const companyId = randomUUID();
     await db.execute(sql`
-      INSERT INTO companies (id, name, issue_prefix) VALUES (${companyId}, 'Post Commit Co', ${nextIssuePrefix()})
+      INSERT INTO companies (organization_id, id, name, issue_prefix) VALUES ('00000000-0000-0000-0000-000000000001', ${companyId}, 'Post Commit Co', ${nextIssuePrefix()})
     `);
 
     const outcome = await provisionCompanyCrew(db, companyId, {
@@ -961,7 +961,7 @@ describe.skipIf(
 
     const companyId = randomUUID();
     await db.execute(sql`
-      INSERT INTO companies (id, name, issue_prefix) VALUES (${companyId}, 'Repair Co', ${nextIssuePrefix()})
+      INSERT INTO companies (organization_id, id, name, issue_prefix) VALUES ('00000000-0000-0000-0000-000000000001', ${companyId}, 'Repair Co', ${nextIssuePrefix()})
     `);
 
     // Land in the R1 state: install commits, bookkeeping fails.
@@ -1024,7 +1024,7 @@ describe.skipIf(
 
     const companyId = randomUUID();
     await db.execute(sql`
-      INSERT INTO companies (id, name, issue_prefix) VALUES (${companyId}, 'Stranded Co', ${nextIssuePrefix()})
+      INSERT INTO companies (organization_id, id, name, issue_prefix) VALUES ('00000000-0000-0000-0000-000000000001', ${companyId}, 'Stranded Co', ${nextIssuePrefix()})
     `);
     // Exactly what a killed process leaves behind: claimed, never finished.
     await db.execute(sql`
@@ -1068,7 +1068,7 @@ describe.skipIf(
 
     const companyId = randomUUID();
     await db.execute(sql`
-      INSERT INTO companies (id, name, issue_prefix) VALUES (${companyId}, 'Live Install Co', ${nextIssuePrefix()})
+      INSERT INTO companies (organization_id, id, name, issue_prefix) VALUES ('00000000-0000-0000-0000-000000000001', ${companyId}, 'Live Install Co', ${nextIssuePrefix()})
     `);
     await db.execute(sql`
       INSERT INTO marketplace_install_operations
@@ -1123,7 +1123,7 @@ describe.skipIf(
 
     const companyId = randomUUID();
     await db.execute(sql`
-      INSERT INTO companies (id, name, issue_prefix) VALUES (${companyId}, 'Deadline Co', ${nextIssuePrefix()})
+      INSERT INTO companies (organization_id, id, name, issue_prefix) VALUES ('00000000-0000-0000-0000-000000000001', ${companyId}, 'Deadline Co', ${nextIssuePrefix()})
     `);
 
     const startedAt = Date.now();
