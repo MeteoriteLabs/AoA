@@ -46,6 +46,8 @@
     "check:distributed-foundation": "node scripts/check-distributed-execution-foundation.mjs",
     "check:worker-protocol-boundary": "node scripts/check-worker-protocol-boundary.mjs",
     "gen:worker-protocol-contract": "node scripts/update-worker-protocol-contract-manifest.mjs",
+    "freeze:worker-protocol-v1": "node scripts/freeze-worker-protocol-consumer.mjs",
+    "check:frozen-worker-protocol-v1": "node scripts/check-frozen-worker-protocol-consumer.mjs",
     "gen:tools": "tsx scripts/generate-tools-manifest.ts",
     "gen:tools:check": "tsx scripts/generate-tools-manifest.ts --check",
     "gen:tools:md": "tsx scripts/generate-tools-md.ts",

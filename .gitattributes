@@ -33,9 +33,18 @@ docs/contracts/mcp-connectors/v1/manifest.sha256 text eol=lf
 
 # Versioned worker-protocol contract bytes (PRT-006) are covered by
 # manifest.sha256 and byte-checked cross-platform in CI. Pin every file in the
-# directory (conformance.json + README.md + the manifest) to LF so a Windows
-# checkout with core.autocrlf=true cannot invalidate the deterministic hashes.
+# directory (conformance.json + operations.md + README.md + the manifest) to LF
+# so a Windows checkout with core.autocrlf=true cannot invalidate the
+# deterministic hashes.
 docs/contracts/worker-protocol/v1/** text eol=lf
+
+# The frozen independent worker-protocol v1 consumer baseline (PRT-007) is a
+# hash-pinned fixture: its bundled dist, declaration tree, package metadata,
+# dependency lock, and manifest are all covered by manifest.sha256 and recomputed
+# by cross-version.test.ts + the frozen-consumer checker. Pin every file to LF so
+# a Windows checkout with core.autocrlf=true cannot invalidate the deterministic
+# hashes.
+tests/fixtures/worker-protocol-consumers/v1/** text eol=lf
 
 # This file's historical base blob contains NUL bytes. Treat the repaired
 # source as LF text so PR review and future diffs remain inspectable.

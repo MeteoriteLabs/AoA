@@ -26,8 +26,16 @@ import { pathToFileURL } from "node:url";
 
 /** The contract directory, relative to the repo root, as POSIX segments. */
 export const CONTRACT_DIR_SEGMENTS = ["docs", "contracts", "worker-protocol", "v1"];
-/** The exact set of hashed contract inputs (README.md is prose, not hashed). */
-export const CONTRACT_FILES = ["conformance.json"];
+/**
+ * The exact set of hashed contract inputs, sorted by POSIX path (README.md is
+ * prose, not hashed). The conformance corpus AND the PRT-007 operation matrix are
+ * both pinned so a change to either the vectors or the documented operation set
+ * shifts the manifest and fails the drift check. The independent frozen-consumer
+ * baseline + its recorded source revision are pinned SEPARATELY by the frozen
+ * fixture's own `manifest.sha256` + `dependency-lock.json`, which `cross-version.test.ts`
+ * recomputes and binds to this contract.
+ */
+export const CONTRACT_FILES = ["conformance.json", "operations.md"];
 /** The manifest file name (never hashed into itself). */
 export const MANIFEST_FILE = "manifest.sha256";
 
