@@ -9,7 +9,7 @@
 **Reviewed revision:** `ed1887bf29c688a0d0d83018a2f63144fb027041`
 **Fix-round 1 RED commit:** `2db268b01`
 **Fix-round 1 candidate code revision:** `d5abd1a53`
-**Fix-round 1 review:** `awaiting distinct re-review`
+**Fix-round 1 review:** `needs_changes` (review attempt 2)
 **Scope:** Corrective E2 prerequisite resolving the premises of E3-F001/E3-F002 only. No JOB-001 or other E3 ticket behavior is implemented.
 
 ## Attempt 1 delivered behavior (superseded by the candidate below)
@@ -124,3 +124,42 @@ SyntaxError at `packages/worker-protocol/src/cross-version.test.ts:12`; no P1 la
 failed, and the repository command is not converted into a pass. Linux CI remains
 formal DEC-03 authority. A distinct reviewer must independently review the final docs
 revision and decide the gate.
+
+## Review attempt 2
+
+**Reviewer:** `Codex distinct reviewer (/root/e2_role_correction_review)`
+
+**Reviewed revision:** `c3aefc6591b7ed4469a7cf2ea9f92040a1c71079`
+
+**Disposition:** `needs_changes`
+
+**Prior-finding verdicts:** the direct operator ACL, `execution_targets` NO-FORCE
+transition, awaited shutdown ordering, and both test-hygiene observations are
+addressed. The real checkout/prompt cases close the original circular-test gap, but
+the traced app grant remains incomplete because the current heartbeat target resolver
+still receives no `execution_targets:SELECT`. Role hardening is also incomplete:
+startup validates `current_user` rather than the authenticated `session_user`, and its
+exact-authority scan excludes views/materialized views/foreign tables.
+
+**Blocking findings:** (1) owner/superuser URLs with PostgreSQL startup
+`options=-c role=aoa_app` / `aoa_operator` pass the actual startup gate; a reviewer
+probe observed `session_user=test,current_user=aoa_app`, then `SET ROLE NONE` restored
+`current_user=test,rolsuper=true`; (2) a granted view over `company_secrets` is omitted
+from the `relkind IN ('r','p')` audit, so startup accepts it and the operator can query
+it; (3) fresh 0214 denies `aoa_app` target-registry resolution with SQLSTATE `42501`.
+These violate the no-owner-fallback, exact metadata-only, and complete traced-grant
+requirements. Corrective E2 QA and the superseding handoff remain non-passing.
+
+**Independent verification:** `operator-directed windows-local` focused acceptance
+passed `49/49`; migration idempotency passed `5/5`; clean valid-role flag-on startup,
+affected DB/server typecheck/build, recursive typecheck, and production build passed.
+Repository `pnpm test:run -- --reporter=dot` remained exit `1` after 176 seconds only
+on the independently reproduced Windows worker-protocol transform/collection
+SyntaxError at `cross-version.test.ts:12`; the imported JavaScript files pass
+`node --check` and zero bodies collect. Linux CI remains formal DEC-03 authority. The
+green focused suite does not cover the three blocking cases above.
+
+**Required next action:** bind both `session_user` and `current_user` to the exact
+expected role; audit/reconcile all table-like effective authority; complete the traced
+target-resolver grant under the approved RLS boundary; add adversarial masked-owner,
+view-grant, and real resolver tests; then submit a new exact revision for review.
