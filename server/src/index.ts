@@ -23,7 +23,12 @@ import {
 import detectPort from "detect-port";
 import postgres from "postgres";
 import { createApp } from "./app.js";
-import { TENANT_APP_ROLE, provisionTenantAppRoleLoginSql } from "./db/rls-tenant.js";
+import {
+  OPERATOR_ROLE,
+  TENANT_APP_ROLE,
+  provisionTenantAppRoleLoginSql,
+} from "./db/rls-tenant.js";
+import { openDistributedExecutionDatabases } from "./db/distributed-execution-databases.js";
 import { tenantIsolationEnforced } from "./config/deployment-mode.js";
 import { reconcileCloudBlockedPlugins } from "./services/plugin-lifecycle.js";
 import { loadConfig } from "./config.js";
@@ -268,27 +273,28 @@ async function ensureMigrations(
 }
 
 /**
- * TEN-002 (E2-D03): flag-gated privileged provisioning of the `aoa_app` non-owner
- * serving role's LOGIN credential. DORMANT BY DEFAULT — a strict no-op unless the
- * distributed-execution flag is on AND `AOA_APP_DB_PASSWORD` is set, so the
- * default-off boot path is byte-identical to before. Runs AFTER migrations, under
- * the privileged (owner) connection; the migration created the role NOLOGIN with no
- * committed credential (E2-D01). Opening the non-owner SERVING pool that USES this
- * role is TEN-003's `runInTenant` (`createTenantAppDb`), NOT done here — E2 keeps
- * this whole-app non-owner cutover dormant-but-tested (FND-005).
+ * Corrective successor to E2-D03: flag-gated privileged provisioning of optional
+ * `aoa_app` / `aoa_operator` LOGIN credentials. DORMANT BY DEFAULT and a strict
+ * no-op while distributed execution is off. Runs after migrations under the
+ * bootstrap owner; the committed migration creates both roles NOLOGIN. Flag-on
+ * startup opens and verifies the separate non-owner pools immediately afterward.
  */
-async function maybeProvisionTenantAppRole(connectionString: string): Promise<void> {
+async function maybeProvisionDistributedExecutionRoles(connectionString: string): Promise<void> {
   if (!config.distributedExecutionEnabled) return;
-  const password = process.env.AOA_APP_DB_PASSWORD;
-  if (!password || password.trim() === "") return;
+  const credentials = [
+    [TENANT_APP_ROLE, process.env.AOA_APP_DB_PASSWORD],
+    [OPERATOR_ROLE, process.env.AOA_OPERATOR_DB_PASSWORD],
+  ] as const;
+  if (!credentials.some(([, password]) => password?.trim())) return;
   const sql = postgres(connectionString, { max: 1 });
   try {
-    // provisionTenantAppRoleLoginSql escapes the secret (ALTER ROLE ... PASSWORD is
-    // utility DDL and cannot be parameter-bound); the password is never logged.
-    await sql.unsafe(provisionTenantAppRoleLoginSql(TENANT_APP_ROLE, password));
-    logger.info(
-      "Provisioned aoa_app non-owner serving role login credential (distributed execution enabled)",
-    );
+    for (const [role, password] of credentials) {
+      if (!password?.trim()) continue;
+      // ALTER ROLE PASSWORD cannot be parameter-bound; the builder validates the
+      // role and escapes the secret. Neither the credential nor URL is logged.
+      await sql.unsafe(provisionTenantAppRoleLoginSql(role, password));
+      logger.info(`Provisioned ${role} non-owner login credential (distributed execution enabled)`);
+    }
   } finally {
     await sql.end();
   }
@@ -530,11 +536,26 @@ if (config.databaseUrl) {
   startupDbInfo = { mode: "embedded-postgres", dataDir, port };
 }
 
-// TEN-002 (E2-D03): dormant-by-default privileged provisioning of the aoa_app
-// non-owner role login. No-op unless the distributed-execution flag is on AND a
-// password is provided (default-off boot unchanged). The serving pool that USES
-// this role is opened by TEN-003 (createTenantAppDb), not here.
-await maybeProvisionTenantAppRole(activeDatabaseConnectionString);
+// Optional boot-only credential provisioning remains dormant by default. External
+// secret managers may instead provision the URLs' credentials ahead of startup.
+await maybeProvisionDistributedExecutionRoles(activeDatabaseConnectionString);
+
+// Corrective E2 successor to E2-D03: flag-on boot must prove both bounded roles
+// before any E3 route/work could start. There is deliberately no owner fallback.
+// Flag-off returns null without reading URLs or allocating either new pool.
+const distributedExecutionDatabases = await openDistributedExecutionDatabases({
+  enabled: config.distributedExecutionEnabled,
+  appDatabaseUrl: process.env.AOA_APP_DATABASE_URL,
+  operatorDatabaseUrl: process.env.AOA_OPERATOR_DATABASE_URL,
+});
+if (distributedExecutionDatabases) {
+  logger.info("Verified aoa_app and aoa_operator bounded database pools");
+  const closeDistributedPools = () => {
+    void distributedExecutionDatabases.close();
+  };
+  process.once("SIGTERM", closeDistributedPools);
+  process.once("SIGINT", closeDistributedPools);
+}
 
 // Expose the active DB URL in process.env so MCP bridge child processes
 // (Commander bridge spawned by claude/codex CLI) can inherit it.

@@ -153,5 +153,20 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect(result.exited).toBe(true);
       expect(result.code).not.toBe(0);
     }, 60_000);
+
+    it.each(["aoa_app", "aoa_operator"] as const)(
+      "rejects an owner-pool fallback for %s even when that connection opens",
+      async (expectedRole) => {
+      guard();
+      const result = await observeStartup({
+        appDatabaseUrl: expectedRole === "aoa_app" ? adminUrl : appUrl,
+        operatorDatabaseUrl: expectedRole === "aoa_operator" ? adminUrl : operatorUrl,
+        expectedRole,
+      });
+      expect(result.exited).toBe(true);
+      expect(result.code).not.toBe(0);
+      },
+      60_000,
+    );
   },
 );

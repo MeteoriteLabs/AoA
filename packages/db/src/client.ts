@@ -73,10 +73,19 @@ export function createDb(url: string) {
  * every query lands on the same physical connection and the transaction-local GUC
  * no-leak assertion is real rather than vacuous.
  */
-export function createTenantAppDb(url: string, opts?: { max?: number }) {
+export interface NonOwnerDbConnection {
+  db: Db;
+  close(): Promise<void>;
+}
+
+function createRequiredNonOwnerDbConnection(
+  url: string,
+  role: "aoa_app" | "aoa_operator",
+  opts?: { max?: number },
+): NonOwnerDbConnection {
   if (typeof url !== "string" || url.trim() === "") {
     throw new Error(
-      "createTenantAppDb requires a non-owner AOA_APP_DATABASE_URL; it must NEVER fall back to " +
+      `${role} requires its explicit non-owner database URL; it must NEVER fall back to ` +
         "the owner/superuser pool (that would bypass RLS - H-01 tenant-isolation fail-open).",
     );
   }
@@ -84,7 +93,28 @@ export function createTenantAppDb(url: string, opts?: { max?: number }) {
     connection: { client_encoding: "UTF8" },
     ...(opts?.max !== undefined ? { max: opts.max } : {}),
   });
-  return drizzlePg(client, { schema });
+  return {
+    db: drizzlePg(client, { schema }),
+    close: () => client.end(),
+  };
+}
+
+export function createTenantAppDbConnection(
+  url: string,
+  opts?: { max?: number },
+): NonOwnerDbConnection {
+  return createRequiredNonOwnerDbConnection(url, "aoa_app", opts);
+}
+
+export function createOperatorDbConnection(
+  url: string,
+  opts?: { max?: number },
+): NonOwnerDbConnection {
+  return createRequiredNonOwnerDbConnection(url, "aoa_operator", opts);
+}
+
+export function createTenantAppDb(url: string, opts?: { max?: number }) {
+  return createTenantAppDbConnection(url, opts).db;
 }
 
 /**
@@ -94,17 +124,27 @@ export function createTenantAppDb(url: string, opts?: { max?: number }) {
  * superuser or BYPASSRLS role always bypasses RLS regardless of FORCE, so serving
  * tenant queries as one is a total H-01 fail-open.
  */
-export async function assertNonOwnerConnection(db: Db): Promise<void> {
+export async function assertNonOwnerConnection(
+  db: Db,
+  expectedRole?: "aoa_app" | "aoa_operator",
+): Promise<void> {
   const result = await db.execute(
-    sql`SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user`,
+    sql`SELECT current_user AS role_name, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user`,
   );
   const rows = (Array.isArray(result) ? result : (result as { rows: unknown[] }).rows) as Array<{
+    role_name?: string;
     rolsuper?: boolean;
     rolbypassrls?: boolean;
   }>;
   const row = rows[0];
   if (!row) {
     throw new Error("assertNonOwnerConnection: could not resolve current_user role attributes");
+  }
+  if (expectedRole && row.role_name !== expectedRole) {
+    throw new Error(
+      `Refusing ${expectedRole} serving pool credentials authenticated as ${row.role_name ?? "unknown"}; ` +
+        "owner-pool or cross-role fallback is forbidden.",
+    );
   }
   if (row.rolsuper || row.rolbypassrls) {
     throw new Error(

@@ -1,4 +1,8 @@
 import { assertSafeRoleName } from "./rls-bootstrap.js";
+import {
+  JOB_CONTROL_LEGACY_GRANTS,
+  type TablePrivilege,
+} from "./job-control-legacy-grants.js";
 
 /**
  * TEN-002 (E2-D01 / product Decision #122): pure, role-name-safe SQL builders that
@@ -22,6 +26,14 @@ import { assertSafeRoleName } from "./rls-bootstrap.js";
 
 /** The non-owner (NOSUPERUSER, NOBYPASSRLS) serving role for the new-path tables. */
 export const TENANT_APP_ROLE = "aoa_app";
+
+/** Bounded non-owner role for null-Organization platform worker/target metadata. */
+export const OPERATOR_ROLE = "aoa_operator";
+
+export const OPERATOR_METADATA_TABLES = Object.freeze([
+  "workers",
+  "execution_targets",
+] as const);
 
 /** The transaction-local tenant GUC the policies read (E2-D02; the shipped `with-tenant-tx.ts` writer). */
 export const TENANT_GUC = "aoa.organization_id";
@@ -76,6 +88,18 @@ export function grantDmlSql(role: string, tables: readonly string[]): string {
   return `GRANT SELECT, INSERT, UPDATE, DELETE ON ${list} TO "${role}";`;
 }
 
+/** Grant one traced operation set; identifiers and privileges are closed enums. */
+export function grantTablePrivilegesSql(
+  role: string,
+  table: string,
+  privileges: readonly TablePrivilege[],
+): string {
+  assertSafeRoleName(role);
+  assertSafeTableName(table);
+  if (privileges.length === 0) throw new Error(`No privileges supplied for ${table}`);
+  return `GRANT ${privileges.join(", ")} ON "${table}" TO "${role}";`;
+}
+
 /**
  * ENABLE then FORCE ROW LEVEL SECURITY for a table (two statements, breakpoint-
  * separated). Both ALTERs are natural no-ops on re-apply, so this is idempotent.
@@ -109,6 +133,49 @@ export function tenantPolicySql(table: string, role: string): string {
     `CREATE POLICY "${policy}" ON "${table}" TO "${role}"\n` +
     `  USING (${predicate})\n` +
     `  WITH CHECK (${predicate});`
+  );
+}
+
+/**
+ * aoa_operator policy for the two platform metadata tables. The owner-user guard
+ * on targets keeps user-owned metadata outside the platform seam as well as all
+ * Organization-owned rows. There is no permissive fallback policy for this role.
+ */
+export function operatorMetadataPolicySql(
+  table: (typeof OPERATOR_METADATA_TABLES)[number],
+  role: string = OPERATOR_ROLE,
+): string {
+  assertSafeTableName(table);
+  assertSafeRoleName(role);
+  const policy = `${table}_platform_operator`;
+  const predicate = table === "workers"
+    ? "organization_id IS NULL AND scope = 'platform'"
+    : "organization_id IS NULL AND owner_user_id IS NULL";
+  return (
+    `DROP POLICY IF EXISTS "${policy}" ON "${table}";\n` +
+    `${STATEMENT_BREAKPOINT}\n` +
+    `CREATE POLICY "${policy}" ON "${table}" TO "${role}"\n` +
+    `  USING (${predicate})\n` +
+    `  WITH CHECK (${predicate});`
+  );
+}
+
+/**
+ * execution_targets predates the E2 8-table kernel but is Organization-scoped
+ * target metadata used by the traced resolver. Tenant serving may read its own
+ * or platform targets; writes remain denied because aoa_app receives SELECT only.
+ */
+export function tenantExecutionTargetPolicySql(role: string = TENANT_APP_ROLE): string {
+  assertSafeRoleName(role);
+  const policy = "execution_targets_tenant_serving";
+  const predicate =
+    `organization_id IS NULL OR ` +
+    `organization_id = current_setting('${TENANT_GUC}', true)::uuid`;
+  return (
+    `DROP POLICY IF EXISTS "${policy}" ON "execution_targets";\n` +
+    `${STATEMENT_BREAKPOINT}\n` +
+    `CREATE POLICY "${policy}" ON "execution_targets" FOR SELECT TO "${role}"\n` +
+    `  USING (${predicate});`
   );
 }
 
@@ -164,4 +231,52 @@ export function buildTenantRlsMigrationSql(
     statements.push(tenantPolicySql(table, role));
   }
   return `${header}\n${statements.join(`\n${STATEMENT_BREAKPOINT}\n`)}`;
+}
+
+/**
+ * Corrective successor to 0211 (E3-F001/F002). This is a delta-free custom
+ * migration under product Decision #122/C14: role/grant/policy DDL is outside
+ * drizzle-kit's configured schema diff, and every statement is idempotent.
+ */
+export function buildServingRoleCorrectionMigrationSql(): string {
+  const header = [
+    "-- Corrective E2 serving/operator-role gate (successor to E2-D03; Decision #123).",
+    "-- DELTA-FREE `--custom` migration under Decision #122/C14: the configured",
+    "-- drizzle schema cannot emit cluster roles, operation-level grants, or policies.",
+    "-- Every hand-authored statement is idempotent: guarded CREATE ROLE; attribute",
+    "-- ALTER/GRANT/ENABLE/FORCE natural re-apply; DROP POLICY IF EXISTS before CREATE.",
+    "-- aoa_app retains the 8 E2 grants and receives only traced JOB-010..014 legacy",
+    "-- operations. aoa_operator receives only null-Organization platform metadata.",
+    "-- Future enrollment/proof/revocation grants remain owned by JOB-002.",
+    "-- Generated from server/src/db/rls-tenant.ts; keep this file byte-for-byte aligned.",
+  ].join("\n");
+
+  const statements: string[] = [
+    createNonOwnerRoleSql(TENANT_APP_ROLE),
+    `ALTER ROLE "${TENANT_APP_ROLE}" NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;`,
+    createNonOwnerRoleSql(OPERATOR_ROLE),
+    `ALTER ROLE "${OPERATOR_ROLE}" NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;`,
+  ];
+
+  for (const [table, privileges] of Object.entries(JOB_CONTROL_LEGACY_GRANTS)) {
+    statements.push(grantTablePrivilegesSql(TENANT_APP_ROLE, table, privileges));
+  }
+  statements.push(grantDmlSql(OPERATOR_ROLE, OPERATOR_METADATA_TABLES));
+  statements.push(enableForceRlsSql("execution_targets"));
+  statements.push(tenantExecutionTargetPolicySql());
+  statements.push(operatorMetadataPolicySql("workers"));
+  statements.push(operatorMetadataPolicySql("execution_targets"));
+
+  const annotatedStatements = statements.map((statement) =>
+    statement
+      .split(`\n${STATEMENT_BREAKPOINT}\n`)
+      .map(
+        (part) =>
+          "-- C14 hand-authored security DDL: drizzle-kit cannot emit this statement; " +
+          "its guarded/natural/drop-before-create form is idempotent.\n" +
+          part,
+      )
+      .join(`\n${STATEMENT_BREAKPOINT}\n`),
+  );
+  return `${header}\n${annotatedStatements.join(`\n${STATEMENT_BREAKPOINT}\n`)}`;
 }

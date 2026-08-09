@@ -16,6 +16,7 @@
 // password is provisioned at runtime and NEVER interpolated into the committed
 // migration string.
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   TENANT_APP_ROLE,
   TENANT_RLS_TABLES,
@@ -26,6 +27,7 @@ import {
   tenantPolicySql,
   provisionTenantAppRoleLoginSql,
   buildTenantRlsMigrationSql,
+  buildServingRoleCorrectionMigrationSql,
 } from "../db/rls-tenant.js";
 import { createTenantAppDb } from "@armyofagents/db";
 
@@ -171,5 +173,15 @@ describe("createTenantAppDb — fail-closed on a blank URL (E2-F007)", () => {
     expect(() => createTenantAppDb(undefined as any)).toThrow();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(() => createTenantAppDb(null as any)).toThrow();
+  });
+});
+
+describe("buildServingRoleCorrectionMigrationSql (assembled 0213 body)", () => {
+  it("stays byte-aligned with the Decision #122 custom migration", () => {
+    const committed = readFileSync(
+      new URL("../../../packages/db/src/migrations/0213_e2_serving_role_correction.sql", import.meta.url),
+      "utf8",
+    ).replaceAll("\r\n", "\n").trim();
+    expect(committed).toBe(buildServingRoleCorrectionMigrationSql().trim());
   });
 });

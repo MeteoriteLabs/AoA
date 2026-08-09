@@ -1,6 +1,8 @@
 import type { DeploymentMode } from "@armyofagents/shared";
 
 export const DISTRIBUTED_EXECUTION_ENABLED_ENV = "AOA_DISTRIBUTED_EXECUTION_ENABLED";
+export const APP_DATABASE_URL_ENV = "AOA_APP_DATABASE_URL";
+export const OPERATOR_DATABASE_URL_ENV = "AOA_OPERATOR_DATABASE_URL";
 export const DISTRIBUTED_PUBLIC_SERVICE_INGRESS_ENV =
   "AOA_DISTRIBUTED_PUBLIC_SERVICE_INGRESS_ENABLED";
 export const DISTRIBUTED_CLOUD_PLUGIN_EXECUTION_ENV =
@@ -45,6 +47,16 @@ export function assertHostedExecutionStartupSafe(input: {
   deploymentMode: DeploymentMode;
   env: Env;
 }): void {
+  if (readDistributedExecutionDeploymentFlag(input.env)) {
+    for (const name of [APP_DATABASE_URL_ENV, OPERATOR_DATABASE_URL_ENV]) {
+      if (!input.env[name]?.trim()) {
+        throw new Error(
+          `${name} is required when ${DISTRIBUTED_EXECUTION_ENABLED_ENV}=true; ` +
+            "the distributed path never falls back to the owner database pool",
+        );
+      }
+    }
+  }
   for (const name of [
     DISTRIBUTED_PUBLIC_SERVICE_INGRESS_ENV,
     DISTRIBUTED_CLOUD_PLUGIN_EXECUTION_ENV,

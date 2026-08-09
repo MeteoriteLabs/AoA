@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import postgres, { type Sql } from "postgres";
 import { sql } from "drizzle-orm";
@@ -54,7 +54,6 @@ const expectedLegacyPrivileges = {
   budget_incidents: ["SELECT", "INSERT", "UPDATE"],
   cost_events: ["SELECT", "INSERT"],
   activity_log: ["SELECT", "INSERT"],
-  run_project_links: ["SELECT"],
   projects: ["SELECT"],
   task_outputs: ["SELECT", "INSERT", "UPDATE"],
   issue_comments: ["INSERT"],
@@ -73,8 +72,10 @@ let operatorUrl = "";
 let admin: Sql | null = null;
 let ownerDb: Db;
 let appDb: Db;
+let appSql: Sql | null = null;
 let operator: Sql | null = null;
 let setupError: unknown = null;
+let correctionMigrationReapplyRounds = 0;
 
 function rowsOf<T>(result: unknown): T[] {
   return (Array.isArray(result) ? result : (result as { rows: T[] }).rows) as T[];
@@ -116,6 +117,19 @@ beforeAll(async () => {
     admin = postgres(adminUrl, { max: 1 });
     ownerDb = createDb(adminUrl);
 
+    const correctionMigration = await readFile(
+      resolve(process.cwd(), "../packages/db/src/migrations/0213_e2_serving_role_correction.sql"),
+      "utf8",
+    );
+    const correctionStatements = correctionMigration
+      .split("--> statement-breakpoint")
+      .map((statement) => statement.trim())
+      .filter(Boolean);
+    for (let round = 0; round < 2; round += 1) {
+      for (const statement of correctionStatements) await admin.unsafe(statement);
+      correctionMigrationReapplyRounds += 1;
+    }
+
     await admin.unsafe(provisionTenantAppRoleLoginSql(TENANT_APP_ROLE, APP_PASSWORD));
     const operatorRole = await admin<{ exists: boolean }[]>`
       SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'aoa_operator') AS exists
@@ -134,6 +148,7 @@ beforeAll(async () => {
     appUrl = adminUrl.replace("test:test", `aoa_app:${APP_PASSWORD}`);
     operatorUrl = adminUrl.replace("test:test", `aoa_operator:${OPERATOR_PASSWORD}`);
     appDb = createTenantAppDb(appUrl, { max: 1 });
+    appSql = postgres(appUrl, { max: 1 });
     operator = postgres(operatorUrl, { max: 1 });
 
     await admin`
@@ -168,6 +183,7 @@ beforeAll(async () => {
 }, 180_000);
 
 afterAll(async () => {
+  try { await appSql?.end(); } catch { /* ignore */ }
   try { await operator?.end(); } catch { /* ignore */ }
   try { await admin?.end(); } catch { /* ignore */ }
   try { await embedded?.stop(); } catch { /* ignore */ }
@@ -187,6 +203,33 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
             ),
           );
           expect(row?.allowed, `${table} requires ${privilege}`).toBe(true);
+
+          if (privilege === "SELECT") {
+            await appSql!.unsafe(`SELECT * FROM "${table}" WHERE false`);
+          } else if (privilege === "UPDATE") {
+            const [column] = await admin!<{ column_name: string }[]>`
+              SELECT column_name
+              FROM information_schema.columns
+              WHERE table_schema = 'public' AND table_name = ${table}
+              ORDER BY ordinal_position
+              LIMIT 1
+            `;
+            expect(column?.column_name).toMatch(/^[A-Za-z_][A-Za-z0-9_]*$/);
+            await appSql!.unsafe(
+              `UPDATE "${table}" SET "${column!.column_name}" = "${column!.column_name}" WHERE false`,
+            );
+          } else if (privilege === "DELETE") {
+            await appSql!.unsafe(`DELETE FROM "${table}" WHERE false`);
+          } else {
+            await appSql!.unsafe("BEGIN");
+            try {
+              await appSql!.unsafe(`INSERT INTO "${table}" DEFAULT VALUES`);
+            } catch (error) {
+              expect(errorCode(error), `${table} INSERT must pass its table privilege check`).not.toBe("42501");
+            } finally {
+              await appSql!.unsafe("ROLLBACK");
+            }
+          }
         }
       }
 
@@ -199,6 +242,11 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       await expect(appDb.execute(sql`SELECT id FROM company_secrets LIMIT 1`)).rejects.toSatisfy(
         (error: unknown) => errorCode(error) === "42501",
       );
+    });
+
+    it("re-applies the Decision #122/C14 correction migration twice", () => {
+      guard();
+      expect(correctionMigrationReapplyRounds).toBe(2);
     });
 
     it("keeps tenant RLS and composite-FK enforcement H-01 safe through runInTenant", async () => {
