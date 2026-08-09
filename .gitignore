@@ -1,5 +1,11 @@
 node_modules/
 dist/
+# The frozen worker-protocol v1 consumer baseline (PRT-007) is a hash-pinned
+# fixture: its bundled dist + declaration tree ARE the checked-in artifact and
+# must be tracked despite the global dist/ ignore above. Re-include the directory
+# then its contents (git cannot re-include files whose parent dir stays excluded).
+!tests/fixtures/worker-protocol-consumers/v1/dist/
+!tests/fixtures/worker-protocol-consumers/v1/dist/**
 server/.aoa/
 build/
 .env
