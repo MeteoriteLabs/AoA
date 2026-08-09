@@ -11,6 +11,10 @@ export interface OwnedEmbeddedPostgres {
   stop(): Promise<void>;
 }
 
+export interface BoundedDatabases {
+  close(): Promise<void>;
+}
+
 export interface ShutdownLogger {
   info(message: string): void;
   info(bindings: Record<string, unknown>, message: string): void;
@@ -19,6 +23,7 @@ export interface ShutdownLogger {
 
 export interface ProcessShutdownOptions {
   getPluginSubsystem(): ShutdownPluginSubsystem | undefined;
+  boundedDatabases?: BoundedDatabases | null;
   ownedEmbeddedPostgres?: OwnedEmbeddedPostgres | null;
   logger: ShutdownLogger;
   exit(code: number): void;
@@ -56,6 +61,18 @@ export function createProcessShutdownHandler(opts: ProcessShutdownOptions) {
               "Plugin host-service cleanup teardown failed"
             );
           }
+        }
+      }
+
+      if (opts.boundedDatabases) {
+        opts.logger.info("Stopping bounded distributed database pools");
+        try {
+          await opts.boundedDatabases.close();
+        } catch (err) {
+          opts.logger.error(
+            { err },
+            "Bounded distributed database shutdown failed",
+          );
         }
       }
 

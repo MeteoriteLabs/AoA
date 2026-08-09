@@ -13,7 +13,12 @@ export const JOB_CONTROL_LEGACY_GRANTS = Object.freeze({
   task_dependencies: ["SELECT"],
   issue_labels: ["SELECT"],
   labels: ["SELECT"],
-  notifications: ["SELECT", "UPDATE"],
+  notifications: ["SELECT", "INSERT", "UPDATE"],
+  user_roles: ["SELECT"],
+  company_memberships: ["SELECT"],
+  notification_preferences: ["SELECT"],
+  notification_digest_items: ["SELECT", "INSERT"],
+  hub_counter_snapshots: ["SELECT", "UPDATE"],
   hub_audit: ["INSERT"],
   heartbeat_runs: ["SELECT", "INSERT", "UPDATE"],
   agent_wakeup_requests: ["SELECT", "INSERT", "UPDATE"],
@@ -43,3 +48,48 @@ export const JOB_CONTROL_LEGACY_GRANTS = Object.freeze({
   execution_workspaces: ["SELECT"],
   workspace_runtime_services: ["SELECT"],
 } satisfies Readonly<Record<string, readonly TablePrivilege[]>>);
+
+/**
+ * Existing E2 new-path DML retained by aoa_app after the corrective ACL reset.
+ * Kept separate from the legacy trace so the two authorization seams stay
+ * reviewable independently.
+ */
+export const JOB_CONTROL_NEW_PATH_GRANTS = Object.freeze({
+  jobs: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+  job_attempts: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+  leases: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+  workers: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+  services: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+  service_instances: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+  job_artifacts: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+  job_secret_handles: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+} satisfies Readonly<Record<string, readonly TablePrivilege[]>>);
+
+/**
+ * E2-D06 operator-read seam. Enrollment credentials, ownership, routing config,
+ * status/revocation mutations, and all DELETE authority remain deferred to
+ * JOB-002; the current operator is metadata-read-only.
+ */
+export const OPERATOR_METADATA_COLUMN_GRANTS = Object.freeze({
+  workers: [
+    "id",
+    "scope",
+    "organization_id",
+    "label",
+    "status",
+    "created_at",
+    "updated_at",
+  ],
+  execution_targets: [
+    "id",
+    "organization_id",
+    "slug",
+    "kind",
+    "trust_class",
+    "status",
+    "capabilities",
+    "last_seen_at",
+    "created_at",
+    "updated_at",
+  ],
+} satisfies Readonly<Record<string, readonly string[]>>);

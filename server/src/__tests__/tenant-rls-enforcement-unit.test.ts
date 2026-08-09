@@ -28,6 +28,7 @@ import {
   provisionTenantAppRoleLoginSql,
   buildTenantRlsMigrationSql,
   buildServingRoleCorrectionMigrationSql,
+  buildServingRoleHardeningMigrationSql,
 } from "../db/rls-tenant.js";
 import { createTenantAppDb } from "@armyofagents/db";
 
@@ -183,5 +184,15 @@ describe("buildServingRoleCorrectionMigrationSql (assembled 0213 body)", () => {
       "utf8",
     ).replaceAll("\r\n", "\n").trim();
     expect(committed).toBe(buildServingRoleCorrectionMigrationSql().trim());
+  });
+});
+
+describe("buildServingRoleHardeningMigrationSql (assembled 0214 body)", () => {
+  it("stays byte-aligned with the additive Decision #122 custom migration", () => {
+    const committed = readFileSync(
+      new URL("../../../packages/db/src/migrations/0214_e2_serving_role_hardening.sql", import.meta.url),
+      "utf8",
+    ).replaceAll("\r\n", "\n").trim();
+    expect(committed).toBe(buildServingRoleHardeningMigrationSql().trim());
   });
 });

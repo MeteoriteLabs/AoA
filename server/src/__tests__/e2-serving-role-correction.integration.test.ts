@@ -67,7 +67,9 @@ function guard(): void {
 }
 
 async function reapplyCorrectionMigration(): Promise<void> {
-  for (const statement of correctionStatements) await admin!.unsafe(statement);
+  await admin!.begin(async (transaction) => {
+    for (const statement of correctionStatements) await transaction.unsafe(statement);
+  });
 }
 
 beforeAll(async () => {
@@ -91,7 +93,7 @@ beforeAll(async () => {
     await applyPendingMigrations(adminUrl);
     admin = postgres(adminUrl, { max: 1 });
     const correctionMigration = await readFile(
-      resolve(process.cwd(), "../packages/db/src/migrations/0213_e2_serving_role_correction.sql"),
+      resolve(process.cwd(), "../packages/db/src/migrations/0214_e2_serving_role_hardening.sql"),
       "utf8",
     );
     correctionStatements = correctionMigration

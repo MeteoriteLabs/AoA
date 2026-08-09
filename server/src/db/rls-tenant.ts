@@ -1,6 +1,8 @@
 import { assertSafeRoleName } from "./rls-bootstrap.js";
 import {
   JOB_CONTROL_LEGACY_GRANTS,
+  JOB_CONTROL_NEW_PATH_GRANTS,
+  OPERATOR_METADATA_COLUMN_GRANTS,
   type TablePrivilege,
 } from "./job-control-legacy-grants.js";
 
@@ -100,6 +102,20 @@ export function grantTablePrivilegesSql(
   return `GRANT ${privileges.join(", ")} ON "${table}" TO "${role}";`;
 }
 
+/** Grant one operation on an exact, reviewed set of columns. */
+export function grantColumnPrivilegesSql(
+  role: string,
+  table: string,
+  privilege: "SELECT",
+  columns: readonly string[],
+): string {
+  assertSafeRoleName(role);
+  assertSafeTableName(table);
+  if (columns.length === 0) throw new Error(`No columns supplied for ${table}`);
+  const list = columns.map((column) => `"${assertSafeTableName(column)}"`).join(", ");
+  return `GRANT ${privilege} (${list}) ON "${table}" TO "${role}";`;
+}
+
 /**
  * ENABLE then FORCE ROW LEVEL SECURITY for a table (two statements, breakpoint-
  * separated). Both ALTERs are natural no-ops on re-apply, so this is idempotent.
@@ -133,6 +149,53 @@ export function tenantPolicySql(table: string, role: string): string {
     `CREATE POLICY "${policy}" ON "${table}" TO "${role}"\n` +
     `  USING (${predicate})\n` +
     `  WITH CHECK (${predicate});`
+  );
+}
+
+/**
+ * Preserve RLS for bounded non-owner roles while restoring PostgreSQL's normal
+ * table-owner exemption for the default-off legacy path.
+ */
+export function enableRlsWithoutForceSql(table: string): string {
+  assertSafeTableName(table);
+  return (
+    `ALTER TABLE "${table}" ENABLE ROW LEVEL SECURITY;\n` +
+    `${STATEMENT_BREAKPOINT}\n` +
+    `ALTER TABLE "${table}" NO FORCE ROW LEVEL SECURITY;`
+  );
+}
+
+function revokeInheritedRolesSql(role: string): string {
+  assertSafeRoleName(role);
+  return (
+    "DO $$ DECLARE inherited_role record; BEGIN " +
+    "FOR inherited_role IN " +
+    "SELECT parent.rolname AS role_name FROM pg_auth_members membership " +
+    "JOIN pg_roles member ON member.oid = membership.member " +
+    "JOIN pg_roles parent ON parent.oid = membership.roleid " +
+    `WHERE member.rolname = '${role}' LOOP ` +
+    `EXECUTE format('REVOKE %I FROM %I', inherited_role.role_name, '${role}'); ` +
+    "END LOOP; END $$;"
+  );
+}
+
+function assertRoleOwnsNoApplicationObjectsSql(role: string): string {
+  assertSafeRoleName(role);
+  return (
+    "DO $$ BEGIN IF EXISTS (" +
+    "SELECT 1 FROM pg_roles role WHERE role.rolname = " +
+    `'${role}' AND (` +
+    "EXISTS (SELECT 1 FROM pg_database database WHERE database.datdba = role.oid AND database.datname = current_database()) OR " +
+    "EXISTS (SELECT 1 FROM pg_namespace namespace WHERE namespace.nspowner = role.oid " +
+    "AND namespace.nspname <> 'information_schema' AND namespace.nspname NOT LIKE 'pg_%') OR " +
+    "EXISTS (SELECT 1 FROM pg_class relation JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace " +
+    "WHERE relation.relowner = role.oid AND namespace.nspname <> 'information_schema' AND namespace.nspname NOT LIKE 'pg_%') OR " +
+    "EXISTS (SELECT 1 FROM pg_proc function JOIN pg_namespace namespace ON namespace.oid = function.pronamespace " +
+    "WHERE function.proowner = role.oid AND namespace.nspname <> 'information_schema' AND namespace.nspname NOT LIKE 'pg_%') OR " +
+    "EXISTS (SELECT 1 FROM pg_type type JOIN pg_namespace namespace ON namespace.oid = type.typnamespace " +
+    "WHERE type.typowner = role.oid AND namespace.nspname <> 'information_schema' AND namespace.nspname NOT LIKE 'pg_%'))) " +
+    `THEN RAISE EXCEPTION 'Serving role ${role} owns an application object'; ` +
+    "END IF; END $$;"
   );
 }
 
@@ -259,7 +322,19 @@ export function buildServingRoleCorrectionMigrationSql(): string {
   ];
 
   for (const [table, privileges] of Object.entries(JOB_CONTROL_LEGACY_GRANTS)) {
-    statements.push(grantTablePrivilegesSql(TENANT_APP_ROLE, table, privileges));
+    // Preserve byte identity for the already-applied 0213 artifact. Its successor
+    // 0214 consumes the current trace below; applied migrations are immutable.
+    if (
+      table === "user_roles" ||
+      table === "company_memberships" ||
+      table === "notification_preferences" ||
+      table === "notification_digest_items" ||
+      table === "hub_counter_snapshots"
+    ) continue;
+    const correctionPrivileges = table === "notifications"
+      ? (["SELECT", "UPDATE"] as const)
+      : privileges;
+    statements.push(grantTablePrivilegesSql(TENANT_APP_ROLE, table, correctionPrivileges));
   }
   statements.push(grantDmlSql(OPERATOR_ROLE, OPERATOR_METADATA_TABLES));
   statements.push(enableForceRlsSql("execution_targets"));
@@ -274,6 +349,65 @@ export function buildServingRoleCorrectionMigrationSql(): string {
         (part) =>
           "-- C14 hand-authored security DDL: drizzle-kit cannot emit this statement; " +
           "its guarded/natural/drop-before-create form is idempotent.\n" +
+          part,
+      )
+      .join(`\n${STATEMENT_BREAKPOINT}\n`),
+  );
+  return `${header}\n${annotatedStatements.join(`\n${STATEMENT_BREAKPOINT}\n`)}`;
+}
+
+/**
+ * Attempt-1 review hardening. Additive successor to applied migration 0213:
+ * resets stale ACLs and memberships, fails closed on serving-role ownership,
+ * restores exact traced authority, and preserves the flag-off table-owner path.
+ */
+export function buildServingRoleHardeningMigrationSql(): string {
+  const header = [
+    "-- Corrective E2 serving-role hardening after prerequisite review (Decision #123).",
+    "-- DELTA-FREE `--custom` migration under Decision #122/C14: drizzle-kit cannot",
+    "-- emit cluster-role attributes, membership reconciliation, ACL resets, or RLS",
+    "-- policy transitions. The custom stub was generated by drizzle-kit, then this",
+    "-- idempotent security DDL was appended from the authoritative builder below.",
+    "-- Applied migration 0213 is intentionally unchanged. Re-application converges",
+    "-- direct grants/memberships/attributes; ownership drift raises and stops closed.",
+    "-- Generated from server/src/db/rls-tenant.ts; keep this file byte-for-byte aligned.",
+  ].join("\n");
+
+  const statements: string[] = [];
+  for (const role of [TENANT_APP_ROLE, OPERATOR_ROLE]) {
+    statements.push(assertRoleOwnsNoApplicationObjectsSql(role));
+    statements.push(revokeInheritedRolesSql(role));
+    statements.push(
+      `ALTER ROLE "${role}" NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION;`,
+    );
+    statements.push(`REVOKE ALL PRIVILEGES ON SCHEMA public FROM "${role}";`);
+    statements.push(`REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM "${role}";`);
+    statements.push(`REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM "${role}";`);
+    statements.push(`GRANT USAGE ON SCHEMA public TO "${role}";`);
+  }
+
+  for (const [table, privileges] of Object.entries(JOB_CONTROL_NEW_PATH_GRANTS)) {
+    statements.push(grantTablePrivilegesSql(TENANT_APP_ROLE, table, privileges));
+  }
+  for (const [table, privileges] of Object.entries(JOB_CONTROL_LEGACY_GRANTS)) {
+    statements.push(grantTablePrivilegesSql(TENANT_APP_ROLE, table, privileges));
+  }
+  for (const [table, columns] of Object.entries(OPERATOR_METADATA_COLUMN_GRANTS)) {
+    statements.push(grantColumnPrivilegesSql(OPERATOR_ROLE, table, "SELECT", columns));
+  }
+
+  statements.push(enableRlsWithoutForceSql("execution_targets"));
+  statements.push(tenantExecutionTargetPolicySql());
+  statements.push(operatorMetadataPolicySql("workers"));
+  statements.push(operatorMetadataPolicySql("execution_targets"));
+
+  const annotatedStatements = statements.map((statement) =>
+    statement
+      .split(`\n${STATEMENT_BREAKPOINT}\n`)
+      .map(
+        (part) =>
+          "-- C14 hand-authored security DDL: drizzle-kit cannot emit this statement; " +
+          "its convergent assertion/revoke/grant/drop-before-create form is idempotent.\n" +
           part,
       )
       .join(`\n${STATEMENT_BREAKPOINT}\n`),

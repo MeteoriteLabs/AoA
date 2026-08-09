@@ -118,9 +118,10 @@ export function createTenantAppDb(url: string, opts?: { max?: number }) {
 }
 
 /**
- * TEN-002 (E2-D03): assert the connection's role is a non-owner serving role, i.e.
- * `NOT rolsuper AND NOT rolbypassrls`. Throws otherwise. Used at boot / in tests to
- * prove the serving pool holds no authority that would bypass forced RLS. A
+ * TEN-002 (E2-D03): assert the connection's role has the exact hardened posture:
+ * non-superuser, no RLS bypass/role inheritance/cluster
+ * authority, no inherited roles, and no owned application objects). Used at boot
+ * / in tests to prove the serving pool cannot widen its effective authority. A
  * superuser or BYPASSRLS role always bypasses RLS regardless of FORCE, so serving
  * tenant queries as one is a total H-01 fail-open.
  */
@@ -128,13 +129,65 @@ export async function assertNonOwnerConnection(
   db: Db,
   expectedRole?: "aoa_app" | "aoa_operator",
 ): Promise<void> {
-  const result = await db.execute(
-    sql`SELECT current_user AS role_name, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user`,
-  );
+  const result = await db.execute(sql`
+    SELECT
+      current_user AS role_name,
+      role.rolsuper,
+      role.rolbypassrls,
+      role.rolcreatedb,
+      role.rolcreaterole,
+      role.rolinherit,
+      role.rolreplication,
+      (
+        SELECT count(*)::int
+        FROM pg_auth_members membership
+        WHERE membership.member = role.oid
+      ) AS membership_count,
+      (
+        EXISTS (
+          SELECT 1 FROM pg_database database
+          WHERE database.datdba = role.oid AND database.datname = current_database()
+        ) OR EXISTS (
+          SELECT 1 FROM pg_namespace namespace
+          WHERE namespace.nspowner = role.oid
+            AND namespace.nspname <> 'information_schema'
+            AND namespace.nspname NOT LIKE 'pg_%'
+        ) OR EXISTS (
+          SELECT 1
+          FROM pg_class relation
+          JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+          WHERE relation.relowner = role.oid
+            AND namespace.nspname <> 'information_schema'
+            AND namespace.nspname NOT LIKE 'pg_%'
+        ) OR EXISTS (
+          SELECT 1
+          FROM pg_proc function
+          JOIN pg_namespace namespace ON namespace.oid = function.pronamespace
+          WHERE function.proowner = role.oid
+            AND namespace.nspname <> 'information_schema'
+            AND namespace.nspname NOT LIKE 'pg_%'
+        ) OR EXISTS (
+          SELECT 1
+          FROM pg_type type
+          JOIN pg_namespace namespace ON namespace.oid = type.typnamespace
+          WHERE type.typowner = role.oid
+            AND namespace.nspname <> 'information_schema'
+            AND namespace.nspname NOT LIKE 'pg_%'
+        )
+      ) AS owns_application_objects
+    FROM pg_roles role
+    WHERE role.rolname = current_user
+  `);
   const rows = (Array.isArray(result) ? result : (result as { rows: unknown[] }).rows) as Array<{
     role_name?: string;
     rolsuper?: boolean;
     rolbypassrls?: boolean;
+    rolcreatedb?: boolean;
+    rolcreaterole?: boolean;
+    rolinherit?: boolean;
+    rolreplication?: boolean;
+    membership_count?: number;
+    owns_application_objects?: boolean;
   }>;
   const row = rows[0];
   if (!row) {
@@ -151,6 +204,21 @@ export async function assertNonOwnerConnection(
       `Refusing to serve tenant queries as a privileged role (rolsuper=${row.rolsuper}, ` +
         `rolbypassrls=${row.rolbypassrls}); the serving pool must be a non-owner NOSUPERUSER ` +
         "NOBYPASSRLS role so forced RLS can filter it.",
+    );
+  }
+  if (
+    row.rolcreatedb ||
+    row.rolcreaterole ||
+    row.rolinherit ||
+    row.rolreplication ||
+    row.membership_count !== 0 ||
+    row.owns_application_objects
+  ) {
+    throw new Error(
+      `Refusing ${row.role_name ?? expectedRole ?? "unknown"} serving pool with drifted authority ` +
+        `(rolcreatedb=${row.rolcreatedb}, rolcreaterole=${row.rolcreaterole}, ` +
+        `rolinherit=${row.rolinherit}, rolreplication=${row.rolreplication}, ` +
+        `memberships=${row.membership_count}, ownsApplicationObjects=${row.owns_application_objects}).`,
     );
   }
 }

@@ -550,11 +550,6 @@ const distributedExecutionDatabases = await openDistributedExecutionDatabases({
 });
 if (distributedExecutionDatabases) {
   logger.info("Verified aoa_app and aoa_operator bounded database pools");
-  const closeDistributedPools = () => {
-    void distributedExecutionDatabases.close();
-  };
-  process.once("SIGTERM", closeDistributedPools);
-  process.once("SIGINT", closeDistributedPools);
 }
 
 // Expose the active DB URL in process.env so MCP bridge child processes
@@ -1661,6 +1656,7 @@ server.listen(listenPort, config.host, () => {
 
 const shutdown = createProcessShutdownHandler({
   getPluginSubsystem: () => (app as any).__pluginSubsystem,
+  boundedDatabases: distributedExecutionDatabases,
   ownedEmbeddedPostgres:
     embeddedPostgres && embeddedPostgresStartedByThisProcess
       ? embeddedPostgres
