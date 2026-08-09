@@ -409,6 +409,17 @@ test("an unavailable recorded source commit fails closed with an actionable erro
   });
 });
 
+test("a non-commit recorded source object fails with its exact type", () => {
+  withSourceRepo({}, (repo) => {
+    const blobSha = runGit(repo.repoRoot, ["rev-parse", "HEAD:package.json"]);
+    installRealFixture(repo, { sourceSha: blobSha });
+
+    const result = runChecker(repo.repoRoot, blobSha);
+    assert.notEqual(result.status, 0, result.stdout);
+    assert.match(result.stderr, /recorded source object .* is blob; expected commit/);
+  });
+});
+
 test("a missing recorded source blob fails closed with its path", () => {
   withSourceRepo({ includeLock: false }, (repo) => {
     writeRepoFile(repo.repoRoot, "pnpm-lock.yaml", repo.lockBytes);
