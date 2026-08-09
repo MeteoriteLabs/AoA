@@ -11,6 +11,7 @@ import {
   provisionTenantAppRoleLoginSql,
   TENANT_APP_ROLE,
 } from "../db/rls-tenant.js";
+import { openDistributedExecutionDatabases } from "../db/distributed-execution-databases.js";
 
 type EmbeddedPostgresInstance = { initialise(): Promise<void>; start(): Promise<void>; stop(): Promise<void> };
 type EmbeddedPostgresCtor = new (opts: Record<string, unknown>) => EmbeddedPostgresInstance;
@@ -30,6 +31,11 @@ let setupError: unknown = null;
 
 function guard(): void {
   if (setupError) throw new Error(`embedded-postgres setup failed: ${String(setupError)}`);
+}
+
+function withStartupRole(url: string, role: "aoa_app" | "aoa_operator"): string {
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}options=${encodeURIComponent(`-c role=${role}`)}`;
 }
 
 beforeAll(async () => {
@@ -236,6 +242,85 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       },
       60_000,
     );
+
+    it.each(["aoa_app", "aoa_operator"] as const)(
+      "rejects a superuser session masked as %s by a startup role option in the direct pool gate",
+      async (expectedRole) => {
+        guard();
+        const maskedOwnerUrl = withStartupRole(adminUrl, expectedRole);
+        const maskedOwner = postgres(maskedOwnerUrl, { max: 1 });
+        try {
+          const [masked] = await maskedOwner<{
+            session_user: string;
+            current_user: string;
+          }[]>`SELECT session_user, current_user`;
+          expect(masked).toEqual({ session_user: "test", current_user: expectedRole });
+          await maskedOwner`SET ROLE NONE`;
+          const [restored] = await maskedOwner<{
+            session_user: string;
+            current_user: string;
+            rolsuper: boolean;
+          }[]>`
+            SELECT session_user, current_user, role.rolsuper
+            FROM pg_roles role
+            WHERE role.rolname = current_user
+          `;
+          expect(restored).toEqual({ session_user: "test", current_user: "test", rolsuper: true });
+        } finally {
+          await maskedOwner.end();
+        }
+
+        let accepted: Awaited<ReturnType<typeof openDistributedExecutionDatabases>> = null;
+        let failure: unknown;
+        try {
+          accepted = await openDistributedExecutionDatabases({
+            enabled: true,
+            appDatabaseUrl: expectedRole === "aoa_app" ? maskedOwnerUrl : appUrl,
+            operatorDatabaseUrl: expectedRole === "aoa_operator" ? maskedOwnerUrl : operatorUrl,
+          });
+        } catch (error) {
+          failure = error;
+        } finally {
+          await accepted?.close();
+        }
+        expect(failure).toBeInstanceOf(Error);
+        expect(String(failure)).toContain(expectedRole);
+      },
+      60_000,
+    );
+
+    it.each(["aoa_app", "aoa_operator"] as const)(
+      "rejects a superuser session masked as %s before the real server reaches health",
+      async (expectedRole) => {
+        guard();
+        const maskedOwnerUrl = withStartupRole(adminUrl, expectedRole);
+        const result = await observeStartup({
+          appDatabaseUrl: expectedRole === "aoa_app" ? maskedOwnerUrl : appUrl,
+          operatorDatabaseUrl: expectedRole === "aoa_operator" ? maskedOwnerUrl : operatorUrl,
+          expectedRole,
+        });
+        expect(result.exited, result.output).toBe(true);
+        expect(result.code).not.toBe(0);
+      },
+      60_000,
+    );
+
+    it("rejects an operator-granted view over company_secrets before serving", async () => {
+      guard();
+      await admin!.unsafe(`CREATE VIEW operator_secret_view AS SELECT id FROM company_secrets`);
+      await admin!.unsafe(`GRANT SELECT ON operator_secret_view TO aoa_operator`);
+      try {
+        const result = await observeStartup({
+          appDatabaseUrl: appUrl,
+          operatorDatabaseUrl: operatorUrl,
+          expectedRole: "aoa_operator",
+        });
+        expect(result.exited, result.output).toBe(true);
+        expect(result.code).not.toBe(0);
+      } finally {
+        await admin!.unsafe(`DROP VIEW IF EXISTS operator_secret_view`).catch(() => {});
+      }
+    }, 60_000);
 
     it("rejects an exact-named app role with inherited secret authority", async () => {
       guard();

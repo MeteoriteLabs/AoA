@@ -14,6 +14,7 @@ import {
 import { allocateEmbeddedPgPort } from "./helpers/embedded-pg-port.js";
 import { runInTenant } from "../db/tenant-context.js";
 import { agentRuntimeDecisionService } from "../services/agent-runtime-decisions.js";
+import { resolveExecutionTargetForRun } from "../services/execution-target-resolver.js";
 import { issueService } from "../services/issues.js";
 import {
   provisionTenantAppRoleLoginSql,
@@ -267,6 +268,79 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       await expect(appDb.execute(sql`SELECT id FROM company_secrets LIMIT 1`)).rejects.toSatisfy(
         (error: unknown) => errorCode(error) === "42501",
       );
+    });
+
+    it("runs the heartbeat pinned-target resolver query as aoa_app with only its required columns", async () => {
+      guard();
+      const [platformTarget] = await admin!<{ id: string }[]>`
+        SELECT id FROM execution_targets WHERE slug = 'platform-existing'
+      `;
+      const resolved = await resolveExecutionTargetForRun(appDb, {
+        organizationId: ORG_A,
+        companyId: COMPANY_A,
+        credentialKind: "company_api_key",
+        pinnedTargetId: platformTarget!.id,
+        executionTargetSlug: null,
+      });
+      expect(resolved).toMatchObject({
+        id: platformTarget!.id,
+        slug: "platform-existing",
+        kind: "pooled_gvisor",
+        status: "active",
+        organizationId: null,
+        config: {},
+      });
+
+      for (const column of [
+        "id",
+        "slug",
+        "kind",
+        "trust_class",
+        "status",
+        "organization_id",
+        "config",
+      ]) {
+        const [row] = await appSql!<{ allowed: boolean }[]>`
+          SELECT has_column_privilege(current_user, 'public.execution_targets', ${column}, 'SELECT') AS allowed
+        `;
+        expect(row?.allowed, `heartbeat resolver requires execution_targets.${column}`).toBe(true);
+      }
+      for (const column of ["worker_token_hash", "owner_user_id", "capabilities", "last_seen_at"]) {
+        const [row] = await appSql!<{ allowed: boolean }[]>`
+          SELECT has_column_privilege(current_user, 'public.execution_targets', ${column}, 'SELECT') AS allowed
+        `;
+        expect(row?.allowed, `heartbeat resolver does not require execution_targets.${column}`).toBe(false);
+      }
+    });
+
+    it("keeps both accepted bounded identities non-privileged after SET ROLE NONE", async () => {
+      guard();
+      for (const [role, connection] of [
+        ["aoa_app", appSql!],
+        ["aoa_operator", operator!],
+      ] as const) {
+        await connection`SET ROLE NONE`;
+        const [identity] = await connection<{
+          session_user: string;
+          current_user: string;
+          rolsuper: boolean;
+          secret_select: boolean;
+        }[]>`
+          SELECT
+            session_user,
+            current_user,
+            role.rolsuper,
+            has_table_privilege(current_user, 'public.company_secrets', 'SELECT') AS secret_select
+          FROM pg_roles role
+          WHERE role.rolname = current_user
+        `;
+        expect(identity).toEqual({
+          session_user: role,
+          current_user: role,
+          rolsuper: false,
+          secret_select: false,
+        });
+      }
     });
 
     it("re-applies the Decision #122/C14 correction migration twice", () => {
