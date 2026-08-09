@@ -8,7 +8,7 @@ import { jobAttempts } from "./job_attempts.js";
 // `fence` is an unpredictable fence token (text/uuid is fine at the kernel level;
 // generation policy is later). At TEN-001a only the plain attempt_id FK (ON DELETE
 // CASCADE) + denormalized organization_id exist; the partial-unique "at most one
-// active lease per attempt" (uniqueIndex WHERE released_at IS NULL) is TEN-004.
+// active lease per attempt" (uniqueIndex WHERE status in ('offered','active')) is TEN-004.
 export const leases = pgTable(
   "leases",
   {
