@@ -1,5 +1,7 @@
 export {
   createDb,
+  createTenantAppDb,
+  assertNonOwnerConnection,
   ensurePostgresDatabase,
   inspectMigrations,
   applyPendingMigrations,

@@ -1478,6 +1478,13 @@
       "when": 1786283531037,
       "tag": "0210_drop_sentinel_org_default",
       "breakpoints": true
+    },
+    {
+      "idx": 211,
+      "version": "7",
+      "when": 1786285646199,
+      "tag": "0211_tenant_rls_enforcement",
+      "breakpoints": true
     }
   ]
 }

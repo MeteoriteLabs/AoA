@@ -21,7 +21,9 @@ import {
   instanceUserRoles,
 } from "@armyofagents/db";
 import detectPort from "detect-port";
+import postgres from "postgres";
 import { createApp } from "./app.js";
+import { TENANT_APP_ROLE, provisionTenantAppRoleLoginSql } from "./db/rls-tenant.js";
 import { tenantIsolationEnforced } from "./config/deployment-mode.js";
 import { reconcileCloudBlockedPlugins } from "./services/plugin-lifecycle.js";
 import { loadConfig } from "./config.js";
@@ -265,6 +267,33 @@ async function ensureMigrations(
   return "applied (pending migrations)";
 }
 
+/**
+ * TEN-002 (E2-D03): flag-gated privileged provisioning of the `aoa_app` non-owner
+ * serving role's LOGIN credential. DORMANT BY DEFAULT — a strict no-op unless the
+ * distributed-execution flag is on AND `AOA_APP_DB_PASSWORD` is set, so the
+ * default-off boot path is byte-identical to before. Runs AFTER migrations, under
+ * the privileged (owner) connection; the migration created the role NOLOGIN with no
+ * committed credential (E2-D01). Opening the non-owner SERVING pool that USES this
+ * role is TEN-003's `runInTenant` (`createTenantAppDb`), NOT done here — E2 keeps
+ * this whole-app non-owner cutover dormant-but-tested (FND-005).
+ */
+async function maybeProvisionTenantAppRole(connectionString: string): Promise<void> {
+  if (!config.distributedExecutionEnabled) return;
+  const password = process.env.AOA_APP_DB_PASSWORD;
+  if (!password || password.trim() === "") return;
+  const sql = postgres(connectionString, { max: 1 });
+  try {
+    // provisionTenantAppRoleLoginSql escapes the secret (ALTER ROLE ... PASSWORD is
+    // utility DDL and cannot be parameter-bound); the password is never logged.
+    await sql.unsafe(provisionTenantAppRoleLoginSql(TENANT_APP_ROLE, password));
+    logger.info(
+      "Provisioned aoa_app non-owner serving role login credential (distributed execution enabled)",
+    );
+  } finally {
+    await sql.end();
+  }
+}
+
 function isLoopbackHost(host: string): boolean {
   const normalized = host.trim().toLowerCase();
   return normalized === "127.0.0.1" || normalized === "localhost" || normalized === "::1";
@@ -500,6 +529,12 @@ if (config.databaseUrl) {
   activeDatabaseConnectionString = embeddedConnectionString;
   startupDbInfo = { mode: "embedded-postgres", dataDir, port };
 }
+
+// TEN-002 (E2-D03): dormant-by-default privileged provisioning of the aoa_app
+// non-owner role login. No-op unless the distributed-execution flag is on AND a
+// password is provided (default-off boot unchanged). The serving pool that USES
+// this role is opened by TEN-003 (createTenantAppDb), not here.
+await maybeProvisionTenantAppRole(activeDatabaseConnectionString);
 
 // Expose the active DB URL in process.env so MCP bridge child processes
 // (Commander bridge spawned by claude/codex CLI) can inherit it.

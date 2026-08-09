@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { DeploymentMode } from "@armyofagents/shared";
+import { sql } from "drizzle-orm";
 import { drizzle as drizzlePg } from "drizzle-orm/postgres-js";
 import { migrate as migratePg } from "drizzle-orm/postgres-js/migrator";
 import { readFile, readdir } from "node:fs/promises";
@@ -54,6 +55,56 @@ export function createDb(url: string) {
   // `→`, em-dashes, emoji in stored markdown) is the cheapest workaround.
   const sql = postgres(url, { connection: { client_encoding: "UTF8" } });
   return drizzlePg(sql, { schema });
+}
+
+/**
+ * TEN-002 (E2-D03 / finding E2-F007): the NON-OWNER serving-pool factory for the
+ * new-path distributed-execution tables. Builds the pool exactly like `createDb`
+ * (UTF-8 client encoding), but is intended to authenticate as `aoa_app`
+ * (NOSUPERUSER, NOBYPASSRLS) so forced RLS filters it.
+ *
+ * FAIL-CLOSED: throws on a missing/blank URL and NEVER falls back to `createDb`
+ * (the privileged/owner pool). A silent fallback would run new-path queries as a
+ * superuser that BYPASSES RLS entirely — a total H-01 tenant-isolation fail-open.
+ * `createDb` is kept unchanged for the privileged/migration path.
+ */
+export function createTenantAppDb(url: string) {
+  if (typeof url !== "string" || url.trim() === "") {
+    throw new Error(
+      "createTenantAppDb requires a non-owner AOA_APP_DATABASE_URL; it must NEVER fall back to " +
+        "the owner/superuser pool (that would bypass RLS - H-01 tenant-isolation fail-open).",
+    );
+  }
+  const client = postgres(url, { connection: { client_encoding: "UTF8" } });
+  return drizzlePg(client, { schema });
+}
+
+/**
+ * TEN-002 (E2-D03): assert the connection's role is a non-owner serving role, i.e.
+ * `NOT rolsuper AND NOT rolbypassrls`. Throws otherwise. Used at boot / in tests to
+ * prove the serving pool holds no authority that would bypass forced RLS. A
+ * superuser or BYPASSRLS role always bypasses RLS regardless of FORCE, so serving
+ * tenant queries as one is a total H-01 fail-open.
+ */
+export async function assertNonOwnerConnection(db: Db): Promise<void> {
+  const result = await db.execute(
+    sql`SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user`,
+  );
+  const rows = (Array.isArray(result) ? result : (result as { rows: unknown[] }).rows) as Array<{
+    rolsuper?: boolean;
+    rolbypassrls?: boolean;
+  }>;
+  const row = rows[0];
+  if (!row) {
+    throw new Error("assertNonOwnerConnection: could not resolve current_user role attributes");
+  }
+  if (row.rolsuper || row.rolbypassrls) {
+    throw new Error(
+      `Refusing to serve tenant queries as a privileged role (rolsuper=${row.rolsuper}, ` +
+        `rolbypassrls=${row.rolbypassrls}); the serving pool must be a non-owner NOSUPERUSER ` +
+        "NOBYPASSRLS role so forced RLS can filter it.",
+    );
+  }
 }
 
 async function listMigrationFiles(): Promise<string[]> {
