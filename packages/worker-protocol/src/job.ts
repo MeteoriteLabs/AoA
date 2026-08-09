@@ -14,6 +14,7 @@ import {
   sha256DigestSchema,
   workerIdSchema,
 } from "./ids.js";
+import { canonicalizeJsonV1 } from "./canonical-json.js";
 import { executionSourceV1Schema } from "./source.js";
 import { addForbiddenWireKeyIssues } from "./wire-safety.js";
 
@@ -155,70 +156,18 @@ export const wireExtensionSchema = z
   .strict();
 export type WireExtension = z.infer<typeof wireExtensionSchema>;
 
-// RFC 8785 canonical JSON, implemented locally solely to size extension values.
-// PRT-004 introduces the shared `canonical-json.ts`; the byte budgets here are
-// deliberately computed after UTF-8 encoding, not JS code-unit length.
-//
-// The locked v1 subset is null, booleans, strings, arrays, plain objects, and
-// finite SAFE integers. Floats, unsafe integers, and lone/broken UTF-16
-// surrogates are NON-canonicalizable and are REJECTED (throw) — byte-for-byte
-// with the E0 authority `scripts/check-distributed-execution-foundation.mjs`
-// (`canonicalizeNumber`/`canonicalizeString`). The amendment names lone
-// surrogates + the unsafe-integer boundary as must-not-diverge (E1-F004). The
-// caller's try/catch converts a throw into a fail-closed "not canonicalizable"
-// issue at the extension value path, so an out-of-subset value never bypasses
-// the byte budget at a strict security-critical envelope.
-function canonicalString(value: string): string {
-  let out = '"';
-  for (let i = 0; i < value.length; i += 1) {
-    const code = value.charCodeAt(i);
-    // High surrogate: must be immediately followed by a low surrogate.
-    if (code >= 0xd800 && code <= 0xdbff) {
-      const next = i + 1 < value.length ? value.charCodeAt(i + 1) : 0;
-      if (next < 0xdc00 || next > 0xdfff) {
-        throw new Error("lone high surrogate is not canonicalizable");
-      }
-      out += value[i] + value[i + 1];
-      i += 1;
-      continue;
-    }
-    // Low surrogate with no preceding high surrogate is lone/broken.
-    if (code >= 0xdc00 && code <= 0xdfff) {
-      throw new Error("lone low surrogate is not canonicalizable");
-    }
-    if (code === 0x22) out += '\\"';
-    else if (code === 0x5c) out += "\\\\";
-    else if (code === 0x08) out += "\\b";
-    else if (code === 0x09) out += "\\t";
-    else if (code === 0x0a) out += "\\n";
-    else if (code === 0x0c) out += "\\f";
-    else if (code === 0x0d) out += "\\r";
-    else if (code < 0x20) out += `\\u${code.toString(16).padStart(4, "0")}`;
-    else out += value[i];
-  }
-  return `${out}"`;
-}
-
-function canonicalJson(value: unknown): string {
-  if (value === null) return "null";
-  if (typeof value === "boolean") return value ? "true" : "false";
-  if (typeof value === "number") {
-    if (!Number.isFinite(value)) throw new Error("non-finite number is not canonicalizable");
-    if (!Number.isInteger(value)) throw new Error("float is not canonicalizable in the v1 subset");
-    if (!Number.isSafeInteger(value)) throw new Error("unsafe integer is not canonicalizable");
-    return Object.is(value, -0) ? "0" : String(value);
-  }
-  if (typeof value === "string") return canonicalString(value);
-  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
-  if (isPlainObject(value)) {
-    const keys = Object.keys(value).sort();
-    return `{${keys.map((key) => `${canonicalString(key)}:${canonicalJson(value[key])}`).join(",")}}`;
-  }
-  throw new Error("value is not representable as canonical JSON");
-}
-
+// Extension values are sized against the RFC 8785 subset. PRT-004 introduced the
+// shared, dependency-free `canonical-json.ts` (byte-for-byte the E0 authority
+// `scripts/check-distributed-execution-foundation.mjs`), so `job.ts` no longer
+// carries its own canonicalizer — the package has ONE canonicalizer (E1-F004
+// unification). `canonicalizeJsonV1` THROWS on a value with no RFC 8785-subset
+// canonical form (floats, unsafe integers, lone/broken UTF-16 surrogates); the
+// caller's try/catch converts that throw into a fail-closed "not canonicalizable"
+// issue at the extension value path, so an out-of-subset value never bypasses the
+// byte budget at a strict security-critical envelope. Byte budgets are computed
+// after UTF-8 encoding (`TextEncoder`), never JS code-unit length or `Buffer`.
 function canonicalByteLength(value: unknown): number {
-  return utf8ByteLength(canonicalJson(value));
+  return utf8ByteLength(canonicalizeJsonV1(value));
 }
 
 /** Recursively validate a single extension value's structural bounds. */

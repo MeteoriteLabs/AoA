@@ -98,9 +98,15 @@ Two commits: **A** (plan core — the shared canonicalizer + event/batch/ACK sch
 `job.ts`'s local private canonicalizer (`canonicalString`/`canonicalJson`/`canonicalByteLength`, PRT-003 Deviation 1) is removed and replaced by `canonicalByteLength(value) = new TextEncoder().encode(canonicalizeJsonV1(value)).byteLength` importing the shared `./canonical-json.js`. The package now carries exactly ONE canonicalizer (E1-F004 non-blocking follow-up satisfied).
 
 - **Behavior byte-identical for every tested input.** The shared `canonicalizeJsonV1` reproduces E0's `canonicalizeJson` byte-for-byte; for the extension-sizing path it rejects the same out-of-subset values (float/unsafe int/lone surrogate) via the same throw, which the existing `addExtensionArrayIssues` try/catch converts into the same fail-closed "not canonicalizable" issue at the extension value path. The one representational difference — a NON-plain object (Date/Map/class instance) is serialized as an object by the shared canonicalizer whereas the old local `isPlainObject`-gated `canonicalJson` threw — cannot change any validation outcome here: `addExtensionValueStructureIssues` independently rejects a non-plain-object extension value with a "must be JSON" issue, so the envelope still fails closed, and no `job.test.ts` case exercises a non-plain-object extension value (the E1-F004 battery is float/unsafe-int/lone-surrogate, all of which both implementations throw on identically).
-- **Verification:** `job.test.ts` re-run GREEN incl. the 13 E1-F004 out-of-subset assertions; out-of-subset extension values (`1.5`, `9007199254740992`, `"\uD800"`, `"\uDC00"`, `{rate:0.25}`, `[9007199254740992]`) still fail closed on BOTH `jobEnvelopeV1Schema` and `leaseOfferV1Schema`; in-subset value-budget boundary unchanged at 16,384 pass / 16,385 fail. Full-package `test:run`, typecheck, build, and boundary re-run at exit 0. Exact counts recorded in the Deliverable-B command block appended with commit B.
+- **Verification:** `job.test.ts` re-run GREEN incl. the 13 E1-F004 out-of-subset assertions; out-of-subset extension values (`1.5`, `9007199254740992`, `"\uD800"`, `"\uDC00"`, `{rate:0.25}`, `[9007199254740992]`) still fail closed on BOTH `jobEnvelopeV1Schema` and `leaseOfferV1Schema`; in-subset value-budget boundary unchanged at 16,384 pass / 16,385 fail. `grep` confirms the only `canonicalize*`/`canonical*` function definitions in runtime source are `canonical-json.ts`'s `canonicalizeString`/`canonicalizeNumber` (private internals) + `canonicalizeJsonV1` (public), plus `job.ts`'s thin `canonicalByteLength` sizing wrapper that delegates to `canonicalizeJsonV1` — one canonicalizer.
 
-<!-- Deliverable-B command evidence appended with the refactor commit. -->
+| Command (Deliverable B) | Exit code | Result summary |
+|---|---:|---|
+| `pnpm --filter @armyofagents/worker-protocol exec vitest run src/job.test.ts` | `0` | Test Files 1 passed (1); Tests **60 passed** (incl. the 13 E1-F004 out-of-subset assertions) |
+| `pnpm --filter @armyofagents/worker-protocol test:run` (full package) | `0` | Test Files 8 passed (8); Tests **201 passed** — no regression |
+| `pnpm --filter @armyofagents/worker-protocol typecheck` | `0` | `tsc --noEmit` clean (no unused-symbol error from the removed local canonicalizer) |
+| `pnpm --filter @armyofagents/worker-protocol build` | `0` | `tsc` clean; no `*.test.*` in `dist/` |
+| `pnpm check:worker-protocol-boundary` | `0` | `worker protocol boundary: PASS` (still no `Buffer`/`node:*` in runtime source) |
 
 ## Findings
 
