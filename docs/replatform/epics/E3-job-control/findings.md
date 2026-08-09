@@ -6,7 +6,7 @@ resolution changes disposition but does not remove the original evidence.
 ## E3-F001 — E2 legacy-table grant prose is ahead of migration 0211
 
 **Date:** 2026-08-09
-**Status:** `approved_option_B_blocked_on_E2_correction`
+**Status:** `resolved_by_corrective_E2_gate`
 **Severity:** P1 STOP — locked-decision/as-built contradiction
 **Affected tickets:** all E3 execution; directly JOB-001/JOB-010 through JOB-014
 
@@ -37,10 +37,15 @@ legacy-table grants on `aoa_app`, retain application-layer Company isolation for
 and include E3-F002's metadata-only `aoa_operator` role in the same corrective E2 gate and
 superseding handoff. Options A and C are not authorized.
 
+**Resolution evidence (2026-08-10):** Independent review attempt 3 passed the corrected
+serving/operator boundary at `7843b86e25eb1ff9c520308aef7f123fec6997a7`. Prerequisite
+result, corrective E2 QA, and the superseding completion handoff are `complete`/`pass` in
+reviewer evidence commit `6b1af52a4db8a0fa41514db564e8cb622b02e1ba`.
+
 ## E3-F002 — Platform-worker operator policy was described by E2 but not implemented
 
 **Date:** 2026-08-09
-**Status:** `approved_blocked_with_E3-F001_correction`
+**Status:** `resolved_by_corrective_E2_gate`
 **Severity:** P1 — expected JOB-002 behavior but role model unresolved
 **Affected tickets:** JOB-002, JOB-009, JOB-003
 
@@ -69,6 +74,11 @@ model. This candidate is not authorized until the operator resolves E3-F001.
 enrollment-route, device-proof, and revocation metadata. It receives no access to jobs,
 attempts, leases, events, artifacts, or secrets. Implementation remains blocked until the
 combined E2 corrective gate passes.
+
+**Resolution evidence (2026-08-10):** The same reviewed revision proves the metadata-only
+operator seam, masked-owner denial, exact effective-authority audit, target-resolver grant,
+flag-off non-superuser safety, and awaited shutdown. JOB-002 still owns future enrollment,
+proof, credential, routing, status, and revocation writes.
 
 ## E3-F003 — Current task checkout mechanism differs from historical shorthand
 
