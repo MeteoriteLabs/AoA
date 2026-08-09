@@ -1,9 +1,14 @@
 # E2 — Tenant-safe Control-plane Kernel
 
-**Status:** `backlog`
-**Depends on:** E0
-**Tickets:** TEN-001 through TEN-006
+**Status:** `planning`
+**Depends on:** E0 (pass) — independent of E1
+**Tickets:** TEN-001 through TEN-006 (TEN-001 and TEN-006 split — see the plan)
 **Exit gate:** non-owner PostgreSQL role, forced RLS, mandatory tenant transactions, composite integrity, sentinel-Organization removal, and the adversarial tenant suite are green.
+
+**Planning artifacts (revision a2, independently reviewed):**
+[`implementation-plan.md`](implementation-plan.md) · [`decisions.md`](decisions.md) (E2-D01…D07) · [`findings.md`](findings.md) (E2-F001…F008).
+**Execution order:** TEN-001 → TEN-004 → TEN-006 → TEN-002 → TEN-003 → TEN-005 → E2 gate.
+**Blocked until operator sign-off:** TEN-002 (E2-D01 lock + E2-D03 scope confirm).
 
 ## Mandatory planning brief
 
