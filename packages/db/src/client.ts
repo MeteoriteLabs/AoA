@@ -131,6 +131,7 @@ export async function assertNonOwnerConnection(
 ): Promise<void> {
   const result = await db.execute(sql`
     SELECT
+      session_user AS session_role_name,
       current_user AS role_name,
       role.rolsuper,
       role.rolbypassrls,
@@ -180,6 +181,7 @@ export async function assertNonOwnerConnection(
   `);
   const rows = (Array.isArray(result) ? result : (result as { rows: unknown[] }).rows) as Array<{
     role_name?: string;
+    session_role_name?: string;
     rolsuper?: boolean;
     rolbypassrls?: boolean;
     rolcreatedb?: boolean;
@@ -193,10 +195,15 @@ export async function assertNonOwnerConnection(
   if (!row) {
     throw new Error("assertNonOwnerConnection: could not resolve current_user role attributes");
   }
-  if (expectedRole && row.role_name !== expectedRole) {
+  if (
+    row.session_role_name !== row.role_name ||
+    (expectedRole && (row.session_role_name !== expectedRole || row.role_name !== expectedRole))
+  ) {
     throw new Error(
-      `Refusing ${expectedRole} serving pool credentials authenticated as ${row.role_name ?? "unknown"}; ` +
-        "owner-pool or cross-role fallback is forbidden.",
+      `Refusing ${expectedRole ?? "bounded"} serving pool credentials with authenticated session ` +
+        `${row.session_role_name ?? "unknown"} and active role ${row.role_name ?? "unknown"}; ` +
+        "session_user and current_user must both equal the expected bounded role, so owner-pool, " +
+        "startup SET ROLE, and cross-role fallback are forbidden.",
     );
   }
   if (row.rolsuper || row.rolbypassrls) {

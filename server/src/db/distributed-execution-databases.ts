@@ -7,6 +7,7 @@ import {
 } from "@armyofagents/db";
 import { sql } from "drizzle-orm";
 import {
+  APP_EXECUTION_TARGET_COLUMN_GRANTS,
   JOB_CONTROL_LEGACY_GRANTS,
   JOB_CONTROL_NEW_PATH_GRANTS,
   OPERATOR_METADATA_COLUMN_GRANTS,
@@ -29,7 +30,7 @@ function appTablePrivileges(): Readonly<Record<string, readonly TablePrivilege[]
   return { ...JOB_CONTROL_NEW_PATH_GRANTS, ...JOB_CONTROL_LEGACY_GRANTS };
 }
 
-/** Fail closed unless the connection's effective public-schema ACL is exact. */
+/** Fail closed unless effective ACLs are exact across every non-system table-like object. */
 async function assertExactServingRoleAuthority(db: Db, role: ServingRole): Promise<void> {
   const schemaRows = rowsOf<{ schema_name: string; usage: boolean; create: boolean }>(await db.execute(sql`
     SELECT
@@ -76,7 +77,7 @@ async function assertExactServingRoleAuthority(db: Db, role: ServingRole): Promi
     JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
     WHERE namespace.nspname <> 'information_schema'
       AND namespace.nspname NOT LIKE 'pg_%'
-      AND relation.relkind IN ('r', 'p')
+      AND relation.relkind IN ('r', 'p', 'v', 'm', 'f')
     ORDER BY relation.relname
   `));
   const expectedTables = role === "aoa_app" ? appTablePrivileges() : {};
@@ -135,7 +136,7 @@ async function assertExactServingRoleAuthority(db: Db, role: ServingRole): Promi
     JOIN pg_attribute attribute ON attribute.attrelid = relation.oid
     WHERE namespace.nspname <> 'information_schema'
       AND namespace.nspname NOT LIKE 'pg_%'
-      AND relation.relkind IN ('r', 'p')
+      AND relation.relkind IN ('r', 'p', 'v', 'm', 'f')
       AND attribute.attnum > 0
       AND NOT attribute.attisdropped
     ORDER BY relation.relname, attribute.attnum
@@ -147,8 +148,14 @@ async function assertExactServingRoleAuthority(db: Db, role: ServingRole): Promi
     const operatorColumns = (
       OPERATOR_METADATA_COLUMN_GRANTS as Readonly<Record<string, readonly string[]>>
     )[row.table_name] ?? [];
+    const appColumnSelect =
+      row.schema_name === "public" &&
+      row.table_name === "execution_targets" &&
+      APP_EXECUTION_TARGET_COLUMN_GRANTS.includes(
+        row.column_name as (typeof APP_EXECUTION_TARGET_COLUMN_GRANTS)[number],
+      );
     const expectedSelect = role === "aoa_app"
-      ? appExpected.has("SELECT")
+      ? appExpected.has("SELECT") || appColumnSelect
       : row.schema_name === "public" && operatorColumns.includes(row.column_name);
     const expectedInsert = role === "aoa_app" && appExpected.has("INSERT");
     const expectedUpdate = role === "aoa_app" && appExpected.has("UPDATE");

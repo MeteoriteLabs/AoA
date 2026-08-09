@@ -66,6 +66,21 @@ export const JOB_CONTROL_NEW_PATH_GRANTS = Object.freeze({
 } satisfies Readonly<Record<string, readonly TablePrivilege[]>>);
 
 /**
+ * Current heartbeat execution-target resolver projection for aoa_app. This is
+ * column-level because the table also stores worker_token_hash and unrelated
+ * enrollment/ownership metadata that the tenant-serving path must not read.
+ */
+export const APP_EXECUTION_TARGET_COLUMN_GRANTS = Object.freeze([
+  "id",
+  "slug",
+  "kind",
+  "trust_class",
+  "status",
+  "organization_id",
+  "config",
+] as const);
+
+/**
  * E2-D06 operator-read seam. Enrollment credentials, ownership, routing config,
  * status/revocation mutations, and all DELETE authority remain deferred to
  * JOB-002; the current operator is metadata-read-only.

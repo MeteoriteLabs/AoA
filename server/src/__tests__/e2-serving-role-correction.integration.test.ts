@@ -94,13 +94,19 @@ beforeAll(async () => {
     adminUrl = `postgres://test:test@127.0.0.1:${port}/postgres`;
     await applyPendingMigrations(adminUrl);
     admin = postgres(adminUrl, { max: 1 });
-    const correctionMigration = await readFile(
-      fileURLToPath(
-        new URL("../../../packages/db/src/migrations/0214_e2_serving_role_hardening.sql", import.meta.url),
+    const correctionMigrations = await Promise.all(
+      [
+        "0214_e2_serving_role_hardening.sql",
+        "0215_e2_serving_role_audit_completion.sql",
+      ].map((migration) =>
+        readFile(
+          fileURLToPath(new URL(`../../../packages/db/src/migrations/${migration}`, import.meta.url)),
+          "utf8",
+        ),
       ),
-      "utf8",
     );
-    correctionStatements = correctionMigration
+    correctionStatements = correctionMigrations
+      .join(`\n--> statement-breakpoint\n`)
       .split("--> statement-breakpoint")
       .map((statement) => statement.trim())
       .filter(Boolean);
