@@ -246,13 +246,30 @@ Linux run is a gate action.**
 
 ## Independent review
 
-**Reviewer:** `pending`
-**Reviewed revision:** `pending`
-**Disposition:** `pending`
-**Review evidence:** `pending`
+**Reviewer:** `claude-opus (independent reviewer — NOT the implementer)`
+**Reviewed revision:** `c4d8756c8a3a256bd4566ae0b9c4b9e47b8da142` (HEAD)
+**Disposition:** `changes_requested`
+**Review evidence:**
+
+Re-run acceptance (C:\e2, `c4d8756c8`, tree clean):
+
+| Command | Exit / result |
+|---|---|
+| `git rev-parse HEAD` / `git status --porcelain` | `c4d8756c8…` / clean |
+| `pnpm --filter @armyofagents/db typecheck` | `0` |
+| `pnpm --filter @armyofagents/server typecheck` (grep companies\|company-portability\|organizations\|insert-test-company) | `none`; 66 total errors, ALL plugin-subsystem = E2-F009 baseline |
+| `vitest run company-writer-fail-closed.test.ts` | **4 passed** (fail-closed guard proven; RED→GREEN genuine — pre-change had `?? DEFAULT_ORGANIZATION_ID`) |
+| `vitest run company-service-org-scope + companies-create-org-default + cloud-auth-cutover + companies-org-scope + companies-prefix-conflict` | 4 files **16 passed**; `cloud-auth-cutover.test.ts` **fails-to-collect** on the transitive `@armyofagents/plugin-sdk` import (E2-F009 baseline — file unmodified by TEN-006a, no plugin-sdk import added) |
+| `vitest run companies-*.test.ts company-*.test.ts *org*.test.ts` (bash-expanded) | 74 files: **59 passed / 13 skipped / 2 fail-to-collect**; **514 tests passed, 62 skipped**. The 2 collect-failures (`company-plugin-upgrade-rollback`, `company-portability-preview-export`) are the E2-F009 plugin-sdk baseline — both unmodified by TEN-006a, transitive plugin-sdk. (Higher file count than the ledger's 42 = bash glob-expansion vs PowerShell literal-arg passing; strictly more coverage, same 2 baseline collect-failures.) |
+| `AOA_RUN_WIN_INTEGRATION=1 vitest run` swept integration sites | **PASS:** `ask-founder-dogfood` (factory) 4/4, `teams-null-parent-cascade` (raw-SQL) 2/2, `memory-rbac-leakage` (raw-SQL control) 8/8. **FAIL (regression):** `crew-repair` **34/37**, `extraction-sandbox-batch` **4/4**, `d18-autonomy-dial-split` **6/6** — all throwing the new TEN-006a guard. |
+
+Verify-item results: (1) no schema/migration change, sentinel `.default(…)` intact at `packages/db/src/schema/companies.ts:21` — **PASS**. (2) all 4 former sinks covered by `requireResolvedOrganizationId` (`companies.ts` :214 replay-key, :353 create, :420 createWithOperator + :447 advisory-lock key + :464 insert), no active `?? DEFAULT_ORGANIZATION_ID` remains (only comments/guard message) — **PASS**. (3) self-hosted Default-Org resolution preserved + threaded explicitly (`routes/companies.ts` `resolveCompanyOrganizationId` :64 → :329 writer; import path :235→:279); no path fail-closed in place of a legit resolution — **PASS**. (4) RED genuine — **PASS**. (5) source-asserting tests inverted/strengthened not weakened; `companies-org-scope.test.ts:201` correctly left as-is — **PASS**. (6/7) raw-SQL + factory sweep verified (column/value pairing correct; factory always explicit); literal-sentinel deviation is **acceptable** (explicit, behavior-preserving, greppable — ledger note, non-blocking). (8) Rule #1 / CAV-005 hygiene — **PASS** (no schema/migration/RLS/manifest/lock change; `companies.update` still strips org). (9) ledger accurate for the raw-SQL half but **overstates exhaustiveness** for the service-writer half.
+
+**BLOCKING DEFECT (E2-F010):** the `companyService(db).create(…)` test-site sweep is **incomplete** — **32 call sites across 14 test files** still pass only `{ name }` and now throw `requireResolvedOrganizationId`. Raw-SQL sweep (0 stragglers) and production callers are clean; the gap is entirely the service-writer axis. Reproduced on embedded PG (crew-repair 34/37, extraction-sandbox-batch 4/4, d18-autonomy-dial-split 6/6). This regresses ~14 currently-green integration files and would turn the mandatory E2-D05/E2-F008 Linux H-01 run RED. Full site list + fix in findings.md **E2-F010**.
 
 ## Review attempt history
 
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
-<!-- First independent reviewer appends attempt 1. -->
+| 1 | claude-opus (independent) | `c4d8756c8` | `changes_requested` | Fail-closed writers + raw-SQL/factory sweep + source-asserting inversions + self-hosted-resolution-preserved all verified PASS. **Blocking:** service-writer sweep incomplete — 32 `companyService.create()` sites / 14 test files omit `organizationId` → throw the TEN-006a guard (crew-repair 34/37, extraction-sandbox-batch 4/4, d18 6/6 reproduced on embedded PG). See **E2-F010**. |
+<!-- Next reviewer appends attempt 2 after the sweep-completion fix. -->
