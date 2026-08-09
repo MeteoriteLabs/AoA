@@ -106,11 +106,17 @@ typecheck/build + changed-manifest checks, once.
 # affected-package typecheck/build (Git Bash — packages/db build uses cp -r/rm -rf)
 pnpm --filter @armyofagents/db typecheck && pnpm --filter @armyofagents/db build
 pnpm --filter @armyofagents/server typecheck && pnpm --filter @armyofagents/server build
-# schema → migration (Rule #1). Migration numbers are "next unused NNNN" (currently 0207 at
-# HEAD df509b946); db:generate assigns them — do NOT hard-code non-contiguous numbers. If a
-# ticket lands out of order the numbers shift; re-confirm at execution.
-pnpm db:generate -- --name=<descriptive_slug>          # normal schema delta (double-dash so pnpm forwards --name)
+# schema → migration (Rule #1). Migration numbers are "next unused NNNN" (0208 next after
+# TEN-001a's 0207 at HEAD; db:generate assigns them — do NOT hard-code non-contiguous numbers.
+# If a ticket lands out of order the numbers shift; re-confirm at execution.
+# NOTE (verified in TEN-001a): `pnpm db:generate -- --name=X` DOUBLE-FORWARDS `--` through the
+# nested pnpm filter and drizzle-kit rejects the stray token. Working invocation = build the
+# schema to dist first, then run drizzle-kit directly from packages/db:
+pnpm --filter @armyofagents/db build && cd /c/e2/packages/db && pnpm exec drizzle-kit generate --name=<slug>   # normal schema delta
 cd /c/e2/packages/db && pnpm exec drizzle-kit generate --custom --name=<slug>   # DELTA-FREE stub (TEN-002 RLS only)
+# Then hand-add the C14 `IF NOT EXISTS` guard to every generated CREATE TABLE/INDEX (drizzle-kit
+# omits it; `migration-idempotency.test.ts` requires it — this is the sanctioned C14 idempotency
+# guard, NOT the RLS/role/backfill hand-append, and applies to EVERY E2 migration).
 # single integration file (real embedded-Postgres); AOA_RUN_WIN_INTEGRATION hatch (E2-D05)
 cd /c/e2/server && AOA_RUN_WIN_INTEGRATION=1 pnpm exec vitest run src/__tests__/<file>.integration.test.ts
 cd /c/e2/packages/db && pnpm exec vitest run src/__tests__/<file>.integration.test.ts

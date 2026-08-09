@@ -93,3 +93,14 @@ resolved finding retains its resolution link.
 - **Affected tickets:** E2 gate.
 - **Disposition:** **Addressed by revision a2 + E2-D05** — the gate runs the H-01 suites Windows-local **and** obtains at least one real Linux execution (`workflow_dispatch` on `pr.yml` or a scratch PR) pinned as formal evidence. **Requires operator action** to trigger a Linux run (or explicit acceptance of the E0/E1 Windows-local precedent for E2).
 - **Resolution link:** [decisions.md#E2-D05](decisions.md).
+
+---
+
+## E2-F009 — Pre-existing: `packages/plugin-sdk` is absent on the branch, so server typecheck/build fails (DEC-03 baseline)
+
+- **Severity:** Low (pre-existing, not epic-touched).
+- **Blocks gate:** No — DEC-03-waivable when captured in the E2 baseline.
+- **Evidence:** `server/package.json:49` depends on `@armyofagents/plugin-sdk` (`workspace:^`), but `packages/plugin-sdk` does not exist on `docs/replatform-program` (packages/ = adapter-utils, adapters, db, plugins, shared, worker-protocol). `pnpm --filter @armyofagents/server typecheck` exits 2 with ~66 errors — the unresolvable `@armyofagents/plugin-sdk` import + downstream `TS7006` implicit-any in the plugin subsystem. **Zero** errors reference E2 files (jobs/attempts/leases/tenant/repositories/`@armyofagents/db`) — grep-confirmed during TEN-001a review. E0 already documents this in `docs/replatform/epics/E0-foundation/qa/pre-existing-failure-baseline.md`.
+- **Affected tickets:** all E2 tickets that run `pnpm --filter @armyofagents/server typecheck`/`build`; the E2 gate D0 rollup (`pnpm -r typecheck`/`build`).
+- **Disposition:** The E2 gate captures its own DEC-03 pre-existing-failure baseline at Start SHA (referencing the E0 baseline row), so server typecheck/build failures are subset-of-baseline and non-epic-touched (waivable). Implementers running server typecheck on an E2 ticket verify only that **no new** error references an E2-changed file. Not a defect to fix in E2.
+- **Resolution link:** E0 `qa/pre-existing-failure-baseline.md`; E2 gate §4.
