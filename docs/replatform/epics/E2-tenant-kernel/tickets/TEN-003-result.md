@@ -1,6 +1,6 @@
 # TEN-003 Result — Mandatory transaction tenant context
 
-**Status:** `gate_review`
+**Status:** `complete`
 **Date (UTC):** `2026-08-09`
 **Epic:** `E2-tenant-kernel`
 **Plan task:** `TEN-003 — Mandatory transaction tenant context (M)`
@@ -197,10 +197,84 @@ evidence here).
 
 ## Independent review
 
-**Reviewer:** `<pending until first independent review, then agent or human identity; must differ from implementer>`
-**Reviewed revision:** `<pending until first independent review, then 40-character git SHA>`
-**Disposition:** `pending`
-**Review evidence:** `<pending until first independent review, then review record, exact commands/exit codes, or finding links>`
+**Reviewer:** `claude-opus (independent reviewer subagent — distinct from the implementer subagent)`
+**Reviewed revision:** `10592fc0b5cd9f759fb24d0fc2e15e908d4d7653`
+**Disposition:** `approved`
+**Review evidence:**
+
+Reviewed at HEAD `10592fc0b` (Start SHA `f730c2c22` = `HEAD~1`, confirmed a real
+ancestor via `git merge-base --is-ancestor`); working tree clean (`git status
+--porcelain` empty).
+
+Re-run acceptance (from `C:\e2`, Git Bash):
+
+| Command | Exit | Result |
+|---|---:|---|
+| `pnpm --filter @armyofagents/db typecheck` | `0` | clean |
+| `pnpm --filter @armyofagents/server typecheck` | `2` | **66** errors, **all** plugin subsystem (E2-F009: `app.ts` = `Cannot find module '@armyofagents/plugin-sdk'`, plus `plugins.ts`/`plugin-host-services.ts`/`plugin-*`); `grep -vi plugin` over the error lines → **empty**; zero reference `tenant-context`/`with-tenant-tx`/`tenant-tx-context` |
+| `vitest run tenant-tx-context-unit.test.ts` | `0` | **6 passed** |
+| `AOA_RUN_WIN_INTEGRATION=1 vitest run tenant-tx-context.integration.test.ts` | `0` | **7 passed** (a, b, b2, c, d, d2, e) |
+| `vitest run tenant-tx-context.integration.test.ts` (no flag) | `0` | **7 skipped** (`describe.skipIf` env-hatch) |
+| `vitest run rls-canary-unit.test.ts` | `0` | **4 passed** (`withTenantTx` behavior unchanged) |
+| `AOA_RUN_WIN_INTEGRATION=1 vitest run tenant-rls-enforcement.integration.test.ts` | `0` | **10 passed** (TEN-002 not regressed) |
+
+**Observed SQLSTATEs (read from the embedded-PG server log during the integration
+run):** assertion (d2) emitted `ERROR: invalid input syntax for type uuid: ""` on
+`STATEMENT: SELECT count(*)::int AS c FROM jobs` — the reused-connection `''::uuid`
+throw = **SQLSTATE 22P02**, statement returned no rows. Assertion (a) cross-tenant
+lookups + (d) pristine both denied at 0 rows (RLS default-deny, no error).
+
+Per-item verification:
+
+1. **`runInTenant` contract (`tenant-context.ts:36-50`)** — `= withTenantTx(appDb,
+   org, tx => fn(tenantRepositories(tx)))`. The non-empty-org guard (`typeof !==
+   "string" || .trim() === ""`) throws **before** `withTenantTx`/`db.transaction`,
+   so `set_config('aoa.organization_id', '')` / `''::uuid` is never reached (unit it
+   4-6 + integration (e): GUC untouched after reject). `fn` receives the repositories,
+   not the tx (unit it 1 asserts `__isFakeTx` absent + the 8 accessor groups); only
+   `fn`'s DATA result returns (unit it 2). GUC is transaction-local (`with-tenant-tx.ts:36`
+   `is_local => true`; unit it 3 asserts `,\s*true)` + org bound as **param** `[ORG]`,
+   never interpolated).
+2. **`with-tenant-tx.ts` comment-only** — `git show f730c2c22..HEAD -- server/src/db/with-tenant-tx.ts`
+   = docblock hunk ONLY (`NOTE (M3)` → `NOTE (TEN-002)`); function body/signature
+   byte-identical. rls-canary-unit (4 passed) corroborates.
+3. **Property proofs on a REAL max:1 non-owner pool** — `beforeAll` builds
+   `createTenantAppDb(url, { max: 1 })` (integration:138); `client.ts` forwards `max`
+   to `postgres()` only when defined (diff confirmed), so the pool is genuinely one
+   physical connection and (b)'s no-leak is not vacuous. (a) disjoint tenants + cross
+   lookups 0/null; (b) GUC empty after BOTH a committed and a rolled-back `runInTenant`
+   on the same connection, next call sees only its org; (b2) GUC == call's org inside,
+   empty outside; (c) nested SAVEPOINT inherits without re-set; (d) pristine no-GUC →
+   **0** rows while the superuser owner sees **2** (genuinely relies on TEN-002 forced
+   RLS — remove FORCE and (d) returns 2); (e) empty/blank throws pre-DB.
+4. **E2-F012 fail-closed verdict — CONFIRMED resolved-by-design.** Grep proves the
+   ONLY writer of `aoa.organization_id` is `with-tenant-tx.ts:36` with `is_local =>
+   true`; no code sets it session-level. Therefore the placeholder-GUC reset value can
+   only ever be **NULL** (pristine → `NULL::uuid` → 0 rows) or **''** (reused →
+   `''::uuid` → 22P02 throw, no rows) — there is **no variant** where a no-context read
+   yields another tenant's rows, because the reset is never a valid uuid. Policy
+   predicate (`rls-tenant.ts:105`) is `organization_id = current_setting('aoa.organization_id',
+   true)::uuid` for both USING and WITH CHECK (no `NULLIF`), so the throw-vs-0-rows
+   split is a faithful consequence, not a defect. Deferring the `NULLIF(current_setting(…),
+   '')::uuid` hardening to E3 introduces **no H-01 gap at E2**: the policies are dormant
+   (no entry point wires `runInTenant`) and every runtime read goes through `runInTenant`
+   which sets a valid uuid. The throw-vs-0-rows inconsistency is **not** an E2 defect —
+   both branches are fail-closed and it reinforces the mandatory-wrapper contract.
+5. **Scope (E2-D04) / Rule #1** — `grep runInTenant` (non-test) finds only its own
+   definition + docblock comments (incl. `server/src/index.ts:277`, a docblock line,
+   not a call): NO route/scheduler/worker wiring (dormant). Migration chain caps at
+   `0211` (no `0212`; no schema change). `git diff --stat f730c2c22..HEAD` touches only
+   `tenant-context.ts`, `with-tenant-tx.ts` (comment), `client.ts`, `index.ts`, the 2
+   tests, and the two docs files — so `rls-bootstrap.ts`, `rls-tenant.ts`,
+   `assertCompanyAccess`, and `createDb` are untouched; `createTenantAppDb`'s `max` and
+   the barrel re-export are additive; NO `package.json`/`pnpm-lock.yaml` change.
+6. **Ledger** — `Status: gate_review` at review start; bare 40-hex Start SHA
+   (`f730c2c22…` = real ancestor); a–e evidence + the E2-D04 scope note present; review
+   block was at pending sentinels; attempt-history table body empty. All consistent.
+
+No defects found. The one owed item is the H-01 Linux run at the E2 gate
+(E2-D05/E2-F008) — evidence here is Windows-local embedded-PG, which the ledger
+already flags; not a TEN-003 blocker.
 
 For `approved`, verify the result describes the reviewed revision, all focused acceptance evidence passes, and every accepted finding is resolved; then change the top-level `Status` to `complete` and commit this disposition separately. Otherwise leave `Status` as `gate_review` or set `blocked`, and link stable findings.
 
@@ -211,3 +285,4 @@ The implementation author leaves the table body empty; the explicit pending summ
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
 <!-- First independent reviewer appends attempt 1. -->
+| 1 | `claude-opus (independent reviewer subagent; ≠ implementer)` | `10592fc0b5cd9f759fb24d0fc2e15e908d4d7653` | `approved` | db typecheck 0; server typecheck 2 (66 errs, all plugin/E2-F009, 0 TEN-003); unit 6 passed; integration 7 passed (flag) / 7 skipped (no flag); rls-canary-unit 4 passed; tenant-rls-enforcement 10 passed (no TEN-002 regression). (d2) SQLSTATE **22P02** (`invalid input syntax for type uuid: ""`) observed in PG log — reused-connection fail-closed. E2-F012 **confirmed resolved-by-design** (sole GUC writer is `is_local` → reset only NULL/'' → never leaks rows; no H-01 gap at E2). Scope clean: no route/scheduler wiring, migration caps 0211, no manifest/lock change. |
