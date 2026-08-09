@@ -6,12 +6,14 @@ import postgres, { type Sql } from "postgres";
 import { sql } from "drizzle-orm";
 import {
   applyPendingMigrations,
-  createDb,
-  createTenantAppDb,
+  createTenantAppDbConnection,
   type Db,
+  type NonOwnerDbConnection,
 } from "@armyofagents/db";
 import { allocateEmbeddedPgPort } from "./helpers/embedded-pg-port.js";
 import { runInTenant } from "../db/tenant-context.js";
+import { agentRuntimeDecisionService } from "../services/agent-runtime-decisions.js";
+import { issueService } from "../services/issues.js";
 import {
   provisionTenantAppRoleLoginSql,
   TENANT_APP_ROLE,
@@ -26,43 +28,11 @@ const ORG_A = "10000000-0000-4000-8000-000000000001";
 const ORG_B = "10000000-0000-4000-8000-000000000002";
 const COMPANY_A = "20000000-0000-4000-8000-000000000001";
 const COMPANY_B = "20000000-0000-4000-8000-000000000002";
-
-const expectedLegacyPrivileges = {
-  issues: ["SELECT", "UPDATE"],
-  agents: ["SELECT", "UPDATE"],
-  task_dependencies: ["SELECT"],
-  issue_labels: ["SELECT"],
-  labels: ["SELECT"],
-  notifications: ["SELECT", "UPDATE"],
-  hub_audit: ["INSERT"],
-  heartbeat_runs: ["SELECT", "INSERT", "UPDATE"],
-  agent_wakeup_requests: ["SELECT", "INSERT", "UPDATE"],
-  discussion_entries: ["SELECT", "UPDATE"],
-  internal_agent_runs: ["SELECT", "INSERT", "UPDATE"],
-  thread_orchestration_state: ["SELECT", "UPDATE"],
-  internal_agent_conversations: ["SELECT"],
-  internal_agent_messages: ["SELECT"],
-  internal_agent_config: ["SELECT"],
-  companies: ["SELECT", "UPDATE"],
-  organizations: ["SELECT"],
-  approvals: ["SELECT", "INSERT", "UPDATE"],
-  agent_runtime_decisions: ["SELECT", "INSERT", "UPDATE"],
-  agent_runtime_trust_rules: ["SELECT", "INSERT", "UPDATE"],
-  internal_agent_runtime_approvals: ["SELECT", "INSERT", "UPDATE"],
-  internal_agent_tool_trust_rules: ["SELECT", "INSERT", "UPDATE"],
-  budget_policies: ["SELECT", "INSERT", "UPDATE", "DELETE"],
-  budget_incidents: ["SELECT", "INSERT", "UPDATE"],
-  cost_events: ["SELECT", "INSERT"],
-  activity_log: ["SELECT", "INSERT"],
-  projects: ["SELECT"],
-  task_outputs: ["SELECT", "INSERT", "UPDATE"],
-  issue_comments: ["INSERT"],
-  artifacts: ["SELECT"],
-  artifact_versions: ["SELECT"],
-  assets: ["SELECT"],
-  execution_workspaces: ["SELECT"],
-  workspace_runtime_services: ["SELECT"],
-} as const;
+const FOUNDER_A = "role-correction-founder-a";
+const AGENT_A = "30000000-0000-4000-8000-000000000001";
+const RUN_A = "40000000-0000-4000-8000-000000000001";
+const ISSUE_A = "50000000-0000-4000-8000-000000000001";
+const STALE_HUB_A = "60000000-0000-4000-8000-000000000001";
 
 let embedded: EmbeddedPostgresInstance | null = null;
 let dataDir = "";
@@ -70,12 +40,13 @@ let adminUrl = "";
 let appUrl = "";
 let operatorUrl = "";
 let admin: Sql | null = null;
-let ownerDb: Db;
 let appDb: Db;
+let appConnection: NonOwnerDbConnection | null = null;
 let appSql: Sql | null = null;
 let operator: Sql | null = null;
 let setupError: unknown = null;
 let correctionMigrationReapplyRounds = 0;
+let correctionStatements: string[] = [];
 
 function rowsOf<T>(result: unknown): T[] {
   return (Array.isArray(result) ? result : (result as { rows: T[] }).rows) as T[];
@@ -93,6 +64,10 @@ function errorCode(error: unknown): string | undefined {
 
 function guard(): void {
   if (setupError) throw new Error(`embedded-postgres setup failed: ${String(setupError)}`);
+}
+
+async function reapplyCorrectionMigration(): Promise<void> {
+  for (const statement of correctionStatements) await admin!.unsafe(statement);
 }
 
 beforeAll(async () => {
@@ -115,18 +90,16 @@ beforeAll(async () => {
     adminUrl = `postgres://test:test@127.0.0.1:${port}/postgres`;
     await applyPendingMigrations(adminUrl);
     admin = postgres(adminUrl, { max: 1 });
-    ownerDb = createDb(adminUrl);
-
     const correctionMigration = await readFile(
       resolve(process.cwd(), "../packages/db/src/migrations/0213_e2_serving_role_correction.sql"),
       "utf8",
     );
-    const correctionStatements = correctionMigration
+    correctionStatements = correctionMigration
       .split("--> statement-breakpoint")
       .map((statement) => statement.trim())
       .filter(Boolean);
     for (let round = 0; round < 2; round += 1) {
-      for (const statement of correctionStatements) await admin.unsafe(statement);
+      await reapplyCorrectionMigration();
       correctionMigrationReapplyRounds += 1;
     }
 
@@ -147,7 +120,8 @@ beforeAll(async () => {
 
     appUrl = adminUrl.replace("test:test", `aoa_app:${APP_PASSWORD}`);
     operatorUrl = adminUrl.replace("test:test", `aoa_operator:${OPERATOR_PASSWORD}`);
-    appDb = createTenantAppDb(appUrl, { max: 1 });
+    appConnection = createTenantAppDbConnection(appUrl, { max: 1 });
+    appDb = appConnection.db;
     appSql = postgres(appUrl, { max: 1 });
     operator = postgres(operatorUrl, { max: 1 });
 
@@ -160,6 +134,52 @@ beforeAll(async () => {
       VALUES
         (${COMPANY_A}, 'Company A', 'RCA', ${ORG_A}),
         (${COMPANY_B}, 'Company B', 'RCB', ${ORG_B})
+    `;
+    await admin`
+      INSERT INTO "user" (id, name, email, email_verified, created_at, updated_at)
+      VALUES (${FOUNDER_A}, 'Founder A', 'founder-a@example.test', true, now(), now())
+    `;
+    await admin`
+      INSERT INTO company_memberships
+        (company_id, principal_type, principal_id, status, membership_role)
+      VALUES (${COMPANY_A}, 'user', ${FOUNDER_A}, 'active', 'owner')
+    `;
+    await admin`
+      INSERT INTO user_roles (company_id, user_id, role)
+      VALUES (${COMPANY_A}, ${FOUNDER_A}, 'founder')
+    `;
+    await admin`
+      INSERT INTO notification_preferences
+        (user_id, company_id, rules, quiet_hours, digest)
+      VALUES (
+        ${FOUNDER_A},
+        ${COMPANY_A},
+        ${admin.json([{ semanticType: "agent_runtime_decision", deliveryMode: "digest", toastEnabled: true }])},
+        ${admin.json({ enabled: false, start: "18:00", end: "09:00", timezone: "UTC" })},
+        ${admin.json({ enabled: true, cadence: "daily" })}
+      )
+    `;
+    await admin`
+      INSERT INTO agents (id, company_id, name, kind, status)
+      VALUES (${AGENT_A}, ${COMPANY_A}, 'Role correction agent', 'org', 'idle')
+    `;
+    await admin`
+      INSERT INTO heartbeat_runs (id, company_id, agent_id, status, started_at)
+      VALUES (${RUN_A}, ${COMPANY_A}, ${AGENT_A}, 'running', now())
+    `;
+    await admin`
+      INSERT INTO issues (id, company_id, title, status, updated_at)
+      VALUES (${ISSUE_A}, ${COMPANY_A}, 'Stale checkout parity', 'todo', now() - interval '2 hours')
+    `;
+    await admin`
+      INSERT INTO notifications
+        (id, company_id, user_id, type, title, semantic_type, status, priority,
+         source_type, source_id, source_unique_key, owner_user_id)
+      VALUES (
+        ${STALE_HUB_A}, ${COMPANY_A}, ${FOUNDER_A}, 'stale_work', 'Stale task',
+        'stale_work', 'open', 'normal', 'issue', ${ISSUE_A},
+        ${`${COMPANY_A}:issue:${ISSUE_A}:stale_work:`}, ${FOUNDER_A}
+      )
     `;
     await admin`
       INSERT INTO workers (scope, organization_id, label)
@@ -183,6 +203,7 @@ beforeAll(async () => {
 }, 180_000);
 
 afterAll(async () => {
+  try { await appConnection?.close(); } catch { /* ignore */ }
   try { await appSql?.end(); } catch { /* ignore */ }
   try { await operator?.end(); } catch { /* ignore */ }
   try { await admin?.end(); } catch { /* ignore */ }
@@ -193,45 +214,44 @@ afterAll(async () => {
 describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1")(
   "P1 corrective E2 bounded serving/operator roles",
   () => {
-    it("grants aoa_app every traced JOB-010..014 legacy operation and denies an unapproved table", async () => {
+    it("runs the real JOB-010 checkout service through stale hub reconciliation as aoa_app", async () => {
       guard();
-      for (const [table, privileges] of Object.entries(expectedLegacyPrivileges)) {
-        for (const privilege of privileges) {
-          const [row] = rowsOf<{ allowed: boolean }>(
-            await appDb.execute(
-              sql`SELECT has_table_privilege(current_user, ${`public.${table}`}, ${privilege}) AS allowed`,
-            ),
-          );
-          expect(row?.allowed, `${table} requires ${privilege}`).toBe(true);
+      const checkedOut = await issueService(appDb).checkout(ISSUE_A, AGENT_A, ["todo"], null);
+      expect(checkedOut).toMatchObject({ id: ISSUE_A, status: "in_progress", assigneeAgentId: AGENT_A });
+      const [staleHub] = await admin!<{ status: string }[]>`
+        SELECT status FROM notifications WHERE id = ${STALE_HUB_A}
+      `;
+      expect(staleHub?.status).toBe("archived");
+    });
 
-          if (privilege === "SELECT") {
-            await appSql!.unsafe(`SELECT * FROM "${table}" WHERE false`);
-          } else if (privilege === "UPDATE") {
-            const [column] = await admin!<{ column_name: string }[]>`
-              SELECT column_name
-              FROM information_schema.columns
-              WHERE table_schema = 'public' AND table_name = ${table}
-              ORDER BY ordinal_position
-              LIMIT 1
-            `;
-            expect(column?.column_name).toMatch(/^[A-Za-z_][A-Za-z0-9_]*$/);
-            await appSql!.unsafe(
-              `UPDATE "${table}" SET "${column!.column_name}" = "${column!.column_name}" WHERE false`,
-            );
-          } else if (privilege === "DELETE") {
-            await appSql!.unsafe(`DELETE FROM "${table}" WHERE false`);
-          } else {
-            await appSql!.unsafe("BEGIN");
-            try {
-              await appSql!.unsafe(`INSERT INTO "${table}" DEFAULT VALUES`);
-            } catch (error) {
-              expect(errorCode(error), `${table} INSERT must pass its table privilege check`).not.toBe("42501");
-            } finally {
-              await appSql!.unsafe("ROLLBACK");
-            }
-          }
-        }
-      }
+    it("creates a real JOB-011 runtime prompt and digest projection as aoa_app", async () => {
+      guard();
+      const result = await agentRuntimeDecisionService(appDb).createPrompt({
+        companyId: COMPANY_A,
+        agentId: AGENT_A,
+        runId: RUN_A,
+        adapterType: "claude_local",
+        kind: "permission",
+        nonce: "role-correction-runtime-prompt",
+        title: "Allow checkout follow-up?",
+        summary: "Exercise the real runtime-decision aggregate",
+        promptText: "pnpm test:run",
+        toolName: "shell",
+        command: "pnpm test:run",
+        timeoutPolicy: "deny",
+      });
+      expect(result.decision.status).toBe("created");
+      expect(result.hubItem).toMatchObject({ semanticType: "agent_runtime_decision", ownerUserId: FOUNDER_A });
+      const [digest] = await admin!<{ user_id: string; hub_item_id: string }[]>`
+        SELECT user_id, hub_item_id
+        FROM notification_digest_items
+        WHERE company_id = ${COMPANY_A} AND hub_item_id = ${result.hubItem.id}
+      `;
+      expect(digest).toEqual({ user_id: FOUNDER_A, hub_item_id: result.hubItem.id });
+    });
+
+    it("still denies aoa_app an unapproved legacy secret table", async () => {
+      guard();
 
       const [denied] = rowsOf<{ allowed: boolean }>(
         await appDb.execute(
@@ -249,6 +269,57 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect(correctionMigrationReapplyRounds).toBe(2);
     });
 
+    it("reconciles stale grants/memberships and hardens both serving role attributes", async () => {
+      guard();
+      await admin!.unsafe(`CREATE ROLE "aoa_role_drift_parent" NOLOGIN`);
+      await admin!.unsafe(`GRANT SELECT ON company_secrets TO aoa_app`);
+      await admin!.unsafe(`GRANT "aoa_role_drift_parent" TO aoa_app`);
+      await admin!.unsafe(`ALTER ROLE aoa_app INHERIT REPLICATION`);
+      try {
+        await reapplyCorrectionMigration();
+        const [posture] = await admin!<{
+          rolinherit: boolean;
+          rolreplication: boolean;
+          stale_grant: boolean;
+          membership_count: number;
+        }[]>`
+          SELECT
+            r.rolinherit,
+            r.rolreplication,
+            has_table_privilege('aoa_app', 'public.company_secrets', 'SELECT') AS stale_grant,
+            (
+              SELECT count(*)::int
+              FROM pg_auth_members m
+              WHERE m.member = r.oid
+            ) AS membership_count
+          FROM pg_roles r
+          WHERE r.rolname = 'aoa_app'
+        `;
+        expect(posture).toEqual({
+          rolinherit: false,
+          rolreplication: false,
+          stale_grant: false,
+          membership_count: 0,
+        });
+      } finally {
+        await admin!.unsafe(`REVOKE "aoa_role_drift_parent" FROM aoa_app`).catch(() => {});
+        await admin!.unsafe(`REVOKE SELECT ON company_secrets FROM aoa_app`).catch(() => {});
+        await admin!.unsafe(`ALTER ROLE aoa_app NOREPLICATION`).catch(() => {});
+        await admin!.unsafe(`DROP ROLE IF EXISTS "aoa_role_drift_parent"`).catch(() => {});
+      }
+    });
+
+    it("fails migration closed when a serving role owns an application object", async () => {
+      guard();
+      await admin!.unsafe(`CREATE TABLE role_owned_drift_probe (id integer)`);
+      await admin!.unsafe(`ALTER TABLE role_owned_drift_probe OWNER TO aoa_operator`);
+      try {
+        await expect(reapplyCorrectionMigration()).rejects.toThrow(/own|owner/i);
+      } finally {
+        await admin!.unsafe(`DROP TABLE IF EXISTS role_owned_drift_probe`);
+      }
+    });
+
     it("keeps tenant RLS and composite-FK enforcement H-01 safe through runInTenant", async () => {
       guard();
       const own = await runInTenant(appDb, ORG_A, (repos) =>
@@ -263,7 +334,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       ).rejects.toSatisfy((error: unknown) => errorCode(error) === "23503");
     });
 
-    it("restricts aoa_operator reads and writes to null-Organization platform metadata", async () => {
+    it("gives aoa_operator only safe read columns on null-Organization platform metadata", async () => {
       guard();
       const op = operator!;
       const roles = await admin!<{ rolname: string; rolsuper: boolean; rolbypassrls: boolean }[]>`
@@ -277,40 +348,71 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         { rolname: "aoa_operator", rolsuper: false, rolbypassrls: false },
       ]);
 
-      const workers = await op<{ organization_id: string | null; label: string }[]>`
-        SELECT organization_id, label FROM workers ORDER BY label
+      const workers = await op<{ id: string; organization_id: string | null; label: string; status: string }[]>`
+        SELECT id, organization_id, label, status FROM workers ORDER BY label
       `;
-      expect(workers).toEqual([{ organization_id: null, label: "platform-existing" }]);
-      const targets = await op<{ organization_id: string | null; slug: string }[]>`
-        SELECT organization_id, slug FROM execution_targets ORDER BY slug
+      expect(workers).toEqual([
+        expect.objectContaining({ organization_id: null, label: "platform-existing", status: "enrolled" }),
+      ]);
+      const targets = await op<{ id: string; organization_id: string | null; slug: string; kind: string; trust_class: string; status: string }[]>`
+        SELECT id, organization_id, slug, kind, trust_class, status
+        FROM execution_targets
+        ORDER BY slug
       `;
-      expect(targets).toEqual([{ organization_id: null, slug: "platform-existing" }]);
+      expect(targets).toEqual([
+        expect.objectContaining({
+          organization_id: null,
+          slug: "platform-existing",
+          kind: "pooled_gvisor",
+          trust_class: "shared_multitenant",
+          status: "active",
+        }),
+      ]);
 
-      await op`
-        INSERT INTO workers (scope, organization_id, label)
-        VALUES ('platform', NULL, 'platform-created')
-      `;
-      await op`
-        INSERT INTO execution_targets
-          (organization_id, slug, kind, trust_class, status, capabilities, config)
-        VALUES
-          (NULL, 'platform-created', 'pooled_gvisor', 'shared_multitenant', 'active', '{}', '{}')
-      `;
-      await op`UPDATE workers SET status = 'active' WHERE label = 'platform-created'`;
-      await op`UPDATE execution_targets SET status = 'draining' WHERE slug = 'platform-created'`;
-      expect((await op<{ c: number }[]>`SELECT count(*)::int AS c FROM workers`)[0]?.c).toBe(2);
-      expect((await op<{ c: number }[]>`SELECT count(*)::int AS c FROM execution_targets`)[0]?.c).toBe(2);
+      for (const [table, column] of [
+        ["workers", "label"],
+        ["workers", "status"],
+        ["execution_targets", "slug"],
+        ["execution_targets", "capabilities"],
+      ] as const) {
+        const [row] = await op<{ allowed: boolean }[]>`
+          SELECT has_column_privilege(current_user, ${`public.${table}`}, ${column}, 'SELECT') AS allowed
+        `;
+        expect(row?.allowed, `${table}.${column} safe metadata read`).toBe(true);
+      }
 
+      for (const [table, column] of [
+        ["workers", "owner_user_id"],
+        ["execution_targets", "owner_user_id"],
+        ["execution_targets", "config"],
+        ["execution_targets", "worker_token_hash"],
+      ] as const) {
+        const [row] = await op<{ allowed: boolean }[]>`
+          SELECT has_column_privilege(current_user, ${`public.${table}`}, ${column}, 'SELECT') AS allowed
+        `;
+        expect(row?.allowed, `${table}.${column} is deferred/sensitive`).toBe(false);
+      }
+
+      await expect(op`SELECT worker_token_hash FROM execution_targets LIMIT 1`).rejects.toSatisfy(
+        (error: unknown) => errorCode(error) === "42501",
+      );
+      await expect(op`SELECT config FROM execution_targets LIMIT 1`).rejects.toSatisfy(
+        (error: unknown) => errorCode(error) === "42501",
+      );
+      await expect(op`UPDATE workers SET status = 'revoked' WHERE label = 'platform-existing'`).rejects.toSatisfy(
+        (error: unknown) => errorCode(error) === "42501",
+      );
+      await expect(op`UPDATE execution_targets SET status = 'disabled' WHERE slug = 'platform-existing'`).rejects.toSatisfy(
+        (error: unknown) => errorCode(error) === "42501",
+      );
+      await expect(op`DELETE FROM workers WHERE label = 'platform-existing'`).rejects.toSatisfy(
+        (error: unknown) => errorCode(error) === "42501",
+      );
+      await expect(op`DELETE FROM execution_targets WHERE slug = 'platform-existing'`).rejects.toSatisfy(
+        (error: unknown) => errorCode(error) === "42501",
+      );
       await expect(
-        op`INSERT INTO workers (scope, organization_id, label) VALUES ('organization', ${ORG_A}, 'forbidden')`,
-      ).rejects.toSatisfy((error: unknown) => errorCode(error) === "42501");
-      await expect(
-        op`
-          INSERT INTO execution_targets
-            (organization_id, slug, kind, trust_class, status, capabilities, config)
-          VALUES
-            (${ORG_A}, 'forbidden', 'dedicated_worker', 'dedicated_tenant', 'active', '{}', '{}')
-        `,
+        op`INSERT INTO workers (scope, organization_id, label) VALUES ('platform', NULL, 'deferred-enrollment')`,
       ).rejects.toSatisfy((error: unknown) => errorCode(error) === "42501");
     });
 
