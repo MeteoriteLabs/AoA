@@ -91,6 +91,8 @@ const EXCLUDED_SURFACE_ENVS = [
 const POLICY_ENV_KEYS = [
   "AOA_DEPLOYMENT_MODE",
   "AOA_DISTRIBUTED_EXECUTION_ENABLED",
+  "AOA_APP_DATABASE_URL",
+  "AOA_OPERATOR_DATABASE_URL",
   "AOA_ALLOW_UNSANDBOXED_MULTITENANT",
   ...EXCLUDED_SURFACE_ENVS,
 ] as const;
@@ -120,6 +122,12 @@ describe("distributed execution reserved-route exclusions", () => {
     "returns the normal 404 for reserved distributed paths (distributed flag=%s)",
     async (enabled) => {
       process.env.AOA_DISTRIBUTED_EXECUTION_ENABLED = enabled ? "true" : "false";
+      if (enabled) {
+        // Config now fail-closes flag-on startup unless both bounded role URLs
+        // are explicit. This route-registration unit never opens either URL.
+        process.env.AOA_APP_DATABASE_URL = "postgres://aoa_app:test@localhost/aoa";
+        process.env.AOA_OPERATOR_DATABASE_URL = "postgres://aoa_operator:test@localhost/aoa";
+      }
       expect(loadConfig().distributedExecutionEnabled).toBe(enabled);
       const app = await buildApp();
       for (const reservedPath of RESERVED_PATHS) {
