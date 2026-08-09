@@ -1,6 +1,6 @@
 # PRT-007 Result — Transport, Control, Error, and Frozen Cross-version Contract
 
-**Status:** `gate_review`
+**Status:** `complete`
 **Date (UTC):** `2026-08-09`
 **Epic:** `E1-worker-protocol`
 **Plan task:** `Task 7: PRT-007 — Transport, Control, Error, and Frozen Cross-version Contract`
@@ -144,15 +144,29 @@ State `None` or link stable IDs from `../findings.md`. (Implementer: `None` at d
 
 ## Independent review
 
-**Reviewer:** `pending until first independent review, then agent or human identity; must differ from implementer`
-**Reviewed revision:** `pending until first independent review, then 40-character git SHA`
-**Disposition:** `pending`
-**Review evidence:** `pending until first independent review, then review record, exact commands/exit codes, or finding links`
+**Reviewer:** `PRT-007 independent reviewer subagent (Claude)`
+**Reviewed revision:** `c68053421ac53c5b49066b041c8fbcdd920dad62`
+**Disposition:** `approved`
+**Review evidence:**
 
-For `approved`, verify the result describes the reviewed revision, all focused acceptance evidence passes, and every accepted finding is resolved; then change the top-level `Status` to `complete` and commit this disposition separately. Otherwise leave `Status` as `gate_review` or set `blocked`, and link stable findings.
+Adversarial, independent re-verification on the reviewed revision (`git rev-parse HEAD` = `c68053421ac53c5b49066b041c8fbcdd920dad62`; working tree clean). Implementer tests were not trusted; every claim was reproduced or independently re-derived.
+
+- **Full verify block — all exit 0, counts confirmed:** `gen:worker-protocol-contract` (byte-stable, `git status` empty after); `test:run` **543 passed / 17 files** (transport 52, errors 14, cross-version 53, contract 47); `typecheck`; `build`; `check:worker-protocol-boundary` PASS; `check:distributed-foundation` PASS; `node --test check-frozen-worker-protocol-consumer.test.mjs` **12/12**; `node --test update-worker-protocol-contract-manifest.test.mjs` **13/13**; `check:frozen-worker-protocol-v1 --source-sha b7a842870…` OK; `git diff --check` clean; `git status --porcelain` empty.
+- **Frozen fixture crux (independent re-derivation):** (a) committed `dist/index.js` has **0** import/export-from/require/import() specifiers, no `sourceMappingURL`, no absolute/`file://`/drive paths, no `src` reference, 0 CR bytes; (b) frozen `package.json` declares no dependencies/peer/optional; (c) **DETERMINISM** — an independent re-bundle of the current built `dist/index.js` + zod with the same esbuild options produced SHA-256 `3c854028f3f1c0e7a792bda328515dc4c801e41bf0b0f3c3ee79a3ac7b7294e9`, **byte-identical** (239,198 bytes) to the committed frozen bundle and the recorded hash; (d) independent manifest recompute (sorted POSIX, excl. self, 18 files) is **byte-equal** to the committed `manifest.sha256`; (e) `dependency-lock.json.sourceSha` == `b7a842870…` == this ledger's `BASELINE_SOURCE_SHA`, records zod 3.24.2 + esbuild 0.28.1 + lockfile/package integrity matching the live repo.
+- **Clone-safety (deviation #1):** all **19** fixture files git-tracked; `.gitignore` negation `!tests/fixtures/worker-protocol-consumers/v1/dist/**` present; committed `dist/index.js` blob is LF (0 CR); the **freeze commit tree** (`c68053421`) carries all 19 files incl. every `dist/*`, and `git archive` extracts the dist bytes.
+- **Two-commit protocol:** runtime (non-test) `src` diff between `b7a842870` and `c68053421` is **empty**; the fixture and `cross-version.test.ts` are **absent** from the source commit and present only in the freeze commit; `BASELINE_SOURCE_SHA` is a bare 40-hex == `b7a842870…`. Neither commit alone completes the ticket.
+- **Bidirectional cross-version:** the harness imports current and frozen as **distinct** instances (asserts `frozen.jobEnvelopeV1Schema !== current.jobEnvelopeV1Schema`), evaluates all 42 corpus cases on **both** consumers in both directions, and agrees on extension preservation, unknown critical-extension/poll-outcome/control-kind/error-code rejection, renewal-identity echo, and duplicate-ID replay/`hash_mismatch`/`conflict` — first freeze correctly classified **`baseline_established`** (53/53).
+- **Product vs runtime-decision separation (independently probed against the built module, non-trivial positives + negatives in one run):** the discriminated `ControlCommandV1` **rejects** a product payload in a `runtime_decision_result` command and a runtime payload in a `product_approval_result` command while **accepting** each correct pairing; `productApprovalAuthorizesActionV1` authorizes exactly the bound governed action (rejects a different id/kind and any non-`approved` decision); `runtimeDecisionResultV1Schema` is a strict `permission | work_question` union (answer required only for `answered`, ≤16 KiB canonical / depth ≤8); `matchRuntimeDecisionResultToRequestV1` **fails closed** on missing request / cross-kind / nonce / requestDigest / schemaVersion / sourceRevision / expiresAt / timeoutPolicy mismatch / late positive answer.
+- **Errors + operations.md:** exactly the **13** stable codes, closed, unknown fails closed; only `throttled`/`internal_unavailable` carry `retryAfterMs`; `.strict()` blocks existence side-channels and credential-bearing detail keys; `redaction: "secret"` required. `operations.md` has one row per operation and `contract.test.ts` enforces the documented set == exported `WORKER_PROTOCOL_OPERATIONS` (no duplicate, no undocumented operation) and pins both files in the manifest.
+- **Deviation #4 verdict — ACCEPTABLE (not a defect):** the control-command **envelope**'s recursive credential-key scan reaches into opaque work-question answer content and rejects forbidden keys (`token`, `environment`, nested `apiKey` all rejected at the envelope; benign keys pass). This is consistent fail-closed secret containment matching PRT-004 event-option scanning and HARD invariant H-04; the narrow false-positive risk (an answer key literally `token`/`env`) resolves in the safe direction and is rephrasable. On the wire a runtime decision always travels inside a control command, so the scan always fires.
+- **Housekeeping:** transport nests the existing PRT-003/004/005 payloads (no redefinition/colliding name); runtime source uses `TextEncoder` (no `Buffer`/`node:*`); runtime dependency is exactly `{"zod":"3.24.2"}`; `index.ts` uses explicit named exports (no real `export *`); ledger conventions correct (Status backtick, Start SHA + BASELINE_SOURCE_SHA bare, implementer identity, empty attempt table before this review).
+- **Mutation corpus (spot-confirmed on isolated copies):** 12/12 synthetic cases fail on tamper; additionally, an independent adversarial test on a **copy of the real fixture** confirmed a mutated byte (`manifest.sha256 does not match`) and a mutated `sourceSha` are rejected while an untouched copy passes.
+
+No accepted findings. `Status` set to `complete`.
 
 ## Review attempt history
 
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
 <!-- First independent reviewer appends attempt 1. -->
+| 1 | PRT-007 independent reviewer subagent (Claude) | `c68053421ac53c5b49066b041c8fbcdd920dad62` | `approved` | Full verify block all exit 0 (543 tests / 17 files; mutation 12/12; manifest 13/13; boundary + distributed PASS; frozen OK; gen byte-stable; git clean). Independent re-bundle SHA `3c854028…7294e9` byte-identical (239,198 B) to the committed frozen bundle; manifest recompute byte-equal; lock sourceSha == BASELINE_SOURCE_SHA (zod 3.24.2, esbuild 0.28.1). Clone-safety proven (19 tracked files, .gitignore negation, LF, freeze-commit tree carries dist). Two-commit protocol confirmed (runtime src diff empty; fixture + cross-version only in freeze). Bidirectional `baseline_established` (distinct instances, 53/53). Product/runtime separation + matcher fail-closed independently probed. 13 error codes closed; operations.md bijection enforced. Deviation #4 judged ACCEPTABLE (envelope-level fail-closed secret containment, H-04). No findings. |
