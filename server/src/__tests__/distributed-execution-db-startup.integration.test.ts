@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
 import postgres, { type Sql } from "postgres";
 import { applyPendingMigrations } from "@armyofagents/db";
@@ -108,7 +109,7 @@ async function observeServer(input: {
   expectedFailureText?: string;
 }): Promise<{ exited: boolean; code: number | null; output: string }> {
   const httpPort = await allocateEmbeddedPgPort();
-  const serverEntry = resolve(process.cwd(), "src/index.ts");
+  const serverEntry = fileURLToPath(new URL("../index.ts", import.meta.url));
   const child = spawn(process.execPath, ["--import", "tsx", serverEntry], {
     cwd: process.cwd(),
     env: {

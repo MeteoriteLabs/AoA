@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
 import postgres, { type Sql } from "postgres";
 import { sql } from "drizzle-orm";
@@ -93,7 +94,9 @@ beforeAll(async () => {
     await applyPendingMigrations(adminUrl);
     admin = postgres(adminUrl, { max: 1 });
     const correctionMigration = await readFile(
-      resolve(process.cwd(), "../packages/db/src/migrations/0214_e2_serving_role_hardening.sql"),
+      fileURLToPath(
+        new URL("../../../packages/db/src/migrations/0214_e2_serving_role_hardening.sql", import.meta.url),
+      ),
       "utf8",
     );
     correctionStatements = correctionMigration
