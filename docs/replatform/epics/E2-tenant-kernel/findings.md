@@ -96,14 +96,15 @@ resolved finding retains its resolution link.
 
 ---
 
-## E2-F009 — Pre-existing: `packages/plugin-sdk` is absent on the branch, so server typecheck/build fails (DEC-03 baseline)
+## E2-F009 — CORRECTED (misdiagnosis): `@armyofagents/plugin-sdk` is present; the isolated `--filter` typecheck failure was a build-order artifact, not a missing package
 
-- **Severity:** Low (pre-existing, not epic-touched).
-- **Blocks gate:** No — DEC-03-waivable when captured in the E2 baseline.
-- **Evidence:** `server/package.json:49` depends on `@armyofagents/plugin-sdk` (`workspace:^`), but `packages/plugin-sdk` does not exist on `docs/replatform-program` (packages/ = adapter-utils, adapters, db, plugins, shared, worker-protocol). `pnpm --filter @armyofagents/server typecheck` exits 2 with ~66 errors — the unresolvable `@armyofagents/plugin-sdk` import + downstream `TS7006` implicit-any in the plugin subsystem. **Zero** errors reference E2 files (jobs/attempts/leases/tenant/repositories/`@armyofagents/db`) — grep-confirmed during TEN-001a review. E0 already documents this in `docs/replatform/epics/E0-foundation/qa/pre-existing-failure-baseline.md`.
-- **Affected tickets:** all E2 tickets that run `pnpm --filter @armyofagents/server typecheck`/`build`; the E2 gate D0 rollup (`pnpm -r typecheck`/`build`).
-- **Disposition:** The E2 gate captures its own DEC-03 pre-existing-failure baseline at Start SHA (referencing the E0 baseline row), so server typecheck/build failures are subset-of-baseline and non-epic-touched (waivable). Implementers running server typecheck on an E2 ticket verify only that **no new** error references an E2-changed file. Not a defect to fix in E2.
-- **Resolution link:** E0 `qa/pre-existing-failure-baseline.md`; E2 gate §4.
+- **Severity:** Low (no real failure — record-keeping correction).
+- **Blocks gate:** No.
+- **Original (incorrect) premise:** that `packages/plugin-sdk` was absent so server typecheck/build fail. The per-ticket runs saw `pnpm --filter @armyofagents/server typecheck` exit 2 with ~66 `@armyofagents/plugin-sdk`-related errors and treated it as a pre-existing baseline.
+- **Correction (E2 gate a1, code-is-truth):** `@armyofagents/plugin-sdk` **IS present** at `packages/plugins/sdk` (note the path — `packages/plugins/sdk`, not `packages/plugin-sdk`), tracked since Start SHA `df509b946` (`git ls-tree df509b946 packages/plugins/sdk` = present; `package.json` name = `@armyofagents/plugin-sdk`). The ~66 errors were a **build-order artifact** of running the ISOLATED `pnpm --filter @armyofagents/server typecheck` against an unbuilt, gitignored `dist/` for the workspace dep. The D0-R01 recursive lanes build packages first: **`pnpm -r typecheck` and `pnpm -r build` both exit 0**, and the 2 files this finding predicted would fail-to-collect (`company-plugin-upgrade-rollback`, `company-portability-preview-export`) **pass**. Zero E2-changed files were ever implicated (that part held).
+- **Affected tickets:** none (no real defect). The per-ticket "server typecheck = 66 baseline errors" notes are explained by this build-order artifact.
+- **Disposition:** **RESOLVED as a misdiagnosis.** The only genuine `pnpm test:run` baseline failure at HEAD is `packages/worker-protocol/src/cross-version.test.ts` (E1, non-epic-touched, a Windows vitest-transform harness artifact expected green on Linux), recorded in `qa/pre-existing-failure-baseline.md`. No plugin-sdk absence exists.
+- **Resolution link:** `qa/pre-existing-failure-baseline.md`; the E2 gate a1 QA record.
 
 ---
 

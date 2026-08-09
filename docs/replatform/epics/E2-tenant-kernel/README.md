@@ -1,14 +1,13 @@
 # E2 — Tenant-safe Control-plane Kernel
 
-**Status:** `planning`
+**Status:** `gate_review` (all 8 ticket ledgers `complete`; gate green Windows-local; **`blocked_external`** pending the one mandatory real-Linux H-01 run — E2-D05/E2-F008)
 **Depends on:** E0 (pass) — independent of E1
-**Tickets:** TEN-001 through TEN-006 (TEN-001 and TEN-006 split — see the plan)
-**Exit gate:** non-owner PostgreSQL role, forced RLS, mandatory tenant transactions, composite integrity, sentinel-Organization removal, and the adversarial tenant suite are green.
+**Tickets:** TEN-001a/b, TEN-002, TEN-003, TEN-004, TEN-005, TEN-006a/b — **all `complete`**, each independently reviewed (reviewer ≠ implementer).
+**Exit gate:** non-owner PostgreSQL role, forced RLS, mandatory tenant transactions, composite integrity, sentinel-Organization removal, and the adversarial tenant suite — **all green** at revision `acf2b32fb`.
 
-**Planning artifacts (revision a2, independently reviewed):**
-[`implementation-plan.md`](implementation-plan.md) · [`decisions.md`](decisions.md) (E2-D01…D07) · [`findings.md`](findings.md) (E2-F001…F008).
-**Execution order:** TEN-001 → TEN-004 → TEN-006 → TEN-002 → TEN-003 → TEN-005 → E2 gate.
-**Blocked until operator sign-off:** TEN-002 (E2-D01 lock + E2-D03 scope confirm).
+**Artifacts:** [`implementation-plan.md`](implementation-plan.md) · [`decisions.md`](decisions.md) (E2-D01…D09) · [`findings.md`](findings.md) (E2-F001…F013, all resolved/corrected) · [`qa/`](qa/) (D0 rollup + baseline) · [`handoffs/`](handoffs/) (gate a1 = `blocked_external`).
+**Execution order (as run):** TEN-001a/b → TEN-004 → TEN-006a/b → TEN-002 → TEN-003 → TEN-005 → E2 gate.
+**Outstanding for `complete`:** a superseding gate `a2` records `Result: pass` after ≥1 real Linux execution of the H-01 suites; then E2 flips `gate_review → complete` and HEAD fast-forwards onto `docs/replatform-program`.
 
 ## Mandatory planning brief
 
