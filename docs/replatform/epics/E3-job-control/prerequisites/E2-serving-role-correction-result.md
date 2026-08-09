@@ -1,15 +1,17 @@
 # Prerequisite P1 Result — E2 bounded serving/operator-role correction
 
-**Status:** `needs_changes`
+**Status:** `complete`
+**Disposition:** `pass`
 **Date (UTC):** `2026-08-10`
 **Implementer:** `Codex implementer agent (/root/e2_role_correction_impl)`
 **Start SHA:** `2c33cb220a4a3cdcd8423f6018258011a24090d7`
 **RED test commit:** `e3c681421`
 **Implementation revision:** `920e55de5a6557577bed9d228e9a00c4d49beadc`
-**Reviewed revision:** `ed1887bf29c688a0d0d83018a2f63144fb027041`
+**Reviewed revision:** `7843b86e25eb1ff9c520308aef7f123fec6997a7`
 **Fix-round 1 RED commit:** `2db268b01`
 **Fix-round 1 candidate code revision:** `d5abd1a53`
 **Fix-round 1 review:** `needs_changes` (review attempt 2)
+**Fix-round 2 review:** `pass` (review attempt 3)
 **Scope:** Corrective E2 prerequisite resolving the premises of E3-F001/E3-F002 only. No JOB-001 or other E3 ticket behavior is implemented.
 
 ## Attempt 1 delivered behavior (superseded by the candidate below)
@@ -193,9 +195,44 @@ The candidate addresses only review attempt 2's three Important findings:
 Implementer-observed focused acceptance is green at 56/56 and migration idempotency
 is green at 5/5. Recursive typecheck and production build pass. Repository-wide test
 evidence and any Windows-local baseline limitation are recorded in the implementer
-report and the non-passing a5 QA/handoff candidate.
+report and the then-awaiting-review a5 QA/handoff candidate, finalized below.
 
-**Required next action:** a distinct reviewer must inspect the exact final revision,
-rerun the adversarial identity/view/resolver cases, classify repository-wide
-verification, and issue the prerequisite decision. Until then, status remains
-`needs_changes` and E3 must not begin from this record.
+**Candidate reviewer action (satisfied by review attempt 3 below):** inspect the exact
+final revision, rerun the adversarial identity/view/resolver cases, classify
+repository-wide verification, and issue the prerequisite decision.
+
+## Review attempt 3
+
+**Reviewer:** `Codex distinct reviewer (/root/e2_role_correction_review)`
+
+**Reviewed revision:** `7843b86e25eb1ff9c520308aef7f123fec6997a7`
+
+**Disposition:** `pass`
+
+All three review-attempt-2 Important findings are addressed. The startup identity
+gate requires authenticated `session_user` and active `current_user` to equal each
+other and the expected bounded role; direct-pool and real-child tests reject masked
+superuser URLs. Table and column authority scans cover relation kinds `r,p,v,m,f`,
+and real view plus reviewer materialized-view/foreign-table drift probes fail closed.
+Migration 0215 grants `aoa_app` only the seven columns selected by the actual pinned
+execution-target resolver; token, owner, capabilities, and liveness fields remain
+denied to that role, and `aoa_operator` authority is unchanged.
+
+Independent operator-directed Windows acceptance passed the three isolated
+regressions (`4/4`, `1/1`, `1/1`), the full focused P1 matrix (`56/56`), migration
+idempotency (`5/5`), and affected DB/server typecheck and build. A clean exact-role
+flag-on gate probe passed. PostgreSQL 18 startup-option probes also established that
+`session_authorization` remains bound to the authenticated login and cannot mask the
+gate; combined `session_authorization`/`role` options still expose the privileged
+`session_user` and are rejected.
+
+The isolated worker-protocol lane still exits `1` on the known Windows Vitest
+transform/collection `SyntaxError` at `cross-version.test.ts:12`, with zero tests
+collected; both directly imported JavaScript files pass `node --check`, and this
+candidate changes no frozen E1 path. It remains an honestly recorded Windows-local
+caveat; Linux CI is the formal DEC-03 authority and is not represented as having run
+locally.
+
+Prerequisite P1 is complete/pass on the exact reviewed revision above. This closes
+only the corrective E2 gate; it does not itself implement JOB-001, JOB-002, or any
+other E3 ticket.
