@@ -127,10 +127,26 @@ None. PRT-004 (sequenced worker events + cumulative ACK) is the next Epic E1 tic
 
 ## Independent review
 
-**Reviewer:** `<pending until first independent review, then agent or human identity; must differ from implementer>`
-**Reviewed revision:** `<pending until first independent review, then 40-character git SHA>`
-**Disposition:** `pending`
-**Review evidence:** `<pending until first independent review, then review record, exact commands/exit codes, or finding links>`
+**Reviewer:** `PRT-003 independent reviewer subagent (Claude)`
+**Reviewed revision:** `d381a3a46f16f5ef05c26a0b8101be63509f927a`
+**Disposition:** `changes_requested`
+**Review evidence:**
+
+*Re-run on the reviewed revision (`git rev-parse HEAD` = `d381a3a46f16f5ef05c26a0b8101be63509f927a`; working tree clean):*
+- `vitest run src/wire-safety.test.ts src/source.test.ts src/job.test.ts` → exit `0`, **80 passed** (15 wire-safety + 18 source + 47 job).
+- `test:run` (full package) → exit `0`, **111 passed** (6 files).
+- `typecheck` → exit `0`; `build` → exit `0` (no `*.test.*` in `dist/`); `pnpm check:worker-protocol-boundary` → `PASS` exit `0`.
+- `git diff --check` → clean exit `0`; `git status --porcelain` → empty (before this doc change).
+- Changed-files (8), test counts (80/111), and the canary seed/count (`20260809` / `10000`, 20,000 samples) in the self-report all match the diff and a re-run.
+
+*CONCERN #1 — canonicalizer cross-check (the single defect; see finding [E1-F004](../findings.md)):* Independently imported the E0 authority `canonicalizeJson` (`scripts/check-distributed-execution-foundation.mjs`) and drove the **built** `jobEnvelopeV1Schema`. **In-subset: 23/23 cases byte-for-byte identical** canonical strings + byte counts (nested objects/arrays, multibyte `é`/astral emoji, combining NFD, all control-char escapes, integers, `-0`, booleans, `null`, key-ordering, unicode keys); real-schema value-budget boundary matches E0's count exactly at 16,384 pass / 16,385 fail for ASCII **and** multibyte. **Out-of-subset DIVERGES on accept/reject:** E0 rejects floats, unsafe integers, and lone/broken surrogates; the local `canonicalJson` accepts all of them, and `jobEnvelopeV1Schema.safeParse` returns `success:true` for extension values `1.5`, `9007199254740992`, `"\uD800"`, `{rate:0.25}`, `[9007199254740992]` — every one non-canonicalizable per the frozen E0/RFC-8785 authority (amendment line 97 names lone surrogates + unsafe-integer boundary as must-not-diverge). Divergence also propagates through `leaseOfferV1Schema` (nested-job float extension accepted). Unsafe integers additionally **miscount** (`9007199254740995` → `"9007199254740996"`). This is verdict (b): a real fail-open defect at a `.strict()` security envelope → `changes_requested`. **Required fix (PRT-003 scope, no PRT-004 pre-emption):** make non-integer numbers, non-safe integers, and lone/broken surrogate strings in an extension value **fail closed** (match E0's `canonicalizeNumber`/`canonicalizeString` reject behavior) + add float/unsafe-int/lone-surrogate rejection tests.
+
+*Everything else verified security-correct (independent probes, 33/33 adversarial checks green):*
+- **Extension boundary±1:** count 16/17; schemaVersion 1·1e6 / 0·1e6+1; depth 8/9; array 128/129; object keys 64/65; per-key **byte** boundary 100/101 via `é` (byte-not-code-unit); per-value canonical 16,384/16,385; **combined exact 65,536 pass / 65,537 fail** (self-report tested 65,010/66,010 — I confirmed the exact ±1 boundary); unknown `critical:true` fails closed; safe `critical:false` value preserved deep-equal.
+- **wire-safety:** forbidden set is exactly the 12 members; `secretHandleIds`/`policyHash`/`secretHandles` (PRT-005 name) NOT flagged; deterministic sorted dotted paths incl. array indices + deep nesting; a forbidden key **deeply nested inside an extension value** (`{a:{b:[{cookie}]}}`), plus `authorization` and `secret_value`, are caught by the job superRefine; canary corpus re-run with a **different seed (424242)** still inspects every string and always catches the canary with benign samples clean.
+- **source union:** `task_run` requires runId+issueId and an `agent` executor byte-equal to `assigneeAgentId` (mismatch + non-agent rejected); the other five strict-reject fabricated `runId`/`issueId`; unknown `kind` and unknown `operationKind` fail closed; opaque principal rejects blank/whitespace/edge-whitespace/>200-UTF-8-byte and preserves bytes (200/201 ASCII + `€`×66/67).
+- **placement matrix:** explicit row membership only — grep confirms no `<`/`>`/`localeCompare`/index ordinal comparison in the class/trust/credential/locality logic (`.includes()`/`===`/Set). Adversarials beyond the implementer's list all fail closed: `managed_cloud`+`organization_brokered`; `owner_desktop`+`organization_target_only`; `organization_dedicated`+`owner_bound`; dual-target `owner_device_only` (invalid for `managed_cloud`); `owner_bound` with two target classes; superfluous trust class. owner/organization/ordered_explicit coherence rules confirmed.
+- **lease + housekeeping:** `leaseOfferV1Schema` rejects `ackDeadline ≥ expiresAt` + forbidden keys (incl. nested in extension value); ACK/renew echo full identity; renew response carries server `expiresAt` + `cancelRequested`/`cancelReason`. `index.ts` uses explicit `export { … }` / `export type { … }` (no `export *`). Ledger conventions correct (bare Start SHA, backtick Status, distinct implementer/reviewer identity).
 
 For `approved`, verify the result describes the reviewed revision, all focused acceptance evidence passes, and every accepted finding is resolved; then change the top-level `Status` to `complete` and commit this disposition separately. Otherwise leave `Status` as `gate_review` or set `blocked`, and link stable findings.
 
@@ -140,4 +156,5 @@ The implementation author leaves the table body empty; the explicit pending summ
 
 | Attempt | Reviewer | Reviewed revision | Disposition | Evidence/findings |
 |---:|---|---|---|---|
-<!-- First independent reviewer appends attempt 1. -->
+| 1 | PRT-003 independent reviewer subagent (Claude) | `d381a3a46f16f5ef05c26a0b8101be63509f927a` | `changes_requested` | Re-run green (focused 80/80, full 111/111, typecheck/build/boundary exit 0, tree clean). Defect: local `job.ts` extension byte-sizer diverges from the E0 RFC-8785 authority — `jobEnvelopeV1Schema` accepts floats / unsafe integers / lone-surrogate strings in extension values (fail-open; non-canonicalizable per E0/amendment line 97; propagates through lease offers; unsafe ints miscount). In-subset 23/23 byte-identical; all other adversarials 33/33 green (boundary±1 incl. exact combined 65,536/65,537, wire-safety, source union, explicit-matrix placement with no ordinal comparison, leases, explicit index exports). See [E1-F004](../findings.md). Fix: reject non-integer/non-safe-integer numbers + lone/broken surrogates in extension values (match E0), add tests. |
+<!-- Later reviewers append attempt 2, 3, … monotonically. -->
