@@ -7,6 +7,8 @@
 **Start SHA:** `baf903bc982c7580b6955b69c624fb6dcab570ae`
 **Candidate code revision:** `4fa9df3f08452509f24c94681df73a8909451684`
 **Reviewed revision:** `c90908281b43ef5e2fba319d828ed1958ca3bb60`
+**Fix-round 1 RED revisions:** `eef4db2588505b61ffee0fc864792e3fd8873fa4`, `193cea335cec8cb9b3ed423bdb62bffb9c638a92`
+**Fix-round 1 candidate code revision:** `127247f54271bc951db04ea50c016cf4d49e0d66`
 **Scope:** Corrective E1 checker/test/evidence work only. No frozen v1 byte, worker-protocol source/schema/bundle, dependency version, or E3 ticket behavior changed.
 
 Distinct review attempt 1 requested changes. P2 is not complete, this record is not a pass, and JOB-001 is not authorized to rely on this correction.
@@ -107,3 +109,43 @@ Direct base/head object comparison is clean: worker-protocol tree `73aeaaeebefea
 ### Decision
 
 The immutable boundaries themselves are unchanged and the intended later-consumer/CRLF/dependency correction works, but the checker does not enforce the complete frozen-artifact mutation contract and is unsafe against replacement refs and invalid executable fixture bytes. P2 remains in `gate_review` with `needs_changes`. The awaiting-review E1 QA/handoff are not finalized or superseded by pass artifacts.
+
+## Fix round 1 candidate - awaiting distinct re-review
+
+This section records implementer-observed corrective evidence only. The result remains
+`gate_review` / `needs_changes`; it is not a pass and does not authorize JOB-001.
+
+### Strict TDD evidence
+
+- RED revision `eef4db2588505b61ffee0fc864792e3fd8873fa4` produced `22 passed / 7 failed` across 29 cases. The seven expected failures exposed coordinated bundle/manifest and schema/manifest mutation acceptance, replacement-ref substitution, invalid-code execution, the missing bounded-smoke API, inherited signing failure, and setup-time temp-repository leakage.
+- RED revision `193cea335cec8cb9b3ed423bdb62bffb9c638a92` added exact non-commit object-type behavior and failed because a blob source SHA was reported only as unavailable.
+- GREEN revision `127247f54271bc951db04ea50c016cf4d49e0d66` passes the expanded `30/30` focused corpus while retaining all original 21 cases.
+
+### Candidate correction
+
+1. The fixture is authenticated against exact raw Git blobs under freeze commit `c68053421ac53c5b49066b041c8fbcdd920dad62`, whose sole parent is the recorded E1 source commit `b7a842870ce7509d8baa75409e0ab19da375c88a` and whose fixture tree is `e62b3b2977fdd69a20ea62a0be30ecd858aafa20`. Coordinated bundle/manifest and schema/manifest regeneration now fail without changing or re-blessing any frozen byte.
+2. Every verifier Git lookup supplies both `--no-replace-objects` and `GIT_NO_REPLACE_OBJECTS=1`; the checker also rejects replacement refs for the source or anchor SHA. A real `refs/replace` adversarial case proves a substituted source tree cannot pass, and recorded source objects must have exact type `commit`.
+3. Static fixture, immutable-source, dependency, and anchor checks complete before fixture import. Smoke execution is an isolated child with a 5-second production timeout, `SIGKILL`, bounded captured output, and explicit failure diagnostics. The corpus proves an invalid sentinel never executes and an infinite-loop fixture is terminated at the focused 100 ms timeout.
+4. Synthetic repositories disable commit/tag signing explicitly, use `--no-gpg-sign`, and place initialization inside cleanup boundaries. The reproduced `commit.gpgSign=true` environment passes, and a forced setup failure leaves no `frozen-wp-git-*` temp repository.
+
+### Fix-round verification
+
+| Command | Outcome |
+|---|---|
+| Checker/test `node --check` | both exit `0` |
+| Focused checker corpus | exit `0`, `30/30` |
+| Actual checker at `b7a842...` | exit `0`; Zod `3.24.2`, esbuild `0.28.1` |
+| Boundary Node suite / boundary CLI | exit `0`, `50/50` / exit `0` |
+| Package smoke / contract-manifest check | both exit `0` |
+| Worker-protocol typecheck / build | both exit `0` |
+| Worker-protocol tests | exit `1`; `16` files and `490` tests passed, with only the documented Windows collection SyntaxError at `cross-version.test.ts:12` |
+| `pnpm -r typecheck` / `pnpm build` | both exit `0` |
+| `pnpm test:run` | exit `1`; the known Windows `cross-version.test.ts:12` collection failure plus a full-load 30-second `cloud-plugin-process-composition.test.ts` setup timeout |
+| Isolated cloud-plugin process-composition lane | exit `0`, `7/7` in about 8 seconds, showing the full-load timeout is not a fix-round behavioral failure |
+
+The immutable/protected diff against `baf903bc982c7580b6955b69c624fb6dcab570ae`
+still exits `0`. No worker-protocol source/schema/bundle, frozen fixture, contract,
+dependency manifest/lockfile, freeze script, or E3 ticket implementation changed.
+
+Distinct review must inspect the exact evidence revision and issue the only
+authoritative pass/needs-changes decision.
