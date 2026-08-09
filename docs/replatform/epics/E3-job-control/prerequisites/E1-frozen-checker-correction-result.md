@@ -9,6 +9,8 @@
 **Reviewed revision:** `2bf5297b66a314858954dbdd3e53c320fba9af25`
 **Fix-round 1 RED revisions:** `eef4db2588505b61ffee0fc864792e3fd8873fa4`, `193cea335cec8cb9b3ed423bdb62bffb9c638a92`
 **Fix-round 1 candidate code revision:** `127247f54271bc951db04ea50c016cf4d49e0d66`
+**Fix-round 2 RED revision:** `4ffd5e0d822e8d3b3a763bca47f1c3c621072480`
+**Fix-round 2 candidate code revision:** `7d649a01802bc2062e91ded370ec7d6385c72931`
 **Scope:** Corrective E1 checker/test/evidence work only. No frozen v1 byte, worker-protocol source/schema/bundle, dependency version, or E3 ticket behavior changed.
 
 Distinct review attempts 1 and 2 requested changes. P2 is not complete, this record is not a pass, and JOB-001 is not authorized to rely on this correction.
@@ -197,3 +199,45 @@ The protected diff remains empty. Base/head identities are unchanged: worker-pro
 ### Decision
 
 All four attempt-1 blockers are substantively addressed, but the fix round introduces two independently reproduced Important issues within the requested re-review scope. P2 remains `gate_review` / `needs_changes`; E1-F008 remains open; the a4 awaiting-review QA/handoff are not finalized; no pass artifacts or E3 authorization are issued.
+
+## Fix round 2 candidate - awaiting distinct re-review
+
+This section is implementer-observed evidence only. The result remains
+`gate_review` / `needs_changes`; it is not a pass and does not authorize JOB-001.
+
+### Strict TDD evidence
+
+- RED revision `4ffd5e0d822e8d3b3a763bca47f1c3c621072480` adds a valid smoke module that reports `Object.keys(process.env)`. On the unchanged Windows implementation it failed with the same eleven visible keys found in review: `HOMEDRIVE`, `HOMEPATH`, `LOGONSERVER`, `PATH`, `SYSTEMDRIVE`, `SYSTEMROOT`, `TEMP`, `USERDOMAIN`, `USERNAME`, `USERPROFILE`, and `WINDIR`.
+- The same RED revision adds a separate staggered process-isolation suite. Against the unchanged harness, its first complete child corpus passed `30/30` but exited without publishing a unique owned parent/live repository, so the regression failed on the missing ownership boundary before any implementation change.
+- GREEN revision `7d649a01802bc2062e91ded370ec7d6385c72931` passes both new isolation cases, the unchanged focused corpus, and the signing-config corpus.
+
+### Candidate correction
+
+1. The smoke child still starts through absolute `process.execPath`, with an absolute module URL, `env: {}`, fixture-local cwd, 5-second timeout, `SIGKILL`, and 1 MiB output cap. Its wrapper now deletes every JavaScript-visible `process.env` key before dynamically importing the authenticated fixture. The valid probe sees exactly zero keys both on the Windows host and in a local Linux Node 24 container. Parent `REVIEW_PARENT_SECRET`, `NODE_OPTIONS`, and `NODE_PATH` remain absent.
+2. Every focused-corpus process creates one unique `frozen-wp-corpus-run-*` parent. All fixture, synthetic Git, clone, and hang paths are created only beneath that parent. Leak assertions compare only the owned parent's children; the shared OS-temp prefix sweep and foreign recursive deletion are gone. A suite-level hook removes only the parent's exact path.
+3. The staggered regression launches two full `30/30` processes with distinct parents. Each publishes its first live Git repository. Process A completes while process B remains blocked; B's repository and `.git/HEAD` remain present. Both processes then exit `0`, both exact owned parents are absent, and only the outer test's four expected coordination files remain before its own cleanup.
+
+### Fix-round 2 verification
+
+| Command | Outcome |
+|---|---|
+| Checker and both test files `node --check` | all exit `0` |
+| Default focused corpus | exit `0`, `30/30` |
+| Focused corpus with inherited `commit.gpgSign=true` | exit `0`, `30/30` |
+| Process-isolation suite | exit `0`, `2/2`; zero environment keys plus two staggered complete `30/30` child corpora |
+| Linux Node 24 zero-environment probe | exit `0`, `1/1` in the locally available `node:24-bookworm` container |
+| Actual checker at `b7a842...` | exit `0`; Zod `3.24.2`, esbuild `0.28.1` |
+| Boundary Node suite / CLI | exit `0`, `50/50` / exit `0` |
+| Package smoke / contract-manifest check | both exit `0` |
+| Worker-protocol and recursive repository typecheck/build | all exit `0`; recursive lanes cover `24/25` projects |
+| Worker-protocol tests | exit `1`; `16` files / `490` tests pass, sole failed suite is the documented Windows `cross-version.test.ts:12` collection SyntaxError |
+| `pnpm test:run` | exit `1` after about 175.5 seconds; the same Windows `cross-version.test.ts:12` collection SyntaxError is the sole failed suite in this fresh run |
+| Protected immutable diff / scoped diff check / owned-temp audit | all clean |
+
+The full 30-case corpus retains coordinated artifact/manifest, replacement-ref,
+invalid-sentinel, timeout, dependency, CRLF, missing-object, clean-clone, and later
+consumer coverage. No resolved checker security behavior was reopened.
+
+No worker-protocol source/schema/bundle, frozen fixture byte, v1 contract, dependency
+manifest/lockfile, freeze script, or E3 ticket implementation changed. Distinct review
+must issue the only authoritative pass/needs-changes decision.
