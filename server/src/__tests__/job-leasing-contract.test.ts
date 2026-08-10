@@ -185,6 +185,11 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
     const enrollment = readFileSync(new URL("../services/worker-enrollment.ts", import.meta.url), "utf8");
     const heartbeat = readFileSync(new URL("../middleware/worker-session-auth.ts", import.meta.url), "utf8");
     const targets = readFileSync(new URL("../services/execution-targets.ts", import.meta.url), "utf8");
+    const targetRoutes = readFileSync(new URL("../routes/execution-targets.ts", import.meta.url), "utf8");
+    const resolver = targets.slice(
+      targets.indexOf("export async function resolveWorkerTargetId"),
+      targets.indexOf("export function stripWorkerSecret"),
+    );
 
     expect(repository).toContain("acquirePlatformTargetAuthorityExclusive");
     expect(enrollment).toContain("acquirePlatformTargetAuthorityShared");
@@ -193,7 +198,8 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
     expect(targets).toContain("acquirePlatformTargetAuthorityExclusive");
     expect(heartbeat).toContain("heartbeatPlatformPhysicalLivenessOnly");
     expect(heartbeat).toContain("transitionPlatformPhysicalStatus");
-    expect(targets).toContain("isNotNull(executionTargets.organizationId)");
+    expect(resolver).toContain("isNotNull(executionTargets.organizationId)");
+    expect(targetRoutes).toContain("kind: \"legacy\"; targetId: string; organizationId: string");
 
     for (const [label, source] of [
       ["repository", repository],

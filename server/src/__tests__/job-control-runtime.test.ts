@@ -3,7 +3,12 @@ import { readFileSync } from "node:fs";
 
 const runtimeHarness = vi.hoisted(() => ({
   visited: [] as string[],
-  claims: new Map<string, Array<{ id: string; organizationId: string; attemptId: string }>>(),
+  claims: new Map<string, Array<{
+    id: string;
+    organizationId: string;
+    targetId: string;
+    attemptId: string;
+  }>>(),
   delivered: [] as string[],
 }));
 
@@ -91,7 +96,13 @@ describe("JOB-003 flag-on job-control runtime", () => {
   it("replays a rejected publication and keeps hints isolated to one logical Organization", async () => {
     const orgA = organizationId(1);
     const orgB = organizationId(2);
-    runtimeHarness.claims.set(orgA, [{ id: "ready-a", organizationId: orgA, attemptId: "attempt-a" }]);
+    const targetA = "c3100000-0000-4000-8000-000000000001";
+    runtimeHarness.claims.set(orgA, [{
+      id: "ready-a",
+      organizationId: orgA,
+      targetId: targetA,
+      attemptId: "attempt-a",
+    }]);
     const scheduler = createJobReadyScheduler();
     let reject = true;
     const worker = createJobOutboxWorker({
@@ -107,9 +118,40 @@ describe("JOB-003 flag-on job-control runtime", () => {
     await expect(worker.tick()).rejects.toThrow("publish rejected");
     reject = false;
     await expect(worker.tick()).resolves.toMatchObject({ delivered: 1 });
-    expect(scheduler.take(orgB)).toEqual([]);
-    expect(scheduler.take(orgA)).toEqual(["attempt-a"]);
+    const exactScheduler = scheduler as unknown as {
+      take(organizationId: string, targetId: string): string[];
+    };
+    expect(exactScheduler.take(orgB, targetA)).toEqual([]);
+    expect(exactScheduler.take(orgA, targetA)).toEqual(["attempt-a"]);
     expect(runtimeHarness.delivered).toEqual(["ready-a"]);
+  });
+
+  it("keeps hints target-scoped and leaves a full scheduler publication retryable", async () => {
+    const orgA = organizationId(1);
+    const orgB = organizationId(2);
+    const targetA = "c3100000-0000-4000-8000-000000000001";
+    const targetB = "c3100000-0000-4000-8000-000000000002";
+    const scheduler = createJobReadyScheduler({ maxOrganizationShards: 1 });
+    const exactScheduler = scheduler as unknown as {
+      hint(hint: { organizationId: string; targetId: string; attemptId: string }): boolean;
+      take(organizationId: string, targetId: string): string[];
+    };
+    expect(exactScheduler.hint({ organizationId: orgB, targetId: targetB, attemptId: "attempt-b" })).toBe(true);
+    runtimeHarness.claims.set(orgA, [{
+      id: "ready-a",
+      organizationId: orgA,
+      targetId: targetA,
+      attemptId: "attempt-a",
+    }]);
+    const worker = createJobOutboxWorker({
+      appDb: {} as never,
+      scheduler,
+      listAdmittedOrganizationIds: async () => [orgA],
+    });
+
+    await expect(worker.tick()).rejects.toThrow("job_ready_scheduler_full");
+    expect(runtimeHarness.delivered).not.toContain("ready-a");
+    expect(exactScheduler.take(orgB, targetB)).toEqual(["attempt-b"]);
   });
 
   it("composes and stops the runtime only inside the distributed-execution flag", () => {
@@ -123,6 +165,12 @@ describe("JOB-003 flag-on job-control runtime", () => {
     expect(schedulerIndex).toBeGreaterThan(flagIndex);
     expect(outboxIndex).toBeGreaterThan(flagIndex);
     expect(indexSource).toContain("listAdmittedOrganizationIds");
+    expect(indexSource).toContain("jobReadyScheduler: scheduler");
+    const appSource = readFileSync(new URL("../app.ts", import.meta.url), "utf8");
+    const workerRoutesSource = readFileSync(new URL("../routes/worker-control.ts", import.meta.url), "utf8");
+    expect(appSource).toContain("jobReadyScheduler?: JobReadyScheduler");
+    expect(appSource).toContain("jobReadyScheduler: opts.jobReadyScheduler");
+    expect(workerRoutesSource).toContain("scheduler: opts.jobReadyScheduler");
     expect(indexSource).toContain("jobControlRuntime.stop");
     expect(shutdownSource.indexOf("jobControlRuntime.stop")).toBeLessThan(
       shutdownSource.indexOf("boundedDatabases.close"),

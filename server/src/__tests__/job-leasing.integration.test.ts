@@ -661,7 +661,7 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
       listAdmittedOrganizationIds: async () => [ORG, ORG],
       visibilityTimeoutMs: 1,
       publishHint: async (hint) => {
-        expect(Object.keys(hint).sort()).toEqual(["attemptId", "organizationId"]);
+        expect.soft(Object.keys(hint).sort()).toEqual(["attemptId", "organizationId", "targetId"]);
         if (crashOnce) {
           crashOnce = false;
           throw new Error("simulated_after_commit_crash");
@@ -674,10 +674,74 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
     expect(claimed?.status).toBe("claimed");
     await new Promise((resolve) => setTimeout(resolve, 5));
     await expect(worker.tick()).resolves.toMatchObject({ claimed: 1, delivered: 1 });
-    scheduler.hint({ organizationId: ORG, attemptId: seeded.attemptId });
-    expect(scheduler.take(ORG, 10)).toEqual([seeded.attemptId]);
+    const exactScheduler = scheduler as unknown as {
+      hint(hint: { organizationId: string; targetId: string; attemptId: string }): boolean;
+      take(organizationId: string, targetId: string, limit?: number): string[];
+    };
+    exactScheduler.hint({ organizationId: ORG, targetId: TARGET, attemptId: seeded.attemptId });
+    expect(exactScheduler.take(ORG, TARGET, 10)).toEqual([seeded.attemptId]);
     const [delivered] = await admin<{ status: string }[]>`SELECT status FROM job_outbox WHERE id = ${seeded.outboxId}`;
     expect(delivered?.status).toBe("delivered");
+  });
+
+  it("publishes only current lease-eligible placements and prefers an exact target hint before pull fallback", async () => {
+    const { admin, app } = guard();
+    await resetRuntimeRows();
+    const unplaced = await seedPlacedJob({ ordinal: 210 });
+    await admin`UPDATE job_attempts SET
+      placement_disposition = NULL, placement_owner = NULL, placement_target_id = NULL,
+      placement_target_class = NULL, placement_target_scope = NULL,
+      placement_target_generation = NULL, placement_profile_hash = NULL,
+      placement_provider_constraint_hash = NULL, placement_fallback_disposition = NULL,
+      placement_reason_code = NULL, placement_mode = NULL, placement_lease_eligible = NULL,
+      placement_input_digest = NULL, placement_policy_digest = NULL, placement_decided_at = NULL
+      WHERE id = ${unplaced.attemptId}`;
+    const older = await seedPlacedJob({ ordinal: 211, availableAt: new Date(Date.now() - 120_000) });
+    const hinted = await seedPlacedJob({ ordinal: 212, availableAt: new Date(Date.now() - 60_000) });
+    const scheduler = createJobReadyScheduler();
+    const published: Array<{ organizationId: string; targetId: string; attemptId: string }> = [];
+    const worker = createJobOutboxWorker({
+      appDb: app.db,
+      scheduler,
+      listAdmittedOrganizationIds: async () => [ORG],
+      publishHint: async (hint) => {
+        published.push(hint as { organizationId: string; targetId: string; attemptId: string });
+        const accepted = (scheduler as unknown as {
+          hint(value: { organizationId: string; targetId: string; attemptId: string }): boolean;
+        }).hint(hint as { organizationId: string; targetId: string; attemptId: string });
+        if (!accepted) throw new Error("job_ready_scheduler_full");
+      },
+    });
+    await worker.tick();
+    expect.soft(published).toEqual(expect.arrayContaining([
+      { organizationId: ORG, targetId: TARGET, attemptId: older.attemptId },
+      { organizationId: ORG, targetId: TARGET, attemptId: hinted.attemptId },
+    ]));
+    expect.soft(published.some((entry) => entry.attemptId === unplaced.attemptId)).toBe(false);
+
+    const exactScheduler = scheduler as unknown as {
+      hint(value: { organizationId: string; targetId: string; attemptId: string }): boolean;
+      take(organizationId: string, targetId: string, limit?: number): string[];
+    };
+    exactScheduler.take(ORG, TARGET, 128);
+    exactScheduler.hint({ organizationId: ORG, targetId: TARGET, attemptId: hinted.attemptId });
+    const leasing = createJobLeasingService({
+      appDb: app.db,
+      scheduler,
+    } as unknown as Parameters<typeof createJobLeasingService>[0]);
+    const preferred = await leasing.poll({
+      auth: auth("poll-exact-hint"),
+      request: pollRequest(WORKER, TARGET, "poll-exact-hint"),
+    });
+    expect(preferred.outcome).toBe("offer");
+    if (preferred.outcome === "offer") expect.soft(preferred.body.job.jobId).toBe(hinted.jobId);
+
+    const fallback = await leasing.poll({
+      auth: auth("poll-after-hint"),
+      request: pollRequest(WORKER, TARGET, "poll-after-hint"),
+    });
+    expect(fallback.outcome).toBe("offer");
+    if (fallback.outcome === "offer") expect.soft(fallback.body.job.jobId).toBe(older.jobId);
   });
 
   it("activates exactly once across 100 concurrent ACKs and semantically replays after restart", async () => {

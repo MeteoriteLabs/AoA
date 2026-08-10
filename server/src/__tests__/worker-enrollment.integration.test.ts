@@ -1494,6 +1494,79 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       })).rejects.toMatchObject({ code: "target_revoked" });
     });
 
+    it("cannot use a pre-enrollment platform bearer resolution after physical enrollment retires it", async () => {
+      const { admin, appDb, operatorDb, mod } = guard();
+      if (!ownerDb) throw new Error("owner DB unavailable");
+      const legacyToken = "aoa_wtk_job003_platform_cutoff";
+      const baselineCapabilities = {
+        providerConstraints: { profileId: "platform-v1", version: 1, digest: "c".repeat(64) },
+      };
+      await admin`UPDATE execution_targets SET
+        worker_token_hash = ${executionTargetService.hashWorkerToken(legacyToken)},
+        status = 'active', capabilities = ${baselineCapabilities}
+        WHERE id = ${TARGET_PLATFORM}`;
+
+      try {
+        // Model the route's two phases: bearer resolution completes, then the
+        // request is paused while enrollment retires the bootstrap token.
+        const resolvedBeforeCutoff = await executionTargetService.resolveWorkerTargetId(
+          ownerDb,
+          legacyToken,
+        );
+        const enrollment = mod.createWorkerEnrollmentService({
+          appDb,
+          operatorDb,
+          sessionSigningKey: "test-signing-key-at-least-32-bytes",
+          now: () => NOW,
+        });
+        const keys = generateKeyPairSync("ed25519");
+        const body = enrollmentBody(WORKER_PLATFORM, TARGET_PLATFORM);
+        const code = await enrollment.issuePlatformCode({
+          executionTargetId: TARGET_PLATFORM,
+          createdByPrincipalKind: "operator",
+          createdByPrincipalId: "platform-cutoff-operator",
+        });
+        await enrollment.enroll({
+          code: code.code,
+          request: body,
+          ...deviceProof(body, keys.privateKey, keys.publicKey, "proof-platform-cutoff-enroll"),
+          method: "POST",
+          path: "/api/worker-control/enroll",
+        });
+
+        const lateHeartbeat = resolvedBeforeCutoff
+          ? await executionTargetService.registerWorkerHeartbeat(ownerDb, {
+              targetId: resolvedBeforeCutoff,
+              status: "draining",
+              capabilities: {
+                providerConstraints: {
+                  profileId: "stale-platform-token",
+                  version: 1,
+                  digest: "e".repeat(64),
+                },
+              },
+            })
+          : { updated: 0 };
+        const [target] = await admin<{
+          worker_token_hash: string | null;
+          status: string;
+          capabilities: unknown;
+        }[]>`SELECT worker_token_hash, status, capabilities
+          FROM execution_targets WHERE id = ${TARGET_PLATFORM}`;
+        expect.soft(resolvedBeforeCutoff).toBeNull();
+        expect.soft(lateHeartbeat.updated).toBe(0);
+        expect.soft(target).toEqual({
+          worker_token_hash: null,
+          status: "active",
+          capabilities: baselineCapabilities,
+        });
+      } finally {
+        await admin`UPDATE execution_targets SET
+          worker_token_hash = NULL, status = 'active', capabilities = ${baselineCapabilities}
+          WHERE id = ${TARGET_PLATFORM}`;
+      }
+    });
+
     it("carries real platform enrollment and physical heartbeat into logical poll and ACK liveness", async () => {
       const { admin, appDb, operatorDb, mod } = guard();
       expect(sessionModule, "worker-session-auth module is not implemented").not.toBeNull();
