@@ -655,7 +655,7 @@ the identical command GREEN; append the affected package typecheck/build command
 | JOB-001 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-001 db' { pnpm --filter @armyofagents/db exec vitest run src/__tests__/job-control-schema.integration.test.ts src/__tests__/migration-idempotency.test.ts }; Invoke-NativeGate 'JOB-001 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-submission.integration.test.ts src/__tests__/tenant-app-db-startup.test.ts src/__tests__/job-control-legacy-grants.contract.test.ts src/__tests__/integration-test-hygiene.test.ts } }; Invoke-NativeGate 'JOB-001 frozen consumer' { pnpm check:frozen-worker-protocol-v1 -- --source-sha b7a842870ce7509d8baa75409e0ab19da375c88a }` |
 | JOB-002 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-002 db' { pnpm --filter @armyofagents/db exec vitest run src/__tests__/worker-enrollment-schema.integration.test.ts src/__tests__/worker-operator-policy.integration.test.ts src/__tests__/migration-idempotency.test.ts }; Invoke-NativeGate 'JOB-002 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/worker-enrollment.integration.test.ts src/__tests__/worker-session-auth.test.ts src/__tests__/job-control-legacy-grants.contract.test.ts } }` |
 | JOB-009 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-009 db' { pnpm --filter @armyofagents/db exec vitest run src/__tests__/migration-idempotency.test.ts }; Invoke-NativeGate 'JOB-009 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-placement.property.test.ts src/__tests__/job-placement.integration.test.ts src/__tests__/job-control-legacy-grants.contract.test.ts } }` |
-| JOB-003 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-003 db' { pnpm --filter @armyofagents/db exec vitest run src/__tests__/job-control-schema.integration.test.ts src/__tests__/worker-operation-receipts-schema.integration.test.ts src/__tests__/migration-idempotency.test.ts }; Invoke-NativeGate 'JOB-003 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-leasing.integration.test.ts src/__tests__/job-leasing-contract.test.ts } }` |
+| JOB-003 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-003 db' { pnpm --filter @armyofagents/db exec vitest run src/__tests__/job-control-schema.integration.test.ts src/__tests__/worker-operation-receipts-schema.integration.test.ts src/__tests__/platform-target-authority-lock.integration.test.ts src/__tests__/job-leasing-migration-upgrade.integration.test.ts src/__tests__/worker-operator-policy.integration.test.ts src/__tests__/migration-idempotency.test.ts }; Invoke-NativeGate 'JOB-003 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-leasing.integration.test.ts src/__tests__/job-leasing-contract.test.ts src/__tests__/job-control-runtime.test.ts src/__tests__/worker-enrollment.integration.test.ts src/__tests__/worker-session-auth.test.ts src/__tests__/job-placement.integration.test.ts src/__tests__/job-control-legacy-grants.contract.test.ts src/__tests__/distributed-execution-db-startup.integration.test.ts src/__tests__/server-shutdown.test.ts } }` |
 | JOB-010 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-010 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-admission-parity.integration.test.ts src/__tests__/job-source-admission-matrix.test.ts src/__tests__/job-control-legacy-grants.contract.test.ts src/__tests__/job-legacy-after-commit.integration.test.ts } }` |
 | JOB-004 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-004 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-fencing.integration.test.ts src/__tests__/job-fence-surface.contract.test.ts } }` |
 | JOB-005 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-005 db' { pnpm --filter @armyofagents/db exec vitest run src/__tests__/job-events-schema.integration.test.ts src/__tests__/migration-idempotency.test.ts }; Invoke-NativeGate 'JOB-005 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-events.integration.test.ts } }` |
@@ -943,18 +943,45 @@ the stored placement decision.
 repositories, `server/src/middleware/worker-operation-proof.ts`,
 `server/src/middleware/worker-session-auth.ts`, `server/src/services/worker-enrollment.ts`,
 `server/src/services/execution-targets.ts`, the worker route, and the flag-on runtime
-composition in `server/src/index.ts`; create the shared domain-separated platform-target
-advisory-lock helper, `packages/db/src/repositories/operator/job-leasing.ts`,
+composition in `server/src/index.ts`; create
+`packages/db/src/platform-target-authority-lock.ts` with the shared lock API,
+`packages/db/src/repositories/operator/job-leasing.ts`,
 `packages/db/src/schema/worker_operation_receipts.ts`, its generated/RLS migrations,
 `server/src/services/job-leasing.ts`,
 `server/src/services/job-outbox-worker.ts`, and
 `server/src/services/job-ready-scheduler.ts`; tests
 `packages/db/src/__tests__/worker-operation-receipts-schema.integration.test.ts`,
+`platform-target-authority-lock.integration.test.ts`, and
+`job-leasing-migration-upgrade.integration.test.ts`,
 `server/src/__tests__/job-leasing.integration.test.ts` and
 `job-leasing-contract.test.ts`, including runtime-composition, multi-Organization platform
 target, advisory-handoff/revocation, authority-mutation-inventory, liveness, and fair-scheduler
 cases. Predecessor file edits are bounded synchronization corrections only; they may not
 change JOB-002 enrollment identity or JOB-009 placement semantics.
+
+The shared DB helper exports
+`acquirePlatformTargetAuthorityShared(tx, targetId)`,
+`acquirePlatformTargetAuthorityExclusive(tx, targetId)`, and the bounded transaction lock-
+timeout setup used before physical row locks. It validates a canonical UUID and uses the
+two-int PostgreSQL advisory namespace `(1095713075, hashtext(targetId))`, where
+`1095713075 = 0x414f4133` (`AOA3`). Both modes therefore derive the identical
+domain-separated key; a rare hash collision may only over-serialize unrelated targets and
+can never authorize one. The timeout is 750 ms through transaction-local `lock_timeout`;
+timeout/cancellation maps to bounded `internal_unavailable` and never retries outside the
+operation's existing idempotency contract.
+
+The mandatory current writer inventory is explicit: platform physical enrollment/replacement
+in `server/src/services/worker-enrollment.ts` and repository
+`advanceTargetGeneration`/`rotateWorker`; shared-platform logical-enrollment validation before
+its tenant profile/session commit; `heartbeatSessionTarget` in
+`server/src/middleware/worker-session-auth.ts` (split last-seen-only writes from any status
+transition); platform registered-profile ratification in
+`server/src/services/execution-targets.ts`; and the platform revoke helper plus JOB-007's later
+cutoff implementation. Each authority-changing path calls the exclusive helper and uses
+target→bound-worker row order. JOB-009 placement keeps its existing app→operator order and is
+rerun as a regression; it may not acquire an operator connection outside an app transaction.
+The static contract fails when a new platform status/generation/device/profile mutation is
+added without the exclusive helper.
 
 **Interfaces:** Poll validates an E1 Organization-scoped logical worker
 session/hello/capacity. A platform-scoped physical session is rejected before tenant lookup
@@ -1014,7 +1041,10 @@ insert, so a collision beyond the cleanup batch cannot replay or permanently blo
 has not shipped on the shared branch, its generated DDL receives the permitted hand-appended,
 idempotent data correction for E2-valid legacy active leases immediately before that same
 migration enforces the activation invariant; a later migration cannot repair a predecessor
-that already fails. Replay over populated E2 state must pass.
+that already fails. The exact backfill is
+`UPDATE leases SET activated_at = COALESCE(updated_at, created_at) WHERE status = 'active' AND activated_at IS NULL`;
+offered/terminal rows and already-populated activation facts remain unchanged. Replay over
+populated E2 state must pass.
 No lease locator or E1 wire/schema change is introduced. Flag-off has no poll/ACK route or
 outbox/scheduler runtime. Rollback stops offers and lets already offered leases expire; never
 transfers their fence.
