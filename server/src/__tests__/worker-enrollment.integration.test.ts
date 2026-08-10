@@ -39,7 +39,7 @@ const WORKER_PLATFORM = "73000000-0000-4000-8000-000000000004";
 const WORKER_OWNER = "73000000-0000-4000-8000-000000000006";
 const OWNER_USER = "job-002-owner-user";
 const PASSWORD = "job-002-role-test";
-const NOW = new Date("2026-08-10T00:00:00.000Z");
+const NOW = new Date(Math.floor(Date.now() / 1_000) * 1_000);
 
 let embedded: EmbeddedPostgresInstance | null = null;
 let dataDir = "";
@@ -195,12 +195,16 @@ beforeEach(async () => {
   await admin.unsafe(`DROP TRIGGER IF EXISTS job002_fail_code_insert ON worker_enrollment_codes`);
   await admin.unsafe(`DROP TRIGGER IF EXISTS job002_fail_code_update ON worker_enrollment_codes`);
   await admin.unsafe(`DROP TRIGGER IF EXISTS job002_fail_proof_insert ON worker_proof_replays`);
+  await admin.unsafe(`DROP TRIGGER IF EXISTS job002_hold_platform_heartbeat ON execution_targets`);
   await admin.unsafe(`DROP FUNCTION IF EXISTS job002_fail_insert()`);
+  await admin.unsafe(`DROP FUNCTION IF EXISTS job002_hold_platform_heartbeat()`);
   await admin`DELETE FROM worker_proof_replays`;
   await admin`DELETE FROM worker_enrollment_codes`;
   await admin`DELETE FROM worker_enrollment_code_routes`;
   await admin`DELETE FROM workers`;
-  await admin`UPDATE execution_targets SET device_generation = 1, status = 'active' WHERE id IN (${TARGET_A}, ${TARGET_B}, ${TARGET_PLATFORM}, ${TARGET_OWNER})`;
+  await admin`UPDATE execution_targets
+    SET device_generation = 1, status = 'active', last_seen_at = NULL
+    WHERE id IN (${TARGET_A}, ${TARGET_B}, ${TARGET_PLATFORM}, ${TARGET_OWNER})`;
   await admin`UPDATE organization_memberships SET status = 'active' WHERE organization_id = ${ORG_A} AND user_id = ${OWNER_USER}`;
 });
 
@@ -358,7 +362,9 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       }
     });
 
-    it("cleans only a bounded ordered batch of expired enrollment proofs before recording a fresh proof", async () => {
+    it.each([1, 100, 101, 301])(
+      "replaces an expired enrollment-proof collision at cleanup position %i without exceeding the bounded maintenance batch",
+      async (collisionPosition) => {
       const { admin, appDb, operatorDb, mod } = guard();
       const service = mod.createWorkerEnrollmentService({
         appDb, operatorDb, sessionSigningKey: "test-signing-key-at-least-32-bytes", now: () => NOW,
@@ -369,9 +375,13 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       const thumbprint = createHash("sha256")
         .update(keys.publicKey.export({ format: "der", type: "spki" }))
         .digest("hex");
-      const expiredRows = Array.from({ length: 101 }, (_, index) => ({
-        thumbprint: index === 0 ? thumbprint : createHash("sha256").update(`expired-${index}`).digest("hex"),
-        proofId: index === 0 ? signed.proof.proofId : `proof-expired-${index}`,
+      const expiredRows = Array.from({ length: 320 }, (_, index) => ({
+        thumbprint: index === collisionPosition - 1
+          ? thumbprint
+          : createHash("sha256").update(`expired-${collisionPosition}-${index}`).digest("hex"),
+        proofId: index === collisionPosition - 1
+          ? signed.proof.proofId
+          : `proof-expired-${collisionPosition}-${index}`,
         expiresAt: new Date(NOW.getTime() - 120_000 + index),
       }));
       for (const row of expiredRows) {
@@ -394,7 +404,10 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         count(*) FILTER (WHERE expires_at <= ${NOW})::int AS expired_count,
         count(*) FILTER (WHERE expires_at > ${NOW})::int AS unexpired_count
         FROM worker_proof_replays`;
-      expect(counts).toEqual({ expired_count: 1, unexpired_count: 1 });
+      expect(counts).toEqual({
+        expired_count: collisionPosition <= 100 ? 220 : 219,
+        unexpired_count: 1,
+      });
 
       const unexpiredCode = await service.issueTenantCode({
         organizationId: ORG_A, executionTargetId: TARGET_A, scope: "organization",
@@ -408,14 +421,69 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       const unexpiredProof = deviceProof(unexpiredBody, keys.privateKey, keys.publicKey, "proof-enrollment-unexpired");
       await admin`INSERT INTO worker_proof_replays
         (organization_id, device_thumbprint, proof_id, issued_at, expires_at)
-        VALUES (${ORG_A}, ${thumbprint}, ${unexpiredProof.proof.proofId}, ${NOW}, ${new Date(NOW.getTime() + 60_000)})`;
+        VALUES (${ORG_A}, ${thumbprint}, ${unexpiredProof.proof.proofId}, ${NOW}, ${new Date(NOW.getTime() + 600_000)})`;
       await expect(service.enroll({
         code: unexpiredCode.code, request: unexpiredBody, ...unexpiredProof,
         method: "POST", path: "/api/worker-control/enroll",
       })).rejects.toMatchObject({ code: "unauthorized" });
       expect(await admin`SELECT id FROM worker_proof_replays
         WHERE proof_id = ${unexpiredProof.proof.proofId}`).toHaveLength(1);
-    });
+      },
+      60_000,
+    );
+
+    it("lets exactly one replica replace an expired proof collision beyond the cleanup limit", async () => {
+      const { admin, appDb, operatorDb, mod } = guard();
+      const firstService = mod.createWorkerEnrollmentService({
+        appDb, operatorDb, sessionSigningKey: "test-signing-key-at-least-32-bytes", now: () => NOW,
+      });
+      const secondService = mod.createWorkerEnrollmentService({
+        appDb, operatorDb, sessionSigningKey: "test-signing-key-at-least-32-bytes", now: () => NOW,
+      });
+      const keys = generateKeyPairSync("ed25519");
+      const body = enrollmentBody(WORKER_A);
+      const signed = deviceProof(body, keys.privateKey, keys.publicKey, "proof-enrollment-concurrent-expired");
+      const thumbprint = createHash("sha256")
+        .update(keys.publicKey.export({ format: "der", type: "spki" }))
+        .digest("hex");
+      for (let index = 0; index < 160; index += 1) {
+        await admin`INSERT INTO worker_proof_replays
+          (organization_id, device_thumbprint, proof_id, issued_at, expires_at)
+          VALUES (
+            ${ORG_A},
+            ${index === 120 ? thumbprint : createHash("sha256").update(`concurrent-expired-${index}`).digest("hex")},
+            ${index === 120 ? signed.proof.proofId : `proof-concurrent-expired-${index}`},
+            ${new Date(NOW.getTime() - 180_000)},
+            ${new Date(NOW.getTime() - 120_000 + index)}
+          )`;
+      }
+      const [firstCode, secondCode] = await Promise.all([
+        firstService.issueTenantCode({
+          organizationId: ORG_A, executionTargetId: TARGET_A, scope: "organization",
+          ownerUserId: null, createdByPrincipalKind: "user", createdByPrincipalId: "founder-a",
+        }),
+        secondService.issueTenantCode({
+          organizationId: ORG_A, executionTargetId: TARGET_A, scope: "organization",
+          ownerUserId: null, createdByPrincipalKind: "user", createdByPrincipalId: "founder-a",
+        }),
+      ]);
+      const results = await Promise.allSettled([
+        firstService.enroll({
+          code: firstCode.code, request: body, ...signed,
+          method: "POST", path: "/api/worker-control/enroll",
+        }),
+        secondService.enroll({
+          code: secondCode.code, request: body, ...signed,
+          method: "POST", path: "/api/worker-control/enroll",
+        }),
+      ]);
+
+      expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+      expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+      expect(await admin`SELECT id FROM worker_proof_replays
+        WHERE device_thumbprint = ${thumbprint} AND proof_id = ${signed.proof.proofId}`).toHaveLength(1);
+      expect(await admin`SELECT id FROM workers WHERE id = ${WORKER_A}`).toHaveLength(1);
+    }, 60_000);
 
     it("emits only frozen enrollment ProtocolErrorV1 envelopes for malformed, absent, foreign, revoked, and internal failures", async () => {
       const { admin, appDb, operatorDb, mod } = guard();
@@ -950,21 +1018,123 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         path: "/api/execution-targets/heartbeat",
         correlationId: heartbeatCorrelation,
       });
-      await expect(sessionModule!.registerProofBoundHeartbeat({
+      const initialHeartbeat = await sessionModule!.registerProofBoundHeartbeat({
         appDb,
         operatorDb,
         principal: orgPrincipal,
-        status: "draining",
+        status: "active",
         now: NOW,
-      })).resolves.toBe(true);
-      const [profileLiveness] = await admin`SELECT last_seen_at FROM workers WHERE id = ${orgWorker}`;
-      const [physicalLiveness] = await admin`SELECT status, last_seen_at FROM execution_targets WHERE id = ${TARGET_PLATFORM}`;
-      expect(profileLiveness.last_seen_at?.toISOString()).toBe(NOW.toISOString());
-      expect(physicalLiveness).toMatchObject({ status: "active", last_seen_at: null });
+      });
+      const [initialProfileLiveness] = await admin`SELECT last_seen_at FROM workers WHERE id = ${orgWorker}`;
+      const [initialPhysicalLiveness] = await admin`
+        SELECT status, last_seen_at FROM execution_targets WHERE id = ${TARGET_PLATFORM}`;
+
+      const waitForOperatorLockOrSettlement = async (operation: Promise<unknown>) => {
+        let settled = false;
+        void operation.then(() => { settled = true; }, () => { settled = true; });
+        for (let attempt = 0; attempt < 200; attempt += 1) {
+          const locks = await ownerDb!.$client`SELECT 1
+            FROM pg_stat_activity
+            WHERE usename = 'aoa_operator' AND wait_event_type = 'Lock'
+            LIMIT 1`;
+          if (locks.length > 0) return "operator_lock" as const;
+          if (settled) return "settled" as const;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        return "timeout" as const;
+      };
+
+      await admin`UPDATE workers SET last_seen_at = NULL, status = 'active' WHERE id = ${orgWorker}`;
+      await admin`UPDATE execution_targets SET last_seen_at = NULL WHERE id = ${TARGET_PLATFORM}`;
+      let releaseRevocation!: () => void;
+      let markRevocationLocked!: () => void;
+      const revocationRelease = new Promise<void>((resolve) => { releaseRevocation = resolve; });
+      const revocationLocked = new Promise<void>((resolve) => { markRevocationLocked = resolve; });
+      const leadingRevocation = admin.begin(async (tx) => {
+        await tx`UPDATE execution_targets
+          SET status = 'disabled', device_generation = device_generation + 1
+          WHERE id = ${TARGET_PLATFORM}`;
+        markRevocationLocked();
+        await revocationRelease;
+      });
+      await revocationLocked;
+      const revokeWinsHeartbeat = sessionModule!.registerProofBoundHeartbeat({
+        appDb,
+        operatorDb,
+        principal: orgPrincipal,
+        status: "active",
+        now: NOW,
+      });
+      const revokeWinsObservation = await waitForOperatorLockOrSettlement(revokeWinsHeartbeat);
+      releaseRevocation();
+      await leadingRevocation;
+      const revokeWinsResult = await revokeWinsHeartbeat;
+      const [revokeWinsProfile] = await admin`SELECT last_seen_at FROM workers WHERE id = ${orgWorker}`;
 
       await admin`UPDATE execution_targets
-        SET status = 'disabled', device_generation = device_generation + 1
+        SET status = 'active', device_generation = 1, last_seen_at = NULL
         WHERE id = ${TARGET_PLATFORM}`;
+      await admin`UPDATE workers
+        SET status = 'active', device_generation = 1, last_seen_at = NULL
+        WHERE execution_target_id = ${TARGET_PLATFORM}`;
+      await admin.unsafe(`CREATE FUNCTION job002_hold_platform_heartbeat() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN PERFORM pg_advisory_xact_lock(2200202); RETURN NEW; END $$`);
+      await admin.unsafe(`CREATE TRIGGER job002_hold_platform_heartbeat
+        BEFORE UPDATE OF last_seen_at ON execution_targets
+        FOR EACH ROW WHEN (NEW.id = '${TARGET_PLATFORM}'::uuid)
+        EXECUTE FUNCTION job002_hold_platform_heartbeat()`);
+      let releaseHeartbeatGate!: () => void;
+      let markHeartbeatGateLocked!: () => void;
+      const heartbeatGateRelease = new Promise<void>((resolve) => { releaseHeartbeatGate = resolve; });
+      const heartbeatGateLocked = new Promise<void>((resolve) => { markHeartbeatGateLocked = resolve; });
+      const heartbeatGate = ownerDb!.$client.begin(async (tx) => {
+        await tx`SELECT pg_advisory_xact_lock(2200202)`;
+        markHeartbeatGateLocked();
+        await heartbeatGateRelease;
+      });
+      await heartbeatGateLocked;
+      const heartbeatWinsHeartbeat = sessionModule!.registerProofBoundHeartbeat({
+        appDb,
+        operatorDb,
+        principal: orgPrincipal,
+        status: "active",
+        now: NOW,
+      });
+      const heartbeatWinsObservation = await waitForOperatorLockOrSettlement(heartbeatWinsHeartbeat);
+      const trailingRevocation = Promise.resolve(admin`UPDATE execution_targets
+        SET status = 'disabled', device_generation = device_generation + 1
+        WHERE id = ${TARGET_PLATFORM}`);
+      releaseHeartbeatGate();
+      await heartbeatGate;
+      const heartbeatWinsResult = await heartbeatWinsHeartbeat;
+      await trailingRevocation;
+      await admin.unsafe(`DROP TRIGGER job002_hold_platform_heartbeat ON execution_targets`);
+      await admin.unsafe(`DROP FUNCTION job002_hold_platform_heartbeat()`);
+      const [heartbeatWinsProfile] = await admin`SELECT last_seen_at FROM workers WHERE id = ${orgWorker}`;
+      const [heartbeatWinsPhysical] = await admin`SELECT status, device_generation, last_seen_at
+        FROM execution_targets WHERE id = ${TARGET_PLATFORM}`;
+      const oldPrincipalAfterRevocation = await sessionModule!.registerProofBoundHeartbeat({
+        appDb,
+        operatorDb,
+        principal: orgPrincipal,
+        status: "active",
+        now: NOW,
+      });
+
+      expect.soft(initialHeartbeat).toBe(true);
+      expect.soft(initialProfileLiveness.last_seen_at).toBeNull();
+      expect.soft(initialPhysicalLiveness.status).toBe("active");
+      expect.soft(initialPhysicalLiveness.last_seen_at?.toISOString()).toBe(NOW.toISOString());
+      expect.soft(revokeWinsObservation).toBe("operator_lock");
+      expect.soft(revokeWinsResult).toBe(false);
+      expect.soft(revokeWinsProfile.last_seen_at).toBeNull();
+      expect.soft(heartbeatWinsObservation).toBe("operator_lock");
+      expect.soft(heartbeatWinsResult).toBe(true);
+      expect.soft(heartbeatWinsProfile.last_seen_at).toBeNull();
+      expect.soft(heartbeatWinsPhysical).toMatchObject({ status: "disabled", device_generation: 2 });
+      expect.soft(heartbeatWinsPhysical.last_seen_at?.toISOString()).toBe(NOW.toISOString());
+      expect.soft(oldPrincipalAfterRevocation).toBe(false);
+
       const revokedProof = deviceProofFor(
         heartbeatBytes, heartbeatCorrelation, keys.privateKey, keys.publicKey,
         "proof-platform-org-revoked", "/api/execution-targets/heartbeat",
