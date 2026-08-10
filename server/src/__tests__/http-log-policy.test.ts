@@ -5,10 +5,12 @@ import {
 } from "../middleware/http-log-policy.js";
 
 describe("shouldOmitHttpRequestPayload", () => {
-  it("omits only distributed job submission payloads from HTTP logs", () => {
+  it("omits distributed job and credential-bearing worker-control payloads from HTTP logs", () => {
     const path = "/api/organizations/org-1/companies/company-1/jobs";
     expect(shouldOmitHttpRequestPayload("POST", `${path}?trace=1`)).toBe(true);
     expect(shouldOmitHttpRequestPayload("POST", path.slice(4))).toBe(true);
+    expect(shouldOmitHttpRequestPayload("POST", "/api/worker-control/enroll?raw-code=must-not-log")).toBe(true);
+    expect(shouldOmitHttpRequestPayload("POST", "/api/execution-targets/heartbeat?session=must-not-log")).toBe(true);
     expect(shouldOmitHttpRequestPayload("GET", path)).toBe(false);
     expect(shouldOmitHttpRequestPayload("POST", `${path}/other`)).toBe(false);
   });

@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import net from "node:net";
@@ -33,6 +34,13 @@ function database(): Sql {
   if (setupError) throw new Error(`embedded-postgres setup failed: ${String(setupError)}`);
   if (!db) throw new Error("database was not initialized");
   return db;
+}
+
+async function replayMigration(client: Sql, fileName: string): Promise<void> {
+  const source = readFileSync(new URL(`../migrations/${fileName}`, import.meta.url), "utf8");
+  for (const statement of source.split("--> statement-breakpoint").map((part) => part.trim()).filter(Boolean)) {
+    await client.unsafe(statement);
+  }
 }
 
 beforeAll(async () => {
@@ -92,6 +100,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         "workers.device_generation",
         "workers.profile_hash",
         "workers.revoked_at",
+        "workers.last_seen_at",
         "worker_enrollment_code_routes.locator_hash",
         "worker_enrollment_code_routes.candidate_organization_id",
         "worker_enrollment_codes.secret_hash",
@@ -102,6 +111,12 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       ]) expect(names, name).toContain(name);
       expect(names).not.toContain("worker_enrollment_code_routes.secret_hash");
       expect(names).not.toContain("worker_enrollment_code_routes.semantic_result");
+    });
+
+    it("replays the applied 0219 and 0220 generated migration chain without duplicate relations or constraints", async () => {
+      const client = database();
+      await replayMigration(client, "0219_worker_enrollment.sql");
+      await replayMigration(client, "0220_worker_enrollment_constraints.sql");
     });
 
     it("uses text owner identity, exact authority checks, and a composite worker-to-target FK", async () => {
