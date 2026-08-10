@@ -813,8 +813,8 @@ to recompute that digest. The plan also described provider totals as target-wide
 Decision #124 limits JOB-003 to the authenticated Organization logical profile, omitted the
 new certificate DML from the exact startup grant allowlist and omitted the schema export,
 left foreign-versus-missing composite-FK oracle equality implicit, reported million-row
-performance without ceilings/distributions, lacked an explicit E2-D08 parent-UNIQUE-before-
-child-FK contingency, and simultaneously called JOB-003 assignable and review-blocked.
+performance without ceilings/distributions, lacked an executable parent-UNIQUE-before-child-
+FK migration sequence, and simultaneously called JOB-003 assignable and review-blocked.
 
 **Disposition:** Candidate-specific certificate validity is now ordinary correlated SQL
 equality over the complete tenant/job/attempt/worker/target/workload/placement/digest tuple.
@@ -824,8 +824,9 @@ rotation invalidates old rows without database JSON hashing. Capacity is explici
 Organization + logical-worker + target; cross-profile physical totals remain WRK-003. The
 JOB-003 inventory now includes `schema/index.ts`, the exact legacy-grant allowlist, its
 contract/startup tests, raw `aoa_app` foreign/missing equality probes for both composite FKs,
-numeric DEC-03 million-row gates and distributions, and verbatim E2-D08 statement reordering
-if drizzle-kit repeats FK-before-UNIQUE. The execution table and terminal review sentinel now
+million-row structural gates and adverse distributions, and a two-step generated migration
+sequence that creates the parent UNIQUE before generating/applying the child FKs. The execution
+table and terminal review sentinel now
 keep JOB-003 blocked. GREEN remains unauthorized until fresh whole-plan and schema/security
 reviewers accept the exact corrected revision with no P0/P1/P2 finding.
 
@@ -834,9 +835,23 @@ scope, grant, oracle, load-ceiling, FK-order, and status findings but found thre
 exactness defects: the poll hash bound only the enrollment authorization hash rather than the
 parsed stored matcher snapshot; the neutral-adapter proof was one-way and could still certify
 a false negative; and the load shapes did not force a current-certificate prefix or sparse/
-tail cleanup. It also found two stale sentences that excluded the already approved E2-D08
-verbatim reorder. The plan now adds a separately canonicalized neutral static-matcher profile
+tail cleanup. It also found two stale sentences inconsistent with the proposed cross-migration
+reorder. The next plan revision added a separately canonicalized neutral static-matcher profile
 hash, bidirectional frozen-matcher equivalence, fixed-hash snapshot mutation coverage,
-999,744-row head saturation plus fully certified no-work, sparse/tail cleanup with buffer/row
-evidence, and consistent E2-D08 wording. Status remains pending fresh exact re-review; no RED
-correction or GREEN is authorized.
+999,744-row head saturation plus fully certified no-work, and sparse/tail cleanup with buffer/
+row evidence.
+
+Schema/security review accepted exact revision
+`1d716e7fe0d2800a0b8819584d1d35b24ce30d68`, but whole-plan review correctly rejected its
+epic-local cross-migration reorder because Decision #19/AGENTS did not authorize that exception.
+It also found that snapshot coverage incorrectly included dynamic capacity and that absolute
+p95 thresholds on variable `ubuntu-latest` were not reproducible gates. The final correction
+uses generated `0229` solely for the logical-worker parent UNIQUE, then generated `0230` for
+the certificate table/child FKs/indexes, and custom `0231` solely for Decision #122 RLS/grants;
+no generated statement is reordered or hand-authored. Snapshot-hash mutation coverage now
+targets every non-capacity static matcher field while proving capacity-only changes leave the
+static hash unchanged and remain dynamic. Million-row correctness, row/buffer/index, memory,
+and no-unbounded-scan checks are blocking; variable-CI latency is observed. A reproducible
+pinned `E3-PERF-01` handoff is mandatory before the E3 exit gate or any production-capacity/
+SLO claim. Status remains pending fresh exact dual re-review; no RED correction or GREEN is
+authorized.

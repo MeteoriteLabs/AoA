@@ -170,9 +170,9 @@ package while preserving the immutable source and fixture anchors.
 | Boundary | Tickets | Assignment rule |
 |---|---|---|
 | **Pre-D1, approved and assignable** | JOB-001, JOB-002, JOB-009, JOB-010 | E3-F001/E3-F002 and E3-F004 corrective handoffs passed. E3-F005's device/binding contract is approved for JOB-002 implementation. Respect ticket dependencies; JOB-010 may start after JOB-001. |
-| **Pre-D1, amendment review blocked** | JOB-003 | Do not assign, correct RED, generate `0229`/`0230`, or resume GREEN until a distinct whole-plan reviewer and a distinct schema/security reviewer accept the exact committed static-certificate successor with no P0/P1/P2 finding. |
+| **Pre-D1, amendment review blocked** | JOB-003 | Do not assign, correct RED, generate `0229`/`0230`/`0231`, or resume GREEN until a distinct whole-plan reviewer and a distinct schema/security reviewer accept the exact committed static-certificate successor with no P0/P1/P2 finding. |
 | **Post-D1, blocked** | JOB-004–JOB-008, JOB-011–JOB-014 | Do not assign until a committed `E6-D1-FOUNDATION` QA record **and passing handoff** cover E6F-00–E6F-08 on one revision. |
-| **E3 exit gate, blocked** | all JOB-001–JOB-014 evidence | Requires every ticket complete and the post-D1 closure. A Windows-local run is not a substitute for the formal Linux lane. |
+| **E3 exit gate, blocked** | all JOB-001–JOB-014 evidence | Requires every ticket complete, the post-D1 closure, and a passing `E3-PERF-01` handoff before any production-capacity/SLO claim. A Windows-local run is not a substitute for the formal Linux lane or the pinned performance environment. |
 
 ### NOT in scope (epic non-goals)
 
@@ -324,29 +324,28 @@ not fit an existing aggregate:
 | JOB-005 | `packages/db/src/schema/job_projection_receipts.ts` | Idempotency state machine for accepted state projection and later calls into existing approval/budget/audit/output engines. Unique `(organization_id, company_id, projection_kind, source_identity)` plus `source_digest`, `job_id`, `attempt_id`, `source_fence`, `status=pending|applied`, `target_aggregate_id`, `created_at`, `applied_at`. Same identity/different digest is a hard conflict; pending is crash-recoverable; applied replays. Prefer an existing legacy unique key when it proves the same authority. |
 | JOB-007 | `packages/db/src/schema/execution_target_revocations.ts` | Operator-metadata-only durable fanout record for a committed target generation cutoff. Unique `(target_id, revoked_generation)` with bounded scan/retry/cursor state; contains no job/event/secret data and is not lease authority. |
 
-JOB-003 does **not** add a worker cursor. Generated successor `0229` creates
-`worker_lease_rejections`, adds only the parent uniqueness needed for its exact logical-worker
-binding, and replaces the same-named all-ascending `jobs_claim_idx` with
+JOB-003 does **not** add a worker cursor. To remain inside locked Decision #19/AGENTS migration
+authority without any cross-migration statement reordering, generated successor `0229` adds only the
+worker parent UNIQUE
+`(organization_id, id, target_authority_key, execution_target_id)`. After that generated
+migration and snapshot exist, generated successor `0230` creates `worker_lease_rejections`,
+its child FKs/indexes, and replaces the same-named all-ascending `jobs_claim_idx` with
 `(organization_id ASC, status ASC, available_at ASC, priority DESC, created_at ASC, id ASC)`.
 It also adds partial `job_attempts_lease_candidate_idx` on
 `(organization_id, placement_target_id, job_id, id)` for rows whose status is `pending`,
 placement disposition/mode are `selected`/`active`, and `placement_lease_eligible=true`.
-The generated migration is C14-replayable by dropping the old index with `IF EXISTS` before
+The generated migrations are C14-replayable; `0230` drops the old index with `IF EXISTS` before
 creating the corrected definition with `IF NOT EXISTS`; a create-only guard that silently
-retains the old priority direction is forbidden. Custom Decision #122 successor `0230`
+retains the old priority direction is forbidden. Custom Decision #122 successor `0231`
 revokes PUBLIC and `aoa_operator`, grants exactly `SELECT`, `INSERT`, `UPDATE`, and `DELETE`
 to `aoa_app`, and ENABLEs/FORCEs tenant RLS on the certificate table. The same four privileges
 must be added to `JOB_LEASING_NEW_PATH_GRANTS.worker_lease_rejections`; the exact startup
 authority audit and its contract test must fail before that allowlist change and pass after it.
-Neither migration changes E1, operator job authority, or a public API.
-
-The worker parent key
-`(organization_id, id, target_authority_key, execution_target_id)` must exist before the
-certificate table's logical-worker FK is applied. If drizzle-kit emits the child FK before
-that newly generated parent UNIQUE, `0229` uses E2-D08 only: move the generated UNIQUE
-statement verbatim ahead of the generated FK, add an inline explanation, and change no DDL
-text. The populated-chain/replay test must reproduce PostgreSQL `42830` before the reorder and
-prove clean first apply plus replay after it. Hand-authored replacement DDL is forbidden.
+No migration changes E1, operator job authority, or a public API. The two-step generated
+sequence is mandatory: `0229` must apply successfully before `0230` is generated/applied, and
+the populated-chain test must prove the parent UNIQUE exists before the child FK. Combining
+them into one generated migration, reordering statements, or hand-authoring replacement DDL
+is forbidden.
 
 The generated certificate columns are exact: `organization_id`, `company_id`, `job_id`,
 `attempt_id`, `worker_id`, `target_id`, `target_authority_key`, `eligibility_version`,
@@ -367,10 +366,8 @@ composite tenant FKs, repository-only access, FORCE RLS, and grants to `aoa_app`
 table/column/index/FK DDL comes only from Drizzle schema plus generated migrations. For
 each new RLS table, generate a separate delta-free `--custom` RLS migration per E2-D01 /
 Decision #122. Hand-added SQL is limited to C14 idempotency guards and #122 role/GRANT/
-FORCE/POLICY DDL; the only other permitted migration-file edit is E2-D08 verbatim statement
-reordering, with its required inline explanation, when generated FK-before-UNIQUE order is
-unappliable. Expected first migration is `0213`, but execution always uses the next unused
-number produced by drizzle-kit.
+FORCE/POLICY DDL. Expected first migration is `0213`, but execution always uses the next
+unused number produced by drizzle-kit.
 
 The operator-readable enrollment route, platform enrollment rows, proof-replay, and revocation
 metadata are exceptions to ordinary tenant visibility, not to least privilege. Organization/
@@ -1012,7 +1009,7 @@ composition in `server/src/index.ts`; create
 `packages/db/src/platform-target-authority-lock.ts` with the shared lock API,
 `packages/db/src/repositories/operator/job-leasing.ts`,
 `packages/db/src/schema/worker_operation_receipts.ts`, its generated/RLS migrations,
-`packages/db/src/schema/worker_lease_rejections.ts`, generated `0229` and custom `0230`,
+`packages/db/src/schema/worker_lease_rejections.ts`, generated `0229` + `0230` and custom `0231`,
 `server/src/services/job-leasing.ts`,
 `server/src/services/job-lease-eligibility.ts`,
 `server/src/services/job-outbox-worker.ts`, and
@@ -1031,13 +1028,14 @@ cases. Predecessor file edits are bounded synchronization corrections only; they
 change JOB-002 enrollment identity or JOB-009 placement semantics.
 
 Review-attempt-2 corrections additionally generate the next unused Drizzle successor
-(`0229` at the reviewed branch tip) for the certificate table, its exact composite parent
-keys/indexes, and the corrected mixed-direction jobs claim index; create custom RLS successor
-`0230`; add a database-keyset admitted-Organization reader; and replace the platform-writer
+(`0229` at the reviewed branch tip) for only the logical-worker composite parent UNIQUE, then
+generate `0230` for the certificate table, its exact child FKs/indexes, and the corrected
+mixed-direction jobs claim index; create custom RLS successor `0231`; add a database-keyset
+admitted-Organization reader; and replace the platform-writer
 substring test with an exhaustive AST/exact allowlist plus injected bypass fixtures. Normal
-DDL remains Drizzle-generated. Hand edits are limited to C14 guards plus, only if emitted,
-the E2-D08 verbatim UNIQUE-before-FK statement reorder in `0229`, and Decision #122 RLS/
-GRANT/POLICY DDL in custom `0230`.
+DDL remains Drizzle-generated. Hand edits are limited to C14 guards in `0229`/`0230` and
+Decision #122 RLS/GRANT/POLICY DDL in custom `0231`; no cross-migration statement reorder is
+authorized.
 
 The shared DB helper exports
 `acquirePlatformTargetAuthorityShared(tx, targetId)`,
@@ -1275,8 +1273,8 @@ offered/terminal rows and already-populated activation facts remain unchanged. T
 is immediately preceded by the literal comment
 `-- C14 permitted idempotent data backfill for E2-valid active leases before leases_activation_check.`
 Replay over populated E2 state must pass.
-Generated `0229` and custom `0230` are additive except for replacing the same-named claim
-index with its correct mixed direction. Certificate rows are derived tenant metadata: flag-
+Generated `0229` + `0230` and custom `0231` are additive except for replacing the same-named
+claim index with its correct mixed direction. Certificate rows are derived tenant metadata: flag-
 off reads/writes none, and a rollback may leave the table/index in place while the canonical
 head scan simply stops consulting it. No lease locator or E1 wire/schema change is introduced.
 Flag-off has no poll/ACK route or outbox/scheduler runtime. Rollback stops offers and lets
@@ -1304,7 +1302,8 @@ counts, and concurrent polls; a newly inserted/changed/capacity-reenabled/lifecy
 older row; a newer signaled attempt that cannot leap an older eligible attempt; database-
 native microsecond tie ordering; certificate version/digest/placement mismatch; offer-null
 rollback and three head restarts; an exact expired receipt behind >100 other expired rows;
-populated-0228 migration/replay through generated `0229` plus custom `0230`; exact
+populated-0228 migration/replay through generated parent-key `0229`, generated certificate/
+index `0230`, and custom RLS `0231`; exact
 `pg_get_indexdef()` priority DESC and Drizzle snapshot direction; forced-RLS/no-GUC/cross-
 Organization/cross-Company certificate denial; and raw-`aoa_app` H-01 oracle probes for both
 the attempt FK and logical-worker-binding FK, where a real foreign parent and a random missing
@@ -1312,14 +1311,14 @@ parent must return the identical SQLSTATE, constraint name, and server message. 
 hash versus worker generation/profile, platform physical-worker generation/profile, target
 generation/profile/provider, algorithm-version, and candidate-column mismatch cases, proving
 every change makes the old certificate nonmatching before cleanup. Programmatically mutate
-each static matcher-consumed `workerHelloV1` field while retaining the same stored
+each non-capacity static matcher-consumed `workerHelloV1` field while retaining the same stored
 `workers.profile_hash`, and separately write a correctly rehashed changed profile; both must
 change `logicalWorkerStaticMatcherProfileHash`, ignore the old certificate, and expose the
 candidate for current evaluation. Capacity-only mutations remain governed by the dynamic
-gates and must not create static certificates. Cover terminal/retired-worker cleanup and
-cascades.
+gates, must leave `logicalWorkerStaticMatcherProfileHash` unchanged, and must not create static
+certificates. Cover terminal/retired-worker cleanup and cascades.
 
-The formal DEC-03 Linux load gate seeds exactly 1,000,000 canonical candidate rows and
+The Linux load-characterization lane seeds exactly 1,000,000 canonical candidate rows and
 1,000,000 certificate rows and records table/index bytes plus
 `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)`. It runs four named shapes: (1) one hot logical
 worker in a fully certified `no_work` state, then deletes only the newest 256 certificates so
@@ -1328,14 +1327,23 @@ the 999,744 oldest candidates remain a current matching prefix before 256 uncert
 terminal/offline cleanup-eligible rows first evenly sparse among retained rows and then
 re-timestamped to the tail of `(organization_id, updated_at, worker_id, attempt_id)`. Every
 plan records actual/removed rows plus shared/local blocks hit/read, not latency alone. After
-five warmups and 30 claim samples, shapes 2/3 must have p95 <= 250 ms with no sample above
-1,500 ms; the head-saturated and fully certified shape must have p95 <= 2,000 ms with no
-sample above 5,000 ms. Twenty bulk-upsert samples of 256 rows must have p95 <= 500 ms, and 20
-cleanup samples of 256 rows in both sparse/tail layouts must have p95 <= 750 ms. Combined
-table+index size must remain <= 2 GiB. The one-statement claim plan at INITIAL/D1 and every
-million-row shape may not use an unbounded sort or a sequential scan of the hot queue/
-certificate tables. A missed ceiling is a blocking query/schema redesign, not a waiver.
-Windows numbers are diagnostic only; the thresholds gate the pinned DEC-03 Linux runner.
+five warmups and 30 claim samples, it reports the provisional objectives: shapes 2/3 p95 <=
+250 ms with no sample above 1,500 ms; head-saturated/fully-certified p95 <= 2,000 ms with no
+sample above 5,000 ms; 20 x 256-row bulk-upsert p95 <= 500 ms; and 20 x 256-row sparse/tail
+cleanup p95 <= 750 ms. These absolute latencies are `OBSERVED`, not pass/fail, while CI uses
+variable `ubuntu-latest`. Every report must capture runner image label/version, CPU model and
+vCPU count, RAM, storage/filesystem, Node/pnpm, embedded-PostgreSQL version and binary SHA-256,
+relevant PostgreSQL settings, and competing load. Blocking gates remain: correct results and
+row counts, combined table+index size <= 2 GiB, the expected indexes/predicates, no unbounded
+sort, and no sequential scan of the hot queue/certificate tables at INITIAL/D1 or any million-
+row shape.
+
+Before the E3 exit gate or any production-capacity/SLO claim, `E3-PERF-01` must record a
+passing benchmark handoff on a reproducible dedicated environment that pins immutable OS/
+image digest, CPU model and vCPU allocation, RAM, storage class or tmpfs, PostgreSQL binary/
+configuration, and exclusive competing-workload policy. That handoff promotes reviewed
+latency objectives to gates or records new reviewed thresholds; `ubuntu-latest` observations
+alone can never waive it. Windows numbers remain diagnostic only.
 Add an exhaustive AST/exact allowlist mutation inventory proving every current platform
 status/generation/device/profile authority writer uses target→worker row order plus the
 exclusive advisory helper, while last-seen-only heartbeat stays non-authoritative and cannot
@@ -2043,11 +2051,11 @@ Two distinct read-only reviewers then rejected exact successor revision
 candidate fields that the pre-fetch SQL anti-join could not recompute. They also found
 cross-profile capacity wording contrary to Decision #124, the omitted exact grant/startup
 allowlist and schema export, missing raw app-role foreign/missing FK equality, non-gating load
-numbers, no explicit E2-D08 FK/UNIQUE-order contingency, and contradictory execution status.
+numbers, no executable parent-UNIQUE-before-child-FK migration sequence, and contradictory execution status.
 This revision resolves those findings by binding one application-computed poll-invariant
 authority hash into SQL while comparing every candidate fact by ordinary correlated columns;
 scoping capacity to the current logical Organization profile; pinning grants, exports, oracle
-tests, load ceilings/distributions, and verbatim E2-D08 reorder proof; and keeping JOB-003
+tests, load ceilings/distributions, and an explicit generated-migration dependency; and keeping JOB-003
 explicitly blocked. Fresh whole-plan and schema/security acceptance of this exact revision is
 still required.
 
@@ -2055,9 +2063,18 @@ Fresh dual review of `b42992bfa9793f5031b80c726cb340f27d01b428` closed those fin
 rejected four remaining exactness gaps: the parsed worker matcher snapshot was not separately
 bound from its enrollment hash, neutral-adapter equivalence was only one-way, million-row
 ordering did not force the adverse current-certificate prefix/sparse cleanup cases, and two
-migration sentences omitted E2-D08. This revision binds the canonical neutral matcher
-projection, requires bidirectional frozen equivalence, pins adverse row order plus buffer/row
-evidence and ceilings, and reconciles E2-D08 everywhere. Another fresh dual review is required.
+migration sentences contradicted the then-proposed cross-migration reorder. The next revision
+bound the canonical neutral matcher projection, required bidirectional frozen equivalence,
+pinned adverse row order plus buffer/row evidence and ceilings, and made that proposed reorder
+explicit. Whole-plan review then found that the epic-local reorder had never been promoted
+into Decision #19/AGENTS authority, while the schema/security reviewer otherwise accepted the
+certificate design. It also found two P2 gate defects: the snapshot-mutation test overclaimed
+capacity fields, and absolute p95 numbers on variable `ubuntu-latest` were not reproducible
+gates. This revision removes the reorder entirely by using generated `0229` for only the
+parent UNIQUE, generated `0230` for the child table/FKs/indexes, and custom `0231` only for
+Decision #122 RLS/grants. It limits snapshot-hash mutation coverage to non-capacity matcher
+fields, keeps capacity dynamic, treats variable-CI latency as observed, and requires a pinned
+`E3-PERF-01` handoff before an exit/SLO claim. Another fresh dual review is required.
 
 ## GSTACK REVIEW REPORT
 
@@ -2065,7 +2082,7 @@ evidence and ceilings, and reconciles E2-D08 everywhere. Another fresh dual revi
 |--------|---------|-----|------|--------|----------|
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | Not run; not required for this backend planning pass. |
 | Codex Review | `/codex review` | Independent 2nd opinion | 0 | — | Not run. |
-| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 5 + JOB-003 successor attempts 1–2 rejected | `AMENDMENT RE-REVIEW REQUIRED` | Original plan accepted; the cyclic cursor and two certificate revisions were rejected. The corrected SQL-comparable, snapshot-bound, logical-profile-scoped successor is paused pending fresh whole-plan and schema/security reviews. |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 5 + JOB-003 successor attempts 1–3 rejected | `AMENDMENT RE-REVIEW REQUIRED` | Original plan accepted; the cyclic cursor and three certificate revisions were rejected. The corrected SQL-comparable, snapshot-bound, split-generated-migration successor with a pinned performance-gate prerequisite is paused pending fresh whole-plan and schema/security reviews. |
 | Claude Code | `claude -p` | User-requested outside-model review | 0 | `AUTH BLOCKED` | Claude Code 2.1.126 is installed, but `claude auth status` reports `loggedIn: false`; no Claude review occurred. |
 | Claude (user-provided) | pasted review | External plan delta review | 1 | `TRIAGED — STALE BASE` | Reviewed origin `8e2faa590`, not the local plan; three concerns were already closed, while JOB-009 sizing and explicit JOB-012–014 disablement were valid deltas and are now resolved in plan. |
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | Not run; E3 operator UI follows existing patterns. |

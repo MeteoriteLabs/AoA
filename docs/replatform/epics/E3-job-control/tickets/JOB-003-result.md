@@ -409,8 +409,9 @@ worker/target/placement authority, and never represent dynamic capacity, locks, 
 timeouts, parsing, envelope, or authority failures. Ready state is one coalesced Organization/
 target signal with no attempt IDs; it may shorten `no_work` retry latency but cannot change
 candidate order. The runtime contract is a 750-ms launch-admission window, not a cumulative
-or hard-wall deadline. Generated `0229` owns the table/parent keys/corrected index; custom
-`0230` owns exact app-only RLS grants.
+or hard-wall deadline. Generated `0229` owns only the required logical-worker parent UNIQUE;
+after it applies, generated `0230` owns the certificate table, child FKs, and corrected indexes,
+while custom `0231` owns exact app-only RLS grants.
 
 JOB-003 remains `needs_changes`. GREEN remains unauthorized until a distinct reviewer accepts
 the exact committed successor, the test-only RED is corrected to that reviewed shape, and the
@@ -423,9 +424,9 @@ Two distinct read-only reviewers checked exact successor revision
 The shared P1 was that a candidate-specific application hash could not be validated by the
 required pre-fetch SQL anti-join. Other P1s were cross-profile `target-wide` capacity wording
 contrary to Decision #124, the missing exact `aoa_app` grant-allowlist seam, and missing H-01
-foreign-versus-absent FK evidence. P2s required executable million-row ceilings/shapes,
-E2-D08 ordering when drizzle-kit emits the new worker UNIQUE after its child FK, and one
-unambiguous blocked execution status.
+foreign-versus-absent FK evidence. P2s required executable million-row ceilings/shapes, an
+executable parent-UNIQUE-before-child-FK migration sequence, and one unambiguous blocked
+execution status.
 
 The corrected successor separates the two domains. The application computes one exact poll-
 invariant hash after locking current logical-worker, target, and any platform physical-worker
@@ -435,7 +436,7 @@ SQL never canonicalizes JSON. Capacity counts are current Organization + logical
 target only, with a two-tenant shared-platform proof; WRK-003 owns cross-profile totals. The
 file/test inventory now includes the schema export, exact grant allowlist and startup audit,
 raw app-role foreign/missing equality for both composite FKs, numeric DEC-03 load ceilings and
-four distributions, and E2-D08 verbatim reorder evidence. JOB-003 stays `needs_changes` and
+four distributions, and an explicit generated-migration dependency. JOB-003 stays `needs_changes` and
 GREEN remains unauthorized pending fresh exact whole-plan and schema/security acceptance.
 
 ## Static-certificate successor review attempt 2 - needs changes
@@ -446,7 +447,8 @@ grant/startup, FK oracle, migration contingency, numeric load gate, and executio
 findings were closed. Review still rejected the revision because it bound the stored
 enrollment hash but not the separately parsed matcher `profile_snapshot`, proved only one
 direction of neutral-adapter equivalence, left the million-row prefix/cleanup ordering
-non-adversarial, and retained two hand-edit sentences inconsistent with E2-D08.
+non-adversarial, and retained two hand-edit sentences inconsistent with the proposed cross-
+migration reorder.
 
 The next correction adds `logicalWorkerStaticMatcherProfileHash`, computed from the parsed
 stored hello with only capacity replaced by the reviewed neutral value and canonicalized with
@@ -454,6 +456,26 @@ stored hello with only capacity replaced by the reviewed neutral value and canon
 certificates. Static rejection now requires bidirectional equivalence to the frozen matcher
 after all dynamic gates. The load gate pins 999,744 oldest current certificates before 256
 uncertified candidates, a fully certified no-work query, and sparse plus indexed-tail cleanup
-with row/buffer evidence and explicit ceilings. Both migration-rule sentences now name E2-D08
-verbatim reordering. JOB-003 remains `needs_changes`; implementation is still paused pending
-another exact dual re-review.
+with row/buffer evidence and explicit ceilings. The next revision made the proposed reorder
+explicit. JOB-003 remains `needs_changes`; implementation is still paused pending another exact
+dual re-review.
+
+## Static-certificate successor review attempt 3 - needs changes
+
+Schema/security review accepted exact revision
+`1d716e7fe0d2800a0b8819584d1d35b24ce30d68`, but the independent whole-plan reviewer found
+one P1 and two P2 defects. The P1 was governance/executability: the plan relied on an epic-local
+cross-migration statement reorder that was not authorized by Decision #19/AGENTS. The P2s were
+an overbroad snapshot-mutation assertion that included dynamic capacity and absolute p95 gates
+on variable `ubuntu-latest` without a pinned benchmark environment.
+
+The correction uses only the repository's authorized migration workflow. Generated `0229`
+adds the logical-worker parent UNIQUE and must apply first. Generated `0230`, created against
+that new snapshot, adds the certificate table/child FKs and corrected indexes. Custom `0231`
+contains only Decision #122 RLS/GRANT/POLICY DDL. There is no cross-migration reorder or hand-
+authored schema DDL. Snapshot coverage now mutates every non-capacity static matcher field and
+separately proves capacity-only changes leave the static matcher hash unchanged and remain
+dynamic. Million-row correctness, row/buffer/index, memory, and bounded-scan checks remain
+blocking; variable-runner latency is observed only. A reproducible pinned `E3-PERF-01` handoff
+is required before the E3 exit gate or any production-capacity/SLO claim. JOB-003 remains
+`needs_changes`; RED correction and GREEN remain unauthorized pending fresh exact dual review.
