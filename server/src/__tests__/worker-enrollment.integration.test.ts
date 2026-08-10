@@ -15,13 +15,21 @@ import {
   type NonOwnerDbConnection,
 } from "@armyofagents/db";
 import { WORKER_CONTROL_HEADERS } from "@armyofagents/shared";
-import { OPERATION_DESCRIPTORS, protocolErrorV1Schema } from "@armyofagents/worker-protocol";
+import {
+  OPERATION_DESCRIPTORS,
+  canonicalProviderConstraintProfileDigestInputV1,
+  canonicalizeJsonV1,
+  protocolErrorV1Schema,
+  type ProviderConstraintProfileV1,
+  type RegisteredTargetProfileV1,
+} from "@armyofagents/worker-protocol";
 import { provisionTenantAppRoleLoginSql } from "../db/rls-tenant.js";
 import { workerControlRoutes } from "../routes/worker-control.js";
 import { executionTargetRoutes } from "../routes/execution-targets.js";
 import { rotateExecutionTargetWorkerToken } from "../services/execution-targets.js";
 import { logger } from "../middleware/logger.js";
 import { errorHandler } from "../middleware/error-handler.js";
+import * as executionTargetService from "../services/execution-targets.js";
 
 type EmbeddedPostgresInstance = { initialise(): Promise<void>; start(): Promise<void>; stop(): Promise<void> };
 type EmbeddedPostgresCtor = new (opts: Record<string, unknown>) => EmbeddedPostgresInstance;
@@ -106,6 +114,56 @@ function enrollmentBody(workerId = WORKER_A, targetId = TARGET_A, deviceGenerati
 
 function rawBody(body: unknown): Buffer {
   return Buffer.from(JSON.stringify(body));
+}
+
+function placementProviderProfile(overrides: Partial<ProviderConstraintProfileV1> = {}): ProviderConstraintProfileV1 {
+  const unsigned = {
+    profileId: "job-009-tenant",
+    version: 1,
+    maxContinuousRuntimeSeconds: 3_600,
+    maxIdleSeconds: 300,
+    resourceCeiling: { cpuMillis: 2_000, memoryMiB: 4_096, pids: 512, diskMiB: 8_192 },
+    maxConcurrentOperations: 8,
+    supportedOperations: [
+      "create", "execute", "cancel", "kill", "destroy", "list", "inspect", "reconcile_cleanup",
+    ],
+    localityTags: ["transfer_allowed"],
+    checkpointMode: "none",
+    healthMode: "none",
+    ...overrides,
+  } as Omit<ProviderConstraintProfileV1, "digest">;
+  return {
+    ...unsigned,
+    digest: createHash("sha256").update(canonicalProviderConstraintProfileDigestInputV1(unsigned)).digest("hex"),
+  } as ProviderConstraintProfileV1;
+}
+
+function placementRegisteredProfile(input: {
+  targetId: string;
+  scope: "platform" | "organization";
+  provider: ProviderConstraintProfileV1;
+}): RegisteredTargetProfileV1 {
+  const platform = input.scope === "platform";
+  return {
+    protocolVersion: 1,
+    targetId: input.targetId,
+    targetClass: platform ? "managed_cloud" : "organization_dedicated",
+    scope: input.scope,
+    organizationId: platform ? null : ORG_A,
+    ownerPrincipalId: null,
+    trustCeiling: platform ? "shared_isolated" : "organization_isolated",
+    credentialCeiling: platform ? "platform_brokered" : "organization_brokered",
+    dataLocalityCeiling: platform ? "transfer_allowed" : "organization_target_only",
+    providerConstraints: {
+      profileId: input.provider.profileId,
+      version: input.provider.version,
+      digest: input.provider.digest,
+    },
+    capabilityCeiling: ["workload.batch"],
+    deviceGeneration: 1,
+    revokedAt: null,
+    policyHash: "a".repeat(64),
+  };
 }
 
 function deviceProof(
@@ -203,7 +261,9 @@ beforeEach(async () => {
   await admin`DELETE FROM worker_enrollment_code_routes`;
   await admin`DELETE FROM workers`;
   await admin`UPDATE execution_targets
-    SET device_generation = 1, status = 'active', last_seen_at = NULL
+    SET device_generation = 1, status = 'active', last_seen_at = NULL,
+        registered_profile = NULL, registered_profile_hash = NULL,
+        provider_constraint_profile = NULL
     WHERE id IN (${TARGET_A}, ${TARGET_B}, ${TARGET_PLATFORM}, ${TARGET_OWNER})`;
   await admin`UPDATE organization_memberships SET status = 'active' WHERE organization_id = ${ORG_A} AND user_id = ${OWNER_USER}`;
 });
@@ -211,6 +271,79 @@ beforeEach(async () => {
 describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1")(
   "JOB-002 tenant enrollment transaction",
   () => {
+    it("[I-02] ratifies tenant and platform profiles through bounded production authority before enrollment", async () => {
+      const { admin, appDb, operatorDb, mod } = guard();
+      const tenantRatify = (executionTargetService as unknown as Record<string, unknown>)
+        .ratifyTenantExecutionTargetPlacementProfile;
+      const platformRatify = (executionTargetService as unknown as Record<string, unknown>)
+        .ratifyPlatformExecutionTargetPlacementProfile;
+      expect(typeof tenantRatify, "tenant registry profile writer must exist").toBe("function");
+      expect(typeof platformRatify, "platform registry profile writer must exist").toBe("function");
+      if (typeof tenantRatify !== "function" || typeof platformRatify !== "function") return;
+
+      const provider = placementProviderProfile();
+      const tenantProfile = placementRegisteredProfile({ targetId: TARGET_A, scope: "organization", provider });
+      const platformProfile = placementRegisteredProfile({ targetId: TARGET_PLATFORM, scope: "platform", provider });
+      const tenant = await (tenantRatify as (input: unknown) => Promise<Record<string, unknown>>)({
+        appDb,
+        organizationId: ORG_A,
+        executionTargetId: TARGET_A,
+        registeredProfile: tenantProfile,
+        providerConstraintProfile: provider,
+      });
+      expect(tenant).toMatchObject({
+        id: TARGET_A,
+        registeredProfileHash: createHash("sha256").update(canonicalizeJsonV1(tenantProfile)).digest("hex"),
+      });
+      const platform = await (platformRatify as (input: unknown) => Promise<Record<string, unknown>>)({
+        operatorDb,
+        executionTargetId: TARGET_PLATFORM,
+        registeredProfile: platformProfile,
+        providerConstraintProfile: provider,
+      });
+      expect(platform).toMatchObject({ id: TARGET_PLATFORM });
+
+      await expect((tenantRatify as (input: unknown) => Promise<unknown>)({
+        appDb, organizationId: ORG_A, executionTargetId: TARGET_B,
+        registeredProfile: tenantProfile, providerConstraintProfile: provider,
+      })).rejects.toThrow();
+      await expect((platformRatify as (input: unknown) => Promise<unknown>)({
+        operatorDb, executionTargetId: TARGET_A,
+        registeredProfile: tenantProfile, providerConstraintProfile: provider,
+      })).rejects.toThrow();
+      await expect((tenantRatify as (input: unknown) => Promise<unknown>)({
+        appDb, organizationId: ORG_A, executionTargetId: TARGET_A,
+        registeredProfile: tenantProfile,
+        providerConstraintProfile: { ...provider, digest: "f".repeat(64) },
+      })).rejects.toThrow();
+
+      const enrollment = mod.createWorkerEnrollmentService({
+        appDb, operatorDb, sessionSigningKey: "test-signing-key-at-least-32-bytes", now: () => NOW,
+      });
+      const issued = await enrollment.issueTenantCode({
+        organizationId: ORG_A, executionTargetId: TARGET_A, scope: "organization",
+        ownerUserId: null, createdByPrincipalKind: "user", createdByPrincipalId: OWNER_USER,
+      });
+      const keys = generateKeyPairSync("ed25519");
+      const body = enrollmentBody(WORKER_A);
+      const enrolled = await enrollment.enroll({
+        code: issued.code, request: body,
+        ...deviceProof(body, keys.privateKey, keys.publicKey, "proof-profile-authority"),
+        method: "POST", path: "/api/worker-control/enroll",
+      });
+      expect(enrolled.response).toMatchObject({ outcome: "enrolled", targetId: TARGET_A });
+      const [stored] = await admin<{
+        registered_profile_hash: string;
+        provider_constraint_profile: Record<string, unknown>;
+      }[]>`SELECT registered_profile_hash, provider_constraint_profile
+          FROM execution_targets WHERE id = ${TARGET_A}`;
+      expect(stored?.registered_profile_hash).toBe(
+        createHash("sha256").update(canonicalizeJsonV1(tenantProfile)).digest("hex"),
+      );
+      expect(stored?.provider_constraint_profile).toEqual(provider);
+      expect(JSON.stringify(stored)).not.toMatch(/secret|token|private/i);
+    });
+
     it("issues a raw code once and atomically enrolls a device-bound logical profile", async () => {
       const { appDb, operatorDb, mod } = guard();
       const service = mod.createWorkerEnrollmentService({

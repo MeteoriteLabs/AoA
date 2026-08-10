@@ -17,6 +17,7 @@ import { allocateEmbeddedPgPort } from "./helpers/embedded-pg-port.js";
 import { provisionTenantAppRoleLoginSql, TENANT_APP_ROLE } from "../db/rls-tenant.js";
 import { createCommanderRunJwt } from "../agent-auth-jwt.js";
 import { jobSubmissionService } from "../services/job-submission.js";
+import * as placementNamespace from "../services/job-placement.js";
 
 vi.mock("../services/aoa-marketplace.js", async (importActual) => {
   const actual = await importActual<typeof import("../services/aoa-marketplace.js")>();
@@ -645,6 +646,85 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         SELECT count(*)::int AS count FROM leases WHERE attempt_id = ${response.body.attemptId}
       `;
       expect(leaseCount?.count).toBe(0);
+    });
+
+    it("[I-01] carries every real submitted source through the JOB-009 production normalizer and placement service", async () => {
+      guard();
+      const normalize = (placementNamespace as unknown as Record<string, unknown>).normalizeSubmittedJobPlacementFacts;
+      const place = (placementNamespace as unknown as Record<string, unknown>).placeJobAttempt;
+      expect(typeof normalize, "JOB-009 must normalize the exact JOB-001 persisted contract").toBe("function");
+      expect(typeof place).toBe("function");
+      if (typeof normalize !== "function" || typeof place !== "function") return;
+
+      for (const source of SOURCE_CASES) {
+        const key = `job009-real-${source.kind}`;
+        const submitted = source.kind === "service_reconcile"
+          ? await jobSubmissionService(appConnection!.db).submit({
+              organizationId: ORG_A,
+              companyId: COMPANY_A,
+              principal: { kind: "system", id: "service-reconciler" } as never,
+              command: command(key, source) as never,
+            })
+          : await request(app)
+              .post(route())
+              .set(source.kind === "commander_turn" ? asCommander(source) :
+                source.kind === "crew_run" || source.kind === "one_shot" ? asAgent() : asUser())
+              .send(command(key, source))
+              .then((response) => {
+                expect(response.status, source.kind).toBe(201);
+                return response.body as { jobId: string; attemptId: string };
+              });
+        const [job] = await admin!<{
+          input_hash: string;
+          policy_hash: string;
+          source_kind: string;
+          requirements: Record<string, unknown>;
+          placement_request: Record<string, unknown>;
+        }[]>`SELECT input_hash, policy_hash, source_kind, requirements, placement_request
+            FROM jobs WHERE id = ${submitted.jobId}`;
+        expect(await (normalize as (input: unknown) => Promise<Record<string, unknown>> | Record<string, unknown>)({
+          sourceKind: job!.source_kind,
+          inputHash: job!.input_hash,
+          policyHash: job!.policy_hash,
+          requirements: job!.requirements,
+          placementRequest: job!.placement_request,
+          rollout: { enabled: false, mode: "legacy", reason: "deployment_disabled" },
+          credentialBinding: {
+            credentialId: null,
+            credentialKind: null,
+            executionTargetSlug: null,
+            pinnedTargetId: null,
+          },
+          resolvedTarget: null,
+        })).toMatchObject({ success: true });
+        await expect((place as (input: unknown) => Promise<unknown>)({
+          appDb: appConnection!.db,
+          operatorDb: { transaction: () => { throw new Error("flag_off_operator_contact"); } },
+          organizationId: ORG_A,
+          companyId: COMPANY_A,
+          jobId: submitted.jobId,
+          attemptId: submitted.attemptId,
+          rollout: { enabled: false, mode: "legacy", reason: "deployment_disabled" },
+          now: new Date("2026-08-10T10:00:05.000Z"),
+          maxHeartbeatAgeMs: 30_000,
+        })).resolves.toMatchObject({ disposition: "legacy", leaseEligible: false });
+      }
+
+      const malformed = await request(app).post(route()).set(asUser()).send(command("job009-malformed"));
+      expect(malformed.status).toBe(201);
+      await admin!`UPDATE jobs SET requirements = ${{ workloadType: "batch", requiredCapabilities: "tampered" }}
+        WHERE id = ${malformed.body.jobId}`;
+      await expect((place as (input: unknown) => Promise<Record<string, unknown>>)({
+        appDb: appConnection!.db,
+        operatorDb: { transaction: () => { throw new Error("flag_off_operator_contact"); } },
+        organizationId: ORG_A,
+        companyId: COMPANY_A,
+        jobId: malformed.body.jobId,
+        attemptId: malformed.body.attemptId,
+        rollout: { enabled: false, mode: "legacy", reason: "deployment_disabled" },
+        now: new Date("2026-08-10T10:00:05.000Z"),
+        maxHeartbeatAgeMs: 30_000,
+      })).resolves.toMatchObject({ disposition: "failed", reasonCode: "invalid_placement_input" });
     });
   },
 );

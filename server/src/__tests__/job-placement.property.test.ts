@@ -19,9 +19,11 @@ const POLICY_DIGEST = "c".repeat(64);
 const NOW = new Date("2026-08-10T10:00:00.000Z");
 
 let decide: Decide | null = null;
+let placementModule: Record<string, unknown> | null = null;
 
 beforeAll(async () => {
   const module = await import("../services/job-placement.js").catch(() => null);
+  placementModule = module as Record<string, unknown> | null;
   decide = module && typeof module.decideJobPlacement === "function"
     ? module.decideJobPlacement as Decide
     : null;
@@ -207,6 +209,75 @@ function seededShuffle<T>(values: readonly T[], seed: number): T[] {
 }
 
 describe("JOB-009 slice B deterministic placement policy", () => {
+  it("[I-01] normalizes the exact JOB-001 persisted shapes without caller-authored provider authority", async () => {
+    const normalize = placementModule?.normalizeSubmittedJobPlacementFacts;
+    expect(typeof normalize, "JOB-001 persisted facts need a production JOB-009 normalizer").toBe("function");
+    if (typeof normalize !== "function") return;
+    const normalized = await (normalize as (input: unknown) => Promise<Record<string, unknown>> | Record<string, unknown>)({
+      sourceKind: "browser_request",
+      inputHash: INPUT_DIGEST,
+      policyHash: POLICY_HASH,
+      requirements: {
+        workloadType: "browser_session",
+        requiredCapabilities: ["browser.chromium"],
+      },
+      placementRequest: {
+        policyId: "job-submission-default",
+        policyVersion: 1,
+        requestedTarget: null,
+      },
+      rollout: { enabled: true, mode: "active", reason: "enabled" },
+      credentialBinding: {
+        credentialId: null,
+        credentialKind: null,
+        executionTargetSlug: null,
+        pinnedTargetId: null,
+      },
+      resolvedTarget: candidate("managed_cloud", 1).registry,
+    });
+    expect(normalized).toMatchObject({ success: true });
+    expect(JSON.stringify(normalized)).not.toContain("credentialOwnerPrincipalId");
+  });
+
+  it("[I-03] honors exact Decision #117 target identity instead of re-routing lexicographically", () => {
+    const first = candidate("owner_desktop", 1);
+    const bound = candidate("owner_desktop", 2);
+    const ownerRequirements = requirements(["owner_desktop"], {
+      targetRequirements: {
+        ...requirements(["owner_desktop"]).targetRequirements,
+        requiredOwnerPrincipalId: OWNER,
+        credentialKind: "owner_bound",
+        dataLocality: "owner_device_only",
+        fallback: { mode: "forbidden", orderedTargetClasses: [] },
+      },
+    });
+    expect(run({
+      requirements: ownerRequirements,
+      credentialOwnerPrincipalId: OWNER,
+      resolvedTargetId: bound.registry.targetId,
+      targetIdentityPolicy: {
+        disposition: "required",
+        targetId: bound.registry.targetId,
+        targetSlug: "owner-bound",
+        unavailableDisposition: "queue",
+      },
+      candidates: [first, bound],
+    })).toMatchObject({ disposition: "selected", targetId: bound.registry.targetId });
+
+    expect(run({
+      requirements: ownerRequirements,
+      credentialOwnerPrincipalId: OWNER,
+      resolvedTargetId: bound.registry.targetId,
+      targetIdentityPolicy: {
+        disposition: "forbidden",
+        targetId: bound.registry.targetId,
+        targetSlug: "owner-bound",
+        unavailableDisposition: "fail",
+      },
+      candidates: [bound],
+    })).toMatchObject({ disposition: "failed", targetId: null, leaseEligible: false });
+  });
+
   it("keeps legacy authoritative when any rollout gate is off", () => {
     expect(run({ rollout: { enabled: false, mode: "legacy", reason: "organization_disabled" } })).toMatchObject({
       disposition: "legacy", owner: "legacy", leaseEligible: false, reasonCode: "organization_disabled",

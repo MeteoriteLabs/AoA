@@ -564,4 +564,133 @@ integration("JOB-009 slice A schema and role boundaries", () => {
     const [row] = await admin<{ decided: Date | null }[]>`SELECT placement_decided_at AS decided FROM job_attempts WHERE id = ${attemptId}`;
     expect(row?.decided).toBeNull();
   });
+
+  it("[I-04] rejects replay when any canonical placement authority fact changes", async () => {
+    const { admin } = guard();
+    const mutations: Array<{
+      name: string;
+      mutate(jobId: string): Promise<unknown>;
+      restore?(): Promise<unknown>;
+    }> = [
+      {
+        name: "normalized requirement",
+        mutate: (jobId) => admin`UPDATE jobs SET requirements = jsonb_set(requirements, '{protocol,max}', '2') WHERE id = ${jobId}`,
+      },
+      {
+        name: "provider demand",
+        mutate: (jobId) => admin`UPDATE jobs SET placement_request = jsonb_set(placement_request, '{providerDemand,maxRuntimeSeconds}', '601') WHERE id = ${jobId}`,
+      },
+      {
+        name: "credential binding",
+        mutate: (jobId) => admin`UPDATE jobs SET placement_request = jsonb_set(placement_request, '{credentialOwnerPrincipalId}', ${JSON.stringify("different-owner")}::jsonb) WHERE id = ${jobId}`,
+      },
+      {
+        name: "source kind",
+        mutate: (jobId) => admin`UPDATE jobs SET source_kind = 'crew_run' WHERE id = ${jobId}`,
+      },
+      {
+        name: "rollout mode",
+        mutate: async () => undefined,
+      },
+      {
+        name: "selected profile hash",
+        mutate: async () => admin`UPDATE execution_targets SET registered_profile_hash = ${"f".repeat(64)} WHERE id = ${TARGET_A}`,
+        restore: async () => {
+          const profile = organizationProfile(providerProfile());
+          await admin`UPDATE execution_targets SET registered_profile_hash = ${sha256(canonicalizeJsonV1(profile))} WHERE id = ${TARGET_A}`;
+        },
+      },
+    ];
+
+    for (const [index, mutation] of mutations.entries()) {
+      const suffix = (30 + index).toString().padStart(12, "0");
+      const jobId = `98000000-0000-4000-8000-${suffix}`;
+      const attemptId = `99000000-0000-4000-8000-${suffix}`;
+      await seedJob({ jobId, attemptId });
+      await place({ jobId, attemptId });
+      try {
+        await mutation.mutate(jobId);
+        await expect(place({
+          jobId,
+          attemptId,
+          ...(mutation.name === "rollout mode" ? { mode: "shadow" as const } : {}),
+        }), mutation.name).rejects.toThrow("placement_already_decided");
+      } finally {
+        await mutation.restore?.();
+      }
+    }
+  });
+
+  it("[I-05] cannot enable or shadow placement through caller-supplied rollout", async () => {
+    const { app } = guard();
+    const jobId = "98000000-0000-4000-8000-000000000040";
+    const attemptId = "99000000-0000-4000-8000-000000000040";
+    await seedJob({ jobId, attemptId });
+    const fn = (placementNamespace as Record<string, unknown>).placeJobAttempt;
+    expect(typeof fn).toBe("function");
+    const prior = process.env.AOA_DISTRIBUTED_EXECUTION_ENABLED;
+    process.env.AOA_DISTRIBUTED_EXECUTION_ENABLED = "false";
+    try {
+      const result = await (fn as (value: unknown) => Promise<Record<string, unknown>>)(
+        {
+          appDb: app.db,
+          operatorDb: { transaction: () => { throw new Error("flag_off_operator_contact"); } },
+          organizationId: ORG_A,
+          companyId: COMPANY_A,
+          jobId,
+          attemptId,
+          rollout: { enabled: true, mode: "shadow", reason: "CALLER_CONTROLLED_PRIVATE_VALUE" },
+          now: new Date("2026-08-10T10:00:05.000Z"),
+          maxHeartbeatAgeMs: 30_000,
+        } as never,
+      );
+      expect(result).toMatchObject({
+        disposition: "legacy",
+        mode: "legacy",
+        reasonCode: "deployment_disabled",
+        leaseEligible: false,
+      });
+      expect(JSON.stringify(result)).not.toContain("CALLER_CONTROLLED_PRIVATE_VALUE");
+    } finally {
+      if (prior === undefined) delete process.env.AOA_DISTRIBUTED_EXECUTION_ENABLED;
+      else process.env.AOA_DISTRIBUTED_EXECUTION_ENABLED = prior;
+    }
+  });
+
+  it("[I-06] enforces lease eligibility iff the decision is selected and active", async () => {
+    const { admin } = guard();
+    const cases = [
+      { disposition: "selected", mode: "shadow", eligible: true },
+      { disposition: "selected", mode: "legacy", eligible: true },
+      { disposition: "selected", mode: "active", eligible: false },
+      { disposition: "legacy", mode: "legacy", eligible: true },
+      { disposition: "queued", mode: "active", eligible: true },
+      { disposition: "failed", mode: "active", eligible: true },
+    ] as const;
+    for (const [index, invalid] of cases.entries()) {
+      const suffix = (50 + index).toString().padStart(12, "0");
+      const jobId = `98000000-0000-4000-8000-${suffix}`;
+      const attemptId = `99000000-0000-4000-8000-${suffix}`;
+      await seedJob({ jobId, attemptId });
+      const selected = invalid.disposition === "selected";
+      await expect(admin`UPDATE job_attempts SET
+        placement_disposition = ${invalid.disposition},
+        placement_owner = ${selected ? "organization_dedicated" : invalid.disposition === "legacy" ? "legacy" : null},
+        placement_target_id = ${selected ? TARGET_A : null},
+        placement_target_class = ${selected ? "organization_dedicated" : null},
+        placement_target_scope = ${selected ? "organization" : null},
+        placement_target_generation = ${selected ? 1 : null},
+        placement_profile_hash = ${selected ? "a".repeat(64) : null},
+        placement_provider_constraint_hash = ${selected ? "b".repeat(64) : null},
+        placement_fallback_disposition = 'not_applicable',
+        placement_reason_code = 'constraint_probe',
+        placement_mode = ${invalid.mode},
+        placement_lease_eligible = ${invalid.eligible},
+        placement_input_digest = ${"c".repeat(64)},
+        placement_policy_digest = ${"d".repeat(64)},
+        placement_decided_at = now()
+        WHERE id = ${attemptId}`,
+      `${invalid.disposition}/${invalid.mode}/${invalid.eligible}`).rejects.toThrow();
+    }
+  });
 });
