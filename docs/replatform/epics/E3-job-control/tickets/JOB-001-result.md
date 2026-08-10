@@ -1,7 +1,7 @@
 # JOB-001 Result — Submit immutable jobs transactionally
 
-**Status:** `implementation_complete_review_needs_changes`
-**Disposition:** `needs_changes`
+**Status:** `implementation_complete_review_pending`
+**Disposition:** `review_pending`
 **Date opened (UTC):** `2026-08-09`
 **Epic:** `E3-job-control`
 **Plan task:** `JOB-001 — Submit immutable jobs transactionally (M)`
@@ -127,3 +127,29 @@ passing before this attempt; they were consumed as immutable dependencies.
   pass; formal Linux/DEC-03 evidence remains pending.
 - No production code was changed. Detailed evidence:
   `.superpowers/sdd/implementation-plan/job-001-review.md`.
+
+### Fix round 2 - 2026-08-10 - Codex `/root/job001_impl`
+
+- RED commit `75c93ccf3310d22ce8b4dd33a361a8bfc19181db` adds persisted-row
+  requester/executor assertions for every accepted source and every allowed combination in
+  the hostile 4-caller x 6-source matrix. The genuine RED run failed 7 tests because all six
+  source classes stored coarse or fabricated executor authority.
+- GREEN commit `ff96abd1a554bdddb3ef4ff85021c4a5d2f12581` makes tenant-bound source
+  admission return the server-owned domain executor authority. Task, crew, and one-shot use
+  `worker`; Commander uses `sandbox`; browser uses `browser_worker`; service uses
+  `service_instance`. Opaque IDs come from admitted source-engine state, except the
+  authenticated one-shot operation identity. Requester authority remains separately stored.
+- No placement, target selection, lease, worker contact, cutover, or E1 change was made. The
+  existing executor columns are unconstrained `text` and already represent the frozen roles,
+  so no Drizzle migration is required. A backfill was deliberately not invented: historical
+  rows are immutable facts and an alternate `worker|sandbox` choice cannot be reconstructed
+  safely. Rolling activation must keep the feature flag off until all submission writers run
+  this revision.
+- Focused schema/migration, submission, hostile, concurrency, builder/grant, logging,
+  composite-FK, RLS/adversarial, startup, frozen checker/install, typecheck, and build lanes
+  pass. Exact Windows `AOA_RUN_WIN_INTEGRATION=1 pnpm test:run` remains honestly non-green:
+  exit 1 after 221s, 3 failed suites and 7 failed tests, all outside JOB-001. Isolated OpenCode
+  (3/3), ask-founder (4/4), and D18 (6/6) pass; the known worker-protocol Windows transform
+  failure reproduces alone. Formal Linux/DEC-03 evidence remains pending.
+- Status is `implementation_complete_review_pending`; only the distinct reviewer may certify
+  or mark JOB-001 complete/pass.
