@@ -663,7 +663,7 @@ millisecond round trip. This finding is resolved.
 ## E3-F021 - Ready-scheduler hint memory is unbounded across execution targets
 
 **Date:** 2026-08-10
-**Status:** `open_JOB-003_review_attempt_2`
+**Status:** `blocked_pending_JOB-003_certificate_amendment_review`
 **Severity:** P1 Important - bounded scheduler contract / process-memory liveness
 **Affected ticket:** JOB-003
 
@@ -681,14 +681,18 @@ attempt UUID pairs in one Organization. All 1,000 calls returned accepted and `s
 `{ organizations: 1, hints: 1000 }`. Existing tests bound duplicate/one-target sets and reject
 a second full Organization but do not vary target cardinality within one Organization.
 
-**Disposition:** JOB-003 remains `needs_changes`. Bound aggregate hints and target cardinality
-per Organization or globally, define deterministic cleanup/eviction that preserves durable
-pull recovery, and add multi-target churn, offline/revoked-target, and delivered-row evidence.
+**Disposition:** JOB-003 remains `needs_changes`. The successor removes attempt IDs from the
+process scheduler and stores one coalesced Organization/target readiness bit. The plan pins
+finite-integer startup validation, Organizations `32/32` default/hard cap, targets per
+Organization `128/1024`, global signals `1024/1024`, TTL `30,000/300,000 ms`, monotonic expiry,
+duplicate-no-extension semantics, and retryable cap rejection. The leasing-facing API receives
+only a boolean that can shorten `no_work` retry latency; it cannot affect selection. Exact-
+text independent review and implementation remain pending.
 
 ## E3-F022 - Lost-hint pull recovery can starve compatible work beyond 256 candidates
 
 **Date:** 2026-08-10
-**Status:** `open_JOB-003_review_attempt_2`
+**Status:** `blocked_pending_JOB-003_certificate_amendment_review`
 **Severity:** P1 Important - H-03 scheduling liveness / no head-of-line blocking
 **Affected ticket:** JOB-003
 
@@ -706,15 +710,21 @@ attempt at position 257. The poll returned `no_work` instead of the browser offe
 was run once and completely removed. The existing no-head-of-line test has only two
 incompatible heads and does not cross the scan bound or restart the scheduler.
 
-**Disposition:** JOB-003 remains `needs_changes`. Provide restart-safe bounded fairness by a
-durable or retained cursor, capability/capacity-aware selection, or another mechanism that
-cannot repeatedly pin the same window. Add greater-than-256, restart/lost-hint, worker-churn,
-and concurrent-poller evidence.
+**Disposition:** JOB-003 remains `needs_changes`. Both two- and four-field cyclic cursors are
+rejected. The successor always begins at the global canonical head, hoists target-wide and
+per-class dynamic capacity into SQL, and anti-joins only exact static-ineligibility
+certificates. One database-native statement returns at most 256 uncertified rows; only
+evaluated static-negative predecessors are bulk-upserted. Certificates bind static algorithm/
+matcher/normalizer/vocabulary versions plus exact worker, target, workload, JOB-009 digests,
+and placement tuple; dynamic capacity/live counts, locked rows, races, timeouts, parsing,
+envelope, and authority failures are never certified. One row per worker/attempt survives
+restart; stale/terminal/offline state has bounded tenant cleanup and cascades. Exact-text
+independent review and implementation remain pending.
 
 ## E3-F023 - Outbox ticks enumerate all Organizations and have no real 750-ms DB budget
 
 **Date:** 2026-08-10
-**Status:** `open_JOB-003_review_attempt_2`
+**Status:** `blocked_pending_JOB-003_certificate_amendment_review`
 **Severity:** P1 Important - bounded traversal / scheduler availability
 **Affected ticket:** JOB-003
 
@@ -726,15 +736,18 @@ Organizations), and sequential tenant claims can exceed 750 ms without stopping 
 This does not satisfy the locked at-most-32-Organization and at-most-750-ms database-work
 contract.
 
-**Disposition:** JOB-003 remains `needs_changes`. Push keyset/limit selection into the
-database-facing traversal, enforce an actual monotonic or statement deadline, and retain or
-persist cursor progress across bounded ticks. Add more-than-32-Organization and deliberately
-slow-tenant tests that prove both work and time bounds plus eventual rotation.
+**Disposition:** JOB-003 remains `needs_changes`. The successor pushes keyset/limit selection
+into the database reader (at most two reads and 32 combined shards), keeps a single-flight
+lexical rotation, and defines 750 ms precisely as a monotonic launch-admission window checked
+before every page/transaction/publication launch. Already-launched work may finish later;
+`statement_timeout` is defense only, not a cumulative or hard-wall claim. The cursor advances
+past an attempted slow/failed shard and durable claims retry through visibility timeout. Exact-
+text independent review and implementation remain pending.
 
 ## E3-F024 - Platform-authority writer inventory does not fail on new bypasses
 
 **Date:** 2026-08-10
-**Status:** `open_JOB-003_review_attempt_2`
+**Status:** `resolved_in_fix_round_2_RED_pending_final_review`
 **Severity:** P1 Important - H-02 cutoff regression certification
 **Affected ticket:** JOB-003
 
@@ -751,15 +764,17 @@ graph, and the real guard-first, cutoff-first, operator-loss, and liveness tests
 blocker is the explicitly required proof that every current writer is inventoried and that a
 new bypass makes the static contract fail.
 
-**Disposition:** JOB-003 remains `needs_changes`. Replace substring presence with an exact
-AST/allowlist inventory or expose only a narrow guarded mutation API; enumerate all mutation
-sites and callers, preserve only the exact approved last-seen exemption, and include a
-negative unguarded-writer fixture that must fail.
+**Disposition:** Fix-round-2 RED `c5be2a6853a93c1ad73910f1bdcd05c8299f93b6`
+replaced the substring assertion with an exhaustive AST/exact allowlist over the current 17
+mutation sites. It passes the current graph and independently fails injected new-file,
+unguarded, and wrong-order writers while preserving only the exact last-seen exemption. The
+certificate successor adds a separate protected-job/placement writer inventory. Final
+implementation review must rerun both; JOB-003 remains `needs_changes` for other findings.
 
 ## E3-F025 - Two-field lease scan cursor contradicts the locked job-claim order
 
 **Date:** 2026-08-10
-**Status:** `blocked_pending_independent_plan_amendment_review`
+**Status:** `superseded_after_rejected_four_field_amendment`
 **Severity:** P1 STOP - durable scheduling semantics / restart-safe fairness
 **Affected ticket:** JOB-003
 
@@ -772,12 +787,11 @@ cursor facts through a referenced job would be deletion/mutation unstable and wo
 tenant-local pagination value into an unnecessary existence dependency.
 
 **Disposition:** Implementation stopped before editing `workers`, generating migration
-`0229`, or changing the leasing repository/service. The plan amendment specifies four
-nullable no-FK worker columns—`lease_scan_cursor_available_at`,
-`lease_scan_cursor_priority`, `lease_scan_cursor_created_at`, and
-`lease_scan_cursor_id`—with an all-or-none CHECK. The continuation predicate preserves the
-complete sort direction, no-offer scans atomically persist the last examined tuple under the
-existing logical-worker lock and an exact Organization/worker/target predicate, without
-touching `workers.updated_at`; end-of-order clears all four for a bounded wrap. The exhaustive
-writer inventory classifies this separately as `scan_cursor_only`. A distinct
-reviewer must accept the amended plan before the committed RED or production code changes.
+`0229`, or changing the leasing repository/service. A replacement four-field cursor was
+planned at `0f1953d4f645d7530a9580289b03365911d02a0b`, but distinct review rejected it: stale
+cyclic progress can skip newly eligible older work indefinitely, hint-first selection also
+violates oldest-first, JavaScript `Date` loses PostgreSQL microseconds, the existing index has
+priority ASC rather than DESC, bounds were unpinned, and 750-ms wording overclaimed. All
+cursor columns and `scan_cursor_only` semantics are now removed from the successor. E3-F022
+tracks the static-negative-certificate replacement; independent exact-text review remains
+required before RED correction or GREEN.

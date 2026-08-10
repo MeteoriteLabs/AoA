@@ -10,12 +10,16 @@ at reviewed revisions `7843b86e25eb1ff9c520308aef7f123fec6997a7` and
 order; the post-D1 boundary remains locked.
 
 **JOB-003 fix-round-2 amendment status:** `pending_independent_review`. Review attempt 2
-proved that restart-safe pull fairness needs a durable cursor, but the initial two-field
-`(created_at, id)` correction contradicted the already locked claim order
-`(available_at ASC, priority DESC, created_at ASC, id ASC)`. JOB-003 implementation is paused
-before migration `0229`. The amendment below preserves the complete order with one nullable,
-all-or-none four-field cursor on the authenticated logical worker; no GREEN cursor work may
-resume until a distinct reviewer accepts this exact amendment.
+proved that restart-safe pull fairness needs durable progress. A first two-field cursor lost
+the locked claim order, and independent review of the replacement four-field cyclic cursor
+also rejected it: stale continuation can bypass newly eligible older work, JavaScript `Date`
+cannot preserve PostgreSQL microseconds, and hint-first selection independently contradicts
+the canonical oldest-eligible rule. JOB-003 implementation is paused before migration
+`0229`. The successor below removes the cursor entirely. Every claim starts at the database-
+ordered global head and anti-joins only exact, tenant-scoped static-ineligibility certificates;
+dynamic capacity is hoisted before selection, and ready signals can affect retry latency but
+never candidate identity or order. No GREEN work may resume until a distinct reviewer accepts
+this exact successor amendment.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use
 > `superpowers:subagent-driven-development` to execute this plan ticket by ticket
@@ -241,7 +245,7 @@ package while preserving the immutable source and fixture anchors.
 | Legacy assignment/approval/budget/cost/activity/output | Existing product tables/services | E3 invokes the current engine transactionally and stores only a linking receipt. Ownership transfers only in E10. |
 | Immutable input/base/policy hashes | Job row plus Git/object manifest references | References are immutable; E3 does not copy repository or object bytes into the DB. |
 | Event/output observation | Worker, until accepted | It becomes authoritative only after digest, tenant, active-fence, sequence, state, and policy checks commit. |
-| Ready/wakeup hint | Job outbox, then non-authoritative scheduler hint | Loss/duplication may affect latency only. Poll/claim transaction rechecks every authority condition. |
+| Ready signal | Job outbox, then one non-authoritative Organization/target coalesced bit (no attempt ID) | Loss/duplication may affect only the bounded `no_work` retry delay. Poll always starts at the canonical database head and rechecks every authority condition. |
 
 ### Frozen lifecycle application
 
@@ -311,19 +315,39 @@ not fit an existing aggregate:
 | JOB-002 | `packages/db/src/schema/worker_enrollment_codes.ts` | FORCE-RLS hashed single-use code authority: Organization/owner rows have non-null Organization and are consumed with worker profile+semantic replay result in one `runInTenant`; platform rows are null-Org and commit with the platform profile in one operator transaction. Same target/key/digest can replay after a lost response; changed digest conflicts. Raw code/session material is never stored. |
 | JOB-002 | `packages/db/src/schema/worker_proof_replays.ts` | Operator metadata anti-replay register keyed by `(device_thumbprint, proof_id)` with issued/expiry timestamps and no request body/tenant payload. Fresh proof IDs are required even when the E1 semantic idempotency key is retried. |
 | JOB-003 | `packages/db/src/schema/worker_operation_receipts.ts` | Tenant RLS receipts for E1 ACK/renew idempotent retry. Unique `(organization_id, company_id, worker_id, operation, idempotency_key)` plus composite lease/attempt FKs, semantic request digest, and bounded response fields; JOB-004 extends it for renew. |
+| JOB-003 | `packages/db/src/schema/worker_lease_rejections.ts` | Tenant FORCE-RLS negative eligibility certificates. At most one row per `(organization_id, worker_id, attempt_id)`; exact composite attempt and logical-worker/target FKs; static matcher/context version, complete placement tuple/digests, closed reason code, and no payload/secret. Certificates are derived exclusion evidence only, never lease authority. |
 | JOB-005 | `packages/db/src/schema/job_events.ts` | Immutable accepted event bytes/digest with unique `(organization_id, event_id)` and `(organization_id, attempt_id, sequence)`. |
 | JOB-006 | `packages/db/src/schema/job_control_commands.ts` | Durable cancel/drain/graceful-stop command sequence and worker ACK, unique per lease/command id. |
 | JOB-005 | `packages/db/src/schema/job_projection_receipts.ts` | Idempotency state machine for accepted state projection and later calls into existing approval/budget/audit/output engines. Unique `(organization_id, company_id, projection_kind, source_identity)` plus `source_digest`, `job_id`, `attempt_id`, `source_fence`, `status=pending|applied`, `target_aggregate_id`, `created_at`, `applied_at`. Same identity/different digest is a hard conflict; pending is crash-recoverable; applied replays. Prefer an existing legacy unique key when it proves the same authority. |
 | JOB-007 | `packages/db/src/schema/execution_target_revocations.ts` | Operator-metadata-only durable fanout record for a committed target generation cutoff. Unique `(target_id, revoked_generation)` with bounded scan/retry/cursor state; contains no job/event/secret data and is not lease authority. |
 
-JOB-003 also extends the existing `workers` table with nullable
-`lease_scan_cursor_available_at timestamptz`, `lease_scan_cursor_priority integer`,
-`lease_scan_cursor_created_at timestamptz`, and `lease_scan_cursor_id uuid`. A generated
-`workers_lease_scan_cursor_all_or_none_check` requires either all four facts or none. These
-are opaque tenant-local pagination facts on the authenticated logical worker, not a foreign
-key, lease locator, job reference, or operator-readable job fact. The four columns reproduce
-the complete locked claim order exactly; storing only `(created_at, id)` is forbidden because
-it would discard `available_at` and descending `priority` authority.
+JOB-003 does **not** add a worker cursor. Generated successor `0229` creates
+`worker_lease_rejections`, adds only the parent uniqueness needed for its exact logical-worker
+binding, and replaces the same-named all-ascending `jobs_claim_idx` with
+`(organization_id ASC, status ASC, available_at ASC, priority DESC, created_at ASC, id ASC)`.
+It also adds partial `job_attempts_lease_candidate_idx` on
+`(organization_id, placement_target_id, job_id, id)` for rows whose status is `pending`,
+placement disposition/mode are `selected`/`active`, and `placement_lease_eligible=true`.
+The generated migration is C14-replayable by dropping the old index with `IF EXISTS` before
+creating the corrected definition with `IF NOT EXISTS`; a create-only guard that silently
+retains the old priority direction is forbidden. Custom Decision #122 successor `0230`
+revokes PUBLIC and `aoa_operator`, grants only required DML to `aoa_app`, and ENABLEs/FORCEs
+tenant RLS on the certificate table. Neither migration changes E1, operator job authority,
+or a public API.
+
+The generated certificate columns are exact: `organization_id`, `company_id`, `job_id`,
+`attempt_id`, `worker_id`, `target_id`, `target_authority_key`, `eligibility_version`,
+`static_context_hash`, `workload_type`, `placement_owner`, `placement_target_class`,
+`placement_target_scope`, `placement_target_generation`, `placement_profile_hash`,
+`placement_provider_constraint_hash`, `placement_input_digest`, `placement_policy_digest`,
+`reason_code`, `created_at`, and `updated_at`. Hash/digest columns require lowercase SHA-256;
+generation/version are positive; workload/placement/reason values use their closed existing
+vocabularies, with reason fixed to `static_requirements_mismatch`. The composite primary/
+unique key is `(organization_id, worker_id, attempt_id)`. No JSON request, capacity snapshot,
+job input, proof, fence, credential, lease ID, or operator-visible payload is stored.
+Generated child indexes cover `(organization_id, company_id, job_id, attempt_id)` for cascade/
+cleanup and `(organization_id, updated_at, worker_id, attempt_id)` for bounded stale sweeps;
+the primary key supplies the candidate anti-join lookup.
 
 Each new table has non-null Organization identity, Company identity where applicable,
 composite tenant FKs, repository-only access, FORCE RLS, and grants to `aoa_app`. Normal
@@ -553,23 +577,29 @@ leave no misleading receipt. No plaintext token or event/job payload is stored t
 Worker polling never scans tenant job rows globally. Organization/dedicated/owner logical
 sessions, including Organization-scoped profiles backed by a platform target, enter exactly
 their authenticated Organization. A platform-scoped physical session never polls tenant
-work, selects a shard, or consumes a ready hint. Each logical poll consults only its
-Organization/target hint and then performs a bounded tenant-local pull through one
-`runInTenant`; that transaction must confirm placement/profile/capability/authority and
-atomically claim the row before releasing job details.
+work, selects a shard, or consumes a ready signal. Each logical poll drains at most one
+coalesced signal for its exact Organization/target and then performs the same bounded tenant-
+local pull through one `runInTenant`; the signal can shorten a `no_work` retry from 750 ms to
+100 ms but cannot identify, rank, filter, or authorize a candidate. That transaction must
+confirm placement/profile/capability/authority and atomically claim the database-ordered
+oldest claimable row before releasing job details.
 
 Separately, the flag-on JOB-001 outbox runtime lists only admitted Organization IDs from the
 established registry through the bounded non-owner `aoa_app` pool. One rotating lexical tick
-visits at most 32 Organization shards and spends at most 750 ms in database work, claiming
-each Organization's outbox only inside its separate `runInTenant` and publishing identifier-
-only non-authoritative hints. Exhaustion resumes from the fair cursor on the next tick rather
-than continuing an unbounded loop. A missed/rejected/lost hint can delay work but can never
-grant authority; tenant-local pull, outbox replay, and the reconciliation sweep recover after
+admits at most 32 Organization shards during one 750-ms monotonic **launch window**, claiming
+each Organization's outbox only inside its separate `runInTenant` and publishing an
+Organization/target coalesced signal. The window is checked before every page read, shard
+transaction, individual signal publication, and delivery transaction; already-launched work
+is awaited and may finish after the window. It is not a cumulative database-time,
+cancellation, response-time, or hard-wall-clock guarantee. Exhaustion resumes from the fair
+cursor on the next non-overlapping tick rather than continuing an unbounded loop. A missed,
+rejected, expired, or lost signal can delay the next client retry but can never grant
+authority; tenant-local pull, outbox replay, and the reconciliation sweep recover after
 restart and membership churn. Operator job/event/worker endpoints use opaque `(createdAt,
 id)` cursors with a default page of 50 and hard maximum 200.
 
 Required query shapes/indexes are explicit: job claim
-`(organization_id, status, available_at, priority, created_at, id)` with placed/queued
+`(organization_id ASC, status ASC, available_at ASC, priority DESC, created_at ASC, id ASC)` with placed/queued
 predicate; outbox claim `(organization_id, status, available_at, created_at, id)`; active
 lease expiry `(organization_id, status, expires_at)`; pending control
 `(organization_id, lease_id, status, sequence)`; event list
@@ -674,7 +704,7 @@ the identical command GREEN; append the affected package typecheck/build command
 | JOB-001 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-001 db' { pnpm --filter @armyofagents/db exec vitest run src/__tests__/job-control-schema.integration.test.ts src/__tests__/migration-idempotency.test.ts }; Invoke-NativeGate 'JOB-001 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-submission.integration.test.ts src/__tests__/tenant-app-db-startup.test.ts src/__tests__/job-control-legacy-grants.contract.test.ts src/__tests__/integration-test-hygiene.test.ts } }; Invoke-NativeGate 'JOB-001 frozen consumer' { pnpm check:frozen-worker-protocol-v1 -- --source-sha b7a842870ce7509d8baa75409e0ab19da375c88a }` |
 | JOB-002 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-002 db' { pnpm --filter @armyofagents/db exec vitest run src/__tests__/worker-enrollment-schema.integration.test.ts src/__tests__/worker-operator-policy.integration.test.ts src/__tests__/migration-idempotency.test.ts }; Invoke-NativeGate 'JOB-002 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/worker-enrollment.integration.test.ts src/__tests__/worker-session-auth.test.ts src/__tests__/job-control-legacy-grants.contract.test.ts } }` |
 | JOB-009 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-009 db' { pnpm --filter @armyofagents/db exec vitest run src/__tests__/migration-idempotency.test.ts }; Invoke-NativeGate 'JOB-009 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-placement.property.test.ts src/__tests__/job-placement.integration.test.ts src/__tests__/job-control-legacy-grants.contract.test.ts } }` |
-| JOB-003 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-003 db' { pnpm --filter @armyofagents/db exec vitest run src/__tests__/job-control-schema.integration.test.ts src/__tests__/worker-operation-receipts-schema.integration.test.ts src/__tests__/platform-target-authority-lock.integration.test.ts src/__tests__/job-leasing-migration-upgrade.integration.test.ts src/__tests__/worker-operator-policy.integration.test.ts src/__tests__/migration-idempotency.test.ts }; Invoke-NativeGate 'JOB-003 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-leasing.integration.test.ts src/__tests__/job-leasing-contract.test.ts src/__tests__/job-control-runtime.test.ts src/__tests__/worker-enrollment.integration.test.ts src/__tests__/worker-session-auth.test.ts src/__tests__/job-placement.integration.test.ts src/__tests__/job-control-legacy-grants.contract.test.ts src/__tests__/distributed-execution-db-startup.integration.test.ts src/__tests__/server-shutdown.test.ts } }` |
+| JOB-003 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-003 db' { pnpm --filter @armyofagents/db exec vitest run src/__tests__/job-control-schema.integration.test.ts src/__tests__/worker-operation-receipts-schema.integration.test.ts src/__tests__/worker-lease-rejections-schema.integration.test.ts src/__tests__/platform-target-authority-lock.integration.test.ts src/__tests__/job-leasing-migration-upgrade.integration.test.ts src/__tests__/worker-operator-policy.integration.test.ts src/__tests__/migration-idempotency.test.ts }; Invoke-NativeGate 'JOB-003 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-leasing.integration.test.ts src/__tests__/job-lease-eligibility.test.ts src/__tests__/job-leasing-contract.test.ts src/__tests__/job-control-runtime.test.ts src/__tests__/worker-enrollment.integration.test.ts src/__tests__/worker-session-auth.test.ts src/__tests__/job-placement.integration.test.ts src/__tests__/job-control-legacy-grants.contract.test.ts src/__tests__/distributed-execution-db-startup.integration.test.ts src/__tests__/server-shutdown.test.ts }; Invoke-NativeGate 'JOB-003 load' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-leasing-load.integration.test.ts --maxWorkers=1 } }` |
 | JOB-010 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-010 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-admission-parity.integration.test.ts src/__tests__/job-source-admission-matrix.test.ts src/__tests__/job-control-legacy-grants.contract.test.ts src/__tests__/job-legacy-after-commit.integration.test.ts } }` |
 | JOB-004 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-004 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-fencing.integration.test.ts src/__tests__/job-fence-surface.contract.test.ts } }` |
 | JOB-005 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-005 db' { pnpm --filter @armyofagents/db exec vitest run src/__tests__/job-events-schema.integration.test.ts src/__tests__/migration-idempotency.test.ts }; Invoke-NativeGate 'JOB-005 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-events.integration.test.ts } }` |
@@ -958,7 +988,7 @@ ACK activates exactly that lease.
 **Ticket non-goals:** renewal, event ingestion, retry/reaping, artifact bytes, or changing
 the stored placement decision.
 
-**Files:** modify `job_attempts.ts`, `leases.ts`, `workers.ts`, tenant job-control and worker-enrollment
+**Files:** modify `job_attempts.ts`, `leases.ts`, `jobs.ts`, `workers.ts`, tenant job-control and worker-enrollment
 repositories, `server/src/middleware/worker-operation-proof.ts`,
 `server/src/middleware/worker-session-auth.ts`, `server/src/services/worker-enrollment.ts`,
 `server/src/services/execution-targets.ts`, the worker route, and the flag-on runtime
@@ -966,24 +996,29 @@ composition in `server/src/index.ts`; create
 `packages/db/src/platform-target-authority-lock.ts` with the shared lock API,
 `packages/db/src/repositories/operator/job-leasing.ts`,
 `packages/db/src/schema/worker_operation_receipts.ts`, its generated/RLS migrations,
+`packages/db/src/schema/worker_lease_rejections.ts`, generated `0229` and custom `0230`,
 `server/src/services/job-leasing.ts`,
+`server/src/services/job-lease-eligibility.ts`,
 `server/src/services/job-outbox-worker.ts`, and
 `server/src/services/job-ready-scheduler.ts`; tests
 `packages/db/src/__tests__/worker-operation-receipts-schema.integration.test.ts`,
+`worker-lease-rejections-schema.integration.test.ts`,
 `platform-target-authority-lock.integration.test.ts`, and
 `job-leasing-migration-upgrade.integration.test.ts`,
 `server/src/__tests__/job-leasing.integration.test.ts`, `job-control-runtime.test.ts`, and
-`job-leasing-contract.test.ts`, including runtime-composition, multi-Organization platform
+`job-leasing-contract.test.ts`, `job-lease-eligibility.test.ts`, and
+`job-leasing-load.integration.test.ts`, including runtime-composition, multi-Organization platform
 target, advisory-handoff/revocation, authority-mutation-inventory, liveness, and fair-scheduler
 cases. Predecessor file edits are bounded synchronization corrections only; they may not
 change JOB-002 enrollment identity or JOB-009 placement semantics.
 
 Review-attempt-2 corrections additionally generate the next unused Drizzle successor
-(`0229` at the reviewed branch tip) for the four nullable worker cursor columns and their
-all-or-none CHECK, add a database-keyset admitted-Organization reader, and replace the
-platform-writer substring test with an exhaustive AST/exact allowlist plus injected bypass
-fixtures. The generated migration receives only required C14 idempotency guards; it contains
-no hand-written schema DDL, data backfill, RLS, grant, or policy change.
+(`0229` at the reviewed branch tip) for the certificate table, its exact composite parent
+keys/indexes, and the corrected mixed-direction jobs claim index; create custom RLS successor
+`0230`; add a database-keyset admitted-Organization reader; and replace the platform-writer
+substring test with an exhaustive AST/exact allowlist plus injected bypass fixtures. Normal
+DDL remains Drizzle-generated. Hand edits are limited to C14 guards in `0229` and Decision
+#122 RLS/GRANT/POLICY DDL in custom `0230`.
 
 The shared DB helper exports
 `acquirePlatformTargetAuthorityShared(tx, targetId)`,
@@ -1042,61 +1077,127 @@ The job remains `queued` until JOB-005 accepts the first fence-authorized
 `attempt_started` event, which moves attempt `leased→running` and job `queued→running` in the
 event transaction. Incompatible/no-work responses reveal no job IDs/details.
 
-The bounded pull cursor is the exact last examined job tuple
-`(available_at, priority, created_at, id)`. Its continuation predicate matches the index and
-sort direction byte-for-byte: a later row has greater `available_at`; or equal
-`available_at` and lower `priority` because priority sorts descending; or equal first two
-facts and greater `created_at`; or equal first three facts and greater `id`. The logical
-worker row is already locked, so a no-offer scan that reaches the per-poll bound commits the
-last examined tuple atomically on that worker using the authenticated
-`(organization_id, worker_id, target_id)` predicate. Cursor-only progress does not update
-`workers.updated_at`, because pagination is operational state rather than registry authority.
-A later poll or new service instance resumes after it. Within each bounded continuation the
-existing four-key order is unchanged; the cursor never substitutes a `(created_at, id)` sort.
-Reaching the end clears all four facts together and the next bounded poll wraps to
-the beginning, so newly inserted or capacity-reenabled earlier work is eventually revisited.
-An offer/rollback never leaves a partial cursor, and concurrent polls for one logical worker
-cannot advance independently. The cursor has no FK and can reveal no foreign job existence.
+Every authoritative poll starts at the global canonical head. After proof and authority
+validation locks the authenticated logical worker, the service takes one database snapshot of
+live lease totals for `batch`, `browser_session`, and `service`. Target-wide provider-total,
+provider resource-ceiling, and target-derived resource-demand gates run before candidate
+selection. The service derives the currently admissible workload classes from the effective
+poll capacity and those live class counts; SQL excludes inadmissible classes before ordering.
+Dynamic slots, free resources, or live counts are never encoded in a durable rejection.
+JOB-009's normalized provider demand is derived solely from the already selected registered
+target, so the one target-wide resource comparison is identical for every candidate in this
+poll; if it fails, the poll returns `no_work` without scanning or certifying a job.
+
+The server factors a static-only matcher adapter around frozen E1 matching. It uses the
+authenticated stored worker profile/capability/protocol/policy facts and the registered target
+and verified provider profile, while substituting neutral capacity facts only after every
+dynamic capacity gate above has passed. An undifferentiated `workerSatisfiesRequirements`
+`false` is never certifiable. Only the closed reason `static_requirements_mismatch` may create
+a certificate. Placement normalization or envelope construction failure is an invariant
+`internal_unavailable`, never a skippable rejection.
+The neutral matcher capacity is exactly one slot for each workload class and zero free CPU,
+memory, and disk; the frozen matcher uses those fields only for its already-hoisted
+over-advertisement and nonzero-slot checks. A focused equivalence matrix must prove the static
+adapter never returns true when the frozen matcher would reject with all dynamic gates
+satisfied.
+
+`worker_lease_rejections` has composite primary/unique identity
+`(organization_id, worker_id, attempt_id)`. Its exact tenant relationships are
+`(organization_id, company_id, job_id, attempt_id)` to the attempt and
+`(organization_id, worker_id, target_authority_key, target_id)` to the logical-worker binding,
+both `ON DELETE CASCADE`; no redundant single-column Company/job/attempt/worker FK is allowed.
+Validity binds a versioned canonical static-context digest covering hash/canonicalizer,
+leasing-algorithm, matcher, placement-normalizer, and workload-vocabulary versions; worker
+identity/profile/generation/authority key; target ID/generation/profile/provider hashes; and
+the candidate workload type, both JOB-009 authority digests, and complete immutable placement
+tuple. An exhaustive AST/exact writer inventory proves the digest-covered job facts and
+placement facts cannot change after submission/placement; injected protected-field writers
+must fail it. A mismatched version, digest, tuple, worker, target, or tenant is ignored.
+Version 1 is the exported server constant `LEASE_STATIC_ELIGIBILITY_VERSION = 1`; its digest is
+lowercase SHA-256 of `canonicalizeJsonV1` over an exact-key object in the order-independent
+canonicalizer, never `JSON.stringify`. Any matcher/normalizer/vocabulary behavior change must
+bump this version before deployment, making old rows nonmatching until bounded cleanup.
+
+Candidate selection is one database-native statement with stable
+`statement_timestamp()`, exact anti-join of still-valid certificates, canonical
+`available_at ASC, priority DESC, created_at ASC, id ASC`, `LIMIT 256`, and `FOR UPDATE SKIP
+LOCKED`. Its `WHERE` binds pending/selected/active/lease-eligible plus the current target ID,
+owner, class, scope, generation, profile hash, and provider hash before ordering. It has no
+cross-statement JavaScript timestamp or keyset cursor. Eligibility means
+claimable at that selection statement: a row held by bounded lifecycle work is temporarily
+unavailable and never certified. This remains safe because the logical worker is locked first,
+schema proves one Organization poller per Organization/target, platform physical sessions
+cannot poll, and non-platform target locking serializes residual same-target paths. Commit and
+rollback tests must prove a lifecycle-locked older row returns on the next poll.
+
+The service evaluates returned rows in database order. It bulk-upserts only predecessors
+actually evaluated as static-negative before the first eligible row, in the same transaction
+as the conditional `pending -> offered` transition and lease insert. Timeout, DB/authority
+error, unknown reason, parsing/envelope failure, `SKIP LOCKED`, and offer race never create a
+certificate. A conditional-offer null or invariant mismatch rolls the whole transaction back
+and restarts from the global head, at most three attempts; exhaustion returns
+`internal_unavailable`. One certificate row is retained per worker/attempt without a
+correctness TTL, so alternating capacity/live-count reports cannot overwrite static evidence
+or pin the first 256. Offering or deleting an attempt removes its rows; a bounded tenant
+sweeper deletes at most 256 terminal, mismatched, or retired-worker rows per admitted-shard
+visit, including permanently offline workers. The storage bound is explicit
+`O(logical workers x pending attempts)`, not a constant-memory claim.
+Payload-free metrics record certificate hit/miss/upsert/cleanup counts, scan-limit
+exhaustion, head-restart count, certificate-table cardinality, readiness-signal rejection/
+expiry, and launch-window overshoot; no job input, requirement, fence, proof, or credential is
+logged.
 
 The flag-on outbox worker lists admitted Organization IDs through the bounded non-owner app
 pool, excluding the sentinel, inactive, and unmapped entries without reading job facts. The
 database-facing reader accepts `(afterOrganizationId, limit)` and issues at most two ordered
-queries per tick (tail then bounded wrap), each with `limit <= 32`; it never materializes the
-full Organization registry. The runtime uses a stable lexical rotating cursor, is
-non-overlapping, and has one monotonic 750-ms deadline. Before each shard transaction it
-checks the remaining budget and applies a transaction-local `statement_timeout` no greater
-than that remainder; exhaustion stops before the next shard and preserves the cursor for the
-next tick. The 750-ms promise bounds launched database work and database statements; current
-Postgres.js/Drizzle APIs cannot hard-cancel connection-pool acquisition or arbitrary custom
-publisher code, so it is not represented as an absolute wall-clock response deadline.
-Non-overlap remains mandatory, and over-budget acquisition/publisher latency is observed but
-cannot start another shard or overlapping tick. It visits at most 32 shards per tick, claims rows only inside each shard's `runInTenant`, and
-feeds identifier-only, non-authoritative ready hints keyed by Organization and target to the
-bounded scheduler. Scheduler state has explicit global and per-Organization aggregate-hint
-and target-cardinality limits plus deterministic expiry/FIFO cleanup. Duplicate hints consume
-no extra capacity; a rejected publication remains retryable, while eviction/expiry can only
-delay work because tenant pull remains authoritative. Repeated ticks must visit every admitted
-shard rather than restarting at the first 32. Each Organization-scoped poll consumes only matching hints and always falls
-back to a bounded pull from its own tenant; outbox replay and pull polling recover after
-restart and after Organization membership churn. A publish/rejection/drop is recorded only as
-a latency signal and never changes outbox/job authority. A platform-scoped session neither
-consumes these hints nor causes a tenant scan. Hints never bypass placement, authority guards,
-row locks, or capacity checks.
+queries per tick (tail then bounded wrap). The first has `LIMIT <= 32`; the second has
+`LIMIT <= 32 - tailCount`, so the combined distinct window never exceeds 32 and the full
+registry is never materialized. The runtime uses a stable lexical rotating cursor and is
+single-flight. A tick snapshots `launchDeadline = monotonicNow() + 750 ms` and immediately
+before each page reader, claim or delivery `runInTenant`, and individual local signal
+publication rechecks the clock. Below 1 ms it launches no additional external unit. Work
+already invoked is awaited and may acquire a pool connection, execute, publish, commit, roll
+back, or return after the window. This is a launch-admission bound, not cumulative database
+time, cancellation, response time, or a hard wall-clock guarantee. `statement_timeout` set
+from the launch-time remainder is defense in depth only. Overshoot is measured/logged without
+tenant payload, and no overlapping tick may start.
+
+The rotation cursor advances past every admitted/attempted Organization even when its claim
+times out or publication is rejected, so one slow/full shard cannot pin the window. A claim
+that cannot publish or launch delivery remains durable for visibility-timeout retry; accepted
+rows alone are marked delivered, and duplicate publication is idempotent. Repeated ticks must
+visit every admitted shard rather than restarting at the first 32.
+
+The in-process scheduler stores one coalesced readiness bit per
+`(organization_id, target_id)`, never attempt IDs. Production defaults/hard bounds are:
+Organizations `32/32`, targets per Organization `128/1024`, global signals `1024/1024`, and
+TTL `30,000/300,000 ms`. Every configured value must be a finite positive integer; invalid or
+fractional input fails startup, and valid input is clamped to its hard ceiling. A monotonic
+clock drives expiry. Admission purges expiry first; duplicates change neither size, order, nor
+expiry; a live-cap violation returns false without eviction and leaves the outbox row
+retryable. Exact-target consumption atomically drains the one bit and returns only a boolean.
+The leasing API can use that boolean only to choose `no_work.retryAfterMs` (`100` when signaled,
+otherwise `750`); it never receives an attempt ID, list, rank, cursor, or query predicate.
+Signal presence cannot alter candidate `WHERE`, `ORDER BY`, `LIMIT`, certificate validity, or
+scan start. A platform-scoped session neither consumes signals nor causes a tenant scan.
 
 **Failure behavior:** partial unique `leases_active_per_attempt_idx` plus the locked
 transition makes concurrent claim losers return no-work; late/wrong ACK is stale-fence or
 attempt-terminal; disconnected pre-ACK offers remain for JOB-006 reaping; target revocation
 or generation change invalidates ACK. Database serialization/internal errors return bounded
-`internal_unavailable`, never a second lease. Capacity is evaluated per applicable workload
-class and an ineligible/full head candidate cannot hide later eligible work. The exact expired
+`internal_unavailable`, never a second lease. Capacity is evaluated once per applicable
+workload class and filtered before canonical ordering; a valid static-negative certificate
+can hide only its exact unchanged worker/target/attempt facts, while an uncertified, new,
+changed, previously lifecycle-locked, or capacity-reenabled older row is visible immediately.
+The exact expired
 semantic receipt is checked/deleted independently of bounded housekeeping before replay or
 insert, so a collision beyond the cleanup batch cannot replay or permanently block progress.
 
-A bounded scan that finds no compatible work commits only the complete four-field logical-
-worker cursor; statement failure rolls it back with proof/liveness changes. At registry or
-tick deadline exhaustion, no new shard transaction starts and the fair Organization cursor
-resumes on the next non-overlapping tick. Scheduler capacity or expiry never marks a rejected
-outbox publication delivered and never changes job/attempt/lease authority.
+A bounded scan that finds no compatible work commits only exact static-negative certificates
+with proof/liveness changes; statement failure rolls all of them back. At launch-window
+exhaustion, no new external unit starts and the fair Organization cursor resumes after the
+last attempted shard on the next non-overlapping tick. Scheduler capacity or expiry never
+marks a rejected outbox publication delivered and never changes job/attempt/lease authority.
 
 **Compatibility / rollback:** additive lease/attempt columns. Because E3 migration `0227`
 has not shipped on the shared branch, its generated DDL receives the permitted hand-appended,
@@ -1108,9 +1209,12 @@ offered/terminal rows and already-populated activation facts remain unchanged. T
 is immediately preceded by the literal comment
 `-- C14 permitted idempotent data backfill for E2-valid active leases before leases_activation_check.`
 Replay over populated E2 state must pass.
-No lease locator or E1 wire/schema change is introduced. Flag-off has no poll/ACK route or
-outbox/scheduler runtime. Rollback stops offers and lets already offered leases expire; never
-transfers their fence.
+Generated `0229` and custom `0230` are additive except for replacing the same-named claim
+index with its correct mixed direction. Certificate rows are derived tenant metadata: flag-
+off reads/writes none, and a rollback may leave the table/index in place while the canonical
+head scan simply stops consulting it. No lease locator or E1 wire/schema change is introduced.
+Flag-off has no poll/ACK route or outbox/scheduler runtime. Rollback stops offers and lets
+already offered leases expire; never transfers their fence.
 
 **RED → GREEN:** real embedded PostgreSQL barrier tests with ≥100 concurrent claim/ACK races,
 two compatible plus one incompatible worker, oldest-eligible ordering, target/generation
@@ -1123,21 +1227,33 @@ registered-profile mutation; operator-connection loss before/during/after adviso
 app/process crash; bounded lock timeout; no operator job/lease/tenant/fence/payload facts;
 real enrollment→physical heartbeat→logical poll/ACK with initial NULL and beyond-window
 logical `last_seen_at`, plus stale-physical denial; >32-shard fair rotation, membership churn,
-publish rejection, and restart pull recovery; multi-target scheduler churn against aggregate
-and target-cardinality limits; deliberately slow tenant work proving the 750-ms deadline,
-non-overlap, bounded two-query Organization wrap, and cursor resume; mixed workload
-capacity without head-of-line starvation; 256 incompatible heads followed by a compatible
-257th attempt, service restart, concurrent logical-worker polls, capacity churn, cursor wrap,
-and newly inserted earlier work using the full four-part order; an exact expired receipt behind >100 other expired
-rows; populated-E2 migration replay; and non-vacuous cross-tenant receipt RLS denial.
+publish rejection, and restart pull recovery; exact scheduler defaults/hard caps, non-finite
+and fractional configuration denial, duplicate/TTL semantics, and more-target/global-cap
+churn; launch-window expiry after page read, claim, and publisher `k`, proving no later
+publisher/delivery/shard launch, allowed completion after 750 ms, non-overlap on success and
+rejection, bounded two-query/32-Organization wrap, slow-shard cursor advance, and retryable
+claimed rows; mixed workload capacity without head-of-line starvation; 256 static-incompatible
+heads followed by compatible attempt 257 across restart, alternating dynamic capacity/live
+counts, and concurrent polls; a newly inserted/changed/capacity-reenabled/lifecycle-unlocked
+older row; a newer signaled attempt that cannot leap an older eligible attempt; database-
+native microsecond tie ordering; certificate version/digest/placement mismatch; offer-null
+rollback and three head restarts; an exact expired receipt behind >100 other expired rows;
+populated-0228 migration/replay through generated `0229` plus custom `0230`; exact
+`pg_get_indexdef()` priority DESC and Drizzle snapshot direction; forced-RLS/no-GUC/cross-
+Organization/cross-Company certificate denial; terminal/retired-worker cleanup and cascades;
+and a 1,000,000-certificate load report covering table/index bytes, anti-join plan, poll p95,
+256-row upsert, and cleanup latency. The one-statement claim plan at INITIAL/D1 volume may not
+use an unbounded sort or sequential scan of the hot queue/certificate tables.
 Add an exhaustive AST/exact allowlist mutation inventory proving every current platform
 status/generation/device/profile authority writer uses target→worker row order plus the
 exclusive advisory helper, while last-seen-only heartbeat stays non-authoritative and cannot
 change status. Its negative fixtures inject an unlisted file, an unguarded writer, and wrong
-target→worker→exclusive order; each must fail the inventory. The tenant-only cursor mutation
-is enumerated separately as `scan_cursor_only`, must include Organization/worker/target
-predicates, and may change only the four cursor columns (never status, generation, device,
-profile, liveness, or `updated_at`).
+target→worker→exclusive order; each must fail the inventory. A separate exact AST inventory
+covers protected immutable job/placement fields used by certificate validity and fails on an
+injected post-placement writer. Certificate upsert/cleanup is classified
+`eligibility_certificate_only`, must include exact tenant, worker, target, and attempt
+predicates, and may mutate only certificate rows (never worker, target, job, attempt, lease,
+liveness, or authority facts).
 JOB-005 later adds the
 started-event job/attempt transition test. Run focused suite three
 times because it is H-03 critical, plus db/server build. Evidence
@@ -1746,10 +1862,10 @@ is committed and independently reviewed; these tasks do not authorize implementa
   - Surfaced by: Architecture — canonical admission parity and mixed capacity enforcement had overlapped.
   - Files: JOB-010 admission bridge/tests; JOB-007 capacity claim/release/wakeup service/tests.
   - Verify: source characterization pre-D1 and mixed legacy/distributed CM-014 proof post-D1.
-- [ ] **T5 (P2, human: ~4h / agent: ~1h)** — readiness outbox — make retry wakeups attempt-aware.
-  - Surfaced by: Code Quality — job-keyed readiness cannot reliably rearm attempt N+1.
+- [ ] **T5 (P2, human: ~4h / agent: ~1h)** — readiness outbox — keep durable retry rows attempt-aware while process signals coalesce by target.
+  - Surfaced by: Code Quality — job-keyed readiness cannot reliably rearm attempt N+1, while candidate IDs must not influence oldest-first leasing.
   - Files: `job_outbox.ts`, JOB-001 submit, JOB-003 drainer, JOB-006 retry/reconciliation.
-  - Verify: retry attempt and readiness row commit atomically; fallback scan is not correctness authority.
+  - Verify: retry attempt and readiness row commit atomically; the canonical tenant pull is sole selection authority and the coalesced signal changes retry latency only.
 - [ ] **T6 (P2, human: ~4h / agent: ~1h)** — projection receipts — define durable exactly-once state.
   - Surfaced by: Code Quality — identity alone did not cover digest conflict, pending recovery, or target aggregate.
   - Files: `job_projection_receipts.ts`, tenant repository, parity bridge adapters.
@@ -1765,7 +1881,7 @@ is committed and independently reviewed; these tasks do not authorize implementa
 - [ ] **T9 (P2, human: ~1 day / agent: ~2h)** — hot queries — bound polling and operator reads.
   - Surfaced by: Performance — claim/sweeper/control/outbox indexes and numeric fan-out limits were missing.
   - Files: schema indexes, poll/reconciliation services, operator list routes, D1 load suites.
-  - Verify: query-plan assertions at INITIAL volumes, ≤32 Org shards/750 ms poll, cursor default 50/max 200.
+  - Verify: query-plan assertions at INITIAL volumes, one-statement oldest-first claim with certificate anti-join, ≤32 Org shards per 750-ms launch-admission window, exact readiness-signal caps, and operator cursor default 50/max 200.
 - [ ] **T10 (P2, human: ~4h / agent: ~1h)** — ticket sizing — keep standard tickets within reviewable slices.
   - Surfaced by: Code Quality / external Claude delta review — JOB-001/JOB-002/JOB-009 combine several independently testable changes.
   - Files: ticket result ledgers and commit sequences defined in JOB-001/JOB-002/JOB-009.
@@ -1819,11 +1935,16 @@ split at the named `E6-D1-FOUNDATION` partial gate.
 JOB-003 review attempt 2 later found four bounded scheduler/certification gaps. Fix-round-2
 RED `c5be2a6853a93c1ad73910f1bdcd05c8299f93b6` proved those gaps, but pre-migration
 inspection found that its initial two-field lease-scan cursor could not preserve the locked
-four-part claim order. Implementation stopped before schema or migration work. This amendment
-chooses the full all-or-none `(available_at, priority, created_at, id)` cursor and retains the
-existing order/index; changing claim ordering to simplify pagination is explicitly rejected.
-Independent amendment review is required before the RED expectation is corrected or GREEN
-resumes.
+four-part claim order. Implementation stopped before schema or migration work. Independent
+review of the proposed full four-part cyclic cursor at
+`0f1953d4f645d7530a9580289b03365911d02a0b` then returned `REJECT / P1 STOP`: stale cyclic
+progress can bypass newly eligible older work, hint-first selection also violates global
+ordering, JavaScript timestamps lose PostgreSQL microseconds, the physical index had the
+wrong priority direction, scheduler bounds were unspecified, and the 750-ms text overclaimed
+cumulative database time. No cursor implementation exists. This successor uses exact static-
+negative certificates plus global-head selection, corrects the index and signal semantics,
+and narrows 750 ms to an enforceable launch-admission window. Independent review of this exact
+successor is required before the committed RED is corrected or GREEN resumes.
 
 ## GSTACK REVIEW REPORT
 
@@ -1831,13 +1952,13 @@ resumes.
 |--------|---------|-----|------|--------|----------|
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | Not run; not required for this backend planning pass. |
 | Codex Review | `/codex review` | Independent 2nd opinion | 0 | — | Not run. |
-| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 4 + JOB-003 amendment pending | `AMENDMENT REVIEW REQUIRED` | Original plan accepted; the JOB-003 four-part durable-cursor amendment is paused before implementation pending a distinct review. |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 5 + JOB-003 successor pending | `AMENDMENT REVIEW REQUIRED` | Original plan accepted; the JOB-003 cyclic-cursor amendment was rejected, and the static-negative-certificate successor is paused before implementation pending a distinct exact-text review. |
 | Claude Code | `claude -p` | User-requested outside-model review | 0 | `AUTH BLOCKED` | Claude Code 2.1.126 is installed, but `claude auth status` reports `loggedIn: false`; no Claude review occurred. |
 | Claude (user-provided) | pasted review | External plan delta review | 1 | `TRIAGED — STALE BASE` | Reviewed origin `8e2faa590`, not the local plan; three concerns were already closed, while JOB-009 sizing and explicit JOB-012–014 disablement were valid deltas and are now resolved in plan. |
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | Not run; E3 operator UI follows existing patterns. |
 | DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | Not run. |
 
-**VERDICT:** APPROVED FOR PRE-D1 EXECUTION EXCEPT THE PENDING JOB-003 CURSOR AMENDMENT;
+**VERDICT:** APPROVED FOR PRE-D1 EXECUTION EXCEPT THE PENDING JOB-003 CERTIFICATE AMENDMENT;
 JOB-003 GREEN is paused until that amendment is independently accepted. The original plan is
 otherwise independently review-complete;
 the operator selected E2 option B plus the metadata-only operator role, approved the E1

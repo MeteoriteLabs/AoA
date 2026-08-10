@@ -387,7 +387,31 @@ gaps without production, schema, migration, or ledger changes. During GREEN pref
 implementer found that the proposed two-field `(created_at, id)` worker cursor cannot preserve
 the locked job claim order `(available_at ASC, priority DESC, created_at ASC, id ASC)`.
 Implementation stopped before generating `0229`; no cursor schema or leasing code remains in
-the worktree. E3-F025 and the implementation plan now specify a nullable all-or-none
-four-field cursor with no FK/existence oracle. JOB-003 remains `needs_changes`; GREEN is not
-authorized until a distinct reviewer accepts that plan amendment and the RED is corrected to
-the reviewed shape.
+the worktree. A first amendment then specified a nullable all-or-none four-field cursor with
+no FK/existence oracle. That historical amendment was never implementation authority.
+
+## Independent cursor-amendment rejection and static-certificate successor
+
+A distinct reviewer read exact plan revision
+`0f1953d4f645d7530a9580289b03365911d02a0b` and returned `REJECT / P1 STOP`. The four-field
+cyclic cursor could bypass a newly inserted, capacity-reenabled, or formerly locked older row
+while later work stayed nonempty; hint-first selection independently violated the locked
+oldest-eligible rule; JavaScript `Date` lost database microseconds; `jobs_claim_idx` had
+priority ASC rather than the required DESC; scheduler bounds were not numeric; and the
+750-ms text incorrectly claimed cumulative database time. No cursor production/schema/
+migration work was created.
+
+The successor amendment removes the cursor. Dynamic provider/resource/class capacity is
+hoisted before selection. One database-native, statement-time, mixed-direction ordered query
+always begins at the global head and anti-joins only exact static-negative certificates in a
+new tenant FORCE-RLS table. Certificates are one row per logical worker/attempt, bind versioned
+worker/target/placement authority, and never represent dynamic capacity, locks, races,
+timeouts, parsing, envelope, or authority failures. Ready state is one coalesced Organization/
+target signal with no attempt IDs; it may shorten `no_work` retry latency but cannot change
+candidate order. The runtime contract is a 750-ms launch-admission window, not a cumulative
+or hard-wall deadline. Generated `0229` owns the table/parent keys/corrected index; custom
+`0230` owns exact app-only RLS grants.
+
+JOB-003 remains `needs_changes`. GREEN remains unauthorized until a distinct reviewer accepts
+the exact committed successor, the test-only RED is corrected to that reviewed shape, and the
+controller reruns the corrected RED.
