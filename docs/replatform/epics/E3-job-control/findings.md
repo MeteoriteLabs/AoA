@@ -777,5 +777,7 @@ nullable no-FK worker columns—`lease_scan_cursor_available_at`,
 `lease_scan_cursor_priority`, `lease_scan_cursor_created_at`, and
 `lease_scan_cursor_id`—with an all-or-none CHECK. The continuation predicate preserves the
 complete sort direction, no-offer scans atomically persist the last examined tuple under the
-existing logical-worker lock, and end-of-order clears all four for a bounded wrap. A distinct
+existing logical-worker lock and an exact Organization/worker/target predicate, without
+touching `workers.updated_at`; end-of-order clears all four for a bounded wrap. The exhaustive
+writer inventory classifies this separately as `scan_cursor_only`. A distinct
 reviewer must accept the amended plan before the committed RED or production code changes.

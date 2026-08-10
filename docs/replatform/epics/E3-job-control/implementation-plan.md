@@ -1048,8 +1048,12 @@ sort direction byte-for-byte: a later row has greater `available_at`; or equal
 `available_at` and lower `priority` because priority sorts descending; or equal first two
 facts and greater `created_at`; or equal first three facts and greater `id`. The logical
 worker row is already locked, so a no-offer scan that reaches the per-poll bound commits the
-last examined tuple atomically on that worker. A later poll or new service instance resumes
-after it. Reaching the end clears all four facts together and the next bounded poll wraps to
+last examined tuple atomically on that worker using the authenticated
+`(organization_id, worker_id, target_id)` predicate. Cursor-only progress does not update
+`workers.updated_at`, because pagination is operational state rather than registry authority.
+A later poll or new service instance resumes after it. Within each bounded continuation the
+existing four-key order is unchanged; the cursor never substitutes a `(created_at, id)` sort.
+Reaching the end clears all four facts together and the next bounded poll wraps to
 the beginning, so newly inserted or capacity-reenabled earlier work is eventually revisited.
 An offer/rollback never leaves a partial cursor, and concurrent polls for one logical worker
 cannot advance independently. The cursor has no FK and can reveal no foreign job existence.
@@ -1062,7 +1066,11 @@ full Organization registry. The runtime uses a stable lexical rotating cursor, i
 non-overlapping, and has one monotonic 750-ms deadline. Before each shard transaction it
 checks the remaining budget and applies a transaction-local `statement_timeout` no greater
 than that remainder; exhaustion stops before the next shard and preserves the cursor for the
-next tick. It visits at most 32 shards per tick, claims rows only inside each shard's `runInTenant`, and
+next tick. The 750-ms promise bounds launched database work and database statements; current
+Postgres.js/Drizzle APIs cannot hard-cancel connection-pool acquisition or arbitrary custom
+publisher code, so it is not represented as an absolute wall-clock response deadline.
+Non-overlap remains mandatory, and over-budget acquisition/publisher latency is observed but
+cannot start another shard or overlapping tick. It visits at most 32 shards per tick, claims rows only inside each shard's `runInTenant`, and
 feeds identifier-only, non-authoritative ready hints keyed by Organization and target to the
 bounded scheduler. Scheduler state has explicit global and per-Organization aggregate-hint
 and target-cardinality limits plus deterministic expiry/FIFO cleanup. Duplicate hints consume
@@ -1126,7 +1134,10 @@ Add an exhaustive AST/exact allowlist mutation inventory proving every current p
 status/generation/device/profile authority writer uses target→worker row order plus the
 exclusive advisory helper, while last-seen-only heartbeat stays non-authoritative and cannot
 change status. Its negative fixtures inject an unlisted file, an unguarded writer, and wrong
-target→worker→exclusive order; each must fail the inventory.
+target→worker→exclusive order; each must fail the inventory. The tenant-only cursor mutation
+is enumerated separately as `scan_cursor_only`, must include Organization/worker/target
+predicates, and may change only the four cursor columns (never status, generation, device,
+profile, liveness, or `updated_at`).
 JOB-005 later adds the
 started-event job/attempt transition test. Run focused suite three
 times because it is H-03 critical, plus db/server build. Evidence
