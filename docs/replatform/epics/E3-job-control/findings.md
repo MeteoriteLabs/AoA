@@ -265,3 +265,27 @@ device proof, revalidates the current worker/target/generation/key/profile/membe
 the owning transaction, and mints a new equivalent short-lived session. Tenant and platform
 rollback tests cover the final receipt boundary; revocation/rotation/transfer and no-session-
 at-rest regressions pass. No nonconforming Slice C GREEN revision was committed.
+
+## E3-F011 — JOB-002 review found transport, shared-target, replay, and fixture gaps
+
+**Date:** 2026-08-10
+**Status:** `resolved_in_JOB-002_fix_round_1_pending_review`
+**Severity:** P1 H-01/H-04, migration, and evidence correctness
+**Affected ticket:** JOB-002
+
+**Finding:** Independent review attempt 1 found seven blockers: production HTTP request logs
+could serialize worker credentials; Organization profiles on a shared platform target could
+not retire or heartbeat global state safely; a global worker UUID collision exposed raw 23505
+details; enrollment omitted bounded expired-proof cleanup; worker-control failures did not use
+frozen `ProtocolErrorV1`; migration 0219 failed exact replay; and stale E2 worker fixtures
+failed before their tenant assertions.
+
+**Disposition:** Fix round 1 added genuine RED at
+`894b84cbf464e88fd9080cf8eb0ecf0800c73940` and GREEN at
+`988c2a8af8a71593558627280ef0d220a7a54071`. Credential routes now have strict safe request/
+error logging; a shared platform target must first have current proof-bound platform physical
+authority, while tenant heartbeat records profile liveness only and sessions recheck global
+revocation; collisions and all HTTP failures close in frozen protocol vocabulary; proof
+cleanup is ordered and bounded; 0219 replay is guarded; and E2 fixtures establish valid
+target/device facts before non-vacuous H-01 assertions. Focused lanes pass, but the ticket
+remains review-pending until a distinct reviewer independently certifies the candidate.

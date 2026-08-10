@@ -1,7 +1,7 @@
 # JOB-002 Result — Enroll workers and persist logical profiles
 
-**Status:** `needs_changes`
-**Disposition:** `needs_changes`
+**Status:** `implementation_complete_review_pending`
+**Disposition:** `review_pending`
 **Date opened (UTC):** `2026-08-10`
 **Epic:** `E3-job-control`
 **Plan task:** `JOB-002 — Enroll workers and persist logical profiles (M)`
@@ -152,3 +152,41 @@ and alone may change the ticket to `complete` / `pass`.
 The ticket is not complete. A fresh implementer fix round must add genuine RED coverage and
 correct all Critical/Important findings without changing frozen E1, then return a new 40-hex
 ancestor revision for another distinct review attempt.
+
+## Implementation fix round 1 — 2026-08-10 — Codex `/root/job002_impl`
+
+- **Review evidence consumed:** `1a842c425bb00861a29bfbf21e4bcdd79fb35172`.
+- **Genuine RED:** `894b84cbf464e88fd9080cf8eb0ecf0800c73940`.
+- **GREEN candidate:** `988c2a8af8a71593558627280ef0d220a7a54071`.
+- **State:** `implementation_complete_review_pending`; **disposition:** `review_pending`.
+
+All seven attempt-1 findings were addressed without changing frozen E1, restoring a legacy
+token, granting tenant mutation of null-Organization targets, or adding placement/lease work.
+Production request logging is strict/omitted on both credential routes; shared platform
+profiles require current proof-bound platform physical authority and update only tenant
+profile liveness; global worker-ID collisions close uniformly; enrollment performs bounded
+expired-proof cleanup; every worker-control 4xx/5xx is frozen `ProtocolErrorV1`; migration
+0219 direct replay is C14-safe; and the E2 worker fixtures reach their original scope/RLS
+assertions with valid target/device facts.
+
+### Fix-round evidence
+
+- Review-blocker focused lanes: logger/file transport **9/9**, worker enrollment and HTTP
+  envelopes **13/13**, DB schema/applied replay **6/6**, E2 schema B **7/7**, and E2 tenant
+  RLS/adversarial **21/21**. The adversarial lane recorded **4,460** operations across eight
+  seeds and reached RLS denial for worker null-Org writes.
+- Full JOB-002 focused matrix: DB **13/13**; enrollment/session/proof/grant/logging **29/29**;
+  static RBAC/legacy service **9/9**; startup/non-owner/role/legacy **48 passed / 6 explicit
+  Windows skips**; JOB-001 default-off **31/31**.
+- Frozen E1 checker at `b7a842870ce7509d8baa75409e0ab19da375c88a`, protocol boundary,
+  frozen install, affected and recursive typecheck, affected builds, and root build all passed.
+- Exact Windows-local `AOA_RUN_WIN_INTEGRATION=1 pnpm test:run` honestly exited 1 after 239s
+  with 12 aggregate failures and no JOB-002/repaired-tenant failure. Returned output showed the
+  known worker-protocol Windows collection SyntaxError, adapter timeout cases, and D18
+  embedded-PG setup contention. D18 passed **6/6** alone, the two reported OpenCode files
+  passed **4/4** alone, and worker-protocol reproduced alone as one failed suite/no collected
+  tests. Linux CI remains formal DEC-03 authority; this is not a waiver or full-suite pass.
+
+A new distinct reviewer must review the GREEN candidate as an ancestor of HEAD, rerun the
+focused acceptance, append review attempt 2, and alone may change the ticket to `complete` /
+`pass`.
