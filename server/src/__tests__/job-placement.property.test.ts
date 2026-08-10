@@ -294,6 +294,15 @@ describe("JOB-009 slice B deterministic placement policy", () => {
         targets: sorted,
       })?.id).toBe(expectedPin);
     }
+
+    const sameSlug = [
+      resolverRow({ suffix: 8, slug: "same-pool", targetClass: "managed_cloud" }),
+      resolverRow({ suffix: 7, slug: "same-pool", targetClass: "managed_cloud" }),
+    ];
+    for (const candidateOrder of permutations(sameSlug)) {
+      const sorted = (order as (targets: unknown[]) => typeof sameSlug)(candidateOrder);
+      expect(sorted.map((target) => target.id)).toEqual([sameSlug[1]!.id, sameSlug[0]!.id]);
+    }
   });
 
   it("[I-01] normalizes the exact JOB-001 persisted shapes without caller-authored provider authority", async () => {

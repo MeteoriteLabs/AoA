@@ -55,6 +55,49 @@ const LEGACY_TRUST_BY_CLASS = {
   owner_desktop: "local_trusted",
 } as const;
 
+const PLACEMENT_SCOPE_PRIORITY = {
+  platform: 0,
+  organization: 1,
+  owner: 2,
+} as const;
+
+const PLACEMENT_CLASS_PRIORITY = {
+  managed_cloud: 0,
+  organization_dedicated: 1,
+  owner_desktop: 2,
+} as const;
+
+function compareStableText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+/**
+ * Stable pre-resolution order for Decision #117. The resolver keeps all of
+ * its existing pin/credential semantics; this only removes repository/heap
+ * enumeration as an authority input. Invalid or missing registered profiles
+ * sort after mapped authority and still fail closed during normalization.
+ */
+export function sortExecutionTargetRowsForPlacement(
+  targets: readonly ExecutionTargetRow[],
+): ExecutionTargetRow[] {
+  const authority = (target: ExecutionTargetRow) => {
+    const parsed = registeredTargetProfileV1Schema.safeParse(target.registeredProfile);
+    if (!parsed.success) return { scope: 3, targetClass: 3 };
+    return {
+      scope: PLACEMENT_SCOPE_PRIORITY[parsed.data.scope],
+      targetClass: PLACEMENT_CLASS_PRIORITY[parsed.data.targetClass],
+    };
+  };
+  return [...targets].sort((left, right) => {
+    const leftAuthority = authority(left);
+    const rightAuthority = authority(right);
+    return leftAuthority.scope - rightAuthority.scope
+      || leftAuthority.targetClass - rightAuthority.targetClass
+      || compareStableText(left.slug, right.slug)
+      || compareStableText(left.id, right.id);
+  });
+}
+
 function sha256(bytes: Uint8Array | string): string {
   return createHash("sha256").update(bytes).digest("hex");
 }

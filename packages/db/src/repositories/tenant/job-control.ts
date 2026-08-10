@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, exists, inArray, isNull } from "drizzle-orm";
 import type { Db } from "../../client.js";
 import {
   agents,
@@ -159,6 +159,7 @@ export interface PlacementDecisionWrite {
   placementReasonCode: string;
   placementMode: string;
   placementLeaseEligible: boolean;
+  placementOwnerPrincipalId: string | null;
   placementInputDigest: string;
   placementPolicyDigest: string;
   placementDecidedAt: Date;
@@ -511,6 +512,22 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
     },
 
     async persistPlacementDecision(input) {
+      const currentOwnerAuthority = input.placementDisposition === "selected"
+        && input.placementOwner === "owner_desktop"
+        ? exists(tx
+            .select({ companyId: companies.id })
+            .from(companies)
+            .innerJoin(organizationMemberships, and(
+              eq(organizationMemberships.organizationId, companies.organizationId),
+              eq(organizationMemberships.organizationId, input.organizationId),
+              eq(organizationMemberships.userId, input.placementOwnerPrincipalId ?? ""),
+              eq(organizationMemberships.status, "active"),
+            ))
+            .where(and(
+              eq(companies.id, input.companyId),
+              eq(companies.organizationId, input.organizationId),
+            )))
+        : undefined;
       const [row] = await tx.update(jobAttempts).set({
         placementDisposition: input.placementDisposition,
         placementOwner: input.placementOwner,
@@ -534,6 +551,7 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         eq(jobAttempts.jobId, input.jobId),
         eq(jobAttempts.id, input.attemptId),
         isNull(jobAttempts.placementDecidedAt),
+        currentOwnerAuthority,
       )).returning();
       return row ?? null;
     },

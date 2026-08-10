@@ -21,6 +21,7 @@ import {
 import {
   chooseExecutionTargetRow,
   normalizePlacementRegistryTarget,
+  sortExecutionTargetRowsForPlacement,
   type ExecutionTargetRow,
 } from "./execution-target-resolver.js";
 
@@ -136,6 +137,9 @@ export async function placeJobAttemptTransaction(
       let routedRow: ExecutionTargetRow | null = null;
       let routingError: string | null = null;
       let routingTemporarilyUnavailable = false;
+      const resolverTargets = sortExecutionTargetRowsForPlacement(
+        snapshots.map((snapshot) => snapshot.target as ExecutionTargetRow),
+      );
       const placementRequest = context.job.placementRequest as Record<string, unknown> | null;
       const requestedTarget = placementRequest && typeof placementRequest.requestedTarget === "string"
         ? placementRequest.requestedTarget
@@ -146,14 +150,14 @@ export async function placeJobAttemptTransaction(
             credentialKind: authority.credentialBinding.credentialKind,
             pinnedTargetId: requestedTarget ?? authority.credentialBinding.pinnedTargetId,
             executionTargetSlug: authority.credentialBinding.executionTargetSlug,
-            targets: snapshots.map((snapshot) => snapshot.target as ExecutionTargetRow),
+            targets: resolverTargets,
           });
         } catch {
           // Resolver error text can contain target identifiers. Persist only the
           // closed reason; request callers never receive registry diagnostics.
           routingError = "execution_target_resolution_failed";
           const explicitTargetId = requestedTarget ?? authority.credentialBinding.pinnedTargetId;
-          const scopedTargets = snapshots.map((snapshot) => snapshot.target as ExecutionTargetRow);
+          const scopedTargets = resolverTargets;
           const unavailableTarget = explicitTargetId
             ? scopedTargets.find((target) => target.id === explicitTargetId) ?? null
             : authority.credentialBinding.credentialKind === "personal_subscription" &&
@@ -287,10 +291,56 @@ export async function placeJobAttemptTransaction(
         placementReasonCode: decision.reasonCode,
         placementMode: decision.mode,
         placementLeaseEligible: decision.leaseEligible,
+        placementOwnerPrincipalId: decision.owner === "owner_desktop"
+          ? candidates.find((candidate) => candidate.registry.targetId === decision.targetId)
+              ?.registry.registeredProfile.ownerPrincipalId ?? null
+          : null,
         placementInputDigest: decision.inputDigest,
         placementPolicyDigest: decision.policyDigest,
         placementDecidedAt: input.now,
       });
+      if (!stored && decision.disposition === "selected" && decision.owner === "owner_desktop") {
+        const ownerUnavailable: JobPlacementDecision = {
+          disposition: requestedTarget ? "failed" : "queued",
+          owner: null,
+          targetId: null,
+          targetClass: null,
+          targetScope: null,
+          targetGeneration: null,
+          profileHash: null,
+          providerConstraintHash: null,
+          fallbackDisposition: "forbidden",
+          reasonCode: "required_target_unavailable",
+          mode: decision.mode,
+          leaseEligible: false,
+          inputDigest: decision.inputDigest,
+          policyDigest: decision.policyDigest,
+        };
+        const fallbackStored = await repos.jobControl.persistPlacementDecision({
+          organizationId: input.organizationId,
+          companyId: input.companyId,
+          jobId: input.jobId,
+          attemptId: input.attemptId,
+          placementDisposition: ownerUnavailable.disposition,
+          placementOwner: ownerUnavailable.owner,
+          placementTargetId: ownerUnavailable.targetId,
+          placementTargetClass: ownerUnavailable.targetClass,
+          placementTargetScope: ownerUnavailable.targetScope,
+          placementTargetGeneration: ownerUnavailable.targetGeneration,
+          placementProfileHash: ownerUnavailable.profileHash,
+          placementProviderConstraintHash: ownerUnavailable.providerConstraintHash,
+          placementFallbackDisposition: ownerUnavailable.fallbackDisposition,
+          placementReasonCode: ownerUnavailable.reasonCode,
+          placementMode: ownerUnavailable.mode,
+          placementLeaseEligible: ownerUnavailable.leaseEligible,
+          placementOwnerPrincipalId: null,
+          placementInputDigest: ownerUnavailable.inputDigest,
+          placementPolicyDigest: ownerUnavailable.policyDigest,
+          placementDecidedAt: input.now,
+        });
+        if (!fallbackStored) throw new JobPlacementError("placement_already_decided");
+        return decisionFromAttempt(fallbackStored)!;
+      }
       if (!stored) throw new JobPlacementError("placement_already_decided");
       return decisionFromAttempt(stored)!;
     };
