@@ -1,14 +1,14 @@
 # JOB-009 Result - Resolve authoritative hybrid placement
 
-**Status:** `review_pending`
-**Disposition:** `review_pending`
+**Status:** `needs_changes`
+**Disposition:** `needs_changes`
 **Date opened (UTC):** `2026-08-10`
 **Epic:** `E3-job-control`
 **Plan task:** `JOB-009 - Resolve authoritative hybrid placement (L; three bounded internal slices)`
 **Implementer:** `Codex /root/job009_impl`
 **Reviewer:** `Codex /root/job009_review`
 **Start SHA:** 91d074bb9f79abe99aa8efaa6f9a99e0a937650e
-**Reviewed revision:** aa2b9a81355db1dec125c35bb53be21d4683360c
+**Reviewed revision:** bc93203be9c5b93f0bc52eb08de2b20aede23205
 **Implementation candidate:** 03005fcfacf7b924aae76d9c81666a5487039ce2
 
 The Start SHA is the reviewed JOB-002 completion revision and the exact JOB-009 assignment
@@ -271,3 +271,60 @@ The full-lane failure is neither a waiver nor a pass. The candidate adds no leas
 capacity reservation/claim, provider/worker contact, execution effect, cutover, second registry,
 or frozen E1 change. Status and disposition remain `review_pending`; only a fresh distinct
 reviewer may append review attempt 2 and certify the ticket.
+
+## Independent review attempt 2 - 2026-08-10 - Codex `/root/job009_review`
+
+- **Reviewed revision:** `bc93203be9c5b93f0bc52eb08de2b20aede23205`
+- **Scoped fix boundary:**
+  `aa2b9a81355db1dec125c35bb53be21d4683360c..bc93203be9c5b93f0bc52eb08de2b20aede23205`
+- **Canonical RED:** `11849e0f59b184e8dbc8a3d6041cc00f8173bba1`
+- **Canonical GREEN:** `03005fcfacf7b924aae76d9c81666a5487039ce2`
+- **Disposition:** `needs_changes`
+- **Specification verdict:** fail.
+- **H-01 verdict:** pass for tenant/platform query, RLS, and non-disclosure boundaries; the
+  owner-authority race below independently fails canonical placement acceptance.
+- **H-03 verdict:** pass for one persisted decision and the selected+active-only database
+  eligibility invariant within JOB-009; JOB-003 lease certification remains separate.
+- **H-04 verdict:** pass for reviewed projections, logs, and evidence.
+- **Migration/compatibility verdict:** pass for 0225/0226, C14 replay, role grants, and frozen E1.
+- **Determinism/owner-authority verdict:** fail.
+
+Review attempt 2 confirms that fix round 1 materially closes I-01 through I-06. Exact JOB-001
+facts reach the normalizer; tenant/platform administrators can ratify existing-registry
+profiles without worker authority; Decision #117 credential/slug/pin routing is consumed;
+canonical authority mutations reject replay; rollout is resolved at the trusted service; and
+PostgreSQL rejects every invalid disposition/mode/lease-eligibility tuple. The proof-bound
+heartbeat changes update exact target/worker liveness atomically and the committed revocation
+race matrix passes.
+
+Two new Important blockers prevent certification:
+
+- **Important I-07 - production pre-resolution is candidate-order dependent.**
+  `chooseExecutionTargetRow` uses `.find()` over unordered tenant plus platform snapshots
+  before `decideJobPlacement` performs its stable sort. A temporary exact-resolver probe with
+  two eligible `pooled_gvisor` targets selected A for `[A,B]` and B for `[B,A]`. The committed
+  20-seed property test shuffles only the downstream pure policy, so it does not prove the real
+  transaction's deterministic target or digest. Define explicit target precedence plus a stable
+  total-order tie-breaker and add a multi-match production transaction test.
+- **Important I-08 - owner membership removal can commit before an owner placement.** Fix
+  round 1 removed the membership `.for("share")` lock while retaining target/worker locks. A
+  temporary embedded-PG probe paused the real transaction after tenant snapshot, committed an
+  owner membership suspension in another transaction, then resumed placement; the attempt still
+  persisted `selected` on that owner target with `leaseEligible=true`. Keep membership authority
+  stable through persistence (or use an equivalent atomic authority version/predicate) and add
+  a real concurrent suspension/deletion negative.
+
+Fresh Windows-local evidence on the reviewed revision: placement/property/grants **35/35**;
+exact JOB-001/JOB-002 production paths **50/50**; remaining resolver/session/tenant/RLS bundle
+**46/46** (combined **96/96**); startup/serving-role/hygiene **36/36**; migration/C14 **5/5**;
+frozen E1 checker/boundary/install pass; affected and recursive typecheck/build pass. Exact
+`AOA_RUN_WIN_INTEGRATION=1 pnpm test:run` exited 1 after 283.48 seconds: 4 failed files / 9
+failed tests, with 2,046 files and 19,119 tests passing. Visible failures were the known Windows
+frozen-consumer SyntaxError, D18 embedded-PG setup/afterAll timeout cascade, and three OpenCode
+adapter timeouts; no committed JOB-009 focused test failed. This is not a waiver or full-suite
+pass; Linux CI remains DEC-03 formal authority.
+
+Both adversarial probes were temporary and removed. The reviewer modified no production code.
+Detailed ignored evidence is in `.superpowers/sdd/implementation-plan/job-009-review.md`. A
+fresh implementer fix round must commit genuine RED/GREEN evidence for I-07 and I-08 and return
+a new exact revision for independent review.
