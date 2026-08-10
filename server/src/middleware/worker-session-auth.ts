@@ -209,15 +209,27 @@ export async function registerProofBoundHeartbeat(input: {
   status: "active" | "draining" | "offline";
   now?: Date;
 }): Promise<boolean> {
+  const heartbeatAt = input.now ?? new Date();
   if (!input.principal.organizationId) {
     if (!input.operatorDb || input.principal.scope !== "platform") fail();
-    return input.operatorDb.transaction((tx) =>
-      operatorWorkerEnrollmentRepository(tx as unknown as Db).heartbeatSessionTarget({
+    return input.operatorDb.transaction(async (tx) => {
+      const authority = operatorWorkerEnrollmentRepository(tx as unknown as Db);
+      const targetCurrent = await authority.heartbeatSessionTarget({
         executionTargetId: input.principal.targetId,
         deviceGeneration: input.principal.targetGeneration,
         status: input.status,
-        now: input.now ?? new Date(),
-      }));
+        now: heartbeatAt,
+      });
+      if (!targetCurrent) return false;
+      const profileCurrent = await authority.heartbeatSessionProfile({
+        workerId: input.principal.workerId,
+        executionTargetId: input.principal.targetId,
+        deviceGeneration: input.principal.targetGeneration,
+        now: heartbeatAt,
+      });
+      if (!profileCurrent) throw new WorkerSessionError("target_revoked");
+      return true;
+    });
   }
   if (input.principal.targetScope === "platform") {
     if (!input.operatorDb || !input.principal.sharedPlatformAuthority) fail();
@@ -231,16 +243,26 @@ export async function registerProofBoundHeartbeat(input: {
         physicalProfileHash: physical.physicalProfileHash,
         devicePublicKey: physical.devicePublicKey,
         deviceThumbprint: input.principal.deviceThumbprint,
-        now: input.now ?? new Date(),
+        now: heartbeatAt,
       }));
   }
-  return runInTenant(input.appDb, input.principal.organizationId, (repos) =>
-    repos.workerEnrollment.heartbeatSessionTarget({
+  return runInTenant(input.appDb, input.principal.organizationId, async (repos) => {
+    const targetCurrent = await repos.workerEnrollment.heartbeatSessionTarget({
       executionTargetId: input.principal.targetId,
       deviceGeneration: input.principal.targetGeneration,
       status: input.status,
-      now: input.now ?? new Date(),
-    }));
+      now: heartbeatAt,
+    });
+    if (!targetCurrent) return false;
+    const profileCurrent = await repos.workerEnrollment.heartbeatSessionProfile({
+      workerId: input.principal.workerId,
+      executionTargetId: input.principal.targetId,
+      deviceGeneration: input.principal.targetGeneration,
+      now: heartbeatAt,
+    });
+    if (!profileCurrent) throw new WorkerSessionError("target_revoked");
+    return true;
+  });
 }
 
 export async function revokeTenantWorkerAuthority(input: {

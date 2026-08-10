@@ -1,7 +1,14 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, eq, ne, notExists } from "drizzle-orm";
+import { and, eq, isNull, ne, notExists } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { executionTargets, workers } from "@armyofagents/db";
+import {
+  canonicalizeJsonV1,
+  registeredTargetProfileV1Schema,
+  verifyAndBrandProviderConstraintProfileV1,
+} from "@armyofagents/worker-protocol";
+import { runInTenant } from "../db/tenant-context.js";
+import { normalizePlacementRegistryTarget, type ExecutionTargetRow } from "./execution-target-resolver.js";
 
 // Rotatable worker credential (Finding #3). The row id is NOT a credential;
 // this token is. Only its hash is persisted (execution_targets.worker_token_hash);
@@ -29,6 +36,109 @@ export async function resolveWorkerTargetId(db: Db, token: string): Promise<stri
 export function stripWorkerSecret<T extends { workerTokenHash?: unknown }>(row: T): Omit<T, "workerTokenHash"> {
   const { workerTokenHash: _omit, ...rest } = row;
   return rest;
+}
+
+const placementProfileTargetColumns = {
+  id: executionTargets.id,
+  organizationId: executionTargets.organizationId,
+  ownerUserId: executionTargets.ownerUserId,
+  scope: executionTargets.scope,
+  targetAuthorityKey: executionTargets.targetAuthorityKey,
+  deviceGeneration: executionTargets.deviceGeneration,
+  slug: executionTargets.slug,
+  kind: executionTargets.kind,
+  trustClass: executionTargets.trustClass,
+  status: executionTargets.status,
+  registeredProfile: executionTargets.registeredProfile,
+  registeredProfileHash: executionTargets.registeredProfileHash,
+  providerConstraintProfile: executionTargets.providerConstraintProfile,
+};
+
+async function validatedPlacementProfiles(input: {
+  target: ExecutionTargetRow;
+  registeredProfile: unknown;
+  providerConstraintProfile: unknown;
+}) {
+  const registered = registeredTargetProfileV1Schema.safeParse(input.registeredProfile);
+  const provider = await verifyAndBrandProviderConstraintProfileV1(
+    input.providerConstraintProfile,
+    (bytes) => createHash("sha256").update(bytes).digest("hex"),
+  );
+  if (!registered.success || !provider || registered.data.revokedAt !== null) {
+    throw new Error("invalid_execution_target_placement_profile");
+  }
+  const registeredProfileHash = createHash("sha256")
+    .update(canonicalizeJsonV1(registered.data))
+    .digest("hex");
+  const normalized = await normalizePlacementRegistryTarget({
+    ...input.target,
+    registeredProfile: registered.data,
+    registeredProfileHash,
+    providerConstraintProfile: provider,
+  });
+  if (!normalized) throw new Error("invalid_execution_target_placement_profile");
+  return {
+    registeredProfile: registered.data as unknown as Record<string, unknown>,
+    registeredProfileHash,
+    providerConstraintProfile: provider as unknown as Record<string, unknown>,
+  };
+}
+
+/** Tenant-admin writer: runInTenant + FORCE RLS are the authority boundary. */
+export async function ratifyTenantExecutionTargetPlacementProfile(input: {
+  appDb: Db;
+  organizationId: string;
+  executionTargetId: string;
+  registeredProfile: unknown;
+  providerConstraintProfile: unknown;
+  now?: Date;
+}) {
+  return runInTenant(input.appDb, input.organizationId, async (repos) => {
+    const target = await repos.workerEnrollment.lockPlacementProfileTarget(input.executionTargetId);
+    if (!target || target.organizationId !== input.organizationId || target.scope === "platform") {
+      throw new Error("execution_target_not_found");
+    }
+    const profiles = await validatedPlacementProfiles({ target, ...input });
+    const updated = await repos.workerEnrollment.ratifyPlacementProfile({
+      executionTargetId: target.id,
+      expectedGeneration: target.deviceGeneration,
+      ...profiles,
+      now: input.now ?? new Date(),
+    });
+    if (!updated) throw new Error("execution_target_profile_update_conflict");
+    return updated;
+  });
+}
+
+/** Platform-admin writer: the operator projection can see/update only null-org rows. */
+export async function ratifyPlatformExecutionTargetPlacementProfile(input: {
+  operatorDb: Db;
+  executionTargetId: string;
+  registeredProfile: unknown;
+  providerConstraintProfile: unknown;
+  now?: Date;
+}) {
+  return input.operatorDb.transaction(async (tx) => {
+    const [target] = await tx.select(placementProfileTargetColumns).from(executionTargets).where(and(
+      eq(executionTargets.id, input.executionTargetId),
+      isNull(executionTargets.organizationId),
+      eq(executionTargets.scope, "platform"),
+      ne(executionTargets.status, "disabled"),
+    )).limit(1).for("update");
+    if (!target) throw new Error("execution_target_not_found");
+    const profiles = await validatedPlacementProfiles({ target, ...input });
+    const [updated] = await tx.update(executionTargets).set({
+      ...profiles,
+      updatedAt: input.now ?? new Date(),
+    }).where(and(
+      eq(executionTargets.id, target.id),
+      isNull(executionTargets.organizationId),
+      eq(executionTargets.deviceGeneration, target.deviceGeneration),
+      ne(executionTargets.status, "disabled"),
+    )).returning(placementProfileTargetColumns);
+    if (!updated) throw new Error("execution_target_profile_update_conflict");
+    return updated;
+  });
 }
 
 export async function rotateExecutionTargetWorkerToken(

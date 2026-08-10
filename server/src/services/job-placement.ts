@@ -1,4 +1,5 @@
 import {
+  canonicalizeJsonV1,
   jobCapabilityRequirementsSchema,
   providerOperationSchema,
   resourceLimitsSchema,
@@ -8,17 +9,23 @@ import {
   type ProviderOperation,
   type ResourceLimits,
   type WorkerCapacity,
+  type WorkerCapability,
   type WorkerHelloV1,
 } from "@armyofagents/worker-protocol";
 import { createHash } from "node:crypto";
 import type { NormalizedPlacementRegistryTarget } from "./execution-target-resolver.js";
 import type { Db } from "@armyofagents/db";
 import type {
+  DeploymentMode,
   JobPlacementDecision,
   JobPlacementDisposition as PlacementDisposition,
   JobPlacementMode as PlacementMode,
   JobPlacementOwner as PlacementOwner,
 } from "@armyofagents/shared";
+import {
+  readDistributedExecutionDeploymentFlag,
+  resolveDistributedExecutionRollout,
+} from "../config/distributed-execution.js";
 
 export type { JobPlacementDecision, PlacementDisposition, PlacementMode, PlacementOwner };
 
@@ -35,6 +42,48 @@ interface PlacementRequestSnapshot {
   providerDemand: PlacementProviderDemand;
   credentialOwnerPrincipalId: string | null;
 }
+
+export interface JobPlacementCredentialBinding {
+  credentialId: string | null;
+  credentialKind: "company_api_key" | "personal_subscription" | null;
+  executionTargetSlug: string | null;
+  pinnedTargetId: string | null;
+}
+
+export interface PlacementTargetIdentityPolicy {
+  disposition: "required" | "preferred" | "forbidden";
+  targetId: string;
+  targetSlug: string | null;
+  unavailableDisposition: "queue" | "fail";
+}
+
+interface SubmittedPlacementRequirements {
+  workloadType: "batch" | "browser_session" | "service";
+  requiredCapabilities: string[];
+}
+
+interface SubmittedPlacementRequest {
+  policyId: string;
+  policyVersion: number;
+  requestedTarget: string | null;
+}
+
+export type NormalizedSubmittedJobPlacementFacts =
+  | {
+      success: true;
+      active: true;
+      requirements: JobCapabilityRequirementsV1;
+      providerDemand: PlacementProviderDemand;
+      credentialOwnerId: string | null;
+      targetIdentityPolicy: PlacementTargetIdentityPolicy | null;
+      authorityFacts: Record<string, unknown>;
+    }
+  | {
+      success: true;
+      active: false;
+      authorityFacts: Record<string, unknown>;
+    }
+  | { success: false; reason: "invalid_submitted_placement_facts" | "unmapped_execution_target" };
 
 type ParseResult<T> = { success: true; data: T } | { success: false };
 
@@ -89,6 +138,202 @@ export function parsePlacementRequestSnapshot(value: unknown): ParseResult<Place
   return { success: true, data: { providerDemand: providerDemand.data, credentialOwnerPrincipalId: owner } };
 }
 
+function parseSubmittedRequirements(value: unknown): ParseResult<SubmittedPlacementRequirements> {
+  if (!isRecord(value) || !hasExactKeys(value, ["workloadType", "requiredCapabilities"]) ||
+      !["batch", "browser_session", "service"].includes(String(value.workloadType)) ||
+      !Array.isArray(value.requiredCapabilities) ||
+      value.requiredCapabilities.some((capability) => typeof capability !== "string" || capability.length < 1) ||
+      new Set(value.requiredCapabilities).size !== value.requiredCapabilities.length) {
+    return { success: false };
+  }
+  return {
+    success: true,
+    data: {
+      workloadType: value.workloadType as SubmittedPlacementRequirements["workloadType"],
+      requiredCapabilities: value.requiredCapabilities as string[],
+    },
+  };
+}
+
+function parseSubmittedPlacementRequest(value: unknown): ParseResult<SubmittedPlacementRequest> {
+  if (!isRecord(value) || !hasExactKeys(value, ["policyId", "policyVersion", "requestedTarget"]) ||
+      typeof value.policyId !== "string" || value.policyId.length < 1 ||
+      !Number.isInteger(value.policyVersion) || Number(value.policyVersion) < 1 ||
+      !(value.requestedTarget === null ||
+        (typeof value.requestedTarget === "string" && value.requestedTarget.length > 0))) {
+    return { success: false };
+  }
+  return {
+    success: true,
+    data: {
+      policyId: value.policyId,
+      policyVersion: Number(value.policyVersion),
+      requestedTarget: value.requestedTarget as string | null,
+    },
+  };
+}
+
+function submittedCapabilities(input: SubmittedPlacementRequirements): WorkerCapability[] | null {
+  const workloadCapability = `workload.${input.workloadType}` as WorkerCapability;
+  const translated = input.requiredCapabilities.map((capability): WorkerCapability | null => {
+    if (capability === "browser.chromium" && input.workloadType === "browser_session") {
+      return "workload.browser_session";
+    }
+    if ([
+      "workload.batch", "workload.browser_session", "workload.service", "provider.lifecycle_v1",
+      "provider.cleanup_v1", "provider.checkpoint_v1", "provider.health_v1", "artifact.direct_upload",
+      "secret.proxy", "sandbox.filesystem_isolated", "sandbox.process_isolated", "sandbox.filtered_egress",
+    ].includes(capability)) return capability as WorkerCapability;
+    return null;
+  });
+  if (translated.some((capability) => capability === null)) return null;
+  return [...new Set([workloadCapability, ...translated as WorkerCapability[]])];
+}
+
+function boundedDemand(target: NormalizedPlacementRegistryTarget): PlacementProviderDemand {
+  const provider = target.providerConstraintProfile;
+  const supported = new Set(provider.supportedOperations);
+  const operations = (["create", "execute"] as ProviderOperation[]).filter((operation) => supported.has(operation));
+  return {
+    maxRuntimeSeconds: Math.min(600, provider.maxContinuousRuntimeSeconds),
+    maxIdleSeconds: Math.min(60, provider.maxIdleSeconds),
+    resources: {
+      cpuMillis: Math.min(1_000, provider.resourceCeiling.cpuMillis),
+      memoryMiB: Math.min(1_024, provider.resourceCeiling.memoryMiB),
+      pids: Math.min(128, provider.resourceCeiling.pids),
+      diskMiB: Math.min(1_024, provider.resourceCeiling.diskMiB),
+    },
+    concurrentOperations: Math.min(1, provider.maxConcurrentOperations),
+    operations,
+    localityTags: provider.localityTags.slice(0, 1),
+  };
+}
+
+/**
+ * Convert JOB-001's frozen persisted source contract into E1 placement facts.
+ * Provider, target, credential, and rollout authority are supplied only by the
+ * trusted server composition root; none is accepted from the submit command.
+ */
+export function normalizeSubmittedJobPlacementFacts(input: {
+  sourceKind: ExecutionSourceKind;
+  inputHash: string;
+  policyHash: string;
+  requirements: unknown;
+  placementRequest: unknown;
+  rollout: { enabled: boolean; mode: PlacementMode; reason: string };
+  credentialBinding: JobPlacementCredentialBinding;
+  resolvedTarget: NormalizedPlacementRegistryTarget | null;
+}): NormalizedSubmittedJobPlacementFacts {
+  const submitted = parseSubmittedRequirements(input.requirements);
+  const request = parseSubmittedPlacementRequest(input.placementRequest);
+  if (!submitted.success || !request.success || !SHA256.test(input.inputHash) || !SHA256.test(input.policyHash)) {
+    return { success: false, reason: "invalid_submitted_placement_facts" };
+  }
+
+  if (!input.rollout.enabled) {
+    return {
+      success: true,
+      active: false,
+      authorityFacts: {
+        sourceKind: input.sourceKind,
+        inputHash: input.inputHash,
+        policyHash: input.policyHash,
+        submittedRequirements: submitted.data,
+        submittedPlacementRequest: request.data,
+        rollout: input.rollout,
+        credentialBinding: input.credentialBinding,
+        resolvedTarget: null,
+      },
+    };
+  }
+
+  if (!input.resolvedTarget) {
+    return { success: false, reason: "unmapped_execution_target" };
+  }
+  const target = input.resolvedTarget;
+  if (input.credentialBinding.credentialKind === "personal_subscription" &&
+      (!input.credentialBinding.credentialId || !input.credentialBinding.executionTargetSlug ||
+       target.targetSlug !== input.credentialBinding.executionTargetSlug ||
+       target.targetClass !== "owner_desktop" || !target.registeredProfile.ownerPrincipalId)) {
+    return { success: false, reason: "unmapped_execution_target" };
+  }
+  const capabilities = submittedCapabilities(submitted.data);
+  const providerDemand = boundedDemand(target);
+  if (!capabilities || providerDemand.operations.length === 0 || providerDemand.localityTags.length === 0 ||
+      providerDemand.maxRuntimeSeconds < 1 || providerDemand.maxIdleSeconds < 1 ||
+      providerDemand.resources.cpuMillis < 1 || providerDemand.resources.memoryMiB < 1 ||
+      providerDemand.resources.pids < 1 || providerDemand.resources.diskMiB < 1) {
+    return { success: false, reason: "unmapped_execution_target" };
+  }
+
+  const profile = target.registeredProfile;
+  const requestedIdentity = request.data.requestedTarget ?? input.credentialBinding.pinnedTargetId;
+  const targetIdentityPolicy: PlacementTargetIdentityPolicy | null = requestedIdentity
+    ? {
+        disposition: "required",
+        targetId: requestedIdentity,
+        targetSlug: input.credentialBinding.executionTargetSlug,
+        unavailableDisposition: request.data.requestedTarget ? "fail" : "queue",
+      }
+    : null;
+  const credentialOwnerId = input.credentialBinding.credentialKind === "personal_subscription"
+    ? profile.ownerPrincipalId
+    : null;
+  const requirements: JobCapabilityRequirementsV1 = {
+    protocol: { min: 1, max: 1 },
+    capabilities,
+    workloadType: submitted.data.workloadType,
+    targetRequirements: {
+      allowedTargetClasses: [profile.targetClass],
+      allowedTrustClasses: [profile.trustCeiling],
+      requiredOwnerPrincipalId: profile.targetClass === "owner_desktop" ? profile.ownerPrincipalId : null,
+      credentialKind: profile.credentialCeiling,
+      dataLocality: profile.dataLocalityCeiling,
+      fallback: { mode: "forbidden", orderedTargetClasses: [] },
+      providerConstraints: profile.providerConstraints,
+    },
+    policyHash: profile.policyHash,
+    mustUnderstand: [],
+  };
+  if (!jobCapabilityRequirementsSchema.safeParse(requirements).success) {
+    return { success: false, reason: "unmapped_execution_target" };
+  }
+  return {
+    success: true,
+    active: true,
+    requirements,
+    providerDemand,
+    credentialOwnerId,
+    targetIdentityPolicy,
+    authorityFacts: {
+      sourceKind: input.sourceKind,
+      inputHash: input.inputHash,
+      policyHash: input.policyHash,
+      submittedRequirements: submitted.data,
+      submittedPlacementRequest: request.data,
+      rollout: input.rollout,
+      credentialBinding: input.credentialBinding,
+      resolvedTarget: {
+        targetId: target.targetId,
+        targetSlug: target.targetSlug,
+        targetClass: target.targetClass,
+        targetScope: target.targetScope,
+        targetGeneration: target.targetGeneration,
+        profileHash: target.profileHash,
+        providerConstraintHash: target.providerConstraintHash,
+      },
+      normalizedRequirements: requirements,
+      providerDemand,
+      credentialOwnerId,
+      targetIdentityPolicy,
+    },
+  };
+}
+
+export function canonicalPlacementAuthorityDigest(authorityFacts: Record<string, unknown>): string {
+  return createHash("sha256").update(canonicalizeJsonV1(authorityFacts)).digest("hex");
+}
+
 export interface PlacementCandidate {
   registry: NormalizedPlacementRegistryTarget;
   worker: WorkerHelloV1;
@@ -114,6 +359,8 @@ export interface DecideJobPlacementInput {
   inputDigest: string;
   policyDigest: string;
   candidates: PlacementCandidate[];
+  resolvedTargetId?: string | null;
+  targetIdentityPolicy?: PlacementTargetIdentityPolicy | null;
 }
 
 export interface PlaceJobAttemptInput {
@@ -123,15 +370,102 @@ export interface PlaceJobAttemptInput {
   companyId: string;
   jobId: string;
   attemptId: string;
-  rollout: DecideJobPlacementInput["rollout"];
   now: Date;
   maxHeartbeatAgeMs: number;
+  /** @deprecated ignored: rollout authority is resolved by the server service. */
+  rollout?: DecideJobPlacementInput["rollout"];
 }
+
+export interface JobPlacementServiceInput extends Omit<PlaceJobAttemptInput, "appDb" | "operatorDb" | "rollout"> {}
+
+export interface JobPlacementOrganizationPolicy {
+  enabled: boolean;
+  mode: "active" | "shadow";
+}
+
+export interface JobPlacementServiceDependencies {
+  appDb: Db;
+  operatorDb: Db;
+  deploymentMode: DeploymentMode;
+  deploymentEnabled: boolean;
+  resolveOrganizationPolicy(input: { organizationId: string }): Promise<JobPlacementOrganizationPolicy> | JobPlacementOrganizationPolicy;
+  resolveWorkloadPolicy(input: {
+    organizationId: string;
+    companyId: string;
+    sourceKind: ExecutionSourceKind;
+    workloadType: string;
+  }): Promise<boolean> | boolean;
+  resolveCredentialBinding(input: {
+    organizationId: string;
+    companyId: string;
+    jobId: string;
+    sourceKind: ExecutionSourceKind;
+  }): Promise<JobPlacementCredentialBinding> | JobPlacementCredentialBinding;
+}
+
+export interface ResolvedJobPlacementAuthority {
+  rollout: DecideJobPlacementInput["rollout"];
+  credentialBinding: JobPlacementCredentialBinding;
+}
+
+export type JobPlacementAuthorityResolver = (input: {
+  organizationId: string;
+  companyId: string;
+  jobId: string;
+  sourceKind: ExecutionSourceKind;
+  workloadType: string;
+}) => Promise<ResolvedJobPlacementAuthority>;
 
 /** Lazy boundary keeps importing this pure policy module free of DB effects. */
 export async function placeJobAttempt(input: PlaceJobAttemptInput): Promise<JobPlacementDecision> {
-  const { placeJobAttemptTransaction } = await import("./job-placement-transaction.js");
-  return placeJobAttemptTransaction(input);
+  const service = createJobPlacementService({
+    appDb: input.appDb,
+    operatorDb: input.operatorDb,
+    deploymentMode: "local_trusted",
+    deploymentEnabled: readDistributedExecutionDeploymentFlag(process.env),
+    resolveOrganizationPolicy: () => ({ enabled: false, mode: "active" }),
+    resolveWorkloadPolicy: () => false,
+    resolveCredentialBinding: () => ({
+      credentialId: null,
+      credentialKind: null,
+      executionTargetSlug: null,
+      pinnedTargetId: null,
+    }),
+  });
+  return service.place(input);
+}
+
+/**
+ * Trusted composition boundary. HTTP/request callers receive only `place`; all
+ * rollout and credential authority is captured once by server-owned resolvers.
+ */
+export function createJobPlacementService(deps: JobPlacementServiceDependencies) {
+  const resolveAuthority: JobPlacementAuthorityResolver = async (input) => {
+    const organization = await deps.resolveOrganizationPolicy({ organizationId: input.organizationId });
+    const workloadEnabled = await deps.resolveWorkloadPolicy(input);
+    const rolloutDecision = resolveDistributedExecutionRollout({
+      deploymentMode: deps.deploymentMode,
+      deploymentEnabled: deps.deploymentEnabled,
+      organizationEnabled: organization.enabled,
+      workloadEnabled,
+    });
+    const rollout: DecideJobPlacementInput["rollout"] = rolloutDecision.enabled
+      ? { enabled: true, mode: organization.mode, reason: "enabled" }
+      : { enabled: false, mode: "legacy", reason: rolloutDecision.reason };
+    const credentialBinding = await deps.resolveCredentialBinding({
+      organizationId: input.organizationId,
+      companyId: input.companyId,
+      jobId: input.jobId,
+      sourceKind: input.sourceKind,
+    });
+    return { rollout, credentialBinding };
+  };
+  return {
+    async place(input: JobPlacementServiceInput): Promise<JobPlacementDecision> {
+      const { placeJobAttemptTransaction } = await import("./job-placement-transaction.js");
+      return placeJobAttemptTransaction({ ...input, appDb: deps.appDb, operatorDb: deps.operatorDb }, resolveAuthority);
+    },
+  };
 }
 
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -268,25 +602,52 @@ export function decideJobPlacement(input: DecideJobPlacementInput): JobPlacement
     ? fallback.orderedTargetClasses
     : [allowed[0]!];
   const rank = new Map(order.map((targetClass, index) => [targetClass, index]));
+  const identityPolicy = input.targetIdentityPolicy ?? null;
+  if (identityPolicy?.disposition === "forbidden") {
+    return terminalDecision(input, {
+      disposition: "failed",
+      owner: null,
+      reasonCode: "target_identity_forbidden",
+      mode: input.rollout.mode,
+      fallbackDisposition: "forbidden",
+    });
+  }
+  const identityTargetId = identityPolicy?.disposition === "required"
+    ? identityPolicy.targetId
+    : identityPolicy ? null : input.resolvedTargetId;
+  const preferredFallbackForbidden = identityPolicy?.disposition === "preferred" && fallback.mode === "forbidden";
   const eligible = input.candidates
+    .filter((candidate) => !identityTargetId || candidate.registry.targetId === identityTargetId)
+    .filter((candidate) => !preferredFallbackForbidden ||
+      candidate.registry.targetId === identityPolicy.targetId)
     .filter((candidate) => rank.has(candidate.registry.targetClass) && candidateFits(input, candidate))
     .sort((left, right) => {
+      if (identityPolicy?.disposition === "preferred") {
+        const byPreference = Number(right.registry.targetId === identityPolicy.targetId) -
+          Number(left.registry.targetId === identityPolicy.targetId);
+        if (byPreference) return byPreference;
+      }
       const byRank = rank.get(left.registry.targetClass)! - rank.get(right.registry.targetClass)!;
       return byRank || left.registry.targetId.localeCompare(right.registry.targetId);
     });
 
   const selected = eligible[0];
   if (!selected) {
+    const identityFailure = Boolean(identityTargetId) && identityPolicy?.unavailableDisposition === "fail";
     return terminalDecision(input, {
-      disposition: "queued",
+      disposition: identityFailure ? "failed" : "queued",
       owner: null,
-      reasonCode: fallback.mode === "forbidden" ? "required_target_unavailable" : "no_eligible_target",
+      reasonCode: identityFailure
+        ? "required_target_unavailable"
+        : fallback.mode === "forbidden" ? "required_target_unavailable" : "no_eligible_target",
       mode: input.rollout.mode,
       fallbackDisposition: fallback.mode === "forbidden" ? "forbidden" : "ordered_explicit",
     });
   }
 
   const selectedRank = rank.get(selected.registry.targetClass)!;
+  const usedIdentityFallback = identityPolicy?.disposition === "preferred" &&
+    selected.registry.targetId !== identityPolicy.targetId;
   return {
     disposition: "selected",
     owner: selected.registry.targetClass,
@@ -296,7 +657,7 @@ export function decideJobPlacement(input: DecideJobPlacementInput): JobPlacement
     targetGeneration: selected.registry.targetGeneration,
     profileHash: selected.registry.profileHash,
     providerConstraintHash: selected.registry.providerConstraintHash,
-    fallbackDisposition: selectedRank === 0 ? "primary" : "ordered_explicit",
+    fallbackDisposition: selectedRank === 0 && !usedIdentityFallback ? "primary" : "ordered_explicit",
     reasonCode: input.rollout.mode === "shadow" ? "shadow_selected" : "target_selected",
     mode: input.rollout.mode,
     leaseEligible: input.rollout.mode === "active",

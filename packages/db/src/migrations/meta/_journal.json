@@ -1576,6 +1576,20 @@
       "when": 1786344962481,
       "tag": "0224_job_placement_authority_grants",
       "breakpoints": true
+    },
+    {
+      "idx": 225,
+      "version": "7",
+      "when": 1786350460765,
+      "tag": "0225_job_attempt_lease_eligibility",
+      "breakpoints": true
+    },
+    {
+      "idx": 226,
+      "version": "7",
+      "when": 1786350714854,
+      "tag": "0226_execution_target_profile_authority",
+      "breakpoints": true
     }
   ]
 }

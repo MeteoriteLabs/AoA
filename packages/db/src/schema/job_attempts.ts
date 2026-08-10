@@ -77,6 +77,9 @@ export const jobAttempts = pgTable(
         placement_fallback_disposition IS NOT NULL AND placement_reason_code IS NOT NULL AND
         placement_mode IN ('active', 'shadow', 'legacy') AND
         placement_lease_eligible IS NOT NULL AND
+        placement_lease_eligible = (
+          placement_disposition = 'selected' AND placement_mode = 'active'
+        ) AND
         placement_input_digest ~ '^[0-9a-f]{64}$' AND
         placement_policy_digest ~ '^[0-9a-f]{64}$' AND (
           (placement_disposition = 'selected' AND

@@ -120,6 +120,7 @@ function candidate(
   return {
     registry: {
       targetId,
+      targetSlug: `target-${suffix}`,
       targetClass,
       targetScope: profile.scope,
       targetGeneration: 1,
@@ -276,6 +277,50 @@ describe("JOB-009 slice B deterministic placement policy", () => {
       },
       candidates: [bound],
     })).toMatchObject({ disposition: "failed", targetId: null, leaseEligible: false });
+
+    const unavailablePreferred = {
+      ...bound,
+      workerStatus: "draining",
+    };
+    expect(run({
+      requirements: ownerRequirements,
+      credentialOwnerPrincipalId: OWNER,
+      targetIdentityPolicy: {
+        disposition: "preferred",
+        targetId: bound.registry.targetId,
+        targetSlug: "owner-bound",
+        unavailableDisposition: "queue",
+      },
+      candidates: [first, unavailablePreferred],
+    })).toMatchObject({
+      disposition: "queued",
+      targetId: null,
+      fallbackDisposition: "forbidden",
+      leaseEligible: false,
+    });
+
+    const explicitFallback = {
+      ...ownerRequirements,
+      targetRequirements: {
+        ...ownerRequirements.targetRequirements,
+        fallback: { mode: "ordered_explicit" as const, orderedTargetClasses: ["owner_desktop" as const] },
+      },
+    };
+    expect(run({
+      requirements: explicitFallback,
+      credentialOwnerPrincipalId: OWNER,
+      targetIdentityPolicy: {
+        disposition: "preferred",
+        targetId: bound.registry.targetId,
+        targetSlug: "owner-bound",
+        unavailableDisposition: "queue",
+      },
+      candidates: [first, unavailablePreferred],
+    })).toMatchObject({
+      disposition: "selected",
+      targetId: first.registry.targetId,
+      fallbackDisposition: "ordered_explicit",
+    });
   });
 
   it("keeps legacy authoritative when any rollout gate is off", () => {

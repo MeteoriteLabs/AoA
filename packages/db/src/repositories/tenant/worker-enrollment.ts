@@ -17,6 +17,11 @@ type EnrollmentTarget = Pick<ExecutionTarget,
   "id" | "organizationId" | "ownerUserId" | "scope" | "targetAuthorityKey" |
   "status" | "deviceGeneration" | "capabilities"
 >;
+type PlacementProfileTarget = Pick<ExecutionTarget,
+  "id" | "organizationId" | "ownerUserId" | "scope" | "targetAuthorityKey" |
+  "deviceGeneration" | "slug" | "kind" | "trustClass" | "status" |
+  "registeredProfile" | "registeredProfileHash" | "providerConstraintProfile"
+>;
 
 const enrollmentTargetColumns = {
   id: executionTargets.id,
@@ -29,7 +34,32 @@ const enrollmentTargetColumns = {
   capabilities: executionTargets.capabilities,
 };
 
+const placementProfileTargetColumns = {
+  id: executionTargets.id,
+  organizationId: executionTargets.organizationId,
+  ownerUserId: executionTargets.ownerUserId,
+  scope: executionTargets.scope,
+  targetAuthorityKey: executionTargets.targetAuthorityKey,
+  deviceGeneration: executionTargets.deviceGeneration,
+  slug: executionTargets.slug,
+  kind: executionTargets.kind,
+  trustClass: executionTargets.trustClass,
+  status: executionTargets.status,
+  registeredProfile: executionTargets.registeredProfile,
+  registeredProfileHash: executionTargets.registeredProfileHash,
+  providerConstraintProfile: executionTargets.providerConstraintProfile,
+};
+
 export interface WorkerEnrollmentRepository {
+  lockPlacementProfileTarget(executionTargetId: string): Promise<PlacementProfileTarget | null>;
+  ratifyPlacementProfile(input: {
+    executionTargetId: string;
+    expectedGeneration: number;
+    registeredProfile: Record<string, unknown>;
+    registeredProfileHash: string;
+    providerConstraintProfile: Record<string, unknown>;
+    now: Date;
+  }): Promise<PlacementProfileTarget | null>;
   findActiveTarget(input: {
     executionTargetId: string;
     scope: "platform" | "organization" | "owner";
@@ -112,6 +142,26 @@ export interface WorkerEnrollmentRepository {
 
 export function createWorkerEnrollmentRepository(tx: Db): WorkerEnrollmentRepository {
   return {
+    async lockPlacementProfileTarget(executionTargetId) {
+      const [target] = await tx.select(placementProfileTargetColumns).from(executionTargets).where(and(
+        eq(executionTargets.id, executionTargetId),
+        ne(executionTargets.status, "disabled"),
+      )).limit(1).for("update");
+      return target ?? null;
+    },
+    async ratifyPlacementProfile(input) {
+      const [target] = await tx.update(executionTargets).set({
+        registeredProfile: input.registeredProfile,
+        registeredProfileHash: input.registeredProfileHash,
+        providerConstraintProfile: input.providerConstraintProfile,
+        updatedAt: input.now,
+      }).where(and(
+        eq(executionTargets.id, input.executionTargetId),
+        eq(executionTargets.deviceGeneration, input.expectedGeneration),
+        ne(executionTargets.status, "disabled"),
+      )).returning(placementProfileTargetColumns);
+      return target ?? null;
+    },
     async findActiveTarget(input) {
       const [target] = await tx.select(enrollmentTargetColumns).from(executionTargets).where(and(
         eq(executionTargets.id, input.executionTargetId),
@@ -358,7 +408,28 @@ export function createWorkerEnrollmentRepository(tx: Db): WorkerEnrollmentReposi
         eq(executionTargets.deviceGeneration, input.deviceGeneration),
         exists(physicalAuthorityExists),
       )).returning({ id: executionTargets.id });
-      return rows.length === 1;
+      if (rows.length !== 1) return false;
+      const workerRows = await tx.update(workers).set({
+        lastSeenAt: input.now,
+        updatedAt: input.now,
+      }).where(and(
+        eq(workers.id, input.physicalWorkerId),
+        eq(workers.executionTargetId, input.executionTargetId),
+        eq(workers.targetAuthorityKey, input.targetAuthorityKey),
+        eq(workers.scope, "platform"),
+        isNull(workers.organizationId),
+        isNull(workers.ownerUserId),
+        ne(workers.status, "revoked"),
+        isNull(workers.revokedAt),
+        eq(workers.deviceGeneration, input.deviceGeneration),
+        eq(workers.devicePublicKey, input.devicePublicKey),
+        eq(workers.deviceThumbprint, input.deviceThumbprint),
+        eq(workers.profileHash, input.physicalProfileHash),
+      )).returning({ id: workers.id });
+      if (workerRows.length !== 1) {
+        throw new Error("Platform worker heartbeat authority changed");
+      }
+      return true;
     },
     async revokeTargetAuthority(input) {
       const [target] = await tx.update(executionTargets).set({

@@ -35,10 +35,15 @@ const ORG_B = "91000000-0000-4000-8000-000000000002";
 const TARGET_A = "92000000-0000-4000-8000-000000000001";
 const TARGET_B = "92000000-0000-4000-8000-000000000002";
 const TARGET_PLATFORM = "92000000-0000-4000-8000-000000000003";
+const TARGET_OWNER_A = "92000000-0000-4000-8000-000000000004";
+const TARGET_OWNER_B = "92000000-0000-4000-8000-000000000005";
 const COMPANY_A = "96000000-0000-4000-8000-000000000001";
 const COMPANY_B = "96000000-0000-4000-8000-000000000002";
 const WORKER_A = "97000000-0000-4000-8000-000000000001";
 const WORKER_PLATFORM = "97000000-0000-4000-8000-000000000002";
+const WORKER_OWNER_A = "97000000-0000-4000-8000-000000000003";
+const WORKER_OWNER_B = "97000000-0000-4000-8000-000000000004";
+const OWNER_A = "job-009-owner-a";
 const PASSWORD = "job-009-role-password";
 const POLICY_HASH = "a".repeat(64);
 
@@ -108,6 +113,24 @@ function organizationProfile(provider: ProviderConstraintProfileV1): RegisteredT
   };
 }
 
+function ownerProfile(
+  provider: ProviderConstraintProfileV1,
+  targetId: string,
+): RegisteredTargetProfileV1 {
+  return {
+    ...registeredProfile(provider),
+    targetId,
+    targetClass: "owner_desktop",
+    scope: "owner",
+    organizationId: ORG_A,
+    ownerPrincipalId: OWNER_A,
+    trustCeiling: "owner_local_trusted",
+    credentialCeiling: "owner_bound",
+    dataLocalityCeiling: "owner_device_only",
+    deviceGeneration: 1,
+  };
+}
+
 function workerHello() {
   return {
     protocolVersion: 1 as const,
@@ -132,6 +155,14 @@ function platformWorkerHello() {
     workerId: WORKER_PLATFORM,
     targetId: TARGET_PLATFORM,
     deviceGeneration: 4,
+  };
+}
+
+function ownerWorkerHello(workerId: string, targetId: string) {
+  return {
+    ...workerHello(),
+    workerId,
+    targetId,
   };
 }
 
@@ -272,6 +303,7 @@ integration("JOB-009 slice A schema and role boundaries", () => {
   let app: NonOwnerDbConnection | null = null;
   let operator: NonOwnerDbConnection | null = null;
   let setupError: unknown = null;
+  const targetClassByJob = new Map<string, "organization_dedicated" | "managed_cloud">();
 
   function guard() {
     if (setupError) throw new Error(`embedded-postgres setup failed: ${String(setupError)}`);
@@ -304,6 +336,11 @@ integration("JOB-009 slice A schema and role boundaries", () => {
       await admin`INSERT INTO companies (id, organization_id, name, issue_prefix) VALUES
         (${COMPANY_A}, ${ORG_A}, 'Placement Company A', 'PCA'),
         (${COMPANY_B}, ${ORG_B}, 'Placement Company B', 'PCB')`;
+      await admin`INSERT INTO "user" (id, name, email, email_verified, created_at, updated_at)
+        VALUES (${OWNER_A}, 'Placement Owner', 'job-009-owner@example.invalid', true, now(), now())`;
+      await admin`INSERT INTO organization_memberships
+        (organization_id, user_id, role, status, joined_at)
+        VALUES (${ORG_A}, ${OWNER_A}, 'owner', 'active', now())`;
       await admin`INSERT INTO execution_targets
         (id, organization_id, owner_user_id, slug, kind, trust_class, status, capabilities, config,
          scope, target_authority_key, device_generation)
@@ -313,7 +350,11 @@ integration("JOB-009 slice A schema and role boundaries", () => {
         (${TARGET_B}, ${ORG_B}, NULL, 'placement-b', 'dedicated_worker', 'dedicated_tenant', 'active', '{}', '{}',
          'organization', ${`organization:${ORG_B}`}, 1),
         (${TARGET_PLATFORM}, NULL, NULL, 'platform-main', 'pooled_gvisor', 'shared_multitenant', 'active', '{}', '{}',
-         'platform', 'platform', 4)`;
+         'platform', 'platform', 4),
+        (${TARGET_OWNER_A}, ${ORG_A}, ${OWNER_A}, 'owner-a', 'local_host', 'local_trusted', 'active', '{}', '{}',
+         'owner', ${`owner:${ORG_A}:${OWNER_A}`}, 1),
+        (${TARGET_OWNER_B}, ${ORG_A}, ${OWNER_A}, 'owner-b', 'local_host', 'local_trusted', 'active', '{}', '{}',
+         'owner', ${`owner:${ORG_A}:${OWNER_A}`}, 1)`;
 
       const provider = providerProfile();
       const organization = organizationProfile(provider);
@@ -330,6 +371,30 @@ integration("JOB-009 slice A schema and role boundaries", () => {
         provider_constraint_profile = ${provider},
         last_seen_at = ${new Date("2026-08-10T10:00:00.000Z")}
         WHERE id = ${TARGET_PLATFORM}`;
+      const ownerProviderUnsigned = {
+        ...provider,
+        profileId: "owner-v1",
+        localityTags: ["owner_device_only"],
+      };
+      const { digest: _ownerOldDigest, ...ownerProviderFacts } = ownerProviderUnsigned;
+      const ownerProvider = {
+        ...ownerProviderFacts,
+        digest: sha256(canonicalProviderConstraintProfileDigestInputV1(ownerProviderFacts)),
+      } as ProviderConstraintProfileV1;
+      const ownerAProfile = ownerProfile(ownerProvider, TARGET_OWNER_A);
+      const ownerBProfile = ownerProfile(ownerProvider, TARGET_OWNER_B);
+      await admin`UPDATE execution_targets SET
+        registered_profile = ${ownerAProfile},
+        registered_profile_hash = ${sha256(canonicalizeJsonV1(ownerAProfile))},
+        provider_constraint_profile = ${ownerProvider},
+        last_seen_at = ${new Date("2026-08-10T10:00:00.000Z")}
+        WHERE id = ${TARGET_OWNER_A}`;
+      await admin`UPDATE execution_targets SET
+        registered_profile = ${ownerBProfile},
+        registered_profile_hash = ${sha256(canonicalizeJsonV1(ownerBProfile))},
+        provider_constraint_profile = ${ownerProvider},
+        last_seen_at = ${new Date("2026-08-10T10:00:00.000Z")}
+        WHERE id = ${TARGET_OWNER_B}`;
       const hello = workerHello();
       const platformHello = platformWorkerHello();
       await admin`INSERT INTO workers
@@ -349,6 +414,21 @@ integration("JOB-009 slice A schema and role boundaries", () => {
           ${sha256(JSON.stringify(platformHello))}, ${platformHello},
           ${new Date("2026-08-10T09:59:00.000Z")}, ${new Date("2026-08-10T10:00:00.000Z")},
           'JOB-009 platform worker', 'enrolled')`;
+      const ownerAHello = ownerWorkerHello(WORKER_OWNER_A, TARGET_OWNER_A);
+      const ownerBHello = ownerWorkerHello(WORKER_OWNER_B, TARGET_OWNER_B);
+      await admin`INSERT INTO workers
+        (id, scope, organization_id, owner_user_id, execution_target_id, target_authority_key,
+         device_public_key, device_thumbprint, device_generation, profile_hash, profile_snapshot,
+         enrolled_at, last_seen_at, label, status)
+        VALUES
+        (${WORKER_OWNER_A}, 'owner', ${ORG_A}, ${OWNER_A}, ${TARGET_OWNER_A}, ${`owner:${ORG_A}:${OWNER_A}`},
+          'job-009-owner-a-key', ${"1".repeat(64)}, 1, ${sha256(JSON.stringify(ownerAHello))}, ${ownerAHello},
+          ${new Date("2026-08-10T09:59:00.000Z")}, ${new Date("2026-08-10T10:00:00.000Z")},
+          'JOB-009 owner worker A', 'enrolled'),
+        (${WORKER_OWNER_B}, 'owner', ${ORG_A}, ${OWNER_A}, ${TARGET_OWNER_B}, ${`owner:${ORG_A}:${OWNER_A}`},
+          'job-009-owner-b-key', ${"2".repeat(64)}, 1, ${sha256(JSON.stringify(ownerBHello))}, ${ownerBHello},
+          ${new Date("2026-08-10T09:59:00.000Z")}, ${new Date("2026-08-10T10:00:00.000Z")},
+          'JOB-009 owner worker B', 'enrolled')`;
     } catch (error) {
       setupError = error;
     }
@@ -417,37 +497,131 @@ integration("JOB-009 slice A schema and role boundaries", () => {
     const { admin } = guard();
     const organizationId = input.organizationId ?? ORG_A;
     const companyId = input.companyId ?? COMPANY_A;
-    const provider = providerProfile();
+    targetClassByJob.set(input.jobId, input.targetClass ?? "organization_dedicated");
     await admin`INSERT INTO jobs
       (id, organization_id, company_id, workload_type, input_hash, policy_hash, requirements,
        placement_request, status)
       VALUES (${input.jobId}, ${organizationId}, ${companyId}, 'batch', ${"b".repeat(64)},
-        ${POLICY_HASH}, ${placementRequirements(provider, input.targetClass)}, ${placementRequest()}, 'queued')`;
+        ${POLICY_HASH}, ${{ workloadType: "batch", requiredCapabilities: [] }},
+        ${{ policyId: "job-submission-default", policyVersion: 1, requestedTarget: null }}, 'queued')`;
     await admin`INSERT INTO job_attempts
       (id, organization_id, company_id, job_id, attempt_number, status)
       VALUES (${input.attemptId}, ${organizationId}, ${companyId}, ${input.jobId}, 1, 'pending')`;
   }
 
-  async function place(input: { jobId: string; attemptId: string; organizationId?: string; companyId?: string; mode?: "active" | "shadow"; enabled?: boolean }) {
+  async function place(input: {
+    jobId: string; attemptId: string; organizationId?: string; companyId?: string;
+    mode?: "active" | "shadow"; enabled?: boolean; credentialId?: string | null;
+    organizationEnabled?: boolean;
+    workloadEnabled?: boolean;
+    credentialBinding?: {
+      credentialId: string | null;
+      credentialKind: "company_api_key" | "personal_subscription" | null;
+      executionTargetSlug: string | null;
+      pinnedTargetId: string | null;
+    };
+  }) {
     const { app, operator } = guard();
-    const fn = (placementNamespace as Record<string, unknown>).placeJobAttempt;
-    expect(typeof fn, "Slice C must expose the single runInTenant placement transaction").toBe("function");
-    return (fn as (value: unknown) => Promise<Record<string, unknown>>)({
+    const factory = (placementNamespace as Record<string, unknown>).createJobPlacementService;
+    expect(typeof factory, "Slice C must expose the trusted placement service").toBe("function");
+    const managed = targetClassByJob.get(input.jobId) === "managed_cloud";
+    const service = (factory as (value: unknown) => { place(value: unknown): Promise<Record<string, unknown>> })({
       appDb: app.db,
-      operatorDb: input.enabled === false
+      operatorDb: input.enabled === false || input.organizationEnabled === false || input.workloadEnabled === false
         ? { transaction: () => { throw new Error("flag_off_operator_contact"); } }
         : operator.db,
+      deploymentMode: "local_trusted",
+      deploymentEnabled: input.enabled !== false,
+      resolveOrganizationPolicy: () => ({ enabled: input.organizationEnabled !== false, mode: input.mode ?? "active" }),
+      resolveWorkloadPolicy: () => input.workloadEnabled !== false,
+      resolveCredentialBinding: () => input.credentialBinding ?? ({
+        credentialId: input.credentialId ?? "credential-a",
+        credentialKind: "company_api_key",
+        executionTargetSlug: null,
+        pinnedTargetId: managed ? null : TARGET_A,
+      }),
+    });
+    return service.place({
       organizationId: input.organizationId ?? ORG_A,
       companyId: input.companyId ?? COMPANY_A,
       jobId: input.jobId,
       attemptId: input.attemptId,
-      rollout: input.enabled === false
-        ? { enabled: false, mode: "legacy", reason: "deployment_disabled" }
-        : { enabled: true, mode: input.mode ?? "active", reason: "enabled" },
       now: new Date("2026-08-10T10:00:05.000Z"),
       maxHeartbeatAgeMs: 30_000,
     });
   }
+
+  it("[I-03] consumes Decision #117 binding for two owner targets and fails mismatch/foreign/shared closed", async () => {
+    const { admin } = guard();
+    const personalBoundToB = {
+      credentialId: "personal-owner-b",
+      credentialKind: "personal_subscription" as const,
+      executionTargetSlug: "owner-b",
+      pinnedTargetId: null,
+    };
+    const selectedJob = "98000000-0000-4000-8000-000000000070";
+    const selectedAttempt = "99000000-0000-4000-8000-000000000070";
+    await seedJob({ jobId: selectedJob, attemptId: selectedAttempt });
+    const selectedResult = await place({
+      jobId: selectedJob,
+      attemptId: selectedAttempt,
+      credentialBinding: personalBoundToB,
+    });
+    expect(selectedResult, JSON.stringify(selectedResult)).toMatchObject({
+      disposition: "selected",
+      targetId: TARGET_OWNER_B,
+      targetClass: "owner_desktop",
+      leaseEligible: true,
+    });
+
+    const deniedCases = [
+      {
+        suffix: "071",
+        requestedTarget: TARGET_OWNER_A,
+        binding: personalBoundToB,
+        reasonCode: "execution_target_resolution_failed",
+      },
+      {
+        suffix: "072",
+        requestedTarget: null,
+        binding: { ...personalBoundToB, executionTargetSlug: "missing-owner" },
+        reasonCode: "execution_target_resolution_failed",
+      },
+      {
+        suffix: "073",
+        requestedTarget: TARGET_B,
+        binding: {
+          credentialId: "company-a",
+          credentialKind: "company_api_key" as const,
+          executionTargetSlug: null,
+          pinnedTargetId: null,
+        },
+        reasonCode: "execution_target_resolution_failed",
+      },
+      {
+        suffix: "074",
+        requestedTarget: TARGET_PLATFORM,
+        binding: { ...personalBoundToB, executionTargetSlug: "platform-main" },
+        reasonCode: "execution_target_resolution_failed",
+      },
+    ];
+    for (const denied of deniedCases) {
+      const jobId = `98000000-0000-4000-8000-000000000${denied.suffix}`;
+      const attemptId = `99000000-0000-4000-8000-000000000${denied.suffix}`;
+      await seedJob({ jobId, attemptId });
+      if (denied.requestedTarget) {
+        await admin`UPDATE jobs SET placement_request = jsonb_set(
+          placement_request, '{requestedTarget}', ${JSON.stringify(denied.requestedTarget)}::jsonb
+        ) WHERE id = ${jobId}`;
+      }
+      await expect(place({ jobId, attemptId, credentialBinding: denied.binding })).resolves.toMatchObject({
+        disposition: "failed",
+        targetId: null,
+        reasonCode: denied.reasonCode,
+        leaseEligible: false,
+      });
+    }
+  });
 
   it("persists one immutable decision and creates no lease or capacity reservation", async () => {
     const { admin } = guard();
@@ -476,7 +650,7 @@ integration("JOB-009 slice A schema and role boundaries", () => {
     await admin`UPDATE jobs SET input_hash = ${"e".repeat(64)} WHERE id = ${jobId}`;
     await expect(place({ jobId, attemptId })).rejects.toThrow("placement_already_decided");
     const [row] = await admin<{ digest: string }[]>`SELECT placement_input_digest AS digest FROM job_attempts WHERE id = ${attemptId}`;
-    expect(row?.digest).toBe("b".repeat(64));
+    expect(row?.digest).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it("selects a platform worker only through the bounded operator snapshot", async () => {
@@ -571,18 +745,128 @@ integration("JOB-009 slice A schema and role boundaries", () => {
       name: string;
       mutate(jobId: string): Promise<unknown>;
       restore?(): Promise<unknown>;
+      placeOptions?: {
+        mode?: "active" | "shadow";
+        enabled?: boolean;
+        organizationEnabled?: boolean;
+        workloadEnabled?: boolean;
+        credentialId?: string | null;
+        credentialBinding?: {
+          credentialId: string | null;
+          credentialKind: "company_api_key" | "personal_subscription" | null;
+          executionTargetSlug: string | null;
+          pinnedTargetId: string | null;
+        };
+      };
     }> = [
       {
-        name: "normalized requirement",
-        mutate: (jobId) => admin`UPDATE jobs SET requirements = jsonb_set(requirements, '{protocol,max}', '2') WHERE id = ${jobId}`,
+        name: "submitted workload requirement",
+        mutate: (jobId) => admin`UPDATE jobs SET requirements = jsonb_set(requirements, '{workloadType}', '"service"') WHERE id = ${jobId}`,
+      },
+      {
+        name: "submitted capability requirement",
+        mutate: (jobId) => admin`UPDATE jobs SET requirements = ${{
+          workloadType: "batch",
+          requiredCapabilities: ["sandbox.process_isolated"],
+        }} WHERE id = ${jobId}`,
+      },
+      {
+        name: "submitted placement policy id",
+        mutate: (jobId) => admin`UPDATE jobs SET placement_request = ${{
+          policyId: "job-submission-changed",
+          policyVersion: 1,
+          requestedTarget: null,
+        }} WHERE id = ${jobId}`,
+      },
+      {
+        name: "submitted placement policy version",
+        mutate: (jobId) => admin`UPDATE jobs SET placement_request = ${{
+          policyId: "job-submission-default",
+          policyVersion: 2,
+          requestedTarget: null,
+        }} WHERE id = ${jobId}`,
+      },
+      {
+        name: "submitted requested target",
+        mutate: (jobId) => admin`UPDATE jobs SET placement_request = ${{
+          policyId: "job-submission-default",
+          policyVersion: 1,
+          requestedTarget: TARGET_A,
+        }} WHERE id = ${jobId}`,
+      },
+      {
+        name: "submitted input hash",
+        mutate: (jobId) => admin`UPDATE jobs SET input_hash = ${"c".repeat(64)} WHERE id = ${jobId}`,
+      },
+      {
+        name: "submitted policy hash",
+        mutate: (jobId) => admin`UPDATE jobs SET policy_hash = ${"d".repeat(64)} WHERE id = ${jobId}`,
       },
       {
         name: "provider demand",
-        mutate: (jobId) => admin`UPDATE jobs SET placement_request = jsonb_set(placement_request, '{providerDemand,maxRuntimeSeconds}', '601') WHERE id = ${jobId}`,
+        mutate: async () => {
+          const original = providerProfile();
+          const { digest: _oldDigest, ...unsigned } = original;
+          const changedUnsigned = { ...unsigned, maxContinuousRuntimeSeconds: 500 };
+          const changed = {
+            ...changedUnsigned,
+            digest: sha256(canonicalProviderConstraintProfileDigestInputV1(changedUnsigned)),
+          } as ProviderConstraintProfileV1;
+          const profile = organizationProfile(changed);
+          await admin`UPDATE execution_targets SET provider_constraint_profile = ${changed},
+            registered_profile = ${profile},
+            registered_profile_hash = ${sha256(canonicalizeJsonV1(profile))}
+            WHERE id = ${TARGET_A}`;
+        },
+        restore: async () => {
+          const provider = providerProfile();
+          const profile = organizationProfile(provider);
+          await admin`UPDATE execution_targets SET provider_constraint_profile = ${provider},
+            registered_profile = ${profile},
+            registered_profile_hash = ${sha256(canonicalizeJsonV1(profile))}
+            WHERE id = ${TARGET_A}`;
+        },
       },
       {
-        name: "credential binding",
-        mutate: (jobId) => admin`UPDATE jobs SET placement_request = jsonb_set(placement_request, '{credentialOwnerPrincipalId}', ${JSON.stringify("different-owner")}::jsonb) WHERE id = ${jobId}`,
+        name: "credential identity",
+        mutate: async () => undefined,
+        placeOptions: { credentialId: "different-credential" },
+      },
+      {
+        name: "credential kind",
+        mutate: async () => undefined,
+        placeOptions: {
+          credentialBinding: {
+            credentialId: "credential-a",
+            credentialKind: null,
+            executionTargetSlug: null,
+            pinnedTargetId: TARGET_A,
+          },
+        },
+      },
+      {
+        name: "credential bound slug",
+        mutate: async () => undefined,
+        placeOptions: {
+          credentialBinding: {
+            credentialId: "credential-a",
+            credentialKind: "company_api_key",
+            executionTargetSlug: "placement-a",
+            pinnedTargetId: TARGET_A,
+          },
+        },
+      },
+      {
+        name: "credential pinned target",
+        mutate: async () => undefined,
+        placeOptions: {
+          credentialBinding: {
+            credentialId: "credential-a",
+            credentialKind: "company_api_key",
+            executionTargetSlug: null,
+            pinnedTargetId: null,
+          },
+        },
       },
       {
         name: "source kind",
@@ -591,6 +875,32 @@ integration("JOB-009 slice A schema and role boundaries", () => {
       {
         name: "rollout mode",
         mutate: async () => undefined,
+        placeOptions: { mode: "shadow" },
+      },
+      {
+        name: "deployment rollout reason",
+        mutate: async () => undefined,
+        placeOptions: { enabled: false },
+      },
+      {
+        name: "Organization rollout reason",
+        mutate: async () => undefined,
+        placeOptions: { organizationEnabled: false },
+      },
+      {
+        name: "workload rollout reason",
+        mutate: async () => undefined,
+        placeOptions: { workloadEnabled: false },
+      },
+      {
+        name: "target slug",
+        mutate: async () => admin`UPDATE execution_targets SET slug = 'placement-a-changed' WHERE id = ${TARGET_A}`,
+        restore: async () => admin`UPDATE execution_targets SET slug = 'placement-a' WHERE id = ${TARGET_A}`,
+      },
+      {
+        name: "target generation",
+        mutate: async () => admin`UPDATE execution_targets SET device_generation = 2 WHERE id = ${TARGET_A}`,
+        restore: async () => admin`UPDATE execution_targets SET device_generation = 1 WHERE id = ${TARGET_A}`,
       },
       {
         name: "selected profile hash",
@@ -603,7 +913,7 @@ integration("JOB-009 slice A schema and role boundaries", () => {
     ];
 
     for (const [index, mutation] of mutations.entries()) {
-      const suffix = (30 + index).toString().padStart(12, "0");
+      const suffix = (100 + index).toString().padStart(12, "0");
       const jobId = `98000000-0000-4000-8000-${suffix}`;
       const attemptId = `99000000-0000-4000-8000-${suffix}`;
       await seedJob({ jobId, attemptId });
@@ -613,7 +923,7 @@ integration("JOB-009 slice A schema and role boundaries", () => {
         await expect(place({
           jobId,
           attemptId,
-          ...(mutation.name === "rollout mode" ? { mode: "shadow" as const } : {}),
+          ...mutation.placeOptions,
         }), mutation.name).rejects.toThrow("placement_already_decided");
       } finally {
         await mutation.restore?.();
@@ -654,6 +964,26 @@ integration("JOB-009 slice A schema and role boundaries", () => {
     } finally {
       if (prior === undefined) delete process.env.AOA_DISTRIBUTED_EXECUTION_ENABLED;
       else process.env.AOA_DISTRIBUTED_EXECUTION_ENABLED = prior;
+    }
+  });
+
+  it("[I-05] keeps deployment, Organization, and workload rollout gates tenant-local and effect-free", async () => {
+    const cases = [
+      { suffix: "041", options: { enabled: false }, reasonCode: "deployment_disabled" },
+      { suffix: "042", options: { organizationEnabled: false }, reasonCode: "organization_disabled" },
+      { suffix: "043", options: { workloadEnabled: false }, reasonCode: "workload_disabled" },
+    ] as const;
+    for (const current of cases) {
+      const jobId = `98000000-0000-4000-8000-000000000${current.suffix}`;
+      const attemptId = `99000000-0000-4000-8000-000000000${current.suffix}`;
+      await seedJob({ jobId, attemptId });
+      await expect(place({ jobId, attemptId, ...current.options })).resolves.toMatchObject({
+        disposition: "legacy",
+        owner: "legacy",
+        mode: "legacy",
+        reasonCode: current.reasonCode,
+        leaseEligible: false,
+      });
     }
   });
 

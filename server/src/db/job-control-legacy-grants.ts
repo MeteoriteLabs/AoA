@@ -174,3 +174,7 @@ export const APP_JOB_PLACEMENT_TARGET_SELECT_COLUMNS = Object.freeze([
 export const OPERATOR_JOB_PLACEMENT_TARGET_SELECT_COLUMNS = Object.freeze([
   "registered_profile", "registered_profile_hash", "provider_constraint_profile",
 ] as const);
+export const APP_JOB_PLACEMENT_TARGET_UPDATE_COLUMNS = Object.freeze([
+  "registered_profile", "registered_profile_hash", "provider_constraint_profile", "updated_at",
+] as const);
+export const OPERATOR_JOB_PLACEMENT_TARGET_UPDATE_COLUMNS = APP_JOB_PLACEMENT_TARGET_UPDATE_COLUMNS;

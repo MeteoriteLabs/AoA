@@ -31,6 +31,7 @@ export interface ExecutionTargetRow {
 
 export interface NormalizedPlacementRegistryTarget {
   targetId: string;
+  targetSlug: string;
   targetClass: RegisteredTargetProfileV1["targetClass"];
   targetScope: RegisteredTargetProfileV1["scope"];
   targetGeneration: number;
@@ -100,6 +101,7 @@ export async function normalizePlacementRegistryTarget(
 
   return {
     targetId: row.id,
+    targetSlug: row.slug,
     targetClass: profile.targetClass,
     targetScope: profile.scope,
     targetGeneration: profile.deviceGeneration,

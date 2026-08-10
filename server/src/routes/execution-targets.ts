@@ -19,11 +19,13 @@ import {
   registerWorkerHeartbeat,
   revokeExecutionTargetWorkerToken,
   resolveWorkerTargetId,
+  ratifyPlatformExecutionTargetPlacementProfile,
+  ratifyTenantExecutionTargetPlacementProfile,
   rotateExecutionTargetWorkerToken,
   stripWorkerSecret,
 } from "../services/execution-targets.js";
 import { organizationAccessService } from "../services/organization-access.js";
-import { assertBoard } from "./authz.js";
+import { assertBoard, assertCanManageInstanceSettings } from "./authz.js";
 import { conflict, forbidden, notFound, unauthorized } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { validate } from "../middleware/validate.js";
@@ -40,6 +42,10 @@ import {
 import { sendWorkerProtocolError } from "../services/worker-protocol-http.js";
 
 const uuidParam = z.string().uuid();
+const placementProfileBody = z.object({
+  registeredProfile: z.record(z.string(), z.unknown()),
+  providerConstraintProfile: z.record(z.string(), z.unknown()),
+}).strict();
 
 /**
  * Worker self-auth (Finding #3). The bearer credential is a rotatable worker
@@ -244,6 +250,63 @@ export function executionTargetRoutes(opts: {
       next(err);
     }
   });
+
+  router.put(
+    "/organizations/:orgId/execution-targets/:targetId/placement-profile",
+    validate(placementProfileBody),
+    async (req, res, next) => {
+      try {
+        const orgId = uuidParam.parse(req.params.orgId);
+        const targetId = uuidParam.parse(req.params.targetId);
+        await assertOrgAdmin(req, orgId);
+        if (!opts.workerSession) throw forbidden("Distributed execution registry is disabled");
+        const input = req.body as z.infer<typeof placementProfileBody>;
+        const target = await ratifyTenantExecutionTargetPlacementProfile({
+          appDb: opts.workerSession.appDb,
+          organizationId: orgId,
+          executionTargetId: targetId,
+          ...input,
+        });
+        logger.info({
+          action: "execution_target.placement_profile.ratified",
+          organizationId: orgId,
+          executionTargetId: targetId,
+          profileHash: target.registeredProfileHash,
+          scope: "org_scoped",
+        }, "execution target placement profile ratified");
+        res.json(target);
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  router.put(
+    "/operator/execution-targets/:targetId/placement-profile",
+    validate(placementProfileBody),
+    async (req, res, next) => {
+      try {
+        assertCanManageInstanceSettings(req);
+        if (!opts.workerSession) throw forbidden("Distributed execution registry is disabled");
+        const targetId = uuidParam.parse(req.params.targetId);
+        const input = req.body as z.infer<typeof placementProfileBody>;
+        const target = await ratifyPlatformExecutionTargetPlacementProfile({
+          operatorDb: opts.workerSession.operatorDb,
+          executionTargetId: targetId,
+          ...input,
+        });
+        logger.info({
+          action: "execution_target.placement_profile.ratified",
+          executionTargetId: targetId,
+          profileHash: target.registeredProfileHash,
+          scope: "platform",
+        }, "platform execution target placement profile ratified");
+        res.json(target);
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
 
   // Worker self-heartbeat: the worker token is bound to ONE target id. The
   // middleware resolves req.workerTargetId; the URL carries NO slug/org so a

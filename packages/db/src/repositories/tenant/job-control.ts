@@ -494,8 +494,7 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
           .where(and(
             eq(organizationMemberships.status, "active"),
             inArray(organizationMemberships.userId, ownerUserIds),
-          ))
-          .for("share");
+          ));
       const activeOwnerKeys = new Set(activeOwnerMemberships.map(
         (membership) => `${membership.organizationId}:${membership.userId}`,
       ));

@@ -11,12 +11,18 @@ import {
 import { runInTenant } from "../db/tenant-context.js";
 import {
   decideJobPlacement,
-  parsePlacementRequestSnapshot,
+  canonicalPlacementAuthorityDigest,
+  normalizeSubmittedJobPlacementFacts,
   type JobPlacementDecision,
+  type JobPlacementAuthorityResolver,
   type PlaceJobAttemptInput,
   type PlacementCandidate,
 } from "./job-placement.js";
-import { normalizePlacementRegistryTarget } from "./execution-target-resolver.js";
+import {
+  chooseExecutionTargetRow,
+  normalizePlacementRegistryTarget,
+  type ExecutionTargetRow,
+} from "./execution-target-resolver.js";
 
 const SOURCE_KINDS = new Set<string>(EXECUTION_SOURCE_KINDS);
 
@@ -95,6 +101,7 @@ function decisionFromAttempt(attempt: JobAttempt): JobPlacementDecision | null {
 /** Called only through the lazy public wrapper in job-placement.ts. */
 export async function placeJobAttemptTransaction(
   input: PlaceJobAttemptInput,
+  resolveAuthority: JobPlacementAuthorityResolver,
 ): Promise<JobPlacementDecision> {
   return runInTenant(input.appDb, input.organizationId, async (repos) => {
     const context = await repos.jobControl.lockPlacementContext({
@@ -105,41 +112,164 @@ export async function placeJobAttemptTransaction(
     });
     if (!context) throw new JobPlacementError("placement_not_found");
 
-    const existing = decisionFromAttempt(context.attempt);
-    if (existing) {
-      if (existing.inputDigest !== context.job.inputHash ||
-          existing.policyDigest !== context.job.policyHash) {
-        throw new JobPlacementError("placement_already_decided");
-      }
-      return existing;
-    }
-
     const sourceKind = SOURCE_KINDS.has(context.job.sourceKind)
       ? context.job.sourceKind as ExecutionSourceKind
       : "task_run";
-    const request = parsePlacementRequestSnapshot(context.job.placementRequest);
-    const tenantSnapshots = input.rollout.enabled
+    const authority = await resolveAuthority({
+      organizationId: input.organizationId,
+      companyId: input.companyId,
+      jobId: input.jobId,
+      sourceKind,
+      workloadType: context.job.workloadType,
+    });
+    const tenantSnapshots = authority.rollout.enabled
       ? await repos.jobControl.listPlacementCandidateSnapshots()
       : [];
 
     const decideAndPersist = async (platformSnapshots: PlacementCandidateSnapshot[]) => {
+      const snapshots = [...tenantSnapshots, ...platformSnapshots];
       const candidates = (await Promise.all(
-        [...tenantSnapshots, ...platformSnapshots]
+        snapshots
           .map((snapshot) => candidateFromSnapshot(snapshot, input.organizationId)),
       )).filter((candidate): candidate is PlacementCandidate => candidate !== null);
 
-      const decision = decideJobPlacement({
+      let routedRow: ExecutionTargetRow | null = null;
+      let routingError: string | null = null;
+      let routingTemporarilyUnavailable = false;
+      const placementRequest = context.job.placementRequest as Record<string, unknown> | null;
+      const requestedTarget = placementRequest && typeof placementRequest.requestedTarget === "string"
+        ? placementRequest.requestedTarget
+        : null;
+      if (authority.rollout.enabled) {
+        try {
+          routedRow = chooseExecutionTargetRow({
+            credentialKind: authority.credentialBinding.credentialKind,
+            pinnedTargetId: requestedTarget ?? authority.credentialBinding.pinnedTargetId,
+            executionTargetSlug: authority.credentialBinding.executionTargetSlug,
+            targets: snapshots.map((snapshot) => snapshot.target as ExecutionTargetRow),
+          });
+        } catch {
+          // Resolver error text can contain target identifiers. Persist only the
+          // closed reason; request callers never receive registry diagnostics.
+          routingError = "execution_target_resolution_failed";
+          const explicitTargetId = requestedTarget ?? authority.credentialBinding.pinnedTargetId;
+          const scopedTargets = snapshots.map((snapshot) => snapshot.target as ExecutionTargetRow);
+          const unavailableTarget = explicitTargetId
+            ? scopedTargets.find((target) => target.id === explicitTargetId) ?? null
+            : authority.credentialBinding.credentialKind === "personal_subscription" &&
+                authority.credentialBinding.executionTargetSlug
+              ? scopedTargets.find((target) => target.slug === authority.credentialBinding.executionTargetSlug &&
+                  (target.kind === "dedicated_worker" || target.kind === "local_host")) ?? null
+              : null;
+          const credentialCompatible = unavailableTarget !== null &&
+            (authority.credentialBinding.credentialKind !== "personal_subscription" ||
+              (Boolean(authority.credentialBinding.executionTargetSlug) &&
+               unavailableTarget.slug === authority.credentialBinding.executionTargetSlug &&
+               (unavailableTarget.kind === "dedicated_worker" || unavailableTarget.kind === "local_host")));
+          routingTemporarilyUnavailable = credentialCompatible && unavailableTarget.status !== "active";
+          routedRow = routingTemporarilyUnavailable ? unavailableTarget : null;
+        }
+      }
+      const resolvedTarget = routedRow ? await normalizePlacementRegistryTarget(routedRow) : null;
+      const normalized = normalizeSubmittedJobPlacementFacts({
+            sourceKind,
+            inputHash: context.job.inputHash,
+            policyHash: context.job.policyHash,
+            requirements: context.job.requirements,
+            placementRequest: context.job.placementRequest,
+            rollout: authority.rollout,
+            credentialBinding: authority.credentialBinding,
+            resolvedTarget,
+          });
+      const authorityFacts: Record<string, unknown> = normalized?.success
+        ? normalized.authorityFacts
+        : {
+            sourceKind,
+            inputHash: context.job.inputHash,
+            policyHash: context.job.policyHash,
+            submittedRequirements: context.job.requirements,
+            submittedPlacementRequest: context.job.placementRequest,
+            rollout: authority.rollout,
+            credentialBinding: authority.credentialBinding,
+            resolvedTarget: resolvedTarget ? {
+              targetId: resolvedTarget.targetId,
+              targetSlug: resolvedTarget.targetSlug,
+              targetClass: resolvedTarget.targetClass,
+              targetScope: resolvedTarget.targetScope,
+              targetGeneration: resolvedTarget.targetGeneration,
+              profileHash: resolvedTarget.profileHash,
+              providerConstraintHash: resolvedTarget.providerConstraintHash,
+            } : null,
+            normalizationReason: normalized?.reason ?? null,
+            routingError,
+          };
+      const authorityDigest = canonicalPlacementAuthorityDigest(authorityFacts);
+      const existing = decisionFromAttempt(context.attempt);
+      if (existing) {
+        if (existing.inputDigest !== authorityDigest || existing.policyDigest !== authorityDigest) {
+          throw new JobPlacementError("placement_already_decided");
+        }
+        return existing;
+      }
+
+      const registeredGeneration = routedRow?.registeredProfile &&
+        typeof routedRow.registeredProfile.deviceGeneration === "number"
+        ? routedRow.registeredProfile.deviceGeneration
+        : null;
+      const temporarilyUnavailable = normalized.success === false &&
+        normalized.reason === "unmapped_execution_target" && routedRow !== null &&
+        (routedRow.status !== "active" || registeredGeneration !== routedRow.deviceGeneration);
+      const routingDenied = routingError !== null && !routingTemporarilyUnavailable;
+      const decision: JobPlacementDecision = routingDenied
+        ? {
+            disposition: "failed",
+            owner: null,
+            targetId: null,
+            targetClass: null,
+            targetScope: null,
+            targetGeneration: null,
+            profileHash: null,
+            providerConstraintHash: null,
+            fallbackDisposition: "forbidden",
+            reasonCode: "execution_target_resolution_failed",
+            mode: authority.rollout.mode === "shadow" ? "shadow" : "active",
+            leaseEligible: false,
+            inputDigest: authorityDigest,
+            policyDigest: authorityDigest,
+          }
+        : temporarilyUnavailable
+        ? {
+            disposition: requestedTarget ? "failed" : "queued",
+            owner: null,
+            targetId: null,
+            targetClass: null,
+            targetScope: null,
+            targetGeneration: null,
+            profileHash: null,
+            providerConstraintHash: null,
+            fallbackDisposition: "forbidden",
+            reasonCode: "required_target_unavailable",
+            mode: authority.rollout.mode === "shadow" ? "shadow" : "active",
+            leaseEligible: false,
+            inputDigest: authorityDigest,
+            policyDigest: authorityDigest,
+          }
+        : decideJobPlacement({
         sourceKind,
-        rollout: input.rollout,
-        requirements: context.job.requirements as never,
-        providerDemand: request.success ? request.data.providerDemand : ({} as never),
-        credentialOwnerPrincipalId: request.success ? request.data.credentialOwnerPrincipalId : null,
+        rollout: !normalized.success && !authority.rollout.enabled
+          ? { enabled: true, mode: "active", reason: "invalid_placement_input" }
+          : authority.rollout,
+        requirements: normalized.success && normalized.active ? normalized.requirements : ({} as never),
+        providerDemand: normalized.success && normalized.active ? normalized.providerDemand : ({} as never),
+        credentialOwnerPrincipalId: normalized.success && normalized.active ? normalized.credentialOwnerId : null,
         now: input.now,
         maxHeartbeatAgeMs: input.maxHeartbeatAgeMs,
-        inputDigest: context.job.inputHash,
-        policyDigest: context.job.policyHash,
+        inputDigest: authorityDigest,
+        policyDigest: authorityDigest,
         candidates,
-      });
+        resolvedTargetId: resolvedTarget?.targetId ?? null,
+        targetIdentityPolicy: normalized.success && normalized.active ? normalized.targetIdentityPolicy : null,
+          });
       const stored = await repos.jobControl.persistPlacementDecision({
         organizationId: input.organizationId,
         companyId: input.companyId,
@@ -167,7 +297,7 @@ export async function placeJobAttemptTransaction(
 
     // Flag-off is tenant-local legacy bookkeeping and must not depend on or
     // contact the distributed operator pool at all.
-    if (!input.rollout.enabled) return decideAndPersist([]);
+    if (!authority.rollout.enabled) return decideAndPersist([]);
 
     // Hold the bounded platform registry snapshot stable until the tenant
     // decision is persisted. This operator callback accepts no job identifiers

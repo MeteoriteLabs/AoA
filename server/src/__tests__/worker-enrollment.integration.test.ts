@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { generateKeyPairSync, sign, createHash, type KeyObject } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -30,6 +30,7 @@ import { rotateExecutionTargetWorkerToken } from "../services/execution-targets.
 import { logger } from "../middleware/logger.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import * as executionTargetService from "../services/execution-targets.js";
+import { createJobPlacementService } from "../services/job-placement.js";
 
 type EmbeddedPostgresInstance = { initialise(): Promise<void>; start(): Promise<void>; stop(): Promise<void> };
 type EmbeddedPostgresCtor = new (opts: Record<string, unknown>) => EmbeddedPostgresInstance;
@@ -46,6 +47,7 @@ const WORKER_UNIFORM = "73000000-0000-4000-8000-000000000003";
 const WORKER_PLATFORM = "73000000-0000-4000-8000-000000000004";
 const WORKER_OWNER = "73000000-0000-4000-8000-000000000006";
 const OWNER_USER = "job-002-owner-user";
+const COMPANY_A = "76000000-0000-4000-8000-000000000001";
 const PASSWORD = "job-002-role-test";
 const NOW = new Date(Math.floor(Date.now() / 1_000) * 1_000);
 
@@ -213,6 +215,8 @@ beforeAll(async () => {
     operator = createOperatorDbConnection(adminUrl.replace("test:test", `aoa_operator:${PASSWORD}`));
     await admin`INSERT INTO organizations (id, name, slug) VALUES
       (${ORG_A}, 'Enrollment A', 'worker-enrollment-a'), (${ORG_B}, 'Enrollment B', 'worker-enrollment-b')`;
+    await admin`INSERT INTO companies (id, organization_id, name, issue_prefix)
+      VALUES (${COMPANY_A}, ${ORG_A}, 'Enrollment Placement Company', 'EPC')`;
     await admin`INSERT INTO "user" (id, name, email, email_verified, created_at, updated_at)
       VALUES (${OWNER_USER}, 'Owner', 'job-002-owner@example.invalid', true, now(), now())`;
     await admin`INSERT INTO organization_memberships
@@ -268,11 +272,16 @@ beforeEach(async () => {
   await admin`UPDATE organization_memberships SET status = 'active' WHERE organization_id = ${ORG_A} AND user_id = ${OWNER_USER}`;
 });
 
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1")(
   "JOB-002 tenant enrollment transaction",
   () => {
     it("[I-02] ratifies tenant and platform profiles through bounded production authority before enrollment", async () => {
       const { admin, appDb, operatorDb, mod } = guard();
+      const infoSpy = vi.spyOn(logger, "info");
       const tenantRatify = (executionTargetService as unknown as Record<string, unknown>)
         .ratifyTenantExecutionTargetPlacementProfile;
       const platformRatify = (executionTargetService as unknown as Record<string, unknown>)
@@ -316,6 +325,71 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         registeredProfile: tenantProfile,
         providerConstraintProfile: { ...provider, digest: "f".repeat(64) },
       })).rejects.toThrow();
+      await expect((tenantRatify as (input: unknown) => Promise<unknown>)({
+        appDb, organizationId: ORG_A, executionTargetId: TARGET_A,
+        registeredProfile: { ...tenantProfile, revokedAt: NOW.toISOString() },
+        providerConstraintProfile: provider,
+      })).rejects.toThrow();
+
+      const httpApp = express();
+      httpApp.use(express.json());
+      httpApp.use((req, _res, next) => {
+        const authority = req.header("x-job009-test-authority");
+        req.actor = authority === "tenant-admin"
+          ? {
+              type: "board",
+              source: "session",
+              userId: OWNER_USER,
+              organizationIds: [ORG_A],
+              companyIds: [COMPANY_A],
+            }
+          : authority === "platform-operator"
+            ? {
+                type: "board",
+                source: "session",
+                userId: OWNER_USER,
+                operator: true,
+              }
+            : {
+                type: "agent",
+                source: "agent_api_key",
+                companyId: COMPANY_A,
+              };
+        next();
+      });
+      httpApp.use("/api", executionTargetRoutes({
+        db: ownerDb!,
+        workerSession: {
+          appDb, operatorDb,
+          sessionSigningKey: "test-signing-key-at-least-32-bytes",
+          now: () => NOW,
+        },
+      }));
+      httpApp.use(errorHandler);
+      await request(httpApp)
+        .put(`/api/organizations/${ORG_A}/execution-targets/${TARGET_A}/placement-profile`)
+        .send({ registeredProfile: tenantProfile, providerConstraintProfile: provider })
+        .expect(403);
+      await request(httpApp)
+        .put(`/api/operator/execution-targets/${TARGET_PLATFORM}/placement-profile`)
+        .send({ registeredProfile: platformProfile, providerConstraintProfile: provider })
+        .expect(403);
+      const tenantHttp = await request(httpApp)
+        .put(`/api/organizations/${ORG_A}/execution-targets/${TARGET_A}/placement-profile`)
+        .set("x-job009-test-authority", "tenant-admin")
+        .send({ registeredProfile: tenantProfile, providerConstraintProfile: provider })
+        .expect(200);
+      expect(tenantHttp.body).toMatchObject({
+        id: TARGET_A,
+        registeredProfileHash: createHash("sha256").update(canonicalizeJsonV1(tenantProfile)).digest("hex"),
+      });
+      const platformHttp = await request(httpApp)
+        .put(`/api/operator/execution-targets/${TARGET_PLATFORM}/placement-profile`)
+        .set("x-job009-test-authority", "platform-operator")
+        .send({ registeredProfile: platformProfile, providerConstraintProfile: provider })
+        .expect(200);
+      expect(platformHttp.body).toMatchObject({ id: TARGET_PLATFORM });
+      expect(JSON.stringify([tenantHttp.body, platformHttp.body])).not.toMatch(/secret|token|private/i);
 
       const enrollment = mod.createWorkerEnrollmentService({
         appDb, operatorDb, sessionSigningKey: "test-signing-key-at-least-32-bytes", now: () => NOW,
@@ -332,6 +406,129 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         method: "POST", path: "/api/worker-control/enroll",
       });
       expect(enrolled.response).toMatchObject({ outcome: "enrolled", targetId: TARGET_A });
+      const platformIssued = await enrollment.issuePlatformCode({
+        executionTargetId: TARGET_PLATFORM,
+        createdByPrincipalKind: "operator",
+        createdByPrincipalId: "platform-operator",
+      });
+      const platformKeys = generateKeyPairSync("ed25519");
+      const platformBody = {
+        ...enrollmentBody(WORKER_PLATFORM, TARGET_PLATFORM),
+        correlationId: "74000000-0000-4000-8000-000000000009",
+        nonce: "platform-placement-enrollment",
+        idempotencyKey: "75000000-0000-4000-8000-000000000009",
+      };
+      const platformEnrolled = await enrollment.enroll({
+        code: platformIssued.code,
+        request: platformBody,
+        ...deviceProof(
+          platformBody,
+          platformKeys.privateKey,
+          platformKeys.publicKey,
+          "proof-platform-profile-authority",
+        ),
+        method: "POST",
+        path: "/api/worker-control/enroll",
+      });
+      expect(platformEnrolled.response).toMatchObject({ outcome: "enrolled", targetId: TARGET_PLATFORM });
+
+      if (!sessionModule) throw new Error("worker-session-auth module unavailable");
+      const authenticator = sessionModule.createWorkerSessionAuthenticator({
+        appDb, operatorDb,
+        sessionSigningKey: "test-signing-key-at-least-32-bytes",
+        now: () => NOW,
+      });
+      const heartbeat = async (input: {
+        session: string;
+        keys: ReturnType<typeof generateKeyPairSync>;
+        correlationId: string;
+        proofId: string;
+      }) => {
+        const body = Buffer.from(JSON.stringify({ status: "active" }));
+        const principal = await authenticator.authenticate({
+          authorization: `Bearer ${input.session}`,
+          rawBody: body,
+          proof: deviceProofFor(
+            body,
+            input.correlationId,
+            input.keys.privateKey,
+            input.keys.publicKey,
+            input.proofId,
+            "/api/execution-targets/heartbeat",
+          ),
+          method: "POST",
+          path: "/api/execution-targets/heartbeat",
+          correlationId: input.correlationId,
+        });
+        await expect(sessionModule!.registerProofBoundHeartbeat({
+          appDb, operatorDb, principal, status: "active", now: NOW,
+        })).resolves.toBe(true);
+      };
+      await heartbeat({
+        session: enrolled.session,
+        keys,
+        correlationId: "74000000-0000-4000-8000-000000000010",
+        proofId: "proof-tenant-profile-heartbeat",
+      });
+      await heartbeat({
+        session: platformEnrolled.session,
+        keys: platformKeys,
+        correlationId: "74000000-0000-4000-8000-000000000011",
+        proofId: "proof-platform-profile-heartbeat",
+      });
+
+      const placementJobs = [
+        {
+          jobId: "78000000-0000-4000-8000-000000000001",
+          attemptId: "79000000-0000-4000-8000-000000000001",
+          targetId: TARGET_A,
+          expectedClass: "organization_dedicated",
+        },
+        {
+          jobId: "78000000-0000-4000-8000-000000000002",
+          attemptId: "79000000-0000-4000-8000-000000000002",
+          targetId: null,
+          expectedClass: "managed_cloud",
+        },
+      ] as const;
+      for (const row of placementJobs) {
+        await admin`INSERT INTO jobs
+          (id, organization_id, company_id, workload_type, input_hash, policy_hash,
+           requirements, placement_request, status)
+          VALUES (${row.jobId}, ${ORG_A}, ${COMPANY_A}, 'batch', ${"b".repeat(64)}, ${"a".repeat(64)},
+            ${{ workloadType: "batch", requiredCapabilities: [] }},
+            ${{ policyId: "job-submission-default", policyVersion: 1, requestedTarget: null }},
+            'queued')`;
+        await admin`INSERT INTO job_attempts
+          (id, organization_id, company_id, job_id, attempt_number, status)
+          VALUES (${row.attemptId}, ${ORG_A}, ${COMPANY_A}, ${row.jobId}, 1, 'pending')`;
+        const placement = createJobPlacementService({
+          appDb, operatorDb,
+          deploymentMode: "local_trusted",
+          deploymentEnabled: true,
+          resolveOrganizationPolicy: () => ({ enabled: true, mode: "active" }),
+          resolveWorkloadPolicy: () => true,
+          resolveCredentialBinding: () => ({
+            credentialId: "credential-profile-authority",
+            credentialKind: "company_api_key",
+            executionTargetSlug: null,
+            pinnedTargetId: row.targetId,
+          }),
+        });
+        const placementResult = await placement.place({
+          organizationId: ORG_A,
+          companyId: COMPANY_A,
+          jobId: row.jobId,
+          attemptId: row.attemptId,
+          now: NOW,
+          maxHeartbeatAgeMs: 30_000,
+        });
+        expect(placementResult, JSON.stringify(placementResult)).toMatchObject({
+          disposition: "selected",
+          targetClass: row.expectedClass,
+          leaseEligible: true,
+        });
+      }
       const [stored] = await admin<{
         registered_profile_hash: string;
         provider_constraint_profile: Record<string, unknown>;
@@ -342,6 +539,12 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       );
       expect(stored?.provider_constraint_profile).toEqual(provider);
       expect(JSON.stringify(stored)).not.toMatch(/secret|token|private/i);
+      expect(platformIssued.code).not.toBe(JSON.stringify(stored));
+      expect(platformEnrolled.session).not.toBe(JSON.stringify(stored));
+      const logged = JSON.stringify(infoSpy.mock.calls);
+      for (const secret of [issued.code, enrolled.session, platformIssued.code, platformEnrolled.session]) {
+        expect(logged).not.toContain(secret);
+      }
     });
 
     it("issues a raw code once and atomically enrolls a device-bound logical profile", async () => {
