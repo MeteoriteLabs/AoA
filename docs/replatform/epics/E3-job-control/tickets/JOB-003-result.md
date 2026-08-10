@@ -1,14 +1,14 @@
 # JOB-003 Result - Lease jobs with ACK deadlines
 
-**Status:** `needs_changes`
-**Disposition:** `needs_changes`
+**Status:** `review_pending`
+**Disposition:** `review_pending`
 **Date opened (UTC):** `2026-08-10`
 **Epic:** `E3-job-control`
 **Plan task:** `JOB-003 - Lease jobs with ACK deadlines (L; three bounded internal slices)`
 **Implementer:** `Codex /root/job003_impl`
-**Reviewer:** `Codex /root/job003_review`
+**Reviewer:** `Pending fresh distinct reviewer`
 **Start SHA:** 4276331160afb77d47ffa488543b968da949c02f
-**Implementation candidate:** 73f9d15537995b15cf2173ae0368ad6b28e6af13
+**Implementation candidate:** 808a17b5cfa545eff77da13aeb9735aa7ebb0a99
 
 The Start SHA is the committed passing JOB-009 completion revision and the exact JOB-003
 assignment boundary. JOB-001, JOB-002, JOB-009, the frozen E1 v1 protocol, and the E2 tenant
@@ -189,3 +189,86 @@ implementer fix round must add genuine RED coverage, correct I-01 through I-04 w
 frozen E1 or widening scope, and return a new 40-hex ancestor revision for another distinct
 review attempt. This ticket review is not the separate E3 integration gate and authorizes no
 push.
+
+## Implementation fix round 1 - 2026-08-10 - Codex `/root/job003_impl`
+
+This fix round implements the independently accepted Decision #124 successor and resolves
+review attempt 1's I-01 through I-04 plus the required receipt RLS probe. It remains an
+implementer handoff: only a fresh reviewer may append review attempt 2 and change this ticket
+to `complete` / `pass`.
+
+### TDD and commit boundaries
+
+- Consolidated amendment/review RED `6b722932e25a5e275dd3fa93d6c7b347b4e0bf7d`;
+  first production GREEN `ef972af6fde478f9e39fd36c36c23591a72c3eac`.
+  - Added the app-outer/operator-shared Decision #124 advisory handoff and the matching
+    target-to-worker/exclusive-writer authority; real lock-order, cutoff, connection-loss,
+    rollback, liveness, static writer-inventory, and no-grant-widening proofs.
+  - Added workload-class plus explicit provider-total capacity accounting with bounded
+    keyset scanning past incompatible/zero/full candidates; exact current receipt expiry
+    handling independent of bounded housekeeping; idempotent populated-E2 migration 0227
+    backfill; and non-vacuous cross-Organization receipt RLS probes.
+- Scheduler/legacy-heartbeat RED `8ce0547b68953fd1d4d8a0aa9d7180fb51b9a54e`;
+  production GREEN `a61f028bd1fab392a08be879c7275a80a95e08cb`.
+  - Composed one flag-on-only scheduler/outbox runtime from `index` through `createApp` and
+    worker-control leasing. Identifier-only hints are exact
+    `{organizationId,targetId,attemptId}`; admitted Organization shards rotate fairly at
+    most 32 per 750-ms tick; publish rejection remains retryable; poll rechecks exact hinted
+    attempts under tenant locks and always falls back to ordered database pull.
+  - Restricted legacy bearer heartbeat to non-null-Organization targets, so platform
+    physical authority remains proof-bound and cannot race a retired legacy token through
+    enrollment/cutoff. Frozen E1 and role grants remain unchanged.
+- Database-clock precision RED `617661bc294bb7030a6bd7f41ab85927edfe07e5`;
+  production GREEN `d7f726ca65430551420a6ed6db764138d06c0d1a`.
+  - A deterministic PostgreSQL `+500 microseconds` case proved that rebinding a DB timestamp
+    through JavaScript milliseconds could hide a newly ready outbox row. Both job and outbox
+    readiness now use one stable, index-friendly `statement_timestamp()` cutoff. The caller
+    time still supplies durable claim/update timestamps and the stale-claim threshold; a
+    true future-row negative remains excluded.
+- Aggregate legacy-test fixture correction `808a17b5cfa545eff77da13aeb9735aa7ebb0a99`.
+  - The full lane exposed an old audit test that mocked only the retired target-ID resolver.
+    Its missing new authority export caused a test-only 500 before validation. The fixture
+    now returns the exact target-plus-Organization authority; production is unchanged and
+    the audit/service lanes pass 8/8 and 7/7.
+
+### Authority and scope result
+
+- H-01: every job/outbox/attempt/lease/receipt path remains inside the authenticated logical
+  Organization's `runInTenant` transaction. `aoa_operator` sees no tenant job identifiers or
+  payload. The platform physical session remains control-only; logical Organization sessions
+  supply tenant authority. Receipt cross-Organization read/insert/update probes fail closed.
+- H-02: platform target/worker authority is linearized by the Decision #124 row/advisory
+  handoff, all inventoried writers use the exclusive side, and stale/retired bearer or proof
+  authority cannot mutate status, touch liveness, offer, ACK, or persist a receipt. ACK keeps
+  fresh DB time, exact fence/tuple predicates, and all-or-nothing rollback.
+- H-03: the partial live-lease uniqueness constraint remains database defense in depth;
+  class-aware reservation plus the provider total prevents cross-class over-counting and
+  over-commit. Three fresh 100-claimer race runs each returned exactly one offer.
+- Scope still stops at ACK receipt. No renewal, event ingestion, reaping, retry lifecycle,
+  provider contact, quota authority, completion, cutover, RLS/grant widening, locator, or E1
+  protocol change was added. Distributed execution remains default-off.
+
+### Operator-directed Windows-local evidence
+
+All real-PostgreSQL commands ran from `C:\e3` with `AOA_RUN_WIN_INTEGRATION=1`.
+Linux CI remains the formal DEC-03 authority.
+
+| Command / lane | Result |
+|---|---|
+| Consolidated focused specialist matrix | PASS - 5 files, 48/48 |
+| Accepted JOB-003 DB matrix | PASS - 6 files, 25/25, including populated 0226-to-0227 upgrade/replay, both lock interleavings, connection-loss release, receipt RLS, and C14 |
+| Accepted JOB-003 server matrix | PASS - 9 files, 89/89 |
+| H-03 full leasing lane, three consecutive fresh runs | PASS - 14/14 on each run |
+| JOB-001/JOB-002/JOB-009/server predecessor bundle | PASS - 8 files, 100/100 |
+| Tenant composite/enrollment/receipt DB predecessor bundle | PASS - 3 files, 21/21; historical 19 grew by the two required receipt RLS cases |
+| Tenant adversarial property suite | PASS - 11/11 over 4,460 operations |
+| Legacy heartbeat audit/service focused correction | PASS - 8/8 and 7/7; two legacy real-DB files remain unconditionally Windows-skipped by their existing declarations |
+| Frozen E1 checker and Start-to-candidate protocol diff | PASS - checker source `b7a842870ce7509d8baa75409e0ab19da375c88a`; zero changed `packages/worker-protocol` file |
+| `pnpm install --frozen-lockfile` | PASS |
+| DB/server affected typecheck, `pnpm -r typecheck`, and `pnpm build` | PASS |
+| `$env:AOA_RUN_WIN_INTEGRATION='1'; pnpm test:run` at `d7f726ca65430551420a6ed6db764138d06c0d1a`, then corrected candidate `808a17b5cfa545eff77da13aeb9735aa7ebb0a99` | **FAIL (honestly labeled Windows-local aggregate)** - first run exited 1 after 258s with 13 visible failure blocks and exposed the stale legacy-heartbeat test mock. After its test-only correction, the second exact run exited 1 after 262s with 22 visible failure blocks from the variable Windows embedded-PostgreSQL contention/setup cascade plus unrelated baseline tests; the heartbeat audit failure did not recur. No visible failure came from a JOB-003 DB, leasing, authority, receipt, startup, tenant-adversarial, migration, frozen-protocol, typecheck, or build lane. |
+
+The aggregate failure is neither hidden nor waived, and this record is not a ticket pass.
+The fresh reviewer must review exact candidate `808a17b5cfa545eff77da13aeb9735aa7ebb0a99`
+plus its evidence descendants, rerun the focused acceptance, verify every Decision #124
+writer and failure interleaving, and alone decide the disposition.

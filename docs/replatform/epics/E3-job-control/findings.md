@@ -471,7 +471,7 @@ composite-integrity suite passes 9/9. JOB-003 remains review-pending for indepen
 ## E3-F017 - JOB-003 review exposed platform composition, capacity, receipt-expiry, and upgrade gaps
 
 **Date:** 2026-08-10
-**Status:** `open_JOB-003_review_attempt_1`
+**Status:** `resolved_in_JOB-003_fix_round_1_pending_review`
 **Severity:** P1 durable leasing correctness / compatibility
 **Affected ticket:** JOB-003
 
@@ -498,10 +498,18 @@ C14-permitted idempotent data correction or narrowly proven legacy branch. Add n
 cross-tenant receipt RLS evidence before certification. Frozen E1, default-off behavior, and
 the JOB-003 scope boundary must remain unchanged.
 
+**Resolution:** Consolidated RED `6b722932e25a5e275dd3fa93d6c7b347b4e0bf7d` and GREEN
+`ef972af6fde478f9e39fd36c36c23591a72c3eac` implement the independently accepted Decision
+#124 successor, class-aware/no-head-of-line capacity, exact current receipt expiry, idempotent
+populated-E2 migration backfill, and non-vacuous receipt RLS probes. Scheduler/legacy-authority
+RED `8ce0547b68953fd1d4d8a0aa9d7180fb51b9a54e` and GREEN
+`a61f028bd1fab392a08be879c7275a80a95e08cb` close the production composition and retired-token
+writer gaps. All focused matrices pass locally; JOB-003 remains review-pending.
+
 ## E3-F018 - Platform-physical ACK has no approved durable tenant-shard authority
 
 **Date:** 2026-08-10
-**Status:** `approved_amendment_pending_JOB-003_implementation`
+**Status:** `implemented_in_JOB-003_fix_round_1_pending_review`
 **Severity:** P1 STOP - H-01/H-02 tenant routing authority / frozen transport compatibility
 **Affected tickets:** JOB-003 and later platform-session lease operations
 
@@ -551,10 +559,18 @@ locator or E1 change is authorized. JOB-003 remains `needs_changes` until a fres
 round and distinct review prove the amendment plus E3-F017; JOB-010 remains paused until that
 review closes.
 
+Implementation RED `6b722932e25a5e275dd3fa93d6c7b347b4e0bf7d` and GREEN
+`ef972af6fde478f9e39fd36c36c23591a72c3eac`, followed by scheduler/legacy-authority RED/GREEN
+`8ce0547b68953fd1d4d8a0aa9d7180fb51b9a54e` /
+`a61f028bd1fab392a08be879c7275a80a95e08cb`, now enforce the approved logical-session design.
+Platform sessions remain physical-control-only; no locator, operator job access, or frozen E1
+change was added. The prior `needs_changes` disposition is now resolved in implementation,
+pending a fresh distinct JOB-003 review; JOB-010 remains paused until that review passes.
+
 ## E3-F019 - Initial Decision #124 guard and platform-profile liveness were not implementable
 
 **Date:** 2026-08-10
-**Status:** `resolved_in_independently_reviewed_plan_pending_JOB-003_implementation`
+**Status:** `implemented_in_JOB-003_fix_round_1_pending_review`
 **Severity:** P1 H-02 cutoff linearization / platform logical-profile availability
 **Affected ticket:** JOB-003, with bounded JOB-002/JOB-009 synchronization seams
 
@@ -587,3 +603,32 @@ The distinct JOB-003 reviewer accepted the complete amended plan at exact revisi
 `2e9217c1e900d42547fd8a1f432efc60f1af71f3` after the exact focused command, helper API/key,
 0227 backfill, runtime test inventory, and stale cross-tenant polling prose were corrected.
 This acceptance authorizes a fresh TDD fix round; it is not a JOB-003 implementation pass.
+
+Implementation GREEN `ef972af6fde478f9e39fd36c36c23591a72c3eac` realizes the app-outer
+shared-advisory handoff, exclusive-writer inventory, connection-loss rollback, and physical-
+heartbeat/logical-session liveness rules without grant widening. The accepted DB and server
+matrices pass locally. This resolves implementation feasibility but is not a review pass.
+
+## E3-F020 - Outbox readiness lost PostgreSQL sub-millisecond precision
+
+**Date:** 2026-08-10
+**Status:** `resolved_in_JOB-003_fix_round_1_pending_review`
+**Severity:** P1 durable scheduling liveness / deterministic local evidence
+**Affected ticket:** JOB-003
+
+**Finding:** A combined embedded-PostgreSQL run intermittently published an older ready hint
+but skipped the newly inserted ready row. The repository sampled database time, converted it
+to a JavaScript `Date`, and rebound that millisecond value as the readiness cutoff. PostgreSQL
+retained microseconds on `available_at`, so a row at `.123456` could compare after a caller
+cutoff of `.123000` even though the claim statement itself ran later. The same precision gap
+applied to both outbox and job availability predicates.
+
+**Disposition:** Deterministic RED `617661bc294bb7030a6bd7f41ab85927edfe07e5`
+sets both availability facts to a sampled millisecond plus 500 microseconds, waits until the
+database clock is later, passes the truncated JavaScript timestamp, and keeps a true future
+row as a negative control. GREEN `d7f726ca65430551420a6ed6db764138d06c0d1a`
+uses one database-native, stable, index-friendly `statement_timestamp()` cutoff for both
+ready predicates while retaining caller time for durable claim/update timestamps and the
+stale threshold. The focused regression passes and the complete H-03 lane passes 14/14 on
+three consecutive fresh runs. No fence-time predicate, E1 wire field, grant, or migration
+changed. JOB-003 remains review-pending.
