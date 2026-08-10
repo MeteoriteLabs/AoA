@@ -83,6 +83,11 @@ export const JOB_SUBMISSION_NEW_PATH_GRANTS = Object.freeze({
   job_outbox: ["SELECT", "INSERT", "UPDATE", "DELETE"],
 } satisfies Readonly<Record<string, readonly TablePrivilege[]>>);
 
+/** JOB-003-only receipt authority, versioned after the immutable E2 grant set. */
+export const JOB_LEASING_NEW_PATH_GRANTS = Object.freeze({
+  worker_operation_receipts: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+} satisfies Readonly<Record<string, readonly TablePrivilege[]>>);
+
 /**
  * Current heartbeat execution-target resolver projection for aoa_app. This is
  * column-level because the table also stores worker_token_hash and unrelated
