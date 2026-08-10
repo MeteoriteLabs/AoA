@@ -1,7 +1,15 @@
 // server/src/services/execution-target-resolver.ts
 import { or, isNull, eq } from "drizzle-orm";
+import { createHash } from "node:crypto";
 import type { Db } from "@armyofagents/db";
 import { executionTargets } from "@armyofagents/db";
+import {
+  canonicalizeJsonV1,
+  registeredTargetProfileV1Schema,
+  verifyAndBrandProviderConstraintProfileV1,
+  type RegisteredTargetProfileV1,
+  type VerifiedProviderConstraintProfileV1,
+} from "@armyofagents/worker-protocol";
 
 export interface ExecutionTargetRow {
   id: string;
@@ -10,7 +18,98 @@ export interface ExecutionTargetRow {
   trustClass: string;
   status: string;
   organizationId: string | null;
+  ownerUserId?: string | null;
+  scope?: string;
+  targetAuthorityKey?: string;
+  deviceGeneration?: number;
+  registeredProfile?: Record<string, unknown> | null;
+  registeredProfileHash?: string | null;
+  providerConstraintProfile?: Record<string, unknown> | null;
+  lastSeenAt?: Date | null;
   config?: Record<string, unknown>;
+}
+
+export interface NormalizedPlacementRegistryTarget {
+  targetId: string;
+  targetClass: RegisteredTargetProfileV1["targetClass"];
+  targetScope: RegisteredTargetProfileV1["scope"];
+  targetGeneration: number;
+  profileHash: string;
+  providerConstraintHash: string;
+  status: string;
+  lastSeenAt: Date | null;
+  registeredProfile: RegisteredTargetProfileV1;
+  providerConstraintProfile: VerifiedProviderConstraintProfileV1;
+}
+
+const TARGET_KIND_BY_CLASS = {
+  managed_cloud: new Set(["pooled_gvisor", "e2b"]),
+  organization_dedicated: new Set(["dedicated_worker"]),
+  owner_desktop: new Set(["desktop", "local_host"]),
+} as const;
+
+const LEGACY_TRUST_BY_CLASS = {
+  managed_cloud: "shared_multitenant",
+  organization_dedicated: "dedicated_tenant",
+  owner_desktop: "local_trusted",
+} as const;
+
+function sha256(bytes: Uint8Array | string): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+/**
+ * Normalize one bounded registry row into the frozen E1 placement vocabulary.
+ * Missing legacy profiles stay unmapped. Every duplicated identity/scope/class
+ * fact must agree, so neither a legacy row nor a worker report can promote it.
+ */
+export async function normalizePlacementRegistryTarget(
+  row: ExecutionTargetRow,
+): Promise<NormalizedPlacementRegistryTarget | null> {
+  if (!row.registeredProfile || !row.providerConstraintProfile || !row.registeredProfileHash) {
+    return null;
+  }
+  const parsed = registeredTargetProfileV1Schema.safeParse(row.registeredProfile);
+  if (!parsed.success) return null;
+  const profile = parsed.data;
+  const provider = await verifyAndBrandProviderConstraintProfileV1(
+    row.providerConstraintProfile,
+    (bytes) => sha256(bytes),
+  );
+  if (!provider) return null;
+
+  const calculatedProfileHash = sha256(canonicalizeJsonV1(profile));
+  if (calculatedProfileHash !== row.registeredProfileHash) return null;
+  if (String(profile.targetId) !== row.id) return null;
+  if (profile.organizationId !== row.organizationId) return null;
+  if (profile.ownerPrincipalId !== (row.ownerUserId ?? null)) return null;
+  if (profile.scope !== row.scope) return null;
+  if (profile.deviceGeneration !== row.deviceGeneration) return null;
+  if (!TARGET_KIND_BY_CLASS[profile.targetClass].has(row.kind as never)) return null;
+  if (LEGACY_TRUST_BY_CLASS[profile.targetClass] !== row.trustClass) return null;
+  if (profile.providerConstraints.profileId !== provider.profileId) return null;
+  if (profile.providerConstraints.version !== provider.version) return null;
+  if (profile.providerConstraints.digest !== provider.digest) return null;
+
+  const expectedAuthority = profile.scope === "platform"
+    ? "platform"
+    : profile.scope === "organization"
+      ? `organization:${profile.organizationId}`
+      : `owner:${profile.organizationId}:${profile.ownerPrincipalId}`;
+  if (row.targetAuthorityKey !== expectedAuthority) return null;
+
+  return {
+    targetId: row.id,
+    targetClass: profile.targetClass,
+    targetScope: profile.scope,
+    targetGeneration: profile.deviceGeneration,
+    profileHash: calculatedProfileHash,
+    providerConstraintHash: String(provider.digest),
+    status: row.status,
+    lastSeenAt: row.lastSeenAt ?? null,
+    registeredProfile: profile,
+    providerConstraintProfile: provider,
+  };
 }
 
 // `credentialKind` + `executionTargetSlug` are P4's normalized seam field names.
@@ -71,6 +170,14 @@ export async function resolveExecutionTargetForRun(
       trustClass: executionTargets.trustClass,
       status: executionTargets.status,
       organizationId: executionTargets.organizationId,
+      ownerUserId: executionTargets.ownerUserId,
+      scope: executionTargets.scope,
+      targetAuthorityKey: executionTargets.targetAuthorityKey,
+      deviceGeneration: executionTargets.deviceGeneration,
+      registeredProfile: executionTargets.registeredProfile,
+      registeredProfileHash: executionTargets.registeredProfileHash,
+      providerConstraintProfile: executionTargets.providerConstraintProfile,
+      lastSeenAt: executionTargets.lastSeenAt,
       config: executionTargets.config,
     })
     .from(executionTargets)

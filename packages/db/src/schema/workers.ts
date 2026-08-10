@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, integer, timestamp, index, uniqueIndex, check, unique, foreignKey } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, integer, timestamp, jsonb, index, uniqueIndex, check, unique, foreignKey } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { authUsers } from "./auth.js";
 import { executionTargets } from "./execution_targets.js";
@@ -33,6 +33,10 @@ export const workers = pgTable(
     deviceThumbprint: text("device_thumbprint"),
     deviceGeneration: integer("device_generation").notNull().default(1),
     profileHash: text("profile_hash"),
+    // JOB-009: the exact proof-bound E1 hello whose digest is profile_hash.
+    // Dynamic poll capacity may only replace the capacity member after session
+    // proof; it cannot widen these enrolled capabilities or policy facts.
+    profileSnapshot: jsonb("profile_snapshot").$type<Record<string, unknown>>(),
     enrolledAt: timestamp("enrolled_at", { withTimezone: true }),
     lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),

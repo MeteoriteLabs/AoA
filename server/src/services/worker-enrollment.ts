@@ -407,6 +407,7 @@ export function createWorkerEnrollmentService(input: {
             devicePublicKey: verified.publicKey,
             deviceThumbprint: verified.deviceThumbprint,
             profileHash,
+            profileSnapshot: request.hello,
             enrolledAt: now(),
           });
           if (!rotated) throw new WorkerEnrollmentError("target_revoked");
@@ -432,6 +433,7 @@ export function createWorkerEnrollmentService(input: {
             deviceThumbprint: verified.deviceThumbprint,
             deviceGeneration: effectiveGeneration,
             profileHash,
+            profileSnapshot: request.hello,
             enrolledAt: now(),
             label: `Worker ${request.hello.workerId.slice(0, 8)}`,
             status: "enrolled",

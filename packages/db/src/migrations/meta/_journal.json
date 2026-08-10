@@ -1562,6 +1562,20 @@
       "when": 1786337907601,
       "tag": "0222_worker_profile_liveness",
       "breakpoints": true
+    },
+    {
+      "idx": 223,
+      "version": "7",
+      "when": 1786344921279,
+      "tag": "0223_job_placement_authority",
+      "breakpoints": true
+    },
+    {
+      "idx": 224,
+      "version": "7",
+      "when": 1786344962481,
+      "tag": "0224_job_placement_authority_grants",
+      "breakpoints": true
     }
   ]
 }

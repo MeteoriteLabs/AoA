@@ -62,6 +62,7 @@ export interface WorkerEnrollmentRepository {
     devicePublicKey: string;
     deviceThumbprint: string;
     profileHash: string;
+    profileSnapshot: Record<string, unknown>;
     enrolledAt: Date;
   }): Promise<boolean>;
   advanceTargetGeneration(input: {
@@ -224,6 +225,7 @@ export function createWorkerEnrollmentRepository(tx: Db): WorkerEnrollmentReposi
         deviceThumbprint: input.deviceThumbprint,
         deviceGeneration: input.nextGeneration,
         profileHash: input.profileHash,
+        profileSnapshot: input.profileSnapshot,
         enrolledAt: input.enrolledAt,
         revokedAt: null,
         status: "enrolled",

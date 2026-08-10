@@ -34,6 +34,11 @@ export const executionTargets = pgTable(
     trustClass: text("trust_class").notNull(), // shared_multitenant | dedicated_tenant | local_trusted
     status: text("status").notNull().default("active"), // active | draining | offline | disabled
     capabilities: jsonb("capabilities").$type<Record<string, unknown>>().notNull().default({}),
+    // JOB-009: exact server-owned E1 target/provider profiles. Nullable legacy
+    // rows are deliberately unmapped and therefore ineligible, never inferred.
+    registeredProfile: jsonb("registered_profile").$type<Record<string, unknown>>(),
+    registeredProfileHash: text("registered_profile_hash"),
+    providerConstraintProfile: jsonb("provider_constraint_profile").$type<Record<string, unknown>>(),
     config: jsonb("config").$type<Record<string, unknown>>().notNull().default({}),
     // Finding #3: rotatable worker credential — SHA-256 hash only; the plaintext
     // is returned once at registration. The row id is no longer a credential.
@@ -64,6 +69,15 @@ export const executionTargets = pgTable(
       ) OR (
         scope = 'owner' AND organization_id IS NOT NULL AND owner_user_id IS NOT NULL AND
         target_authority_key = 'owner:' || organization_id::text || ':' || owner_user_id
+      )`,
+    ),
+    placementProfilesAtomic: check(
+      "execution_targets_placement_profiles_atomic_check",
+      sql`(
+        registered_profile IS NULL AND registered_profile_hash IS NULL AND provider_constraint_profile IS NULL
+      ) OR (
+        registered_profile IS NOT NULL AND registered_profile_hash ~ '^[0-9a-f]{64}$' AND
+        provider_constraint_profile IS NOT NULL
       )`,
     ),
     ownerUserFk: foreignKey({
