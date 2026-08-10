@@ -1590,6 +1590,20 @@
       "when": 1786350714854,
       "tag": "0226_execution_target_profile_authority",
       "breakpoints": true
+    },
+    {
+      "idx": 227,
+      "version": "7",
+      "when": 1786358317260,
+      "tag": "0227_job_leasing_authority",
+      "breakpoints": true
+    },
+    {
+      "idx": 228,
+      "version": "7",
+      "when": 1786358367465,
+      "tag": "0228_job_leasing_rls",
+      "breakpoints": true
     }
   ]
 }

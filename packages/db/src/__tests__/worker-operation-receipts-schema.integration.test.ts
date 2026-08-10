@@ -163,6 +163,29 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect(receipt).toContain("idempotency_key");
     });
 
+    it("retains activation history when an active lease reaches a terminal state", async () => {
+      const client = database();
+      const organizationId = "30000000-0000-4000-8000-000000000001";
+      const companyId = "30000000-0000-4000-8000-000000000002";
+      const jobId = "30000000-0000-4000-8000-000000000003";
+      const attemptId = "30000000-0000-4000-8000-000000000004";
+      const leaseId = "30000000-0000-4000-8000-000000000005";
+
+      await client`INSERT INTO organizations (id, name, slug) VALUES (${organizationId}, 'Lease history org', 'lease-history-org')`;
+      await client`INSERT INTO companies (id, organization_id, name, issue_prefix) VALUES (${companyId}, ${organizationId}, 'Lease history company', 'LHIST')`;
+      await client`INSERT INTO jobs (id, organization_id, company_id) VALUES (${jobId}, ${organizationId}, ${companyId})`;
+      await client`INSERT INTO job_attempts (id, organization_id, company_id, job_id) VALUES (${attemptId}, ${organizationId}, ${companyId}, ${jobId})`;
+      await client`
+        INSERT INTO leases (id, organization_id, attempt_id, status, fence, activated_at)
+        VALUES (${leaseId}, ${organizationId}, ${attemptId}, 'active', 'legacy-history-fence', clock_timestamp())
+      `;
+      await expect(client`
+        UPDATE leases SET status = 'released', released_at = clock_timestamp()
+        WHERE id = ${leaseId}
+        RETURNING id
+      `).resolves.toHaveLength(1);
+    });
+
     it("forces tenant RLS, grants no operator access, and replays both JOB-003 migrations", async () => {
       const client = database();
       const [security] = await client<{

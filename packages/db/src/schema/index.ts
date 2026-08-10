@@ -42,6 +42,11 @@ export { jobs, type Job, type NewJob } from "./jobs.js";
 export { jobAttempts, type JobAttempt, type NewJobAttempt } from "./job_attempts.js";
 export { jobOutbox, type JobOutbox, type NewJobOutbox } from "./job_outbox.js";
 export { leases, type Lease, type NewLease } from "./leases.js";
+export {
+  workerOperationReceipts,
+  type WorkerOperationReceipt,
+  type NewWorkerOperationReceipt,
+} from "./worker_operation_receipts.js";
 // E2 tenant kernel (TEN-001b): worker/service/artifact/secret-handle ownership tables.
 export { workers, type Worker, type NewWorker } from "./workers.js";
 export {
