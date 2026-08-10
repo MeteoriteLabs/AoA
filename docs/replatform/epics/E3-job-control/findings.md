@@ -293,7 +293,7 @@ remains review-pending until a distinct reviewer independently certifies the can
 ## E3-F012 — JOB-002 review attempt 2 found revocation, protocol-error, and replay-cleanup races
 
 **Date:** 2026-08-10
-**Status:** `open_needs_JOB-002_fix_round_2`
+**Status:** `resolved_pending_JOB-002_review_attempt_3`
 **Severity:** P1 authority/replay correctness
 **Affected ticket:** JOB-002 and every later worker-authenticated operation
 
@@ -308,11 +308,17 @@ deletes only the oldest 100 expired proof rows before inserting a proof. If the 
 expired proof is outside that batch, the unique insert fails and rolls back the cleanup, so
 every retry repeats the same failure forever.
 
-**Disposition:** JOB-002 remains `needs_changes`. Fix round 2 must make the shared-platform
-authority check and heartbeat mutation one revocation-safe authoritative operation (without
-granting a tenant mutation authority over the platform target); mark every heartbeat failure
-path for frozen descriptor-allowed `ProtocolErrorV1` before bearer parsing/lookup; and delete
-or replace the exact expired proof collision independently of the bounded background cleanup
-while preserving unexpired replay authority. Each correction needs a genuine RED test,
-including an authenticate/revoke/heartbeat interleaving, missing-bearer/error-path response
-schema coverage, and an expired colliding proof ordered strictly beyond the cleanup limit.
+**Disposition:** Fix round 2 added genuine RED at
+`e66f173918eda336c0340a447ae8eab0862b2c0a` and GREEN at
+`d9c8aa5db73f4218ae02f1ee505623c4ffd7e509`. Shared-platform physical heartbeat now
+linearizes with revocation in one bounded operator transaction and conditionally updates only
+physical liveness after rechecking every pinned authority fact; tenant profiles and global
+trust/capability metadata are not mutated. The heartbeat route marks protocol context before
+Authorization parsing and lookup. Proof recording deletes only the exact expired collision
+by fresh database clock, independently of bounded housekeeping, and preserves unexpired
+replay authority. Deterministic both-order row-lock tests, frozen-envelope early failures,
+positions 1/100/101/301, restart, and concurrent-replica tests pass. Focused, RLS,
+startup, frozen-E1, typecheck, and build lanes pass. The exact Windows full lane remains
+honestly non-green for visible non-JOB-002 contention/Windows collection failures and is not
+waived. JOB-002 is `implementation_complete_review_pending` until a distinct reviewer
+independently certifies the candidate.

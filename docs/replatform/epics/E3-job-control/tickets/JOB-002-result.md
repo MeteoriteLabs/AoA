@@ -1,7 +1,7 @@
 # JOB-002 Result — Enroll workers and persist logical profiles
 
-**Status:** `needs_changes`
-**Disposition:** `needs_changes`
+**Status:** `implementation_complete_review_pending`
+**Disposition:** `review_pending`
 **Date opened (UTC):** `2026-08-10`
 **Epic:** `E3-job-control`
 **Plan task:** `JOB-002 — Enroll workers and persist logical profiles (M)`
@@ -257,3 +257,55 @@ reviewer modified no production code. Detailed evidence is in
 The ticket remains incomplete. A fresh implementer fix round must add genuine RED coverage
 for I2-01 through I2-03 and return a new 40-hex ancestor revision for another independent
 review attempt.
+
+## Implementation fix round 2 - 2026-08-10 - Codex `/root/job002_impl`
+
+- **Review evidence consumed:** `987b0d75de7fae827d4b60fc239222cfb2522c6b`.
+- **Genuine RED:** `e66f173918eda336c0340a447ae8eab0862b2c0a`.
+- **GREEN candidate:** `d9c8aa5db73f4218ae02f1ee505623c4ffd7e509`.
+- **State:** `implementation_complete_review_pending`; **disposition:** `review_pending`.
+
+The three attempt-2 blockers are corrected without role, migration, frozen-E1, placement,
+lease, or cutover expansion. Shared-platform heartbeat now uses one bounded `aoa_operator`
+transaction and one conditional physical-target update that rechecks the pinned target,
+authority, generation, worker, key, thumbprint, and profile facts at the mutation boundary.
+It updates only physical liveness; it does not mutate the tenant profile or global trust and
+capability metadata. Deterministic revoke-first and heartbeat-first row-lock tests prove that
+revocation and heartbeat linearize, and that the old principal cannot write again after
+revocation. Same-Organization heartbeat retains the tenant transaction path.
+
+The heartbeat route marks worker protocol v1 before Authorization parsing or lookup, so
+missing bearer, malformed bearer, and early lookup failures emit only frozen PRT-007
+`ProtocolErrorV1`. Proof recording now removes only the exact matching expired collision by
+fresh database clock before the conflict-safe insert, while the separate ordered cleanup
+remains bounded. Tests cover expired collisions at positions 1, 100, 101, and 301, an
+unexpired collision, restart semantics, and concurrent replicas with exactly one proof
+effect.
+
+### Fix-round-2 evidence
+
+- New early HTTP protocol lane: **1 file / 3 tests passed**.
+- Full enrollment integration plus early protocol lane: **2 files / 20 tests passed**.
+- JOB-002 DB schema/operator-policy/idempotency lane: **3 files / 13 tests passed**.
+- Enrollment/session/proof/RLS/logging lane: **6 files / 27 tests passed**.
+- Grant/RBAC/legacy-target lane: **3 files passed, 12 tests passed / 6 explicit Windows
+  skips**.
+- Startup/non-owner/operator/legacy bundle: **5 files passed, 48 tests passed / 6 explicit
+  Windows skips**.
+- E2 schema-B fixture: **1 file / 7 tests passed**; tenant RLS/adversarial: **2 files / 21
+  tests passed**, recording **4,460** hostile operations across eight seeds.
+- JOB-001 default-off submission regression: **1 file / 31 tests passed**.
+- Frozen E1 checker at `b7a842870ce7509d8baa75409e0ab19da375c88a`, frozen install,
+  affected-package typecheck/build, recursive typecheck, root build, diff hygiene, frozen-E1
+  zero-diff, and assignment/RED/GREEN ancestry checks all passed.
+- Exact Windows-local `AOA_RUN_WIN_INTEGRATION=1 pnpm test:run` honestly exited 1 after
+  253.4s with 13 aggregate failures. Visible failures were outside the repaired JOB-002
+  lanes: embedded-Postgres startup contention/D18, distributed-startup timeouts,
+  runtime-service-control timing, and the known frozen worker-protocol Windows collection
+  SyntaxError. Isolated D18 passed **6/6**, runtime-service-control passed **59/59**, and the
+  startup bundle passed as stated above; the frozen-protocol file alone still reproduces one
+  failed suite with no tests collected. This is not a full-suite pass or waiver. Linux CI
+  remains formal DEC-03 authority.
+
+A distinct reviewer must review the new evidence revision, rerun focused acceptance, append
+review attempt 3, and alone may change the ticket to `complete` / `pass`.
