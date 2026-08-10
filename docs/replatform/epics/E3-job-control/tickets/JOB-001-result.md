@@ -1,12 +1,12 @@
 # JOB-001 Result — Submit immutable jobs transactionally
 
-**Status:** `implementation_complete_review_pending`
-**Disposition:** `review_pending`
+**Status:** `implementation_complete_review_needs_changes`
+**Disposition:** `needs_changes`
 **Date opened (UTC):** `2026-08-09`
 **Epic:** `E3-job-control`
 **Plan task:** `JOB-001 — Submit immutable jobs transactionally (M)`
 **Implementer:** `Codex /root/job001_impl`
-**Reviewer:** `not_assigned_distinct_required`
+**Reviewer:** `Codex /root/job001_review`
 **Start SHA:** 8e2faa590d4e97a2cbd250c55f4a2ed81a352a33
 
 The Start SHA remains the fetched `origin/docs/replatform-program` tip and exact pre-E3
@@ -44,5 +44,31 @@ passing before this attempt; they were consumed as immutable dependencies.
 
 ## Independent review
 
-Pending. A distinct reviewer alone may append review attempt 1 and change this ticket to
-complete/pass.
+### Review attempt 1 - 2026-08-10 - Codex `/root/job001_review`
+
+- **Reviewed revision:** `75ae7d5ec46f3fae01afa5b6349f3f5d5f4772c4`
+- **Disposition:** `needs_changes`
+- **Specification verdict:** fail.
+- **Code/security quality verdict:** fail.
+- Confirmed that the non-owner `aoa_app` submission path is one `runInTenant` transaction,
+  atomic across immutable job + initial attempt + attempt-aware identifier-only outbox; exact
+  scoped idempotency, digest conflict, 32-way convergence, hostile tenant denial, flag-off
+  isolation, frozen E1 boundary, paired manifest/lock, focused schema/migration/startup/legacy
+  grants, affected builds, and typechecks pass.
+- **Important I-01:** the route accepts five non-task source identities from an unrelated
+  authenticated principal without source-specific proof. An ordinary user is explicitly
+  accepted for all six sources, including system-only `service_reconcile` and restricted
+  `one_shot`, so persisted requester/executor/source authority facts are not server-authenticated.
+- **Important I-02 (H-01):** forced transaction failures emit raw Drizzle query messages and
+  parameters through generic error logging, exposing `source_intent` and arbitrary job input
+  despite the request-body omission policy.
+- **Important I-03:** adding JOB-001 tables to shared live grant constants changes the
+  authoritative builders for immutable migrations 0213/0214. Their byte-alignment tests fail,
+  and rebuilt 0214 would reference `job_outbox` before 0216 creates it.
+- **Important I-04:** exact `AOA_RUN_WIN_INTEGRATION=1 pnpm test:run` completed with 43 failed
+  tests (not a timeout and not `ERR_IPC_CHANNEL_CLOSED`). Focused reproduction found 22 server
+  tenant/RLS failures and 5 DB failures caused by unsynchronized `job_attempts.company_id`
+  fixtures and the changed shared repository surface.
+- Windows-local evidence is not formal Linux/DEC-03 certification; nevertheless these are
+  deterministic completed failures and block review. No production code was changed.
+- Detailed evidence: `.superpowers/sdd/implementation-plan/job-001-review.md`.
