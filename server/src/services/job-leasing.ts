@@ -1,7 +1,10 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type { Db, Job, JobAttempt, LeaseWorkerAuthority } from "@armyofagents/db";
 import {
   jobEnvelopeV1Schema,
+  canonicalizeJsonV1,
+  leaseAckOperationRequestV1Schema,
+  leaseAckOperationResponseV1Schema,
   leaseOfferV1Schema,
   pollRequestV1Schema,
   pollResponseV1Schema,
@@ -11,6 +14,8 @@ import {
   type ExecutionSourceV1,
   type JobCapabilityRequirementsV1,
   type JobEnvelopeV1,
+  type LeaseAckOperationRequestV1,
+  type LeaseAckOperationResponseV1,
   type PollRequestV1,
   type PollResponseV1,
   type PrincipalV1,
@@ -30,10 +35,30 @@ export type { VerifiedWorkerOperation } from "../middleware/worker-operation-pro
 const ACTIVE_WORKER_STATUSES = new Set(["enrolled", "active"]);
 
 export class JobLeasingError extends Error {
-  constructor(public readonly code: "malformed" | "unauthorized" | "target_revoked" | "internal_unavailable") {
+  constructor(public readonly code:
+    | "malformed"
+    | "unauthorized"
+    | "target_revoked"
+    | "stale_fence"
+    | "attempt_terminal"
+    | "internal_unavailable") {
     super(`Job leasing ${code}`);
     this.name = "JobLeasingError";
   }
+}
+
+function semanticAckDigest(
+  auth: VerifiedWorkerOperation,
+  request: LeaseAckOperationRequestV1,
+): string {
+  return createHash("sha256").update(canonicalizeJsonV1({
+    audience: request.audience,
+    workerId: auth.workerId,
+    targetId: auth.targetId,
+    targetGeneration: auth.targetGeneration,
+    profileHash: auth.profileHash,
+    body: request.body,
+  })).digest("hex");
 }
 
 function principal(kind: string, id: string): PrincipalV1 {
@@ -185,6 +210,38 @@ function authorityCurrent(input: {
     && input.databaseNow.getTime() - oldestHeartbeat <= input.maxHeartbeatAgeMs;
 }
 
+function ackAuthorityCurrent(input: {
+  auth: VerifiedWorkerOperation;
+  authority: LeaseWorkerAuthority;
+  workerId: string;
+  databaseNow: Date;
+  maxHeartbeatAgeMs: number;
+}): boolean {
+  const { auth, authority } = input;
+  const worker = authority.worker;
+  const target = authority.target;
+  const oldestHeartbeat = !worker.lastSeenAt || !target.lastSeenAt
+    ? null
+    : Math.min(worker.lastSeenAt.getTime(), target.lastSeenAt.getTime());
+  return input.workerId === auth.workerId
+    && worker.id === auth.workerId
+    && worker.executionTargetId === auth.targetId
+    && worker.organizationId === auth.organizationId
+    && worker.scope !== "platform"
+    && worker.deviceGeneration === auth.targetGeneration
+    && worker.deviceThumbprint === auth.deviceThumbprint
+    && worker.devicePublicKey === auth.publicKey
+    && worker.profileHash === auth.profileHash
+    && worker.revokedAt === null
+    && ACTIVE_WORKER_STATUSES.has(worker.status)
+    && authority.ownerMembershipActive
+    && target.id === auth.targetId
+    && target.status === "active"
+    && target.deviceGeneration === auth.targetGeneration
+    && oldestHeartbeat !== null
+    && input.databaseNow.getTime() - oldestHeartbeat <= input.maxHeartbeatAgeMs;
+}
+
 function candidateMatchesPlacement(
   attempt: JobAttempt,
   authority: LeaseWorkerAuthority,
@@ -196,6 +253,25 @@ function candidateMatchesPlacement(
     && attempt.placementMode === "active"
     && attempt.placementLeaseEligible === true
     && attempt.placementOwner === expectedOwner
+    && attempt.placementTargetId === target.targetId
+    && attempt.placementTargetClass === target.targetClass
+    && attempt.placementTargetScope === target.targetScope
+    && attempt.placementTargetGeneration === target.targetGeneration
+    && attempt.placementProfileHash === target.profileHash
+    && attempt.placementProviderConstraintHash === target.providerConstraintHash
+    && authority.worker.targetAuthorityKey === authority.target.targetAuthorityKey;
+}
+
+function ackPlacementCurrent(
+  attempt: JobAttempt,
+  authority: LeaseWorkerAuthority,
+  target: NormalizedPlacementRegistryTarget,
+): boolean {
+  return attempt.status === "offered"
+    && attempt.placementDisposition === "selected"
+    && attempt.placementMode === "active"
+    && attempt.placementLeaseEligible === true
+    && attempt.placementOwner === target.targetClass
     && attempt.placementTargetId === target.targetId
     && attempt.placementTargetClass === target.targetClass
     && attempt.placementTargetScope === target.targetScope
@@ -303,11 +379,12 @@ export function createJobLeasingService(input: {
           workerId: pollInput.auth.workerId,
           targetId: pollInput.auth.targetId,
         });
+        const authorityNow = await repos.jobControl.currentDatabaseTime();
         if (!authority || !authorityCurrent({
           auth: pollInput.auth,
           authority,
           request,
-          databaseNow,
+          databaseNow: authorityNow,
           maxHeartbeatAgeMs,
         })) throw new JobLeasingError(authority ? "target_revoked" : "unauthorized");
 
@@ -345,15 +422,15 @@ export function createJobLeasingService(input: {
             normalized.requirements,
           )) continue;
 
-          const ackDeadline = new Date(databaseNow.getTime() + ackTimeoutMs);
-          const expiresAt = new Date(databaseNow.getTime() + leaseDurationMs);
+          const ackDeadline = new Date(authorityNow.getTime() + ackTimeoutMs);
+          const expiresAt = new Date(authorityNow.getTime() + leaseDurationMs);
           const job = buildJobEnvelope({
             job: candidate.job,
             attempt: candidate.attempt,
             target,
             requirements: normalized.requirements,
             resourceLimits: normalized.providerDemand.resources,
-            databaseNow,
+            databaseNow: authorityNow,
             leaseExpiresAt: expiresAt,
           });
           if (!job) continue;
@@ -373,7 +450,7 @@ export function createJobLeasingService(input: {
             fence,
             ackDeadline,
             expiresAt,
-            createdAt: databaseNow,
+            createdAt: authorityNow,
           });
           if (!lease) continue;
           const offer = leaseOfferV1Schema.parse({
@@ -389,7 +466,7 @@ export function createJobLeasingService(input: {
           return pollResponseV1Schema.parse({
             protocolVersion: 1,
             correlationId: request.correlationId,
-            serverTime: databaseNow.toISOString(),
+            serverTime: authorityNow.toISOString(),
             outcome: "offer",
             body: offer,
           });
@@ -398,9 +475,130 @@ export function createJobLeasingService(input: {
         return pollResponseV1Schema.parse({
           protocolVersion: 1,
           correlationId: request.correlationId,
-          serverTime: databaseNow.toISOString(),
+          serverTime: authorityNow.toISOString(),
           outcome: "no_work",
           retryAfterMs: 750,
+        });
+      });
+    },
+
+    async ack(ackInput: {
+      auth: VerifiedWorkerOperation;
+      request: LeaseAckOperationRequestV1;
+    }): Promise<LeaseAckOperationResponseV1> {
+      const parsedRequest = leaseAckOperationRequestV1Schema.safeParse(ackInput.request);
+      if (!parsedRequest.success) throw new JobLeasingError("malformed");
+      const request = parsedRequest.data;
+      const digest = semanticAckDigest(ackInput.auth, request);
+      return runInTenant(input.appDb, ackInput.auth.organizationId, async (repos) => {
+        const databaseNow = await repos.jobControl.currentDatabaseTime();
+        await repos.workerEnrollment.cleanupExpiredProofs(databaseNow, 100);
+        await repos.jobControl.cleanupExpiredOperationReceipts(databaseNow, 100);
+        const proofRecorded = await repos.workerEnrollment.recordProof({
+          organizationId: ackInput.auth.organizationId,
+          deviceThumbprint: ackInput.auth.deviceThumbprint,
+          proofId: ackInput.auth.proofId,
+          issuedAt: ackInput.auth.proofIssuedAt,
+          expiresAt: ackInput.auth.sessionExpiresAt,
+        });
+        if (!proofRecorded) throw new JobLeasingError("unauthorized");
+
+        const authority = await repos.jobControl.lockWorkerLeaseAuthority({
+          workerId: ackInput.auth.workerId,
+          targetId: ackInput.auth.targetId,
+        });
+        const authorityNow = await repos.jobControl.currentDatabaseTime();
+        if (!authority || !ackAuthorityCurrent({
+          auth: ackInput.auth,
+          authority,
+          workerId: request.body.workerId,
+          databaseNow: authorityNow,
+          maxHeartbeatAgeMs,
+        })) throw new JobLeasingError(authority ? "target_revoked" : "unauthorized");
+
+        const target = await normalizePlacementRegistryTarget(authority.target);
+        if (!target || target.status !== "active") throw new JobLeasingError("target_revoked");
+        const prior = await repos.jobControl.findOperationReceipt({
+          organizationId: ackInput.auth.organizationId,
+          workerId: ackInput.auth.workerId,
+          targetId: ackInput.auth.targetId,
+          targetGeneration: ackInput.auth.targetGeneration,
+          profileHash: ackInput.auth.profileHash,
+          operation: "lease_ack",
+          idempotencyKey: request.idempotencyKey,
+        });
+        if (prior) {
+          if (prior.semanticDigest !== digest) throw new JobLeasingError("malformed");
+          return leaseAckOperationResponseV1Schema.parse({
+            protocolVersion: 1,
+            correlationId: request.correlationId,
+            serverTime: authorityNow.toISOString(),
+            outcome: "acknowledged",
+            ...prior.outcome,
+          });
+        }
+
+        const context = await repos.jobControl.lockLeaseAckContext({
+          organizationId: ackInput.auth.organizationId,
+          workerId: ackInput.auth.workerId,
+          targetId: ackInput.auth.targetId,
+          targetGeneration: ackInput.auth.targetGeneration,
+          profileHash: ackInput.auth.profileHash,
+          leaseId: request.body.leaseId,
+          jobId: request.body.jobId,
+          attemptNumber: request.body.attempt,
+          fence: request.body.fenceToken,
+        });
+        if (!context) throw new JobLeasingError("stale_fence");
+        if (context.lease.status !== "offered" || context.attempt.status !== "offered") {
+          throw new JobLeasingError("attempt_terminal");
+        }
+        if (!ackPlacementCurrent(context.attempt, authority, target)
+          || context.lease.organizationId !== ackInput.auth.organizationId
+          || context.lease.workerId !== ackInput.auth.workerId
+          || context.lease.targetId !== target.targetId
+          || context.lease.targetAuthorityKey !== authority.worker.targetAuthorityKey
+          || context.lease.targetGeneration !== target.targetGeneration
+          || context.lease.profileHash !== ackInput.auth.profileHash
+          || context.lease.providerConstraintHash !== target.providerConstraintHash
+          || !context.lease.companyId
+          || !context.lease.jobId
+          || !context.lease.attemptNumber
+          || !context.lease.expiresAt) {
+          throw new JobLeasingError("stale_fence");
+        }
+
+        const outcome = {
+          leaseId: context.lease.id,
+          expiresAt: context.lease.expiresAt.toISOString(),
+        };
+        const activated = await repos.jobControl.activateLeaseAck({
+          organizationId: ackInput.auth.organizationId,
+          companyId: context.lease.companyId,
+          jobId: context.lease.jobId,
+          attemptId: context.lease.attemptId,
+          attemptNumber: context.lease.attemptNumber,
+          leaseId: context.lease.id,
+          workerId: ackInput.auth.workerId,
+          targetId: target.targetId,
+          targetAuthorityKey: authority.worker.targetAuthorityKey,
+          targetGeneration: target.targetGeneration,
+          profileHash: ackInput.auth.profileHash,
+          providerConstraintHash: target.providerConstraintHash,
+          placementProfileHash: target.profileHash,
+          fence: request.body.fenceToken,
+          idempotencyKey: request.idempotencyKey,
+          semanticDigest: digest,
+          receiptExpiresAt: context.lease.expiresAt,
+          outcome,
+        });
+        if (!activated) throw new JobLeasingError("stale_fence");
+        return leaseAckOperationResponseV1Schema.parse({
+          protocolVersion: 1,
+          correlationId: request.correlationId,
+          serverTime: authorityNow.toISOString(),
+          outcome: "acknowledged",
+          ...outcome,
         });
       });
     },

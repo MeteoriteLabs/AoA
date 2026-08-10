@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, exists, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, exists, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { Db } from "../../client.js";
 import {
   agents,
@@ -18,6 +18,7 @@ import {
   organizations,
   executionTargets,
   workers,
+  workerOperationReceipts,
   services,
   type Job,
   type JobAttempt,
@@ -26,6 +27,7 @@ import {
   type NewJobAttempt,
   type NewJobOutbox,
   type Lease,
+  type WorkerOperationReceipt,
 } from "../../schema/index.js";
 
 export interface TenantAdmissionRecord {
@@ -134,6 +136,47 @@ export interface JobControlRepository {
     ackDeadline: Date;
     expiresAt: Date;
     createdAt: Date;
+  }): Promise<Lease | null>;
+  cleanupExpiredOperationReceipts(expiresBefore: Date, limit?: number): Promise<number>;
+  findOperationReceipt(input: {
+    organizationId: string;
+    workerId: string;
+    targetId: string;
+    targetGeneration: number;
+    profileHash: string;
+    operation: "lease_ack";
+    idempotencyKey: string;
+  }): Promise<WorkerOperationReceipt | null>;
+  lockLeaseAckContext(input: {
+    organizationId: string;
+    workerId: string;
+    targetId: string;
+    targetGeneration: number;
+    profileHash: string;
+    leaseId: string;
+    jobId: string;
+    attemptNumber: number;
+    fence: string;
+  }): Promise<{ lease: Lease; attempt: JobAttempt } | null>;
+  activateLeaseAck(input: {
+    organizationId: string;
+    companyId: string;
+    jobId: string;
+    attemptId: string;
+    attemptNumber: number;
+    leaseId: string;
+    workerId: string;
+    targetId: string;
+    targetAuthorityKey: string;
+    targetGeneration: number;
+    profileHash: string;
+    providerConstraintHash: string;
+    placementProfileHash: string;
+    fence: string;
+    idempotencyKey: string;
+    semanticDigest: string;
+    receiptExpiresAt: Date;
+    outcome: Record<string, unknown>;
   }): Promise<Lease | null>;
   claimReadyOutbox(input: {
     claimToken: string;
@@ -646,6 +689,7 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
           eq(executionTargets.id, input.targetId),
           eq(executionTargets.targetAuthorityKey, worker.targetAuthorityKey),
         ))
+        .for("update")
         .limit(1);
       if (!target) return null;
 
@@ -658,6 +702,7 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
             eq(organizationMemberships.userId, worker.ownerUserId!),
             eq(organizationMemberships.status, "active"),
           ))
+          .for("share")
           .limit(1);
         ownerMembershipActive = Boolean(membership);
       }
@@ -746,6 +791,125 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         updatedAt: input.createdAt,
       }).returning();
       return lease ?? null;
+    },
+
+    async cleanupExpiredOperationReceipts(expiresBefore, limit = 100) {
+      const boundedLimit = Math.max(1, Math.min(1_000, Math.floor(limit)));
+      const expired = await tx.select({ id: workerOperationReceipts.id })
+        .from(workerOperationReceipts)
+        .where(lte(workerOperationReceipts.expiresAt, expiresBefore))
+        .orderBy(asc(workerOperationReceipts.expiresAt), asc(workerOperationReceipts.id))
+        .limit(boundedLimit)
+        .for("update", { skipLocked: true });
+      if (expired.length === 0) return 0;
+      const removed = await tx.delete(workerOperationReceipts)
+        .where(inArray(workerOperationReceipts.id, expired.map((row) => row.id)))
+        .returning({ id: workerOperationReceipts.id });
+      return removed.length;
+    },
+
+    async findOperationReceipt(input) {
+      const [receipt] = await tx.select().from(workerOperationReceipts).where(and(
+        eq(workerOperationReceipts.organizationId, input.organizationId),
+        eq(workerOperationReceipts.workerId, input.workerId),
+        eq(workerOperationReceipts.targetId, input.targetId),
+        eq(workerOperationReceipts.targetGeneration, input.targetGeneration),
+        eq(workerOperationReceipts.profileHash, input.profileHash),
+        eq(workerOperationReceipts.operation, input.operation),
+        eq(workerOperationReceipts.idempotencyKey, input.idempotencyKey),
+      )).limit(1);
+      return receipt ?? null;
+    },
+
+    async lockLeaseAckContext(input) {
+      const [context] = await tx.select({ lease: leases, attempt: jobAttempts })
+        .from(leases)
+        .innerJoin(jobAttempts, and(
+          eq(jobAttempts.organizationId, leases.organizationId),
+          eq(jobAttempts.companyId, leases.companyId),
+          eq(jobAttempts.jobId, leases.jobId),
+          eq(jobAttempts.id, leases.attemptId),
+        ))
+        .where(and(
+          eq(leases.organizationId, input.organizationId),
+          eq(leases.id, input.leaseId),
+          eq(leases.jobId, input.jobId),
+          eq(leases.attemptNumber, input.attemptNumber),
+          eq(leases.workerId, input.workerId),
+          eq(leases.targetId, input.targetId),
+          eq(leases.targetGeneration, input.targetGeneration),
+          eq(leases.profileHash, input.profileHash),
+          eq(leases.fence, input.fence),
+        ))
+        .for("update")
+        .limit(1);
+      return context ?? null;
+    },
+
+    async activateLeaseAck(input) {
+      const [lease] = await tx.update(leases).set({
+        status: "active",
+        activatedAt: sql`clock_timestamp()`,
+        updatedAt: sql`clock_timestamp()`,
+      }).where(and(
+        eq(leases.organizationId, input.organizationId),
+        eq(leases.companyId, input.companyId),
+        eq(leases.jobId, input.jobId),
+        eq(leases.attemptId, input.attemptId),
+        eq(leases.attemptNumber, input.attemptNumber),
+        eq(leases.id, input.leaseId),
+        eq(leases.workerId, input.workerId),
+        eq(leases.targetId, input.targetId),
+        eq(leases.targetAuthorityKey, input.targetAuthorityKey),
+        eq(leases.targetGeneration, input.targetGeneration),
+        eq(leases.profileHash, input.profileHash),
+        eq(leases.providerConstraintHash, input.providerConstraintHash),
+        eq(leases.fence, input.fence),
+        eq(leases.status, "offered"),
+        gte(leases.ackDeadline, sql`clock_timestamp()`),
+        gte(leases.expiresAt, sql`clock_timestamp()`),
+      )).returning();
+      if (!lease) return null;
+
+      const [attempt] = await tx.update(jobAttempts).set({
+        status: "leased",
+        updatedAt: sql`clock_timestamp()`,
+      }).where(and(
+        eq(jobAttempts.organizationId, input.organizationId),
+        eq(jobAttempts.companyId, input.companyId),
+        eq(jobAttempts.jobId, input.jobId),
+        eq(jobAttempts.id, input.attemptId),
+        eq(jobAttempts.attemptNumber, input.attemptNumber),
+        eq(jobAttempts.status, "offered"),
+        eq(jobAttempts.placementDisposition, "selected"),
+        eq(jobAttempts.placementMode, "active"),
+        eq(jobAttempts.placementLeaseEligible, true),
+        eq(jobAttempts.placementTargetId, input.targetId),
+        eq(jobAttempts.placementTargetGeneration, input.targetGeneration),
+        eq(jobAttempts.placementProfileHash, input.placementProfileHash),
+        eq(jobAttempts.placementProviderConstraintHash, input.providerConstraintHash),
+      )).returning({ id: jobAttempts.id });
+      if (!attempt) throw new Error("Lease ACK attempt authority changed");
+
+      await tx.insert(workerOperationReceipts).values({
+        organizationId: input.organizationId,
+        companyId: input.companyId,
+        jobId: input.jobId,
+        attemptId: input.attemptId,
+        leaseId: input.leaseId,
+        operation: "lease_ack",
+        workerId: input.workerId,
+        targetId: input.targetId,
+        targetAuthorityKey: input.targetAuthorityKey,
+        targetGeneration: input.targetGeneration,
+        profileHash: input.profileHash,
+        idempotencyKey: input.idempotencyKey,
+        semanticDigest: input.semanticDigest,
+        outcome: input.outcome,
+        expiresAt: input.receiptExpiresAt,
+        createdAt: sql`clock_timestamp()`,
+      });
+      return lease;
     },
 
     async claimReadyOutbox(input) {

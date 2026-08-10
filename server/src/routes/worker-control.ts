@@ -5,7 +5,11 @@ import {
   WORKER_CONTROL_HEADERS,
   type IssueWorkerEnrollmentCodeInput,
 } from "@armyofagents/shared";
-import { pollRequestV1Schema } from "@armyofagents/worker-protocol";
+import {
+  leaseAckOperationRequestV1Schema,
+  OPERATION_DESCRIPTORS,
+  pollRequestV1Schema,
+} from "@armyofagents/worker-protocol";
 import { z } from "zod";
 import { validate } from "../middleware/validate.js";
 import { assertBoard } from "./authz.js";
@@ -158,8 +162,12 @@ export function workerControlRoutes(opts: {
       const authorization = req.header("authorization");
       const proof = deviceProofHeaders(req);
       const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
-      if (!parsed.success || !authorization || !proof || !rawBody) {
+      if (!parsed.success || (rawBody && rawBody.length > OPERATION_DESCRIPTORS.poll.maxRequestBytes)) {
         sendWorkerOperationProtocolError(req, res, "poll", "malformed", opts.now?.() ?? new Date());
+        return;
+      }
+      if (!authorization || !proof || !rawBody) {
+        sendWorkerOperationProtocolError(req, res, "poll", "unauthorized", opts.now?.() ?? new Date());
         return;
       }
       const auth = verifyWorkerOperationProof({
@@ -188,6 +196,51 @@ export function workerControlRoutes(opts: {
         reasonCode: "worker_poll_internal_unavailable",
       }, "worker poll unavailable");
       sendWorkerOperationProtocolError(req, res, "poll", "internal_unavailable", opts.now?.() ?? new Date());
+    }
+  });
+
+  router.post("/worker-control/leases/:leaseId/ack", async (req, res) => {
+    try {
+      const parsed = leaseAckOperationRequestV1Schema.safeParse(req.body);
+      const leaseId = uuid.safeParse(req.params.leaseId);
+      const authorization = req.header("authorization");
+      const proof = deviceProofHeaders(req);
+      const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+      if (!parsed.success || !leaseId.success || parsed.data.body.leaseId !== leaseId.data
+        || (rawBody && rawBody.length > OPERATION_DESCRIPTORS.lease_ack.maxRequestBytes)) {
+        sendWorkerOperationProtocolError(req, res, "lease_ack", "malformed", opts.now?.() ?? new Date());
+        return;
+      }
+      if (!authorization || !proof || !rawBody) {
+        sendWorkerOperationProtocolError(req, res, "lease_ack", "unauthorized", opts.now?.() ?? new Date());
+        return;
+      }
+      const auth = verifyWorkerOperationProof({
+        sessionSigningKey: opts.sessionSigningKey,
+        authorization,
+        rawBody,
+        proof,
+        method: req.method,
+        path: req.originalUrl,
+        correlationId: parsed.data.correlationId,
+        now: opts.now?.(),
+      });
+      const response = await leasing.ack({ auth, request: parsed.data });
+      res.status(200).json(response);
+    } catch (error) {
+      if (error instanceof WorkerOperationProofError) {
+        sendWorkerOperationProtocolError(req, res, "lease_ack", "unauthorized", opts.now?.() ?? new Date());
+        return;
+      }
+      if (error instanceof JobLeasingError) {
+        sendWorkerOperationProtocolError(req, res, "lease_ack", error.code, opts.now?.() ?? new Date());
+        return;
+      }
+      logger.error({
+        action: "worker.lease_ack.failed",
+        reasonCode: "worker_lease_ack_internal_unavailable",
+      }, "worker lease ACK unavailable");
+      sendWorkerOperationProtocolError(req, res, "lease_ack", "internal_unavailable", opts.now?.() ?? new Date());
     }
   });
 

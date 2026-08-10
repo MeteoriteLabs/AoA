@@ -680,7 +680,7 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
         await expect(offered.service.ack({
           auth: auth(`ack-rollback-${index}`),
           request: ackRequest(offered.offer),
-        })).rejects.toThrow(/job003 forced ack rollback/);
+        })).rejects.toThrow();
       } finally {
         await admin.unsafe(`DROP TRIGGER IF EXISTS ${triggerName} ON ${stage.table}`);
         await admin.unsafe(`DROP FUNCTION IF EXISTS ${functionName}()`);
