@@ -1,7 +1,7 @@
 # JOB-009 Result - Resolve authoritative hybrid placement
 
-**Status:** `needs_changes`
-**Disposition:** `needs_changes`
+**Status:** `review_pending`
+**Disposition:** `review_pending`
 **Date opened (UTC):** `2026-08-10`
 **Epic:** `E3-job-control`
 **Plan task:** `JOB-009 - Resolve authoritative hybrid placement (L; three bounded internal slices)`
@@ -9,13 +9,13 @@
 **Reviewer:** `Codex /root/job009_review`
 **Start SHA:** 91d074bb9f79abe99aa8efaa6f9a99e0a937650e
 **Reviewed revision:** bc93203be9c5b93f0bc52eb08de2b20aede23205
-**Implementation candidate:** 03005fcfacf7b924aae76d9c81666a5487039ce2
+**Implementation candidate:** 372f150c9364d86caa63eb15edaa500ba44b7021
 
 The Start SHA is the reviewed JOB-002 completion revision and the exact JOB-009 assignment
 boundary. JOB-001/JOB-002, E1's frozen v1 protocol, and the E2 tenant kernel are immutable
 inputs. This ledger is implementer evidence, not ticket certification. A fresh distinct
 reviewer must review the new candidate revision, rerun focused acceptance, append review
-attempt 2, and alone may change the ticket status and disposition to `complete` / `pass`.
+attempt 3, and alone may change the ticket status and disposition to `complete` / `pass`.
 
 ## Dependency and scope state
 
@@ -328,3 +328,64 @@ Both adversarial probes were temporary and removed. The reviewer modified no pro
 Detailed ignored evidence is in `.superpowers/sdd/implementation-plan/job-009-review.md`. A
 fresh implementer fix round must commit genuine RED/GREEN evidence for I-07 and I-08 and return
 a new exact revision for independent review.
+
+## Fix round 2 - 2026-08-10 - Codex `/root/job009_impl`
+
+### TDD boundary
+
+- Review-attempt-2 evidence revision:
+  `c2270ced81949c9da26f2a41909b159e0042cc74`.
+- Genuine consolidated RED:
+  `d3b4f50cbcf3ce9348d2482261c098b4864f8141`.
+- Minimal GREEN / new implementation candidate:
+  `372f150c9364d86caa63eb15edaa500ba44b7021`.
+- I-07 RED exercised all candidate permutations and the real tenant+platform placement path;
+  the production path selected different targets from equivalent candidate sets because the
+  Decision #117 pre-resolver received database enumeration order.
+- I-08 RED used deterministic PostgreSQL barriers. Suspension/deletion committed after the
+  tenant snapshot but before the final attempt write, yet the old code persisted an active,
+  lease-eligible owner placement.
+
+### Resolution of review findings
+
+- **I-07:** the combined tenant/platform registry snapshot is now copied and ordered before
+  invoking the unchanged Decision #117 `chooseExecutionTargetRow`. The one explicit comparator
+  uses registered profile scope priority, then registered target class priority, then slug and
+  target ID tie-breaks. Explicit pin and credential-bound target semantics remain owned by the
+  existing resolver. All permutations across pooled/shared, Organization-dedicated, owner,
+  equal-priority/equal-slug, and tenant+platform composition converge on byte-identical trusted
+  resolution and persisted placement.
+- **I-08:** for an owner-desktop selection, the same final conditional `UPDATE job_attempts`
+  now contains an `EXISTS` predicate for the exact Company, Organization, owner principal, and
+  active membership. Missing/foreign/deleted/suspended authority makes the selected update
+  affect zero rows. The transaction then persists the same payload-free, lease-ineligible
+  unavailable disposition used when authority is initially absent; it never exposes whether a
+  membership existed. If placement's final statement wins first, later removal may commit and
+  the immutable old attempt remains historical for JOB-003's mandatory authority recheck/fence.
+  No membership UPDATE grant, owner fallback, lease/fence, or authority-version rewrite was
+  added.
+
+### Fix-round-2 Windows-local evidence on candidate
+`372f150c9364d86caa63eb15edaa500ba44b7021`
+
+All embedded-PostgreSQL commands ran from `C:\e3` with
+`AOA_RUN_WIN_INTEGRATION=1`. Linux CI remains the formal DEC-03 authority.
+
+| Command / lane | Result |
+|---|---|
+| JOB-009 property, embedded-PG placement, and exact-grant contract | PASS - 3 files, 39/39 (15 property, 21 integration, 3 grants) |
+| JOB-001/JOB-002, resolver, worker-session, tenant/RLS regression bundle | PASS - 10 files, 96/96 |
+| Migration idempotency / C14 | PASS - 1 file, 5/5 |
+| Correct startup path `distributed-execution-db-startup.integration.test.ts` | PASS - 1 file, 14/14 |
+| Integration hygiene and serving-role correction | PASS - 2 files, 22/22 |
+| Frozen E1 checker at `b7a842870ce7509d8baa75409e0ab19da375c88a`, protocol boundary, and frozen install | PASS |
+| Affected db/shared/server typecheck and build | PASS |
+| `pnpm -r typecheck` and root `pnpm build` | PASS - 24/25 workspace projects |
+| Exact `$env:AOA_RUN_WIN_INTEGRATION='1'; $env:NODE_OPTIONS='--max-old-space-size=8192'; pnpm test:run` after root build | **FAIL (honestly labeled Windows-local aggregate)** - native exit 1 after 271.8s. The captured output reached failure block 17/17 but the tool elided the aggregate summary. Visible non-JOB-009 failures include the D18 embedded-PostgreSQL setup cascade and `runtime-service-control.test.ts` stop-confirmation failure; no JOB-009 focused failure was emitted. No passed-file/test totals are inferred from truncated output. |
+| Supplemental default-environment JSON reporter (not the integration-enabled gate) | **FAIL** - 2,138 files: 2,136 passed / 2 failed; 19,618 tests: 18,840 passed / 1 failed / 777 pending. Failures were the frozen cross-version Windows collection SyntaxError and OpenCode FU-23. |
+
+The full-lane failure is neither a waiver nor a pass. The new candidate adds no schema,
+migration, grant, frozen-E1, lease/fence, capacity, contact, execution, second-registry, or
+cutover change. Status and disposition return only to `review_pending`; a fresh distinct
+reviewer must inspect the Start-to-candidate diff, rerun focused acceptance at the reviewed
+revision, append review attempt 3, and alone may certify JOB-009.

@@ -405,3 +405,40 @@ startup **14/14**, frozen protocol, typecheck, and build lanes pass locally. The
 full lane exited 1 after 106.1 seconds without an aggregate because Vitest's IPC channel closed
 after an unrelated embedded-Postgres setup failure; it is recorded as non-green and not waived.
 JOB-009 remains `review_pending` until a fresh distinct reviewer certifies the new candidate.
+
+## E3-F015 - JOB-009 pre-resolution order and owner-membership races
+
+**Date:** 2026-08-10
+**Status:** `resolved_in_JOB-009_fix_round_2_pending_review`
+**Severity:** P1 placement determinism / owner authority linearization
+**Affected ticket:** JOB-009 and JOB-003's later authority recheck
+
+**Finding:** Independent review attempt 2 found two Important blockers after confirming the
+first fix round. The real transaction passed unordered tenant-plus-platform snapshots to the
+existing Decision #117 resolver, so equivalent multi-match candidate sets could select a
+different trusted target before the downstream pure policy sorted anything. Separately, owner
+membership was read earlier in the tenant transaction but was not part of the final conditional
+placement write. A suspension or deletion could therefore commit after the snapshot and before
+the attempt update, while the old code still persisted an active, lease-eligible owner target.
+
+**Disposition:** Fix round 2 committed genuine RED at
+`d3b4f50cbcf3ce9348d2482261c098b4864f8141` and GREEN at
+`372f150c9364d86caa63eb15edaa500ba44b7021`. A registered-authority comparator now orders the
+combined candidate snapshot by scope/class priority plus slug/ID total-order tie-breaks before
+the unchanged Decision #117 resolver runs; explicit pin and credential-bound target precedence
+remain resolver-owned. All candidate permutations, equal-priority ties, tenant/platform
+composition, and database enumeration changes converge on the same persisted placement.
+
+The same final conditional attempt `UPDATE` now requires current active membership for the
+exact Company, Organization, and owner principal when selecting an owner-desktop target.
+Remove-first affects zero selected rows and persists only the stable unavailable,
+lease-ineligible decision without a membership-existence oracle or partial tuple;
+placement-first remains an immutable historical decision for JOB-003 to recheck/fence.
+Delete/suspend, foreign/missing authority, retries, and non-owner targets are covered by
+deterministic real-PostgreSQL barriers. No membership UPDATE grant, schema/migration, owner
+fallback, lease/fence, or second registry was added. Focused JOB-009/grant **39/39**,
+JOB-001/JOB-002/tenant/RLS **96/96**, startup **14/14**, serving-role/hygiene **22/22**,
+migration/C14 **5/5**, frozen protocol, typecheck, and build lanes pass locally. The exact
+Windows integration-enabled full lane remains honestly non-green with 17 visible failure
+blocks in truncated output, none emitted from JOB-009; it is not waived. JOB-009 remains
+`review_pending` until a fresh distinct reviewer certifies the candidate.
