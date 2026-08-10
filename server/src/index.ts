@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import type { Request as ExpressRequest, RequestHandler } from "express";
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq, exists, ne } from "drizzle-orm";
 import {
   createDb,
   ensurePostgresDatabase,
@@ -19,6 +19,7 @@ import {
   companies,
   companyMemberships,
   instanceUserRoles,
+  organizations,
 } from "@armyofagents/db";
 import detectPort from "detect-port";
 import postgres from "postgres";
@@ -550,6 +551,58 @@ const distributedExecutionDatabases = await openDistributedExecutionDatabases({
 });
 if (distributedExecutionDatabases) {
   logger.info("Verified aoa_app and aoa_operator bounded database pools");
+}
+
+let jobControlRuntime: { stop(): Promise<void> } | null = null;
+if (config.distributedExecutionEnabled && distributedExecutionDatabases) {
+  const { createJobReadyScheduler } = await import("./services/job-ready-scheduler.js");
+  const { createJobOutboxWorker } = await import("./services/job-outbox-worker.js");
+  const scheduler = createJobReadyScheduler();
+  const listAdmittedOrganizationIds = async (): Promise<string[]> => {
+    const rows = await distributedExecutionDatabases.appDb.select({ id: organizations.id })
+      .from(organizations)
+      .where(and(
+        eq(organizations.status, "active"),
+        ne(organizations.id, "00000000-0000-0000-0000-000000000001"),
+        exists(
+          distributedExecutionDatabases.appDb.select({ id: companies.id })
+            .from(companies)
+            .where(eq(companies.organizationId, organizations.id)),
+        ),
+      ))
+      .orderBy(asc(organizations.id));
+    return rows.map((row) => row.id);
+  };
+  const outbox = createJobOutboxWorker({
+    appDb: distributedExecutionDatabases.appDb,
+    scheduler,
+    listAdmittedOrganizationIds,
+    maxOrganizationShards: 32,
+  });
+  let stopped = false;
+  let inFlight: Promise<void> | null = null;
+  const tick = () => {
+    if (stopped || inFlight) return;
+    inFlight = outbox.tick()
+      .then(() => {})
+      .catch((err) => logger.warn({ err }, "job-control outbox tick failed"))
+      .finally(() => { inFlight = null; });
+  };
+  const timer = setInterval(tick, 750);
+  timer.unref();
+  tick();
+  jobControlRuntime = {
+    async stop() {
+      stopped = true;
+      clearInterval(timer);
+      if (!inFlight) return;
+      const completed = await Promise.race([
+        inFlight.then(() => true),
+        new Promise<false>((resolve) => setTimeout(() => resolve(false), 5_000)),
+      ]);
+      if (!completed) logger.error({ err: new Error("job-control runtime stop timeout") }, "job-control runtime stop failed");
+    },
+  };
 }
 
 // Expose the active DB URL in process.env so MCP bridge child processes
@@ -1660,6 +1713,9 @@ server.listen(listenPort, config.host, () => {
 
 const shutdown = createProcessShutdownHandler({
   getPluginSubsystem: () => (app as any).__pluginSubsystem,
+  jobControlRuntime: jobControlRuntime
+    ? { stop: () => jobControlRuntime.stop() }
+    : null,
   boundedDatabases: distributedExecutionDatabases,
   ownedEmbeddedPostgres:
     embeddedPostgres && embeddedPostgresStartedByThisProcess

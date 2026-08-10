@@ -58,7 +58,7 @@ export function workerControlRoutes(opts: {
     sessionSigningKey: opts.sessionSigningKey,
     now: opts.now,
   });
-  const leasing = createJobLeasingService({ appDb: opts.appDb });
+  const leasing = createJobLeasingService({ appDb: opts.appDb, operatorDb: opts.operatorDb });
 
   router.post(
     "/organizations/:organizationId/execution-targets/:targetId/enrollment-codes",

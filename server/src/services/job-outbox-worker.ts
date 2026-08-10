@@ -18,11 +18,16 @@ export function createJobOutboxWorker(input: {
   const publish = input.publishHint ?? (async (hint: JobReadyHint) => {
     input.scheduler.hint(hint);
   });
+  let cursor: string | null = null;
 
   return {
     async tick(): Promise<{ organizations: number; claimed: number; delivered: number }> {
-      const organizationIds = [...new Set(await input.listAdmittedOrganizationIds())]
-        .slice(0, maxOrganizations);
+      const admitted = [...new Set(await input.listAdmittedOrganizationIds())].sort();
+      const start = cursor === null
+        ? 0
+        : admitted.findIndex((organizationId) => organizationId > cursor!);
+      const offset = start < 0 ? 0 : start;
+      const organizationIds = admitted.slice(offset, offset + maxOrganizations);
       let claimedCount = 0;
       let deliveredCount = 0;
       for (const organizationId of organizationIds) {
@@ -53,6 +58,12 @@ export function createJobOutboxWorker(input: {
             now: deliveredAt,
           });
         });
+      }
+      if (organizationIds.length > 0) {
+        cursor = organizationIds[organizationIds.length - 1]!;
+        if (offset + organizationIds.length >= admitted.length) cursor = null;
+      } else {
+        cursor = null;
       }
       return { organizations: organizationIds.length, claimed: claimedCount, delivered: deliveredCount };
     },

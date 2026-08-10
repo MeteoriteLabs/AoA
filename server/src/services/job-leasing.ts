@@ -1,5 +1,13 @@
 import { createHash, randomBytes } from "node:crypto";
-import type { Db, Job, JobAttempt, LeaseWorkerAuthority } from "@armyofagents/db";
+import {
+  configurePlatformTargetAuthorityLockTimeout,
+  operatorJobLeasingRepository,
+  type Db,
+  type Job,
+  type JobAttempt,
+  type LeaseWorkerAuthority,
+  type TenantRepositories,
+} from "@armyofagents/db";
 import {
   jobEnvelopeV1Schema,
   canonicalizeJsonV1,
@@ -182,13 +190,16 @@ function authorityCurrent(input: {
   request: PollRequestV1;
   databaseNow: Date;
   maxHeartbeatAgeMs: number;
+  platformPhysicalHeartbeatAt?: Date | null;
 }): boolean {
   const { auth, authority, request } = input;
   const worker = authority.worker;
   const target = authority.target;
-  const oldestHeartbeat = !worker.lastSeenAt || !target.lastSeenAt
-    ? null
-    : Math.min(worker.lastSeenAt.getTime(), target.lastSeenAt.getTime());
+  const oldestHeartbeat = target.scope === "platform"
+    ? input.platformPhysicalHeartbeatAt?.getTime() ?? null
+    : !worker.lastSeenAt || !target.lastSeenAt
+      ? null
+      : Math.min(worker.lastSeenAt.getTime(), target.lastSeenAt.getTime());
   return worker.id === auth.workerId
     && worker.executionTargetId === auth.targetId
     && worker.organizationId === auth.organizationId
@@ -216,13 +227,16 @@ function ackAuthorityCurrent(input: {
   workerId: string;
   databaseNow: Date;
   maxHeartbeatAgeMs: number;
+  platformPhysicalHeartbeatAt?: Date | null;
 }): boolean {
   const { auth, authority } = input;
   const worker = authority.worker;
   const target = authority.target;
-  const oldestHeartbeat = !worker.lastSeenAt || !target.lastSeenAt
-    ? null
-    : Math.min(worker.lastSeenAt.getTime(), target.lastSeenAt.getTime());
+  const oldestHeartbeat = target.scope === "platform"
+    ? input.platformPhysicalHeartbeatAt?.getTime() ?? null
+    : !worker.lastSeenAt || !target.lastSeenAt
+      ? null
+      : Math.min(worker.lastSeenAt.getTime(), target.lastSeenAt.getTime());
   return input.workerId === auth.workerId
     && worker.id === auth.workerId
     && worker.executionTargetId === auth.targetId
@@ -347,6 +361,7 @@ function buildJobEnvelope(input: {
 
 export function createJobLeasingService(input: {
   appDb: Db;
+  operatorDb?: Db;
   ackTimeoutMs?: number;
   leaseDurationMs?: number;
   maxHeartbeatAgeMs?: number;
@@ -354,6 +369,57 @@ export function createJobLeasingService(input: {
   const ackTimeoutMs = Math.max(1_000, input.ackTimeoutMs ?? 15_000);
   const leaseDurationMs = Math.max(ackTimeoutMs + 1_000, input.leaseDurationMs ?? 5 * 60_000);
   const maxHeartbeatAgeMs = Math.max(1_000, input.maxHeartbeatAgeMs ?? 5 * 60_000);
+
+  const guardPlatformAuthority = async (
+    repos: TenantRepositories,
+    auth: VerifiedWorkerOperation,
+    authority: LeaseWorkerAuthority,
+  ): Promise<Date | null> => {
+    if (authority.target.scope !== "platform") return null;
+    if (!input.operatorDb) throw new JobLeasingError("internal_unavailable");
+    let physicalHeartbeatAt: Date | null = null;
+    try {
+      await input.operatorDb.transaction(async (operatorTx) => {
+        await configurePlatformTargetAuthorityLockTimeout(operatorTx as unknown as Db);
+        const physical = await operatorJobLeasingRepository(operatorTx as unknown as Db)
+          .lockPlatformPhysicalAuthority(auth.targetId, "share");
+        if (!physical || physical.target.status !== "active" ||
+            physical.target.targetAuthorityKey !== "platform" ||
+            physical.target.deviceGeneration !== auth.targetGeneration ||
+            physical.target.registeredProfileHash !== authority.target.registeredProfileHash ||
+            physical.worker.status === "revoked" || physical.worker.revokedAt !== null ||
+            physical.worker.deviceGeneration !== auth.targetGeneration ||
+            physical.worker.devicePublicKey !== auth.publicKey ||
+            physical.worker.deviceThumbprint !== auth.deviceThumbprint ||
+            !physical.worker.profileHash ||
+            !physical.target.lastSeenAt || !physical.worker.lastSeenAt) {
+          throw new JobLeasingError("target_revoked");
+        }
+
+        // App transaction is outermost. Acquire its shared xact advisory lock
+        // while the operator target→physical-worker FOR SHARE locks are held,
+        // then plain-recheck the app-visible target before operator commit.
+        await repos.jobControl.acquirePlatformTargetAuthorityShared(auth.targetId);
+        const current = await repos.jobControl.recheckPlatformTargetAuthority({
+          targetId: auth.targetId,
+          targetAuthorityKey: "platform",
+          targetGeneration: auth.targetGeneration,
+        });
+        if (!current || current.status !== "active" ||
+            current.registeredProfileHash !== physical.target.registeredProfileHash) {
+          throw new JobLeasingError("target_revoked");
+        }
+        physicalHeartbeatAt = new Date(Math.min(
+          physical.target.lastSeenAt.getTime(),
+          physical.worker.lastSeenAt.getTime(),
+        ));
+      });
+    } catch (error) {
+      if (error instanceof JobLeasingError) throw error;
+      throw new JobLeasingError("internal_unavailable");
+    }
+    return physicalHeartbeatAt;
+  };
 
   return {
     async poll(pollInput: {
@@ -379,6 +445,9 @@ export function createJobLeasingService(input: {
           workerId: pollInput.auth.workerId,
           targetId: pollInput.auth.targetId,
         });
+        const platformPhysicalHeartbeatAt = authority
+          ? await guardPlatformAuthority(repos, pollInput.auth, authority)
+          : null;
         const authorityNow = await repos.jobControl.currentDatabaseTime();
         if (!authority || !authorityCurrent({
           auth: pollInput.auth,
@@ -386,6 +455,7 @@ export function createJobLeasingService(input: {
           request,
           databaseNow: authorityNow,
           maxHeartbeatAgeMs,
+          platformPhysicalHeartbeatAt,
         })) throw new JobLeasingError(authority ? "target_revoked" : "unauthorized");
 
         const target = await normalizePlacementRegistryTarget(authority.target);
@@ -395,25 +465,34 @@ export function createJobLeasingService(input: {
         }
         const effectiveCapacity = minCapacity(storedHello.data.capacity, request.capacity);
         const effectiveHello: WorkerHelloV1 = { ...storedHello.data, capacity: effectiveCapacity };
-        const liveLeases = await repos.jobControl.countLiveWorkerLeases({
+        if (!await repos.jobControl.touchWorkerLeaseProfile({
           workerId: pollInput.auth.workerId,
           targetId: pollInput.auth.targetId,
-        });
+          targetGeneration: pollInput.auth.targetGeneration,
+        })) throw new JobLeasingError("target_revoked");
         const providerSlots = target.providerConstraintProfile.maxConcurrentOperations;
-        const candidates = await repos.jobControl.lockEligibleLeaseCandidates({
-          targetId: target.targetId,
-          limit: 32,
-        });
-
-        for (const candidate of candidates) {
+        let after: { availableAt: Date; priority: number; createdAt: Date; jobId: string } | undefined;
+        let scanned = 0;
+        while (scanned < 256) {
+          const candidates = await repos.jobControl.lockEligibleLeaseCandidates({
+            targetId: target.targetId,
+            limit: Math.min(32, 256 - scanned),
+            after,
+          });
+          if (candidates.length === 0) break;
+          scanned += candidates.length;
+          for (const candidate of candidates) {
           if (!candidateMatchesPlacement(candidate.attempt, authority, target)) continue;
           const normalized = normalizedRequirements(candidate.job, target);
           if (!normalized) continue;
-          const slots = Math.min(
-            workloadSlots(effectiveCapacity, candidate.job.workloadType),
-            providerSlots,
-          );
-          if (liveLeases >= slots || slots < 1) break;
+          const workloadLimit = workloadSlots(effectiveCapacity, candidate.job.workloadType);
+          if (workloadLimit < 1) continue;
+          const liveLeases = await repos.jobControl.countLiveWorkerLeases({
+            workerId: pollInput.auth.workerId,
+            targetId: pollInput.auth.targetId,
+            workloadType: candidate.job.workloadType,
+          });
+          if (liveLeases.total >= providerSlots || liveLeases.workload >= workloadLimit) continue;
           if (!resourceCapacityFits(effectiveCapacity, normalized.providerDemand)) continue;
           if (!workerSatisfiesRequirements(
             target.registeredProfile,
@@ -470,6 +549,15 @@ export function createJobLeasingService(input: {
             outcome: "offer",
             body: offer,
           });
+          }
+          const last = candidates[candidates.length - 1]!;
+          after = {
+            availableAt: last.job.availableAt,
+            priority: last.job.priority,
+            createdAt: last.job.createdAt,
+            jobId: last.job.id,
+          };
+          if (candidates.length < 32) break;
         }
 
         return pollResponseV1Schema.parse({
@@ -507,6 +595,9 @@ export function createJobLeasingService(input: {
           workerId: ackInput.auth.workerId,
           targetId: ackInput.auth.targetId,
         });
+        const platformPhysicalHeartbeatAt = authority
+          ? await guardPlatformAuthority(repos, ackInput.auth, authority)
+          : null;
         const authorityNow = await repos.jobControl.currentDatabaseTime();
         if (!authority || !ackAuthorityCurrent({
           auth: ackInput.auth,
@@ -514,10 +605,16 @@ export function createJobLeasingService(input: {
           workerId: request.body.workerId,
           databaseNow: authorityNow,
           maxHeartbeatAgeMs,
+          platformPhysicalHeartbeatAt,
         })) throw new JobLeasingError(authority ? "target_revoked" : "unauthorized");
 
         const target = await normalizePlacementRegistryTarget(authority.target);
         if (!target || target.status !== "active") throw new JobLeasingError("target_revoked");
+        if (!await repos.jobControl.touchWorkerLeaseProfile({
+          workerId: ackInput.auth.workerId,
+          targetId: ackInput.auth.targetId,
+          targetGeneration: ackInput.auth.targetGeneration,
+        })) throw new JobLeasingError("target_revoked");
         const prior = await repos.jobControl.findOperationReceipt({
           organizationId: ackInput.auth.organizationId,
           workerId: ackInput.auth.workerId,

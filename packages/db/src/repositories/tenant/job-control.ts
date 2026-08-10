@@ -1,5 +1,9 @@
-import { and, asc, count, desc, eq, exists, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, exists, gt, gte, inArray, isNull, lt, lte, ne, or, sql } from "drizzle-orm";
 import type { Db } from "../../client.js";
+import {
+  acquirePlatformTargetAuthorityShared,
+  configurePlatformTargetAuthorityLockTimeout,
+} from "../../platform-target-authority-lock.js";
 import {
   agents,
   companies,
@@ -117,8 +121,24 @@ export interface JobControlRepository {
   lockEligibleLeaseCandidates(input: {
     targetId: string;
     limit?: number;
+    after?: LeaseCandidateCursor;
   }): Promise<LeaseCandidate[]>;
-  countLiveWorkerLeases(input: { workerId: string; targetId: string }): Promise<number>;
+  countLiveWorkerLeases(input: {
+    workerId: string;
+    targetId: string;
+    workloadType: string;
+  }): Promise<{ total: number; workload: number }>;
+  acquirePlatformTargetAuthorityShared(targetId: string): Promise<void>;
+  recheckPlatformTargetAuthority(input: {
+    targetId: string;
+    targetAuthorityKey: string;
+    targetGeneration: number;
+  }): Promise<PlacementCandidateSnapshot["target"] | null>;
+  touchWorkerLeaseProfile(input: {
+    workerId: string;
+    targetId: string;
+    targetGeneration: number;
+  }): Promise<boolean>;
   currentDatabaseTime(): Promise<Date>;
   offerLease(input: {
     attemptId: string;
@@ -211,6 +231,13 @@ export interface LeaseWorkerAuthority {
 export interface LeaseCandidate {
   job: Job;
   attempt: JobAttempt;
+}
+
+export interface LeaseCandidateCursor {
+  availableAt: Date;
+  priority: number;
+  createdAt: Date;
+  jobId: string;
 }
 
 export interface PlacementCandidateSnapshot {
@@ -683,14 +710,19 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
       )).for("update").limit(1);
       if (!worker) return null;
 
-      const [target] = await tx.select(placementTargetColumns)
+      const targetQuery = tx.select(placementTargetColumns)
         .from(executionTargets)
         .where(and(
           eq(executionTargets.id, input.targetId),
           eq(executionTargets.targetAuthorityKey, worker.targetAuthorityKey),
         ))
-        .for("update")
         .limit(1);
+      // aoa_app deliberately has SELECT-only visibility over null-Org platform
+      // targets. The Decision #124 shared advisory handoff supplies the cutoff
+      // guard; requesting FOR UPDATE here would require forbidden global DML.
+      const [target] = worker.targetAuthorityKey === "platform"
+        ? await targetQuery
+        : await targetQuery.for("update");
       if (!target) return null;
 
       let ownerMembershipActive = true;
@@ -711,6 +743,26 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
 
     async lockEligibleLeaseCandidates(input) {
       const boundedLimit = Math.max(1, Math.min(64, Math.floor(input.limit ?? 32)));
+      const after = input.after
+        ? or(
+            gt(jobs.availableAt, input.after.availableAt),
+            and(
+              eq(jobs.availableAt, input.after.availableAt),
+              lt(jobs.priority, input.after.priority),
+            ),
+            and(
+              eq(jobs.availableAt, input.after.availableAt),
+              eq(jobs.priority, input.after.priority),
+              gt(jobs.createdAt, input.after.createdAt),
+            ),
+            and(
+              eq(jobs.availableAt, input.after.availableAt),
+              eq(jobs.priority, input.after.priority),
+              eq(jobs.createdAt, input.after.createdAt),
+              gt(jobs.id, input.after.jobId),
+            ),
+          )
+        : undefined;
       return tx.select({ job: jobs, attempt: jobAttempts })
         .from(jobAttempts)
         .innerJoin(jobs, and(
@@ -726,6 +778,7 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
           eq(jobAttempts.placementTargetId, input.targetId),
           eq(jobs.status, "queued"),
           lte(jobs.availableAt, sql`clock_timestamp()`),
+          after,
         ))
         .orderBy(asc(jobs.availableAt), desc(jobs.priority), asc(jobs.createdAt), asc(jobs.id))
         .limit(boundedLimit)
@@ -733,12 +786,55 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
     },
 
     async countLiveWorkerLeases(input) {
-      const [row] = await tx.select({ value: count() }).from(leases).where(and(
+      const [row] = await tx.select({
+        total: count(),
+        workload: sql<number>`count(*) filter (where ${jobs.workloadType} = ${input.workloadType})`,
+      }).from(leases).innerJoin(jobs, and(
+        eq(jobs.organizationId, leases.organizationId),
+        eq(jobs.companyId, leases.companyId),
+        eq(jobs.id, leases.jobId),
+      )).where(and(
         eq(leases.workerId, input.workerId),
         eq(leases.targetId, input.targetId),
         inArray(leases.status, ["offered", "active"]),
       ));
-      return Number(row?.value ?? 0);
+      return {
+        total: Number(row?.total ?? 0),
+        workload: Number(row?.workload ?? 0),
+      };
+    },
+
+    async acquirePlatformTargetAuthorityShared(targetId) {
+      await configurePlatformTargetAuthorityLockTimeout(tx);
+      await acquirePlatformTargetAuthorityShared(tx, targetId);
+    },
+
+    async recheckPlatformTargetAuthority(input) {
+      const [target] = await tx.select(placementTargetColumns)
+        .from(executionTargets)
+        .where(and(
+          eq(executionTargets.id, input.targetId),
+          eq(executionTargets.scope, "platform"),
+          isNull(executionTargets.organizationId),
+          isNull(executionTargets.ownerUserId),
+          eq(executionTargets.targetAuthorityKey, input.targetAuthorityKey),
+          eq(executionTargets.deviceGeneration, input.targetGeneration),
+        ))
+        .limit(1);
+      return target ?? null;
+    },
+
+    async touchWorkerLeaseProfile(input) {
+      const rows = await tx.update(workers).set({
+        lastSeenAt: sql`clock_timestamp()`,
+        updatedAt: sql`clock_timestamp()`,
+      }).where(and(
+        eq(workers.id, input.workerId),
+        eq(workers.executionTargetId, input.targetId),
+        eq(workers.deviceGeneration, input.targetGeneration),
+        ne(workers.status, "revoked"),
+      )).returning({ id: workers.id });
+      return rows.length === 1;
     },
 
     async currentDatabaseTime() {
@@ -809,7 +905,7 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
     },
 
     async findOperationReceipt(input) {
-      const [receipt] = await tx.select().from(workerOperationReceipts).where(and(
+      const exactIdentity = and(
         eq(workerOperationReceipts.organizationId, input.organizationId),
         eq(workerOperationReceipts.workerId, input.workerId),
         eq(workerOperationReceipts.targetId, input.targetId),
@@ -817,6 +913,17 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         eq(workerOperationReceipts.profileHash, input.profileHash),
         eq(workerOperationReceipts.operation, input.operation),
         eq(workerOperationReceipts.idempotencyKey, input.idempotencyKey),
+      );
+      // Semantic replay validity is independent of bounded housekeeping. Remove
+      // only this exact expired collision using fresh DB time, then read only a
+      // still-current receipt. An unexpired receipt is never deleted/replaced.
+      await tx.delete(workerOperationReceipts).where(and(
+        exactIdentity,
+        lte(workerOperationReceipts.expiresAt, sql`clock_timestamp()`),
+      ));
+      const [receipt] = await tx.select().from(workerOperationReceipts).where(and(
+        exactIdentity,
+        gt(workerOperationReceipts.expiresAt, sql`clock_timestamp()`),
       )).limit(1);
       return receipt ?? null;
     },

@@ -1,6 +1,11 @@
 import { and, asc, eq, exists, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { Db } from "../../client.js";
 import {
+  acquirePlatformTargetAuthorityExclusive,
+  acquirePlatformTargetAuthorityShared,
+  configurePlatformTargetAuthorityLockTimeout,
+} from "../../platform-target-authority-lock.js";
+import {
   executionTargets,
   workerEnrollmentCodeRoutes,
   workerEnrollmentCodes,
@@ -51,6 +56,8 @@ const placementProfileTargetColumns = {
 };
 
 export interface WorkerEnrollmentRepository {
+  acquirePlatformTargetAuthorityShared(executionTargetId: string): Promise<void>;
+  lockPlatformAuthorityForMutation(executionTargetId: string): Promise<boolean>;
   lockPlacementProfileTarget(executionTargetId: string): Promise<PlacementProfileTarget | null>;
   ratifyPlacementProfile(input: {
     executionTargetId: string;
@@ -137,11 +144,45 @@ export interface WorkerEnrollmentRepository {
     deviceThumbprint: string;
     now: Date;
   }): Promise<boolean>;
+  heartbeatPlatformPhysicalLivenessOnly(input: {
+    executionTargetId: string;
+    deviceGeneration: number;
+    physicalWorkerId: string;
+    physicalProfileHash: string;
+    deviceThumbprint: string;
+    now: Date;
+  }): Promise<boolean>;
   revokeTargetAuthority(input: { executionTargetId: string; now: Date }): Promise<number | null>;
 }
 
 export function createWorkerEnrollmentRepository(tx: Db): WorkerEnrollmentRepository {
   return {
+    async acquirePlatformTargetAuthorityShared(executionTargetId) {
+      await configurePlatformTargetAuthorityLockTimeout(tx);
+      await acquirePlatformTargetAuthorityShared(tx, executionTargetId);
+    },
+    async lockPlatformAuthorityForMutation(executionTargetId) {
+      await configurePlatformTargetAuthorityLockTimeout(tx);
+      const [target] = await tx.select({
+        id: executionTargets.id,
+        targetAuthorityKey: executionTargets.targetAuthorityKey,
+      }).from(executionTargets).where(and(
+        eq(executionTargets.id, executionTargetId),
+        eq(executionTargets.scope, "platform"),
+        isNull(executionTargets.organizationId),
+        isNull(executionTargets.ownerUserId),
+      )).limit(1).for("update");
+      if (!target) return false;
+      await tx.select({ id: workers.id }).from(workers).where(and(
+        eq(workers.executionTargetId, target.id),
+        eq(workers.targetAuthorityKey, target.targetAuthorityKey),
+        eq(workers.scope, "platform"),
+        isNull(workers.organizationId),
+        isNull(workers.ownerUserId),
+      )).for("update");
+      await acquirePlatformTargetAuthorityExclusive(tx, target.id);
+      return true;
+    },
     async lockPlacementProfileTarget(executionTargetId) {
       const [target] = await tx.select(placementProfileTargetColumns).from(executionTargets).where(and(
         eq(executionTargets.id, executionTargetId),
@@ -431,7 +472,53 @@ export function createWorkerEnrollmentRepository(tx: Db): WorkerEnrollmentReposi
       }
       return true;
     },
+    async heartbeatPlatformPhysicalLivenessOnly(input) {
+      const physicalAuthorityExists = tx.select({ id: workers.id })
+        .from(workers)
+        .where(and(
+          eq(workers.id, input.physicalWorkerId),
+          eq(workers.executionTargetId, input.executionTargetId),
+          eq(workers.scope, "platform"),
+          isNull(workers.organizationId),
+          isNull(workers.ownerUserId),
+          ne(workers.status, "revoked"),
+          isNull(workers.revokedAt),
+          eq(workers.deviceGeneration, input.deviceGeneration),
+          eq(workers.deviceThumbprint, input.deviceThumbprint),
+          eq(workers.profileHash, input.physicalProfileHash),
+        ));
+      const targets = await tx.update(executionTargets).set({
+        lastSeenAt: input.now,
+        updatedAt: input.now,
+      }).where(and(
+        eq(executionTargets.id, input.executionTargetId),
+        eq(executionTargets.scope, "platform"),
+        isNull(executionTargets.organizationId),
+        isNull(executionTargets.ownerUserId),
+        eq(executionTargets.status, "active"),
+        eq(executionTargets.deviceGeneration, input.deviceGeneration),
+        exists(physicalAuthorityExists),
+      )).returning({ id: executionTargets.id });
+      if (targets.length !== 1) return false;
+      const profiles = await tx.update(workers).set({
+        lastSeenAt: input.now,
+        updatedAt: input.now,
+      }).where(and(
+        eq(workers.id, input.physicalWorkerId),
+        eq(workers.executionTargetId, input.executionTargetId),
+        eq(workers.scope, "platform"),
+        isNull(workers.organizationId),
+        isNull(workers.ownerUserId),
+        ne(workers.status, "revoked"),
+        isNull(workers.revokedAt),
+        eq(workers.deviceGeneration, input.deviceGeneration),
+        eq(workers.deviceThumbprint, input.deviceThumbprint),
+        eq(workers.profileHash, input.physicalProfileHash),
+      )).returning({ id: workers.id });
+      return profiles.length === 1;
+    },
     async revokeTargetAuthority(input) {
+      await this.lockPlatformAuthorityForMutation(input.executionTargetId);
       const [target] = await tx.update(executionTargets).set({
         status: "disabled",
         workerTokenHash: null,

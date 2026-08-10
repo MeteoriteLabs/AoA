@@ -1,6 +1,8 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { eq } from "drizzle-orm";
 import {
+  configurePlatformTargetAuthorityLockTimeout,
+  operatorJobLeasingRepository,
   operatorWorkerEnrollmentRepository,
   workerEnrollmentCodeRoutes,
   type Db,
@@ -151,10 +153,24 @@ export function createWorkerEnrollmentService(input: {
     deviceGeneration: number;
     devicePublicKey: string;
     deviceThumbprint: string;
+    tenantAuthority?: ReturnType<typeof operatorWorkerEnrollmentRepository>;
   }): Promise<void> => {
-    const physical = await input.operatorDb.transaction((tx) =>
-      operatorWorkerEnrollmentRepository(tx as unknown as Db)
-        .findPlatformPhysicalAuthority(authorityInput.executionTargetId));
+    const physical = await input.operatorDb.transaction(async (tx) => {
+      await configurePlatformTargetAuthorityLockTimeout(tx as unknown as Db);
+      const locked = await operatorJobLeasingRepository(tx as unknown as Db)
+        .lockPlatformPhysicalAuthority(authorityInput.executionTargetId, "share");
+      if (locked && authorityInput.tenantAuthority) {
+        await authorityInput.tenantAuthority.acquirePlatformTargetAuthorityShared(
+          authorityInput.executionTargetId,
+        );
+        const current = await authorityInput.tenantAuthority.findTargetByAuthority({
+          executionTargetId: authorityInput.executionTargetId,
+          targetAuthorityKey: "platform",
+        });
+        if (!current || current.deviceGeneration !== authorityInput.deviceGeneration) return null;
+      }
+      return locked;
+    });
     if (!physical || physical.target.status !== "active" ||
         physical.target.scope !== "platform" || physical.target.organizationId !== null ||
         physical.target.deviceGeneration !== authorityInput.deviceGeneration ||
@@ -163,6 +179,15 @@ export function createWorkerEnrollmentService(input: {
         physical.worker.devicePublicKey !== authorityInput.devicePublicKey ||
         physical.worker.deviceThumbprint !== authorityInput.deviceThumbprint) {
       throw new WorkerEnrollmentError("unauthorized");
+    }
+  };
+
+  const acquirePlatformTargetAuthorityExclusive = async (
+    authority: ReturnType<typeof operatorWorkerEnrollmentRepository>,
+    executionTargetId: string,
+  ): Promise<void> => {
+    if (!await authority.lockPlatformAuthorityForMutation(executionTargetId)) {
+      throw new WorkerEnrollmentError("target_revoked");
     }
   };
 
@@ -332,6 +357,7 @@ export function createWorkerEnrollmentService(input: {
               deviceGeneration: current.target.deviceGeneration,
               devicePublicKey: current.worker.devicePublicKey!,
               deviceThumbprint: current.worker.deviceThumbprint!,
+              tenantAuthority: authority,
             });
           }
           const replayedAt = now();
@@ -356,7 +382,7 @@ export function createWorkerEnrollmentService(input: {
         }
         if (stored.expiresAt.getTime() < now().getTime()) throw new WorkerEnrollmentError("unauthorized");
 
-        const target = await authority.findTargetByAuthority({
+        let target = await authority.findTargetByAuthority({
           executionTargetId: stored.executionTargetId,
           targetAuthorityKey: stored.targetAuthorityKey,
         });
@@ -370,7 +396,15 @@ export function createWorkerEnrollmentService(input: {
             deviceGeneration: target.deviceGeneration,
             devicePublicKey: verified.publicKey,
             deviceThumbprint: verified.deviceThumbprint,
+            tenantAuthority: authority,
           });
+        } else if (authoritativeOrganizationId === null && target.scope === "platform") {
+          await acquirePlatformTargetAuthorityExclusive(authority, target.id);
+          target = await authority.findTargetByAuthority({
+            executionTargetId: stored.executionTargetId,
+            targetAuthorityKey: stored.targetAuthorityKey,
+          });
+          if (!target) throw new WorkerEnrollmentError("target_revoked");
         }
         const profileHash = sha256(JSON.stringify(request.hello));
         const boundWorker = await authority.findWorkerForBinding({

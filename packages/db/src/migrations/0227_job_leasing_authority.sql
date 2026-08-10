@@ -60,4 +60,6 @@ DO $$ BEGIN ALTER TABLE "leases" ADD CONSTRAINT "leases_authority_atomic_check" 
         provider_constraint_hash ~ '^[0-9a-f]{64}$' AND
         ack_deadline IS NOT NULL AND expires_at IS NOT NULL AND ack_deadline < expires_at
       )); EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL; END $$;--> statement-breakpoint
+-- C14 permitted idempotent data backfill for E2-valid active leases before leases_activation_check.
+UPDATE leases SET activated_at = COALESCE(updated_at, created_at) WHERE status = 'active' AND activated_at IS NULL;--> statement-breakpoint
 DO $$ BEGIN ALTER TABLE "leases" ADD CONSTRAINT "leases_activation_check" CHECK ((status = 'active' AND activated_at IS NOT NULL) OR (status = 'offered' AND activated_at IS NULL) OR status IN ('released', 'expired', 'revoked')); EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL; END $$;

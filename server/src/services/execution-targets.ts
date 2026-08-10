@@ -1,7 +1,13 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, eq, isNull, ne, notExists } from "drizzle-orm";
-import type { Db } from "@armyofagents/db";
-import { executionTargets, workers } from "@armyofagents/db";
+import { and, eq, isNotNull, isNull, ne, notExists } from "drizzle-orm";
+import {
+  acquirePlatformTargetAuthorityExclusive,
+  configurePlatformTargetAuthorityLockTimeout,
+  executionTargets,
+  operatorJobLeasingRepository,
+  workers,
+  type Db,
+} from "@armyofagents/db";
 import {
   canonicalizeJsonV1,
   registeredTargetProfileV1Schema,
@@ -119,6 +125,11 @@ export async function ratifyPlatformExecutionTargetPlacementProfile(input: {
   now?: Date;
 }) {
   return input.operatorDb.transaction(async (tx) => {
+    await configurePlatformTargetAuthorityLockTimeout(tx as unknown as Db);
+    const authority = await operatorJobLeasingRepository(tx as unknown as Db)
+      .lockPlatformAuthorityForMutation(input.executionTargetId);
+    if (!authority) throw new Error("execution_target_not_found");
+    await acquirePlatformTargetAuthorityExclusive(tx as unknown as Db, input.executionTargetId);
     const [target] = await tx.select(placementProfileTargetColumns).from(executionTargets).where(and(
       eq(executionTargets.id, input.executionTargetId),
       isNull(executionTargets.organizationId),
@@ -156,6 +167,7 @@ export async function rotateExecutionTargetWorkerToken(
       and(
         eq(executionTargets.id, input.targetId),
         eq(executionTargets.organizationId, input.organizationId),
+        isNotNull(executionTargets.organizationId),
         ne(executionTargets.status, "disabled"),
         notExists(
           db.select({ id: workers.id }).from(workers).where(and(

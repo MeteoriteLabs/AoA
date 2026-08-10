@@ -45,3 +45,12 @@ export { tenantRepositories, type TenantRepositories } from "./repositories/tena
 export type { LeaseWorkerAuthority, PlacementCandidateSnapshot } from "./repositories/tenant/job-control.js";
 export { operatorWorkerEnrollmentRepository } from "./repositories/operator/worker-enrollment.js";
 export { listPlatformPlacementCandidateSnapshots } from "./repositories/operator/job-placement.js";
+export {
+  configurePlatformTargetAuthorityLockTimeout,
+  acquirePlatformTargetAuthorityShared,
+  acquirePlatformTargetAuthorityExclusive,
+} from "./platform-target-authority-lock.js";
+export {
+  operatorJobLeasingRepository,
+  type PlatformPhysicalLeaseAuthority,
+} from "./repositories/operator/job-leasing.js";

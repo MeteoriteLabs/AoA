@@ -154,7 +154,9 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
 
       const [legacy] = await db<{ activated_at: Date | null }[]>`
         SELECT activated_at FROM leases WHERE id = ${legacyActive}`;
-      expect(legacy?.activated_at?.toISOString()).toBe(updatedAt.toISOString());
+      expect(legacy?.activated_at === null || legacy?.activated_at === undefined
+        ? null
+        : new Date(legacy.activated_at).toISOString()).toBe(updatedAt.toISOString());
       const legacyNulls = await db<{ status: string; activated_at: Date | null }[]>`
         SELECT status, activated_at FROM leases WHERE attempt_id IN (${attempts[1]}, ${attempts[2]}) ORDER BY status`;
       expect(legacyNulls).toEqual([

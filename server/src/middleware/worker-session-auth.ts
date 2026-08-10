@@ -1,5 +1,11 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-import { operatorWorkerEnrollmentRepository, type Db } from "@armyofagents/db";
+import {
+  acquirePlatformTargetAuthorityExclusive,
+  configurePlatformTargetAuthorityLockTimeout,
+  operatorJobLeasingRepository,
+  operatorWorkerEnrollmentRepository,
+  type Db,
+} from "@armyofagents/db";
 import { runInTenant } from "../db/tenant-context.js";
 import { verifyDeviceProof, type DeviceProofHeaders } from "../services/worker-device-proof.js";
 
@@ -202,6 +208,58 @@ export function createWorkerSessionAuthenticator(input: {
   };
 }
 
+async function heartbeatPlatformPhysicalLivenessOnly(input: {
+  operatorDb: Db;
+  principal: VerifiedTargetPrincipal;
+  now: Date;
+}): Promise<boolean> {
+  return input.operatorDb.transaction((tx) =>
+    operatorWorkerEnrollmentRepository(tx as unknown as Db)
+      .heartbeatPlatformPhysicalLivenessOnly({
+        executionTargetId: input.principal.targetId,
+        deviceGeneration: input.principal.targetGeneration,
+        physicalWorkerId: input.principal.workerId,
+        physicalProfileHash: input.principal.profileHash,
+        deviceThumbprint: input.principal.deviceThumbprint,
+        now: input.now,
+      }));
+}
+
+async function transitionPlatformPhysicalStatus(input: {
+  operatorDb: Db;
+  principal: VerifiedTargetPrincipal;
+  status: "draining" | "offline";
+  now: Date;
+}): Promise<boolean> {
+  return input.operatorDb.transaction(async (tx) => {
+    await configurePlatformTargetAuthorityLockTimeout(tx as unknown as Db);
+    const current = await operatorJobLeasingRepository(tx as unknown as Db)
+      .lockPlatformPhysicalAuthority(input.principal.targetId, "update");
+    if (!current || current.target.status !== "active" ||
+        current.target.deviceGeneration !== input.principal.targetGeneration ||
+        current.worker.id !== input.principal.workerId ||
+        current.worker.status === "revoked" || current.worker.revokedAt !== null ||
+        current.worker.deviceGeneration !== input.principal.targetGeneration ||
+        current.worker.deviceThumbprint !== input.principal.deviceThumbprint ||
+        current.worker.profileHash !== input.principal.profileHash) return false;
+    await acquirePlatformTargetAuthorityExclusive(tx as unknown as Db, input.principal.targetId);
+    const authority = operatorWorkerEnrollmentRepository(tx as unknown as Db);
+    const targetCurrent = await authority.heartbeatSessionTarget({
+      executionTargetId: input.principal.targetId,
+      deviceGeneration: input.principal.targetGeneration,
+      status: input.status,
+      now: input.now,
+    });
+    if (!targetCurrent) return false;
+    return authority.heartbeatSessionProfile({
+      workerId: input.principal.workerId,
+      executionTargetId: input.principal.targetId,
+      deviceGeneration: input.principal.targetGeneration,
+      now: input.now,
+    });
+  });
+}
+
 export async function registerProofBoundHeartbeat(input: {
   appDb: Db;
   operatorDb?: Db;
@@ -212,24 +270,18 @@ export async function registerProofBoundHeartbeat(input: {
   const heartbeatAt = input.now ?? new Date();
   if (!input.principal.organizationId) {
     if (!input.operatorDb || input.principal.scope !== "platform") fail();
-    return input.operatorDb.transaction(async (tx) => {
-      const authority = operatorWorkerEnrollmentRepository(tx as unknown as Db);
-      const targetCurrent = await authority.heartbeatSessionTarget({
-        executionTargetId: input.principal.targetId,
-        deviceGeneration: input.principal.targetGeneration,
-        status: input.status,
-        now: heartbeatAt,
-      });
-      if (!targetCurrent) return false;
-      const profileCurrent = await authority.heartbeatSessionProfile({
-        workerId: input.principal.workerId,
-        executionTargetId: input.principal.targetId,
-        deviceGeneration: input.principal.targetGeneration,
-        now: heartbeatAt,
-      });
-      if (!profileCurrent) throw new WorkerSessionError("target_revoked");
-      return true;
-    });
+    return input.status === "active"
+      ? heartbeatPlatformPhysicalLivenessOnly({
+          operatorDb: input.operatorDb,
+          principal: input.principal,
+          now: heartbeatAt,
+        })
+      : transitionPlatformPhysicalStatus({
+          operatorDb: input.operatorDb,
+          principal: input.principal,
+          status: input.status,
+          now: heartbeatAt,
+        });
   }
   if (input.principal.targetScope === "platform") {
     if (!input.operatorDb || !input.principal.sharedPlatformAuthority) fail();

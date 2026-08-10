@@ -10,16 +10,15 @@ import {
   applyPendingMigrations,
   createOperatorDbConnection,
   createTenantAppDbConnection,
-  type Db,
   type NonOwnerDbConnection,
 } from "../index.js";
 
 type EmbeddedPostgresInstance = { initialise(): Promise<void>; start(): Promise<void>; stop(): Promise<void> };
 type EmbeddedPostgresCtor = new (opts: Record<string, unknown>) => EmbeddedPostgresInstance;
 type PlatformLockModule = {
-  configurePlatformTargetAuthorityLockTimeout(tx: Db, timeoutMs?: number): Promise<void>;
-  acquirePlatformTargetAuthorityShared(tx: Db, targetId: string): Promise<void>;
-  acquirePlatformTargetAuthorityExclusive(tx: Db, targetId: string): Promise<void>;
+  configurePlatformTargetAuthorityLockTimeout(tx: unknown, timeoutMs?: number): Promise<void>;
+  acquirePlatformTargetAuthorityShared(tx: unknown, targetId: string): Promise<void>;
+  acquirePlatformTargetAuthorityExclusive(tx: unknown, targetId: string): Promise<void>;
 };
 
 const TARGET = "e3000000-0000-4000-8000-000000000001";
@@ -106,13 +105,14 @@ beforeAll(async () => {
        device_generation, registered_profile, registered_profile_hash, provider_constraint_profile, last_seen_at)
       VALUES (${TARGET}, NULL, 'authority-lock-platform', 'pooled_gvisor', 'shared_multitenant',
         'active', 'platform', 'platform', 1,
-        ${{ profile: "registered" }}, ${"1".repeat(64)}, ${{ profile: "provider" }}, clock_timestamp())`;
+        ${admin.json({ profile: "registered" })}, ${"1".repeat(64)},
+        ${admin.json({ profile: "provider" })}, clock_timestamp())`;
     await admin`INSERT INTO workers
       (id, scope, organization_id, execution_target_id, target_authority_key, device_public_key,
        device_thumbprint, device_generation, profile_hash, profile_snapshot, enrolled_at,
        last_seen_at, label, status)
       VALUES (${PHYSICAL_WORKER}, 'platform', NULL, ${TARGET}, 'platform', 'platform-public-key',
-        ${"2".repeat(64)}, 1, ${"3".repeat(64)}, ${{ profile: "physical" }}, clock_timestamp(),
+        ${"2".repeat(64)}, 1, ${"3".repeat(64)}, ${admin.json({ profile: "physical" })}, clock_timestamp(),
         clock_timestamp(), 'platform physical worker', 'active')`;
   } catch (error) {
     setupError = error;
@@ -120,8 +120,15 @@ beforeAll(async () => {
 }, 180_000);
 
 afterAll(async () => {
-  await operator?.close().catch(() => {});
-  await app?.close().catch(() => {});
+  const boundedClose = async (close: (() => Promise<void>) | undefined) => {
+    if (!close) return;
+    await Promise.race([
+      close().catch(() => {}),
+      new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
+    ]);
+  };
+  await boundedClose(operator ? () => operator!.close() : undefined);
+  await boundedClose(app ? () => app!.close() : undefined);
   await admin?.end().catch(() => {});
   await embedded?.stop().catch(() => {});
   if (dataDir) await rm(dataDir, { recursive: true, force: true }).catch(() => {});
@@ -146,15 +153,15 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       const locks = await authorityLocks();
       const { app, operator } = connections();
       await expect(app.db.transaction((tx) =>
-        locks.acquirePlatformTargetAuthorityShared(tx as Db, "not-a-canonical-uuid"),
+        locks.acquirePlatformTargetAuthorityShared(tx, "not-a-canonical-uuid"),
       )).rejects.toThrow();
 
       let sharedAcquired = false;
       let releaseShared!: () => void;
       const sharedRelease = new Promise<void>((resolve) => { releaseShared = resolve; });
       const shared = app.db.transaction(async (tx) => {
-        await locks.configurePlatformTargetAuthorityLockTimeout(tx as Db);
-        await locks.acquirePlatformTargetAuthorityShared(tx as Db, TARGET);
+        await locks.configurePlatformTargetAuthorityLockTimeout(tx);
+        await locks.acquirePlatformTargetAuthorityShared(tx, TARGET);
         sharedAcquired = true;
         await sharedRelease;
       });
@@ -162,8 +169,8 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
 
       let exclusiveAcquired = false;
       const exclusive = operator.db.transaction(async (tx) => {
-        await locks.configurePlatformTargetAuthorityLockTimeout(tx as Db, 5_000);
-        await locks.acquirePlatformTargetAuthorityExclusive(tx as Db, TARGET);
+        await locks.configurePlatformTargetAuthorityLockTimeout(tx, 5_000);
+        await locks.acquirePlatformTargetAuthorityExclusive(tx, TARGET);
         exclusiveAcquired = true;
       });
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -181,16 +188,16 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       let releaseExclusive!: () => void;
       const exclusiveRelease = new Promise<void>((resolve) => { releaseExclusive = resolve; });
       const heldExclusive = operator.db.transaction(async (tx) => {
-        await locks.configurePlatformTargetAuthorityLockTimeout(tx as Db, 5_000);
-        await locks.acquirePlatformTargetAuthorityExclusive(tx as Db, TARGET);
+        await locks.configurePlatformTargetAuthorityLockTimeout(tx, 5_000);
+        await locks.acquirePlatformTargetAuthorityExclusive(tx, TARGET);
         exclusiveAcquired = true;
         await exclusiveRelease;
       });
       await waitUntil(() => exclusiveAcquired);
       const started = Date.now();
       await expect(app.db.transaction(async (tx) => {
-        await locks.configurePlatformTargetAuthorityLockTimeout(tx as Db);
-        await locks.acquirePlatformTargetAuthorityShared(tx as Db, TARGET);
+        await locks.configurePlatformTargetAuthorityLockTimeout(tx);
+        await locks.acquirePlatformTargetAuthorityShared(tx, TARGET);
       })).rejects.toThrow();
       expect(Date.now() - started).toBeGreaterThanOrEqual(650);
       expect(Date.now() - started).toBeLessThan(2_000);
@@ -202,10 +209,10 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       let holdApp!: () => void;
       const appRelease = new Promise<void>((resolve) => { holdApp = resolve; });
       const dyingApp = app.db.transaction(async (tx) => {
-        await locks.configurePlatformTargetAuthorityLockTimeout(tx as Db, 5_000);
+        await locks.configurePlatformTargetAuthorityLockTimeout(tx, 5_000);
         const rows = await tx.execute<{ pid: number }>(sql`SELECT pg_backend_pid()::int AS pid`);
         appPid = Number(rows[0]?.pid ?? 0);
-        await locks.acquirePlatformTargetAuthorityShared(tx as Db, TARGET);
+        await locks.acquirePlatformTargetAuthorityShared(tx, TARGET);
         appSharedAcquired = true;
         await appRelease;
       });
@@ -214,8 +221,8 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       holdApp();
       await expect(dyingApp).rejects.toThrow();
       await expect(operator.db.transaction(async (tx) => {
-        await locks.configurePlatformTargetAuthorityLockTimeout(tx as Db);
-        await locks.acquirePlatformTargetAuthorityExclusive(tx as Db, TARGET);
+        await locks.configurePlatformTargetAuthorityLockTimeout(tx);
+        await locks.acquirePlatformTargetAuthorityExclusive(tx, TARGET);
       })).resolves.toBeUndefined();
     }, 20_000);
 
@@ -231,10 +238,10 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       const guardFirst = app.db.transaction(async (appTx) => {
         await appTx.execute(sql`SELECT set_config('aoa.organization_id', ${ORG}, true)`);
         await operator!.db.transaction(async (operatorTx) => {
-          await locks.configurePlatformTargetAuthorityLockTimeout(operatorTx as Db, 5_000);
+          await locks.configurePlatformTargetAuthorityLockTimeout(operatorTx, 5_000);
           await operatorTx.execute(sql`SELECT id FROM execution_targets WHERE id = ${TARGET} FOR SHARE`);
           await operatorTx.execute(sql`SELECT id FROM workers WHERE id = ${PHYSICAL_WORKER} FOR SHARE`);
-          await locks.acquirePlatformTargetAuthorityShared(appTx as Db, TARGET);
+          await locks.acquirePlatformTargetAuthorityShared(appTx, TARGET);
           const current = await appTx.execute<{ status: string }>(
             sql`SELECT status FROM execution_targets WHERE id = ${TARGET}`,
           );
@@ -247,10 +254,10 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
 
       let cutoffCommitted = false;
       const cutoffAfterGuard = operator.db.transaction(async (tx) => {
-        await locks.configurePlatformTargetAuthorityLockTimeout(tx as Db, 5_000);
+        await locks.configurePlatformTargetAuthorityLockTimeout(tx, 5_000);
         await tx.execute(sql`SELECT id FROM execution_targets WHERE id = ${TARGET} FOR UPDATE`);
         await tx.execute(sql`SELECT id FROM workers WHERE id = ${PHYSICAL_WORKER} FOR UPDATE`);
-        await locks.acquirePlatformTargetAuthorityExclusive(tx as Db, TARGET);
+        await locks.acquirePlatformTargetAuthorityExclusive(tx, TARGET);
         await tx.execute(sql`UPDATE execution_targets SET status = 'disabled' WHERE id = ${TARGET}`);
         cutoffCommitted = true;
       });
@@ -266,10 +273,10 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       let releaseCutoff!: () => void;
       const cutoffRelease = new Promise<void>((resolve) => { releaseCutoff = resolve; });
       const cutoffFirst = operator.db.transaction(async (tx) => {
-        await locks.configurePlatformTargetAuthorityLockTimeout(tx as Db, 5_000);
+        await locks.configurePlatformTargetAuthorityLockTimeout(tx, 5_000);
         await tx.execute(sql`SELECT id FROM execution_targets WHERE id = ${TARGET} FOR UPDATE`);
         await tx.execute(sql`SELECT id FROM workers WHERE id = ${PHYSICAL_WORKER} FOR UPDATE`);
-        await locks.acquirePlatformTargetAuthorityExclusive(tx as Db, TARGET);
+        await locks.acquirePlatformTargetAuthorityExclusive(tx, TARGET);
         await tx.execute(sql`UPDATE execution_targets SET device_generation = 2 WHERE id = ${TARGET}`);
         cutoffReady = true;
         await cutoffRelease;
@@ -279,12 +286,12 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       const guardAfterCutoff = app.db.transaction(async (appTx) => {
         await appTx.execute(sql`SELECT set_config('aoa.organization_id', ${ORG}, true)`);
         await operator!.db.transaction(async (operatorTx) => {
-          await locks.configurePlatformTargetAuthorityLockTimeout(operatorTx as Db, 5_000);
+          await locks.configurePlatformTargetAuthorityLockTimeout(operatorTx, 5_000);
           const targetRows = await operatorTx.execute<{ device_generation: number }>(
             sql`SELECT device_generation FROM execution_targets WHERE id = ${TARGET} FOR SHARE`,
           );
           await operatorTx.execute(sql`SELECT id FROM workers WHERE id = ${PHYSICAL_WORKER} FOR SHARE`);
-          await locks.acquirePlatformTargetAuthorityShared(appTx as Db, TARGET);
+          await locks.acquirePlatformTargetAuthorityShared(appTx, TARGET);
           guardObserved = targetRows[0]?.device_generation === 2;
         });
       });

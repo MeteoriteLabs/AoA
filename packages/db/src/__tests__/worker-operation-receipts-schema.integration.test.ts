@@ -275,22 +275,23 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         VALUES
           (${receiptA}, ${orgA}, ${companyA}, ${jobA}, ${attemptA}, ${leaseA}, 'lease_ack', ${workerA},
             ${targetA}, ${`organization:${orgA}`}, 1, ${"b".repeat(64)},
-            '30000000-0000-4000-8000-000000000117', ${"1".repeat(64)}, ${{ leaseId: leaseA }},
+            '30000000-0000-4000-8000-000000000117', ${"1".repeat(64)}, ${client.json({ leaseId: leaseA })},
             clock_timestamp() + interval '2 minutes'),
           (${receiptB}, ${orgB}, ${companyB}, ${jobB}, ${attemptB}, ${leaseB}, 'lease_ack', ${workerB},
             ${targetB}, ${`organization:${orgB}`}, 1, ${"d".repeat(64)},
-            '30000000-0000-4000-8000-000000000118', ${"2".repeat(64)}, ${{ leaseId: leaseB }},
+            '30000000-0000-4000-8000-000000000118', ${"2".repeat(64)}, ${client.json({ leaseId: leaseB })},
             clock_timestamp() + interval '2 minutes')`;
 
       const observed = await client.begin(async (tx) => {
-        await tx`SET LOCAL ROLE aoa_app`;
-        await tx`SELECT set_config('aoa.organization_id', ${orgA}, true)`;
-        const own = await tx<{ id: string }[]>`SELECT id FROM worker_operation_receipts WHERE id = ${receiptA}`;
-        const foreign = await tx<{ id: string }[]>`SELECT id FROM worker_operation_receipts WHERE id = ${receiptB}`;
-        const foreignUpdate = await tx<{ id: string }[]>`
+        const query = tx as unknown as Sql;
+        await query`SET LOCAL ROLE aoa_app`;
+        await query`SELECT set_config('aoa.organization_id', ${orgA}, true)`;
+        const own = await query<{ id: string }[]>`SELECT id FROM worker_operation_receipts WHERE id = ${receiptA}`;
+        const foreign = await query<{ id: string }[]>`SELECT id FROM worker_operation_receipts WHERE id = ${receiptB}`;
+        const foreignUpdate = await query<{ id: string }[]>`
           UPDATE worker_operation_receipts SET semantic_digest = ${"3".repeat(64)}
           WHERE id = ${receiptB} RETURNING id`;
-        const ownUpdate = await tx<{ id: string }[]>`
+        const ownUpdate = await query<{ id: string }[]>`
           UPDATE worker_operation_receipts SET semantic_digest = ${"4".repeat(64)}
           WHERE id = ${receiptA} RETURNING id`;
         return { own, foreign, foreignUpdate, ownUpdate };
@@ -301,15 +302,16 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect(observed.ownUpdate).toHaveLength(1);
 
       await expect(client.begin(async (tx) => {
-        await tx`SET LOCAL ROLE aoa_app`;
-        await tx`SELECT set_config('aoa.organization_id', ${orgA}, true)`;
-        await tx`INSERT INTO worker_operation_receipts
+        const query = tx as unknown as Sql;
+        await query`SET LOCAL ROLE aoa_app`;
+        await query`SELECT set_config('aoa.organization_id', ${orgA}, true)`;
+        await query`INSERT INTO worker_operation_receipts
           (organization_id, company_id, job_id, attempt_id, lease_id, operation, worker_id,
            target_id, target_authority_key, target_generation, profile_hash, idempotency_key,
            semantic_digest, outcome, expires_at)
           VALUES (${orgB}, ${companyB}, ${jobB}, ${attemptB}, ${leaseB}, 'lease_ack', ${workerB},
             ${targetB}, ${`organization:${orgB}`}, 1, ${"d".repeat(64)},
-            '30000000-0000-4000-8000-000000000119', ${"5".repeat(64)}, ${{ leaseId: leaseB }},
+            '30000000-0000-4000-8000-000000000119', ${"5".repeat(64)}, ${query.json({ leaseId: leaseB })},
             clock_timestamp() + interval '2 minutes')`;
       })).rejects.toThrow();
     });

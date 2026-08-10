@@ -15,6 +15,10 @@ export interface BoundedDatabases {
   close(): Promise<void>;
 }
 
+export interface JobControlRuntime {
+  stop(): Promise<void>;
+}
+
 export interface ShutdownLogger {
   info(message: string): void;
   info(bindings: Record<string, unknown>, message: string): void;
@@ -23,6 +27,7 @@ export interface ShutdownLogger {
 
 export interface ProcessShutdownOptions {
   getPluginSubsystem(): ShutdownPluginSubsystem | undefined;
+  jobControlRuntime?: JobControlRuntime | null;
   boundedDatabases?: BoundedDatabases | null;
   ownedEmbeddedPostgres?: OwnedEmbeddedPostgres | null;
   logger: ShutdownLogger;
@@ -61,6 +66,15 @@ export function createProcessShutdownHandler(opts: ProcessShutdownOptions) {
               "Plugin host-service cleanup teardown failed"
             );
           }
+        }
+      }
+
+      if (opts.jobControlRuntime) {
+        opts.logger.info("Stopping durable job-control runtime");
+        try {
+          await opts.jobControlRuntime.stop();
+        } catch (err) {
+          opts.logger.error({ err }, "Durable job-control runtime shutdown failed");
         }
       }
 
