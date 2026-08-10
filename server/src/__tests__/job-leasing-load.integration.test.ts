@@ -324,7 +324,7 @@ function assertHotPlan(plan: Record<string, unknown>, shape: string): {
     summary.localBlocks += numeric(node, "Local Hit Blocks") + numeric(node, "Local Read Blocks") +
       numeric(node, "Local Dirtied Blocks") + numeric(node, "Local Written Blocks");
     summary.tempBlocks += numeric(node, "Temp Read Blocks") + numeric(node, "Temp Written Blocks");
-    if (nodeType === "Sort" && (
+    if ((nodeType === "Sort" || nodeType === "Incremental Sort") && (
       node["Sort Method"] !== "top-N heapsort" || actualRows > 256 ||
       numeric(node, "Temp Read Blocks") !== 0 || numeric(node, "Temp Written Blocks") !== 0
     )) violations.push("unbounded_or_spilled_sort");
@@ -371,7 +371,7 @@ function assertCleanupPlan(plan: Record<string, unknown>, layout: string, affect
     summary.actualRows += actualRows;
     summary.rowsRemoved += numeric(node, "Rows Removed by Filter") + numeric(node, "Rows Removed by Index Recheck");
     summary.tempBlocks += tempBlocks;
-    if (nodeType === "Sort" && (
+    if ((nodeType === "Sort" || nodeType === "Incremental Sort") && (
       node["Sort Method"] !== "top-N heapsort" || actualRows > 256 || tempBlocks !== 0
     )) violations.push("unbounded_or_spilled_sort");
     if ((nodeType === "Seq Scan" || nodeType === "Parallel Seq Scan") &&
@@ -396,6 +396,37 @@ function assertCleanupPlan(plan: Record<string, unknown>, layout: string, affect
 
 function deterministicUuidSql(namespace: string, ordinalSql: string): string {
   return `md5('${namespace}:' || (${ordinalSql})::text)::uuid`;
+}
+
+const CERTIFICATE_ONLY_GUARDED_TABLES = Object.freeze([
+  "workers",
+  "execution_targets",
+  "jobs",
+  "job_attempts",
+  "leases",
+] as const);
+
+async function installCertificateOnlyMutationGuards(client: Sql): Promise<void> {
+  await client.unsafe(`CREATE OR REPLACE FUNCTION e3_perf_01_reject_non_certificate_mutation()
+    RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      RAISE EXCEPTION 'E3_PERF_01_CERTIFICATE_ONLY_VIOLATION:%', TG_TABLE_NAME
+        USING ERRCODE = 'integrity_constraint_violation';
+    END
+    $$`);
+  for (const table of CERTIFICATE_ONLY_GUARDED_TABLES) {
+    await client.unsafe(`DROP TRIGGER IF EXISTS e3_perf_01_certificate_only_guard ON ${table}`);
+    await client.unsafe(`CREATE TRIGGER e3_perf_01_certificate_only_guard
+      BEFORE INSERT OR UPDATE OR DELETE ON ${table}
+      FOR EACH STATEMENT EXECUTE FUNCTION e3_perf_01_reject_non_certificate_mutation()`);
+  }
+}
+
+async function dropCertificateOnlyMutationGuards(client: Sql): Promise<void> {
+  for (const table of CERTIFICATE_ONLY_GUARDED_TABLES) {
+    await client.unsafe(`DROP TRIGGER IF EXISTS e3_perf_01_certificate_only_guard ON ${table}`);
+  }
+  await client.unsafe("DROP FUNCTION IF EXISTS e3_perf_01_reject_non_certificate_mutation() CASCADE");
 }
 
 async function seedE3Perf01Corpus(client: Sql): Promise<void> {
@@ -890,14 +921,41 @@ describe("E3-PERF-01 immutable load contract", () => {
     expect(() => assertHotPlan({ Plan: {
       "Node Type": "Seq Scan", "Relation Name": "jobs", "Actual Rows": 1,
     } }, "seq")).toThrow();
-    expect(() => assertHotPlan({ Plan: {
-      "Node Type": "Sort", "Sort Method": "external merge", "Actual Rows": 257,
-      "Temp Read Blocks": 1, "Temp Written Blocks": 1,
-    } }, "sort")).toThrow();
+    const invalidHotSort = (nodeType: "Sort" | "Incremental Sort") => ({ Plan: {
+      "Node Type": "Limit", "Actual Rows": 256, Plans: [{
+        "Node Type": nodeType, "Sort Method": "external merge", "Actual Rows": 257,
+        "Temp Read Blocks": 1, "Temp Written Blocks": 1, Plans: [{
+          "Node Type": "Index Scan", "Relation Name": "jobs", "Index Name": "jobs_claim_idx",
+          "Actual Rows": 256, Plans: [{
+            "Node Type": "Index Scan", "Relation Name": "job_attempts",
+            "Index Name": "job_attempts_lease_candidate_idx", "Actual Rows": 256, Plans: [{
+              "Node Type": "Index Only Scan", "Relation Name": "worker_lease_rejections",
+              "Index Name": "worker_lease_rejections_pkey", "Actual Rows": 256,
+              "Heap Fetches": 0,
+            }],
+          }],
+        }],
+      }],
+    } });
+    for (const nodeType of ["Sort", "Incremental Sort"] as const) {
+      expect(
+        () => assertHotPlan(invalidHotSort(nodeType), `hot-${nodeType}`),
+        `${nodeType} must be classified even when every reviewed index and cardinality fact is present`,
+      ).toThrow(/unbounded_or_spilled_sort/);
+    }
     expect(() => assertCleanupPlan({ Plan: {
       "Node Type": "Index Scan", "Relation Name": "worker_lease_rejections",
       "Index Name": "worker_lease_rejections_cleanup_idx", "Actual Rows": 256,
     } }, "valid")).not.toThrow();
+    for (const nodeType of ["Sort", "Incremental Sort"] as const) {
+      expect(() => assertCleanupPlan({ Plan: {
+        "Node Type": nodeType, "Sort Method": "external merge", "Actual Rows": 256,
+        "Temp Read Blocks": 1, "Temp Written Blocks": 1, Plans: [{
+          "Node Type": "Index Scan", "Relation Name": "worker_lease_rejections",
+          "Index Name": "worker_lease_rejections_cleanup_idx", "Actual Rows": 256,
+        }],
+      } }, `cleanup-${nodeType}`)).toThrow(/unbounded_or_spilled_sort/);
+    }
     expect(() => assertCleanupPlan({ Plan: {
       "Node Type": "Seq Scan", "Relation Name": "worker_lease_rejections", "Actual Rows": 0,
     } }, "seq")).toThrow();
@@ -1097,25 +1155,33 @@ describe.skipIf(!enabled)("E3-PERF-01 production-capacity static-certificate lan
       )::text) AS digest`;
     const samples: number[] = [];
     const queryFingerprints = new Set<string>();
-    for (let index = 0; index < E3_PERF_01_DATASET.mutationSamples; index += 1) {
-      const start = performance.now();
-      capturedQueries.length = 0;
-      let affected = 0;
-      const rollback = new Error("E3_PERF_01_ROLLBACK_BULK_UPSERT");
-      await expect(runInTenant(tenantDatabase() as never, E3_PERF_01_ORGANIZATION_ID, async (repos) => {
-        const operation = (repos.jobControl as unknown as {
-          upsertLeaseRejectionCertificates(input: { certificates: unknown[] }): Promise<number>;
-        }).upsertLeaseRejectionCertificates;
-        expect.soft(typeof operation).toBe("function");
-        if (typeof operation !== "function") throw new Error("production certificate upsert is missing");
-        affected = await operation({ certificates });
-        throw rollback;
-      })).rejects.toBe(rollback);
-      samples.push(performance.now() - start);
-      expect(affected).toBe(E3_PERF_01_DATASET.batchSize);
-      const query = [...capturedQueries].reverse().find((entry) => /worker_lease_rejections/i.test(entry.sql));
-      expect.soft(query).toBeDefined();
-      if (query) queryFingerprints.add(normalizedQuerySha256(query.sql));
+    // These statement triggers live outside the transaction deliberately: an
+    // unauthorized job/attempt/lease/worker/target (including liveness) write
+    // fails before the test's rollback can erase evidence of the violation.
+    await installCertificateOnlyMutationGuards(authorityClient);
+    try {
+      for (let index = 0; index < E3_PERF_01_DATASET.mutationSamples; index += 1) {
+        const start = performance.now();
+        capturedQueries.length = 0;
+        let affected = 0;
+        const rollback = new Error("E3_PERF_01_ROLLBACK_BULK_UPSERT");
+        await expect(runInTenant(tenantDatabase() as never, E3_PERF_01_ORGANIZATION_ID, async (repos) => {
+          const operation = (repos.jobControl as unknown as {
+            upsertLeaseRejectionCertificates(input: { certificates: unknown[] }): Promise<number>;
+          }).upsertLeaseRejectionCertificates;
+          expect.soft(typeof operation).toBe("function");
+          if (typeof operation !== "function") throw new Error("production certificate upsert is missing");
+          affected = await operation({ certificates });
+          throw rollback;
+        })).rejects.toBe(rollback);
+        samples.push(performance.now() - start);
+        expect(affected).toBe(E3_PERF_01_DATASET.batchSize);
+        const query = [...capturedQueries].reverse().find((entry) => /worker_lease_rejections/i.test(entry.sql));
+        expect.soft(query).toBeDefined();
+        if (query) queryFingerprints.add(normalizedQuerySha256(query.sql));
+      }
+    } finally {
+      await dropCertificateOnlyMutationGuards(authorityClient);
     }
     const [authorityAfter] = await authorityClient<{ digest: string }[]>`
       SELECT md5(jsonb_build_object(
@@ -1150,29 +1216,34 @@ describe.skipIf(!enabled)("E3-PERF-01 production-capacity static-certificate lan
     const samples: number[] = [];
     const queryFingerprints = new Set<string>();
     let measuredQuery: { sql: string; parameters: unknown[] } | undefined;
-    for (let index = 0; index < E3_PERF_01_DATASET.mutationSamples; index += 1) {
-      const start = performance.now();
-      capturedQueries.length = 0;
-      let affected = 0;
-      const rollback = new Error(`E3_PERF_01_ROLLBACK_CLEANUP_${layout}`);
-      await expect(runInTenant(tenantDatabase() as never, E3_PERF_01_ORGANIZATION_ID, async (repos) => {
-        const operation = (repos.jobControl as unknown as {
-          cleanupLeaseRejectionCertificates(input: { limit: number }): Promise<number>;
-        }).cleanupLeaseRejectionCertificates;
-        expect.soft(typeof operation).toBe("function");
-        if (typeof operation !== "function") throw new Error("production certificate cleanup is missing");
-        affected = await operation({ limit: E3_PERF_01_DATASET.batchSize });
-        throw rollback;
-      })).rejects.toBe(rollback);
-      samples.push(performance.now() - start);
-      expect(affected).toBe(E3_PERF_01_DATASET.batchSize);
-      const query = [...capturedQueries].reverse().find((entry) =>
-        /worker_lease_rejections/i.test(entry.sql) && /FOR\s+UPDATE|SKIP\s+LOCKED/i.test(entry.sql));
-      expect.soft(query).toBeDefined();
-      if (query) {
-        measuredQuery ??= query;
-        queryFingerprints.add(normalizedQuerySha256(query.sql));
+    await installCertificateOnlyMutationGuards(client);
+    try {
+      for (let index = 0; index < E3_PERF_01_DATASET.mutationSamples; index += 1) {
+        const start = performance.now();
+        capturedQueries.length = 0;
+        let affected = 0;
+        const rollback = new Error(`E3_PERF_01_ROLLBACK_CLEANUP_${layout}`);
+        await expect(runInTenant(tenantDatabase() as never, E3_PERF_01_ORGANIZATION_ID, async (repos) => {
+          const operation = (repos.jobControl as unknown as {
+            cleanupLeaseRejectionCertificates(input: { limit: number }): Promise<number>;
+          }).cleanupLeaseRejectionCertificates;
+          expect.soft(typeof operation).toBe("function");
+          if (typeof operation !== "function") throw new Error("production certificate cleanup is missing");
+          affected = await operation({ limit: E3_PERF_01_DATASET.batchSize });
+          throw rollback;
+        })).rejects.toBe(rollback);
+        samples.push(performance.now() - start);
+        expect(affected).toBe(E3_PERF_01_DATASET.batchSize);
+        const query = [...capturedQueries].reverse().find((entry) =>
+          /worker_lease_rejections/i.test(entry.sql) && /FOR\s+UPDATE|SKIP\s+LOCKED/i.test(entry.sql));
+        expect.soft(query).toBeDefined();
+        if (query) {
+          measuredQuery ??= query;
+          queryFingerprints.add(normalizedQuerySha256(query.sql));
+        }
       }
+    } finally {
+      await dropCertificateOnlyMutationGuards(client);
     }
     expect.soft([...queryFingerprints]).toHaveLength(1);
     expect.soft(measuredQuery).toBeDefined();

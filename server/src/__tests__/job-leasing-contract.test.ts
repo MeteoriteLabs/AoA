@@ -749,6 +749,8 @@ function namedFunctionUnexpectedCertificateCalls(source: string, name: string): 
     "exists", "notExists", "asc", "desc",
   ]);
   const reviewedBuilders = new Set<string>();
+  const reviewedCollections = new Set<string>();
+  const locallyBound = new Set<string>();
   const databaseRooted = (expression: ts.Expression): boolean => {
     if (ts.isParenthesizedExpression(expression) || ts.isAsExpression(expression)) {
       return databaseRooted(expression.expression);
@@ -761,10 +763,35 @@ function namedFunctionUnexpectedCertificateCalls(source: string, name: string): 
         ["select", "selectDistinct", "insert", "delete"].includes(callName)) return true;
     return allowedDatabaseFluent.has(callName) && databaseRooted(receiver);
   };
+  const collectionRooted = (expression: ts.Expression): boolean => {
+    if (ts.isParenthesizedExpression(expression) || ts.isAsExpression(expression) ||
+        ts.isNonNullExpression(expression)) return collectionRooted(expression.expression);
+    if (ts.isAwaitExpression(expression)) return databaseRooted(expression.expression);
+    if (ts.isArrayLiteralExpression(expression)) return true;
+    if (ts.isIdentifier(expression)) return reviewedCollections.has(expression.text);
+    if (ts.isPropertyAccessExpression(expression) && ts.isIdentifier(expression.expression) &&
+        expression.expression.text === "input") return true;
+    if (!ts.isCallExpression(expression) || !ts.isPropertyAccessExpression(expression.expression)) return false;
+    return allowedCollectionFluent.has(expression.expression.name.text) &&
+      collectionRooted(expression.expression.expression);
+  };
+  const collectBindings = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) locallyBound.add(node.name.text);
+    if (ts.isFunctionDeclaration(node) && node.name) locallyBound.add(node.name.text);
+    if (ts.isFunctionLike(node)) {
+      for (const parameter of node.parameters) {
+        if (ts.isIdentifier(parameter.name)) locallyBound.add(parameter.name.text);
+      }
+    }
+    ts.forEachChild(node, collectBindings);
+  };
+  collectBindings(file);
   for (let pass = 0; pass < 3; pass += 1) {
     const collectBuilders = (node: ts.Node): void => {
-      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer &&
-          databaseRooted(node.initializer)) reviewedBuilders.add(node.name.text);
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+        if (databaseRooted(node.initializer)) reviewedBuilders.add(node.name.text);
+        if (collectionRooted(node.initializer)) reviewedCollections.add(node.name.text);
+      }
       ts.forEachChild(node, collectBuilders);
     };
     collectBuilders(file);
@@ -773,7 +800,9 @@ function namedFunctionUnexpectedCertificateCalls(source: string, name: string): 
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node)) {
       if (ts.isIdentifier(node.expression)) {
-        if (!allowedPure.has(node.expression.text)) found.push(node.expression.text);
+        if (!allowedPure.has(node.expression.text) || locallyBound.has(node.expression.text)) {
+          found.push(node.expression.text);
+        }
       } else if (ts.isPropertyAccessExpression(node.expression)) {
         const callName = node.expression.name.text;
         const receiver = node.expression.expression.getText(file).replace(/\s+/g, "");
@@ -782,7 +811,9 @@ function namedFunctionUnexpectedCertificateCalls(source: string, name: string): 
           ((ts.isIdentifier(node.expression.expression) && node.expression.expression.text === "tx" &&
             ["select", "selectDistinct", "insert", "delete"].includes(callName)) ||
             databaseRooted(node.expression.expression));
-        if (!allowedDatabaseCall && !allowedCollectionFluent.has(callName) && !allowedMath) {
+        const allowedCollectionCall = allowedCollectionFluent.has(callName) &&
+          collectionRooted(node.expression.expression);
+        if (!allowedDatabaseCall && !allowedCollectionCall && !allowedMath) {
           found.push(`${receiver}.${callName}`);
         }
       } else {
@@ -931,16 +962,232 @@ function awaitedCallFacts(source: string): Array<{ name: string; awaited: boolea
   return facts;
 }
 
+const authorityRepositoryDelegateMethods = new Set([
+  "advanceTargetGeneration",
+  "insertWorker",
+  "ratifyPlacementProfile",
+  "retireBootstrapCredential",
+  "revokeTargetAuthority",
+  "rotateWorker",
+]);
+
+function repositoryDelegateCallSiteInventory(
+  sources: Array<{ file: string; source: string }>,
+): string[] {
+  const found: string[] = [];
+  for (const input of sources) {
+    const file = ts.createSourceFile(input.file, input.source, ts.ScriptTarget.Latest, true);
+    const aliases = new Map<string, string>();
+    const delegateReference = (expression: ts.Expression): string | null => {
+      if (ts.isParenthesizedExpression(expression) || ts.isAsExpression(expression) ||
+          ts.isNonNullExpression(expression)) return delegateReference(expression.expression);
+      if (ts.isIdentifier(expression)) return aliases.get(expression.text) ?? null;
+      if (ts.isPropertyAccessExpression(expression) &&
+          authorityRepositoryDelegateMethods.has(expression.name.text)) return expression.name.text;
+      if (ts.isElementAccessExpression(expression) && expression.argumentExpression &&
+          (ts.isStringLiteral(expression.argumentExpression) ||
+           ts.isNoSubstitutionTemplateLiteral(expression.argumentExpression)) &&
+          authorityRepositoryDelegateMethods.has(expression.argumentExpression.text)) {
+        return expression.argumentExpression.text;
+      }
+      if (ts.isCallExpression(expression) && ts.isPropertyAccessExpression(expression.expression) &&
+          expression.expression.name.text === "bind") {
+        return delegateReference(expression.expression.expression);
+      }
+      return null;
+    };
+    for (let pass = 0; pass < 3; pass += 1) {
+      const collectAliases = (node: ts.Node): void => {
+        if (ts.isVariableDeclaration(node) && node.initializer) {
+          if (ts.isIdentifier(node.name)) {
+            const method = delegateReference(node.initializer);
+            if (method) aliases.set(node.name.text, method);
+          } else if (ts.isObjectBindingPattern(node.name)) {
+            for (const element of node.name.elements) {
+              if (!ts.isIdentifier(element.name)) continue;
+              const imported = element.propertyName ? propertyName(element.propertyName) : element.name.text;
+              if (imported && authorityRepositoryDelegateMethods.has(imported)) {
+                aliases.set(element.name.text, imported);
+              }
+            }
+          }
+        }
+        if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+            ts.isIdentifier(node.left)) {
+          const method = delegateReference(node.right);
+          if (method) aliases.set(node.left.text, method);
+        }
+        ts.forEachChild(node, collectAliases);
+      };
+      collectAliases(file);
+    }
+    const observation = (call: ts.CallExpression): "awaited" | "returned" | "unobserved" => {
+      let current: ts.Node = call;
+      while (current.parent && (
+        ts.isParenthesizedExpression(current.parent) || ts.isAsExpression(current.parent) ||
+        ts.isNonNullExpression(current.parent)
+      )) current = current.parent;
+      if (ts.isAwaitExpression(current.parent)) return "awaited";
+      if (ts.isReturnStatement(current.parent)) return "returned";
+      if ((ts.isArrowFunction(current.parent) || ts.isFunctionExpression(current.parent)) &&
+          current.parent.body === current) return "returned";
+      return "unobserved";
+    };
+    const visit = (node: ts.Node): void => {
+      if (ts.isCallExpression(node)) {
+        const method = delegateReference(node.expression);
+        if (method) {
+          found.push(`${input.file.replaceAll("\\", "/")}#${enclosingFunctionName(node)}:${method}:${observation(node)}`);
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(file);
+  }
+  return found.sort();
+}
+
+function placementProfileDelegateFlowViolations(source: string): string[] {
+  const file = ts.createSourceFile("placement-profile-flow.ts", source, ts.ScriptTarget.Latest, true);
+  const violations: string[] = [];
+  let owner: ts.FunctionDeclaration | null = null;
+  const locate = (node: ts.Node): void => {
+    if (ts.isFunctionDeclaration(node) && node.name?.text === "ratifyTenantExecutionTargetPlacementProfile") {
+      owner = node;
+      return;
+    }
+    ts.forEachChild(node, locate);
+  };
+  locate(file);
+  if (!owner?.body) return ["ratifyTenantExecutionTargetPlacementProfile:missing"];
+
+  const calls: Array<{ node: ts.CallExpression; name: string }> = [];
+  const scan = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+      calls.push({ node, name: node.expression.name.text });
+    }
+    ts.forEachChild(node, scan);
+  };
+  scan(owner.body);
+  const delegates = calls.filter((call) => call.name === "ratifyPlacementProfile");
+  if (delegates.length !== 1) return [`ratifyPlacementProfile:count:${delegates.length}`];
+  const delegate = delegates[0]!.node;
+  const executionScope = (node: ts.Node): ts.FunctionLikeDeclaration | null => {
+    let current: ts.Node | undefined = node.parent;
+    while (current && current !== owner) {
+      if (ts.isFunctionLike(current)) return current;
+      current = current.parent;
+    }
+    return owner;
+  };
+  const scope = executionScope(delegate);
+  const directlyAwaited = (call: ts.CallExpression): boolean => {
+    let current: ts.Node = call;
+    while (current.parent && (
+      ts.isParenthesizedExpression(current.parent) || ts.isAsExpression(current.parent) ||
+      ts.isNonNullExpression(current.parent)
+    )) current = current.parent;
+    return ts.isAwaitExpression(current.parent);
+  };
+  const directInScope = (node: ts.Node, functionScope: ts.FunctionLikeDeclaration | null): boolean => {
+    if (!functionScope) return false;
+    let current: ts.Node | undefined = node.parent;
+    while (current && current !== functionScope) {
+      if (ts.isIfStatement(current) || ts.isConditionalExpression(current) || ts.isTryStatement(current) ||
+          ts.isCatchClause(current) || ts.isForStatement(current) || ts.isForInStatement(current) ||
+          ts.isForOfStatement(current) || ts.isWhileStatement(current) || ts.isDoStatement(current) ||
+          ts.isCaseClause(current) || ts.isDefaultClause(current) ||
+          (ts.isBinaryExpression(current) &&
+            (current.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
+             current.operatorToken.kind === ts.SyntaxKind.BarBarToken))) return false;
+      current = current.parent;
+    }
+    return current === functionScope;
+  };
+  if (!directlyAwaited(delegate) || !directInScope(delegate, scope)) {
+    violations.push("ratifyPlacementProfile:observation");
+  }
+
+  const locks = calls.filter((call) => call.name === "lockPlacementProfileTarget" &&
+    executionScope(call.node) === scope && call.node.getStart(file) < delegate.getStart(file));
+  if (locks.length !== 1 || !directlyAwaited(locks[0]!.node) || !directInScope(locks[0]!.node, scope)) {
+    violations.push("placement-profile-lock");
+  }
+
+  const normalize = (node: ts.Node): string => node.getText(file).replace(/\s+/g, "").replace(/'/g, '"');
+  let exactScopeDenial = false;
+  const findScopeDenial = (node: ts.Node): void => {
+    if (node !== scope?.body && ts.isFunctionLike(node)) return;
+    if (ts.isIfStatement(node) && node.getStart(file) < delegate.getStart(file) &&
+        normalize(node.expression) === '!target||target.organizationId!==input.organizationId||target.scope==="platform"' &&
+        directInScope(node, scope)) {
+      const statements = ts.isBlock(node.thenStatement) ? node.thenStatement.statements : [node.thenStatement];
+      exactScopeDenial = statements.some(ts.isThrowStatement);
+    }
+    ts.forEachChild(node, findScopeDenial);
+  };
+  if (scope?.body) findScopeDenial(scope.body);
+  if (!exactScopeDenial) violations.push("placement-profile-scope-denial");
+  return [...new Set(violations)].sort();
+}
+
 function enrollmentAuthorityFlowViolations(source: string): string[] {
   const file = ts.createSourceFile("enrollment-authority-flow.ts", source, ts.ScriptTarget.Latest, true);
   const violations: string[] = [];
   let body: ts.ConciseBody | null = null;
+  let authoritativeSharedGuard: ts.VariableDeclaration | null = null;
+  type GuardBinding = {
+    declaration: ts.Node;
+    start: number;
+    scopeStart: number;
+    scopeEnd: number;
+  };
+  const guardBindings: GuardBinding[] = [];
+  const bindingScope = (node: ts.Node): ts.Node => {
+    let current: ts.Node | undefined = node.parent;
+    while (current && !ts.isBlock(current) && !ts.isSourceFile(current) && !ts.isFunctionLike(current)) {
+      current = current.parent;
+    }
+    return current ?? file;
+  };
+  const addGuardBinding = (declaration: ts.Node, scope = bindingScope(declaration)): void => {
+    guardBindings.push({
+      declaration,
+      start: declaration.getStart(file),
+      scopeStart: scope.getStart(file),
+      scopeEnd: scope.getEnd(),
+    });
+  };
   const locate = (node: ts.Node): void => {
+    if (ts.isImportSpecifier(node) && node.name.text === "requireCurrentPlatformPhysicalAuthority") {
+      addGuardBinding(node, file);
+    }
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) &&
+        node.name.text === "requireCurrentPlatformPhysicalAuthority") {
+      addGuardBinding(node);
+      const statement = node.parent.parent;
+      const block = statement.parent;
+      const owner = block.parent;
+      if (ts.isVariableStatement(statement) && ts.isBlock(block) &&
+          ts.isFunctionDeclaration(owner) && owner.name?.text === "createWorkerEnrollmentService" &&
+          node.initializer && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))) {
+        authoritativeSharedGuard = node;
+      }
+    }
+    if (ts.isFunctionDeclaration(node) && node.name?.text === "requireCurrentPlatformPhysicalAuthority") {
+      addGuardBinding(node);
+    }
+    if (ts.isFunctionLike(node)) {
+      for (const parameter of node.parameters) {
+        if (ts.isIdentifier(parameter.name) && parameter.name.text === "requireCurrentPlatformPhysicalAuthority") {
+          addGuardBinding(parameter, node);
+        }
+      }
+    }
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) &&
         node.name.text === "completeEnrollment" && node.initializer &&
         (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))) {
       body = node.initializer.body;
-      return;
     }
     ts.forEachChild(node, locate);
   };
@@ -1001,6 +1248,16 @@ function enrollmentAuthorityFlowViolations(source: string): string[] {
       !isDirectInBranch(sharedGuards[0]!.node, sharedBranch.thenStatement)) {
     violations.push("shared-platform-guard");
   }
+  const sharedGuardCall = sharedGuards[0]?.node;
+  const boundGuard = sharedGuardCall && ts.isIdentifier(sharedGuardCall.expression)
+    ? guardBindings.filter((binding) =>
+        binding.scopeStart <= sharedGuardCall.getStart(file) && sharedGuardCall.getStart(file) <= binding.scopeEnd)
+      .sort((left, right) =>
+        (left.scopeEnd - left.scopeStart) - (right.scopeEnd - right.scopeStart) || right.start - left.start)[0]
+    : undefined;
+  if (!authoritativeSharedGuard || boundGuard?.declaration !== authoritativeSharedGuard) {
+    violations.push("shared-platform-guard-binding");
+  }
 
   const nullBranch = sharedBranch.elseStatement && ts.isIfStatement(sharedBranch.elseStatement)
     ? sharedBranch.elseStatement
@@ -1027,6 +1284,100 @@ function enrollmentAuthorityFlowViolations(source: string): string[] {
     }
   }
   return [...new Set(violations)].sort();
+}
+
+const exactPlacementDecisionWhereConjuncts = [
+  "currentOwnerAuthority",
+  "eq(jobAttempts.companyId,input.companyId)",
+  "eq(jobAttempts.id,input.attemptId)",
+  "eq(jobAttempts.jobId,input.jobId)",
+  "eq(jobAttempts.organizationId,input.organizationId)",
+  "isNull(jobAttempts.placementDecidedAt)",
+].sort();
+
+function persistPlacementDecisionPredicateFacts(source: string): Array<{
+  exactMutation: boolean;
+  conjuncts: string[];
+}> {
+  const file = ts.createSourceFile("placement-decision-predicate.ts", source, ts.ScriptTarget.Latest, true);
+  let owner: ts.FunctionLikeDeclaration | null = null;
+  const locate = (node: ts.Node): void => {
+    const name = (ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node) ||
+        ts.isFunctionExpression(node)) && node.name
+      ? propertyName(node.name)
+      : ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer &&
+          (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))
+        ? node.name.text
+        : null;
+    if (name === "persistPlacementDecision") {
+      owner = ts.isVariableDeclaration(node) ? node.initializer as ts.FunctionLikeDeclaration : node;
+      return;
+    }
+    ts.forEachChild(node, locate);
+  };
+  locate(file);
+  if (!owner?.body) return [];
+
+  const unwrap = (expression: ts.Expression): ts.Expression => {
+    let current = expression;
+    while (ts.isParenthesizedExpression(current) || ts.isAsExpression(current) ||
+        ts.isNonNullExpression(current)) current = current.expression;
+    return current;
+  };
+  const containsJobAttemptUpdate = (expression: ts.Expression): boolean => {
+    const current = unwrap(expression);
+    if (ts.isCallExpression(current) && ts.isPropertyAccessExpression(current.expression)) {
+      if (current.expression.name.text === "update" && current.arguments.length === 1 &&
+          unwrap(current.arguments[0]!) .getText(file) === "jobAttempts") return true;
+      return containsJobAttemptUpdate(current.expression.expression);
+    }
+    if (ts.isPropertyAccessExpression(current)) return containsJobAttemptUpdate(current.expression);
+    return false;
+  };
+  const isExactMutation = (whereReceiver: ts.Expression): boolean => {
+    const setCall = unwrap(whereReceiver);
+    if (!ts.isCallExpression(setCall) || !ts.isPropertyAccessExpression(setCall.expression) ||
+        setCall.expression.name.text !== "set") return false;
+    const updateCall = unwrap(setCall.expression.expression);
+    return ts.isCallExpression(updateCall) && ts.isPropertyAccessExpression(updateCall.expression) &&
+      updateCall.expression.name.text === "update" &&
+      ts.isIdentifier(unwrap(updateCall.expression.expression)) &&
+      (unwrap(updateCall.expression.expression) as ts.Identifier).text === "tx" &&
+      updateCall.arguments.length === 1 && unwrap(updateCall.arguments[0]!).getText(file) === "jobAttempts";
+  };
+  const facts: Array<{ exactMutation: boolean; conjuncts: string[] }> = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) &&
+        node.expression.name.text === "where" &&
+        containsJobAttemptUpdate(node.expression.expression) &&
+        node.arguments.length === 1) {
+      const predicate = node.arguments[0]!;
+      let conjuncts: string[] = [];
+      if (ts.isCallExpression(predicate) && ts.isIdentifier(predicate.expression) &&
+          predicate.expression.text === "and") {
+        conjuncts = predicate.arguments.map((argument) => argument.getText(file).replace(/\s+/g, "")).sort();
+      }
+      facts.push({ exactMutation: isExactMutation(node.expression.expression), conjuncts });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(owner.body);
+  return facts;
+}
+
+function persistPlacementDecisionWhereConjuncts(source: string): string[] {
+  const facts = persistPlacementDecisionPredicateFacts(source);
+  return facts.length === 1 && facts[0]!.exactMutation ? facts[0]!.conjuncts : [];
+}
+
+function persistPlacementDecisionPredicateViolations(source: string): string[] {
+  const facts = persistPlacementDecisionPredicateFacts(source);
+  const actual = facts[0]?.conjuncts ?? [];
+  return facts.length === 1 && facts[0]!.exactMutation &&
+    actual.length === exactPlacementDecisionWhereConjuncts.length &&
+    actual.every((conjunct, index) => conjunct === exactPlacementDecisionWhereConjuncts[index])
+    ? []
+    : ["persistPlacementDecision:one-shot-predicate"];
 }
 
 function forbiddenLeaseContinuationIdentifiers(source: string): string[] {
@@ -1260,7 +1611,7 @@ function platformGuardOrderViolations(
   const helperKindAt = (name: string, useNode: ts.Node): HelperKind => {
     const use = useNode.getStart(file);
     const visible = helperDeclarations.filter((declaration) => declaration.name === name &&
-      declaration.start <= use && declaration.scopeStart <= use && use <= declaration.scopeEnd)
+      declaration.scopeStart <= use && use <= declaration.scopeEnd)
       .sort((left, right) =>
         (left.scopeEnd - left.scopeStart) - (right.scopeEnd - right.scopeStart) || right.start - left.start);
     return visible[0]?.kind ?? null;
@@ -1598,6 +1949,147 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
     expect(flagBlock).not.toContain("appDb: db");
   });
 
+  it("binds the shared-platform enrollment guard to the exact outer production declaration", () => {
+    const validModule = `function createWorkerEnrollmentService() {
+      const requireCurrentPlatformPhysicalAuthority = async () => undefined;
+      const completeEnrollment = async (authority: any, authoritativeOrganizationId: string | null) => {
+        const sharedPlatformProfile = authoritativeOrganizationId !== null && target.scope === "platform";
+        if (sharedPlatformProfile) {
+          await requireCurrentPlatformPhysicalAuthority({ target });
+        } else if (authoritativeOrganizationId === null && target.scope === "platform") {
+          await acquirePlatformTargetAuthorityExclusive(authority, target.id);
+        }
+        await authority.advanceTargetGeneration();
+        await authority.rotateWorker();
+        await authority.insertWorker();
+        await authority.retireBootstrapCredential();
+      };
+    }`;
+    expect.soft(enrollmentAuthorityFlowViolations(validModule)).toEqual([]);
+    expect.soft(enrollmentAuthorityFlowViolations(validModule.replace(
+      "const sharedPlatformProfile =",
+      "const requireCurrentPlatformPhysicalAuthority = async () => undefined; const sharedPlatformProfile =",
+    ))).toContain("shared-platform-guard-binding");
+    expect.soft(enrollmentAuthorityFlowViolations(validModule.replace(
+      "await requireCurrentPlatformPhysicalAuthority({ target });",
+      "await requireCurrentPlatformPhysicalAuthority({ target }); " +
+        "function requireCurrentPlatformPhysicalAuthority() { return undefined; }",
+    ))).toContain("shared-platform-guard-binding");
+    expect.soft(enrollmentAuthorityFlowViolations(validModule.replace(
+      "function createWorkerEnrollmentService() {\n      const requireCurrentPlatformPhysicalAuthority = async () => undefined;",
+      'import { requireCurrentPlatformPhysicalAuthority } from "./fake-worker-authority.js";',
+    ))).toContain("shared-platform-guard-binding");
+  });
+
+  it("discovers every exempt repository delegate call site and its promise observation", () => {
+    const fixture = [{
+      file: "server/src/services/delegate-fixture.ts",
+      source: `async function guarded(authority: any) {
+        await authority.rotateWorker({});
+      }
+      async function injectedUnguarded(repos: any) {
+        repos.workerEnrollment.rotateWorker({});
+      }
+      async function returned(repos: any) {
+        return repos.workerEnrollment.revokeTargetAuthority({});
+      }
+      async function computed(repos: any) {
+        await repos.workerEnrollment["insertWorker"]({});
+      }
+      async function aliased(repos: any) {
+        const { advanceTargetGeneration: advance } = repos.workerEnrollment;
+        await advance({});
+      }
+      async function bound(repos: any) {
+        const retire = repos.workerEnrollment.retireBootstrapCredential.bind(repos.workerEnrollment);
+        await retire({});
+      }`,
+    }];
+    expect(repositoryDelegateCallSiteInventory(fixture)).toEqual([
+      "server/src/services/delegate-fixture.ts#aliased:advanceTargetGeneration:awaited",
+      "server/src/services/delegate-fixture.ts#bound:retireBootstrapCredential:awaited",
+      "server/src/services/delegate-fixture.ts#computed:insertWorker:awaited",
+      "server/src/services/delegate-fixture.ts#guarded:rotateWorker:awaited",
+      "server/src/services/delegate-fixture.ts#injectedUnguarded:rotateWorker:unobserved",
+      "server/src/services/delegate-fixture.ts#returned:revokeTargetAuthority:returned",
+    ]);
+  });
+
+  it("requires the tenant placement-profile delegate to follow its awaited row lock and scope denial", () => {
+    const validFlow = `async function ratifyTenantExecutionTargetPlacementProfile(input: any) {
+      return runInTenant(input.appDb, input.organizationId, async (repos: any) => {
+        const target = await repos.workerEnrollment.lockPlacementProfileTarget(input.executionTargetId);
+        if (!target || target.organizationId !== input.organizationId || target.scope === "platform") {
+          throw new Error("execution_target_not_found");
+        }
+        const updated = await repos.workerEnrollment.ratifyPlacementProfile({ executionTargetId: target.id });
+        return updated;
+      });
+    }`;
+    expect.soft(placementProfileDelegateFlowViolations(validFlow)).toEqual([]);
+    expect.soft(placementProfileDelegateFlowViolations(validFlow.replace(
+      "const target = await repos.workerEnrollment.lockPlacementProfileTarget(input.executionTargetId);",
+      "const target = repos.workerEnrollment.lockPlacementProfileTarget(input.executionTargetId);",
+    ))).toContain("placement-profile-lock");
+    expect.soft(placementProfileDelegateFlowViolations(validFlow.replace(
+      "const target = await repos.workerEnrollment.lockPlacementProfileTarget(input.executionTargetId);",
+      "let target; try { target = await repos.workerEnrollment.lockPlacementProfileTarget(input.executionTargetId); throw failure; } catch {}",
+    ))).toContain("placement-profile-lock");
+    expect.soft(placementProfileDelegateFlowViolations(validFlow.replace(
+      "const updated = await repos.workerEnrollment.ratifyPlacementProfile",
+      "const updated = repos.workerEnrollment.ratifyPlacementProfile",
+    ))).toContain("ratifyPlacementProfile:observation");
+    expect.soft(placementProfileDelegateFlowViolations(validFlow.replace(
+      ' || target.scope === "platform"',
+      "",
+    ))).toContain("placement-profile-scope-denial");
+  });
+
+  it("requires the placement decision writer's exact one-shot null predicate", () => {
+    const validWriter = `const repository = {
+      async persistPlacementDecision(input: any) {
+        const currentOwnerAuthority = undefined;
+        return tx.update(jobAttempts).set({ placementDecidedAt: input.placementDecidedAt }).where(and(
+          eq(jobAttempts.organizationId, input.organizationId),
+          eq(jobAttempts.companyId, input.companyId),
+          eq(jobAttempts.jobId, input.jobId),
+          eq(jobAttempts.id, input.attemptId),
+          isNull(jobAttempts.placementDecidedAt),
+          currentOwnerAuthority,
+        ));
+      },
+    };`;
+    expect.soft(persistPlacementDecisionWhereConjuncts(validWriter)).toEqual(exactPlacementDecisionWhereConjuncts);
+    expect.soft(persistPlacementDecisionPredicateViolations(validWriter)).toEqual([]);
+    expect.soft(persistPlacementDecisionPredicateViolations(validWriter.replace(
+      "          isNull(jobAttempts.placementDecidedAt),\n",
+      "",
+    ))).toEqual(["persistPlacementDecision:one-shot-predicate"]);
+    expect.soft(persistPlacementDecisionPredicateViolations(validWriter.replace(
+      "isNull(jobAttempts.placementDecidedAt)",
+      "isNotNull(jobAttempts.placementDecidedAt)",
+    ))).toEqual(["persistPlacementDecision:one-shot-predicate"]);
+    const decoyWriter = `const repository = {
+      async persistPlacementDecision(input: any) {
+        const currentOwnerAuthority = undefined;
+        await tx.update(jobAttempts).set({ placementDecidedAt: input.placementDecidedAt }).where(and(
+          eq(jobAttempts.organizationId, input.organizationId)
+        ));
+        return audit.update(jobAttempts).where(and(
+          eq(jobAttempts.organizationId, input.organizationId),
+          eq(jobAttempts.companyId, input.companyId),
+          eq(jobAttempts.jobId, input.jobId),
+          eq(jobAttempts.id, input.attemptId),
+          isNull(jobAttempts.placementDecidedAt),
+          currentOwnerAuthority,
+        ));
+      },
+    };`;
+    expect.soft(persistPlacementDecisionPredicateViolations(decoyWriter)).toEqual([
+      "persistPlacementDecision:one-shot-predicate",
+    ]);
+  });
+
   it("enforces an exhaustive authority-writer allowlist and target-worker-exclusive lock order", () => {
     const dbHelper = new URL("../../../packages/db/src/platform-target-authority-lock.ts", import.meta.url);
     expect(existsSync(dbHelper), "platform-target lock helper must exist before writers can be guarded").toBe(true);
@@ -1875,6 +2367,13 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
       await acquirePlatformTargetAuthorityExclusive();
       await tx.update(executionTargets).set({ status: "offline" });
     }`;
+    const hoistedExclusiveBypass = authorityHelperImport + `async function hoistedExclusiveBypass(tx: any) {
+      await tx.select().from(executionTargets).where(ok).for("update");
+      await tx.select().from(workers).where(ok).for("update");
+      await acquirePlatformTargetAuthorityExclusive();
+      await tx.update(executionTargets).set({ status: "offline" });
+      function acquirePlatformTargetAuthorityExclusive() { return Promise.resolve(); }
+    }`;
     const shadowedCombinedBypass = `async function shadowedCombinedBypass(tx: any) {
       const lockPlatformAuthorityForMutation = async () => true;
       await lockPlatformAuthorityForMutation();
@@ -1938,6 +2437,7 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
     expect.soft(platformGuardOrderViolations(workerUnguarded)).toEqual(["workerUnguarded"]);
     expect.soft(platformGuardOrderViolations(tryCatchBypass)).toEqual(["tryCatchBypass"]);
     expect.soft(platformGuardOrderViolations(shadowedExclusiveBypass)).toContain("shadowedExclusiveBypass");
+    expect.soft(platformGuardOrderViolations(hoistedExclusiveBypass)).toContain("hoistedExclusiveBypass");
     expect.soft(platformGuardOrderViolations(shadowedCombinedBypass)).toContain("shadowedCombinedBypass");
     expect.soft(platformGuardOrderViolations(fakeSuffixImportBypass)).toContain("fakeSuffixImportBypass");
     expect.soft(platformGuardOrderViolations(unrelatedThisDelegateBypass)).toContain("unrelatedThisDelegateBypass");
@@ -1949,6 +2449,14 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
     expect.soft(platformGuardOrderViolations(preboundGuardBypass)).toContain("preboundGuardBypass");
 
     const sourceByFile = new Map(sourceFiles.map((entry) => [entry.file, entry.source]));
+    expect.soft(repositoryDelegateCallSiteInventory(sourceFiles)).toEqual([
+      "server/src/middleware/worker-session-auth.ts#revokeTenantWorkerAuthority:revokeTargetAuthority:returned",
+      "server/src/services/execution-targets.ts#ratifyTenantExecutionTargetPlacementProfile:ratifyPlacementProfile:awaited",
+      "server/src/services/worker-enrollment.ts#completeEnrollment:advanceTargetGeneration:awaited",
+      "server/src/services/worker-enrollment.ts#completeEnrollment:insertWorker:awaited",
+      "server/src/services/worker-enrollment.ts#completeEnrollment:retireBootstrapCredential:awaited",
+      "server/src/services/worker-enrollment.ts#completeEnrollment:rotateWorker:awaited",
+    ]);
     const exactNonPlatformWriters = new Set([
       "server/src/services/execution-targets.ts#registerWorkerHeartbeat",
       "server/src/services/execution-targets.ts#revokeExecutionTargetWorkerToken",
@@ -2003,6 +2511,15 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
       ).toEqual([]);
     }
     const targetWriters = sourceByFile.get("server/src/services/execution-targets.ts")!;
+    expect.soft(placementProfileDelegateFlowViolations(targetWriters)).toEqual([]);
+    const tenantRevocation = namedFunctionAuditSource(
+      sourceByFile.get("server/src/middleware/worker-session-auth.ts")!,
+      "revokeTenantWorkerAuthority",
+    ).replace(/\s+/g, "");
+    expect.soft(tenantRevocation).toContain(
+      "returnrunInTenant(input.appDb,input.organizationId,(repos)=>repos.workerEnrollment.revokeTargetAuthority({",
+    );
+    expect.soft(tenantRevocation).toContain("executionTargetId:input.executionTargetId");
     const workerRepository = sourceByFile.get(
       "packages/db/src/repositories/tenant/worker-enrollment.ts",
     )!;
@@ -2044,7 +2561,7 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
     }
     const exclusiveCalls = enrollmentFacts.filter((fact) => fact.name === "acquirePlatformTargetAuthorityExclusive");
     expect.soft(exclusiveCalls).toEqual([expect.objectContaining({ awaited: true })]);
-    expect.soft(enrollmentAuthorityFlowViolations(completeEnrollment)).toEqual([]);
+    expect.soft(enrollmentAuthorityFlowViolations(enrollmentService)).toEqual([]);
     const validEnrollmentFlow = `const completeEnrollment = async (authority: any, authoritativeOrganizationId: string | null) => {
       const sharedPlatformProfile = authoritativeOrganizationId !== null && target.scope === "platform";
       if (sharedPlatformProfile) {
@@ -2057,24 +2574,28 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
       await authority.insertWorker();
       await authority.retireBootstrapCredential();
     };`;
-    expect.soft(enrollmentAuthorityFlowViolations(validEnrollmentFlow)).toEqual([]);
-    expect.soft(enrollmentAuthorityFlowViolations(validEnrollmentFlow.replace(
+    const validEnrollmentModule = `function createWorkerEnrollmentService() {
+      const requireCurrentPlatformPhysicalAuthority = async () => undefined;
+      ${validEnrollmentFlow}
+    }`;
+    expect.soft(enrollmentAuthorityFlowViolations(validEnrollmentModule)).toEqual([]);
+    expect.soft(enrollmentAuthorityFlowViolations(validEnrollmentModule.replace(
       "await requireCurrentPlatformPhysicalAuthority({ target });",
       "maybe && await requireCurrentPlatformPhysicalAuthority({ target });",
     ))).toContain("shared-platform-guard");
-    expect.soft(enrollmentAuthorityFlowViolations(validEnrollmentFlow.replace(
+    expect.soft(enrollmentAuthorityFlowViolations(validEnrollmentModule.replace(
       "await requireCurrentPlatformPhysicalAuthority({ target });",
       "try { await requireCurrentPlatformPhysicalAuthority({ target }); throw failure; } catch {}",
     ))).toContain("shared-platform-guard");
-    expect.soft(enrollmentAuthorityFlowViolations(validEnrollmentFlow.replace(
+    expect.soft(enrollmentAuthorityFlowViolations(validEnrollmentModule.replace(
       "await acquirePlatformTargetAuthorityExclusive(authority, target.id);",
       "acquirePlatformTargetAuthorityExclusive(authority, target.id);",
     ))).toContain("null-platform-exclusive");
-    expect.soft(enrollmentAuthorityFlowViolations(validEnrollmentFlow.replace(
+    expect.soft(enrollmentAuthorityFlowViolations(validEnrollmentModule.replace(
       "await authority.rotateWorker();",
       "await Promise.all([authority.rotateWorker()]);",
     ))).toContain("mutation:rotateWorker");
-    expect.soft(enrollmentAuthorityFlowViolations(validEnrollmentFlow.replace(
+    expect.soft(enrollmentAuthorityFlowViolations(validEnrollmentModule.replace(
       "authoritativeOrganizationId !== null && target.scope === \"platform\"",
       "authoritativeOrganizationId !== null || target.scope === \"platform\"",
     ))).toContain("shared-platform-condition");
@@ -2647,6 +3168,10 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
       new URL("../../../packages/db/src/repositories/tenant/job-control.ts", import.meta.url),
       "utf8",
     );
+    expect.soft(
+      persistPlacementDecisionPredicateViolations(repository),
+      "persistPlacementDecision must remain one-shot and scoped to the exact tenant/job/attempt identity",
+    ).toEqual([]);
     const certificateMethods = [
       ["upsertLeaseRejectionCertificates", ["workerLeaseRejections:insert"]],
       ["cleanupLeaseRejectionCertificates", ["workerLeaseRejections:delete"]],
@@ -2760,5 +3285,21 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
       fakeFluentReceiver,
       "upsertLeaseRejectionCertificates",
     )).toEqual(["authority.delete", "this.insert"]);
+    const aliasedFluentReceiver = `async function upsertLeaseRejectionCertificates(tx: any, input: any) {
+      const authority = { map: async () => undefined };
+      const eq = mutateAuthority;
+      await authority.map();
+      await eq();
+      await tx.insert(workerLeaseRejections).values({
+        organizationId: input.organizationId,
+        workerId: input.workerId,
+        targetId: input.targetId,
+        attemptId: input.attemptId,
+      });
+    }`;
+    expect.soft(namedFunctionUnexpectedCertificateCalls(
+      aliasedFluentReceiver,
+      "upsertLeaseRejectionCertificates",
+    )).toEqual(["authority.map", "eq"]);
   });
 });

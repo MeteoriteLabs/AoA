@@ -475,6 +475,92 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
     expect(state).toEqual({ leaseStatus: "offered", attemptStatus: "offered", receipts: 0 });
   }
 
+  async function installOfferRestartGate(input: {
+    attemptId: string;
+    allowOnPass: 3 | 4;
+    stem: "success" | "exhaustion";
+  }): Promise<{ readPasses(): Promise<number>; drop(): Promise<void> }> {
+    const { admin } = guard();
+    const sequenceName = `job003_offer_restart_${input.stem}_seq`;
+    const functionName = `job003_offer_restart_${input.stem}_fn`;
+    const triggerName = `job003_offer_restart_${input.stem}_trigger`;
+    // nextval is deliberately nontransactional: it is the independent oracle
+    // for head passes whose tenant transactions must otherwise leave no trace.
+    await admin.unsafe(`CREATE SEQUENCE ${sequenceName} START WITH 1`);
+    await admin.unsafe(`GRANT USAGE, SELECT ON SEQUENCE ${sequenceName} TO aoa_app`);
+    await admin.unsafe(`CREATE FUNCTION ${functionName}() RETURNS trigger
+      LANGUAGE plpgsql AS $$
+      DECLARE restart_pass bigint;
+      BEGIN
+        restart_pass := nextval('${sequenceName}'::regclass);
+        IF restart_pass < ${input.allowOnPass} THEN
+          RETURN NULL;
+        END IF;
+        RETURN NEW;
+      END $$`);
+    await admin.unsafe(`CREATE TRIGGER ${triggerName}
+      BEFORE UPDATE OF status ON job_attempts
+      FOR EACH ROW WHEN (
+        OLD.id = '${input.attemptId}'::uuid
+        AND OLD.status = 'pending'
+        AND NEW.status = 'offered'
+      ) EXECUTE FUNCTION ${functionName}()`);
+    return {
+      async readPasses() {
+        const [row] = await admin.unsafe<Array<{ passes: number }>>(
+          `SELECT CASE WHEN is_called THEN last_value ELSE 0 END::int AS passes FROM ${sequenceName}`,
+        );
+        return Number(row?.passes ?? 0);
+      },
+      async drop() {
+        await admin.unsafe(`DROP TRIGGER IF EXISTS ${triggerName} ON job_attempts`);
+        await admin.unsafe(`DROP FUNCTION IF EXISTS ${functionName}()`);
+        await admin.unsafe(`DROP SEQUENCE IF EXISTS ${sequenceName}`);
+      },
+    };
+  }
+
+  async function installCertificateWriteCounter(input: {
+    attemptId: string;
+    stem: "success" | "exhaustion";
+  }): Promise<{ readWrites(): Promise<number>; drop(): Promise<void> } | null> {
+    const { admin } = guard();
+    const [table] = await admin<{ name: string | null }[]>`
+      SELECT to_regclass('public.worker_lease_rejections')::text AS name`;
+    if (table?.name !== "worker_lease_rejections") return null;
+    const sequenceName = `job003_certificate_restart_${input.stem}_seq`;
+    const functionName = `job003_certificate_restart_${input.stem}_fn`;
+    const triggerName = `job003_certificate_restart_${input.stem}_trigger`;
+    // Count the real repository insert before rollback erases the certificate.
+    await admin.unsafe(`CREATE SEQUENCE ${sequenceName} START WITH 1`);
+    await admin.unsafe(`GRANT USAGE, SELECT ON SEQUENCE ${sequenceName} TO aoa_app`);
+    await admin.unsafe(`CREATE FUNCTION ${functionName}() RETURNS trigger
+      LANGUAGE plpgsql AS $$
+      BEGIN
+        PERFORM nextval('${sequenceName}'::regclass);
+        RETURN NEW;
+      END $$`);
+    await admin.unsafe(`CREATE TRIGGER ${triggerName}
+      BEFORE INSERT ON worker_lease_rejections
+      FOR EACH ROW WHEN (
+        NEW.worker_id = '${WORKER}'::uuid
+        AND NEW.attempt_id = '${input.attemptId}'::uuid
+      ) EXECUTE FUNCTION ${functionName}()`);
+    return {
+      async readWrites() {
+        const [row] = await admin.unsafe<Array<{ writes: number }>>(
+          `SELECT CASE WHEN is_called THEN last_value ELSE 0 END::int AS writes FROM ${sequenceName}`,
+        );
+        return Number(row?.writes ?? 0);
+      },
+      async drop() {
+        await admin.unsafe(`DROP TRIGGER IF EXISTS ${triggerName} ON worker_lease_rejections`);
+        await admin.unsafe(`DROP FUNCTION IF EXISTS ${functionName}()`);
+        await admin.unsafe(`DROP SEQUENCE IF EXISTS ${sequenceName}`);
+      },
+    };
+  }
+
   beforeAll(async () => {
     try {
       dataDir = await mkdtemp(join(tmpdir(), "aoa-job-leasing-"));
@@ -621,6 +707,101 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
     expect(first.outcome === "offer" ? first.body.job.jobId : null).toBe(oldest.jobId);
     expect(second.outcome === "offer" ? second.body.job.jobId : null).toBe(middle.jobId);
     expect(third.outcome).toBe("no_work");
+  });
+
+  it("preserves PostgreSQL microseconds and applies available-at, priority, created-at, then id ordering", async () => {
+    const { admin, app } = guard();
+    await resetRuntimeRows();
+    const availableFirst = await seedPlacedJob({ ordinal: 1100 });
+    const priorityFirst = await seedPlacedJob({ ordinal: 1101 });
+    const createdFirst = await seedPlacedJob({ ordinal: 1102 });
+    const idFirst = await seedPlacedJob({ ordinal: 1103 });
+    const idLast = await seedPlacedJob({ ordinal: 1104 });
+
+    await admin`UPDATE jobs AS job SET
+        available_at = ordering.available_at,
+        priority = ordering.priority,
+        created_at = ordering.created_at,
+        updated_at = ordering.created_at
+      FROM (VALUES
+        (${availableFirst.jobId}::uuid, '2020-01-01 00:00:00.000001+00'::timestamptz,
+          1, '2020-01-01 00:00:00.000009+00'::timestamptz),
+        (${priorityFirst.jobId}::uuid, '2020-01-01 00:00:00.000002+00'::timestamptz,
+          99, '2020-01-01 00:00:00.000009+00'::timestamptz),
+        (${createdFirst.jobId}::uuid, '2020-01-01 00:00:00.000002+00'::timestamptz,
+          50, '2020-01-01 00:00:00.000003+00'::timestamptz),
+        (${idFirst.jobId}::uuid, '2020-01-01 00:00:00.000002+00'::timestamptz,
+          50, '2020-01-01 00:00:00.000004+00'::timestamptz),
+        (${idLast.jobId}::uuid, '2020-01-01 00:00:00.000002+00'::timestamptz,
+          50, '2020-01-01 00:00:00.000004+00'::timestamptz)
+      ) AS ordering(id, available_at, priority, created_at)
+      WHERE job.id = ordering.id`;
+
+    const seededPrecision = await admin<{
+      id: string;
+      availableAt: string;
+      createdAt: string;
+      priority: number;
+    }[]>`SELECT id::text AS id,
+        to_char(available_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US') AS "availableAt",
+        to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US') AS "createdAt",
+        priority::int AS priority
+      FROM jobs
+      WHERE id IN (${availableFirst.jobId}, ${priorityFirst.jobId}, ${createdFirst.jobId},
+        ${idFirst.jobId}, ${idLast.jobId})
+      ORDER BY id`;
+    expect.soft(seededPrecision).toEqual([
+      {
+        id: "a3100000-0000-4000-8000-000000001100",
+        availableAt: "2020-01-01 00:00:00.000001",
+        createdAt: "2020-01-01 00:00:00.000009",
+        priority: 1,
+      },
+      {
+        id: "a3100000-0000-4000-8000-000000001101",
+        availableAt: "2020-01-01 00:00:00.000002",
+        createdAt: "2020-01-01 00:00:00.000009",
+        priority: 99,
+      },
+      {
+        id: "a3100000-0000-4000-8000-000000001102",
+        availableAt: "2020-01-01 00:00:00.000002",
+        createdAt: "2020-01-01 00:00:00.000003",
+        priority: 50,
+      },
+      {
+        id: "a3100000-0000-4000-8000-000000001103",
+        availableAt: "2020-01-01 00:00:00.000002",
+        createdAt: "2020-01-01 00:00:00.000004",
+        priority: 50,
+      },
+      {
+        id: "a3100000-0000-4000-8000-000000001104",
+        availableAt: "2020-01-01 00:00:00.000002",
+        createdAt: "2020-01-01 00:00:00.000004",
+        priority: 50,
+      },
+    ]);
+
+    const service = createJobLeasingService({ appDb: app.db });
+    const offeredJobIds: string[] = [];
+    for (let poll = 1; poll <= 5; poll += 1) {
+      const result = await service.poll({
+        auth: auth(`native-microsecond-order-${poll}`),
+        request: pollRequest(WORKER, TARGET, `native-microsecond-order-${poll}`),
+      });
+      offeredJobIds.push(result.outcome === "offer" ? result.body.job.jobId : result.outcome);
+      if (result.outcome === "offer") {
+        await admin`DELETE FROM leases WHERE id = ${result.body.leaseId}`;
+      }
+    }
+    expect(offeredJobIds).toEqual([
+      "a3100000-0000-4000-8000-000000001100",
+      "a3100000-0000-4000-8000-000000001101",
+      "a3100000-0000-4000-8000-000000001102",
+      "a3100000-0000-4000-8000-000000001103",
+      "a3100000-0000-4000-8000-000000001104",
+    ]);
   });
 
   it("accounts live offers by workload class so a batch lease does not consume a browser slot", async () => {
@@ -1626,6 +1807,174 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
         .toMatchObject({ count: 1, eligibility_version: 1, static_context_hash: expectedCurrentHash });
     }
   }, 180_000);
+
+  it("restarts the global head twice and offers on the third pass of the same real poll", async () => {
+    const { admin, app } = guard();
+    await resetRuntimeRows();
+    const staticHead = await seedPlacedJob({
+      ordinal: 1110,
+      requiredCapabilities: ["sandbox.filtered_egress"],
+      availableAt: new Date(Date.now() - 120_000),
+    });
+    const eligible = await seedPlacedJob({
+      ordinal: 1111,
+      availableAt: new Date(Date.now() - 60_000),
+    });
+    const offerGate = await installOfferRestartGate({
+      attemptId: eligible.attemptId,
+      allowOnPass: 3,
+      stem: "success",
+    });
+    const certificateCounter = await installCertificateWriteCounter({
+      attemptId: staticHead.attemptId,
+      stem: "success",
+    });
+    const service = createJobLeasingService({ appDb: app.db });
+    let pollResult: Awaited<ReturnType<typeof service.poll>> | undefined;
+    let pollFailure: unknown;
+    let restartPasses = 0;
+    let certificateWrites: number | null = null;
+    try {
+      pollResult = await service.poll({
+        auth: auth("head-restart-third-pass"),
+        request: pollRequest(WORKER, TARGET, "head-restart-third-pass"),
+      });
+    } catch (error) {
+      pollFailure = error;
+    } finally {
+      restartPasses = await offerGate.readPasses();
+      certificateWrites = certificateCounter ? await certificateCounter.readWrites() : null;
+      await offerGate.drop();
+      await certificateCounter?.drop();
+    }
+
+    expect.soft(pollFailure).toBeUndefined();
+    expect.soft(restartPasses, "the real conditional offer must be attempted exactly three times").toBe(3);
+    expect.soft(
+      certificateWrites,
+      "the static predecessor must be evaluated and written inside each rolled-back head pass",
+    ).toBe(3);
+    expect.soft(pollResult?.outcome).toBe("offer");
+    expect.soft(pollResult?.outcome === "offer" ? pollResult.body.job.jobId : null)
+      .toBe("a3100000-0000-4000-8000-000000001111");
+
+    const [state] = await admin<{
+      leases: number;
+      pending: number;
+      offered: number;
+      proofs: number;
+    }[]>`SELECT
+      (SELECT count(*)::int FROM leases
+        WHERE attempt_id IN (${staticHead.attemptId}, ${eligible.attemptId})) AS leases,
+      (SELECT count(*)::int FROM job_attempts
+        WHERE id IN (${staticHead.attemptId}, ${eligible.attemptId}) AND status = 'pending') AS pending,
+      (SELECT count(*)::int FROM job_attempts
+        WHERE id IN (${staticHead.attemptId}, ${eligible.attemptId}) AND status = 'offered') AS offered,
+      (SELECT count(*)::int FROM worker_proof_replays
+        WHERE proof_id = 'head-restart-third-pass') AS proofs`;
+    expect.soft(state).toEqual({ leases: 1, pending: 1, offered: 1, proofs: 1 });
+
+    const [certificateTable] = await admin<{ name: string | null }[]>`
+      SELECT to_regclass('public.worker_lease_rejections')::text AS name`;
+    expect.soft(certificateTable?.name).toBe("worker_lease_rejections");
+    if (certificateTable?.name === "worker_lease_rejections") {
+      const [certificates] = await admin<{ staticHead: number; eligible: number }[]>`SELECT
+        (SELECT count(*)::int FROM worker_lease_rejections
+          WHERE worker_id = ${WORKER} AND attempt_id = ${staticHead.attemptId}) AS "staticHead",
+        (SELECT count(*)::int FROM worker_lease_rejections
+          WHERE worker_id = ${WORKER} AND attempt_id = ${eligible.attemptId}) AS eligible`;
+      expect.soft(certificates).toEqual({ staticHead: 1, eligible: 0 });
+    }
+  }, 60_000);
+
+  it("bounds all three static head restarts and rolls the exhausted poll transaction back", async () => {
+    const { admin, app } = guard();
+    await resetRuntimeRows();
+    const staticHead = await seedPlacedJob({
+      ordinal: 1120,
+      requiredCapabilities: ["sandbox.filtered_egress"],
+      availableAt: new Date(Date.now() - 120_000),
+    });
+    const eligible = await seedPlacedJob({
+      ordinal: 1121,
+      availableAt: new Date(Date.now() - 60_000),
+    });
+    const attemptsBefore = await admin<{ id: string; status: string; updatedAt: string }[]>`
+      SELECT id::text AS id, status,
+        to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US') AS "updatedAt"
+      FROM job_attempts WHERE id IN (${staticHead.attemptId}, ${eligible.attemptId}) ORDER BY id`;
+    const [workerBefore] = await admin<{ lastSeenAt: string }[]>`
+      SELECT to_char(last_seen_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US') AS "lastSeenAt"
+      FROM workers WHERE id = ${WORKER}`;
+    const offerGate = await installOfferRestartGate({
+      attemptId: eligible.attemptId,
+      allowOnPass: 4,
+      stem: "exhaustion",
+    });
+    const certificateCounter = await installCertificateWriteCounter({
+      attemptId: staticHead.attemptId,
+      stem: "exhaustion",
+    });
+    const service = createJobLeasingService({ appDb: app.db });
+    let pollResult: Awaited<ReturnType<typeof service.poll>> | undefined;
+    let pollFailure: unknown;
+    let restartPasses = 0;
+    let certificateWrites: number | null = null;
+    try {
+      pollResult = await service.poll({
+        auth: auth("head-restart-exhausted"),
+        request: pollRequest(WORKER, TARGET, "head-restart-exhausted"),
+      });
+    } catch (error) {
+      pollFailure = error;
+    } finally {
+      restartPasses = await offerGate.readPasses();
+      certificateWrites = certificateCounter ? await certificateCounter.readWrites() : null;
+      await offerGate.drop();
+      await certificateCounter?.drop();
+    }
+
+    expect.soft(restartPasses, "the fourth conditional offer must never run").toBe(3);
+    expect.soft(certificateWrites, "each failed pass must reach the real static-certificate write").toBe(3);
+    expect.soft(pollResult).toBeUndefined();
+    expect.soft(pollFailure).toMatchObject({ code: "internal_unavailable" });
+
+    const [state] = await admin<{
+      leases: number;
+      pending: number;
+      offered: number;
+      proofs: number;
+    }[]>`SELECT
+      (SELECT count(*)::int FROM leases
+        WHERE attempt_id IN (${staticHead.attemptId}, ${eligible.attemptId})) AS leases,
+      (SELECT count(*)::int FROM job_attempts
+        WHERE id IN (${staticHead.attemptId}, ${eligible.attemptId}) AND status = 'pending') AS pending,
+      (SELECT count(*)::int FROM job_attempts
+        WHERE id IN (${staticHead.attemptId}, ${eligible.attemptId}) AND status = 'offered') AS offered,
+      (SELECT count(*)::int FROM worker_proof_replays
+        WHERE proof_id = 'head-restart-exhausted') AS proofs`;
+    expect.soft(state).toEqual({ leases: 0, pending: 2, offered: 0, proofs: 0 });
+    const attemptsAfter = await admin<{ id: string; status: string; updatedAt: string }[]>`
+      SELECT id::text AS id, status,
+        to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US') AS "updatedAt"
+      FROM job_attempts WHERE id IN (${staticHead.attemptId}, ${eligible.attemptId}) ORDER BY id`;
+    const [workerAfter] = await admin<{ lastSeenAt: string }[]>`
+      SELECT to_char(last_seen_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US') AS "lastSeenAt"
+      FROM workers WHERE id = ${WORKER}`;
+    expect.soft(attemptsAfter).toEqual(attemptsBefore);
+    expect.soft(workerAfter).toEqual(workerBefore);
+
+    const [certificateTable] = await admin<{ name: string | null }[]>`
+      SELECT to_regclass('public.worker_lease_rejections')::text AS name`;
+    expect.soft(certificateTable?.name).toBe("worker_lease_rejections");
+    if (certificateTable?.name === "worker_lease_rejections") {
+      const [certificates] = await admin<{ count: number }[]>`
+        SELECT count(*)::int AS count FROM worker_lease_rejections
+        WHERE worker_id = ${WORKER}
+          AND attempt_id IN (${staticHead.attemptId}, ${eligible.attemptId})`;
+      expect.soft(certificates?.count).toBe(0);
+    }
+  }, 60_000);
 
   it("rolls back predecessor certificates when lease insert fails and never certifies invariant failures", async () => {
     const { admin, app } = guard();

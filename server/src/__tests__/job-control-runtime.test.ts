@@ -149,6 +149,43 @@ describe("JOB-003 flag-on job-control runtime", () => {
     expect.soft(scheduler.signal({ organizationId: orgA, targetId: targetA })).toBe(true);
   });
 
+  it("purges expired readiness at admission before capacity rejection", () => {
+    let nowMs = 0;
+    const scheduler = readySignalScheduler({
+      maxOrganizationShards: 1,
+      maxTargetsPerOrganization: 1,
+      maxSignalsGlobal: 1,
+      signalTtlMs: 1_000,
+      monotonicNow: () => nowMs,
+    });
+    expect.soft(typeof scheduler.signal).toBe("function");
+    expect.soft(typeof scheduler.consume).toBe("function");
+    if (!scheduler.signal || !scheduler.consume) return;
+
+    const firstOrganizationId = "c3110000-0000-4000-8000-000000000001";
+    const replacementOrganizationId = "c3110000-0000-4000-8000-000000000004";
+    const firstTargetId = "c3110000-0000-4000-8000-000000000002";
+    const replacementTargetId = "c3110000-0000-4000-8000-000000000003";
+    expect.soft(scheduler.signal({ organizationId: firstOrganizationId, targetId: firstTargetId })).toBe(true);
+
+    // No consume/size/read may perform cleanup before these admission calls.
+    nowMs = 999;
+    expect.soft(scheduler.signal({
+      organizationId: replacementOrganizationId,
+      targetId: replacementTargetId,
+    })).toBe(false);
+    expect.soft(scheduler.size()).toEqual({ organizations: 1, targets: 1, signals: 1 });
+
+    nowMs = 1_000;
+    expect.soft(scheduler.signal({
+      organizationId: replacementOrganizationId,
+      targetId: replacementTargetId,
+    })).toBe(true);
+    expect.soft(scheduler.size()).toEqual({ organizations: 1, targets: 1, signals: 1 });
+    expect.soft(scheduler.consume(firstOrganizationId, firstTargetId)).toBe(false);
+    expect.soft(scheduler.consume(replacementOrganizationId, replacementTargetId)).toBe(true);
+  });
+
   it("pins scheduler defaults/hard ceilings and rejects non-finite, non-positive, and fractional configuration", () => {
     for (const invalid of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 1.5]) {
       expect(() => readySignalScheduler({ maxOrganizationShards: invalid })).toThrow();

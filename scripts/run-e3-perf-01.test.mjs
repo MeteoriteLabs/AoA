@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 const REQUIRED_ASSETS = [
   new URL("./run-e3-perf-01.mjs", import.meta.url),
@@ -25,6 +26,8 @@ const GATE_TREE40 = "8".repeat(40);
 const MANIFEST_BLOB40 = "9".repeat(40);
 const MANIFEST_SHA256 = "c".repeat(64);
 const EVIDENCE_ARCHIVE_PATH = "e3-perf-01-evidence.json";
+const CAMPAIGN_NOW = "2026-08-11T01:05:00.000Z";
+const MINIMUM_RETENTION_MS = 180 * 24 * 60 * 60 * 1_000;
 const REVIEWED_BENCHMARK_ENVIRONMENT = Object.freeze({
   NODE_ENV: "test",
   TZ: "UTC",
@@ -127,6 +130,18 @@ function inputFact(path) {
   };
 }
 
+function reviewedEvidenceFact(path) {
+  return {
+    path,
+    status: "M",
+    mode: "100644",
+    oldBlob: "a".repeat(40),
+    newBlob: "b".repeat(40),
+    sha256: "d".repeat(64),
+    reviewEvidenceBlob: "e".repeat(40),
+  };
+}
+
 function completeInputInventoryFixture() {
   return COMPLETE_PINNED_INPUT_PATHS.map(inputFact);
 }
@@ -137,6 +152,80 @@ test("E3-PERF-01 requires the reviewed runner, strict schemas, and dedicated loa
     [],
     "required E3-PERF-01 implementation assets missing",
   );
+});
+
+function cliFailureEnvelope(result) {
+  const records = `${result.stdout}\n${result.stderr}`
+    .split(/\r?\n/u)
+    .filter(Boolean)
+    .flatMap((line) => {
+      try {
+        const parsed = JSON.parse(line);
+        return parsed && typeof parsed === "object" ? [parsed] : [];
+      } catch {
+        return [];
+      }
+    })
+    .filter((record) => record.kind === "e3_perf_01_cli_failure");
+  assert.equal(records.length, 1, "the real CLI must emit exactly one closed mode-specific failure envelope");
+  return records[0];
+}
+
+test("the real CLI implements pre-commit validation and campaign trigger modes", { skip: !assetsPresent }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "e3-perf-01-cli-"));
+  try {
+    const manifestPath = join(root, "manifest.json");
+    const outputPath = join(root, "output");
+    await writeFile(manifestPath, `${JSON.stringify(manifestFixture())}\n`, "utf8");
+    const runnerPath = fileURLToPath(REQUIRED_ASSETS[0]);
+    const validation = spawnSync(process.execPath, [
+      runnerPath,
+      "--validate-manifest", manifestPath,
+      "--evidence-parent", EVIDENCE_PARENT_SHA40,
+    ], { cwd: fileURLToPath(new URL("..", import.meta.url)), encoding: "utf8", timeout: 30_000 });
+    assert.equal(validation.error, undefined);
+    assert.notEqual(validation.status, 0, "synthetic Git facts must fail closed in validation mode");
+    const validationFailure = cliFailureEnvelope(validation);
+    assert.deepEqual(
+      {
+        kind: validationFailure.kind,
+        mode: validationFailure.mode,
+        phase: validationFailure.phase,
+        disposition: validationFailure.disposition,
+      },
+      {
+        kind: "e3_perf_01_cli_failure",
+        mode: "validate-manifest",
+        phase: "manifest-preflight",
+        disposition: "fail",
+      },
+    );
+
+    const campaign = spawnSync(process.execPath, [
+      runnerPath,
+      "--manifest", manifestPath,
+      "--output", outputPath,
+    ], { cwd: fileURLToPath(new URL("..", import.meta.url)), encoding: "utf8", timeout: 30_000 });
+    assert.equal(campaign.error, undefined);
+    assert.notEqual(campaign.status, 0, "an unattested fixture campaign must fail during real preflight");
+    const campaignFailure = cliFailureEnvelope(campaign);
+    assert.deepEqual(
+      {
+        kind: campaignFailure.kind,
+        mode: campaignFailure.mode,
+        phase: campaignFailure.phase,
+        disposition: campaignFailure.disposition,
+      },
+      {
+        kind: "e3_perf_01_cli_failure",
+        mode: "campaign",
+        phase: "campaign-preflight",
+        disposition: "fail",
+      },
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 async function runner() {
@@ -251,7 +340,7 @@ function manifestFixture() {
     output: {
       origin: "s3://aoa-e3-perf",
       namespace: `s3://aoa-e3-perf/e3-perf-01/${SHA40}/a1`,
-      retentionUntil: "2027-02-07T00:00:00.000Z",
+      retentionUntil: "2027-02-08T00:00:00.000Z",
     },
   };
 }
@@ -401,8 +490,11 @@ function makeHarness(overrides = {}) {
   };
   const archive = {
     bytes: Buffer.alloc(0),
+    scannedBytes: null,
+    hashedBytes: null,
     manifest: [],
     scanPassed: true,
+    acceptOnlyEmptyScan: false,
     hashCalls: 0,
     buildCalls: 0,
     injectAfterRedaction: null,
@@ -413,16 +505,23 @@ function makeHarness(overrides = {}) {
         sha256: createHash("sha256").update(file.bytes).digest("hex"),
       })).sort((left, right) => left.path.localeCompare(right.path));
       this.bytes = buildTestArchiveBytes(files, outputDirectory);
+      if (this.injectAfterRedaction !== null) {
+        this.bytes = Buffer.concat([this.bytes, Buffer.from(this.injectAfterRedaction)]);
+      }
       this.buildCalls += 1;
       phases.archiveBytesComplete = true;
       trace.push("archive:complete");
       return { bytes: Buffer.from(this.bytes), manifest: structuredClone(this.manifest) };
     },
     scanCanaries(bytes) {
+      this.scannedBytes = Buffer.from(bytes);
       trace.push("archive:scan");
-      return this.scanPassed && this.injectAfterRedaction === null && Buffer.isBuffer(bytes);
+      if (this.acceptOnlyEmptyScan) return Buffer.isBuffer(bytes) && bytes.length === 0;
+      return this.scanPassed && Buffer.isBuffer(bytes) &&
+        (this.injectAfterRedaction === null || !bytes.includes(Buffer.from(this.injectAfterRedaction)));
     },
     sha256(bytes) {
+      this.hashedBytes = Buffer.from(bytes);
       this.hashCalls += 1;
       trace.push("archive:digest");
       return createHash("sha256").update(bytes).digest("hex");
@@ -442,6 +541,7 @@ function makeHarness(overrides = {}) {
     },
     environment,
     output: { exists: false, empty: true, reused: false },
+    clock: { now: () => new Date(CAMPAIGN_NOW) },
     child: {
       invocations: 0,
       command: [],
@@ -465,6 +565,8 @@ function makeHarness(overrides = {}) {
     redactor: { observeInput: null },
     files: [],
     console: { lines: [] },
+    qaFixture: Buffer.from("E3-PERF-01 QA fixture: disposition pending artifact verification\n"),
+    handoffFixture: Buffer.from("E3-PERF-01 handoff fixture: security review pending\n"),
     archive,
     store,
     phases,
@@ -541,6 +643,10 @@ test("strict schemas close every object and pin revisions, provenance, threshold
   assert.doesNotThrow(() => new Ajv2020({ strict: true }).compile(evidenceSchema));
   assert.equal(mod.validateManifestDocument(manifestFixture()), true);
   assert.equal(mod.validateEvidenceDocument(evidenceFixture()), true);
+  assert.ok(
+    Date.parse(manifestFixture().output.retentionUntil) - Date.parse(CAMPAIGN_NOW) >= MINIMUM_RETENTION_MS,
+    "passing manifest fixture must retain the immutable archive for at least 180 full days",
+  );
   assert.deepEqual(manifestFixture().sourceInputs.map((entry) => entry.path), COMPLETE_PINNED_INPUT_PATHS);
   assert.deepEqual(
     manifestFixture().dependencyClosure.criticalInputs.map((entry) => entry.path),
@@ -719,6 +825,34 @@ test("recursive canary and credential rejection never echoes the sensitive value
     assert.equal(harness.store.failureRecords.length, 0);
     assert.equal(harness.store.uploads.length, 0);
   }
+  const uriCanary = "E3_CANARY_VALID_CONTENT_URI_DO_NOT_ECHO";
+  const uriCanaryManifest = structuredClone(manifestFixture());
+  uriCanaryManifest.referencedEvidence[0].uri =
+    `https://evidence.example.invalid/${uriCanary}/sha256/${uriCanaryManifest.referencedEvidence[0].sha256}`;
+  const { default: Ajv2020 } = await import("ajv/dist/2020.js");
+  const validateManifestSchema = new Ajv2020({ strict: true }).compile(
+    JSON.parse(readFileSync(REQUIRED_ASSETS[1], "utf8")),
+  );
+  assert.equal(validateManifestSchema(uriCanaryManifest), true, "URI canary fixture must be schema-valid");
+  assert.equal(mod.validateContentAddressedInputUri(uriCanaryManifest.referencedEvidence[0].uri), true);
+  assert.throws(
+    () => mod.validateManifestDocument(uriCanaryManifest, { canaries: [uriCanary] }),
+    undefined,
+    "schema-valid digest-bound URIs must still pass through the recursive canary scanner",
+  );
+  const uriCanaryHarness = makeHarness({ canaries: [uriCanary] });
+  let uriCanaryMessage = "";
+  try {
+    await runGate(mod, uriCanaryManifest, "unused", uriCanaryHarness);
+    assert.fail("schema-valid URI canary must fail before the load child");
+  } catch (error) {
+    uriCanaryMessage = String(error);
+  }
+  assert.equal(uriCanaryMessage.includes(uriCanary), false);
+  assert.equal(uriCanaryHarness.child.invocations, 0);
+  assert.equal(uriCanaryHarness.store.passRecords.length, 0);
+  assert.equal(uriCanaryHarness.store.failureRecords.length, 0);
+  assert.equal(uriCanaryHarness.store.uploads.length, 0);
 });
 
 test("full pre-sample provenance, Git, environment, manifest, URI, and output drift matrix fails closed", { skip: !assetsPresent }, async () => {
@@ -744,8 +878,12 @@ test("full pre-sample provenance, Git, environment, manifest, URI, and output dr
     { name: "evidence_parent_tree", harness: (h) => { h.git.parentTree = "0".repeat(40); } },
     { name: "wrong_parent", harness: (h) => { h.git.parents = ["0".repeat(40)]; } },
     { name: "multiple_parent", harness: (h) => { h.git.parents.push("f".repeat(40)); } },
+    { name: "manifest_blob", harness: (h) => { h.git.manifestBlob = "0".repeat(40); } },
+    { name: "manifest_sha", harness: (h) => { h.git.manifestSha256 = "0".repeat(64); } },
     { name: "extra_gate_delta", harness: (h) => { h.git.parentToHeadDelta.push({ path: "extra.txt", status: "A", mode: "100644" }); } },
     { name: "wrong_gate_delta_path", harness: (h) => { h.git.parentToHeadDelta[0].path = "wrong-manifest.json"; } },
+    { name: "wrong_gate_delta_status", harness: (h) => { h.git.parentToHeadDelta[0].status = "M"; } },
+    { name: "wrong_gate_delta_mode", harness: (h) => { h.git.parentToHeadDelta[0].mode = "100755"; } },
     { name: "unlisted_evidence", harness: (h) => { h.git.implementationToParentDelta.push({ path: "extra.md", status: "A", mode: "100644" }); } },
     { name: "missing_reviewed_evidence", harness: (h) => { h.git.implementationToParentDelta = []; } },
     { name: "evidence_status", harness: (h) => { h.git.implementationToParentDelta[0].status = "A"; } },
@@ -778,6 +916,9 @@ test("full pre-sample provenance, Git, environment, manifest, URI, and output dr
     })),
     { name: "nonempty_output", harness: (h) => { h.output.exists = true; h.output.empty = false; } },
     { name: "reused_output", harness: (h) => { h.output.reused = true; } },
+    { name: "retention_under_180_full_days", manifest: (m) => {
+      m.output.retentionUntil = new Date(Date.parse(CAMPAIGN_NOW) + MINIMUM_RETENTION_MS - 1).toISOString();
+    } },
     { name: "threshold", manifest: (m) => { m.thresholds.cleanupP95Ms += 1; } },
     { name: "missing_integration_owner", manifest: (m) => { delete m.owners.integration; } },
     { name: "missing_security_owner", manifest: (m) => { delete m.owners.security; } },
@@ -793,6 +934,17 @@ test("full pre-sample provenance, Git, environment, manifest, URI, and output dr
     { name: "trust_root", harness: (h) => { h.provenance.trustRootValid = false; } },
     { name: "e6f06", harness: (h) => { h.provenance.e6f06EvidenceValid = false; } },
   ];
+  for (const [name, path] of [
+    ["synchronized_forbidden_source_delta", "server/src/services/unreviewed-perf-change.ts"],
+    ["synchronized_forbidden_wildcard_delta", "server/src"],
+  ]) {
+    const fact = reviewedEvidenceFact(path);
+    cases.push({
+      name,
+      manifest: (m) => { m.reviewedEvidence.push(structuredClone(fact)); },
+      harness: (h) => { h.git.implementationToParentDelta.push(structuredClone(fact)); },
+    });
+  }
   for (const path of [
     "server/src/services/job-leasing.ts", "vitest.config.ts", "pnpm-lock.yaml",
     "packages/db/src/schema/jobs.ts", "packages/db/src/migrations/0230_static_certificates.sql",
@@ -862,6 +1014,13 @@ test("full pre-sample provenance, Git, environment, manifest, URI, and output dr
     const harness = makeHarness();
     item.manifest?.(manifest);
     item.harness?.(harness);
+    if (item.name.startsWith("synchronized_forbidden_")) {
+      assert.deepEqual(
+        harness.git.implementationToParentDelta,
+        manifest.reviewedEvidence,
+        `${item.name} must not fail merely because the observed and declared deltas differ`,
+      );
+    }
     await assert.rejects(runGate(mod, manifest, "unused", harness), undefined, item.name);
     assert.equal(harness.child.invocations, 0, item.name);
     assert.equal(harness.store.passRecords.length, 0, item.name);
@@ -979,7 +1138,15 @@ test("post-sample NDJSON, threshold, structure, mutation, and archive failures c
     { name: "wrong_candidate_index_predicate", mutate: (h) => replaceRecords(h, (records) => { recordOf(records, "storage").indexes[0].predicate = "status = 'pending'"; }) },
     { name: "wrong_claim_index_direction", mutate: (h) => replaceRecords(h, (records) => { recordOf(records, "storage").indexes[1].definition = "CREATE INDEX priority ASC"; }) },
     { name: "claim_plan_missing_index", mutate: (h) => replaceRecords(h, (records) => { records[0].planSummary.indexes = ["jobs_claim_idx"]; }) },
-    { name: "combined_storage_over_2gib", mutate: (h) => replaceRecords(h, (records) => { recordOf(records, "storage").total_bytes = 2 * 1024 * 1024 * 1024 + 1; }) },
+    { name: "forged_combined_storage_total", mutate: (h) => replaceRecords(h, (records) => {
+      recordOf(records, "storage").total_bytes += 1;
+    }) },
+    { name: "combined_storage_over_2gib", mutate: (h) => replaceRecords(h, (records) => {
+      const storage = recordOf(records, "storage");
+      storage.table_bytes = 1024 * 1024 * 1024 + 1;
+      storage.index_bytes = 1024 * 1024 * 1024;
+      storage.total_bytes = storage.table_bytes + storage.index_bytes;
+    }) },
     { name: "bulk_affected_count", mutate: (h) => replaceRecords(h, (records) => { recordOf(records, "bulk_upsert").affectedPerSample[0] = 255; }) },
     { name: "bulk_affected_sample_count", mutate: (h) => replaceRecords(h, (records) => { recordOf(records, "bulk_upsert").affectedPerSample.pop(); }) },
     { name: "sparse_cleanup_affected_count", mutate: (h) => replaceRecords(h, (records) => { recordOf(records, "cleanup", "sparse").affectedPerSample[0] = 255; }) },
@@ -997,6 +1164,13 @@ test("post-sample NDJSON, threshold, structure, mutation, and archive failures c
     { name: "tail_cleanup_query_fingerprint", mutate: (h) => replaceRecords(h, (records) => { recordOf(records, "cleanup", "tail").querySha256 = "0".repeat(64); }) },
     { name: "post_run_mutation", mutate: (h) => { h.postRun.git.workingBytesMatch = false; } },
     { name: "archive_canary", mutate: (h) => { h.archive.injectAfterRedaction = "ARCHIVE_CANARY_DO_NOT_PERSIST"; } },
+    {
+      name: "empty_scan_cannot_authorize_contaminated_archive",
+      mutate: (h) => {
+        h.archive.injectAfterRedaction = "ARCHIVE_CANARY_DO_NOT_PERSIST";
+        h.archive.acceptOnlyEmptyScan = true;
+      },
+    },
     {
       name: "upload_error",
       publicationFailure: true,
@@ -1096,6 +1270,8 @@ test("post-sample NDJSON, threshold, structure, mutation, and archive failures c
         assert.equal(harness.phases.digestDerived, true, item.name);
         assert.equal(harness.store.uploads.length, 1, item.name);
         const [upload] = harness.store.uploads;
+        assert.deepEqual(harness.archive.scannedBytes, upload.bytes, `${item.name} must scan the exact uploaded bytes`);
+        assert.deepEqual(harness.archive.hashedBytes, upload.bytes, `${item.name} must hash the exact uploaded bytes`);
         const actualArchiveSha256 = createHash("sha256").update(upload.bytes).digest("hex");
         const archivedFiles = readTestArchiveBytes(upload.bytes);
         assert.deepEqual(archivedFiles.map((file) => file.path), [EVIDENCE_ARCHIVE_PATH], item.name);
@@ -1133,7 +1309,7 @@ test("post-sample NDJSON, threshold, structure, mutation, and archive failures c
           archive: {
             uri: upload.uri,
             sha256: actualArchiveSha256,
-            retentionUntil: "2027-02-07T00:00:00.000Z",
+            retentionUntil: "2027-02-08T00:00:00.000Z",
           },
         }], item.name);
         assert.deepEqual(harness.trace, [
@@ -1149,6 +1325,8 @@ test("post-sample NDJSON, threshold, structure, mutation, and archive failures c
       } else if (item.publicationFailure) {
         assert.equal(harness.phases.digestDerived, true, item.name);
         assert.equal(harness.store.uploads.length, 1, item.name);
+        assert.deepEqual(harness.archive.scannedBytes, harness.store.uploads[0].bytes, item.name);
+        assert.deepEqual(harness.archive.hashedBytes, harness.store.uploads[0].bytes, item.name);
         assert.ok(readTestArchiveBytes(harness.store.uploads[0].bytes).length > 0, item.name);
         assert.equal(harness.store.failureRecords.length, 0, item.name);
         assert.equal(harness.trace.includes("record:pass"), false, item.name);
@@ -1196,6 +1374,19 @@ test("real ingress canaries reach env/DB/argv/stdout/stderr but reach no console
     } catch (error) {
       failureMessage = String(error);
     }
+    harness.qaFixture = Buffer.from(`${JSON.stringify({
+      schemaVersion: 1,
+      gate: "E3-PERF-01",
+      attempt: "a1",
+      disposition: "fail",
+      summary: failureMessage,
+    })}\n`);
+    harness.handoffFixture = Buffer.from(`${JSON.stringify({
+      schemaVersion: 1,
+      gate: "E3-PERF-01",
+      reviewedDisposition: "fail",
+      qaSha256: createHash("sha256").update(harness.qaFixture).digest("hex"),
+    })}\n`);
     assert.equal(spawnInputs.length, 1, "the child-spawn seam must observe the actual launch input once");
     const [spawn] = spawnInputs;
     assert.deepEqual(spawn.command, E3_PERF_01_CHILD_COMMAND);
@@ -1216,6 +1407,8 @@ test("real ingress canaries reach env/DB/argv/stdout/stderr but reach no console
     assert.ok(renderedCommand.includes(canaries.argv));
     assert.ok(redactorInputs.find((entry) => entry.channel === "stdout")?.value.includes(canaries.stdout));
     assert.ok(redactorInputs.find((entry) => entry.channel === "stderr")?.value.includes(canaries.stderr));
+    assert.ok(Buffer.byteLength(harness.qaFixture) > 0, "QA fixture bytes must be real/nonempty");
+    assert.ok(Buffer.byteLength(harness.handoffFixture) > 0, "handoff fixture bytes must be real/nonempty");
     const disk = existsSync(outputDirectory) ? await readAllFiles(outputDirectory) : [];
     const permanentBytes = Buffer.concat([
       ...disk.map((file) => file.bytes),
@@ -1243,6 +1436,9 @@ test("closed evidence and real output archive gate one digest-addressed success"
   const outputDirectory = await mkdtemp(join(tmpdir(), "e3-perf-01-success-"));
   try {
     const manifest = manifestFixture();
+    manifest.output.retentionUntil = new Date(
+      Date.parse(CAMPAIGN_NOW) + MINIMUM_RETENTION_MS,
+    ).toISOString();
     const harness = makeHarness();
     const spawnInputs = [];
     harness.child.observeSpawnInput = (input) => { spawnInputs.push(structuredClone(input)); };
@@ -1279,6 +1475,10 @@ test("closed evidence and real output archive gate one digest-addressed success"
     assert.equal(harness.phases.archiveBytesComplete, true);
     assert.equal(harness.phases.digestDerived, true);
     assert.equal(harness.archive.hashCalls, 1);
+    assert.deepEqual(harness.archive.scannedBytes, harness.archive.bytes,
+      "the binary canary scan must inspect the completed archive bytes");
+    assert.deepEqual(harness.archive.hashedBytes, harness.archive.bytes,
+      "the digest must be computed from the exact scanned archive bytes");
     assert.equal(
       createHash("sha256").update(harness.archive.bytes).digest("hex"),
       expectedArchiveSha256,
@@ -1342,7 +1542,7 @@ test("closed evidence and real output archive gate one digest-addressed success"
       archive: {
         uri: expectedArchiveUri,
         sha256: expectedArchiveSha256,
-        retentionUntil: "2027-02-07T00:00:00.000Z",
+        retentionUntil: manifest.output.retentionUntil,
       },
     }]);
     assert.equal(harness.store.failureRecords.length, 0);
