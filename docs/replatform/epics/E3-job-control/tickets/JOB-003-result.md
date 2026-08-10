@@ -1,14 +1,15 @@
 # JOB-003 Result - Lease jobs with ACK deadlines
 
-**Status:** `review_pending`
-**Disposition:** `review_pending`
+**Status:** `needs_changes`
+**Disposition:** `needs_changes`
 **Date opened (UTC):** `2026-08-10`
 **Epic:** `E3-job-control`
 **Plan task:** `JOB-003 - Lease jobs with ACK deadlines (L; three bounded internal slices)`
 **Implementer:** `Codex /root/job003_impl`
-**Reviewer:** `Pending fresh distinct reviewer`
+**Reviewer:** `Codex /root/job003_final_review`
 **Start SHA:** 4276331160afb77d47ffa488543b968da949c02f
 **Implementation candidate:** 808a17b5cfa545eff77da13aeb9735aa7ebb0a99
+**Reviewed revision:** a48faac86cf3a875e5a16c487d91e88d9f78d6fd
 
 The Start SHA is the committed passing JOB-009 completion revision and the exact JOB-003
 assignment boundary. JOB-001, JOB-002, JOB-009, the frozen E1 v1 protocol, and the E2 tenant
@@ -272,3 +273,109 @@ The aggregate failure is neither hidden nor waived, and this record is not a tic
 The fresh reviewer must review exact candidate `808a17b5cfa545eff77da13aeb9735aa7ebb0a99`
 plus its evidence descendants, rerun the focused acceptance, verify every Decision #124
 writer and failure interleaving, and alone decide the disposition.
+
+## Independent review attempt 2 - 2026-08-10 - Codex `/root/job003_final_review`
+
+- **Reviewed revision:** `a48faac86cf3a875e5a16c487d91e88d9f78d6fd`
+- **Assignment base:** `4276331160afb77d47ffa488543b968da949c02f`
+- **Code candidate ancestor:** `808a17b5cfa545eff77da13aeb9735aa7ebb0a99`
+- **Prior review ancestor:** `55ed851c2cb72fb381fc6530642bcfcdcd947798`
+- **Reviewer decision:** `changes_requested`
+- **Disposition:** `needs_changes`
+- **Specification verdict:** fail.
+- **H-01 tenant-isolation verdict:** pass. Every tenant job operation remains in the exact
+  authenticated logical Organization transaction; platform physical authority remains
+  control-only and receipt RLS rejects cross-Organization access.
+- **H-02 lease-authority verdict:** runtime handoff and cutoff paths pass, but certification
+  fails because the required static exclusive-writer inventory does not detect bypasses.
+- **H-03 single-executor verdict:** uniqueness, class/provider reservation, and three fresh
+  100-way offer races pass; restart/lost-hint database-pull liveness can permanently starve
+  eligible work beyond the fixed scan window.
+- **Migration/compatibility verdict:** pass, including populated 0226-to-0227 upgrade/replay,
+  C14 guards/backfill, receipt expiry, and database-native microsecond eligibility.
+
+The reviewer is distinct from implementer `/root/job003_impl` and changed no production or
+test code. The exact reviewed revision was a clean HEAD before evidence edits; the assignment
+base, implementation candidate, and prior review revision are all ancestors. The full
+Start-to-reviewed and candidate-to-reviewed diffs were inspected, the latter contains only
+JOB-003 evidence, and frozen E1 has no changed file. One temporary real-PostgreSQL starvation
+probe was applied, run once, and removed; a read-only built-runtime scheduler probe changed no
+file. The worktree returned clean before this review evidence was written.
+
+There are **zero Critical findings and four Important/specification findings**:
+
+- **Important I-05 - scheduler hint memory is not bounded across execution targets.**
+  `job-ready-scheduler.ts` stores Organization to target to attempt sets, but applies
+  `maxHintsPerShard` independently to each target set. Target-map cardinality and aggregate
+  Organization hints have no cap or sweep, and only a poll of that exact target removes its
+  entry. A read-only runtime probe configured one Organization shard and one hint per shard,
+  then published 1,000 distinct valid target/attempt pairs: all 1,000 were accepted and
+  `size()` reported 1,000 hints. Because the outbox row is marked delivered after acceptance,
+  offline, revoked, and historical target IDs can retain process memory indefinitely. Bound
+  aggregate hints and target cardinality per Organization or globally, define deterministic
+  eviction/cleanup, and add multi-target churn plus delivered-row tests.
+- **Important I-06 - database pull can permanently starve compatible work beyond 256 rows.**
+  Each poll resets its lexical cursor, examines at most 256 rows, and returns `no_work`.
+  Placement and static readiness are SQL-filtered, but dynamic worker workload slots,
+  capabilities, resource fit, and class/provider capacity are rejected only after selection.
+  A temporary real-PostgreSQL probe queued 256 older batch attempts, polled with
+  `batchSlots=0` and `browserSessionSlots=1`, then queued a compatible browser attempt at
+  position 257; the poll deterministically returned `no_work`. After scheduler-memory loss or
+  restart, every later request rescans the same 256 while its already delivered hint cannot be
+  replayed. Add durable or fair cursor progress, capability/capacity-aware bounded selection,
+  or another restart-safe mechanism and cover greater-than-window/restart/churn cases.
+- **Important I-07 - the outbox tick does unbounded Organization work and has no 750-ms DB
+  budget.** Runtime startup materializes every admitted Organization on every tick before the
+  worker deduplicates/sorts the full array and slices 32. The worker has neither an elapsed
+  deadline nor a database statement budget; 750 ms is only the interval cadence. Organization
+  enumeration is therefore O(all Organizations), and slow sequential tenant work can exceed
+  the promised 750-ms DB budget without resumable cutoff. Move keyset/limit selection into the
+  database-facing traversal, enforce an actual monotonic/statement deadline, persist or retain
+  cursor progress, and test more than 32 Organizations plus a slow tenant.
+- **Important I-08 - the mandatory platform-authority writer inventory is non-enforcing.**
+  `job-leasing-contract.test.ts` only checks that each of four broad source files contains the
+  guard helper symbol somewhere. It neither binds every status/generation/device/profile
+  mutation site to target-to-worker locking and the exclusive advisory nor discovers mutation
+  sites in unlisted files. Generic enrollment mutation methods remain available, and a new
+  unguarded mutation beside any existing helper occurrence leaves the test green. Replace this
+  with an exact AST/allowlist or narrow guarded mutation surface that fails on every new bypass,
+  preserving only the specifically approved last-seen exemption, and add a negative bypass
+  fixture.
+
+The current app-outer/operator-shared handoff, operator-loss rollback, guard-first and
+cutoff-first interleavings, platform logical liveness, legacy platform-token exclusion,
+logical-profile class/provider capacity, exact receipt expiry, cross-Organization receipt
+denial, stable `statement_timestamp()` readiness, migration 0227 compatibility, default-off
+composition, shutdown, role/grant boundary, and single-engine constraint all passed review.
+Decision #124 intentionally assigns aggregate cross-profile physical-device capacity to
+WRK-003; JOB-003 correctly enforces the registered clamp per logical Organization profile.
+
+Fresh Windows-local evidence against exact reviewed revision
+`a48faac86cf3a875e5a16c487d91e88d9f78d6fd`:
+
+| Command / lane | Result |
+|---|---|
+| Accepted JOB-003 DB matrix | PASS - 6 files, 25/25, 18.045s |
+| Accepted JOB-003 server matrix | PASS - 9 files, 89/89, 75.981s |
+| Specialist matrix | PASS - 5 files, 48/48, 11.047s |
+| H-03 leasing file, three consecutive fresh processes | PASS - 14/14 each, 32.095s total |
+| JOB-001/JOB-002/JOB-009 server predecessor bundle | PASS - 8 files, **101/101**, 20.568s; the reviewed revision contains one more test than the stale 100-test expectation |
+| Tenant DB predecessor bundle | PASS - 3 files, 21/21, 10.421s |
+| Tenant adversarial property suite | PASS - 11/11 over 4,460 operations, 10.917s |
+| Frozen E1 checker at `b7a842870ce7509d8baa75409e0ab19da375c88a` | PASS - 1.795s; Start-to-reviewed protocol diff empty |
+| `pnpm install --frozen-lockfile` | PASS - 3.210s; no tracked change |
+| DB/server affected typecheck | PASS - 6.245s / 18.502s |
+| DB/server affected build | PASS - 7.044s / 20.883s |
+| `pnpm -r typecheck` | PASS - 72.434s |
+| `pnpm build` | PASS - 53.307s |
+| `$env:AOA_RUN_WIN_INTEGRATION='1'; pnpm test:run` | **FAIL (honestly labeled Windows-local aggregate)** - run exactly once, exit 1 after 295.5s with 13 visible failure blocks. Visible output included the D18 embedded-PostgreSQL setup cascade and an unrelated UI `ProjectDetailDiscussions` failure. Output truncation prevents claiming that list is exhaustive. |
+
+The aggregate failure is not represented as a waiver or full-suite pass; Linux CI remains the
+formal DEC-03 authority. No focused acceptance lane failed. Stable findings `E3-F021` through
+`E3-F024` record the four blockers; prior findings `E3-F018` through `E3-F020` are resolved and
+`E3-F017` is only partially resolved because its bounded scheduler/no-head-of-line acceptance
+remains open. JOB-003 is not complete. A fresh implementer round must add genuine RED coverage
+and correct I-05 through I-08 without changing frozen E1, widening roles/grants, adding a
+second engine, or expanding lifecycle scope. This ticket review is not the separate E3
+integration gate, does not mark the epic complete, authorizes no push, and leaves JOB-010
+paused.

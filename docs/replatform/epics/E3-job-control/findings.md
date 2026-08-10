@@ -471,7 +471,7 @@ composite-integrity suite passes 9/9. JOB-003 remains review-pending for indepen
 ## E3-F017 - JOB-003 review exposed platform composition, capacity, receipt-expiry, and upgrade gaps
 
 **Date:** 2026-08-10
-**Status:** `resolved_in_JOB-003_fix_round_1_pending_review`
+**Status:** `partially_resolved_in_JOB-003_review_attempt_2_followups_open`
 **Severity:** P1 durable leasing correctness / compatibility
 **Affected ticket:** JOB-003
 
@@ -506,10 +506,17 @@ RED `8ce0547b68953fd1d4d8a0aa9d7180fb51b9a54e` and GREEN
 `a61f028bd1fab392a08be879c7275a80a95e08cb` close the production composition and retired-token
 writer gaps. All focused matrices pass locally; JOB-003 remains review-pending.
 
+**Review attempt 2:** Exact revision `a48faac86cf3a875e5a16c487d91e88d9f78d6fd`
+passes the original platform composition, mixed-class/provider capacity, exact receipt expiry,
+populated upgrade, and cross-Organization receipt probes. The finding remains partially open:
+E3-F021 through E3-F023 show that the composed scheduler is not bounded across target IDs or
+all admitted Organizations and that restart/lost-hint pull recovery can still starve work
+beyond the fixed candidate window.
+
 ## E3-F018 - Platform-physical ACK has no approved durable tenant-shard authority
 
 **Date:** 2026-08-10
-**Status:** `implemented_in_JOB-003_fix_round_1_pending_review`
+**Status:** `resolved_in_JOB-003_review_attempt_2`
 **Severity:** P1 STOP - H-01/H-02 tenant routing authority / frozen transport compatibility
 **Affected tickets:** JOB-003 and later platform-session lease operations
 
@@ -567,10 +574,17 @@ Platform sessions remain physical-control-only; no locator, operator job access,
 change was added. The prior `needs_changes` disposition is now resolved in implementation,
 pending a fresh distinct JOB-003 review; JOB-010 remains paused until that review passes.
 
+**Review attempt 2 resolution:** The distinct reviewer confirmed the approved Decision #124
+logical-Organization session design at exact revision
+`a48faac86cf3a875e5a16c487d91e88d9f78d6fd`. Platform physical sessions remain control-only;
+tenant poll/offer/ACK is routed by authenticated logical Organization authority, with no
+locator, operator tenant-job access, or frozen E1 change. This finding is resolved, although
+JOB-003 remains `needs_changes` for E3-F021 through E3-F024.
+
 ## E3-F019 - Initial Decision #124 guard and platform-profile liveness were not implementable
 
 **Date:** 2026-08-10
-**Status:** `implemented_in_JOB-003_fix_round_1_pending_review`
+**Status:** `resolved_in_JOB-003_review_attempt_2`
 **Severity:** P1 H-02 cutoff linearization / platform logical-profile availability
 **Affected ticket:** JOB-003, with bounded JOB-002/JOB-009 synchronization seams
 
@@ -609,10 +623,17 @@ shared-advisory handoff, exclusive-writer inventory, connection-loss rollback, a
 heartbeat/logical-session liveness rules without grant widening. The accepted DB and server
 matrices pass locally. This resolves implementation feasibility but is not a review pass.
 
+**Review attempt 2 resolution:** Exact revision
+`a48faac86cf3a875e5a16c487d91e88d9f78d6fd` passed both lock orders, operator-connection-loss
+rollback, target-to-worker/shared-advisory handoff, and platform physical-heartbeat/logical-
+profile liveness without role/grant widening. The live call graph has no discovered authority
+writer bypass. This finding is resolved; E3-F024 separately records that the required static
+regression inventory is too weak to certify future bypass detection.
+
 ## E3-F020 - Outbox readiness lost PostgreSQL sub-millisecond precision
 
 **Date:** 2026-08-10
-**Status:** `resolved_in_JOB-003_fix_round_1_pending_review`
+**Status:** `resolved_in_JOB-003_review_attempt_2`
 **Severity:** P1 durable scheduling liveness / deterministic local evidence
 **Affected ticket:** JOB-003
 
@@ -632,3 +653,105 @@ ready predicates while retaining caller time for durable claim/update timestamps
 stale threshold. The focused regression passes and the complete H-03 lane passes 14/14 on
 three consecutive fresh runs. No fence-time predicate, E1 wire field, grant, or migration
 changed. JOB-003 remains review-pending.
+
+**Review attempt 2 resolution:** The distinct reviewer reran the deterministic microsecond
+eligibility/future-negative matrix at exact revision
+`a48faac86cf3a875e5a16c487d91e88d9f78d6fd` and inspected both job and outbox predicates.
+Database-native `statement_timestamp()` supplies the readiness cutoff without a JavaScript
+millisecond round trip. This finding is resolved.
+
+## E3-F021 - Ready-scheduler hint memory is unbounded across execution targets
+
+**Date:** 2026-08-10
+**Status:** `open_JOB-003_review_attempt_2`
+**Severity:** P1 Important - bounded scheduler contract / process-memory liveness
+**Affected ticket:** JOB-003
+
+**Finding:** `server/src/services/job-ready-scheduler.ts` stores an Organization map whose
+values are target maps whose values are attempt sets. `maxHintsPerShard` is checked only
+against one target's attempt set. Neither target-map cardinality nor the aggregate hints for
+an Organization has a limit or expiry, and only `take(organizationId, targetId)` removes a
+target entry. Outbox delivery is committed after the scheduler accepts the hint, so a hint
+for an offline, revoked, or historical target is not durably retried and may remain in memory
+indefinitely.
+
+**Review evidence:** A read-only built-runtime probe configured
+`maxOrganizationShards: 1, maxHintsPerShard: 1` and published 1,000 distinct valid target and
+attempt UUID pairs in one Organization. All 1,000 calls returned accepted and `size()` returned
+`{ organizations: 1, hints: 1000 }`. Existing tests bound duplicate/one-target sets and reject
+a second full Organization but do not vary target cardinality within one Organization.
+
+**Disposition:** JOB-003 remains `needs_changes`. Bound aggregate hints and target cardinality
+per Organization or globally, define deterministic cleanup/eviction that preserves durable
+pull recovery, and add multi-target churn, offline/revoked-target, and delivered-row evidence.
+
+## E3-F022 - Lost-hint pull recovery can starve compatible work beyond 256 candidates
+
+**Date:** 2026-08-10
+**Status:** `open_JOB-003_review_attempt_2`
+**Severity:** P1 Important - H-03 scheduling liveness / no head-of-line blocking
+**Affected ticket:** JOB-003
+
+**Finding:** Each poll initializes its lexical cursor and scan count anew, examines at most
+256 ready candidates, and then returns `no_work`. SQL selection filters durable placement and
+readiness but cannot filter worker-advertised workload slots, dynamic capabilities, resource
+fit, or class/provider capacity; those permanently incompatible candidates are rejected later.
+The next request therefore scans the same oldest 256 again. A hint accepted before restart is
+already marked delivered while scheduler memory is process-local, so restart or hint loss
+removes the only path that could prefer a later compatible attempt.
+
+**Review evidence:** A temporary real-PostgreSQL probe queued 256 older batch attempts, used a
+poll advertising `batchSlots=0` and `browserSessionSlots=1`, and queued a compatible browser
+attempt at position 257. The poll returned `no_work` instead of the browser offer. The probe
+was run once and completely removed. The existing no-head-of-line test has only two
+incompatible heads and does not cross the scan bound or restart the scheduler.
+
+**Disposition:** JOB-003 remains `needs_changes`. Provide restart-safe bounded fairness by a
+durable or retained cursor, capability/capacity-aware selection, or another mechanism that
+cannot repeatedly pin the same window. Add greater-than-256, restart/lost-hint, worker-churn,
+and concurrent-poller evidence.
+
+## E3-F023 - Outbox ticks enumerate all Organizations and have no real 750-ms DB budget
+
+**Date:** 2026-08-10
+**Status:** `open_JOB-003_review_attempt_2`
+**Severity:** P1 Important - bounded traversal / scheduler availability
+**Affected ticket:** JOB-003
+
+**Finding:** Runtime startup queries and materializes every active admitted Organization on
+every tick. The outbox worker then deduplicates and sorts that full collection before slicing
+at most 32. The tick has no elapsed deadline, statement timeout, or cancellation budget; the
+750-ms value controls only interval cadence. Organization discovery is therefore O(all
+Organizations), and sequential tenant claims can exceed 750 ms without stopping at a cursor.
+This does not satisfy the locked at-most-32-Organization and at-most-750-ms database-work
+contract.
+
+**Disposition:** JOB-003 remains `needs_changes`. Push keyset/limit selection into the
+database-facing traversal, enforce an actual monotonic or statement deadline, and retain or
+persist cursor progress across bounded ticks. Add more-than-32-Organization and deliberately
+slow-tenant tests that prove both work and time bounds plus eventual rotation.
+
+## E3-F024 - Platform-authority writer inventory does not fail on new bypasses
+
+**Date:** 2026-08-10
+**Status:** `open_JOB-003_review_attempt_2`
+**Severity:** P1 Important - H-02 cutoff regression certification
+**Affected ticket:** JOB-003
+
+**Finding:** The mandatory static writer-inventory test reads four broad source files and
+only asserts that each file contains the exclusive guard helper symbol somewhere. It does not
+bind each status, generation, device-binding, or registered-profile mutation to target-to-
+worker row locks and the exclusive advisory, and it does not discover mutation sites in
+unlisted files. Generic worker-enrollment mutation methods remain available. Adding an
+unguarded mutation in a listed file beside an existing helper, or in another file, leaves the
+test green.
+
+**Review evidence:** The distinct review found no bypass in the current live production call
+graph, and the real guard-first, cutoff-first, operator-loss, and liveness tests pass. The
+blocker is the explicitly required proof that every current writer is inventoried and that a
+new bypass makes the static contract fail.
+
+**Disposition:** JOB-003 remains `needs_changes`. Replace substring presence with an exact
+AST/allowlist inventory or expose only a narrow guarded mutation API; enumerate all mutation
+sites and callers, preserve only the exact approved last-seen exemption, and include a
+negative unguarded-writer fixture that must fail.
