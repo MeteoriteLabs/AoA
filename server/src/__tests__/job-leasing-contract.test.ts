@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
+import ts from "typescript";
 import {
   OPERATION_DESCRIPTORS,
   pollRequestV1Schema,
@@ -13,6 +16,185 @@ import {
 } from "../middleware/worker-operation-proof.js";
 import { buildDeviceProofCanonicalInput } from "../services/worker-device-proof.js";
 import { workerOperationProtocolErrorV1 } from "../services/worker-protocol-http.js";
+
+type AuthorityWriter = {
+  file: string;
+  functionName: string;
+  table: "executionTargets" | "workers";
+  fields: string[];
+  mode: "authority" | "last_seen_only";
+};
+
+const repositoryRoot = fileURLToPath(new URL("../../../", import.meta.url));
+
+function productionTypeScriptFiles(root: string): string[] {
+  const files: string[] = [];
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    if (entry.name === "__tests__" || entry.name === "migrations" || entry.name === "dist") continue;
+    const path = join(root, entry.name);
+    if (entry.isDirectory()) files.push(...productionTypeScriptFiles(path));
+    else if (entry.isFile() && entry.name.endsWith(".ts") && !entry.name.endsWith(".d.ts")) files.push(path);
+  }
+  return files;
+}
+
+function propertyName(node: ts.PropertyName | undefined): string | null {
+  if (!node) return null;
+  if (ts.isIdentifier(node) || ts.isStringLiteral(node) || ts.isNumericLiteral(node)) return node.text;
+  return null;
+}
+
+function enclosingFunctionName(node: ts.Node): string {
+  let current: ts.Node | undefined = node;
+  while (current) {
+    if ((ts.isFunctionDeclaration(current) || ts.isMethodDeclaration(current)) && current.name) {
+      return propertyName(current.name) ?? "<anonymous>";
+    }
+    if (ts.isArrowFunction(current) || ts.isFunctionExpression(current)) {
+      const parent = current.parent;
+      if (ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)) return parent.name.text;
+      if (ts.isPropertyAssignment(parent)) return propertyName(parent.name) ?? "<anonymous>";
+    }
+    current = current.parent;
+  }
+  return "<module>";
+}
+
+function scanAuthorityWriters(sources: Array<{ file: string; source: string }>): AuthorityWriter[] {
+  const writers: AuthorityWriter[] = [];
+  for (const input of sources) {
+    const sourceFile = ts.createSourceFile(input.file, input.source, ts.ScriptTarget.Latest, true);
+    const visit = (node: ts.Node): void => {
+      if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) &&
+          node.expression.name.text === "set") {
+        const update = node.expression.expression;
+        if (ts.isCallExpression(update) && ts.isPropertyAccessExpression(update.expression) &&
+            update.expression.name.text === "update") {
+          const tableNode = update.arguments[0];
+          const table = tableNode && ts.isIdentifier(tableNode) ? tableNode.text : null;
+          if (table === "executionTargets" || table === "workers") {
+            const value = node.arguments[0];
+            const fields = value && ts.isObjectLiteralExpression(value)
+              ? value.properties.map((property) => {
+                  if (ts.isSpreadAssignment(property)) return "<spread>";
+                  return propertyName(property.name) ?? "<computed>";
+                }).sort()
+              : ["<dynamic>"];
+            const lastSeenOnly = fields.every((field) => field === "lastSeenAt" || field === "updatedAt");
+            writers.push({
+              file: input.file.replaceAll("\\", "/"),
+              functionName: enclosingFunctionName(node),
+              table,
+              fields,
+              mode: lastSeenOnly ? "last_seen_only" : "authority",
+            });
+          }
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+  }
+  return writers.sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+}
+
+function writerIdentity(writer: AuthorityWriter): string {
+  return `${writer.file}#${writer.functionName}:${writer.table}:${writer.fields.join(",")}:${writer.mode}`;
+}
+
+function namedFunctionSource(source: string, name: string): string {
+  const file = ts.createSourceFile("named-source.ts", source, ts.ScriptTarget.Latest, true);
+  let match: string | null = null;
+  const visit = (node: ts.Node): void => {
+    if ((ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node)) &&
+        propertyName(node.name) === name) {
+      match = ts.isMethodDeclaration(node)
+        ? `const fixture = { ${node.getText(file)} };`
+        : node.getText(file);
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  if (!match) throw new Error(`writer function ${name} was not found`);
+  return match;
+}
+
+function platformGuardOrderViolations(source: string): string[] {
+  const file = ts.createSourceFile("guard-fixture.ts", source, ts.ScriptTarget.Latest, true);
+  const violations: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isFunctionLike(node) && node.body) {
+      const markers: Array<{
+        kind: "target" | "worker" | "combined" | "exclusive" | "mutation";
+        position: number;
+      }> = [];
+      const scan = (child: ts.Node): void => {
+        if (ts.isCallExpression(child)) {
+          const callName = ts.isIdentifier(child.expression)
+            ? child.expression.text
+            : ts.isPropertyAccessExpression(child.expression)
+              ? child.expression.name.text
+              : null;
+          if (callName === "for" && child.arguments[0] && ts.isStringLiteral(child.arguments[0]) &&
+              child.arguments[0].text === "update" && ts.isPropertyAccessExpression(child.expression)) {
+            const lockedQuery = child.expression.expression.getText(file);
+            if (/\.from\(executionTargets\)/.test(lockedQuery)) {
+              markers.push({ kind: "target", position: child.getStart(file) });
+            }
+            if (/\.from\(workers\)/.test(lockedQuery)) {
+              markers.push({ kind: "worker", position: child.getStart(file) });
+            }
+          }
+          if (callName === "acquirePlatformTargetAuthorityExclusive") {
+            markers.push({ kind: "exclusive", position: child.getStart(file) });
+          }
+          if (callName === "lockPlatformAuthorityForMutation") {
+            markers.push({ kind: "combined", position: child.getStart(file) });
+          }
+          if (callName === "set" && ts.isPropertyAccessExpression(child.expression)) {
+            const update = child.expression.expression;
+            if (ts.isCallExpression(update) && ts.isPropertyAccessExpression(update.expression) &&
+                update.expression.name.text === "update" && update.arguments[0] &&
+                ts.isIdentifier(update.arguments[0]) && update.arguments[0].text === "executionTargets") {
+              markers.push({ kind: "mutation", position: child.getStart(file) });
+            }
+          }
+        }
+        ts.forEachChild(child, scan);
+      };
+      scan(node.body);
+      const firstPosition = (kind: (typeof markers)[number]["kind"]): number | undefined => {
+        const positions = markers.filter((marker) => marker.kind === kind).map((marker) => marker.position);
+        return positions.length > 0 ? Math.min(...positions) : undefined;
+      };
+      const mutation = firstPosition("mutation");
+      if (mutation !== undefined) {
+        const target = firstPosition("target");
+        const worker = firstPosition("worker");
+        const combined = firstPosition("combined");
+        const exclusive = firstPosition("exclusive");
+        const directOrder = target !== undefined && worker !== undefined && exclusive !== undefined &&
+          target < worker && worker < exclusive && exclusive < mutation;
+        const delegatedOrder = combined !== undefined && combined < mutation &&
+          (exclusive === undefined || combined < exclusive && exclusive < mutation);
+        if (!directOrder && !delegatedOrder) {
+          violations.push(enclosingFunctionName(node));
+        }
+      } else if (enclosingFunctionName(node) === "lockPlatformAuthorityForMutation") {
+        const target = firstPosition("target");
+        const worker = firstPosition("worker");
+        const exclusive = firstPosition("exclusive");
+        const rowOrder = target !== undefined && worker !== undefined && target < worker;
+        const exclusiveOrder = exclusive === undefined || worker !== undefined && worker < exclusive;
+        if (!rowOrder || !exclusiveOrder) violations.push("lockPlatformAuthorityForMutation");
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return [...new Set(violations)].sort();
+}
 
 function signedPoll() {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
@@ -175,39 +357,95 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
     expect(flagBlock).not.toContain("appDb: db");
   });
 
-  it("keeps the complete platform authority-writer inventory on the exclusive helper", () => {
+  it("enforces an exhaustive authority-writer allowlist and target-worker-exclusive lock order", () => {
     const dbHelper = new URL("../../../packages/db/src/platform-target-authority-lock.ts", import.meta.url);
     expect(existsSync(dbHelper), "platform-target lock helper must exist before writers can be guarded").toBe(true);
-    const repository = readFileSync(
-      new URL("../../../packages/db/src/repositories/tenant/worker-enrollment.ts", import.meta.url),
-      "utf8",
-    );
-    const enrollment = readFileSync(new URL("../services/worker-enrollment.ts", import.meta.url), "utf8");
-    const heartbeat = readFileSync(new URL("../middleware/worker-session-auth.ts", import.meta.url), "utf8");
-    const targets = readFileSync(new URL("../services/execution-targets.ts", import.meta.url), "utf8");
-    const targetRoutes = readFileSync(new URL("../routes/execution-targets.ts", import.meta.url), "utf8");
-    const resolver = targets.slice(
-      targets.indexOf("export async function resolveWorkerTargetId"),
-      targets.indexOf("export function stripWorkerSecret"),
-    );
+    const sourceFiles = [
+      ...productionTypeScriptFiles(join(repositoryRoot, "server", "src")),
+      ...productionTypeScriptFiles(join(repositoryRoot, "packages", "db", "src")),
+    ].map((path) => ({
+      file: relative(repositoryRoot, path).replaceAll("\\", "/"),
+      source: readFileSync(path, "utf8"),
+    }));
+    const inventory = scanAuthorityWriters(sourceFiles).map(writerIdentity);
+    const expected = [
+      "packages/db/src/repositories/tenant/job-control.ts#touchWorkerLeaseProfile:workers:lastSeenAt,updatedAt:last_seen_only",
+      "packages/db/src/repositories/tenant/worker-enrollment.ts#advanceTargetGeneration:executionTargets:deviceGeneration,updatedAt:authority",
+      "packages/db/src/repositories/tenant/worker-enrollment.ts#heartbeatPlatformPhysicalLivenessOnly:executionTargets:lastSeenAt,updatedAt:last_seen_only",
+      "packages/db/src/repositories/tenant/worker-enrollment.ts#heartbeatPlatformPhysicalLivenessOnly:workers:lastSeenAt,updatedAt:last_seen_only",
+      "packages/db/src/repositories/tenant/worker-enrollment.ts#heartbeatSessionProfile:workers:lastSeenAt,updatedAt:last_seen_only",
+      "packages/db/src/repositories/tenant/worker-enrollment.ts#heartbeatSessionTarget:executionTargets:lastSeenAt,status,updatedAt:authority",
+      "packages/db/src/repositories/tenant/worker-enrollment.ts#heartbeatSharedPlatformTarget:executionTargets:lastSeenAt,updatedAt:last_seen_only",
+      "packages/db/src/repositories/tenant/worker-enrollment.ts#heartbeatSharedPlatformTarget:workers:lastSeenAt,updatedAt:last_seen_only",
+      "packages/db/src/repositories/tenant/worker-enrollment.ts#ratifyPlacementProfile:executionTargets:providerConstraintProfile,registeredProfile,registeredProfileHash,updatedAt:authority",
+      "packages/db/src/repositories/tenant/worker-enrollment.ts#retireBootstrapCredential:executionTargets:updatedAt,workerTokenHash:authority",
+      "packages/db/src/repositories/tenant/worker-enrollment.ts#revokeTargetAuthority:executionTargets:deviceGeneration,status,updatedAt,workerTokenHash:authority",
+      "packages/db/src/repositories/tenant/worker-enrollment.ts#revokeTargetAuthority:workers:revokedAt,status,updatedAt:authority",
+      "packages/db/src/repositories/tenant/worker-enrollment.ts#rotateWorker:workers:deviceGeneration,devicePublicKey,deviceThumbprint,enrolledAt,profileHash,profileSnapshot,revokedAt,status,updatedAt:authority",
+      "server/src/services/execution-targets.ts#ratifyPlatformExecutionTargetPlacementProfile:executionTargets:<spread>,updatedAt:authority",
+      "server/src/services/execution-targets.ts#registerWorkerHeartbeat:executionTargets:<spread>,lastSeenAt,status,updatedAt:authority",
+      "server/src/services/execution-targets.ts#revokeExecutionTargetWorkerToken:executionTargets:status,updatedAt,workerTokenHash:authority",
+      "server/src/services/execution-targets.ts#rotateExecutionTargetWorkerToken:executionTargets:updatedAt,workerTokenHash:authority",
+    ].sort();
+    expect.soft(inventory).toEqual(expected);
 
-    expect(repository).toContain("acquirePlatformTargetAuthorityExclusive");
-    expect(enrollment).toContain("acquirePlatformTargetAuthorityShared");
-    expect(enrollment).toContain("acquirePlatformTargetAuthorityExclusive");
-    expect(heartbeat).toContain("acquirePlatformTargetAuthorityExclusive");
-    expect(targets).toContain("acquirePlatformTargetAuthorityExclusive");
-    expect(heartbeat).toContain("heartbeatPlatformPhysicalLivenessOnly");
-    expect(heartbeat).toContain("transitionPlatformPhysicalStatus");
-    expect(resolver).toContain("isNotNull(executionTargets.organizationId)");
-    expect(targetRoutes).toContain("kind: \"legacy\"; targetId: string; organizationId: string");
+    const injected = scanAuthorityWriters([...sourceFiles, {
+      file: "server/src/services/injected-platform-bypass.ts",
+      source: `export async function injectedBypass(tx: any) {
+        await tx.update(executionTargets).set({ status: "offline" });
+      }`,
+    }]).map(writerIdentity);
+    expect.soft(injected.filter((identity) => !expected.includes(identity))).toEqual([
+      "server/src/services/injected-platform-bypass.ts#injectedBypass:executionTargets:status:authority",
+    ]);
 
-    for (const [label, source] of [
-      ["repository", repository],
-      ["enrollment", enrollment],
-      ["heartbeat", heartbeat],
-      ["targets", targets],
-    ] as const) {
-      expect(source, `${label} must not widen platform target RLS or grants`).not.toContain(
+    const guarded = `async function guarded(tx: any) {
+      await tx.select().from(executionTargets).where(ok).for("update");
+      await tx.select().from(workers).where(ok).for("update");
+      await acquirePlatformTargetAuthorityExclusive(tx, targetId);
+      await tx.update(executionTargets).set({ status: "offline" });
+    }`;
+    const wrongOrder = `async function wrongOrder(tx: any) {
+      await tx.select().from(executionTargets).where(ok).for("update");
+      await acquirePlatformTargetAuthorityExclusive(tx, targetId);
+      await tx.select().from(workers).where(ok).for("update");
+      await tx.update(executionTargets).set({ status: "offline" });
+    }`;
+    const unguarded = `async function unguarded(tx: any) {
+      await tx.update(executionTargets).set({ deviceGeneration: 2 });
+    }`;
+    expect.soft(platformGuardOrderViolations(guarded)).toEqual([]);
+    expect.soft(platformGuardOrderViolations(wrongOrder)).toEqual(["wrongOrder"]);
+    expect.soft(platformGuardOrderViolations(unguarded)).toEqual(["unguarded"]);
+
+    const sourceByFile = new Map(sourceFiles.map((entry) => [entry.file, entry.source]));
+    const targetWriters = sourceByFile.get("server/src/services/execution-targets.ts")!;
+    const workerRepository = sourceByFile.get(
+      "packages/db/src/repositories/tenant/worker-enrollment.ts",
+    )!;
+    const operatorRepository = sourceByFile.get(
+      "packages/db/src/repositories/operator/job-leasing.ts",
+    )!;
+    expect.soft(platformGuardOrderViolations(namedFunctionSource(
+      targetWriters,
+      "ratifyPlatformExecutionTargetPlacementProfile",
+    ))).toEqual([]);
+    expect.soft(platformGuardOrderViolations(namedFunctionSource(
+      workerRepository,
+      "lockPlatformAuthorityForMutation",
+    ))).toEqual([]);
+    expect.soft(platformGuardOrderViolations(namedFunctionSource(
+      workerRepository,
+      "revokeTargetAuthority",
+    ))).toEqual([]);
+    expect.soft(platformGuardOrderViolations(namedFunctionSource(
+      operatorRepository,
+      "lockPlatformAuthorityForMutation",
+    ))).toEqual([]);
+
+    const writerFiles = new Set(inventory.map((identity) => identity.slice(0, identity.indexOf("#"))));
+    for (const { file, source } of sourceFiles.filter((entry) => writerFiles.has(entry.file))) {
+      expect(source, `${file} must not widen platform target RLS or grants`).not.toContain(
         "execution_targets_tenant_enrollment_update",
       );
     }

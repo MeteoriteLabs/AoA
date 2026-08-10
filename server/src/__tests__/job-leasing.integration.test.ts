@@ -586,6 +586,97 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
     expect(result.body.job.jobId).toBe(browser.jobId);
   });
 
+  it("durably advances beyond 256 incompatible attempts across restart, churn, and concurrent polls", async () => {
+    const { admin, app } = guard();
+    await resetRuntimeRows();
+    const authority = await configureMixedWorkloadAuthority();
+    const placement = { profileHash: authority.targetProfileHash, providerHash: authority.providerHash };
+    const baseTime = Date.now() - 10 * 60_000;
+    for (let start = 0; start < 256; start += 32) {
+      await Promise.all(Array.from({ length: 32 }, (_, offset) => {
+        const index = start + offset;
+        return seedPlacedJob({
+          ordinal: 700 + index,
+          workloadType: "batch",
+          availableAt: new Date(baseTime + index),
+          placement,
+        });
+      }));
+    }
+    const browser = await seedPlacedJob({
+      ordinal: 956,
+      workloadType: "browser_session",
+      availableAt: new Date(baseTime + 256),
+      placement,
+    });
+    // Model a delivered hint lost on process restart. Tenant-local pull remains
+    // the only authority and must eventually reach the compatible 257th row.
+    await admin`UPDATE job_outbox SET status = 'delivered', updated_at = clock_timestamp()`;
+    const browserOnly = {
+      batchSlots: 0,
+      browserSessionSlots: 1,
+      serviceSlots: 0,
+      freeCpuMillis: 2_000,
+      freeMemoryMiB: 4_096,
+      freeDiskMiB: 8_192,
+    };
+
+    const firstProcess = createJobLeasingService({ appDb: app.db });
+    const bounded = await firstProcess.poll({
+      auth: auth("restart-safe-window-1", WORKER, TARGET, authority.workerProfileHash),
+      request: pollRequestWithCapacity(WORKER, TARGET, "restart-safe-window-1", browserOnly),
+    });
+    expect.soft(bounded.outcome).toBe("no_work");
+    const [cursor] = await admin<{
+      createdAt: string | null;
+      id: string | null;
+    }[]>`SELECT
+      to_jsonb(worker)->>'lease_scan_cursor_created_at' AS "createdAt",
+      to_jsonb(worker)->>'lease_scan_cursor_id' AS id
+      FROM workers worker WHERE id = ${WORKER}`;
+    expect.soft(cursor?.createdAt).toEqual(expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/));
+    expect.soft(cursor?.id).toEqual(expect.stringMatching(/^[0-9a-f-]{36}$/));
+
+    const restartedA = createJobLeasingService({ appDb: app.db });
+    const restartedB = createJobLeasingService({ appDb: app.db });
+    const concurrent = await Promise.all([
+      restartedA.poll({
+        auth: auth("restart-safe-window-2a", WORKER, TARGET, authority.workerProfileHash),
+        request: pollRequestWithCapacity(WORKER, TARGET, "restart-safe-window-2a", browserOnly),
+      }),
+      restartedB.poll({
+        auth: auth("restart-safe-window-2b", WORKER, TARGET, authority.workerProfileHash),
+        request: pollRequestWithCapacity(WORKER, TARGET, "restart-safe-window-2b", browserOnly),
+      }),
+    ]);
+    const offers = concurrent.filter((result) => result.outcome === "offer");
+    expect.soft(offers).toHaveLength(1);
+    expect.soft(offers[0]?.outcome === "offer" ? offers[0].body.job.jobId : null).toBe(browser.jobId);
+
+    // A capacity change plus newly inserted older work must be reached after at
+    // most one durable wrap; a cursor may never permanently hide older rows.
+    const newlyOlder = await seedPlacedJob({
+      ordinal: 957,
+      workloadType: "batch",
+      availableAt: new Date(baseTime - 60_000),
+      placement,
+      outbox: false,
+    });
+    const batchOnly = { ...browserOnly, batchSlots: 1, browserSessionSlots: 0 };
+    const churnFirst = await createJobLeasingService({ appDb: app.db }).poll({
+      auth: auth("restart-safe-churn-1", WORKER, TARGET, authority.workerProfileHash),
+      request: pollRequestWithCapacity(WORKER, TARGET, "restart-safe-churn-1", batchOnly),
+    });
+    const churnOffer = churnFirst.outcome === "offer"
+      ? churnFirst
+      : await createJobLeasingService({ appDb: app.db }).poll({
+          auth: auth("restart-safe-churn-2", WORKER, TARGET, authority.workerProfileHash),
+          request: pollRequestWithCapacity(WORKER, TARGET, "restart-safe-churn-2", batchOnly),
+        });
+    expect.soft(churnOffer.outcome).toBe("offer");
+    expect.soft(churnOffer.outcome === "offer" ? churnOffer.body.job.jobId : null).toBe(newlyOlder.jobId);
+  }, 180_000);
+
   it("allows concurrent claims in independent workload classes under the explicit provider total", async () => {
     const { app } = guard();
     await resetRuntimeRows();
