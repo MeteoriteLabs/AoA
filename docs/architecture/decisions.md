@@ -2016,22 +2016,41 @@ lifecycle operations that expose no tenant or job identity. Tenant worker-operat
 reject it uniformly before tenant lookup. No lease locator is added and frozen E1 v1 remains
 byte-for-byte unchanged.
 
-For a platform target, each governed tenant mutation uses a revocation-linearized guard. A
-bounded `aoa_operator` transaction locks the exact physical target/worker authority row
-`FOR SHARE`, validates active generation/device/profile without receiving tenant, job, lease,
-fence, or payload facts, and holds the lock while the Organization-scoped `runInTenant`
-transaction revalidates and commits the complete logical worker/job/attempt/lease/fence tuple.
-Platform revoke/replace takes the conflicting `FOR UPDATE` lock, changes generation/status,
-and is the global cutoff. Guard-first tenant work commits before cutoff; cutoff-first work
-waits and then fails the new authority check. The operator guard is not job authority, a
-tenant router, or a distributed transaction participant.
+For a platform target, each governed tenant mutation uses a revocation-linearized advisory
+handoff with the app transaction outermost. Inside the already-open `runInTenant` transaction,
+a bounded operator transaction locks the exact physical target and then physical worker
+`FOR SHARE` in fixed order and validates active generation/device/profile without receiving
+tenant, job, lease, fence, or payload facts. While those row locks remain held, the app
+transaction acquires a domain-separated transaction-scoped shared advisory lock for the
+target and performs a plain SELECT authority recheck; it never requests a row UPDATE lock or
+wider RLS policy. Operator validation must commit successfully, after which the app retains
+the advisory lock through its tenant mutation and commit. Operator failure forces app
+rollback; app/process failure automatically releases the transaction-scoped advisory lock.
+All nested pool acquisition is app→operator.
 
-The flag-on outbox runtime may enumerate admitted Organization shards internally only to
+Every platform status, generation, device-binding, or registered-profile authority writer
+locks target then its bound worker when present `FOR UPDATE`, obtains the matching transaction-scoped exclusive
+advisory lock, and only then mutates. Last-seen-only physical heartbeat is split from authority
+changes. Guard-first tenant work commits before the exclusive cutoff can complete; cutoff-
+first work blocks the shared-row handoff and then fails the changed authority check. Locks are
+bounded and fail closed. This requires no grant/RLS widening or distributed two-phase commit.
+A static writer inventory prevents an authority-changing path from bypassing the protocol.
+
+Platform logical-profile liveness is not circular. A fresh session-bound device proof plus
+the guarded current physical worker/target heartbeat supplies operation liveness; a newly
+enrolled logical profile may have `workers.last_seen_at IS NULL`. After authority succeeds,
+the tenant transaction writes the exact logical profile's database-time `last_seen_at` for
+observability. A stale physical worker/target still denies. Organization/owner targets retain
+their ordinary logical worker and target heartbeat requirements.
+
+The flag-on outbox runtime may list admitted Organization IDs through the bounded non-owner
+app pool and enumerate those shards internally only to
 claim tenant outbox rows through separate `runInTenant` calls and create identifier-only,
-non-authoritative ready hints. It visits a bounded rotating window rather than a permanent
-first-N prefix. Each Organization-scoped poll consumes only its own hints and retains a
-bounded tenant-local pull fallback, so hint loss/restart affects latency rather than
-correctness. A platform-scoped session never consumes tenant-ready hints.
+non-authoritative ready hints. It excludes sentinel/inactive/unmapped entries and visits a
+stable lexical rotating window rather than a permanent first-N prefix. Each Organization-
+scoped poll consumes only its own hints and retains a bounded tenant-local pull fallback, so
+hint rejection/loss/restart or membership churn affects latency rather than correctness. A
+platform-scoped session never consumes tenant-ready hints.
 
 **Consequences.** This preserves H-01/H-02 and frozen wire compatibility without exposing job
 metadata through the operator role. One physical device may hold many logical sessions; the

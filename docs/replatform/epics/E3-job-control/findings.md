@@ -550,3 +550,35 @@ Organization profile; the platform-scoped session remains physical-control-only.
 locator or E1 change is authorized. JOB-003 remains `needs_changes` until a fresh TDD fix
 round and distinct review prove the amendment plus E3-F017; JOB-010 remains paused until that
 review closes.
+
+## E3-F019 - Initial Decision #124 guard and platform-profile liveness were not implementable
+
+**Date:** 2026-08-10
+**Status:** `resolved_in_plan_pending_independent_re_review`
+**Severity:** P1 H-02 cutoff linearization / platform logical-profile availability
+**Affected ticket:** JOB-003, with bounded JOB-002/JOB-009 synchronization seams
+
+**Finding:** Independent review of the first E3-F018 amendment revision found two blocking
+defects before implementation. First, an outer operator `FOR SHARE` transaction held across
+`runInTenant` conflicts with JOB-003's tenant `FOR UPDATE` on the same null-Organization
+platform target. Real PostgreSQL showed the current tenant UPDATE policy returns zero rows;
+widening it would grant unsafe global mutation authority, while a widened probe deadlocked
+with SQLSTATE 57014. Removing only the inner row lock still leaves a stale-commit window if
+the operator connection dies before the tenant transaction commits, and operator→app nesting
+opposes the existing app→operator pool order. Second, a real Organization logical profile on
+a platform target is inserted with `workers.last_seen_at = NULL`, while its heartbeat updates
+only physical operator metadata. The prior JOB-003 freshness predicate therefore rejected the
+first real poll; seeded workers hid the circular prerequisite.
+
+**Disposition:** Decision #124 and JOB-003 now specify an app-outer advisory handoff. Operator
+locks physical target→worker `FOR SHARE`; while held, the app transaction acquires a shared
+transaction-scoped advisory lock and plain-rechecks the target; operator validation commits;
+the app retains the lock through tenant commit. Every platform authority writer locks
+target→worker `FOR UPDATE`, takes the matching exclusive advisory lock, then changes status,
+generation, device binding, or registered profile. Lock timeout, connection/process failure,
+guard-first/cutoff-first, static writer inventory, and no-grant-widening tests are mandatory.
+For liveness, a fresh session-bound device proof plus guarded fresh physical worker/target
+heartbeat authorizes the platform logical operation; tenant `last_seen_at` is updated after
+success for observability but is not a prior prerequisite. Real enrollment→physical
+heartbeat→logical poll/ACK and stale-physical cases are mandatory. No production or test edit
+may begin until the distinct reviewer accepts this successor plan revision.

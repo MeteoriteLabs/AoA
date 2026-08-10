@@ -465,19 +465,27 @@ because a transaction may cross the deadline. Worker `observedAt`, `ackedAt`, or
 timestamps are evidence only and never authorize time. For Organization/owner targets, the
 current-generation recheck locks the exact tenant-visible `execution_targets` authority row
 and the governed mutation executes in the same tenant transaction. For a platform target,
-Decision #124 uses a nested guard protocol: a bounded `aoa_operator` transaction locks the
-exact null-Organization physical target/worker authority `FOR SHARE`, rechecks active status,
-generation, device, and profile without receiving any Organization/job/lease/fence/payload,
-then holds that lock while the authenticated Organization-scoped `runInTenant` transaction
-rechecks the logical worker/placement/lease tuple and commits the governed mutation. The
-operator guard is read-only authority, not a second job transaction or a shard selector. A
-tenant failure rolls back normally; a process failure releases the guard, and any tenant
-commit completed while the lock was held is ordered before a later cutoff. Thus there is no
-check-then-write gap and no distributed two-phase commit requirement. Platform revocation
-cannot update every tenant RLS shard in one transaction. Its operator transaction instead
-locks that same authority row
-`FOR UPDATE`, increments generation/disables the target, and inserts a durable revocation-
-fanout record.
+Decision #124 keeps the authenticated `runInTenant` app transaction outermost. Inside it, a
+bounded operator transaction locks the exact physical target and then physical worker
+`FOR SHARE` in that fixed order and validates only active generation/device/profile metadata.
+While those row locks remain held, the already-open app transaction acquires the
+domain-separated transaction-scoped shared advisory lock for the target and performs a plain
+SELECT recheck of the null-Organization target; it never requests an UPDATE row lock or wider
+RLS policy. Operator validation must then commit successfully before the app transaction may
+mutate tenant state. The app transaction retains the advisory lock through its own commit.
+Operator failure forces app rollback; app/process failure rolls back and automatically
+releases the advisory lock. All nested pool use is app→operator, never operator→app.
+
+Every platform status/generation/device-binding/registered-profile cutoff path locks the
+physical target and then its bound worker when present `FOR UPDATE`, acquires the matching
+transaction-scoped exclusive advisory lock, and only then mutates. Last-seen-only heartbeat updates are split
+from authority changes and need not take the exclusive lock. Locks have a bounded timeout and
+fail closed. Thus guard-first tenant work commits before cutoff, while cutoff-first work waits
+at the physical row handoff and then observes the changed authority; there is no check-then-
+write gap, grant expansion, or distributed two-phase commit. Platform revocation cannot
+update every tenant RLS shard in one transaction. Its operator transaction uses the
+exclusive protocol above, increments generation/disables the target, and inserts a durable
+revocation-fanout record.
 That commit is the linearization point: a guard that locked first may finish before cutoff;
 one that starts or resumes after waits and fails the new generation/status check. An
 idempotent reconciler then enumerates admitted Organizations and, separately inside each
@@ -931,9 +939,12 @@ ACK activates exactly that lease.
 **Ticket non-goals:** renewal, event ingestion, retry/reaping, artifact bytes, or changing
 the stored placement decision.
 
-**Files:** modify `job_attempts.ts`, `leases.ts`, tenant job-control repository,
-`server/src/middleware/worker-operation-proof.ts`, the worker route, and the flag-on runtime
-composition in `server/src/index.ts`; create
+**Files:** modify `job_attempts.ts`, `leases.ts`, tenant job-control and worker-enrollment
+repositories, `server/src/middleware/worker-operation-proof.ts`,
+`server/src/middleware/worker-session-auth.ts`, `server/src/services/worker-enrollment.ts`,
+`server/src/services/execution-targets.ts`, the worker route, and the flag-on runtime
+composition in `server/src/index.ts`; create the shared domain-separated platform-target
+advisory-lock helper, `packages/db/src/repositories/operator/job-leasing.ts`,
 `packages/db/src/schema/worker_operation_receipts.ts`, its generated/RLS migrations,
 `server/src/services/job-leasing.ts`,
 `server/src/services/job-outbox-worker.ts`, and
@@ -941,14 +952,17 @@ composition in `server/src/index.ts`; create
 `packages/db/src/__tests__/worker-operation-receipts-schema.integration.test.ts`,
 `server/src/__tests__/job-leasing.integration.test.ts` and
 `job-leasing-contract.test.ts`, including runtime-composition, multi-Organization platform
-target, revocation-barrier, and fair-scheduler cases.
+target, advisory-handoff/revocation, authority-mutation-inventory, liveness, and fair-scheduler
+cases. Predecessor file edits are bounded synchronization corrections only; they may not
+change JOB-002 enrollment identity or JOB-009 placement semantics.
 
 **Interfaces:** Poll validates an E1 Organization-scoped logical worker
 session/hello/capacity. A platform-scoped physical session is rejected before tenant lookup
 with the uniform frozen protocol error and can reveal neither Organization nor job existence.
 For an Organization/owner target, poll proceeds in one tenant transaction. For a platform
-target, it first acquires the Decision #124 operator shared authority guard and holds it
-through the tenant commit. The authenticated session Organization—not a request field,
+target, the outer tenant transaction performs the Decision #124 physical-row-to-shared-
+advisory handoff and retains the advisory guard through commit. The authenticated session
+Organization—not a request field,
 operator lookup, lease locator, or scan—selects exactly one `runInTenant` transaction, which
 selects the oldest eligible placed attempt with Drizzle's PostgreSQL row-lock
 API (`FOR UPDATE SKIP LOCKED`), rechecks target/profile/generation/capability/capacity, moves
@@ -957,23 +971,35 @@ and opaque fence. One conditional ACK transaction locks the same identities and 
 `offered→active` plus attempt `offered→leased`; a late/wrong/replayed loser changes neither.
 ACK uses the Organization and logical worker identity from the authenticated session, so the
 strict frozen ACK v1 body and lease-only URL need no tenant field or extension. Platform
-targets use the same operator guard across ACK's tenant commit; revocation-first observes the
-new generation and denies, while ACK-first commits before the cutoff lock can complete.
-The transaction also stores the ACK operation receipt. A lost-response retry with the same
+targets use the same advisory handoff across ACK's tenant commit; revocation-first observes
+the new generation and denies, while ACK-first commits before the cutoff can acquire its
+exclusive advisory lock.
+For Organization/owner targets, logical worker and target heartbeat freshness remains part of
+authority. For an Organization-scoped logical profile backed by a platform target, a fresh
+session-bound device proof plus the guarded current physical worker/target heartbeat supplies
+liveness; `workers.last_seen_at` on the logical profile is not a circular prerequisite and may
+be NULL immediately after real enrollment. After all authority checks pass, the tenant
+transaction updates only that exact logical profile's `last_seen_at` from
+`clock_timestamp()` for observability. A stale physical heartbeat still denies. The
+transaction also stores the ACK operation receipt. A lost-response retry with the same
 authenticated scope/idempotency key/semantic digest and a fresh device proof returns the
 original `acknowledged` outcome even though the lease is already active; it never reapplies
 the transition. Same key with a changed digest is generic `malformed`.
 The job remains `queued` until JOB-005 accepts the first fence-authorized
 `attempt_started` event, which moves attempt `leased→running` and job `queued→running` in the
 event transaction. Incompatible/no-work responses reveal no job IDs/details.
-The flag-on outbox worker enumerates admitted Organization shards with a rotating fair cursor,
+The flag-on outbox worker lists admitted Organization IDs through the bounded non-owner app
+pool, excluding the sentinel, inactive, and unmapped entries without reading job facts. It
+uses a stable lexical rotating cursor,
 visits at most 32 shards per tick, claims rows only inside each shard's `runInTenant`, and
 feeds identifier-only, non-authoritative ready hints keyed by Organization and target to the
 bounded scheduler. Repeated ticks must visit every admitted shard rather than restarting at
 the first 32. Each Organization-scoped poll consumes only matching hints and always falls
 back to a bounded pull from its own tenant; outbox replay and pull polling recover after
-restart. A platform-scoped session neither consumes these hints nor causes a tenant scan.
-Hints never bypass placement, authority guards, row locks, or capacity checks.
+restart and after Organization membership churn. A publish/rejection/drop is recorded only as
+a latency signal and never changes outbox/job authority. A platform-scoped session neither
+consumes these hints nor causes a tenant scan. Hints never bypass placement, authority guards,
+row locks, or capacity checks.
 
 **Failure behavior:** partial unique `leases_active_per_attempt_idx` plus the locked
 transition makes concurrent claim losers return no-work; late/wrong ACK is stale-fence or
@@ -984,9 +1010,11 @@ class and an ineligible/full head candidate cannot hide later eligible work. The
 semantic receipt is checked/deleted independently of bounded housekeeping before replay or
 insert, so a collision beyond the cleanup batch cannot replay or permanently block progress.
 
-**Compatibility / rollback:** additive lease/attempt columns. The generated successor
-migration performs an idempotent C14-permitted data correction for E2-valid legacy active
-leases before enforcing the activation invariant; replay over populated E2 state must pass.
+**Compatibility / rollback:** additive lease/attempt columns. Because E3 migration `0227`
+has not shipped on the shared branch, its generated DDL receives the permitted hand-appended,
+idempotent data correction for E2-valid legacy active leases immediately before that same
+migration enforces the activation invariant; a later migration cannot repair a predecessor
+that already fails. Replay over populated E2 state must pass.
 No lease locator or E1 wire/schema change is introduced. Flag-off has no poll/ACK route or
 outbox/scheduler runtime. Rollback stops offers and lets already offered leases expire; never
 transfers their fence.
@@ -997,10 +1025,17 @@ change, ACK same-key/same-digest response loss, same-key/changed-digest conflict
 ID on semantic replay, late/wrong ACK, rollback between each lease/attempt update (proving the whole ACK
 transaction rolls back), restart consistency, and no-detail response. Add explicit REDs for:
 Organization-scoped logical sessions on one platform target in two tenants; platform-session
-poll/ACK denial; operator-guard ACK-first/revoke-first barriers and crash release; no operator
-job/lease/tenant facts; >32-shard fair rotation plus restart pull recovery; mixed workload
+poll/ACK denial; poll/offer/ACK against guard-first and cutoff-first revoke, replacement, and
+registered-profile mutation; operator-connection loss before/during/after advisory handoff;
+app/process crash; bounded lock timeout; no operator job/lease/tenant/fence/payload facts;
+real enrollment→physical heartbeat→logical poll/ACK with initial NULL and beyond-window
+logical `last_seen_at`, plus stale-physical denial; >32-shard fair rotation, membership churn,
+publish rejection, and restart pull recovery; mixed workload
 capacity without head-of-line starvation; an exact expired receipt behind >100 other expired
 rows; populated-E2 migration replay; and non-vacuous cross-tenant receipt RLS denial.
+Add a static mutation inventory proving every current platform status/generation/device/profile
+authority writer uses target→worker row order plus the exclusive advisory helper, while
+last-seen-only heartbeat stays non-authoritative and cannot change status.
 JOB-005 later adds the
 started-event job/attempt transition test. Run focused suite three
 times because it is H-03 critical, plus db/server build. Evidence
