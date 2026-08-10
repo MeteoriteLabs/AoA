@@ -217,6 +217,9 @@ async function seedGraph(g: TenantGraph): Promise<void> {
         attemptId: l.attemptId,
         status: "active" as const,
         fence: l.fence,
+        // JOB-003 makes activation explicit: every active lease retains the
+        // instant it became authoritative, including legacy adversarial seeds.
+        activatedAt: new Date(),
       })),
     ),
   );
