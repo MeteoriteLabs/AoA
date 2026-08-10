@@ -8,7 +8,7 @@
 **Implementer:** `Codex /root/job003_impl`
 **Reviewer:** `pending distinct Codex /root/job003_review`
 **Start SHA:** 4276331160afb77d47ffa488543b968da949c02f
-**Implementation candidate:** ee8a1005fa2a0d97f2dfcb68dbce1aa6b88f83a8
+**Implementation candidate:** 73f9d15537995b15cf2173ae0368ad6b28e6af13
 
 The Start SHA is the committed passing JOB-009 completion revision and the exact JOB-003
 assignment boundary. JOB-001, JOB-002, JOB-009, the frozen E1 v1 protocol, and the E2 tenant
@@ -64,6 +64,8 @@ attempt 1, and alone may change this ticket to `complete` / `pass`.
     authority and drift-denial cases pass.
 - Aggregate lifecycle fixture correction `ee8a1005fa2a0d97f2dfcb68dbce1aa6b88f83a8`
   adds `activated_at` to the direct-SQL active-lease integrity seeds; the file passes 9/9.
+- Pre-review hygiene correction `73f9d15537995b15cf2173ae0368ad6b28e6af13`
+  removes one extra EOF blank line from the receipt schema; DB typecheck/build are unchanged.
 
 ## Authority, compatibility, and failure behavior
 
