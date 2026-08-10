@@ -12,6 +12,8 @@ import {
 import {
   canonicalProviderConstraintProfileDigestInputV1,
   canonicalizeJsonV1,
+  type LeaseAckOperationRequestV1,
+  type LeaseOfferV1,
   type PollRequestV1,
   type ProviderConstraintProfileV1,
   type RegisteredTargetProfileV1,
@@ -137,6 +139,32 @@ function pollRequest(workerId: string, targetId: string, nonce: string, batchSlo
       freeCpuMillis: 2_000,
       freeMemoryMiB: 4_096,
       freeDiskMiB: 8_192,
+    },
+  };
+}
+
+function ackRequest(
+  offer: LeaseOfferV1,
+  idempotencyKey = crypto.randomUUID(),
+  body: Partial<LeaseAckOperationRequestV1["body"]> = {},
+): LeaseAckOperationRequestV1 {
+  return {
+    protocolVersion: 1,
+    correlationId: crypto.randomUUID(),
+    issuedAt: new Date().toISOString(),
+    nonce: `ack-${crypto.randomUUID()}`,
+    audience: "worker_run",
+    idempotencyKey,
+    body: {
+      protocolVersion: 1,
+      workerId: offer.workerId,
+      jobId: offer.job.jobId,
+      attempt: offer.job.attempt,
+      leaseId: offer.leaseId,
+      fenceToken: offer.fenceToken,
+      ackedAt: new Date().toISOString(),
+      extensions: [],
+      ...body,
     },
   };
 }
@@ -272,6 +300,38 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
           clock_timestamp())`;
     }
     return { jobId, attemptId, outboxId };
+  }
+
+  async function offerPlacedJob(input: {
+    ordinal: number;
+    service?: ReturnType<typeof createJobLeasingService>;
+  }): Promise<{
+    seeded: Awaited<ReturnType<typeof seedPlacedJob>>;
+    offer: LeaseOfferV1;
+    service: ReturnType<typeof createJobLeasingService>;
+  }> {
+    const { app } = guard();
+    const seeded = await seedPlacedJob({ ordinal: input.ordinal });
+    const service = input.service ?? createJobLeasingService({ appDb: app.db });
+    const result = await service.poll({
+      auth: auth(`offer-${input.ordinal}`),
+      request: pollRequest(WORKER, TARGET, `offer-${input.ordinal}`),
+    });
+    if (result.outcome !== "offer") throw new Error("expected lease offer");
+    return { seeded, offer: result.body, service };
+  }
+
+  async function expectOfferUnchanged(attemptId: string): Promise<void> {
+    const { admin } = guard();
+    const [state] = await admin<{
+      leaseStatus: string;
+      attemptStatus: string;
+      receipts: number;
+    }[]>`SELECT
+      (SELECT status FROM leases WHERE attempt_id = ${attemptId}) AS "leaseStatus",
+      (SELECT status FROM job_attempts WHERE id = ${attemptId}) AS "attemptStatus",
+      (SELECT count(*)::int FROM worker_operation_receipts WHERE attempt_id = ${attemptId}) AS receipts`;
+    expect(state).toEqual({ leaseStatus: "offered", attemptStatus: "offered", receipts: 0 });
   }
 
   beforeAll(async () => {
@@ -458,5 +518,177 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
     expect(scheduler.take(ORG, 10)).toEqual([seeded.attemptId]);
     const [delivered] = await admin<{ status: string }[]>`SELECT status FROM job_outbox WHERE id = ${seeded.outboxId}`;
     expect(delivered?.status).toBe("delivered");
+  });
+
+  it("activates exactly once across 100 concurrent ACKs and semantically replays after restart", async () => {
+    const { admin, app } = guard();
+    await resetRuntimeRows();
+    const { seeded, offer, service } = await offerPlacedJob({ ordinal: 300 });
+    const idempotencyKey = crypto.randomUUID();
+    const first = ackRequest(offer, idempotencyKey);
+    const results = await Promise.all(Array.from({ length: 100 }, (_, index) => service.ack({
+      auth: auth(`ack-race-${index}`),
+      request: {
+        ...first,
+        correlationId: crypto.randomUUID(),
+        issuedAt: new Date().toISOString(),
+        nonce: `ack-race-${index}`,
+      },
+    })));
+    expect(results.every((result) => result.outcome === "acknowledged")).toBe(true);
+    expect(new Set(results.map((result) => `${result.leaseId}:${result.expiresAt}`))).toEqual(
+      new Set([`${offer.leaseId}:${offer.expiresAt}`]),
+    );
+    const [state] = await admin<{
+      leaseStatus: string;
+      attemptStatus: string;
+      jobStatus: string;
+      activated: boolean;
+      receipts: number;
+    }[]>`SELECT
+      (SELECT status FROM leases WHERE id = ${offer.leaseId}) AS "leaseStatus",
+      (SELECT status FROM job_attempts WHERE id = ${seeded.attemptId}) AS "attemptStatus",
+      (SELECT status FROM jobs WHERE id = ${seeded.jobId}) AS "jobStatus",
+      (SELECT activated_at IS NOT NULL FROM leases WHERE id = ${offer.leaseId}) AS activated,
+      (SELECT count(*)::int FROM worker_operation_receipts WHERE lease_id = ${offer.leaseId}) AS receipts`;
+    expect(state).toEqual({
+      leaseStatus: "active",
+      attemptStatus: "leased",
+      jobStatus: "queued",
+      activated: true,
+      receipts: 1,
+    });
+
+    const restarted = createJobLeasingService({ appDb: app.db });
+    const replay = await restarted.ack({
+      auth: auth("ack-restart-replay"),
+      request: { ...first, correlationId: crypto.randomUUID(), nonce: "ack-restart-replay" },
+    });
+    expect(replay).toMatchObject({ outcome: "acknowledged", leaseId: offer.leaseId, expiresAt: offer.expiresAt });
+
+    const changed = ackRequest(offer, idempotencyKey, {
+      ackedAt: new Date(Date.parse(first.body.ackedAt) + 1_000).toISOString(),
+    });
+    await expect(restarted.ack({ auth: auth("ack-changed-digest"), request: changed }))
+      .rejects.toMatchObject({ code: "malformed" });
+    await expect(restarted.ack({
+      auth: auth("ack-restart-replay"),
+      request: ackRequest(offer, crypto.randomUUID()),
+    })).rejects.toMatchObject({ code: "unauthorized" });
+  }, 60_000);
+
+  it("uses fresh DB time so before-deadline ACK succeeds and late or crossing ACK changes nothing", async () => {
+    const { admin } = guard();
+    await resetRuntimeRows();
+    const before = await offerPlacedJob({ ordinal: 310 });
+    await admin`UPDATE leases SET ack_deadline = clock_timestamp() + interval '1 second'
+      WHERE id = ${before.offer.leaseId}`;
+    await expect(before.service.ack({
+      auth: auth("ack-before-deadline"),
+      request: ackRequest(before.offer),
+    })).resolves.toMatchObject({ outcome: "acknowledged", leaseId: before.offer.leaseId });
+
+    await resetRuntimeRows();
+    const late = await offerPlacedJob({ ordinal: 311 });
+    await admin`UPDATE leases SET ack_deadline = clock_timestamp() - interval '1 millisecond'
+      WHERE id = ${late.offer.leaseId}`;
+    await expect(late.service.ack({
+      auth: auth("ack-after-deadline"),
+      request: ackRequest(late.offer),
+    })).rejects.toMatchObject({ code: "stale_fence" });
+    await expectOfferUnchanged(late.seeded.attemptId);
+
+    await resetRuntimeRows();
+    const crossing = await offerPlacedJob({ ordinal: 312 });
+    await admin.unsafe(`CREATE OR REPLACE FUNCTION job003_sleep_ack_proof() RETURNS trigger
+      LANGUAGE plpgsql AS $$ BEGIN
+        IF NEW.proof_id = 'ack-crossing-deadline' THEN PERFORM pg_sleep(0.10); END IF;
+        RETURN NEW;
+      END $$`);
+    await admin.unsafe(`CREATE TRIGGER job003_sleep_ack_proof_trigger BEFORE INSERT ON worker_proof_replays
+      FOR EACH ROW EXECUTE FUNCTION job003_sleep_ack_proof()`);
+    try {
+      await admin`UPDATE leases SET ack_deadline = clock_timestamp() + interval '50 milliseconds'
+        WHERE id = ${crossing.offer.leaseId}`;
+      await expect(crossing.service.ack({
+        auth: auth("ack-crossing-deadline"),
+        request: ackRequest(crossing.offer),
+      })).rejects.toMatchObject({ code: "stale_fence" });
+    } finally {
+      await admin.unsafe("DROP TRIGGER IF EXISTS job003_sleep_ack_proof_trigger ON worker_proof_replays");
+      await admin.unsafe("DROP FUNCTION IF EXISTS job003_sleep_ack_proof()");
+    }
+    await expectOfferUnchanged(crossing.seeded.attemptId);
+  });
+
+  it("rejects wrong worker, target, fence, lease, and revoked authority without disclosing or mutating", async () => {
+    const { admin } = guard();
+    await resetRuntimeRows();
+    const offered = await offerPlacedJob({ ordinal: 320 });
+    const cases = [
+      {
+        proof: "ack-wrong-worker",
+        auth: auth("ack-wrong-worker"),
+        request: ackRequest(offered.offer, undefined, { workerId: OTHER_WORKER }),
+      },
+      {
+        proof: "ack-wrong-target",
+        auth: auth("ack-wrong-target", OTHER_WORKER, OTHER_TARGET),
+        request: ackRequest(offered.offer),
+      },
+      {
+        proof: "ack-wrong-fence",
+        auth: auth("ack-wrong-fence"),
+        request: ackRequest(offered.offer, undefined, { fenceToken: "x".repeat(43) }),
+      },
+      {
+        proof: "ack-wrong-lease",
+        auth: auth("ack-wrong-lease"),
+        request: ackRequest(offered.offer, undefined, { leaseId: crypto.randomUUID() }),
+      },
+    ];
+    for (const candidate of cases) {
+      await expect(offered.service.ack({ auth: candidate.auth, request: candidate.request }))
+        .rejects.toMatchObject({ code: expect.stringMatching(/^(unauthorized|target_revoked|stale_fence)$/) });
+      await expectOfferUnchanged(offered.seeded.attemptId);
+    }
+    await admin`UPDATE execution_targets SET status = 'revoked' WHERE id = ${TARGET}`;
+    await expect(offered.service.ack({
+      auth: auth("ack-revoked-target"),
+      request: ackRequest(offered.offer),
+    })).rejects.toMatchObject({ code: "target_revoked" });
+    await expectOfferUnchanged(offered.seeded.attemptId);
+  });
+
+  it("rolls back lease, attempt, receipt, and proof when any ACK statement fails", async () => {
+    const { admin } = guard();
+    const stages = [
+      { table: "leases", event: "UPDATE", when: "WHEN (NEW.status = 'active')" },
+      { table: "job_attempts", event: "UPDATE", when: "WHEN (NEW.status = 'leased')" },
+      { table: "worker_operation_receipts", event: "INSERT", when: "" },
+    ] as const;
+    for (const [index, stage] of stages.entries()) {
+      await resetRuntimeRows();
+      const offered = await offerPlacedJob({ ordinal: 330 + index });
+      const functionName = `job003_fail_ack_${index}`;
+      const triggerName = `job003_fail_ack_trigger_${index}`;
+      await admin.unsafe(`CREATE OR REPLACE FUNCTION ${functionName}() RETURNS trigger
+        LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'job003 forced ack rollback'; END $$`);
+      await admin.unsafe(`CREATE TRIGGER ${triggerName} BEFORE ${stage.event} ON ${stage.table}
+        FOR EACH ROW ${stage.when} EXECUTE FUNCTION ${functionName}()`);
+      try {
+        await expect(offered.service.ack({
+          auth: auth(`ack-rollback-${index}`),
+          request: ackRequest(offered.offer),
+        })).rejects.toThrow(/job003 forced ack rollback/);
+      } finally {
+        await admin.unsafe(`DROP TRIGGER IF EXISTS ${triggerName} ON ${stage.table}`);
+        await admin.unsafe(`DROP FUNCTION IF EXISTS ${functionName}()`);
+      }
+      await expectOfferUnchanged(offered.seeded.attemptId);
+      const [proof] = await admin<{ count: number }[]>`SELECT count(*)::int AS count
+        FROM worker_proof_replays WHERE proof_id = ${`ack-rollback-${index}`}`;
+      expect(proof?.count).toBe(0);
+    }
   });
 });
