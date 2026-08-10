@@ -281,7 +281,7 @@ frozen `ProtocolErrorV1`; migration 0219 failed exact replay; and stale E2 worke
 failed before their tenant assertions.
 
 **Disposition:** Fix round 1 added genuine RED at
-`894b84cbf464e88fd9080cf8eb0ecf0800c73940` and GREEN at
+`894b84cbfd79132759daf43784d2381fbeb92246` and GREEN at
 `988c2a8af24a1b24b1b9b896aae94e696dda53e4`. Credential routes now have strict safe request/
 error logging; a shared platform target must first have current proof-bound platform physical
 authority, while tenant heartbeat records profile liveness only and sessions recheck global

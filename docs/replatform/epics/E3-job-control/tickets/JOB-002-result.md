@@ -156,7 +156,7 @@ ancestor revision for another distinct review attempt.
 ## Implementation fix round 1 — 2026-08-10 — Codex `/root/job002_impl`
 
 - **Review evidence consumed:** `1a842c425bb00861a29bfbf21e4bcdd79fb35172`.
-- **Genuine RED:** `894b84cbf464e88fd9080cf8eb0ecf0800c73940`.
+- **Genuine RED:** `894b84cbfd79132759daf43784d2381fbeb92246`.
 - **GREEN candidate:** `988c2a8af24a1b24b1b9b896aae94e696dda53e4`.
 - **State:** `implementation_complete_review_pending`; **disposition:** `review_pending`.
 
