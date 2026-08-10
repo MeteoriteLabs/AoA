@@ -27,6 +27,7 @@ import {
 import { createJobReadyScheduler } from "../services/job-ready-scheduler.js";
 import { createJobOutboxWorker } from "../services/job-outbox-worker.js";
 import { allocateEmbeddedPgPort } from "./helpers/embedded-pg-port.js";
+import { runInTenant } from "../db/tenant-context.js";
 
 type EmbeddedPostgresInstance = {
   initialise(): Promise<void>;
@@ -682,6 +683,39 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
     expect(exactScheduler.take(ORG, TARGET, 10)).toEqual([seeded.attemptId]);
     const [delivered] = await admin<{ status: string }[]>`SELECT status FROM job_outbox WHERE id = ${seeded.outboxId}`;
     expect(delivered?.status).toBe("delivered");
+  });
+
+  it("uses fresh PostgreSQL statement time across the JavaScript millisecond boundary", async () => {
+    const { admin, app } = guard();
+    await resetRuntimeRows();
+    const ready = await seedPlacedJob({ ordinal: 213 });
+    const future = await seedPlacedJob({ ordinal: 214 });
+    const [sampled] = await admin<{ callerNow: Date }[]>`
+      SELECT date_trunc('milliseconds', clock_timestamp()) AS "callerNow"`;
+    if (!sampled) throw new Error("expected a sampled database timestamp");
+    await admin`UPDATE jobs SET available_at = ${sampled.callerNow}::timestamptz + interval '500 microseconds'
+      WHERE id = ${ready.jobId}`;
+    await admin`UPDATE job_outbox SET available_at = ${sampled.callerNow}::timestamptz + interval '500 microseconds'
+      WHERE id = ${ready.outboxId}`;
+    await admin`UPDATE jobs SET available_at = clock_timestamp() + interval '1 minute'
+      WHERE id = ${future.jobId}`;
+    await admin`UPDATE job_outbox SET available_at = clock_timestamp() + interval '1 minute'
+      WHERE id = ${future.outboxId}`;
+    await admin`SELECT pg_sleep(0.002)`;
+    const claimed = await runInTenant(app.db, ORG, async (repos) => {
+      return repos.jobControl.claimReadyOutbox({
+        claimToken: crypto.randomUUID(),
+        now: sampled.callerNow,
+        staleBefore: new Date(sampled.callerNow.getTime() - 60_000),
+        limit: 32,
+      });
+    });
+    expect(claimed).toEqual([{
+      id: ready.outboxId,
+      organizationId: ORG,
+      targetId: TARGET,
+      attemptId: ready.attemptId,
+    }]);
   });
 
   it("publishes only current lease-eligible placements and prefers an exact target hint before pull fallback", async () => {
