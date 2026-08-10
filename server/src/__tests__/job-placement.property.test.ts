@@ -276,6 +276,16 @@ describe("JOB-009 slice B deterministic placement policy", () => {
       registry: { ...candidate("managed_cloud", 1).registry, lastSeenAt: new Date(NOW.getTime() - 60_000) },
     });
     expect(run({ candidates: [stale] })).toMatchObject({ disposition: "queued" });
+
+    const noCapacity = candidate("managed_cloud", 1, {
+      currentCapacity: {
+        batchSlots: 0, browserSessionSlots: 0, serviceSlots: 0,
+        freeCpuMillis: 2_000, freeMemoryMiB: 4_096, freeDiskMiB: 8_192,
+      },
+    });
+    const capacityBefore = JSON.stringify(noCapacity);
+    expect(run({ candidates: [noCapacity] })).toMatchObject({ disposition: "queued" });
+    expect(JSON.stringify(noCapacity)).toBe(capacityBefore);
   });
 
   it.each(["task_run", "commander_turn", "crew_run", "one_shot", "browser_request", "service_reconcile"])(
