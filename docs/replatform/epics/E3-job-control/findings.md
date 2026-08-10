@@ -442,3 +442,28 @@ migration/C14 **5/5**, frozen protocol, typecheck, and build lanes pass locally.
 Windows integration-enabled full lane remains honestly non-green with 17 visible failure
 blocks in truncated output, none emitted from JOB-009; it is not waived. JOB-009 remains
 `review_pending` until a fresh distinct reviewer certifies the candidate.
+
+## E3-F016 - JOB-003 aggregate verification exposed receipt-grant and lifecycle-fixture drift
+
+**Date:** 2026-08-10
+**Status:** `resolved_in_JOB-003_implementation_pending_review`
+**Severity:** P1 fail-closed startup authority / deterministic regression evidence
+**Affected ticket:** JOB-003
+
+**Finding:** JOB-003 migration `0228` correctly granted tenant-serving DML on the new forced-
+RLS `worker_operation_receipts` table, but the exact runtime startup authority allowlist still
+expected no access to that table. The real server therefore failed closed at startup before
+later negative cases could exercise `aoa_operator`. The same aggregate lane also found two
+older test fixtures that seeded `active` leases without the newly required `activated_at`
+fact, causing setup failures before their tenant and composite-integrity assertions.
+
+**Disposition:** A genuine grant-contract RED was committed at
+`a20758916ba18ddd9475e17ca6df9ccd595c6386` and GREEN at
+`0c52ecbf1044cc1eadccfbaeb4de0fd2d8798428`. `JOB_LEASING_NEW_PATH_GRANTS` is a versioned
+JOB-003 delta consumed by the fail-closed startup checker; immutable E2 grant constants and
+applied migrations remain unchanged. The exact startup suite now passes 14/14, including all
+role/grant/ownership drift denials. Fixture-only commits
+`a1ade69e727d51ed4b8b28db1f3f4ab8adfeb8c5` and
+`ee8a1005fa2a0d97f2dfcb68dbce1aa6b88f83a8` supply activation timestamps to legitimate
+active-lease seeds. The adversarial tenant suite passes 11/11 across 4,460 operations and the
+composite-integrity suite passes 9/9. JOB-003 remains review-pending for independent review.
