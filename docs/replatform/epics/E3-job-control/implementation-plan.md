@@ -953,7 +953,7 @@ composition in `server/src/index.ts`; create
 `packages/db/src/__tests__/worker-operation-receipts-schema.integration.test.ts`,
 `platform-target-authority-lock.integration.test.ts`, and
 `job-leasing-migration-upgrade.integration.test.ts`,
-`server/src/__tests__/job-leasing.integration.test.ts` and
+`server/src/__tests__/job-leasing.integration.test.ts`, `job-control-runtime.test.ts`, and
 `job-leasing-contract.test.ts`, including runtime-composition, multi-Organization platform
 target, advisory-handoff/revocation, authority-mutation-inventory, liveness, and fair-scheduler
 cases. Predecessor file edits are bounded synchronization corrections only; they may not
@@ -1043,8 +1043,10 @@ idempotent data correction for E2-valid legacy active leases immediately before 
 migration enforces the activation invariant; a later migration cannot repair a predecessor
 that already fails. The exact backfill is
 `UPDATE leases SET activated_at = COALESCE(updated_at, created_at) WHERE status = 'active' AND activated_at IS NULL`;
-offered/terminal rows and already-populated activation facts remain unchanged. Replay over
-populated E2 state must pass.
+offered/terminal rows and already-populated activation facts remain unchanged. The statement
+is immediately preceded by the literal comment
+`-- C14 permitted idempotent data backfill for E2-valid active leases before leases_activation_check.`
+Replay over populated E2 state must pass.
 No lease locator or E1 wire/schema change is introduced. Flag-off has no poll/ACK route or
 outbox/scheduler runtime. Rollback stops offers and lets already offered leases expire; never
 transfers their fence.
