@@ -243,3 +243,25 @@ the rollback gate refuses bridge disablement while a receipt is pending. Do not 
 proposed five-ticket-only plan or E6-first reordering: the operator and canonical program
 design require all fourteen E3 tickets to be planned now, while execution stops at the named
 `E6-D1-FOUNDATION` boundary.
+
+## E3-F010 — Enrollment upgrade paths could restore or retain bearer authority
+
+**Date:** 2026-08-10
+**Status:** `resolved_in_JOB-002_implementation`
+**Severity:** P1 authority downgrade / secret retention
+**Affected tickets:** JOB-002 and every later worker-authenticated operation
+
+**Finding:** Final JOB-002 conformance checks found two downgrade paths before Slice C GREEN
+was committed. The existing legacy token-rotation service could repopulate
+`execution_targets.worker_token_hash` after a target had enrolled a proof-bound worker, and
+the first local semantic-retry draft placed the returned bearer session in the retained JSON
+receipt. The former could restore bootstrap bearer authority; the latter contradicted the
+approved plan's prohibition on stored raw code/session material.
+
+**Disposition:** Enrollment clears the bootstrap token, and legacy rotation now uses one
+conditional update with an atomic `NOT EXISTS` current enrolled-worker guard. Semantic
+receipts store only bounded E1 response/action facts. A retry must present a fresh valid
+device proof, revalidates the current worker/target/generation/key/profile/membership inside
+the owning transaction, and mints a new equivalent short-lived session. Tenant and platform
+rollback tests cover the final receipt boundary; revocation/rotation/transfer and no-session-
+at-rest regressions pass. No nonconforming Slice C GREEN revision was committed.
