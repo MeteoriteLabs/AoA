@@ -467,3 +467,33 @@ role/grant/ownership drift denials. Fixture-only commits
 `ee8a1005fa2a0d97f2dfcb68dbce1aa6b88f83a8` supply activation timestamps to legitimate
 active-lease seeds. The adversarial tenant suite passes 11/11 across 4,460 operations and the
 composite-integrity suite passes 9/9. JOB-003 remains review-pending for independent review.
+
+## E3-F017 - JOB-003 review exposed platform composition, capacity, receipt-expiry, and upgrade gaps
+
+**Date:** 2026-08-10
+**Status:** `open_JOB-003_review_attempt_1`
+**Severity:** P1 durable leasing correctness / compatibility
+**Affected ticket:** JOB-003
+
+**Finding:** Independent review attempt 1 found four Important blockers. The approved
+operator-owned platform poll/outbox path exists only as uncomposed factories while HTTP proof
+middleware rejects platform principals, so platform workers cannot poll and ready outbox rows
+are never drained. Poll capacity counts all live leases against each candidate's one workload
+slot limit and terminates the scan, allowing one batch lease or an incompatible head row to
+hide valid browser work. ACK's bounded cleanup can leave the exact expired semantic receipt
+outside the first 100 rows, after which an expiry-blind lookup replays stale success. Finally,
+migration `0227` adds `activated_at` and an unconditional active-state check without an
+idempotent compatibility step, so an E2-valid pre-upgrade active lease fails the migration.
+
+**Disposition:** `needs_changes`. Real-PostgreSQL probes independently reproduced the
+mixed-workload `no_work`, stale receipt replay behind 101 older expired rows, and SQLSTATE
+23514 migration failure. The platform composition gap is also direct from the production call
+graph: scheduler/outbox factories are consumed only by the focused test. A fresh implementer
+round must add genuine RED coverage and (1) compose the flag-on-only operator-principal,
+fair/bounded 32-shard/750-ms poll and outbox runtime while every job read remains in
+`runInTenant`; (2) enforce independent applicable workload capacity and continue past
+ineligible candidates; (3) validate/delete the exact expired receipt independently of bounded
+housekeeping using database time; and (4) make the 0226-to-0227 upgrade compatible via a
+C14-permitted idempotent data correction or narrowly proven legacy branch. Add non-vacuous
+cross-tenant receipt RLS evidence before certification. Frozen E1, default-off behavior, and
+the JOB-003 scope boundary must remain unchanged.

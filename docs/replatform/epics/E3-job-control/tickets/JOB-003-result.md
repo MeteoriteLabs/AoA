@@ -1,12 +1,12 @@
 # JOB-003 Result - Lease jobs with ACK deadlines
 
-**Status:** `implementation_complete_review_pending`
-**Disposition:** `review_pending`
+**Status:** `needs_changes`
+**Disposition:** `needs_changes`
 **Date opened (UTC):** `2026-08-10`
 **Epic:** `E3-job-control`
 **Plan task:** `JOB-003 - Lease jobs with ACK deadlines (L; three bounded internal slices)`
 **Implementer:** `Codex /root/job003_impl`
-**Reviewer:** `pending distinct Codex /root/job003_review`
+**Reviewer:** `Codex /root/job003_review`
 **Start SHA:** 4276331160afb77d47ffa488543b968da949c02f
 **Implementation candidate:** 73f9d15537995b15cf2173ae0368ad6b28e6af13
 
@@ -112,5 +112,80 @@ ticket disposition.
 
 ## Independent review
 
-Pending fresh distinct reviewer `/root/job003_review`. No reviewer attempt has been recorded
-and the implementer has not certified this ticket.
+### Review attempt 1 - 2026-08-10 - Codex `/root/job003_review`
+
+- **Reviewed revision:** `55ed851c2cb72fb381fc6530642bcfcdcd947798`
+- **Assignment base:** `4276331160afb77d47ffa488543b968da949c02f`
+- **Code candidate ancestor:** `73f9d15537995b15cf2173ae0368ad6b28e6af13`
+- **Reviewer decision:** `changes_requested`
+- **Disposition:** `needs_changes`
+- **Specification verdict:** fail.
+- **H-01 tenant-isolation verdict:** structural controls pass; certification blocked by the
+  absent platform-tenant traversal and missing non-vacuous receipt cross-tenant probe.
+- **H-02 lease-authority verdict:** exact ACK/fence/deadline mutation paths pass focused
+  acceptance; bounded semantic-receipt expiry is incorrect.
+- **H-03 single-executor verdict:** the database uniqueness and three 100-way race reruns pass;
+  valid mixed-workload capacity remains incorrect.
+- **Migration/compatibility verdict:** fail.
+
+The reviewer is distinct from implementer `/root/job003_impl` and changed no production code.
+The review reread the canonical ticket and approved plan, brief/report/result/findings, frozen
+PRT state machines/envelopes/errors, JOB-001/JOB-002/JOB-009, Decisions #117/#121/#123,
+TEN/RLS/grants, and the full assignment-base diff. The reviewed revision and code candidate
+are ancestors of HEAD; frozen E1 has no changed file. Four temporary adversarial test probes
+were run against ephemeral embedded PostgreSQL and completely removed before this evidence.
+
+There are **zero Critical findings and four Important findings**:
+
+- **Important I-01 - the approved platform poll/outbox runtime is test-only.** The proof
+  middleware rejects every absent-Organization or `platform` principal, the route gives the
+  leasing service only `appDb`, and neither the ready scheduler nor outbox worker has a
+  production caller. Platform workers therefore cannot poll, durable ready rows are never
+  drained, and the first-32 Organization slice has no round-robin cursor. This contradicts
+  the approved 32-shard/750-ms operator-principal traversal and E3-F002. Compose a flag-on-only
+  operator poll/outbox runtime with physical-principal snapshot/recheck, fair bounded shard
+  traversal, and job access exclusively through the selected `runInTenant` transaction.
+- **Important I-02 - capacity accounting hides valid mixed-workload work.** Poll counts every
+  live worker/target lease, compares that total to the current candidate workload's slots,
+  and `break`s. A temporary real-PostgreSQL probe with batch=1 and browser=1 offered the batch
+  job, then returned `no_work` for an eligible browser job. A zero-slot/incompatible oldest
+  row can likewise hide later compatible jobs. Count/reserve capacity by applicable workload
+  and continue the bounded scan; add mixed-class and concurrent cross-class matrices.
+- **Important I-03 - an expired ACK receipt beyond bounded cleanup replays stale success.**
+  ACK deletes only 100 expired receipts, then looks up the exact receipt without an expiry
+  predicate. A real-PostgreSQL probe placed the exact expired receipt behind 101 older rows;
+  a fresh-proof semantic retry returned the expired `acknowledged` result. Independently
+  reject/delete the exact expired collision using fresh database time and cover positions
+  1/100/101/301/final, restart, proof variants, digest drift, and concurrent replicas.
+- **Important I-04 - migration 0227 rejects an E2-valid active legacy lease.** It adds nullable
+  `activated_at`, performs no idempotent compatibility backfill, then requires every active
+  row to have a value. Replaying exact 0227 over a pre-0227 active row failed with PostgreSQL
+  23514 at `leases_activation_check`. Add C14-permitted idempotent compatibility or a narrowly
+  proven legacy branch, and test an exact 0226-to-0227 upgrade with active/offered/terminal
+  legacy and rich rows plus direct replay.
+
+Fresh Windows-local evidence against the exact reviewed revision:
+
+| Command / lane | Result |
+|---|---|
+| JOB-003 DB schema, receipt, and migration focused lane | PASS - 3 files, 15/15 |
+| Poll/offer/ACK integration plus contract, three fresh consecutive runs | PASS - each 12/12, including 100-claim and 100-ACK races |
+| JOB-001/JOB-002/JOB-009/tenant/startup/grant regression bundle | PASS - all 7 requested files |
+| Tenant composite and worker-enrollment schema | PASS - 2 files, 15/15 |
+| Frozen E1 checker at `b7a842870ce7509d8baa75409e0ab19da375c88a` | PASS |
+| `pnpm install --frozen-lockfile` | PASS |
+| DB/server and recursive typecheck; DB/server and root build | PASS |
+| `$env:AOA_RUN_WIN_INTEGRATION='1'; pnpm test:run` | **FAIL (honestly labeled Windows-local aggregate)** - exit 1 after 270.6s with 12 failing tests; visible output included the D18 embedded-PostgreSQL setup cascade and known Windows/frozen failures. No separately rerun focused JOB-003 lane failed. |
+
+The Windows-local result is not represented as a waiver or full-suite pass; Linux CI remains
+formal DEC-03 authority. Offer and ACK forced-statement probes rolled back every side effect,
+the job stayed queued after ACK, default-off behavior remained closed, and no renewal/event/
+reaping/quota/provider/completion/cutover scope or fence/proof leakage was found. Add a real
+cross-tenant receipt RLS read/write probe before certification even though policy shape and
+grants are structurally correct.
+
+Stable finding `E3-F017` records the four blockers. JOB-003 is not complete. A fresh
+implementer fix round must add genuine RED coverage, correct I-01 through I-04 without changing
+frozen E1 or widening scope, and return a new 40-hex ancestor revision for another distinct
+review attempt. This ticket review is not the separate E3 integration gate and authorizes no
+push.
