@@ -87,6 +87,8 @@ export async function ensureControlPlaneExecutionTarget(db: Db): Promise<void> {
     .insert(executionTargets)
     .values({
       organizationId: null,
+      scope: "platform",
+      targetAuthorityKey: "platform",
       slug: "control-plane",
       kind: "local_host",
       trustClass: "local_trusted",

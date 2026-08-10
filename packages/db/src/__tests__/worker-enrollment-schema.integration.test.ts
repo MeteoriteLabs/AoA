@@ -179,9 +179,9 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
           await client`INSERT INTO workers
             (scope, organization_id, label, status, execution_target_id,
              target_authority_key, device_generation, device_public_key,
-             device_thumbprint, profile_hash)
+             device_thumbprint, profile_hash, enrolled_at)
             VALUES ('organization', ${orgA}, 'bad', 'enrolled', ${targetId},
-              ${`organization:${orgA}`}, 1, 'key', ${"a".repeat(64)}, ${"b".repeat(64)})`;
+              ${`organization:${orgA}`}, 1, 'key', ${"a".repeat(64)}, ${"b".repeat(64)}, now())`;
           throw new Error("expected worker target binding denial");
         } catch (error) {
           return (error as { constraint_name?: string }).constraint_name;
@@ -200,7 +200,9 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
           'worker_enrollment_codes', 'worker_proof_replays')
       `;
       expect(rls).toHaveLength(5);
-      expect(rls.every((row) => row.relrowsecurity && row.relforcerowsecurity)).toBe(true);
+      expect(rls.every((row) => row.relrowsecurity)).toBe(true);
+      expect(rls.filter((row) => row.relname !== "execution_targets").every((row) => row.relforcerowsecurity)).toBe(true);
+      expect(rls.find((row) => row.relname === "execution_targets")?.relforcerowsecurity).toBe(false);
 
       const [operator] = await client<{
         codes_select: boolean;
@@ -214,10 +216,12 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
           has_table_privilege('aoa_operator', 'worker_enrollment_code_routes', 'SELECT') AS routes_select,
           has_table_privilege('aoa_operator', 'jobs', 'SELECT') AS jobs_select,
           has_table_privilege('aoa_operator', 'workers', 'INSERT') AS workers_insert,
-          has_table_privilege('aoa_operator', 'execution_targets', 'UPDATE') AS targets_update
+          has_column_privilege('aoa_operator', 'execution_targets', 'worker_token_hash', 'UPDATE') AND
+          has_column_privilege('aoa_operator', 'execution_targets', 'device_generation', 'UPDATE') AND
+          has_column_privilege('aoa_operator', 'execution_targets', 'status', 'UPDATE') AS targets_update
       `;
       expect(operator).toEqual({
-        codes_select: false,
+        codes_select: true,
         routes_select: true,
         jobs_select: false,
         workers_insert: true,

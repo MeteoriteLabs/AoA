@@ -126,3 +126,37 @@ export const OPERATOR_METADATA_COLUMN_GRANTS = Object.freeze({
     "updated_at",
   ],
 } satisfies Readonly<Record<string, readonly string[]>>);
+
+/** JOB-002 tenant authority, versioned after the immutable E2/JOB-001 grants. */
+export const WORKER_ENROLLMENT_APP_GRANTS = Object.freeze({
+  worker_enrollment_code_routes: ["SELECT", "INSERT", "DELETE"],
+  worker_enrollment_codes: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+  worker_proof_replays: ["SELECT", "INSERT", "DELETE"],
+} satisfies Readonly<Record<string, readonly TablePrivilege[]>>);
+
+/** JOB-002 platform metadata authority; RLS restricts every mutable row to null-Org. */
+export const WORKER_ENROLLMENT_OPERATOR_GRANTS = Object.freeze({
+  workers: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+  worker_enrollment_code_routes: ["SELECT", "INSERT", "DELETE"],
+  worker_enrollment_codes: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+  worker_proof_replays: ["SELECT", "INSERT", "DELETE"],
+} satisfies Readonly<Record<string, readonly TablePrivilege[]>>);
+
+/** Tenant target metadata needed to issue/consume enrollment and retire bootstrap auth. */
+export const APP_ENROLLMENT_TARGET_SELECT_COLUMNS = Object.freeze([
+  "id", "organization_id", "owner_user_id", "scope", "target_authority_key",
+  "status", "device_generation", "capabilities",
+] as const);
+export const APP_ENROLLMENT_TARGET_UPDATE_COLUMNS = Object.freeze([
+  "worker_token_hash", "device_generation", "status", "updated_at",
+] as const);
+
+/** Platform target projection keeps config and bootstrap hashes unreadable. */
+export const OPERATOR_ENROLLMENT_TARGET_SELECT_COLUMNS = Object.freeze([
+  "id", "organization_id", "owner_user_id", "slug", "kind", "trust_class",
+  "status", "capabilities", "scope", "target_authority_key", "device_generation",
+  "last_seen_at", "created_at", "updated_at",
+] as const);
+export const OPERATOR_ENROLLMENT_TARGET_UPDATE_COLUMNS = Object.freeze([
+  "worker_token_hash", "device_generation", "status", "updated_at",
+] as const);

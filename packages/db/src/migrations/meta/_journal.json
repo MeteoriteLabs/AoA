@@ -1534,6 +1534,27 @@
       "when": 1786321981348,
       "tag": "0218_job_control_submission_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 219,
+      "version": "7",
+      "when": 1786331668706,
+      "tag": "0219_worker_enrollment",
+      "breakpoints": true
+    },
+    {
+      "idx": 220,
+      "version": "7",
+      "when": 1786331763217,
+      "tag": "0220_worker_enrollment_constraints",
+      "breakpoints": true
+    },
+    {
+      "idx": 221,
+      "version": "7",
+      "when": 1786331770352,
+      "tag": "0221_worker_enrollment_rls",
+      "breakpoints": true
     }
   ]
 }

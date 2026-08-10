@@ -220,8 +220,8 @@ beforeAll(async () => {
       INSERT INTO provider_connections (id, organization_id, company_id, provider, auth_method)
       VALUES (gen_random_uuid(), ${orgId}, ${companyId}, 'anthropic', 'oauth')`;
     await client`
-      INSERT INTO execution_targets (id, organization_id, slug, kind, trust_class)
-      VALUES (gen_random_uuid(), ${orgId}, 'et-1', 'local', 'trusted')`;
+      INSERT INTO execution_targets (id, organization_id, slug, kind, trust_class, scope, target_authority_key)
+      VALUES (gen_random_uuid(), ${orgId}, 'et-1', 'local', 'trusted', 'organization', ${`organization:${orgId}`})`;
   } catch (err) {
     setupError = err;
     // eslint-disable-next-line no-console

@@ -1,11 +1,17 @@
 import { assertSafeRoleName } from "./rls-bootstrap.js";
 import {
   APP_MCP_API_KEY_COLUMN_GRANTS,
+  APP_ENROLLMENT_TARGET_SELECT_COLUMNS,
+  APP_ENROLLMENT_TARGET_UPDATE_COLUMNS,
   JOB_CONTROL_LEGACY_GRANTS,
   JOB_CONTROL_NEW_PATH_GRANTS,
   JOB_SUBMISSION_LEGACY_GRANTS,
   JOB_SUBMISSION_NEW_PATH_GRANTS,
   OPERATOR_METADATA_COLUMN_GRANTS,
+  OPERATOR_ENROLLMENT_TARGET_SELECT_COLUMNS,
+  OPERATOR_ENROLLMENT_TARGET_UPDATE_COLUMNS,
+  WORKER_ENROLLMENT_APP_GRANTS,
+  WORKER_ENROLLMENT_OPERATOR_GRANTS,
   type TablePrivilege,
 } from "./job-control-legacy-grants.js";
 
@@ -109,7 +115,7 @@ export function grantTablePrivilegesSql(
 export function grantColumnPrivilegesSql(
   role: string,
   table: string,
-  privilege: "SELECT",
+  privilege: "SELECT" | "INSERT" | "UPDATE",
   columns: readonly string[],
 ): string {
   assertSafeRoleName(role);
@@ -117,6 +123,25 @@ export function grantColumnPrivilegesSql(
   if (columns.length === 0) throw new Error(`No columns supplied for ${table}`);
   const list = columns.map((column) => `"${assertSafeTableName(column)}"`).join(", ");
   return `GRANT ${privilege} (${list}) ON "${table}" TO "${role}";`;
+}
+
+function scopedPolicySql(input: {
+  table: string;
+  policy: string;
+  role: string;
+  predicate: string;
+  operation?: "ALL" | "SELECT" | "UPDATE";
+}): string {
+  const table = assertSafeTableName(input.table);
+  const policy = assertSafeTableName(input.policy);
+  assertSafeRoleName(input.role);
+  const operation = input.operation ?? "ALL";
+  const withCheck = operation === "SELECT" ? "" : `\n  WITH CHECK (${input.predicate})`;
+  return (
+    `DROP POLICY IF EXISTS "${policy}" ON "${table}";\n${STATEMENT_BREAKPOINT}\n` +
+    `CREATE POLICY "${policy}" ON "${table}" FOR ${operation} TO "${input.role}"\n` +
+    `  USING (${input.predicate})${withCheck};`
+  );
 }
 
 /**
@@ -458,4 +483,75 @@ export function buildJobControlSubmissionRlsMigrationSql(): string {
       `  WITH CHECK (organization_id = current_setting('${TENANT_GUC}', true)::uuid);`,
   ];
   return `${header}\n${statements.join(`\n${STATEMENT_BREAKPOINT}\n`)}`;
+}
+
+/** JOB-002 Decision #122 custom authority delta; generated schema remains Drizzle-only. */
+export function buildWorkerEnrollmentRlsMigrationSql(): string {
+  const header = [
+    "-- JOB-002 Decision #122 custom security DDL. drizzle-kit cannot express roles,",
+    "-- operation/column grants, FORCE RLS, or policies. Every statement is",
+    "-- guarded, naturally idempotent, or drop-before-create per C14.",
+  ].join("\n");
+  const statements: string[] = [
+    createNonOwnerRoleSql(TENANT_APP_ROLE),
+    createNonOwnerRoleSql(OPERATOR_ROLE),
+    `ALTER ROLE "${TENANT_APP_ROLE}" NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;`,
+    `ALTER ROLE "${OPERATOR_ROLE}" NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;`,
+  ];
+  for (const table of Object.keys(WORKER_ENROLLMENT_APP_GRANTS)) {
+    statements.push(`REVOKE ALL ON "${assertSafeTableName(table)}" FROM PUBLIC;`);
+  }
+  for (const [table, privileges] of Object.entries(WORKER_ENROLLMENT_APP_GRANTS)) {
+    statements.push(grantTablePrivilegesSql(TENANT_APP_ROLE, table, privileges));
+  }
+  statements.push(grantColumnPrivilegesSql(TENANT_APP_ROLE, "execution_targets", "SELECT", APP_ENROLLMENT_TARGET_SELECT_COLUMNS));
+  statements.push(grantColumnPrivilegesSql(TENANT_APP_ROLE, "execution_targets", "UPDATE", APP_ENROLLMENT_TARGET_UPDATE_COLUMNS));
+  for (const [table, privileges] of Object.entries(WORKER_ENROLLMENT_OPERATOR_GRANTS)) {
+    statements.push(grantTablePrivilegesSql(OPERATOR_ROLE, table, privileges));
+  }
+  statements.push(grantColumnPrivilegesSql(OPERATOR_ROLE, "execution_targets", "SELECT", OPERATOR_ENROLLMENT_TARGET_SELECT_COLUMNS));
+  statements.push(grantColumnPrivilegesSql(OPERATOR_ROLE, "execution_targets", "UPDATE", OPERATOR_ENROLLMENT_TARGET_UPDATE_COLUMNS));
+
+  for (const table of ["worker_enrollment_code_routes", "worker_enrollment_codes", "worker_proof_replays"]) {
+    statements.push(enableForceRlsSql(table));
+  }
+  statements.push(scopedPolicySql({
+    table: "worker_enrollment_code_routes",
+    policy: "worker_enrollment_code_routes_tenant_isolation",
+    role: TENANT_APP_ROLE,
+    predicate: `candidate_organization_id = current_setting('${TENANT_GUC}', true)::uuid`,
+  }));
+  for (const table of ["worker_enrollment_codes", "worker_proof_replays"]) {
+    statements.push(tenantPolicySql(table, TENANT_APP_ROLE));
+  }
+  statements.push(scopedPolicySql({
+    table: "worker_enrollment_code_routes",
+    policy: "worker_enrollment_code_routes_platform_operator",
+    role: OPERATOR_ROLE,
+    predicate: "candidate_organization_id IS NULL",
+  }));
+  for (const table of ["worker_enrollment_codes", "worker_proof_replays"]) {
+    statements.push(scopedPolicySql({
+      table,
+      policy: `${table}_platform_operator`,
+      role: OPERATOR_ROLE,
+      predicate: "organization_id IS NULL",
+    }));
+  }
+  statements.push(operatorMetadataPolicySql("workers"));
+  statements.push(operatorMetadataPolicySql("execution_targets"));
+  statements.push(scopedPolicySql({
+    table: "execution_targets",
+    policy: "execution_targets_tenant_enrollment_update",
+    role: TENANT_APP_ROLE,
+    predicate: `organization_id = current_setting('${TENANT_GUC}', true)::uuid`,
+    operation: "UPDATE",
+  }));
+  const annotated = statements.map((statement) =>
+    statement.split(`\n${STATEMENT_BREAKPOINT}\n`).map((part) =>
+      "-- C14 hand-authored security DDL: drizzle-kit cannot emit this statement; " +
+      "its guarded/natural/drop-before-create form is idempotent.\n" + part,
+    ).join(`\n${STATEMENT_BREAKPOINT}\n`),
+  );
+  return `${header}\n${annotated.join(`\n${STATEMENT_BREAKPOINT}\n`)}`;
 }

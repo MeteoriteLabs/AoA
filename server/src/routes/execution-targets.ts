@@ -86,9 +86,19 @@ export function executionTargetRoutes(opts: { db: Db }) {
       // Mint a rotatable worker credential: persist only its hash, return the
       // plaintext ONCE. The row id is no longer a credential (Finding #3).
       const workerToken = createWorkerToken();
+      const scope = input.ownerUserId ? "owner" : "organization";
+      const targetAuthorityKey = input.ownerUserId
+        ? `owner:${orgId}:${input.ownerUserId}`
+        : `organization:${orgId}`;
       const [row] = await opts.db
         .insert(executionTargets)
-        .values({ organizationId: orgId, ...input, workerTokenHash: hashWorkerToken(workerToken) })
+        .values({
+          organizationId: orgId,
+          ...input,
+          scope,
+          targetAuthorityKey,
+          workerTokenHash: hashWorkerToken(workerToken),
+        })
         .returning();
       // Audit trail: registering an execution destination is security-sensitive
       // and must be visible to incident review. activity_log is company-scoped

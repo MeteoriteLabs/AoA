@@ -8,12 +8,18 @@ import {
 import { sql } from "drizzle-orm";
 import {
   APP_EXECUTION_TARGET_COLUMN_GRANTS,
+  APP_ENROLLMENT_TARGET_SELECT_COLUMNS,
+  APP_ENROLLMENT_TARGET_UPDATE_COLUMNS,
   APP_MCP_API_KEY_COLUMN_GRANTS,
   JOB_CONTROL_LEGACY_GRANTS,
   JOB_CONTROL_NEW_PATH_GRANTS,
   JOB_SUBMISSION_LEGACY_GRANTS,
   JOB_SUBMISSION_NEW_PATH_GRANTS,
   OPERATOR_METADATA_COLUMN_GRANTS,
+  OPERATOR_ENROLLMENT_TARGET_SELECT_COLUMNS,
+  OPERATOR_ENROLLMENT_TARGET_UPDATE_COLUMNS,
+  WORKER_ENROLLMENT_APP_GRANTS,
+  WORKER_ENROLLMENT_OPERATOR_GRANTS,
   type TablePrivilege,
 } from "./job-control-legacy-grants.js";
 
@@ -35,7 +41,12 @@ function appTablePrivileges(): Readonly<Record<string, readonly TablePrivilege[]
     ...JOB_CONTROL_LEGACY_GRANTS,
     ...JOB_SUBMISSION_NEW_PATH_GRANTS,
     ...JOB_SUBMISSION_LEGACY_GRANTS,
+    ...WORKER_ENROLLMENT_APP_GRANTS,
   };
+}
+
+function operatorTablePrivileges(): Readonly<Record<string, readonly TablePrivilege[]>> {
+  return WORKER_ENROLLMENT_OPERATOR_GRANTS;
 }
 
 /** Fail closed unless effective ACLs are exact across every non-system table-like object. */
@@ -88,7 +99,7 @@ async function assertExactServingRoleAuthority(db: Db, role: ServingRole): Promi
       AND relation.relkind IN ('r', 'p', 'v', 'm', 'f')
     ORDER BY relation.relname
   `));
-  const expectedTables = role === "aoa_app" ? appTablePrivileges() : {};
+  const expectedTables = role === "aoa_app" ? appTablePrivileges() : operatorTablePrivileges();
   const tableOperations = ["SELECT", "INSERT", "UPDATE", "DELETE"] as const;
   for (const row of tableRows) {
     const expected = new Set(
@@ -153,14 +164,18 @@ async function assertExactServingRoleAuthority(db: Db, role: ServingRole): Promi
     const appExpected = new Set(
       row.schema_name === "public" ? expectedTables[row.table_name] ?? [] : [],
     );
-    const operatorColumns = (
-      OPERATOR_METADATA_COLUMN_GRANTS as Readonly<Record<string, readonly string[]>>
-    )[row.table_name] ?? [];
+    const operatorColumns = new Set([
+      ...((OPERATOR_METADATA_COLUMN_GRANTS as Readonly<Record<string, readonly string[]>>)[row.table_name] ?? []),
+      ...(row.table_name === "execution_targets" ? OPERATOR_ENROLLMENT_TARGET_SELECT_COLUMNS : []),
+    ]);
     const appColumnSelect = row.schema_name === "public" && (
-      (row.table_name === "execution_targets" &&
+      (row.table_name === "execution_targets" && (
         APP_EXECUTION_TARGET_COLUMN_GRANTS.includes(
-          row.column_name as (typeof APP_EXECUTION_TARGET_COLUMN_GRANTS)[number],
-        )) ||
+          row.column_name as (typeof APP_EXECUTION_TARGET_COLUMN_GRANTS)[number]
+        ) || APP_ENROLLMENT_TARGET_SELECT_COLUMNS.includes(
+          row.column_name as (typeof APP_ENROLLMENT_TARGET_SELECT_COLUMNS)[number]
+        )
+      )) ||
       (row.table_name === "mcp_api_keys" &&
         APP_MCP_API_KEY_COLUMN_GRANTS.includes(
           row.column_name as (typeof APP_MCP_API_KEY_COLUMN_GRANTS)[number],
@@ -168,9 +183,19 @@ async function assertExactServingRoleAuthority(db: Db, role: ServingRole): Promi
     );
     const expectedSelect = role === "aoa_app"
       ? appExpected.has("SELECT") || appColumnSelect
-      : row.schema_name === "public" && operatorColumns.includes(row.column_name);
-    const expectedInsert = role === "aoa_app" && appExpected.has("INSERT");
-    const expectedUpdate = role === "aoa_app" && appExpected.has("UPDATE");
+      : row.schema_name === "public" && (appExpected.has("SELECT") || operatorColumns.has(row.column_name));
+    const expectedInsert = appExpected.has("INSERT");
+    const expectedUpdate = appExpected.has("UPDATE") || (
+      row.schema_name === "public" && row.table_name === "execution_targets" && (
+        role === "aoa_app"
+          ? APP_ENROLLMENT_TARGET_UPDATE_COLUMNS.includes(
+              row.column_name as (typeof APP_ENROLLMENT_TARGET_UPDATE_COLUMNS)[number]
+            )
+          : OPERATOR_ENROLLMENT_TARGET_UPDATE_COLUMNS.includes(
+              row.column_name as (typeof OPERATOR_ENROLLMENT_TARGET_UPDATE_COLUMNS)[number]
+            )
+      )
+    );
     for (const [operation, actual, expected] of [
       ["SELECT", row.select_allowed, expectedSelect],
       ["INSERT", row.insert_allowed, expectedInsert],

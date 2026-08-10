@@ -34,6 +34,9 @@ const FOUNDER_A = "role-correction-founder-a";
 const AGENT_A = "30000000-0000-4000-8000-000000000001";
 const RUN_A = "40000000-0000-4000-8000-000000000001";
 const ISSUE_A = "50000000-0000-4000-8000-000000000001";
+const TARGET_PLATFORM = "60000000-0000-4000-8000-000000000001";
+const TARGET_A = "60000000-0000-4000-8000-000000000002";
+const TARGET_B = "60000000-0000-4000-8000-000000000003";
 const STALE_HUB_A = "60000000-0000-4000-8000-000000000001";
 
 let embedded: EmbeddedPostgresInstance | null = null;
@@ -194,20 +197,22 @@ beforeAll(async () => {
       )
     `;
     await admin`
-      INSERT INTO workers (scope, organization_id, label)
+      INSERT INTO execution_targets
+        (id, organization_id, slug, kind, trust_class, status, capabilities, config, scope, target_authority_key)
       VALUES
-        ('platform', NULL, 'platform-existing'),
-        ('organization', ${ORG_A}, 'tenant-a-worker'),
-        ('organization', ${ORG_B}, 'tenant-b-worker')
+        (${TARGET_PLATFORM}, NULL, 'platform-existing', 'pooled_gvisor', 'shared_multitenant', 'active', '{}', '{}', 'platform', 'platform'),
+        (${TARGET_A}, ${ORG_A}, 'tenant-a-target', 'dedicated_worker', 'dedicated_tenant', 'active', '{}', '{}', 'organization', ${`organization:${ORG_A}`}),
+        (${TARGET_B}, ${ORG_B}, 'tenant-b-target', 'dedicated_worker', 'dedicated_tenant', 'active', '{}', '{}', 'organization', ${`organization:${ORG_B}`})
+      ON CONFLICT DO NOTHING
     `;
     await admin`
-      INSERT INTO execution_targets
-        (organization_id, slug, kind, trust_class, status, capabilities, config)
+      INSERT INTO workers
+        (scope, organization_id, label, status, execution_target_id, target_authority_key,
+         device_public_key, device_thumbprint, profile_hash, enrolled_at)
       VALUES
-        (NULL, 'platform-existing', 'pooled_gvisor', 'shared_multitenant', 'active', '{}', '{}'),
-        (${ORG_A}, 'tenant-a-target', 'dedicated_worker', 'dedicated_tenant', 'active', '{}', '{}'),
-        (${ORG_B}, 'tenant-b-target', 'dedicated_worker', 'dedicated_tenant', 'active', '{}', '{}')
-      ON CONFLICT DO NOTHING
+        ('platform', NULL, 'platform-existing', 'enrolled', ${TARGET_PLATFORM}, 'platform', 'fixture-key', ${"1".repeat(64)}, ${"2".repeat(64)}, now()),
+        ('organization', ${ORG_A}, 'tenant-a-worker', 'enrolled', ${TARGET_A}, ${`organization:${ORG_A}`}, 'fixture-key', ${"3".repeat(64)}, ${"4".repeat(64)}, now()),
+        ('organization', ${ORG_B}, 'tenant-b-worker', 'enrolled', ${TARGET_B}, ${`organization:${ORG_B}`}, 'fixture-key', ${"5".repeat(64)}, ${"6".repeat(64)}, now())
     `;
   } catch (error) {
     setupError = error;

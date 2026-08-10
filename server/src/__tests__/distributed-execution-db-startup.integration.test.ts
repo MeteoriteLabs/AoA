@@ -192,9 +192,9 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       try {
         await legacyOwner`
           INSERT INTO execution_targets
-            (organization_id, slug, kind, trust_class, status, capabilities, config)
+            (organization_id, slug, kind, trust_class, status, capabilities, config, scope, target_authority_key)
           VALUES
-            (NULL, 'flag-off-legacy-owner', 'local_host', 'local_trusted', 'active', '{}', '{}')
+            (NULL, 'flag-off-legacy-owner', 'local_host', 'local_trusted', 'active', '{}', '{}', 'platform', 'platform')
           ON CONFLICT DO NOTHING
         `;
         const rows = await legacyOwner<{ slug: string }[]>`
