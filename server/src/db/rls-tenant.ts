@@ -530,6 +530,13 @@ export function buildWorkerEnrollmentRlsMigrationSql(): string {
     role: OPERATOR_ROLE,
     predicate: "candidate_organization_id IS NULL",
   }));
+  statements.push(scopedPolicySql({
+    table: "worker_enrollment_code_routes",
+    policy: "worker_enrollment_code_routes_operator_discovery",
+    role: OPERATOR_ROLE,
+    predicate: "true",
+    operation: "SELECT",
+  }));
   for (const table of ["worker_enrollment_codes", "worker_proof_replays"]) {
     statements.push(scopedPolicySql({
       table,

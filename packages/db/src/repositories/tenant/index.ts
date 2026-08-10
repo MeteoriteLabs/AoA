@@ -33,6 +33,10 @@ import {
   createJobControlRepository,
   type JobControlRepository,
 } from "./job-control.js";
+import {
+  createWorkerEnrollmentRepository,
+  type WorkerEnrollmentRepository,
+} from "./worker-enrollment.js";
 
 export interface JobsRepository {
   insert(values: NewJob): Promise<Job>;
@@ -92,6 +96,7 @@ export interface TenantRepositories {
   jobArtifacts: JobArtifactsRepository;
   jobSecretHandles: JobSecretHandlesRepository;
   jobControl: JobControlRepository;
+  workerEnrollment: WorkerEnrollmentRepository;
 }
 
 /**
@@ -103,7 +108,7 @@ export interface TenantRepositories {
  * returns) MUST NOT escape the caller's transaction callback.
  */
 export function tenantRepositories(tx: Db): TenantRepositories {
-  const repositories: Omit<TenantRepositories, "jobControl"> = {
+  const repositories: Omit<TenantRepositories, "jobControl" | "workerEnrollment"> = {
     jobs: {
       async insert(values) {
         const [row] = await tx.insert(jobs).values(values).returning();
@@ -230,6 +235,12 @@ export function tenantRepositories(tx: Db): TenantRepositories {
   };
   Object.defineProperty(repositories, "jobControl", {
     value: createJobControlRepository(tx),
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  Object.defineProperty(repositories, "workerEnrollment", {
+    value: createWorkerEnrollmentRepository(tx),
     enumerable: false,
     configurable: false,
     writable: false,

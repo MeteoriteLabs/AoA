@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { generateKeyPairSync, sign, createHash, type KeyObject } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -21,6 +21,8 @@ const ORG_B = "71000000-0000-4000-8000-000000000002";
 const TARGET_A = "72000000-0000-4000-8000-000000000001";
 const TARGET_B = "72000000-0000-4000-8000-000000000002";
 const WORKER_A = "73000000-0000-4000-8000-000000000001";
+const WORKER_REPLAY = "73000000-0000-4000-8000-000000000002";
+const WORKER_UNIFORM = "73000000-0000-4000-8000-000000000003";
 const PASSWORD = "job-002-role-test";
 const NOW = new Date("2026-08-10T00:00:00.000Z");
 
@@ -146,6 +148,14 @@ afterAll(async () => {
   try { if (dataDir) await rm(dataDir, { recursive: true, force: true }); } catch { /* ignore */ }
 }, 60_000);
 
+beforeEach(async () => {
+  if (!admin) return;
+  await admin`DELETE FROM worker_proof_replays`;
+  await admin`DELETE FROM worker_enrollment_codes`;
+  await admin`DELETE FROM worker_enrollment_code_routes`;
+  await admin`DELETE FROM workers`;
+});
+
 describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1")(
   "JOB-002 tenant enrollment transaction",
   () => {
@@ -160,7 +170,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       });
       expect(issued.code).toMatch(/^aoa_enr_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
       const { privateKey, publicKey } = generateKeyPairSync("ed25519");
-      const body = enrollmentBody();
+      const body = enrollmentBody(WORKER_A);
       const proof = deviceProof(body, privateKey, publicKey, "proof-enroll-1");
       const result = await service.enroll({
         code: issued.code, request: body, ...proof, method: "POST", path: "/api/worker-control/enroll",
@@ -179,7 +189,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         ownerUserId: null, createdByPrincipalKind: "user", createdByPrincipalId: "founder-a",
       });
       const keys = generateKeyPairSync("ed25519");
-      const body = enrollmentBody();
+      const body = enrollmentBody(WORKER_REPLAY);
       const firstProof = deviceProof(body, keys.privateKey, keys.publicKey, "proof-replay-1");
       const first = await service.enroll({ code: issued.code, request: body, ...firstProof, method: "POST", path: "/api/worker-control/enroll" });
       const freshProof = deviceProof(body, keys.privateKey, keys.publicKey, "proof-replay-2");
@@ -199,7 +209,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         ownerUserId: null, createdByPrincipalKind: "user", createdByPrincipalId: "founder-a",
       });
       const keys = generateKeyPairSync("ed25519");
-      const body = enrollmentBody();
+      const body = enrollmentBody(WORKER_UNIFORM);
       await service.enroll({ code: issued.code, request: body, ...deviceProof(body, keys.privateKey, keys.publicKey, "proof-uniform-1"), method: "POST", path: "/api/worker-control/enroll" });
       const changed = { ...body, nonce: "changed-semantic-body" };
       await expect(service.enroll({ code: issued.code, request: changed, ...deviceProof(changed, keys.privateKey, keys.publicKey, "proof-uniform-2"), method: "POST", path: "/api/worker-control/enroll" }))

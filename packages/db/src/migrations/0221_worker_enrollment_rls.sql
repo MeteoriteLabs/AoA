@@ -106,6 +106,13 @@ CREATE POLICY "worker_enrollment_code_routes_platform_operator" ON "worker_enrol
   WITH CHECK (candidate_organization_id IS NULL);
 --> statement-breakpoint
 -- C14 hand-authored security DDL: drizzle-kit cannot emit this statement; its guarded/natural/drop-before-create form is idempotent.
+DROP POLICY IF EXISTS "worker_enrollment_code_routes_operator_discovery" ON "worker_enrollment_code_routes";
+--> statement-breakpoint
+-- C14 hand-authored security DDL: drizzle-kit cannot emit this statement; its guarded/natural/drop-before-create form is idempotent.
+CREATE POLICY "worker_enrollment_code_routes_operator_discovery" ON "worker_enrollment_code_routes" FOR SELECT TO "aoa_operator"
+  USING (true);
+--> statement-breakpoint
+-- C14 hand-authored security DDL: drizzle-kit cannot emit this statement; its guarded/natural/drop-before-create form is idempotent.
 DROP POLICY IF EXISTS "worker_enrollment_codes_platform_operator" ON "worker_enrollment_codes";
 --> statement-breakpoint
 -- C14 hand-authored security DDL: drizzle-kit cannot emit this statement; its guarded/natural/drop-before-create form is idempotent.
