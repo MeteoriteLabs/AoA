@@ -479,3 +479,25 @@ dynamic. Million-row correctness, row/buffer/index, memory, and bounded-scan che
 blocking; variable-runner latency is observed only. A reproducible pinned `E3-PERF-01` handoff
 is required before the E3 exit gate or any production-capacity/SLO claim. JOB-003 remains
 `needs_changes`; RED correction and GREEN remain unauthorized pending fresh exact dual review.
+
+## Static-certificate successor review attempt 4 - needs changes
+
+Two independent read-only reviewers checked exact revision
+`9bbd2002033b4f254f11f726af0c0c1493e88435`. Schema/security review returned `ACCEPT` with
+zero P0/P1/P2 and confirmed the split generated migrations, composite FKs, FORCE RLS/app-only
+grants, startup allowlist, static matcher hash, capacity separation, correlated SQL validity,
+and structural load checks. Whole-plan review closed all of those findings but rejected one
+P2: `E3-PERF-01` was mandatory without an executable owner/evidence/trigger contract, and its
+wording allowed thresholds to be chosen after measurement.
+
+The correction assigns the independent Integration Gate Owner to execute the campaign and a
+distinct Security Gate Owner to prospectively approve its manifest and verify its result. A
+committed pre-sample manifest freezes the exact implementation revision, immutable environment,
+dataset, raw-evidence retention, and INITIAL numeric thresholds. The new
+`scripts/run-e3-perf-01.mjs` trigger validates that manifest/environment, runs the million-row
+load suite, and writes content-addressed raw evidence. Immutable performance QA and handoff
+attempts record every Git/image/config/archive digest; any mismatch or threshold miss fails,
+and any prospective threshold change requires a higher reviewed manifest and complete new
+campaign while preserving the failed attempt. The overall Integration Gate Owner must pin and
+consume both passing performance artifacts before epic completion. JOB-003 remains
+`needs_changes`; implementation is still paused for fresh exact dual re-review.

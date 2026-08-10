@@ -855,3 +855,17 @@ and no-unbounded-scan checks are blocking; variable-CI latency is observed. A re
 pinned `E3-PERF-01` handoff is mandatory before the E3 exit gate or any production-capacity/
 SLO claim. Status remains pending fresh exact dual re-review; no RED correction or GREEN is
 authorized.
+
+Exact re-review of `9bbd2002033b4f254f11f726af0c0c1493e88435` accepted every migration,
+certificate, static-hash, capacity, SQL, RLS/grant, oracle, and load-shape correction. The
+schema/security reviewer returned `ACCEPT`; the whole-plan reviewer rejected one remaining
+P2 because `E3-PERF-01` was mandatory but had no named owner, prospective threshold manifest,
+exact runner trigger, immutable artifact paths, or integration-gate consumption. The plan now
+assigns the independent Integration Gate Owner plus a distinct Security Gate Owner; freezes
+the environment and INITIAL numeric thresholds in a committed manifest before samples; adds
+the manifest-validating `scripts/run-e3-perf-01.mjs` trigger; requires content-addressed raw
+evidence retained >=180 days plus immutable performance QA/handoff attempts; and pins those
+blobs into the overall E3 gate. Any environment/threshold mismatch fails, and any prospective
+threshold change requires a new reviewed manifest and full campaign while retaining the prior
+failure. Status remains pending another fresh exact dual review; implementation remains
+unauthorized.

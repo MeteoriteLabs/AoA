@@ -716,7 +716,7 @@ the identical command GREEN; append the affected package typecheck/build command
 | JOB-001 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-001 db' { pnpm --filter @armyofagents/db exec vitest run src/__tests__/job-control-schema.integration.test.ts src/__tests__/migration-idempotency.test.ts }; Invoke-NativeGate 'JOB-001 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-submission.integration.test.ts src/__tests__/tenant-app-db-startup.test.ts src/__tests__/job-control-legacy-grants.contract.test.ts src/__tests__/integration-test-hygiene.test.ts } }; Invoke-NativeGate 'JOB-001 frozen consumer' { pnpm check:frozen-worker-protocol-v1 -- --source-sha b7a842870ce7509d8baa75409e0ab19da375c88a }` |
 | JOB-002 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-002 db' { pnpm --filter @armyofagents/db exec vitest run src/__tests__/worker-enrollment-schema.integration.test.ts src/__tests__/worker-operator-policy.integration.test.ts src/__tests__/migration-idempotency.test.ts }; Invoke-NativeGate 'JOB-002 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/worker-enrollment.integration.test.ts src/__tests__/worker-session-auth.test.ts src/__tests__/job-control-legacy-grants.contract.test.ts } }` |
 | JOB-009 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-009 db' { pnpm --filter @armyofagents/db exec vitest run src/__tests__/migration-idempotency.test.ts }; Invoke-NativeGate 'JOB-009 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-placement.property.test.ts src/__tests__/job-placement.integration.test.ts src/__tests__/job-control-legacy-grants.contract.test.ts } }` |
-| JOB-003 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-003 db' { pnpm --filter @armyofagents/db exec vitest run src/__tests__/job-control-schema.integration.test.ts src/__tests__/worker-operation-receipts-schema.integration.test.ts src/__tests__/worker-lease-rejections-schema.integration.test.ts src/__tests__/platform-target-authority-lock.integration.test.ts src/__tests__/job-leasing-migration-upgrade.integration.test.ts src/__tests__/worker-operator-policy.integration.test.ts src/__tests__/migration-idempotency.test.ts }; Invoke-NativeGate 'JOB-003 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-leasing.integration.test.ts src/__tests__/job-lease-eligibility.test.ts src/__tests__/job-leasing-contract.test.ts src/__tests__/job-control-runtime.test.ts src/__tests__/worker-enrollment.integration.test.ts src/__tests__/worker-session-auth.test.ts src/__tests__/job-placement.integration.test.ts src/__tests__/job-control-legacy-grants.contract.test.ts src/__tests__/distributed-execution-db-startup.integration.test.ts src/__tests__/server-shutdown.test.ts }; Invoke-NativeGate 'JOB-003 load' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-leasing-load.integration.test.ts --maxWorkers=1 } }` |
+| JOB-003 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-003 db' { pnpm --filter @armyofagents/db exec vitest run src/__tests__/job-control-schema.integration.test.ts src/__tests__/worker-operation-receipts-schema.integration.test.ts src/__tests__/worker-lease-rejections-schema.integration.test.ts src/__tests__/platform-target-authority-lock.integration.test.ts src/__tests__/job-leasing-migration-upgrade.integration.test.ts src/__tests__/worker-operator-policy.integration.test.ts src/__tests__/migration-idempotency.test.ts }; Invoke-NativeGate 'JOB-003 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-leasing.integration.test.ts src/__tests__/job-lease-eligibility.test.ts src/__tests__/job-leasing-contract.test.ts src/__tests__/job-control-runtime.test.ts src/__tests__/worker-enrollment.integration.test.ts src/__tests__/worker-session-auth.test.ts src/__tests__/job-placement.integration.test.ts src/__tests__/job-control-legacy-grants.contract.test.ts src/__tests__/distributed-execution-db-startup.integration.test.ts src/__tests__/server-shutdown.test.ts }; Invoke-NativeGate 'JOB-003 load' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-leasing-load.integration.test.ts --maxWorkers=1 } }; Invoke-NativeGate 'JOB-003 perf runner' { node --test scripts/run-e3-perf-01.test.mjs }` |
 | JOB-010 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-010 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-admission-parity.integration.test.ts src/__tests__/job-source-admission-matrix.test.ts src/__tests__/job-control-legacy-grants.contract.test.ts src/__tests__/job-legacy-after-commit.integration.test.ts } }` |
 | JOB-004 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-004 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-fencing.integration.test.ts src/__tests__/job-fence-surface.contract.test.ts } }` |
 | JOB-005 | `Invoke-E3Integration { Invoke-NativeGate 'JOB-005 db' { pnpm --filter @armyofagents/db exec vitest run src/__tests__/job-events-schema.integration.test.ts src/__tests__/migration-idempotency.test.ts }; Invoke-NativeGate 'JOB-005 server' { pnpm --filter @armyofagents/server exec vitest run src/__tests__/job-events.integration.test.ts } }` |
@@ -1020,7 +1020,8 @@ composition in `server/src/index.ts`; create
 `job-leasing-migration-upgrade.integration.test.ts`,
 `server/src/__tests__/job-leasing.integration.test.ts`, `job-control-runtime.test.ts`, and
 `job-leasing-contract.test.ts`, `job-lease-eligibility.test.ts`, and
-`job-leasing-load.integration.test.ts`; extend
+`job-leasing-load.integration.test.ts`; create `scripts/run-e3-perf-01.mjs` and
+`scripts/run-e3-perf-01.test.mjs`; extend
 `server/src/__tests__/job-control-legacy-grants.contract.test.ts` and
 `distributed-execution-db-startup.integration.test.ts`, including runtime-composition, multi-Organization platform
 target, advisory-handoff/revocation, authority-mutation-inventory, liveness, and fair-scheduler
@@ -1338,12 +1339,58 @@ row counts, combined table+index size <= 2 GiB, the expected indexes/predicates,
 sort, and no sequential scan of the hot queue/certificate tables at INITIAL/D1 or any million-
 row shape.
 
-Before the E3 exit gate or any production-capacity/SLO claim, `E3-PERF-01` must record a
-passing benchmark handoff on a reproducible dedicated environment that pins immutable OS/
-image digest, CPU model and vCPU allocation, RAM, storage class or tmpfs, PostgreSQL binary/
-configuration, and exclusive competing-workload policy. That handoff promotes reviewed
-latency objectives to gates or records new reviewed thresholds; `ubuntu-latest` observations
-alone can never waive it. Windows numbers remain diagnostic only.
+#### E3-PERF-01 — pinned production-capacity benchmark gate
+
+The independent E3 Integration Gate Owner owns `E3-PERF-01`; a distinct named Security Gate
+Owner prospectively approves its manifest and independently reviews the result. Before the
+first sample, after the implementation candidate is frozen, they commit an immutable
+`qa/<date>-e3-perf-01-manifest-<sha12>-aN.json`. That manifest pins the exact 40-hex
+implementation revision; immutable OS/runner image digest; CPU model and vCPU allocation;
+RAM; storage class, filesystem, and tmpfs settings; Node/pnpm versions; PostgreSQL version,
+binary SHA-256, and complete non-default configuration; exclusive competing-workload policy;
+dataset seeds/counts; raw-artifact destination and >=180-day retention deadline; and every
+numeric threshold. Both owners and their approval timestamps are part of the committed
+manifest. The gate revision may differ from the implementation candidate only by this
+prospective evidence manifest and already-reviewed ticket evidence.
+
+The first manifest freezes these `INITIAL` latency thresholds before execution: shapes 2/3
+p95 <=250 ms and max <=1,500 ms; head-saturated and fully-certified p95 <=2,000 ms and max
+<=5,000 ms; 256-row bulk-certificate upsert p95 <=500 ms over 20 samples; and sparse and tail
+256-row cleanup p95 <=750 ms over 20 samples each. It also freezes the REQUIRED structural
+conditions above: exact row/results, <=2 GiB combined table+index size, expected index and
+predicate use, no unbounded sort, and no hot queue/certificate sequential scan. A manifest,
+environment, dataset, or revision mismatch aborts before samples and cannot be classified as
+a pass. Once sampling begins, a threshold miss is `fail`. A threshold change requires a dated
+prospective decision approved by both owners, a higher manifest/QA/handoff attempt, and a
+complete new gate campaign; the failed attempt and raw evidence remain immutable. Thresholds
+may never be selected or lowered in response to observed results.
+
+`scripts/run-e3-perf-01.mjs` validates the tracked manifest and actual environment before it
+launches `job-leasing-load.integration.test.ts --maxWorkers=1`, then emits the environment,
+ordered seeds, every sample, table/index sizes, row/buffer counts, and JSON query plans into an
+empty content-addressed output directory. Its Node contract test fails an untracked/modified
+manifest, revision or environment mismatch, nonempty/reused output path, altered thresholds,
+missing owner approvals, and a simulated threshold/structural miss; a hermetic success fixture
+proves the expanded child command and complete archive manifest. The Gate Owner runs this exact trigger, substituting
+the already committed manifest path and its literal attempt number:
+
+```powershell
+$perfManifest = 'docs/replatform/epics/E3-job-control/qa/<committed-manifest-name>.json'
+$perfOutput = Join-Path $env:AOA_EVIDENCE_ROOT 'e3-perf-01/<implementation-sha40>/aN'
+Invoke-NativeGate 'E3-PERF-01' {
+  node scripts/run-e3-perf-01.mjs --manifest $perfManifest --output $perfOutput
+}
+```
+
+The expanded command, manifest Git blob, runner-script Git blob, implementation/config/image
+digests, controlled artifact URI, archive SHA-256, retention deadline, and every threshold/
+result are recorded in immutable
+`qa/<date>-e3-perf-01-<sha12>-aN.md`. The distinct Security Gate Owner writes
+`handoffs/<date>-e3-perf-01-<sha12>-aN.md` only after independently reproducing manifest and
+artifact hashes and confirming every INITIAL/REQUIRED result passes. The Git QA keeps enough
+row/buffer/plan/sample summary to remain meaningful after linked CI artifacts expire. A
+Windows or variable `ubuntu-latest` run remains OBSERVED diagnostic evidence only and cannot
+replace either passing artifact.
 Add an exhaustive AST/exact allowlist mutation inventory proving every current platform
 status/generation/device/profile authority writer uses target→worker row order plus the
 exclusive advisory helper, while last-seen-only heartbeat stays non-authoritative and cannot
@@ -1790,6 +1837,7 @@ attributable without becoming accepted product actions.
 | D0-R02 | Root `pnpm build` through `Invoke-NativeGate`, with no tracked-byte mutation. |
 | D0-R03 | JOB-003/004/005/006/007 and the final H-01/H-02/H-03 integration suite pass 3 consecutive times. |
 | D0-R04 / EVID-01–03 | Byte-clean worktree and immutable QA/handoff with exact 40-hex revision, flags/config/protocol hash, commands/counts/durations, requirement IDs. |
+| E3-PERF-01 pinned capacity gate | Independent Integration Gate Owner executes the prospectively frozen manifest/runner on the dedicated environment; distinct Security Gate Owner verifies the raw archive and writes the passing handoff. Overall E3 QA pins both Git blobs, manifest/blob/archive hashes, and exact implementation revision. |
 | H-01 tenant isolation | Every ticket; final hostile cross-Org/Company submit/enroll/place/lease/event/control/operator/parity matrix through `runInTenant`. Zero tolerance. |
 | H-02 lease authority | JOB-003–007/011–014; one shared stale/replaced fence surface matrix. Zero tolerance. |
 | H-03 single executor | JOB-003/004/006/007/010/014 concurrent lease/replace/legacy races. Zero tolerance. |
@@ -1821,10 +1869,16 @@ gate.
 
 ### E3 integration gate (independent Gate Owner)
 
-1. Freeze one candidate revision after all fourteen reviewer-completed ledgers.
-2. Build workspace packages before tests. Run focused critical suites 3×, then D0-R01/R02,
+1. Freeze one implementation candidate after all fourteen reviewer-completed ledgers.
+2. Before any gate sample, the Integration Gate Owner and distinct Security Gate Owner
+   prospectively approve and commit the `E3-PERF-01` manifest described above. That evidence-
+   only commit becomes the gate revision; its diff from the frozen implementation candidate
+   may contain only the performance manifest and already-reviewed ticket evidence. Any code,
+   dependency, migration, generated artifact, or runtime configuration change is a new
+   implementation candidate and invalidates the campaign.
+3. Build workspace packages before tests. Run focused critical suites 3×, then D0-R01/R02,
    foundation/protocol-boundary/idempotency/integration-hygiene checks, and byte-clean check.
-3. Run the E3-owned D1 contributions at their INITIAL volumes/topology, retaining seeds and
+4. Run the E3-owned D1 contributions at their INITIAL volumes/topology, retaining seeds and
    raw-log references. This is not full D1 promotion: E5 artifact bytes and the remaining E6
    provider-resource slices are downstream in the program DAG. H-01/H-02/H-03 failure is
    `fail`, never conditional/waived.
@@ -1855,13 +1909,22 @@ gate.
    H-03 subset three consecutive times on the frozen revision. The QA record marks D1-04's
    provider-resource portion, D1-06 bytes, and provider-resource D1-07 closure as downstream/
    not certified by E3. Full D1 promotion joins E3, E5, and remaining E6 evidence later.
-4. On Windows local, set `AOA_RUN_WIN_INTEGRATION=1` from `C:\e3` and label the result
+5. On Windows local, set `AOA_RUN_WIN_INTEGRATION=1` from `C:\e3` and label the result
    `operator-directed windows-local`. Linux CI is the formal DEC-03 authority.
-5. Gate Owner writes a new immutable
-   `qa/<date>-d1-e3-job-control-<sha12>-a1.md`, then a distinct
-   `handoffs/<date>-epic-completion-<sha12>-a1.md`, pinning every ticket ledger blob and
-   reviewed revision. No self-certification.
-6. Only after both records say `pass` on the same revision: change E3 README and epics index
+6. On the same gate revision, the Integration Gate Owner runs the exact `E3-PERF-01` trigger
+   on the manifest-pinned dedicated environment. Environment preflight mismatch, runner
+   failure, any INITIAL threshold miss, or any REQUIRED structural miss is a failed attempt.
+   The owner writes the immutable performance QA; the distinct Security Gate Owner verifies
+   it and writes the performance handoff. Both paths, Git blobs, and raw-archive digest must
+   say `pass` before continuing.
+7. Gate Owner writes a new immutable
+   `qa/<date>-d1-e3-job-control-<sha12>-aN.md`, then a distinct
+   `handoffs/<date>-epic-completion-<sha12>-aN.md`, using a higher attempt for every retry and
+   pinning every ticket ledger blob, reviewed
+   revision, `E3-PERF-01` manifest/QA/handoff blob, runner blob, and controlled raw-archive
+   digest. No self-certification.
+8. Only after the performance QA/handoff and overall QA/handoff all say `pass` on the same
+   gate and implementation revisions: change E3 README and epics index
    `backlog` → `complete`, commit evidence, fetch origin, verify
    `origin/docs/replatform-program` is an ancestor of HEAD, and—only with operator go-ahead—
    push `HEAD:docs/replatform-program`. Divergence is a STOP; never force-push.
@@ -2076,13 +2139,24 @@ Decision #122 RLS/grants. It limits snapshot-hash mutation coverage to non-capac
 fields, keeps capacity dynamic, treats variable-CI latency as observed, and requires a pinned
 `E3-PERF-01` handoff before an exit/SLO claim. Another fresh dual review is required.
 
+Fresh schema/security review accepted exact revision
+`9bbd2002033b4f254f11f726af0c0c1493e88435` with no P0/P1/P2, and whole-plan review closed
+all prior certificate/migration findings but rejected one remaining P2: `E3-PERF-01` was a
+mandatory exit condition without an owner, prospective manifest, executable trigger,
+immutable records, or explicit integration-gate consumption. This revision assigns the
+independent Integration Gate Owner and distinct Security Gate Owner, freezes the environment
+and INITIAL thresholds before any sample, adds the manifest-validating runner and exact
+trigger, defines immutable QA/handoff/raw-retention evidence, makes every changed threshold a
+new failed-preserving campaign, and pins all performance blobs into the E3 completion gate.
+Another fresh dual review of the exact committed text is required.
+
 ## GSTACK REVIEW REPORT
 
 | Review | Trigger | Why | Runs | Status | Findings |
 |--------|---------|-----|------|--------|----------|
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | Not run; not required for this backend planning pass. |
 | Codex Review | `/codex review` | Independent 2nd opinion | 0 | — | Not run. |
-| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 5 + JOB-003 successor attempts 1–3 rejected | `AMENDMENT RE-REVIEW REQUIRED` | Original plan accepted; the cyclic cursor and three certificate revisions were rejected. The corrected SQL-comparable, snapshot-bound, split-generated-migration successor with a pinned performance-gate prerequisite is paused pending fresh whole-plan and schema/security reviews. |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 5 + JOB-003 successor attempts 1–4 rejected | `AMENDMENT RE-REVIEW REQUIRED` | Original plan accepted; the cyclic cursor and four certificate revisions were rejected. The corrected SQL-comparable, snapshot-bound, split-generated-migration successor now includes an executable prospectively frozen performance gate and is paused pending fresh whole-plan and schema/security reviews. |
 | Claude Code | `claude -p` | User-requested outside-model review | 0 | `AUTH BLOCKED` | Claude Code 2.1.126 is installed, but `claude auth status` reports `loggedIn: false`; no Claude review occurred. |
 | Claude (user-provided) | pasted review | External plan delta review | 1 | `TRIAGED — STALE BASE` | Reviewed origin `8e2faa590`, not the local plan; three concerns were already closed, while JOB-009 sizing and explicit JOB-012–014 disablement were valid deltas and are now resolved in plan. |
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | Not run; E3 operator UI follows existing patterns. |
