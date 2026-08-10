@@ -99,7 +99,7 @@ amendment is required.
 ## E3-F004 — Frozen-consumer checker pins the mutable repository lockfile
 
 **Date:** 2026-08-10
-**Status:** `approved_blocked_on_E1_custodian_correction`
+**Status:** `resolved_by_corrective_E1_gate`
 **Severity:** P1 STOP — frozen dependency gate conflicts with required consumer declaration
 **Affected tickets:** JOB-001 and therefore all downstream E3 tickets
 
@@ -122,6 +122,11 @@ the consumer manifest dependency, or bypassing the check is not authorized.
 **Operator decision (2026-08-10):** Approve the checker-only correction exactly as scoped
 above. Frozen protocol/schema/bundle fixture bytes remain unchanged. JOB-001 remains blocked
 until the Protocol/Schema Custodian commits superseding passing E1 QA and handoff evidence.
+
+**Resolution evidence (2026-08-10):** Independent review attempt 3 passed the corrected
+checker at `01ad1ab554fe25c5178c7552ec047d4df45b7dcf`. The prerequisite result, corrective
+E1 QA, and superseding completion handoff are `complete`/`pass` in reviewer evidence commit
+`db8afd27ab134ad741a96d2ef7f157c306690c44`. Frozen source/fixture trees are unchanged.
 
 ## E3-F005 — Device proof and worker-to-target binding are not frozen E1 interfaces
 

@@ -1,9 +1,10 @@
 # E3 — Durable Job Control — Implementation Plan
 
-**Plan status:** `approved_blocked_on_E1_correction` — the operator approved the reviewed
-plan and recommended E2/E1/JOB-002 choices on 2026-08-10. The corrective E2 gate passed at
-reviewed revision `7843b86e25eb1ff9c520308aef7f123fec6997a7`; E3 ticket implementation is
-not assignable until the named E1 corrective gate also passes.
+**Plan status:** `approved_pre_D1_execution_ready` — the operator approved the reviewed plan
+and recommended E2/E1/JOB-002 choices on 2026-08-10. The corrective E2 and E1 gates passed
+at reviewed revisions `7843b86e25eb1ff9c520308aef7f123fec6997a7` and
+`01ad1ab554fe25c5178c7552ec047d4df45b7dcf`. Pre-D1 tickets may now execute in dependency
+order; the post-D1 boundary remains locked.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use
 > `superpowers:subagent-driven-development` to execute this plan ticket by ticket
@@ -47,7 +48,7 @@ Organization/workload until E10 migration tickets transfer ownership.
 | Frozen `origin/main` | `003492988269a91eadfadb352bff7f413fa61adb` — present locally and an ancestor of the current `origin/main`; the crosswalk execution freeze is intact. |
 | E3 Start SHA | `8e2faa590d4e97a2cbd250c55f4a2ed81a352a33` — fetched `origin/docs/replatform-program` and the `C:\e3` worktree's initial HEAD before planning commits. This exact bare 40-hex value is the `Start SHA` in `JOB-001-result.md`. |
 | E0 completion | `pass` — `docs/replatform/epics/E0-foundation/handoffs/2026-08-08-epic-completion-3a469b6bec68-a1.md`. |
-| E1 completion | Handoff is `pass`, but E1's frozen-consumer checker pins the whole current `pnpm-lock.yaml`; JOB-001's required declared server dependency changes that file. A protocol-custodian correction and superseding evidence are required before JOB-001 can consume the package without breaking the frozen gate. |
+| E1 completion | Corrective QA and superseding handoff are `pass` for reviewed revision `01ad1ab554fe25c5178c7552ec047d4df45b7dcf` (`2026-08-10-d0-e1-frozen-checker-correction-01ad1ab554fe-a6.md` and paired completion handoff). E3-F004 is resolved. |
 | E2 completion | Corrective QA and superseding handoff are `pass` for reviewed revision `7843b86e25eb1ff9c520308aef7f123fec6997a7` (`2026-08-10-d0-e2-tenant-kernel-21335854f-a5.md` and paired completion handoff). E3-F001/E3-F002 are resolved. |
 | `E6-D1-FOUNDATION` | **Not present / not passed at planning time.** It is a named partial gate, never a ticket-result substitute. |
 | Planning worktree | `C:\e3`, branch `codex/epic-e3-job-control`; dependencies installed with `pnpm install --frozen-lockfile`. |
@@ -70,9 +71,8 @@ frozen-consumer checker conflict, and E3-F005 records the approved device-proof 
 worker-target binding contract. E3-F006 through E3-F008 record plan defects corrected by
 this revision. The operator selected bounded-grant E2 option B, approved the E1 checker-only
 correction, and approved E3-F005's HTTP-header proof/composite binding on 2026-08-10.
-E3-F001/E3-F002 are resolved by the independently reviewed corrective E2 gate. E3-F004
-remains the execution blocker until its corrective gate and superseding handoff pass; E3 may
-not improvise beyond the approved contracts.
+E3-F001/E3-F002 and E3-F004 are resolved by independently reviewed corrective gates. The
+approved E3-F005 contract remains binding on JOB-002; E3 may not improvise beyond it.
 
 ### RESOLVED — E2-D03 successor serving/operator path
 
@@ -117,7 +117,7 @@ The corrective implementation is reviewed at
 handoff are `pass`. E3 now consumes this interface, but ticket assignment remains blocked on
 the separate E1 correction below.
 
-### APPROVED CORRECTION REQUIRED — E1's frozen-consumer gate pins a mutable lockfile
+### RESOLVED — E1 frozen-consumer checker correction
 
 The frozen v1 bundle and schema are valid and remain immutable. The problem is the as-built
 verification seam: `scripts/check-frozen-worker-protocol-consumer.mjs` hashes the current
@@ -138,11 +138,16 @@ record/handoff. Any alternative—including changing the frozen fixture, omittin
 manifest dependency, or bypassing the check—is a STOP requiring explicit custodian approval.
 JOB-001 cannot be assigned until the corrected check passes at its assignment revision.
 
+The corrected checker passed independent review at
+`01ad1ab554fe25c5178c7552ec047d4df45b7dcf`; its prerequisite result, corrective E1 QA,
+and superseding completion handoff are `complete`/`pass`. JOB-001 may consume the frozen
+package while preserving the immutable source and fixture anchors.
+
 ### Execution boundary
 
 | Boundary | Tickets | Assignment rule |
 |---|---|---|
-| **Pre-D1, approved but blocked on E1 correction** | JOB-001, JOB-002, JOB-009, JOB-003, JOB-010 | E3-F001/E3-F002 reconciliation passed. Requires the committed passing E3-F004 correction handoff. E3-F005's device/binding contract is approved for JOB-002 implementation. Then respect ticket dependencies; JOB-010 may start after JOB-001. |
+| **Pre-D1, approved and assignable** | JOB-001, JOB-002, JOB-009, JOB-003, JOB-010 | E3-F001/E3-F002 and E3-F004 corrective handoffs passed. E3-F005's device/binding contract is approved for JOB-002 implementation. Respect ticket dependencies; JOB-010 may start after JOB-001. |
 | **Post-D1, blocked** | JOB-004–JOB-008, JOB-011–JOB-014 | Do not assign until a committed `E6-D1-FOUNDATION` QA record **and passing handoff** cover E6F-00–E6F-08 on one revision. |
 | **E3 exit gate, blocked** | all JOB-001–JOB-014 evidence | Requires every ticket complete and the post-D1 closure. A Windows-local run is not a substitute for the formal Linux lane. |
 
@@ -1636,9 +1641,9 @@ split at the named `E6-D1-FOUNDATION` partial gate.
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | Not run; E3 operator UI follows existing patterns. |
 | DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | Not run. |
 
-**VERDICT:** APPROVED, BLOCKED ON E1 CORRECTION — independently review-complete;
+**VERDICT:** APPROVED FOR PRE-D1 EXECUTION — independently review-complete;
 the operator selected E2 option B plus the metadata-only operator role, approved the E1
-checker-only correction, and approved JOB-002's HTTP-header proof/composite binding. The E2
-corrective gate passed; no E3 ticket is assignable until the E1 corrective gate also passes.
+checker-only correction, and approved JOB-002's HTTP-header proof/composite binding. Both
+corrective gates passed. Post-D1 tickets remain blocked on `E6-D1-FOUNDATION`.
 
 NO UNRESOLVED DECISIONS
