@@ -212,5 +212,106 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       await replayMigration(client, "0227_job_leasing_authority.sql");
       await replayMigration(client, "0228_job_leasing_rls.sql");
     });
+
+    it("lets aoa_app read and update its own receipt but denies cross-Organization read, insert, and update", async () => {
+      const client = database();
+      const orgA = "30000000-0000-4000-8000-000000000101";
+      const orgB = "30000000-0000-4000-8000-000000000102";
+      const companyA = "30000000-0000-4000-8000-000000000103";
+      const companyB = "30000000-0000-4000-8000-000000000104";
+      const targetA = "30000000-0000-4000-8000-000000000105";
+      const targetB = "30000000-0000-4000-8000-000000000106";
+      const workerA = "30000000-0000-4000-8000-000000000107";
+      const workerB = "30000000-0000-4000-8000-000000000108";
+      const jobA = "30000000-0000-4000-8000-000000000109";
+      const jobB = "30000000-0000-4000-8000-000000000110";
+      const attemptA = "30000000-0000-4000-8000-000000000111";
+      const attemptB = "30000000-0000-4000-8000-000000000112";
+      const leaseA = "30000000-0000-4000-8000-000000000113";
+      const leaseB = "30000000-0000-4000-8000-000000000114";
+      const receiptA = "30000000-0000-4000-8000-000000000115";
+      const receiptB = "30000000-0000-4000-8000-000000000116";
+
+      await client`INSERT INTO organizations (id, name, slug) VALUES
+        (${orgA}, 'receipt org A', 'receipt-rls-a'), (${orgB}, 'receipt org B', 'receipt-rls-b')`;
+      await client`INSERT INTO companies (id, organization_id, name, issue_prefix) VALUES
+        (${companyA}, ${orgA}, 'receipt company A', 'RRA'),
+        (${companyB}, ${orgB}, 'receipt company B', 'RRB')`;
+      await client`INSERT INTO execution_targets
+        (id, organization_id, slug, kind, trust_class, status, scope, target_authority_key, device_generation)
+        VALUES
+          (${targetA}, ${orgA}, 'receipt-target-a', 'dedicated_worker', 'dedicated_tenant', 'active',
+            'organization', ${`organization:${orgA}`}, 1),
+          (${targetB}, ${orgB}, 'receipt-target-b', 'dedicated_worker', 'dedicated_tenant', 'active',
+            'organization', ${`organization:${orgB}`}, 1)`;
+      await client`INSERT INTO workers
+        (id, scope, organization_id, execution_target_id, target_authority_key, device_public_key,
+         device_thumbprint, device_generation, profile_hash, enrolled_at, label, status)
+        VALUES
+          (${workerA}, 'organization', ${orgA}, ${targetA}, ${`organization:${orgA}`}, 'receipt-key-a',
+            ${"a".repeat(64)}, 1, ${"b".repeat(64)}, clock_timestamp(), 'receipt worker A', 'enrolled'),
+          (${workerB}, 'organization', ${orgB}, ${targetB}, ${`organization:${orgB}`}, 'receipt-key-b',
+            ${"c".repeat(64)}, 1, ${"d".repeat(64)}, clock_timestamp(), 'receipt worker B', 'enrolled')`;
+      await client`INSERT INTO jobs (id, organization_id, company_id) VALUES
+        (${jobA}, ${orgA}, ${companyA}), (${jobB}, ${orgB}, ${companyB})`;
+      await client`INSERT INTO job_attempts (id, organization_id, company_id, job_id, attempt_number) VALUES
+        (${attemptA}, ${orgA}, ${companyA}, ${jobA}, 1),
+        (${attemptB}, ${orgB}, ${companyB}, ${jobB}, 1)`;
+      await client`INSERT INTO leases
+        (id, organization_id, company_id, job_id, attempt_id, attempt_number, worker_id, target_id,
+         target_authority_key, target_generation, profile_hash, provider_constraint_hash, status,
+         fence, ack_deadline, expires_at, activated_at)
+        VALUES
+          (${leaseA}, ${orgA}, ${companyA}, ${jobA}, ${attemptA}, 1, ${workerA}, ${targetA},
+            ${`organization:${orgA}`}, 1, ${"b".repeat(64)}, ${"e".repeat(64)}, 'active', 'receipt-a-fence',
+            clock_timestamp() + interval '1 minute', clock_timestamp() + interval '2 minutes', clock_timestamp()),
+          (${leaseB}, ${orgB}, ${companyB}, ${jobB}, ${attemptB}, 1, ${workerB}, ${targetB},
+            ${`organization:${orgB}`}, 1, ${"d".repeat(64)}, ${"f".repeat(64)}, 'active', 'receipt-b-fence',
+            clock_timestamp() + interval '1 minute', clock_timestamp() + interval '2 minutes', clock_timestamp())`;
+      await client`INSERT INTO worker_operation_receipts
+        (id, organization_id, company_id, job_id, attempt_id, lease_id, operation, worker_id,
+         target_id, target_authority_key, target_generation, profile_hash, idempotency_key,
+         semantic_digest, outcome, expires_at)
+        VALUES
+          (${receiptA}, ${orgA}, ${companyA}, ${jobA}, ${attemptA}, ${leaseA}, 'lease_ack', ${workerA},
+            ${targetA}, ${`organization:${orgA}`}, 1, ${"b".repeat(64)},
+            '30000000-0000-4000-8000-000000000117', ${"1".repeat(64)}, ${{ leaseId: leaseA }},
+            clock_timestamp() + interval '2 minutes'),
+          (${receiptB}, ${orgB}, ${companyB}, ${jobB}, ${attemptB}, ${leaseB}, 'lease_ack', ${workerB},
+            ${targetB}, ${`organization:${orgB}`}, 1, ${"d".repeat(64)},
+            '30000000-0000-4000-8000-000000000118', ${"2".repeat(64)}, ${{ leaseId: leaseB }},
+            clock_timestamp() + interval '2 minutes')`;
+
+      const observed = await client.begin(async (tx) => {
+        await tx`SET LOCAL ROLE aoa_app`;
+        await tx`SELECT set_config('aoa.organization_id', ${orgA}, true)`;
+        const own = await tx<{ id: string }[]>`SELECT id FROM worker_operation_receipts WHERE id = ${receiptA}`;
+        const foreign = await tx<{ id: string }[]>`SELECT id FROM worker_operation_receipts WHERE id = ${receiptB}`;
+        const foreignUpdate = await tx<{ id: string }[]>`
+          UPDATE worker_operation_receipts SET semantic_digest = ${"3".repeat(64)}
+          WHERE id = ${receiptB} RETURNING id`;
+        const ownUpdate = await tx<{ id: string }[]>`
+          UPDATE worker_operation_receipts SET semantic_digest = ${"4".repeat(64)}
+          WHERE id = ${receiptA} RETURNING id`;
+        return { own, foreign, foreignUpdate, ownUpdate };
+      });
+      expect(observed.own).toHaveLength(1);
+      expect(observed.foreign).toHaveLength(0);
+      expect(observed.foreignUpdate).toHaveLength(0);
+      expect(observed.ownUpdate).toHaveLength(1);
+
+      await expect(client.begin(async (tx) => {
+        await tx`SET LOCAL ROLE aoa_app`;
+        await tx`SELECT set_config('aoa.organization_id', ${orgA}, true)`;
+        await tx`INSERT INTO worker_operation_receipts
+          (organization_id, company_id, job_id, attempt_id, lease_id, operation, worker_id,
+           target_id, target_authority_key, target_generation, profile_hash, idempotency_key,
+           semantic_digest, outcome, expires_at)
+          VALUES (${orgB}, ${companyB}, ${jobB}, ${attemptB}, ${leaseB}, 'lease_ack', ${workerB},
+            ${targetB}, ${`organization:${orgB}`}, 1, ${"d".repeat(64)},
+            '30000000-0000-4000-8000-000000000119', ${"5".repeat(64)}, ${{ leaseId: leaseB }},
+            clock_timestamp() + interval '2 minutes')`;
+      })).rejects.toThrow();
+    });
   },
 );

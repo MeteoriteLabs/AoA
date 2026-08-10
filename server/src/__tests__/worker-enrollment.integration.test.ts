@@ -20,6 +20,7 @@ import {
   canonicalProviderConstraintProfileDigestInputV1,
   canonicalizeJsonV1,
   protocolErrorV1Schema,
+  type LeaseOfferV1,
   type ProviderConstraintProfileV1,
   type RegisteredTargetProfileV1,
 } from "@armyofagents/worker-protocol";
@@ -48,6 +49,7 @@ const WORKER_PLATFORM = "73000000-0000-4000-8000-000000000004";
 const WORKER_OWNER = "73000000-0000-4000-8000-000000000006";
 const OWNER_USER = "job-002-owner-user";
 const COMPANY_A = "76000000-0000-4000-8000-000000000001";
+const COMPANY_B = "76000000-0000-4000-8000-000000000002";
 const PASSWORD = "job-002-role-test";
 const NOW = new Date(Math.floor(Date.now() / 1_000) * 1_000);
 
@@ -216,7 +218,9 @@ beforeAll(async () => {
     await admin`INSERT INTO organizations (id, name, slug) VALUES
       (${ORG_A}, 'Enrollment A', 'worker-enrollment-a'), (${ORG_B}, 'Enrollment B', 'worker-enrollment-b')`;
     await admin`INSERT INTO companies (id, organization_id, name, issue_prefix)
-      VALUES (${COMPANY_A}, ${ORG_A}, 'Enrollment Placement Company', 'EPC')`;
+      VALUES
+        (${COMPANY_A}, ${ORG_A}, 'Enrollment Placement Company A', 'EPA'),
+        (${COMPANY_B}, ${ORG_B}, 'Enrollment Placement Company B', 'EPB')`;
     await admin`INSERT INTO "user" (id, name, email, email_verified, created_at, updated_at)
       VALUES (${OWNER_USER}, 'Owner', 'job-002-owner@example.invalid', true, now(), now())`;
     await admin`INSERT INTO organization_memberships
@@ -260,6 +264,11 @@ beforeEach(async () => {
   await admin.unsafe(`DROP TRIGGER IF EXISTS job002_hold_platform_heartbeat ON execution_targets`);
   await admin.unsafe(`DROP FUNCTION IF EXISTS job002_fail_insert()`);
   await admin.unsafe(`DROP FUNCTION IF EXISTS job002_hold_platform_heartbeat()`);
+  await admin`DELETE FROM worker_operation_receipts`;
+  await admin`DELETE FROM leases`;
+  await admin`DELETE FROM job_outbox`;
+  await admin`DELETE FROM job_attempts`;
+  await admin`DELETE FROM jobs`;
   await admin`DELETE FROM worker_proof_replays`;
   await admin`DELETE FROM worker_enrollment_codes`;
   await admin`DELETE FROM worker_enrollment_code_routes`;
@@ -1483,6 +1492,319 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         path: "/api/execution-targets/heartbeat",
         correlationId: heartbeatCorrelation,
       })).rejects.toMatchObject({ code: "target_revoked" });
+    });
+
+    it("carries real platform enrollment and physical heartbeat into logical poll and ACK liveness", async () => {
+      const { admin, appDb, operatorDb, mod } = guard();
+      expect(sessionModule, "worker-session-auth module is not implemented").not.toBeNull();
+      if (!ownerDb) throw new Error("owner DB unavailable");
+
+      const provider = placementProviderProfile();
+      const profile = placementRegisteredProfile({
+        targetId: TARGET_PLATFORM,
+        scope: "platform",
+        provider,
+      });
+      await executionTargetService.ratifyPlatformExecutionTargetPlacementProfile({
+        operatorDb,
+        executionTargetId: TARGET_PLATFORM,
+        registeredProfile: profile,
+        providerConstraintProfile: provider,
+      });
+
+      const service = mod.createWorkerEnrollmentService({
+        appDb,
+        operatorDb,
+        sessionSigningKey: "test-signing-key-at-least-32-bytes",
+        now: () => NOW,
+      });
+      const keys = generateKeyPairSync("ed25519");
+      const physicalBody = enrollmentBody(WORKER_PLATFORM, TARGET_PLATFORM);
+      const physicalCode = await service.issuePlatformCode({
+        executionTargetId: TARGET_PLATFORM,
+        createdByPrincipalKind: "operator",
+        createdByPrincipalId: "platform-liveness-operator",
+      });
+      const physical = await service.enroll({
+        code: physicalCode.code,
+        request: physicalBody,
+        ...deviceProof(physicalBody, keys.privateKey, keys.publicKey, "proof-platform-liveness-enroll"),
+        method: "POST",
+        path: "/api/worker-control/enroll",
+      });
+
+      const authenticator = sessionModule!.createWorkerSessionAuthenticator({
+        appDb,
+        operatorDb,
+        sessionSigningKey: "test-signing-key-at-least-32-bytes",
+        now: () => NOW,
+      });
+      const heartbeatBody = Buffer.from(JSON.stringify({ status: "active" }));
+      const heartbeatCorrelation = "74000000-0000-4000-8000-000000000601";
+      const physicalPrincipal = await authenticator.authenticate({
+        authorization: `Bearer ${physical.session}`,
+        rawBody: heartbeatBody,
+        proof: deviceProofFor(
+          heartbeatBody,
+          heartbeatCorrelation,
+          keys.privateKey,
+          keys.publicKey,
+          "proof-platform-liveness-heartbeat",
+          "/api/execution-targets/heartbeat",
+        ),
+        method: "POST",
+        path: "/api/execution-targets/heartbeat",
+        correlationId: heartbeatCorrelation,
+      });
+      await expect(sessionModule!.registerProofBoundHeartbeat({
+        appDb,
+        operatorDb,
+        principal: physicalPrincipal,
+        status: "active",
+        now: NOW,
+      })).resolves.toBe(true);
+
+      const logicalWorker = "73000000-0000-4000-8000-000000000007";
+      const logicalBody = {
+        ...enrollmentBody(logicalWorker, TARGET_PLATFORM),
+        idempotencyKey: "75000000-0000-4000-8000-000000000607",
+      };
+      const logicalCode = await service.issueTenantCode({
+        organizationId: ORG_A,
+        executionTargetId: TARGET_PLATFORM,
+        scope: "organization",
+        ownerUserId: null,
+        createdByPrincipalKind: "user",
+        createdByPrincipalId: OWNER_USER,
+      });
+      const logical = await service.enroll({
+        code: logicalCode.code,
+        request: logicalBody,
+        ...deviceProof(logicalBody, keys.privateKey, keys.publicKey, "proof-platform-logical-enroll"),
+        method: "POST",
+        path: "/api/worker-control/enroll",
+      });
+      const logicalWorkerB = "73000000-0000-4000-8000-000000000008";
+      const logicalBodyB = {
+        ...enrollmentBody(logicalWorkerB, TARGET_PLATFORM),
+        idempotencyKey: "75000000-0000-4000-8000-000000000608",
+      };
+      const logicalCodeB = await service.issueTenantCode({
+        organizationId: ORG_B,
+        executionTargetId: TARGET_PLATFORM,
+        scope: "organization",
+        ownerUserId: null,
+        createdByPrincipalKind: "user",
+        createdByPrincipalId: "founder-b",
+      });
+      const logicalB = await service.enroll({
+        code: logicalCodeB.code,
+        request: logicalBodyB,
+        ...deviceProof(logicalBodyB, keys.privateKey, keys.publicKey, "proof-platform-logical-b-enroll"),
+        method: "POST",
+        path: "/api/worker-control/enroll",
+      });
+      const initialLogical = await admin<{ id: string; last_seen_at: Date | null }[]>`
+        SELECT id, last_seen_at FROM workers WHERE id IN (${logicalWorker}, ${logicalWorkerB}) ORDER BY id`;
+      expect(initialLogical).toEqual([
+        { id: logicalWorker, last_seen_at: null },
+        { id: logicalWorkerB, last_seen_at: null },
+      ]);
+      await admin`UPDATE workers SET last_seen_at = ${new Date(NOW.getTime() - 60 * 60_000)}
+        WHERE id = ${logicalWorkerB}`;
+
+      const seedPlacedPlatformJob = async (input: {
+        ordinal: number;
+        organizationId: string;
+        companyId: string;
+        workerId: string;
+      }) => {
+        const suffix = input.ordinal.toString().padStart(12, "0");
+        const jobId = `77000000-0000-4000-8000-${suffix}`;
+        const attemptId = `78000000-0000-4000-8000-${suffix}`;
+        await admin`INSERT INTO jobs
+          (id, organization_id, company_id, workload_type, source_kind, source_identity,
+           source_intent, requester_principal_kind, requester_principal_id,
+           executor_principal_kind, executor_principal_id, input, input_hash, policy_snapshot,
+           policy_hash, requirements, placement_request, available_at, priority, status)
+          VALUES (${jobId}, ${input.organizationId}, ${input.companyId}, 'batch', 'one_shot', ${jobId},
+            ${{ kind: "one_shot", operationId: jobId, operationKind: "extraction" }},
+            'system', 'platform-liveness-test', 'worker', ${input.workerId},
+            ${{ command: "codex", args: ["exec", "--json"], stdinArtifactId: null, maxRuntimeSeconds: 600 }},
+            ${"8".repeat(64)}, ${{ policyId: "job-submission-default", version: 1 }}, ${"a".repeat(64)},
+            ${{ workloadType: "batch", requiredCapabilities: ["workload.batch"] }},
+            ${{ policyId: "job-submission-default", policyVersion: 1, requestedTarget: TARGET_PLATFORM }},
+            clock_timestamp(), 50, 'queued')`;
+        await admin`INSERT INTO job_attempts
+          (id, organization_id, company_id, job_id, attempt_number, status,
+           placement_disposition, placement_owner, placement_target_id, placement_target_class,
+           placement_target_scope, placement_target_generation, placement_profile_hash,
+           placement_provider_constraint_hash, placement_fallback_disposition, placement_reason_code,
+           placement_mode, placement_lease_eligible, placement_input_digest, placement_policy_digest,
+           placement_decided_at)
+          VALUES (${attemptId}, ${input.organizationId}, ${input.companyId}, ${jobId}, 1, 'pending',
+            'selected', 'managed_cloud', ${TARGET_PLATFORM}, 'managed_cloud', 'platform', 1,
+            ${createHash("sha256").update(canonicalizeJsonV1(profile)).digest("hex")},
+            ${provider.digest}, 'primary', 'target_selected', 'active', true,
+            ${"9".repeat(64)}, ${"9".repeat(64)}, clock_timestamp())`;
+        return { jobId, attemptId };
+      };
+      const first = await seedPlacedPlatformJob({
+        ordinal: 601,
+        organizationId: ORG_A,
+        companyId: COMPANY_A,
+        workerId: logicalWorker,
+      });
+      const firstB = await seedPlacedPlatformJob({
+        ordinal: 608,
+        organizationId: ORG_B,
+        companyId: COMPANY_B,
+        workerId: logicalWorkerB,
+      });
+
+      const httpApp = express();
+      httpApp.use(express.json({ verify: (req, _res, bytes) => {
+        (req as typeof req & { rawBody?: Buffer }).rawBody = Buffer.from(bytes);
+      } }));
+      httpApp.use("/api", workerControlRoutes({
+        db: ownerDb,
+        appDb,
+        operatorDb,
+        sessionSigningKey: "test-signing-key-at-least-32-bytes",
+        now: () => NOW,
+      }));
+      httpApp.use(errorHandler);
+
+      const proofHeaders = (proof: ReturnType<typeof deviceProofFor>) => ({
+        [WORKER_CONTROL_HEADERS.proofVersion]: proof.version,
+        [WORKER_CONTROL_HEADERS.publicKey]: proof.publicKey,
+        [WORKER_CONTROL_HEADERS.signature]: proof.signature,
+        [WORKER_CONTROL_HEADERS.issuedAt]: proof.issuedAt,
+        [WORKER_CONTROL_HEADERS.proofId]: proof.proofId,
+      });
+      const poll = {
+        protocolVersion: 1,
+        correlationId: "74000000-0000-4000-8000-000000000602",
+        issuedAt: NOW.toISOString(),
+        nonce: "platform-logical-poll-1",
+        audience: "worker_poll",
+        workerId: logicalWorker,
+        targetId: TARGET_PLATFORM,
+        deviceGeneration: 1,
+        capacity: logicalBody.hello.capacity,
+      };
+      const pollBytes = Buffer.from(JSON.stringify(poll));
+      const pollB = {
+        ...poll,
+        correlationId: "74000000-0000-4000-8000-000000000608",
+        nonce: "platform-logical-b-poll",
+        workerId: logicalWorkerB,
+        capacity: logicalBodyB.hello.capacity,
+      };
+      const pollBBytes = Buffer.from(JSON.stringify(pollB));
+      const pollBResponse = await request(httpApp)
+        .post("/api/worker-control/poll")
+        .set("authorization", `Bearer ${logicalB.session}`)
+        .set(proofHeaders(deviceProofFor(
+          pollBBytes,
+          pollB.correlationId,
+          keys.privateKey,
+          keys.publicKey,
+          "proof-platform-logical-b-poll",
+          "/api/worker-control/poll",
+        )))
+        .send(pollB);
+      expect(pollBResponse.status, JSON.stringify(pollBResponse.body)).toBe(200);
+      expect(pollBResponse.body).toMatchObject({ outcome: "offer" });
+      expect((pollBResponse.body.body as LeaseOfferV1).job.jobId).toBe(firstB.jobId);
+
+      const pollResponse = await request(httpApp)
+        .post("/api/worker-control/poll")
+        .set("authorization", `Bearer ${logical.session}`)
+        .set(proofHeaders(deviceProofFor(
+          pollBytes,
+          poll.correlationId,
+          keys.privateKey,
+          keys.publicKey,
+          "proof-platform-logical-poll",
+          "/api/worker-control/poll",
+        )))
+        .send(poll);
+      expect(pollResponse.status, JSON.stringify(pollResponse.body)).toBe(200);
+      expect(pollResponse.body).toMatchObject({ outcome: "offer" });
+      const offer = pollResponse.body.body as LeaseOfferV1;
+      expect(offer.job.jobId).toBe(first.jobId);
+
+      await admin`UPDATE workers SET last_seen_at = ${new Date(NOW.getTime() - 60 * 60_000)}
+        WHERE id = ${logicalWorker}`;
+      const ack = {
+        protocolVersion: 1,
+        correlationId: "74000000-0000-4000-8000-000000000603",
+        issuedAt: NOW.toISOString(),
+        nonce: "platform-logical-ack-1",
+        audience: "worker_run",
+        idempotencyKey: "79000000-0000-4000-8000-000000000603",
+        body: {
+          protocolVersion: 1,
+          workerId: logicalWorker,
+          jobId: offer.job.jobId,
+          attempt: offer.job.attempt,
+          leaseId: offer.leaseId,
+          fenceToken: offer.fenceToken,
+          ackedAt: NOW.toISOString(),
+          extensions: [],
+        },
+      };
+      const ackBytes = Buffer.from(JSON.stringify(ack));
+      const ackResponse = await request(httpApp)
+        .post(`/api/worker-control/leases/${offer.leaseId}/ack`)
+        .set("authorization", `Bearer ${logical.session}`)
+        .set(proofHeaders(deviceProofFor(
+          ackBytes,
+          ack.correlationId,
+          keys.privateKey,
+          keys.publicKey,
+          "proof-platform-logical-ack",
+          `/api/worker-control/leases/${offer.leaseId}/ack`,
+        )))
+        .send(ack);
+      expect(ackResponse.status, JSON.stringify(ackResponse.body)).toBe(200);
+      expect(ackResponse.body).toMatchObject({ outcome: "acknowledged", leaseId: offer.leaseId });
+      const [afterAck] = await admin<{ status: string; last_seen_at: Date | null }[]>`
+        SELECT status, last_seen_at FROM workers WHERE id = ${logicalWorker}`;
+      expect(afterAck).toMatchObject({ status: "enrolled" });
+      expect(afterAck?.last_seen_at).not.toBeNull();
+
+      await seedPlacedPlatformJob({
+        ordinal: 602,
+        organizationId: ORG_A,
+        companyId: COMPANY_A,
+        workerId: logicalWorker,
+      });
+      const staleAt = new Date(NOW.getTime() - 60 * 60_000);
+      await admin`UPDATE execution_targets SET last_seen_at = ${staleAt} WHERE id = ${TARGET_PLATFORM}`;
+      await admin`UPDATE workers SET last_seen_at = ${staleAt}
+        WHERE id = ${WORKER_PLATFORM} AND organization_id IS NULL`;
+      const stalePoll = {
+        ...poll,
+        correlationId: "74000000-0000-4000-8000-000000000604",
+        nonce: "platform-logical-poll-stale-physical",
+      };
+      const staleBytes = Buffer.from(JSON.stringify(stalePoll));
+      const staleResponse = await request(httpApp)
+        .post("/api/worker-control/poll")
+        .set("authorization", `Bearer ${logical.session}`)
+        .set(proofHeaders(deviceProofFor(
+          staleBytes,
+          stalePoll.correlationId,
+          keys.privateKey,
+          keys.publicKey,
+          "proof-platform-logical-stale-physical",
+          "/api/worker-control/poll",
+        )))
+        .send(stalePoll);
+      expect(staleResponse.status).toBe(409);
+      expect(staleResponse.body).toMatchObject({ code: "target_revoked", detail: {} });
     });
 
     it("keeps frozen E1 JSON unchanged at the HTTP boundary and returns the session only in a header", async () => {

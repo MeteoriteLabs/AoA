@@ -143,6 +143,15 @@ function pollRequest(workerId: string, targetId: string, nonce: string, batchSlo
   };
 }
 
+function pollRequestWithCapacity(
+  workerId: string,
+  targetId: string,
+  nonce: string,
+  capacity: PollRequestV1["capacity"],
+): PollRequestV1 {
+  return { ...pollRequest(workerId, targetId, nonce), capacity };
+}
+
 function ackRequest(
   offer: LeaseOfferV1,
   idempotencyKey = crypto.randomUUID(),
@@ -234,9 +243,56 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
       last_seen_at = clock_timestamp() WHERE id = ${OTHER_WORKER}`;
   }
 
+  async function configureMixedWorkloadAuthority(): Promise<{
+    workerProfileHash: string;
+    targetProfileHash: string;
+    providerHash: string;
+  }> {
+    const { admin } = guard();
+    const provider = providerProfile(2);
+    const profile = {
+      ...registeredProfile(provider),
+      capabilityCeiling: [
+        "workload.batch",
+        "workload.browser_session",
+        "sandbox.process_isolated",
+      ],
+    };
+    const hello = {
+      ...workerHello(WORKER, TARGET, 1),
+      reportedCapabilities: [
+        "workload.batch",
+        "workload.browser_session",
+        "sandbox.process_isolated",
+      ],
+      capacity: {
+        batchSlots: 1,
+        browserSessionSlots: 1,
+        serviceSlots: 0,
+        freeCpuMillis: 2_000,
+        freeMemoryMiB: 4_096,
+        freeDiskMiB: 8_192,
+      },
+    };
+    const workerProfileHash = sha256(JSON.stringify(hello));
+    const targetProfileHash = sha256(canonicalizeJsonV1(profile));
+    await admin`UPDATE execution_targets SET
+      registered_profile = ${profile},
+      registered_profile_hash = ${targetProfileHash},
+      provider_constraint_profile = ${provider},
+      status = 'active', device_generation = 1, last_seen_at = clock_timestamp()
+      WHERE id = ${TARGET}`;
+    await admin`UPDATE workers SET
+      profile_hash = ${workerProfileHash}, profile_snapshot = ${hello}, status = 'enrolled',
+      revoked_at = NULL, device_generation = 1, last_seen_at = clock_timestamp()
+      WHERE id = ${WORKER}`;
+    return { workerProfileHash, targetProfileHash, providerHash: provider.digest };
+  }
+
   async function seedPlacedJob(input: {
     ordinal: number;
     availableAt?: Date;
+    workloadType?: "batch" | "browser_session";
     placement?: Partial<{
       disposition: string;
       mode: string;
@@ -255,6 +311,21 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
     const outboxId = `a3300000-0000-4000-8000-${suffix}`;
     const provider = providerProfile();
     const profile = registeredProfile(provider);
+    const workloadType = input.workloadType ?? "batch";
+    const workload = workloadType === "browser_session"
+      ? {
+          engine: "chromium",
+          viewport: { width: 1280, height: 720 },
+          locale: "en-US",
+          timezone: "UTC",
+          recordTrace: false,
+          recordVideo: false,
+          maxSessionSeconds: 600,
+        }
+      : { command: "codex", args: ["exec", "--json"], stdinArtifactId: null, maxRuntimeSeconds: 600 };
+    const requiredCapabilities = workloadType === "browser_session"
+      ? ["workload.browser_session"]
+      : ["sandbox.process_isolated"];
     const placement = {
       disposition: "selected",
       mode: "active",
@@ -271,12 +342,12 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
        requester_principal_kind, requester_principal_id, executor_principal_kind, executor_principal_id,
        input, input_hash, policy_snapshot, policy_hash, requirements, placement_request,
        available_at, priority, status, created_at, updated_at)
-      VALUES (${jobId}, ${ORG}, ${COMPANY}, 'batch', 'one_shot', ${jobId},
-        ${{ kind: "one_shot", operationId: jobId, operationKind: "extraction" }},
-        'system', 'job-003-test', 'worker', ${WORKER},
-        ${{ command: "codex", args: ["exec", "--json"], stdinArtifactId: null, maxRuntimeSeconds: 600 }},
-        ${"5".repeat(64)}, ${{ policyId: "job-submission-default", version: 1 }}, ${POLICY_HASH},
-        ${{ workloadType: "batch", requiredCapabilities: ["sandbox.process_isolated"] }},
+       VALUES (${jobId}, ${ORG}, ${COMPANY}, ${workloadType}, 'one_shot', ${jobId},
+         ${{ kind: "one_shot", operationId: jobId, operationKind: "extraction" }},
+         'system', 'job-003-test', 'worker', ${WORKER},
+         ${workload},
+         ${"5".repeat(64)}, ${{ policyId: "job-submission-default", version: 1 }}, ${POLICY_HASH},
+         ${{ workloadType, requiredCapabilities }},
         ${{ policyId: "job-submission-default", policyVersion: 1, requestedTarget: TARGET }},
         ${availableAt}, 50, 'queued', ${availableAt}, ${availableAt})`;
     await admin`INSERT INTO job_attempts
@@ -456,6 +527,95 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
     expect(third.outcome).toBe("no_work");
   });
 
+  it("accounts live offers by workload class so a batch lease does not consume a browser slot", async () => {
+    const { app } = guard();
+    await resetRuntimeRows();
+    const authority = await configureMixedWorkloadAuthority();
+    const placement = { profileHash: authority.targetProfileHash, providerHash: authority.providerHash };
+    await seedPlacedJob({ ordinal: 20, workloadType: "batch", placement });
+    const browser = await seedPlacedJob({ ordinal: 21, workloadType: "browser_session", placement });
+    const service = createJobLeasingService({ appDb: app.db });
+    const mixedCapacity = {
+      batchSlots: 1,
+      browserSessionSlots: 1,
+      serviceSlots: 0,
+      freeCpuMillis: 2_000,
+      freeMemoryMiB: 4_096,
+      freeDiskMiB: 8_192,
+    };
+
+    const batchOffer = await service.poll({
+      auth: auth("mixed-batch", WORKER, TARGET, authority.workerProfileHash),
+      request: pollRequestWithCapacity(WORKER, TARGET, "mixed-batch", mixedCapacity),
+    });
+    expect(batchOffer.outcome).toBe("offer");
+    const browserOffer = await service.poll({
+      auth: auth("mixed-browser", WORKER, TARGET, authority.workerProfileHash),
+      request: pollRequestWithCapacity(WORKER, TARGET, "mixed-browser", mixedCapacity),
+    });
+    expect(browserOffer.outcome).toBe("offer");
+    if (browserOffer.outcome !== "offer") return;
+    expect(browserOffer.body.job.jobId).toBe(browser.jobId);
+    expect(browserOffer.body.job.workloadType).toBe("browser_session");
+  });
+
+  it("continues past zero-slot and full head candidates to later eligible work", async () => {
+    const { app } = guard();
+    await resetRuntimeRows();
+    const authority = await configureMixedWorkloadAuthority();
+    const placement = { profileHash: authority.targetProfileHash, providerHash: authority.providerHash };
+    await seedPlacedJob({ ordinal: 30, workloadType: "batch", placement });
+    await seedPlacedJob({ ordinal: 31, workloadType: "batch", placement });
+    const browser = await seedPlacedJob({ ordinal: 32, workloadType: "browser_session", placement });
+    const service = createJobLeasingService({ appDb: app.db });
+    const browserOnly = {
+      batchSlots: 0,
+      browserSessionSlots: 1,
+      serviceSlots: 0,
+      freeCpuMillis: 2_000,
+      freeMemoryMiB: 4_096,
+      freeDiskMiB: 8_192,
+    };
+    const result = await service.poll({
+      auth: auth("browser-no-hol", WORKER, TARGET, authority.workerProfileHash),
+      request: pollRequestWithCapacity(WORKER, TARGET, "browser-no-hol", browserOnly),
+    });
+    expect(result.outcome).toBe("offer");
+    if (result.outcome !== "offer") return;
+    expect(result.body.job.jobId).toBe(browser.jobId);
+  });
+
+  it("allows concurrent claims in independent workload classes under the explicit provider total", async () => {
+    const { app } = guard();
+    await resetRuntimeRows();
+    const authority = await configureMixedWorkloadAuthority();
+    const placement = { profileHash: authority.targetProfileHash, providerHash: authority.providerHash };
+    await seedPlacedJob({ ordinal: 40, workloadType: "batch", placement });
+    await seedPlacedJob({ ordinal: 41, workloadType: "browser_session", placement });
+    const service = createJobLeasingService({ appDb: app.db });
+    const baseCapacity = {
+      serviceSlots: 0,
+      freeCpuMillis: 2_000,
+      freeMemoryMiB: 4_096,
+      freeDiskMiB: 8_192,
+    };
+    const [batch, browser] = await Promise.all([
+      service.poll({
+        auth: auth("concurrent-batch-class", WORKER, TARGET, authority.workerProfileHash),
+        request: pollRequestWithCapacity(WORKER, TARGET, "concurrent-batch-class", {
+          ...baseCapacity, batchSlots: 1, browserSessionSlots: 0,
+        }),
+      }),
+      service.poll({
+        auth: auth("concurrent-browser-class", WORKER, TARGET, authority.workerProfileHash),
+        request: pollRequestWithCapacity(WORKER, TARGET, "concurrent-browser-class", {
+          ...baseCapacity, batchSlots: 0, browserSessionSlots: 1,
+        }),
+      }),
+    ]);
+    expect([batch, browser].filter((result) => result.outcome === "offer")).toHaveLength(2);
+  });
+
   it("fails closed for stale placement, target, worker, generation, and profile/provider authority", async () => {
     const { admin, app } = guard();
     const mutations: Array<{ name: string; mutate(jobId: string, attemptId: string): Promise<unknown> }> = [
@@ -576,6 +736,37 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
       request: ackRequest(offer, crypto.randomUUID()),
     })).rejects.toMatchObject({ code: "unauthorized" });
   }, 60_000);
+
+  it("never replays an exact expired ACK receipt hidden behind more than 100 older rows", async () => {
+    const { admin } = guard();
+    await resetRuntimeRows();
+    const { offer, service } = await offerPlacedJob({ ordinal: 305 });
+    const idempotencyKey = crypto.randomUUID();
+    const request = ackRequest(offer, idempotencyKey);
+    await expect(service.ack({ auth: auth("ack-expiry-first"), request }))
+      .resolves.toMatchObject({ outcome: "acknowledged" });
+
+    await admin`UPDATE worker_operation_receipts
+      SET created_at = clock_timestamp() - interval '3 hours',
+          expires_at = clock_timestamp() - interval '1 hour'
+      WHERE lease_id = ${offer.leaseId} AND idempotency_key = ${idempotencyKey}`;
+    await admin`INSERT INTO worker_operation_receipts
+      (organization_id, company_id, job_id, attempt_id, lease_id, operation, worker_id,
+       target_id, target_authority_key, target_generation, profile_hash, idempotency_key,
+       semantic_digest, outcome, expires_at, created_at)
+      SELECT organization_id, company_id, job_id, attempt_id, lease_id, operation, worker_id,
+        target_id, target_authority_key, target_generation, profile_hash,
+        md5('job003-expired-' || series::text)::uuid, semantic_digest, outcome,
+        clock_timestamp() - interval '2 hours', clock_timestamp() - interval '3 hours'
+      FROM worker_operation_receipts receipt
+      CROSS JOIN generate_series(1, 101) series
+      WHERE receipt.lease_id = ${offer.leaseId} AND receipt.idempotency_key = ${idempotencyKey}`;
+
+    await expect(service.ack({
+      auth: auth("ack-expiry-retry-fresh-proof"),
+      request: { ...request, correlationId: crypto.randomUUID(), nonce: "ack-expiry-retry" },
+    })).rejects.toMatchObject({ code: "attempt_terminal" });
+  });
 
   it("uses fresh DB time so before-deadline ACK succeeds and late or crossing ACK changes nothing", async () => {
     const { admin } = guard();

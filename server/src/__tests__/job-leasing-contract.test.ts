@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import {
   OPERATION_DESCRIPTORS,
   pollRequestV1Schema,
@@ -66,6 +66,7 @@ function signedPoll() {
       exp: Math.floor((now.getTime() + 10 * 60_000) / 1000),
     })}`,
     sessionKey,
+    deviceThumbprint,
     proof: {
       version: "1",
       publicKey: publicKeyHeader,
@@ -121,6 +122,32 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
     })).toThrow(WorkerOperationProofError);
   });
 
+  it("rejects the platform-scoped physical session before any tenant lookup", () => {
+    const signed = signedPoll();
+    const platformAuthorization = `Bearer ${createWorkerSessionToken(signed.sessionKey, {
+      aud: "device_session",
+      sub: signed.request.workerId,
+      organizationId: null,
+      targetId: signed.request.targetId,
+      generation: 3,
+      scope: "platform",
+      deviceThumbprint: signed.deviceThumbprint,
+      profileHash: "9".repeat(64),
+      iat: Math.floor(signed.now.getTime() / 1000),
+      exp: Math.floor((signed.now.getTime() + 10 * 60_000) / 1000),
+    })}`;
+    expect(() => verifyWorkerOperationProof({
+      sessionSigningKey: signed.sessionKey,
+      authorization: platformAuthorization,
+      rawBody: signed.rawBody,
+      proof: signed.proof,
+      method: "POST",
+      path: "/api/worker-control/poll",
+      correlationId: signed.request.correlationId,
+      now: signed.now,
+    })).toThrow(WorkerOperationProofError);
+  });
+
   it("uses only descriptor-allowed frozen poll errors with redacted detail", () => {
     const request = {
       body: { correlationId: randomUUID() },
@@ -146,5 +173,37 @@ describe("JOB-003 frozen worker-operation HTTP contract", () => {
     expect(flagBlock).toContain("workerSessionSigningKey");
     expect(flagBlock).toContain("owner fallback is forbidden");
     expect(flagBlock).not.toContain("appDb: db");
+  });
+
+  it("keeps the complete platform authority-writer inventory on the exclusive helper", () => {
+    const dbHelper = new URL("../../../packages/db/src/platform-target-authority-lock.ts", import.meta.url);
+    expect(existsSync(dbHelper), "platform-target lock helper must exist before writers can be guarded").toBe(true);
+    const repository = readFileSync(
+      new URL("../../../packages/db/src/repositories/tenant/worker-enrollment.ts", import.meta.url),
+      "utf8",
+    );
+    const enrollment = readFileSync(new URL("../services/worker-enrollment.ts", import.meta.url), "utf8");
+    const heartbeat = readFileSync(new URL("../middleware/worker-session-auth.ts", import.meta.url), "utf8");
+    const targets = readFileSync(new URL("../services/execution-targets.ts", import.meta.url), "utf8");
+
+    expect(repository).toContain("acquirePlatformTargetAuthorityExclusive");
+    expect(enrollment).toContain("acquirePlatformTargetAuthorityShared");
+    expect(enrollment).toContain("acquirePlatformTargetAuthorityExclusive");
+    expect(heartbeat).toContain("acquirePlatformTargetAuthorityExclusive");
+    expect(targets).toContain("acquirePlatformTargetAuthorityExclusive");
+    expect(heartbeat).toContain("heartbeatPlatformPhysicalLivenessOnly");
+    expect(heartbeat).toContain("transitionPlatformPhysicalStatus");
+    expect(targets).toContain("isNotNull(executionTargets.organizationId)");
+
+    for (const [label, source] of [
+      ["repository", repository],
+      ["enrollment", enrollment],
+      ["heartbeat", heartbeat],
+      ["targets", targets],
+    ] as const) {
+      expect(source, `${label} must not widen platform target RLS or grants`).not.toContain(
+        "execution_targets_tenant_enrollment_update",
+      );
+    }
   });
 });
