@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, exists, gt, gte, inArray, isNull, lt, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, exists, gt, gte, inArray, isNotNull, isNull, lt, lte, ne, or, sql } from "drizzle-orm";
 import type { Db } from "../../client.js";
 import {
   acquirePlatformTargetAuthorityShared,
@@ -120,6 +120,7 @@ export interface JobControlRepository {
   }): Promise<LeaseWorkerAuthority | null>;
   lockEligibleLeaseCandidates(input: {
     targetId: string;
+    attemptIds?: string[];
     limit?: number;
     after?: LeaseCandidateCursor;
   }): Promise<LeaseCandidate[]>;
@@ -203,7 +204,12 @@ export interface JobControlRepository {
     now: Date;
     staleBefore: Date;
     limit?: number;
-  }): Promise<Array<{ id: string; organizationId: string; attemptId: string }>>;
+  }): Promise<Array<{
+    id: string;
+    organizationId: string;
+    targetId: string;
+    attemptId: string;
+  }>>;
   deliverReadyOutbox(input: { claimToken: string; ids: string[]; now: Date }): Promise<number>;
 }
 
@@ -743,6 +749,7 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
 
     async lockEligibleLeaseCandidates(input) {
       const boundedLimit = Math.max(1, Math.min(64, Math.floor(input.limit ?? 32)));
+      if (input.attemptIds && input.attemptIds.length === 0) return [];
       const after = input.after
         ? or(
             gt(jobs.availableAt, input.after.availableAt),
@@ -776,6 +783,7 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
           eq(jobAttempts.placementMode, "active"),
           eq(jobAttempts.placementLeaseEligible, true),
           eq(jobAttempts.placementTargetId, input.targetId),
+          input.attemptIds ? inArray(jobAttempts.id, input.attemptIds) : undefined,
           eq(jobs.status, "queued"),
           lte(jobs.availableAt, sql`clock_timestamp()`),
           after,
@@ -1044,13 +1052,33 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         id: jobOutbox.id,
         organizationId: jobOutbox.organizationId,
         attemptId: jobOutbox.attemptId,
-      }).from(jobOutbox).where(and(
-        eq(jobOutbox.kind, "attempt_ready"),
-        or(eq(jobOutbox.status, "pending"), eq(jobOutbox.status, "retry")),
-        lte(jobOutbox.availableAt, input.now),
-      )).orderBy(asc(jobOutbox.availableAt), asc(jobOutbox.createdAt), asc(jobOutbox.id))
+        targetId: jobAttempts.placementTargetId,
+      }).from(jobOutbox)
+        .innerJoin(jobAttempts, and(
+          eq(jobAttempts.organizationId, jobOutbox.organizationId),
+          eq(jobAttempts.companyId, jobOutbox.companyId),
+          eq(jobAttempts.jobId, jobOutbox.jobId),
+          eq(jobAttempts.id, jobOutbox.attemptId),
+        ))
+        .innerJoin(jobs, and(
+          eq(jobs.organizationId, jobAttempts.organizationId),
+          eq(jobs.companyId, jobAttempts.companyId),
+          eq(jobs.id, jobAttempts.jobId),
+        ))
+        .where(and(
+          eq(jobOutbox.kind, "attempt_ready"),
+          or(eq(jobOutbox.status, "pending"), eq(jobOutbox.status, "retry")),
+          lte(jobOutbox.availableAt, input.now),
+          eq(jobAttempts.status, "pending"),
+          eq(jobAttempts.placementDisposition, "selected"),
+          eq(jobAttempts.placementMode, "active"),
+          eq(jobAttempts.placementLeaseEligible, true),
+          isNotNull(jobAttempts.placementTargetId),
+          eq(jobs.status, "queued"),
+          lte(jobs.availableAt, input.now),
+        )).orderBy(asc(jobOutbox.availableAt), asc(jobOutbox.createdAt), asc(jobOutbox.id))
         .limit(boundedLimit)
-        .for("update", { skipLocked: true });
+        .for("update", { of: [jobOutbox, jobAttempts], skipLocked: true });
       if (ready.length === 0) return [];
       const claimed = await tx.update(jobOutbox).set({
         status: "claimed",
@@ -1067,7 +1095,11 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         organizationId: jobOutbox.organizationId,
         attemptId: jobOutbox.attemptId,
       });
-      return claimed;
+      const targetByOutboxId = new Map(ready.map((row) => [row.id, row.targetId!]));
+      return claimed.map((row) => ({
+        ...row,
+        targetId: targetByOutboxId.get(row.id)!,
+      }));
     },
 
     async deliverReadyOutbox(input) {

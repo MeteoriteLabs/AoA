@@ -83,6 +83,7 @@ import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-
 import { tryRecoverOrphanPostgres } from "./postgres/embedded-orphan-recovery.js";
 import { assertTestSupportFlagSafe } from "./services/test-support-safety.js";
 import { createProcessShutdownHandler } from "./services/server-shutdown.js";
+import type { JobReadyScheduler } from "./services/job-ready-scheduler.js";
 import { DEFAULT_BACKUP_RETENTION } from "@armyofagents/shared";
 import { runChroniclerSweep, CHRONICLER_SWEEP_INTERVAL_MS } from "./services/internal-agent/aoa-agents/sweep-chronicler.js";
 import { ensureCrewAgents, ensureInfrastructureAgents, isCrewMarketplaceManaged } from "./services/internal-agent/aoa-agents/crew-seeding.js";
@@ -554,10 +555,11 @@ if (distributedExecutionDatabases) {
 }
 
 let jobControlRuntime: { stop(): Promise<void> } | null = null;
+let scheduler: JobReadyScheduler | undefined;
 if (config.distributedExecutionEnabled && distributedExecutionDatabases) {
   const { createJobReadyScheduler } = await import("./services/job-ready-scheduler.js");
   const { createJobOutboxWorker } = await import("./services/job-outbox-worker.js");
-  const scheduler = createJobReadyScheduler();
+  scheduler = createJobReadyScheduler();
   const listAdmittedOrganizationIds = async (): Promise<string[]> => {
     const rows = await distributedExecutionDatabases.appDb.select({ id: organizations.id })
       .from(organizations)
@@ -788,6 +790,7 @@ const app = await createApp(db as any, {
   distributedExecutionEnabled: config.distributedExecutionEnabled,
   tenantAppDb: distributedExecutionDatabases?.appDb,
   operatorDb: distributedExecutionDatabases?.operatorDb,
+  jobReadyScheduler: scheduler,
   workerSessionSigningKey: process.env.AOA_WORKER_SESSION_SIGNING_KEY,
 });
 const server = createServer(app as unknown as Parameters<typeof createServer>[0]);

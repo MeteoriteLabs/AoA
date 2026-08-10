@@ -31,6 +31,7 @@ import {
   type WorkerHelloV1,
 } from "@armyofagents/worker-protocol";
 import { runInTenant } from "../db/tenant-context.js";
+import type { JobReadyScheduler } from "./job-ready-scheduler.js";
 import {
   normalizePlacementRegistryTarget,
   type NormalizedPlacementRegistryTarget,
@@ -362,6 +363,7 @@ function buildJobEnvelope(input: {
 export function createJobLeasingService(input: {
   appDb: Db;
   operatorDb?: Db;
+  scheduler?: JobReadyScheduler;
   ackTimeoutMs?: number;
   leaseDurationMs?: number;
   maxHeartbeatAgeMs?: number;
@@ -471,35 +473,28 @@ export function createJobLeasingService(input: {
           targetGeneration: pollInput.auth.targetGeneration,
         })) throw new JobLeasingError("target_revoked");
         const providerSlots = target.providerConstraintProfile.maxConcurrentOperations;
-        let after: { availableAt: Date; priority: number; createdAt: Date; jobId: string } | undefined;
-        let scanned = 0;
-        while (scanned < 256) {
-          const candidates = await repos.jobControl.lockEligibleLeaseCandidates({
-            targetId: target.targetId,
-            limit: Math.min(32, 256 - scanned),
-            after,
-          });
-          if (candidates.length === 0) break;
-          scanned += candidates.length;
-          for (const candidate of candidates) {
-          if (!candidateMatchesPlacement(candidate.attempt, authority, target)) continue;
+        type LeaseCandidate = Awaited<ReturnType<
+          TenantRepositories["jobControl"]["lockEligibleLeaseCandidates"]
+        >>[number];
+        const tryOffer = async (candidate: LeaseCandidate): Promise<PollResponseV1 | null> => {
+          if (!candidateMatchesPlacement(candidate.attempt, authority, target)) return null;
           const normalized = normalizedRequirements(candidate.job, target);
-          if (!normalized) continue;
+          if (!normalized) return null;
           const workloadLimit = workloadSlots(effectiveCapacity, candidate.job.workloadType);
-          if (workloadLimit < 1) continue;
+          if (workloadLimit < 1) return null;
           const liveLeases = await repos.jobControl.countLiveWorkerLeases({
             workerId: pollInput.auth.workerId,
             targetId: pollInput.auth.targetId,
             workloadType: candidate.job.workloadType,
           });
-          if (liveLeases.total >= providerSlots || liveLeases.workload >= workloadLimit) continue;
-          if (!resourceCapacityFits(effectiveCapacity, normalized.providerDemand)) continue;
+          if (liveLeases.total >= providerSlots || liveLeases.workload >= workloadLimit) return null;
+          if (!resourceCapacityFits(effectiveCapacity, normalized.providerDemand)) return null;
           if (!workerSatisfiesRequirements(
             target.registeredProfile,
             target.providerConstraintProfile,
             effectiveHello,
             normalized.requirements,
-          )) continue;
+          )) return null;
 
           const ackDeadline = new Date(authorityNow.getTime() + ackTimeoutMs);
           const expiresAt = new Date(authorityNow.getTime() + leaseDurationMs);
@@ -512,7 +507,7 @@ export function createJobLeasingService(input: {
             databaseNow: authorityNow,
             leaseExpiresAt: expiresAt,
           });
-          if (!job) continue;
+          if (!job) return null;
           const fence = randomBytes(32).toString("base64url");
           const lease = await repos.jobControl.offerLease({
             attemptId: candidate.attempt.id,
@@ -531,7 +526,7 @@ export function createJobLeasingService(input: {
             expiresAt,
             createdAt: authorityNow,
           });
-          if (!lease) continue;
+          if (!lease) return null;
           const offer = leaseOfferV1Schema.parse({
             protocolVersion: 1,
             workerId: pollInput.auth.workerId,
@@ -549,6 +544,42 @@ export function createJobLeasingService(input: {
             outcome: "offer",
             body: offer,
           });
+        };
+
+        // Hints are identifier-only preference, never authority. Consume them
+        // only after session, tenant, worker, target and platform guards pass;
+        // PostgreSQL then locks and rechecks the exact attempts. A lost, stale,
+        // duplicate or process-restart hint always falls through to ordered pull.
+        const hintedAttemptIds = input.scheduler?.take(
+          pollInput.auth.organizationId,
+          pollInput.auth.targetId,
+          32,
+        ) ?? [];
+        if (hintedAttemptIds.length > 0) {
+          const hintedCandidates = await repos.jobControl.lockEligibleLeaseCandidates({
+            targetId: target.targetId,
+            attemptIds: hintedAttemptIds,
+            limit: hintedAttemptIds.length,
+          });
+          for (const candidate of hintedCandidates) {
+            const response = await tryOffer(candidate);
+            if (response) return response;
+          }
+        }
+
+        let after: { availableAt: Date; priority: number; createdAt: Date; jobId: string } | undefined;
+        let scanned = 0;
+        while (scanned < 256) {
+          const candidates = await repos.jobControl.lockEligibleLeaseCandidates({
+            targetId: target.targetId,
+            limit: Math.min(32, 256 - scanned),
+            after,
+          });
+          if (candidates.length === 0) break;
+          scanned += candidates.length;
+          for (const candidate of candidates) {
+            const response = await tryOffer(candidate);
+            if (response) return response;
           }
           const last = candidates[candidates.length - 1]!;
           after = {

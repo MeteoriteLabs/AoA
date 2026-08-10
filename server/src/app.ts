@@ -166,6 +166,7 @@ import {
 import { createHostClientHandlers } from "@armyofagents/plugin-sdk";
 import { resolveAoaInstanceId } from "./home-paths.js";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
+import type { JobReadyScheduler } from "./services/job-ready-scheduler.js";
 
 // Host version reported to plugin workers during initialize. Read from
 // server package.json at import time; falls back to "0.0.0" if unreadable.
@@ -215,6 +216,7 @@ export async function createApp(
     distributedExecutionEnabled?: boolean;
     tenantAppDb?: Db;
     operatorDb?: Db;
+    jobReadyScheduler?: JobReadyScheduler;
     workerSessionSigningKey?: string;
   }
 ) {
@@ -395,6 +397,7 @@ export async function createApp(
       db,
       appDb: opts.tenantAppDb,
       operatorDb: opts.operatorDb,
+      jobReadyScheduler: opts.jobReadyScheduler,
       sessionSigningKey: opts.workerSessionSigningKey,
     }));
   }

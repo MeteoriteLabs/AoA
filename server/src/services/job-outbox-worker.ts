@@ -16,7 +16,7 @@ export function createJobOutboxWorker(input: {
   const maxRows = Math.max(1, Math.min(128, input.maxRowsPerShard ?? 32));
   const visibilityTimeoutMs = Math.max(1, input.visibilityTimeoutMs ?? 30_000);
   const publish = input.publishHint ?? (async (hint: JobReadyHint) => {
-    input.scheduler.hint(hint);
+    if (!input.scheduler.hint(hint)) throw new Error("job_ready_scheduler_full");
   });
   let cursor: string | null = null;
 
@@ -48,7 +48,11 @@ export function createJobOutboxWorker(input: {
         // durable claim for visibility-timeout replay; the hint itself carries
         // no job data and can never authorize a lease.
         for (const row of claimed) {
-          await publish({ organizationId: row.organizationId, attemptId: row.attemptId });
+          await publish({
+            organizationId: row.organizationId,
+            targetId: row.targetId,
+            attemptId: row.attemptId,
+          });
         }
         deliveredCount += await runInTenant(input.appDb, organizationId, async (repos) => {
           const deliveredAt = await repos.jobControl.currentDatabaseTime();

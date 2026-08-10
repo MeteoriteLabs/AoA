@@ -18,7 +18,7 @@ import {
   listExecutionTargets,
   registerWorkerHeartbeat,
   revokeExecutionTargetWorkerToken,
-  resolveWorkerTargetId,
+  resolveWorkerHeartbeatAuthority,
   ratifyPlatformExecutionTargetPlacementProfile,
   ratifyTenantExecutionTargetPlacementProfile,
   rotateExecutionTargetWorkerToken,
@@ -72,10 +72,13 @@ function requireWorkerHeartbeatAuthority(db: Db, workerSession?: {
         next(unauthorized());
         return;
       }
-      const targetId = await resolveWorkerTargetId(db, token);
-      if (targetId) {
-        (req as Request & { workerHeartbeatAuthority?: { kind: "legacy"; targetId: string } })
-          .workerHeartbeatAuthority = { kind: "legacy", targetId };
+      const legacyAuthority = await resolveWorkerHeartbeatAuthority(db, token);
+      if (legacyAuthority) {
+        (req as Request & {
+          workerHeartbeatAuthority?: {
+            kind: "legacy"; targetId: string; organizationId: string;
+          };
+        }).workerHeartbeatAuthority = { kind: "legacy", ...legacyAuthority };
         next();
         return;
       }
@@ -321,12 +324,13 @@ export function executionTargetRoutes(opts: {
       const input = req.body as WorkerExecutionTargetHeartbeatInput;
       const authority = (req as Request & {
         workerHeartbeatAuthority?:
-          | { kind: "legacy"; targetId: string }
+          | { kind: "legacy"; targetId: string; organizationId: string }
           | { kind: "session"; principal: VerifiedTargetPrincipal };
       }).workerHeartbeatAuthority!;
       const updated = authority.kind === "legacy"
         ? (await registerWorkerHeartbeat(opts.db, {
             targetId: authority.targetId,
+            organizationId: authority.organizationId,
             status: input.status,
             capabilities: input.capabilities,
           })).updated

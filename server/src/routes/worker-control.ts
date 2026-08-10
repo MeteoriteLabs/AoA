@@ -28,6 +28,7 @@ import {
   WorkerOperationProofError,
 } from "../middleware/worker-operation-proof.js";
 import { createJobLeasingService, JobLeasingError } from "../services/job-leasing.js";
+import type { JobReadyScheduler } from "../services/job-ready-scheduler.js";
 
 const uuid = z.string().uuid();
 
@@ -47,6 +48,7 @@ export function workerControlRoutes(opts: {
   db: Db;
   appDb: Db;
   operatorDb: Db;
+  jobReadyScheduler?: JobReadyScheduler;
   sessionSigningKey: string;
   now?: () => Date;
 }) {
@@ -58,7 +60,11 @@ export function workerControlRoutes(opts: {
     sessionSigningKey: opts.sessionSigningKey,
     now: opts.now,
   });
-  const leasing = createJobLeasingService({ appDb: opts.appDb, operatorDb: opts.operatorDb });
+  const leasing = createJobLeasingService({
+    appDb: opts.appDb,
+    operatorDb: opts.operatorDb,
+    scheduler: opts.jobReadyScheduler,
+  });
 
   router.post(
     "/organizations/:organizationId/execution-targets/:targetId/enrollment-codes",

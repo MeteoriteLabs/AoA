@@ -25,19 +25,38 @@ export function createWorkerToken(): string {
 export function hashWorkerToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
+export interface LegacyWorkerHeartbeatAuthority {
+  targetId: string;
+  organizationId: string;
+}
+
 export async function resolveWorkerTargetId(db: Db, token: string): Promise<string | null> {
+  return (await resolveWorkerHeartbeatAuthority(db, token))?.targetId ?? null;
+}
+
+export async function resolveWorkerHeartbeatAuthority(
+  db: Db,
+  token: string,
+): Promise<LegacyWorkerHeartbeatAuthority | null> {
   const trimmed = token.trim();
   if (!trimmed) return null;
   const rows = await db
-    .select({ id: executionTargets.id })
+    .select({
+      targetId: executionTargets.id,
+      organizationId: executionTargets.organizationId,
+    })
     .from(executionTargets)
     .where(
       and(
         eq(executionTargets.workerTokenHash, hashWorkerToken(trimmed)),
         ne(executionTargets.status, "disabled"),
+        isNotNull(executionTargets.organizationId),
       ),
     );
-  return rows[0]?.id ?? null;
+  const row = rows[0];
+  return row?.organizationId
+    ? { targetId: row.targetId, organizationId: row.organizationId }
+    : null;
 }
 export function stripWorkerSecret<T extends { workerTokenHash?: unknown }>(row: T): Omit<T, "workerTokenHash"> {
   const { workerTokenHash: _omit, ...rest } = row;
@@ -239,7 +258,12 @@ export async function ensureControlPlaneExecutionTarget(db: Db): Promise<void> {
 // deactivated. (The resolver already excludes disabled rows from routing.)
 export async function registerWorkerHeartbeat(
   db: Db,
-  input: { targetId: string; status?: "active" | "draining" | "offline"; capabilities?: Record<string, unknown> },
+  input: {
+    targetId: string;
+    organizationId?: string;
+    status?: "active" | "draining" | "offline";
+    capabilities?: Record<string, unknown>;
+  },
 ): Promise<{ updated: number }> {
   const rows = await db
     .update(executionTargets)
@@ -249,7 +273,13 @@ export async function registerWorkerHeartbeat(
       ...(input.capabilities ? { capabilities: input.capabilities } : {}),
       updatedAt: new Date(),
     })
-    .where(and(eq(executionTargets.id, input.targetId), ne(executionTargets.status, "disabled")))
+    .where(and(
+      eq(executionTargets.id, input.targetId),
+      input.organizationId
+        ? eq(executionTargets.organizationId, input.organizationId)
+        : isNotNull(executionTargets.organizationId),
+      ne(executionTargets.status, "disabled"),
+    ))
     .returning({ id: executionTargets.id });
   return { updated: rows.length };
 }
