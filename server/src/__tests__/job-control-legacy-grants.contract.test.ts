@@ -3,6 +3,7 @@ import {
   APP_MCP_API_KEY_COLUMN_GRANTS,
   JOB_CONTROL_LEGACY_GRANTS,
   JOB_CONTROL_NEW_PATH_GRANTS,
+  JOB_LEASING_NEW_PATH_GRANTS,
 } from "../db/job-control-legacy-grants.js";
 import * as grants from "../db/job-control-legacy-grants.js";
 import { readFileSync } from "node:fs";
@@ -50,5 +51,23 @@ describe("JOB-001 bounded aoa_app authority", () => {
     expect(JOB_CONTROL_LEGACY_GRANTS).not.toHaveProperty("execution_targets");
     expect(JOB_CONTROL_LEGACY_GRANTS).not.toHaveProperty("worker_sessions");
     expect(JOB_CONTROL_LEGACY_GRANTS).not.toHaveProperty("worker_enrollment_codes");
+  });
+});
+
+describe("JOB-003 bounded aoa_app authority", () => {
+  it("keeps receipt DML in a versioned leasing grant delta", () => {
+    expect(JOB_CONTROL_NEW_PATH_GRANTS).not.toHaveProperty("worker_operation_receipts");
+    expect(JOB_LEASING_NEW_PATH_GRANTS).toEqual({
+      worker_operation_receipts: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+    });
+
+    const migration = readFileSync(
+      fileURLToPath(new URL("../../../packages/db/src/migrations/0228_job_leasing_rls.sql", import.meta.url)),
+      "utf8",
+    );
+    expect(migration).toContain(
+      'GRANT SELECT, INSERT, UPDATE, DELETE ON "worker_operation_receipts" TO "aoa_app"',
+    );
+    expect(migration).toContain('ALTER TABLE "worker_operation_receipts" FORCE ROW LEVEL SECURITY');
   });
 });
