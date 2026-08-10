@@ -326,9 +326,9 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       // (a) two active leases on the same attempt → second rejected by the index.
       const jobId1 = await seedJob(orgA, companyA);
       const attempt1 = await seedAttempt(orgA, companyA, jobId1);
-      await client`INSERT INTO leases (organization_id, attempt_id, status, fence) VALUES (${orgA}, ${attempt1}, 'active', 'live-1')`;
+      await client`INSERT INTO leases (organization_id, attempt_id, status, fence, activated_at) VALUES (${orgA}, ${attempt1}, 'active', 'live-1', now())`;
       const dupErr = await captureReject(() =>
-        client`INSERT INTO leases (organization_id, attempt_id, status, fence) VALUES (${orgA}, ${attempt1}, 'active', 'live-2')`,
+        client`INSERT INTO leases (organization_id, attempt_id, status, fence, activated_at) VALUES (${orgA}, ${attempt1}, 'active', 'live-2', now())`,
       );
       expect(dupErr.code).toBe("23505"); // unique_violation
       expect(dupErr.constraint_name).toBe("leases_active_per_attempt_idx");
@@ -339,7 +339,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       const attempt2 = await seedAttempt(orgA, companyA, jobId2);
       await client`INSERT INTO leases (organization_id, attempt_id, status, released_at, fence) VALUES (${orgA}, ${attempt2}, 'released', now(), 'done-1')`;
       const ok = await client<{ id: string }[]>`
-        INSERT INTO leases (organization_id, attempt_id, status, fence) VALUES (${orgA}, ${attempt2}, 'active', 'fresh-active')
+        INSERT INTO leases (organization_id, attempt_id, status, fence, activated_at) VALUES (${orgA}, ${attempt2}, 'active', 'fresh-active', now())
         RETURNING id`;
       expect(ok[0]!.id).not.toBe("");
     });
