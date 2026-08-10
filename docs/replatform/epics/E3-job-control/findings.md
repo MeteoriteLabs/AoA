@@ -497,3 +497,53 @@ housekeeping using database time; and (4) make the 0226-to-0227 upgrade compatib
 C14-permitted idempotent data correction or narrowly proven legacy branch. Add non-vacuous
 cross-tenant receipt RLS evidence before certification. Frozen E1, default-off behavior, and
 the JOB-003 scope boundary must remain unchanged.
+
+## E3-F018 - Platform-physical ACK has no approved durable tenant-shard authority
+
+**Date:** 2026-08-10
+**Status:** `blocked_pending_operator_amendment`
+**Severity:** P1 STOP - H-01/H-02 tenant routing authority / frozen transport compatibility
+**Affected tickets:** JOB-003 and later platform-session lease operations
+
+**Finding:** JOB-003 review requires the platform-worker scheduler and outbox path to be
+composed, but the approved single platform-physical session cannot durably route an ACK into
+the mandatory tenant transaction. The frozen strict Lease ACK v1 body contains worker, job,
+attempt, lease, fence, and timestamp facts but no Organization identifier; the current ACK URL
+is lease-only. A platform-scoped worker session is structurally bound to
+`organizationId: null`. No durable lease-to-Organization locator exists, and Decision #123 /
+E3-F002 deliberately deny `aoa_operator` access to jobs, attempts, leases, outbox rows, and
+operation receipts. An in-memory offer map is not restart-safe, a bounded tenant scan can miss
+the ACK before its deadline, an unbounded scan creates a tenant oracle, and widening operator
+lease access violates H-01. The existing Organization-scoped logical worker sessions on a
+shared platform target are routable because their authenticated session carries the tenant,
+but that is different from the plan's single platform-session scheduler prose.
+
+**Independent review:** A distinct reviewer confirmed the STOP against the frozen E1 schemas,
+current proof middleware, routes, grants, migrations, and call graph. Directly adding an
+Organization field to the strict v1 JSON is incompatible. An unsigned header or query value
+would not be authoritative; a signed/versioned path could only be a routing hint and still
+does not by itself solve the platform-physical-worker to tenant-logical-worker binding.
+
+**Recommendation:** Amend JOB-003 so tenant job poll/offer/ACK uses the existing
+Organization-scoped logical session even when its physical target is platform-scoped. Keep
+the platform-scoped session limited to physical registry and lifecycle control. This preserves
+the frozen wire schema, makes the authenticated Organization select `runInTenant`, retains the
+tenant logical worker identity used by lease foreign keys, and adds no operator job metadata.
+The flag-on scheduler can still discover admitted Organization shards fairly and durably, but
+must issue tenant work only through the corresponding Organization-scoped session.
+
+If one platform-physical session must serve many tenants, an explicit architecture amendment
+is required instead: a dedicated tenant-written locator containing only a domain-separated
+hash of the opaque lease ID, candidate Organization, and expiry, inserted atomically with the
+offer; FORCE RLS; own-Organization `aoa_app` DML; exact-lookup-only operator authority; no raw
+lease, fence, job, or payload; and complete tuple/fence/deadline revalidation inside the
+selected `runInTenant` transaction. That option must also define physical-to-logical worker
+binding, revocation linearization, uniform missing/foreign behavior, retention, cleanup, and
+exact startup-grant audits. It has residual operator-visible activity metadata and is therefore
+not the preferred option.
+
+**Disposition:** No fix-round RED or production change was started after this contradiction
+was found. JOB-003 remains `needs_changes`; JOB-010 and later execution remain paused. The
+controller may resume only after operator approval of the recommended Organization-scoped
+session amendment or a separately approved durable-locator amendment, followed by an updated
+implementation plan and fresh TDD/review cycle.
