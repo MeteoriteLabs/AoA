@@ -1,7 +1,10 @@
 import { assertSafeRoleName } from "./rls-bootstrap.js";
 import {
+  APP_MCP_API_KEY_COLUMN_GRANTS,
   JOB_CONTROL_LEGACY_GRANTS,
   JOB_CONTROL_NEW_PATH_GRANTS,
+  JOB_SUBMISSION_LEGACY_GRANTS,
+  JOB_SUBMISSION_NEW_PATH_GRANTS,
   OPERATOR_METADATA_COLUMN_GRANTS,
   type TablePrivilege,
 } from "./job-control-legacy-grants.js";
@@ -413,4 +416,46 @@ export function buildServingRoleHardeningMigrationSql(): string {
       .join(`\n${STATEMENT_BREAKPOINT}\n`),
   );
   return `${header}\n${annotatedStatements.join(`\n${STATEMENT_BREAKPOINT}\n`)}`;
+}
+
+/**
+ * JOB-001's additive serving-role delta. Its inputs are deliberately separate
+ * from the immutable 0213/0214 grant sets so rebuilding applied prerequisites
+ * remains byte-identical and cannot reference the later 0216 outbox table.
+ */
+export function buildJobControlSubmissionRlsMigrationSql(): string {
+  const header = [
+    "-- JOB-001 Decision #122 custom security DDL. drizzle-kit cannot express roles,",
+    "-- operation grants, FORCE RLS, or policies. Every statement is naturally",
+    "-- idempotent or guarded/drop-before-create per C14.",
+  ].join("\n");
+  const outboxPrivileges = JOB_SUBMISSION_NEW_PATH_GRANTS.job_outbox;
+  const membershipPrivileges = JOB_SUBMISSION_LEGACY_GRANTS.organization_memberships;
+  const statements = [
+    "-- C14 hand-authored security DDL: guarded role creation.\n" +
+      createNonOwnerRoleSql(TENANT_APP_ROLE),
+    "-- C14 hand-authored security DDL: role posture is a natural idempotent ALTER.\n" +
+      `ALTER ROLE "${TENANT_APP_ROLE}" NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;`,
+    "-- C14 hand-authored security DDL: remove ambient public authority first.\n" +
+      'REVOKE ALL ON "job_outbox" FROM PUBLIC;',
+    "-- C14 hand-authored security DDL: exact new-path outbox operations.\n" +
+      grantTablePrivilegesSql(TENANT_APP_ROLE, "job_outbox", outboxPrivileges),
+    "-- C14 hand-authored security DDL: admission edge is read-only.\n" +
+      grantTablePrivilegesSql(TENANT_APP_ROLE, "organization_memberships", membershipPrivileges),
+    "-- C14 hand-authored security DDL: remove any ambient whole-table MCP authority.\n" +
+      `REVOKE ALL ON "mcp_api_keys" FROM "${TENANT_APP_ROLE}";`,
+    "-- C14 hand-authored security DDL: authenticated MCP revalidation sees identifiers/status only, never key hashes.\n" +
+      grantColumnPrivilegesSql(TENANT_APP_ROLE, "mcp_api_keys", "SELECT", APP_MCP_API_KEY_COLUMN_GRANTS),
+    "-- C14 hand-authored security DDL: natural idempotent RLS enablement.\n" +
+      `ALTER TABLE "job_outbox" ENABLE ROW LEVEL SECURITY;`,
+    "-- C14 hand-authored security DDL: defense-in-depth against an owner mistake.\n" +
+      `ALTER TABLE "job_outbox" FORCE ROW LEVEL SECURITY;`,
+    "-- C14 hand-authored security DDL: drop-before-create policy replay guard.\n" +
+      `DROP POLICY IF EXISTS "job_outbox_tenant_isolation" ON "job_outbox";`,
+    "-- C14 hand-authored security DDL: tenant GUC gates reads and writes.\n" +
+      `CREATE POLICY "job_outbox_tenant_isolation" ON "job_outbox" TO "${TENANT_APP_ROLE}"\n` +
+      `  USING (organization_id = current_setting('${TENANT_GUC}', true)::uuid)\n` +
+      `  WITH CHECK (organization_id = current_setting('${TENANT_GUC}', true)::uuid);`,
+  ];
+  return `${header}\n${statements.join(`\n${STATEMENT_BREAKPOINT}\n`)}`;
 }

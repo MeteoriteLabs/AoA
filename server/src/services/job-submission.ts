@@ -15,8 +15,14 @@ import {
 import { attemptReadyOutbox } from "./job-outbox.js";
 
 export interface AuthenticatedJobPrincipal {
-  kind: "user" | "agent" | "mcp" | "commander" | "local_board";
+  kind: "user" | "agent" | "mcp" | "commander" | "local_board" | "system";
   id: string;
+  role?: string;
+  commanderClaims?: {
+    userId: string;
+    conversationId: string;
+    turnId: string;
+  };
 }
 
 export interface SubmitJobRequest {
@@ -80,6 +86,15 @@ function denial(): TenantAdmissionDeniedError {
   return new TenantAdmissionDeniedError();
 }
 
+const SOURCE_REQUESTER_KINDS = Object.freeze({
+  task_run: ["founder", "team_lead", "team_member", "agent"],
+  commander_turn: ["founder", "team_lead", "team_member", "commander"],
+  crew_run: ["founder", "team_lead", "team_member", "agent"],
+  one_shot: ["agent", "system", "commander"],
+  browser_request: ["founder", "team_lead", "team_member", "agent"],
+  service_reconcile: ["system"],
+} satisfies Record<SubmitJobSource["kind"], readonly string[]>);
+
 export function jobSubmissionService(appDb: Db) {
   return {
     async submit(input: SubmitJobRequest): Promise<SubmitJobResponse> {
@@ -117,21 +132,73 @@ export function jobSubmissionService(appDb: Db) {
           companyId: input.companyId,
           principalKind: input.principal.kind,
           principalId: input.principal.id,
+          principalRole: input.principal.role,
         });
-        if (!admission.organizationExists || !admission.companyInOrganization || !admission.principalAuthorized) {
+        if (
+          !admission.organizationExists ||
+          !admission.companyInOrganization ||
+          !admission.principalAuthorized ||
+          !admission.requester ||
+          !SOURCE_REQUESTER_KINDS[input.command.source.kind].includes(admission.requester.kind)
+        ) {
           throw denial();
         }
-        if (input.command.source.kind === "task_run") {
+        const source = input.command.source;
+        if (source.kind === "task_run") {
           const admitted = await repos.jobControl.taskSourceIsAdmitted({
             companyId: input.companyId,
-            runId: input.command.source.runId,
-            issueId: input.command.source.issueId,
-            assigneeAgentId: input.command.source.assigneeAgentId,
+            runId: source.runId,
+            issueId: source.issueId,
+            assigneeAgentId: source.assigneeAgentId,
           });
           if (!admitted) throw denial();
-          if (input.principal.kind === "agent" && input.principal.id !== input.command.source.assigneeAgentId) {
+          if (input.principal.kind === "agent" && input.principal.id !== source.assigneeAgentId) {
             throw denial();
           }
+        } else if (source.kind === "commander_turn") {
+          const claims = input.principal.commanderClaims;
+          if (
+            input.principal.kind === "commander" &&
+            (!claims ||
+              claims.userId !== input.principal.id ||
+              claims.conversationId !== source.conversationId ||
+              claims.turnId !== source.internalAgentRunId)
+          ) {
+            throw denial();
+          }
+          const admitted = await repos.jobControl.commanderSourceIsAdmitted({
+            companyId: input.companyId,
+            runId: source.internalAgentRunId,
+            conversationId: source.conversationId,
+            userId: admission.requester.id,
+          });
+          if (!admitted) throw denial();
+        } else if (source.kind === "crew_run") {
+          const admitted = await repos.jobControl.internalRunSourceIsAdmitted({
+            companyId: input.companyId,
+            runId: source.crewRunId,
+            requesterKind: admission.requester.kind,
+            requesterId: admission.requester.id,
+            triggerSource: "crew_dispatch",
+          });
+          if (!admitted) throw denial();
+        } else if (source.kind === "browser_request") {
+          const admitted = await repos.jobControl.internalRunSourceIsAdmitted({
+            companyId: input.companyId,
+            runId: source.browserRequestId,
+            requesterKind: admission.requester.kind,
+            requesterId: admission.requester.id,
+            triggerSource: "browser_request",
+          });
+          if (!admitted) throw denial();
+        } else if (source.kind === "service_reconcile") {
+          const admitted = await repos.jobControl.serviceSourceIsAdmitted({
+            organizationId: input.organizationId,
+            companyId: input.companyId,
+            serviceId: source.serviceId,
+            generation: source.generation,
+          });
+          if (!admitted) throw denial();
         }
 
         const now = new Date();
@@ -152,8 +219,8 @@ export function jobSubmissionService(appDb: Db) {
           sourceKind: input.command.source.kind,
           sourceIdentity: sourceId,
           sourceIntent: input.command.source,
-          requesterPrincipalKind: input.principal.kind,
-          requesterPrincipalId: input.principal.id,
+          requesterPrincipalKind: admission.requester.kind,
+          requesterPrincipalId: admission.requester.id,
           executorPrincipalKind: executionPrincipal.kind,
           executorPrincipalId: executionPrincipal.id,
           input: input.command.input,

@@ -5,6 +5,9 @@ import {
   companies,
   companyMemberships,
   heartbeatRuns,
+  internalAgentConversations,
+  internalAgentMessages,
+  internalAgentRuns,
   issues,
   jobAttempts,
   jobOutbox,
@@ -12,6 +15,7 @@ import {
   mcpApiKeys,
   organizationMemberships,
   organizations,
+  services,
   type Job,
   type JobAttempt,
   type JobOutbox,
@@ -24,7 +28,16 @@ export interface TenantAdmissionRecord {
   organizationExists: boolean;
   companyInOrganization: boolean;
   principalAuthorized: boolean;
+  requester: { kind: SourceRequesterKind; id: string } | null;
 }
+
+export type SourceRequesterKind =
+  | "founder"
+  | "team_lead"
+  | "team_member"
+  | "agent"
+  | "commander"
+  | "system";
 
 export interface JobControlRepository {
   admission(input: {
@@ -32,12 +45,32 @@ export interface JobControlRepository {
     companyId: string;
     principalKind: string;
     principalId: string;
+    principalRole?: string;
   }): Promise<TenantAdmissionRecord>;
   taskSourceIsAdmitted(input: {
     companyId: string;
     runId: string;
     issueId: string;
     assigneeAgentId: string;
+  }): Promise<boolean>;
+  internalRunSourceIsAdmitted(input: {
+    companyId: string;
+    runId: string;
+    requesterKind: SourceRequesterKind;
+    requesterId: string;
+    triggerSource: "crew_dispatch" | "browser_request";
+  }): Promise<boolean>;
+  commanderSourceIsAdmitted(input: {
+    companyId: string;
+    runId: string;
+    conversationId: string;
+    userId: string;
+  }): Promise<boolean>;
+  serviceSourceIsAdmitted(input: {
+    organizationId: string;
+    companyId: string;
+    serviceId: string;
+    generation: number;
   }): Promise<boolean>;
   insertJobOnce(values: NewJob): Promise<Job | null>;
   findSubmission(input: {
@@ -55,6 +88,41 @@ export interface JobControlRepository {
 }
 
 export function createJobControlRepository(tx: Db): JobControlRepository {
+  function requesterKindForOrganizationRole(role: string): SourceRequesterKind | null {
+    if (role === "owner") return "founder";
+    if (role === "admin") return "team_lead";
+    if (role === "member") return "team_member";
+    return null;
+  }
+
+  async function admittedUserRequester(input: {
+    organizationId: string;
+    companyId: string;
+    userId: string;
+  }): Promise<{ kind: SourceRequesterKind; id: string } | null> {
+    const [orgMembership] = await tx
+      .select({ role: organizationMemberships.role })
+      .from(organizationMemberships)
+      .where(and(
+        eq(organizationMemberships.organizationId, input.organizationId),
+        eq(organizationMemberships.userId, input.userId),
+        eq(organizationMemberships.status, "active"),
+      ))
+      .limit(1);
+    const [companyMembership] = await tx
+      .select({ id: companyMemberships.id })
+      .from(companyMemberships)
+      .where(and(
+        eq(companyMemberships.companyId, input.companyId),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, input.userId),
+        eq(companyMemberships.status, "active"),
+      ))
+      .limit(1);
+    const kind = orgMembership ? requesterKindForOrganizationRole(orgMembership.role) : null;
+    return companyMembership && kind ? { kind, id: input.userId } : null;
+  }
+
   return {
     async admission(input) {
       const [organization] = await tx
@@ -71,38 +139,23 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         ))
         .limit(1);
 
-      let principalAuthorized = false;
+      let requester: { kind: SourceRequesterKind; id: string } | null = null;
       if (input.principalKind === "user") {
-        const [orgMembership] = await tx
-          .select({ id: organizationMemberships.id })
-          .from(organizationMemberships)
-          .where(and(
-            eq(organizationMemberships.organizationId, input.organizationId),
-            eq(organizationMemberships.userId, input.principalId),
-            eq(organizationMemberships.status, "active"),
-          ))
-          .limit(1);
-        const [companyMembership] = await tx
-          .select({ id: companyMemberships.id })
-          .from(companyMemberships)
-          .where(and(
-            eq(companyMemberships.companyId, input.companyId),
-            eq(companyMemberships.principalType, "user"),
-            eq(companyMemberships.principalId, input.principalId),
-            eq(companyMemberships.status, "active"),
-          ))
-          .limit(1);
-        principalAuthorized = Boolean(orgMembership && companyMembership);
+        requester = await admittedUserRequester({
+          organizationId: input.organizationId,
+          companyId: input.companyId,
+          userId: input.principalId,
+        });
       } else if (input.principalKind === "agent") {
         const [agent] = await tx
           .select({ id: agents.id })
           .from(agents)
           .where(and(eq(agents.id, input.principalId), eq(agents.companyId, input.companyId)))
           .limit(1);
-        principalAuthorized = Boolean(agent);
+        requester = agent ? { kind: "agent", id: input.principalId } : null;
       } else if (input.principalKind === "mcp") {
         const [key] = await tx
-          .select({ id: mcpApiKeys.id })
+          .select({ id: mcpApiKeys.id, userId: mcpApiKeys.userId })
           .from(mcpApiKeys)
           .where(and(
             eq(mcpApiKeys.id, input.principalId),
@@ -110,19 +163,32 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
             isNull(mcpApiKeys.revokedAt),
           ))
           .limit(1);
-        principalAuthorized = Boolean(key);
-      } else if (input.principalKind === "commander" || input.principalKind === "local_board") {
+        requester = key
+          ? await admittedUserRequester({
+              organizationId: input.organizationId,
+              companyId: input.companyId,
+              userId: key.userId,
+            })
+          : null;
+      } else if (input.principalKind === "commander") {
         // These actors are authenticated by a company-bound run JWT or the
         // explicitly enabled local loopback identity. Re-check the admitted
         // Organization→Company edge in this transaction; neither actor has a
         // durable membership/key row of its own.
-        principalAuthorized = Boolean(company);
+        requester = company && ["founder", "team_lead", "team_member"].includes(input.principalRole ?? "")
+          ? { kind: "commander", id: input.principalId }
+          : null;
+      } else if (input.principalKind === "local_board") {
+        requester = company ? { kind: "founder", id: input.principalId } : null;
+      } else if (input.principalKind === "system") {
+        requester = company ? { kind: "system", id: input.principalId } : null;
       }
 
       return {
         organizationExists: Boolean(organization),
         companyInOrganization: Boolean(company),
-        principalAuthorized,
+        principalAuthorized: Boolean(requester),
+        requester,
       };
     },
 
@@ -148,6 +214,59 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
           eq(heartbeatRuns.id, input.runId),
           eq(heartbeatRuns.companyId, input.companyId),
           eq(heartbeatRuns.agentId, input.assigneeAgentId),
+        ))
+        .limit(1);
+      return Boolean(row);
+    },
+
+    async internalRunSourceIsAdmitted(input) {
+      const ownership = input.requesterKind === "agent"
+        ? eq(internalAgentRuns.agentId, input.requesterId)
+        : eq(internalAgentRuns.userId, input.requesterId);
+      const [row] = await tx
+        .select({ id: internalAgentRuns.id })
+        .from(internalAgentRuns)
+        .where(and(
+          eq(internalAgentRuns.id, input.runId),
+          eq(internalAgentRuns.companyId, input.companyId),
+          eq(internalAgentRuns.triggerSource, input.triggerSource),
+          ownership,
+        ))
+        .limit(1);
+      return Boolean(row);
+    },
+
+    async commanderSourceIsAdmitted(input) {
+      const [row] = await tx
+        .select({ id: internalAgentRuns.id })
+        .from(internalAgentRuns)
+        .innerJoin(internalAgentMessages, eq(internalAgentMessages.runId, internalAgentRuns.id))
+        .innerJoin(
+          internalAgentConversations,
+          eq(internalAgentConversations.id, internalAgentMessages.conversationId),
+        )
+        .where(and(
+          eq(internalAgentRuns.id, input.runId),
+          eq(internalAgentRuns.companyId, input.companyId),
+          eq(internalAgentRuns.triggerType, "conversation"),
+          eq(internalAgentRuns.userId, input.userId),
+          eq(internalAgentConversations.id, input.conversationId),
+          eq(internalAgentConversations.companyId, input.companyId),
+          eq(internalAgentConversations.userId, input.userId),
+        ))
+        .limit(1);
+      return Boolean(row);
+    },
+
+    async serviceSourceIsAdmitted(input) {
+      const [row] = await tx
+        .select({ id: services.id })
+        .from(services)
+        .where(and(
+          eq(services.id, input.serviceId),
+          eq(services.organizationId, input.organizationId),
+          eq(services.companyId, input.companyId),
+          eq(services.generation, input.generation),
         ))
         .limit(1);
       return Boolean(row);

@@ -103,8 +103,7 @@ export interface TenantRepositories {
  * returns) MUST NOT escape the caller's transaction callback.
  */
 export function tenantRepositories(tx: Db): TenantRepositories {
-  return {
-    jobControl: createJobControlRepository(tx),
+  const repositories: Omit<TenantRepositories, "jobControl"> = {
     jobs: {
       async insert(values) {
         const [row] = await tx.insert(jobs).values(values).returning();
@@ -229,4 +228,11 @@ export function tenantRepositories(tx: Db): TenantRepositories {
       },
     },
   };
+  Object.defineProperty(repositories, "jobControl", {
+    value: createJobControlRepository(tx),
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  return repositories as TenantRepositories;
 }

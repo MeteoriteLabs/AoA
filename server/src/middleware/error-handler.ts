@@ -17,6 +17,10 @@ export interface ErrorContext {
   reqQuery?: unknown;
 }
 
+function isJobSubmissionPath(url: string): boolean {
+  return /^\/(?:api\/)?organizations\/[^/]+\/companies\/[^/]+\/jobs(?:\?|$)/.test(url);
+}
+
 export function errorHandler(
   err: unknown,
   req: Request,
@@ -116,6 +120,27 @@ export function errorHandler(
       });
       return;
     }
+  }
+
+  if (isJobSubmissionPath(req.originalUrl)) {
+    (res as any).__jobSubmissionLogContext ??= {
+      organizationId: req.params.organizationId,
+      companyId: req.params.companyId,
+      sourceKind: req.body?.source?.kind,
+      replayed: false,
+      reasonCode: "job_submission_internal_error",
+    };
+    (res as any).__errorContext = {
+      error: { message: "Job submission failed", name: "JobSubmissionError" },
+      method: req.method,
+      url: req.originalUrl,
+      reqParams: {
+        organizationId: req.params.organizationId,
+        companyId: req.params.companyId,
+      },
+    } satisfies ErrorContext;
+    res.status(500).json({ error: "Internal server error" });
+    return;
   }
 
   (res as any).__errorContext = {

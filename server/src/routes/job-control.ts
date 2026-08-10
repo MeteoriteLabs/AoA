@@ -28,8 +28,24 @@ function principalFor(req: Request, companyId: string, organizationId: string): 
   if (actor.type === "mcp" && actor.companyId === companyId && actor.keyId) {
     return { kind: "mcp", id: actor.keyId };
   }
-  if (actor.type === "commander" && actor.companyId === companyId) {
-    return { kind: "commander", id: actor.userId ?? actor.keyId ?? "commander" };
+  if (
+    actor.type === "commander" &&
+    actor.companyId === companyId &&
+    actor.userId &&
+    actor.userRole &&
+    actor.conversationId &&
+    actor.turnId
+  ) {
+    return {
+      kind: "commander",
+      id: actor.userId,
+      role: actor.userRole,
+      commanderClaims: {
+        userId: actor.userId,
+        conversationId: actor.conversationId,
+        turnId: actor.turnId,
+      },
+    };
   }
   return null;
 }
@@ -98,6 +114,14 @@ export function jobControlRoutes(appDb: Db) {
           res.status(error.status).json({ error: error.message });
           return;
         }
+        (res as typeof res & { __jobSubmissionLogContext?: Record<string, unknown> })
+          .__jobSubmissionLogContext = {
+            organizationId,
+            companyId,
+            sourceKind: req.body.source.kind,
+            replayed: false,
+            reasonCode: "job_submission_internal_error",
+          };
         throw error;
       }
     },

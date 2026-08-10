@@ -43,7 +43,7 @@ describe("JOB-001 bounded aoa_app authority", () => {
       expect.arrayContaining(["INSERT", "UPDATE", "DELETE"]),
     );
     expect(JOB_CONTROL_LEGACY_GRANTS).not.toHaveProperty("mcp_api_keys");
-    expect(APP_MCP_API_KEY_COLUMN_GRANTS).toEqual(["id", "company_id", "revoked_at"]);
+    expect(APP_MCP_API_KEY_COLUMN_GRANTS).toEqual(["id", "company_id", "user_id", "revoked_at"]);
   });
 
   it("does not grant worker contact or target placement authority", () => {

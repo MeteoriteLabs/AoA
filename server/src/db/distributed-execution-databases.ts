@@ -8,8 +8,11 @@ import {
 import { sql } from "drizzle-orm";
 import {
   APP_EXECUTION_TARGET_COLUMN_GRANTS,
+  APP_MCP_API_KEY_COLUMN_GRANTS,
   JOB_CONTROL_LEGACY_GRANTS,
   JOB_CONTROL_NEW_PATH_GRANTS,
+  JOB_SUBMISSION_LEGACY_GRANTS,
+  JOB_SUBMISSION_NEW_PATH_GRANTS,
   OPERATOR_METADATA_COLUMN_GRANTS,
   type TablePrivilege,
 } from "./job-control-legacy-grants.js";
@@ -27,7 +30,12 @@ function rowsOf<T>(result: unknown): T[] {
 }
 
 function appTablePrivileges(): Readonly<Record<string, readonly TablePrivilege[]>> {
-  return { ...JOB_CONTROL_NEW_PATH_GRANTS, ...JOB_CONTROL_LEGACY_GRANTS };
+  return {
+    ...JOB_CONTROL_NEW_PATH_GRANTS,
+    ...JOB_CONTROL_LEGACY_GRANTS,
+    ...JOB_SUBMISSION_NEW_PATH_GRANTS,
+    ...JOB_SUBMISSION_LEGACY_GRANTS,
+  };
 }
 
 /** Fail closed unless effective ACLs are exact across every non-system table-like object. */
@@ -148,12 +156,16 @@ async function assertExactServingRoleAuthority(db: Db, role: ServingRole): Promi
     const operatorColumns = (
       OPERATOR_METADATA_COLUMN_GRANTS as Readonly<Record<string, readonly string[]>>
     )[row.table_name] ?? [];
-    const appColumnSelect =
-      row.schema_name === "public" &&
-      row.table_name === "execution_targets" &&
-      APP_EXECUTION_TARGET_COLUMN_GRANTS.includes(
-        row.column_name as (typeof APP_EXECUTION_TARGET_COLUMN_GRANTS)[number],
-      );
+    const appColumnSelect = row.schema_name === "public" && (
+      (row.table_name === "execution_targets" &&
+        APP_EXECUTION_TARGET_COLUMN_GRANTS.includes(
+          row.column_name as (typeof APP_EXECUTION_TARGET_COLUMN_GRANTS)[number],
+        )) ||
+      (row.table_name === "mcp_api_keys" &&
+        APP_MCP_API_KEY_COLUMN_GRANTS.includes(
+          row.column_name as (typeof APP_MCP_API_KEY_COLUMN_GRANTS)[number],
+        ))
+    );
     const expectedSelect = role === "aoa_app"
       ? appExpected.has("SELECT") || appColumnSelect
       : row.schema_name === "public" && operatorColumns.includes(row.column_name);

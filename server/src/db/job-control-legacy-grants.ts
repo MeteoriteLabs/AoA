@@ -16,7 +16,6 @@ export const JOB_CONTROL_LEGACY_GRANTS = Object.freeze({
   notifications: ["SELECT", "INSERT", "UPDATE"],
   user_roles: ["SELECT"],
   company_memberships: ["SELECT"],
-  organization_memberships: ["SELECT"],
   notification_preferences: ["SELECT"],
   notification_digest_items: ["SELECT", "INSERT"],
   hub_counter_snapshots: ["SELECT", "UPDATE"],
@@ -54,6 +53,7 @@ export const JOB_CONTROL_LEGACY_GRANTS = Object.freeze({
 export const APP_MCP_API_KEY_COLUMN_GRANTS = Object.freeze([
   "id",
   "company_id",
+  "user_id",
   "revoked_at",
 ] as const);
 
@@ -71,6 +71,15 @@ export const JOB_CONTROL_NEW_PATH_GRANTS = Object.freeze({
   service_instances: ["SELECT", "INSERT", "UPDATE", "DELETE"],
   job_artifacts: ["SELECT", "INSERT", "UPDATE", "DELETE"],
   job_secret_handles: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+} satisfies Readonly<Record<string, readonly TablePrivilege[]>>);
+
+/** JOB-001-only legacy reads, versioned away from the immutable 0213/0214 inputs. */
+export const JOB_SUBMISSION_LEGACY_GRANTS = Object.freeze({
+  organization_memberships: ["SELECT"],
+} satisfies Readonly<Record<string, readonly TablePrivilege[]>>);
+
+/** JOB-001-only new-path authority introduced after the immutable 0214 artifact. */
+export const JOB_SUBMISSION_NEW_PATH_GRANTS = Object.freeze({
   job_outbox: ["SELECT", "INSERT", "UPDATE", "DELETE"],
 } satisfies Readonly<Record<string, readonly TablePrivilege[]>>);
 

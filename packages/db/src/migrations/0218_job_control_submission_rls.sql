@@ -20,7 +20,7 @@ GRANT SELECT ON "organization_memberships" TO "aoa_app";
 REVOKE ALL ON "mcp_api_keys" FROM "aoa_app";
 --> statement-breakpoint
 -- C14 hand-authored security DDL: authenticated MCP revalidation sees identifiers/status only, never key hashes.
-GRANT SELECT ("id", "company_id", "revoked_at") ON "mcp_api_keys" TO "aoa_app";
+GRANT SELECT ("id", "company_id", "user_id", "revoked_at") ON "mcp_api_keys" TO "aoa_app";
 --> statement-breakpoint
 -- C14 hand-authored security DDL: natural idempotent RLS enablement.
 ALTER TABLE "job_outbox" ENABLE ROW LEVEL SECURITY;
