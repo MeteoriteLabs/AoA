@@ -533,20 +533,22 @@ header for the same enrolled identity; ACK/renew store bounded response fields i
 deterministic rejection outcomes; pre-auth failures and `throttled`/`internal_unavailable`
 leave no misleading receipt. No plaintext token or event/job payload is stored there.
 
-Platform-worker polling never scans tenant job rows globally. Organization/dedicated/owner
-sessions enter their bound Organization directly. For a platform session, an operator-owned
-fair scheduler enumerates only admitted Organization IDs from the established Organization
-registry, uses non-authoritative outbox readiness hints, and tries each shard through
-`runInTenant`; the first tenant transaction that confirms placement/profile/capability and
-atomically claims a row may release job details. The JOB-001 outbox drainer likewise obtains
-candidate Organization IDs outside the new-path tables, then claims each Organization's
-outbox only inside `runInTenant`. A missed/lost hint can delay a poll but can never grant
-authority; bounded round-robin fallback and outbox replay recover after restart.
+Worker polling never scans tenant job rows globally. Organization/dedicated/owner logical
+sessions, including Organization-scoped profiles backed by a platform target, enter exactly
+their authenticated Organization. A platform-scoped physical session never polls tenant
+work, selects a shard, or consumes a ready hint. Each logical poll consults only its
+Organization/target hint and then performs a bounded tenant-local pull through one
+`runInTenant`; that transaction must confirm placement/profile/capability/authority and
+atomically claim the row before releasing job details.
 
-One platform poll inspects at most 32 admitted Organization shards and spends at most 750 ms
-in database work; exhaustion returns bounded no-work/retry rather than continuing an
-unbounded cross-tenant loop. A separate reconciliation sweep rebuilds readiness hints and
-performs broader fair scanning. Operator job/event/worker endpoints use opaque `(createdAt,
+Separately, the flag-on JOB-001 outbox runtime lists only admitted Organization IDs from the
+established registry through the bounded non-owner `aoa_app` pool. One rotating lexical tick
+visits at most 32 Organization shards and spends at most 750 ms in database work, claiming
+each Organization's outbox only inside its separate `runInTenant` and publishing identifier-
+only non-authoritative hints. Exhaustion resumes from the fair cursor on the next tick rather
+than continuing an unbounded loop. A missed/rejected/lost hint can delay work but can never
+grant authority; tenant-local pull, outbox replay, and the reconciliation sweep recover after
+restart and membership churn. Operator job/event/worker endpoints use opaque `(createdAt,
 id)` cursors with a default page of 50 and hard maximum 200.
 
 Required query shapes/indexes are explicit: job claim
