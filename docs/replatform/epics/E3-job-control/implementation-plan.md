@@ -9,6 +9,14 @@ at reviewed revisions `7843b86e25eb1ff9c520308aef7f123fec6997a7` and
 `01ad1ab554fe25c5178c7552ec047d4df45b7dcf`. Pre-D1 tickets may now execute in dependency
 order; the post-D1 boundary remains locked.
 
+**JOB-003 fix-round-2 amendment status:** `pending_independent_review`. Review attempt 2
+proved that restart-safe pull fairness needs a durable cursor, but the initial two-field
+`(created_at, id)` correction contradicted the already locked claim order
+`(available_at ASC, priority DESC, created_at ASC, id ASC)`. JOB-003 implementation is paused
+before migration `0229`. The amendment below preserves the complete order with one nullable,
+all-or-none four-field cursor on the authenticated logical worker; no GREEN cursor work may
+resume until a distinct reviewer accepts this exact amendment.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: use
 > `superpowers:subagent-driven-development` to execute this plan ticket by ticket
 > **only after operator approval**. Every ticket uses a fresh implementer subagent
@@ -307,6 +315,15 @@ not fit an existing aggregate:
 | JOB-006 | `packages/db/src/schema/job_control_commands.ts` | Durable cancel/drain/graceful-stop command sequence and worker ACK, unique per lease/command id. |
 | JOB-005 | `packages/db/src/schema/job_projection_receipts.ts` | Idempotency state machine for accepted state projection and later calls into existing approval/budget/audit/output engines. Unique `(organization_id, company_id, projection_kind, source_identity)` plus `source_digest`, `job_id`, `attempt_id`, `source_fence`, `status=pending|applied`, `target_aggregate_id`, `created_at`, `applied_at`. Same identity/different digest is a hard conflict; pending is crash-recoverable; applied replays. Prefer an existing legacy unique key when it proves the same authority. |
 | JOB-007 | `packages/db/src/schema/execution_target_revocations.ts` | Operator-metadata-only durable fanout record for a committed target generation cutoff. Unique `(target_id, revoked_generation)` with bounded scan/retry/cursor state; contains no job/event/secret data and is not lease authority. |
+
+JOB-003 also extends the existing `workers` table with nullable
+`lease_scan_cursor_available_at timestamptz`, `lease_scan_cursor_priority integer`,
+`lease_scan_cursor_created_at timestamptz`, and `lease_scan_cursor_id uuid`. A generated
+`workers_lease_scan_cursor_all_or_none_check` requires either all four facts or none. These
+are opaque tenant-local pagination facts on the authenticated logical worker, not a foreign
+key, lease locator, job reference, or operator-readable job fact. The four columns reproduce
+the complete locked claim order exactly; storing only `(created_at, id)` is forbidden because
+it would discard `available_at` and descending `priority` authority.
 
 Each new table has non-null Organization identity, Company identity where applicable,
 composite tenant FKs, repository-only access, FORCE RLS, and grants to `aoa_app`. Normal
@@ -941,7 +958,7 @@ ACK activates exactly that lease.
 **Ticket non-goals:** renewal, event ingestion, retry/reaping, artifact bytes, or changing
 the stored placement decision.
 
-**Files:** modify `job_attempts.ts`, `leases.ts`, tenant job-control and worker-enrollment
+**Files:** modify `job_attempts.ts`, `leases.ts`, `workers.ts`, tenant job-control and worker-enrollment
 repositories, `server/src/middleware/worker-operation-proof.ts`,
 `server/src/middleware/worker-session-auth.ts`, `server/src/services/worker-enrollment.ts`,
 `server/src/services/execution-targets.ts`, the worker route, and the flag-on runtime
@@ -960,6 +977,13 @@ composition in `server/src/index.ts`; create
 target, advisory-handoff/revocation, authority-mutation-inventory, liveness, and fair-scheduler
 cases. Predecessor file edits are bounded synchronization corrections only; they may not
 change JOB-002 enrollment identity or JOB-009 placement semantics.
+
+Review-attempt-2 corrections additionally generate the next unused Drizzle successor
+(`0229` at the reviewed branch tip) for the four nullable worker cursor columns and their
+all-or-none CHECK, add a database-keyset admitted-Organization reader, and replace the
+platform-writer substring test with an exhaustive AST/exact allowlist plus injected bypass
+fixtures. The generated migration receives only required C14 idempotency guards; it contains
+no hand-written schema DDL, data backfill, RLS, grant, or policy change.
 
 The shared DB helper exports
 `acquirePlatformTargetAuthorityShared(tx, targetId)`,
@@ -1017,13 +1041,34 @@ the transition. Same key with a changed digest is generic `malformed`.
 The job remains `queued` until JOB-005 accepts the first fence-authorized
 `attempt_started` event, which moves attempt `leased→running` and job `queued→running` in the
 event transaction. Incompatible/no-work responses reveal no job IDs/details.
+
+The bounded pull cursor is the exact last examined job tuple
+`(available_at, priority, created_at, id)`. Its continuation predicate matches the index and
+sort direction byte-for-byte: a later row has greater `available_at`; or equal
+`available_at` and lower `priority` because priority sorts descending; or equal first two
+facts and greater `created_at`; or equal first three facts and greater `id`. The logical
+worker row is already locked, so a no-offer scan that reaches the per-poll bound commits the
+last examined tuple atomically on that worker. A later poll or new service instance resumes
+after it. Reaching the end clears all four facts together and the next bounded poll wraps to
+the beginning, so newly inserted or capacity-reenabled earlier work is eventually revisited.
+An offer/rollback never leaves a partial cursor, and concurrent polls for one logical worker
+cannot advance independently. The cursor has no FK and can reveal no foreign job existence.
+
 The flag-on outbox worker lists admitted Organization IDs through the bounded non-owner app
-pool, excluding the sentinel, inactive, and unmapped entries without reading job facts. It
-uses a stable lexical rotating cursor,
-visits at most 32 shards per tick, claims rows only inside each shard's `runInTenant`, and
+pool, excluding the sentinel, inactive, and unmapped entries without reading job facts. The
+database-facing reader accepts `(afterOrganizationId, limit)` and issues at most two ordered
+queries per tick (tail then bounded wrap), each with `limit <= 32`; it never materializes the
+full Organization registry. The runtime uses a stable lexical rotating cursor, is
+non-overlapping, and has one monotonic 750-ms deadline. Before each shard transaction it
+checks the remaining budget and applies a transaction-local `statement_timeout` no greater
+than that remainder; exhaustion stops before the next shard and preserves the cursor for the
+next tick. It visits at most 32 shards per tick, claims rows only inside each shard's `runInTenant`, and
 feeds identifier-only, non-authoritative ready hints keyed by Organization and target to the
-bounded scheduler. Repeated ticks must visit every admitted shard rather than restarting at
-the first 32. Each Organization-scoped poll consumes only matching hints and always falls
+bounded scheduler. Scheduler state has explicit global and per-Organization aggregate-hint
+and target-cardinality limits plus deterministic expiry/FIFO cleanup. Duplicate hints consume
+no extra capacity; a rejected publication remains retryable, while eviction/expiry can only
+delay work because tenant pull remains authoritative. Repeated ticks must visit every admitted
+shard rather than restarting at the first 32. Each Organization-scoped poll consumes only matching hints and always falls
 back to a bounded pull from its own tenant; outbox replay and pull polling recover after
 restart and after Organization membership churn. A publish/rejection/drop is recorded only as
 a latency signal and never changes outbox/job authority. A platform-scoped session neither
@@ -1038,6 +1083,12 @@ or generation change invalidates ACK. Database serialization/internal errors ret
 class and an ineligible/full head candidate cannot hide later eligible work. The exact expired
 semantic receipt is checked/deleted independently of bounded housekeeping before replay or
 insert, so a collision beyond the cleanup batch cannot replay or permanently block progress.
+
+A bounded scan that finds no compatible work commits only the complete four-field logical-
+worker cursor; statement failure rolls it back with proof/liveness changes. At registry or
+tick deadline exhaustion, no new shard transaction starts and the fair Organization cursor
+resumes on the next non-overlapping tick. Scheduler capacity or expiry never marks a rejected
+outbox publication delivered and never changes job/attempt/lease authority.
 
 **Compatibility / rollback:** additive lease/attempt columns. Because E3 migration `0227`
 has not shipped on the shared branch, its generated DDL receives the permitted hand-appended,
@@ -1064,12 +1115,18 @@ registered-profile mutation; operator-connection loss before/during/after adviso
 app/process crash; bounded lock timeout; no operator job/lease/tenant/fence/payload facts;
 real enrollment→physical heartbeat→logical poll/ACK with initial NULL and beyond-window
 logical `last_seen_at`, plus stale-physical denial; >32-shard fair rotation, membership churn,
-publish rejection, and restart pull recovery; mixed workload
-capacity without head-of-line starvation; an exact expired receipt behind >100 other expired
+publish rejection, and restart pull recovery; multi-target scheduler churn against aggregate
+and target-cardinality limits; deliberately slow tenant work proving the 750-ms deadline,
+non-overlap, bounded two-query Organization wrap, and cursor resume; mixed workload
+capacity without head-of-line starvation; 256 incompatible heads followed by a compatible
+257th attempt, service restart, concurrent logical-worker polls, capacity churn, cursor wrap,
+and newly inserted earlier work using the full four-part order; an exact expired receipt behind >100 other expired
 rows; populated-E2 migration replay; and non-vacuous cross-tenant receipt RLS denial.
-Add a static mutation inventory proving every current platform status/generation/device/profile
-authority writer uses target→worker row order plus the exclusive advisory helper, while
-last-seen-only heartbeat stays non-authoritative and cannot change status.
+Add an exhaustive AST/exact allowlist mutation inventory proving every current platform
+status/generation/device/profile authority writer uses target→worker row order plus the
+exclusive advisory helper, while last-seen-only heartbeat stays non-authoritative and cannot
+change status. Its negative fixtures inject an unlisted file, an unguarded writer, and wrong
+target→worker→exclusive order; each must fail the inventory.
 JOB-005 later adds the
 started-event job/attempt transition test. Run focused suite three
 times because it is H-03 critical, plus db/server build. Evidence
@@ -1748,19 +1805,30 @@ The suggestion to plan only the startable five or build E6 first was not adopted
 operator and canonical program design require all of E3 to be planned now, with execution
 split at the named `E6-D1-FOUNDATION` partial gate.
 
+JOB-003 review attempt 2 later found four bounded scheduler/certification gaps. Fix-round-2
+RED `c5be2a6853a93c1ad73910f1bdcd05c8299f93b6` proved those gaps, but pre-migration
+inspection found that its initial two-field lease-scan cursor could not preserve the locked
+four-part claim order. Implementation stopped before schema or migration work. This amendment
+chooses the full all-or-none `(available_at, priority, created_at, id)` cursor and retains the
+existing order/index; changing claim ordering to simplify pagination is explicitly rejected.
+Independent amendment review is required before the RED expectation is corrected or GREEN
+resumes.
+
 ## GSTACK REVIEW REPORT
 
 | Review | Trigger | Why | Runs | Status | Findings |
 |--------|---------|-----|------|--------|----------|
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | Not run; not required for this backend planning pass. |
 | Codex Review | `/codex review` | Independent 2nd opinion | 0 | — | Not run. |
-| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 4 | `ACCEPT AS BLOCKED PLAN` | Current delta triage confirmed no new P0/P1; JOB-009 received one P2 sizing clarification. |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 4 + JOB-003 amendment pending | `AMENDMENT REVIEW REQUIRED` | Original plan accepted; the JOB-003 four-part durable-cursor amendment is paused before implementation pending a distinct review. |
 | Claude Code | `claude -p` | User-requested outside-model review | 0 | `AUTH BLOCKED` | Claude Code 2.1.126 is installed, but `claude auth status` reports `loggedIn: false`; no Claude review occurred. |
 | Claude (user-provided) | pasted review | External plan delta review | 1 | `TRIAGED — STALE BASE` | Reviewed origin `8e2faa590`, not the local plan; three concerns were already closed, while JOB-009 sizing and explicit JOB-012–014 disablement were valid deltas and are now resolved in plan. |
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | Not run; E3 operator UI follows existing patterns. |
 | DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | Not run. |
 
-**VERDICT:** APPROVED FOR PRE-D1 EXECUTION — independently review-complete;
+**VERDICT:** APPROVED FOR PRE-D1 EXECUTION EXCEPT THE PENDING JOB-003 CURSOR AMENDMENT;
+JOB-003 GREEN is paused until that amendment is independently accepted. The original plan is
+otherwise independently review-complete;
 the operator selected E2 option B plus the metadata-only operator role, approved the E1
 checker-only correction, and approved JOB-002's HTTP-header proof/composite binding. Both
 corrective gates passed. Post-D1 tickets remain blocked on `E6-D1-FOUNDATION`.

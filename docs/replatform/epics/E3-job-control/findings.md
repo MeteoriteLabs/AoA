@@ -755,3 +755,27 @@ new bypass makes the static contract fail.
 AST/allowlist inventory or expose only a narrow guarded mutation API; enumerate all mutation
 sites and callers, preserve only the exact approved last-seen exemption, and include a
 negative unguarded-writer fixture that must fail.
+
+## E3-F025 - Two-field lease scan cursor contradicts the locked job-claim order
+
+**Date:** 2026-08-10
+**Status:** `blocked_pending_independent_plan_amendment_review`
+**Severity:** P1 STOP - durable scheduling semantics / restart-safe fairness
+**Affected ticket:** JOB-003
+
+**Finding:** Fix-round-2 RED correctly required restart-safe progress beyond 256 incompatible
+attempts, but its proposed worker cursor stored only `(created_at, id)`. The locked claim index
+and repository order are `(available_at ASC, priority DESC, created_at ASC, id ASC)`. A
+two-field cursor cannot identify a continuation in that total order. Reordering claims to
+`(created_at, id)` would regress availability and priority semantics; looking up omitted
+cursor facts through a referenced job would be deletion/mutation unstable and would turn a
+tenant-local pagination value into an unnecessary existence dependency.
+
+**Disposition:** Implementation stopped before editing `workers`, generating migration
+`0229`, or changing the leasing repository/service. The plan amendment specifies four
+nullable no-FK worker columns—`lease_scan_cursor_available_at`,
+`lease_scan_cursor_priority`, `lease_scan_cursor_created_at`, and
+`lease_scan_cursor_id`—with an all-or-none CHECK. The continuation predicate preserves the
+complete sort direction, no-offer scans atomically persist the last examined tuple under the
+existing logical-worker lock, and end-of-order clears all four for a bounded wrap. A distinct
+reviewer must accept the amended plan before the committed RED or production code changes.

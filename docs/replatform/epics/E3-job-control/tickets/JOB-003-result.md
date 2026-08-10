@@ -379,3 +379,15 @@ and correct I-05 through I-08 without changing frozen E1, widening roles/grants,
 second engine, or expanding lifecycle scope. This ticket review is not the separate E3
 integration gate, does not mark the epic complete, authorizes no push, and leaves JOB-010
 paused.
+
+## Fix round 2 STOP - cursor order amendment required
+
+Fix-round-2 RED `c5be2a6853a93c1ad73910f1bdcd05c8299f93b6` reproduced the four review-attempt-2
+gaps without production, schema, migration, or ledger changes. During GREEN preflight, the
+implementer found that the proposed two-field `(created_at, id)` worker cursor cannot preserve
+the locked job claim order `(available_at ASC, priority DESC, created_at ASC, id ASC)`.
+Implementation stopped before generating `0229`; no cursor schema or leasing code remains in
+the worktree. E3-F025 and the implementation plan now specify a nullable all-or-none
+four-field cursor with no FK/existence oracle. JOB-003 remains `needs_changes`; GREEN is not
+authorized until a distinct reviewer accepts that plan amendment and the RED is corrected to
+the reviewed shape.
