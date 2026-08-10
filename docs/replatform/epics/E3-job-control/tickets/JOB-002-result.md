@@ -107,4 +107,3 @@ Pending. The reviewer must inspect revision
 `39a199bef432bb69da8b17cf90fc184cae2bedae` or a later ancestor of HEAD, rerun the focused
 embedded-Postgres and threat-model lanes, verify the frozen E1 boundary and raw-secret/session
 storage prohibition, and append review attempt 1 in a separate plain-commit revision.
-
