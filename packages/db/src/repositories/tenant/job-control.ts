@@ -1068,14 +1068,14 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         .where(and(
           eq(jobOutbox.kind, "attempt_ready"),
           or(eq(jobOutbox.status, "pending"), eq(jobOutbox.status, "retry")),
-          lte(jobOutbox.availableAt, input.now),
+          lte(jobOutbox.availableAt, sql`statement_timestamp()`),
           eq(jobAttempts.status, "pending"),
           eq(jobAttempts.placementDisposition, "selected"),
           eq(jobAttempts.placementMode, "active"),
           eq(jobAttempts.placementLeaseEligible, true),
           isNotNull(jobAttempts.placementTargetId),
           eq(jobs.status, "queued"),
-          lte(jobs.availableAt, input.now),
+          lte(jobs.availableAt, sql`statement_timestamp()`),
         )).orderBy(asc(jobOutbox.availableAt), asc(jobOutbox.createdAt), asc(jobOutbox.id))
         .limit(boundedLimit)
         .for("update", { of: [jobOutbox, jobAttempts], skipLocked: true });
