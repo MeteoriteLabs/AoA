@@ -289,3 +289,30 @@ revocation; collisions and all HTTP failures close in frozen protocol vocabulary
 cleanup is ordered and bounded; 0219 replay is guarded; and E2 fixtures establish valid
 target/device facts before non-vacuous H-01 assertions. Focused lanes pass, but the ticket
 remains review-pending until a distinct reviewer independently certifies the candidate.
+
+## E3-F012 — JOB-002 review attempt 2 found revocation, protocol-error, and replay-cleanup races
+
+**Date:** 2026-08-10
+**Status:** `open_needs_JOB-002_fix_round_2`
+**Severity:** P1 authority/replay correctness
+**Affected ticket:** JOB-002 and every later worker-authenticated operation
+
+**Finding:** Independent review attempt 2 confirmed the seven attempt-1 corrections, then
+found three remaining blockers with temporary adversarial probes. First, an Organization
+session bound to a shared platform target rechecks global physical authority during
+authentication, but heartbeat later commits tenant-profile liveness without rechecking that
+global authority; revocation between those steps therefore loses the race. Second, a
+heartbeat request with no bearer fails before the route marks the response as worker protocol
+v1, so it emits the generic HTTP error rather than frozen `ProtocolErrorV1`. Third, enrollment
+deletes only the oldest 100 expired proof rows before inserting a proof. If the colliding
+expired proof is outside that batch, the unique insert fails and rolls back the cleanup, so
+every retry repeats the same failure forever.
+
+**Disposition:** JOB-002 remains `needs_changes`. Fix round 2 must make the shared-platform
+authority check and heartbeat mutation one revocation-safe authoritative operation (without
+granting a tenant mutation authority over the platform target); mark every heartbeat failure
+path for frozen descriptor-allowed `ProtocolErrorV1` before bearer parsing/lookup; and delete
+or replace the exact expired proof collision independently of the bounded background cleanup
+while preserving unexpired replay authority. Each correction needs a genuine RED test,
+including an authenticate/revoke/heartbeat interleaving, missing-bearer/error-path response
+schema coverage, and an expired colliding proof ordered strictly beyond the cleanup limit.

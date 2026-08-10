@@ -1,7 +1,7 @@
 # JOB-002 Result — Enroll workers and persist logical profiles
 
-**Status:** `implementation_complete_review_pending`
-**Disposition:** `review_pending`
+**Status:** `needs_changes`
+**Disposition:** `needs_changes`
 **Date opened (UTC):** `2026-08-10`
 **Epic:** `E3-job-control`
 **Plan task:** `JOB-002 — Enroll workers and persist logical profiles (M)`
@@ -190,3 +190,70 @@ assertions with valid target/device facts.
 A new distinct reviewer must review the GREEN candidate as an ancestor of HEAD, rerun the
 focused acceptance, append review attempt 2, and alone may change the ticket to `complete` /
 `pass`.
+
+### Review attempt 2 - 2026-08-10 - Codex `/root/job002_review`
+
+- **Reviewed revision:** `f34948e5276cef66386c7ba5ff4beb635b172b32`
+- **Whole-ticket assignment base:** `434fbaad5e73e5f4f9c0d25896a11625bfa63148`
+- **Fix-round boundary:** `208fedf7a68037d4110d08e563e60395f1137cd8..f34948e5276cef66386c7ba5ff4beb635b172b32`
+- **Genuine RED ancestor:** `894b84cbfd79132759daf43784d2381fbeb92246`
+- **GREEN candidate ancestor:** `988c2a8af24a1b24b1b9b896aae94e696dda53e4`
+- **Disposition:** `needs_changes`
+- **Specification verdict:** fail.
+- **Security/H-01/H-04 verdict:** fail.
+- **Migration/compatibility verdict:** pass for the reviewed fix-round scope.
+
+Attempt 2 independently confirmed closure of attempt-1 C-01 and I-01 through I-06: file-
+transport logs omit credential/semantic payloads on all committed success/error cases; shared
+platform enrollment requires the same proof-bound physical key/generation and never gives the
+tenant target-mutation authority; foreign UUID collisions close uniformly without SQL leakage;
+0219/0220 replay and 0221 builder/file alignment pass; repaired E2 fixtures reach every
+original RLS assertion non-vacuously; semantic receipts store no session; bootstrap bearer
+restoration stays atomically blocked; and frozen E1/default-off/no-placement/no-lease boundaries
+remain intact. Three fresh Important blockers nevertheless prevent certification:
+
+- **Important I2-01 — shared-platform revocation loses the post-authentication heartbeat race.**
+  `authenticate()` verifies the tenant profile and then global platform physical authority in
+  separate transactions. `registerProofBoundHeartbeat()` subsequently updates only the tenant
+  profile and does not recheck global authority. A temporary embedded-PG probe authenticated a
+  current principal, revoked/incremented the global target, then called heartbeat with that
+  principal: it returned `true` and mutated profile liveness. Revocation must win atomically at
+  the mutation boundary without giving the tenant authority to mutate the global target.
+- **Important I2-02 — heartbeat missing-bearer denial is not frozen `ProtocolErrorV1`.**
+  `requireWorkerHeartbeatAuthority` rejects a missing bearer before setting
+  `res.locals.workerProtocolV1`; a temporary HTTP probe failed `protocolErrorV1Schema` and
+  received the generic HTTP envelope. Mark the worker-protocol route before all parsing/lookup
+  failures and prove every heartbeat 4xx/5xx is descriptor-allowed and protocol-safe.
+- **Important I2-03 — bounded cleanup can permanently strand a valid proof.** The committed
+  test places the colliding expired proof inside the first 100 ordered deletions. A temporary
+  probe moved that collision to row 101. Enrollment then failed unauthorized; because cleanup
+  and insert share the transaction, the unique violation rolled back the 100 deletions and
+  retries repeat forever. Delete/replace the exact expired collision independently of bounded
+  housekeeping, never an unexpired proof, and test restart/retry beyond the limit.
+
+Fresh Windows-local evidence against the reviewed revision:
+
+- JOB-002 DB/schema/RLS/replay/idempotency: **3 files / 13 tests passed**.
+- Enrollment/session/device-proof/RLS-builder/log transport: **6 files / 28 tests passed**.
+- Grant/RBAC/legacy rotation contracts: **3 files / 12 tests passed**.
+- E2 schema-B fixture: **1 file / 7 tests passed**; tenant RLS/adversarial: **2 files /
+  21 tests passed**, recording **4,460** hostile operations across eight seeds.
+- Startup/non-owner/operator/legacy bundle: **5 files / 48 tests passed**, with the one
+  Linux-only file / six tests explicitly skipped on Windows.
+- JOB-001/default-off submission regression: **1 file / 31 tests passed**.
+- Frozen E1 checker, frozen install, affected-package and recursive typecheck/build, diff
+  hygiene, frozen E1 zero-diff, and all reviewed/RED/GREEN ancestry checks passed.
+- Exact `AOA_RUN_WIN_INTEGRATION=1 pnpm test:run` honestly **failed** after 240.3s. Visible
+  failures were the existing Windows worker-protocol collection SyntaxError and D18
+  embedded-Postgres setup failures; D18 reproduced alone as a setup failure and the frozen
+  protocol reproduced alone as one failed suite with no tests collected. No repaired
+  JOB-002/E2 focused suite failed. This is not a full-suite pass or waiver; Linux CI remains
+  formal DEC-03 authority.
+
+All three adversarial probes were temporary test-only edits and were fully removed. The
+reviewer modified no production code. Detailed evidence is in
+`.superpowers/sdd/implementation-plan/job-002-review.md`.
+
+The ticket remains incomplete. A fresh implementer fix round must add genuine RED coverage
+for I2-01 through I2-03 and return a new 40-hex ancestor revision for another independent
+review attempt.
