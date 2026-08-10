@@ -557,3 +557,20 @@ after the secret scan and archive hash, the runner derives the final digest-addr
 records URI+SHA in QA/handoff. Tests cover intervening source/config/migration drift, unlisted
 evidence, wrong output origin/prefix/attempt, and successful unknown-future-output derivation.
 JOB-003 remains `needs_changes`; implementation is paused pending fresh exact dual review.
+
+## Static-certificate successor review attempt 8 - accepted plan amendment
+
+The distinct whole-plan reviewer `/root/job003_certificate_plan_review` and the distinct
+schema/security reviewer `/root/job003_certificate_security_review` independently reviewed
+exact revision `73675cc621008ea0dcf18f6ae0c430162e7e448e`. Both returned `ACCEPT` with
+zero P0/P1/P2 findings. They accepted the static-negative-certificate design, split generated
+`0229`/`0230` plus custom `0231` migration contract, tenant RLS/grant/FK-oracle boundaries,
+snapshot-bound matcher and logical-profile capacity semantics, correlated SQL and fairness
+gates, platform-authority inventory, and the constructible, provenance-verified, secret-safe
+`E3-PERF-01` evidence lineage.
+
+This acceptance authorizes only replacement of the obsolete cursor-based tests with a
+corrected tests-only RED matching the accepted successor. The controller must independently
+inspect and rerun that RED and confirm intended assertion failures only before authorizing any
+schema edit, migration generation, or production GREEN work. JOB-003 therefore remains
+`needs_changes`; no pass, completion, production change, migration, or push is claimed here.

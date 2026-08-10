@@ -1,16 +1,16 @@
 # E3 — Durable Job Control — Implementation Plan
 
-**Plan status:** `approved_pre_D1_execution_ready_except_JOB-003_review_block` — the operator approved the reviewed plan
+**Plan status:** `approved_pre_D1_execution_ready_JOB-003_corrected_RED_only` — the operator approved the reviewed plan
 and recommended E2/E1/JOB-002 choices on 2026-08-10. On 2026-08-10 the operator also
 approved the E3-F018 / Decision #124 amendment: tenant work on a platform target uses an
 Organization-scoped logical worker session; a platform-scoped physical session remains
 physical-control-only. The corrective E2 and E1 gates passed
 at reviewed revisions `7843b86e25eb1ff9c520308aef7f123fec6997a7` and
 `01ad1ab554fe25c5178c7552ec047d4df45b7dcf`. Pre-D1 tickets may now execute in dependency
-order except that JOB-003 remains paused on the exact successor review named below; the
+order except that JOB-003 may proceed only to the corrected tests-only RED named below; the
 post-D1 boundary remains locked.
 
-**JOB-003 fix-round-2 amendment status:** `pending_independent_review`. Review attempt 2
+**JOB-003 fix-round-2 amendment status:** `accepted_for_corrected_RED`. Review attempt 2
 proved that restart-safe pull fairness needs durable progress. A first two-field cursor lost
 the locked claim order, and independent review of the replacement four-field cyclic cursor
 also rejected it: stale continuation can bypass newly eligible older work, JavaScript `Date`
@@ -19,9 +19,12 @@ the canonical oldest-eligible rule. JOB-003 implementation is paused before migr
 `0229`. The successor below removes the cursor entirely. Every claim starts at the database-
 ordered global head and anti-joins only exact, tenant-scoped static-ineligibility certificates;
 dynamic capacity is hoisted before selection, and ready signals can affect retry latency but
-never candidate identity or order. No GREEN work may resume until a distinct reviewer accepts
-this exact successor amendment and a distinct schema/security reviewer independently accepts
-its DDL, RLS, grant, FK-oracle, and query-validity contract.
+never candidate identity or order. A distinct whole-plan reviewer and a distinct schema/security
+reviewer independently accepted exact revision
+`73675cc621008ea0dcf18f6ae0c430162e7e448e` with zero P0/P1/P2 findings. This authorizes only
+replacement of the obsolete cursor-based tests with one corrected tests-only RED matching the
+accepted successor. Migration generation and production GREEN remain paused until the controller
+independently verifies that committed RED and its intended failure map.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use
 > `superpowers:subagent-driven-development` to execute this plan ticket by ticket
@@ -170,7 +173,7 @@ package while preserving the immutable source and fixture anchors.
 | Boundary | Tickets | Assignment rule |
 |---|---|---|
 | **Pre-D1, approved and assignable** | JOB-001, JOB-002, JOB-009, JOB-010 | E3-F001/E3-F002 and E3-F004 corrective handoffs passed. E3-F005's device/binding contract is approved for JOB-002 implementation. Respect ticket dependencies; JOB-010 may start after JOB-001. |
-| **Pre-D1, amendment review blocked** | JOB-003 | Do not assign, correct RED, generate `0229`/`0230`/`0231`, or resume GREEN until a distinct whole-plan reviewer and a distinct schema/security reviewer accept the exact committed static-certificate successor with no P0/P1/P2 finding. |
+| **Pre-D1, corrected RED authorized** | JOB-003 | Exact successor revision `73675cc621008ea0dcf18f6ae0c430162e7e448e` passed distinct whole-plan and schema/security review with zero P0/P1/P2 findings. Authorize only a replacement tests-only RED. Do not generate `0229`/`0230`/`0231` or resume production GREEN until the controller independently verifies that RED contains only intended behavioral failures. |
 | **Post-D1, blocked** | JOB-004–JOB-008, JOB-011–JOB-014 | Do not assign until a committed `E6-D1-FOUNDATION` QA record **and passing handoff** cover E6F-00–E6F-08 on one revision. |
 | **E3 exit gate, blocked** | all JOB-001–JOB-014 evidence | Requires every ticket complete, the post-D1 closure, and a passing `E3-PERF-01` handoff before any production-capacity/SLO claim. A Windows-local run is not a substitute for the formal Linux lane or the pinned performance environment. |
 
@@ -2291,25 +2294,34 @@ distinguishes digest-bound pre-existing input references from a credentialless a
 output repository/attempt namespace, deriving the final digest URI only after the scanned
 archive exists and recording it in QA/handoff. Another fresh exact dual review is required.
 
+Exact dual review of `73675cc621008ea0dcf18f6ae0c430162e7e448e` accepted the complete
+static-certificate successor and performance-evidence contract with zero P0/P1/P2 findings.
+The whole-plan reviewer accepted the executable migration, matcher, capacity, SQL, fairness,
+load, and evidence seams. The independent schema/security reviewer accepted the DDL/RLS/FK,
+grant/startup, snapshot-hash, provenance, secret-safety, and evidence-lineage contracts. This
+closes the amendment-review block and authorizes only a corrected tests-only RED. Production,
+schema, migration, and GREEN work remain unauthorized until the controller independently
+reruns that RED and confirms that every failure is intentional and behavior-first.
+
 ## GSTACK REVIEW REPORT
 
 | Review | Trigger | Why | Runs | Status | Findings |
 |--------|---------|-----|------|--------|----------|
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | Not run; not required for this backend planning pass. |
 | Codex Review | `/codex review` | Independent 2nd opinion | 0 | — | Not run. |
-| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 5 + JOB-003 successor attempts 1–7 rejected | `AMENDMENT RE-REVIEW REQUIRED` | Original plan accepted; the cyclic cursor and seven certificate revisions were rejected. The corrected SQL-comparable, snapshot-bound, split-generated-migration successor now includes a fully lineage-closed, constructible, source-attested, provenance-verified, secret-safe performance gate and is paused pending fresh whole-plan and schema/security reviews. |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 5 + JOB-003 successor attempts 1–7 rejected + attempt 8 accepted | `ACCEPTED FOR CORRECTED RED` | Exact revision `73675cc621008ea0dcf18f6ae0c430162e7e448e` passed distinct whole-plan and schema/security review with zero P0/P1/P2 findings. Corrected tests-only RED is authorized; migrations and GREEN remain gated on controller RED verification. |
 | Claude Code | `claude -p` | User-requested outside-model review | 0 | `AUTH BLOCKED` | Claude Code 2.1.126 is installed, but `claude auth status` reports `loggedIn: false`; no Claude review occurred. |
 | Claude (user-provided) | pasted review | External plan delta review | 1 | `TRIAGED — STALE BASE` | Reviewed origin `8e2faa590`, not the local plan; three concerns were already closed, while JOB-009 sizing and explicit JOB-012–014 disablement were valid deltas and are now resolved in plan. |
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | Not run; E3 operator UI follows existing patterns. |
 | DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | Not run. |
 
-**VERDICT:** APPROVED FOR PRE-D1 EXECUTION EXCEPT THE BLOCKED JOB-003 CERTIFICATE AMENDMENT;
-JOB-003 RED correction, migrations, and GREEN are paused until that amendment is independently
-accepted by both required reviewers. The original plan is
+**VERDICT:** APPROVED FOR PRE-D1 EXECUTION; THE JOB-003 CERTIFICATE AMENDMENT IS ACCEPTED FOR
+A CORRECTED TESTS-ONLY RED. JOB-003 migrations and GREEN remain paused until the controller
+independently verifies that RED. The original plan is
 otherwise independently review-complete;
 the operator selected E2 option B plus the metadata-only operator role, approved the E1
 checker-only correction, and approved JOB-002's HTTP-header proof/composite binding. Both
 corrective gates passed. Post-D1 tickets remain blocked on `E6-D1-FOUNDATION`.
 
 **UNRESOLVED DECISIONS:**
-- No unresolved product choice; JOB-003 retains an unresolved independent-review block and GREEN remains unauthorized.
+- No unresolved product or architecture choice. JOB-003 retains an execution checkpoint: corrected tests-only RED verification must pass before migration generation or GREEN authorization.

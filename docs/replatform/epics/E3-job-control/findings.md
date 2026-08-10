@@ -663,7 +663,7 @@ millisecond round trip. This finding is resolved.
 ## E3-F021 - Ready-scheduler hint memory is unbounded across execution targets
 
 **Date:** 2026-08-10
-**Status:** `blocked_pending_JOB-003_certificate_amendment_review`
+**Status:** `resolved_in_plan_pending_JOB-003_corrected_RED_and_implementation`
 **Severity:** P1 Important - bounded scheduler contract / process-memory liveness
 **Affected ticket:** JOB-003
 
@@ -686,13 +686,15 @@ process scheduler and stores one coalesced Organization/target readiness bit. Th
 finite-integer startup validation, Organizations `32/32` default/hard cap, targets per
 Organization `128/1024`, global signals `1024/1024`, TTL `30,000/300,000 ms`, monotonic expiry,
 duplicate-no-extension semantics, and retryable cap rejection. The leasing-facing API receives
-only a boolean that can shorten `no_work` retry latency; it cannot affect selection. Exact-
-text independent review and implementation remain pending.
+only a boolean that can shorten `no_work` retry latency; it cannot affect selection. Exact
+revision `73675cc621008ea0dcf18f6ae0c430162e7e448e` passed distinct whole-plan and
+schema/security review with zero P0/P1/P2 findings. Corrected tests-only RED and implementation
+remain pending; this finding is not yet closed in production.
 
 ## E3-F022 - Lost-hint pull recovery can starve compatible work beyond 256 candidates
 
 **Date:** 2026-08-10
-**Status:** `blocked_pending_JOB-003_certificate_amendment_review`
+**Status:** `resolved_in_plan_pending_JOB-003_corrected_RED_and_implementation`
 **Severity:** P1 Important - H-03 scheduling liveness / no head-of-line blocking
 **Affected ticket:** JOB-003
 
@@ -721,12 +723,14 @@ matched by ordinary correlated SQL columns, so PostgreSQL need not reproduce
 only evaluated static-negative predecessors are bulk-upserted. Dynamic capacity/live counts,
 locked rows, races, timeouts, parsing, envelope, and authority failures are never certified.
 One row per worker/attempt survives restart; stale/terminal/offline state has bounded tenant
-cleanup and cascades. Exact-text independent re-review and implementation remain pending.
+cleanup and cascades. Exact revision `73675cc621008ea0dcf18f6ae0c430162e7e448e`
+passed distinct whole-plan and schema/security review with zero P0/P1/P2 findings. Corrected
+tests-only RED and implementation remain pending; this finding is not yet closed in production.
 
 ## E3-F023 - Outbox ticks enumerate all Organizations and have no real 750-ms DB budget
 
 **Date:** 2026-08-10
-**Status:** `blocked_pending_JOB-003_certificate_amendment_review`
+**Status:** `resolved_in_plan_pending_JOB-003_corrected_RED_and_implementation`
 **Severity:** P1 Important - bounded traversal / scheduler availability
 **Affected ticket:** JOB-003
 
@@ -743,8 +747,10 @@ into the database reader (at most two reads and 32 combined shards), keeps a sin
 lexical rotation, and defines 750 ms precisely as a monotonic launch-admission window checked
 before every page/transaction/publication launch. Already-launched work may finish later;
 `statement_timeout` is defense only, not a cumulative or hard-wall claim. The cursor advances
-past an attempted slow/failed shard and durable claims retry through visibility timeout. Exact-
-text independent review and implementation remain pending.
+past an attempted slow/failed shard and durable claims retry through visibility timeout. Exact
+revision `73675cc621008ea0dcf18f6ae0c430162e7e448e` passed distinct whole-plan and
+schema/security review with zero P0/P1/P2 findings. Corrected tests-only RED and implementation
+remain pending; this finding is not yet closed in production.
 
 ## E3-F024 - Platform-authority writer inventory does not fail on new bypasses
 
@@ -801,7 +807,7 @@ required before RED correction or GREEN.
 ## E3-F026 - Static-certificate successor lacked SQL-comparable validity and exact gate seams
 
 **Date:** 2026-08-10
-**Status:** `resolved_in_plan_pending_exact_rereview`
+**Status:** `resolved_in_plan`
 **Severity:** P1 Important - certificate correctness / tenant authority / executable evidence
 **Affected ticket:** JOB-003
 
@@ -909,3 +915,8 @@ derives its digest-addressed final URI only after scan/hash. Contract tests cove
 code/config/migration, unlisted evidence, output-namespace drift, and successful future-output
 derivation. Status remains pending fresh exact dual review; RED correction and GREEN remain
 unauthorized.
+
+Final exact dual review of `73675cc621008ea0dcf18f6ae0c430162e7e448e` returned
+`ACCEPT` from both the whole-plan reviewer and the independent schema/security reviewer with
+zero P0/P1/P2 findings. The plan defect is resolved. Only a corrected tests-only RED is now
+authorized; implementation and ticket completion remain pending.
