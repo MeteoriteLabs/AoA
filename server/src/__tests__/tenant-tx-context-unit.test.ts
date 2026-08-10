@@ -59,6 +59,8 @@ describe("runInTenant (TEN-003) — wrapper contract (pure)", () => {
       "services",
       "workers",
     ]);
+    expect(Object.prototype.propertyIsEnumerable.call(received, "jobControl")).toBe(false);
+    expect(typeof (received as { jobControl: { admission?: unknown } }).jobControl.admission).toBe("function");
     for (const group of Object.values(received as Record<string, { insert?: unknown; getById?: unknown }>)) {
       expect(typeof group.insert).toBe("function");
       expect(typeof group.getById).toBe("function");

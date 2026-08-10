@@ -44,6 +44,9 @@ describe("tenant repository public surface (TEN-001a)", () => {
       "services",
       "workers",
     ]);
+    expect(Object.prototype.propertyIsEnumerable.call(repos, "jobControl")).toBe(false);
+    expect(typeof repos.jobControl.admission).toBe("function");
+    expect(typeof repos.jobControl.insertJobOnce).toBe("function");
     for (const group of Object.values(repos)) {
       expect(typeof (group as { insert: unknown }).insert).toBe("function");
       expect(typeof (group as { getById: unknown }).getById).toBe("function");

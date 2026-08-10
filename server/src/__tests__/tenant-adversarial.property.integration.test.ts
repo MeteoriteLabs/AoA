@@ -631,7 +631,7 @@ async function runAdversarialOps(g: TenantGraph): Promise<{ anomalies: string[];
       anomalies.push(`mixed-tenant job rejected by ${String(pgField(jobAErr, "constraint_name"))}, expected jobs_org_company_fk`);
     }
     const attemptErr = await captureReject(() =>
-      db.execute(sql`INSERT INTO job_attempts (organization_id, job_id) VALUES (${ob.org.id}, ${oa.jobs[0]!.id})`),
+      db.execute(sql`INSERT INTO job_attempts (organization_id, company_id, job_id) VALUES (${ob.org.id}, ${oa.jobs[0]!.companyId}, ${oa.jobs[0]!.id})`),
     );
     bump("compositeSqlReject");
     expect(sqlstate(attemptErr), "mixed-tenant attempt composite-FK SQLSTATE").toBe("23503");

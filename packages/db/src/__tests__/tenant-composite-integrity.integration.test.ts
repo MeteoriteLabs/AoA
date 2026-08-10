@@ -128,9 +128,9 @@ async function seedJob(orgId: string, companyId: string): Promise<string> {
   return rows[0]!.id;
 }
 
-async function seedAttempt(orgId: string, jobId: string): Promise<string> {
+async function seedAttempt(orgId: string, companyId: string, jobId: string): Promise<string> {
   const rows = await client<{ id: string }[]>`
-    INSERT INTO job_attempts (organization_id, job_id) VALUES (${orgId}, ${jobId})
+    INSERT INTO job_attempts (organization_id, company_id, job_id) VALUES (${orgId}, ${companyId}, ${jobId})
     RETURNING id`;
   return rows[0]!.id;
 }
@@ -232,12 +232,12 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       guard();
       const jobId = await seedJob(orgA, companyA);
       const err = await captureReject(() =>
-        client`INSERT INTO job_attempts (organization_id, job_id) VALUES (${orgB}, ${jobId})`,
+        client`INSERT INTO job_attempts (organization_id, company_id, job_id) VALUES (${orgB}, ${companyA}, ${jobId})`,
       );
       expect(err.code).toBe("23503");
       expect(err.constraint_name).toBe("job_attempts_org_job_fk");
 
-      const attemptId = await seedAttempt(orgA, jobId);
+      const attemptId = await seedAttempt(orgA, companyA, jobId);
       expect(attemptId).not.toBe("");
     });
 
@@ -245,7 +245,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
     it("rejects a lease whose org (B) does not match its attempt's org (A); allows same-tenant", async () => {
       guard();
       const jobId = await seedJob(orgA, companyA);
-      const attemptId = await seedAttempt(orgA, jobId);
+      const attemptId = await seedAttempt(orgA, companyA, jobId);
       const err = await captureReject(() =>
         client`INSERT INTO leases (organization_id, attempt_id, fence) VALUES (${orgB}, ${attemptId}, 'fence-x')`,
       );
@@ -325,7 +325,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
 
       // (a) two active leases on the same attempt → second rejected by the index.
       const jobId1 = await seedJob(orgA, companyA);
-      const attempt1 = await seedAttempt(orgA, jobId1);
+      const attempt1 = await seedAttempt(orgA, companyA, jobId1);
       await client`INSERT INTO leases (organization_id, attempt_id, status, fence) VALUES (${orgA}, ${attempt1}, 'active', 'live-1')`;
       const dupErr = await captureReject(() =>
         client`INSERT INTO leases (organization_id, attempt_id, status, fence) VALUES (${orgA}, ${attempt1}, 'active', 'live-2')`,
@@ -336,7 +336,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       // (b) a released/terminal lease does NOT occupy the partial index, so a fresh
       // active lease on the SAME attempt is allowed.
       const jobId2 = await seedJob(orgA, companyA);
-      const attempt2 = await seedAttempt(orgA, jobId2);
+      const attempt2 = await seedAttempt(orgA, companyA, jobId2);
       await client`INSERT INTO leases (organization_id, attempt_id, status, released_at, fence) VALUES (${orgA}, ${attempt2}, 'released', now(), 'done-1')`;
       const ok = await client<{ id: string }[]>`
         INSERT INTO leases (organization_id, attempt_id, status, fence) VALUES (${orgA}, ${attempt2}, 'active', 'fresh-active')

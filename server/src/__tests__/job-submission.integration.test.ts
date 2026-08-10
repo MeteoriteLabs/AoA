@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
@@ -15,6 +16,7 @@ import type { StorageService } from "../storage/types.js";
 import { allocateEmbeddedPgPort } from "./helpers/embedded-pg-port.js";
 import { provisionTenantAppRoleLoginSql, TENANT_APP_ROLE } from "../db/rls-tenant.js";
 import { createCommanderRunJwt } from "../agent-auth-jwt.js";
+import { jobSubmissionService } from "../services/job-submission.js";
 
 vi.mock("../services/aoa-marketplace.js", async (importActual) => {
   const actual = await importActual<typeof import("../services/aoa-marketplace.js")>();
@@ -26,7 +28,11 @@ vi.mock("../services/aoa-marketplace.js", async (importActual) => {
   return { ...actual, MarketplaceCatalogService: NoopMarketplaceCatalogService };
 });
 
+const capturedLogDir = await mkdtemp(join(tmpdir(), "aoa-job-submission-logs-"));
+process.env.AOA_LOG_DIR = capturedLogDir;
+process.env.AOA_AGENT_JWT_SECRET = "job-submission-commander-jwt-secret";
 const { createApp } = await import("../app.js");
+const { logger } = await import("../middleware/logger.js");
 
 type EmbeddedPostgresInstance = { initialise(): Promise<void>; start(): Promise<void>; stop(): Promise<void> };
 type EmbeddedPostgresCtor = new (opts: Record<string, unknown>) => EmbeddedPostgresInstance;
@@ -45,15 +51,20 @@ const ISSUE_A = "50000000-0000-4000-8000-000000000001";
 const ISSUE_B = "50000000-0000-4000-8000-000000000002";
 const MCP_KEY_A = "d0000000-0000-4000-8000-000000000001";
 const MCP_TOKEN_A = "job-submission-mcp-token-a";
+const COMMANDER_RUN_A = "60000000-0000-4000-8000-000000000001";
+const CONVERSATION_A = "70000000-0000-4000-8000-000000000001";
+const CREW_RUN_A = "80000000-0000-4000-8000-000000000001";
+const BROWSER_RUN_A = "a0000000-0000-4000-8000-000000000001";
+const SERVICE_A = "b0000000-0000-4000-8000-000000000001";
 
 const SOURCE_CASES = [
   { kind: "task_run", runId: RUN_A, issueId: ISSUE_A, assigneeAgentId: AGENT_A },
   {
     kind: "commander_turn",
-    internalAgentRunId: "60000000-0000-4000-8000-000000000001",
-    conversationId: "70000000-0000-4000-8000-000000000001",
+    internalAgentRunId: COMMANDER_RUN_A,
+    conversationId: CONVERSATION_A,
   },
-  { kind: "crew_run", crewRunId: "80000000-0000-4000-8000-000000000001" },
+  { kind: "crew_run", crewRunId: CREW_RUN_A },
   {
     kind: "one_shot",
     operationId: "90000000-0000-4000-8000-000000000001",
@@ -61,12 +72,12 @@ const SOURCE_CASES = [
   },
   {
     kind: "browser_request",
-    browserRequestId: "a0000000-0000-4000-8000-000000000001",
+    browserRequestId: BROWSER_RUN_A,
     parentJobId: null,
   },
   {
     kind: "service_reconcile",
-    serviceId: "b0000000-0000-4000-8000-000000000001",
+    serviceId: SERVICE_A,
     generation: 1,
     reconciliationId: "c0000000-0000-4000-8000-000000000001",
   },
@@ -95,6 +106,36 @@ function command(idempotencyKey: string, source: Record<string, unknown> = SOURC
 
 function asUser(userId = USER_A) {
   return { "x-test-user": userId, origin: "http://127.0.0.1", host: "127.0.0.1" };
+}
+
+function asAgent() {
+  return { "x-aoa-run-id": RUN_A };
+}
+
+function asMcp() {
+  return { authorization: `Bearer ${MCP_TOKEN_A}` };
+}
+
+function asCommander(source = SOURCE_CASES[1]) {
+  const token = createCommanderRunJwt({
+    companyId: COMPANY_A,
+    userId: USER_A,
+    userRole: "founder",
+    conversationId: source.conversationId,
+    turnId: source.internalAgentRunId,
+  });
+  if (!token) throw new Error("Commander test JWT was not created");
+  return { authorization: `Bearer ${token}` };
+}
+
+async function flushCapturedLogs(): Promise<string> {
+  await new Promise<void>((resolve) => logger.flush(() => resolve()));
+  await delay(300);
+  try {
+    return await readFile(join(capturedLogDir, "server.log"), "utf8");
+  } catch {
+    return "";
+  }
 }
 
 async function counts(key: string) {
@@ -199,6 +240,26 @@ beforeAll(async () => {
         (${ISSUE_A}, ${COMPANY_A}, 'Submit immutable job', 'in_progress', ${AGENT_A}, ${RUN_A}, ${RUN_A}, now()),
         (${ISSUE_B}, ${COMPANY_A}, 'Other agent task', 'in_progress', ${AGENT_B}, null, null, now())
     `;
+    await admin`
+      INSERT INTO internal_agent_conversations (id, company_id, user_id, status)
+      VALUES (${CONVERSATION_A}, ${COMPANY_A}, ${USER_A}, 'active')
+    `;
+    await admin`
+      INSERT INTO internal_agent_runs
+        (id, company_id, trigger_type, trigger_source, status, user_id, agent_id)
+      VALUES
+        (${COMMANDER_RUN_A}, ${COMPANY_A}, 'conversation', 'user_message', 'running', ${USER_A}, null),
+        (${CREW_RUN_A}, ${COMPANY_A}, 'sub_agent', 'crew_dispatch', 'running', ${USER_A}, ${AGENT_A}),
+        (${BROWSER_RUN_A}, ${COMPANY_A}, 'sub_agent', 'browser_request', 'running', ${USER_A}, ${AGENT_A})
+    `;
+    await admin`
+      INSERT INTO internal_agent_messages (conversation_id, role, content, run_id)
+      VALUES (${CONVERSATION_A}, 'assistant', 'Commander test turn', ${COMMANDER_RUN_A})
+    `;
+    await admin`
+      INSERT INTO services (id, organization_id, company_id, desired_state, generation)
+      VALUES (${SERVICE_A}, ${ORG_A}, ${COMPANY_A}, 'running', 1)
+    `;
 
     const ownerDb = createDb(adminUrl);
     const baseOptions = {
@@ -251,6 +312,7 @@ afterAll(async () => {
   try { await admin?.end(); } catch { /* ignore */ }
   try { await embedded?.stop(); } catch { /* ignore */ }
   try { if (dataDir) await rm(dataDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  try { await rm(capturedLogDir, { recursive: true, force: true }); } catch { /* logger transport owns it until process exit */ }
 }, 60_000);
 
 describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1")(
@@ -340,11 +402,17 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect(await counts(key)).toEqual({ jobs: 1, attempts: 1, outbox: 1 });
     });
 
-    it.each(SOURCE_CASES)("accepts authenticated $kind source intent without delivery authority", async (source) => {
+    it.each([
+      ["task_run", SOURCE_CASES[0], asUser()],
+      ["commander_turn", SOURCE_CASES[1], asCommander()],
+      ["crew_run", SOURCE_CASES[2], asAgent()],
+      ["one_shot", SOURCE_CASES[3], asAgent()],
+      ["browser_request", SOURCE_CASES[4], asUser()],
+    ] as const)("accepts authenticated %s source intent without delivery authority", async (_kind, source, headers) => {
       guard();
       const response = await request(app)
         .post(route())
-        .set(asUser())
+        .set(headers)
         .send(command(`source-${source.kind}`, source));
       expect(response.status).toBe(201);
       const [job] = await admin!<Record<string, unknown>[]>
@@ -352,14 +420,81 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect(job).toMatchObject({
         organization_id: ORG_A,
         company_id: COMPANY_A,
-        authenticated_principal_kind: "user",
-        authenticated_principal_id: USER_A,
         source_kind: source.kind,
       });
       expect(job).toHaveProperty("input_hash");
       expect(job).toHaveProperty("policy_hash");
       expect(job).toHaveProperty("requirements");
       expect(job).toHaveProperty("placement_request");
+    });
+
+    it("accepts service reconciliation only through a system principal and tenant-bound service generation", async () => {
+      guard();
+      const response = await jobSubmissionService(appConnection!.db).submit({
+        organizationId: ORG_A,
+        companyId: COMPANY_A,
+        principal: { kind: "system", id: "service-reconciler" } as never,
+        command: command("source-service_reconcile", SOURCE_CASES[5]) as never,
+      });
+      expect(response).toMatchObject({ status: "queued", replayed: false });
+      expect(await counts("source-service_reconcile")).toEqual({ jobs: 1, attempts: 1, outbox: 1 });
+    });
+
+    it("enforces the frozen hostile source/caller authority matrix before persistence", async () => {
+      guard();
+      const callers = [
+        { name: "user", headers: asUser(), allowed: new Set(["task_run", "commander_turn", "crew_run", "browser_request"]) },
+        { name: "agent", headers: asAgent(), allowed: new Set(["task_run", "crew_run", "one_shot", "browser_request"]) },
+        { name: "mcp_user", headers: asMcp(), allowed: new Set(["task_run", "commander_turn", "crew_run", "browser_request"]) },
+        { name: "commander", headers: asCommander(), allowed: new Set(["commander_turn", "one_shot"]) },
+      ];
+      for (const caller of callers) {
+        for (const source of SOURCE_CASES) {
+          const key = `matrix-${caller.name}-${source.kind}`;
+          const response = await request(app).post(route()).set(caller.headers).send(command(key, source));
+          const allowed = caller.allowed.has(source.kind);
+          expect(response.status, `${caller.name}/${source.kind}`).toBe(allowed ? 201 : 403);
+          expect(await counts(key), `${caller.name}/${source.kind} persistence`).toEqual(
+            allowed ? { jobs: 1, attempts: 1, outbox: 1 } : { jobs: 0, attempts: 0, outbox: 0 },
+          );
+        }
+      }
+    });
+
+    it("binds Commander DTO identifiers to JWT claims and tenant-bound turn state", async () => {
+      guard();
+      const mismatched = {
+        ...SOURCE_CASES[1],
+        internalAgentRunId: "60000000-0000-4000-8000-000000000099",
+      };
+      const response = await request(app)
+        .post(route())
+        .set(asCommander())
+        .send(command("commander-claim-mismatch", mismatched));
+      expect(response.status).toBe(403);
+      expect(await counts("commander-claim-mismatch")).toEqual({ jobs: 0, attempts: 0, outbox: 0 });
+    });
+
+    it.each([
+      ["crew", { kind: "crew_run", crewRunId: "80000000-0000-4000-8000-000000000099" }, asAgent()],
+      ["browser", { kind: "browser_request", browserRequestId: "a0000000-0000-4000-8000-000000000099", parentJobId: null }, asUser()],
+    ] as const)("rejects an unbound %s identity", async (name, source, headers) => {
+      guard();
+      const key = `${name}-identity-mismatch`;
+      const response = await request(app).post(route()).set(headers).send(command(key, source));
+      expect(response.status).toBe(403);
+      expect(await counts(key)).toEqual({ jobs: 0, attempts: 0, outbox: 0 });
+    });
+
+    it("rejects a stale service generation before persistence", async () => {
+      guard();
+      await expect(jobSubmissionService(appConnection!.db).submit({
+        organizationId: ORG_A,
+        companyId: COMPANY_A,
+        principal: { kind: "system", id: "service-reconciler" } as never,
+        command: command("service-stale-generation", { ...SOURCE_CASES[5], generation: 2 }) as never,
+      })).rejects.toMatchObject({ name: "TenantAdmissionDeniedError" });
+      expect(await counts("service-stale-generation")).toEqual({ jobs: 0, attempts: 0, outbox: 0 });
     });
 
     it.each(["jobs", "job_attempts", "job_outbox"] as const)(
@@ -373,6 +508,26 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         expect(await counts(key)).toEqual({ jobs: 0, attempts: 0, outbox: 0 });
       },
     );
+
+    it("emits only stable identifier metadata when a submission transaction fails", async () => {
+      guard();
+      const before = await flushCapturedLogs();
+      const marker = "H01_PRIVATE_INPUT_SENTINEL";
+      await installFailureTrigger("jobs");
+      const response = await request(app).post(route()).set(asUser()).send(command("log-sanitize", SOURCE_CASES[0], marker));
+      expect(response.status).toBe(500);
+      const emitted = (await flushCapturedLogs()).slice(before.length);
+      expect(emitted).toContain("job_submission_internal_error");
+      expect(emitted).toContain(ORG_A);
+      expect(emitted).toContain(COMPANY_A);
+      expect(emitted).toContain("task_run");
+      expect(emitted).not.toContain(marker);
+      expect(emitted).not.toContain("source_intent");
+      expect(emitted).not.toContain("INSERT INTO \"jobs\"");
+      expect(emitted).not.toContain("query:");
+      expect(emitted).not.toContain("params:");
+      expect(emitted).not.toContain("stack:");
+    });
 
     it("denies requester/assignee mismatch uniformly before persistence", async () => {
       guard();

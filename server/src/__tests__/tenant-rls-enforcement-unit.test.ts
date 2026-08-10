@@ -31,6 +31,7 @@ import {
   buildServingRoleHardeningMigrationSql,
 } from "../db/rls-tenant.js";
 import { createTenantAppDb } from "@armyofagents/db";
+import * as tenantRlsBuilders from "../db/rls-tenant.js";
 
 describe("rls-tenant builders — constants", () => {
   it("names the non-owner serving role and the 8 new-path tables (frozen)", () => {
@@ -194,5 +195,20 @@ describe("buildServingRoleHardeningMigrationSql (assembled 0214 body)", () => {
       "utf8",
     ).replaceAll("\r\n", "\n").trim();
     expect(committed).toBe(buildServingRoleHardeningMigrationSql().trim());
+  });
+});
+
+describe("buildJobControlSubmissionRlsMigrationSql (assembled 0218 body)", () => {
+  it("versions JOB-001 grants without changing the applied 0213/0214 builders", () => {
+    const builder = (tenantRlsBuilders as typeof tenantRlsBuilders & {
+      buildJobControlSubmissionRlsMigrationSql?: () => string;
+    }).buildJobControlSubmissionRlsMigrationSql;
+    expect(builder).toBeTypeOf("function");
+    if (!builder) return;
+    const committed = readFileSync(
+      new URL("../../../packages/db/src/migrations/0218_job_control_submission_rls.sql", import.meta.url),
+      "utf8",
+    ).replaceAll("\r\n", "\n").trim();
+    expect(committed).toBe(builder().trim());
   });
 });

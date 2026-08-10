@@ -89,9 +89,9 @@ async function seedJob(orgId: string, companyId: string): Promise<string> {
     INSERT INTO jobs (organization_id, company_id) VALUES (${orgId}, ${companyId}) RETURNING id`;
   return rows[0]!.id;
 }
-async function seedAttempt(orgId: string, jobId: string): Promise<string> {
+async function seedAttempt(orgId: string, companyId: string, jobId: string): Promise<string> {
   const rows = await client<{ id: string }[]>`
-    INSERT INTO job_attempts (organization_id, job_id) VALUES (${orgId}, ${jobId}) RETURNING id`;
+    INSERT INTO job_attempts (organization_id, company_id, job_id) VALUES (${orgId}, ${companyId}, ${jobId}) RETURNING id`;
   return rows[0]!.id;
 }
 async function seedService(orgId: string, companyId: string): Promise<string> {
@@ -163,7 +163,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       const org = await seedOrg("od-cascade-job");
       const company = await seedCompany(org);
       const job = await seedJob(org, company);
-      const attempt = await seedAttempt(org, job);
+      const attempt = await seedAttempt(org, company, job);
       const lease = (
         await client<{ id: string }[]>`
           INSERT INTO leases (organization_id, attempt_id, fence) VALUES (${org}, ${attempt}, 'f1') RETURNING id`

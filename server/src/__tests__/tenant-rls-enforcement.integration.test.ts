@@ -169,8 +169,8 @@ beforeAll(async () => {
     // platform null-Org row).
     jobA = firstId(await db.execute(sql`INSERT INTO jobs (organization_id, company_id) VALUES (${ORG_A}, ${CO_A}) RETURNING id`));
     jobB = firstId(await db.execute(sql`INSERT INTO jobs (organization_id, company_id) VALUES (${ORG_B}, ${CO_B}) RETURNING id`));
-    attemptA = firstId(await db.execute(sql`INSERT INTO job_attempts (organization_id, job_id) VALUES (${ORG_A}, ${jobA}) RETURNING id`));
-    const attemptB = firstId(await db.execute(sql`INSERT INTO job_attempts (organization_id, job_id) VALUES (${ORG_B}, ${jobB}) RETURNING id`));
+    attemptA = firstId(await db.execute(sql`INSERT INTO job_attempts (organization_id, company_id, job_id) VALUES (${ORG_A}, ${CO_A}, ${jobA}) RETURNING id`));
+    const attemptB = firstId(await db.execute(sql`INSERT INTO job_attempts (organization_id, company_id, job_id) VALUES (${ORG_B}, ${CO_B}, ${jobB}) RETURNING id`));
     await db.execute(sql`INSERT INTO leases (organization_id, attempt_id, fence) VALUES (${ORG_A}, ${attemptA}, 'fa')`);
     await db.execute(sql`INSERT INTO leases (organization_id, attempt_id, fence) VALUES (${ORG_B}, ${attemptB}, 'fb')`);
     workerOrgA = firstId(await db.execute(sql`INSERT INTO workers (scope, organization_id, label) VALUES ('organization', ${ORG_A}, 'wa') RETURNING id`));
