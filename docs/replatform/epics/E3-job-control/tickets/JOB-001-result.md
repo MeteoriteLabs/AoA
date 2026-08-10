@@ -1,7 +1,7 @@
 # JOB-001 Result — Submit immutable jobs transactionally
 
-**Status:** `implementation_complete_review_pending`
-**Disposition:** `review_pending`
+**Status:** `complete`
+**Disposition:** `pass`
 **Date opened (UTC):** `2026-08-09`
 **Epic:** `E3-job-control`
 **Plan task:** `JOB-001 — Submit immutable jobs transactionally (M)`
@@ -153,3 +153,37 @@ passing before this attempt; they were consumed as immutable dependencies.
   failure reproduces alone. Formal Linux/DEC-03 evidence remains pending.
 - Status is `implementation_complete_review_pending`; only the distinct reviewer may certify
   or mark JOB-001 complete/pass.
+
+### Review attempt 3 - 2026-08-10 - Codex `/root/job001_review`
+
+- **Reviewed revision:** `697bf9f462b7ec834e264b63363e614f6440cc4a`
+- **Disposition:** `pass`
+- **Specification verdict:** pass.
+- **Code/security quality verdict:** pass.
+- The attempt-2 executor-authority finding is resolved. Persisted executor roles now equal the
+  frozen six-source domain matrix: task, crew, and one-shot use `worker`; Commander uses
+  `sandbox`; browser uses `browser_worker`; and service reconciliation uses
+  `service_instance`. Persisted requester and executor facts are asserted for every accepted
+  source and every allowed cell of the hostile 4-caller x 6-source matrix.
+- The opaque IDs are truthful source-engine authority facts, not fabricated delivery targets:
+  task uses the tenant-bound heartbeat agent; Commander/browser use admitted internal-run IDs;
+  crew uses its admitted agent or its admitted user-owned run as the no-agent fallback;
+  one-shot uses the validated operation ID; and service uses the tenant- and generation-bound
+  service ID. Submission still performs no placement, lease, worker contact, or cutover.
+- All four attempt-1 findings remain closed: source/caller admission is tenant- and
+  server-state-bound; the full 5xx path is H-01-safe; historical 0213/0214 builders remain
+  byte-identical while 0218 owns current authority; and tenant repository/company contracts
+  remain compatible and non-vacuous.
+- Fresh focused evidence is green: submission 30/30; persisted authority/hostile target 7/7;
+  schema/migration 10/10; required startup/legacy/hygiene lane 40/40; 32-way race 1/1;
+  builder/grant/transaction/logging 35/35; repository 3/3; DB composite 16/16; tenant/RLS
+  regression 45/45; distributed startup 16/16; frozen checker/install, affected and recursive
+  typecheck/build all pass.
+- Exact `AOA_RUN_WIN_INTEGRATION=1 pnpm test:run` is honestly **non-green**: exit 1 after
+  230.9s with the pre-existing Windows worker-protocol cross-version transform failure and one
+  Cursor sandbox timeout. The worker-protocol failure reproduces alone; the Cursor test passes
+  alone 1/1. Neither correction boundary touches those packages. This result is not called a
+  pass, and formal Linux/DEC-03 evidence remains pending; the ticket-specific focused acceptance
+  and regression surface are green.
+- No production code was changed by the reviewer. Detailed evidence:
+  `.superpowers/sdd/implementation-plan/job-001-review.md`.
