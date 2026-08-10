@@ -1,12 +1,12 @@
 # JOB-002 Result — Enroll workers and persist logical profiles
 
-**Status:** `implementation_complete_review_pending`
-**Disposition:** `review_pending`
+**Status:** `needs_changes`
+**Disposition:** `needs_changes`
 **Date opened (UTC):** `2026-08-10`
 **Epic:** `E3-job-control`
 **Plan task:** `JOB-002 — Enroll workers and persist logical profiles (M)`
 **Implementer:** `Codex /root/job002_impl`
-**Reviewer:** `Codex /root/job002_review (pending; must be distinct from implementer)`
+**Reviewer:** `Codex /root/job002_review`
 **Start SHA:** 434fbaad5e73e5f4f9c0d25896a11625bfa63148
 
 The Start SHA is the reviewed JOB-001 completion revision and exact JOB-002 assignment
@@ -103,7 +103,52 @@ and alone may change the ticket to `complete` / `pass`.
 
 ## Independent review
 
-Pending. The reviewer must inspect revision
-`39a199bef432bb69da8b17cf90fc184cae2bedae` or a later ancestor of HEAD, rerun the focused
-embedded-Postgres and threat-model lanes, verify the frozen E1 boundary and raw-secret/session
-storage prohibition, and append review attempt 1 in a separate plain-commit revision.
+### Review attempt 1 - 2026-08-10 - Codex `/root/job002_review`
+
+- **Reviewed revision:** `208fedf7a68037d4110d08e563e60395f1137cd8`
+- **Assignment base:** `434fbaad5e73e5f4f9c0d25896a11625bfa63148`
+- **Code candidate ancestor:** `39a199bef432bb69da8b17cf90fc184cae2bedae`
+- **Disposition:** `needs_changes`
+- **Specification verdict:** fail.
+- **Security/H-01/H-04 verdict:** fail.
+- **Migration/compatibility verdict:** fail.
+- **Critical C-01 (H-04):** the globally mounted pino-http request serializer logs raw
+  enrollment-code, device-proof, and bearer-session headers. JOB-002's structured audit test
+  does not exercise this production transport logger.
+- **Important I-01:** an Organization logical profile is allowed to enroll on a platform target,
+  but the tenant UPDATE policy makes both bootstrap-token retirement and proof-bound heartbeat
+  silently affect zero target rows. A fresh embedded-PG probe returned enrollment success while
+  preserving the bootstrap hash and returning `heartbeatUpdated=false`.
+- **Important I-02 (H-01/H-04):** a caller-chosen worker UUID already owned by another tenant is
+  RLS-invisible to `findWorker`, then collides with the global primary key at insert. A hostile
+  probe received a raw Drizzle/Postgres 23505 and query parameters instead of uniform closed
+  denial, creating a cross-tenant existence and log oracle.
+- **Important I-03:** enrollment records a proof without the bounded expired-proof cleanup used
+  by session authentication. An expired durable proof row therefore rejects an otherwise valid
+  fresh enrollment proof, contrary to the explicit cleanup/restart acceptance.
+- **Important I-04:** worker enrollment errors are plain `{error}` JSON rather than the frozen
+  PRT-007 `ProtocolErrorV1` envelope and closed target-enrollment error vocabulary.
+- **Important I-05 (C14):** direct replay of exact migration 0219 fails with Postgres 42P07 at
+  `execution_targets_authority_id_uq`; its `duplicate_object` guard does not catch the duplicate
+  backing relation, and later generated constraints are unguarded. The generic static
+  idempotency test does not exercise this partial replay.
+- **Important I-06:** exact `AOA_RUN_WIN_INTEGRATION=1 pnpm test:run` exited 1 after about 246s
+  with 33 failed tests in the visible summary, not the implementation ledger's claimed sole
+  known worker-protocol failure. Focused reproduction found JOB-002-owned stale worker fixtures:
+  DB tenant-kernel schema B was 1 failed / 6 passed; server tenant RLS plus adversarial property
+  suites were 19 failed / 2 passed, failing before H-01 assertions on the new required target
+  authority columns.
+- Fresh positive evidence remains meaningful but cannot waive the blockers: JOB-002 focused DB
+  12/12, enrollment/session/device proof 17/17, startup/role/RLS/legacy-token 48/48 with the
+  Linux-only 6-test file skipped, RBAC/legacy service 9/9, frozen E1 checker/install, affected
+  and recursive typecheck/build all pass. Route/code issuance transactions, semantic retry
+  authority recheck, JWT binding, rotation/revocation/owner-removal controls, startup role
+  authority, flag-off behavior, and the no-placement/no-lease boundary were confirmed.
+- The direct replay and three adversarial probes were temporary test-only additions and were
+  fully removed. No production code was changed by the reviewer. Windows-local evidence is not
+  formal Linux/DEC-03 certification.
+- Detailed evidence: `.superpowers/sdd/implementation-plan/job-002-review.md`.
+
+The ticket is not complete. A fresh implementer fix round must add genuine RED coverage and
+correct all Critical/Important findings without changing frozen E1, then return a new 40-hex
+ancestor revision for another distinct review attempt.
