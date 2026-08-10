@@ -52,6 +52,7 @@ export function workerControlRoutes(opts: {
     validate(issueWorkerEnrollmentCodeSchema),
     async (req, res, next) => {
       try {
+        // rbac: paired-via-helper — organizationAccessService.canOrg below is the scoped check.
         assertBoard(req);
         const organizationId = uuid.parse(req.params.organizationId);
         const executionTargetId = uuid.parse(req.params.targetId);
