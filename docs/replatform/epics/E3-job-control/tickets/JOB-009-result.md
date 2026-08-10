@@ -1,14 +1,14 @@
 # JOB-009 Result - Resolve authoritative hybrid placement
 
-**Status:** `implementation_complete_review_pending`
-**Disposition:** `review_pending`
+**Status:** `needs_changes`
+**Disposition:** `needs_changes`
 **Date opened (UTC):** `2026-08-10`
 **Epic:** `E3-job-control`
 **Plan task:** `JOB-009 - Resolve authoritative hybrid placement (L; three bounded internal slices)`
 **Implementer:** `Codex /root/job009_impl`
-**Reviewer:** `pending (must differ from implementer)`
+**Reviewer:** `Codex /root/job009_review`
 **Start SHA:** 91d074bb9f79abe99aa8efaa6f9a99e0a937650e
-**Reviewed revision:** pending
+**Reviewed revision:** aa2b9a81355db1dec125c35bb53be21d4683360c
 **Implementation candidate:** 684f5edf388956c47e7124a58b2a16c08be5e97a
 
 The Start SHA is the reviewed JOB-002 completion revision and the exact JOB-009 assignment
@@ -125,7 +125,68 @@ the reviewed revision and make the ticket disposition.
 
 ## Independent review
 
-Pending. Reviewer must differ from `Codex /root/job009_impl`, verify the reviewed revision is
-a 40-hex ancestor of HEAD, inspect the entire Start-SHA-to-candidate diff, rerun the focused
-acceptance (including embedded PostgreSQL), append review attempt 1, and alone decide whether
-the ticket may be certified.
+### Review attempt 1 - 2026-08-10 - Codex `/root/job009_review`
+
+- **Reviewed revision:** `aa2b9a81355db1dec125c35bb53be21d4683360c`
+- **Assignment base:** `91d074bb9f79abe99aa8efaa6f9a99e0a937650e`
+- **Code candidate ancestor:** `684f5edf388956c47e7124a58b2a16c08be5e97a`
+- **Disposition:** `needs_changes`
+- **Specification verdict:** fail.
+- **H-01 verdict:** pass for the implemented tenant/operator query boundaries.
+- **H-03 verdict:** fail because the database accepts a lease-eligible shadow decision.
+- **H-04 / secret-containment verdict:** pass for reviewed placement projections and evidence.
+- **Migration/compatibility verdict:** fail.
+
+The complete Start-to-review diff and all named dependencies were independently inspected.
+The candidate is an ancestor of the reviewed revision. No frozen E1 file changed, no second
+target table or lease/capacity/provider/worker effect was added, and the tracked worktree was
+clean before review edits. The committed focused matrix is meaningful: tenant/platform rows
+remain bounded and locked through decision persistence; false hello/profile/provider/limit/
+locality/status/generation/member failures close; identical writers converge; rollback is
+atomic; all six sources and 20 fixed order seeds are deterministic; and platform discovery
+cannot read jobs.
+
+Six Important blockers prevent certification:
+
+- **Important I-01 — JOB-001/JOB-009 contract mismatch.** JOB-001 persists
+  `{workloadType, requiredCapabilities}` plus `{policyId, policyVersion, requestedTarget}`;
+  JOB-009 requires frozen `JobCapabilityRequirementsV1` plus exact
+  `{providerDemand, credentialOwnerPrincipalId}`. A temporary probe using the exact JOB-001
+  objects returned `[false,false]`, so real submitted jobs fail placement while the green
+  integration suite uses synthetic direct inserts.
+- **Important I-02 — no registered-profile producer.** The new registry profile/hash/provider
+  columns have no production writer anywhere in the reviewed tree. JOB-002 enrollment stores
+  the worker hello but never ratifies these target facts; therefore every real target remains
+  null/unmapped and ineligible.
+- **Important I-03 — Decision #117 credential/target binding is bypassed.** JOB-009 never
+  consumes the existing pinned-target / personal-credential `executionTargetSlug` resolver.
+  Owner ID alone cannot bind a personal credential to one target, and required/preferred/
+  forbidden target identity is unrepresentable, creating a second route-by-credential policy.
+- **Important I-04 — replay digests omit placement authority.** Stored input/policy digests do
+  not cover requirements, fallback, credential/target binding, provider demand, or rollout.
+  A temporary embedded-PG probe changed provider demand after placement and received the old
+  selected decision instead of `placement_already_decided`.
+- **Important I-05 — rollout/default-off authority is caller supplied.** The public placement
+  transaction accepts arbitrary enabled/mode/reason fields and does not consume the established
+  deployment → Organization → workload resolver. The reason is also unbounded and can be
+  persisted verbatim on flag-off.
+- **Important I-06 — shadow lease eligibility is not constrained.** A temporary real-PG probe
+  successfully wrote a complete `selected + shadow + placement_lease_eligible=true` tuple. The
+  same schema check permits true for legacy/queued/failed, contrary to shadow no-lease and H-03
+  defense-in-depth requirements.
+
+Fresh Windows-local evidence: committed placement/property/integration/grant **28/28**;
+migration-idempotency **5/5**; tenant/RLS/serving-role/hygiene **52/52**; the actual startup
+file `distributed-execution-db-startup.integration.test.ts` **14/14**; JOB-001/JOB-002 bundle
+**65/65** plus worker-session auth **2/2**; frozen E1 checker/boundary/install pass; affected
+and recursive typecheck/build pass. The implementation ledger's
+`distributed-execution-startup.integration.test.ts` path does not exist and must be corrected.
+Exact `AOA_RUN_WIN_INTEGRATION=1 pnpm test:run` exited 1 after 237.3s with seven visible
+aggregate failures (adapter/MCP timeouts and a runtime-service assertion among them); no
+committed JOB-009 focused test failed. This is not a waiver or full-suite pass. Linux CI remains
+DEC-03 formal authority.
+
+All three adversarial probes were temporary and removed. The reviewer changed no production
+code. Detailed ignored evidence is in
+`.superpowers/sdd/implementation-plan/job-009-review.md`. A fresh implementer fix round must
+commit genuine REDs for all six findings and return a new exact ancestor revision for re-review.
