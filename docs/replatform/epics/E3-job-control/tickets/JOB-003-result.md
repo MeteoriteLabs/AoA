@@ -501,3 +501,23 @@ and any prospective threshold change requires a higher reviewed manifest and com
 campaign while preserving the failed attempt. The overall Integration Gate Owner must pin and
 consume both passing performance artifacts before epic completion. JOB-003 remains
 `needs_changes`; implementation is still paused for fresh exact dual re-review.
+
+## Static-certificate successor review attempt 5 - needs changes
+
+Whole-plan review accepted exact revision
+`349c3cc466ddeb50b98019315dbe18bda8fa3607` with zero P0/P1/P2. Schema/security review kept
+all prior migration/certificate/RLS/hash/query findings closed but rejected three P1s in the
+new benchmark harness: it did not attest the bytes actually executed, it recorded an image
+digest without verifying H-08 provenance/policy/trust roots, and broad environment/child-output
+capture could retain secrets in >=180-day evidence.
+
+The correction requires a disposable read-only detached checkout with Git replacement
+processing disabled, pre/post clean whole-tree verification against Git blobs, explicit
+critical runner/load/config/lock/schema/migration input hashes, and frozen-install dependency
+integrity. The benchmark runner image must be the exact approved E6F-06 digest with verified
+project signature or provider attestation plus pinned verification-policy and trust-root
+digests; tampered/unapproved inputs fail before samples. Evidence uses only a closed non-secret
+descriptor schema, fail-closed command/stdout/stderr redaction, and an archive-wide canary scan.
+The runner contract mutates every input class and injects canaries through environment, DB
+credentials, argv, and child output. JOB-003 remains `needs_changes`; implementation is paused
+pending another fresh exact dual review.

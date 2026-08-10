@@ -869,3 +869,17 @@ blobs into the overall E3 gate. Any environment/threshold mismatch fails, and an
 threshold change requires a new reviewed manifest and full campaign while retaining the prior
 failure. Status remains pending another fresh exact dual review; implementation remains
 unauthorized.
+
+Exact whole-plan review accepted `349c3cc466ddeb50b98019315dbe18bda8fa3607`, while the
+schema/security reviewer rejected three benchmark-harness P1s without reopening any
+certificate invariant: executed runner/test/config/dependency/schema/migration bytes were not
+attested immediately around sampling; the benchmark image digest was not bound to verified
+H-08 signature/provenance policy and trust roots; and broad environment/child-output capture
+could leak credentials into >=180-day evidence. The corrected plan runs only from a
+read-only detached checkout in the approved E6F-06 image; disables Git replacement processing;
+verifies clean pre/post whole-tree bytes plus a critical input/blob closure and frozen-install
+integrity; and records/negatively tests the image attestation, verification policy, and trust
+roots. It replaces environment dumps with a closed non-secret descriptor schema, redacts child
+output/commands before persistence, and requires injected environment/DB/argv/stdout/stderr
+canaries to be absent from every console/file/archive/QA/handoff artifact. Status remains
+pending fresh exact dual review; RED correction and GREEN remain unauthorized.
