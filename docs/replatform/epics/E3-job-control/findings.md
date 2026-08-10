@@ -501,7 +501,7 @@ the JOB-003 scope boundary must remain unchanged.
 ## E3-F018 - Platform-physical ACK has no approved durable tenant-shard authority
 
 **Date:** 2026-08-10
-**Status:** `blocked_pending_operator_amendment`
+**Status:** `approved_amendment_pending_JOB-003_implementation`
 **Severity:** P1 STOP - H-01/H-02 tenant routing authority / frozen transport compatibility
 **Affected tickets:** JOB-003 and later platform-session lease operations
 
@@ -543,7 +543,10 @@ exact startup-grant audits. It has residual operator-visible activity metadata a
 not the preferred option.
 
 **Disposition:** No fix-round RED or production change was started after this contradiction
-was found. JOB-003 remains `needs_changes`; JOB-010 and later execution remain paused. The
-controller may resume only after operator approval of the recommended Organization-scoped
-session amendment or a separately approved durable-locator amendment, followed by an updated
-implementation plan and fresh TDD/review cycle.
+was found. On 2026-08-10 the operator approved the recommended Organization-scoped-session
+amendment as the production design. Decision #124 and the JOB-003 plan now require tenant
+poll/offer/ACK and every later tenant worker operation to authenticate through the logical
+Organization profile; the platform-scoped session remains physical-control-only. No lease
+locator or E1 change is authorized. JOB-003 remains `needs_changes` until a fresh TDD fix
+round and distinct review prove the amendment plus E3-F017; JOB-010 remains paused until that
+review closes.

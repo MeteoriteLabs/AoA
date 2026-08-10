@@ -1989,3 +1989,54 @@ resolver: `id`, `slug`, `kind`, `trust_class`, `status`, `organization_id`, and
 `config`. It excludes `worker_token_hash`, `owner_user_id`, `capabilities`,
 `last_seen_at`, and all operator writes. Candidate code revision `21335854f` awaits distinct re-review;
 this is not a prerequisite pass and grants no JOB-002 authority.
+
+## Decision #124 — Tenant work on platform targets uses Organization-scoped logical worker sessions (2026-08-10)
+
+**Status:** Locked 2026-08-10 (operator-approved E3-F018 amendment; Epic E3 / JOB-003).
+
+**Context.** A platform physical worker session is deliberately null-Organization, while the
+strict frozen Lease ACK v1 body and lease-only HTTP path carry no tenant shard. No durable
+lease-to-Organization locator exists, and Decision #123 forbids `aoa_operator` from reading
+jobs, attempts, leases, outbox rows, or operation receipts. Memory routing is not restart-safe;
+tenant scans create latency and isolation oracles; widening operator job authority violates
+H-01. E1 and JOB-002 already support one device having multiple Organization-scoped logical
+profiles on a shared platform target.
+
+**Decision.** Tenant job poll, offer, ACK, renew, event upload, control ACK, artifact/secret
+access, and completion always authenticate with the selected Organization-scoped logical
+worker session, including when its registered physical target has `scope='platform'`. The
+session binds Organization, logical worker ID, target ID/generation, device thumbprint, and
+profile hash. Its authenticated Organization is the sole tenant-shard selector for
+`runInTenant`; request JSON, headers, extensions, operator lookup, and scanning cannot select
+or widen that shard. The logical worker ID remains the lease and receipt FK identity.
+
+The platform-scoped physical session remains null-Organization and physical-control-only:
+enrollment, device/target health, generation, drain/revoke, and other platform registry
+lifecycle operations that expose no tenant or job identity. Tenant worker-operation routes
+reject it uniformly before tenant lookup. No lease locator is added and frozen E1 v1 remains
+byte-for-byte unchanged.
+
+For a platform target, each governed tenant mutation uses a revocation-linearized guard. A
+bounded `aoa_operator` transaction locks the exact physical target/worker authority row
+`FOR SHARE`, validates active generation/device/profile without receiving tenant, job, lease,
+fence, or payload facts, and holds the lock while the Organization-scoped `runInTenant`
+transaction revalidates and commits the complete logical worker/job/attempt/lease/fence tuple.
+Platform revoke/replace takes the conflicting `FOR UPDATE` lock, changes generation/status,
+and is the global cutoff. Guard-first tenant work commits before cutoff; cutoff-first work
+waits and then fails the new authority check. The operator guard is not job authority, a
+tenant router, or a distributed transaction participant.
+
+The flag-on outbox runtime may enumerate admitted Organization shards internally only to
+claim tenant outbox rows through separate `runInTenant` calls and create identifier-only,
+non-authoritative ready hints. It visits a bounded rotating window rather than a permanent
+first-N prefix. Each Organization-scoped poll consumes only its own hints and retains a
+bounded tenant-local pull fallback, so hint loss/restart affects latency rather than
+correctness. A platform-scoped session never consumes tenant-ready hints.
+
+**Consequences.** This preserves H-01/H-02 and frozen wire compatibility without exposing job
+metadata through the operator role. One physical device may hold many logical sessions; the
+worker-side WRK-003 implementation owns process-local cross-profile polling and local capacity,
+while JOB-003 enforces per-logical-profile lease authority and registered clamps, and JOB-007
+later enforces Organization/workload quota authority after E6-D1-FOUNDATION. Any future move
+to one cross-tenant platform session requires a new locked decision and threat-model review;
+it is not an additive JOB-003 implementation choice.
