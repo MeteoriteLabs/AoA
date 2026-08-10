@@ -57,6 +57,7 @@ function requireWorkerHeartbeatAuthority(db: Db, workerSession?: {
     ? createWorkerSessionAuthenticator(workerSession)
     : null;
   return async (req: Request, res: Response, next: NextFunction) => {
+    if (sessionAuthenticator) res.locals.workerProtocolV1 = true;
     try {
       const header = req.header("authorization") ?? "";
       const match = /^Bearer\s+(.+)$/i.exec(header.trim());
@@ -72,7 +73,6 @@ function requireWorkerHeartbeatAuthority(db: Db, workerSession?: {
         next();
         return;
       }
-      if (sessionAuthenticator) res.locals.workerProtocolV1 = true;
       const proof = deviceProofHeaders(req);
       const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
       const correlationId = req.header(WORKER_CONTROL_HEADERS.requestId);

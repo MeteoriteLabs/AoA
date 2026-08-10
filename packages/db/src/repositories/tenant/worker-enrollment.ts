@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, eq, exists, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { Db } from "../../client.js";
 import {
   executionTargets,
@@ -96,6 +96,16 @@ export interface WorkerEnrollmentRepository {
     deviceGeneration: number;
     now: Date;
   }): Promise<boolean>;
+  heartbeatSharedPlatformTarget(input: {
+    executionTargetId: string;
+    targetAuthorityKey: "platform";
+    deviceGeneration: number;
+    physicalWorkerId: string;
+    physicalProfileHash: string;
+    devicePublicKey: string;
+    deviceThumbprint: string;
+    now: Date;
+  }): Promise<boolean>;
   revokeTargetAuthority(input: { executionTargetId: string; now: Date }): Promise<number | null>;
 }
 
@@ -147,6 +157,11 @@ export function createWorkerEnrollmentRepository(tx: Db): WorkerEnrollmentReposi
       return code ?? null;
     },
     async recordProof(values) {
+      await tx.delete(workerProofReplays).where(and(
+        eq(workerProofReplays.deviceThumbprint, values.deviceThumbprint),
+        eq(workerProofReplays.proofId, values.proofId),
+        lte(workerProofReplays.expiresAt, sql`clock_timestamp()`),
+      ));
       const rows = await tx.insert(workerProofReplays).values(values)
         .onConflictDoNothing()
         .returning({ id: workerProofReplays.id });
@@ -309,6 +324,38 @@ export function createWorkerEnrollmentRepository(tx: Db): WorkerEnrollmentReposi
         eq(workers.deviceGeneration, input.deviceGeneration),
         ne(workers.status, "revoked"),
       )).returning({ id: workers.id });
+      return rows.length === 1;
+    },
+    async heartbeatSharedPlatformTarget(input) {
+      const physicalAuthorityExists = tx.select({ id: workers.id })
+        .from(workers)
+        .where(and(
+          eq(workers.id, input.physicalWorkerId),
+          eq(workers.executionTargetId, input.executionTargetId),
+          eq(workers.targetAuthorityKey, input.targetAuthorityKey),
+          eq(workers.scope, "platform"),
+          isNull(workers.organizationId),
+          isNull(workers.ownerUserId),
+          ne(workers.status, "revoked"),
+          isNull(workers.revokedAt),
+          eq(workers.deviceGeneration, input.deviceGeneration),
+          eq(workers.devicePublicKey, input.devicePublicKey),
+          eq(workers.deviceThumbprint, input.deviceThumbprint),
+          eq(workers.profileHash, input.physicalProfileHash),
+        ));
+      const rows = await tx.update(executionTargets).set({
+        lastSeenAt: input.now,
+        updatedAt: input.now,
+      }).where(and(
+        eq(executionTargets.id, input.executionTargetId),
+        eq(executionTargets.targetAuthorityKey, input.targetAuthorityKey),
+        eq(executionTargets.scope, "platform"),
+        isNull(executionTargets.organizationId),
+        isNull(executionTargets.ownerUserId),
+        eq(executionTargets.status, "active"),
+        eq(executionTargets.deviceGeneration, input.deviceGeneration),
+        exists(physicalAuthorityExists),
+      )).returning({ id: executionTargets.id });
       return rows.length === 1;
     },
     async revokeTargetAuthority(input) {

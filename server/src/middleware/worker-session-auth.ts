@@ -30,6 +30,11 @@ export interface VerifiedTargetPrincipal {
   organizationId: string | null;
   scope: WorkerSessionClaims["scope"];
   targetScope: "platform" | "organization" | "owner";
+  sharedPlatformAuthority?: {
+    physicalWorkerId: string;
+    physicalProfileHash: string;
+    devicePublicKey: string;
+  };
 }
 
 export class WorkerSessionError extends Error {
@@ -180,9 +185,17 @@ export function createWorkerSessionAuthenticator(input: {
             physical.worker.status === "revoked" || physical.worker.revokedAt !== null ||
             physical.worker.deviceGeneration !== principal.targetGeneration ||
             physical.worker.deviceThumbprint !== principal.deviceThumbprint ||
-            physical.worker.devicePublicKey !== proof.publicKey) {
+            physical.worker.devicePublicKey !== proof.publicKey || !physical.worker.profileHash) {
           throw new WorkerSessionError("target_revoked");
         }
+        return {
+          ...principal,
+          sharedPlatformAuthority: {
+            physicalWorkerId: physical.worker.id,
+            physicalProfileHash: physical.worker.profileHash,
+            devicePublicKey: proof.publicKey,
+          },
+        };
       }
       return principal;
     },
@@ -207,11 +220,17 @@ export async function registerProofBoundHeartbeat(input: {
       }));
   }
   if (input.principal.targetScope === "platform") {
-    return runInTenant(input.appDb, input.principal.organizationId, (repos) =>
-      repos.workerEnrollment.heartbeatSessionProfile({
-        workerId: input.principal.workerId,
+    if (!input.operatorDb || !input.principal.sharedPlatformAuthority) fail();
+    const physical = input.principal.sharedPlatformAuthority;
+    return input.operatorDb.transaction((tx) =>
+      operatorWorkerEnrollmentRepository(tx as unknown as Db).heartbeatSharedPlatformTarget({
         executionTargetId: input.principal.targetId,
+        targetAuthorityKey: "platform",
         deviceGeneration: input.principal.targetGeneration,
+        physicalWorkerId: physical.physicalWorkerId,
+        physicalProfileHash: physical.physicalProfileHash,
+        devicePublicKey: physical.devicePublicKey,
+        deviceThumbprint: input.principal.deviceThumbprint,
         now: input.now ?? new Date(),
       }));
   }
