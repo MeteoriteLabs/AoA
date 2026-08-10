@@ -68,6 +68,21 @@ function organizationId(ordinal: number): string {
   return `c3000000-0000-4000-8000-${ordinal.toString().padStart(12, "0")}`;
 }
 
+type AdmittedOrganizationPage = {
+  afterOrganizationId: string | null;
+  limit: number;
+  statementTimeoutMs: number;
+};
+
+function admittedOrganizationPage(input: unknown, organizations: string[]): string[] {
+  const page = input as AdmittedOrganizationPage;
+  const start = page.afterOrganizationId === null
+    ? 0
+    : organizations.findIndex((id) => id > page.afterOrganizationId);
+  if (start < 0) return [];
+  return organizations.slice(start, start + page.limit);
+}
+
 type ReadySignalScheduler = ReturnType<typeof createJobReadyScheduler> & {
   signal?: (input: { organizationId: string; targetId: string }) => boolean;
   consume?: (organizationId: string, targetId: string) => boolean;
@@ -194,15 +209,50 @@ describe("JOB-003 flag-on job-control runtime", () => {
     expect.soft(organizationBound.size()).toEqual({ organizations: 32, targets: 32, signals: 32 });
   });
 
+  it("independently pins the default 128-target Organization bound and exact 30,000ms TTL", () => {
+    let nowMs = 0;
+    const targetBound = readySignalScheduler({ monotonicNow: () => nowMs });
+    expect.soft(typeof targetBound.signal).toBe("function");
+    expect.soft(typeof targetBound.consume).toBe("function");
+    if (!targetBound.signal || !targetBound.consume) return;
+
+    const org = organizationId(1);
+    let accepted = 0;
+    for (let index = 0; index < 129; index += 1) {
+      if (targetBound.signal({
+        organizationId: org,
+        targetId: `c3500000-0000-4000-8000-${index.toString().padStart(12, "0")}`,
+      })) accepted += 1;
+    }
+    expect.soft(accepted).toBe(128);
+    expect.soft(targetBound.size()).toEqual({ organizations: 1, targets: 128, signals: 128 });
+
+    const aliveAtLastMillisecond = readySignalScheduler({ monotonicNow: () => nowMs });
+    expect.soft(typeof aliveAtLastMillisecond.signal).toBe("function");
+    expect.soft(typeof aliveAtLastMillisecond.consume).toBe("function");
+    if (!aliveAtLastMillisecond.signal || !aliveAtLastMillisecond.consume) return;
+    const ttlTarget = "c3500000-0000-4000-8000-999999999998";
+    nowMs = 0;
+    expect.soft(aliveAtLastMillisecond.signal({ organizationId: org, targetId: ttlTarget })).toBe(true);
+    nowMs = 29_999;
+    expect.soft(aliveAtLastMillisecond.consume(org, ttlTarget)).toBe(true);
+
+    const expiredAtBoundary = readySignalScheduler({ monotonicNow: () => nowMs });
+    expect.soft(typeof expiredAtBoundary.signal).toBe("function");
+    expect.soft(typeof expiredAtBoundary.consume).toBe("function");
+    if (!expiredAtBoundary.signal || !expiredAtBoundary.consume) return;
+    nowMs = 0;
+    expect.soft(expiredAtBoundary.signal({ organizationId: org, targetId: ttlTarget })).toBe(true);
+    nowMs = 30_000;
+    expect.soft(expiredAtBoundary.consume(org, ttlTarget)).toBe(false);
+  });
+
   it("reads at most tail plus bounded wrap and admits at most 32 distinct Organizations per tick", async () => {
     const admitted = Array.from({ length: 35 }, (_, index) => organizationId(index + 1));
-    const queryInputs: Array<{ after: string | null; limit: number }> = [];
-    const listPage = async (input: { after: string | null; limit: number }) => {
-      queryInputs.push(input);
-      const start = input.after === null
-        ? 0
-        : Math.max(0, admitted.findIndex((id) => id > input.after!));
-      return admitted.slice(start, start + input.limit);
+    const queryInputs: AdmittedOrganizationPage[] = [];
+    const listPage = async (input: unknown) => {
+      queryInputs.push(input as AdmittedOrganizationPage);
+      return admittedOrganizationPage(input, admitted);
     };
     const scheduler = createJobReadyScheduler();
     const worker = createJobOutboxWorker({
@@ -210,21 +260,85 @@ describe("JOB-003 flag-on job-control runtime", () => {
       scheduler,
       listAdmittedOrganizationIds: listPage,
       maxOrganizationShards: 32,
+      monotonicNow: () => 0,
     });
 
     await worker.tick();
     const firstTickQueries = queryInputs.splice(0);
-    expect.soft(firstTickQueries).toMatchObject([{ after: null, limit: 32 }]);
+    expect.soft(firstTickQueries).toEqual([{
+      afterOrganizationId: null,
+      limit: 32,
+      statementTimeoutMs: 750,
+    }]);
     expect.soft(runtimeHarness.visited).toEqual(admitted.slice(0, 32));
     runtimeHarness.visited.length = 0;
     await worker.tick();
-    expect.soft(queryInputs).toMatchObject([
-      { after: admitted[31], limit: 32 },
-      { after: null, limit: 29 },
+    expect.soft(queryInputs).toEqual([
+      { afterOrganizationId: admitted[31], limit: 32, statementTimeoutMs: 750 },
+      { afterOrganizationId: null, limit: 29, statementTimeoutMs: 750 },
     ]);
     expect.soft(queryInputs).toHaveLength(2);
     expect.soft(runtimeHarness.visited).toEqual([...admitted.slice(32), ...admitted.slice(0, 29)]);
     expect.soft(new Set(runtimeHarness.visited).size).toBe(32);
+  });
+
+  it("reads an exhausted tail at the last cursor before a bounded wrap from the canonical head", async () => {
+    const admitted = [organizationId(1), organizationId(2)];
+    const queryInputs: AdmittedOrganizationPage[] = [];
+    const worker = createJobOutboxWorker({
+      appDb: {} as never,
+      scheduler: createJobReadyScheduler(),
+      listAdmittedOrganizationIds: async (input) => {
+        queryInputs.push(input as AdmittedOrganizationPage);
+        return admittedOrganizationPage(input, admitted);
+      },
+      maxOrganizationShards: 2,
+      monotonicNow: () => 0,
+    });
+
+    await worker.tick();
+    expect.soft(runtimeHarness.visited).toEqual(admitted);
+    queryInputs.length = 0;
+    runtimeHarness.visited.length = 0;
+
+    await worker.tick();
+    expect.soft(queryInputs).toEqual([
+      { afterOrganizationId: admitted[1], limit: 2, statementTimeoutMs: 750 },
+      { afterOrganizationId: null, limit: 2, statementTimeoutMs: 750 },
+    ]);
+    expect.soft(runtimeHarness.visited).toEqual(admitted);
+  });
+
+  it("rechecks the launch deadline after an exhausted tail and starts no wrap page at the boundary", async () => {
+    const admitted = [organizationId(1), organizationId(2)];
+    const queryInputs: AdmittedOrganizationPage[] = [];
+    let monotonicMs = 0;
+    let exhaustTailAtDeadline = false;
+    const worker = createJobOutboxWorker({
+      appDb: {} as never,
+      scheduler: createJobReadyScheduler(),
+      listAdmittedOrganizationIds: async (input) => {
+        const page = input as AdmittedOrganizationPage;
+        queryInputs.push(page);
+        const result = admittedOrganizationPage(page, admitted);
+        if (exhaustTailAtDeadline && page.afterOrganizationId === admitted[1]) monotonicMs = 750;
+        return result;
+      },
+      maxOrganizationShards: 2,
+      tickBudgetMs: 750,
+      monotonicNow: () => monotonicMs,
+    } as never);
+
+    await worker.tick();
+    queryInputs.length = 0;
+    runtimeHarness.visited.length = 0;
+    exhaustTailAtDeadline = true;
+
+    await expect(worker.tick()).resolves.toMatchObject({ organizations: 0, claimed: 0, delivered: 0 });
+    expect.soft(queryInputs).toEqual([
+      { afterOrganizationId: admitted[1], limit: 2, statementTimeoutMs: 750 },
+    ]);
+    expect.soft(runtimeHarness.visited).toEqual([]);
   });
 
   it("preserves fair progress through membership churn and a runtime restart", async () => {
@@ -234,7 +348,7 @@ describe("JOB-003 flag-on job-control runtime", () => {
     const first = createJobOutboxWorker({
       appDb: {} as never,
       scheduler,
-      listAdmittedOrganizationIds: async () => admitted,
+      listAdmittedOrganizationIds: async (input) => admittedOrganizationPage(input, admitted),
       maxOrganizationShards: 32,
     });
     await first.tick();
@@ -248,7 +362,7 @@ describe("JOB-003 flag-on job-control runtime", () => {
     const restarted = createJobOutboxWorker({
       appDb: {} as never,
       scheduler: createJobReadyScheduler(),
-      listAdmittedOrganizationIds: async () => admitted,
+      listAdmittedOrganizationIds: async (input) => admittedOrganizationPage(input, admitted),
       maxOrganizationShards: 32,
     });
     await restarted.tick();
@@ -259,16 +373,16 @@ describe("JOB-003 flag-on job-control runtime", () => {
   it("does not invent cursor progress when an admitted-Organization page read fails", async () => {
     const orgA = organizationId(1);
     const orgB = organizationId(2);
-    const pageInputs: Array<{ after?: string | null; limit?: number }> = [];
+    const pageInputs: AdmittedOrganizationPage[] = [];
     let fail = true;
     const worker = createJobOutboxWorker({
       appDb: {} as never,
       scheduler: createJobReadyScheduler(),
       maxOrganizationShards: 1,
       listAdmittedOrganizationIds: async (input) => {
-        pageInputs.push(input);
+        pageInputs.push(input as unknown as AdmittedOrganizationPage);
         if (fail) throw new Error("admitted organization page failed");
-        return [orgA, orgB];
+        return admittedOrganizationPage(input, [orgA, orgB]);
       },
     });
 
@@ -276,7 +390,7 @@ describe("JOB-003 flag-on job-control runtime", () => {
     fail = false;
     await expect(worker.tick()).resolves.toMatchObject({ organizations: 1 });
     expect.soft(pageInputs).toHaveLength(2);
-    expect.soft(pageInputs.map((input) => input.after ?? null)).toEqual([null, null]);
+    expect.soft(pageInputs.map((input) => input.afterOrganizationId)).toEqual([null, null]);
     expect.soft(runtimeHarness.visited).toEqual([orgA]);
   });
 
@@ -288,9 +402,9 @@ describe("JOB-003 flag-on job-control runtime", () => {
       appDb: {} as never,
       scheduler: createJobReadyScheduler(),
       listAdmittedOrganizationIds: async (input) => {
-        pageInputs.push(input);
+        pageInputs.push(input as unknown as { statementTimeoutMs?: number });
         monotonicMs = 750;
-        return [org];
+        return admittedOrganizationPage(input, [org]);
       },
       tickBudgetMs: 750,
       monotonicNow: () => monotonicMs,
@@ -312,7 +426,7 @@ describe("JOB-003 flag-on job-control runtime", () => {
     const worker = createJobOutboxWorker({
       appDb: {} as never,
       scheduler: createJobReadyScheduler(),
-      listAdmittedOrganizationIds: async () => [org],
+      listAdmittedOrganizationIds: async (input) => admittedOrganizationPage(input, [org]),
       publishHint: async (signal) => { publications.push(signal); },
       tickBudgetMs: 750,
       monotonicNow: () => monotonicMs,
@@ -336,7 +450,7 @@ describe("JOB-003 flag-on job-control runtime", () => {
     const worker = createJobOutboxWorker({
       appDb: {} as never,
       scheduler: createJobReadyScheduler(),
-      listAdmittedOrganizationIds: async () => [org],
+      listAdmittedOrganizationIds: async (input) => admittedOrganizationPage(input, [org]),
       publishHint: async (signal) => {
         publications.push(signal);
         monotonicMs = 750;
@@ -359,7 +473,7 @@ describe("JOB-003 flag-on job-control runtime", () => {
     const worker = createJobOutboxWorker({
       appDb: {} as never,
       scheduler: createJobReadyScheduler(),
-      listAdmittedOrganizationIds: async () => [org],
+      listAdmittedOrganizationIds: async (input) => admittedOrganizationPage(input, [org]),
       publishHint: async () => { monotonicMs = 749; },
       tickBudgetMs: 750,
       monotonicNow: () => monotonicMs,
@@ -387,7 +501,7 @@ describe("JOB-003 flag-on job-control runtime", () => {
     const worker = createJobOutboxWorker({
       appDb: {} as never,
       scheduler: createJobReadyScheduler(),
-      listAdmittedOrganizationIds: async () => orgs,
+      listAdmittedOrganizationIds: async (input) => admittedOrganizationPage(input, orgs),
       maxOrganizationShards: 1,
     });
 
@@ -416,7 +530,7 @@ describe("JOB-003 flag-on job-control runtime", () => {
     const worker = createJobOutboxWorker({
       appDb: {} as never,
       scheduler: createJobReadyScheduler(),
-      listAdmittedOrganizationIds: async () => [orgA, orgB],
+      listAdmittedOrganizationIds: async (input) => admittedOrganizationPage(input, [orgA, orgB]),
       maxOrganizationShards: 1,
       publishHint: async (hint) => {
         if (reject) throw new Error("publish rejected");
@@ -452,7 +566,7 @@ describe("JOB-003 flag-on job-control runtime", () => {
     const worker = createJobOutboxWorker({
       appDb: {} as never,
       scheduler,
-      listAdmittedOrganizationIds: async () => [orgA],
+      listAdmittedOrganizationIds: async (input) => admittedOrganizationPage(input, [orgA]),
       publishHint: async (signal) => {
         publications.push(signal);
         expect.soft(Object.keys(signal).sort()).toEqual(["organizationId", "targetId"]);
@@ -487,7 +601,7 @@ describe("JOB-003 flag-on job-control runtime", () => {
     const worker = createJobOutboxWorker({
       appDb: {} as never,
       scheduler,
-      listAdmittedOrganizationIds: async () => [orgA],
+      listAdmittedOrganizationIds: async (input) => admittedOrganizationPage(input, [orgA]),
     });
 
     await expect(worker.tick()).rejects.toThrow("job_ready_scheduler_full");
@@ -504,7 +618,7 @@ describe("JOB-003 flag-on job-control runtime", () => {
     const worker = createJobOutboxWorker({
       appDb: {} as never,
       scheduler: createJobReadyScheduler(),
-      listAdmittedOrganizationIds: async () => [orgA, orgB],
+      listAdmittedOrganizationIds: async (input) => admittedOrganizationPage(input, [orgA, orgB]),
       maxOrganizationShards: 1,
     });
 
@@ -517,6 +631,7 @@ describe("JOB-003 flag-on job-control runtime", () => {
 
   it("composes and stops the runtime only inside the distributed-execution flag", () => {
     const indexSource = readFileSync(new URL("../index.ts", import.meta.url), "utf8");
+    const outboxSource = readFileSync(new URL("../services/job-outbox-worker.ts", import.meta.url), "utf8");
     const shutdownSource = readFileSync(new URL("../services/server-shutdown.ts", import.meta.url), "utf8");
     const flagIndex = indexSource.indexOf("config.distributedExecutionEnabled");
     const schedulerIndex = indexSource.indexOf("createJobReadyScheduler");
@@ -526,6 +641,9 @@ describe("JOB-003 flag-on job-control runtime", () => {
     expect(schedulerIndex).toBeGreaterThan(flagIndex);
     expect(outboxIndex).toBeGreaterThan(flagIndex);
     expect(indexSource).toContain("listAdmittedOrganizationIds");
+    expect(indexSource).toContain("afterOrganizationId");
+    expect(outboxSource).toMatch(/interface AdmittedOrganizationPageInput[\s\S]{0,200}afterOrganizationId:/);
+    expect(outboxSource).not.toMatch(/interface AdmittedOrganizationPageInput[\s\S]{0,200}\bafter\??:/);
     expect(indexSource).toMatch(/listAdmittedOrganizationIds[\s\S]*?\.limit\(/);
     expect(indexSource).toContain("eq(organizations.status, \"active\")");
     expect(indexSource).toContain("ne(organizations.id, \"00000000-0000-0000-0000-000000000001\")");

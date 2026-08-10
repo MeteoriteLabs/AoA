@@ -3,13 +3,18 @@ import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import {
   canonicalizeJsonV1,
-  canonicalProviderConstraintProfileDigestInputV1,
-  verifyAndBrandProviderConstraintProfileV1,
-  workerSatisfiesRequirements,
 } from "@armyofagents/worker-protocol";
 
 const moduleUrl = new URL("../services/job-lease-eligibility.ts", import.meta.url);
 const source = existsSync(moduleUrl) ? readFileSync(moduleUrl, "utf8") : "";
+const frozenV1Url = new URL(
+  "../../../tests/fixtures/worker-protocol-consumers/v1/dist/index.js",
+  import.meta.url,
+);
+const frozenConformanceUrl = new URL(
+  "../../../docs/contracts/worker-protocol/v1/conformance.json",
+  import.meta.url,
+);
 
 interface EligibilityModule {
   LEASE_STATIC_ELIGIBILITY_VERSION: number;
@@ -36,6 +41,28 @@ async function loadEligibility(): Promise<EligibilityModule | null> {
   return vi.importActual(specifier) as Promise<EligibilityModule>;
 }
 
+async function loadFrozenV1Matcher(): Promise<(
+  target: unknown,
+  verifiedProviderConstraints: unknown,
+  worker: unknown,
+  requirements: unknown,
+) => boolean> {
+  expect.soft(existsSync(frozenV1Url), "immutable E1 v1 consumer fixture must exist").toBe(true);
+  const frozen = await loadFrozenV1Module();
+  expect.soft(typeof frozen.workerSatisfiesRequirements).toBe("function");
+  return frozen.workerSatisfiesRequirements as (
+    target: unknown,
+    verifiedProviderConstraints: unknown,
+    worker: unknown,
+    requirements: unknown,
+  ) => boolean;
+}
+
+async function loadFrozenV1Module(): Promise<Record<string, any>> {
+  expect.soft(existsSync(frozenV1Url), "immutable E1 v1 consumer fixture must exist").toBe(true);
+  return vi.importActual<Record<string, any>>(frozenV1Url.href);
+}
+
 function hello(capacity: Record<string, number> = {
   batchSlots: 3,
   browserSessionSlots: 2,
@@ -50,7 +77,7 @@ function hello(capacity: Record<string, number> = {
     targetId: "e3200000-0000-4000-8000-000000000002",
     deviceGeneration: 1,
     agentVersion: "job003-static-matcher",
-    supportedProtocol: { min: 1, max: 1 },
+    supportedProtocol: { min: 1, max: 2 },
     platform: { os: "linux", arch: "x64", runtime: "worker" },
     reportedCapabilities: ["workload.batch", "sandbox.process_isolated"],
     capacity,
@@ -87,6 +114,7 @@ async function matcherPair(overrides: {
   worker?: Record<string, unknown>;
   requirements?: Record<string, unknown>;
 } = {}) {
+  const frozen = await loadFrozenV1Module();
   const profile: Record<string, unknown> = {
     profileId: "job003-static",
     version: 1,
@@ -101,7 +129,7 @@ async function matcherPair(overrides: {
     healthMode: "none",
   };
   profile.digest = createHash("sha256")
-    .update(canonicalProviderConstraintProfileDigestInputV1(profile))
+    .update(frozen.canonicalProviderConstraintProfileDigestInputV1(profile))
     .digest("hex");
   const reference = { profileId: profile.profileId, version: 1, digest: profile.digest };
   const target = {
@@ -151,7 +179,7 @@ async function matcherPair(overrides: {
     mustUnderstand: ["provider.lifecycle_v1"],
     ...overrides.requirements,
   };
-  const verifiedProviderConstraints = await verifyAndBrandProviderConstraintProfileV1(
+  const verifiedProviderConstraints = await frozen.verifyAndBrandProviderConstraintProfileV1(
     profile,
     async (bytes) => createHash("sha256").update(bytes).digest("hex"),
   );
@@ -192,21 +220,19 @@ describe("JOB-003 static-only lease eligibility", () => {
     const baselineHash = eligibility.logicalWorkerStaticMatcherProfileHash(baseline);
     expect.soft(baselineHash).toMatch(/^[0-9a-f]{64}$/);
 
-    const capacityOnly = hello({
-      batchSlots: 99,
-      browserSessionSlots: 0,
-      serviceSlots: 17,
-      freeCpuMillis: 1,
-      freeMemoryMiB: 2,
-      freeDiskMiB: 3,
-    });
-    expect.soft(eligibility.logicalWorkerStaticMatcherProfileHash(capacityOnly)).toBe(baselineHash);
-
     const mutations: Array<[string, Record<string, unknown>]> = [
+      ["protocolVersion", { ...baseline, protocolVersion: 2 }],
+      ["workerId", { ...baseline, workerId: "e3200000-0000-4000-8000-000000000099" }],
+      ["targetId", { ...baseline, targetId: "e3200000-0000-4000-8000-000000000098" }],
+      ["deviceGeneration", { ...baseline, deviceGeneration: 2 }],
       ["agentVersion", { ...baseline, agentVersion: "changed" }],
-      ["protocol", { ...baseline, supportedProtocol: { min: 1, max: 2 } }],
-      ["platform", { ...baseline, platform: { os: "windows", arch: "x64", runtime: "worker" } }],
+      ["supportedProtocol.min", { ...baseline, supportedProtocol: { min: 2, max: 2 } }],
+      ["supportedProtocol.max", { ...baseline, supportedProtocol: { min: 1, max: 3 } }],
+      ["platform.os", { ...baseline, platform: { os: "windows", arch: "x64", runtime: "worker" } }],
+      ["platform.arch", { ...baseline, platform: { os: "linux", arch: "arm64", runtime: "worker" } }],
+      ["platform.runtime", { ...baseline, platform: { os: "linux", arch: "x64", runtime: "changed" } }],
       ["capabilities", { ...baseline, reportedCapabilities: ["workload.batch"] }],
+      ["capability-order", { ...baseline, reportedCapabilities: [...baseline.reportedCapabilities as string[]].reverse() }],
       ["policy", { ...baseline, policyHash: "9".repeat(64) }],
     ];
     for (const [label, mutation] of mutations) {
@@ -214,14 +240,32 @@ describe("JOB-003 static-only lease eligibility", () => {
         eligibility.logicalWorkerStaticMatcherProfileHash(mutation),
         label,
       ).not.toBe(baselineHash);
+      expect.soft(
+        createHash("sha256").update(JSON.stringify(mutation)).digest("hex"),
+        `${label}:correctly rehashed enrollment snapshot`,
+      ).not.toBe(createHash("sha256").update(JSON.stringify(baseline)).digest("hex"));
+    }
+
+    const baselineCapacity = baseline.capacity as Record<string, number>;
+    for (const field of [
+      "batchSlots", "browserSessionSlots", "serviceSlots",
+      "freeCpuMillis", "freeMemoryMiB", "freeDiskMiB",
+    ]) {
+      const capacityOnly = {
+        ...baseline,
+        capacity: { ...baselineCapacity, [field]: baselineCapacity[field]! + 1 },
+      };
+      expect.soft(eligibility.logicalWorkerStaticMatcherProfileHash(capacityOnly), field).toBe(baselineHash);
     }
 
     const expectedNeutral = {
       ...baseline,
       capacity: eligibility.NEUTRAL_LEASE_MATCHER_CAPACITY,
     };
+    const frozen = await loadFrozenV1Module();
+    expect.soft(canonicalizeJsonV1(expectedNeutral)).toBe(frozen.canonicalizeJsonV1(expectedNeutral));
     const expectedHash = createHash("sha256")
-      .update(canonicalizeJsonV1(expectedNeutral))
+      .update(frozen.canonicalizeJsonV1(expectedNeutral))
       .digest("hex");
     expect.soft(baselineHash).toBe(expectedHash);
   });
@@ -232,10 +276,28 @@ describe("JOB-003 static-only lease eligibility", () => {
     const baseline = context();
     const baselineHash = eligibility.leaseStaticContextHash(baseline);
     expect.soft(baselineHash).toMatch(/^[0-9a-f]{64}$/);
+    const expectedCanonical = {
+      certificateVersion: eligibility.LEASE_STATIC_ELIGIBILITY_VERSION,
+      canonicalizerVersion: eligibility.LEASE_CANONICALIZER_VERSION,
+      leasingAlgorithmVersion: eligibility.LEASE_ALGORITHM_VERSION,
+      matcherVersion: eligibility.LEASE_MATCHER_VERSION,
+      placementNormalizerVersion: eligibility.LEASE_PLACEMENT_NORMALIZER_VERSION,
+      workloadVocabularyVersion: eligibility.LEASE_WORKLOAD_VOCABULARY_VERSION,
+      ...baseline,
+    };
+    const frozen = await loadFrozenV1Module();
+    expect.soft(Object.keys(expectedCanonical)).toHaveLength(25);
+    expect.soft(baselineHash).toBe(createHash("sha256")
+      .update(frozen.canonicalizeJsonV1(expectedCanonical))
+      .digest("hex"));
     for (const key of Object.keys(baseline)) {
-      const changed = { ...baseline, [key]: baseline[key] === null ? "changed" : `${String(baseline[key])}-changed` };
+      const value = baseline[key];
+      const changedValue = value === null ? "changed" : typeof value === "number" ? value + 1 : `${String(value)}-changed`;
+      const changed = { ...baseline, [key]: changedValue };
       expect.soft(eligibility.leaseStaticContextHash(changed), key).not.toBe(baselineHash);
     }
+    expect.soft(eligibility.leaseStaticContextHash({ ...baseline, ignoredExtraKey: "must-not-enter-hash" }))
+      .toBe(baselineHash);
     expect.soft(source).toMatch(/certificateVersion[\s\S]*canonicalizerVersion[\s\S]*leasingAlgorithmVersion/);
     expect.soft(source).toMatch(/matcherVersion[\s\S]*placementNormalizerVersion[\s\S]*workloadVocabularyVersion/);
   });
@@ -249,23 +311,125 @@ describe("JOB-003 static-only lease eligibility", () => {
   it("is bidirectionally equivalent to frozen matching after dynamic gates pass", async () => {
     const eligibility = await loadEligibility();
     if (!eligibility) return;
+    const frozenWorkerSatisfiesRequirements = await loadFrozenV1Matcher();
     expect.soft(typeof eligibility.evaluateStaticLeaseEligibility).toBe("function");
     if (typeof eligibility.evaluateStaticLeaseEligibility !== "function") return;
 
-    const cases = [
-      { name: "coherent", pair: await matcherPair(), expected: true },
-      { name: "capability", pair: await matcherPair({ worker: { reportedCapabilities: ["workload.batch"] } }), expected: false },
-      { name: "protocol", pair: await matcherPair({ worker: { supportedProtocol: { min: 2, max: 2 } } }), expected: false },
-      { name: "worker-policy", pair: await matcherPair({ worker: { policyHash: "b".repeat(64) } }), expected: false },
-      { name: "revoked-target", pair: await matcherPair({ target: { revokedAt: "2026-08-11T00:00:00.000Z" } }), expected: false },
-      { name: "target-class", pair: await matcherPair({
-        requirements: {
-          targetRequirements: {
-            ...(await matcherPair()).requirements.targetRequirements,
-            allowedTargetClasses: ["organization_dedicated"],
+    const baselinePair = await matcherPair();
+    const providerMismatch = await matcherPair();
+    providerMismatch.target.providerConstraints = {
+      ...(providerMismatch.target.providerConstraints as Record<string, unknown>),
+      digest: "9".repeat(64),
+    };
+    const targetClassMismatch = await matcherPair({
+      requirements: {
+        targetRequirements: {
+          ...baselinePair.requirements.targetRequirements as Record<string, unknown>,
+          allowedTargetClasses: ["organization_dedicated"],
+        },
+      },
+    });
+    const trustMismatch = await matcherPair({
+      requirements: {
+        targetRequirements: {
+          ...baselinePair.requirements.targetRequirements as Record<string, unknown>,
+          allowedTrustClasses: ["organization_isolated"],
+        },
+      },
+    });
+    const ownerMismatch = await matcherPair({
+      target: {
+        targetClass: "owner_desktop",
+        scope: "owner",
+        organizationId: "e3200000-0000-4000-8000-000000000003",
+        ownerPrincipalId: "owner-principal-9",
+        trustCeiling: "owner_local_trusted",
+        credentialCeiling: "owner_bound",
+        dataLocalityCeiling: "owner_device_only",
+      },
+      requirements: {
+        targetRequirements: {
+          ...baselinePair.requirements.targetRequirements as Record<string, unknown>,
+          allowedTargetClasses: ["owner_desktop"],
+          allowedTrustClasses: ["owner_local_trusted"],
+          requiredOwnerPrincipalId: "someone-else",
+          credentialKind: "owner_bound",
+          dataLocality: "owner_device_only",
+        },
+      },
+    });
+    const credentialMismatch = await matcherPair({
+      target: {
+        targetClass: "organization_dedicated",
+        scope: "organization",
+        organizationId: "e3200000-0000-4000-8000-000000000003",
+        trustCeiling: "organization_isolated",
+        credentialCeiling: "platform_brokered",
+        dataLocalityCeiling: "organization_target_only",
+      },
+      requirements: {
+        targetRequirements: {
+          ...baselinePair.requirements.targetRequirements as Record<string, unknown>,
+          allowedTargetClasses: ["organization_dedicated"],
+          allowedTrustClasses: ["organization_isolated"],
+          credentialKind: "organization_brokered",
+          dataLocality: "organization_target_only",
+        },
+      },
+    });
+    const localityMismatch = await matcherPair({
+      target: {
+        targetClass: "organization_dedicated",
+        scope: "organization",
+        organizationId: "e3200000-0000-4000-8000-000000000003",
+        trustCeiling: "organization_isolated",
+        credentialCeiling: "organization_brokered",
+        dataLocalityCeiling: "transfer_allowed",
+      },
+      requirements: {
+        targetRequirements: {
+          ...baselinePair.requirements.targetRequirements as Record<string, unknown>,
+          allowedTargetClasses: ["organization_dedicated"],
+          allowedTrustClasses: ["organization_isolated"],
+          credentialKind: "organization_brokered",
+          dataLocality: "organization_target_only",
+        },
+      },
+    });
+    const requirementsProviderMismatch = await matcherPair({
+      requirements: {
+        targetRequirements: {
+          ...baselinePair.requirements.targetRequirements as Record<string, unknown>,
+          providerConstraints: {
+            ...baselinePair.requirements.targetRequirements.providerConstraints as Record<string, unknown>,
+            digest: "8".repeat(64),
           },
         },
+      },
+    });
+    const cases = [
+      { name: "coherent", pair: baselinePair, expected: true },
+      { name: "target-id", pair: await matcherPair({ worker: { targetId: "e3200000-0000-4000-8000-000000000099" } }), expected: false },
+      { name: "target-generation", pair: await matcherPair({ worker: { deviceGeneration: 2 } }), expected: false },
+      { name: "revoked-target", pair: await matcherPair({ target: { revokedAt: "2026-08-11T00:00:00.000Z" } }), expected: false },
+      { name: "provider-profile", pair: providerMismatch, expected: false },
+      { name: "requirements-provider-profile", pair: requirementsProviderMismatch, expected: false },
+      { name: "server-capability-ceiling", pair: await matcherPair({ target: { capabilityCeiling: ["workload.batch"] } }), expected: false },
+      { name: "worker-capability-report", pair: await matcherPair({ worker: { reportedCapabilities: ["workload.batch"] } }), expected: false },
+      { name: "unknown-must-understand", pair: await matcherPair({ requirements: { mustUnderstand: ["provider.unknownfuture_v9"] } }), expected: false },
+      { name: "withheld-must-understand", pair: await matcherPair({
+        target: { capabilityCeiling: ["workload.batch", "provider.lifecycle_v1", "sandbox.process_isolated"] },
+        requirements: { mustUnderstand: ["secret.proxy"] },
       }), expected: false },
+      { name: "requirements-policy", pair: await matcherPair({ requirements: { policyHash: "b".repeat(64) } }), expected: false },
+      { name: "worker-policy", pair: await matcherPair({ worker: { policyHash: "b".repeat(64) } }), expected: false },
+      { name: "protocol", pair: await matcherPair({ worker: { supportedProtocol: { min: 2, max: 2 } } }), expected: false },
+      { name: "target-class", pair: targetClassMismatch, expected: false },
+      { name: "target-trust", pair: trustMismatch, expected: false },
+      { name: "credential-ceiling", pair: credentialMismatch, expected: false },
+      { name: "data-locality", pair: localityMismatch, expected: false },
+      { name: "owner-principal", pair: ownerMismatch, expected: false },
+      { name: "workload-capability", pair: await matcherPair({ requirements: { workloadType: "service", capabilities: [] } }), expected: false },
     ];
     const dynamicallyAdmissibleCapacity = [
       { batchSlots: 1, browserSessionSlots: 0, serviceSlots: 0, freeCpuMillis: 1, freeMemoryMiB: 1, freeDiskMiB: 1 },
@@ -276,7 +440,7 @@ describe("JOB-003 static-only lease eligibility", () => {
       expect.soft(adapter.eligible, testCase.name).toBe(testCase.expected);
       expect.soft(adapter.reasonCode, testCase.name).toBe(testCase.expected ? null : "static_requirements_mismatch");
       for (const capacity of dynamicallyAdmissibleCapacity) {
-        const frozen = workerSatisfiesRequirements(
+        const frozen = frozenWorkerSatisfiesRequirements(
           testCase.pair.target as never,
           testCase.pair.verifiedProviderConstraints!,
           { ...testCase.pair.worker, capacity } as never,
@@ -294,12 +458,45 @@ describe("JOB-003 static-only lease eligibility", () => {
       freeMemoryMiB: 999_999,
       freeDiskMiB: 999_999,
     } } });
-    expect.soft(workerSatisfiesRequirements(
+    expect.soft(frozenWorkerSatisfiesRequirements(
       dynamicOnly.target as never,
       dynamicOnly.verifiedProviderConstraints!,
       dynamicOnly.worker as never,
       dynamicOnly.requirements as never,
     )).toBe(false);
     expect.soft(eligibility.evaluateStaticLeaseEligibility(dynamicOnly).eligible).toBe(true);
+  });
+
+  it("runs every immutable target_worker_pair conformance case through frozen v1 and the adapter", async () => {
+    const eligibility = await loadEligibility();
+    if (!eligibility) return;
+    const frozen = await vi.importActual<Record<string, any>>(frozenV1Url.href);
+    const conformance = JSON.parse(readFileSync(frozenConformanceUrl, "utf8")) as {
+      cases: Array<{ name: string; schema: string; valid: boolean; input: Record<string, unknown> }>;
+    };
+    const cases = conformance.cases.filter((entry) => entry.schema === "target_worker_pair");
+    expect.soft(cases.length).toBeGreaterThan(0);
+    for (const entry of cases) {
+      const target = frozen.registeredTargetProfileV1Schema.parse(entry.input.registeredTarget);
+      const provider = await frozen.verifyAndBrandProviderConstraintProfileV1(
+        entry.input.providerProfile,
+        async (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex"),
+      );
+      const worker = frozen.workerHelloV1Schema.parse(entry.input.worker);
+      const requirements = frozen.jobCapabilityRequirementsSchema.parse(entry.input.requirements);
+      expect.soft(provider, entry.name).not.toBeNull();
+      if (!provider) continue;
+      const frozenResult = frozen.workerSatisfiesRequirements(target, provider, worker, requirements);
+      expect.soft(frozenResult, `${entry.name}:fixture disposition`).toBe(entry.valid);
+      const adapter = eligibility.evaluateStaticLeaseEligibility({
+        target,
+        verifiedProviderConstraints: provider,
+        worker,
+        requirements,
+      });
+      expect.soft(adapter.eligible, `${entry.name}:adapter`).toBe(frozenResult);
+      expect.soft(adapter.reasonCode, `${entry.name}:reason`)
+        .toBe(frozenResult ? null : "static_requirements_mismatch");
+    }
   });
 });

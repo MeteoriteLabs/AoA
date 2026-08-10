@@ -116,11 +116,20 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         .join("\n")
         .trim())
         .filter(Boolean);
-      for (const statement of rlsStatements) {
-        expect.soft(statement).toMatch(
-          /^(?:REVOKE ALL ON(?: TABLE)? "worker_lease_rejections" FROM (?:PUBLIC|"aoa_operator")|GRANT SELECT, INSERT, UPDATE, DELETE ON(?: TABLE)? "worker_lease_rejections" TO "aoa_app"|ALTER TABLE "worker_lease_rejections" (?:ENABLE|FORCE) ROW LEVEL SECURITY|DROP POLICY IF EXISTS "worker_lease_rejections_tenant_isolation" ON "worker_lease_rejections"|CREATE POLICY "worker_lease_rejections_tenant_isolation" ON "worker_lease_rejections" TO "aoa_app"[\s\S]*)/,
-        );
-      }
+      const normalizeStatement = (statement: string): string => statement.replace(/\s+/g, " ").trim();
+      const expectedCustomStatements = [
+        'REVOKE ALL ON "worker_lease_rejections" FROM PUBLIC;',
+        'REVOKE ALL ON "worker_lease_rejections" FROM "aoa_operator";',
+        'GRANT SELECT, INSERT, UPDATE, DELETE ON "worker_lease_rejections" TO "aoa_app";',
+        'ALTER TABLE "worker_lease_rejections" ENABLE ROW LEVEL SECURITY;',
+        'ALTER TABLE "worker_lease_rejections" FORCE ROW LEVEL SECURITY;',
+        'DROP POLICY IF EXISTS "worker_lease_rejections_tenant_isolation" ON "worker_lease_rejections";',
+        'CREATE POLICY "worker_lease_rejections_tenant_isolation" ON "worker_lease_rejections" TO "aoa_app" USING (organization_id = current_setting(\'aoa.organization_id\', true)::uuid) WITH CHECK (organization_id = current_setting(\'aoa.organization_id\', true)::uuid);',
+      ];
+      expect.soft(rlsStatements.map(normalizeStatement)).toEqual(expectedCustomStatements);
+      const withUnauthorizedTail = [...rlsStatements];
+      withUnauthorizedTail[withUnauthorizedTail.length - 1] += " SELECT current_user;";
+      expect.soft(withUnauthorizedTail.map(normalizeStatement)).not.toEqual(expectedCustomStatements);
 
       const snapshotPath = new URL("../migrations/meta/0230_snapshot.json", import.meta.url);
       const parentSnapshotPath = new URL("../migrations/meta/0229_snapshot.json", import.meta.url);
@@ -180,18 +189,30 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       ));
       expect.soft(fks.some((row) => /FOREIGN KEY \((company_id|job_id|attempt_id|worker_id)\)/.test(row.definition))).toBe(false);
       const definitions = constraints.map((row) => row.definition).join("\n");
-      expect.soft(definitions).toContain("static_requirements_mismatch");
-      for (const value of ["batch", "browser_session", "service"]) expect.soft(definitions).toContain(value);
-      for (const value of ["managed_cloud", "organization_dedicated", "owner_desktop"]) {
-        expect.soft(definitions).toContain(value);
-      }
-      for (const value of ["platform", "organization", "owner"]) expect.soft(definitions).toContain(value);
+      const checks = constraints.filter((row) => row.type === "c");
+      const closedVocabulary = (column: string): string[] => {
+        const matches = checks.filter((row) => new RegExp(`\\b${column}\\b`).test(row.definition));
+        expect.soft(matches, `${column} must have one dedicated closed-vocabulary CHECK`).toHaveLength(1);
+        return [...(matches[0]?.definition ?? "").matchAll(/'([^']+)'(?:::text)?/g)]
+          .map((match) => match[1]!)
+          .filter((value) => !value.startsWith("^["))
+          .sort();
+      };
+      expect.soft(closedVocabulary("workload_type")).toEqual(["batch", "browser_session", "service"]);
+      expect.soft(closedVocabulary("placement_owner")).toEqual([
+        "managed_cloud", "organization_dedicated", "owner_desktop",
+      ]);
+      expect.soft(closedVocabulary("placement_target_class")).toEqual([
+        "managed_cloud", "organization_dedicated", "owner_desktop",
+      ]);
+      expect.soft(closedVocabulary("placement_target_scope")).toEqual(["organization", "owner", "platform"]);
+      expect.soft(closedVocabulary("reason_code")).toEqual(["static_requirements_mismatch"]);
       for (const column of [
         "static_context_hash", "placement_profile_hash", "placement_provider_constraint_hash",
         "placement_input_digest", "placement_policy_digest",
       ]) {
         expect.soft(definitions, `${column} must be lowercase sha256`).toMatch(
-          new RegExp(`${column}[^\\n]*\\^\\[0-9a-f\\]\\{64\\}\\$`, "i"),
+          new RegExp(`${column}[^\\n]*\\^\\[0-9a-f\\]\\{64\\}\\$`),
         );
       }
       expect.soft(definitions).toMatch(/eligibility_version\s*>\s*0/i);
@@ -292,6 +313,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       const orgB = "e3100000-0000-4000-8000-000000000002";
       const companyA = "e3100000-0000-4000-8000-000000000003";
       const companyB = "e3100000-0000-4000-8000-000000000004";
+      const companyA2 = "e3100000-0000-4000-8000-000000000013";
       const targetA = "e3100000-0000-4000-8000-000000000005";
       const targetB = "e3100000-0000-4000-8000-000000000006";
       const workerA = "e3100000-0000-4000-8000-000000000007";
@@ -308,7 +330,8 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
         (${orgB}, 'certificate org B', 'certificate-org-b')`;
       await client`INSERT INTO companies (id, organization_id, name, issue_prefix) VALUES
         (${companyA}, ${orgA}, 'certificate company A', 'CFA'),
-        (${companyB}, ${orgB}, 'certificate company B', 'CFB')`;
+        (${companyB}, ${orgB}, 'certificate company B', 'CFB'),
+        (${companyA2}, ${orgA}, 'certificate company A2', 'CF2')`;
       await client`INSERT INTO execution_targets
         (id, organization_id, slug, kind, trust_class, status, scope, target_authority_key, device_generation)
         VALUES
@@ -408,6 +431,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
       expect(dml).toEqual({ ownUpdate: 1, foreignUpdate: 0, foreignDelete: 0, ownDelete: 1, ownInsert: 1 });
 
       async function deniedInsert(input: {
+        organizationId?: string;
         companyId: string;
         jobId: string;
         attemptId: string;
@@ -427,7 +451,7 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
                placement_target_generation, placement_profile_hash,
                placement_provider_constraint_hash, placement_input_digest,
                placement_policy_digest, reason_code)
-              VALUES (${orgA}, ${input.companyId}, ${input.jobId}, ${input.attemptId},
+              VALUES (${input.organizationId ?? orgA}, ${input.companyId}, ${input.jobId}, ${input.attemptId},
                 ${input.workerId}, ${input.targetId}, ${input.authorityKey}, 1, ${hash}, 'batch',
                 'organization_dedicated', 'organization_dedicated', 'organization', 1,
                 ${hash}, ${hash}, ${hash}, ${hash}, 'static_requirements_mismatch')`;
@@ -442,6 +466,39 @@ describe.skipIf(process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRAT
           };
         }
       }
+
+      // This row is valid against every composite FK. With Org A selected, its
+      // only denial reason must therefore be the tenant WITH CHECK policy.
+      await client`DELETE FROM worker_lease_rejections
+        WHERE organization_id = ${orgB} AND worker_id = ${workerB} AND attempt_id = ${attemptB}`;
+      const validCrossOrganization = await deniedInsert({
+        organizationId: orgB,
+        companyId: companyB,
+        jobId: jobB,
+        attemptId: attemptB,
+        workerId: workerB,
+        targetId: targetB,
+        authorityKey: `organization:${orgB}`,
+      });
+      expect.soft(validCrossOrganization.code).toBe("42501");
+      expect.soft(validCrossOrganization.constraint).toBeUndefined();
+      expect.soft(validCrossOrganization.message).toMatch(/row-level security/i);
+      expect.soft(validCrossOrganization.message).not.toContain(orgA);
+      expect.soft(validCrossOrganization.message).not.toContain(orgB);
+
+      // Same-Organization cross-Company mixing cannot satisfy the composite
+      // attempt FK: company A2 is real and visible, but it does not own job A.
+      const sameOrganizationCrossCompany = await deniedInsert({
+        companyId: companyA2,
+        jobId: jobA,
+        attemptId: attemptA,
+        workerId: workerA,
+        targetId: targetA,
+        authorityKey: `organization:${orgA}`,
+      });
+      expect.soft(sameOrganizationCrossCompany.code).toBe("23503");
+      expect.soft(sameOrganizationCrossCompany.constraint).toBe("worker_lease_rejections_attempt_fk");
+      expect.soft(sameOrganizationCrossCompany.message).not.toContain(companyA2);
 
       const foreignAttempt = await deniedInsert({
         companyId: companyB, jobId: jobB, attemptId: attemptB,

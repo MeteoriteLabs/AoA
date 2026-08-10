@@ -50,6 +50,7 @@ const PLATFORM_TARGET = "a3000000-0000-4000-8000-000000000009";
 const PLATFORM_PHYSICAL_WORKER = "a3000000-0000-4000-8000-000000000010";
 const PLATFORM_LOGICAL_WORKER_A = "a3000000-0000-4000-8000-000000000011";
 const PLATFORM_LOGICAL_WORKER_B = "a3000000-0000-4000-8000-000000000012";
+const ALT_COMPANY = "a3000000-0000-4000-8000-000000000013";
 const PASSWORD = "job-003-role-password";
 const POLICY_HASH = "3".repeat(64);
 const THUMBPRINT = "4".repeat(64);
@@ -881,14 +882,171 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
       targetProviderConstraintHash: provider.digest,
     });
 
+    const currentCertificateFacts = {
+      eligibilityVersion: 1,
+      staticContextHash,
+      workloadType: "batch",
+      placementOwner: "organization_dedicated",
+      placementTargetClass: "organization_dedicated",
+      placementTargetScope: "organization",
+      placementTargetGeneration: 1,
+      placementProfileHash: sha256(canonicalizeJsonV1(profile)),
+      placementProviderConstraintHash: provider.digest,
+      placementInputDigest: "6".repeat(64),
+      placementPolicyDigest: "6".repeat(64),
+    };
+
+    // Every ordinary correlation in the certificate anti-join also gets a
+    // runtime proof. Composite FKs make some alternate identities travel as a
+    // valid tuple; the assertions below name the intended changed component
+    // and keep every inserted certificate FK-valid.
+    await admin`INSERT INTO companies (id, organization_id, name, issue_prefix)
+      VALUES (${ALT_COMPANY}, ${ORG}, 'JOB-003 alternate company', 'J03X')
+      ON CONFLICT (id) DO NOTHING`;
+    type CertificateIdentity = {
+      organizationId: string;
+      companyId: string;
+      jobId: string;
+      attemptId: string;
+      workerId: string;
+      targetId: string;
+      targetAuthorityKey: string;
+    };
+    const insertCertificate = async (identity: CertificateIdentity): Promise<void> => {
+      await admin`INSERT INTO worker_lease_rejections
+        (organization_id, company_id, job_id, attempt_id, worker_id, target_id,
+         target_authority_key, eligibility_version, static_context_hash, workload_type,
+         placement_owner, placement_target_class, placement_target_scope,
+         placement_target_generation, placement_profile_hash,
+         placement_provider_constraint_hash, placement_input_digest, placement_policy_digest,
+         reason_code)
+        VALUES (${identity.organizationId}, ${identity.companyId}, ${identity.jobId}, ${identity.attemptId},
+          ${identity.workerId}, ${identity.targetId}, ${identity.targetAuthorityKey},
+          ${currentCertificateFacts.eligibilityVersion}, ${currentCertificateFacts.staticContextHash},
+          ${currentCertificateFacts.workloadType}, ${currentCertificateFacts.placementOwner},
+          ${currentCertificateFacts.placementTargetClass}, ${currentCertificateFacts.placementTargetScope},
+          ${currentCertificateFacts.placementTargetGeneration}, ${currentCertificateFacts.placementProfileHash},
+          ${currentCertificateFacts.placementProviderConstraintHash},
+          ${currentCertificateFacts.placementInputDigest}, ${currentCertificateFacts.placementPolicyDigest},
+          'static_requirements_mismatch')`;
+    };
+    const identityCases = [
+      "organizationId",
+      "companyId",
+      "jobId",
+      "attemptId",
+      "workerId",
+      "targetId",
+      "targetAuthorityKey",
+    ] as const;
+    for (const [index, changedIdentity] of identityCases.entries()) {
+      await resetRuntimeRows();
+      const current = await seedPlacedJob({ ordinal: 930 + index });
+      const currentIdentity: CertificateIdentity = {
+        organizationId: ORG,
+        companyId: COMPANY,
+        jobId: current.jobId,
+        attemptId: current.attemptId,
+        workerId: WORKER,
+        targetId: TARGET,
+        targetAuthorityKey: `organization:${ORG}`,
+      };
+      let alternate: CertificateIdentity;
+      if (changedIdentity === "organizationId") {
+        const providerB = platformProviderProfile();
+        const profileB = platformRegisteredProfile(providerB);
+        const otherOrg = await seedPlacedJob({
+          ordinal: 940 + index,
+          organizationId: ORG_B,
+          companyId: COMPANY_B,
+          workerId: PLATFORM_LOGICAL_WORKER_B,
+          placement: {
+            targetId: PLATFORM_TARGET,
+            owner: "managed_cloud",
+            targetClass: "managed_cloud",
+            targetScope: "platform",
+            profileHash: sha256(canonicalizeJsonV1(profileB)),
+            providerHash: providerB.digest,
+          },
+          outbox: false,
+        });
+        alternate = {
+          organizationId: ORG_B,
+          companyId: COMPANY_B,
+          jobId: otherOrg.jobId,
+          attemptId: otherOrg.attemptId,
+          workerId: PLATFORM_LOGICAL_WORKER_B,
+          targetId: PLATFORM_TARGET,
+          targetAuthorityKey: "platform",
+        };
+      } else if (changedIdentity === "companyId") {
+        const otherCompany = await seedPlacedJob({
+          ordinal: 940 + index,
+          companyId: ALT_COMPANY,
+          outbox: false,
+        });
+        alternate = { ...currentIdentity, companyId: ALT_COMPANY,
+          jobId: otherCompany.jobId, attemptId: otherCompany.attemptId };
+      } else if (changedIdentity === "jobId") {
+        const otherJob = await seedPlacedJob({ ordinal: 940 + index, outbox: false });
+        alternate = { ...currentIdentity, jobId: otherJob.jobId, attemptId: otherJob.attemptId };
+      } else if (changedIdentity === "attemptId") {
+        const alternateAttemptId = `a3210000-0000-4000-8000-${(940 + index).toString().padStart(12, "0")}`;
+        await admin`INSERT INTO job_attempts
+          (id, organization_id, company_id, job_id, attempt_number, status,
+           placement_disposition, placement_owner, placement_target_id, placement_target_class,
+           placement_target_scope, placement_target_generation, placement_profile_hash,
+           placement_provider_constraint_hash, placement_fallback_disposition, placement_reason_code,
+           placement_mode, placement_lease_eligible, placement_input_digest, placement_policy_digest,
+           placement_decided_at, created_at, updated_at)
+          SELECT ${alternateAttemptId}, organization_id, company_id, job_id, 2, 'failed',
+            placement_disposition, placement_owner, placement_target_id, placement_target_class,
+            placement_target_scope, placement_target_generation, placement_profile_hash,
+            placement_provider_constraint_hash, placement_fallback_disposition, placement_reason_code,
+            placement_mode, placement_lease_eligible, placement_input_digest, placement_policy_digest,
+            placement_decided_at, created_at, updated_at
+          FROM job_attempts WHERE id = ${current.attemptId}`;
+        alternate = { ...currentIdentity, attemptId: alternateAttemptId };
+      } else if (changedIdentity === "targetAuthorityKey") {
+        alternate = { ...currentIdentity,
+          workerId: PLATFORM_LOGICAL_WORKER_A,
+          targetId: PLATFORM_TARGET,
+          targetAuthorityKey: "platform" };
+      } else {
+        alternate = { ...currentIdentity,
+          workerId: OTHER_WORKER,
+          targetId: OTHER_TARGET,
+          targetAuthorityKey: `organization:${ORG}` };
+      }
+      expect.soft(alternate[changedIdentity], `${changedIdentity} fixture must actually differ`)
+        .not.toBe(currentIdentity[changedIdentity]);
+      await insertCertificate(alternate);
+      const result = await createJobLeasingService({ appDb: app.db }).poll({
+        auth: auth(`certificate-identity-${changedIdentity}`),
+        request: pollRequest(WORKER, TARGET, `certificate-identity-${changedIdentity}`),
+      });
+      expect.soft(result.outcome, changedIdentity).toBe("offer");
+      expect.soft(result.outcome === "offer" ? result.body.job.jobId : null, changedIdentity)
+        .toBe(current.jobId);
+    }
+
     const cases = [
-      { name: "version", eligibilityVersion: 999, staticContextHash, workloadType: "batch" },
-      { name: "context", eligibilityVersion: 1, staticContextHash: "7".repeat(64), workloadType: "batch" },
-      { name: "candidate", eligibilityVersion: 1, staticContextHash, workloadType: "browser_session" },
+      { name: "eligibility-version", changed: { eligibilityVersion: 999 } },
+      { name: "static-context", changed: { staticContextHash: "7".repeat(64) } },
+      { name: "workload-type", changed: { workloadType: "browser_session" } },
+      { name: "placement-owner", changed: { placementOwner: "managed_cloud" } },
+      { name: "placement-target-class", changed: { placementTargetClass: "managed_cloud" } },
+      { name: "placement-target-scope", changed: { placementTargetScope: "platform" } },
+      { name: "placement-target-generation", changed: { placementTargetGeneration: 999 } },
+      { name: "placement-profile-hash", changed: { placementProfileHash: "8".repeat(64) } },
+      { name: "placement-provider-hash", changed: { placementProviderConstraintHash: "9".repeat(64) } },
+      { name: "placement-input-digest", changed: { placementInputDigest: "a".repeat(64) } },
+      { name: "placement-policy-digest", changed: { placementPolicyDigest: "b".repeat(64) } },
     ] as const;
     for (const [index, mismatch] of cases.entries()) {
       await resetRuntimeRows();
       const seeded = await seedPlacedJob({ ordinal: 970 + index });
+      const certificate = { ...currentCertificateFacts, ...mismatch.changed };
       await admin`INSERT INTO worker_lease_rejections
         (organization_id, company_id, job_id, attempt_id, worker_id, target_id,
          target_authority_key, eligibility_version, static_context_hash, workload_type,
@@ -897,10 +1055,12 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
          placement_provider_constraint_hash, placement_input_digest, placement_policy_digest,
          reason_code)
         VALUES (${ORG}, ${COMPANY}, ${seeded.jobId}, ${seeded.attemptId}, ${WORKER}, ${TARGET},
-          ${`organization:${ORG}`}, ${mismatch.eligibilityVersion}, ${mismatch.staticContextHash},
-          ${mismatch.workloadType}, 'organization_dedicated', 'organization_dedicated',
-          'organization', 1, ${sha256(canonicalizeJsonV1(profile))}, ${provider.digest},
-          ${"6".repeat(64)}, ${"6".repeat(64)}, 'static_requirements_mismatch')`;
+          ${`organization:${ORG}`}, ${certificate.eligibilityVersion}, ${certificate.staticContextHash},
+          ${certificate.workloadType}, ${certificate.placementOwner}, ${certificate.placementTargetClass},
+          ${certificate.placementTargetScope}, ${certificate.placementTargetGeneration},
+          ${certificate.placementProfileHash}, ${certificate.placementProviderConstraintHash},
+          ${certificate.placementInputDigest}, ${certificate.placementPolicyDigest},
+          'static_requirements_mismatch')`;
       const result = await createJobLeasingService({ appDb: app.db }).poll({
         auth: auth(`stale-certificate-${mismatch.name}`),
         request: pollRequest(WORKER, TARGET, `stale-certificate-${mismatch.name}`),
@@ -990,6 +1150,37 @@ integration("JOB-003 atomic poll/offer and ready hints", () => {
     expect.soft(contextNowEligible.outcome).toBe("offer");
     expect.soft(contextNowEligible.outcome === "offer" ? contextNowEligible.body.job.jobId : null)
       .toBe(changedContext.jobId);
+
+    // The same invalidation must hold when enrollment correctly rehashes the
+    // changed snapshot instead of deliberately retaining the old profile_hash.
+    await resetRuntimeRows();
+    await admin`UPDATE execution_targets SET registered_profile = ${contextProfile},
+      registered_profile_hash = ${contextProfileHash}, provider_constraint_profile = ${contextProvider},
+      status = 'active', device_generation = 1, last_seen_at = clock_timestamp()
+      WHERE id = ${TARGET}`;
+    await admin`UPDATE workers SET profile_snapshot = ${initialHello}, profile_hash = ${enrollmentProfileHash},
+      status = 'enrolled', revoked_at = NULL, last_seen_at = clock_timestamp()
+      WHERE id = ${WORKER}`;
+    const rehashedContext = await seedPlacedJob({
+      ordinal: 977,
+      requiredCapabilities: ["sandbox.filtered_egress"],
+      placement: { profileHash: contextProfileHash, providerHash: contextProvider.digest },
+    });
+    const rehashedBefore = await createJobLeasingService({ appDb: app.db }).poll({
+      auth: auth("certificate-rehashed-before", WORKER, TARGET, enrollmentProfileHash),
+      request: pollRequest(WORKER, TARGET, "certificate-rehashed-before"),
+    });
+    expect.soft(rehashedBefore.outcome).toBe("no_work");
+    const expandedEnrollmentProfileHash = sha256(JSON.stringify(expandedHello));
+    await admin`UPDATE workers SET profile_snapshot = ${expandedHello},
+      profile_hash = ${expandedEnrollmentProfileHash} WHERE id = ${WORKER}`;
+    const rehashedAfter = await createJobLeasingService({ appDb: app.db }).poll({
+      auth: auth("certificate-rehashed-after", WORKER, TARGET, expandedEnrollmentProfileHash),
+      request: pollRequest(WORKER, TARGET, "certificate-rehashed-after"),
+    });
+    expect.soft(rehashedAfter.outcome).toBe("offer");
+    expect.soft(rehashedAfter.outcome === "offer" ? rehashedAfter.body.job.jobId : null)
+      .toBe(rehashedContext.jobId);
   });
 
   it("rolls back predecessor certificates when lease insert fails and never certifies invariant failures", async () => {
