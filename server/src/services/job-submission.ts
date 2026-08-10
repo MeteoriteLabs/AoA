@@ -54,17 +54,6 @@ function sourceIdentity(source: SubmitJobSource): string {
   }
 }
 
-function executor(source: SubmitJobSource): { kind: string; id: string } {
-  switch (source.kind) {
-    case "task_run": return { kind: "agent", id: source.assigneeAgentId };
-    case "service_reconcile": return { kind: "service", id: source.serviceId };
-    case "browser_request": return { kind: "system", id: "aoa-browser" };
-    case "commander_turn": return { kind: "system", id: "aoa-commander" };
-    case "crew_run": return { kind: "system", id: "aoa-crew" };
-    case "one_shot": return { kind: "system", id: "aoa-one-shot" };
-  }
-}
-
 function workloadType(source: SubmitJobSource): string {
   if (source.kind === "browser_request") return "browser_session";
   if (source.kind === "service_reconcile") return "service";
@@ -124,8 +113,6 @@ export function jobSubmissionService(appDb: Db) {
         policyVersion: 1,
         requestedTarget: null,
       };
-      const executionPrincipal = executor(input.command.source);
-
       return runInTenant(appDb, input.organizationId, async (repos) => {
         const admission = await repos.jobControl.admission({
           organizationId: input.organizationId,
@@ -144,14 +131,15 @@ export function jobSubmissionService(appDb: Db) {
           throw denial();
         }
         const source = input.command.source;
+        let executionPrincipal: { kind: string; id: string } | null = null;
         if (source.kind === "task_run") {
-          const admitted = await repos.jobControl.taskSourceIsAdmitted({
+          executionPrincipal = await repos.jobControl.taskSourceIsAdmitted({
             companyId: input.companyId,
             runId: source.runId,
             issueId: source.issueId,
             assigneeAgentId: source.assigneeAgentId,
           });
-          if (!admitted) throw denial();
+          if (!executionPrincipal) throw denial();
           if (input.principal.kind === "agent" && input.principal.id !== source.assigneeAgentId) {
             throw denial();
           }
@@ -166,40 +154,46 @@ export function jobSubmissionService(appDb: Db) {
           ) {
             throw denial();
           }
-          const admitted = await repos.jobControl.commanderSourceIsAdmitted({
+          executionPrincipal = await repos.jobControl.commanderSourceIsAdmitted({
             companyId: input.companyId,
             runId: source.internalAgentRunId,
             conversationId: source.conversationId,
             userId: admission.requester.id,
           });
-          if (!admitted) throw denial();
+          if (!executionPrincipal) throw denial();
         } else if (source.kind === "crew_run") {
-          const admitted = await repos.jobControl.internalRunSourceIsAdmitted({
+          executionPrincipal = await repos.jobControl.internalRunSourceIsAdmitted({
             companyId: input.companyId,
             runId: source.crewRunId,
             requesterKind: admission.requester.kind,
             requesterId: admission.requester.id,
             triggerSource: "crew_dispatch",
           });
-          if (!admitted) throw denial();
+          if (!executionPrincipal) throw denial();
+        } else if (source.kind === "one_shot") {
+          // The admitted one-shot engine is worker-class in the frozen FND-007
+          // authority. The operation is its opaque engine identity; no worker,
+          // target, placement, or lease is selected at submission.
+          executionPrincipal = { kind: "worker", id: source.operationId };
         } else if (source.kind === "browser_request") {
-          const admitted = await repos.jobControl.internalRunSourceIsAdmitted({
+          executionPrincipal = await repos.jobControl.internalRunSourceIsAdmitted({
             companyId: input.companyId,
             runId: source.browserRequestId,
             requesterKind: admission.requester.kind,
             requesterId: admission.requester.id,
             triggerSource: "browser_request",
           });
-          if (!admitted) throw denial();
+          if (!executionPrincipal) throw denial();
         } else if (source.kind === "service_reconcile") {
-          const admitted = await repos.jobControl.serviceSourceIsAdmitted({
+          executionPrincipal = await repos.jobControl.serviceSourceIsAdmitted({
             organizationId: input.organizationId,
             companyId: input.companyId,
             serviceId: source.serviceId,
             generation: source.generation,
           });
-          if (!admitted) throw denial();
+          if (!executionPrincipal) throw denial();
         }
+        if (!executionPrincipal) throw denial();
 
         const now = new Date();
         const jobId = randomUUID();

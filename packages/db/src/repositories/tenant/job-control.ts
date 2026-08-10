@@ -39,6 +39,17 @@ export type SourceRequesterKind =
   | "commander"
   | "system";
 
+export type SourceExecutorKind =
+  | "worker"
+  | "sandbox"
+  | "browser_worker"
+  | "service_instance";
+
+export interface SourceExecutorAuthority {
+  kind: SourceExecutorKind;
+  id: string;
+}
+
 export interface JobControlRepository {
   admission(input: {
     organizationId: string;
@@ -52,26 +63,26 @@ export interface JobControlRepository {
     runId: string;
     issueId: string;
     assigneeAgentId: string;
-  }): Promise<boolean>;
+  }): Promise<SourceExecutorAuthority | null>;
   internalRunSourceIsAdmitted(input: {
     companyId: string;
     runId: string;
     requesterKind: SourceRequesterKind;
     requesterId: string;
     triggerSource: "crew_dispatch" | "browser_request";
-  }): Promise<boolean>;
+  }): Promise<SourceExecutorAuthority | null>;
   commanderSourceIsAdmitted(input: {
     companyId: string;
     runId: string;
     conversationId: string;
     userId: string;
-  }): Promise<boolean>;
+  }): Promise<SourceExecutorAuthority | null>;
   serviceSourceIsAdmitted(input: {
     organizationId: string;
     companyId: string;
     serviceId: string;
     generation: number;
-  }): Promise<boolean>;
+  }): Promise<SourceExecutorAuthority | null>;
   insertJobOnce(values: NewJob): Promise<Job | null>;
   findSubmission(input: {
     organizationId: string;
@@ -194,7 +205,7 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
 
     async taskSourceIsAdmitted(input) {
       const [row] = await tx
-        .select({ runId: heartbeatRuns.id })
+        .select({ agentId: heartbeatRuns.agentId })
         .from(heartbeatRuns)
         .innerJoin(
           issues,
@@ -216,7 +227,9 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
           eq(heartbeatRuns.agentId, input.assigneeAgentId),
         ))
         .limit(1);
-      return Boolean(row);
+      // The admitted legacy heartbeat engine supplies the domain worker role;
+      // JOB-009 may later place that work, but no concrete worker is chosen here.
+      return row ? { kind: "worker", id: row.agentId } : null;
     },
 
     async internalRunSourceIsAdmitted(input) {
@@ -224,7 +237,7 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
         ? eq(internalAgentRuns.agentId, input.requesterId)
         : eq(internalAgentRuns.userId, input.requesterId);
       const [row] = await tx
-        .select({ id: internalAgentRuns.id })
+        .select({ id: internalAgentRuns.id, agentId: internalAgentRuns.agentId })
         .from(internalAgentRuns)
         .where(and(
           eq(internalAgentRuns.id, input.runId),
@@ -233,7 +246,14 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
           ownership,
         ))
         .limit(1);
-      return Boolean(row);
+      if (!row) return null;
+      if (input.triggerSource === "browser_request") {
+        return { kind: "browser_worker", id: row.id };
+      }
+      // Crew's admitted source engine is worker-class. Its bound agent is the
+      // opaque executor identity when present; the run remains the fallback for
+      // a user-owned crew source without an assigned agent. This is not placement.
+      return { kind: "worker", id: row.agentId ?? row.id };
     },
 
     async commanderSourceIsAdmitted(input) {
@@ -255,7 +275,7 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
           eq(internalAgentConversations.userId, input.userId),
         ))
         .limit(1);
-      return Boolean(row);
+      return row ? { kind: "sandbox", id: row.id } : null;
     },
 
     async serviceSourceIsAdmitted(input) {
@@ -269,7 +289,7 @@ export function createJobControlRepository(tx: Db): JobControlRepository {
           eq(services.generation, input.generation),
         ))
         .limit(1);
-      return Boolean(row);
+      return row ? { kind: "service_instance", id: row.id } : null;
     },
 
     async insertJobOnce(values) {
